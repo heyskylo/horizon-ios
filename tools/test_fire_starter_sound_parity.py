@@ -25,7 +25,7 @@ def main():
              'FireChargeItem.useOn\'s choice between lighting and placing fire is not exercised.')
     harness.differential(
         'rust-fire-starter-sound-parity', 'VanillaFireStarterSoundOracle', 'fire_starter_sound_probe', make_cases,
-        scope, sources=[lab.ROOT / 'crates/horizon-client/src/items.rs'])
+        scope, sources=[lab.ROOT / 'crates/horizon-items/src/items.rs'])
 
 
 if __name__ == '__main__':

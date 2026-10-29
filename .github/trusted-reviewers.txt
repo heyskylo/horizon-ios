@@ -1,0 +1,9 @@
+# Trusted reviewers: one list for two things (docs/release-flow.md "Trusted reviewers").
+# - `/nightly 2640 2642` picks the pull requests the Nightly holds (tools/ci/nightly_set.py);
+# - `/close`, `/reopen`, `/label`, `/unlabel` triage issues and pull requests (tools/ci/triage_command.py).
+# Ludovic is always allowed and isn't listed. One GitHub login per line, with who added it and when. Removing a
+# line revokes that login at once. A line with only `paused` stops both for every reviewer (Ludovic's still work).
+kacpherek    # added by Ludovic, 2026-10-27
+rdbtCVS      # added by Ludovic, 2026-10-27
+Online5277   # added by Ludovic, 2026-10-27 (his top three by merged pull requests)
+levzzz5154   # added by Ludovic, 2026-10-28 (Horizon Team; author of horizon-mixins)

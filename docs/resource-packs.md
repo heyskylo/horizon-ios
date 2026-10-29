@@ -85,12 +85,12 @@ shaders, the missing pieces are missing vanilla features too, and each vanilla p
 | --- | --- | --- |
 | Animation `interpolate` | small | fix PR (`gfx.rs` `animate_sprites`) |
 | GUI scaling `width`/`height`, `stretch_inner`, `tile`, `stretch` | small | next fix PR (`ui.rs`) |
-| Villager hats | small | [#334](https://github.com/ludovic111/horizon/issues/334) |
-| `blur`/`clamp` from packs | small | [#335](https://github.com/ludovic111/horizon/issues/335) |
-| Text component fonts, TrueType fonts | medium | [#336](https://github.com/ludovic111/horizon/issues/336) |
-| Trims on worn armour (paletted textures) | medium | [#337](https://github.com/ludovic111/horizon/issues/337) |
-| Credits and end poem screen | medium | [#338](https://github.com/ludovic111/horizon/issues/338) |
-| Locator bar | medium | [#339](https://github.com/ludovic111/horizon/issues/339) |
+| Villager hats | small | [#334](https://github.com/horizon-rust/horizon/issues/334) |
+| `blur`/`clamp` from packs | small | [#335](https://github.com/horizon-rust/horizon/issues/335) |
+| Text component fonts, TrueType fonts | medium | [#336](https://github.com/horizon-rust/horizon/issues/336) |
+| Trims on worn armour (paletted textures) | medium | [#337](https://github.com/horizon-rust/horizon/issues/337) |
+| Credits and end poem screen | medium | [#338](https://github.com/horizon-rust/horizon/issues/338) |
+| Locator bar | medium | [#339](https://github.com/horizon-rust/horizon/issues/339) |
 | Post effects and core shaders | large | none yet |
 
 ## Testing a pack

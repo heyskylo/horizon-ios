@@ -219,7 +219,7 @@ Benchmarks (`--benchmark`) never load mods.
 
 ```sh
 rustup target add wasm32-unknown-unknown
-cargo install --git https://github.com/ludovic111/horizon cargo-horizon-mod
+cargo install --git https://github.com/horizon-rust/horizon cargo-horizon-mod
 cargo horizon-mod new my-mod        # Cargo.toml, horizon-mod.toml, src/lib.rs, tests/hello.toml
                                     # (--template content: a content mod, no code)
 cd my-mod
@@ -391,6 +391,27 @@ blocks and items by declaring them in `data/<id>/horizon/block/*.json` and
   "item": true }
 ```
 
+An item copies its template's data components, with `max_stack_size` and
+`rarity` changed, and any other 26.3 component set or removed in
+`components`, written as a data component patch is: `minecraft:<type>` sets
+one, `!minecraft:<type>` with `{}` removes it. That is how a modded sword
+gets its own damage and durability, or a tool its mining speed:
+
+```json
+{ "template": "minecraft:iron_sword",
+  "components": {
+    "minecraft:max_damage": 900,
+    "minecraft:attribute_modifiers": [{ "type": "minecraft:attack_damage",
+      "id": "minecraft:base_attack_damage", "amount": 7.0,
+      "operation": "add_value", "slot": "mainhand" }],
+    "!minecraft:repairable": {} } }
+```
+
+A component type no vanilla item has is refused, so a misspelt one fails
+the load instead of doing nothing. Behaviour the game ties to a vanilla
+item's id doesn't come along yet: a copy of the trident doesn't throw
+([#3305](https://github.com/horizon-rust/horizon/issues/3305)).
+
 The fence: files go in the mod's own namespaces (`assets/<id>/`,
 `data/<id>/`, and those its manifest lists), plus additions to vanilla tags
 (`data/minecraft/tags/`) and to the convention tags NeoForge and Fabric mods
@@ -540,7 +561,7 @@ that are on, and only that one:
 | Mode | Runs server mods | Players they see |
 |---|---|---|
 | Single player (default) | the server thread | the window's player, a connection like any other |
-| Single player `--in-frame` | the window's own game, beside its client mods | the window's player |
+| Single player `--in-frame` (deprecated, will be removed) | the window's own game, beside its client mods | the window's player |
 | Open to LAN, Play with Friends | the host's server thread (or its window, in-frame) | the host and every guest |
 | Dedicated server (`--dedicated`, `horizon-server`) | the server | every connected player |
 
@@ -581,7 +602,7 @@ published. Players find them at [playhorizon.dev/mods](https://playhorizon.dev/m
    public profile) and fill in the page: the file, its name and summary, licence, source address, and optionally a
    minisign public key with the file's `.minisig`.
 4. The form checks the file again and opens a pull request in
-   [ludovic111/horizon-mods](https://github.com/ludovic111/horizon-mods) that adds `mods/<id>.toml`, with you as its
+   [horizon-rust/horizon-mods](https://github.com/horizon-rust/horizon-mods) that adds `mods/<id>.toml`, with you as its
    owner. That repository's checks run the file in the sandbox and post their report on the pull request; answer the
    reviewers there.
 5. A reviewer merges it: within minutes the file is a release of horizon-mods, and the project is on the site and in
@@ -663,7 +684,7 @@ so the same rustc and `Cargo.lock` give the same file.
   key, so an update signed by another key is refused. Unsigned local files
   stay allowed, with an "unsigned" mark on the Mods page.
 - **Where mods come from.** Horizon's registry ([Publish your mod](#publish-your-mod)): reviewed pull requests in
-  [ludovic111/horizon-mods](https://github.com/ludovic111/horizon-mods), files as its release assets, and an
+  [horizon-rust/horizon-mods](https://github.com/horizon-rust/horizon-mods), files as its release assets, and an
   `index.json` on GitHub Pages that the launcher and the website read. A file the registry takes down
   (`revoked.toml`) is refused by the launcher and turned off where installed.
 - **The launcher.** A Mods tab per installation: browse and search the index,

@@ -91,11 +91,11 @@ fn civil(days: i64) -> (i64, u32, u32) {
     (yoe + era * 400 + i64::from(m <= 2), m, d)
 }
 /// `DateTimeFormatter.ofPattern(pattern).format(now)` for the month, day,
-/// year and time letters item models use (UTC: no time zone database).
+/// year and time letters item models use, in the system time zone
+/// (`LocalTime` without a `time_zone`).
 pub(super) fn local_time(pattern: &str) -> String {
-    let secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs() as i64);
+    let now = chrono::Local::now();
+    let secs = now.timestamp() + i64::from(now.offset().local_minus_utc());
     let (y, mo, d) = civil(secs.div_euclid(86_400));
     let s = secs.rem_euclid(86_400);
     let (h, mi, se) = (s / 3600, s / 60 % 60, s % 60);
@@ -174,13 +174,16 @@ pub(super) fn owner_at(position: [f64; 3], yaw: f32, entity_type: &str) -> Owner
         ..Default::default()
     }
 }
-/// `UseDuration` of a stack: 72000 for drawn items, the consume time for food.
+/// `UseDuration` of a stack (`Item.getUseDuration`): 72000 for drawn items
+/// and for `blocks_attacks` items (shields), the consume time for food.
 fn use_duration(components: &Components) -> i32 {
     if let Some(c) = components.get("minecraft:consumable") {
         let seconds = c["consume_seconds"].as_f64().unwrap_or(1.6);
         return (seconds * 20.0) as i32;
     }
-    if components.get("minecraft:kinetic_weapon").is_some() {
+    if components.get("minecraft:blocks_attacks").is_some()
+        || components.get("minecraft:kinetic_weapon").is_some()
+    {
         return 72_000;
     }
     let item_model = components
@@ -351,11 +354,24 @@ impl Game<'_> {
         light: u32,
         out: &mut Vec<Vertex>,
     ) {
+        let lights = diffuse_lights(self.dim == Dim::Nether);
+        self.submit_item_lit(state, pose, light, lights, out);
+    }
+    /// [`Self::submit_item_world`] shaded by other diffuse lights (a
+    /// `Lighting.Entry` other than the level's), in the pose's output space.
+    pub(super) fn submit_item_lit(
+        &self,
+        state: &ItemRenderState,
+        pose: glam::Mat4,
+        light: u32,
+        lights: (glam::Vec3, glam::Vec3),
+        out: &mut Vec<Vertex>,
+    ) {
         let start = out.len();
         let mut sink = WorldSink {
             out,
             light,
-            lights: Some(diffuse_lights(self.dim == Dim::Nether)),
+            lights: Some(lights),
             glint: self.glint(),
         };
         state.submit(
@@ -496,11 +512,35 @@ impl Game<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn civil_dates_follow_the_gregorian_calendar() {
         assert_eq!(civil(0), (1970, 1, 1));
         assert_eq!(civil(19_716), (2023, 12, 25));
         assert_eq!(civil(11_016), (2000, 2, 29));
+    }
+
+    #[test]
+    fn a_shield_is_used_for_the_vanilla_s_time() {
+        // Item.getUseDuration: an item with `blocks_attacks` (a shield) is
+        // used for 72000 ticks, so its use animation (the arm held up)
+        // runs instead of ending at once (#2289).
+        let mut shield = Components::new();
+        shield.insert("minecraft:blocks_attacks".into(), json!({}));
+        assert_eq!(use_duration(&shield), 72_000);
+        // Food is used for as long as it takes to eat it.
+        let mut food = Components::new();
+        food.insert(
+            "minecraft:consumable".into(),
+            json!({"consume_seconds": 1.6}),
+        );
+        assert_eq!(use_duration(&food), 32);
+        // The bow keeps its own use time.
+        let mut bow = Components::new();
+        bow.insert("minecraft:item_model".into(), json!("minecraft:bow"));
+        assert_eq!(use_duration(&bow), 72_000);
+        // Anything else is not used at all.
+        assert_eq!(use_duration(&Components::new()), 0);
     }
 }

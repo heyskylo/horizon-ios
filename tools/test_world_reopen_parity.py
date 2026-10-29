@@ -34,9 +34,10 @@ CYCLES = 3
 
 
 def game_env():
-    """macOS renders offscreen; Linux uses the virtual screen (as test_save_roundtrip_parity)."""
+    """macOS renders offscreen; Linux uses the virtual screen (as test_save_roundtrip_parity), or renders
+    offscreen too where there is no vscreen."""
     env = lab.game_env()
-    if sys.platform == 'darwin':
+    if sys.platform == 'darwin' or not shutil.which('vscreen'):
         return env, ['--offscreen']
     subprocess.run(['vscreen', 'up'], check=False, capture_output=True)
     text = subprocess.run(['vscreen', 'env'], capture_output=True, text=True, check=True).stdout

@@ -28,7 +28,7 @@ def main():
         'Item.canDestroyBlock with each vanilla item, empty stacks, Survival/Creative '
         'abilities, and explicit/implicit tool overrides. Block destruction and network '
         'prediction call this predicate; end-to-end packet handling is not covered here.',
-        sources=[lab.ROOT / 'crates/horizon-client/src/items.rs'])
+        sources=[lab.ROOT / 'crates/horizon-items/src/items.rs'])
 
 
 if __name__ == '__main__':

@@ -1,7 +1,7 @@
 # Benchmark summary fixtures
 
 Used by the telemetry server's `GET /v1/benchmarks/summary` test (`tests/summary.rs`) and, as a copy, by the
-website's aggregator test (`scripts/benchmarks.test.mjs` in ludovic111/horizon-site, which checks its copy against
+website's aggregator test (`scripts/benchmarks.test.mjs` in horizon-rust/horizon-site, which checks its copy against
 this one on main): the same `benchmark` items in, the same groups out. Change both together.
 
 - `items.jsonl`: one stored item per line (`install_id`, `day`, `version`, `data`: a benchmark report). Group

@@ -10,7 +10,7 @@
 set -euo pipefail
 secret=${1:-RELEASE_SIGNING_KEY}
 case "$secret" in RELEASE_SIGNING_KEY|RELEASE_SIGNING_KEY_NEXT) ;; *) echo "unknown secret $secret" >&2; exit 2 ;; esac
-repo=${GITHUB_REPOSITORY:-ludovic111/horizon}
+repo=${GITHUB_REPOSITORY:-horizon-rust/horizon}
 cd "$(dirname "$0")/../.."
 gh api "repos/$repo/environments/release" > /dev/null || {
   echo "The release environment doesn't exist yet: create it first (docs/security.md)." >&2; exit 1; }

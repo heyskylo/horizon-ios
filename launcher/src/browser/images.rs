@@ -9,11 +9,13 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 /// Hosts images may come from.
-const HOSTS: [&str; 4] = [
+const HOSTS: [&str; 5] = [
     "https://cdn.modrinth.com/",
     "https://media.forgecdn.net/",
     "https://edge.forgecdn.net/",
-    // Horizon's registry's icons (its GitHub Pages).
+    // Horizon's registry's icons (its GitHub Pages), and the mirror kept at the address it had
+    // before the repositories moved to the horizon-rust organization.
+    "https://horizon-rust.github.io/horizon-mods/",
     "https://ludovic111.github.io/horizon-mods/",
 ];
 /// The most an image may weigh before decoding.

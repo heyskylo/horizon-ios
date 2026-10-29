@@ -21,7 +21,7 @@ pub const SCHEMA: u32 = 1;
 /// The biggest file the registry takes (a `.hmod` with content, a `.hpack`).
 pub const MAX_FILE: u64 = 64 << 20;
 /// Where files may be downloaded from: the registry's release assets.
-pub const FILE_HOST: &str = "https://github.com/ludovic111/horizon-mods/releases/download/";
+pub const FILE_HOST: &str = "https://github.com/horizon-rust/horizon-mods/releases/download/";
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Index {
@@ -43,6 +43,8 @@ pub struct Index {
 pub enum Kind {
     /// A `.hmod`.
     Mod,
+    /// A source-only native mixin bundle, compiled into an isolated game build.
+    NativeMod,
     /// A `.hpack`: registry mods played together as a profile.
     Modpack,
     /// A resource pack (`.zip` with `pack.mcmeta`) made or tested for Horizon.
@@ -57,6 +59,7 @@ impl Kind {
     pub fn name(&self) -> &str {
         match self {
             Kind::Mod => "mod",
+            Kind::NativeMod => "native-mod",
             Kind::Modpack => "modpack",
             Kind::ResourcePack => "resourcepack",
             Kind::Shader => "shader",
@@ -68,6 +71,7 @@ impl Kind {
     pub fn extension(&self) -> Option<&'static str> {
         match self {
             Kind::Mod => Some("hmod"),
+            Kind::NativeMod => Some("hnmod"),
             Kind::Modpack => Some("hpack"),
             Kind::ResourcePack => Some("zip"),
             Kind::Shader => Some(horizon_shader_api::EXTENSION),
@@ -80,6 +84,7 @@ impl From<String> for Kind {
     fn from(name: String) -> Kind {
         match name.as_str() {
             "mod" => Kind::Mod,
+            "native-mod" => Kind::NativeMod,
             "modpack" => Kind::Modpack,
             "resourcepack" => Kind::ResourcePack,
             "shader" => Kind::Shader,
@@ -552,6 +557,7 @@ impl Facts {
 /// this build doesn't know are refused: their checks come with their formats.
 pub fn inspect(kind: &Kind, path: &Path) -> Result<Facts, String> {
     match kind {
+        Kind::NativeMod => Ok(native::Bundle::read(path)?.manifest.facts()),
         Kind::Mod => {
             let Package { manifest: m, wasm } = Package::read(path)?;
             crate::Content::read(path, &m)?;
@@ -656,7 +662,7 @@ fn check_resource_pack(path: &Path) -> Result<String, String> {
 /// formats.
 pub fn open(kind: &Kind) -> Result<(), String> {
     match kind {
-        Kind::Mod | Kind::Modpack | Kind::ResourcePack | Kind::Shader => Ok(()),
+        Kind::Mod | Kind::NativeMod | Kind::Modpack | Kind::ResourcePack | Kind::Shader => Ok(()),
         Kind::Other(name) => Err(format!("the registry doesn't take {name} yet")),
     }
 }
@@ -666,6 +672,7 @@ fn names(caps: &[Capability]) -> String {
     format!("[{}]", names.join(", "))
 }
 
+pub mod native;
 pub mod registry;
 #[cfg(test)]
 mod tests;

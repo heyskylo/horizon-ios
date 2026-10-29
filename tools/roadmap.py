@@ -28,13 +28,13 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 SOURCE = ROOT / "roadmap" / "roadmap.toml"
 OUTPUT = ROOT / "ROADMAP.md"
-# What the website's hub reads from main at build time (ludovic111/horizon-site), and serves at /data/roadmap.json
+# What the website's hub reads from main at build time (horizon-rust/horizon-site), and serves at /data/roadmap.json
 # for Kira and others.
 SITE_DATA = ROOT / "roadmap" / "roadmap.json"
 # The journal's weekly summaries, one file per ISO week: roadmap/journal/2026-43.md (roadmap/README.md).
 JOURNAL = ROOT / "roadmap" / "journal"
 WEEK = re.compile(r"(\d{4})-(\d{2})\.md$")
-REPO = "ludovic111/horizon"
+REPO = "horizon-rust/horizon"
 SITE = "https://playhorizon.dev/hub"
 
 STATUSES = {
@@ -245,7 +245,7 @@ def weeks(directory=JOURNAL):
     entries, problems = [], []
     for path in sorted(directory.glob("*.md"), reverse=True) if directory.exists() else []:
         name = WEEK.match(path.name)
-        text = path.read_text()
+        text = path.read_text(encoding="utf-8")
         parts = re.match(r"# (.+)\n\n(.+?)\n\n## Technical\n\n(.+)", text.strip() + "\n", re.S)
         if not name or not 1 <= int(name[2]) <= 53:
             problems.append(f"journal/{path.name}: name it by its ISO week, like 2026-43.md")
@@ -377,7 +377,7 @@ def online_problems(data, states, now):
 
 def family(paths):
     """Which releases carry a change: the launcher's, the website (deployed when merged) or the game's. The site
-    left this repository on 2026-10-26 (ludovic111/horizon-site), so only older pull requests are website-only;
+    left this repository on 2026-10-26 (horizon-rust/horizon-site), so only older pull requests are website-only;
     an item the site alone ships takes shipped_in = "website" by hand."""
     if paths and all(path.startswith("launcher/") for path in paths):
         return "launcher"
@@ -525,12 +525,12 @@ def command_build(args):
         return report(problems)
     files = outputs(data)
     if args.check:
-        stale = [path for path, text in files.items() if not path.exists() or path.read_text() != text]
+        stale = [path for path, text in files.items() if not path.exists() or path.read_text(encoding="utf-8") != text]
         return report([f"{path.relative_to(ROOT)} is out of date: run `python3 tools/roadmap.py build`"
                        for path in stale])
     for path, text in files.items():
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(text)
+        path.write_text(text, encoding="utf-8")
         print(f"roadmap: wrote {path.relative_to(ROOT)}")
     return 0
 
@@ -555,17 +555,17 @@ def command_sync(args):
     if problems:
         return report(problems)
     subprocess.run(["git", "fetch", "--quiet", "--tags", "origin"], cwd=ROOT, check=False)
-    text, log = sync(data, SOURCE.read_text(), github_states(numbers_in(data), token()))
+    text, log = sync(data, SOURCE.read_text(encoding="utf-8"), github_states(numbers_in(data), token()))
     for line in log:
         print(f"roadmap: {line}")
-    if args.dry_run or text == SOURCE.read_text():
+    if args.dry_run or text == SOURCE.read_text(encoding="utf-8"):
         return 0
     new = tomllib.loads(text)
     if len(new.get("item", [])) != len(data.get("item", [])) or validate(new):
         return report(["sync produced an invalid file; nothing written"] + validate(new))
-    SOURCE.write_text(text)
+    SOURCE.write_text(text, encoding="utf-8")
     for path, content in outputs(new).items():
-        path.write_text(content)
+        path.write_text(content, encoding="utf-8")
     print("roadmap: wrote roadmap/roadmap.toml, ROADMAP.md and roadmap/roadmap.json")
     return 0
 

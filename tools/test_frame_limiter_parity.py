@@ -62,7 +62,7 @@ def main():
              'real OS sleep accuracy is outside the comparison.')
     harness.differential(
         'rust-frame-limiter-parity', 'VanillaFrameLimiterOracle', 'frame_limiter_probe', make_cases, scope,
-        sources=[lab.ROOT / 'crates/horizon-client/src/window.rs'])
+        sources=[lab.ROOT / 'crates/horizon-client-input/src/window.rs'])
 
 
 if __name__ == '__main__':

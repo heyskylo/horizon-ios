@@ -1,7 +1,7 @@
 //! Fishing: `FishingRodItem.use` (cast / reel in), the `FishingHook` (flight,
 //! bobbing, lure and bite timers, open water, hooking mobs, retrieving the
 //! `gameplay/fishing` loot) and `FishingHookRenderer` (bobber and line).
-use super::{Game, view_vector};
+use super::{Game, lan::LanHost, lan_mobs::guest_bounds, view_vector};
 use horizon_client::advancements::EntityView;
 use horizon_client::lan::{entity::States, hub::Hub};
 use horizon_client::{
@@ -46,6 +46,13 @@ pub(super) struct Hook {
     open_water: bool,
     luck: i32,
     lure: i32,
+}
+/// A player a hook can catch (`canHitEntity`): their entity id, which
+/// guest they are (none: the host) and their box.
+pub(super) struct HookTarget {
+    id: u32,
+    conn: Option<u32>,
+    bounds: Aabb,
 }
 const SIZE: f64 = 0.25;
 fn bounds(p: Vec3) -> Aabb {
@@ -168,6 +175,11 @@ impl Game<'_> {
             } else if let Some(item) = self.dropped.iter_mut().find(|i| i.id == id) {
                 item.velocity = pulled(item.velocity);
                 hooked_item = true;
+            } else if self.creatures.hook_targets.iter().any(|t| t.id == id) {
+                // A player: the hub moves them when the tick ends.
+                self.creatures
+                    .hook_pulls
+                    .push((id, Vec3::new(d.x * 0.1, d.y * 0.1, d.z * 0.1)));
             }
             // CriteriaTriggers.FISHING_ROD_HOOKED with no items.
             let hooked = self
@@ -476,6 +488,15 @@ impl Game<'_> {
         if !self.holds_rod() || d2 > 1024.0 {
             return;
         }
+        // The players it can catch, as they stand now (the host's own hook;
+        // guests' hooks use the ones taken as their turns start).
+        if self.lan_acting.is_none()
+            && matches!(h.state, State::Flying | State::Hooked(_))
+            && let Some(host) = self.lan.take()
+        {
+            self.refresh_hook_targets(&host);
+            self.lan = Some(host);
+        }
         h.previous = h.position;
         if h.on_ground {
             h.life += 1;
@@ -501,8 +522,8 @@ impl Game<'_> {
                     self.hook = Some(h);
                     return;
                 }
-                // checkCollision: hook the first living mob it touches, or (via
-                // `canHitEntity`) a dropped item.
+                // checkCollision: hook the first living mob or other player it
+                // touches, or (via `canHitEntity`) a dropped item.
                 let bb = bounds(h.position);
                 let (lo, hi) = (bb.min_position(), bb.max_position());
                 let touches = |b: Aabb| {
@@ -514,6 +535,14 @@ impl Game<'_> {
                     .iter()
                     .find(|m| m.alive() && touches(m.bounds()))
                     .map(|m| m.id)
+                    .or_else(|| {
+                        let owner = self.lan_acting;
+                        self.creatures
+                            .hook_targets
+                            .iter()
+                            .find(|t| t.conn != owner && touches(t.bounds))
+                            .map(|t| t.id)
+                    })
                     .or_else(|| {
                         self.dropped
                             .iter()
@@ -528,12 +557,25 @@ impl Game<'_> {
                 }
             }
             State::Hooked(id) => {
-                // updateHookedEntity: ride the hooked mob or item at 0.8 of its height.
+                // updateHookedEntity: ride the hooked mob, player or item at 0.8 of its height.
                 let hooked = self
                     .mobs
                     .iter()
                     .find(|m| m.id == id && m.alive())
                     .map(|m| (m.position, f64::from(m.height())))
+                    .or_else(|| {
+                        self.creatures
+                            .hook_targets
+                            .iter()
+                            .find(|t| t.id == id)
+                            .map(|t| {
+                                let (lo, hi) = (t.bounds.min_position(), t.bounds.max_position());
+                                (
+                                    Vec3::new((lo.x + hi.x) / 2.0, lo.y, (lo.z + hi.z) / 2.0),
+                                    hi.y - lo.y,
+                                )
+                            })
+                    })
                     .or_else(|| {
                         self.dropped
                             .iter()
@@ -601,6 +643,59 @@ impl Game<'_> {
             h.velocity.z * 0.92,
         );
         self.hook = Some(h);
+    }
+    /// The players a hook can catch: everyone but spectators and the dead
+    /// (`Projectile.canHitEntity`), the host and the guests in the level.
+    pub(super) fn refresh_hook_targets(&mut self, host: &LanHost) {
+        let mut targets = Vec::new();
+        if self.options.dedicated.is_none()
+            && !self.spectator()
+            && let Some(p) = self.player.as_ref()
+            && !p.health.dead_or_dying()
+        {
+            targets.push(HookTarget {
+                id: host.host_entity as u32,
+                conn: None,
+                bounds: p.bounds(),
+            });
+        }
+        for g in &host.hub.guests {
+            if host.hub.here(g) && g.loaded && !g.dead && !g.spectator() {
+                targets.push(HookTarget {
+                    id: g.entity_id as u32,
+                    conn: Some(g.conn),
+                    bounds: guest_bounds(g),
+                });
+            }
+        }
+        self.creatures.hook_targets = targets;
+    }
+    /// `FishingHook.pullEntity` on the players the hooks reeled in this tick
+    /// pulled: their velocity moves, and a guest's reaches their client.
+    pub(super) fn flush_hook_pulls(&mut self) {
+        let pulls = std::mem::take(&mut self.creatures.hook_pulls);
+        let Some(mut host) = self.lan.take() else {
+            return;
+        };
+        for (id, delta) in pulls {
+            let push = |g: &mut Self| {
+                if let Some(p) = g.player.as_mut() {
+                    p.velocity = p.velocity.add_vector(delta);
+                }
+            };
+            if id == host.host_entity as u32 {
+                push(self);
+            } else if let Some(conn) = host
+                .hub
+                .guests
+                .iter()
+                .find(|g| g.entity_id as u32 == id)
+                .map(|g| g.conn)
+            {
+                self.guest_hit_by(&mut host, conn, push);
+            }
+        }
+        self.lan = Some(host);
     }
     /// `FishingRodCast`: the stack in the arm holding the rod
     /// (`FishingHookRenderer.getHoldingArm`) while the hook is out.

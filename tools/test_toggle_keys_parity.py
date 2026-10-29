@@ -69,7 +69,7 @@ def main():
              'not exercised; KeyboardInput then reads isDown as the sprint and local input harnesses compare.')
     harness.differential(
         'rust-toggle-keys-parity', 'VanillaToggleKeysOracle', 'toggle_keys_probe', make_cases, scope,
-        sources=[lab.ROOT / 'crates/horizon-client/src/keymapping.rs'])
+        sources=[lab.ROOT / 'crates/horizon-client-input/src/keymapping.rs'])
 
 
 if __name__ == '__main__':

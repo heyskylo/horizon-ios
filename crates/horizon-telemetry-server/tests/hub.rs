@@ -42,7 +42,7 @@ fn hub(config: Config) -> Hub {
             labels: issue.labels.clone(),
         });
         Ok(format!(
-            "https://github.com/ludovic111/horizon/issues/{}",
+            "https://github.com/horizon-rust/horizon/issues/{}",
             1000 + opened.len()
         ))
     });
@@ -156,7 +156,7 @@ async fn a_report_becomes_an_issue_in_the_bug_template() {
     assert_eq!(code, StatusCode::CREATED);
     assert_eq!(
         body["issue"],
-        "https://github.com/ludovic111/horizon/issues/1001"
+        "https://github.com/horizon-rust/horizon/issues/1001"
     );
     let issue = hub.github.opened.lock().unwrap().remove(0);
     assert_eq!(issue.title, "Water is black on AMD");

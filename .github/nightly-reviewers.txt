@@ -1,7 +1,0 @@
-# Trusted reviewers: they pick the pull requests the Nightly holds with `/nightly 2640 2642` in any issue or pull
-# request (docs/release-flow.md "Nightly channel", tools/ci/nightly_set.py). Ludovic is always allowed and isn't
-# listed. One GitHub login per line, with who added it and when. Removing a line revokes that login at once.
-# A line with only `paused` stops every reviewer's `/nightly` (Ludovic's still work).
-kacpherek    # added by Ludovic, 2026-10-27
-rdbtCVS      # added by Ludovic, 2026-10-27
-Online5277   # added by Ludovic, 2026-10-27 (his top three by merged pull requests)

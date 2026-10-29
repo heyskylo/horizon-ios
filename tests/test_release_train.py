@@ -12,14 +12,14 @@ NOW = dt.datetime(2026, 10, 15, 12, 0, tzinfo=dt.timezone.utc)
 def pr(number, title="Fix a thing", labels=(), paths=("crates/horizon-client/src/game.rs",), issues=(), author="ludovic111",
        merged=dt.timedelta(hours=9)):
     return {"number": number, "title": title, "labels": list(labels), "paths": list(paths), "issues": list(issues),
-            "author": author, "url": f"https://github.com/ludovic111/horizon/pull/{number}", "merged_at": NOW - merged}
+            "author": author, "url": f"https://github.com/horizon-rust/horizon/pull/{number}", "merged_at": NOW - merged}
 
 
 class ReleaseTrainTests(unittest.TestCase):
     def setUp(self):
         # REPO is the repository CI runs in (GITHUB_REPOSITORY), which a fork changes, and PLAYERS links to its
         # releases; these notes are Horizon's.
-        horizon = "ludovic111/horizon"
+        horizon = "horizon-rust/horizon"
         players = train.PLAYERS.replace(f"https://github.com/{train.REPO}/", f"https://github.com/{horizon}/")
         for name, value in (("REPO", horizon), ("PLAYERS", players)):
             patcher = mock.patch.object(train, name, value)
@@ -241,7 +241,7 @@ class ReleaseTrainTests(unittest.TestCase):
         # GitHub's latest is a game release: whoever lands on it is sent to the launcher first (#1647).
         _, body = train.notes("game", "v0.2.50", [pr(1)], ["- Sound cuts out after an hour."])
         self.assertTrue(body.startswith('<h3>Want to play? Download the <a href="https://playhorizon.dev">Horizon launcher'))
-        self.assertIn('href="https://github.com/ludovic111/horizon/releases?q=launcher&amp;expanded=true"', body)
+        self.assertIn('href="https://github.com/horizon-rust/horizon/releases?q=launcher&amp;expanded=true"', body)
         self.assertNotIn("\n", train.PLAYERS, "one line: one HTML block, which ends at the blank line after it")
         self.assertEqual(body.count("playhorizon.dev"), 1, "said once, at the top")
         _, body = train.notes("game", "v0.2.51", [], [])
@@ -277,6 +277,35 @@ class ReleaseTrainTests(unittest.TestCase):
             _, body = train.notes("game", "v0.2.70", [pr(1)], train.known_issues(path))
             self.assertIn("### Known issues\n- Shader packs have been removed for now. Packs in your "
                           "`shaderpacks` folder are left where they are.\n", body)
+
+
+
+
+class NightlyTrainTests(unittest.TestCase):
+    """Since 2026-10-28 the train decides when a Nightly goes out (release.yml starts nightly-build.yml)."""
+
+    PRS = [{"number": 1, "labels": [], "paths": ["crates/x.rs"]}]
+
+    def test_one_build_at_a_time_and_twelve_a_day(self):
+        self.assertEqual(train.nightly_decision(True, "5 pull requests", self.PRS, None, 3)[:2], (True, "5 pull requests"))
+        release, reason, _ = train.nightly_decision(True, "5", self.PRS, 4242, 3)
+        self.assertFalse(release)
+        self.assertIn("run 4242", reason)
+        release, reason, urgent = train.nightly_decision(True, "5", self.PRS, None, 12)
+        self.assertFalse(release)
+        self.assertFalse(urgent)
+        self.assertIn("12 Nightlies today", reason)
+        self.assertEqual(train.nightly_decision(False, "waiting", self.PRS, None, 0)[:2], (False, "waiting"))
+
+    def test_release_now_and_force_pass_the_cap_but_not_a_running_build(self):
+        urgent = [{"number": 2, "labels": ["release-now"], "paths": ["crates/x.rs"]}]
+        self.assertEqual(train.nightly_decision(True, "release-now: #2", urgent, None, 12), (True, "release-now: #2", True))
+        self.assertTrue(train.nightly_decision(True, "forced", self.PRS, None, 30, force=True)[0])
+        self.assertFalse(train.nightly_decision(True, "forced", self.PRS, 7, 0, force=True)[0])
+
+    def test_the_cap_is_the_nightly_sets(self):
+        from tools.ci import nightly_set
+        self.assertEqual(train.NIGHTLY_CAP, nightly_set.MAX_BUILDS_PER_DAY)
 
 
 if __name__ == "__main__":

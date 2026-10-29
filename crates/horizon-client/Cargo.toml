@@ -10,7 +10,10 @@ description = "Horizon native development client"
 [dependencies]
 horizon-assets = { path = "../horizon-assets" }
 horizon-client-core = { path = "../horizon-client-core" }
+horizon-client-input = { path = "../horizon-client-input" }
+horizon-client-render = { path = "../horizon-client-render" }
 horizon-command = { path = "../horizon-command" }
+horizon-items = { path = "../horizon-items" }
 horizon-core = { path = "../horizon-core" }
 # The server thread ahead of the workers (MinecraftServer.spin's Thread.setPriority).
 horizon-threads = { path = "../horizon-threads" }
@@ -44,9 +47,6 @@ serde_json = { version = "1.0.151", features = ["raw_value"] }
 # hlsl-out: the gfx.rs tests translate every shader as wgpu's DirectX 12 backend does. A normal feature,
 # not a dev-dependency's, so builds, tests and examples share one build of naga, wgpu and this crate.
 naga = { version = "30.0.1", features = ["wgsl-in", "hlsl-out"] }
-# Sound (ALSA on Linux); the `audio` feature.
-cpal = { version = "0.16", optional = true }
-symphonia = { version = "0.5", default-features = false, features = ["ogg", "vorbis"] }
 miniz_oxide = "0.8"
 ab_glyph = "0.2.32"
 log = "0.4"
@@ -86,6 +86,8 @@ arboard = { version = "3.6.1", default-features = false, features = ["wayland-da
 rustix = { version = "1", default-features = false, features = ["std", "time"] }
 
 [target.'cfg(windows)'.dependencies]
+# Use the registered URI handler without routing links through Explorer/cmd.
+open = { version = "5.4.5", features = ["shellexecute-on-windows"] }
 # DirectX 12, where Vulkan has no adapter or device, or by choice (`graphicsApi`, graphics.rs).
 # Shaders compile with FXC (d3dcompiler_47.dll, part of Windows), or DXC when dxcompiler.dll is
 # on the PATH.
@@ -104,12 +106,9 @@ winresource = "0.1"
 default = ["audio", "controllers"]
 # Sound output. Without it (and `controllers`) the program links neither libasound nor libudev on
 # Linux: the server build (`--no-default-features`, released as horizon-engine; docs/server.md).
-audio = ["dep:cpal"]
+audio = ["horizon-client-render/audio"]
 # Controllers: gilrs, and the DualSense's own output. Without it only `horizon-ctl pad`'s virtual pad.
-controllers = ["dep:gilrs", "dep:horizon-dualsense"]
-# Runs code mods (wasmtime and cranelift: a quarter of a clean build). On in every release build
-# (release.yml); the tests and probes don't need it. Content mods load without it.
-mods = ["horizon-mods/runtime"]
+controllers = ["dep:gilrs", "dep:horizon-dualsense", "horizon-client-input/controllers"]
 # Records the call sites of mob random draws (`mob_ai_probe` traces).
 rng-trace = ["horizon-core/rng-trace"]
 
@@ -122,5 +121,7 @@ path = "examples/probe/main.rs"
 workspace = true
 
 [dev-dependencies]
+horizon-client-render = { path = "../horizon-client-render", features = ["test-support"] }
+horizon-items = { path = "../horizon-items", features = ["test-support"] }
 # Every WGSL shader translated as wgpu's DirectX 12 backend does (gfx.rs tests).
 naga = { version = "30.0.1", features = ["wgsl-in", "hlsl-out", "msl-out", "spv-out"] }

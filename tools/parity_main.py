@@ -20,7 +20,7 @@ import subprocess
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
-REPO = os.environ.get("GITHUB_REPOSITORY", "ludovic111/horizon")
+REPO = os.environ.get("GITHUB_REPOSITORY", "horizon-rust/horizon")
 LAST_RUN = ROOT / ".local" / "parity-runner" / "last-run.json"
 
 

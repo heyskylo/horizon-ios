@@ -12,6 +12,14 @@ pub struct Growth {
     features: OnceLock<Arc<LiveFeatures>>,
 }
 
+// Live structure commands use the level's exported BlockState.isSolidRender
+// flags, just as generation uses TreeBlocks' bindings for the same query.
+impl crate::worldgen::structure::legacy::SolidRender for Behaviours {
+    fn solid_render(&self, state: BlockStateId) -> bool {
+        Behaviours::solid_render(self, state)
+    }
+}
+
 impl Behaviours {
     /// Install the live feature registry used by sapling growth and bone meal.
     /// Without it, saplings report [`LevelEvent::GrowTree`] instead of growing.
@@ -104,6 +112,7 @@ impl Behaviours {
                     &placed.start,
                     &mut world,
                     &placed.resources,
+                    self,
                     &mut random,
                     chunk_box,
                     &mut place_feature,

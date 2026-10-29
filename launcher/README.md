@@ -12,8 +12,9 @@ The opening, then Play ([clip](docs/opening.webm)):
 
 ## What it does
 
-- **Versions**: lists the published releases of ludovic111/horizon, installs the build for
-  this platform into its own folder, and removes it again.
+- **Versions**: lists the published builds of horizon-rust/horizon (the current Nightly, the last
+  week's, then the releases from before), installs the build for this platform into its own
+  folder, and removes it again.
 - **Play**: prepares resources as `PLAY.txt` describes (your launcher's 26.3 install, the
   26.3 server jar from that version's own json, and Java 25) and copies its sounds from your
   launcher's asset store (`horizon-prepare sounds`; a launcher install without them only
@@ -24,6 +25,19 @@ The opening, then Play ([clip](docs/opening.webm)):
   preparation reuses checksum-verified game jars and libraries from the current
   or another installed Horizon version, so the original Minecraft install is
   only required when no valid imported copy exists.
+- **Download and prepare**: for a signed-in account that owns the game (asked again first),
+  the launcher downloads the pinned version from Mojang itself (piston-meta, piston-data,
+  libraries.minecraft.net, resources.download.minecraft.net; never a mirror) into `minecraft/`
+  in its data folder, in the official launcher's layout: the version file, the client jar, this
+  system's libraries, the asset index and the assets. Every file must have the size and sha1
+  Mojang lists. The Play page shows how far it is and has Cancel; files already whole are kept,
+  so the next try goes on from there. **From my install** prepares from the player's own launcher
+  instead, and an install that lacks the version falls back to the download. **Play** on a version
+  not prepared yet does it all for an owner, as the official launcher does: it prepares from the
+  install when there is one, else downloads (with Mojang's Java when no Java 25 is installed), then
+  starts the game. With no install on the computer the Play page offers the download alone and the
+  Minecraft folder row says none is needed. Without an owner,
+  the Play page asks to sign in first. `horizon-launcher prepare --download`.
 - **Mods**: search Modrinth (CurseForge support is coming soon) for resource
   packs and modpacks, each marked Works, Partly or Doesn't run in
   Horizon; Java mod jars are never offered. Install puts a pack and what it needs in
@@ -124,9 +138,12 @@ The opening, then Play ([clip](docs/opening.webm)):
   [instance] [--remove]`; `HORIZON_LAUNCHER_DESKTOP` points it at another folder.
 - **Accounts and quick switch**: the top bar's account chip opens a menu of everyone who can play:
   each signed-in Microsoft account, the offline names the player keeps, and the name the game
-  made up (`horizon-player.txt`). Picking one plays as it from the next Play. Settings > Account
-  adds offline names (3 to 16 letters, digits or `_`; the game gets `--name`) and forgets them;
-  the Console's Share log takes them out of the log too. `horizon-launcher account offline
+  made up (`horizon-player.txt`). Picking one plays as it from the next Play. Offline names play
+  only while an account that owns the game is signed in ([Microsoft accounts](#microsoft-accounts));
+  signing the last one out keeps them, unplayable until one is back. Settings > Account
+  adds offline names (3 to 16 letters, digits or `_`; the game gets `--name`) and forgets them,
+  skin and cape files included, and rolls the game's made-up name for a new one; the Console's
+  Share log takes the names out of the log too. `horizon-launcher account offline
   [NAME]`, `account select <name>` (an account or an offline name), `account forget-offline
   <name>`.
 - **Accent and Home background**: on top of Dark, Light or System, Settings > Launcher picks an
@@ -136,12 +153,12 @@ The opening, then Play ([clip](docs/opening.webm)):
   white on the Play button at 4.5:1 and the accent at 3:1 on every background (a test holds every
   accent in both looks to it). The picture is copied into the data folder.
   `horizon-launcher settings accent NAME`, `settings background PATH|default`.
-- **Language**: English, French and Russian (the languages Horizon's own game menus have).
+- **Language**: English, French, Russian, German, Simplified Chinese, Spanish and Ukrainian.
   The window follows the system's language unless the player picks one in Settings > Launcher
   (each named in itself); a string a table lacks shows in English. The tables are
   `launcher/lang/<code>.json`, English text to its translation, Horizon's own; a test fails when
   the code asks `tr("…")` for a string a table lacks, or a table keeps one the code dropped.
-  `horizon-launcher settings language system|en|fr|ru`.
+  `horizon-launcher settings language system|en|fr|ru|de|zh|es|uk`.
 - **Skin and cape**: each offline name's **Skin…** in Settings > Account shows the front of its
   skin and cape, takes a skin PNG (64×64, or the older 64×32) and a cape PNG (64×32), and picks
   classic or slim arms. The launcher keeps copies in its `skins/` folder and gives the game
@@ -180,13 +197,19 @@ The opening, then Play ([clip](docs/opening.webm)):
   step through) with **Copy** (the picture, to the clipboard), **Open**, **Show in folder** and
   **Delete** (to the trash, after a confirmation). From the command line:
   `horizon-launcher screenshots [list|delete] [--instance <name>]`.
+- **Java** (for the Minecraft: Java Edition instances to come): the runtime a version's JSON asks for
+  (`javaVersion`: its major exactly, Java 8 before that field), found among Mojang's runtimes Horizon
+  downloaded (`minecraft/runtime/` in its data folder, the one preparing uses) and the Java homes installed
+  on this computer, read from their `release` files without starting them; when none has that major,
+  Mojang's runtime is downloaded; an instance may name its own Java home instead.
+  `horizon-launcher java [list|install]`.
 - **Multiplayer**: Home lists the selected instance's servers, the game's own Multiplayer list
   (`servers.dat`, each with the picture the game last saw). **Join** starts the game straight into
   one; **Add server** and **Remove** (after a confirmation) change the file the game reads,
   keeping every field the launcher doesn't show and the servers joined with Direct Connection. The
   same from the command line: `horizon-launcher multiplayer [list|add|remove] [--instance <name>]`
   and `horizon-launcher play --server <address or name>`.
-- **Patch notes**: each release's notes, newest first, with a link to GitHub Sponsors. Quiet "Discord" and "Website" links sit in the footer.
+- **Patch notes**: each release's notes, newest first, with a link to GitHub Sponsors. Quiet "Sponsor", "Discord" and "Website" links sit in the sidebar footer.
 
 Data lives in the platform's data directory (`~/.local/share/horizon-launcher` on Linux,
 `~/Library/Application Support/horizon-launcher` on macOS, `%APPDATA%\horizon-launcher` on
@@ -200,11 +223,16 @@ page `servers.json` (the list), `servers/<name>/` (the servers created there) an
   when the game starts and brings it back to the front when the game closes; `settings
   while-playing stay|minimize|hide`), the game's extra command-line arguments, an HTTP proxy for
   downloads, and the launcher's own version and update state.
-- **Updates**: there is one channel. Every release is published as the release, GitHub's latest,
-  once its smoke test passed (docs/release-flow.md), and the launcher installs it. The game
-  pre-releases of the old Alpha channel (v0.2.1 on) stay on the Versions page to install
-  by hand, but are never installed as an update. The `update_channel` and `beta_builds` keys
-  older launchers wrote in `settings.json` are ignored and dropped on the next save.
+- **Updates**: Horizon ships only the Nightly (since 2026-10-28, docs/release-flow.md). The
+  launcher installs the current one (the `nightly` pre-release, checksums signed for the Nightly
+  channel) as `nightly-<date>-<commit>` and selects it when the player was on a Nightly, on the
+  newest release or on nothing; a version picked by hand or pinned by an instance stays. Older
+  Nightlies are removed once nothing plays them. Worlds are never touched: they live in the game's
+  folder, not in a version's. The last week's Nightlies (`nightly-<date>`), the `vX.Y.Z`
+  releases and the old Alpha pre-releases stay on the Versions page to install by hand, never as
+  an update. The "Nightly builds" setting and its `nightly` key are gone (an old key is ignored);
+  its "Nightly" instance stays and keeps following the Nightly. The `update_channel` and
+  `beta_builds` keys older launchers wrote are ignored and dropped on the next save.
 - **Game arguments**: extra arguments added to the game's command line (for example
   `--server-thread`), one line where quotes group a word with spaces. They are appended after the
   launcher's own arguments, kept as `game_args` in `settings.json`, and apply the next time the
@@ -232,11 +260,11 @@ minimize, maximize/restore and close; macOS and Linux keep their system title ba
 
 ## Updates
 
-The launcher looks for a newer Horizon release when it starts and every 30 minutes while it
-is open, and shows a small "available, Install" line on Play.
+The launcher looks for a newer Nightly when it starts and every 30 minutes while it is open, and
+shows a small "available, Install" line on Play.
 
-It also updates itself from GitHub releases tagged `launcher@X.Y.Z` (Horizon's own are `vX.Y.Z`;
-neither is ever taken for the other). Before 0.2 they were `launcher-vX.Y.Z` and `vYYYY.MM.DD`:
+It also updates itself from GitHub releases tagged `launcher@X.Y.Z` (the game's are `nightly`, and
+`vX.Y.Z` before 2026-10-28; neither is ever taken for the other). Before 0.2 they were `launcher-vX.Y.Z` and `vYYYY.MM.DD`:
 every 0.2 tag counts as newer than all of those (docs/versioning.md). It downloads the new build, replaces its
 own binary, and offers "Restart" in the footer. Development builds and
 `HORIZON_LAUNCHER_NO_SELF_UPDATE=1` never replace themselves.
@@ -285,6 +313,9 @@ and don't set `%ERRORLEVEL%` / `$LASTEXITCODE`. Scripts that need the exit code 
     horizon-launcher account offline                play without an account
     horizon-launcher instance [list]                the instances and their game folders (* = Play starts it)
     horizon-launcher instance create <name> [--copy <instance>]   empty, or a copy of one's worlds, options and packs
+    horizon-launcher instance create <name> --minecraft <1.21.4|latest|latest-snapshot>   a Minecraft: Java Edition instance
+    horizon-launcher instance versions [--snapshots] [--old]   the Java Edition versions, from Mojang's list (kept for offline)
+    horizon-launcher instance java <instance> [--home <dir>|--auto] [--memory <MiB>] [--args "<jvm args>"]
     horizon-launcher instance rename|icon|group <instance> <value>  icon: a block or item name, #rrggbb or none
     horizon-launcher instance select <instance>     make Play start it
     horizon-launcher instance version <instance> <tag|latest>   keep it on one installed version, or follow updates
@@ -294,6 +325,8 @@ and don't set `%ERRORLEVEL%` / `$LASTEXITCODE`. Scripts that need the exit code 
     horizon-launcher packs add <file> | on|off|remove <pack> [--kind shader]
     horizon-launcher screenshots [list] [--instance <name>]   an instance's screenshots, the newest first
     horizon-launcher screenshots delete <name> [--instance <name>]   moves it to the trash
+    horizon-launcher java [list]          Java runtimes: Mojang's (downloaded by Horizon) and installed ones
+    horizon-launcher java install <21|java-runtime-delta>   downloads Mojang's runtime, each file sha1-checked
     horizon-launcher multiplayer [list] [--instance <name>]   the servers in an instance's Multiplayer list
     horizon-launcher multiplayer add <address> [--name <name>] | remove <server>
     horizon-launcher modpack [list]                 the imported packs and their coverage
@@ -364,10 +397,15 @@ The window, the command line and the MCP server all call the same core, `src/bac
 
 ## Microsoft accounts
 
-Settings → Accounts signs in a Microsoft account to play on online-mode servers under your own
-name and skin: the launcher shows a code, you enter it at microsoft.com/link, and the launcher
-checks that the account owns Minecraft: Java Edition. The Play page says who plays ("Playing as");
-without an account the game plays offline, as before. Tokens live in the system keychain (Keychain,
+The launcher starts the game only while a Microsoft account that owns Minecraft: Java Edition is
+signed in, as other launchers do: without one, Play (Home, instances, `horizon-launcher play`, the
+MCP's `play`) says "Sign in with a Microsoft account that owns Minecraft: Java Edition to play"
+and starts nothing. Settings → Accounts signs in: the launcher shows a code, you enter it at
+microsoft.com/link, and the launcher checks that the account owns the game. It asks again at every
+Play, with the token renewal; with no network the last answer stands, and a "doesn't own" blocks
+at once. The account also plays online-mode servers under your own name and skin; offline names
+play LAN and offline-mode servers beside it. The game binary started directly (`horizon-client`,
+`horizon-ctl launch`), the harnesses and the servers don't go through this check. Tokens live in the system keychain (Keychain,
 Credential Manager, or the Secret Service on Linux), never in a file, a log or the command line;
 `accounts.json` in the data folder keeps only names and UUIDs. Without a keychain you stay signed
 in until the launcher closes. When the game starts, it gets the session in a private file it

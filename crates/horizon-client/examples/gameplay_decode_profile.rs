@@ -2,7 +2,7 @@
 //! Build with `cargo build --release -p horizon-client --example gameplay_decode_profile`.
 //! Each invocation runs one phase in a separate process for CPU/RSS measurements.
 #[allow(dead_code)]
-#[path = "../src/blocks/decode.rs"]
+#[path = "../../horizon-items/src/blocks/decode.rs"]
 mod decode;
 
 use std::{hint::black_box, path::Path, time::Instant};

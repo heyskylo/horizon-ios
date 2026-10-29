@@ -1,6 +1,6 @@
 //! The hardware classes the public output breaks results down by. Coarse on purpose: a class
 //! holds many machines, and a published cell still needs `MIN_INSTALLS` different installs.
-//! The website's `scripts/benchmarks.mjs` (ludovic111/horizon-site) has the same functions, tested on the same fixtures.
+//! The website's `scripts/benchmarks.mjs` (horizon-rust/horizon-site) has the same functions, tested on the same fixtures.
 //!
 //! The raw values (the exact memory, the driver, the screen) stay in the database for the
 //! retention period and are never published.

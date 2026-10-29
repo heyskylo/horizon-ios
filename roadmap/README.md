@@ -63,7 +63,7 @@ or when the file breaks a rule; `python3 tools/roadmap.py check --offline` runs 
 ## The journal
 
 The hub's Journal tab and `https://playhorizon.dev/data/journal.json` are built with each deploy of the website
-(`src/hub.js` in ludovic111/horizon-site). The tab shows every game and launcher release with its notes' changes, each placed under
+(`src/hub.js` in horizon-rust/horizon-site). The tab shows every game and launcher release with its notes' changes, each placed under
 the roadmap item it moves (the pull request's `roadmap:<id>` label, else the item that links it), the merged pull
 requests no release has yet, and the weekly summaries above.
 

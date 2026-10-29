@@ -7,7 +7,7 @@ Horizon started as a decompilation and optimization lab. This page describes the
 Game JARs, decompiled Java, libraries, inventories, worlds and logs live **inside this checkout** under gitignored **`.local/`**. No game code is in Git history or release downloads. Fresh clones rebuild the inspection workspace from your own copy of the game (see [Build from source](../README.md#build-from-source)); nothing of the game is downloaded.
 
 ```sh
-git clone https://github.com/ludovic111/horizon.git
+git clone https://github.com/horizon-rust/horizon.git
 cd horizon
 git config core.hooksPath .githooks
 python3 tools/lab.py prepare --server-jar ~/Downloads/server.jar

@@ -30,7 +30,7 @@ The totals are grouped per version, OS, GPU vendor and render distance. Each gro
 
 ## Benchmarks summary
 
-`src/summary.rs` makes it with the same rules as the website's `scripts/benchmarks.mjs` (ludovic111/horizon-site), which bakes the page's fallback copy; both are tested against the same fixtures (`tests/fixtures/benchmarks/` here, copied in the site's repository).
+`src/summary.rs` makes it with the same rules as the website's `scripts/benchmarks.mjs` (horizon-rust/horizon-site), which bakes the page's fallback copy; both are tested against the same fixtures (`tests/fixtures/benchmarks/` here, copied in the site's repository).
 
 - Only reports that compare: a version 1 `horizon-benchmark-report` of the standard flight over the four scenes, VSync off, no frame cap, on screen, from Horizon or plain vanilla, naming its GPU and CPU.
 - A group (GPU, CPU, render distance, game) is published only with **at least 3 different installs**. Each install counts once: the median of its runs, then the median across installs.
@@ -89,7 +89,7 @@ All are environment variables:
 - `HORIZON_TELEMETRY_HUB_KEEP_DAYS` (90)
 - `HORIZON_TELEMETRY_HUB_TOKEN`: the token Kira reads the suggestions with (unset: `GET /hub/suggestions` is off)
 - `HORIZON_TELEMETRY_GITHUB_TOKEN`: a fine-grained token with Issues read and write on the repository only (unset: `POST /hub/report` answers 503 and the form points to GitHub and Discord)
-- `HORIZON_TELEMETRY_GITHUB_REPO` (`ludovic111/horizon`)
+- `HORIZON_TELEMETRY_GITHUB_REPO` (`horizon-rust/horizon`)
 
 ## Hosting
 

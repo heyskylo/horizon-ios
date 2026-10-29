@@ -1,14 +1,16 @@
 # Microsoft account sign-in and online-mode play
 
 Horizon signs players in with their Microsoft account in the launcher and joins online-mode
-(authenticated) servers like vanilla 26.3 does. Offline profiles and offline/LAN play stay exactly as
-they are. This note is the design, the status of each part and what Ludovic has to register.
+(authenticated) servers like vanilla 26.3 does. The launcher plays only with an account that owns
+Minecraft: Java Edition ([the owner gate](#the-owner-gate)); offline names, LAN and offline-mode
+servers play behind it. This note is the design, the status of each part and what Ludovic has to
+register.
 
 ## What Ludovic registers (needs his accounts)
 
-Nothing below can be done by an agent: the app registrations belong to Ludovic. Until the client ID
-is set, the launcher's sign-in shows "Coming soon" ("Microsoft sign-in is coming soon") and everything else
-works as before.
+Nothing below can be done by an agent: the app registrations belong to Ludovic. A build without
+the client ID can't sign in, so its launcher can't start the game ("This build of the launcher has
+no Microsoft sign-in"); release builds have it.
 
 1. **Azure app registration** (https://portal.azure.com → Microsoft Entra ID → App registrations →
    New registration):
@@ -26,7 +28,7 @@ works as before.
    `api.minecraftservices.com/authentication/login_with_xbox` (HTTP 403, "Invalid app registration")
    until Mojang approves them. Apply with the form linked from https://aka.ms/mce-reviewappid
    (Minecraft Java "App ID review"), giving the client ID above, the app name, the project URL
-   (https://github.com/ludovic111/horizon) and a short description ("open-source Minecraft Java
+   (https://github.com/horizon-rust/horizon) and a short description ("open-source Minecraft Java
    Edition client written in Rust; signs players in to join online-mode servers"). Approval takes
    days to weeks; sign-in fails at the Minecraft step with "This app is not approved by Mojang yet"
    until then.
@@ -64,17 +66,58 @@ All requests use HTTPS and JSON except the two OAuth calls (form-encoded):
 7. **Profile**: `GET https://api.minecraftservices.com/minecraft/profile`: UUID, name, skins, capes.
    404 = owns the game but has no profile yet ("Create your Minecraft profile on minecraft.net first").
 
+## The owner gate
+
+Decided 2026-10-27 (Ludovic, after a modder's suggestion): like other launchers, Horizon's
+launcher starts the game only while an account in it owns Java Edition. Offline play stays
+possible; the launcher just doesn't offer it on its own.
+
+- **Play needs an owner.** Every Play (Home, instances and packs, `horizon-launcher play`,
+  `modpack play`, the MCP's `play`) asks `account::launch` first. It asks the Minecraft services
+  again for each account, the selected one first, until one owns the game: the token renewal
+  (below) if due, then entitlements and profile. Without an owner the game doesn't start and Play
+  says "Sign in with a Microsoft account that owns Minecraft: Java Edition to play", with Sign in.
+- **The window says it once.** A player without an owner (one who played offline until now) sees
+  the gate's screen once when the launcher opens: why Horizon needs the account ("like other
+  launchers"), that worlds, offline names and settings stay where they are, and Sign in, which shows
+  the device code on the same screen. It comes back whenever Play is refused; Not now closes it,
+  and Home keeps a Sign in row (`launcher/src/owner_page.rs`).
+- **The answer lives with the tokens.** Each account's keychain item keeps the last answer
+  (`owns`), so no plain file can say yes. With no network (or a sign-in that can't be renewed) the
+  last answer stands: being offline never blocks a player who passed before, and the game starts
+  without a session, offline. An answer of "doesn't own" (or no profile) blocks at once.
+- **Offline names play behind an owner.** They can be added and played only while an owning
+  account is signed in. Signing the last one out keeps them, and they play again once one is back.
+- **Who isn't affected:** the game binary itself (`horizon-client`, `horizon-ctl launch`, the
+  harnesses, CI), the dedicated server and `horizon-server`, the website. There is no bypass flag:
+  the launcher's tests use accounts in a memory store (`MemoryStore`, and `HORIZON_NO_KEYCHAIN`
+  for the CLI and MCP tests, which then have no owner).
+
+## Downloading the game for an owner
+
+Decided 2026-10-27. This is the only exception to "Horizon never downloads the game", and it
+applies only on the player's machine, for an account the owner gate just asked about. The
+launcher's "Download and prepare" (`horizon-launcher prepare --download`) fetches the pinned
+version straight from Mojang (`launcher/src/mojang.rs`): the version file, the client jar,
+libraries, the asset index and the assets, each checked against the size and sha1 Mojang lists.
+They go to `minecraft/` in the launcher's data folder, and the preparation runs as usual. The
+download can be cancelled and goes on where it stopped. CI, agents, harnesses and the repo never
+download or keep Mojang's files.
+
 Refresh: the Minecraft token is renewed from the Microsoft refresh token (steps 2-5 with
-`grant_type=refresh_token`) when it has less than an hour left, before every launch. A refused
+`grant_type=refresh_token`) when it has less than an hour left, before every launch; steps 6-7 run
+at every launch (the owner gate). A refused
 refresh token (`invalid_grant`) asks the player to sign in again. Several accounts can be signed in;
 one is selected. "Sign out" deletes the account's secrets from the keychain.
 
 ## Token storage
 
-- Secrets (the Microsoft refresh token, the Minecraft access token and its expiry) go to the OS
+- Secrets (the Microsoft refresh token, the Minecraft access token and its expiry, the last
+  ownership answer) go to the OS
   keychain, one item per account: Keychain on macOS, Credential Manager on Windows, the Secret
   Service (GNOME Keyring, KWallet) on Linux. Service name `dev.playhorizon.launcher`, account = the
-  Minecraft UUID.
+  Minecraft UUID. Credential Manager takes at most 2560 bytes per item, which the secrets of a sign-in
+  exceed: on macOS and Windows a longer secret is split over the items `<uuid>`, `<uuid>.1`, `<uuid>.2`...
 - `accounts.json` in the launcher's data folder keeps only public data: UUID, name, skin URL, which
   account is selected. Never a token.
 - No keychain available (a Linux box without a Secret Service, a locked keychain): sign-in still

@@ -80,7 +80,7 @@ class RepositoryRoadmap(unittest.TestCase):
 
     def test_generated_files_match_the_toml(self):
         for path, text in roadmap.outputs(roadmap.load()).items():
-            self.assertEqual(path.read_text(), text, f"{path.name} is out of date: run `python3 tools/roadmap.py build`")
+            self.assertEqual(path.read_text(encoding="utf-8"), text, f"{path.name} is out of date: run `python3 tools/roadmap.py build`")
 
     def test_site_data_has_every_item_in_one_line_text(self):
         data = json.loads(roadmap.site_data(tomllib.loads(SAMPLE)))
@@ -147,9 +147,9 @@ class Render(unittest.TestCase):
         self.assertIn("## Recently shipped", text)
         self.assertNotIn("## Later", text)
         self.assertIn("- **Fast**: Faster.", text)
-        self.assertIn("Multiply, not divide ([#10](https://github.com/ludovic111/horizon/issues/10)).", text)
+        self.assertIn("Multiply, not divide ([#10](https://github.com/horizon-rust/horizon/issues/10)).", text)
         # A link the technical text already gives isn't repeated; the others are listed after it.
-        self.assertIn("More: [#12](https://github.com/ludovic111/horizon/issues/12)", text)
+        self.assertIn("More: [#12](https://github.com/horizon-rust/horizon/issues/12)", text)
         self.assertIn("- **Old** (v0.2.1): Done.", text)
 
 

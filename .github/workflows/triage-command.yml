@@ -1,0 +1,48 @@
+name: triage command
+# `/close`, `/reopen`, `/label`, `/unlabel` comments: the trusted reviewers in .github/trusted-reviewers.txt (and
+# Ludovic) triage issues and pull requests without any repository role (docs/release-flow.md "Trusted reviewers",
+# tools/ci/triage_command.py).
+#
+# Why no pull request's code runs here, though the token can write:
+# - `issue_comment` always runs this file from main, whoever comments and wherever.
+# - It checks out main's script and list only, never a pull request; it reads threads through the API.
+# - The comment's text and author reach the script as env vars, never in a shell line. The token stays in the step.
+on:
+  issue_comment:
+    types: [created]
+permissions:
+  contents: read
+jobs:
+  command:
+    # Every other comment skips here, before a runner starts.
+    if: >-
+      github.event.comment.user.type != 'Bot' && (
+      startsWith(github.event.comment.body, '/close') ||
+      startsWith(github.event.comment.body, '/reopen') ||
+      startsWith(github.event.comment.body, '/label') ||
+      startsWith(github.event.comment.body, '/unlabel'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
+          sparse-checkout: |
+            .github/trusted-reviewers.txt
+            tools/ci/nightly_set.py
+            tools/ci/triage_command.py
+          sparse-checkout-cone-mode: false
+      - name: Run the command
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BODY: ${{ github.event.comment.body }}
+          AUTHOR: ${{ github.event.comment.user.login }}
+          ISSUE: ${{ github.event.issue.number }}
+          REPO: ${{ github.repository }}
+          COMMENT_URL: ${{ github.event.comment.html_url }}
+        run: python3 tools/ci/triage_command.py command

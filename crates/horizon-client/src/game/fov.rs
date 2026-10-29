@@ -1,11 +1,13 @@
 //! Field of view (`Camera.tickFov`, `calculateFov`,
 //! `AbstractClientPlayer.getFieldOfViewModifier`), view and hurt bobbing
-//! (`GameRenderer.bobHurt`, `bobView`) and the spyglass (`SpyglassItem`,
+//! (`GameRenderer.bobHurt`, `bobView`), the portal and Nausea spin
+//! (`GameRenderer.renderLevel`) and the spyglass (`SpyglassItem`,
 //! `Hud.extractSpyglassOverlay`). The arithmetic is `horizon_client::camera`.
 use super::Game;
 use horizon_client::{
     camera::{
         BobState, CameraFluid, FovPlayer, HurtBob, UseItem, bob_matrix, field_of_view_modifier,
+        spinning_effect_matrix,
     },
     fog::{FogType, fog_type},
     hud::HudBatch,
@@ -25,6 +27,28 @@ impl Game<'_> {
     /// `options.fovEffectScale`.
     pub(super) fn fov_effect_scale(&self) -> f32 {
         self.settings.file.double("fovEffectScale") as f32
+    }
+    /// `options.screenEffectScale` (Distortion Effects).
+    pub(super) fn screen_effect_scale(&self) -> f32 {
+        self.settings.file.double("screenEffectScale") as f32
+    }
+    /// `LocalPlayer.getEffectBlendFactor(NAUSEA, partial)`: 0 without the effect.
+    pub(super) fn nausea_blend(&self, partial: f32) -> f32 {
+        if self.potions.effects.get("nausea").is_none() {
+            return 0.0;
+        }
+        let fx = &self.screen_fx;
+        fx.o_nausea + partial * (fx.nausea - fx.o_nausea)
+    }
+    /// The spin `GameRenderer.renderLevel` multiplies into the level's
+    /// projection: the larger of the portal and Nausea intensities, scaled by
+    /// Distortion Effects squared, turning by `LocalPlayer.getSpinningEffectAngle`.
+    pub(super) fn spinning_matrix(&self, partial: f32) -> glam::Mat4 {
+        let fx = &self.screen_fx;
+        let portal = fx.o_portal + partial * (fx.portal - fx.o_portal);
+        let scale = self.screen_effect_scale();
+        let intensity = portal.max(self.nausea_blend(partial)) * (scale * scale);
+        spinning_effect_matrix(intensity, fx.spinning_time + partial * fx.spinning_speed)
     }
     /// What `AbstractClientPlayer.getFieldOfViewModifier` reads.
     fn fov_player(&self) -> Option<FovPlayer> {
@@ -140,7 +164,7 @@ impl Game<'_> {
             (p.position.x - start[0]) as f32,
             (p.position.z - start[2]) as f32,
         );
-        self.avatar.tick();
+        self.avatar.tick(start);
         self.avatar
             .update_bob(ground && alive && !swimming, velocity);
         if riding {

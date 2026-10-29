@@ -87,7 +87,7 @@ elif ! flock -s -n 8; then
   flock -s 8
 fi
 if [ ! -d "$name/.git" ]; then
-  git clone -q --filter=blob:none --no-checkout https://github.com/ludovic111/horizon "$name" 8>&- 9>&-
+  git clone -q --filter=blob:none --no-checkout https://github.com/horizon-rust/horizon "$name" 8>&- 9>&-
 fi
 cd "$name"
 # The lock's descriptor stays out of everything started here (8>&- 9>&-): a daemon one of them starts (sccache's server,

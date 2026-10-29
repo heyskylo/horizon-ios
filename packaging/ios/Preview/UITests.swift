@@ -42,65 +42,15 @@ final class LauncherLayoutTests: XCTestCase {
         alert.textFields.firstMatch.tap()
         alert.buttons["Cancel"].tap()
     }
-    func testSettingsControlsLoadAndTogglePersistsAcrossNavigation() {
-        let app = launch(signedIn: false)
+    func testLauncherSettingsKeepOnlyGameFilesAndAbout() {
+        let app = launch(signedIn: false, optionsResponse: "error")
         app.tabBars.buttons["Settings"].tap()
-        XCTAssertTrue(app.staticTexts["Graphics"].waitForExistence(timeout: 8))
-        XCTAssertTrue(app.staticTexts["Render Distance"].exists)
-        for _ in 0..<5 {
-            if app.buttons["settings-group-sound"].isHittable && app.buttons["settings-group-sound"].frame.maxY < app.frame.maxY - 180 { break }
-            app.scrollViews.firstMatch.coordinate(withNormalizedOffset: CGVector(dx: 0.03, dy: 0.70))
-                .press(forDuration: 0.05, thenDragTo: app.scrollViews.firstMatch.coordinate(withNormalizedOffset: CGVector(dx: 0.03, dy: 0.40)))
+        XCTAssertTrue(app.staticTexts["Game files"].waitForExistence(timeout: 8))
+        XCTAssertTrue(app.staticTexts["About"].exists)
+        for title in ["Video", "Sound", "Controls", "Input", "iPad keyboard + pointer lock"] {
+            XCTAssertFalse(app.staticTexts[title].exists)
         }
-        if app.buttons["settings-group-sound"].value as? String != "Expanded" { app.buttons["settings-group-sound"].tap() }
-        XCTAssertEqual(app.buttons["settings-group-sound"].value as? String, "Expanded")
-        for _ in 0..<5 {
-            if app.staticTexts["Master Volume"].isHittable { break }
-            app.scrollViews.firstMatch.coordinate(withNormalizedOffset: CGVector(dx: 0.03, dy: 0.70))
-                .press(forDuration: 0.05, thenDragTo: app.scrollViews.firstMatch.coordinate(withNormalizedOffset: CGVector(dx: 0.03, dy: 0.40)))
-        }
-        XCTAssertTrue(app.staticTexts["Master Volume"].isHittable)
-        for _ in 0..<5 {
-            if app.buttons["settings-group-controls"].isHittable && app.buttons["settings-group-controls"].frame.maxY < app.frame.maxY - 180 { break }
-            app.scrollViews.firstMatch.coordinate(withNormalizedOffset: CGVector(dx: 0.03, dy: 0.70))
-                .press(forDuration: 0.05, thenDragTo: app.scrollViews.firstMatch.coordinate(withNormalizedOffset: CGVector(dx: 0.03, dy: 0.40)))
-        }
-        if app.buttons["settings-group-controls"].value as? String != "Expanded" { app.buttons["settings-group-controls"].tap() }
-        XCTAssertEqual(app.buttons["settings-group-controls"].value as? String, "Expanded")
-        for _ in 0..<5 {
-            if app.switches["setting-autoJump"].isHittable { break }
-            app.scrollViews.firstMatch.coordinate(withNormalizedOffset: CGVector(dx: 0.03, dy: 0.70))
-                .press(forDuration: 0.05, thenDragTo: app.scrollViews.firstMatch.coordinate(withNormalizedOffset: CGVector(dx: 0.03, dy: 0.40)))
-        }
-        let toggle = app.switches["setting-autoJump"]
-        XCTAssertTrue(toggle.isHittable)
-        let before = toggle.value as? String
-        toggle.tap()
-        XCTAssertNotEqual(toggle.value as? String, before)
-        let after = toggle.value as? String
-        app.tabBars.buttons["Play"].tap()
-        app.tabBars.buttons["Settings"].tap()
-        for _ in 0..<5 {
-            if app.buttons["settings-group-controls"].isHittable && app.buttons["settings-group-controls"].frame.maxY < app.frame.maxY - 180 { break }
-            app.scrollViews.firstMatch.coordinate(withNormalizedOffset: CGVector(dx: 0.03, dy: 0.70))
-                .press(forDuration: 0.05, thenDragTo: app.scrollViews.firstMatch.coordinate(withNormalizedOffset: CGVector(dx: 0.03, dy: 0.40)))
-        }
-        if app.buttons["settings-group-controls"].value as? String != "Expanded" { app.buttons["settings-group-controls"].tap() }
-        XCTAssertEqual(app.buttons["settings-group-controls"].value as? String, "Expanded")
-        for _ in 0..<5 {
-            if app.switches.matching(identifier: "setting-autoJump").firstMatch.isHittable { break }
-            app.scrollViews.firstMatch.coordinate(withNormalizedOffset: CGVector(dx: 0.03, dy: 0.70))
-                .press(forDuration: 0.05, thenDragTo: app.scrollViews.firstMatch.coordinate(withNormalizedOffset: CGVector(dx: 0.03, dy: 0.40)))
-        }
-        XCTAssertEqual(app.switches.matching(identifier: "setting-autoJump").firstMatch.value as? String, after)
-    }
-
-    func testSettingsEmptyResponseShowsRetry() {
-        let app = launch(signedIn: false, optionsResponse: "empty")
-        app.tabBars.buttons["Settings"].tap()
-        XCTAssertTrue(app.buttons["settings-retry"].waitForExistence(timeout: 8))
-        XCTAssertFalse(app.staticTexts["Video"].exists)
-        XCTAssertTrue(app.staticTexts["Settings couldn’t load"].exists)
+        XCTAssertFalse(app.buttons["settings-retry"].exists)
     }
 
     func testNativeTabBarHasOnlyThreeDestinationsAndNavigates() {

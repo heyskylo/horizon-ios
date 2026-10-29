@@ -39,6 +39,11 @@ pub(super) struct CombatTracker {
     pub(super) last_hurt_mob: Option<(u32, i64)>,
     /// The mob whose projectile is hitting the player now.
     pub(super) projectile_owner: Option<u32>,
+    /// The display name of the projectile hitting the player now: the
+    /// `DamageSource.directEntity` the death message names when no owner is
+    /// known (`AbstractArrow.onHitEntity` makes an ownerless arrow its own
+    /// cause).
+    pub(super) projectile_direct: Option<Text>,
     /// The projectile hitting the player now is another player's that
     /// `ServerPlayer.canHarmPlayer` refuses (the `pvp` rule, an ally).
     pub(super) refuse_player_hit: bool,
@@ -46,9 +51,16 @@ pub(super) struct CombatTracker {
     /// stand and the seconds their weapon disables a shield for
     /// (`getSecondsToDisableBlocking`).
     pub(super) player_attacker: Option<([f64; 3], f32)>,
+    /// While set, a sweep attack's reach to the other players is kept here
+    /// instead of landing, for the caller that holds the LAN host.
+    pub(super) sweeps: Option<Vec<super::lan_pvp::Sweep>>,
     /// The mob exploding now (`ServerExplosion.source`): its team's friendly
     /// fire decides whom the blast may hurt.
     pub(super) explosion_source: Option<u32>,
+    /// The exploding mob named itself (`MobEvent::ExplosionSource`), so the
+    /// blast leaves it out (`getEntities(source, box)`). A source guessed
+    /// from the mobs near the centre is still hurt: it may be a bystander.
+    pub(super) explosion_source_named: bool,
     /// The blast now going off comes from a primed TNT, creeper, wither
     /// skull, wither or TNT minecart, the sources that empty a hive they
     /// destroy (`BeehiveBlock.getDrops`).
@@ -208,6 +220,7 @@ impl Game<'_> {
         }
         self.combat.pending.clear();
         self.combat.pending_direct.clear();
+        self.combat.projectile_direct = None;
         self.combat.fall_before = self.player.as_ref().map_or(0.0, |p| p.fall_distance);
     }
     /// `FallLocation.getCurrentFallLocation` and the fall distance so far.

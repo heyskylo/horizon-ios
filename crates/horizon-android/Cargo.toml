@@ -19,6 +19,8 @@ crate-type = ["cdylib"]
 [dependencies]
 horizon-client = { path = "../horizon-client", default-features = false }
 horizon-assets = { path = "../horizon-assets" }
+# Shared game/dialog code now names the extracted item layer directly.
+horizon-items = { path = "../horizon-items" }
 horizon-core = { path = "../horizon-core" }
 horizon-threads = { path = "../horizon-threads" }
 horizon-world = { path = "../horizon-world" }
@@ -49,7 +51,6 @@ default = ["audio"]
 audio = ["horizon-client/audio"]
 # Named because game/ asks for them; gilrs and hidapi have no Android backend, and wasmtime's JIT is untested here.
 controllers = []
-mods = ["horizon-client/mods"]
 
 [patch.crates-io]
 wgpu-hal = { path = "../../third_party/wgpu-hal" }

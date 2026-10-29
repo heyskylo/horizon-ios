@@ -140,7 +140,7 @@ Geist (400, 500, 600) and Geist Mono (400), bundled under the SIL Open Font Lice
   landscape banner with the hero, the version picker and Play; Mods holds the mod, resource pack
   and modpack tabs; Versions and Patch notes are lists of panels; Settings is
   grouped panels of rows. Dark by default, Light or System in Settings (Appearance).
-- **Website** (ludovic111/horizon-site): the Blocks look below. The same page structure as before (what it
+- **Website** (horizon-rust/horizon-site): the Blocks look below. The same page structure as before (what it
   is, screenshots, parity, launcher, patch notes, community), headings in Pixelify Sans, lists as
   stacks of panels, the stone texture behind the page and Horizon's pixel landscape (a dawn or a
   sunset) behind the hero. Light and dark follow the system, with a toggle. A giant wordmark in
@@ -158,7 +158,10 @@ of the main action. The game's menus keep `LIGHT` and `DARK`.
 
 - **Pixel type for what names and what you act on.** Headings, navigation, buttons and the
   wordmark use Pixelify Sans (OFL; Medium, SemiBold, Bold); paragraphs and numbers stay in Geist
-  and Geist Mono so long text reads easily.
+  and Geist Mono so long text reads easily. The bundled copies add the three uppercase Cyrillic
+  letters upstream leaves out, О, П and І: the Latin O's glyph, the lowercase п lifted to that
+  weight's cap height, and the Latin I's glyph, so a Russian or Ukrainian heading stays in the
+  pixel face.
 - **Blocks, not rounded cards.** Every surface is square: a 2 px dark outline, a 2 px light bevel
   along the top and a darker lip along the bottom. The main action is the violet face with its own
   bevel and a 4 px lip; it sinks a pixel when pressed. Code and fields are sunk wells.

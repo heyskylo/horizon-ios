@@ -96,7 +96,7 @@ The launcher reads it when it opens and every minute after, and shows "N playing
 - `GET /v1/benchmarks/summary`: players' benchmark uploads grouped by GPU, CPU, render distance and game for playhorizon.dev/benchmarks. A group shows only with at least 3 different installs, and only its medians and counts: no install ID, day, OS version, driver, exact memory or screen. Uploads are never published one by one. Each group's `breakdowns` count its installs per hardware class.
 - `POST /v1/live` and `GET /v1/live`: the "I'm playing" ping and the live count.
 
-Public output never holds a raw hardware value, only these classes (`src/classes.rs`, the same in the website's `scripts/benchmarks.mjs`, ludovic111/horizon-site), and a class is published only with at least 3 different installs:
+Public output never holds a raw hardware value, only these classes (`src/classes.rs`, the same in the website's `scripts/benchmarks.mjs`, horizon-rust/horizon-site), and a class is published only with at least 3 different installs:
 
 | Breakdown | Classes |
 |---|---|

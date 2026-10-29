@@ -705,6 +705,14 @@ impl PlayerMotion {
     /// Vehicle, item-use and effect bindings remain separate; hunger, flight,
     /// water and collision conditions use this actor's actual state.
     pub fn sprint_input_tick(&mut self, keys: crate::sprint::Keys) -> Result<()> {
+        self.sprint_input_tick_with_window(keys, 7)
+    }
+    /// The same phase with Java's `Options.sprintWindow` value.
+    pub fn sprint_input_tick_with_window(
+        &mut self,
+        keys: crate::sprint::Keys,
+        sprint_window: i32,
+    ) -> Result<()> {
         let conditions = crate::sprint::Conditions {
             sprinting: self.sprinting,
             enough_food: self.health.food.has_enough_food(),
@@ -725,7 +733,9 @@ impl PlayerMotion {
         // The sprint setter edits attributes and flags, independent of local
         // keyboard history. Retain the input prefix even if that setter fails.
         let mut state = self.sprint_input;
-        let result = state.tick(keys, conditions, 7, |value| self.set_sprinting(value));
+        let result = state.tick(keys, conditions, sprint_window.clamp(0, 10), |value| {
+            self.set_sprinting(value)
+        });
         self.sprint_input = state;
         result
     }
@@ -992,6 +1002,14 @@ impl MotionWorld<'_, '_, '_> {
             .food_tick(&self.resources.health, self.scene.health_rules)
     }
     pub fn controlled_simulation_tick(&mut self, keys: crate::sprint::Keys) -> Result<()> {
+        self.controlled_simulation_tick_with_sprint_window(keys, 7)
+    }
+    /// Local simulation with the configured double-tap sprint window.
+    pub fn controlled_simulation_tick_with_sprint_window(
+        &mut self,
+        keys: crate::sprint::Keys,
+        sprint_window: i32,
+    ) -> Result<()> {
         // The base tick (fluids, swimming) precedes LocalPlayer.aiStep.
         self.player.health.advance_clock();
         self.fluid_base_tick()?;
@@ -1004,7 +1022,8 @@ impl MotionWorld<'_, '_, '_> {
             self.player.auto_jump_time -= 1;
             keys.jump = true;
         }
-        self.player.sprint_input_tick(keys)?;
+        self.player
+            .sprint_input_tick_with_window(keys, sprint_window)?;
         self.player.shift_key_down = keys.shift;
         let direction = keys.direction();
         self.player.move_vector = direction;
@@ -1256,6 +1275,19 @@ impl MotionWorld<'_, '_, '_> {
             let slime = under.is_some_and(|s| s.name == "minecraft:slime_block");
             if magma && !self.player.shift_key_down {
                 self.environment_hurt("minecraft:hot_floor", 1.0)?;
+            }
+            // TurtleEggBlock.stepOn: a step that is not careful may break an egg.
+            if !self.player.shift_key_down {
+                let state = self.block(on);
+                self.resources
+                    .landing
+                    .step_on(
+                        self,
+                        state,
+                        on,
+                        horizon_world::block_landing::LandingEntityKind::Player,
+                    )
+                    .map_err(|e| e.to_string())?;
             }
             // SlimeBlock.stepOn: a slow walk on slime drags the horizontal
             // speed (the client moves its own player, so not the server's copy).
@@ -1551,7 +1583,10 @@ impl MotionWorld<'_, '_, '_> {
         // Only the server broadcasts event 53 (`!level.isClientSide()`).
         let particles = !self.player.client_side
             && random.next_int_bound(5).map_err(|e| format!("{e:?}"))? == 0;
-        if sound || particles {
+        // The server also checks the slide criterion every 20 game ticks,
+        // including ticks without a sound or a particle event.
+        let criterion = !self.player.client_side && self.scene.game_time % 20 == 0;
+        if sound || particles || criterion {
             self.player.events.push(MotionEvent::HoneySlide {
                 pos,
                 sound,
@@ -3509,6 +3544,80 @@ mod tests {
                 assert!(w.player.health.health() < 20.0);
             }
         }
+    }
+    #[test]
+    fn a_server_copy_of_a_riptide_spin_counts_down_and_stands_again() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        if !root.join("movement-properties.nbt").exists() {
+            return;
+        }
+        let assets = Assets::load(&root).unwrap();
+        let render = assets.reload(&root).unwrap();
+        let binding = crate::collisions::load(&root, assets.registry).unwrap();
+        let resources = MotionResources::load(&root, &assets).unwrap();
+        let mut scene = World::test_scene(&assets, &render, 2).unwrap();
+        let mut player = PlayerMotion::new(&resources, Vec3::new(20.5, 10.0, 20.5)).unwrap();
+        player.auto_spin_attack_ticks = 2;
+        player.auto_spin_attack_dmg = 8.0;
+        let mut w = MotionWorld {
+            entities: &[],
+            player: &mut player,
+            scene: &mut scene,
+            assets: &assets,
+            collision_binding: &binding,
+            resources: &resources,
+        };
+        w.update_player_pose().unwrap();
+        assert_eq!(w.player.pose, crate::pose::Pose::SpinAttack);
+        w.player.count_down_server_spin();
+        w.update_player_pose().unwrap();
+        assert_eq!(w.player.pose, crate::pose::Pose::SpinAttack);
+        assert_eq!(w.player.auto_spin_attack_dmg, 8.0);
+        w.player.count_down_server_spin();
+        assert_eq!(w.player.auto_spin_attack_ticks, 0);
+        assert_eq!(w.player.auto_spin_attack_dmg, 0.0);
+        w.update_player_pose().unwrap();
+        assert_eq!(w.player.pose, crate::pose::Pose::Standing);
+        assert_eq!(w.player.dimensions.eye_height, 1.62);
+        // Nothing to count once the spin is over.
+        w.player.count_down_server_spin();
+        assert_eq!(w.player.auto_spin_attack_ticks, 0);
+    }
+    /// #3308: a swimmer who boards a boat stops swimming
+    /// (`Entity.updateSwimming` needs `!isPassenger()`) and `updatePlayerPose`
+    /// sits them up, eye at 1.62 instead of the swim's 0.4.
+    #[test]
+    fn a_passenger_stops_swimming_and_stands() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        if !root.join("movement-properties.nbt").exists() {
+            return;
+        }
+        let assets = Assets::load(&root).unwrap();
+        let render = assets.reload(&root).unwrap();
+        let binding = crate::collisions::load(&root, assets.registry).unwrap();
+        let resources = MotionResources::load(&root, &assets).unwrap();
+        let mut scene = World::test_scene(&assets, &render, 2).unwrap();
+        let mut player = PlayerMotion::new(&resources, Vec3::new(20.5, 10.0, 20.5)).unwrap();
+        player.sprinting = true;
+        player.swimming = true;
+        player.set_pose(crate::pose::Pose::Swimming).unwrap();
+        assert_eq!(player.dimensions.eye_height, 0.4);
+        let mut w = MotionWorld {
+            entities: &[],
+            player: &mut player,
+            scene: &mut scene,
+            assets: &assets,
+            collision_binding: &binding,
+            resources: &resources,
+        };
+        w.passenger_pose_tick().unwrap();
+        assert!(!w.player.swimming);
+        assert_eq!(w.player.pose, crate::pose::Pose::Standing);
+        assert_eq!(w.player.dimensions.eye_height, 1.62);
     }
     #[test]
     fn a_riptide_spin_lies_flat_and_ends_on_the_first_entity_it_touches() {

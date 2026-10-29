@@ -1,5 +1,5 @@
 name: nightly command
-# `/nightly …` comments: the trusted reviewers in .github/nightly-reviewers.txt (and Ludovic) pick the pull requests
+# `/nightly …` comments: the trusted reviewers in .github/trusted-reviewers.txt (and Ludovic) pick the pull requests
 # the Nightly holds (docs/release-flow.md "Nightly channel", tools/ci/nightly_set.py). This job only checks who asked,
 # saves the set on the nightly-state branch, starts `nightly build` and answers in the thread.
 #
@@ -33,7 +33,7 @@ jobs:
           persist-credentials: false
           sparse-checkout: |
             .github/CODEOWNERS
-            .github/nightly-reviewers.txt
+            .github/trusted-reviewers.txt
             tools/ci/nightly_set.py
           sparse-checkout-cone-mode: false
       - name: Run the command

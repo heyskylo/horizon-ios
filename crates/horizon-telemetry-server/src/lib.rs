@@ -99,7 +99,7 @@ impl Default for Config {
             hub_keep_days: 90,
             hub_token: None,
             github_token: None,
-            github_repo: "ludovic111/horizon".into(),
+            github_repo: "horizon-rust/horizon".into(),
         }
     }
 }
@@ -265,7 +265,7 @@ impl App {
     /// The address requests are counted under, for the rate limits only: kept in memory, never
     /// stored or logged. Behind a proxy (Railway) the TCP peer is the proxy, so it is the proxy's
     /// `X-Real-IP`, else the last `X-Forwarded-For` entry: the one the proxy added, which a client
-    /// can't choose (the first one it can).
+    /// can't choose (the first one it can). An IPv6 client counts by its /64.
     fn client(&self, headers: &HeaderMap, peer: Option<SocketAddr>) -> IpAddr {
         let header = |name: &str| headers.get(name)?.to_str().ok();
         let forwarded = self
@@ -284,9 +284,11 @@ impl App {
                     })
             })
             .flatten();
-        forwarded
-            .or(peer.map(|p| p.ip()))
-            .unwrap_or(IpAddr::from([0, 0, 0, 0]))
+        rate_key(
+            forwarded
+                .or(peer.map(|p| p.ip()))
+                .unwrap_or(IpAddr::from([0, 0, 0, 0])),
+        )
     }
 
     /// The day an install's newest row came in, if it has any left.
@@ -337,6 +339,22 @@ fn take<K: Hash + Eq>(buckets: &Mutex<HashMap<K, (f64, Instant)>>, per_hour: f64
     }
     *tokens -= 1.0;
     true
+}
+
+/// The address a client's requests count under: IPv4 (an IPv4-mapped IPv6 address as IPv4 too),
+/// or an IPv6 address's /64, which one home or host holds whole, so addresses rotated inside it
+/// don't get fresh buckets.
+fn rate_key(ip: IpAddr) -> IpAddr {
+    match ip {
+        IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
+            Some(v4) => IpAddr::V4(v4),
+            None => {
+                let s = v6.segments();
+                IpAddr::V6(std::net::Ipv6Addr::new(s[0], s[1], s[2], s[3], 0, 0, 0, 0))
+            }
+        },
+        v4 => v4,
+    }
 }
 
 fn peer(req: &Request) -> Option<SocketAddr> {
@@ -579,4 +597,24 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/hub/suggestions", get(intake::suggestions))
         .route("/healthz", get(|| async { "ok" }))
         .with_state(app)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ipv6_rates_count_by_64() {
+        let ip = |s: &str| s.parse::<IpAddr>().unwrap();
+        // Rotated inside a /64: one key. Another /64: another key.
+        assert_eq!(rate_key(ip("2001:db8::1")), rate_key(ip("2001:db8::99")));
+        assert_ne!(rate_key(ip("2001:db8::1")), rate_key(ip("2001:db8:1::1")));
+        // IPv4-mapped counts as the IPv4 it is.
+        assert_eq!(
+            rate_key(ip("::ffff:203.0.113.7")),
+            IpAddr::from([203, 0, 113, 7])
+        );
+        // Plain IPv4 unchanged.
+        assert_eq!(rate_key(ip("203.0.113.8")), IpAddr::from([203, 0, 113, 8]));
+    }
 }

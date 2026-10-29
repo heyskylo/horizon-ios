@@ -13,7 +13,7 @@ Playing through the Horizon launcher
 
 Downloaded this archive directly?
   Get the launcher instead; it installs, prepares and updates Horizon for you:
-  https://github.com/ludovic111/horizon/releases?q=launcher-v&expanded=true
+  https://github.com/horizon-rust/horizon/releases?q=launcher-v&expanded=true
   More about Horizon: https://playhorizon.dev
 
   To prepare this folder by hand you need Minecraft Java Edition 26.3, played

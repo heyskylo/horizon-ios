@@ -148,7 +148,7 @@ early, wrote no report. Its lines come from its output.
 
 ## Reproduce
 
-    curl -fsSL https://raw.githubusercontent.com/ludovic111/horizon/main/packaging/server/install.sh | sh
+    curl -fsSL https://raw.githubusercontent.com/horizon-rust/horizon/main/packaging/server/install.sh | sh
     horizon-prepare --prepare --server-jar /path/to/server.jar      # your own copy
     cargo build --release -p horizon-bots                            # on the machine that runs the bots
     # in a checkout whose .local/minecraft holds the pinned vanilla jars (tools/lab.py prepare):

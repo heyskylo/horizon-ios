@@ -6,6 +6,7 @@
 
 use horizon_client::camera::CameraFluid;
 use horizon_client::gfx::pack_uniforms::PackInputs;
+use horizon_client::text::Text;
 use horizon_shaders::{BlockIds, Macros, Pack, Properties, dimension_folder, load_post};
 
 use super::{Dim, Game};
@@ -185,6 +186,12 @@ fn poll_parser() -> Option<(LoadKey, Result<ParsedPack, String>)> {
         Some((key, result))
     })
 }
+const SOURCE_PANIC: &str = "Shader source compiler panicked: ";
+fn parse_source<T>(work: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    horizon_client::crash::contain(work)
+        .unwrap_or_else(|panic| Err(format!("{SOURCE_PANIC}{panic}")))
+}
+
 fn start_parser(key: LoadKey, inputs: horizon_shaders::GameInputs) -> Result<(), String> {
     let path = key.path.clone();
     let dimension = key.dimension;
@@ -193,7 +200,7 @@ fn start_parser(key: LoadKey, inputs: horizon_shaders::GameInputs) -> Result<(),
         .name("Shader source".into())
         .stack_size(16 * 1024 * 1024)
         .spawn(move || {
-            let parsed = (|| {
+            let parsed = parse_source(|| {
                 let pack = Pack::open(&path).map_err(|error| error.to_string())?;
                 let macros = Macros::standard();
                 let properties =
@@ -248,7 +255,7 @@ fn start_parser(key: LoadKey, inputs: horizon_shaders::GameInputs) -> Result<(),
                     ids,
                     entity_ids,
                 })
-            })();
+            });
             let _ = sender.send(parsed);
         })
         .map_err(|error| format!("Could not start shader parser: {error}"))?;
@@ -319,6 +326,10 @@ impl Game<'_> {
             PENDING_LOAD.with_borrow_mut(|pending| {
                 if let Some(load) = pending.as_ref()
                     && load.key != desired
+                    && load
+                        .worker
+                        .as_ref()
+                        .is_none_or(|worker| worker.is_finished())
                 {
                     match load.result.try_recv() {
                         Err(std::sync::mpsc::TryRecvError::Empty) => {}
@@ -385,8 +396,12 @@ impl Game<'_> {
                         }
                     }
                     Err(error) => {
-                        self.pack_ids = None;
-                        renderer.set_shader_pack(dimension, None, &[]);
+                        if error.starts_with(SOURCE_PANIC) {
+                            self.shader_pack_failed(&name, dimension, &error);
+                        } else {
+                            self.pack_ids = None;
+                            renderer.set_shader_pack(dimension, None, &[]);
+                        }
                         record_report(&name, dimension, &[], &[error]);
                     }
                 }
@@ -463,6 +478,25 @@ impl Game<'_> {
             end_flash_position,
             end_flash_intensity,
         }
+    }
+
+    /// Turns off the pack `name` after loading it panicked: nothing runs in its place, it is no
+    /// longer the picked pack (so the next start does not load it again), and the chat says so.
+    fn shader_pack_failed(&mut self, name: &str, dimension: i32, error: &str) {
+        log::error!("shader pack {name}: turned off: {error}");
+        self.pack_ids = None;
+        if let Some(renderer) = &mut self.renderer {
+            // Marks this dimension as loaded, without a pack, so it is not tried again.
+            renderer.set_shader_pack(dimension, None, &[]);
+        }
+        if self.settings.horizon.shader_pack == name {
+            self.settings.horizon.shader_pack.clear();
+            self.settings.save(&Self::options_path());
+        }
+        self.system_message(Text::colored(
+            format!("Shader pack {name} could not be loaded and was turned off"),
+            0xFF5555,
+        ));
     }
 
     /// `heldItemId(2)` and `heldBlockLightValue(2)`: main hand, then off hand (5.2, 5.3).
@@ -664,6 +698,17 @@ fn state_block_id_table(
 #[cfg(test)]
 mod integration_tests {
     use super::*;
+    #[test]
+    fn source_parser_panics_become_errors_without_losing_load_errors() {
+        let error = parse_source::<()>(|| panic!("broken source")).unwrap_err();
+        assert!(error.starts_with(SOURCE_PANIC));
+        assert!(error.contains("broken source"));
+        assert_eq!(
+            parse_source::<()>(|| Err("missing pack".into())).unwrap_err(),
+            "missing pack"
+        );
+        assert_eq!(parse_source(|| Ok(7)), Ok(7));
+    }
     #[test]
     fn shutdown_waits_for_parser_and_discards_its_result() {
         let (release, wait) = std::sync::mpsc::channel();

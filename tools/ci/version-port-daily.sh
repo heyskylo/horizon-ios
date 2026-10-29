@@ -5,7 +5,7 @@
 # It never publishes (version_port.py publish --yes stays a person's call) and never pushes.
 #
 # It runs from a copy taken from main, never from a checkout (it updates its own worktree of origin/main):
-#   curl -fsSL https://raw.githubusercontent.com/ludovic111/horizon/main/tools/ci/version-port-daily.sh \
+#   curl -fsSL https://raw.githubusercontent.com/horizon-rust/horizon/main/tools/ci/version-port-daily.sh \
 #     -o ~/code/horizon-parity/version-port-daily.sh
 #
 # HORIZON_REPO       the clone to make the worktree from (default ~/code/horizon)

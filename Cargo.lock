@@ -886,6 +886,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d8b14ccef22fc6f5a8f4d7d768562a182c04ce9a3b3157b91390b52ddfdf1a76"
 
 [[package]]
+name = "dunce"
+version = "1.0.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "92773504d58c093f6de2459af4af33faa518c13451eb8f2b5698ed3d36e7c813"
+
+[[package]]
 name = "either"
 version = "1.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1393,7 +1399,6 @@ dependencies = [
  "arboard",
  "bytemuck",
  "chrono",
- "cpal",
  "flate2",
  "gilrs",
  "glam",
@@ -1401,6 +1406,8 @@ dependencies = [
  "horizon-assets",
  "horizon-bench",
  "horizon-client-core",
+ "horizon-client-input",
+ "horizon-client-render",
  "horizon-command",
  "horizon-core",
  "horizon-dualsense",
@@ -1408,6 +1415,7 @@ dependencies = [
  "horizon-gamecontroller",
  "horizon-hdr",
  "horizon-ios-launcher",
+ "horizon-items",
  "horizon-mods",
  "horizon-protocol",
  "horizon-server-files",
@@ -1420,6 +1428,7 @@ dependencies = [
  "log",
  "miniz_oxide 0.8.9",
  "naga",
+ "open",
  "png",
  "pollster",
  "rustix 1.1.5",
@@ -1428,7 +1437,6 @@ dependencies = [
  "sha1",
  "sha2",
  "stacker",
- "symphonia",
  "unicode-bidi",
  "ureq",
  "wgpu",
@@ -1443,6 +1451,61 @@ version = "0.1.0"
 dependencies = [
  "horizon-world",
  "serde_json",
+]
+
+[[package]]
+name = "horizon-client-input"
+version = "0.1.0"
+dependencies = [
+ "arboard",
+ "horizon-client-core",
+ "horizon-dualsense",
+ "horizon-theme",
+ "png",
+ "winit",
+]
+
+[[package]]
+name = "horizon-client-render"
+version = "0.1.0"
+dependencies = [
+ "ab_glyph",
+ "bytemuck",
+ "chrono",
+ "cpal",
+ "flate2",
+ "glam",
+ "horizon-assets",
+ "horizon-bench",
+ "horizon-client-core",
+ "horizon-client-input",
+ "horizon-command",
+ "horizon-core",
+ "horizon-hdr",
+ "horizon-items",
+ "horizon-protocol",
+ "horizon-shader-api",
+ "horizon-shaders",
+ "horizon-telemetry",
+ "horizon-theme",
+ "horizon-threads",
+ "horizon-world",
+ "log",
+ "miniz_oxide 0.8.9",
+ "naga",
+ "png",
+ "pollster",
+ "rustix 1.1.5",
+ "serde",
+ "serde_json",
+ "sha2",
+ "stacker",
+ "symphonia",
+ "unicode-bidi",
+ "ureq",
+ "wgpu",
+ "winit",
+ "zip",
 ]
 
 [[package]]
@@ -1506,6 +1569,9 @@ name = "horizon-hdr"
 version = "0.1.0"
 dependencies = [
  "ash",
+ "wayland-backend",
+ "wayland-client",
+ "wayland-protocols",
  "wgpu",
 ]
 
@@ -1523,6 +1589,17 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "log",
+]
+
+[[package]]
+name = "horizon-items"
+version = "0.1.0"
+dependencies = [
+ "horizon-client-core",
+ "horizon-core",
+ "horizon-world",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -1908,6 +1985,25 @@ dependencies = [
  "windows-registry",
  "windows-result 0.4.1",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "is-docker"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "928bae27f42bc99b60d9ac7334e3a21d10ad8f1835a4e12ec3ec0464765ed1b3"
+dependencies = [
+ "once_cell",
+]
+
+[[package]]
+name = "is-wsl"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "173609498df190136aa7dea1a91db051746d339e18476eed5ca40521f02d7aa5"
+dependencies = [
+ "is-docker",
+ "once_cell",
 ]
 
 [[package]]
@@ -2747,6 +2843,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c08d65885ee38876c4f86fa503fb49d7b507c2b62552df7c70b2fce627e06381"
 
 [[package]]
+name = "open"
+version = "5.4.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8d8c8b8e725ad26404d6896eb2f064294a0a7b4f1d9120210d85544684c4ca95"
+dependencies = [
+ "dunce",
+ "is-wsl",
+ "libc",
+]
+
+[[package]]
 name = "orbclient"
 version = "0.3.55"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3271,9 +3378,9 @@ dependencies = [
 
 [[package]]
 name = "rustls-webpki"
-version = "0.103.15"
+version = "0.103.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f3c3cf1d8b1e7d4927e2d154c3fcb02979afb9939629c62cd9048d4f07b60ac2"
+checksum = "4443b1b6d39d7c663139942cc4558262562d2c84123bb6282ef177009ca8b281"
 dependencies = [
  "ring",
  "rustls-pki-types",
@@ -4464,14 +4571,14 @@ version = "0.26.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "521bc38abb08001b01866da9f51eb7c5d647a19260e00054a8c7fd5f9e57f7a9"
 dependencies = [
- "webpki-roots 1.0.9",
+ "webpki-roots 1.0.10",
 ]
 
 [[package]]
 name = "webpki-roots"
-version = "1.0.9"
+version = "1.0.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7dcd9d09a39985f5344844e66b0c530a33843579125f23e21e9f0f220850f22a"
+checksum = "1c1c8e20c8a38fc7d65abfe74eb7280e4aa667e8eec8bc84996d2874810748d9"
 dependencies = [
  "rustls-pki-types",
 ]

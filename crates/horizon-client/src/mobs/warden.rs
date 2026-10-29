@@ -395,7 +395,7 @@ pub fn anger_level(m: &Mob) -> AngerLevel {
 
 /// `Warden.isInvulnerableTo`: while digging or emerging.
 pub fn accepts_damage(m: &Mob, source: &Damage) -> bool {
-    !(digging_or_emerging(m) && source.kind != DamageKind::Generic)
+    !(digging_or_emerging(m) && !source.kind.bypasses_invulnerability())
 }
 /// `Warden.hurtServer`'s reaction, handled at the warden's next tick.
 pub fn hurt(m: &mut Mob, source: &Damage) {
@@ -454,7 +454,13 @@ pub fn do_push(m: &mut Mob, w: &MobWorld, who: Who, events: &mut Vec<MobEvent>) 
 }
 /// `Warden.doHurtTarget`: the attack keyframes (entity event 4), the impact
 /// sound, a sonic boom cooldown, then `Mob.doHurtTarget`.
-pub(super) fn do_hurt_target(m: &mut Mob, target: Who, w: &MobWorld, events: &mut Vec<MobEvent>) {
+pub(super) fn do_hurt_target(
+    m: &mut Mob,
+    target: Who,
+    w: &MobWorld,
+    lr: &mut LegacyRandom,
+    events: &mut Vec<MobEvent>,
+) {
     m.anim.states[ROAR].stop();
     m.anim.states[ATTACK].start(m.age as f32);
     events.push(MobEvent::EntityEvent {
@@ -465,7 +471,7 @@ pub(super) fn do_hurt_target(m: &mut Mob, target: Who, w: &MobWorld, events: &mu
     let pitch = voice_pitch(m);
     sound(m, "entity.warden.attack_impact", 10.0, pitch, events);
     warden_brain::mem(m).sonic_boom_cooldown.set_ttl((), 40);
-    let mut cx = warden_brain::cx(w, events);
+    let mut cx = warden_brain::cx(w, lr, events);
     super::ai::do_hurt_target(m, target, &mut cx);
 }
 
@@ -489,7 +495,8 @@ pub fn can_receive_vibration(m: &Mob, _now: i64, ctx: &Context) -> bool {
 }
 /// `VibrationSystem.Listener.handleGameEvent` for the warden: a free
 /// listener within 16 blocks of its eyes schedules what it can hear.
-/// `occluded` is `VibrationSystem.Listener.isOccluded`.
+/// `occluded` is `VibrationSystem.Listener.isOccluded`. Returns true when a
+/// sneaking player's step was avoided (AVOID_VIBRATION) instead.
 pub fn listen(
     m: &mut Mob,
     now: i64,
@@ -497,23 +504,35 @@ pub fn listen(
     pos: [f64; 3],
     ctx: &Context,
     occluded: impl Fn([f64; 3], [f64; 3]) -> bool,
-) {
+) -> bool {
     let eye = [m.position.x, m.position.y + m.kind.eye_height, m.position.z];
     let Some(st) = m.extra.warden.as_ref() else {
-        return;
+        return false;
     };
     if st.vibration.current.is_some() {
-        return;
+        return false;
     }
     let block = |p: [f64; 3]| p.map(|v| i64::from(v.floor() as i32));
     let (source, listener) = (block(pos), block(eye));
     let d = [0, 1, 2].map(|i| source[i] - listener[i]);
-    if d[0] * d[0] + d[1] * d[1] + d[2] * d[2] > 256
-        || !sculk::valid_vibration(sculk::warden_can_listen(event), event, ctx)
+    if d[0] * d[0] + d[1] * d[1] + d[2] * d[2] > 256 {
+        return false;
+    }
+    // isValidVibration: the warden can trigger avoid vibration.
+    let listens = sculk::warden_can_listen(event);
+    if listens
+        && ctx.source == Some(Who::Player)
+        && !ctx.spectator
+        && ctx.stepping_carefully
+        && sculk::ignored_when_sneaking(event)
+    {
+        return true;
+    }
+    if !sculk::valid_vibration(listens, event, ctx)
         || !can_receive_vibration(m, i64::from(m.age), ctx)
         || occluded(pos, eye)
     {
-        return;
+        return false;
     }
     let d = [pos[0] - eye[0], pos[1] - eye[1], pos[2] - eye[2]];
     let distance = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt() as f32;
@@ -529,6 +548,7 @@ pub fn listen(
             now,
         );
     }
+    false
 }
 /// `Level.gameEvent` for the mobs' own movement events from `from` on, as
 /// the mob AI probe has no sculk layer: every warden's listener hears them.

@@ -112,14 +112,14 @@ impl Goal for GuardianAttack {
         if self.attack_time == 0 {
             m.extra.flag = true;
             m.extra.counter2 = 0;
-            // Entity event 21: the attack sound loop starts.
-            let sound = "entity.guardian.attack";
-            cx.events.push(MobEvent::Sound(
-                sound,
-                [m.position.x, m.position.y, m.position.z],
-                1.0,
-                1.0,
-            ));
+            // Entity event 21: the attack sound loop starts on the clients.
+            if !m.silent {
+                cx.events.push(MobEvent::EntityEvent {
+                    mob: m.id,
+                    event: 21,
+                    at: [m.position.x, m.position.y, m.position.z],
+                });
+            }
         } else if self.attack_time >= attack_duration(m) {
             // Indirect magic (1, +2 on Hard, +2 for the elder), then
             // doHurtTarget.
@@ -475,4 +475,13 @@ pub fn anim(m: &Mob, s: &State, p: &mut Poses) {
     p.yrot("tail0", tail.msin() * PI * 0.05);
     p.yrot("tail1", tail.msin() * PI * 0.1);
     p.yrot("tail2", tail.msin() * PI * 0.15);
+}
+/// `Guardian.getAttackAnimationScale(0)`: how far the beam has charged. A
+/// beam that ended counts from zero again.
+pub fn attack_scale(m: &Mob) -> f32 {
+    if m.extra.flag {
+        m.extra.counter2 as f32 / attack_duration(m) as f32
+    } else {
+        0.0
+    }
 }

@@ -347,7 +347,8 @@ def horizon_resave(source, destination, bin_dir):
     socket = Path(tempfile.mkdtemp(prefix='hzrt')) / 'control.sock'  # sockets need short paths
     ctl = [str(bin_dir / 'horizon-ctl'), '--socket', str(socket)]
     extra = []
-    if sys.platform == 'darwin':
+    # Offscreen on macOS, and on a Linux without vscreen (never a window on a real monitor).
+    if sys.platform == 'darwin' or not shutil.which('vscreen'):
         env = lab.game_env()
         extra = ['--offscreen']
     else:

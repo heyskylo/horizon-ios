@@ -16,7 +16,7 @@
 #   tools/ci/protect_pipeline.sh            # print the protection it would set, change nothing
 #   tools/ci/protect_pipeline.sh --apply    # set it (needs the maintainer's admin login)
 set -euo pipefail
-repo=${GITHUB_REPOSITORY:-ludovic111/horizon}
+repo=${GITHUB_REPOSITORY:-horizon-rust/horizon}
 api="repos/$repo/branches/main/protection"
 body=$(gh api "$api" | jq '{
   required_status_checks: (.required_status_checks

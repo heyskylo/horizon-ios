@@ -2,12 +2,13 @@
 //! blocks and bring them to their player (or a liked note block), dance to
 //! jukeboxes and duplicate when given an amethyst shard mid-dance.
 use super::{
-    Mob,
+    Mob, MobEvent, MobWorld,
     anim::{Poses, State},
     control::MoveKind,
     goals::{Cx, Goal, LookAtPlayer, MOVE, Panic, RandomLookAround, Stroll, goal_clone},
     nav::NavKind,
 };
+use horizon_core::geometry::Vec3;
 use horizon_core::geometry::trig::Mth;
 
 // Allay state: `main_hand` the held item, `ints[1]` how many it carries,
@@ -95,7 +96,8 @@ impl Goal for Deliver {
         }
     }
 }
-/// `StayCloseToTarget`: back within 4 blocks of the deposit.
+/// `StayCloseToTarget.create(.., 4, 16, 2.25)`: acts only once the deposit is
+/// 16 blocks away or more, then walks until within 4.
 #[derive(Clone, Debug)]
 struct StayClose;
 impl Goal for StayClose {
@@ -109,7 +111,19 @@ impl Goal for StayClose {
                 let d = (p[0] - m.position.x).powi(2)
                     + (p[1] - m.position.y).powi(2)
                     + (p[2] - m.position.z).powi(2);
-                d > 16.0
+                d >= 256.0
+            })
+    }
+    /// `MoveToTargetSink.reachedTarget`: the walk target it set is reached
+    /// within a Manhattan block distance of 4 (`closeEnough`).
+    fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
+        m.extra.point.is_none()
+            && deposit(m, cx).is_some_and(|p| {
+                let at = [m.position.x, m.position.y, m.position.z];
+                (0..3)
+                    .map(|i| (p[i].floor() as i32 - at[i].floor() as i32).abs())
+                    .sum::<i32>()
+                    > 4
             })
     }
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
@@ -119,6 +133,14 @@ impl Goal for StayClose {
             m.nav_move_to(cx.w, p, 2.25);
         }
     }
+}
+/// `Allay.travel`: `travelFlying(input, getSpeed())` — the airborne speed is
+/// the one the move control set this tick, and no gravity applies, so an
+/// allay never falls under its own travel.
+pub fn travel(m: &mut Mob, w: &MobWorld, input: Vec3, events: &mut Vec<MobEvent>) -> bool {
+    let speed = m.ai.speed;
+    m.travel_flying_speeds(w, input, events, 0.02, 0.02, speed);
+    true
 }
 /// `Allay.aiStep` / `tick`: healing, cooldowns, the hold and spin clocks.
 pub fn ai_step(m: &mut Mob) {

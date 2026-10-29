@@ -169,7 +169,8 @@ pub fn register_hoglin(m: &mut Mob) {
     let g = &mut m.ai.goals;
     g.add(0, Float);
     g.add(1, BabyPanic(super::goals::Panic::new(1.25)));
-    g.add(2, MeleeAttack::new(1.0, true));
+    // HoglinAi: MeleeAttack.create(40) for adults, 15 for babies.
+    g.add(2, MeleeAttack::new(1.0, true).intervals(40, 15));
     g.add(3, super::goals::Breed::new(1.0));
     g.add(3, HoglinAvoidRepellent);
     g.add(4, super::goals::FollowParent::new(1.1));
@@ -185,7 +186,8 @@ pub fn register_hoglin(m: &mut Mob) {
 pub fn register_zoglin(m: &mut Mob) {
     let g = &mut m.ai.goals;
     g.add(0, Float);
-    g.add(2, MeleeAttack::new(1.0, true));
+    // Zoglin.initMemories: MeleeAttack.create(40) for adults, 15 for babies.
+    g.add(2, MeleeAttack::new(1.0, true).intervals(40, 15));
     g.add(5, Stroll::avoiding_water(0.4));
     g.add(6, LookAtPlayer::new(8.0));
     m.ai.targets.add(1, HurtByTarget::new());
@@ -464,6 +466,13 @@ pub fn celebrate(m: &mut Mob, w: &MobWorld) {
         t.position.y.floor() as i32,
         t.position.z.floor() as i32,
     ]);
+}
+/// `Hoglin.isConverting` and `AbstractPiglin.isConverting` on a client: in a
+/// dimension that is not piglin safe (`nether` is false), a mob that is not
+/// immune (`flag2`) and has AI shakes. `counter2 > 0` draws the shake, as it
+/// does on the server while the zombification counts up.
+pub fn client_converting(m: &mut Mob, nether: bool) {
+    m.extra.counter2 = i32::from(!nether && !m.extra.flag2 && !m.no_ai);
 }
 /// Per-tick piglin and hoglin state: admiring, anger, zombification and the
 /// hoglin attack animation. Returns a conversion when it happens.

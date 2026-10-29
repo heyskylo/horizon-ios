@@ -9,8 +9,8 @@ use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 
-pub const REPO: &str = "ludovic111/horizon";
-pub const README_URL: &str = "https://github.com/ludovic111/horizon/blob/main/launcher/README.md";
+pub const REPO: &str = "horizon-rust/horizon";
+pub const README_URL: &str = "https://github.com/horizon-rust/horizon/blob/main/launcher/README.md";
 /// The players' page on connecting an AI agent (the website's docs/agents.md).
 pub const AGENT_DOCS_URL: &str = "https://playhorizon.dev/docs/agents";
 /// This launcher's version: the release workflow sets `HORIZON_LAUNCHER_VERSION` from the
@@ -37,9 +37,13 @@ pub struct Release {
     pub body: String,
     pub date: String,
     pub asset: Option<(String, u64)>,
-    /// A GitHub pre-release: the Alpha builds from before every release went out as the release
-    /// (v0.2.1 on, docs/release-flow.md). Listed and installed by hand, never as an update.
+    /// Listed and installed by hand, never as an update: a GitHub pre-release of the old Alpha
+    /// channel (v0.2.1 on), or a Nightly older than the current one.
     pub prerelease: bool,
+    /// A Nightly's GitHub tag (`nightly`, or `nightly-<date>` for the last week's): its files and
+    /// signature are there, while `tag` is the version it installs as (`nightly-2026-10-28-0c02067`).
+    /// None for a release.
+    pub nightly: Option<String>,
 }
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
@@ -74,7 +78,7 @@ const LAUNCHER_BINARY: &str = if cfg!(windows) {
     "horizon-launcher"
 };
 
-const CLIENT: &str = if cfg!(windows) {
+pub(crate) const CLIENT: &str = if cfg!(windows) {
     "horizon-client.exe"
 } else {
     "horizon-client"
@@ -88,6 +92,16 @@ fn agent(url: &str) -> ureq::Agent {
         url,
     )
     .build()
+}
+
+/// A file's body, from the network as the launcher reaches it.
+pub fn get_bytes(url: &str) -> Result<Vec<u8>, String> {
+    let mut body = Vec::new();
+    get(url)?
+        .into_reader()
+        .read_to_end(&mut body)
+        .map_err(|e| e.to_string())?;
+    Ok(body)
 }
 
 pub(crate) fn get(url: &str) -> Result<ureq::Response, String> {
@@ -154,6 +168,9 @@ pub enum ReleaseOrder {
     /// Numbers without trailing zeros, so 1.2 and 1.2.0 are equal.
     Before02(Vec<u64>),
     Semver([u64; 3], Prerelease),
+    /// A Nightly (`nightly-<date>-<commit>`), by its date: newer than every release, since the
+    /// Nightly is the only build Horizon ships.
+    Nightly(String),
 }
 
 /// (is a release, the pre-release's identifiers): a release follows every pre-release of its
@@ -170,6 +187,9 @@ pub enum Identifier {
 const FIRST_YEAR: u64 = 1000;
 
 pub fn release_order(tag: &str) -> ReleaseOrder {
+    if let Some(date) = crate::nightly::date_of(tag) {
+        return ReleaseOrder::Nightly(date.to_owned());
+    }
     let semver = tag
         .strip_prefix(LAUNCHER_TAG_PREFIX)
         .or_else(|| tag.strip_prefix('v'))
@@ -270,6 +290,7 @@ pub(crate) fn parse_releases(
                 .collect(),
             asset: found,
             prerelease: r["prerelease"].as_bool().unwrap_or(false),
+            nightly: None,
         });
     }
     out.sort_by(|a, b| compare_versions(&b.tag, &a.tag));
@@ -280,10 +301,30 @@ fn is_launcher_tag(tag: &str) -> bool {
     launcher_version(tag).is_some()
 }
 
-/// Published Horizon releases, newest first. Drafts never reach the anonymous API, and launcher
-/// releases are left out.
+/// Published Horizon builds, newest first: the current Nightly (the only build Horizon ships since
+/// 2026-10-28, docs/release-flow.md), the last week's Nightlies, then the releases from before.
+/// Drafts never reach the anonymous API, and launcher releases are left out.
 pub fn releases() -> Result<Vec<Release>, String> {
-    Ok(parse_releases(&release_list()?, ASSET, is_game_tag))
+    Ok(game_releases(&release_list()?))
+}
+
+/// The game's builds in `list`, newest first. A Nightly is listed under the version it installs as
+/// ([`crate::nightly::version_of`]); only the current one (`nightly`) is an update.
+pub(crate) fn game_releases(list: &serde_json::Value) -> Vec<Release> {
+    let mut out = parse_releases(list, ASSET, |tag| {
+        is_game_tag(tag) || horizon_release_sign::is_nightly(tag)
+    });
+    for r in &mut out {
+        if horizon_release_sign::is_nightly(&r.tag) {
+            let version = crate::nightly::version_of(r);
+            let tag = std::mem::replace(&mut r.tag, version);
+            r.prerelease = tag != horizon_release_sign::NIGHTLY;
+            r.nightly = Some(tag);
+        }
+    }
+    // Two Nightlies of one day: the current one first (the dated one is the day's earlier build).
+    out.sort_by(|a, b| compare_versions(&b.tag, &a.tag).then(a.prerelease.cmp(&b.prerelease)));
+    out
 }
 
 /// The launcher releases in `list` (the newest 100 releases). Game releases come out several times
@@ -500,15 +541,24 @@ fn signed_digest(tag: &str, asset: &str) -> Result<String, String> {
     )
 }
 
-/// Downloads `url` into `to`; the file is kept only if its SHA-256 is `sha256`, the signed one.
-fn download(
+/// Downloads `url` into `to`; the file is kept only if its SHA-256 is `sha256`, the signed (or
+/// pinned) one. A `size` of 0 takes the server's Content-Length for the progress.
+pub(crate) fn download(
     url: &str,
     size: u64,
     sha256: &str,
     to: &Path,
     progress: &impl Fn(f32),
 ) -> Result<(), String> {
-    let mut reader = get(url)?.into_reader();
+    let response = get(url)?;
+    let size = match size {
+        0 => response
+            .header("Content-Length")
+            .and_then(|n| n.parse().ok())
+            .unwrap_or(0),
+        n => n,
+    };
+    let mut reader = response.into_reader();
     let mut file = fs::File::create(to).map_err(|e| e.to_string())?;
     let mut hash = horizon_release_sign::Sha256::default();
     let (mut done, mut buf) = (0u64, vec![0u8; 1 << 16]);
@@ -547,10 +597,17 @@ fn unpack(archive: &Path, url: &str, to: &Path) -> Result<(), String> {
 /// the fraction done.
 pub fn install(release: &Release, progress: impl Fn(f32)) -> Result<(), String> {
     let tag = release.tag.as_str();
-    if !is_game_tag(tag) {
-        return Err(format!("{tag} is not a Horizon release."));
-    }
-    let sha256 = signed_digest(tag, ASSET.unwrap_or_default())?;
+    let sha256 = match &release.nightly {
+        // Signed for the Nightly channel, served under its own GitHub tag.
+        Some(published) => crate::signed::nightly_digest(
+            published,
+            ASSET.unwrap_or_default(),
+            &horizon_release_sign::trusted_keys(),
+            fetch_small,
+        )?,
+        None if is_game_tag(tag) => signed_digest(tag, ASSET.unwrap_or_default())?,
+        None => return Err(format!("{tag} is not a Horizon release.")),
+    };
     install_as(release, tag, &sha256, progress)
 }
 
@@ -617,6 +674,23 @@ pub fn remove(tag: &str) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// The bytes an installed version takes on disk.
+pub fn disk_use(tag: &str) -> u64 {
+    fn size(dir: &Path) -> u64 {
+        fs::read_dir(dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|e| match e.metadata() {
+                Ok(m) if m.is_dir() => size(&e.path()),
+                Ok(m) => m.len(),
+                Err(_) => 0,
+            })
+            .sum()
+    }
+    size(&version_dir(tag))
 }
 
 /// The Minecraft version a Horizon build targets, from its research-lock.json.
@@ -858,7 +932,7 @@ fn files_under(dir: &Path, relative: &Path) -> Vec<PathBuf> {
     files
 }
 
-fn copy_dir(from: &Path, to: &Path) -> std::io::Result<()> {
+pub(crate) fn copy_dir(from: &Path, to: &Path) -> std::io::Result<()> {
     fs::create_dir_all(to)?;
     for entry in fs::read_dir(from)? {
         let entry = entry?;
@@ -1042,9 +1116,11 @@ fn lacks_unifont(resources: &Path) -> bool {
         .is_file()
 }
 
-/// Whether `en_us`, the one language the client jar has, is the only one.
+/// Whether the language list is missing: `pack.mcmeta` only the asset index holds, while the
+/// client jar's `lang` folder holds `en_us.json` and `deprecated.json`, so counting its files
+/// never tells.
 fn lacks_languages(resources: &Path) -> bool {
-    fs::read_dir(resources.join("assets/minecraft/lang")).map_or(true, |dir| dir.count() <= 1)
+    !resources.join("assets/pack.mcmeta").is_file()
 }
 
 fn lacks_packs(resources: &Path) -> bool {
@@ -1195,7 +1271,7 @@ fn preparer_binary(dir: &Path) -> Option<PathBuf> {
     binary.is_file().then_some(binary)
 }
 
-/// Downloads the pinned version from Mojang into `dir` when the signed-in account owns
+/// Downloads the pinned version from Mojang into `dir` when an account in the launcher owns
 /// Minecraft (asked again now), else says what signing in would do, as the last line of the
 /// not-found error.
 fn download_for_owner(
@@ -1204,18 +1280,142 @@ fn download_for_owner(
     fetch: sources::Fetch,
     log: &dyn Fn(String),
 ) -> Result<(), String> {
+    let mut accounts = account::Accounts::load();
+    // The strict gate, never `launch_for_game`: the developer option that lets offline names
+    // play without an owner must not download the game for them.
+    let pass = account::launch(
+        &account::Endpoints::live(),
+        account::client_id().as_deref(),
+        account::store(),
+        &mut accounts,
+    );
+    let _ = accounts.save();
+    download_for(pins, dir, pass, !accounts.accounts.is_empty(), fetch, log)
+}
+
+/// Downloads Minecraft `id` (any version on Mojang's list, its version file's sha1 from it) into
+/// Horizon's own game folder, in the official launcher's layout, for an account that owns the
+/// game (asked again now). Returns that folder.
+pub fn download_version_for_owner(
+    id: &str,
+    manifest_sha1: &str,
+    log: &dyn Fn(String),
+) -> Result<PathBuf, String> {
+    let dir = data_dir().join("minecraft");
+    let fetch = |url: &str| -> Result<Vec<u8>, String> {
+        let mut body = Vec::new();
+        get(url)?
+            .into_reader()
+            .read_to_end(&mut body)
+            .map_err(|e| e.to_string())?;
+        Ok(body)
+    };
+    let pins = sources::Pins::for_version(id, manifest_sha1);
+    download_for_owner(&pins, &dir, &fetch, log)
+        .map_err(|e| e.trim_start_matches("\n  • ").to_string())?;
+    Ok(dir)
+}
+
+/// The command that starts a Java instance's Minecraft, for an account that owns the game: its
+/// version downloaded from Mojang the first time (then it starts offline too), the Java it needs
+/// (the instance's own, else one found here, else Mojang's, downloaded), and the game in the
+/// instance's folder. The caller wraps it (`launch::wrap`) and never logs it: it holds the token.
+/// A Java instance's game, ready to start; `server` (`host[:port]`) is joined once it has.
+pub fn java_game(
+    instance: &crate::instances::Instance,
+    server: Option<&str>,
+    log: &dyn Fn(String),
+) -> Result<Command, String> {
+    let game = instance.java.as_ref().ok_or_else(|| {
+        format!(
+            "{} plays Horizon, not Minecraft: Java Edition",
+            instance.name
+        )
+    })?;
+    let player = account::java_player()?;
+    let minecraft = data_dir().join("minecraft");
+    let id = mojang::relative(&game.minecraft)?;
+    let natives = minecraft.join("natives").join(&id);
+    // Each version and loader profile is fetched once; it then starts offline too.
+    let downloaded = |id: &str| -> Result<PathBuf, String> {
+        Ok(minecraft
+            .join("versions")
+            .join(mojang::relative(id)?)
+            .join(".downloaded"))
+    };
+    let marker = downloaded(&game.minecraft)?;
+    if !marker.is_file() {
+        let listed = crate::minecraft_versions::load()?;
+        let version = listed.find(&game.minecraft)?;
+        download_version_for_owner(&version.id, &version.sha1, log)?;
+        fs::write(&marker, "").map_err(|e| format!("{}: {e}", marker.display()))?;
+    }
+    let mut start = game.minecraft.clone();
+    if let Some(loader) = &game.loader {
+        start = loader.kind.profile_id(&loader.version, &game.minecraft);
+        let marker = downloaded(&start)?;
+        if !marker.is_file() {
+            start = crate::loaders::install(loader, &game.minecraft, &minecraft, &get_bytes, log)?;
+            fs::write(downloaded(&start)?, "").map_err(|e| e.to_string())?;
+        }
+    }
+    let file = minecraft
+        .join("versions")
+        .join(mojang::relative(&start)?)
+        .join(format!("{start}.json"));
+    let version = crate::java_launch::resolve(crate::java_launch::read(&file)?, &minecraft)?;
+    let need = crate::java::Need::of(&version);
+    let found = crate::java::pick(
+        &need,
+        game.home.as_deref(),
+        &crate::java::mojang_runtimes(&crate::java::runtimes_dir()),
+        &crate::java::installed(),
+    )?;
+    let runtime = match found {
+        Some(runtime) => runtime,
+        None => {
+            log(format!("Downloading Java {} from Mojang", need.major));
+            crate::java::install(&need, log)?
+        }
+    };
+    let jvm_args: Vec<String> = game.jvm_args.split_whitespace().map(String::from).collect();
+    fs::create_dir_all(&instance.home).map_err(|e| format!("{}: {e}", instance.home.display()))?;
+    crate::java_launch::command(
+        &version,
+        &crate::java_launch::Launch {
+            minecraft: &minecraft,
+            game_dir: &instance.home,
+            natives: &natives,
+            java: &runtime.java(),
+            memory_mb: game
+                .memory_mb
+                .unwrap_or(crate::instances::DEFAULT_MEMORY_MB),
+            jvm_args: &jvm_args,
+            player: &player,
+            os: crate::java_launch::os_name(),
+            window: game.window,
+            server,
+        },
+    )
+}
+
+/// What [`download_for_owner`] does with the owner gate's answer: Mojang's files only for its
+/// `owner`, an account the services said owns the game just now.
+fn download_for(
+    pins: &sources::Pins,
+    dir: &Path,
+    pass: Result<account::Launch, account::NoOwner>,
+    signed_in: bool,
+    fetch: sources::Fetch,
+    log: &dyn Fn(String),
+) -> Result<(), String> {
     let v = &pins.version;
-    let owner = (|| -> Result<Option<(String, bool)>, String> {
-        let ep = account::Endpoints::live();
-        let mut accounts = account::Accounts::load();
-        let Some((a, secrets)) = account::session_for_launch(&ep, account::store(), &mut accounts)?
-        else {
-            return Ok(None);
-        };
-        Ok(Some((a.name, account::owns_minecraft(&ep, &secrets)?)))
-    })();
-    match owner {
-        Ok(Some((name, true))) => {
+    match pass {
+        Ok(account::Launch {
+            owner: Some((owner, _)),
+            ..
+        }) => {
+            let name = owner.name;
             log(format!(
                 "{name} owns Minecraft: downloading {v} from Mojang"
             ));
@@ -1224,21 +1424,23 @@ fn download_for_owner(
                 sources::Os::MacOs => "osx",
                 sources::Os::Windows => "windows",
             };
-            mojang::download(pins, dir, os, 8, fetch, log).map_err(|e| {
+            mojang::download(pins, dir, os, 8, fetch, &mojang::CANCEL, log).map_err(|e| {
                 format!("\n  • Horizon tried to download {v} from Mojang for {name}, but: {e}")
             })
         }
-        Ok(Some((name, false))) => Err(format!(
-            "\n  • {name}, the signed-in account, doesn't own Minecraft: Java Edition, so Horizon \
-             can't download it."
+        // An owner by its last answer, who can't be asked now.
+        Ok(pass) => Err(format!(
+            "\n  • Downloading {v} from Mojang needs your Microsoft account, which could not be \
+             checked: {}",
+            pass.offline.unwrap_or_default()
         )),
-        Ok(None) => Err(format!(
+        Err(_) if signed_in => Err(
+            "\n  • No signed-in account owns Minecraft: Java Edition, so Horizon can't download it."
+                .into(),
+        ),
+        Err(_) => Err(format!(
             "\n  • Or sign in with the Microsoft account that owns Minecraft: Horizon then \
              downloads {v} from Mojang itself."
-        )),
-        Err(e) => Err(format!(
-            "\n  • Downloading {v} from Mojang needs your Microsoft account, which could not be \
-             checked: {e}"
         )),
     }
 }
@@ -1294,14 +1496,15 @@ fn java(
         Ok(body)
     };
     let runtime = data_dir().join("minecraft").join("runtime");
-    let home = mojang::java_runtime(&component, &runtime, 8, &fetch, log).map_err(|e| {
+    let home = mojang::java_runtime(&component, &runtime, 8, &fetch, &mojang::CANCEL, log)
+        .map_err(|e| {
         format!("{missing}\n  • Horizon also tried to download Minecraft's own Java from Mojang, but: {e}")
     })?;
     find(major, &[home]).map(|jdk| jdk.home())
 }
 
 /// The dynamic loader glibc programs on x86-64 Linux start through.
-const GLIBC_LOADER: &str = "/lib64/ld-linux-x86-64.so.2";
+pub(crate) const GLIBC_LOADER: &str = "/lib64/ld-linux-x86-64.so.2";
 
 /// Runs `cmd` with Java at `home`: JAVA_HOME names it and its `bin` leads the PATH, as the
 /// versions' own preparers look for Java.
@@ -1346,6 +1549,16 @@ fn assets_folder(
     }
 }
 
+/// Where the preparation takes Minecraft's files from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MinecraftFrom {
+    /// The player's own install (any launcher's); Mojang only when none has the version and an
+    /// account that owns the game is signed in.
+    Install,
+    /// Mojang, for the signed-in account that owns the game ("Download and prepare").
+    Mojang,
+}
+
 /// Checks what the preparation needs and picks how to run it. PLAY.txt describes the same
 /// steps: the player's own launcher install, the server jar from that version's own json, and
 /// Java (and Python, for versions before horizon-prepare). Also returns the Minecraft folder
@@ -1354,6 +1567,7 @@ fn assets_folder(
 pub fn preparer(
     tag: &str,
     minecraft: &Path,
+    from: MinecraftFrom,
     log: &dyn Fn(String),
 ) -> Result<(Preparer, PathBuf), String> {
     let version = game_version(tag);
@@ -1381,16 +1595,23 @@ pub fn preparer(
             Ok(body)
         };
         let linked = data_dir().join("linked-minecraft");
-        let resolved = sources::resolve(minecraft, &pins, &known, &linked, &fetch, log);
-        if reused {
-            assets_folder(resolved, &chosen, &version, log)
+        if from == MinecraftFrom::Mojang {
+            // Straight from Mojang (what is already there and whole is kept), for an owner only.
+            download_for_owner(&pins, &own, &fetch, log)
+                .map_err(|e| e.trim_start_matches("\n  • ").to_string())?;
+            own
         } else {
-            match resolved? {
-                sources::Resolved::Folder(dir) => dir,
-                sources::Resolved::NotFound(checked) => {
-                    let not_found = sources::not_found(&version, &checked, minecraft);
-                    download_for_owner(&pins, &own, &fetch, log).map_err(|e| not_found + &e)?;
-                    own
+            let resolved = sources::resolve(minecraft, &pins, &known, &linked, &fetch, log);
+            if reused {
+                assets_folder(resolved, &chosen, &version, log)
+            } else {
+                match resolved? {
+                    sources::Resolved::Folder(dir) => dir,
+                    sources::Resolved::NotFound(checked) => {
+                        let not_found = sources::not_found(&version, &checked, minecraft);
+                        download_for_owner(&pins, &own, &fetch, log).map_err(|e| not_found + &e)?;
+                        own
+                    }
                 }
             }
         }
@@ -1857,6 +2078,72 @@ pub fn remove_version(tag: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// How many of the newest release versions stay installed when the player has not said.
+const KEEP_NEWEST: usize = 2;
+
+/// The release versions to delete: all but the `keep` newest of `installed` (newest first), and
+/// never one of `protected`. Nightly builds are left out: `nightly::after_update` removes the
+/// older ones.
+fn stale_versions(installed: &[String], keep: usize, protected: &[String]) -> Vec<String> {
+    installed
+        .iter()
+        .filter(|t| is_game_tag(t))
+        .skip(keep)
+        .filter(|t| !protected.contains(t))
+        .cloned()
+        .collect()
+}
+
+/// Whether a running program was started from the version's folder: the game and a server take
+/// their program and `--resources` from it. Windows refuses to delete a running program's files,
+/// so there the delete itself fails. With no answer from `ps` the version counts as running.
+#[cfg(unix)]
+fn in_use(tag: &str) -> bool {
+    let dir = format!("{}/", version_dir(tag).display());
+    Command::new("ps")
+        .args(["-A", "-ww", "-o", "args="])
+        .output()
+        .ok()
+        .is_none_or(|out| String::from_utf8_lossy(&out.stdout).contains(&dir))
+}
+
+#[cfg(not(unix))]
+fn in_use(_tag: &str) -> bool {
+    false
+}
+
+/// Deletes the release versions nothing needs after an install or update, unless the player
+/// turned that off: all but the newest few (`Settings::keep_newest`), the selected version, the
+/// ones instances pin and the ones a program is running from. A version that does not delete
+/// is logged and the rest still go. Returns the versions deleted. They install again from GitHub.
+pub fn prune_old_versions() -> Vec<String> {
+    let settings = Settings::load();
+    if !settings.auto_prune() {
+        return Vec::new();
+    }
+    let mut protected: Vec<String> = settings.selected.iter().cloned().collect();
+    protected.extend(
+        crate::instances::list()
+            .into_iter()
+            .filter_map(|i| i.version),
+    );
+    let mut gone = Vec::new();
+    for tag in stale_versions(&installed(), settings.keep_newest(), &protected) {
+        if in_use(&tag) {
+            eprintln!("Keeping old version {tag}: the game is running from it.");
+            continue;
+        }
+        match remove(&tag) {
+            Ok(()) => {
+                eprintln!("Removed old version {tag}.");
+                gone.push(tag);
+            }
+            Err(e) => eprintln!("Could not remove old version {tag}: {e}"),
+        }
+    }
+    gone
+}
+
 /// The Minecraft folder to prepare from: the one given, the one chosen in the launcher, or the
 /// official launcher's default. It may be absent when imported files can be reused.
 pub fn minecraft_dir(requested: Option<PathBuf>) -> Result<PathBuf, String> {
@@ -1880,21 +2167,32 @@ pub fn need_prepared(tag: &str) -> Result<(), String> {
         Ok(())
     } else {
         Err(format!(
-            "{tag} is not prepared yet. Prepare it first (it needs your own Minecraft {}).",
-            game_version(tag)
+            "{tag} is not prepared yet. Prepare it first: `horizon-launcher prepare --version {tag}` \
+             uses your own Minecraft {v}, or downloads it from Mojang for the signed-in account \
+             that owns it.",
+            v = game_version(tag)
         ))
     }
 }
 
-/// The client's command, once its resources are prepared.
+/// The client's command, once the owner gate lets it start and its resources are prepared. Past
+/// the gate, a sign-in that can't be renewed (no network, expired) still lets the game start,
+/// offline.
 pub fn client(tag: &str) -> Result<Command, String> {
+    let (session, offline) = account::session_for_game(&game_home(), false)
+        .map_err(|refused| format!("{refused} Sign in with `horizon-launcher account sign-in`."))?;
     need_prepared(tag)?;
     complete_assets(tag);
     crate::browser::horizon::before_play(&game_home());
     let mut cmd = client_command(tag);
-    // A sign-in that can't be renewed (no network, expired) still lets the game start, offline.
-    if let Err(e) = crate::account::attach_session(&mut cmd, &game_home()) {
+    if let Some(file) = session {
+        cmd.arg("--session-file").arg(file);
+    }
+    if let Some(e) = offline {
         eprintln!("Playing offline: {e}");
+    }
+    if let Some(e) = account::take_unsaved() {
+        eprintln!("{e}");
     }
     append_game_args(&mut cmd);
     Ok(cmd)
@@ -2014,12 +2312,15 @@ pub struct Updates {
     pub launcher: Option<Release>,
 }
 
-/// The newest Horizon release with a build here, if it is newer than every installed version.
+/// The newest Horizon build with a build here (the current Nightly), if it isn't installed and
+/// no installed version is newer. Two Nightlies of one day compare equal: the one on GitHub is
+/// the update.
 pub fn horizon_update(releases: &[Release], installed: &[String]) -> Option<Release> {
     let newest = latest(releases)?;
-    let newer = installed
-        .iter()
-        .all(|t| compare_versions(&newest.tag, t).is_gt());
+    let newer = !installed.contains(&newest.tag)
+        && installed
+            .iter()
+            .all(|t| compare_versions(&newest.tag, t).is_ge());
     newer.then(|| newest.clone())
 }
 
@@ -2059,7 +2360,7 @@ fn releases_and_updates_with(
             return Err(e);
         }
     };
-    let releases = parse_releases(&list, ASSET, is_game_tag);
+    let releases = game_releases(&list);
     let horizon = horizon_update(&installable_updates(&releases), &installed());
     on_releases(Ok(releases));
     Ok(Updates {
@@ -2073,12 +2374,18 @@ pub fn check_updates() -> Result<Updates, String> {
     releases_and_updates(|_| {})
 }
 
-/// Whether a version installed as an update becomes the selected one: only when the player was
-/// on the newest installed version before (or had none).
+/// Whether a version installed as an update becomes the selected one: when the player had none,
+/// was on a Nightly, or on the newest installed release (so a player of the release channel moves
+/// to the Nightly at the first check, docs/release-flow.md). An older release picked by hand
+/// stays; an instance pinned to a version keeps it either way.
 pub fn select_after_update(selected: Option<&str>, installed_before: &[String]) -> bool {
     match selected {
         None => true,
-        Some(s) => installed_before.first().is_none_or(|newest| newest == s),
+        Some(s) if crate::nightly::date_of(s).is_some() => true,
+        Some(s) => installed_before
+            .iter()
+            .find(|t| is_game_tag(t))
+            .is_none_or(|newest| newest == s),
     }
 }
 
@@ -2107,6 +2414,10 @@ pub fn install_tag(tag: &str, as_update: bool, progress: impl Fn(f32)) -> Result
         settings.selected = Some(release.tag.clone());
         settings.save();
     }
+    if as_update && release.nightly.is_some() {
+        crate::nightly::after_update(&release.tag);
+    }
+    prune_old_versions();
     Ok(release.tag.clone())
 }
 
@@ -2432,28 +2743,44 @@ pub enum Msg {
     Installed(String, Result<(), String>),
     /// A version's files are gone (or could not be deleted).
     Removed(String, Result<(), String>),
+    /// `prune_old_versions` ended; these versions were deleted.
+    Pruned(Vec<String>),
+    /// What each installed version takes on disk (`disk_use`).
+    DiskUse(Vec<(String, u64)>),
     Line(Job, String),
     Exit(Job, Result<(), String>),
-    Updates(Result<Updates, String>),
+    /// Boxed: two releases, the largest message by far.
+    Updates(Result<Box<Updates>, String>),
     LauncherProgress(f32),
     LauncherUpdated(Result<(), String>),
     /// `reuse_prepared_everywhere` prepared these versions.
     Reused(Vec<(String, String)>),
-    /// Whether secrets are kept in the OS keychain (else only until the launcher closes).
-    Keychain(bool),
-    /// The selected account's session file for the game about to start (none = offline), or
-    /// why it could not be renewed.
-    Session(Result<Option<PathBuf>, String>),
+    /// None when secrets are kept in the OS keychain, else what to say: they last only until
+    /// the launcher closes, and why.
+    Keychain(Option<String>),
+    /// Whether an account in the launcher owned the game at its last check (the owner gate).
+    Owner(bool),
+    /// The owner gate's answer for the game about to start: the selected account's session
+    /// file (none = offline) and why it plays offline, if it does.
+    Session(Result<(Option<PathBuf>, Option<String>), crate::account::NoOwner>),
     /// A modpack step's line (`modpacks`).
     PackLine(String),
     /// A modpack step ended: the pack as it now is.
     PackDone(Result<Box<crate::modpacks::Imported>, String>),
     /// How many play Horizon now, or none when the server can't be reached (`telemetry`).
     Playing(Option<u64>),
-    /// The nightly being installed, done this far (`nightly`).
-    NightlyProgress(f32),
-    /// A nightly check ended: the version installed (None: already up to date), or why not.
-    Nightly(Result<Option<String>, String>),
+    /// Where the native-mods build is (`native_mods::Step::label`).
+    NativeProgress(String),
+    /// The native-mods build ended: the version built, or why not.
+    Native(Result<String, String>),
+    /// A Java instance's game is ready to start (`java_game`, wrapped): the instance's id and
+    /// game folder, and the command or why not.
+    /// A Java instance's game ready to start, and its variables for the post-exit command.
+    JavaGame(
+        String,
+        PathBuf,
+        Result<(Command, crate::launch::Vars), String>,
+    ),
 }
 
 /// A running process; its output arrives as `Msg::Line`, its end as `Msg::Exit`.
@@ -2590,6 +2917,13 @@ pub struct Settings {
     /// `auto_install` (off by default) for everyone, so this is a new key and that one is ignored.
     #[serde(default)]
     pub install_new_versions: Option<bool>,
+    /// Unset means on: after an install the launcher deletes the release versions nothing needs
+    /// (`prune_old_versions`). Only a player who turned it off has `false` here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prune_old_versions: Option<bool>,
+    /// How many of the newest release versions pruning keeps. Unset means [`KEEP_NEWEST`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keep_versions: Option<usize>,
     /// Off by default, so the opening animation shows unless the player turns it off.
     #[serde(default)]
     pub skip_opening: bool,
@@ -2612,6 +2946,10 @@ pub struct Settings {
     /// first-run question, or on the Play page once if they answered that before it existed.
     #[serde(default)]
     pub ping_notice_seen: bool,
+    /// The player without an account that owns the game has read, once, why the launcher needs
+    /// one now (the owner gate's screen).
+    #[serde(default)]
+    pub owner_notice_seen: bool,
     /// Seconds the sidebar's partner banner has been on screen, over every start, up to
     /// `partner::SEEN_BEFORE_HIDE`: only then can the player hide it.
     #[serde(default)]
@@ -2632,10 +2970,20 @@ pub struct Settings {
     /// The window's language. Unset follows the system's (`i18n::Language::system`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub language: Option<crate::i18n::Language>,
-    /// The player turned Nightly on (`nightly`): the nightly build installs and updates in its own
-    /// instance. Off by default.
+    /// Native mods (experimental) are on (`native_mods`): mixin mods compiled into a game of
+    /// their own. Off until the player installs a native mod (`native_mods::turns_on`), or turns
+    /// them on in Settings.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub nightly: bool,
+    pub native_mods: bool,
+    /// The player has read what installing a native mod starts (`native_mods::needs_notice`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub native_mods_noticed: bool,
+    /// Developer options (hidden: seven clicks on the sidebar's launcher version reveal them):
+    /// offline names play without an account that owns the game, in the window only
+    /// (`account::Accounts::play_as_with`, `account::launch_for_game`). Never a download: the game still
+    /// comes from the player's own install. Off by default, and absent from the file while off.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub dev_offline: bool,
 }
 
 impl Settings {
@@ -2686,6 +3034,14 @@ impl Settings {
     pub fn auto_install(&self) -> bool {
         self.install_new_versions.unwrap_or(true)
     }
+    /// Whether old versions are deleted after an install.
+    pub fn auto_prune(&self) -> bool {
+        self.prune_old_versions.unwrap_or(true)
+    }
+    /// How many of the newest release versions pruning keeps: at least the newest.
+    pub fn keep_newest(&self) -> usize {
+        self.keep_versions.unwrap_or(KEEP_NEWEST).max(1)
+    }
     pub fn save(&self) {
         let _ = fs::create_dir_all(data_dir());
         let _ = fs::write(
@@ -2724,6 +3080,107 @@ mod tests {
         assert_eq!(program_mod_api_level(&old), 0);
         assert_eq!(program_mod_api_level(&dir.join("missing")), 0);
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The launcher downloads Mojang's game files (client jar, libraries, assets) only for an
+    /// account the services said owns the game: never without one, and never past the gate by
+    /// the developer option (`Settings::dev_offline`), whose pass has no owner.
+    #[test]
+    fn mojang_downloads_only_for_an_owner() {
+        let dir = std::env::temp_dir().join(format!("horizon-owner-only-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let pins = sources::Pins::read(&serde_json::json!({ "minecraft": {
+            "version": "26.3",
+            "client_sha1": "00",
+            "manifest_sha1": "00",
+        }}))
+        .unwrap();
+        let asked = std::sync::Mutex::new(Vec::<String>::new());
+        let fetch = |url: &str| -> Result<Vec<u8>, String> {
+            asked.lock().unwrap().push(url.to_string());
+            Err("no network in tests".into())
+        };
+        let log = |_: String| {};
+        let no_owner = || Ok(account::Launch::default());
+        for (pass, signed_in) in [
+            (Err(account::NoOwner), false),
+            (Err(account::NoOwner), true),
+            (no_owner(), false),
+            (no_owner(), true),
+        ] {
+            assert!(download_for(&pins, &dir, pass, signed_in, &fetch, &log).is_err());
+        }
+        assert!(asked.lock().unwrap().is_empty());
+        assert!(!dir.exists());
+        // An owner: Mojang is asked (and the download fails here, without network).
+        let owner = account::Account {
+            uuid: "069a79f444e94726a5befca90e38aaf5".into(),
+            name: "Notch".into(),
+            skin: None,
+            cape: None,
+        };
+        let secrets = serde_json::from_str(
+            r#"{"refresh_token":"r","minecraft_token":"t","minecraft_expires_at":1,"owns":true}"#,
+        )
+        .unwrap();
+        let pass = Ok(account::Launch {
+            owner: Some((owner, secrets)),
+            ..Default::default()
+        });
+        assert!(download_for(&pins, &dir, pass, true, &fetch, &log).is_err());
+        assert!(!asked.lock().unwrap().is_empty());
+        let _ = fs::remove_dir_all(&dir);
+
+        // In the sources: one call downloads the game, in `download_for`, and the only caller
+        // of that asks the strict gate. Game-file hosts appear nowhere else.
+        let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut files = vec![src.clone()];
+        let mut sources = Vec::new();
+        while let Some(path) = files.pop() {
+            if path.is_dir() {
+                files.extend(fs::read_dir(&path).unwrap().map(|e| e.unwrap().path()));
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                let name = path.file_name().unwrap().to_string_lossy().to_string();
+                let in_tests = name.contains("tests") || path.parent().unwrap() != src;
+                // The code alone: test modules (this one included) come after it.
+                // A Windows checkout has CRLF line ends: the searches below look for "\n".
+                let mut text = fs::read_to_string(&path).unwrap().replace("\r\n", "\n");
+                text.truncate(text.find("#[cfg(test)]").unwrap_or(text.len()));
+                sources.push((name, in_tests, text));
+            }
+        }
+        let calls: Vec<_> = sources
+            .iter()
+            .filter(|(_, tests, _)| !tests)
+            .flat_map(|(name, _, text)| {
+                text.matches("mojang::download(")
+                    .map(move |_| name.as_str())
+            })
+            .collect();
+        assert_eq!(calls, ["backend.rs"]);
+        let backend = &sources.iter().find(|(n, ..)| n == "backend.rs").unwrap().2;
+        let body = |f: &str| {
+            let start = backend.find(&format!("\nfn {f}(")).unwrap();
+            &backend[start..start + backend[start + 1..].find("\n}\n").unwrap()]
+        };
+        assert!(body("download_for").contains("mojang::download("));
+        assert!(body("download_for_owner").contains("account::launch("));
+        assert!(!body("download_for_owner").contains("launch_for_game("));
+        // `download_for` is defined once and called once, by `download_for_owner`.
+        assert_eq!(backend.matches("download_for(").count(), 2);
+        assert!(body("download_for_owner").contains("download_for("));
+        for host in [
+            "piston-data",
+            "libraries.minecraft.net",
+            "resources.download.minecraft.net",
+        ] {
+            for (name, tests, text) in &sources {
+                assert!(
+                    *tests || name == "mojang.rs" || !text.contains(host),
+                    "{name} names {host}"
+                );
+            }
+        }
     }
 
     /// A preparation that reuses the imported game files still reads the assets from the
@@ -3095,6 +3552,7 @@ mod tests {
             date: String::new(),
             asset: Some(("u".into(), 1)),
             prerelease: false,
+            nightly: None,
         };
         assert!(launcher_update(&[r(own_tag())]).is_none());
         assert_eq!(launcher_version(&own_tag()), Some(VERSION));
@@ -3135,6 +3593,7 @@ mod tests {
             date: String::new(),
             asset: Some(("u".into(), 1)),
             prerelease: false,
+            nightly: None,
         };
         let mut list = vec![
             r("launcher-v0.16.0"),
@@ -3301,6 +3760,7 @@ mod tests {
             date: String::new(),
             asset: Some(("u".into(), 1)),
             prerelease: false,
+            nightly: None,
         };
         let releases = [r("v2026.10.13"), r("v2026.10.12")];
         assert_eq!(
@@ -3315,6 +3775,83 @@ mod tests {
         assert!(select_after_update(Some("v2026.10.12"), &installed));
         assert!(!select_after_update(Some("v2026.10.1"), &installed));
         assert!(select_after_update(None, &installed));
+    }
+
+    /// The Nightly is the only build Horizon ships (docs/release-flow.md): every launcher takes the
+    /// current one as its update, over every release; the last week's are listed, never offered.
+    #[test]
+    fn every_launcher_updates_to_the_current_nightly() {
+        let asset = ASSET.unwrap_or("horizon-linux-x86_64.tar.gz");
+        let build = |url: &str| serde_json::json!([{"name": asset, "browser_download_url": url, "size": 1}]);
+        let list = serde_json::json!([
+            {"tag_name": "nightly", "name": "Nightly 2026-10-28 · 9b772b2", "prerelease": true,
+             "published_at": "2026-10-28T09:58:01Z", "assets": build("n")},
+            {"tag_name": "launcher@0.2.21", "assets": []},
+            {"tag_name": "v0.2.95", "assets": build("r")},
+            {"tag_name": "nightly-2026-10-28", "name": "Nightly 2026-10-28 · 83f15fa", "prerelease": true,
+             "published_at": "2026-10-28T07:54:57Z", "assets": build("d")},
+            {"tag_name": "nightly-2026-10-27", "name": "Nightly 2026-10-27 · 7954902", "prerelease": true,
+             "published_at": "2026-10-28T00:15:40Z", "assets": build("e")},
+        ]);
+        let releases = game_releases(&list);
+        let listed: Vec<_> = releases
+            .iter()
+            .map(|r| (r.tag.as_str(), r.nightly.as_deref(), r.prerelease))
+            .collect();
+        assert_eq!(
+            listed,
+            [
+                ("nightly-2026-10-28-9b772b2", Some("nightly"), false),
+                (
+                    "nightly-2026-10-28-83f15fa",
+                    Some("nightly-2026-10-28"),
+                    true
+                ),
+                (
+                    "nightly-2026-10-27-7954902",
+                    Some("nightly-2026-10-27"),
+                    true
+                ),
+                ("v0.2.95", None, false),
+            ]
+        );
+        let offered = |installed: &[&str]| {
+            let installed: Vec<String> = installed.iter().map(|t| t.to_string()).collect();
+            horizon_update(&installable_updates(&releases), &installed).map(|r| r.tag)
+        };
+        let current = Some("nightly-2026-10-28-9b772b2".to_string());
+        // A player of the release channel, a new player, one on an older Nightly of the same day.
+        assert_eq!(offered(&["v0.2.95", "v0.2.94"]), current);
+        assert_eq!(offered(&[]), current);
+        assert_eq!(offered(&["nightly-2026-10-28-83f15fa", "v0.2.95"]), current);
+        assert_eq!(offered(&["nightly-2026-10-28-9b772b2"]), None);
+        // Nightlies come after every release in every list.
+        assert!(compare_versions("nightly-2026-10-27-7954902", "v0.2.95").is_gt());
+        assert!(
+            compare_versions("nightly-2026-10-28-9b772b2", "nightly-2026-10-27-7954902").is_gt()
+        );
+    }
+
+    /// Players move to the Nightly at their next check: whoever was on the newest release, on a
+    /// Nightly, or on nothing. A release picked by hand stays picked.
+    #[test]
+    fn players_of_the_newest_release_move_to_the_nightly() {
+        let installed = [
+            "nightly-2026-10-27-7954902".to_string(),
+            "v0.2.95".into(),
+            "v0.2.90".into(),
+        ];
+        assert!(select_after_update(Some("v0.2.95"), &installed));
+        assert!(select_after_update(
+            Some("nightly-2026-10-27-7954902"),
+            &installed
+        ));
+        assert!(select_after_update(None, &installed));
+        assert!(!select_after_update(Some("v0.2.90"), &installed));
+        assert!(select_after_update(
+            Some("v0.2.95"),
+            &["v0.2.95".to_string()]
+        ));
     }
 
     #[test]
@@ -3712,6 +4249,10 @@ mod tests {
                 write(resources.join(RESOURCES_MANIFEST), b"{}");
                 write(resources.join("assets/minecraft/lang/en_us.json"), b"{}");
                 write(
+                    resources.join("assets/minecraft/lang/deprecated.json"),
+                    b"{}",
+                );
+                write(
                     resources
                         .join("assets")
                         .join(background)
@@ -3948,6 +4489,24 @@ mod tests {
         names.sort();
         assert_eq!(names, ["horizon-launcher", "new"]);
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn pruning_keeps_the_newest_and_the_protected() {
+        let tags = |t: &[&str]| t.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let installed = tags(&[
+            "v0.2.91", "v0.2.90", "v0.2.88", "v0.2.85", "v0.2.80", "nightly",
+        ]);
+        assert_eq!(
+            stale_versions(&installed, 2, &tags(&["v0.2.85"])),
+            tags(&["v0.2.88", "v0.2.80"])
+        );
+        // A protected version among the newest still leaves the newest `keep` in place.
+        assert_eq!(
+            stale_versions(&installed, 2, &tags(&["v0.2.91"])),
+            tags(&["v0.2.88", "v0.2.85", "v0.2.80"])
+        );
+        assert!(stale_versions(&installed, 9, &[]).is_empty());
     }
 
     #[test]

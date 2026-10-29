@@ -2,7 +2,7 @@
 
 Horizon's registry lists what is made for Horizon and reviewed: mods (`.hmod`), modpacks (`.hpack`), resource packs
 and Horizon shader packs (`.hshader`, [shaders.md](../shaders.md)). Submissions are pull requests in
-[ludovic111/horizon-mods](https://github.com/ludovic111/horizon-mods); merging one publishes it. The launcher and the
+[horizon-rust/horizon-mods](https://github.com/horizon-rust/horizon-mods); merging one publishes it. The launcher and the
 website read one file, `index.json`, which that repository's CI builds. The Rust types and every check below are
 `horizon_mods::index` and `horizon_mods::modpack` (feature `index`); the sample is
 `crates/horizon-mods/tests/index/index-v1.json`, read by the tests with the files it lists.
@@ -22,7 +22,7 @@ Level: preview ([stability.md](stability.md)). Schema 1.
     "versions": [{
       "version": "0.1.0", "published": "2026-10-24", "changelog": "",
       "api": "0.1", "side": "client", "capabilities": ["game-read", "hud", "chat"], "api_level": 0, "game": "26.3",
-      "file": { "name": "coords_hud-0.1.0.hmod", "url": "https://github.com/ludovic111/horizon-mods/releases/download/...",
+      "file": { "name": "coords_hud-0.1.0.hmod", "url": "https://github.com/horizon-rust/horizon-mods/releases/download/...",
                 "size": 438, "sha256": "e113...", "signature": "untrusted comment: ...\n...\ntrusted comment: ...\n...\n" }
     }]
   }],
@@ -96,7 +96,7 @@ them into the profile's game folder.
 
 ## The registry repository
 
-[ludovic111/horizon-mods](https://github.com/ludovic111/horizon-mods) holds one `mods/<id>.toml` per project, written by
+[horizon-rust/horizon-mods](https://github.com/horizon-rust/horizon-mods) holds one `mods/<id>.toml` per project, written by
 the submission form or by hand, and `revoked.toml`. What an entry can't vouch for is read from its file by the kind's
 own check (`index::inspect`): a mod's API, side and capabilities, a modpack's mods, the size. Types and rules:
 `horizon_mods::index::registry`.
@@ -154,7 +154,7 @@ How the repository runs (its workflows are in `.github/workflows/`):
   body's `<!-- submitted-by: … -->` line.
 - **Merging** needs the `check` run and a CODEOWNER's review. `publish.yml` then makes each new version a release
   `<id>-<version>` and deploys `index.json` and `icons/` to GitHub Pages:
-  `https://ludovic111.github.io/horizon-mods/index.json`, served with `Access-Control-Allow-Origin: *`.
+  `https://horizon-rust.github.io/horizon-mods/index.json`, served with `Access-Control-Allow-Origin: *`.
 - **Weekly**, `cleanup.yml` deletes staged copies of published files after 7 days and of files no open pull request
   lists after 30.
 - **Taking a file down** is a pull request adding it to `revoked.toml`. Removing an entry outright (a test, a project

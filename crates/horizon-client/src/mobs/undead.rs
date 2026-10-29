@@ -181,6 +181,17 @@ fn drowned_ok_target(m: &Mob, w: &super::MobWorld) -> bool {
 pub fn drowned_wants_to_swim(m: &Mob, w: &super::MobWorld) -> bool {
     m.extra.flag2 || m.target_info(w).is_some_and(|t| in_water_at(w, t.position))
 }
+/// `Drowned.updateSwimming`: swimming under water while it wants to. `flag`
+/// holds `isSwimming`, which clients take from the entity's shared flags.
+pub fn drowned_update_swimming(m: &mut Mob, w: &super::MobWorld) {
+    m.extra.flag =
+        !m.no_ai && m.was_eye_in_water && m.fluids.in_water && drowned_wants_to_swim(m, w);
+}
+/// A drowned on a client: `LivingEntity.updateSwimAmount` follows the
+/// swimming flag (`Drowned.isVisuallySwimming`).
+pub fn drowned_client_tick(m: &mut Mob) {
+    m.extra.swim.tick(m.extra.flag, m.fluids.in_water);
+}
 /// Drowned.DrownedMoveControl
 pub fn drowned_move_control(m: &mut Mob, w: &super::MobWorld) {
     let target = m.target_info(w);
@@ -553,9 +564,6 @@ fn skeleton_freezing(m: &mut Mob, cx: &mut Cx) {
     }
 }
 pub fn custom_server_ai_step(m: &mut Mob, cx: &mut Cx) {
-    if m.species() == Species::ZombieVillager {
-        super::zombie_villager::step(m, cx);
-    }
     if m.species() == Species::Skeleton && m.alive() && !m.no_ai {
         skeleton_freezing(m, cx);
     }

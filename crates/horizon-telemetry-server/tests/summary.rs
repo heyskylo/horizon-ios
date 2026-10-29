@@ -1,5 +1,5 @@
 //! `GET /v1/benchmarks/summary` against the shared fixtures (tests/fixtures/benchmarks/): the same uploads must
-//! give the groups the website's `scripts/benchmarks.mjs` (ludovic111/horizon-site) gives on its copy of them.
+//! give the groups the website's `scripts/benchmarks.mjs` (horizon-rust/horizon-site) gives on its copy of them.
 use std::sync::Arc;
 use std::sync::atomic::AtomicU32;
 

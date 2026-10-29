@@ -261,6 +261,21 @@ async fn an_address_is_rate_limited() {
         s.send(from("203.0.113.9, 198.51.100.7", None)).await.0,
         StatusCode::NO_CONTENT
     );
+    // Two IPv6 addresses of one /64 share a bucket; another /64 doesn't.
+    for forwarded in ["2001:db8::1", "2001:db8::2", "2001:db8::3"] {
+        assert_eq!(
+            s.send(from(forwarded, None)).await.0,
+            StatusCode::NO_CONTENT
+        );
+    }
+    assert_eq!(
+        s.send(from("2001:db8::ffff:ffff", None)).await.0,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    assert_eq!(
+        s.send(from("2001:db8:1::1", None)).await.0,
+        StatusCode::NO_CONTENT
+    );
 }
 
 #[tokio::test]

@@ -3,7 +3,7 @@
 The service behind the registry's submission form (`playhorizon.dev/mods/submit`). A creator signs in with GitHub and
 sends a file with its page; the service runs the file's own checks (`horizon_mods::index::inspect`, the signature, the
 entry's fields), uploads it to the `staging` release of
-[ludovic111/horizon-mods](https://github.com/ludovic111/horizon-mods) as `<sha256>.<extension>`, and opens a pull
+[horizon-rust/horizon-mods](https://github.com/horizon-rust/horizon-mods) as `<sha256>.<extension>`, and opens a pull
 request adding or updating `mods/<id>.toml`. That repository's CI checks it again, with a trial run of a mod in the
 sandbox; reviewers decide, and merging publishes. Formats and rules: [docs/api/mod-index.md](../../docs/api/mod-index.md).
 
@@ -43,7 +43,7 @@ REGISTRY_PUBLIC_URL=http://localhost:4173 REGISTRY_SESSION_KEY=... GITHUB_CLIENT
 | `REGISTRY_SESSION_KEY` | 32 characters or more, random: signs sessions |
 | `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` | The OAuth app |
 | `GITHUB_BOT_TOKEN` | Fine-grained, the registry repository only: Contents and Pull requests read and write |
-| `REGISTRY_REPO` | Default `ludovic111/horizon-mods` |
+| `REGISTRY_REPO` | Default `horizon-rust/horizon-mods` |
 | `REGISTRY_DB` | The ratings' SQLite file: default `/data/registry.sqlite3`, the volume |
 | `PORT` | Default 8080 |
 

@@ -1,6 +1,6 @@
 //! `GET /v1/benchmarks/summary`: players' benchmark uploads, grouped for the website's Benchmarks page.
 //!
-//! The same rules as the website's `scripts/benchmarks.mjs` (ludovic111/horizon-site; it builds the page's baked
+//! The same rules as the website's `scripts/benchmarks.mjs` (horizon-rust/horizon-site; it builds the page's baked
 //! copy), checked against the same fixtures (`tests/fixtures/benchmarks/`, which the site's test keeps a copy of):
 //!
 //! - Only reports that compare: `horizon-benchmark-report` version 1, kind `game`, Horizon or plain vanilla, the

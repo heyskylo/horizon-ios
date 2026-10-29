@@ -33,6 +33,16 @@ impl Pins {
         })
     }
 
+    /// Any version from Mojang's version list, by its id and its version file's sha1 (the
+    /// list's): the client's sha1 then comes from that checked version file.
+    pub fn for_version(id: &str, manifest_sha1: &str) -> Pins {
+        Pins {
+            version: id.to_string(),
+            client_sha1: String::new(),
+            manifests: vec![manifest_sha1.to_string()],
+        }
+    }
+
     fn manifest_accepted(&self, path: &Path) -> bool {
         sha1_file(path).is_some_and(|sha1| self.manifests.contains(&sha1))
     }
@@ -494,10 +504,17 @@ fn make_link(target: &Path, link: &Path) -> std::io::Result<()> {
 /// copy on another volume).
 #[cfg(windows)]
 fn make_link(target: &Path, link: &Path) -> std::io::Result<()> {
-    use std::os::windows::process::CommandExt;
     if !target.is_dir() {
         return fs::hard_link(target, link).or_else(|_| fs::copy(target, link).map(|_| ()));
     }
+    junction(target, link)
+}
+
+/// Makes `link` a junction to the folder `target` (no admin rights needed, unlike a symlink). The
+/// error carries cmd's own message ("Access is denied", "The system cannot find the path…").
+#[cfg(windows)]
+pub(crate) fn junction(target: &Path, link: &Path) -> std::io::Result<()> {
+    use std::os::windows::process::CommandExt;
     // Always quoted: cmd reads `&`, `^` or `(` in an unquoted path (a user folder may have
     // them) as its own syntax. A Windows path never holds a quote.
     let quoted = |path: &Path| {
@@ -506,16 +523,19 @@ fn make_link(target: &Path, link: &Path) -> std::io::Result<()> {
         arg.push("\"");
         arg
     };
-    let status = crate::process::command("cmd")
+    let out = crate::process::command("cmd")
         .args(["/C", "mklink", "/J"])
         .raw_arg(quoted(link))
         .raw_arg(quoted(target))
-        .stdout(std::process::Stdio::null())
-        .status()?;
-    match status.success() {
-        true => Ok(()),
-        false => Err(std::io::Error::other("mklink /J failed")),
+        .output()?;
+    if out.status.success() {
+        return Ok(());
     }
+    let why = String::from_utf8_lossy(&out.stderr);
+    Err(std::io::Error::other(match why.trim() {
+        "" => "mklink /J failed".to_string(),
+        why => format!("mklink /J failed: {why}"),
+    }))
 }
 
 #[cfg(test)]

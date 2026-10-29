@@ -30,7 +30,7 @@ description = "`/where` puts them in chat, `/coords` hides or shows the panel."
 authors = ["Horizon"]
 owners = ["ludovic111"]
 license = "MIT"
-source = "https://github.com/ludovic111/horizon/tree/main/crates/horizon-mod-sdk/examples/coords-hud"
+source = "https://github.com/horizon-rust/horizon/tree/main/crates/horizon-mod-sdk/examples/coords-hud"
 icon = "icons/coords_hud.png"
 key = "RWTVtuGb/GRXcBf3Re5hzM07EzoStr2sLTJjghJia0xX15ULoZRFFZDb"
 
@@ -52,7 +52,7 @@ summary = "Coordinates and a calm render distance."
 authors = ["Horizon"]
 owners = ["ludovic111"]
 license = "MIT"
-source = "https://github.com/ludovic111/horizon-mods"
+source = "https://github.com/horizon-rust/horizon-mods"
 
 [[versions]]
 version = "1.0.0"
@@ -69,7 +69,7 @@ summary = "A post-processing pass over the world."
 authors = ["Horizon"]
 owners = ["ludovic111"]
 license = "MIT"
-source = "https://github.com/ludovic111/horizon-mods"
+source = "https://github.com/horizon-rust/horizon-mods"
 
 [[versions]]
 version = "1.0.0"
@@ -123,7 +123,7 @@ impl Scratch {
             registry: &repo,
             files: &files,
             release: super::super::FILE_HOST,
-            site: "https://ludovic111.github.io/horizon-mods/",
+            site: "https://horizon-rust.github.io/horizon-mods/",
             generated: "2026-10-24T18:00:00Z".into(),
         })
     }
@@ -241,6 +241,33 @@ fn a_review_protects_published_files() {
 
     let r = review(&[], &[cozy], "newcomer");
     assert_eq!(r.notes, ["cozy: a new modpack by ludovic111"]);
+}
+
+#[test]
+fn a_mod_may_turn_native_once() {
+    let base: Entry = toml::from_str(&hud_entry()).unwrap();
+    let mut native = base.clone();
+    native.kind = Kind::NativeMod;
+    let mut next = native.versions[0].clone();
+    next.version = "2.0.0".into();
+    next.file = "coords_hud-2.0.0.hnmod".into();
+    native.versions.insert(0, next);
+    let r = review(
+        std::slice::from_ref(&base),
+        std::slice::from_ref(&native),
+        "ludovic111",
+    );
+    assert!(r.errors.is_empty(), "{r:?}");
+    assert!(r.notes.iter().any(|n| n.contains("turns native")), "{r:?}");
+    // Its .hmod versions are a WebAssembly mod's files; the new ones native.
+    assert_eq!(file_kind(&native, &native.versions[1]), Kind::Mod);
+    assert_eq!(file_kind(&native, &native.versions[0]), Kind::NativeMod);
+    // And never back.
+    let r = review(&[native], &[base], "ludovic111");
+    assert!(
+        r.errors.iter().any(|e| e.contains("kind can't change")),
+        "{r:?}"
+    );
 }
 
 #[test]

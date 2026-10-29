@@ -7,7 +7,7 @@ use serde_json::Value;
 use std::{collections::BTreeMap, path::Path};
 
 const API: &str = "https://api.modrinth.com/v2";
-pub(crate) const AGENT: &str = "ludovic111/horizon horizon-port-pack/0.1 (docs/modpacks.md)";
+pub(crate) const AGENT: &str = "horizon-rust/horizon horizon-port-pack/0.1 (docs/modpacks.md)";
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct Cache {

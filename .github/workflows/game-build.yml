@@ -37,9 +37,10 @@ permissions:
 jobs:
   exporters:
     # This runner holds the maintainer's own pinned Minecraft jars. Only our classes leave it. An untrusted build
-    # goes to the Mac mini runner that already runs pull requests' parity jobs (macOS + horizon-game:
-    # ludovics-mac-mini), never the release runner (MAC_RUNNER: ludovics-mac-mini-release) nor parity-main's.
-    runs-on: ${{ inputs.trusted && vars.MAC_RUNNER || fromJSON('["self-hosted", "macOS", "horizon-game"]') }}
+    # goes to the Mac mini's nightly runner (macOS + horizon-nightly: ludovics-mac-mini-nightly, beside the one that
+    # runs pull requests' parity jobs, so a nightly never waits behind their queue), never the release runner
+    # (MAC_RUNNER: ludovics-mac-mini-release) nor parity-main's.
+    runs-on: ${{ inputs.trusted && vars.MAC_RUNNER || fromJSON('["self-hosted", "macOS", "horizon-nightly"]') }}
     # Three full preparations (two isolated, one batched) besides the compile.
     timeout-minutes: 60
     steps:
@@ -103,7 +104,7 @@ jobs:
             mac: true
             dir: horizon-macos-arm64
             asset: horizon-macos-arm64.zip
-    runs-on: ${{ matrix.mac && (inputs.trusted && vars.MAC_RUNNER || fromJSON('["self-hosted", "macOS", "horizon-game"]')) || matrix.os }}
+    runs-on: ${{ matrix.mac && (inputs.trusted && vars.MAC_RUNNER || fromJSON('["self-hosted", "macOS", "horizon-nightly"]')) || matrix.os }}
     # Notarizing the zip can take a few minutes.
     timeout-minutes: ${{ matrix.mac && 60 || 40 }}
     env:
@@ -137,8 +138,7 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev libudev-dev
       - name: Build the client, horizon-ctl, horizon-prepare and horizon-server
-        # `horizon-client/mods`: every released game runs code mods (the feature is off in dev builds).
-        run: cargo build --release --locked --features horizon-client/mods -p horizon-client --bin horizon-client --bin horizon-ctl -p horizon-prepare --bin horizon-prepare -p horizon-server --bin horizon-server
+        run: cargo build --release --locked -p horizon-client --bin horizon-client --bin horizon-ctl -p horizon-prepare --bin horizon-prepare -p horizon-server --bin horizon-server
       - name: Every program the release folder takes was built
         run: |
           for binary in horizon-client horizon-ctl horizon-prepare horizon-server; do
@@ -266,9 +266,8 @@ jobs:
         run: |
           set -euo pipefail
           # After the client is packaged: target/release/horizon-client is rebuilt without the audio and
-          # controllers features, so it needs neither libasound nor libudev (minimal server images lack them),
-          # and with code mods like the client.
-          cargo build --release --locked -p horizon-client --no-default-features --features mods --bin horizon-client
+          # controllers features, so it needs neither libasound nor libudev (minimal server images lack them).
+          cargo build --release --locked -p horizon-client --no-default-features --bin horizon-client
           cargo run --locked -p xtask -- package-server target/release/horizon-client "dist/${{ matrix.server_dir }}"
           folder="dist/${{ matrix.server_dir }}"
           python3 tools/check_imports.py --server "$folder/horizon-engine" "$folder/horizon-server" "$folder/horizon-prepare"

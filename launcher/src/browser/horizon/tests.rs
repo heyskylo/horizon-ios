@@ -34,6 +34,39 @@ fn hud(index: &Index) -> Project {
 }
 
 #[test]
+fn native_registry_entries_are_mods_that_say_they_run_native_code() {
+    assert_eq!(kind_of(&index::Kind::NativeMod), Some(Kind::Mod));
+    let mut index = sample();
+    index.projects[0].kind = index::Kind::NativeMod;
+    let found = search(&index, &Query::new("", Kind::Mod));
+    assert!(found.iter().any(|p| p.id == index.projects[0].id));
+    let entry = |file: &str| {
+        serde_json::from_value::<installed::Entry>(serde_json::json!({
+            "source": "horizon", "project": "p", "slug": "p", "title": "P", "kind": "mod",
+            "version": "1", "number": "1", "file": file, "checksum": "", "page": ""
+        }))
+        .unwrap()
+    };
+    assert_eq!(
+        mod_id(&entry("horizon-native-mods/veinminer.hnmod")),
+        Some("veinminer")
+    );
+    assert_eq!(mod_id(&entry("horizon-mods/zoom.hmod")), Some("zoom"));
+}
+
+#[test]
+fn only_horizons_own_projects_go_without_the_not_endorsed_line() {
+    let mut p = sample().projects[0].clone();
+    p.authors = vec!["Horizon".into()];
+    p.source = "https://github.com/horizon-rust/horizon-mod-zoom".into();
+    assert!(official(&p));
+    p.source = "https://github.com/someone/horizon-mod-zoom".into();
+    assert!(!official(&p), "the name alone doesn't make it official");
+    p.authors = vec!["levzzz5154".into()];
+    assert!(!official(&p));
+}
+
+#[test]
 fn searches_by_kind_and_words() {
     let index = sample();
     let found = |text: &str, kind| -> Vec<String> {
@@ -105,6 +138,26 @@ fn installs_checked_turns_on_and_removes() {
     installed::remove(&home, "coords_hud").unwrap();
     assert!(!home.join("horizon-mods/coords_hud.hmod").exists());
     assert!(installed::Installed::load(&home).entries.is_empty());
+    fs::remove_dir_all(&home).unwrap();
+}
+
+#[test]
+fn a_mod_that_turned_native_keeps_its_hmod_until_removed() {
+    assert!(stays(true, "horizon-mods/coords_hud.hmod"));
+    assert!(!stays(false, "horizon-mods/coords_hud.hmod"));
+    assert!(!stays(true, "horizon-native-mods/coords_hud.hnmod"));
+    let index = sample();
+    let home = scratch("turned-native");
+    install_from(&index, true, None, &hud(&index), &home, &|_, _| {}).unwrap();
+    // As install_version leaves it after the native update.
+    let mut list = installed::Installed::load(&home);
+    list.entries[0].file = "horizon-native-mods/coords_hud.hnmod".into();
+    list.save(&home).unwrap();
+    fs::create_dir_all(home.join("horizon-native-mods")).unwrap();
+    fs::write(home.join("horizon-native-mods/coords_hud.hnmod"), "").unwrap();
+    installed::remove(&home, "coords_hud").unwrap();
+    assert!(!home.join("horizon-native-mods/coords_hud.hnmod").exists());
+    assert!(!home.join("horizon-mods/coords_hud.hmod").exists());
     fs::remove_dir_all(&home).unwrap();
 }
 

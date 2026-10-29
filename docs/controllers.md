@@ -25,7 +25,7 @@ Select/Start). No second windowing or event stack: gilrs is polled once per
 loop iteration next to winit's events.
 
 - The pure logic (mapping table, deadzones and curves, button edges, the
-  settings file, glyph choice) lives in `crates/horizon-client/src/gamepad.rs`
+  settings file, glyph choice) lives in `crates/horizon-client-input/src/gamepad.rs`
   and is unit-tested. The game owns a thin gilrs backend and applies actions.
 - Controller actions go through the same path a keyboard key takes after
   rebinding: an action names a vanilla key mapping (`key.jump`, `key.attack`,

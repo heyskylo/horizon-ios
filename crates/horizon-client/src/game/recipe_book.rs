@@ -180,6 +180,7 @@ impl Game<'_> {
         }
         let ctrl = self.has_control_down();
         let shift = self.has_shift_down();
+        let types_text = self.types_text();
         let Some(search) = self.recipe_ui.search.as_mut() else {
             return;
         };
@@ -188,7 +189,7 @@ impl Game<'_> {
             _ => false,
         };
         if !handled
-            && !ctrl
+            && types_text
             && let Some(text) = &event.text
         {
             let text: String = text.chars().filter(|c| !c.is_control()).collect();
@@ -338,8 +339,7 @@ impl Game<'_> {
         ui.client_known = Some(known.clone());
         ui.client_version += 1;
     }
-    /// Every entry of the book, in its order (capability `recipes`).
-    #[cfg(feature = "mods")]
+    /// Every entry of the book, in its order (`native_recipes`).
     pub(super) fn recipe_book_entries(&mut self) -> Vec<Entry> {
         self.ensure_book();
         self.recipe_ui
@@ -348,8 +348,7 @@ impl Game<'_> {
             .map_or_else(Vec::new, |b| b.entries.clone())
     }
     /// The display ids the player's book holds, and a number that changes
-    /// whenever they do (capability `recipes`).
-    #[cfg(feature = "mods")]
+    /// whenever they do (`native_known_recipes`).
     pub(super) fn recipe_book_displays(&mut self) -> (u64, Vec<i32>) {
         self.sync_client_book();
         (
@@ -863,18 +862,16 @@ impl Game<'_> {
         self.recipe_ui.ghost.clear();
         self.place_recipe(book_type, entry_index, use_max);
     }
-    /// Whether the open screen takes `recipes.place`: a crafting grid's
+    /// Whether the open screen takes `native_place_recipe`: a crafting grid's
     /// book (the inventory's or a crafting table's).
-    #[cfg(feature = "mods")]
     pub(super) fn mod_recipe_screen(&self) -> bool {
         self.screen == Screen::Inventory
             && self.active_book() == Some(BookType::Crafting)
             && !self.spectator()
     }
-    /// `recipes.place`: the book's click on the recipe with this display
+    /// `native_place_recipe`: the book's click on the recipe with this display
     /// id, refused as `handlePlaceRecipe` refuses it (no crafting screen,
     /// not in the player's book; an impossible one in `place_recipe`).
-    #[cfg(feature = "mods")]
     pub(super) fn mod_place_recipe(&mut self, display_id: i32, all: bool) {
         if !self.mod_recipe_screen() || !self.recipe_ui.client.displays().contains(&display_id) {
             return;

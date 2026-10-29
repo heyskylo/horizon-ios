@@ -35,6 +35,25 @@ pub fn op_warning(stack: &crate::items::ItemStack) -> bool {
     data(stack).is_some_and(|(id, _)| OP_ONLY.contains(&id.as_str()))
 }
 
+/// `SpawnEggItem.shouldPrintOpWarning` for a player with game master
+/// permission: a spawn egg carries data of an op-only entity type
+/// (`EntityTypes.OP_ONLY_CUSTOM_DATA`).
+pub fn spawn_egg_op_warning(stack: &crate::items::ItemStack) -> bool {
+    stack.item.ends_with("_spawn_egg")
+        && matches!(
+            stack
+                .data()
+                .and_then(|d| d.other("minecraft:entity_data"))
+                .and_then(|data| data.get("id")),
+            Some(Tag::String(id)) if matches!(
+                id.to_string_lossy().as_str(),
+                "minecraft:falling_block"
+                    | "minecraft:command_block_minecart"
+                    | "minecraft:spawner_minecart"
+            )
+        )
+}
+
 /// `Spawner.getSpawnEntityDisplayName` (`SpawnData.entity.id` of the item's
 /// data, which `ItemStack.addDetailsToTooltip` reads for spawners and trial
 /// spawners alike): the entity type a spawner item spawns.

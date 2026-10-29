@@ -75,7 +75,8 @@ impl Config {
             session_key: key.into_bytes(),
             github: GitHub::new(
                 github::Endpoints::default(),
-                std::env::var("REGISTRY_REPO").unwrap_or_else(|_| "ludovic111/horizon-mods".into()),
+                std::env::var("REGISTRY_REPO")
+                    .unwrap_or_else(|_| "horizon-rust/horizon-mods".into()),
                 var("GITHUB_CLIENT_ID")?,
                 var("GITHUB_CLIENT_SECRET")?,
                 var("GITHUB_BOT_TOKEN")?,

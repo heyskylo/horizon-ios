@@ -4,12 +4,12 @@
     nightly_set.py command     one `/nightly …` comment (nightly-command.yml): checks who asked, updates the set,
                                starts the build and answers in the thread
 
-A comment by Ludovic or by a login in .github/nightly-reviewers.txt, on any issue or pull request:
+A comment by Ludovic or by a login in .github/trusted-reviewers.txt, on any issue or pull request:
 
     /nightly 2640 2642     the set becomes these pull requests, merged onto main in this order; builds now
     /nightly add 2650      adds one, or takes its newest head again; builds now
     /nightly remove 2640   drops one; builds now. Ludovic's remove also keeps reviewers from adding it back
-    /nightly clear         empties the set: the Nightly is the proven union or main again; builds now
+    /nightly clear         empties the set: the Nightly is main alone again; builds now
     /nightly status        what the set holds
     /nightly dry-run 2640  builds main + these and signs with a throwaway key; publishes nothing, the set stays
 
@@ -35,7 +35,7 @@ from pathlib import Path
 from typing import Callable
 
 OWNER = "ludovic111"
-REVIEWERS = ".github/nightly-reviewers.txt"
+REVIEWERS = ".github/trusted-reviewers.txt"
 CODEOWNERS = ".github/CODEOWNERS"
 # What CODEOWNERS guards today, refused even if the file moved: what builds, signs and checks releases.
 ALWAYS_GUARDED = ["/.github/", "/tools/ci/", "/crates/horizon-release-sign/", "/crates/horizon-server/src/update.rs",
@@ -43,7 +43,7 @@ ALWAYS_GUARDED = ["/.github/", "/tools/ci/", "/crates/horizon-release-sign/", "/
 STATE_BRANCH = "nightly-state"
 BUILD_PREFIX = "nightly/build-"
 MAX_PRS = 30
-MAX_BUILDS_PER_DAY = 6
+MAX_BUILDS_PER_DAY = 12
 BOT = ("github-actions[bot]", "41898283+github-actions[bot]@users.noreply.github.com")
 # Git never runs anything of the merged commits; these make sure nothing of the runner's either.
 SAFE_GIT = ["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "-c", "merge.renormalize=false"]
@@ -157,10 +157,21 @@ class PullRequest:
     author: str
     base: str
     files: list[str]
+    approvals: dict[str, str] = field(default_factory=dict)  # login (lowercase) -> the head their approval is on
 
 
-def check(pr: PullRequest | None, number: int, patterns: list[str]) -> str | None:
-    """Why `pr` can't go in a Nightly, or None."""
+def approvers(pr: PullRequest, head: str, team: set[str]) -> list[str]:
+    """Who approved `pr` at exactly `head`: a trusted reviewer, or Ludovic (his own review or his agents', which post
+    as ludovic111), never its author. A Nightly reaches every player (Ludovic, 2026-10-28): nothing goes in that the
+    Team or the agents haven't reviewed, and a push after the review needs a new one."""
+    ok = {t.lower() for t in team} | {OWNER}
+    return sorted(login for login, sha in pr.approvals.items()
+                  if sha == head and login in ok and login != pr.author.lower())
+
+
+def check(pr: PullRequest | None, number: int, patterns: list[str], team: set[str] | None = None) -> str | None:
+    """Why `pr` can't go in a Nightly, or None. `team`: the trusted reviewers, whose approval (or Ludovic's) it needs
+    at its head; None skips that, for a dry run, which publishes nothing."""
     if pr is None:
         return f"#{number} isn't a pull request here"
     if pr.state != "open":
@@ -171,6 +182,9 @@ def check(pr: PullRequest | None, number: int, patterns: list[str]) -> str | Non
     if bad:
         more = f" and {len(bad) - 1} more" if len(bad) > 1 else ""
         return f"#{number} changes `{bad[0]}`{more}, which only Ludovic merges (CODEOWNERS)"
+    if team is not None and not approvers(pr, pr.head, team):
+        return (f"#{number} has no approving review at its head {pr.head[:7]} from the Team or Ludovic's agents "
+                "(not its author)")
     return None
 
 
@@ -194,7 +208,7 @@ def plain(text: str) -> str:
 
 def describe(prs: list[dict], heading: str = "The set") -> str:
     if not prs:
-        return "The set is empty: the Nightly is the newest proven union, or main."
+        return "The set is empty: the Nightly is main alone."
     lines = [f"{heading} ({len(prs)}), merged onto main in this order:"]
     lines += [f"- #{e['number']} {plain(e['title'])} (by {e['author']}, at {e['head'][:7]}, asked by "
               f"{e['asked_by']})" for e in prs]
@@ -202,7 +216,7 @@ def describe(prs: list[dict], heading: str = "The set") -> str:
 
 
 def apply(state: dict, cmd: Command, login: str, now: str, lookup: Callable[[int], PullRequest | None],
-          patterns: list[str]) -> Result:
+          patterns: list[str], team: set[str] = frozenset()) -> Result:
     """What `cmd` by `login` makes of `state` (set.json). Pure but for `lookup`; raises Refused."""
     st = copy.deepcopy(state)
     prs: list[dict] = st.setdefault("prs", [])
@@ -227,7 +241,7 @@ def apply(state: dict, cmd: Command, login: str, now: str, lookup: Callable[[int
         problems, asked = [], []
         for n in cmd.prs:
             pr = lookup(n)
-            if why := check(pr, n, patterns):
+            if why := check(pr, n, patterns, None if cmd.verb == "dry-run" else team):
                 problems.append(why)
             else:
                 asked.append(entry(pr, login, now))
@@ -448,7 +462,16 @@ def lookup(repo: str) -> Callable[[int], PullRequest | None]:
         files = gh("api", "--paginate", f"repos/{repo}/pulls/{n}/files", "--jq",
                    ".[] | .filename, (.previous_filename // empty)").splitlines()
         state = "merged" if p.get("merged_at") else p["state"]
-        return PullRequest(n, state, p["head"]["sha"], p["title"], p["user"]["login"], p["base"]["ref"], files)
+        approvals: dict[str, str] = {}  # each reviewer's last say: an approval, or a change request or dismissal
+        for r in json.loads(gh("api", "--paginate", "--slurp", f"repos/{repo}/pulls/{n}/reviews") or "[]"):
+            for review in r if isinstance(r, list) else [r]:
+                who = (review.get("user") or {}).get("login", "").lower()
+                if review.get("state") == "APPROVED":
+                    approvals[who] = review.get("commit_id", "")
+                elif review.get("state") in ("CHANGES_REQUESTED", "DISMISSED"):
+                    approvals.pop(who, None)
+        return PullRequest(n, state, p["head"]["sha"], p["title"], p["user"]["login"], p["base"]["ref"], files,
+                           approvals)
     return get
 
 
@@ -499,7 +522,7 @@ def command() -> None:
         results: list[Result] = []
 
         def change(state: dict, builds: str):
-            result = apply(state, cmd, login, now, lookup(repo), patterns)
+            result = apply(state, cmd, login, now, lookup(repo), patterns, read_reviewers(reviewers).logins)
             results.append(result)
             if result.state is state:  # status, dry run: nothing to save
                 return None

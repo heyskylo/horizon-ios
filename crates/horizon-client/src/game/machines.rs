@@ -109,16 +109,6 @@ fn offset(p: Pos, d: Direction) -> Pos {
     let s = step(d);
     (p.0 + s[0], p.1 + s[1], p.2 + s[2])
 }
-fn clockwise(d: Direction) -> Direction {
-    match d {
-        Direction::North => Direction::East,
-        Direction::East => Direction::South,
-        Direction::South => Direction::West,
-        Direction::West => Direction::North,
-        other => other,
-    }
-}
-
 /// State-level container queries shared by the game and comparator signals.
 struct Containers<'a> {
     world: &'a World,
@@ -176,7 +166,7 @@ impl Containers<'_> {
             _ => Kind::Generic,
         };
         let size = entity.slots().len();
-        if matches!(name, "minecraft:chest" | "minecraft:trapped_chest") {
+        if horizon_client::containers::is_chest_block(name) {
             let is_blocked = |p: Pos| {
                 let above = self.world.block(p.0, p.1 + 1, p.2);
                 self.behaviours.facts(above).flags
@@ -186,22 +176,19 @@ impl Containers<'_> {
             if blocked_chests && is_blocked(pos) {
                 return None;
             }
-            let kind_prop = self.prop(state, "type").unwrap_or("single");
-            if kind_prop != "single"
-                && let Some(facing) = self.prop(state, "facing").and_then(dir_from_name)
+            let half = |s: BlockStateId| {
+                Some(horizon_client::containers::ChestHalf {
+                    block: self.name(s),
+                    kind: self.prop(s, "type")?,
+                    facing: self.prop(s, "facing")?,
+                })
+            };
+            if let Some(own) = half(state)
+                && let Some((dx, dz)) = own.connected_step()
             {
-                // ChestBlock.getConnectedDirection
-                let connected = if kind_prop == "left" {
-                    clockwise(facing)
-                } else {
-                    clockwise(clockwise(clockwise(facing)))
-                };
-                let other = offset(pos, connected);
+                let other = (pos.0 + dx, pos.1, pos.2 + dz);
                 let other_state = self.world.block(other.0, other.1, other.2);
-                let paired = self.name(other_state) == name
-                    && self
-                        .prop(other_state, "type")
-                        .is_some_and(|t| t != "single" && t != kind_prop)
+                let paired = half(other_state).is_some_and(|o| own.pairs_with(&o))
                     && self
                         .world
                         .block_entities
@@ -211,7 +198,7 @@ impl Containers<'_> {
                     if blocked_chests && is_blocked(other) {
                         return None;
                     }
-                    let parts = if kind_prop == "right" {
+                    let parts = if own.kind == "right" {
                         vec![(pos, size), (other, 27)]
                     } else {
                         vec![(other, 27), (pos, size)]
@@ -595,6 +582,18 @@ impl Game<'_> {
     /// `HopperBlockEntity.pushItemsTick` of the hopper at `pos`, if its block
     /// is still a hopper (`BlockEntityType.isValid`).
     pub(super) fn tick_hopper(&mut self, pos: Pos) {
+        let time = self.world.game_time;
+        let waiting = {
+            let state = self.hoppers.entry(pos).or_default();
+            state.cooldown -= 1;
+            state.ticked = time;
+            state.cooldown > 0
+        };
+        if waiting {
+            return;
+        }
+        // Most ticks only advance the cooldown: the block is checked when the
+        // hopper is about to move, not on every tick it waits.
         let hopper = self
             .res
             .facts()
@@ -606,14 +605,10 @@ impl Game<'_> {
             self.hoppers.remove(&pos);
             return;
         }
-        let time = self.world.game_time;
-        let state = self.hoppers.entry(pos).or_default();
-        state.cooldown -= 1;
-        state.ticked = time;
-        if state.cooldown <= 0 {
+        if let Some(state) = self.hoppers.get_mut(&pos) {
             state.cooldown = 0;
-            self.hopper_try_move_items(pos);
         }
+        self.hopper_try_move_items(pos);
     }
     /// Drops the cooldowns of hoppers whose block entity is gone.
     pub(super) fn forget_gone_hoppers(&mut self) {

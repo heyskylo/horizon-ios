@@ -3,6 +3,7 @@
 //! the rain, nor through a blocked front, unless the hive is emptied in an
 //! emergency), honey for every bee coming home with nectar. The host (the game
 //! or the mob AI probe) loads and adds the bees through [`HiveHost`].
+pub use crate::chunk::block_entity::{Beehive, Occupant};
 use crate::mobs::{Mob, Species, bee};
 use horizon_core::random::{LegacyRandom, RandomSource};
 use horizon_world::nbt::{Compound, Tag};
@@ -38,20 +39,6 @@ const IGNORED_BEE_TAGS: [&str; 25] = [
     "UUID",
 ];
 
-/// `BeehiveBlockEntity`: the bees inside and the flower one of them knew.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct Beehive {
-    pub bees: Vec<Occupant>,
-    pub flower: Option<[i32; 3]>,
-}
-/// `BeehiveBlockEntity.Occupant`: a bee's tag (with its `id`), its time in
-/// the hive and the time it stays at least.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Occupant {
-    pub entity_data: Tag,
-    pub ticks_in_hive: i32,
-    pub min_ticks_in_hive: i32,
-}
 /// `BeehiveBlockEntity.BeeReleaseStatus`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Release {
@@ -96,10 +83,19 @@ fn pos(tag: Option<&Tag>) -> Option<[i32; 3]> {
     }
 }
 
-impl Occupant {
+/// The bee occupant's codec and constructors, over the data in `chunk::block_entity`.
+pub trait OccupantExt: Sized {
     /// `Occupant.of`: the bee's saved tag without the ignored tags, staying
     /// 2400 ticks with nectar, else 600.
-    pub fn of(mut tag: Tag) -> Self {
+    fn of(tag: Tag) -> Self;
+    /// `Occupant.create`: a worldgen nest's bee, a bare bee tag.
+    fn create(ticks_in_hive: i32) -> Self;
+    fn has_nectar(&self) -> bool;
+    fn from_nbt(tag: &Tag) -> Option<Self>;
+    fn to_nbt(&self) -> Tag;
+}
+impl OccupantExt for Occupant {
+    fn of(mut tag: Tag) -> Self {
         if let Tag::Compound(c) = &mut tag {
             strip_ignored(c);
         }
@@ -110,8 +106,7 @@ impl Occupant {
             min_ticks_in_hive: if nectar { 2400 } else { 600 },
         }
     }
-    /// `Occupant.create`: a worldgen nest's bee, a bare bee tag.
-    pub fn create(ticks_in_hive: i32) -> Self {
+    fn create(ticks_in_hive: i32) -> Self {
         Self {
             entity_data: Tag::compound([("id", Tag::String("minecraft:bee".into()))]),
             ticks_in_hive,
@@ -141,13 +136,50 @@ impl Occupant {
     }
 }
 
-impl Beehive {
-    pub fn full(&self) -> bool {
-        self.bees.len() == MAX_OCCUPANTS
-    }
+/// `BeehiveBlockEntity`'s behaviour, over the data in `chunk::block_entity`.
+pub trait BeehiveExt: Sized {
+    fn full(&self) -> bool;
     /// `loadAdditional`: `bees` (all or none, as the list codec reads them)
     /// and `flower_pos`.
-    pub fn from_nbt(tag: &Tag) -> Self {
+    fn from_nbt(tag: &Tag) -> Self;
+    /// `saveAdditional`.
+    fn to_nbt(&self) -> Vec<(&'static str, Tag)>;
+    /// `addOccupant` (the bee's own tag, saved by the host): the hive keeps
+    /// the bee's flower, or now and then swaps its own for it. The host then
+    /// discards the bee.
+    fn add_occupant(
+        &mut self,
+        at: [i32; 3],
+        tag: Tag,
+        bee_flower: Option<[i32; 3]>,
+        host: &mut impl HiveHost,
+    ) -> bool;
+    /// `serverTick`: the bees whose time is up come out, then the hive
+    /// hums now and then while it holds any. `honey` is the hive state's
+    /// honey level as the tick starts (`None` without the property);
+    /// `facing` its front.
+    fn server_tick(
+        &mut self,
+        at: [i32; 3],
+        facing: [i32; 2],
+        honey: Option<i32>,
+        host: &mut impl HiveHost,
+    );
+    /// `releaseAllOccupants`: the ids of the bees let out.
+    fn release_all(
+        &mut self,
+        at: [i32; 3],
+        facing: [i32; 2],
+        honey: Option<i32>,
+        status: Release,
+        host: &mut impl HiveHost,
+    ) -> Vec<u32>;
+}
+impl BeehiveExt for Beehive {
+    fn full(&self) -> bool {
+        self.bees.len() == MAX_OCCUPANTS
+    }
+    fn from_nbt(tag: &Tag) -> Self {
         let bees = match tag.get("bees") {
             Some(Tag::List(list)) => list
                 .iter()
@@ -161,8 +193,7 @@ impl Beehive {
             flower: pos(tag.get("flower_pos")),
         }
     }
-    /// `saveAdditional`.
-    pub fn to_nbt(&self) -> Vec<(&'static str, Tag)> {
+    fn to_nbt(&self) -> Vec<(&'static str, Tag)> {
         let mut out = vec![(
             "bees",
             Tag::List(self.bees.iter().map(Occupant::to_nbt).collect()),
@@ -172,10 +203,7 @@ impl Beehive {
         }
         out
     }
-    /// `addOccupant` (the bee's own tag, saved by the host): the hive keeps
-    /// the bee's flower, or now and then swaps its own for it. The host then
-    /// discards the bee.
-    pub fn add_occupant(
+    fn add_occupant(
         &mut self,
         at: [i32; 3],
         tag: Tag,
@@ -195,11 +223,7 @@ impl Beehive {
         host.sound("block.beehive.enter", corner);
         true
     }
-    /// `serverTick`: the bees whose time is up come out, then the hive
-    /// hums now and then while it holds any. `honey` is the hive state's
-    /// honey level as the tick starts (`None` without the property);
-    /// `facing` its front.
-    pub fn server_tick(
+    fn server_tick(
         &mut self,
         at: [i32; 3],
         facing: [i32; 2],
@@ -236,8 +260,7 @@ impl Beehive {
             host.sound("block.beehive.work", hum);
         }
     }
-    /// `releaseAllOccupants`: the ids of the bees let out.
-    pub fn release_all(
+    fn release_all(
         &mut self,
         at: [i32; 3],
         facing: [i32; 2],

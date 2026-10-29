@@ -20,11 +20,11 @@
 # RUNNER_CPUS and RUNNER_MEMORY (GB): the slice's CPU quota and memory cap (default half the threads, two thirds of
 # the memory), for a machine that does nothing else. RUNNER_TOKEN: the registration (or, for uninstall, removal)
 # token, made with gh on another machine, where gh must not be logged in (a machine someone else also runs):
-#   RUNNER_TOKEN=$(gh api -X POST repos/ludovic111/horizon/actions/runners/registration-token --jq .token)
+#   RUNNER_TOKEN=$(gh api -X POST repos/horizon-rust/horizon/actions/runners/registration-token --jq .token)
 # Without Nix (Debian, Ubuntu), the packages come from apt (the list in system_packages) and python3.13 from the
 # PATH (uv python install 3.13, linked into ~/.local/bin).
 set -euo pipefail
-repo=ludovic111/horizon
+repo=horizon-rust/horizon
 dir=$HOME/.actions-runners/horizon
 units=${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user
 version=2.338.0

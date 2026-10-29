@@ -307,13 +307,13 @@ To turn it on, on the Mac mini (as Ludovic, once approved):
 
 ```sh
 # 1. The label publish files issues under (once):
-gh label create version-port --repo ludovic111/horizon --color 5319e7 \
+gh label create version-port --repo horizon-rust/horizon --color 5319e7 \
   --description "Work to port Horizon to a new Minecraft release (tools/version_port.py publish)"
 # 2. The script, as a copy from main (it updates its own worktree, so it never runs from a checkout):
-curl -fsSL https://raw.githubusercontent.com/ludovic111/horizon/main/tools/ci/version-port-daily.sh \
+curl -fsSL https://raw.githubusercontent.com/horizon-rust/horizon/main/tools/ci/version-port-daily.sh \
   -o ~/code/horizon-parity/version-port-daily.sh
 # 3. The agent:
-curl -fsSL https://raw.githubusercontent.com/ludovic111/horizon/main/tools/ci/dev.horizon.version-port.plist \
+curl -fsSL https://raw.githubusercontent.com/horizon-rust/horizon/main/tools/ci/dev.horizon.version-port.plist \
   | sed "s|@HOME@|$HOME|g" > ~/Library/LaunchAgents/dev.horizon.version-port.plist
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.horizon.version-port.plist
 # A run now, to see it work (log: ~/Library/Logs/horizon-version-port.log):

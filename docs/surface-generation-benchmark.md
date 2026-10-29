@@ -2,7 +2,7 @@
 
 The upstream PR contains only the surface change and tests, reapplied to upstream main. The measurements below were collected with #796 present; they are historical incremental measurements, not new timings for the rebased upstream head.
 
-This surface-only change is based on the bulk unary density optimization in [upstream PR #796](https://github.com/ludovic111/horizon/pull/796). Measurements compare against `eb3789038e3184c98a1459fe638947200217d360`, which already includes that optimization; its savings are not counted again.
+This surface-only change is based on the bulk unary density optimization in [upstream PR #796](https://github.com/horizon-rust/horizon/pull/796). Measurements compare against `eb3789038e3184c98a1459fe638947200217d360`, which already includes that optimization; its savings are not counted again.
 
 With one worker, primary initialized Overworld terrain time improved from 10.664 to 10.298 ms/input chunk (3.43%). Terrain plus decoration improved from 12.645 to 12.242 (3.19%). With four workers, terrain improved 2.48% and combined time 2.07%. Nether terrain improved 4.16% / 3.93% with one/four workers; combined improved 3.76% / 3.63%. The second Overworld site improved terrain 2.53% / 2.81%. End improved 2.95% with one worker but regressed 2.93% with four, with substantial paired noise. This meets the revised 3% median gate on selected representative cases, not the original 5% gate or every workload.
 

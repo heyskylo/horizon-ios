@@ -269,33 +269,30 @@ def parity_summary(output):
     return text
 
 
-# CI's verify job (.github/workflows/ci.yml): clippy over the whole workspace with the game's code mods, and over the
-# server build (the game without sound or controllers); tests with code mods and mod packaging.
-CI_CLIPPY = "cargo clippy --workspace --all-targets --locked --features horizon-client/mods -- -D warnings"
+# CI's verify job (.github/workflows/ci.yml): clippy over the whole workspace, and over the server build (the game
+# without sound or controllers); tests with mod packaging.
+CI_CLIPPY = "cargo clippy --workspace --all-targets --locked -- -D warnings"
 CI_CLIPPY_SERVER = "cargo clippy -p horizon-client --all-targets --locked --no-default-features -- -D warnings"
-CI_TEST_FEATURES = "horizon-client/mods,horizon-mods/pack"
+CI_TEST_FEATURES = "horizon-mods/pack"
 
 
 def mod_features(crates):
-    """The features CI's workspace-wide test run gives these crates (code mods are off by default: docs/mods.md).
-    Cargo unifies features over the packages it builds, so a crate tested alone needs the ones the workspace would
-    have turned on for it: horizon-client's code mods, and horizon-mods' runtime, packaging and index."""
+    """The features CI's workspace-wide test run gives these crates. Cargo unifies features over the packages it
+    builds, so a crate tested alone needs the ones the workspace would have turned on for it: horizon-mods' runtime,
+    packaging and index."""
     if crates is None:
         return f" --features {CI_TEST_FEATURES}"
     features = []
     if "horizon-mods" in crates:
         features += ["horizon-mods/runtime", "horizon-mods/pack", "horizon-mods/index"]
-    if "horizon-client" in crates:
-        features.append("horizon-client/mods")
     return f" --features {','.join(features)}" if features else ""
 
 
 # What horizon-client's full content-root tests load (mod_content_tests.rs). They take minutes on prepared data, so
 # they are #[ignore]d and run here only when one of these changes.
-CONTENT_ROOT = ("crates/horizon-client/src/mod_content", "crates/horizon-client/src/assets.rs",
-                "crates/horizon-client/src/blocks.rs", "crates/horizon-client/src/items.rs", "crates/horizon-items/",
+CONTENT_ROOT = ("crates/horizon-client/src/mod_content", "crates/horizon-client-render/src/assets.rs", "crates/horizon-items/",
                 "crates/horizon-mods/", "crates/horizon-assets/")
-CONTENT_ROOT_TESTS = "cargo test --locked -p horizon-client --features horizon-client/mods --lib mod_content::tests:: -- --ignored"
+CONTENT_ROOT_TESTS = "cargo test --locked -p horizon-client --lib mod_content::tests:: -- --ignored"
 
 
 def plan(args, base, changed, crates_of, libraries, dependencies):

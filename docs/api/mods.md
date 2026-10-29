@@ -27,7 +27,7 @@ the player before the mod is turned on, and checked against the component's real
 The step-by-step guide, from installing the tools to publishing on the registry, is
 [Make a mod](https://playhorizon.dev/docs/make-a-mod) on the website. In short:
 
-1. `rustup target add wasm32-unknown-unknown`, `cargo install --git https://github.com/ludovic111/horizon
+1. `rustup target add wasm32-unknown-unknown`, `cargo install --git https://github.com/horizon-rust/horizon
    cargo-horizon-mod`, then `cargo horizon-mod new my-mod` ([Making a mod](../mods.md#making-a-mod)).
 2. Implement `Mod` for your type, list the capabilities you import in `horizon-mod.toml`
    ([The manifest](../mods.md#the-manifest)).

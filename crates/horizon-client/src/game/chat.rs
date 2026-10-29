@@ -13,17 +13,20 @@ use horizon_client::{
     screen_draw::Measure,
     text::{ClickEvent, Style, Text},
 };
-use std::collections::BTreeMap;
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+    sync::{Arc, Mutex},
+};
 
 /// The tree the chat parses and completes with: a server's, once it has
 /// sent one (ClientPacketListener.commands), else the game's own.
-fn chat_tree<'a>(
-    remote: &'a Option<super::remote::Remote>,
-    mods: &'a super::mods::ModsState,
-) -> &'a horizon_client::command::Dispatcher {
+pub(super) fn chat_tree(
+    remote: &Option<super::remote::Remote>,
+) -> &horizon_client::command::Dispatcher {
     match remote.as_ref().and_then(|r| r.commands.as_ref()) {
-        Some(tree) => mods.remote_dispatcher().unwrap_or(tree),
-        None => mods.dispatcher(),
+        Some(tree) => tree,
+        None => horizon_client::command::vanilla::game_dispatcher(),
     }
 }
 use winit::{
@@ -124,6 +127,84 @@ impl UiState {
     }
 }
 
+/// The ids `build_registries` lists from the prepared resources' folders.
+/// The folders don't change while the game runs, so each root is read once
+/// instead of at every world opening (thousands of files).
+struct ResourceIds {
+    recipes: Vec<String>,
+    damage_types: Vec<String>,
+    loot_tables: Vec<String>,
+    templates: Vec<String>,
+}
+static RESOURCE_IDS: Mutex<Vec<(PathBuf, Arc<ResourceIds>)>> = Mutex::new(Vec::new());
+
+fn resource_ids(root: &Path) -> Arc<ResourceIds> {
+    let mut cache = RESOURCE_IDS.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((_, ids)) = cache.iter().find(|(cached, _)| cached == root) {
+        return ids.clone();
+    }
+    let data = root.join("data/minecraft");
+    let ids = Arc::new(ResourceIds {
+        recipes: ids_under(&data.join("recipe"), "json"),
+        damage_types: ids_under(&data.join("damage_type"), "json"),
+        loot_tables: ids_under(&data.join("loot_table"), "json"),
+        templates: templates_under(&root.join("worldgen/structure")),
+    });
+    cache.push((root.to_owned(), ids.clone()));
+    ids
+}
+
+/// The `minecraft:` ids of the `extension` files under `root`, sorted.
+fn ids_under(root: &Path, extension: &str) -> Vec<String> {
+    ids_in(root, extension, "minecraft")
+}
+
+/// The templates of every namespace folder under `root` (vanilla's and the
+/// content mods'), as `namespace:path`, sorted.
+fn templates_under(root: &Path) -> Vec<String> {
+    let Ok(namespaces) = std::fs::read_dir(root) else {
+        return Vec::new();
+    };
+    let mut out: Vec<String> = namespaces
+        .flatten()
+        .filter(|e| e.path().is_dir())
+        .flat_map(|e| ids_in(&e.path(), "nbt", &e.file_name().to_string_lossy()))
+        .collect();
+    out.sort();
+    out
+}
+
+/// The `namespace:` ids of the `extension` files under `root`, sorted.
+fn ids_in(root: &Path, extension: &str, namespace: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut stack = vec![root.to_owned()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for e in entries.flatten() {
+            let path = e.path();
+            // The listing's own type, without another look at each file; a
+            // link is followed, as `Path::is_dir` does.
+            let is_dir = e
+                .file_type()
+                .is_ok_and(|t| t.is_dir() || (t.is_symlink() && path.is_dir()));
+            if is_dir {
+                stack.push(path);
+            } else if path.extension().and_then(|x| x.to_str()) == Some(extension)
+                && let Ok(rel) = path.strip_prefix(root)
+            {
+                out.push(format!(
+                    "{namespace}:{}",
+                    rel.with_extension("").to_string_lossy().replace('\\', "/")
+                ));
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
 impl Game<'_> {
     /// `PlayerList.isOp` for the single-player owner: the world's Allow Commands.
     pub(super) fn allow_commands(&self) -> bool {
@@ -147,61 +228,11 @@ impl Game<'_> {
         let permission = owner_permission(self.allow_commands());
         let reg = &mut self.ui.registries;
         reg.permission = permission;
-        {
-            let dir = |sub: &str| -> Vec<String> {
-                let root = self.options.resources.join("data/minecraft").join(sub);
-                let mut out = Vec::new();
-                let mut stack = vec![root.clone()];
-                while let Some(d) = stack.pop() {
-                    let Ok(entries) = std::fs::read_dir(&d) else {
-                        continue;
-                    };
-                    for e in entries.flatten() {
-                        let p = e.path();
-                        if p.is_dir() {
-                            stack.push(p);
-                        } else if p.extension().and_then(|x| x.to_str()) == Some("json")
-                            && let Ok(rel) = p.strip_prefix(&root)
-                        {
-                            out.push(format!(
-                                "minecraft:{}",
-                                rel.with_extension("").to_string_lossy().replace('\\', "/")
-                            ));
-                        }
-                    }
-                }
-                out.sort();
-                out
-            };
-            self.ui.registries.recipes = dir("recipe");
-            self.ui.registries.damage_types = dir("damage_type");
-            self.ui.registries.loot_tables = dir("loot_table");
-            self.ui.registries.templates = {
-                let root = self.options.resources.join("worldgen/structure/minecraft");
-                let mut out = Vec::new();
-                let mut stack = vec![root.clone()];
-                while let Some(d) = stack.pop() {
-                    let Ok(entries) = std::fs::read_dir(&d) else {
-                        continue;
-                    };
-                    for e in entries.flatten() {
-                        let p = e.path();
-                        if p.is_dir() {
-                            stack.push(p);
-                        } else if p.extension().and_then(|x| x.to_str()) == Some("nbt")
-                            && let Ok(rel) = p.strip_prefix(&root)
-                        {
-                            out.push(format!(
-                                "minecraft:{}",
-                                rel.with_extension("").to_string_lossy().replace('\\', "/")
-                            ));
-                        }
-                    }
-                }
-                out.sort();
-                out
-            };
-        }
+        let ids = resource_ids(&self.options.resources);
+        self.ui.registries.recipes = ids.recipes.clone();
+        self.ui.registries.damage_types = ids.damage_types.clone();
+        self.ui.registries.loot_tables = ids.loot_tables.clone();
+        self.ui.registries.templates = ids.templates.clone();
         self.ui.registries.sounds = self.audio.event_names();
         self.ui.registries.attributes = [
             "armor",
@@ -416,9 +447,21 @@ impl Game<'_> {
             .map(|(k, _)| k.clone())
             .collect();
     }
-    /// The block the player is looking at, for coordinate suggestions.
+    /// The block the player is looking at, for coordinate suggestions, and
+    /// the entity, for entity arguments (ClientSuggestionProvider).
+    /// `ClientSuggestionProvider.getRelevantCoordinates` and
+    /// `getAbsoluteCoordinates` read `Minecraft.hitResult` only when it is a
+    /// block: an entity in front of the block leaves the `~` defaults.
     fn refresh_dynamic_registries(&mut self) {
-        self.ui.registries.target_block = self.pick().map(|h| h.pos);
+        let hit = if self.pick_entity_hit().is_some() {
+            None
+        } else {
+            self.pick()
+        };
+        self.ui.registries.target_block = hit.as_ref().map(|h| h.pos);
+        self.ui.registries.target_point =
+            hit.map(|h| h.point.map(horizon_client::java_text::format_fixed2));
+        self.ui.registries.selected_entities = self.crosshair_entity_uuid().into_iter().collect();
         // ClientPacketListener.getOnlinePlayerNames on a server.
         if let Some(names) = self.remote_online_names() {
             self.ui.registries.players = names;
@@ -436,7 +479,7 @@ impl Game<'_> {
         let b = HudBatch::new(size);
         let m = Measure(&self.gui.atlas.font);
         let c = Commands {
-            dispatcher: chat_tree(&self.remote, &self.mods),
+            dispatcher: chat_tree(&self.remote),
             registries: &self.ui.registries,
         };
         let mut screen = ChatScreen::new(
@@ -536,13 +579,12 @@ impl Game<'_> {
         }
     }
     /// A line on the window's own chat when the Chat option lets `source`
-    /// through; running mods hear it.
+    /// through.
     fn local_chat_line(&mut self, text: Text, indicator: Option<u32>, source: ChatSource) {
         if !self.ui.chat.shows(source) {
             return;
         }
         let focused = self.screen == Screen::Chat;
-        let heard = self.mods.running().then(|| text.plain());
         self.ui.chat.add(
             &self.gui.atlas,
             text,
@@ -551,16 +593,13 @@ impl Game<'_> {
             self.ticks,
             focused,
         );
-        if let Some(line) = heard {
-            self.mods_chat(&line);
-        }
     }
     /// Keys while the chat screen is open.
     pub(super) fn chat_key(&mut self, event: &KeyEvent) {
         if let Some(shortcut) = self.edit_shortcut(event) {
             let m = Measure(&self.gui.atlas.font);
             let c = Commands {
-                dispatcher: chat_tree(&self.remote, &self.mods),
+                dispatcher: chat_tree(&self.remote),
                 registries: &self.ui.registries,
             };
             if let Some(screen) = self.ui.chat_screen.as_mut() {
@@ -613,7 +652,7 @@ impl Game<'_> {
         };
         let m = Measure(&self.gui.atlas.font);
         let c = Commands {
-            dispatcher: chat_tree(&self.remote, &self.mods),
+            dispatcher: chat_tree(&self.remote),
             registries: &self.ui.registries,
         };
         match screen.key(&m, &c, &self.ui.chat.recent, key, shift, ctrl) {
@@ -635,7 +674,7 @@ impl Game<'_> {
             ChatAction::None => {
                 // charTyped: the text the key typed.
                 if let Some(text) = typed_text
-                    && !ctrl
+                    && self.types_text()
                 {
                     screen.type_text(&m, &c, text);
                 }
@@ -653,7 +692,7 @@ impl Game<'_> {
     ) {
         let m = Measure(&self.gui.atlas.font);
         let c = Commands {
-            dispatcher: chat_tree(&self.remote, &self.mods),
+            dispatcher: chat_tree(&self.remote),
             registries: &self.ui.registries,
         };
         if let Some(screen) = self.ui.chat_screen.as_mut() {
@@ -664,7 +703,7 @@ impl Game<'_> {
     pub(super) fn chat_type(&mut self, text: &str) {
         let m = Measure(&self.gui.atlas.font);
         let c = Commands {
-            dispatcher: chat_tree(&self.remote, &self.mods),
+            dispatcher: chat_tree(&self.remote),
             registries: &self.ui.registries,
         };
         if let Some(screen) = self.ui.chat_screen.as_mut() {
@@ -683,7 +722,7 @@ impl Game<'_> {
         // unless a client mod owns the command.
         if self.remote.is_some() {
             if let Some(command) = message.strip_prefix('/')
-                && self.mod_command(command)
+                && self.client_mod_command(command)
             {
                 return;
             }
@@ -691,8 +730,8 @@ impl Game<'_> {
             return;
         }
         if let Some(command) = message.strip_prefix('/') {
-            // A client mod's command first, then a server mod's, as on a server.
-            if !self.mod_command(command) && !self.local_server_mod_command(command) {
+            // A native mod's command first.
+            if !self.client_mod_command(command) {
                 self.run_command(command);
             }
         } else {
@@ -701,7 +740,6 @@ impl Game<'_> {
                 &[self.player_display_name(), Text::literal(message)],
             );
             let focused = self.screen == Screen::Chat;
-            let heard = self.mods.running().then(|| line.plain());
             self.ui.chat.add(
                 &self.gui.atlas,
                 line,
@@ -710,11 +748,7 @@ impl Game<'_> {
                 self.ticks,
                 focused,
             );
-            if let Some(line) = heard {
-                self.mods_chat(&line);
-            }
             self.lan_host_chat(message);
-            self.mod_player_chat(super::server_mods::Who::Local, message);
         }
     }
     pub(super) fn chat_scroll(&mut self, amount: f32) {
@@ -741,7 +775,7 @@ impl Game<'_> {
         });
         let m = Measure(&self.gui.atlas.font);
         let c = Commands {
-            dispatcher: chat_tree(&self.remote, &self.mods),
+            dispatcher: chat_tree(&self.remote),
             registries: &self.ui.registries,
         };
         if self.ui.in_bed_chat && self.sleeping.is_some() {
@@ -794,6 +828,9 @@ impl Game<'_> {
                 }
             }
             Some(ClickEvent::RunCommand(command)) => self.click_command(&command),
+            // Screen.defaultHandleGameClickEvent: the dialog opens over the
+            // screen, and closes back to it.
+            Some(ClickEvent::ShowDialog(dialog)) => self.show_dialog_ref(&dialog),
             // Screen.defaultHandleClickEvent: a page link means nothing in chat.
             Some(ClickEvent::ChangePage(_)) | None => {}
         }
@@ -816,16 +853,19 @@ impl Game<'_> {
         &self,
         url: &str,
         size: (f32, f32),
-    ) -> horizon_client::confirm_screen::Confirm {
+    ) -> horizon_client::confirm_screen::Choice {
         let warning = Text::translate("chat.link.warning", &[]).with_color(0xFF_CCCC);
         let message = Text::literal(url)
             .append(Text::literal("\n"))
             .append(warning);
-        horizon_client::confirm_screen::Confirm::new(
+        // ConfirmLinkScreen.addButtons: yes, copy and no, 100 wide each.
+        horizon_client::confirm_screen::Choice::new(
             &self.gui.atlas.font,
             size,
             &Text::translate("chat.link.confirm", &[]),
             &message,
+            3,
+            100.0,
         )
     }
     pub(super) fn draw_link_prompt(&self, batch: &mut HudBatch) {
@@ -835,12 +875,13 @@ impl Game<'_> {
         let atlas = &self.gui.atlas;
         let (w, h) = (batch.width, batch.height);
         horizon_client::ui::menu_background(batch, atlas, 0.0, 0.0, w, h, true);
-        let (yes, no) = (
+        let labels = [
             Text::translate("gui.yes", &[]),
+            Text::translate("chat.copy", &[]),
             Text::translate("gui.no", &[]),
-        );
+        ];
         self.link_prompt_layout(url, (w, h))
-            .draw(batch, atlas, self.cursor, [&yes, &no]);
+            .draw(batch, atlas, self.cursor, &labels);
     }
     /// The prompt's answer: the link opens on yes; either way the chat is back.
     pub(super) fn answer_link_prompt(&mut self, yes: bool) {
@@ -851,15 +892,20 @@ impl Game<'_> {
         }
     }
     pub(super) fn link_prompt_click(&mut self) {
-        let Some(url) = &self.link_prompt else {
+        let Some(url) = self.link_prompt.clone() else {
             return;
         };
-        let answer = self
-            .link_prompt_layout(url, self.gui_size())
-            .answer_at(self.cursor);
-        if let Some(yes) = answer {
+        let pressed = self
+            .link_prompt_layout(&url, self.gui_size())
+            .pressed_at(self.cursor);
+        if let Some(button) = pressed {
             self.audio.play_button_click();
-            self.answer_link_prompt(yes);
+            if button == LINK_COPY {
+                // ConfirmLinkScreen.copyToClipboard, then the callback's no.
+                use horizon_client::clipboard::Clipboard;
+                self.clipboard.set(&url);
+            }
+            self.answer_link_prompt(button == LINK_YES);
         }
     }
     /// `Screen.clickCommandAction`: run a clicked command as the player
@@ -867,14 +913,14 @@ impl Game<'_> {
     /// first, as `ClientPacketListener.sendUnattendedCommand` lets client
     /// commands take it. (Vanilla asks first when the command fails to
     /// parse; here the server answers it.)
-    fn click_command(&mut self, command: &str) {
+    pub(super) fn click_command(&mut self, command: &str) {
         let command = command.strip_prefix('/').unwrap_or(command);
-        if self.mod_command(command) {
+        if self.client_mod_command(command) {
             return;
         }
         if self.remote.is_some() {
             self.send_chat(&format!("/{command}"));
-        } else if !self.local_server_mod_command(command) {
+        } else {
             self.run_command(command);
         }
     }
@@ -894,7 +940,7 @@ impl Game<'_> {
         };
         let m = Measure(&self.gui.atlas.font);
         let c = Commands {
-            dispatcher: chat_tree(&self.remote, &self.mods),
+            dispatcher: chat_tree(&self.remote),
             registries: &self.ui.registries,
         };
         screen.resize(&m, &c, batch.width as i32, batch.height as i32);
@@ -957,7 +1003,7 @@ impl Game<'_> {
         }
     }
     /// `Font.split`: a tooltip text wrapped at `width`, one white row per line.
-    fn wrapped_rows(&self, text: &Text, width: i32) -> Vec<(Text, u32)> {
+    pub(super) fn wrapped_rows(&self, text: &Text, width: i32) -> Vec<(Text, u32)> {
         let split = self
             .gui
             .atlas
@@ -1000,6 +1046,7 @@ impl Game<'_> {
             spawn_mobs: r.bool("spawn_mobs"),
             spawn_monsters: r.bool("spawn_monsters"),
             fire_spread_radius_around_player: r.int("fire_spread_radius_around_player"),
+            spread_vines: r.bool("spread_vines"),
         }
     }
     /// Apply rules mirrored in other state (natural regeneration, difficulty).
@@ -1024,10 +1071,7 @@ impl Game<'_> {
         self.ui.rules = GameRules::load(&self.world_root);
         self.ui.clock = WorldClock::default();
         // PrimaryLevelData: the difficulty comes back from level.dat's difficulty_settings.
-        self.ui.difficulty = horizon_client::title::DIFFICULTIES
-            .iter()
-            .position(|d| *d == self.level.difficulty)
-            .map_or(2, |i| i as u8);
+        self.ui.difficulty = self.level.difficulty_id();
         if let Ok(bytes) = std::fs::read(self.world_root.join("data/minecraft/world_clocks.dat"))
             && let Ok(raw) = horizon_world::compression::Compression::Gzip.decode(&bytes, 1 << 20)
             && let Ok((root, _)) =
@@ -1124,9 +1168,19 @@ impl Game<'_> {
             None => self.combat_death_message(),
         };
         self.ui.death_text = Some(message.clone());
-        // ServerPlayer.die: a team that hides death messages keeps it out of
-        // the dying player's own chat (the death screen still shows it).
-        if horizon_client::scoreboard::own_death_message_shown(self.player_team()) {
+        // ServerPlayer.die: the team's death message visibility decides who
+        // hears it, the dying player's own chat included (the death screen
+        // still shows it).
+        let board = &self.score.board;
+        if let Some(host) = &self.lan {
+            host.hub.system_message_to(
+                horizon_client::lan::data::component_nbt(&message.component()),
+                |other| {
+                    horizon_client::scoreboard::death_message_reaches(board, PLAYER_NAME, other)
+                },
+            );
+        }
+        if horizon_client::scoreboard::death_message_reaches(board, PLAYER_NAME, PLAYER_NAME) {
             self.system_message(message);
         }
     }
@@ -1147,7 +1201,10 @@ impl Game<'_> {
             return;
         };
         let path = dir.join(name);
-        renderer.screenshot = Some(path.clone());
+        renderer.screenshot = Some(horizon_client::gfx::ScreenshotRequest {
+            path: path.clone(),
+            size: None,
+        });
         self.ui.screenshot_message = Some(path);
     }
     /// After a frame: report a finished F2 screenshot in chat.
@@ -1157,6 +1214,7 @@ impl Game<'_> {
         };
         let message = match result {
             Ok(_) => {
+                log::info!("Saved screenshot to {}", path.display());
                 let name = path.file_name().unwrap_or_default().to_string_lossy();
                 let link = Text::styled(
                     name,
@@ -1181,24 +1239,10 @@ impl Game<'_> {
         );
     }
 }
-/// `yyyy-MM-dd_HH.mm.ss[_n].png` (Util.getFilenameFormattedDateTime, local time
-/// approximated as UTC).
+/// `yyyy-MM-dd_HH.mm.ss[_n].png` (Util.getFilenameFormattedDateTime, in local time).
 pub fn screenshot_name(dir: &std::path::Path) -> String {
-    let secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs());
-    let days = (secs / 86400) as i64;
-    let (h, m, s) = ((secs % 86400) / 3600, (secs % 3600) / 60, secs % 60);
-    let z = days + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let mo = if mp < 10 { mp + 3 } else { mp - 9 };
-    let y = yoe + era * 400 + i64::from(mo <= 2);
-    let base = format!("{y}-{mo:02}-{d:02}_{h:02}.{m:02}.{s:02}");
+    // Util.getFilenameFormattedDateTime: the local date and time.
+    let base = chrono::Local::now().format("%Y-%m-%d_%H.%M.%S").to_string();
     let mut n = 1;
     loop {
         let name = if n == 1 {
@@ -1217,4 +1261,29 @@ pub fn screenshot_name(dir: &std::path::Path) -> String {
 /// commands are allowed, else `ALL` (0).
 fn owner_permission(allow_commands: bool) -> u8 {
     if allow_commands { 4 } else { 0 }
+}
+
+/// `ConfirmLinkScreen`'s buttons, left to right: yes, copy, no.
+const LINK_YES: usize = 0;
+const LINK_COPY: usize = 1;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resource_ids_are_listed_once_per_root() {
+        let root = std::env::temp_dir().join(format!("horizon-ids-{}", std::process::id()));
+        let recipe = root.join("data/minecraft/recipe");
+        std::fs::create_dir_all(recipe.join("sub")).unwrap();
+        std::fs::write(recipe.join("b.json"), "{}").unwrap();
+        std::fs::write(recipe.join("sub/a.json"), "{}").unwrap();
+        std::fs::write(recipe.join("notes.txt"), "").unwrap();
+        let first = resource_ids(&root);
+        assert_eq!(first.recipes, ["minecraft:b", "minecraft:sub/a"]);
+        assert!(first.loot_tables.is_empty());
+        std::fs::write(recipe.join("c.json"), "{}").unwrap();
+        assert!(Arc::ptr_eq(&first, &resource_ids(&root)));
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

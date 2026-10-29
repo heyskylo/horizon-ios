@@ -191,7 +191,7 @@ comes out of the headless-engine work.
 **One-command install** (`packaging/server/`):
 
 - Linux and macOS:
-  `curl -fsSL https://raw.githubusercontent.com/ludovic111/horizon/main/packaging/server/install.sh | sh`
+  `curl -fsSL https://raw.githubusercontent.com/horizon-rust/horizon/main/packaging/server/install.sh | sh`
   The script picks the release archive for the OS and architecture (on Linux x86_64 the server archive,
   on macOS arm64 the game's), downloads it from GitHub Releases, and checks it against the SHA-256 GitHub
   publishes for each asset. It never asks for sudo. Options: `--version vX.Y.Z`, `--dir` (default
@@ -203,7 +203,7 @@ comes out of the headless-engine work.
   any that are missing, `init` warns, and `run` stops at once with what to install, rather than restarting
   a game that can't load.
 - Windows:
-  `irm https://raw.githubusercontent.com/ludovic111/horizon/main/packaging/server/install.ps1 | iex`
+  `irm https://raw.githubusercontent.com/horizon-rust/horizon/main/packaging/server/install.ps1 | iex`
   The script does the same into `%LOCALAPPDATA%\Horizon` (`-Version`, `-Dir`), with junctions instead of
   links (no admin rights), and adds `bin` to the user's PATH.
 - **Layout.** Each release goes to `<dir>/releases/<tag>` and `<dir>/current` points at the one in use, so an
@@ -409,10 +409,12 @@ runtime or new dependency. Server-sent events can replace the polling later if a
   newer release a minute after it starts and then every 6 hours, and only says so, in its log, in `status`
   and in the panel (`HORIZON_NO_UPDATE_CHECK=1` turns the check off). `update --check` asks GitHub once.
   `update`:
-  1. downloads the newest stable release's archive for this computer (on Linux the server build; `--version`
-     picks another, a beta included) and checks it against the release's SHA256SUMS, whose Ed25519 signature
-     must check with a key built into `horizon-server` (docs/release-flow.md, "Signed checksums"): an unsigned
-     or tampered release is refused;
+  1. downloads the current Nightly's archive for this computer (the only build Horizon ships since 2026-10-28;
+     GitHub's latest release while there is none; on Linux the server build; `--version` picks another: a
+     `vX.Y.Z` release, or a `nightly-<date>` of the last 7 days) and checks it against its SHA256SUMS, whose Ed25519
+     signature must check with a key built into `horizon-server` (docs/release-flow.md, "Signed checksums"),
+     signed for the Nightly channel: an unsigned or tampered build is refused. A Nightly installs as
+     `nightly-<date>-<commit>`, newer than every `vX.Y.Z`; another build of the same day is an update too;
   2. unpacks it into `<dir>/releases/<tag>`, beside the others, with its game files linked to
      `<dir>/game-files` as the installers do;
   3. stops the game, backs up the world (`backups/<time>-before-<tag>.zip`), records the release in use in

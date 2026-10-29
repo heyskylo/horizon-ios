@@ -3,7 +3,7 @@
 `horizon-server` hosts a Minecraft Java Edition 26.3 server with Horizon's own game as the engine: one native
 program, no Java, one settings file, a command line, and a web panel. Vanilla 26.3 clients and Horizon clients
 can join it. This page covers what works on `main` today and says plainly what doesn't yet. The design and the
-plan are in [docs/server.md](https://github.com/ludovic111/horizon/blob/main/docs/server.md).
+plan are in [docs/server.md](https://github.com/horizon-rust/horizon/blob/main/docs/server.md).
 
 ## Before you start
 
@@ -19,7 +19,7 @@ plan are in [docs/server.md](https://github.com/ludovic111/horizon/blob/main/doc
   takes the account's UUID when someone owns that name, as vanilla does, and that player is then refused.
 - **Horizon's own client can't sign in to a Microsoft account yet.** That needs an Azure app registration and
   Mojang's approval, which the project doesn't have
-  ([docs/microsoft-account.md](https://github.com/ludovic111/horizon/blob/main/docs/microsoft-account.md)).
+  ([docs/microsoft-account.md](https://github.com/horizon-rust/horizon/blob/main/docs/microsoft-account.md)).
   Until then Horizon players can join offline servers only (`online_mode = false`). An offline server never
   checks accounts: anyone who reaches it can join under any name. Keep it on your LAN or a tailnet
   (Tailscale, ZeroTier), or share it only with friends you trust.
@@ -44,17 +44,17 @@ plan are in [docs/server.md](https://github.com/ludovic111/horizon/blob/main/doc
 Linux (x86-64) and macOS (Apple Silicon):
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/ludovic111/horizon/main/packaging/server/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/horizon-rust/horizon/main/packaging/server/install.sh | sh
 ```
 
 Windows (x64), in PowerShell:
 
 ```powershell
-irm https://raw.githubusercontent.com/ludovic111/horizon/main/packaging/server/install.ps1 | iex
+irm https://raw.githubusercontent.com/horizon-rust/horizon/main/packaging/server/install.ps1 | iex
 ```
 
-The script downloads the latest Horizon release for your computer from GitHub, checks it against the SHA-256
-GitHub publishes, and never asks for sudo or administrator rights. It installs:
+The script downloads the current Horizon Nightly for your computer from GitHub (the only build Horizon ships;
+`--version` picks another), checks it against the SHA-256 GitHub publishes, and never asks for sudo or administrator rights. It installs:
 
 - the release in `~/.local/share/horizon/releases/<version>` (Windows: `%LOCALAPPDATA%\Horizon`), with
   `current` pointing at the one in use;
@@ -236,7 +236,7 @@ minutes. It keeps the crash report and gives up after 5 crashes in 10 minutes, a
 after it starts and every 6 hours after, and says so in its log, in `status` and in the panel; it never
 updates by itself. `horizon-server update --check` asks once. `horizon-server update`:
 
-1. downloads the newest release and checks it against the SHA-256 GitHub publishes for it;
+1. downloads the current Nightly and checks it against its signed SHA-256;
 2. stops the game, backs up the world (`backups/<time>-before-<release>.zip`) and switches to the new
    release;
 3. starts the game on it and waits up to 5 minutes (`--timeout SECONDS`) for it to come up.
@@ -311,7 +311,7 @@ No image is published: build one from the repository. The image holds none of Mi
 folder you prepared (step 2) read-only.
 
 ```sh
-git clone https://github.com/ludovic111/horizon && cd horizon
+git clone https://github.com/horizon-rust/horizon && cd horizon
 docker build -f packaging/server/Dockerfile -t horizon-server .
 
 docker run -d --name horizon -p 25565:25565 --stop-timeout 180 \
@@ -336,10 +336,10 @@ docker run -d --name horizon -p 25565:25565 --stop-timeout 180 \
 ## 10. How fast is it
 
 The latest bot benchmark compares Horizon with vanilla 26.3, Paper and Fabric + Lithium:
-[benchmarks/server-four-way-2026-10-19](https://github.com/ludovic111/horizon/blob/main/benchmarks/server-four-way-2026-10-19/README.md).
+[benchmarks/server-four-way-2026-10-19](https://github.com/horizon-rust/horizon/blob/main/benchmarks/server-four-way-2026-10-19/README.md).
 It ran release v2026.10.19 on a 4-thread laptop CPU (i7-7500U), with 1 to 50 players walking, exploring and
 standing around spawn, the bots on another machine. All four servers did the same work. Earlier
-measurements are in [docs/server.md](https://github.com/ludovic111/horizon/blob/main/docs/server.md). In
+measurements are in [docs/server.md](https://github.com/horizon-rust/horizon/blob/main/docs/server.md). In
 short:
 
 - **Memory:** 0.7 GB with one player and 1.1 GB with 50, against 3.4 to 4.5 GB for the Java servers
@@ -366,4 +366,4 @@ For more than 50 active players, give it more cores.
   open in your firewall. On a tailnet, use the server's tailnet address.
 - **It keeps restarting**: `horizon-server status` shows the last crash and `horizon-server logs -n 200` the log
   before it. Crash reports are in `crash-reports/`.
-- Report problems at <https://github.com/ludovic111/horizon/issues>, with the end of the log.
+- Report problems at <https://github.com/horizon-rust/horizon/issues>, with the end of the log.

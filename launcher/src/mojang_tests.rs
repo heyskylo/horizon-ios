@@ -8,6 +8,9 @@ const COMMON: &[u8] = b"a library every system uses";
 const LINUX: &[u8] = b"a linux native";
 const SOUND: &[u8] = b"a fake ogg";
 const LANG: &[u8] = b"{}";
+const LOGGING: &[u8] = b"<Configuration/>";
+/// Never cancelled.
+static GO: AtomicBool = AtomicBool::new(false);
 
 /// The fake version file, asset index and files, by URL.
 fn mojang() -> (Pins, HashMap<String, Vec<u8>>) {
@@ -28,7 +31,7 @@ fn mojang() -> (Pins, HashMap<String, Vec<u8>>) {
         "id": "26.3",
         "assetIndex": {"id": "34", "sha1": sha1_hex(index.as_bytes()),
                        "url": "https://piston-meta.mojang.com/v1/packages/i/34.json"},
-        "downloads": {"client": {"sha1": sha1_hex(CLIENT), "url": "https://piston-data.mojang.com/client.jar"}},
+        "downloads": {"client": {"sha1": sha1_hex(CLIENT), "size": CLIENT.len(), "url": "https://piston-data.mojang.com/client.jar"}},
         "libraries": [
             {"name": "org.fake:common:1", "downloads": {"artifact": artifact("common", COMMON)}},
             {"name": "org.fake:linux:1", "downloads": {"artifact": artifact("linux", LINUX)},
@@ -112,9 +115,15 @@ fn an_owner_gets_the_official_layout_with_this_systems_libraries() {
     };
     let dir = scratch("layout");
     let logged = Mutex::new(Vec::new());
-    download(&pins, &dir, "linux", 3, &|url| server.fetch(url), &|line| {
-        logged.lock().unwrap().push(line)
-    })
+    download(
+        &pins,
+        &dir,
+        "linux",
+        3,
+        &|url| server.fetch(url),
+        &GO,
+        &|line| logged.lock().unwrap().push(line),
+    )
     .unwrap();
     assert_eq!(
         fs::read(dir.join("versions/26.3/26.3.jar")).unwrap(),
@@ -156,7 +165,16 @@ fn an_owner_gets_the_official_layout_with_this_systems_libraries() {
         &|_| {},
     );
     assert_eq!(found, Ok(Resolved::Folder(dir.clone())));
-    download(&pins, &dir, "linux", 3, &|url| server.fetch(url), &|_| {}).unwrap();
+    download(
+        &pins,
+        &dir,
+        "linux",
+        3,
+        &|url| server.fetch(url),
+        &GO,
+        &|_| {},
+    )
+    .unwrap();
     assert_eq!(server.asked(), Vec::<String>::new());
     fs::remove_dir_all(&dir).unwrap();
 }
@@ -169,7 +187,16 @@ fn macos_skips_what_its_rules_disallow() {
         asked: Mutex::new(Vec::new()),
     };
     let dir = scratch("osx");
-    download(&pins, &dir, "osx", 2, &|url| server.fetch(url), &|_| {}).unwrap();
+    download(
+        &pins,
+        &dir,
+        "osx",
+        2,
+        &|url| server.fetch(url),
+        &GO,
+        &|_| {},
+    )
+    .unwrap();
     let libraries = dir.join("libraries/org/fake");
     assert!(libraries.join("common/1/common-1.jar").is_file());
     assert!(!libraries.join("linux").exists());
@@ -182,14 +209,23 @@ fn a_file_that_is_not_the_pinned_one_stops_the_download() {
     let (pins, mut files) = mojang();
     files.insert(
         "https://piston-data.mojang.com/client.jar".into(),
-        b"something else".to_vec(),
+        b"fake client JAR".to_vec(),
     );
     let server = Server {
         files,
         asked: Mutex::new(Vec::new()),
     };
     let dir = scratch("bad-jar");
-    let error = download(&pins, &dir, "linux", 2, &|url| server.fetch(url), &|_| {}).unwrap_err();
+    let error = download(
+        &pins,
+        &dir,
+        "linux",
+        2,
+        &|url| server.fetch(url),
+        &GO,
+        &|_| {},
+    )
+    .unwrap_err();
     assert!(
         error.starts_with("https://piston-data.mojang.com/client.jar is not the one Horizon pins"),
         "{error}"
@@ -209,9 +245,15 @@ fn missing_sounds_are_a_line_in_the_log_not_an_error() {
     };
     let dir = scratch("no-sound");
     let logged = Mutex::new(Vec::new());
-    download(&pins, &dir, "linux", 1, &|url| server.fetch(url), &|line| {
-        logged.lock().unwrap().push(line)
-    })
+    download(
+        &pins,
+        &dir,
+        "linux",
+        1,
+        &|url| server.fetch(url),
+        &GO,
+        &|line| logged.lock().unwrap().push(line),
+    )
     .unwrap();
     assert!(dir.join("versions/26.3/26.3.jar").is_file());
     let last = logged.lock().unwrap().last().cloned().unwrap();
@@ -290,6 +332,7 @@ fn java_runtime_lays_out_mojangs_runtime_with_its_executables_and_links() {
         &dir,
         2,
         &|url| server.fetch(url),
+        &GO,
         &|_| {},
     )
     .unwrap();
@@ -316,6 +359,7 @@ fn java_runtime_lays_out_mojangs_runtime_with_its_executables_and_links() {
         &dir,
         2,
         &|url| server.fetch(url),
+        &GO,
         &|_| {},
     )
     .unwrap();
@@ -325,8 +369,201 @@ fn java_runtime_lays_out_mojangs_runtime_with_its_executables_and_links() {
         &dir,
         2,
         &|url| server.fetch(url),
+        &GO,
         &|_| {}
     )
     .is_err());
     fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn a_file_of_another_size_than_mojang_lists_is_refused() {
+    let (pins, mut files) = mojang();
+    // A cut-off body: its size says so before its sha1.
+    files.insert(
+        "https://piston-data.mojang.com/client.jar".into(),
+        CLIENT[..4].to_vec(),
+    );
+    let server = Server {
+        files,
+        asked: Mutex::new(Vec::new()),
+    };
+    let dir = scratch("size");
+    let error = download(
+        &pins,
+        &dir,
+        "linux",
+        2,
+        &|url| server.fetch(url),
+        &GO,
+        &|_| {},
+    )
+    .unwrap_err();
+    assert!(
+        error.ends_with(&format!(
+            "is 4 bytes, not the {} Mojang lists",
+            CLIENT.len()
+        )),
+        "{error}"
+    );
+    assert!(!dir.join("versions/26.3/26.3.jar").exists());
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn a_cancelled_download_goes_on_where_it_stopped() {
+    let (pins, files) = mojang();
+    let server = Server {
+        files,
+        asked: Mutex::new(Vec::new()),
+    };
+    let dir = scratch("cancel");
+    let cancel = AtomicBool::new(false);
+    // Cancelled once the client jar has arrived: one job, so nothing after it starts.
+    let fetch = |url: &str| {
+        let body = server.fetch(url);
+        if url.ends_with("client.jar") {
+            cancel.store(true, Relaxed);
+        }
+        body
+    };
+    let error = download(&pins, &dir, "linux", 1, &fetch, &cancel, &|_| {}).unwrap_err();
+    assert_eq!(error, CANCELLED);
+    assert_eq!(
+        fs::read(dir.join("versions/26.3/26.3.jar")).unwrap(),
+        CLIENT
+    );
+    assert!(!dir.join("libraries").exists());
+    // Again: the version file and the jar are kept, only the rest is fetched.
+    cancel.store(false, Relaxed);
+    server.asked();
+    download(
+        &pins,
+        &dir,
+        "linux",
+        1,
+        &|url| server.fetch(url),
+        &cancel,
+        &|_| {},
+    )
+    .unwrap();
+    let asked = server.asked();
+    assert!(
+        !asked
+            .iter()
+            .any(|u| u.ends_with("client.jar") || u.ends_with("26.3.json")),
+        "{asked:#?}"
+    );
+    assert_eq!(asked.len(), 6, "{asked:#?}");
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+/// A version Horizon doesn't pin, as Mojang's list names it (its version file's sha1): the
+/// client's sha1 comes from that checked file, and an old version's natives for this system
+/// (a classifier of their library, `${arch}` filled in) come with the libraries.
+#[test]
+fn any_listed_version_comes_with_its_natives() {
+    let native = |name: &str, data: &[u8]| {
+        serde_json::json!({
+            "path": format!("org/lwjgl/lwjgl-platform/2.9.4/lwjgl-platform-2.9.4-{name}.jar"),
+            "sha1": sha1_hex(data),
+            "url": format!("https://libraries.minecraft.net/lwjgl-platform-{name}.jar"),
+        })
+    };
+    let index = serde_json::json!({"objects": {}}).to_string();
+    let manifest = serde_json::json!({
+        "id": "1.12.2",
+        "assetIndex": {"id": "1.12", "sha1": sha1_hex(index.as_bytes()),
+                       "url": "https://piston-meta.mojang.com/v1/packages/i/1.12.json"},
+        "downloads": {"client": {"sha1": sha1_hex(CLIENT), "size": CLIENT.len(), "url": "https://piston-data.mojang.com/old.jar"}},
+        "logging": {"client": {"argument": "-Dlog4j.configurationFile=${path}", "file": {
+            "id": "client-1.12.xml", "sha1": sha1_hex(LOGGING), "size": LOGGING.len(),
+            "url": "https://piston-data.mojang.com/client-1.12.xml"}}},
+        "libraries": [{
+            "name": "org.lwjgl.lwjgl:lwjgl-platform:2.9.4",
+            "natives": {"osx": "natives-osx", "windows": "natives-windows-${arch}"},
+            "downloads": {"classifiers": {
+                "natives-osx": native("natives-osx", b"osx natives"),
+                "natives-windows-64": native("natives-windows-64", b"win64 natives"),
+                "natives-windows-32": native("natives-windows-32", b"win32 natives"),
+            }},
+        }],
+    })
+    .to_string();
+    let sha1 = sha1_hex(manifest.as_bytes());
+    let lib = |name: &str| format!("https://libraries.minecraft.net/lwjgl-platform-{name}.jar");
+    let server = Server {
+        files: HashMap::from([
+            (
+                format!("https://piston-meta.mojang.com/v1/packages/{sha1}/1.12.2.json"),
+                manifest.into_bytes(),
+            ),
+            (
+                "https://piston-data.mojang.com/old.jar".into(),
+                CLIENT.to_vec(),
+            ),
+            (
+                "https://piston-data.mojang.com/client-1.12.xml".into(),
+                LOGGING.to_vec(),
+            ),
+            (lib("natives-osx"), b"osx natives".to_vec()),
+            (lib("natives-windows-64"), b"win64 natives".to_vec()),
+            (lib("natives-windows-32"), b"win32 natives".to_vec()),
+            (
+                "https://piston-meta.mojang.com/v1/packages/i/1.12.json".into(),
+                index.into_bytes(),
+            ),
+        ]),
+        asked: Mutex::new(Vec::new()),
+    };
+    let pins = Pins::for_version("1.12.2", &sha1);
+    let platform = |os: &str| {
+        let dir = scratch(&format!("any-{os}"));
+        download(&pins, &dir, os, 2, &|url| server.fetch(url), &GO, &|_| {}).unwrap();
+        dir
+    };
+    let mac = platform("osx");
+    assert_eq!(
+        fs::read(mac.join("versions/1.12.2/1.12.2.jar")).unwrap(),
+        CLIENT
+    );
+    let natives = |dir: &Path, name: &str| {
+        dir.join(format!(
+            "libraries/org/lwjgl/lwjgl-platform/2.9.4/lwjgl-platform-2.9.4-{name}.jar"
+        ))
+    };
+    assert!(natives(&mac, "natives-osx").is_file());
+    assert_eq!(
+        fs::read(mac.join("assets/log_configs/client-1.12.xml")).unwrap(),
+        LOGGING
+    );
+    assert!(!natives(&mac, "natives-windows-64").exists());
+    let windows = platform("windows");
+    assert!(natives(&windows, "natives-windows-64").is_file());
+    assert!(!natives(&windows, "natives-windows-32").exists());
+    // Linux has no natives in this library: nothing to fetch for it, and no error.
+    let linux = platform("linux");
+    assert!(!linux.join("libraries").exists());
+    assert!(linux.join("assets/log_configs/client-1.12.xml").is_file());
+    for dir in [mac, windows, linux] {
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    // A client that isn't the one its checked version file names is refused.
+    let wrong = Server {
+        files: server
+            .files
+            .clone()
+            .into_iter()
+            .map(|(url, body)| match url.ends_with("old.jar") {
+                true => (url, b"another jar".to_vec()),
+                false => (url, body),
+            })
+            .collect(),
+        asked: Mutex::new(Vec::new()),
+    };
+    let dir = scratch("any-wrong");
+    let refused = download(&pins, &dir, "osx", 1, &|url| wrong.fetch(url), &GO, &|_| {});
+    assert!(refused.unwrap_err().contains("old.jar"));
+    let _ = fs::remove_dir_all(&dir);
 }

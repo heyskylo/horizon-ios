@@ -7,6 +7,11 @@ Until 0.2 the game was tagged by date (`v2026.10.19.15`) and the launcher counte
 From 0.2 both follow [semantic versioning](https://semver.org) and share one release line: **Horizon 0.2.x** is the
 game and the launcher of the 0.2 line.
 
+**Since 2026-10-28 the game ships only Nightlies** ([release-flow.md](release-flow.md#nightly-only)): no new `vX.Y.Z`
+game tag is made, and a game build is named `nightly-<date>-<commit>` (its release title, "Nightly <date> ·
+<commit>"), which launchers and servers rank after every `vX.Y.Z`. The launcher keeps its `launcher@X.Y.Z` tags on
+the release line. What follows describes the `vX.Y.Z` game tags as they were.
+
 ## Tags
 
 | | Game | Launcher |
@@ -44,7 +49,7 @@ A tag is a 0.2 tag when it is `v` or `launcher@` followed by exactly three numbe
 major below 1000; a date's first number is a year, so `v2026.10.21` never is. The rule is written once per
 language, with the same tests: `crates/horizon-server/src/update.rs` (`newer`), `launcher/src/backend.rs`
 (`release_order`), `tools/release_train.py` (`tag_key`) and
-the website's `src/versions.js` (ludovic111/horizon-site).
+the website's `src/versions.js` (horizon-rust/horizon-site).
 
 ## The workflows
 
@@ -125,7 +130,7 @@ Run by the orchestrator, in this order. Until step 3, nothing is published.
 4. Let the game bridge become stable on its normal schedule: about 6 hours after it was published, the promote run
    makes it *latest*. Do not force it (`promote` with `force=true`): it carries about 43 player-facing pull requests
    from the freeze and needs its beta like any release. Check it is *latest*:
-   `gh api repos/ludovic111/horizon/releases/latest --jq .tag_name`.
+   `gh api repos/horizon-rust/horizon/releases/latest --jq .tag_name`.
 5. Only then merge the update channels pull request (the launcher's Stable and Alpha, the daily promotion), then
    mark the switch pull request (#1132) ready and merge it (`.github/release-line.txt` = `0.2`, and the
    docs that talk about 0.2). On the next run, about 10 minutes, the train publishes `v0.2.0` as a beta and

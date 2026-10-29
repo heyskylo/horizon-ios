@@ -8,11 +8,13 @@ use std::path::{Path, PathBuf};
 
 /// Hosts a file may come from: Modrinth's and CurseForge's file servers, and the release assets
 /// of Horizon's registry.
-const HOSTS: [&str; 4] = [
+const HOSTS: [&str; 5] = [
     "https://cdn.modrinth.com/",
     "https://edge.forgecdn.net/",
     "https://mediafilez.forgecdn.net/",
     horizon_mods::index::FILE_HOST,
+    // The registry's files at their address before the move to horizon-rust (GitHub redirects it).
+    "https://github.com/ludovic111/horizon-mods/releases/download/",
 ];
 /// Bigger than any pack these sources serve (Modrinth caps uploads at 500 MiB).
 const MAX: u64 = 1 << 30;
@@ -27,7 +29,7 @@ pub(super) fn agent(url: &str) -> ureq::Agent {
     horizon_port_pack::net::keep("browser", spec.as_deref(), |proxy| {
         let builder = ureq::AgentBuilder::new()
             .user_agent(&format!(
-                "ludovic111/horizon horizon-launcher/{} (github.com/ludovic111/horizon)",
+                "horizon-rust/horizon horizon-launcher/{} (github.com/horizon-rust/horizon)",
                 crate::backend::VERSION
             ))
             .timeout_connect(std::time::Duration::from_secs(15))

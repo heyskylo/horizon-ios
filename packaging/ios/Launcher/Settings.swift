@@ -134,77 +134,10 @@ final class GameOptions: ObservableObject {
 struct SettingsPage: View {
     @ObservedObject var link: GameLink
     @ObservedObject var download: GameFilesDownload
-    @StateObject private var model = GameOptions()
     @State private var showingNews = false
-    @State private var expanded: Set<String> = ["Video"]
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            if model.loading && model.options.isEmpty {
-                ProgressView("Loading settings…").frame(maxWidth: .infinity).padding(24)
-            }
-            if let issue = model.issue {
-                VStack(alignment: .leading, spacing: 12) {
-                    Label("Settings couldn’t load", systemImage: "exclamationmark.triangle")
-                        .font(.headline)
-                    Text(issue).font(.subheadline).foregroundStyle(.secondary)
-                    Button("Try Again") { Task { await model.load() } }
-                        .accessibilityIdentifier("settings-retry")
-                }.padding(18).card()
-            }
-            if !model.unavailable.isEmpty {
-                Label("Some controls are unavailable in this build: " + model.unavailable.joined(separator: ", "),
-                      systemImage: "info.circle")
-                    .font(.footnote).foregroundStyle(.secondary)
-            }
-            ForEach(GameOptions.groups, id: \.title) { group in
-                let rows = group.rows.filter { model.options[$0.key] != nil }
-                if !rows.isEmpty {
-                    VStack(spacing: 0) {
-                        Button {
-                            withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) {
-                                if expanded.contains(group.title) { expanded.remove(group.title) }
-                                else { expanded.insert(group.title) }
-                            }
-                        } label: {
-                            HStack(spacing: 14) {
-                                Image(systemName: group.icon).font(.system(size: 21, weight: .medium))
-                                    .foregroundStyle(group.title == "Sound" ? .orange : group.title == "Controls" ? .indigo : Theme.accent)
-                                    .frame(width: 48, height: 48)
-                                    .background(Theme.surfaceSunken, in: RoundedRectangle(cornerRadius: 16))
-                                VStack(alignment: .leading, spacing: 5) {
-                                    Text(group.title).font(.system(.title3, design: .rounded).weight(.semibold)).foregroundStyle(Theme.text)
-                                    Text(group.title == "Video" ? "Graphics & performance" : group.title == "Sound" ? "Volume & ambience" : "Movement & input")
-                                        .font(.caption).foregroundStyle(.secondary)
-                                }
-                                Spacer()
-                                Image(systemName: expanded.contains(group.title) ? "chevron.up" : "chevron.down")
-                                    .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                            }.padding(18).contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityIdentifier("settings-group-" + group.title.lowercased())
-                        .accessibilityValue(expanded.contains(group.title) ? "Expanded" : "Collapsed")
-                        if expanded.contains(group.title) {
-                            Divider().padding(.horizontal, 18)
-                            VStack(spacing: 2) {
-                                ForEach(rows, id: \.key) { row in
-                                    if let option = model.options[row.key] {
-                                        OptionRow(row: row, option: option) { value in
-                                            Task { if let error = await model.set(row.key, value) { link.problem = error } }
-                                        }
-                                    }
-                                }
-                            }.padding(.vertical, 8)
-                        }
-                    }
-                    .background(Theme.surface, in: RoundedRectangle(cornerRadius: 26))
-                    .overlay(RoundedRectangle(cornerRadius: 26).strokeBorder(Theme.border.opacity(0.5)))
-                    .disabled(model.loading || model.issue != nil)
-                }
-            }
-
             SectionHeader(title: "Game files")
             GameFilesCard(download: download, missing: !GameFolder.hasGameFiles)
 
@@ -212,7 +145,6 @@ struct SettingsPage: View {
             SecondaryButton(title: "What's New", icon: "sparkles") { showingNews = true }
             About(version: link.version)
         }
-        .task { await model.load() }
         .sheet(isPresented: $showingNews) {
             ScrollView {
                 NewsPage().pageColumn()
@@ -224,99 +156,6 @@ struct SettingsPage: View {
     }
 }
 
-private struct OptionRow: View {
-    let row: GameOptions.Row
-    let option: GameOption
-    let set: (String) -> Void
-    @State private var dragging: Double?
-
-    var body: some View {
-        Group {
-            switch option.type {
-            case "bool":
-                Toggle(isOn: Binding(get: { option.flag }, set: { set($0 ? "true" : "false") })) {
-                    title
-                }
-                .tint(Theme.accent)
-                .accessibilityLabel(row.title)
-                .accessibilityIdentifier("setting-" + row.key)
-            case "enum":
-                choice(option.choices.map { ($0, row.names[$0] ?? $0.capitalized) }, current: option.text)
-            case "int" where !row.names.isEmpty:
-                choice(row.names.keys.sorted().map { ($0, row.names[$0] ?? $0) }, current: String(Int(option.number)))
-            default:
-                slider
-            }
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
-        .frame(minHeight: 50)
-    }
-
-    private var title: some View {
-        Text(row.title).font(Theme.sans(14)).foregroundStyle(Theme.text)
-    }
-
-    private func choice(_ values: [(String, String)], current: String) -> some View {
-        HStack {
-            title
-            Spacer()
-            Menu {
-                ForEach(values.indices, id: \.self) { index in
-                    let (value, name) = values[index]
-                    Button {
-                        Haptics.tap()
-                        set(value)
-                    } label: {
-                        if value == current {
-                            Label(name, systemImage: "checkmark")
-                        } else {
-                            Text(name)
-                        }
-                    }
-                }
-            } label: {
-                HStack(spacing: 4) {
-                    Text(values.first(where: { $0.0 == current })?.1 ?? current)
-                    Image(systemName: "chevron.up.chevron.down").font(.system(size: 10, weight: .semibold))
-                }
-                .font(Theme.sans(13, .semiBold))
-                .foregroundStyle(Theme.accentText)
-            }
-        }
-    }
-
-    private var slider: some View {
-        let low = option.min ?? 0
-        let high = Swift.max(low + (option.step ?? 1), Swift.min(option.max ?? low + 10, row.cap ?? .infinity))
-        let step = option.step ?? (option.type == "int" ? 1 : 0.01)
-        let shown = dragging ?? option.number
-        return VStack(alignment: .leading, spacing: 4) {
-            HStack {
-                title
-                Spacer()
-                Text(row.format(shown)).font(.caption.monospacedDigit().weight(.semibold)).foregroundStyle(Theme.accentText)
-                    .padding(.horizontal, 9).padding(.vertical, 5).background(Theme.notice, in: Capsule())
-            }
-            Slider(
-                value: Binding(get: { Swift.min(Swift.max(shown, low), high) }, set: { dragging = $0 }),
-                in: low...high,
-                step: step,
-                onEditingChanged: { editing in
-                    // Sent when the finger lifts: each change reloads what depends on it (chunks, for distance).
-                    if !editing, let value = dragging {
-                        set(option.type == "int" ? String(Int(value.rounded())) : String(value))
-                        dragging = nil
-                    }
-                }
-            )
-            .tint(Theme.accent)
-            .accessibilityLabel(row.title)
-            .accessibilityIdentifier("setting-" + row.key)
-        }
-    }
-}
-
 private struct About: View {
     let version: String
 
@@ -324,7 +163,6 @@ private struct About: View {
         VStack(alignment: .leading, spacing: 10) {
             line("Horizon for iPhone and iPad", Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "")
             line("Build", Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "")
-            line("Input", "iPad keyboard + pointer lock")
             line("Minecraft: Java Edition", version)
             line("Game files", GameFolder.hasGameFiles ? "Installed" : "Not installed")
             Link(destination: URL(string: "https://github.com/heyskylo/horizon-ios")!) {

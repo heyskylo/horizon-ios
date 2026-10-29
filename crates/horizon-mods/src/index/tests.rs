@@ -131,7 +131,7 @@ fn refuses_broken_indexes() {
     assert!(e.contains("https"), "{e}");
     // A local test registry may list files on disk; the published one may not.
     let local = text.replace(
-        "https://github.com/ludovic111/horizon-mods/releases/download/coords_hud-0.1.0/",
+        "https://github.com/horizon-rust/horizon-mods/releases/download/coords_hud-0.1.0/",
         "file:///tmp/",
     );
     assert!(Index::parse(&local).unwrap_err().contains("https"));

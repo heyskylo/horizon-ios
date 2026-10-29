@@ -161,7 +161,7 @@ horizon-launcher mods remove faithful-32x
 ## Sources
 
 **Horizon's registry.** Mods (`.hmod`), modpacks (`.hpack`), resource packs and shader packs (`.hshader`) made for Horizon, reviewed as pull requests in
-[ludovic111/horizon-mods](https://github.com/ludovic111/horizon-mods) ([api/mod-index.md](api/mod-index.md)). The
+[horizon-rust/horizon-mods](https://github.com/horizon-rust/horizon-mods) ([api/mod-index.md](api/mod-index.md)). The
 launcher reads its `index.json` (`browser/horizon.rs`; `HORIZON_MOD_INDEX=<file or https address>` reads a test
 registry instead, whose files may then be on disk) at most every ten minutes, and keeps the last copy in
 `mod-browser/horizon-index.json`. Before a result is installed it shows whether its files are signed and, for a mod,

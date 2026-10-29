@@ -53,4 +53,4 @@ Every page has the same parts: **Overview** (what you can build), **Guide** (whe
 
 The website shows these pages at [playhorizon.dev/docs/api](https://playhorizon.dev/docs/api), built from this
 folder, and a summary for players and authors at [playhorizon.dev/docs/apis](https://playhorizon.dev/docs/apis)
-(in the website's repository, ludovic111/horizon-site).
+(in the website's repository, horizon-rust/horizon-site).

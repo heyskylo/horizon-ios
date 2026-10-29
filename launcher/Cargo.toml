@@ -71,5 +71,10 @@ keyring = { version = "3", features = ["windows-native"] }
 # The icon resource in the .exe (build.rs).
 winresource = "0.1"
 
+[dev-dependencies]
+# Tokenize source strings for the translation completeness test, including multiline calls.
+proc-macro2 = "1"
+syn = "2"
+
 [profile.release]
 strip = true

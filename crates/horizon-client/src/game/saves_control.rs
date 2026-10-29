@@ -97,7 +97,8 @@ pub(super) fn file_command(
                         json!({
                             "folder": w.folder,
                             "name": w.name,
-                            "mode": if w.creative { "creative" } else { "survival" },
+                            "mode": match w.game_mode { 1 => "creative", 2 => "adventure", 3 => "spectator", _ => "survival" },
+                            "hardcore": w.hardcore,
                             "last_played": w.modified.duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64),
                             "commands": w.commands,
                             "version": w.version,

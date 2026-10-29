@@ -35,7 +35,7 @@ def main():
     build=lab.LOCAL/'rust-local-input';build.mkdir(exist_ok=True)
     report=build/'report.json';report.unlink(missing_ok=True)
     oracle=lab.ROOT/'mods/horizon/src/test/java/dev/horizonlab/parity/VanillaLocalInputOracle.java'
-    sources=[Path(__file__),lab.ROOT/'tools/test_rust_parity.py',lab.ROOT/'tools/test_model_baking_parity.py',lab.ROOT/'tools/lab.py',oracle,lab.ROOT/'Cargo.toml',lab.ROOT/'Cargo.lock',lab.ROOT/'crates/horizon-client/Cargo.toml',lab.ROOT/'crates/horizon-client/src/input.rs',lab.ROOT/'crates/horizon-client/src/lib.rs',lab.ROOT/'crates/horizon-client/examples/probe/input_probe.rs']
+    sources=[Path(__file__),lab.ROOT/'tools/test_rust_parity.py',lab.ROOT/'tools/test_model_baking_parity.py',lab.ROOT/'tools/lab.py',oracle,lab.ROOT/'Cargo.toml',lab.ROOT/'Cargo.lock',lab.ROOT/'crates/horizon-client/Cargo.toml',lab.ROOT/'crates/horizon-client-input/src/input.rs',lab.ROOT/'crates/horizon-client/src/lib.rs',lab.ROOT/'crates/horizon-client/examples/probe/input_probe.rs']
     tested=base.source_hashes(sources)
     def run(command,name):
         with (build/(name+'.log')).open('w') as log:subprocess.run(list(map(str,command)),cwd=lab.ROOT,check=True,timeout=600,stdout=log,stderr=subprocess.STDOUT)

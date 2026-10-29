@@ -1,5 +1,5 @@
 //! Horizon's own registry (docs/api/mod-index.md): mods, modpacks and resource packs made for
-//! Horizon, reviewed as pull requests in ludovic111/horizon-mods. One file lists them all,
+//! Horizon, reviewed as pull requests in horizon-rust/horizon-mods. One file lists them all,
 //! `index.json`; every download is checked against it before it reaches the game folder
 //! (`horizon_mods::index::check_file`: size, SHA-256, the author's signature, the file's own
 //! manifest), and files the index says were taken down are refused and turned off.
@@ -14,12 +14,12 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-/// Where the registry publishes its index (GitHub Pages of ludovic111/horizon-mods).
-pub const INDEX_URL: &str = "https://ludovic111.github.io/horizon-mods/index.json";
+/// Where the registry publishes its index (GitHub Pages of horizon-rust/horizon-mods).
+pub const INDEX_URL: &str = "https://horizon-rust.github.io/horizon-mods/index.json";
 /// The registry's pages on the website, `<SITE>/<id>`.
 const SITE: &str = "https://playhorizon.dev/mods";
 /// The report form of a project.
-const REPORT: &str = "https://github.com/ludovic111/horizon-mods/issues/new?template=report.yml";
+const REPORT: &str = "https://github.com/horizon-rust/horizon-mods/issues/new?template=report.yml";
 /// The loader name the browser gives registry versions, so `support` and `pick` know them.
 pub const LOADER: &str = "horizon";
 /// How long a fetched index is used before it is fetched again.
@@ -58,6 +58,14 @@ pub fn known_index() -> Option<Arc<Index>> {
         .unwrap()
         .as_ref()
         .map(|(_, index)| index.clone())
+}
+
+/// Whether the registry's project `id` is a native mod, by the index already read (never the
+/// network); false when none was read.
+pub fn is_native_mod(id: &str) -> bool {
+    known_index()
+        .and_then(|index| Some(index.project(id)?.kind == index::Kind::NativeMod))
+        .unwrap_or(false)
 }
 
 /// The index: the one fetched in the last ten minutes, else fetched again (and kept in the game
@@ -210,12 +218,24 @@ fn kind_of(kind: &index::Kind) -> Option<Kind> {
         index::Kind::ResourcePack => Some(Kind::ResourcePack),
         index::Kind::Modpack => Some(Kind::Modpack),
         index::Kind::Shader => Some(Kind::Shader),
+        // Mixin mods: installed beside the others, compiled into the game by `native_mods`.
+        index::Kind::NativeMod => Some(Kind::Mod),
         index::Kind::Other(_) => None,
     }
 }
 
-/// What the player reads about a registry project before installing it: whether its files are
-/// signed, and for a mod what it may do, in the game's words (Options > Mods).
+/// Where the registry's mod policy is: who owns and answers for a project, takedowns.
+pub const POLICY: &str = "https://playhorizon.dev/mods/policy";
+
+/// Whether the Horizon project made `p` (the mod policy's "Official": author Horizon, source in
+/// the horizon-rust organisation).
+pub fn official(p: &index::Project) -> bool {
+    p.authors == ["Horizon"] && p.source.starts_with("https://github.com/horizon-rust/")
+}
+
+/// What the player reads about a registry project before installing it: who made it, whether its
+/// files are signed, and for a mod what it may do, in the game's words (Options > Mods). A native
+/// mod says it runs with the player's rights.
 pub fn trust_and_capabilities(id: &str) -> Vec<String> {
     let Ok(index) = index() else {
         return Vec::new();
@@ -223,10 +243,30 @@ pub fn trust_and_capabilities(id: &str) -> Vec<String> {
     let Some(p) = index.project(id) else {
         return Vec::new();
     };
-    let mut lines = vec![match &p.key {
+    let mut lines = vec![if official(p) {
+        "Made by Horizon".to_owned()
+    } else {
+        format!(
+            "Made by {}. Not made or endorsed by the Horizon project ({POLICY})",
+            p.authors.join(", ")
+        )
+    }];
+    lines.push(match &p.key {
         Some(_) => "Signed by its author: the launcher checks the signature".to_owned(),
         None => "Unsigned: the launcher checks its checksum only".to_owned(),
-    }];
+    });
+    if p.kind == index::Kind::NativeMod {
+        lines.push(
+            "Native code: it is compiled into the game and runs with full access to your computer. Its source was reviewed before it was listed".into(),
+        );
+        if let Some(v) = p.versions.first() {
+            let pin = v.api.split('/').nth(1).unwrap_or_default();
+            lines.push(format!(
+                "Built by the launcher on Horizon {}",
+                &pin[..pin.len().min(7)]
+            ));
+        }
+    }
     if let Some(v) = p.versions.first().filter(|_| p.kind == index::Kind::Mod) {
         lines.extend(
             v.capabilities
@@ -562,7 +602,11 @@ fn install_version(
     if let Some(r) = index.revoked(&p.id, &v.file.sha256) {
         return Err(format!("{} was taken down: {}", p.name, r.reason));
     }
-    let relative = relative(project.kind, &p.id, &v.file.name)?;
+    let native = p.kind == index::Kind::NativeMod;
+    let relative = match native {
+        true => format!("{}/{}.hnmod", crate::native_mods::INSTALLED, p.id),
+        false => relative(project.kind, &p.id, &v.file.name)?,
+    };
     let mut list = installed::Installed::load(home);
     let ours = |e: &installed::Entry| e.source == SourceId::Horizon && e.project == p.id;
     let old = list.entries.iter().find(|e| ours(e)).cloned();
@@ -579,7 +623,7 @@ fn install_version(
         ));
     }
     let clash = target.exists() && old.as_ref().is_none_or(|o| o.file != relative);
-    if project.kind == Kind::Mod && (clash || folder_mod.exists()) {
+    if project.kind == Kind::Mod && (clash || (!native && folder_mod.exists())) {
         return Err(format!(
             "A mod with the id {} is already in {}: move it away first.",
             p.id,
@@ -593,14 +637,27 @@ fn install_version(
     let file = &version_of(index, p, v, None).files[0];
     let staging = home.join("mod-browser/downloads");
     let path = fetch(file, &staging, local, &|f| progress(&line, f))?;
-    let trust = index::check_file(index, p, v, &path).inspect_err(|_| {
+    let checked = index::check_file(index, p, v, &path).and_then(|trust| {
+        // Only Rust and TOML sources, for the mod the index names: nothing in it runs here.
+        match native {
+            true => index::native::Bundle::read(&path).and_then(|b| match b.manifest.id == p.id {
+                true => Ok(trust),
+                false => Err(format!("it is {}, not {}", b.manifest.id, p.id)),
+            }),
+            false => Ok(trust),
+        }
+    });
+    let trust = checked.inspect_err(|_| {
         let _ = fs::remove_file(&path);
     })?;
     if let Some(dir) = target.parent() {
         fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     }
     fs::rename(&path, &target).map_err(|e| format!("{}: {e}", target.display()))?;
-    if let Some(old) = old.as_ref().filter(|o| o.file != relative) {
+    if let Some(old) = old
+        .as_ref()
+        .filter(|o| o.file != relative && !stays(native, &o.file))
+    {
         let _ = fs::remove_file(home.join(&old.file));
     }
     if project.kind == Kind::Mod {
@@ -628,8 +685,19 @@ fn install_version(
     Ok(entry)
 }
 
-/// The mod id of an installed mod (`horizon-mods/<id>` or `horizon-mods/<id>.hmod`).
+/// Whether an update to a native version keeps the old file `old`: a mod that turned native
+/// keeps its `.hmod` until the player builds the game with the new version. The game runs it
+/// meanwhile and skips it once the native one is built in; removing the mod removes both.
+fn stays(native: bool, old: &str) -> bool {
+    native && old.ends_with(".hmod")
+}
+
+/// The mod id of an installed mod (`horizon-mods/<id>`, `horizon-mods/<id>.hmod` or
+/// `horizon-native-mods/<id>.hnmod`).
 pub fn mod_id(entry: &installed::Entry) -> Option<&str> {
+    if let Some(rest) = entry.file.strip_prefix(crate::native_mods::INSTALLED) {
+        return rest.strip_prefix('/')?.strip_suffix(".hnmod");
+    }
     let rest = entry.file.strip_prefix(java::MODS_DIR)?.strip_prefix('/')?;
     Some(rest.strip_suffix(".hmod").unwrap_or(rest))
 }
