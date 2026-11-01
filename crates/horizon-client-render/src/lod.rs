@@ -69,6 +69,9 @@ const WORLD_START: i32 = 1024 * 16;
 /// How many tile widths away from the camera a tile of the world-wide terrain
 /// splits (`Plan::visit`: cells then span about 1/48 of the distance).
 const WORLD_SPLIT: i32 = 3;
+/// A split tile stays split until its distance passes the threshold by this
+/// ratio (`Plan::visit`): 1 / 0.95.
+const RETURN: (i64, i64) = (20, 19);
 /// The farthest `Plan` reaches, in chunks.
 pub const MAX_CHUNKS: u32 = 1 << 22;
 /// The coarsest tile level whose chunks are generated in full (trees,
@@ -664,20 +667,36 @@ impl Plan {
         }
         // Keep distant cells small on screen; finest tiles retain individual
         // blocks. Reduced keeps them twice as large (a quarter of the cells).
-        let split = if previous.split.contains(&key) { 10 } else { 8 };
+        let held = previous.split.contains(&key);
+        let split = if held { 10 } else { 8 };
         // Beyond the old 1024-chunk limit the cells are as large as `reduced`'s:
         // the whole world is 22 levels, not all of them worth full cells.
-        let threshold = key.size()
-            * if key.distance(camera) >= WORLD_START {
+        let world = key.distance(camera) >= WORLD_START;
+        let threshold = i64::from(key.size())
+            * i64::from(if world {
                 WORLD_SPLIT
             } else if reduced {
                 split / 2
             } else {
                 split
-            };
+            });
+        // The 8 to 10 band above is wide already. The ring of full detail
+        // around the camera and the world-wide threshold have none: a tile
+        // split last plan stays split until it is 5% past them, or it
+        // flickered between two levels as the camera moved a block to and
+        // fro across the line.
+        let hold = |bound: i64| {
+            if held {
+                bound * RETURN.0 / RETURN.1
+            } else {
+                bound
+            }
+        };
+        let distance = i64::from(key.distance(camera));
         if key.level > 0
-            && (key.distance(camera) < detail * 16 + 16
-                || key.distance(camera).max(self.elevation) < threshold)
+            && (distance < hold(i64::from(detail) * 16 + 16)
+                || distance.max(i64::from(self.elevation))
+                    < if world { hold(threshold) } else { threshold })
         {
             self.split.insert(key);
             for child in key.children() {
@@ -3140,6 +3159,27 @@ mod tests {
         }
         assert!(retained > 100);
         assert!(after.nodes.len() < 16000);
+    }
+    #[test]
+    fn a_split_tile_stays_split_a_little_past_the_detail_ring() {
+        // Detail 40 puts the ring of full detail at 656 blocks, past where
+        // level 2 tiles split by their width (8 * 64 = 512): the ring alone
+        // splits this one, 640 blocks away.
+        let tile = TileKey {
+            x: 10,
+            z: 0,
+            level: 2,
+        };
+        let before = Plan::new([0, 0], 40, 256);
+        assert!(before.split.contains(&tile));
+        // 670 blocks: past the ring, inside 5% of it.
+        let held = Plan::with_previous([-30, 0], 40, 256, &before, 0, false);
+        assert!(held.split.contains(&tile));
+        // Not held without having been split: it was never in the ring.
+        assert!(!Plan::new([-30, 0], 40, 256).split.contains(&tile));
+        // 700 blocks: past the margin.
+        let gone = Plan::with_previous([-60, 0], 40, 256, &before, 0, false);
+        assert!(!gone.split.contains(&tile));
     }
     #[test]
     fn reduced_material_votes_ignore_light_and_retain_exposure() {
