@@ -184,6 +184,17 @@ fn body_anchor_y(m: &Mob, front: bool, height: f32, scale: f32) -> f64 {
     }
     base_sit_offset
 }
+/// `Camel.getLeashOffset` at the partial tick 0: the lead hangs from the
+/// front body anchor (sinking while the camel sits) less 0.2 scaled, and
+/// 0.56 of the width ahead.
+pub fn leash_offset(m: &Mob) -> [f64; 3] {
+    let scale = if m.is_baby() { 0.6 } else { 1.0 };
+    [
+        0.0,
+        body_anchor_y(m, true, m.height(), scale) - f64::from(0.2_f32 * scale),
+        f64::from(m.width() * 0.56),
+    ]
+}
 /// `Camel.getPassengerAttachmentPoint` of the one rider Horizon seats, before
 /// the camel's yaw turns it: half a block ahead (scaled by `getAgeScale`, 0.6
 /// for a baby) at the body anchor, which sinks while the camel sits. The
@@ -609,7 +620,7 @@ mod tests {
                 "{{id:\"minecraft:camel\",Pos:[0.0d,0.0d,0.0d],LastPoseTick:{tick}L}}"
             ))
             .unwrap();
-            let mut m = crate::entity_nbt::mob_from_nbt(&tag, &types, 2).unwrap();
+            let mut m = crate::entity_nbt::mob_from_nbt(&tag, &types, 2, None).unwrap();
             finish_load(&mut m, now);
             m
         };
@@ -628,7 +639,7 @@ mod tests {
         let (tag, _) =
             horizon_world::nbt::parse_snbt("{id:\"minecraft:camel\",Pos:[0.0d,0.0d,0.0d]}")
                 .unwrap();
-        let mut m = crate::entity_nbt::mob_from_nbt(&tag, &types, 2).unwrap();
+        let mut m = crate::entity_nbt::mob_from_nbt(&tag, &types, 2, None).unwrap();
         finish_load(&mut m, 5000);
         assert!(!refuse_to_move(&m));
     }

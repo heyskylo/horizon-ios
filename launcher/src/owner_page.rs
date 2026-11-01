@@ -31,10 +31,7 @@ impl Launcher {
 
     /// Closes it; it comes back with the next refused Play.
     fn close_owner_screen(&mut self) {
-        if let Some(s) = self.sign_in.take() {
-            s.cancel();
-        }
-        self.sign_in_state = None;
+        self.cancel_sign_in();
         self.owner_screen_open = false;
         if !self.settings.owner_notice_seen {
             self.settings.owner_notice_seen = true;
@@ -50,7 +47,8 @@ impl Launcher {
         let state = match &self.sign_in_state {
             _ if sign_in_preview() => Shown::Code("https://www.microsoft.com/link", "K7Q-4MXR"),
             _ if !configured => Shown::Error(tr(account::NOT_CONFIGURED)),
-            Some(SignInState::Starting) => Shown::Starting,
+            Some(SignInState::Starting) => Shown::Starting("Asking Microsoft…"),
+            Some(SignInState::Working(phase)) => Shown::Starting(phase.label()),
             Some(SignInState::Code(code)) => Shown::Code(&code.verification_uri, &code.user_code),
             Some(SignInState::Done(Err(e))) => Shown::Error(e),
             Some(SignInState::Done(Ok(_))) | None => Shown::Idle,
@@ -144,12 +142,9 @@ impl Launcher {
                         ),
                 )
             }
-            Shown::Starting => body.child(
-                raised().child(
-                    shell::text(theme::night::UI, shell::c(n.ink_soft))
-                        .child(tr("Asking Microsoft…").to_string()),
-                ),
-            ),
+            Shown::Starting(what) => body.child(raised().child(
+                shell::text(theme::night::UI, shell::c(n.ink_soft)).child(tr(what).to_string()),
+            )),
             Shown::Error(e) => body.child(
                 raised()
                     .child(shell::text(theme::night::UI, shell::c(n.danger)).child(e.to_string())),
@@ -165,7 +160,7 @@ impl Launcher {
                         .on_click(move |_, _, cx| cx.open_url(&uri)),
                 )
             }
-            Shown::Starting => None,
+            Shown::Starting(_) => None,
             Shown::Error(_) if !configured => None,
             _ => Some(
                 microsoft::sign_in_button("owner-sign-in", &t).on_click(cx.listener(
@@ -227,7 +222,7 @@ impl Launcher {
             .px(px(32.))
             .py(px(24.))
             .bg(plate::alpha(n.page, 0.8))
-            .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+            .on_scroll(|_, _, cx| cx.stop_propagation())
             .occlude()
             .child(card)
     }
@@ -237,7 +232,8 @@ impl Launcher {
 #[derive(Clone, Copy)]
 enum Shown<'a> {
     Idle,
-    Starting,
+    /// What the sign-in is doing.
+    Starting(&'static str),
     /// The page and the code to enter there.
     Code(&'a str, &'a str),
     Error(&'a str),

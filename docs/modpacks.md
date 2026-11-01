@@ -165,7 +165,7 @@ using the "Shape" column. What a content pack needs:
 |---|---|---|---|---|
 | Block registry: ids, states, properties, shapes, sounds, light | — | data and up (all 331) | **0.2** | declared in `data/<mod>/horizon/block/*.json`, each from a vanilla *template* block (below) |
 | Item registry, block items | — | data and up | **0.2** | `data/<mod>/horizon/item/*.json`, from a vanilla template item |
-| Mob effect registry: category, colour, name | — | data and up | **0.2** | `data/<mod>/horizon/mob_effect/*.json` ([mods.md](mods.md#content-mods-api-02)); no tick behaviour yet: that needs native hook points |
+| Mob effect registry: category, colour, icon, name | — | data and up | **0.2** | `data/<mod>/horizon/mob_effect/*.json` ([mods.md](mods.md#content-mods-api-02)); no tick behaviour yet: that needs native hook points |
 | Recipes, loot tables, tags, advancements, lang, blockstates, models, textures, sounds in the mod's namespace | vanilla namespace only | data and up | **0.2** | the 26.3 data-pack and resource-pack formats, as they are |
 | Worldgen JSON: features, structures, template pools, processors, structure NBT, biome additions | vanilla bundle only | about 30 data-tier structure and biome mods | 0.2.x | carried into the `worldgen/` bundle |
 | Block and item behaviour callbacks: use, place, break, attack, random tick, scheduled tick, neighbour change, entity inside | — | logic and up (253) | **0.3** | `server` interface; hooks per registered id, budgeted |
@@ -178,7 +178,7 @@ using the "Shape" column. What a content pack needs:
 | Accessory slots (what Curios does) | — | Curios users (6 require it, more use it optionally) | **0.4** | built-in slots API |
 | Mod networking between its client and server halves | — | machines and up | **0.4** | `net` interface |
 | Custom recipe types: machine recipes with their own JSON | — | machines and up | **0.4** | recipe-type registry: the mod declares its JSON schema and a display layout for the recipe viewer |
-| Entities: types, attributes, AI goals and brains, spawning | — | deep (87) | 0.5 | `entity` interface, AI in the mod with vanilla goals reusable |
+| Entities: types, attributes, AI goals and brains, spawning | — | deep (87) | 0.5 | `entity` interface, AI in the mod with vanilla goals reusable; thrown item projectiles are already data in 0.2 ([mods.md](mods.md)) |
 | Custom renderers and animated models (block-entity, entity, item; GeckoLib's format) | — | deep | 0.5 | data models (Bedrock geometry + animations), plus a budgeted draw-list interface for the rest |
 | Dimensions: dimension types, levels, chunk generators | — | about 10 (Twilight Forest, Aether, Ad Astra, Undergarden, ...) | 0.5 | JSON part with worldgen; custom generators as mod code |
 | New hooks into vanilla behaviour (what Mixins do) | — | deep | as asked | each becomes a named hook, added for everyone |
@@ -212,7 +212,7 @@ properties and shapes the new block takes, and overrides what differs:
 ```json
 {
   "template": "minecraft:iron_block",
-  "properties": { "hardness": 5.0, "explosion_resistance": 6.0, "sound": "minecraft:metal",
+  "properties": { "hardness": 5.0, "explosion_resistance": 6.0, "sounds": "minecraft:iron_block",
                   "map_color": 33, "light": 0, "requires_tool": true },
   "item": true
 }
@@ -291,9 +291,10 @@ How the game loads them, without touching vanilla's path:
   and a recipe that does not parse are logged and skipped: the block gets no model or the
   missing model, the recipe is absent, everything else loads. Vanilla's own files never hit
   these paths.
-- Not in 0.2: multiplayer registry sync (single player and the integrated server first), worlds
-  opened without a mod they used (vanilla turns unknown blocks into air; we will ask first),
-  vanilla ids redefined by a mod (refused).
+- Multiplayer works when the server and its players run the same content mods: a client whose
+  mods add different blocks, items, effects, entity types or menus is refused when it joins.
+- Not in 0.2: worlds opened without a mod they used (vanilla turns unknown blocks into air; we
+  will ask first), vanilla ids redefined by a mod (refused).
 
 ## The pipeline: `horizon-port-pack`
 
@@ -506,7 +507,9 @@ Two cases the oracle fills in:
   - `lithostitched:jigsaw`, MoogsStructureLib's and Repurposed Structures' generic jigsaws
     become `minecraft:jigsaw`;
   - their `advanced_random_spread` becomes `minecraft:random_spread`;
-  - their versioned, legacy and empty pool elements become vanilla's.
+  - their versioned, legacy and empty pool elements become vanilla's; Lithostitched's
+    `limited` and `guaranteed` elements are the game's own (its `delegating` places its
+    `delegate`).
 
   Three more rewrites make the mapped structures decode and start where their mod would:
   - **Block states.** 1.21.1 writes a block or fluid state as `{"Name", "Properties"}`, 26.3
@@ -573,6 +576,11 @@ Two cases the oracle fills in:
     CTOV's compat hooks for other mods (its `modular_compat`, 30 of them in 17 lists) become a
     `reference` when the mod they name is ported along, and are taken out (a no-op, as in the
     mod) when it is not. In ATM10 they all name Nature's Spirit, which the pack does not have.
+    Lithostitched's `add_template_pool_elements` and `add_processor_list_processors` modifiers
+    (CTOV's houses for 11 of ATM10's mods) become the game's additions, when the mods their
+    load conditions name are ported along. The houses are `limited` (at most once in a
+    village) or `guaranteed` (tried first, from the depth they name, until placed): the game
+    keeps both.
     In Java, Lithostitched also lays out every jigsaw structure its own way (villages,
     outposts, trial chambers; CTOV's villages are `lithostitched:jigsaw`, carried as vanilla's
     jigsaw). Horizon keeps vanilla's layouts, so with Lithostitched in a pack, structure layouts

@@ -65,9 +65,13 @@ pub fn single(from: &Mob, to: &mut Mob, params: Params) {
     // convertCommon.
     to.extra.effects = from.extra.effects.clone();
     to.extra.hidden_effects = from.extra.hidden_effects.clone();
+    to.extra.ambient_effects = from.extra.ambient_effects.clone();
     if from.is_baby() {
-        // setBaby(true); an ageable pair keeps the exact age.
-        to.extra.age = from.extra.age;
+        super::finalize::set_baby(to, true);
+    }
+    // An ageable pair keeps the exact age, an adult's breeding cooldown too.
+    if super::finalize::ageable(from.species()) && super::finalize::ageable(to.species()) {
+        super::finalize::set_age(to, from.extra.age);
         to.extra.forced_age = from.extra.forced_age;
         to.extra.forced_age_timer = from.extra.forced_age_timer;
     }

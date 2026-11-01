@@ -26,24 +26,26 @@ impl Game<'_> {
     /// `Consumable.startConsuming`: positive durations begin a held use;
     /// zero-tick consumables execute onConsume in this interaction, not a later tick.
     pub(super) fn start_eating(&mut self, info: &ItemInfo) -> bool {
+        let Some(stack) = self.held().cloned() else {
+            return false;
+        };
         let Some(consumable) = info.consumable.as_ref() else {
             return false;
         };
         if info.food.is_some()
-            && !self
-                .player
-                .as_ref()
-                .is_some_and(|p| info.can_always_eat || p.health.food.food < 20 || self.creative)
+            && (self.player.is_none() || !self.can_eat(&stack, info.can_always_eat))
         {
             return false;
         }
-        if consumable.ticks() <= 0 {
-            let Some(stack) = self.held().cloned() else {
-                return false;
-            };
-            self.complete_consuming(info, consumable, &stack);
-        } else if self.using.is_none() {
-            self.using = Some((self.held_slot(), 0));
+        if super::item_use::consumes_at_once(consumable.ticks()) {
+            // Instant use is authoritative on the server; a connected client
+            // receives its resulting inventory instead of consuming twice.
+            if self.remote.is_none() {
+                self.complete_consuming(info, consumable, &stack);
+            }
+        } else {
+            // Also initializes the duration and lets native use hooks adjust it.
+            self.start_using_item();
         }
         true
     }

@@ -39,6 +39,13 @@ impl Game<'_> {
             }
         }
         let boats: std::collections::HashSet<u32> = self.boats.iter().map(|b| b.id).collect();
+        let carts: std::collections::HashSet<u32> = self.carts.iter().map(|c| c.id).collect();
+        let tnts: std::collections::HashSet<u32> = self
+            .tnts
+            .iter()
+            .map(|t| t.id)
+            .filter(|&id| id != 0)
+            .collect();
         let index: HashMap<u32, usize> = self
             .mobs
             .iter()
@@ -55,6 +62,8 @@ impl Game<'_> {
             let valid = self.mobs[i].alive()
                 && !self.mobs[i].removed
                 && (boats.contains(&v)
+                    || carts.contains(&v)
+                    || tnts.contains(&v)
                     || index
                         .get(&v)
                         .is_some_and(|&j| self.mobs[j].alive() && !self.mobs[j].removed));
@@ -76,6 +85,8 @@ impl Game<'_> {
     /// no passenger's position.
     pub(super) fn position_riders(&mut self) {
         self.seat_boat_mobs();
+        self.seat_cart_mobs();
+        self.seat_tnt_mobs();
         let index: HashMap<u32, usize> = self
             .mobs
             .iter()
@@ -170,31 +181,55 @@ impl Game<'_> {
                 }
             }
         }
-        // Armor stands riding a mob or the local player (a server's name tag
-        // hologram): seated like the displays above, so the name follows its
-        // vehicle instead of staying where the stand spawned. The stand's own
-        // vehicle attachment is the default 0, so its feet sit on the seat.
+        // Armor stands riding a mob (a server's name tag hologram): seated
+        // like the displays above, so the name follows its vehicle instead of
+        // staying where the stand spawned. The stand's own vehicle attachment
+        // is the default 0, so its feet sit on the seat. The seat at the
+        // start of the tick too (`commonTick` runs before `rideTick`), so the
+        // stand is drawn between the two even while the level is frozen and
+        // its vehicle is not. Those riding the local player are seated after
+        // its move (`seat_own_stands`).
         for i in 0..self.armor_stands.len() {
             let Some(vehicle) = self.armor_stands[i].vehicle else {
                 continue;
             };
-            let at = if Some(vehicle) == me {
-                let Some(at) = own_seat else { continue };
-                at
-            } else {
-                let Some(&j) = index.get(&vehicle) else {
-                    continue;
-                };
-                let vehicle = &self.mobs[j];
-                riders::seat(
-                    riders::passenger_attachment(vehicle),
-                    0.0,
-                    vehicle.position,
-                    vehicle.yaw,
-                )
+            let Some(&j) = index.get(&vehicle).filter(|_| Some(vehicle) != me) else {
+                continue;
             };
+            let vehicle = &self.mobs[j];
+            let attach = riders::passenger_attachment(vehicle);
+            let at = riders::seat(attach, 0.0, vehicle.position, vehicle.yaw);
+            let before = riders::seat(attach, 0.0, vehicle.previous, vehicle.previous_yaw);
             let stand = &mut self.armor_stands[i];
             stand.position = at;
+            stand.previous = before;
+            stand.velocity = Vec3::ZERO;
+        }
+    }
+
+    /// Armor stands riding the local player, on the top of its box. Vanilla
+    /// ticks the player (`tickNonPassenger`) before its passengers
+    /// (`tickPassenger` -> `positionRider`), so a rider's `xo` and `x` are the
+    /// seats before and after the same move: call this after the player's.
+    pub(super) fn seat_own_stands(&mut self) {
+        let (Some(me), Some(p)) = (
+            self.remote.as_ref().map(|r| r.entity_id as u32),
+            self.player.as_ref(),
+        ) else {
+            return;
+        };
+        let up = Vec3::new(0.0, f64::from(p.dimensions.height), 0.0);
+        let (at, before) = (
+            p.position.add_vector(up),
+            self.previous_position.add_vector(up),
+        );
+        for stand in self
+            .armor_stands
+            .iter_mut()
+            .filter(|a| a.vehicle == Some(me))
+        {
+            stand.position = at;
+            stand.previous = before;
             stand.velocity = Vec3::ZERO;
         }
     }
@@ -364,7 +399,7 @@ impl Game<'_> {
             at[2].floor() as i32,
         );
         let frequent = self.world.chunks.get(&(x >> 4, z >> 4)).is_some_and(|c| {
-            let b = self.res.biomes().get(c.biome(x, y, z));
+            let b = world_biomes!(self).get(c.biome(x, y, z));
             self.res
                 .mob_data()
                 .biome_has("minecraft:more_frequent_drowned_spawns", &b.name)

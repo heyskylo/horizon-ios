@@ -1,5 +1,7 @@
 //! `PistonMovingBlockEntity.moveCollidedEntities` and `moveStuckEntities` for
-//! the entities the game moves itself: the players and the mobs.
+//! the entities the game moves itself: the players and the mobs. The shulker
+//! box lid's push (`ShulkerBoxBlockEntity.moveCollidedEntities`) rides along,
+//! with `Entity.move(MoverType.SHULKER_BOX, …)` taking the same path.
 //!
 //! The geometry is in [`horizon_world::piston_push`]; this file supplies the
 //! bodies and applies the movement the way `Entity.move(MoverType.PISTON, …)`
@@ -9,7 +11,7 @@
 //!
 use super::Game;
 use horizon_client::collisions::{EntityCollisions, SceneCollisions, with_piston_noclip};
-use horizon_core::geometry::{Aabb, Direction, Vec3, border::BorderGeometry};
+use horizon_core::geometry::{Aabb, Axis, Direction, ShapeOp, Vec3, border::BorderGeometry};
 use horizon_core::position::BlockPos;
 use horizon_world::{
     block_collision_scan::BlockCollisionWorld, level::pistons::MovingPiston,
@@ -19,6 +21,11 @@ use horizon_world::{
 /// What one piston asks for this tick: where it is, its state, and the progress
 /// `moveCollidedEntities` runs at (before the tick stores it).
 pub(super) type Push = (BlockPos, MovingPiston, f32);
+
+/// What one shulker box asks for this tick (`moveCollidedEntities`): where it
+/// is, its facing as a 3D data value, and the lid box it swept
+/// (`Shulker.getProgressDeltaAabb`).
+pub(super) type ShulkerPush = ([i32; 3], u8, [f64; 6]);
 
 /// Which entity was pushed, so its storage can be reached after the world
 /// borrow ends.
@@ -59,6 +66,61 @@ impl Game<'_> {
         let mut accumulators = std::collections::HashMap::new();
         for push in pushes {
             self.push_for_piston(push, &mut accumulators);
+        }
+    }
+
+    /// `ShulkerBoxBlockEntity.moveCollidedEntities` for the bodies this game
+    /// moves itself: every entity the sweeping lid box meets moves out along
+    /// the box's facing by the box's own size plus 0.01
+    /// (`Entity.move(MoverType.SHULKER_BOX, …)`).
+    pub(super) fn push_shulker_entities(&mut self, pushes: Vec<ShulkerPush>) {
+        let steps = self.push_step_heights();
+        for (pos, facing, lid) in pushes {
+            self.push_for_shulker(pos, facing, lid, &steps);
+        }
+    }
+
+    /// One box's push, a body at a time. The move resolves as a piston's does
+    /// (`Entity.move` stops at the blocks and the world border), without a
+    /// piston's per-tick travel limit or its noclip.
+    fn push_for_shulker(&mut self, pos: [i32; 3], facing: u8, lid: [f64; 6], steps: &StepHeights) {
+        let direction = Direction::ALL[usize::from(facing) % Direction::ALL.len()];
+        let [x, y, z] = direction.normal();
+        let movement = Vec3::new(
+            (lid[3] - lid[0] + 0.01) * f64::from(x),
+            (lid[4] - lid[1] + 0.01) * f64::from(y),
+            (lid[5] - lid[2] + 0.01) * f64::from(z),
+        );
+        let area = Aabb::new(
+            Vec3::new(lid[0], lid[1], lid[2]),
+            Vec3::new(lid[3], lid[4], lid[5]),
+        );
+        let at = BlockPos::new(pos[0], pos[1], pos[2]);
+        for target in self.push_targets() {
+            let Some(body) = self.push_body(target, at, steps) else {
+                continue;
+            };
+            if !body.bounds.intersects(area) {
+                continue;
+            }
+            let Ok(moved) = pushed_movement(
+                SceneCollisions {
+                    world: &self.world,
+                    binding: &self.collision,
+                    subject: None,
+                },
+                self.border.geometry(),
+                [body.position.x, body.position.z],
+                body.bounds,
+                movement,
+                body.step_height,
+                body.on_ground,
+            ) else {
+                continue;
+            };
+            if moved.length_squared() > 0.0 {
+                self.apply_push(target, moved);
+            }
         }
     }
 
@@ -202,6 +264,55 @@ impl Game<'_> {
                     );
                 }
             }
+        }
+    }
+
+    /// `Block.pushEntitiesUp(old, new, level, pos)` for the block now at `pos`
+    /// (`FarmlandBlock.turnToBaseBlock`, `PathBlock.turnToBaseBlock`): every body
+    /// touching the collision that the new state adds over `old` is lifted
+    /// onto it with `teleportRelative`, no collision scan.
+    pub(super) fn push_entities_up(
+        &mut self,
+        pos: BlockPos,
+        old: horizon_world::registry::BlockStateId,
+    ) {
+        let new = self.world.block(pos.x, pos.y, pos.z);
+        if new == old {
+            return;
+        }
+        let at = [pos.x, pos.y, pos.z];
+        let shape = |state| {
+            let mut scene = SceneCollisions {
+                world: &self.world,
+                binding: &self.collision,
+                subject: None,
+            };
+            self.collision.collision_shape(&mut scene, state, at).ok()
+        };
+        let (Some(old_shape), Some(new_shape)) = (shape(old), shape(new)) else {
+            return;
+        };
+        let Ok(added) = old_shape.join_unoptimized(&new_shape, ShapeOp::ONLY_SECOND) else {
+            return;
+        };
+        let added = added.moved(Vec3::new(
+            f64::from(pos.x),
+            f64::from(pos.y),
+            f64::from(pos.z),
+        ));
+        let Some(bounds) = added.bounds() else {
+            return;
+        };
+        let steps = self.push_step_heights();
+        for target in self.push_targets() {
+            let Some(body) = self.push_body(target, pos, &steps) else {
+                continue;
+            };
+            if !body.bounds.intersects(bounds) {
+                continue;
+            }
+            let dy = added.collide(Axis::Y, body.bounds.move_by(Vec3::new(0.0, 1.0, 0.0)), -1.0);
+            self.apply_push(target, Vec3::new(0.0, 1.0 + dy, 0.0));
         }
     }
 
@@ -396,6 +507,12 @@ impl Game<'_> {
             )
             .unwrap_or(Vec3::ZERO)
         });
+        // Entity.move updates an authoritative living entity's ground flag
+        // even for a horizontal piston push. Keeping the old support flag
+        // would run Frost Walker while the stand is moving over open water.
+        if let Target::ArmorStand(i) = target {
+            self.armor_stands[i].on_ground = limited.y < 0.0 && limited.y != resolved.y;
+        }
         if resolved.length_squared() <= 1.0e-7
             && limited.length_squared() - resolved.length_squared() >= 1.0e-7
         {

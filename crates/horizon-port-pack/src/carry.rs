@@ -532,8 +532,8 @@ fn extra_namespaces(
     pack_mod: &dyn Fn(&str) -> bool,
 ) -> Vec<String> {
     let mut candidates = BTreeSet::new();
-    for name in zip.file_names() {
-        if let Some((_, ns, _)) = split(name)
+    for name in zip.file_names().filter_map(Result::ok) {
+        if let Some((_, ns, _)) = split(&name)
             && ns != id
             && !NOT_CLAIMED.contains(&ns)
             && !pack_mod(ns)
@@ -550,7 +550,10 @@ fn extra_namespaces(
         let Ok(mut entry) = zip.by_index(i) else {
             continue;
         };
-        let Some((root, ns, rest)) = split(entry.name()) else {
+        let Ok(name) = entry.name().map(|n| n.into_owned()) else {
+            continue;
+        };
+        let Some((root, ns, rest)) = split(&name) else {
             continue;
         };
         let ns = match () {
@@ -559,7 +562,7 @@ fn extra_namespaces(
             _ => continue,
         };
         let mut bytes = Vec::new();
-        if entry.name().ends_with(".json") && entry.read_to_end(&mut bytes).is_ok() {
+        if name.ends_with(".json") && entry.read_to_end(&mut bytes).is_ok() {
             texts.push((ns, bytes));
         }
     }
@@ -750,7 +753,7 @@ pub fn carry(
         .collect();
     for i in 0..zip.len() {
         let mut entry = zip.by_index(i).map_err(|e| e.to_string())?;
-        let name = entry.name().to_owned();
+        let name = entry.name().map_err(|e| e.to_string())?.into_owned();
         let Some(keep) = place(&name, &owned) else {
             continue;
         };

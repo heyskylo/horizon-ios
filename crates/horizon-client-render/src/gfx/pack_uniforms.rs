@@ -30,6 +30,8 @@ pub struct PackInputs {
     pub biome_precipitation: i32,
     pub temperature: f32,
     pub rainfall: f32,
+    /// Whether the biome at the camera is known (its chunk is loaded).
+    pub biome_known: bool,
     /// `heldItemId`, `heldItemId2` (item.properties, 5.3) and `heldBlockLightValue(2)`.
     pub held_items: [i32; 2],
     pub held_light: [i32; 2],
@@ -48,6 +50,29 @@ pub struct PackInputs {
     pub end_flash_position: Vec3,
     /// The End flash's interpolated intensity, 0 outside the End.
     pub end_flash_intensity: f32,
+    /// `isRightHanded` (the Main Hand option) and `is_on_ground`.
+    pub right_handed: bool,
+    pub on_ground: bool,
+    /// The dimension type's lowest block (`bedrockLevel`), build height (`heightLimit`),
+    /// logical height, sky light and ceiling.
+    pub min_y: i32,
+    pub height: i32,
+    pub logical_height: i32,
+    pub has_skylight: bool,
+    pub has_ceiling: bool,
+    /// The values native mods hand their packs (`frame.mods`, `native_shader_params`).
+    pub mod_params: [[f32; 4]; 8],
+}
+
+/// The `cloudHeight` uniform. Vanilla reads `visual/cloud_height` only while the cloud color
+/// has alpha (`LevelExtractor`); a dimension without clouds has no height, which the uniform
+/// reports as NaN. NaN is not vanilla's own value: packs map it to "no clouds".
+pub fn cloud_height(cloud_color_alpha: f32, height: f32) -> f32 {
+    if crate::clouds::has_color(cloud_color_alpha) {
+        height
+    } else {
+        f32::NAN
+    }
 }
 
 /// One uniform's value: up to 16 floats or 3 integers.
@@ -189,6 +214,15 @@ pub const NAMES: &[&str] = &[
     "shadowModelViewInverse",
     "shadowProjection",
     "shadowProjectionInverse",
+    "playerBodyVector",
+    "firstPersonCamera",
+    "isRightHanded",
+    "is_on_ground",
+    "bedrockLevel",
+    "heightLimit",
+    "logicalHeightLimit",
+    "hasSkylight",
+    "hasCeiling",
 ];
 
 /// Values carried from frame to frame.
@@ -265,7 +299,7 @@ pub fn shadow_culling(frame: &Frame, shadow: &Shadow) -> Mat4 {
 
 /// How far toward the light the shadow projection starts, in blocks: part of the projection,
 /// not of `shadowModelView` (Iris's matrices, measured).
-const SHADOW_EYE: f32 = 100.0;
+pub const SHADOW_EYE: f32 = 100.0;
 
 /// The shadow camera as Iris places it (7.1; measured from the outside): its view (player
 /// space to shadow view space) and GL projection. The view undoes `sunPathRotation`, turns the
@@ -284,7 +318,12 @@ pub fn shadow_camera(light: Vec3, camera: DVec3, shadow: &Shadow) -> (Mat4, Mat4
         * DMat4::from_rotation_x(tilt);
     let step = f64::from(shadow.interval);
     let origin = if step > 0.0 {
-        DVec3::splat(step / 2.0) - camera % step
+        let remainder = if shadow.euclidean_snap {
+            camera.rem_euclid(DVec3::splat(step))
+        } else {
+            camera % step
+        };
+        DVec3::splat(step / 2.0) - remainder
     } else {
         DVec3::ZERO
     };
@@ -451,7 +490,7 @@ impl FrameUniforms {
                 "previousCameraPositionFract" => v3(previous_fract),
                 "eyePosition" => v3((inputs.eye_position - self.camera_origin).as_vec3()),
                 "relativeEyePosition" => v3((frame.camera - inputs.eye_position).as_vec3()),
-                "playerLookVector" => v3(inputs.player_look),
+                "playerLookVector" | "playerBodyVector" => v3(inputs.player_look),
                 "isElytraFlying" => Value::i(&[inputs.elytra_flying as i32]),
                 "playerMood" => Value::f(&[inputs.player_mood]),
                 "cloudHeight" => Value::f(&[inputs.cloud_height]),
@@ -459,6 +498,14 @@ impl FrameUniforms {
                 "heavyFog" => Value::i(&[inputs.heavy_fog as i32]),
                 "endFlashPosition" => v3(end_flash),
                 "endFlashIntensity" => Value::f(&[inputs.end_flash_intensity]),
+                "firstPersonCamera" => Value::i(&[i32::from(frame.first_person)]),
+                "isRightHanded" => Value::i(&[i32::from(inputs.right_handed)]),
+                "is_on_ground" => Value::i(&[i32::from(inputs.on_ground)]),
+                "bedrockLevel" => Value::i(&[inputs.min_y]),
+                "heightLimit" => Value::i(&[inputs.height]),
+                "logicalHeightLimit" => Value::i(&[inputs.logical_height]),
+                "hasSkylight" => Value::i(&[i32::from(inputs.has_skylight)]),
+                "hasCeiling" => Value::i(&[i32::from(inputs.has_ceiling)]),
                 "eyeAltitude" => Value::f(&[frame.camera.y as f32]),
                 "upPosition" => v3(to_view(Vec3::new(0.0, 100.0, 0.0))),
                 "sunPosition" => v3(sun),
@@ -577,6 +624,7 @@ fn components(name: &str) -> usize {
         | "eyePosition"
         | "relativeEyePosition"
         | "playerLookVector"
+        | "playerBodyVector"
         | "upPosition"
         | "sunPosition"
         | "moonPosition"
@@ -884,6 +932,25 @@ mod tests {
         Value::f(&[1.5, -6.0, 0.5, 1.0]).write("vec4", &mut out, 16);
         let w = f32::from_ne_bytes(out[28..32].try_into().unwrap());
         assert_eq!(w, 1.0);
+    }
+
+    #[test]
+    fn cloud_height_needs_a_cloud_color() {
+        assert_eq!(cloud_height(0.8, 192.33), 192.33);
+        assert_eq!(cloud_height(0.8, 120.0), 120.0);
+        assert!(cloud_height(0.0, 192.33).is_nan());
+    }
+
+    #[test]
+    fn elytra_and_cloud_height_uniforms_are_written() {
+        assert!(NAMES.contains(&"isElytraFlying") && NAMES.contains(&"cloudHeight"));
+        let mut out = vec![0u8; 16];
+        Value::i(&[1]).write("bool", &mut out, 0);
+        assert_eq!(i32::from_ne_bytes(out[0..4].try_into().unwrap()), 1);
+        Value::f(&[192.33]).write("float", &mut out, 4);
+        assert_eq!(f32::from_ne_bytes(out[4..8].try_into().unwrap()), 192.33);
+        Value::f(&[f32::NAN]).write("float", &mut out, 8);
+        assert!(f32::from_ne_bytes(out[8..12].try_into().unwrap()).is_nan());
     }
 
     #[test]

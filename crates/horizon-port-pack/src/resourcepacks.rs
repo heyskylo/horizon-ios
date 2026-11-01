@@ -89,19 +89,41 @@ fn regular(path: &Path) -> Result<fs::Metadata, String> {
     Ok(meta)
 }
 
-/// Creates only ordinary directories, refusing links in an existing destination's ancestry.
-pub(crate) fn directory(path: &Path) -> Result<(), String> {
-    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
-        directory(parent)?;
-    }
-    match fs::symlink_metadata(path) {
-        Ok(m) if m.is_dir() && !m.is_symlink() => Ok(()),
-        Ok(_) => Err(format!("{}: not an ordinary directory", path.display())),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            fs::create_dir(path).map_err(|e| format!("{}: {e}", path.display()))
+/// Creates `path` and its missing parents below `base` (the import's work folder or the player's
+/// home) as ordinary directories. A link between `base` and `path` is refused: it could send the
+/// packs out of that folder. Links at or above `base` are the player's own layout and are accepted
+/// (Fedora Silverblue's `/home` is a link to `/var/home`, macOS's `/var` to `/private/var`).
+pub(crate) fn directory(base: &Path, path: &Path) -> Result<(), String> {
+    let below = path
+        .strip_prefix(base)
+        .map_err(|_| format!("{}: not inside {}", path.display(), base.display()))?;
+    fs::create_dir_all(base).map_err(|e| format!("{}: {e}", base.display()))?;
+    let real_base = base
+        .canonicalize()
+        .map_err(|e| format!("{}: {e}", base.display()))?;
+    let mut at = base.to_path_buf();
+    for part in below.components() {
+        let std::path::Component::Normal(part) = part else {
+            return Err(format!("{}: not a plain path", path.display()));
+        };
+        at.push(part);
+        match fs::symlink_metadata(&at) {
+            Ok(m) if m.is_dir() && !m.is_symlink() => {}
+            Ok(_) => return Err(format!("{}: not an ordinary directory", at.display())),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                fs::create_dir(&at).map_err(|e| format!("{}: {e}", at.display()))?
+            }
+            Err(e) => return Err(format!("{}: {e}", at.display())),
         }
-        Err(e) => Err(format!("{}: {e}", path.display())),
     }
+    // Every step was checked above; the resolved paths say the same, whatever changed meanwhile.
+    let real = path
+        .canonicalize()
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    if !real.starts_with(&real_base) {
+        return Err(format!("{}: leaves {}", path.display(), base.display()));
+    }
+    Ok(())
 }
 
 type Files = BTreeMap<String, Vec<u8>>;
@@ -224,8 +246,10 @@ fn groups(files: Files) -> BTreeMap<String, Files> {
     groups
 }
 
+/// Copies one pack into `root`, the `resourcepacks` folder of a work folder or a home.
 fn publish(root: &Path, name: &str, files: &Files) -> Result<Outcome, String> {
-    directory(root)?;
+    let base = root.parent().ok_or("no resource-pack folder parent")?;
+    directory(base, root)?;
     let target = root.join(name);
     for entry in fs::read_dir(root).map_err(|e| e.to_string())? {
         let entry = entry.map_err(|e| e.to_string())?;
@@ -264,7 +288,7 @@ fn publish(root: &Path, name: &str, files: &Files) -> Result<Outcome, String> {
     }
     for (relative, bytes) in files {
         let dest = root.join(relative);
-        directory(dest.parent().ok_or("no resource-pack parent")?)?;
+        directory(base, dest.parent().ok_or("no resource-pack parent")?)?;
         let mut file = match fs::OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -369,7 +393,7 @@ pub fn stage(source: &Path, work: &Path, pack: &import::Pack) -> Result<Report, 
             let mut layer = Files::new();
             for i in 0..zip.len() {
                 let entry = zip.by_index(i).map_err(|e| e.to_string())?;
-                let raw = entry.name().to_owned();
+                let raw = entry.name().map_err(|e| e.to_string())?.into_owned();
                 if raw.starts_with(&format!("{root}/shaderpacks/")) {
                     report.set(
                         "shaderpacks/",
@@ -470,7 +494,7 @@ fn fetch_with(
                 .filter(|h| h.len() == 40 && h.bytes().all(|c| c.is_ascii_hexdigit()))
                 .ok_or("resource-pack download has no valid SHA-1")?;
             let root = work.join("resourcepacks");
-            directory(&root)?;
+            directory(work, &root)?;
             let dest = root.join(file.file_name());
             match fs::symlink_metadata(&dest) {
                 Ok(_) => {

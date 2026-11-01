@@ -48,7 +48,8 @@ impl Launcher {
             }
             true => {
                 let path = home.join("logs/latest.log");
-                std::fs::read_to_string(&path).map_err(|_| "There is no log to share yet.")?
+                std::fs::read_to_string(&path)
+                    .map_err(|_| tr("There is no log to share yet.").to_string())?
             }
         };
         Ok((text, vec![home, backend::game_home()]))
@@ -118,8 +119,14 @@ impl Launcher {
         let header = text(theme::CAPTION)
             .text_color(t.muted)
             .child(match self.client {
-                Some(_) => format!("{count} lines, the game is running"),
-                None => format!("{count} lines from the last run"),
+                Some(_) => trf(
+                    "{count} lines, the game is running",
+                    &[("count", &count.to_string())],
+                ),
+                None => trf(
+                    "{count} lines from the last run",
+                    &[("count", &count.to_string())],
+                ),
             });
         let mut section = div().flex().flex_col().gap(px(10.));
         let search = self.servers.value(Field::ConsoleSearch).trim().to_string();
@@ -141,7 +148,11 @@ impl Launcher {
             .gap(px(8.))
             .cursor_pointer()
             .child(switch("console-follow-switch", self.console.follow, &t))
-            .child(text(theme::LABEL).text_color(t.ink_soft).child("Follow"))
+            .child(
+                text(theme::LABEL)
+                    .text_color(t.ink_soft)
+                    .child(tr("Follow")),
+            )
             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                 this.console.follow = !this.console.follow;
                 this.console.seen.0 = usize::MAX;
@@ -153,7 +164,7 @@ impl Launcher {
             .flex_wrap()
             .items_center()
             .gap(px(10.))
-            .child(self.field(Field::ConsoleSearch, "Search the log", 260., cx))
+            .child(self.field(Field::ConsoleSearch, tr("Search the log"), 260., cx))
             .child(follow)
             .child(div().flex_1())
             .child(
@@ -199,12 +210,12 @@ impl Launcher {
                     .px(px(14.))
                     .py(px(10.))
                     .child(div().flex_1().min_w_0().child(
-                        text(theme::CAPTION).text_color(t.ink_soft).child(
+                        text(theme::CAPTION).text_color(t.ink_soft).child(tr(
                             "Upload this log to mclo.gs, a paste service for Minecraft logs? \
                              Anyone with the link can read it, until it is deleted or unread \
                              for 90 days. Your home folder, user name and account names are \
                              taken out first.",
-                        ),
+                        )),
                     ))
                     .child(
                         button("console-share-no", "Cancel", Kind::Ghost, &t).on_click(
@@ -226,7 +237,11 @@ impl Launcher {
         }
         match &self.console.shared {
             _ if self.console.sharing => {
-                section = section.child(text(theme::CAPTION).text_color(t.muted).child("Sending…"))
+                section = section.child(
+                    text(theme::CAPTION)
+                        .text_color(t.muted)
+                        .child(tr("Sending…")),
+                )
             }
             Some(Ok(shared)) => {
                 let (url, open_url) = (shared.url.clone(), shared.url.clone());
@@ -238,7 +253,7 @@ impl Launcher {
                         .child(
                             text(theme::CAPTION)
                                 .text_color(t.ink_soft)
-                                .child(format!("Shared: {url}")),
+                                .child(trf("Shared: {url}", &[("url", &url)])),
                         )
                         .child(
                             button("console-link-copy", "Copy link", Kind::Ghost, &t).on_click(

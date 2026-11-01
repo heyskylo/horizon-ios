@@ -211,7 +211,8 @@ fn commands_need_allow_commands() {
         .into_iter()
         .map(|s| s.text)
         .collect();
-    // Commands.java with CommandSelection.INTEGRATED: seed and version need no level.
+    // Commands.java with CommandSelection.INTEGRATED: seed and version need no
+    // level (a dedicated server's tree: a_dedicated_server_keeps_seed_and_version_for_game_masters).
     assert_eq!(
         root,
         [
@@ -752,6 +753,41 @@ fn profile_commands_parse_like_vanilla() {
     }
 }
 #[test]
+fn the_dedicated_commands_complete_from_the_servers_lists() {
+    // OpCommand, DeOpCommands, PardonCommand, PardonIpCommand and WhitelistCommand: the server answers from
+    // its own lists (vanilla's `.suggests(...)`, javap on the pinned 26.3 classes), not from the registries'
+    // default of the one local player.
+    let reg = Registries {
+        permission: 4,
+        players: vec!["Alex".into(), "Steve".into(), "Zed".into()],
+        ops: vec!["steve".into()],
+        banned_players: vec!["Griefer".into()],
+        banned_ips: vec!["203.0.113.9".into()],
+        whitelisted: vec!["Alex".into(), "Old".into()],
+        ..reg()
+    };
+    let d = vanilla::game_tree(false, false, true);
+    let suggest = |input: &str| -> Vec<String> {
+        let parse = d.parse(input, &reg);
+        d.suggestions(&parse, input.len(), &reg)
+            .1
+            .into_iter()
+            .map(|s| s.text)
+            .collect()
+    };
+    // Only the online players who are not operators (the match ignores case).
+    assert_eq!(suggest("op "), ["Alex", "Zed"]);
+    assert_eq!(suggest("op z"), ["Zed"]);
+    assert_eq!(suggest("deop "), ["steve"]);
+    assert_eq!(suggest("pardon "), ["Griefer"]);
+    assert_eq!(suggest("pardon-ip "), ["203.0.113.9"]);
+    // Add offers the online players who are not whitelisted; remove offers the list, online or not.
+    assert_eq!(suggest("whitelist add "), ["Steve", "Zed"]);
+    assert_eq!(suggest("whitelist remove "), ["Alex", "Old"]);
+    // Nothing else changed: ban still completes by the argument type, with the selectors.
+    assert!(suggest("ban ").contains(&"@a".to_owned()));
+}
+#[test]
 fn only_a_dedicated_server_has_the_dedicated_commands() {
     // Commands.CommandSelection: an integrated server (single player, a LAN
     // world) registers no /op, /ban, /ban-ip, /banlist, /pardon, /pardon-ip,
@@ -774,12 +810,72 @@ fn only_a_dedicated_server_has_the_dedicated_commands() {
                 assert!(integrated.find(name).is_none(), "{name}");
                 assert!(server.find(name).is_some(), "{name}");
             }
+            // includeIntegrated: /publish and /unpublish are the integrated
+            // server's alone.
+            for name in ["publish", "unpublish"] {
+                assert!(integrated.find(name).is_some(), "{name}");
+                assert!(server.find(name).is_none(), "{name}");
+            }
             assert_eq!(
                 server.nodes[0].children.len(),
-                integrated.nodes[0].children.len() + dedicated.len()
+                integrated.nodes[0].children.len() + dedicated.len() - 2
             );
         }
     }
     assert!(vanilla::game_dispatcher().find("ban").is_none());
     assert!(vanilla::release_dispatcher().find("ban").is_none());
+}
+/// The root literals a player at `level` is offered (the chat's, client tree).
+fn root_commands(d: &Dispatcher, level: u8) -> Vec<String> {
+    let reg = Registries {
+        permission: level,
+        ..reg()
+    };
+    let parse = d.parse("", &reg);
+    d.client_suggestions(&parse, 0, &reg)
+        .1
+        .into_iter()
+        .map(|s| s.text)
+        .collect()
+}
+#[test]
+fn a_dedicated_server_keeps_seed_and_version_for_game_masters() {
+    // Commands.java: SeedCommand.register(dispatcher, selection != INTEGRATED)
+    // and VersionCommand likewise; `checkPermissions` makes them require
+    // LEVEL_GAMEMASTERS instead of LEVEL_ALL. A dedicated server's player
+    // without op gets neither (a seed cracker's input on an SMP).
+    for dev in [false, true] {
+        for horizon in [false, true] {
+            let integrated = vanilla::game_tree(dev, horizon, false);
+            let server = vanilla::game_tree(dev, horizon, true);
+            let open = root_commands(integrated, 0);
+            assert!(open.contains(&"seed".to_owned()), "{open:?}");
+            assert!(open.contains(&"version".to_owned()), "{open:?}");
+            assert_eq!(
+                root_commands(server, 0),
+                [
+                    "help", "list", "me", "msg", "random", "teammsg", "tell", "tm", "trigger", "w"
+                ]
+            );
+            let gm = root_commands(server, 2);
+            assert!(gm.contains(&"seed".to_owned()), "{gm:?}");
+            assert!(gm.contains(&"version".to_owned()), "{gm:?}");
+            for line in ["seed", "version"] {
+                let player = Registries {
+                    permission: 0,
+                    ..reg()
+                };
+                // Brigadier: a node the source can't use is no node at all.
+                let e = server.parse(line, &player).executable().unwrap_err();
+                assert_eq!(e.message.plain(), "command.unknown.command", "{line}");
+                assert_eq!(e.input.as_deref(), Some(line), "{line}");
+                assert!(integrated.parse(line, &player).executable().is_ok());
+                let op = Registries {
+                    permission: 2,
+                    ..reg()
+                };
+                assert_eq!(server.parse(line, &op).executable().unwrap().1, line);
+            }
+        }
+    }
 }

@@ -258,13 +258,20 @@ impl EntityOutline {
         frame: &wgpu::TextureView,
         entity_group: &wgpu::BindGroup,
         indices: &wgpu::Buffer,
+        mut timing: Option<&mut super::pack_timing::PassTiming>,
     ) {
         let Some(t) = self.targets.as_ref().filter(|_| self.quads > 0) else {
             return;
         };
         let clear = wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT);
         {
-            let mut pass = begin(encoder, "Entity outline", &t.outline, clear);
+            let mut pass = begin(
+                encoder,
+                "Entity outline",
+                &t.outline,
+                clear,
+                timing.as_deref_mut(),
+            );
             pass.set_pipeline(&self.silhouette);
             pass.set_bind_group(0, entity_group, &[]);
             pass.set_index_buffer(indices.slice(..), wgpu::IndexFormat::Uint32);
@@ -280,7 +287,7 @@ impl EntityOutline {
             ("Entity outline blit", frame, wgpu::LoadOp::Load),
         ];
         for (i, (label, view, load)) in steps.into_iter().enumerate() {
-            let mut pass = begin(encoder, label, view, load);
+            let mut pass = begin(encoder, label, view, load, timing.as_deref_mut());
             pass.set_pipeline(&self.passes[i]);
             pass.set_bind_group(0, &t.groups[i], &[]);
             pass.draw(0..3, 0..1);
@@ -293,6 +300,7 @@ fn begin<'e>(
     label: &str,
     view: &wgpu::TextureView,
     load: wgpu::LoadOp<wgpu::Color>,
+    timing: Option<&mut super::pack_timing::PassTiming>,
 ) -> wgpu::RenderPass<'e> {
     let attachments = [Some(wgpu::RenderPassColorAttachment {
         view,
@@ -305,6 +313,7 @@ fn begin<'e>(
     })];
     encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
         label: Some(label),
+        timestamp_writes: timing.and_then(|t| t.writes(label)),
         color_attachments: &attachments,
         ..Default::default()
     })

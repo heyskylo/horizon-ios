@@ -74,9 +74,9 @@ TeamPredicate.matches	missing		minor: team key is not read though scoreboard tea
 AnyBlockInteractionTrigger.trigger	missing		minor: any_block_use never fires; no vanilla advancement uses it
 AnyBlockInteractionTrigger.TriggerInstance.matches	port	crates/horizon-client/src/game/advancements.rs::Game::trigger_block	the location test; only the firing of the trigger is missing
 AnyBlockInteractionTrigger.TriggerInstance.validate	skip:data		load-time validation of the location
-BeeNestDestroyedTrigger.trigger	missing		player: breaking a bee nest with bees never fires the criterion; husbandry/silk_touch_nest cannot complete
+BeeNestDestroyedTrigger.trigger	port	crates/horizon-client/src/game/advancements.rs::Game::trigger_bee_nest_destroyed	
 BeeNestDestroyedTrigger.TriggerInstance.destroyedBeeNest	skip:java		builder
-BeeNestDestroyedTrigger.TriggerInstance.matches	missing		player: the bee nest test is never run because the trigger never fires
+BeeNestDestroyedTrigger.TriggerInstance.matches	port	crates/horizon-client/src/game/advancements.rs::Game::trigger_bee_nest_destroyed	the criterion fires from there; its test is the closure given to `trigger`
 BredAnimalsTrigger.trigger	port	crates/horizon-client/src/game/advancements.rs::Game::trigger_bred	parent, partner and child contexts
 BredAnimalsTrigger.TriggerInstance.bredAnimals	skip:java		builder
 BredAnimalsTrigger.TriggerInstance.matches	port	crates/horizon-client/src/game/advancements.rs::Game::trigger_bred	parent and partner in either order, then child
@@ -85,8 +85,8 @@ BrewedPotionTrigger.TriggerInstance.matches	port	crates/horizon-client/src/advan
 ChangeDimensionTrigger.trigger	port	crates/horizon-client/src/game/advancements.rs::Game::trigger_dimension	from and to dimensions
 ChangeDimensionTrigger.TriggerInstance.changedDimension	skip:java		builder
 ChangeDimensionTrigger.TriggerInstance.matches	port	crates/horizon-client/src/game/advancements.rs::Game::trigger_dimension	from and to test
-ChanneledLightningTrigger.trigger	missing		player: Channeling strikes lightning (channel_lightning) but the channeled-lightning criterion never fires; adventure/very_very_frightening cannot complete
-ChanneledLightningTrigger.TriggerInstance.matches	missing		player: never run, the trigger never fires
+ChanneledLightningTrigger.trigger	port	crates/horizon-client/src/game/advancements.rs::Game::trigger_channeled_lightning	
+ChanneledLightningTrigger.TriggerInstance.matches	port	crates/horizon-client/src/game/advancements.rs::Game::trigger_channeled_lightning	the criterion fires from there; its test is the closure given to `trigger`
 ConstructBeaconTrigger.TriggerInstance.constructedBeacon	skip:java		builder
 ConsumeItemTrigger.TriggerInstance.usedItem	skip:java		builder
 ConsumeItemTrigger.TriggerInstance.matches	port	crates/horizon-client/src/game/advancements.rs::Game::trigger_item	the item test; consume.rs passes the stack
@@ -97,23 +97,23 @@ CuredZombieVillagerTrigger.TriggerInstance.validate	skip:data		load-time validat
 DefaultBlockInteractionTrigger.trigger	missing		minor: default_block_use (block use with an empty hand) never fires; no vanilla advancement uses it
 DefaultBlockInteractionTrigger.TriggerInstance.matches	port	crates/horizon-client/src/game/advancements.rs::Game::trigger_block	the location test
 DefaultBlockInteractionTrigger.TriggerInstance.validate	skip:data		load-time validation
-DistanceTrigger.trigger	missing		player: fall_from_height and ride_entity_in_lava never fire (no fall or lava-ride tracking); ride_strider_in_overworld_lava and fall_from_world_height cannot complete
+DistanceTrigger.trigger	port	crates/horizon-client/src/game/advancements.rs::Game::trigger_distance	
 DistanceTrigger.TriggerInstance.fallFromHeight	skip:java		builder
 DistanceTrigger.TriggerInstance.rideEntityInLava	skip:java		builder
-DistanceTrigger.TriggerInstance.matches	missing		player: the start-position and distance test is never run; the trigger never fires
-EffectsChangedTrigger.trigger	missing		player: effects_changed never fires; nether/all_effects, nether/all_potions and husbandry/kill_axolotl_target cannot complete
+DistanceTrigger.TriggerInstance.matches	port	crates/horizon-client/src/game/advancements.rs::Game::trigger_distance	the criterion fires from there; its test is the closure given to `trigger`
+EffectsChangedTrigger.trigger	port	crates/horizon-client/src/game/advancements.rs::Game::trigger_effects_changed	
 EffectsChangedTrigger.TriggerInstance.hasEffects	skip:java		builder
 EffectsChangedTrigger.TriggerInstance.gotEffectsFrom	skip:java		builder
-EffectsChangedTrigger.TriggerInstance.matches	missing		player: never run; the effects and source tests are not in Horizon
+EffectsChangedTrigger.TriggerInstance.matches	port	crates/horizon-client/src/game/advancements.rs::Game::trigger_effects_changed	the criterion fires from there; its test is the closure given to `trigger`
 EnchantedItemTrigger.trigger	port	crates/horizon-client/src/game/advancements.rs::Game::trigger_enchanted_item	the enchanted item and its levels
 EnchantedItemTrigger.TriggerInstance.matches	port	crates/horizon-client/src/game/advancements.rs::Game::trigger_enchanted_item	item and levels test
 EnterBlockTrigger.TriggerInstance.entersBlock	skip:java		builder
 EnterBlockTrigger.TriggerInstance.matches	port	crates/horizon-client/src/game/advancements.rs::Game::trigger_enter_block	block and state test
 EntityHurtPlayerTrigger.trigger	port	crates/horizon-client/src/game/advancements.rs::Game::trigger_entity_hurt_player	the player and the damage it took
 EntityHurtPlayerTrigger.TriggerInstance.matches	port	crates/horizon-client/src/advancements.rs::damage	the damage predicate
-FallAfterExplosionTrigger.trigger	missing		player: fall_after_explosion never fires; adventure/who_needs_rockets cannot complete
+FallAfterExplosionTrigger.trigger	port	crates/horizon-client/src/game/advancements.rs::Game::trigger_fall_after_explosion	
 FallAfterExplosionTrigger.TriggerInstance.fallAfterExplosion	skip:java		builder
-FallAfterExplosionTrigger.TriggerInstance.matches	missing		player: never run; the trigger never fires
+FallAfterExplosionTrigger.TriggerInstance.matches	port	crates/horizon-client/src/game/advancements.rs::Game::trigger_fall_after_explosion	the criterion fires from there; its test is the closure given to `trigger`
 FilledBucketTrigger.TriggerInstance.matches	port	crates/horizon-client/src/game/advancements.rs::Game::trigger_item	the item test; filled_bucket is fired through trigger_item
 FishingRodHookedTrigger.trigger	port	crates/horizon-client/src/game/advancements.rs::Game::trigger_fishing_rod_hooked	the hook as the hooked entity and the caught stacks
 FishingRodHookedTrigger.TriggerInstance.fishedItem	skip:java		builder
@@ -124,7 +124,7 @@ InventoryChangeTrigger.TriggerInstance.matches	port	crates/horizon-client/src/ga
 InventoryChangeTrigger.TriggerInstance.Slots.matches	port	crates/horizon-client/src/game/advancements.rs::Game::check_inventory_trigger	occupied, full and empty ranges
 ItemDurabilityTrigger.trigger	missing		player: item_durability_changed never fires; nether/ride_strider cannot complete
 ItemDurabilityTrigger.TriggerInstance.changedDurability	skip:java		builder
-ItemDurabilityTrigger.TriggerInstance.matches	missing		player: never run; the trigger never fires
+ItemDurabilityTrigger.TriggerInstance.matches	port	crates/horizon-client/src/game/advancements.rs::Game::trigger_item_durability	the criterion fires from there; its test is the closure given to `trigger`
 ItemUsedOnLocationTrigger.trigger	port	crates/horizon-client/src/game/advancements.rs::Game::trigger_block	gap: minor: no block entity in the context
 ItemUsedOnLocationTrigger.TriggerInstance.placedBlock	skip:java		builder
 ItemUsedOnLocationTrigger.TriggerInstance.placedBlockWithProperties	skip:java		builder
@@ -139,9 +139,9 @@ KilledTrigger.TriggerInstance.entityKilledPlayer	skip:java		builder
 KilledTrigger.TriggerInstance.matches	inline	crates/horizon-client/src/game/advancements.rs::Game::trigger_entity	gap: player: killing_blow not tested (see KilledTrigger.trigger)
 LevitationTrigger.trigger	port	crates/horizon-client/src/game/advancements.rs::Game::trigger_levitation	start, duration and the player
 LevitationTrigger.TriggerInstance.matches	port	crates/horizon-client/src/game/advancements.rs::Game::trigger_levitation	distance and duration tests
-LightningStrikeTrigger.trigger	missing		player: lightning_strike never fires; adventure/lightning_rod_with_villager_no_fire cannot complete
+LightningStrikeTrigger.trigger	port	crates/horizon-client/src/game/advancements.rs::Game::trigger_lightning_strike	
 LightningStrikeTrigger.TriggerInstance.lightningStrike	skip:java		builder
-LightningStrikeTrigger.TriggerInstance.matches	missing		player: never run; the bystander test is not in Horizon
+LightningStrikeTrigger.TriggerInstance.matches	port	crates/horizon-client/src/game/advancements.rs::Game::trigger_lightning_strike	the criterion fires from there; its test is the closure given to `trigger`
 LightningStrikeTrigger.TriggerInstance.validate	skip:data		load-time validation
 LootTableTrigger.TriggerInstance.lootTableUsed	skip:java		builder
 PickedUpItemTrigger.trigger	port	crates/horizon-client/src/game/advancements.rs::Game::trigger_item_entity	gap: player: only the sulfur cube absorb fires the entity variant; thrown_item_picked_up_by_player never fires (husbandry/allay_deliver_item_to_player)

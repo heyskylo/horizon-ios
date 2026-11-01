@@ -28,6 +28,12 @@ pub struct Registries {
     /// Game rule name -> integer-valued.
     pub game_rules: Vec<(String, bool)>,
     pub players: Vec<String>,
+    /// A dedicated server's lists, for the completions of `/op`, `/deop`, `/pardon`, `/pardon-ip` and
+    /// `/whitelist`: the operators' names, the banned names and addresses, the whitelisted names.
+    pub ops: Vec<String>,
+    pub banned_players: Vec<String>,
+    pub banned_ips: Vec<String>,
+    pub whitelisted: Vec<String>,
     /// `ClientSuggestionProvider.customCompletionSuggestions`: the extra chat
     /// completions the server sent (ClientboundCustomChatCompletionsPacket),
     /// each once.

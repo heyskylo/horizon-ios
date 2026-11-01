@@ -2,8 +2,9 @@
 //! flags byte (sleeping, sitting, crouching, interested, pouncing,
 //! faceplanted), stalking and pouncing, napping in the shade by day, seeking
 //! shelter, perching, eating berries and the food held in the mouth.
-//! Picking up items, strolling through villages and trusting players (with
-//! defending them) are not ported yet.
+//! Strolling through villages and defending trusted players are not ported yet.
+//! The goal that walks to a dropped item is here; the game side takes the
+//! items (`Fox.pickUpItem`, `game/foxes.rs`).
 use super::{
     Mob, MobEvent, MobWorld, Seen, Species,
     goals::{
@@ -71,6 +72,42 @@ fn set_flag(m: &mut Mob, f: i32, on: bool) {
 fn clear_states(m: &mut Mob) {
     m.extra.ints[0] = 0;
 }
+/// `Fox.getTrustedEntities`: the UUIDs a fox trusts, `DATA_TRUSTED_ID_0`
+/// first.
+pub fn trusted_entities(m: &Mob) -> impl Iterator<Item = [i32; 4]> + '_ {
+    m.extra.trusted.iter().flatten().copied()
+}
+/// `Fox.addTrustedEntity`: the first free slot, and once both are taken a new
+/// one replaces the second.
+pub fn add_trusted_entity(m: &mut Mob, uuid: [i32; 4]) {
+    let slot = usize::from(m.extra.trusted[0].is_some());
+    m.extra.trusted[slot] = Some(uuid);
+}
+/// `Fox.clearTrusted`: forget everyone.
+pub fn clear_trusted(m: &mut Mob) {
+    m.extra.trusted = [None; 2];
+}
+/// `Fox.trusts`: the UUID is one of the trusted.
+pub fn trusts(m: &Mob, uuid: [i32; 4]) -> bool {
+    trusted_entities(m).any(|trusted| trusted == uuid)
+}
+/// The trust of a fox's breeding (`Fox.FoxBreedGoal.breed`): the baby trusts
+/// the player who fed this fox into love and, when it is another player, the
+/// one who fed its partner.
+pub fn trust_breeders(
+    baby: &mut Mob,
+    love_cause: Option<[i32; 4]>,
+    partner_love_cause: Option<[i32; 4]>,
+) {
+    if let Some(cause) = love_cause {
+        add_trusted_entity(baby, cause);
+    }
+    if let Some(cause) = partner_love_cause
+        && partner_love_cause != love_cause
+    {
+        add_trusted_entity(baby, cause);
+    }
+}
 /// `Fox.canMove`, which `FoxMoveControl` waits for.
 pub fn can_move(m: &Mob) -> bool {
     !flag(m, SLEEPING | SITTING | FACEPLANTED)
@@ -119,7 +156,7 @@ pub fn register(m: &mut Mob) {
     g.add(
         4,
         AvoidEntity::new(Avoid::Player, 16.0, 1.6, 1.4)
-            .player_when(|p| !p.sneaking && !p.spectator),
+            .player_when(|m, p| !p.sneaking && !p.spectator && !trusts(m, p.uuid)),
     );
     g.add(
         4,
@@ -146,6 +183,7 @@ pub fn register(m: &mut Mob) {
     g.add(10, EatBerries::new());
     g.add(10, LeapAtTarget::new(0.4));
     g.add(11, Stroll::avoiding_water(1.0));
+    g.add(11, SearchForItems);
     // FoxLookAtPlayerGoal: not with the nose in the snow or while stalking.
     g.add(
         12,
@@ -895,5 +933,169 @@ pub fn pose(m: &Mob, partial: f32) -> super::body_anim::Fox {
         head_roll_angle: m.anim.lerp(INTERESTED_ANGLE, partial) * 0.11 * std::f32::consts::PI,
         crouch_amount: m.anim.lerp(CROUCH_AMOUNT, partial),
         leg_motion_pos: (m.age as f32 + partial) * 0.67 * 3.0,
+    }
+}
+
+#[cfg(test)]
+mod trust_tests {
+    use super::*;
+    use crate::mobs::sensor_scan_tests::kind;
+
+    fn fox() -> Mob {
+        let mut kind = kind();
+        let k = std::sync::Arc::make_mut(&mut kind);
+        k.id = "minecraft:fox".into();
+        k.species = Species::Fox;
+        Mob::new(1, kind, Vec3::ZERO, 0.0)
+    }
+
+    /// `Fox.addTrustedEntity`: the first free slot, then the second, and a
+    /// third player replaces the second (`DATA_TRUSTED_ID_0/1`).
+    #[test]
+    fn a_fox_trusts_two_players_and_the_third_replaces_the_second() {
+        const A: [i32; 4] = [1, 2, 3, 4];
+        const B: [i32; 4] = [5, 6, 7, 8];
+        const C: [i32; 4] = [9, 10, 11, 12];
+        let mut f = fox();
+        assert!(!trusts(&f, A), "a fresh fox trusts nobody");
+        add_trusted_entity(&mut f, A);
+        add_trusted_entity(&mut f, B);
+        assert!(trusts(&f, A) && trusts(&f, B));
+        add_trusted_entity(&mut f, C);
+        assert!(trusts(&f, A), "the first slot stays");
+        assert!(!trusts(&f, B) && trusts(&f, C), "the second is replaced");
+        assert_eq!(trusted_entities(&f).collect::<Vec<_>>(), vec![A, C]);
+        clear_trusted(&mut f);
+        assert_eq!(trusted_entities(&f).count(), 0);
+        assert!(!trusts(&f, A));
+    }
+}
+
+#[cfg(test)]
+mod trust_breed_tests {
+    use super::*;
+    use crate::mobs::sensor_scan_tests::kind;
+
+    fn fox() -> Mob {
+        let mut kind = kind();
+        let k = std::sync::Arc::make_mut(&mut kind);
+        k.id = "minecraft:fox".into();
+        k.species = Species::Fox;
+        Mob::new(1, kind, Vec3::ZERO, 0.0)
+    }
+
+    /// `Fox.FoxBreedGoal.breed`: the baby trusts both players who fed the
+    /// parents into love, and one of them only once when it is the same.
+    #[test]
+    fn a_baby_fox_trusts_both_players_who_fed_its_parents() {
+        const A: [i32; 4] = [1, 2, 3, 4];
+        const B: [i32; 4] = [5, 6, 7, 8];
+        let mut baby = fox();
+        trust_breeders(&mut baby, Some(A), Some(B));
+        assert_eq!(trusted_entities(&baby).collect::<Vec<_>>(), vec![A, B]);
+        let mut same = fox();
+        trust_breeders(&mut same, Some(A), Some(A));
+        assert_eq!(trusted_entities(&same).collect::<Vec<_>>(), vec![A]);
+        let mut one = fox();
+        trust_breeders(&mut one, Some(A), None);
+        assert_eq!(trusted_entities(&one).collect::<Vec<_>>(), vec![A]);
+        let mut none = fox();
+        trust_breeders(&mut none, None, None);
+        assert_eq!(trusted_entities(&none).count(), 0);
+    }
+}
+
+/// Where the first item a fox may pick up lies within 8 blocks (`Fox.ALLOWED_ITEMS`:
+/// no pickup delay, alive), found by the game each tick for `FoxSearchForItemsGoal`.
+pub fn set_item_at(m: &mut Mob, at: Option<[f64; 3]>) {
+    m.extra.point = at;
+}
+/// `Fox.canHoldItem`: an empty mouth, or food to swap for what is not food once it has
+/// eaten at all. `food` says whether `item` and the held item are consumable food.
+pub fn can_hold_item(m: &Mob, item_is_food: bool, held_is_food: bool) -> bool {
+    m.extra.main_hand.is_none()
+        || (m.extra.ints[TICKS_SINCE_EATEN] > 0 && item_is_food && !held_is_food)
+}
+/// `Fox.pickUpItem` after the swap: it has taken the item (`ticksSinceEaten = 0`).
+pub fn took_item(m: &mut Mob) {
+    m.extra.ints[TICKS_SINCE_EATEN] = 0;
+}
+/// `Fox.FoxSearchForItemsGoal`: walk to a dropped item while the mouth is empty.
+#[derive(Clone, Debug)]
+struct SearchForItems;
+impl Goal for SearchForItems {
+    goal_clone!();
+    fn flags(&self) -> u8 {
+        MOVE
+    }
+    fn can_use(&mut self, m: &mut Mob, _cx: &mut Cx) -> bool {
+        if m.extra.main_hand.is_some() {
+            return false;
+        }
+        if m.ai.target.is_some() || m.ai.last_hurt_by.is_some() {
+            return false;
+        }
+        if !can_move(m) {
+            return false;
+        }
+        if m.random.next_int_bound(reduced(10)).unwrap_or(0) != 0 {
+            return false;
+        }
+        m.extra.point.is_some() && m.extra.main_hand.is_none()
+    }
+    fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
+        if let Some(at) = m.extra.point {
+            m.nav_move_to_entity(cx.w, at, 0, f64::from(1.2_f32));
+        }
+    }
+    fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
+        if m.extra.main_hand.is_none()
+            && let Some(at) = m.extra.point
+        {
+            m.nav_move_to_entity(cx.w, at, 0, f64::from(1.2_f32));
+        }
+    }
+}
+
+#[cfg(test)]
+mod pickup_tests {
+    use super::*;
+    use crate::mobs::sensor_scan_tests::kind;
+
+    fn fox() -> Mob {
+        let mut kind = kind();
+        let k = std::sync::Arc::make_mut(&mut kind);
+        k.id = "minecraft:fox".into();
+        k.species = Species::Fox;
+        Mob::new(1, kind, Vec3::ZERO, 0.0)
+    }
+
+    /// `Fox.canHoldItem`: an empty mouth takes anything; a full one only swaps its non-food
+    /// for food, and only once the fox has had ticks since it last ate.
+    #[test]
+    fn a_fox_holds_what_its_mouth_has_room_for() {
+        let mut f = fox();
+        assert!(
+            can_hold_item(&f, false, false),
+            "an empty mouth takes any item"
+        );
+        f.extra.set_main_hand(Some("minecraft:stick".into()));
+        f.extra.ints[TICKS_SINCE_EATEN] = 0;
+        assert!(
+            !can_hold_item(&f, true, false),
+            "no food swap at 0 ticks since eating"
+        );
+        f.extra.ints[TICKS_SINCE_EATEN] = 1;
+        assert!(can_hold_item(&f, true, false), "food replaces a stick");
+        assert!(
+            !can_hold_item(&f, false, false),
+            "a stick does not replace a stick"
+        );
+        assert!(!can_hold_item(&f, true, true), "food does not replace food");
+        took_item(&mut f);
+        assert_eq!(
+            f.extra.ints[TICKS_SINCE_EATEN], 0,
+            "taking an item restarts the clock"
+        );
     }
 }

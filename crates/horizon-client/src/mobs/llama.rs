@@ -278,7 +278,7 @@ pub fn texture(m: &Mob) -> String {
     format!("entity/llama/llama_{coat}{baby}")
 }
 /// The carpet colour on the llama, if it wears one.
-fn carpet(m: &Mob) -> Option<&str> {
+pub(super) fn carpet(m: &Mob) -> Option<&str> {
     m.extra
         .head
         .as_deref()

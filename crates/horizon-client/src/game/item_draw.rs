@@ -31,6 +31,9 @@ impl ItemEnv for Env<'_, '_> {
             .get("minecraft:custom_data")
             .is_some_and(|actual| item_render::custom_data_matches(actual, pattern))
     }
+    fn enchantment_in_tag(&self, enchantment: &str, tag: &str) -> bool {
+        self.game.stations().enchantments.in_tag(tag, enchantment)
+    }
     fn potion_effect_color(&self, contents: &Value) -> Option<i32> {
         // `PotionContents.getColorOr`: the effect mix when any effect is visible.
         let id = contents["potion"].as_str();
@@ -274,10 +277,13 @@ impl Game<'_> {
             && self.stack_in(slot) == Some(stack)
         {
             let view = item_render::stack_view(stack);
-            let duration = use_duration(&self.pack.item_renderer.models.components(&view));
+            let mut duration = use_duration(&self.pack.item_renderer.models.components(&view));
+            self.native_use_duration(stack, &mut duration);
             owner.using_this_item = true;
             owner.use_duration = duration;
-            owner.use_item_remaining_ticks = duration - ticks as i32;
+            // getUseItemRemainingTicks: the duration the use started with,
+            // as LivingEntityUseItemEvent.Start and .Tick left it (`game/item_use.rs`).
+            owner.use_item_remaining_ticks = self.use_duration - ticks as i32;
             owner.crossbow_charge_duration = Self::charge_ticks(stack).max(1) as i32;
         }
         owner.fishing_cast_with_this_item = stack
@@ -445,21 +451,33 @@ impl Game<'_> {
                 p.y + (q.y - p.y) * alpha,
                 p.z + (q.z - p.z) * alpha,
             ];
-            (item, at, alpha as f32)
+            (item, at, alpha as f32, true)
         });
         // ItemPickupParticle: the render state extracted at partial tick 1.
         let taken = self.pickups.live.iter().filter_map(|p| match &p.taken {
             super::pickups::Taken::Item(item) => {
-                Some((&**item, super::pickups::position(p, alpha), 1.0))
+                Some((&**item, super::pickups::position(p, alpha), 1.0, false))
             }
             _ => None,
         });
-        for (item, at, partial) in live.chain(taken) {
+        for (item, at, partial, entity) in live.chain(taken) {
             let entity_start = out.len();
+            self.mark_motion(entity_start, (2 << 32) | u64::from(item.id));
             let q = item.position;
             let pos = glam::DVec3::from_array(at) - camera;
             if pos.length_squared() > 64.0 * 64.0 {
                 continue;
+            }
+            // EntityRenderer.shouldRender: the item's 0.25 box, grown by 0.5,
+            // in the view frustum. Checked before its model is resolved.
+            if entity && let Some(view) = &self.view_frustum {
+                let feet = (glam::DVec3::new(q.x, q.y, q.z) - camera).as_vec3();
+                let half = glam::Vec3::new(0.125 + 0.5, 0.5, 0.125 + 0.5);
+                let lo = feet - half;
+                let hi = feet + glam::Vec3::new(half.x, 0.25 + 0.5, half.z);
+                if !view.intersects(lo, hi) {
+                    continue;
+                }
             }
             // `extractItemGroupRenderState`: GROUND, seeded by the entity id.
             let owner = owner_at([q.x, q.y, q.z], 0.0, "minecraft:item");

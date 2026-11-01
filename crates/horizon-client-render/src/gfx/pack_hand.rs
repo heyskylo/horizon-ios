@@ -28,8 +28,8 @@ pub fn inputs() -> horizon_shaders::GbuffersInputs {
     inputs
 }
 
-/// The hand's projection in GL's conventions: `hud_fov` degrees and depth scaled by
-/// `MC_HAND_DEPTH`. The shared gbuffer model-view already supplies the camera bob.
+/// The hand's projection in GL's conventions: `hud_fov` degrees, depth scaled by
+/// `MC_HAND_DEPTH` (the view bob is in `gbufferModelView`).
 pub fn projection(hud_fov: f32, aspect: f32, far: f32) -> Mat4 {
     Mat4::from_scale(glam::Vec3::new(1.0, 1.0, HAND_DEPTH))
         * Mat4::perspective_rh_gl(hud_fov.to_radians(), aspect, 0.05, far)

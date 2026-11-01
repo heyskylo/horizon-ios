@@ -1,0 +1,26 @@
+{
+  "hooks": [
+    {
+      "name": "living_entity_use_item_tick",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_living_entity_use_item_tick",
+      "neoforge": "LivingEntityUseItemEvent.Tick",
+      "cancellable": true
+    },
+    {
+      "name": "on_use_tick",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_on_use_tick"
+    },
+    {
+      "name": "living_entity_use_item_stop",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_living_entity_use_item_stop",
+      "neoforge": "LivingEntityUseItemEvent.Stop",
+      "cancellable": true
+    },
+    {
+      "name": "release_using",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_release_using"
+    }
+  ],
+  "rust_summary": "an item's use tick and release (`native_living_entity_use_item_tick`,\n`native_on_use_tick`, `native_living_entity_use_item_stop`, `native_release_using`).",
+  "doc_summary": "an item's use tick and release, as vanilla's `Item.onUseTick` and `releaseUsing` and NeoForge's `LivingEntityUseItemEvent.Tick` and `.Stop`. Each tick of a use, `native_living_entity_use_item_tick` may change the ticks left: at 0 or less, or on a cancel, the server finishes the use, as NeoForge's code does, and an item used on release stays frozen until let go. `native_on_use_tick` is what a mod's own item does then (cook, charge). When the player lets go early, `native_living_entity_use_item_stop` may skip the release, and `native_release_using` acts with the ticks left (a bow-like item shoots by its charge); setting `used` starts the item's cooldown. All four run on both sides, as vanilla's do, and take the using entity, None for a player; the tick and stop take the hand too. Change the world only where this game runs the world, not on a server's client. Bundles that use them need `\"hooks\": @API:item_use_tick_release@`."
+}

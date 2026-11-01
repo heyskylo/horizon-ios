@@ -239,6 +239,101 @@ fn next_int(random: &mut LegacyRandom, min: i32, max: i32) -> i32 {
         random.next_int_bound(max - min + 1).unwrap_or(0) + min
     }
 }
+/// A track a native mod plays over or instead of the music
+/// (`native_music_layers`): a sound event and its volume, 0 to 1.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MusicLayer {
+    pub sound: String,
+    pub volume: f32,
+}
+
+/// The layers playing: each a looping music-source instance whose volume
+/// eases toward the one its mod asks for, by [`MusicLayers::FADE`] a tick.
+/// A layer asked for again after it faded out starts from its beginning.
+#[derive(Default)]
+pub struct MusicLayers {
+    playing: Vec<PlayingLayer>,
+}
+struct PlayingLayer {
+    sound: String,
+    id: InstanceId,
+    gain: f32,
+    target: f32,
+    /// The engine has played it: once it isn't active any more (a new level
+    /// stopped every sound), the layer starts again.
+    heard: bool,
+}
+impl MusicLayers {
+    /// The volume a layer moves by in a tick: two seconds from silent to full.
+    pub const FADE: f32 = 0.025;
+    /// One client tick with the layers `wanted` (the last of a sound counts).
+    /// Layers new this tick start together, silent, so stems listed at once
+    /// stay in step.
+    pub fn tick(&mut self, wanted: &[MusicLayer], sounds: &mut impl Sounds) {
+        let target = |sound: &str| {
+            wanted
+                .iter()
+                .rev()
+                .find(|w| w.sound == sound)
+                .map_or(0.0, |w| {
+                    if w.volume.is_finite() {
+                        w.volume.clamp(0.0, 1.0)
+                    } else {
+                        0.0
+                    }
+                })
+        };
+        self.playing.retain(|l| {
+            let active = sounds.is_active(l.id);
+            if l.heard && !active {
+                sounds.release(l.id);
+                return false;
+            }
+            true
+        });
+        for w in wanted {
+            if w.sound.is_empty() || self.playing.iter().any(|l| l.sound == w.sound) {
+                continue;
+            }
+            let instance = SoundInstance::for_music_layer(&w.sound, SoundEngine::unseeded());
+            let (id, _) = sounds.play_instance(instance, true);
+            self.playing.push(PlayingLayer {
+                sound: w.sound.clone(),
+                id,
+                gain: 0.0,
+                target: 0.0,
+                heard: false,
+            });
+        }
+        self.playing.retain_mut(|l| {
+            l.target = target(&l.sound);
+            l.gain = if l.gain < l.target {
+                (l.gain + Self::FADE).min(l.target)
+            } else {
+                (l.gain - Self::FADE).max(l.target)
+            };
+            // Float steps land a hair off the target.
+            if (l.gain - l.target).abs() < 1.0E-4 {
+                l.gain = l.target;
+            }
+            l.heard |= sounds.is_active(l.id);
+            if l.gain <= 0.0 && l.target <= 0.0 && !wanted.iter().any(|w| w.sound == l.sound) {
+                sounds.stop_instance(l.id);
+                sounds.release(l.id);
+                return false;
+            }
+            if let Some(instance) = sounds.engine().instance_mut(l.id) {
+                instance.volume = l.gain;
+            }
+            true
+        });
+    }
+    /// The sound events playing and each one's volume now.
+    pub fn playing(&self) -> impl Iterator<Item = (&str, f32)> {
+        self.playing.iter().map(|l| (l.sound.as_str(), l.gain))
+    }
+}
+
 /// `MusicManager`.
 pub struct MusicManager {
     random: LegacyRandom,
@@ -443,6 +538,87 @@ mod tests {
             &|_, _| true,
         );
         SoundEngine::new(registry)
+    }
+
+    fn layer(sound: &str, volume: f32) -> MusicLayer {
+        MusicLayer {
+            sound: sound.to_owned(),
+            volume,
+        }
+    }
+
+    #[test]
+    fn layers_fade_in_together_follow_their_volume_and_fade_out() {
+        let (mut engine, mut backend) = (engine(), Null::default());
+        let mut layers = MusicLayers::default();
+        let mut tick = |layers: &mut MusicLayers, wanted: &[MusicLayer]| {
+            layers.tick(
+                wanted,
+                &mut Bound {
+                    engine: &mut engine,
+                    backend: &mut backend,
+                },
+            );
+        };
+        let playing = |layers: &MusicLayers| -> Vec<(String, f32)> {
+            layers
+                .playing()
+                .map(|(s, g)| (s.to_owned(), (g * 1000.0).round() / 1000.0))
+                .collect()
+        };
+        // Two stems, one silent: both start in the same tick.
+        let both = [
+            layer("minecraft:music.game", 1.0),
+            layer("minecraft:music.end", 0.0),
+        ];
+        tick(&mut layers, &both);
+        assert_eq!(
+            playing(&layers),
+            [
+                ("minecraft:music.game".into(), 0.025),
+                ("minecraft:music.end".into(), 0.0)
+            ]
+        );
+        for _ in 0..50 {
+            tick(&mut layers, &both);
+        }
+        assert_eq!(playing(&layers)[0].1, 1.0);
+        // The second stem rises toward its new volume, by FADE a tick.
+        let fuller = [
+            layer("minecraft:music.game", 1.0),
+            layer("minecraft:music.end", 0.5),
+        ];
+        for _ in 0..10 {
+            tick(&mut layers, &fuller);
+        }
+        assert_eq!(playing(&layers)[1].1, 0.25);
+        // A layer left out fades out, then stops.
+        let one = [layer("minecraft:music.end", 0.5)];
+        for _ in 0..39 {
+            tick(&mut layers, &one);
+        }
+        assert_eq!(playing(&layers).len(), 2);
+        tick(&mut layers, &one);
+        assert_eq!(playing(&layers), [("minecraft:music.end".into(), 0.5)]);
+    }
+
+    #[test]
+    fn layer_volumes_out_of_range_are_clamped() {
+        let (mut engine, mut backend) = (engine(), Null::default());
+        let mut layers = MusicLayers::default();
+        for volume in [7.0, f32::NAN] {
+            for _ in 0..60 {
+                layers.tick(
+                    &[layer("minecraft:music.game", volume)],
+                    &mut Bound {
+                        engine: &mut engine,
+                        backend: &mut backend,
+                    },
+                );
+            }
+            let gain = layers.playing().next().map(|(_, g)| g);
+            assert_eq!(gain, Some(if volume.is_nan() { 0.0 } else { 1.0 }));
+        }
     }
 
     #[test]

@@ -2,7 +2,7 @@
 //! `ItemFrame.survives`, `interact` (put an item in, then rotate it),
 //! `hurtServer` (take the item out, then break the frame) and
 //! `ItemFrameRenderer` (the frame model and the item at a 45 degree step).
-use super::{Game, Hit};
+use super::{Game, Hit, InteractTarget};
 use horizon_assets::{bake::bake_model, model::CuboidModel, resolve::ModelLibrary};
 use horizon_client::{entities::ItemFrame, items::ItemStack, mesher::Vertex};
 use horizon_core::{
@@ -175,7 +175,7 @@ impl Game<'_> {
     /// The frame under the crosshair within reach and its distance.
     pub(super) fn frame_hit(&self) -> Option<(usize, f64)> {
         let (eye, dir) = self.aim()?;
-        let reach: f64 = if self.creative { 5.0 } else { 3.0 };
+        let reach: f64 = self.entity_reach;
         let mut best: Option<(usize, f64)> = None;
         for (i, f) in self.item_frames.iter().enumerate() {
             let (lo, hi) = f.bounds();
@@ -201,7 +201,7 @@ impl Game<'_> {
     }
     /// Nearer than the targeted block?
     pub(super) fn before_block(&self, distance: f64) -> bool {
-        self.pick().is_none_or(|h| {
+        self.pick_unfiltered().is_none_or(|h| {
             let eye = self.aim().map(|(eye, _)| eye).unwrap_or_default();
             (0..3)
                 .map(|a| (h.point[a] - eye[a]).powi(2))
@@ -210,12 +210,17 @@ impl Game<'_> {
                 > distance
         })
     }
-    /// `ItemFrame.interact` for the frame under the crosshair.
-    pub(super) fn interact_frame(&mut self) -> bool {
-        let Some((i, d)) = self.frame_hit() else {
+    /// `ItemFrame.interact` for the frame under the crosshair, or the one a
+    /// guest's interact packet named.
+    pub(super) fn interact_frame(&mut self, target: Option<InteractTarget>) -> bool {
+        let Some((i, d)) = (match target {
+            Some(t) => Self::named_entity(&self.item_frames, t.id, |f| f.id).map(|i| (i, 0.0)),
+            None => self.frame_hit(),
+        }) else {
             return false;
         };
-        if !self.before_block(d) || self.item_frames[i].fixed {
+        // Only a client's own pick is stopped by a block: the range check passed.
+        if (target.is_none() && !self.before_block(d)) || self.item_frames[i].fixed {
             return false;
         }
         let at = center(&self.item_frames[i]);
@@ -250,6 +255,12 @@ impl Game<'_> {
             return false;
         }
         if self.item_frames[i].fixed {
+            // A fixed frame refuses the hit of a player who isn't in creative
+            // (canHurtWhenFixed), so skipAttackInteraction is false and
+            // Player.attack goes on to onAttack.
+            if !self.creative {
+                self.attack_ticks = 0;
+            }
             return true;
         }
         let with_frame = self.item_frames[i].item.is_none();
@@ -283,33 +294,51 @@ impl Game<'_> {
     }
     /// `ItemFrame.dropItem`: the frame (when breaking) and the held item.
     fn drop_frame_items(&mut self, f: &ItemFrame, with_frame: bool, by_player: bool) {
+        // The framed map forgets the frame, except when the drops are off and
+        // something caused the break (`removeFramedMap` runs only for a null
+        // `causedBy` then).
+        if self.ui.rules.bool("entity_drops") || !by_player {
+            self.remove_framed_map(f);
+        }
         if !self.ui.rules.bool("entity_drops") || (by_player && self.creative) {
             return;
         }
         let s = f.step().map(f64::from);
         let c = center(f);
         let at = [c[0] + s[0] * 0.15, c[1], c[2] + s[2] * 0.15];
+        let mut drops = Vec::new();
         if with_frame {
-            let frame = ItemStack {
+            drops.push(ItemStack {
                 item: Arc::from(f.kind()),
                 count: 1,
                 damage: 0,
                 extra: None,
-            };
-            self.spawn_item(frame, at, [0.0; 3], 10);
+            });
         }
         if let Some(item) = f.item.clone()
             && self.world.random.next_float() < f.drop_chance
         {
-            self.spawn_item(item, at, [0.0; 3], 10);
+            drops.push(item);
+        }
+        if by_player && !drops.is_empty() {
+            let tool = self.held().cloned();
+            self.native_use_drops(
+                "",
+                c,
+                None,
+                Some((f.id, f.kind())),
+                tool.as_ref(),
+                &mut drops,
+            );
+        }
+        for stack in drops {
+            self.spawn_item(stack, at, [0.0; 3], 10);
         }
     }
     /// `ServerExplosion.hurtEntities` for item frames: a frame within the blast
     /// is killed and dropped with its item (`BlockAttachedEntity.hurtServer`).
     /// A fixed frame is not hurt by an explosion, and `blast_spares_decorations`
     /// keeps every frame without `mobGriefing`.
-    /// Not ported: `ignoreExplosion` also spares frames when the exploding
-    /// entity is in water.
     pub(super) fn explosion_breaks_frames(
         &mut self,
         blast: [f64; 3],
@@ -427,6 +456,7 @@ impl Game<'_> {
             };
             let frame_packed =
                 (u32::from(frame_light >> 4) * 16) | ((u32::from(frame_light & 15) * 16) << 8);
+            let frame_start = out.len();
             let mut quad =
                 |m: &glam::DMat4, corners: [[f64; 3]; 4], uv: [[f32; 2]; 4], light: u32| {
                     // The frame model is drawn with the entity shader, lit by its face normal.
@@ -472,6 +502,13 @@ impl Game<'_> {
                         map_uv(r, *uv),
                         frame_packed,
                     );
+                }
+            }
+            // HDR output: a glow frame shines softly (entity.wgsl fs_hdr_mark); the item in it
+            // is only lit, as vanilla draws it.
+            if f.glow {
+                for v in &mut out[frame_start..] {
+                    v.layer |= u32::from(horizon_client::mesher::INCANDESCENT) << 16;
                 }
             }
             self.cull_entity_vertices(out, entity_start);

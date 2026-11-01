@@ -91,6 +91,12 @@ impl Builder {
             .name("Far decoration".into())
             .spawn(move || {
                 horizon_threads::idle_current();
+                // A superflat world's far ring is its flat ground (`FlatTerrain::lod_surface`);
+                // a normal overworld rebuilt here would draw hills, oceans and trees.
+                if terrain.is_flat() {
+                    worker.stop.store(true, Ordering::Relaxed);
+                    return;
+                }
                 // Structure pieces have mutable one-shot placement flags. Sharing
                 // gameplay's seeded pipeline would consume its chests/spawners.
                 let generator = match OverworldGenerator::for_dimension(
@@ -376,7 +382,7 @@ fn shade_sky(column: &mut Column, states: &GenBlockStates) {
         }
     }
     shaded.reverse();
-    column.spans = shaded;
+    column.spans = shaded.into();
 }
 
 /// A whole tile inside visited chunks needs no density work at all. This
@@ -569,7 +575,7 @@ impl VanillaLodSampler {
         let registry = self.generator.generator.data().registry();
         let mut column = Column {
             surface,
-            spans: Vec::new(),
+            spans: crate::lod::Spans::new(),
         };
         for (min, max, state) in spans.into_iter().rev() {
             column.push(Span {

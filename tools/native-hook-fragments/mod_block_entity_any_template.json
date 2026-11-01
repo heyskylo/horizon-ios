@@ -1,0 +1,5 @@
+{
+  "hooks": [],
+  "rust_summary": "mod block entities on any template (`native_block_entity`).",
+  "doc_summary": "`native_block_entity` gives a block a block entity whatever its template: a mod's stone casing or thin part no longer needs a chest's or furnace's template. The engine removes it when its block is broken or replaced, no piston moves it, and a mod that draws it (`native_block_entity_submit`) is asked for it. Bundles need \"hooks\": @API:mod_block_entity_any_template@."
+}

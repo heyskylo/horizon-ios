@@ -18,6 +18,54 @@ use std::collections::VecDeque;
 /// Client ticks kept: two seconds at 20 a second.
 pub const KEPT: usize = 40;
 
+/// Server changes kept, the oldest dropped first.
+const CHANGES_KEPT: usize = 64;
+
+/// Changes near the player kept until every kept tick has seen them.
+const NEAR_KEPT: usize = 1024;
+
+/// Something the server sent the player that changes how its client moves. The client applies it when
+/// it handles the packet, before its next tick.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Change {
+    /// ClientboundSetEntityMotionPacket for the player itself: its new velocity, as the client
+    /// decodes it.
+    Velocity([f64; 3]),
+    /// ClientboundExplodePacket's player knockback, added to the velocity.
+    Knockback([f64; 3]),
+    /// ClientboundUpdateAttributesPacket for the player itself: the server's attributes as they
+    /// are when the replay reaches it, but for the movement speed's sprint modifier, which the
+    /// client's sprinting decides: `sprint` is whether the packet had it when it carried the
+    /// movement speed (the client takes the modifiers as sent, so a sprint modifier the packet
+    /// lacks is gone while the client sprints), None when it didn't (the client keeps its own).
+    Attributes { sprint: Option<bool> },
+    /// ClientboundSetEntityDataPacket for the player itself with its shared flags: their sprinting
+    /// bit, which the client takes as sent (SynchedEntityData.assignValues sets the flag alone, its
+    /// speed modifier and wasSprinting stay). A client whose sprint the server cleared this way
+    /// starts it again in its next aiStep, which adds the modifier back, and says nothing.
+    Sprinting(bool),
+    /// ClientboundUpdateMobEffectPacket or ClientboundRemoveMobEffectPacket for the player itself:
+    /// the server's effects, as they are when the replay reaches it. (Their attribute modifiers
+    /// are the server's: they reach the client as attributes.)
+    Effects,
+    /// ClientboundPlayerAbilitiesPacket (a game mode, flight given or taken), or the player's chest
+    /// slot (a glider put on or taken off): the replay takes these from the server every tick, so a
+    /// tick played before the client had them may be off.
+    Abilities,
+}
+
+/// A teleport the client accepted: the replay starts again from it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Restart {
+    /// Where it put the player.
+    pub at: [f64; 3],
+    /// It kept the player's motion (an End gateway's).
+    pub kept_motion: bool,
+    /// Client ticks ended and changes heard before it: the ones after are the replay's.
+    pub ended: u64,
+    pub changed: u64,
+}
+
 /// One client tick.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct ClientTick {
@@ -49,7 +97,17 @@ pub struct Record {
     /// Client ticks ended since the record began.
     ended: u64,
     /// Where an accepted teleport put the player, until the replay starts again from there.
-    restart: Option<[f64; 3]>,
+    restart: Option<Restart>,
+    /// What the server changed, with the server tick that sent it, oldest first.
+    changes: VecDeque<(u64, Change)>,
+    /// Changes heard since the record began.
+    changed: u64,
+    /// The blocks the server changed near the player (None: an entity it stopped showing the player
+    /// from near it, which counts wherever the player has gone since), with the server tick that sent
+    /// each, until every kept tick has seen them.
+    near: VecDeque<(u64, Option<[i32; 3]>)>,
+    /// The server tick of the last of them dropped early ([`NEAR_KEPT`] came after it).
+    near_dropped: Option<u64>,
 }
 
 impl Record {
@@ -92,6 +150,13 @@ impl Record {
         }
         self.ticks.push_back(ended);
         self.ended += 1;
+        // What the oldest tick kept had seen, every later one had too.
+        if let Some(seen) = self.ticks.front().and_then(|t| t.seen) {
+            while self.near.front().is_some_and(|&(sent, _)| sent <= seen) {
+                self.near.pop_front();
+            }
+            self.near_dropped = self.near_dropped.filter(|&sent| sent > seen);
+        }
         self.ticks.back().expect("just pushed")
     }
 
@@ -120,21 +185,90 @@ impl Record {
         Some(self.ticks.iter().skip(self.ticks.len() - new))
     }
 
-    /// The client accepted a teleport to `at` (ServerboundAcceptTeleportationPacket): it goes on from
-    /// there, standing still, and the ticks before say nothing about the ones after.
-    pub fn teleported(&mut self, at: [f64; 3]) {
-        self.clear();
-        self.restart = Some(at);
+    /// `change`, sent during server tick `server_tick` (before that tick's ping).
+    pub fn changed(&mut self, server_tick: u64, change: Change) {
+        if self.changes.len() == CHANGES_KEPT {
+            self.changes.pop_front();
+        }
+        self.changes.push_back((server_tick, change));
+        self.changed += 1;
     }
 
-    /// Where the last accepted teleport put the player, once.
-    pub fn take_restart(&mut self) -> Option<[f64; 3]> {
+    /// Changes heard since the record began.
+    pub fn changes(&self) -> u64 {
+        self.changed
+    }
+
+    /// The changes after the first `applied`, oldest first; None when some of them are no longer kept.
+    pub fn changes_since(
+        &self,
+        applied: u64,
+    ) -> Option<impl Iterator<Item = &(u64, Change)> + Clone> {
+        let new = self.changed.checked_sub(applied)?;
+        let new = usize::try_from(new)
+            .ok()
+            .filter(|&n| n <= self.changes.len())?;
+        Some(self.changes.iter().skip(self.changes.len() - new))
+    }
+
+    /// During server tick `server_tick` (before that tick's ping) the server sent the client the block
+    /// at `pos`.
+    pub fn changed_near(&mut self, server_tick: u64, pos: [i32; 3]) {
+        self.note_near(server_tick, Some(pos));
+    }
+
+    /// During server tick `server_tick` the server stopped showing the client an entity near it (a
+    /// firework it flew with, a mob that pushed it): the client may still have it, wherever it goes.
+    pub fn entity_gone(&mut self, server_tick: u64) {
+        if self.near.back() != Some(&(server_tick, None)) {
+            self.note_near(server_tick, None);
+        }
+    }
+
+    fn note_near(&mut self, server_tick: u64, pos: Option<[i32; 3]>) {
+        if self.near.len() == NEAR_KEPT {
+            self.near_dropped = self.near.pop_front().map(|(sent, _)| sent);
+        }
+        self.near.push_back((server_tick, pos));
+    }
+
+    /// Whether a client tick that had `seen` up to that server tick (its [`ClientTick::seen`]) may
+    /// not have had a change at a position for which `near` holds: it still had the old block, or the
+    /// entity, where the server no longer has it.
+    pub fn unseen_near(&self, seen: Option<u64>, near: impl Fn([i32; 3]) -> bool) -> bool {
+        let unseen = |sent: u64| seen.is_none_or(|seen| sent > seen);
+        self.near_dropped.is_some_and(unseen)
+            || self
+                .near
+                .iter()
+                .any(|&(sent, pos)| unseen(sent) && pos.is_none_or(&near))
+    }
+
+    /// The client accepted a teleport to `at` (ServerboundAcceptTeleportationPacket): it goes on from
+    /// there, standing still unless the teleport `kept_motion` (an End gateway's). The ticks it ended
+    /// before stay, for a replay that hasn't played them yet; the one under way starts again.
+    pub fn teleported(&mut self, at: [f64; 3], kept_motion: bool) {
+        self.restart_tick();
+        self.restart = Some(Restart {
+            at,
+            kept_motion,
+            ended: self.ended,
+            changed: self.changed,
+        });
+    }
+
+    /// The last teleport the client accepted, once.
+    pub fn take_restart(&mut self) -> Option<Restart> {
         self.restart.take()
     }
 
     /// The ticks before now say nothing about the ones after.
     pub fn clear(&mut self) {
         self.ticks.clear();
+        self.restart_tick();
+    }
+
+    fn restart_tick(&mut self) {
         self.current = ClientTick {
             yaw: self.current.yaw,
             pitch: self.current.pitch,
@@ -146,6 +280,41 @@ impl Record {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_change_near_is_unseen_by_the_ticks_before_its_pong() {
+        let mut r = Record::default();
+        r.changed_near(4, [1, 2, 3]);
+        r.changed_near(5, [7, 2, 3]);
+        let near = |p: [i32; 3]| p[0] < 5;
+        assert!(r.unseen_near(None, near));
+        assert!(r.unseen_near(Some(3), near));
+        assert!(!r.unseen_near(Some(4), near));
+        assert!(r.unseen_near(Some(4), |_| true));
+        // Kept until the oldest tick kept had seen it: one that ended before the pong hadn't.
+        r.tick_end(0, false);
+        assert!(r.pong(5, 5));
+        r.tick_end(0, false);
+        assert!(r.unseen_near(Some(3), near));
+        for _ in 0..KEPT {
+            r.tick_end(0, false);
+        }
+        assert!(!r.unseen_near(None, |_| true));
+        // An entity gone counts anywhere.
+        r.entity_gone(5);
+        r.entity_gone(5);
+        assert!(r.unseen_near(Some(4), |_| false));
+        assert!(!r.unseen_near(Some(5), |_| false));
+        // One dropped early counts for the ticks that hadn't seen it.
+        for i in 0..=NEAR_KEPT as u64 {
+            r.changed_near(6 + i, [100, 0, 0]);
+        }
+        assert!(
+            r.unseen_near(Some(5), near),
+            "a change dropped unseen counts"
+        );
+        assert!(!r.unseen_near(Some(6), near));
+    }
 
     #[test]
     fn a_tick_is_the_packets_between_two_tick_ends() {
@@ -209,8 +378,39 @@ mod tests {
         r.clear();
         assert_eq!(x(&r, 2), None);
         assert_eq!(x(&r, 3), Some(vec![]));
-        r.teleported([5.0, 6.0, 7.0]);
-        assert_eq!(r.take_restart(), Some([5.0, 6.0, 7.0]));
+        r.moved(Some([8.0, 0.0, 0.0]), None, 0);
+        r.tick_end(0, false);
+        r.moved(Some([9.0, 0.0, 0.0]), None, 0);
+        r.teleported([5.0, 6.0, 7.0], false);
+        // A tick that ends before the replay starts again is still one after the teleport.
+        r.tick_end(0, false);
+        let restart = r.take_restart().unwrap();
+        assert_eq!((restart.at, restart.kept_motion), ([5.0, 6.0, 7.0], false));
+        assert_eq!(r.since(restart.ended).unwrap().count(), 1);
+        // The tick ended before it stays for a replay that hasn't played it; the move of the one
+        // under way is gone.
+        let positions: Vec<_> = r.since(3).unwrap().map(|t| t.position).collect();
+        assert_eq!(positions, [Some([8.0, 0.0, 0.0]), None]);
         assert_eq!(r.take_restart(), None);
+    }
+
+    #[test]
+    fn changes_keep_the_server_tick_that_sent_them() {
+        let mut r = Record::default();
+        r.changed(3, Change::Velocity([0.0, 0.4, 0.0]));
+        r.changed(5, Change::Effects);
+        let all: Vec<_> = r.changes_since(0).unwrap().copied().collect();
+        assert_eq!(
+            all,
+            [(3, Change::Velocity([0.0, 0.4, 0.0])), (5, Change::Effects)]
+        );
+        assert_eq!(r.changes_since(1).unwrap().count(), 1);
+        assert!(r.changes_since(3).is_none());
+        for i in 0..CHANGES_KEPT as u64 {
+            r.changed(6 + i, Change::Effects);
+        }
+        // The first two are gone.
+        assert!(r.changes_since(1).is_none());
+        assert_eq!(r.changes_since(2).unwrap().count(), CHANGES_KEPT);
     }
 }

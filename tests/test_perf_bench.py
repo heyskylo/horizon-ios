@@ -1,4 +1,5 @@
 import json
+import sys
 import unittest
 
 from tools.perf_bench import HISTOGRAM_EDGES_MS, OPTIONS, frames, rnd, summary
@@ -122,6 +123,35 @@ class PerfBenchStatsTests(unittest.TestCase):
         self.assertEqual(OPTIONS["renderDistance"].format(distance=16), "16")
         self.assertEqual(OPTIONS["graphicsPreset"], '"custom"')
 
+    def test_table_distinguishes_missing_scene_load_from_zero(self):
+        import contextlib
+        import io
+        import tempfile
+        from pathlib import Path
+        from unittest import mock
+        import tools.perf_bench as pb
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            reports = root / "benchmarks" / "perf"
+            reports.mkdir(parents=True)
+            # Comparable runs: table() refuses reports whose conditions differ or are missing.
+            conditions = {"scenario": "flight", "seed": "1234", "render_distance": 8, "simulation_distance": 12,
+                          "window": [1920, 1080], "vsync": False, "offscreen": False}
+            for label, metrics in (
+                ("missing", {}),
+                ("zero", {"chunks.village.load_ms": {"mean": 0}}),
+                ("measured", {"chunks.village.load_ms": {"mean": 1000},
+                              "chunks.forest.load_ms": {"mean": 3000}}),
+            ):
+                (reports / f"{label}-rd8.json").write_text(
+                    json.dumps({"conditions": conditions, "metrics": metrics}), encoding="utf-8")
+            output = io.StringIO()
+            with mock.patch.object(pb, "ROOT", root), contextlib.redirect_stdout(output):
+                pb.table(["missing", "zero", "measured"])
+        row = next(line for line in output.getvalue().splitlines() if line.startswith("| 8 |"))
+        self.assertEqual([cell.strip().split(", ")[1] for cell in row.split("|")[2:-1]], ["–", "0.0", "2.0"])
+
 
 
 
@@ -217,6 +247,21 @@ class PortabilityTests(unittest.TestCase):
             self.assertIsNone(pb.nvidia_memory_mb(1234))
             self.assertEqual(pb.nvidia_memory_mb(4321), 812.0)
             self.assertIsNone(pb.nvidia_memory_mb(99))
+
+    @unittest.skipUnless(sys.platform == "win32", "the console's OEM code page is Windows'")
+    def test_windows_version_reads_the_console_code_page(self):
+        # pr_ready runs the tests with PYTHONUTF8=1, and `cmd /C ver` answers in the OEM code page:
+        # decoding it as UTF-8 left `stdout` None (issue #5201).
+        import os
+        import subprocess
+        from pathlib import Path
+        root = Path(__file__).resolve().parents[1]
+        out = subprocess.run(
+            [sys.executable, "-c",
+             "from tools.perf_bench import windows_version; print(windows_version())"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace", check=True,
+            env={**os.environ, "PYTHONUTF8": "1"}, cwd=root)
+        self.assertIn("Windows", out.stdout)
 
     def test_control_over_the_tcp_endpoint(self):
         # The game's TCP transport (Windows, or an endpoint path ending in .json): the file names a port and

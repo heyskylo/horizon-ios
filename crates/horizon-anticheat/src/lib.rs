@@ -2,17 +2,25 @@
 //! `server.toml`, each player's violation levels, and the rules of the checks. The server's hub
 //! (`horizon_client::lan`) feeds it what players send and carries out what it decides.
 //!
-//! It is off unless the owner turns it on. A check that fails *flags* the player: its violation level
-//! (VL) rises by the flag's weight and falls back by `decay` a second. From `setback` on, the move or
-//! action is cancelled (the player is sent back where the server last had them); from `alert` on,
-//! online operators and the console are told; from `kick` on, the player is disconnected. Nothing bans.
-//! Any threshold at 0 turns that action off.
+//! It is on by default, and so is every check, but only the checks a vanilla client can't trip act on
+//! their own (`combat`); the others log only until they have shown no false positive with real
+//! players (their `setback`, `alert` and `kick` are 0). `enabled = false` turns the anticheat, or one
+//! check, off. A check that fails *flags* the player: its violation level (VL) rises by the flag's
+//! weight and falls back by `decay` a second. From `setback` on, the move or action is cancelled (the
+//! player is sent back where the server last had them); from `alert` on, online operators and the
+//! console are told; from `kick` on, the player is disconnected. A check's kicks are counted per player
+//! across sessions ([`Strikes`]), and the kick that reaches its `ban_after` bans the player instead
+//! (`banned-players.json`, reason "Horizon anticheat: <check>"). Any threshold at 0 turns that action
+//! off.
 //!
 //! The checks are written from vanilla 26.3's own rules and from what cheats are publicly described to
 //! do, never from another anticheat's code.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
+pub mod combat;
 pub mod prediction;
 pub mod timer;
 
@@ -24,12 +32,14 @@ pub struct Actions {
     pub kick: f32,
     /// Violation level lost each second.
     pub decay: f32,
+    /// The kick, counting this check's earlier ones for the player, that bans instead; 0: never.
+    pub ban_after: u32,
 }
 
 macro_rules! checks {
     ($(
         $(#[$doc:meta])*
-        $field:ident: $Check:ident => $Config:ident [$setback:expr, $alert:expr, $kick:expr, $decay:expr] {
+        $field:ident: $Check:ident => $Config:ident [$setback:expr, $alert:expr, $kick:expr, $decay:expr, $ban_after:expr] {
             $( $(#[$xdoc:meta])* $extra:ident: $ty:ty = $default:expr, )*
         }
     )*) => {
@@ -55,6 +65,7 @@ macro_rules! checks {
                 pub alert: f32,
                 pub kick: f32,
                 pub decay: f32,
+                pub ban_after: u32,
                 $( $(#[$xdoc])* pub $extra: $ty, )*
             }
 
@@ -66,13 +77,14 @@ macro_rules! checks {
                         alert: $alert,
                         kick: $kick,
                         decay: $decay,
+                        ban_after: $ban_after,
                         $($extra: $default,)*
                     }
                 }
             }
         )*
 
-        /// `server.toml`'s `[anticheat]`: off by default.
+        /// `server.toml`'s `[anticheat]`: on by default.
         #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
         #[serde(default, deny_unknown_fields)]
         pub struct Config {
@@ -83,16 +95,20 @@ macro_rules! checks {
             pub alert_level: u8,
             /// Every flag, one line each, relative to the server's folder; empty: no file.
             pub log: String,
+            /// The players' kicks by check ([`Strikes`]), relative to the server's folder; empty: kept
+            /// only while the server runs.
+            pub strikes: String,
             $(pub $field: $Config,)*
         }
 
         impl Default for Config {
             fn default() -> Self {
                 Self {
-                    enabled: false,
+                    enabled: true,
                     alerts: true,
                     alert_level: 2,
                     log: "logs/anticheat.log".into(),
+                    strikes: "anticheat-strikes.json".into(),
                     $($field: $Config::default(),)*
                 }
             }
@@ -108,7 +124,13 @@ macro_rules! checks {
                 match check {
                     $(Check::$Check => {
                         let c = &self.$field;
-                        Actions { setback: c.setback, alert: c.alert, kick: c.kick, decay: c.decay }
+                        Actions {
+                            setback: c.setback,
+                            alert: c.alert,
+                            kick: c.kick,
+                            decay: c.decay,
+                            ban_after: c.ban_after,
+                        }
                     })*
                 }
             }
@@ -120,7 +142,8 @@ checks! {
     /// Timer: more client ticks than the server's clock allows (a sped-up game). Vanilla's client ends
     /// every tick with ServerboundClientTickEndPacket, at the server's tick rate; each one spends a tick's
     /// time from a balance that wall-clock time fills, capped so a pause can't be saved up for a burst.
-    timer: Timer => TimerConfig [2.0, 5.0, 20.0, 0.02] {
+    /// It logs only by default; once trusted: `setback = 2`, `alert = 5`, `kick = 20`.
+    timer: Timer => TimerConfig [0.0, 0.0, 0.0, 0.02, 0] {
         /// How far ahead of the clock, in milliseconds, a client may get before it is flagged.
         tolerance_ms: f64 = 300.0,
         /// The most time, in milliseconds, a quiet connection banks for the ticks that follow (a lag
@@ -129,15 +152,35 @@ checks! {
     }
 
     /// Ground: a move that says it ends on the ground with nothing there to stand on: no-fall (claiming
-    /// the ground to skip fall damage) and walking on water. The claim is always dropped, so vanilla's
-    /// fall damage follows; from `setback` on the player is also sent back.
-    ground: Ground => GroundConfig [5.0, 15.0, 60.0, 2.0] {}
+    /// the ground to skip fall damage) and walking on water. The claim is dropped, so vanilla's
+    /// fall damage follows (the player is never sent back: `setback = 0` makes the check log only), and
+    /// a player that keeps claiming is kicked, then banned at the second kick (`ban_after = 2`). A claim standing still isn't
+    /// judged (no fall to skip). On the official server's first two hours (67 players), every player who
+    /// wasn't flying or walking on water peaked at level 7 (4 claims standing still in one second); the
+    /// ones who were, at 113 to 3749.
+    ground: Ground => GroundConfig [10.0, 15.0, 30.0, 2.0, 2] {}
 
     /// Prediction: each move played again from the client's own inputs with vanilla's movement code,
-    /// and compared (speed, step, fly, jesus...). Being built: for now it records each player's
-    /// client ticks (`prediction::Record`), with a ping a tick to place what the server changes, and
-    /// plays them again (horizon-client's `lan::prediction`), but flags nothing.
-    prediction: Prediction => PredictionConfig [5.0, 15.0, 60.0, 2.0] {}
+    /// and compared (speed, step, fly, jesus...). Each player's client ticks are recorded
+    /// (`prediction::Record`), with a ping a tick to place what the server changes, and played again
+    /// (horizon-client's `lan::prediction`). A move that lands farther than `tolerance` from the
+    /// replay flags, by how far it lands (one `tolerance` off weighs 1, at most 5 a tick), and the
+    /// setback puts the player back where its moves last agreed. A tick near what the replay can't
+    /// play yet (another entity, a block change or abilities the client hadn't seen, a moving piston,
+    /// a chunk the client doesn't have, a riptide launch) is excused, and so are the ticks after it
+    /// until the moves agree again. It logs only by default; once trusted: `setback = 5`, `alert = 15`,
+    /// `kick = 60`.
+    prediction: Prediction => PredictionConfig [0.0, 0.0, 0.0, 2.0, 0] {
+        /// How far, in blocks, a move may land from where the replay puts it.
+        tolerance: f64 = 0.03,
+    }
+
+    /// Combat: attacks vanilla's client can't send (`combat`): one with no swing after it (a kill aura
+    /// that hides its swing), or a second entity attacked in the same client tick (vanilla attacks the
+    /// one entity under the crosshair, picked once a tick). Each flags once; from `setback` on the
+    /// player's attacks are dropped. A vanilla client never trips it, so it acts by default: the first
+    /// kick warns, the second bans (`ban_after = 2`).
+    combat: Combat => CombatConfig [2.0, 5.0, 20.0, 0.5, 2] {}
 }
 
 /// How many checks there are.
@@ -178,7 +221,38 @@ impl Config {
                 ));
             }
         }
+        let tolerance = self.prediction.tolerance;
+        if !tolerance.is_finite() || tolerance <= 0.0 {
+            return Err("anticheat.prediction: tolerance is a number of blocks above 0".into());
+        }
         Ok(())
+    }
+}
+
+/// How many times each check kicked each player, kept across sessions (`strikes`, a JSON object of
+/// players' UUIDs to check names to counts): the kick that reaches a check's `ban_after` is a ban.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct Strikes(pub BTreeMap<String, BTreeMap<String, u32>>);
+
+impl Strikes {
+    /// Player `uuid` was kicked by `check`: its kicks by it so far, this one included, and whether this
+    /// one bans. A ban starts the count again, so a player an operator pardons is kicked before the
+    /// next ban.
+    pub fn kick(&mut self, uuid: &str, check: Check, ban_after: u32) -> (u32, bool) {
+        let count = self
+            .0
+            .entry(uuid.to_owned())
+            .or_default()
+            .entry(check.name().to_owned())
+            .or_default();
+        *count = count.saturating_add(1);
+        let kicks = *count;
+        let ban = ban_after > 0 && kicks >= ban_after;
+        if ban {
+            *count = 0;
+        }
+        (kicks, ban)
     }
 }
 
@@ -207,6 +281,15 @@ pub struct Player {
     pub ground: Option<(u64, f64)>,
     /// The client ticks the prediction plays again (only while it runs).
     pub record: Option<Box<prediction::Record>>,
+    /// Sprinting as the client's own commands left it (ServerboundPlayerCommandPacket's
+    /// START_SPRINTING and STOP_SPRINTING: LocalPlayer.wasSprinting), which the record's ticks take.
+    /// Not the server's player: a hit with extra knockback stops its sprint
+    /// (Player.causeExtraKnockback), the client's own `Player.attack` doesn't (a mob's `hurtClient`
+    /// is false), and once the server's flag reaches it LocalPlayer.aiStep starts the sprint again
+    /// while the sprint key is held, with nothing to say: wasSprinting never changed.
+    pub sprinting: bool,
+    /// The attacks of the client tick being heard.
+    pub attacks: combat::Attacks,
 }
 
 impl Player {
@@ -250,12 +333,22 @@ mod tests {
     }
 
     #[test]
-    fn off_by_default_and_without_a_section() {
-        assert!(!Config::default().enabled);
+    fn on_by_default_but_only_combat_and_ground_act() {
         let c = Config::from_server_toml("[server]\nport = 25565\n").unwrap();
         assert_eq!(c, Config::default());
-        assert!(!c.runs(Check::Timer));
-        assert!(!c.runs(Check::Ground));
+        for &check in Check::ALL {
+            assert!(c.runs(check), "{}", check.name());
+            let a = c.actions(check);
+            let acts = [a.setback, a.alert, a.kick] != [0.0; 3];
+            assert_eq!(
+                acts,
+                matches!(check, Check::Combat | Check::Ground),
+                "{}",
+                check.name()
+            );
+        }
+        let off = Config::from_server_toml("[anticheat]\nenabled = false\n").unwrap();
+        assert!(Check::ALL.iter().all(|&check| !off.runs(check)));
     }
 
     #[test]
@@ -266,6 +359,8 @@ mod tests {
         assert_eq!(c.timer.kick, 0.0);
         assert_eq!(c.timer.tolerance_ms, 500.0);
         assert_eq!(c.timer.alert, TimerConfig::default().alert);
+        let zero = "[anticheat]\n[anticheat.prediction]\ntolerance = 0\n";
+        assert!(Config::from_server_toml(zero).is_err());
         let off = "[anticheat]\nenabled = true\n[anticheat.timer]\nenabled = false\n";
         assert!(!Config::from_server_toml(off).unwrap().runs(Check::Timer));
     }
@@ -300,6 +395,25 @@ mod tests {
         assert_eq!(p.vl(&c, Check::Timer, 10_000), 0.0);
         let v = p.flag(&c, Check::Timer, 5.0, 10_000);
         assert!(v.kick && v.alert);
+    }
+
+    #[test]
+    fn the_kick_that_reaches_ban_after_bans() {
+        let c = Config::default();
+        assert_eq!(c.actions(Check::Combat).ban_after, 2);
+        assert_eq!(c.actions(Check::Prediction).ban_after, 0);
+        let mut s = Strikes::default();
+        assert_eq!(s.kick("a", Check::Combat, 2), (1, false));
+        // Another player, another check: their own counts.
+        assert_eq!(s.kick("b", Check::Combat, 2), (1, false));
+        assert_eq!(s.kick("a", Check::Timer, 2), (1, false));
+        assert_eq!(s.kick("a", Check::Combat, 2), (2, true));
+        // Pardoned, the player is kicked once more before the next ban.
+        assert_eq!(s.kick("a", Check::Combat, 2), (1, false));
+        // 0 never bans; 1 bans at the first kick.
+        assert_eq!(s.kick("c", Check::Timer, 0), (1, false));
+        assert_eq!(s.kick("c", Check::Timer, 0), (2, false));
+        assert_eq!(s.kick("d", Check::Ground, 1), (1, true));
     }
 
     #[test]

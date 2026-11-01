@@ -1,5 +1,6 @@
 //! Saved section palettes and storage-level chunk access. Changes here do not
 //! run block behavior, lighting, heightmaps, neighbor updates or scheduled ticks.
+pub use crate::block_state_properties::BlockProperties;
 use crate::{
     DATA_VERSION,
     compression::invalid,
@@ -12,7 +13,7 @@ use horizon_core::{
     storage::PackedStorage,
     ticks::{ChunkTicks, SavedTick, TickTypeId},
 };
-use std::{collections::BTreeMap, io};
+use std::io;
 
 fn key(value: &str) -> JavaString {
     JavaString::from(value)
@@ -161,7 +162,7 @@ impl PalettedContainer {
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct BlockState {
     pub name: String,
-    pub properties: BTreeMap<String, String>,
+    pub properties: BlockProperties,
 }
 impl BlockState {
     pub fn to_nbt(&self) -> Tag {
@@ -184,13 +185,13 @@ impl BlockState {
         if let Tag::String(name) = tag {
             return Ok(Self {
                 name: name.to_string().map_err(|e| invalid(e.to_string()))?,
-                properties: BTreeMap::new(),
+                properties: BlockProperties::new(),
             });
         }
         let Some(Tag::String(name)) = tag.get("id") else {
             return Err(invalid("block state is missing id"));
         };
-        let mut properties = BTreeMap::new();
+        let mut properties = Vec::new();
         if let Some(tag) = tag.get("properties") {
             let Tag::Compound(map) = tag else {
                 return Err(invalid("block properties are not a compound"));
@@ -199,15 +200,15 @@ impl BlockState {
                 let Tag::String(v) = v else {
                     return Err(invalid("block property is not a string"));
                 };
-                properties.insert(
+                properties.push((
                     k.to_string().map_err(|e| invalid(e.to_string()))?,
                     v.to_string().map_err(|e| invalid(e.to_string()))?,
-                );
+                ));
             }
         }
         Ok(Self {
             name: name.to_string().map_err(|e| invalid(e.to_string()))?,
-            properties,
+            properties: properties.into_iter().collect(),
         })
     }
 }
@@ -431,6 +432,19 @@ impl<'r> BlockSection<'r> {
             return Err(out_of_bounds());
         }
         Ok(self.state(index))
+    }
+    /// Every state in index order, as [`state`](Self::state) reads them one by
+    /// one, unpacked word by word.
+    pub(crate) fn fill_states(&self, out: &mut [u32; 4096]) {
+        match &self.storage {
+            None => out.fill(self.palette[0].0),
+            Some(storage) => {
+                storage.unpack_into(out);
+                for v in out.iter_mut() {
+                    *v = self.palette[*v as usize].0;
+                }
+            }
+        }
     }
     /// The state at `index`, which must be below 4096 (a `local_index`).
     #[inline]
@@ -745,7 +759,7 @@ mod tests {
                 Tag::compound([("id", Tag::String(format!("minecraft:b{i}").as_str().into()))])
             })
             .collect();
-        let defaults: BTreeMap<_, _> = (0..states)
+        let defaults: std::collections::BTreeMap<_, _> = (0..states)
             .map(|i| {
                 (
                     JavaString::from(format!("minecraft:b{i}").as_str()),
@@ -759,6 +773,32 @@ mod tests {
             ("defaults", Tag::Compound(defaults)),
         ]);
         BlockRegistry::from_nbt(&tag).unwrap()
+    }
+
+    /// `fill_states` reads what `state` reads at every index, from a uniform
+    /// section (no storage) through every palette width.
+    #[test]
+    fn fill_states_matches_state() {
+        let registry = benchmark_registry(64);
+        for &(distinct, seed) in &[(1u64, 1u64), (2, 2), (16, 3), (17, 4), (64, 6)] {
+            let mut section = BlockSection::uniform(BlockStateId(0), &registry).unwrap();
+            let mut rng = seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1;
+            let mut out = [0u32; 4096];
+            for round in 0..4 {
+                section.fill_states(&mut out);
+                for (index, &value) in out.iter().enumerate() {
+                    assert_eq!(value, section.state(index).0, "round {round} index {index}");
+                }
+                for _ in 0..2_000 {
+                    rng ^= rng << 13;
+                    rng ^= rng >> 7;
+                    rng ^= rng << 17;
+                    let index = (rng % 4096) as usize;
+                    let value = ((rng >> 20) % distinct) as u32;
+                    section.set(index, BlockStateId(value)).unwrap();
+                }
+            }
+        }
     }
 
     /// The optimized `set`/`get` must agree with the pre-optimization ones on

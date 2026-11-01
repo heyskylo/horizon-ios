@@ -628,6 +628,8 @@ pub struct Viewer<'a> {
     pub tracker: &'a mut Tracker,
     /// What the tick sends it, in order.
     pub out: &'a mut Vec<Vec<u8>>,
+    /// Where the entities it stops tracking were last sent, when asked (the prediction's replay).
+    pub gone: Option<&'a mut Vec<[f64; 3]>>,
 }
 
 /// One entity as this tick's range checks read it: where it is
@@ -885,7 +887,10 @@ impl Entities {
                 let states = &self.states;
                 v.tracker.seen.retain(|id| match states.get(id) {
                     Some(s) if s.seen == now && flags[s.index] & TRACKS != 0 => true,
-                    _ => {
+                    other => {
+                        if let (Some(gone), Some(s)) = (v.gone.as_deref_mut(), other) {
+                            gone.push(s.base);
+                        }
                         removed.push(*id);
                         false
                     }
@@ -1338,6 +1343,8 @@ mod tests {
         positions: [[f64; 3]; 2],
         moved: [bool; 2],
         spectators: [bool; 2],
+        /// The first client's entities gone, where they were last sent.
+        gone: Vec<[f64; 3]>,
     }
 
     impl Clients {
@@ -1349,6 +1356,7 @@ mod tests {
                 positions: [[0.0, 64.0, 0.0]; 2],
                 moved: [false; 2],
                 spectators: [false; 2],
+                gone: Vec::new(),
             }
         }
         fn tick(&mut self, level: &mut Entities, entities: &[&EntityState]) {
@@ -1367,6 +1375,7 @@ mod tests {
                     chunks: &self.chunks,
                     tracker: t0,
                     out: o0,
+                    gone: Some(&mut self.gone),
                 },
                 Viewer {
                     entity_id: 2,
@@ -1377,6 +1386,7 @@ mod tests {
                     chunks: &self.chunks,
                     tracker: t1,
                     out: o1,
+                    gone: None,
                 },
             ];
             level.tick(entities, &Riding::default(), &mut viewers, |_| Some(100));
@@ -1459,10 +1469,12 @@ mod tests {
         c.tick(&mut level, &[&me, &e]);
         assert!(!c.trackers[0].is_tracking(1) && c.trackers[1].is_tracking(1));
         assert!(c.trackers[0].is_tracking(7));
-        // Out of the zombie's 8 chunks.
+        // Out of the zombie's 8 chunks: the client last had it where it started.
+        let start = e.position;
         e.position[0] = 200.0;
         c.tick(&mut level, &[&me, &e]);
         assert!(!c.trackers[0].is_tracking(7));
+        assert_eq!(c.gone, [start]);
         let removed = body(play::Clientbound::RemoveEntities(play::RemoveEntities {
             ids: vec![7],
         }));

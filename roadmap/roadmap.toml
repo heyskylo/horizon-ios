@@ -1235,11 +1235,12 @@ links = ["docs/design-system.md"]
 
 [[item]]
 id = "linux-packages"
-title = "AppImage and a Nix flake"
+title = "A Nix flake"
 status = "later"
 area = "platforms"
-plain = """Install Horizon on any Linux distribution as an AppImage, and on NixOS through a Nix flake."""
-dev = """A player's idea (#horizon-ideas). An AppImage of the launcher and game from the release workflow, and a \
-flake.nix packaging the release binaries with their runtime libraries (Vulkan loader, X11/Wayland, ALSA), \
-the way horizon-parity's NixOS setup runs them today."""
-links = []
+plain = """Install Horizon on NixOS through a Nix flake."""
+dev = """A player's idea (#horizon-ideas). The launcher's AppImage ships with each launcher release \
+(packaging/linux/appimage.sh): one file with the libraries GPUI needs, which replaces itself when it \
+updates. A flake.nix packaging the release binaries with their runtime libraries (Vulkan loader, \
+X11/Wayland, ALSA) is still missing, the way horizon-parity's NixOS setup runs them today."""
+links = ["packaging/linux/appimage.sh"]

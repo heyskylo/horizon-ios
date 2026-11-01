@@ -83,7 +83,11 @@ fn wearing_harness(m: &Mob) -> bool {
 }
 /// `getControllingPassenger`: a player on a harnessed adult.
 pub fn controlled(m: &Mob) -> bool {
-    m.rider.is_some() && wearing_harness(m) && !m.is_baby()
+    m.rider.is_some() && harnessed_adult(m)
+}
+/// A harnessed adult, whether or not a rider is on it yet.
+pub fn harnessed_adult(m: &Mob) -> bool {
+    wearing_harness(m) && !m.is_baby()
 }
 /// `getHappyGhastRestrictionRadius`.
 fn restriction_radius(m: &Mob) -> i32 {

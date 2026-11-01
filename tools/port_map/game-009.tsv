@@ -95,7 +95,7 @@ RangedCrossbowAttackGoal.canContinueToUse	port	crates/horizon-client/src/mobs/il
 RangedCrossbowAttackGoal.isValidTarget	inline	crates/horizon-client/src/mobs/illager.rs::CrossbowAttack::can_use	alive target; also rejects creative players
 RemoveBlockGoal.getPosWithBlock	inline	crates/horizon-client/src/mobs/undead.rs::AttackTurtleEgg::tick	own cell, below, west, east, north, south, two below
 RunAroundLikeCrazyGoal.start	inline	crates/horizon-client/src/mobs/equine.rs::RunAroundLikeCrazy::can_use	navigation to the random spot starts in can_use
-SpearUseGoal	missing		player: zombies and zombified piglins holding a spear do not run the charge, jab and retreat routine; they only melee
+SpearUseGoal	home	crates/horizon-client/src/mobs/spear_use.rs	
 SpearUseGoal.SpearUseState	missing		player: see SpearUseGoal
 StrollThroughVillageGoal.tick	missing		minor: foxes do not wander through villages at night (goal missing; no village-bound step)
 StrollThroughVillageGoal.moveRandomly	missing		minor: foxes do not wander through villages at night

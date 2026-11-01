@@ -6,7 +6,19 @@ use crate::{Session, commands};
 use serde_json::{Value, json};
 use std::io::{BufRead, Write};
 
-const PROTOCOL: &str = "2025-06-18";
+/// Revisions this server implements. Older ones are not claimed: only the revision actually
+/// implemented is advertised (no JSON-RPC batches, no other capability than `tools`).
+const SUPPORTED: &[&str] = &["2025-06-18"];
+
+/// MCP lifecycle: answer with the client's version if supported, otherwise one we support.
+fn negotiate_version(params: &Value) -> &'static str {
+    let wanted = params.get("protocolVersion").and_then(Value::as_str);
+    SUPPORTED
+        .iter()
+        .copied()
+        .find(|v| Some(*v) == wanted)
+        .unwrap_or(SUPPORTED[0])
+}
 
 fn tools() -> Vec<Value> {
     commands::COMMANDS
@@ -134,7 +146,7 @@ impl Session {
     fn handle(&mut self, method: &str, params: &Value) -> Result<Value, (i64, String)> {
         match method {
             "initialize" => Ok(json!({
-                "protocolVersion": params.get("protocolVersion").and_then(Value::as_str).unwrap_or(PROTOCOL),
+                "protocolVersion": negotiate_version(params),
                 "capabilities": { "tools": {} },
                 "serverInfo": { "name": "horizon-ctl", "version": horizon_core::release::VERSION },
                 "instructions": "Play Horizon, a Rust reimplementation of Minecraft Java Edition. Start with launch (it finds the game installed by the Horizon launcher and opens or creates a world), then read the world with state, inventory, screen, entities and find_block, and act with goto, look_at_block, break, place, interact, click_slot and click_button. Actions block until they finish and report what happened. Coordinates are block coordinates; yaw 0 faces south (+Z).",
@@ -194,7 +206,17 @@ pub fn serve(session: &mut Session) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
+    #[test]
+    fn version_negotiation() {
+        let v = |p: Value| negotiate_version(&p);
+        assert_eq!(v(json!({ "protocolVersion": "2025-06-18" })), "2025-06-18");
+        assert_eq!(v(json!({ "protocolVersion": "2026-07-28" })), "2025-06-18");
+        assert_eq!(v(json!({ "protocolVersion": "1999-01-01" })), "2025-06-18");
+        assert_eq!(v(json!({ "protocolVersion": 7 })), "2025-06-18");
+        assert_eq!(v(json!({})), "2025-06-18");
+    }
 
     #[test]
     fn base64_matches_rfc_4648() {
@@ -234,9 +256,9 @@ mod tests {
     fn protocol_basics() {
         let mut s = Session::new(std::env::temp_dir().join("horizon-ctl-mcp-test.sock"), None);
         let init = s
-            .handle("initialize", &json!({ "protocolVersion": "2025-03-26" }))
+            .handle("initialize", &json!({ "protocolVersion": "2025-06-18" }))
             .unwrap();
-        assert_eq!(init["protocolVersion"], "2025-03-26");
+        assert_eq!(init["protocolVersion"], "2025-06-18");
         assert!(s.handle("nope", &json!({})).is_err());
         let r = s
             .handle(

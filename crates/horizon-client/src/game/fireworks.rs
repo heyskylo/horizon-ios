@@ -10,9 +10,10 @@ use horizon_client::{
     entity_nbt::RocketNbt,
     items::ItemStack,
     mesher::Vertex,
-    mobs::{Damage, DamageKind, Species, Who},
+    mobs::{Damage, Species, Who},
     particles::{FireworkExplosion, ParticleOptions, ParticleType},
     projectiles::ProjectileWorld,
+    text::Text,
 };
 use horizon_core::{
     geometry::{Aabb, Vec3},
@@ -121,6 +122,18 @@ impl Rocket {
                 self.velocity.z * 1.15,
             )
         }
+    }
+    /// `EntityType.FIREWORK_ROCKET`: 0.25 x 0.25.
+    pub(super) fn bounds(&self) -> Aabb {
+        let h = 0.125;
+        Aabb::new(
+            Vec3::new(self.position.x - h, self.position.y, self.position.z - h),
+            Vec3::new(
+                self.position.x + h,
+                self.position.y + 2.0 * h,
+                self.position.z + h,
+            ),
+        )
     }
     /// `FireworkRocketEntity.tick` for a rocket attached to no entity: speed
     /// up (an angled one keeps its motion) and rise, then move.
@@ -398,14 +411,14 @@ impl Game<'_> {
             // other player in range and in sight takes the blast.
             let boosted = r.guest.filter(|_| r.attached);
             if r.attached && boosted.is_none() {
-                self.rocket_hurt_player(damage);
+                self.rocket_hurt_player(from, damage);
             } else {
                 self.rocket_blast_player(from, damage);
             }
             if let Some(conn) = boosted
                 && let Some(mut host) = self.lan.take()
             {
-                self.as_guest(&mut host, conn, |g| g.rocket_hurt_player(damage));
+                self.as_guest(&mut host, conn, |g| g.rocket_hurt_player(from, damage));
                 self.lan = Some(host);
             }
             // Every other player in the level (LAN guests, the players of a
@@ -466,21 +479,25 @@ impl Game<'_> {
     fn rocket_hurt_mobs(&mut self, hits: &[(u32, f32)], attacker: Option<Who>, at: [f64; 3]) {
         for &(id, amount) in hits {
             if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
-                m.damage(
-                    amount,
-                    Damage {
-                        kind: DamageKind::Explosion,
-                        attacker,
-                        from: Some(at),
-                    },
-                );
+                let hurt = m.damage(amount, Damage::fireworks(attacker, at));
+                // LivingEntity.hurtServer: a player's rocket makes them the
+                // last player to hurt it (`setLastHurtByPlayer`), so its death
+                // message names them and their item.
+                if hurt && attacker == Some(Who::Player) {
+                    self.last_hurt_by_player.insert(id, self.lan_acting);
+                }
             }
         }
     }
     /// The owner as `rocket_targets` names it: a guest by their entity id.
     fn rocket_owner(&self, r: &Rocket) -> Option<Who> {
-        let owner = r.owner?;
-        let Some(conn) = r.guest.filter(|_| owner == Who::Player) else {
+        self.shooter_who(r.owner, r.guest)
+    }
+    /// `Projectile.getOwner` as a target's `Who`: a guest's `Who::Player`
+    /// (kept with the connection that shot it) is their entity, not the host.
+    pub(super) fn shooter_who(&self, owner: Option<Who>, guest: Option<u32>) -> Option<Who> {
+        let owner = owner?;
+        let Some(conn) = guest.filter(|_| owner == Who::Player) else {
             return Some(owner);
         };
         let host = self.lan.as_ref()?;
@@ -577,21 +594,30 @@ impl Game<'_> {
             })
         };
         if sees {
-            self.rocket_hurt_player(blast_damage(damage, from, feet));
+            self.rocket_hurt_player(from, blast_damage(damage, from, feet));
         }
     }
-    /// `hurtServer` with `damageSources().fireworks`: armor absorbs it and
-    /// wears (`hurtArmor`); creative and spectator players are immune.
-    fn rocket_hurt_player(&mut self, amount: f32) {
-        if self.creative || self.spectator() {
+    /// `hurtServer` with `damageSources().fireworks` from the rocket at
+    /// `from`: the rocket is the direct entity, so the player is knocked away
+    /// from it and the death message names it; creative and spectator
+    /// players are immune.
+    fn rocket_hurt_player(&mut self, from: Vec3, amount: f32) {
+        if self.creative
+            || self.spectator()
+            || self
+                .player
+                .as_ref()
+                .is_none_or(|p| p.health.dead_or_dying())
+        {
             return;
         }
-        if let Some(p) = self.player.as_mut()
-            && !p.health.dead_or_dying()
-            && let Some(id) = self.motion.health.damage.id("minecraft:fireworks")
-        {
-            let _ = p.hurt(&self.motion.health, self.world.health_rules, id, amount);
-        }
+        // No mob ever owns a rocket.
+        self.combat.projectile_owner = None;
+        self.combat.rocket_hit = true;
+        self.combat.projectile_direct =
+            Some(Text::translate("entity.minecraft.firework_rocket", &[]));
+        let at = [from.x, from.y, from.z];
+        self.hurt_player_from(amount, Some(at), "minecraft:fireworks", Some(None));
     }
     /// `FireworkEntityRenderer.submit`: the item (GROUND) facing the camera,
     /// lit at the rocket's light probe.

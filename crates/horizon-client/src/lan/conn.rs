@@ -9,6 +9,7 @@
 use super::{
     Joined, NetEvent, Out, Shared,
     data::{CORE_PACK, SyncData},
+    forwarding,
 };
 use horizon_protocol::{
     PROTOCOL_VERSION,
@@ -38,6 +39,13 @@ const KEEP_ALIVE_EVERY: Duration = Duration::from_secs(15);
 /// ReadTimeoutHandler(30) in ServerConnectionListener: a connection that sends
 /// nothing for 30 s.
 const READ_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// How long the handshake, a status request and the login may wait for the client's next packet,
+/// where vanilla waits 30 s: a client answers these at once, and each connection holds a thread
+/// and one of the places the server keeps for connections, which a crowd of silent or slow
+/// sockets would otherwise take for 30 s each. Configuration and play keep [`READ_TIMEOUT`] (a
+/// resource pack downloads in configuration).
+const LOGIN_TIMEOUT: Duration = Duration::from_secs(10);
 /// Packets queued for one client beyond this many bytes disconnect it.
 const MAX_PENDING: usize = 96 << 20;
 /// Vanilla's server-side disconnect during login is a JSON component.
@@ -456,8 +464,20 @@ pub fn serve(
     {
         return serve_legacy(stream, &shared);
     }
+    // A peer that stops reading (a frozen game, a dropped network) would otherwise hold
+    // its writer in a full send buffer for good, or until TCP gives up minutes later, and
+    // its thread and its place among the server's connections with it.
+    let _ = stream.set_write_timeout(Some(WRITE_TIMEOUT));
     serve_connection(Connection::from_stream(stream).map_err(e)?, address, shared)
 }
+
+/// How long one write may wait on a peer that reads nothing: as long as a read may wait.
+const WRITE_TIMEOUT: Duration = READ_TIMEOUT;
+
+/// The address a memory connection logs in from: no network peer has port 0.
+pub const MEMORY_ADDRESS: std::net::SocketAddr = std::net::SocketAddr::V4(
+    std::net::SocketAddrV4::new(std::net::Ipv4Addr::LOCALHOST, 0),
+);
 
 /// `ServerConnectionListener.startMemoryChannel`: an integrated server's
 /// own player, over one end of an in-memory pipe.
@@ -465,8 +485,7 @@ pub fn serve_local(
     pipe: horizon_protocol::connection::Pipe,
     shared: Arc<Shared>,
 ) -> Result<(), String> {
-    let address = std::net::SocketAddr::from(([127, 0, 0, 1], 0));
-    serve_connection(Connection::local(pipe), address, shared)
+    serve_connection(Connection::local(pipe), MEMORY_ADDRESS, shared)
 }
 
 fn serve_connection(
@@ -475,9 +494,7 @@ fn serve_connection(
     shared: Arc<Shared>,
 ) -> Result<(), String> {
     let e = |e: horizon_protocol::Error| e.to_string();
-    c.reader
-        .set_read_timeout(Some(Duration::from_secs(30)))
-        .map_err(e)?;
+    c.reader.set_read_timeout(Some(LOGIN_TIMEOUT)).map_err(e)?;
     let (id, payload) = c.recv().map_err(e)?;
     let intention = match handshake::Serverbound::decode(id, &payload).map_err(e)? {
         handshake::Serverbound::Intention(i) => i,
@@ -708,21 +725,64 @@ fn serve_login(
         );
         return Ok(());
     }
-    let user = shared
-        .config
-        .log
-        .as_ref()
-        .map(|log| user_name(&hello.name, address, log))
-        .unwrap_or_default();
+    let (mut name, mut address) = (hello.name.clone(), address);
+    let user_of = |name: &str, address| {
+        shared
+            .config
+            .log
+            .as_ref()
+            .map(|log| user_name(name, address, log))
+            .unwrap_or_default()
+    };
+    let mut user = user_of(&name, address);
     // handleHello: online mode authenticates first; offline mode, and the
     // integrated server's own player through memory, derive the profile
-    // from the name.
+    // from the name. Behind a Velocity proxy (forwarding.secret) the proxy has
+    // authenticated the player and the profile is the one it forwards.
     let online = shared.config.online.as_ref().filter(|_| !c.is_memory());
-    let (uuid, properties) = match online {
-        Some(online) => match authenticate(&mut c, shared, online, &hello.name, address, &user) {
-            Ok(Ok(profile)) => profile,
-            Ok(Err(refused)) => {
-                lost(shared, &user, &refused);
+    let forwarding = shared
+        .config
+        .forwarding_secret
+        .as_deref()
+        .filter(|_| online.is_none() && !c.is_memory());
+    let (uuid, properties) = match (online, forwarding) {
+        (Some(online), _) => {
+            match authenticate(&mut c, shared, online, &hello.name, address, &user) {
+                Ok(Ok(profile)) => profile,
+                Ok(Err(refused)) => {
+                    lost(shared, &user, &refused);
+                    return Ok(());
+                }
+                Err(err) => {
+                    lost(shared, &user, "Disconnected");
+                    return Err(err);
+                }
+            }
+        }
+        (None, Some(secret)) => match forward(&mut c, secret) {
+            Ok(Ok(forwarded)) => {
+                (name, address) = (
+                    forwarded.name,
+                    std::net::SocketAddr::new(forwarded.address, address.port()),
+                );
+                user = user_of(&name, address);
+                (forwarded.uuid, forwarded.properties)
+            }
+            Ok(Err(reason)) => {
+                let text = "This server is behind a proxy: join through the proxy.";
+                let json = format!("{{\"text\":\"{text}\"}}");
+                let _ = c.send(
+                    &login::Clientbound::Disconnect(login::Disconnect { reason_json: json })
+                        .encode(),
+                );
+                if let Some(log) = &shared.config.log {
+                    (log.write)(
+                        "Server thread",
+                        "WARN",
+                        &format!("Refused {user}: {reason}"),
+                    );
+                }
+                lost(shared, &user, text);
                 return Ok(());
             }
             Err(err) => {
@@ -730,16 +790,16 @@ fn serve_login(
                 return Err(err);
             }
         },
-        None => (offline_uuid(&hello.name), Vec::new()),
+        (None, None) => (offline_uuid(&hello.name), Vec::new()),
     };
     // verifyLoginAndFinishConnectionSetup: PlayerList.canPlayerLogin, then
     // duplicates and a full server.
-    if let Some(reason) = shared.try_admit(address, uuid, &hello.name) {
+    if let Some(reason) = shared.try_admit(address, uuid, &name) {
         let text = refuse(&mut c, shared, "Server thread", &user, &reason);
         lost(shared, &user, &text);
         return Ok(());
     }
-    let result = login_and_configure(&mut c, shared, uuid, &hello.name, properties);
+    let result = login_and_configure(&mut c, shared, uuid, &name, properties);
     match result {
         Ok(Some(parts)) => {
             play(c, shared, parts, address);
@@ -752,10 +812,40 @@ fn serve_login(
         Err(err) => {
             shared.release(uuid);
             // ServerConfigurationPacketListenerImpl.onDisconnect.
-            let profile = format!("{} ({})", hello.name, uuid_string(uuid));
+            let profile = format!("{name} ({})", uuid_string(uuid));
             lost(shared, &profile, "Disconnected");
             Err(err)
         }
+    }
+}
+
+/// Asks the proxy for the player's forwarded information (login plugin channel `velocity:player_info`) and
+/// checks it against the shared secret. The outer error is the connection failing; the inner one is a refusal
+/// (the client isn't a proxy, or signed with another secret), with the reason for the log.
+fn forward(
+    c: &mut Connection,
+    secret: &[u8],
+) -> Result<Result<forwarding::Forwarded, String>, String> {
+    const TRANSACTION: i32 = 1;
+    let e = |e: horizon_protocol::Error| e.to_string();
+    c.send(
+        &login::Clientbound::CustomQuery(login::CustomQuery {
+            transaction: TRANSACTION,
+            channel: forwarding::CHANNEL.into(),
+            data: forwarding::request(),
+        })
+        .encode(),
+    )
+    .map_err(e)?;
+    let (id, payload) = c.recv().map_err(e)?;
+    match login::Serverbound::decode(id, &payload).map_err(e)? {
+        login::Serverbound::CustomQueryAnswer(answer) if answer.transaction == TRANSACTION => {
+            Ok(match answer.payload {
+                Some(data) => forwarding::verify(secret, &data),
+                None => Err("the client didn't answer the forwarding request".into()),
+            })
+        }
+        _ => Err("unexpected packet during login".into()),
     }
 }
 
@@ -803,6 +893,7 @@ fn login_and_configure(
             _ => return Err("unexpected packet during login".into()),
         }
     }
+    c.reader.set_read_timeout(Some(READ_TIMEOUT)).map_err(e)?;
     // Configuration.
     let sync_data = shared.sync();
     let sync: &SyncData = &sync_data;
@@ -862,16 +953,22 @@ fn login_and_configure(
             _ => {}
         }
     };
-    // horizon-clients-only: the brand the client sent ("vanilla" when it sent
-    // none) must be Horizon's.
-    if shared.config.horizon_clients_only && brand != "horizon" {
-        let text = super::HORIZON_CLIENTS_ONLY_REASON;
+    // Custom component IDs need Horizon's registry check. The server may also
+    // require Horizon clients even when it has no custom components.
+    if brand != "horizon"
+        && (shared.config.horizon_clients_only
+            || horizon_protocol::item::custom::entries().next().is_some())
+    {
+        let text = if shared.config.horizon_clients_only {
+            super::HORIZON_CLIENTS_ONLY_REASON
+        } else {
+            crate::content_identity::MISMATCH
+        };
         let reason = horizon_world::nbt::Tag::String(horizon_world::nbt::JavaString::from(text));
         let _ = send(c, cfg::Clientbound::Disconnect(cfg::Disconnect { reason }));
         if let Some(log) = &shared.config.log {
-            let line = format!(
-                "Disconnecting {name}: its client is \"{brand}\", not Horizon (horizon-clients-only)"
-            );
+            let line =
+                format!("Disconnecting {name}: its client is \"{brand}\", not Horizon ({text})");
             (log.write)("Server thread", "INFO", &line);
         }
         lost(shared, &format!("{name} ({})", uuid_string(uuid)), text);
@@ -885,6 +982,24 @@ fn login_and_configure(
             cfg::Clientbound::CustomPayload(cfg::CustomPayload {
                 channel: horizon_protocol::quiet::CHANNEL.into(),
                 data: Vec::new(),
+            }),
+        )?;
+        // And that it carries native mods' messages (horizon_protocol::mod_net).
+        send(
+            c,
+            cfg::Clientbound::CustomPayload(cfg::CustomPayload {
+                channel: horizon_protocol::mod_net::CHANNEL.into(),
+                data: Vec::new(),
+            }),
+        )?;
+    }
+    // And how far it samples far terrain for it (crate::lod_net).
+    if brand == "horizon" && shared.config.lod_distance > 0 {
+        send(
+            c,
+            cfg::Clientbound::CustomPayload(cfg::CustomPayload {
+                channel: crate::lod_net::CHANNEL.into(),
+                data: crate::lod_net::Offer::new(shared.config.lod_distance).encode(),
             }),
         )?;
     }
@@ -1095,6 +1210,7 @@ fn wait_alive<T>(
 }
 
 fn play(c: Connection, shared: &Arc<Shared>, parts: Parts, address: std::net::SocketAddr) {
+    shared.entered_play();
     let conn_id = shared.next_id();
     let events = shared.events.clone();
     let _ = c.reader.set_read_timeout(Some(READ_TIMEOUT));
@@ -1166,9 +1282,11 @@ fn play(c: Connection, shared: &Arc<Shared>, parts: Parts, address: std::net::So
     };
     let _ = tx.send(Out::Close);
     let _ = events.send(NetEvent::Left(conn_id, reason));
+    shared.closing.fetch_add(1, Ordering::AcqRel);
     if let Some(t) = writer_thread {
         let _ = t.join();
     }
+    shared.closing.fetch_sub(1, Ordering::AcqRel);
     shared.release(parts.uuid);
 }
 

@@ -17,6 +17,7 @@ use horizon_client::{
     biome::Biomes,
     blocks::BlockFacts,
     chunk::HEIGHT,
+    graphics::LeafCullingMode,
     light::LightTables,
     mesher::{MeshTables, Mesher, Region, borrow},
     models,
@@ -134,10 +135,13 @@ fn main() -> Result<(), Error> {
     for _ in 0..rounds.max(1) {
         let mut mesher = Mesher {
             nether_shading: false,
+            shader_pack_lighting: false,
             zoom: BiomeZoom::new(obfuscate_seed(seed)),
             blend_radius: 2,
             smooth_lighting: true,
             cutout_leaves: true,
+            translucent_layers: &[],
+            leaf_culling: LeafCullingMode::Off,
             assets: &context.assets,
             render: &context.render,
             tables: &context.tables,

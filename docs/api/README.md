@@ -12,7 +12,7 @@ section has one page per surface, plus the rules every surface follows:
 | [Agent control](agent-control.md) | agents, scripts, tests | `horizon-ctl`, its MCP server, the game's control socket | preview | [horizon-ctl-commands.md](../horizon-ctl-commands.md) (generated) |
 | [Servers](server.md) | hosts, panels, bots | `horizon-server` commands, `server.toml`, control API `/api/v1` | stable | [server-reference.md](server-reference.md) (generated) |
 | [Launcher](launcher.md) | players' agents, pack makers | `horizon-launcher` commands and its MCP server | preview | [launcher-commands.md](../launcher-commands.md) (generated) |
-| [Launch](launch.md) | other launchers | `horizon-client`'s launch options, the session JSON, exit codes | experimental | [launch-reference.md](launch-reference.md) (generated) |
+| [Launch](launch.md) | other launchers | `horizon-client`'s launch options, the session JSON, exit codes; `horizon-prepare`'s output, `--check` and `--progress json` | experimental | [launch-reference.md](launch-reference.md) (generated) |
 | [Data formats](data-formats.md) | tools that read Horizon's files | benchmark reports, telemetry, settings files, signed checksums | stable or preview, per format | on that page |
 
 ## How these APIs are designed

@@ -204,6 +204,13 @@ pub struct GeneratorData {
     /// Placed-feature decoration by biome source (see `decoration_for`),
     /// most recent last.
     decorations: Mutex<Vec<(String, DecorationSlot)>>,
+    /// What `BlendingData` asks of the blocks of an old chunk, by state.
+    old_chunk_facts: OnceLock<OldChunkFacts>,
+}
+/// `BlendingData.isGround` and `SURFACE_BLOCKS`, by block state id.
+struct OldChunkFacts {
+    ground: Vec<bool>,
+    surface: Vec<bool>,
 }
 type RingCacheEntry = ((i64, String), Arc<OnceLock<super::structure::start::Rings>>);
 /// Generators whose ring positions are kept: the dimensions of a few worlds.
@@ -564,6 +571,7 @@ impl GeneratorData {
             feature_resources,
             ring_cache: Mutex::new(Vec::new()),
             decorations: Mutex::new(Vec::new()),
+            old_chunk_facts: OnceLock::new(),
             bound_block_tags: std::sync::OnceLock::new(),
         }))
     }
@@ -669,6 +677,83 @@ impl GeneratorData {
     }
     pub fn biome_names(&self) -> &[Arc<str>] {
         &self.biome_names
+    }
+    fn old_chunk_facts(&self) -> &OldChunkFacts {
+        self.old_chunk_facts.get_or_init(|| {
+            let members = |tag: &str| -> std::collections::HashSet<&str> {
+                self.block_tags
+                    .get(tag)
+                    .into_iter()
+                    .flatten()
+                    .map(String::as_str)
+                    .collect()
+            };
+            let (leaves, logs) = (members("minecraft:leaves"), members("minecraft:logs"));
+            let collision = self
+                .feature_resources
+                .as_ref()
+                .and_then(|resources| resources.blocks.as_ref())
+                .map(|blocks| &blocks.collision);
+            let surface_names = [
+                "minecraft:podzol",
+                "minecraft:gravel",
+                "minecraft:grass_block",
+                "minecraft:stone",
+                "minecraft:coarse_dirt",
+                "minecraft:sand",
+                "minecraft:red_sand",
+                "minecraft:mycelium",
+                "minecraft:snow_block",
+                "minecraft:terracotta",
+                "minecraft:dirt",
+            ];
+            let (mut ground, mut surface) = (Vec::new(), Vec::new());
+            for index in 0..self.registry.len() {
+                let id = BlockStateId(index as u32);
+                let name = self.registry.state(id).map_or("", |s| s.name.as_str());
+                surface.push(surface_names.contains(&name));
+                // An empty collision shape: air, the liquids (no entity stands
+                // on them), powder snow and the like; and leaves, logs and
+                // huge mushrooms, which `isGround` leaves out.
+                let excluded = self.states.get(id).air
+                    || leaves.contains(name)
+                    || logs.contains(name)
+                    || matches!(
+                        name,
+                        "minecraft:brown_mushroom_block"
+                            | "minecraft:red_mushroom_block"
+                            | "minecraft:water"
+                            | "minecraft:lava"
+                            | "minecraft:powder_snow"
+                    );
+                ground.push(
+                    !excluded
+                        && match collision {
+                            Some(registry) => registry
+                                .collision_block(id)
+                                .map_or(true, |block| !block.empty_shape),
+                            None => self.states.get(id).motion,
+                        },
+                );
+            }
+            OldChunkFacts { ground, surface }
+        })
+    }
+    /// `BlendingData.isGround` of a block state of an old chunk.
+    pub fn is_old_chunk_ground(&self, state: BlockStateId) -> bool {
+        self.old_chunk_facts()
+            .ground
+            .get(state.0 as usize)
+            .copied()
+            .unwrap_or(false)
+    }
+    /// Whether the block state is one of `BlendingData.SURFACE_BLOCKS`.
+    pub fn is_old_chunk_surface(&self, state: BlockStateId) -> bool {
+        self.old_chunk_facts()
+            .surface
+            .get(state.0 as usize)
+            .copied()
+            .unwrap_or(false)
     }
     pub fn biome_name(&self, id: BiomeId) -> &str {
         &self.biome_names[id.0 as usize]
@@ -826,7 +911,33 @@ struct Pipeline<R: RandomSource> {
     pub(super) structures: Option<super::generator_structures::StructureState>,
     /// The noise settings' `spawn_target` points.
     spawn_target: Vec<SpawnTargetPoint>,
+    /// The chunks an older version generated, which new chunks blend with.
+    old_world: std::sync::OnceLock<Arc<dyn super::blending::OldWorld>>,
+    /// The noise settings' `debug_functions`: label and sampler.
+    debug_density: Vec<(String, Arc<dyn DensitySampler>)>,
     spawn_position: std::sync::OnceLock<[i32; 2]>,
+    /// A superflat world: its layers stand where the noise terrain would.
+    flat: Option<FlatLayers>,
+}
+/// `FlatLevelGeneratorSettings.getLayers` as `FlatLevelSource` reads them: the states from the
+/// level's minimum Y up, with the layers `adjustGenerationSettings` replaced by `null`
+/// (not opaque to `MOTION_BLOCKING`: a feature fills them later) marked.
+struct FlatLayers {
+    min_y: i32,
+    states: Vec<BlockStateId>,
+    /// `layers.get(i) == null`: `getBaseHeight` skips it, `getBaseColumn` reads it as air, and
+    /// `buildTerrain` leaves it for the `FillLayerFeature` that runs after the structures.
+    null: Vec<bool>,
+}
+/// A superflat world's generator settings (`FlatLevelGeneratorSettings`).
+#[derive(Clone, Debug)]
+pub struct FlatSettings {
+    /// The layers, bottom up: block id and height.
+    pub layers: Vec<(String, i32)>,
+    /// The biome the whole world is.
+    pub biome: String,
+    /// `structure_overrides`: the structure sets that may generate (all of them when `None`).
+    pub structure_overrides: Option<Vec<String>>,
 }
 const CACHE_LIMIT: usize = 16384;
 /// Coordinates only equal missing neighbour keys. Weak entries retain no
@@ -933,6 +1044,26 @@ where
         let mut densities = DensityRegistry::from_json(&data.noises, &data.densities)?;
         let router =
             NoiseRouter::from_json(&settings_json["noise_router"].to_string(), &mut densities)?;
+        // NoiseGeneratorSettings.debugFunctions: a registered density or an
+        // inline one, each with its label.
+        let debug_functions = settings_json
+            .get("debug_functions")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .map(|entry| {
+                let label = entry["label"]
+                    .as_str()
+                    .ok_or_else(|| resource("debug label"))?;
+                let id = match &entry["function"] {
+                    Value::String(name) => densities
+                        .reference(name)
+                        .ok_or_else(|| resource(format!("debug function {name}")))?,
+                    inline => densities.decode_functions(&[&inline.to_string()])?[0],
+                };
+                Ok((label.to_owned(), id))
+            })
+            .collect::<Result<Vec<_>, GeneratorError>>()?;
         let aquifers = settings_json
             .get("aquifers")
             .filter(|v| !v.is_null())
@@ -947,6 +1078,10 @@ where
             settings.legacy,
         )?;
         let router = library.compile_router(router)?;
+        let debug_density = debug_functions
+            .into_iter()
+            .map(|(label, id)| Ok((label, library.function_sampler(id)?)))
+            .collect::<Result<Vec<_>, GeneratorError>>()?;
         let aquifer = aquifers
             .map(|config| library.compile_aquifer(config))
             .transpose()?
@@ -1057,7 +1192,10 @@ where
             decoration: None,
             structures: None,
             spawn_target,
+            old_world: std::sync::OnceLock::new(),
+            debug_density,
             spawn_position: std::sync::OnceLock::new(),
+            flat: None,
         };
         pipeline.decoration = pipeline
             .data
@@ -1072,15 +1210,39 @@ where
             let rings = pipeline.data.rings_for(seed, generator);
             pipeline.structures =
                 super::generator_structures::StructureState::new(&pipeline.data, &possible, rings)?;
+            if let Some(state) = pipeline.structures.as_mut() {
+                state.fixed_biome = generator["biome_source"]["type"] == "minecraft:fixed";
+            }
         }
         Ok(pipeline)
     }
     fn generation(&self) -> WorldGenerationContext {
+        // `new WorldGenerationContext(generator, level)`: the larger minimum Y and the smaller
+        // height of the generator and the level (`FlatLevelSource`: 0 and 384).
+        if self.flat.is_some() {
+            return WorldGenerationContext::new(
+                self.settings.level_min_y.max(0),
+                self.settings.level_height.min(384),
+                self.settings.sea_level,
+            );
+        }
         WorldGenerationContext::new(
             self.settings.noise_min_y,
             self.settings.noise_height,
             self.settings.sea_level,
         )
+    }
+    /// `Blender.of(region)` for the chunk at `pos`.
+    fn blender_at(&self, pos: ChunkPos) -> Arc<super::blending::Blender> {
+        // `SharedConstants.DEBUG_DISABLE_BLENDING`.
+        static DISABLED: OnceLock<bool> = OnceLock::new();
+        if *DISABLED.get_or_init(|| std::env::var_os("HORIZON_DISABLE_BLENDING").is_some()) {
+            return Arc::new(super::blending::Blender::empty());
+        }
+        Arc::new(match self.old_world.get() {
+            Some(world) => super::blending::Blender::of(world.as_ref(), pos),
+            None => super::blending::Blender::empty(),
+        })
     }
     fn biome_chunk(
         &self,
@@ -1100,6 +1262,14 @@ where
     ) -> Result<Option<Arc<BiomeChunk<BiomeId>>>, GeneratorError> {
         if let Some(chunk) = self.biome_cache.lock().unwrap().get(&(pos.x, pos.z)) {
             return Ok(Some(chunk.clone()));
+        }
+        // An old chunk keeps the biomes it was saved with.
+        if let Some(old) = self
+            .old_world
+            .get()
+            .and_then(|world| world.old_biomes(pos.x, pos.z))
+        {
+            return Ok(Some(old));
         }
         let work = self.biome_work.at((pos.x, pos.z));
         let _work = if wait {
@@ -1133,11 +1303,18 @@ where
             )
             .map_err(stage("biomes"))?;
         let ids = &self.data.biome_ids;
+        let blender = self.blender_at(pos);
         // Names point into the source's parameter list: neighbouring quarts
         // mostly resolve to the same entry, so skip the map lookup for it.
         let mut last: Option<(*const str, BiomeId)> = None;
         chunk
             .fill(min, min + height - 1, |quart| -> Result<BiomeId, String> {
+                // `Blender.getBiomeResolver`: an old chunk's biome near it.
+                if !blender.is_empty()
+                    && let Some(old) = blender.blend_biome(quart[0], quart[1], quart[2])
+                {
+                    return Ok(old);
+                }
                 let name = resolver
                     .sample_prepared(context, volume.as_ref(), quart)
                     .map_err(|e| e.to_string())?;
@@ -1331,25 +1508,89 @@ where
             }
             None => (Vec::new(), Starts::default()),
         };
-        if let Some(beard) = self
-            .structures
-            .as_ref()
-            .and_then(|s| s.beardifier(&references, pos))
-        {
-            *context = std::mem::take(context).with_world_fields(
-                horizon_core::density::WorldFields::default().with_field(
-                    horizon_core::density::WorldField::Beardifier,
-                    Arc::new(beard),
-                ),
-            );
+        // `FlatLevelSource.buildTerrain`: the layers, and nothing else (no noise, surface or carvers).
+        if let Some(flat) = &self.flat {
+            for (i, &state) in flat.states.iter().enumerate() {
+                let y = flat.min_y + i as i32;
+                if y >= self.settings.level_min_y + self.settings.level_height {
+                    break;
+                }
+                if flat.null[i] || data.states.get(state).is_air() {
+                    continue;
+                }
+                for z in 0..16 {
+                    for x in 0..16 {
+                        chunk
+                            .set_block_raw(
+                                pos.x.wrapping_shl(4) + x,
+                                y,
+                                pos.z.wrapping_shl(4) + z,
+                                state,
+                            )
+                            .map_err(stage("flat"))?;
+                    }
+                }
+            }
+            chunk
+                .prime_heightmaps(&[
+                    HeightmapType::WorldSurfaceWg,
+                    HeightmapType::OceanFloorWg,
+                    HeightmapType::MotionBlocking,
+                    HeightmapType::MotionBlockingNoLeaves,
+                    HeightmapType::OceanFloor,
+                    HeightmapType::WorldSurface,
+                ])
+                .map_err(stage("heightmaps"))?;
+            chunk.set_generation_stage(PreLightChunkStage::Terrain);
+            return Ok(ProtoChunk {
+                terrain: chunk,
+                biomes: center,
+                data: data.clone(),
+                decorated: false,
+                block_entities: Vec::new(),
+                structure_starts: references,
+                own_starts,
+                entities: Vec::new(),
+            });
         }
-        worker.timings.structures += lap(&mut clock);
         let volume = DensityVolume::new(
             [16, height, 16],
             [pos.x.wrapping_shl(4), min, pos.z.wrapping_shl(4)],
             [1; 3],
         )
         .map_err(stage("noise"))?;
+        let blender = self.blender_at(pos);
+        let beard = self
+            .structures
+            .as_ref()
+            .and_then(|s| s.beardifier(&references, pos));
+        if beard.is_some() || !blender.is_empty() {
+            let mut fields = horizon_core::density::WorldFields::default();
+            if let Some(beard) = beard {
+                fields = fields.with_field(
+                    horizon_core::density::WorldField::Beardifier,
+                    Arc::new(beard),
+                );
+            }
+            if !blender.is_empty() {
+                let buffer = Arc::new(blender.output_buffer(volume));
+                for (field, offset) in [
+                    (horizon_core::density::WorldField::BlendAlpha, false),
+                    (horizon_core::density::WorldField::BlendOffset, true),
+                ] {
+                    fields = fields.with_field(
+                        field,
+                        Arc::new(super::blending::BlendFieldSampler {
+                            buffer: buffer.clone(),
+                            offset,
+                        }),
+                    );
+                }
+                fields = fields.with_blender(blender.clone());
+            }
+            *context = std::mem::take(context).with_world_fields(fields);
+        }
+        worker.timings.structures += lap(&mut clock);
         worker.timings.noise += lap(&mut clock);
         let mut aquifer: Box<dyn TerrainAquifer> = match &self.aquifer {
             Some(samplers) => Box::new(
@@ -1443,7 +1684,7 @@ where
                 },
                 aquifer.as_mut(),
                 &data.carving_blocks,
-                |_| true,
+                |[x, y, z]| blender.carving_filter(x, y, z).unwrap_or(true),
             )
             .map_err(stage("carvers"))?;
         }
@@ -1486,10 +1727,19 @@ where
                 center.z.wrapping_shl(4),
             ))
     }
+    /// The Y range `getBaseHeight` and `getBaseColumn` answer for: the noise's, or a superflat
+    /// world's whole level (its layers are not bound by any noise settings).
+    fn column_range(&self) -> (i32, i32) {
+        if self.flat.is_some() {
+            (self.settings.level_min_y, self.settings.level_height)
+        } else {
+            (self.settings.noise_min_y, self.settings.noise_height)
+        }
+    }
     /// ChunkGenerator.getBaseHeight: the first free Y above the noise column
     /// (with aquifers, without terrain adaptation) for a heightmap type.
     fn base_height(&self, x: i32, z: i32, kind: HeightmapType) -> i32 {
-        let min = self.settings.noise_min_y;
+        let (min, _) = self.column_range();
         let mut found = min;
         self.noise_column(x, z, &mut |y, state| {
             if kind.is_opaque(self.data.states.get(state)) {
@@ -1507,7 +1757,7 @@ where
     }
     /// One noise-column pass, as opacities for each heightmap kind.
     fn base_columns(&self, x: i32, z: i32, kinds: &[HeightmapType]) -> Vec<Vec<bool>> {
-        let (min, height) = (self.settings.noise_min_y, self.settings.noise_height);
+        let (min, height) = self.column_range();
         let mut columns = vec![vec![false; height as usize]; kinds.len()];
         self.noise_column(x, z, &mut |y, state| {
             let state = self.data.states.get(state);
@@ -1523,7 +1773,7 @@ where
     /// are never cobwebs or bamboo saplings).
     fn noise_blocks(&self, x: i32, z: i32) -> super::structure::start::NoiseColumn {
         use super::structure::start::{NoiseBlock, NoiseColumn};
-        let (min, height) = (self.settings.noise_min_y, self.settings.noise_height);
+        let (min, height) = self.column_range();
         let mut blocks = vec![NoiseBlock::Air; height as usize];
         let registry = self.data.registry;
         self.noise_column(x, z, &mut |y, state| {
@@ -1544,6 +1794,25 @@ where
     }
     /// iterateNoiseColumn from the top down until `visit` returns true.
     fn noise_column(&self, x: i32, z: i32, visit: &mut dyn FnMut(i32, BlockStateId) -> bool) {
+        // `FlatLevelSource.getBaseHeight` and `getBaseColumn`: the layers, and air above them.
+        if let Some(flat) = &self.flat {
+            let air = self.data.registry.default_state("minecraft:air");
+            let top = self.settings.level_min_y + self.settings.level_height;
+            for y in (self.settings.level_min_y..top).rev() {
+                let i = (y - flat.min_y) as usize;
+                let state = match flat.states.get(i) {
+                    Some(&state) if !flat.null[i] => state,
+                    _ => match air {
+                        Some(air) => air,
+                        None => return,
+                    },
+                };
+                if visit(y, state) {
+                    return;
+                }
+            }
+            return;
+        }
         let (min, height) = (self.settings.noise_min_y, self.settings.noise_height);
         let Ok(volume) = DensityVolume::new([1, height, 1], [x, min, z], [1; 3]) else {
             return;
@@ -1661,11 +1930,31 @@ impl<R: RandomSource> super::structure::start::StartContext for StructureQueries
 where
     R::Positional: Clone + Send + Sync,
 {
+    fn is_old_chunk(&self, chunk: ChunkPos) -> bool {
+        self.pipeline
+            .old_world
+            .get()
+            .is_some_and(|world| world.is_old_chunk_around(chunk, 0))
+    }
+    fn saved_starts(&self, chunk: ChunkPos) -> Vec<super::blending::SavedStart> {
+        self.pipeline
+            .old_world
+            .get()
+            .map(|world| world.saved_starts(chunk.x, chunk.z))
+            .unwrap_or_default()
+    }
     fn seed(&self) -> i64 {
         self.pipeline.seed
     }
     fn sea_level(&self) -> i32 {
         self.pipeline.settings.sea_level
+    }
+    fn generator_min_y(&self) -> i32 {
+        if self.pipeline.flat.is_some() {
+            0
+        } else {
+            self.pipeline.settings.noise_min_y
+        }
     }
     fn base_column(&mut self, x: i32, z: i32, kind: HeightmapType) -> Vec<bool> {
         self.pipeline.base_column(x, z, kind)
@@ -2088,7 +2377,12 @@ trait SeededPipeline: Send + Sync {
         names: &[String],
         from: [i32; 3],
         radius: i32,
+        skip: &dyn Fn(&str, ChunkPos) -> bool,
     ) -> Option<(String, [i32; 3])>;
+    /// The chunks an older version generated, for `Blender.of`.
+    fn set_old_world(&self, world: Arc<dyn super::blending::OldWorld>);
+    /// `NoiseBasedChunkGenerator.addDebugScreenInfo`.
+    fn debug_density_line(&self, feet: [i32; 3]) -> Option<String>;
     fn find_closest_biome(
         &self,
         worker: &mut WorkerState,
@@ -2253,6 +2547,7 @@ where
         names: &[String],
         from: [i32; 3],
         radius: i32,
+        skip: &dyn Fn(&str, ChunkPos) -> bool,
     ) -> Option<(String, [i32; 3])> {
         self.structures.as_ref()?.locate(
             &mut StructureQueries {
@@ -2263,7 +2558,26 @@ where
             names,
             from,
             radius,
+            skip,
         )
+    }
+    fn set_old_world(&self, world: Arc<dyn super::blending::OldWorld>) {
+        let _ = self.old_world.set(world);
+    }
+    /// `NoiseBasedChunkGenerator.addDebugScreenInfo`: the labelled values of
+    /// the settings' `debug_functions` at `feet`, three decimals each.
+    fn debug_density_line(&self, feet: [i32; 3]) -> Option<String> {
+        if self.debug_density.is_empty() {
+            return None;
+        }
+        let mut context = SamplerContext::cached();
+        let mut line = String::from("Density ");
+        for (label, sampler) in &self.debug_density {
+            let value = sampler.sample_value(&mut context, feet).ok()?;
+            line.push_str(&format!("{label}: {:.3} ", f64::from(value)));
+        }
+        line.pop();
+        Some(line)
     }
     fn find_closest_biome(
         &self,
@@ -2353,6 +2667,20 @@ where
         };
         self.noise_column(x, z, &mut visit);
         let (height, state) = top?;
+        // A superflat surface is its top layer, with its one biome.
+        if self.flat.is_some() {
+            let biome = self
+                .source
+                .possible_biomes()
+                .into_iter()
+                .find_map(|name| self.data.biome_id(name))?;
+            return Some(SurfaceSample {
+                height,
+                state,
+                water,
+                biome,
+            });
+        }
         let y = height - 1;
         let position = BlockPos::new(x, y, z);
         let mut resolver = self.source.resolver(
@@ -2417,6 +2745,20 @@ where
     ) -> Result<Vec<LodColumn>, GeneratorError> {
         if width <= 0 || side == 0 || side > 64 {
             return Err(resource("far sample dimensions"));
+        }
+        // A superflat world's columns are its layers: the surface sample, and its spans.
+        if self.flat.is_some() {
+            let mut columns = Vec::with_capacity(side * side);
+            for dz in 0..side {
+                for dx in 0..side {
+                    let (wx, wz) = (x + dx as i32 * width, z + dz as i32 * width);
+                    let mut spans = Vec::new();
+                    let sample =
+                        SeededPipeline::surface_sample(self, worker, wx, wz, Some(&mut spans));
+                    columns.push((sample, spans));
+                }
+            }
+            return Ok(columns);
         }
         let mut geometry = Vec::with_capacity(side * side);
         // The coarse and band passes below share the 2D (x/z-only) parts.
@@ -2845,6 +3187,11 @@ pub struct OverworldGenerator {
     noise_clamped: Option<(NoiseSettings, NoiseSettings)>,
 }
 impl OverworldGenerator {
+    /// The chunks an older version generated, which new chunks blend with
+    /// (`Blender.of`); set once, before chunks are generated.
+    pub fn set_old_world(&self, world: Arc<dyn super::blending::OldWorld>) {
+        self.pipeline.set_old_world(world);
+    }
     /// The `minecraft:overworld` dimension of the `minecraft:normal` world preset.
     pub fn new(data: Arc<GeneratorData>, seed: i64) -> Result<Self, GeneratorError> {
         Self::for_dimension(data, seed, "minecraft:normal", "minecraft:overworld")
@@ -2862,6 +3209,101 @@ impl OverworldGenerator {
         dimension: &str,
     ) -> Result<Self, GeneratorError> {
         Self::build(data, seed, preset, dimension, true)
+    }
+    /// A superflat overworld (`FlatLevelSource`): the layers where the terrain would be, a
+    /// fixed biome, and the structure sets `structure_overrides` allows (every one when it
+    /// names none) generating on the flat ground, with or without structures.
+    pub fn flat(
+        data: Arc<GeneratorData>,
+        seed: i64,
+        flat: &FlatSettings,
+        structures: bool,
+    ) -> Result<Self, GeneratorError> {
+        let registry = data.registry;
+        let (level_min_y, level_height) = overrides::LevelHeight::of_type(
+            &Value::from("minecraft:overworld"),
+            &data.dimension_types,
+        )
+        .map_or((-64, 384), |h| (h.min_y, h.height));
+        // The overworld's own noise settings give the level its sea level and the rest of
+        // the generator its data; no noise is ever sampled.
+        let settings_json: Value = serde_json::from_str(
+            data.settings
+                .get("minecraft:overworld")
+                .ok_or_else(|| resource("missing noise settings minecraft:overworld"))?,
+        )?;
+        // `Biome.CODEC.lenientOptionalFieldOf("biome")`: an unknown biome is Plains.
+        let biome = if data.biome_id(&flat.biome).is_some() {
+            flat.biome.as_str()
+        } else {
+            "minecraft:plains"
+        };
+        let generator = serde_json::json!({
+            "type": "minecraft:noise",
+            "settings": "minecraft:overworld",
+            "biome_source": { "type": "minecraft:fixed", "biome": biome },
+            "structure_overrides": flat.structure_overrides,
+        });
+        let mut pipeline = Pipeline::new(
+            data.clone(),
+            seed,
+            XoroshiroRandom::new(seed),
+            &generator,
+            &settings_json,
+            structures,
+            Some((level_min_y, level_height)),
+        )?;
+        let mut states = Vec::new();
+        let mut null = Vec::new();
+        for (block, height) in &flat.layers {
+            let id = registry
+                .default_state(block)
+                .ok_or_else(|| resource(format!("missing block {block}")))?;
+            // `adjustGenerationSettings`: a layer that is not opaque to MOTION_BLOCKING is
+            // `null` in the layers `FlatLevelSource` reads.
+            let hole = !HeightmapType::MotionBlocking.is_opaque(data.states.get(id));
+            for _ in 0..(*height).max(0) {
+                states.push(id);
+                null.push(hole);
+            }
+        }
+        states.truncate(level_height.max(0) as usize);
+        null.truncate(states.len());
+        // `FlatLevelSource.getSeaLevel`; its minimum Y and depth are in `generation`.
+        pipeline.settings.sea_level = -63;
+        let top_layers: Vec<(i32, BlockStateId)> = null
+            .iter()
+            .zip(&states)
+            .enumerate()
+            .filter(|(_, (hole, _))| **hole)
+            .map(|(i, (_, &state))| (level_min_y + i as i32, state))
+            .collect();
+        pipeline.flat = Some(FlatLayers {
+            min_y: level_min_y,
+            states,
+            null,
+        });
+        // No placed features here (the layers are the whole terrain), but the structure
+        // steps run: the plan keeps the steps and leaves their feature lists empty.
+        pipeline.decoration =
+            super::generator_decoration::Decoration::new_with(&data, &pipeline.source, false)?.map(
+                |mut decoration| {
+                    decoration.top_layers = top_layers;
+                    Arc::new(decoration)
+                },
+            );
+        if let (Some(state), Some(only)) = (pipeline.structures.as_mut(), &flat.structure_overrides)
+        {
+            state.restrict_to(only);
+        }
+        // `ChunkGeneratorStructureState.createForFlat`: the stronghold rings use seed 0.
+        if let Some(state) = pipeline.structures.as_mut() {
+            state.ring_seed = Some(0);
+        }
+        Ok(Self {
+            pipeline: Arc::new(pipeline),
+            noise_clamped: None,
+        })
     }
     /// A dimension of a world preset, with or without structures (the
     /// world's `generate_structures`: without, no starts, terrain adaptation,
@@ -2998,6 +3440,12 @@ impl OverworldGenerator {
     ) -> Box<dyn super::structure::legacy::PieceRandom> {
         self.pipeline.region_random(center)
     }
+    /// `NoiseBasedChunkGenerator.addDebugScreenInfo`: the `Density` line of
+    /// the noise settings' `debug_functions` at the feet (none without them).
+    /// It reads the pipeline's samplers only, so it needs no worker.
+    pub fn debug_density_line(&self, feet: [i32; 3]) -> Option<String> {
+        self.pipeline.debug_density_line(feet)
+    }
     /// Create per-thread state. Workers are cheap; keep one per thread.
     pub fn worker(&self) -> GeneratorWorker {
         let data = self.pipeline.data();
@@ -3071,7 +3519,20 @@ impl GeneratorWorker {
         from: [i32; 3],
         radius: i32,
     ) -> Option<(String, [i32; 3])> {
-        self.pipeline.locate(&mut self.state, names, from, radius)
+        self.locate_skipping(names, from, radius, &|_, _| false)
+    }
+    /// `ChunkGenerator.findNearestMapStructure`: like `locate`, past the
+    /// starts `skip` says can't be referenced again (an explorer map that
+    /// skips known structures).
+    pub fn locate_skipping(
+        &mut self,
+        names: &[String],
+        from: [i32; 3],
+        radius: i32,
+        skip: &dyn Fn(&str, ChunkPos) -> bool,
+    ) -> Option<(String, [i32; 3])> {
+        self.pipeline
+            .locate(&mut self.state, names, from, radius, skip)
     }
     /// Direct far sampling: work scales with rendered vertical resolution,
     /// without allocating chunks, carving masks or propagated aquifers.
@@ -3091,6 +3552,11 @@ impl GeneratorWorker {
     }
     pub fn noise_biomes(&mut self, quarts: &[[i32; 3]]) -> Vec<Option<String>> {
         self.pipeline.noise_biomes(&mut self.state, quarts)
+    }
+    /// `NoiseBasedChunkGenerator.addDebugScreenInfo`: the `Density` line of
+    /// the noise settings' `debug_functions` at the feet (none without them).
+    pub fn debug_density_line(&self, feet: [i32; 3]) -> Option<String> {
+        self.pipeline.debug_density_line(feet)
     }
     /// `BiomeSource.findClosestBiome3d`: the first sampled position whose
     /// noise biome passes `allowed`, spiralling out from the origin.

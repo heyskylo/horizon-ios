@@ -98,6 +98,47 @@ impl Preset {
     }
 }
 
+/// Entity occlusion strategy. The synchronous mode preserves the original
+/// same-frame CPU test; asynchronous results only hide a mesh when their
+/// camera, bounds and occluder evidence still match.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum EntityCullingMode {
+    #[default]
+    Off,
+    Synchronous,
+    Asynchronous,
+}
+impl EntityCullingMode {
+    pub const ALL: [EntityCullingMode; 3] = [
+        EntityCullingMode::Off,
+        EntityCullingMode::Synchronous,
+        EntityCullingMode::Asynchronous,
+    ];
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Synchronous => "sync",
+            Self::Asynchronous => "async",
+        }
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Off => "Off",
+            Self::Synchronous => "Synchronous",
+            Self::Asynchronous => "Asynchronous",
+        }
+    }
+    fn parse(s: &str) -> Self {
+        match s {
+            // Keep graphics files written before the mode selector readable.
+            "true" | "synchronous" | "sync" => Self::Synchronous,
+            "false" | "off" => Self::Off,
+            "asynchronous" | "async" => Self::Asynchronous,
+            _ => Self::default(),
+        }
+    }
+}
+
 /// How the swapchain presents frames.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum PresentMode {
@@ -265,6 +306,91 @@ impl FarDetail {
     }
 }
 
+/// Frame generation: a frame made between each two real ones.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum FrameGeneration {
+    #[default]
+    Off,
+    /// AMD FidelityFX Super Resolution 3.1's frame interpolation, ported to WGSL.
+    Fsr31,
+}
+impl FrameGeneration {
+    pub const ALL: [FrameGeneration; 2] = [FrameGeneration::Off, FrameGeneration::Fsr31];
+    pub fn name(self) -> &'static str {
+        match self {
+            FrameGeneration::Off => "off",
+            FrameGeneration::Fsr31 => "fsr3.1",
+        }
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            FrameGeneration::Off => "Off",
+            FrameGeneration::Fsr31 => "FSR 3.1",
+        }
+    }
+    fn parse(s: &str) -> Self {
+        Self::ALL
+            .into_iter()
+            .find(|f| f.name() == s)
+            .unwrap_or_default()
+    }
+}
+
+/// What the section mesher does with leaf faces inside a canopy. Terrain
+/// geometry only: entities, particles and block entities are untouched.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum LeafCullingMode {
+    /// Every leaf face, as vanilla's fancy leaves draw them.
+    #[default]
+    Off,
+    /// Leaves surrounded on all six sides by leaves or full opaque cubes draw
+    /// in the opaque layer, so their cutouts no longer show the layers behind.
+    Solid,
+    /// Like `Solid`, but a leaf with one open side draws opaque too: the
+    /// exposed shell thins by a layer and the canopy looks chunkier.
+    SolidAggressive,
+    /// Drops the faces two leaves share. Faces toward air, cavities, partial
+    /// models, unknown neighbours and section boundaries stay.
+    Hollow,
+}
+impl LeafCullingMode {
+    pub const ALL: [LeafCullingMode; 4] = [
+        LeafCullingMode::Off,
+        LeafCullingMode::Solid,
+        LeafCullingMode::SolidAggressive,
+        LeafCullingMode::Hollow,
+    ];
+    pub fn name(self) -> &'static str {
+        match self {
+            LeafCullingMode::Off => "off",
+            LeafCullingMode::Solid => "solid",
+            LeafCullingMode::SolidAggressive => "solid_aggressive",
+            LeafCullingMode::Hollow => "hollow",
+        }
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            LeafCullingMode::Off => "Off",
+            LeafCullingMode::Solid => "Solid",
+            LeafCullingMode::SolidAggressive => "Solid Aggressive",
+            LeafCullingMode::Hollow => "Hollow",
+        }
+    }
+    /// Whether this mode draws interior leaf faces in the solid layer.
+    pub fn is_interior(self) -> bool {
+        matches!(
+            self,
+            LeafCullingMode::Solid | LeafCullingMode::SolidAggressive
+        )
+    }
+    fn parse(s: &str) -> Self {
+        Self::ALL
+            .into_iter()
+            .find(|mode| mode.name() == s)
+            .unwrap_or_default()
+    }
+}
+
 /// TAA upscaling: the world renders this much smaller than the resolution scale's size,
 /// and TAA builds the full-size picture from the jittered frames (FSR's and DLSS's ratios).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -332,6 +458,8 @@ pub fn reduced_far_detail_suggested() -> bool {
 
 /// The name the options screen waits on to bind `Graphics::hdr_key`.
 pub const HDR_KEY: &str = "horizon.hdrSettings";
+/// The Screenshot Quality choices, times the game's resolution.
+pub const SCREENSHOT_QUALITIES: [u32; 4] = [1, 2, 4, 8];
 static HDR_OFFERED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 /// Whether the display path offers HDR output (HDR10 or scRGB): set when the renderer
 /// opens its surface; the settings open HDR's screen only then.
@@ -340,6 +468,19 @@ pub fn offer_hdr(on: bool) {
 }
 pub fn hdr_offered() -> bool {
     HDR_OFFERED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+static TRANSLUCENT_BATCHING_OFFERED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+/// Whether the device can batch translucent quads (`Graphics::translucent_batching`): set when
+/// the renderer starts; not without indirect multi-draw or on OpenGL, which loops over a
+/// multi-draw's entries on the CPU, nor where vanilla frames draw flat (they read the section
+/// arena's translucent quads).
+pub fn offer_translucent_batching(on: bool) {
+    TRANSLUCENT_BATCHING_OFFERED.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+pub fn translucent_batching_offered() -> bool {
+    TRANSLUCENT_BATCHING_OFFERED.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// The farthest LOD Distance, in chunks, on integrated GPUs other than
@@ -353,7 +494,7 @@ pub fn lod_capped(info: &wgpu::AdapterInfo) -> bool {
 }
 /// A LOD distance as far terrain uses it on this adapter.
 pub fn lod_distance_capped(distance: u32, info: &wgpu::AdapterInfo) -> u32 {
-    let distance = distance.min(1024);
+    let distance = distance.min(crate::lod::MAX_CHUNKS);
     if lod_capped(info) {
         distance.min(INTEGRATED_LOD_DISTANCE)
     } else {
@@ -365,6 +506,46 @@ impl Graphics {
     pub fn lod_distance_on(&self, info: &wgpu::AdapterInfo) -> u32 {
         lod_distance_capped(self.lod_distance, info)
     }
+    /// Whether the selected packs leave vanilla's block models in place.
+    /// Horizon's occlusion assumptions (entity and leaf culling) hold only
+    /// for those: a pack can replace an opaque cube's model or a leaf's.
+    pub fn vanilla_models(&self, resource_packs: &[String]) -> bool {
+        resource_packs.iter().all(|id| id == "vanilla")
+    }
+    /// The same check including packs overlaid by the connected server.
+    /// Their ids are namespaced as `server/...`, so an active server pack
+    /// disables model-dependent occlusion assumptions.
+    pub fn vanilla_models_with_server_packs<'a>(
+        &self,
+        resource_packs: impl IntoIterator<Item = &'a str>,
+        server_packs: impl IntoIterator<Item = &'a str>,
+    ) -> bool {
+        resource_packs
+            .into_iter()
+            .chain(server_packs)
+            .all(|id| id == "vanilla")
+    }
+    /// The leaf culling the mesher may apply. A pack that can replace leaf
+    /// models falls back to `Off`, which draws exactly vanilla's leaves.
+    pub fn leaf_culling_effective(&self, resource_packs: &[String]) -> LeafCullingMode {
+        if self.vanilla_models(resource_packs) {
+            self.leaf_culling
+        } else {
+            LeafCullingMode::Off
+        }
+    }
+    /// The effective mode when local and server resource packs are active.
+    pub fn leaf_culling_effective_with_server_packs<'a>(
+        &self,
+        resource_packs: impl IntoIterator<Item = &'a str>,
+        server_packs: impl IntoIterator<Item = &'a str>,
+    ) -> LeafCullingMode {
+        if self.vanilla_models_with_server_packs(resource_packs, server_packs) {
+            self.leaf_culling
+        } else {
+            LeafCullingMode::Off
+        }
+    }
 }
 #[derive(Clone, Debug, PartialEq)]
 pub struct Graphics {
@@ -375,16 +556,26 @@ pub struct Graphics {
     pub far_detail: FarDetail,
     /// Skip sections hidden behind closed ones (vanilla's occlusion graph).
     pub cave_culling: bool,
-    /// Skip drawing entities hidden behind opaque terrain.
-    pub entity_culling: bool,
+    /// Skip drawing entities hidden behind opaque terrain, synchronously or asynchronously.
+    pub entity_culling: EntityCullingMode,
+    /// Terrain leaf faces inside a canopy (see [`LeafCullingMode`]); `Off` draws
+    /// vanilla's fancy leaves. Ignored with a resource pack that may replace
+    /// the vanilla leaf models ([`Graphics::leaf_culling_effective`]).
+    pub leaf_culling: LeafCullingMode,
     /// Meshed sections uploaded per frame; 0 uploads all that are ready.
     pub chunk_updates: u32,
     /// Section mesh bytes uploaded per frame, in KiB; 0 is unlimited.
     pub upload_budget_kib: u32,
+    /// The block textures' video memory (their top mip level), in MiB; 0 leaves it to
+    /// Horizon (`sprites::DEFAULT_TEXTURE_BUDGET`). Applies when resources next load.
+    pub texture_budget_mib: u32,
     pub sky: bool,
     pub fog: bool,
     pub weather: bool,
     pub animated_textures: bool,
+    /// Dithers the small mip levels of cutouts from 64 texels up, so a high-resolution pack's
+    /// fine plants keep their coverage in the distance; off is vanilla's look.
+    pub dither_cutout_mips: bool,
     pub present_mode: PresentMode,
     pub pacing: Pacing,
     /// Chunk worker threads; 0 uses every core but one. Applies at the next start.
@@ -398,6 +589,10 @@ pub struct Graphics {
     pub taa: bool,
     /// TAA upscaling; anything but `Native` comes with `taa` on.
     pub upscaling: Upscaling,
+    /// F2 screenshots at this many times the game's resolution: 1, 2, 4 or 8.
+    pub screenshot_quality: u32,
+    /// Frame generation (Horizon setting), off by default.
+    pub frame_generation: FrameGeneration,
     /// HDR output (HDR10, or scRGB), where the display path offers it.
     pub hdr: bool,
     /// HDR paper white (where SDR white sits), in nits; 0 is Auto: the desktop's SDR
@@ -418,8 +613,17 @@ pub struct Graphics {
     /// or behind other windows, and half the worker threads. Off by default;
     /// it changes when frames are drawn, never what they show or the ticks.
     pub battery: bool,
+    /// Reuse the shader pack's last shadow map when sun, view, scene revision and
+    /// pack uniforms still match. Off by default: vanilla loaders redraw every frame
+    /// (or every `shadowInterval`), and a hit with a stale key shows old shadows.
+    pub shadow_cache: bool,
     /// The graphics API (Windows only; see `GraphicsApi`).
     pub api: GraphicsApi,
+    /// Translucent quads in vertex buffers of their own (`gfx`'s translucent arena), so their
+    /// back-to-front draws go out in a few calls, for a little more video memory. Off by
+    /// default for now; read when a renderer is made (start, resource-pack reload), where it is
+    /// offered (`translucent_batching_offered`).
+    pub translucent_batching: bool,
     /// The shader pack picked in `shaderpacks/` (`shader_pack_list`); empty: none. Its key is
     /// not `shaderPack`, which versions before the clean-room rewrite saved and which stays
     /// ignored.
@@ -432,13 +636,16 @@ impl Default for Graphics {
             lod_distance: 0,
             far_detail: FarDetail::Full,
             cave_culling: true,
-            entity_culling: false,
+            entity_culling: EntityCullingMode::Off,
+            leaf_culling: LeafCullingMode::Off,
             chunk_updates: 0,
             upload_budget_kib: 0,
+            texture_budget_mib: 0,
             sky: true,
             fog: true,
             weather: true,
             animated_textures: true,
+            dither_cutout_mips: false,
             present_mode: PresentMode::Auto,
             pacing: Pacing::Efficient,
             workers: 0,
@@ -449,6 +656,8 @@ impl Default for Graphics {
             fxaa: false,
             taa: false,
             upscaling: Upscaling::Native,
+            screenshot_quality: 1,
+            frame_generation: FrameGeneration::Off,
             hdr: false,
             hdr_paper_white: 0,
             hdr_peak: 0,
@@ -456,7 +665,9 @@ impl Default for Graphics {
             hdr_ui_brightness: 100,
             hdr_key: "key.keyboard.unknown".into(),
             battery: false,
+            shadow_cache: false,
             api: GraphicsApi::Auto,
+            translucent_batching: false,
             shader_pack: String::new(),
         }
     }
@@ -501,16 +712,23 @@ impl Graphics {
             let number = |d: u32| value.parse().unwrap_or(d);
             match key.trim() {
                 "preset" => g.preset = Preset::parse(value),
-                "lodDistance" => g.lod_distance = number(g.lod_distance).min(1024),
+                "lodDistance" => {
+                    g.lod_distance = number(g.lod_distance).min(crate::lod::MAX_CHUNKS)
+                }
                 "farDetail" => g.far_detail = FarDetail::parse(value),
                 "caveCulling" => g.cave_culling = flag(g.cave_culling),
-                "entityCulling" => g.entity_culling = flag(g.entity_culling),
+                "entityCulling" => g.entity_culling = EntityCullingMode::parse(value),
+                "leafCulling" => g.leaf_culling = LeafCullingMode::parse(value),
                 "chunkUpdates" => g.chunk_updates = number(g.chunk_updates).min(512),
                 "uploadBudgetKiB" => g.upload_budget_kib = number(g.upload_budget_kib).min(65536),
+                "textureBudgetMiB" => {
+                    g.texture_budget_mib = number(g.texture_budget_mib).min(16384);
+                }
                 "sky" => g.sky = flag(g.sky),
                 "fog" => g.fog = flag(g.fog),
                 "weather" => g.weather = flag(g.weather),
                 "animatedTextures" => g.animated_textures = flag(g.animated_textures),
+                "ditherCutoutMips" => g.dither_cutout_mips = flag(g.dither_cutout_mips),
                 "presentMode" => g.present_mode = PresentMode::parse(value),
                 "framePacing" => {
                     g.pacing = if value == "precise" {
@@ -524,11 +742,17 @@ impl Graphics {
                 "fxaa" => g.fxaa = flag(g.fxaa),
                 "taa" => g.taa = flag(g.taa),
                 "upscaling" => g.upscaling = Upscaling::parse(value),
+                "screenshotQuality" => {
+                    g.screenshot_quality = Some(number(0))
+                        .filter(|q| SCREENSHOT_QUALITIES.contains(q))
+                        .unwrap_or(1)
+                }
+                "frameGeneration" => g.frame_generation = FrameGeneration::parse(value),
                 "hdr" => g.hdr = flag(g.hdr),
                 "hdrPaperWhite" => {
                     g.hdr_paper_white = match number(g.hdr_paper_white) {
                         0 => 0,
-                        n => n.clamp(80, 480),
+                        n => n.clamp(10, 480),
                     }
                 }
                 "hdrPeak" => {
@@ -543,6 +767,8 @@ impl Graphics {
                 }
                 "hdrKey" if value.starts_with("key.") => g.hdr_key = value.to_owned(),
                 "batteryMode" => g.battery = flag(g.battery),
+                "shadowCache" => g.shadow_cache = flag(g.shadow_cache),
+                "translucentBatching" => g.translucent_batching = flag(g.translucent_batching),
                 "graphicsApi" => g.api = GraphicsApi::from_name(value).unwrap_or_default(),
                 "pickedShaderPack" => g.shader_pack = value.to_owned(),
                 "overlay" => {
@@ -559,18 +785,21 @@ impl Graphics {
     }
     pub fn serialize(&self) -> String {
         format!(
-            "preset:{}\nlodDistance:{}\nfarDetail:{}\ncaveCulling:{}\nentityCulling:{}\nchunkUpdates:{}\nuploadBudgetKiB:{}\nsky:{}\nfog:{}\nweather:{}\nanimatedTextures:{}\npresentMode:{}\nframePacing:{}\nworkers:{}\noverlay:{}\nresolutionScale:{}\nfxaa:{}\ntaa:{}\nupscaling:{}\nhdr:{}\nhdrPaperWhite:{}\nhdrPeak:{}\nhdrBlackLevel:{}\nhdrUiBrightness:{}\nhdrKey:{}\nbatteryMode:{}\ngraphicsApi:{}\npickedShaderPack:{}\n",
+            "preset:{}\nlodDistance:{}\nfarDetail:{}\ncaveCulling:{}\nentityCulling:{}\nleafCulling:{}\nchunkUpdates:{}\nuploadBudgetKiB:{}\ntextureBudgetMiB:{}\nsky:{}\nfog:{}\nweather:{}\nanimatedTextures:{}\nditherCutoutMips:{}\npresentMode:{}\nframePacing:{}\nworkers:{}\noverlay:{}\nresolutionScale:{}\nfxaa:{}\ntaa:{}\nupscaling:{}\nscreenshotQuality:{}\nframeGeneration:{}\nhdr:{}\nhdrPaperWhite:{}\nhdrPeak:{}\nhdrBlackLevel:{}\nhdrUiBrightness:{}\nhdrKey:{}\nbatteryMode:{}\nshadowCache:{}\ngraphicsApi:{}\npickedShaderPack:{}\ntranslucentBatching:{}\n",
             self.preset.name(),
             self.lod_distance,
             self.far_detail.name(),
             bool_text(self.cave_culling),
-            bool_text(self.entity_culling),
+            self.entity_culling.name(),
+            self.leaf_culling.name(),
             self.chunk_updates,
             self.upload_budget_kib,
+            self.texture_budget_mib,
             bool_text(self.sky),
             bool_text(self.fog),
             bool_text(self.weather),
             bool_text(self.animated_textures),
+            bool_text(self.dither_cutout_mips),
             self.present_mode.name(),
             match self.pacing {
                 Pacing::Efficient => "efficient",
@@ -586,6 +815,8 @@ impl Graphics {
             bool_text(self.fxaa),
             bool_text(self.taa),
             self.upscaling.name(),
+            self.screenshot_quality,
+            self.frame_generation.name(),
             bool_text(self.hdr),
             self.hdr_paper_white,
             self.hdr_peak,
@@ -593,8 +824,10 @@ impl Graphics {
             self.hdr_ui_brightness,
             self.hdr_key,
             bool_text(self.battery),
+            bool_text(self.shadow_cache),
             self.api.name(),
             self.shader_pack,
+            bool_text(self.translucent_batching),
         )
     }
     /// Binds Horizon's graphics key `name` (`HDR_KEY`); false for another name.
@@ -738,13 +971,16 @@ mod tests {
             lod_distance: 256,
             far_detail: FarDetail::Reduced,
             cave_culling: false,
-            entity_culling: true,
+            entity_culling: EntityCullingMode::Synchronous,
+            leaf_culling: LeafCullingMode::SolidAggressive,
             chunk_updates: 12,
             upload_budget_kib: 4096,
+            texture_budget_mib: 1536,
             sky: false,
             fog: false,
             weather: false,
             animated_textures: false,
+            dither_cutout_mips: true,
             present_mode: PresentMode::Mailbox,
             pacing: Pacing::Precise,
             workers: 6,
@@ -753,6 +989,8 @@ mod tests {
             fxaa: true,
             taa: true,
             upscaling: Upscaling::Balanced,
+            screenshot_quality: 4,
+            frame_generation: FrameGeneration::Fsr31,
             hdr: true,
             hdr_paper_white: 240,
             hdr_peak: 1400,
@@ -760,16 +998,48 @@ mod tests {
             hdr_ui_brightness: 60,
             hdr_key: "key.keyboard.h".into(),
             battery: true,
+            shadow_cache: true,
             api: GraphicsApi::Dx12,
+            translucent_batching: true,
             shader_pack: "Golden Hour".into(),
         };
         assert_eq!(Graphics::parse(&g.serialize()), g);
+        for mode in EntityCullingMode::ALL {
+            let graphics = Graphics {
+                entity_culling: mode,
+                ..Graphics::default()
+            };
+            assert_eq!(Graphics::parse(&graphics.serialize()), graphics);
+        }
+        assert_eq!(
+            Graphics::parse("entityCulling:true\n").entity_culling,
+            EntityCullingMode::Synchronous
+        );
+        assert_eq!(
+            Graphics::parse("entityCulling:false\n").entity_culling,
+            EntityCullingMode::Off
+        );
         assert_eq!(Graphics::parse(""), Graphics::default());
+        // Translucent Batching is opt-in for now: only the file turns it on.
+        assert!(!Graphics::default().translucent_batching);
         // 0 is Auto; anything else is a peak the slider reaches.
         assert_eq!(Graphics::parse("hdrPeak:0\n").hdr_peak, 0);
         assert_eq!(Graphics::parse("hdrPeak:50\n").hdr_peak, 200);
         assert_eq!(Graphics::parse("hdrPaperWhite:0\n").hdr_paper_white, 0);
-        assert_eq!(Graphics::parse("hdrPaperWhite:5\n").hdr_paper_white, 80);
+        assert_eq!(Graphics::parse("hdrPaperWhite:5\n").hdr_paper_white, 10);
+        // Only the button's choices.
+        assert_eq!(
+            Graphics::parse("screenshotQuality:8\n").screenshot_quality,
+            8
+        );
+        assert_eq!(
+            Graphics::parse("screenshotQuality:3\n").screenshot_quality,
+            1
+        );
+        assert_eq!(
+            Graphics::parse("screenshotQuality:16\n").screenshot_quality,
+            1
+        );
         // The old menus' Simple / Advanced choice is ignored, and so is the
         // shader pack older versions saved.
         assert_eq!(Graphics::parse("level:advanced\n"), Graphics::default());
@@ -778,9 +1048,94 @@ mod tests {
             Graphics::default()
         );
         assert_eq!(
-            Graphics::parse("workers:abc\nsky:maybe\ncullLeaves:true\nentityCulling:maybe\n"),
+            Graphics::parse(
+                "workers:abc\nsky:maybe\ncullLeaves:true\nentityCulling:maybe\nleafCulling:maybe\n"
+            ),
             Graphics::default()
         );
+    }
+
+    #[test]
+    fn leaf_culling_round_trips_its_stable_names() {
+        assert_eq!(Graphics::default().leaf_culling, LeafCullingMode::Off);
+        for mode in LeafCullingMode::ALL {
+            let g = Graphics {
+                leaf_culling: mode,
+                ..Graphics::default()
+            };
+            assert_eq!(Graphics::parse(&g.serialize()), g, "{mode:?}");
+            assert_eq!(
+                Graphics::parse(&format!("leafCulling:{}\n", mode.name())).leaf_culling,
+                mode
+            );
+        }
+        for text in [
+            "leafCulling:other\n",
+            "leafCulling:\n",
+            "leafCulling:SOLID\n",
+        ] {
+            assert_eq!(
+                Graphics::parse(text).leaf_culling,
+                LeafCullingMode::Off,
+                "{text:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn presets_keep_the_leaf_culling_choice() {
+        for mode in LeafCullingMode::ALL {
+            for preset in Preset::ALL {
+                let mut s = crate::settings::Settings::default();
+                s.horizon.leaf_culling = mode;
+                apply_preset(preset, &mut s);
+                assert_eq!(s.horizon.leaf_culling, mode, "{preset:?}");
+                assert_eq!(Graphics::parse(&s.horizon.serialize()), s.horizon);
+            }
+        }
+    }
+
+    #[test]
+    fn custom_packs_turn_leaf_culling_off() {
+        let g = Graphics {
+            leaf_culling: LeafCullingMode::Hollow,
+            ..Graphics::default()
+        };
+        assert!(g.vanilla_models(&["vanilla".into()]));
+        assert_eq!(
+            g.leaf_culling_effective(&["vanilla".into()]),
+            LeafCullingMode::Hollow
+        );
+        assert!(!g.vanilla_models(&["vanilla".into(), "My Pack".into()]));
+        assert_eq!(
+            g.leaf_culling_effective(&["vanilla".into(), "My Pack".into()]),
+            LeafCullingMode::Off
+        );
+        assert_eq!(g.leaf_culling_effective(&[]), LeafCullingMode::Hollow);
+    }
+
+    #[test]
+    fn server_pack_apply_disables_leaf_culling_and_removal_restores_it() {
+        let g = Graphics {
+            leaf_culling: LeafCullingMode::Solid,
+            ..Graphics::default()
+        };
+        let selected = ["vanilla"];
+        let applied_server_pack = ["server/0123456789abcdef/model-pack.zip"];
+
+        assert_eq!(
+            g.leaf_culling_effective_with_server_packs(selected, applied_server_pack),
+            LeafCullingMode::Off,
+            "an applied server pack can replace block models"
+        );
+        assert!(!g.vanilla_models_with_server_packs(selected, applied_server_pack));
+
+        assert_eq!(
+            g.leaf_culling_effective_with_server_packs(selected, []),
+            LeafCullingMode::Solid,
+            "removing the server pack restores the selected local mode"
+        );
+        assert!(g.vanilla_models_with_server_packs(selected, []));
     }
 
     #[test]
@@ -826,12 +1181,15 @@ mod tests {
     #[test]
     fn lod_distance_is_opt_in_and_bounded() {
         assert_eq!(Graphics::default().lod_distance, 0);
-        for distance in [0, 64, 128, 256, 512, 1024] {
+        for distance in [0, 64, 128, 256, 512, 1024, 65_536, crate::lod::MAX_CHUNKS] {
             let g = Graphics::parse(&format!("lodDistance:{distance}\n"));
             assert_eq!(g.lod_distance, distance);
             assert_eq!(Graphics::parse(&g.serialize()), g);
         }
-        assert_eq!(Graphics::parse("lodDistance:10000\n").lod_distance, 1024);
+        assert_eq!(
+            Graphics::parse("lodDistance:99999999\n").lod_distance,
+            crate::lod::MAX_CHUNKS
+        );
         assert_eq!(Graphics::parse("lodDistance:-1\n").lod_distance, 0);
         assert_eq!(Graphics::parse("lodDistance:invalid\n").lod_distance, 0);
     }

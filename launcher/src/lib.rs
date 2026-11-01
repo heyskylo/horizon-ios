@@ -10,6 +10,7 @@ pub mod export;
 #[cfg(unix)]
 pub mod game_app;
 pub mod game_log;
+pub mod github;
 pub mod github_mods;
 pub mod heads;
 pub mod i18n;
@@ -19,10 +20,13 @@ pub mod java;
 pub mod java_launch;
 pub mod launch;
 pub mod loaders;
+#[cfg(target_os = "macos")]
+mod mac_update;
 pub mod minecraft_versions;
 pub mod modpacks;
 pub mod mojang;
 pub mod native_mods;
+pub mod native_status;
 pub mod nightly;
 pub mod other_launchers;
 pub mod packs;

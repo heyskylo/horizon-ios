@@ -83,9 +83,14 @@ def run_vanilla(classpath, world, out, target=None):
     # The oracle replaces OUT itself: left in place, an unchanged run's outputs can be reused.
     log = out.parent / (out.name + '.log')
     with log.open('w') as f:
-        subprocess.run(['java', '-Xmx3g', '-Djava.awt.headless=true', '-cp', classpath,
-                        'dev.horizonlab.parity.VanillaDataFixOracle', str(world), str(out), *([str(target)] if target else [])],
-                       check=True, stdout=f, stderr=subprocess.STDOUT)
+        result = subprocess.run(['java', '-Xmx3g', '-Djava.awt.headless=true', '-cp', classpath,
+                                 'dev.horizonlab.parity.VanillaDataFixOracle', str(world), str(out), *([str(target)] if target else [])],
+                                stdout=f, stderr=subprocess.STDOUT)
+    if result.returncode:
+        # The traceback of a failed check names the command, not why the JVM stopped: show its exit and last output.
+        how = f'exit {result.returncode}' + (' (killed by signal %d)' % -result.returncode if result.returncode < 0 else '')
+        tail = '\n'.join(log.read_text(errors='replace').splitlines()[-20:])
+        raise SystemExit(f'the vanilla oracle failed on {world.name} ({how}); the end of {log}:\n{tail}')
 
 
 def run_horizon(binary, world, out, target=None):

@@ -7,7 +7,8 @@ use horizon_client::{
     biome::{BiomeInfo, Biomes, GrassModifier},
     blocks::BlockFacts,
     chunk::{Chunk, Light, MIN_Y, index},
-    mesher::{EMISSION_BITS, MeshTables, Mesher, OPAQUE_LAYER, TerrainVertex},
+    graphics::LeafCullingMode,
+    mesher::{EMISSION_BITS, FLUID_FACE_BITS, MeshTables, Mesher, OPAQUE_LAYER, TerrainVertex},
     models,
 };
 use horizon_core::biome::BiomeZoom;
@@ -127,6 +128,7 @@ fn scene(
         std::array::from_fn(|z| std::array::from_fn(|x| Some(&chunks[z * 3 + x])));
     let mut mesher = Mesher {
         nether_shading: row["nether"].as_bool().unwrap_or(false),
+        shader_pack_lighting: false,
         assets,
         render,
         tables,
@@ -136,6 +138,8 @@ fn scene(
         blend_radius,
         smooth_lighting,
         cutout_leaves,
+        translucent_layers: &[],
+        leaf_culling: LeafCullingMode::Off,
     };
     let section_y = int(&row["section_y"])?;
     let started = Instant::now();
@@ -167,7 +171,7 @@ fn scene(
                         z,
                         u,
                         w,
-                        argb(v.color | EMISSION_BITS),
+                        argb(v.color | EMISSION_BITS | FLUID_FACE_BITS),
                         light_coords(v.light)
                     ])
                 })

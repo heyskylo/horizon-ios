@@ -91,9 +91,35 @@ pub const TIERS: [Tier; 4] = [
         full: 0.38,
     },
 ];
+/// Which pixels of a light source's sprite may shine (`hdr_stats.wgsl`), as a fraction of
+/// the way from its darkest to its brightest opaque pixel: `parts` for one whose bright parts
+/// shine (a torch's flame, not its handle), `whole` for one that shines all over
+/// (`mesher::WHOLE`). The tier windows still decide how much.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Masks {
+    pub parts: f32,
+    pub whole: f32,
+}
+pub const MASKS: Masks = Masks {
+    parts: 0.32,
+    whole: 0.0,
+};
+/// A step of HDR calibration (`crate::hdr_calibration`): its test picture is drawn in nits
+/// above the controls instead of the frame.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Calibration {
+    /// 1 black level, 2 peak brightness, 3 paper white.
+    pub step: u32,
+    /// The slider's value, in nits.
+    pub nits: f32,
+    /// Where the controls start, as a share of the height.
+    pub band: f32,
+}
 
 pub struct Hdr {
     layout: wgpu::BindGroupLayout,
+    /// Horizon's logo as a 1-bit mask, for calibration's test pictures.
+    logo: wgpu::TextureView,
     pipeline: wgpu::RenderPipeline,
     /// Zeroes the frame's alpha once the world is kept (`keep_world`): what draws after,
     /// the hand, HUD and menus, raises it, so HDR output knows where they cover the world.
@@ -120,13 +146,27 @@ pub struct Hdr {
     pub tiers: [Tier; 4],
     /// The HUD and menus' brightness, as a share of paper white (0.25..=1).
     pub ui: f32,
+    /// Which pixels of a light source shine (`Masks`).
+    pub masks: Masks,
+    /// Calibration's test picture while it runs.
+    pub calibration: Option<Calibration>,
 }
 
 impl Hdr {
-    pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat, output: Output) -> Self {
-        super::deep_stack(|| Self::new_inner(device, format, output))
+    pub fn new(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        format: wgpu::TextureFormat,
+        output: Output,
+    ) -> Self {
+        super::deep_stack(|| Self::new_inner(device, queue, format, output))
     }
-    fn new_inner(device: &wgpu::Device, format: wgpu::TextureFormat, output: Output) -> Self {
+    fn new_inner(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        format: wgpu::TextureFormat,
+        output: Output,
+    ) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Horizon HDR"),
             source: wgpu::ShaderSource::Wgsl(include_str!("../hdr.wgsl").into()),
@@ -146,6 +186,7 @@ impl Hdr {
             entries: &[
                 texture(0),
                 texture(1),
+                texture(3),
                 wgpu::BindGroupLayoutEntry {
                     binding: 2,
                     visibility: wgpu::ShaderStages::FRAGMENT,
@@ -235,12 +276,13 @@ impl Hdr {
         let params = || {
             device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("Horizon HDR parameters"),
-                size: 80,
+                size: 96,
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             })
         };
         Self {
+            logo: logo_mask(device, queue),
             layout,
             pipeline: pipeline_for(output.format()),
             clear_alpha,
@@ -257,6 +299,8 @@ impl Hdr {
             black: 0.0,
             tiers: TIERS,
             ui: 1.0,
+            masks: MASKS,
+            calibration: None,
         }
     }
 
@@ -301,6 +345,10 @@ impl Hdr {
                         binding: 2,
                         resource: self.params.as_entire_binding(),
                     },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: wgpu::BindingResource::TextureView(&self.logo),
+                    },
                 ],
             });
             self.targets = Some(Targets {
@@ -313,10 +361,24 @@ impl Hdr {
         self.targets.as_ref().unwrap().frame.clone()
     }
 
+    /// The peak the HDR metadata gives: while calibration's peak step runs, PQ's own
+    /// 10 000 nits, so a compositor that clips at the declared peak (KWin) lets the test
+    /// patch through as bright as the display goes and the logo under it shows.
+    pub fn declared_peak(&self) -> f32 {
+        match self.calibration {
+            Some(c) if c.step == 2 => 10_000.0,
+            _ => self.peak,
+        }
+    }
+
     /// Keeps the world as drawn so far, before the hand and HUD cover it, then zeroes the
     /// frame's alpha: the world's marks live on in the copy, and whatever draws from here
     /// on raises the alpha where it covers the world.
-    pub fn keep_world(&self, encoder: &mut wgpu::CommandEncoder) {
+    pub fn keep_world(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        timing: Option<&mut super::pack_timing::PassTiming>,
+    ) {
         let Some(t) = &self.targets else {
             return;
         };
@@ -337,6 +399,7 @@ impl Hdr {
         })];
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("Horizon HDR UI mask"),
+            timestamp_writes: timing.and_then(|t| t.writes("HDR UI mask")),
             color_attachments: &attachments,
             ..Default::default()
         });
@@ -347,7 +410,11 @@ impl Hdr {
     /// After the hand: its pixels' alpha goes down to 1/255, below anything the HUD and
     /// menus leave, so HDR output tells the hand (the world's brightness, never lifted)
     /// from the UI (UI Brightness).
-    pub fn mark_hand(&self, encoder: &mut wgpu::CommandEncoder) {
+    pub fn mark_hand(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        timing: Option<&mut super::pack_timing::PassTiming>,
+    ) {
         let Some(t) = &self.targets else {
             return;
         };
@@ -363,6 +430,7 @@ impl Hdr {
         })];
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("Horizon HDR hand mark"),
+            timestamp_writes: timing.and_then(|t| t.writes("HDR hand mark")),
             color_attachments: &attachments,
             ..Default::default()
         });
@@ -384,6 +452,7 @@ impl Hdr {
         encoder: &mut wgpu::CommandEncoder,
         target: &wgpu::Texture,
         world: bool,
+        timing: Option<&mut super::pack_timing::PassTiming>,
     ) {
         let Some(t) = &self.targets else {
             return;
@@ -393,7 +462,7 @@ impl Hdr {
             0,
             bytemuck::cast_slice(&self.params(world, self.output == Output::Pq)),
         );
-        Self::draw(encoder, &self.pipeline, &t.group, target);
+        Self::draw(encoder, &self.pipeline, &t.group, target, timing);
     }
 
     /// The frame `present` writes, as HDR10 (BT.2020, PQ, 10 bits a channel) whatever
@@ -433,6 +502,10 @@ impl Hdr {
                     binding: 2,
                     resource: self.capture_params.as_entire_binding(),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::TextureView(&self.logo),
+                },
             ],
         });
         queue.write_buffer(
@@ -440,14 +513,15 @@ impl Hdr {
             0,
             bytemuck::cast_slice(&self.params(world, true)),
         );
-        Self::draw(encoder, &self.capture_pipeline, &group, &texture);
+        Self::draw(encoder, &self.capture_pipeline, &group, &texture, None);
         Some(texture)
     }
 
     /// hdr.wgsl's `Params`.
-    fn params(&self, world: bool, pq: bool) -> [f32; 20] {
+    fn params(&self, world: bool, pq: bool) -> [f32; 24] {
         let paper = self.paper_white.max(1.0);
-        let mut params = [0.0; 20];
+        let c = self.calibration;
+        let mut params = [0.0; 24];
         params[..5].copy_from_slice(&[
             paper / 80.0,
             (self.peak / paper).max(1.0),
@@ -462,6 +536,9 @@ impl Hdr {
             params[12 + i] = t.start;
             params[16 + i] = t.full;
         }
+        params[20] = c.map_or(0.0, |c| c.step as f32);
+        params[21] = c.map_or(0.0, |c| c.nits);
+        params[22] = c.map_or(0.0, |c| c.band);
         params
     }
 
@@ -470,6 +547,7 @@ impl Hdr {
         pipeline: &wgpu::RenderPipeline,
         group: &wgpu::BindGroup,
         target: &wgpu::Texture,
+        timing: Option<&mut super::pack_timing::PassTiming>,
     ) {
         let view = target.create_view(&Default::default());
         let attachments = [Some(wgpu::RenderPassColorAttachment {
@@ -483,6 +561,7 @@ impl Hdr {
         })];
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("Horizon HDR"),
+            timestamp_writes: timing.and_then(|t| t.writes("HDR output")),
             color_attachments: &attachments,
             ..Default::default()
         });
@@ -490,6 +569,47 @@ impl Hdr {
         pass.set_bind_group(0, group, &[]);
         pass.draw(0..3, 0..1);
     }
+}
+
+/// Horizon's icon (horizon-theme) as a 1-bit mask: its white strokes, one colour with hard
+/// edges, are the logo; everything else is not.
+fn logo_mask(device: &wgpu::Device, queue: &wgpu::Queue) -> wgpu::TextureView {
+    use wgpu::util::DeviceExt;
+    let (w, h, rgba) =
+        crate::hud::decode_bytes(horizon_theme::ICON_PNG).unwrap_or((1, 1, vec![0; 4]));
+    let mask: Vec<u8> = rgba
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|p| {
+            if p[3] > 128 && p[..3].iter().all(|&c| c > 200) {
+                255
+            } else {
+                0
+            }
+        })
+        .collect();
+    device
+        .create_texture_with_data(
+            queue,
+            &wgpu::TextureDescriptor {
+                label: Some("Horizon HDR calibration logo"),
+                size: wgpu::Extent3d {
+                    width: w,
+                    height: h,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::R8Unorm,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            },
+            wgpu::util::TextureDataOrder::LayerMajor,
+            &mask,
+        )
+        .create_view(&Default::default())
 }
 
 #[cfg(test)]
@@ -503,6 +623,7 @@ mod tests {
         for source in [
             include_str!("../hdr.wgsl"),
             include_str!("../terrain.wgsl"),
+            include_str!("../hdr_stats.wgsl"),
             &entity,
         ] {
             let module = naga::front::wgsl::parse_str(source).unwrap();

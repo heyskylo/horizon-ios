@@ -26,7 +26,8 @@ use std::time::Instant;
 #[path = "MODE_SOURCE"] mod input_mode;
 use touch::{Control, Out, Touches};
 type Result<T> = std::result::Result<T, std::convert::Infallible>;
-struct ActiveEventLoop;
+trait EventLoopCtl {}
+struct ActiveEventLoop; impl EventLoopCtl for ActiveEventLoop {}
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum TouchPhase { Started, Moved, Ended, Cancelled }
 struct Point { x: f64, y: f64 }
@@ -48,8 +49,8 @@ impl Game {
     fn touch_batch(&self) -> Option<Batch> { Some(Batch { scale: 2.0, width: 500.0, height: 300.0 }) }
     fn touch_now(&mut self) -> f64 { 0.0 }
     fn touch_playing(&self) -> bool { self.playing }
-    fn touch_menu(&mut self, _: &ActiveEventLoop, _: u64, _: TouchPhase, _: (f32,f32)) { self.menu_calls += 1; }
-    fn touch_button(&mut self, _: &ActiveEventLoop, down: bool) { self.buttons.push(down); }
+    fn touch_menu(&mut self, _: &dyn EventLoopCtl, _: u64, _: TouchPhase, _: (f32,f32)) { self.menu_calls += 1; }
+    fn touch_button(&mut self, _: &dyn EventLoopCtl, down: bool) { self.buttons.push(down); }
     fn touch_act(&mut self, actions: Vec<Out>, _: f32) -> Result<()> { self.actions.extend(actions); Ok(()) }
 METHODS
 }

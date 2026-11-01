@@ -212,7 +212,7 @@ impl Default for ColumnLayout {
 
 /// Biomes are 4x4x4 containers over the biome table (67 entries: a 7-bit
 /// global palette).
-pub const BIOME_STRATEGY: Strategy = Strategy::biomes(7);
+pub const BIOME_STRATEGY: Strategy = Strategy::biomes(8);
 
 /// Bits of the block states' global palette: 16 for vanilla's 35,723 states
 /// (what vanilla servers and clients send), more when content mods add states
@@ -391,6 +391,9 @@ pub struct Chunk {
     pub light_loaded: bool,
     /// Newly generated (not loaded from a save): eligible for generation-time spawns.
     pub fresh: bool,
+    /// Finished from a proto chunk just now, in any kind of world, not read
+    /// from a save (`ChunkEvent.Load`'s `isNewChunk`).
+    pub generated: bool,
     /// Block entities read from a save, moved into the world on arrival.
     pub block_entities: Vec<((i32, i32, i32), block_entity::BlockEntity)>,
     /// `CustomName` of the container block entities (shown as the screen title).
@@ -428,6 +431,7 @@ impl Chunk {
             lit: false,
             light_loaded: false,
             fresh: false,
+            generated: false,
             block_entities: Vec::new(),
             block_names: Vec::new(),
             structure_refs: Vec::new(),
@@ -503,6 +507,15 @@ impl Chunk {
             }
         }
         previous
+    }
+    /// Section `s`'s block states replaced whole (a bulk edit): its storage
+    /// compacted, and the heightmaps built again on their next read.
+    pub fn replace_blocks(&mut self, s: usize, values: &[u32; 4096]) {
+        let section = Arc::make_mut(&mut self.sections[s]);
+        section.blocks = Section::from_blocks(values);
+        section.compact();
+        self.surface = OnceLock::new();
+        self.motion_blocking = OnceLock::new();
     }
     /// `getHeight(Heightmap.Types.WORLD_SURFACE, x, z)` (`x`, `z` within the
     /// chunk): one above the highest block that isn't `air`, or the column's

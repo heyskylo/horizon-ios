@@ -385,9 +385,40 @@ pub fn draw(
     }
 }
 
+/// `LoadingOverlay.MOJANG_STUDIOS_LOGO_LOCATION`, from the player's own resources.
+pub const MOJANG_STUDIOS_LOGO: &str = "gui/title/mojangstudios";
+
+/// `LoadingOverlay.extractRenderState`'s logo on a GUI `w` x `h`: the left
+/// half's corner, then each half's width and height.
+pub fn logo_layout(w: f32, h: f32) -> (i32, i32, i32, i32) {
+    let (w, h) = (f64::from(w), f64::from(h));
+    let (content_x, logo_y) = ((w * 0.5) as i32, (h * 0.5) as i32);
+    let logo_height = (w * 0.75).min(h) * 0.25;
+    let half_height = (logo_height * 0.5) as i32;
+    let half_width = (logo_height * 4.0 * 0.5) as i32;
+    (
+        content_x - half_width,
+        logo_y - half_height,
+        half_width,
+        logo_height as i32,
+    )
+}
+
+/// `GuiGraphicsExtractor.fill(x0, y0, x1, y1, color)`: the corners in either order.
+fn fill_corners(batch: &mut HudBatch, atlas: &HudAtlas, [x0, y0, x1, y1]: [i32; 4], color: u32) {
+    let (left, right) = (x0.min(x1), x0.max(x1));
+    let (top, bottom) = (y0.min(y1), y0.max(y1));
+    let (w, h) = ((right - left) as f32, (bottom - top) as f32);
+    batch.fill(atlas, left as f32, top as f32, w, h, color);
+}
+
 /// `LoadingOverlay.extractRenderState`: fills the frame with `BRAND_BACKGROUND`
-/// (Mojang red, or black when `darkMojangStudiosBackground` is set) and draws the
-/// progress line and bar.
+/// (Mojang red, or black when `darkMojangStudiosBackground` is set), draws the
+/// Mojang Studios logo as its two halves side by side, and the progress bar
+/// at 83.25% of the height (`extractProgressBar`, unfaded), with the stage's
+/// line above it. The logo's `MOJANG_LOGO` pipeline adds it (`SRC_ALPHA, ONE`):
+/// its texels are white, which alpha blending matches but for the red channel
+/// of the logo's soft edges, a 16/255 difference at most.
 pub fn draw_loading_overlay(
     batch: &mut HudBatch,
     atlas: &HudAtlas,
@@ -395,15 +426,58 @@ pub fn draw_loading_overlay(
     progress: f32,
     dark: bool,
 ) {
-    batch.fill(
+    let (w, h) = (batch.width, batch.height);
+    batch.fill(atlas, 0.0, 0.0, w, h, brand_background(dark));
+    let (x, y, half_width, logo_height) = logo_layout(w, h);
+    if let Some(r) = atlas.sprites.get(MOJANG_STUDIOS_LOGO).copied() {
+        // blit(.., u, v, width, height, 120, 60, 120, 120): the left half
+        // samples the texture's top half from u = -0.0625, the right half its
+        // bottom half from u = 0.0625 (clamped, as the logo's sampler is).
+        let at = |u: f32, v: f32| {
+            let (u, v) = ((u / 120.0).clamp(0.0, 1.0), v / 120.0);
+            (r.u0 + (r.u1 - r.u0) * u, r.v0 + (r.v1 - r.v0) * v)
+        };
+        for (i, (u, v)) in [(-0.0625, 0.0), (0.0625, 60.0)].into_iter().enumerate() {
+            let (u0, v0) = at(u, v);
+            let (u1, v1) = at(u + 120.0, v + 60.0);
+            let half = crate::hud::Rect {
+                u0,
+                v0,
+                u1,
+                v1,
+                ..r
+            };
+            let left = x + i as i32 * half_width;
+            let (lw, lh) = (half_width as f32, logo_height as f32);
+            batch.rect_uv(left as f32, y as f32, lw, lh, half, u32::MAX);
+        }
+    }
+    let bar_y = (f64::from(h) * 0.8325) as i32;
+    let x_center = (w as i32) / 2;
+    let [x0, y0, x1, y1] = [
+        x_center - half_width,
+        bar_y - 5,
+        x_center + half_width,
+        bar_y + 5,
+    ];
+    let filled = (((x1 - x0) - 2) as f32 * progress.clamp(0.0, 1.0)).ceil() as i32;
+    let white = u32::MAX;
+    fill_corners(batch, atlas, [x0 + 2, y0 + 2, x0 + filled, y1 - 2], white);
+    fill_corners(batch, atlas, [x0 + 1, y0, x1 - 1, y0 + 1], white);
+    fill_corners(batch, atlas, [x0 + 1, y1, x1 - 1, y1 - 1], white);
+    fill_corners(batch, atlas, [x0, y0, x0 + 1, y1], white);
+    fill_corners(batch, atlas, [x1, y0, x1 - 1, y1], white);
+    let text = Text::literal(line);
+    let tw = atlas.font.width_text(&text) as i32;
+    let text_top = (y0 - 9 - 3) as f32;
+    batch.text_styled(
         atlas,
-        0.0,
-        0.0,
-        batch.width,
-        batch.height,
-        brand_background(dark),
+        &text,
+        (x_center - tw / 2) as f32,
+        text_top,
+        white,
+        true,
     );
-    draw_progress(batch, atlas, line, progress);
 }
 
 /// The startup loading screen: the stage's line and a progress bar, centred
@@ -571,6 +645,14 @@ pub fn draw_file_fixer(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_mojang_logo_is_a_quarter_of_the_shorter_side_and_four_times_as_wide() {
+        // 320x240: min(240, 240) / 4 = 60 high, two halves of 120.
+        assert_eq!(logo_layout(320.0, 240.0), (40, 90, 120, 60));
+        // A tall frame sizes the logo by three quarters of its width.
+        assert_eq!(logo_layout(400.0, 500.0), (50, 213, 150, 75));
+    }
 
     #[test]
     fn progress_weighs_the_prepared_server_and_the_player_chunks() {

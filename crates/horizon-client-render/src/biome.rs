@@ -172,6 +172,7 @@ fn color(v: &Value) -> Option<u32> {
 fn colormap(root: &Path, name: &str) -> Result<Vec<u32>> {
     let path = root.join(format!("assets/minecraft/textures/colormap/{name}.png"));
     let mut decoder = png::Decoder::new(std::io::BufReader::new(fs::File::open(path)?));
+    decoder.ignore_checksums(true);
     decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
     let mut reader = decoder.read_info()?;
     let mut bytes = vec![0; reader.output_buffer_size().ok_or("colormap too large")?];
@@ -387,6 +388,52 @@ impl Biomes {
     }
 }
 
+/// A biome's colours as a mod may change them (`native_biome_colors`), each
+/// 0xRRGGBB: what tints grass (before the dark forest's modifier; the swamp's
+/// noise colours replace it), leaves and vines, dry foliage (leaf litter) and
+/// water.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BiomeColors {
+    pub grass: u32,
+    pub foliage: u32,
+    pub dry_foliage: u32,
+    pub water: u32,
+}
+
+impl Biomes {
+    /// This table with each biome's colours passed through `f`, given the
+    /// biome's name (`minecraft:plains`) and its colours; None when `f`
+    /// changed none. Bits past 0xFFFFFF are dropped.
+    pub fn with_colors(&self, mut f: impl FnMut(&str, &mut BiomeColors)) -> Option<Self> {
+        let mut out = self.clone();
+        let mut changed = false;
+        for b in &mut out.list {
+            let before = BiomeColors {
+                grass: b.grass,
+                foliage: b.foliage,
+                dry_foliage: b.dry_foliage,
+                water: b.water,
+            };
+            let mut colors = before;
+            f(&b.name, &mut colors);
+            let after = BiomeColors {
+                grass: colors.grass & 0xFF_FFFF,
+                foliage: colors.foliage & 0xFF_FFFF,
+                dry_foliage: colors.dry_foliage & 0xFF_FFFF,
+                water: colors.water & 0xFF_FFFF,
+            };
+            if after != before {
+                changed = true;
+                b.grass = after.grass;
+                b.foliage = after.foliage;
+                b.dry_foliage = after.dry_foliage;
+                b.water = after.water;
+            }
+        }
+        changed.then_some(out)
+    }
+}
+
 /// A 24-bit colour as sRGB components in 0..1.
 pub fn rgb(c: u32) -> [f32; 3] {
     [16, 8, 0].map(|shift| (c >> shift & 255) as f32 / 255.0)
@@ -531,6 +578,81 @@ mod pack_tests {
         assert!(!other.contains("minecraft:molten_peaks"));
         assert_eq!(other.get(2).water, 0x3F76E4);
         assert!(!other.has_packs());
+    }
+}
+
+#[cfg(test)]
+mod color_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn biomes() -> Biomes {
+        let maps = Colormaps {
+            grass: Vec::new(),
+            foliage: Vec::new(),
+            dry: Vec::new(),
+        };
+        let effects = |grass: u32, modifier: &str| {
+            json!({"effects": {"grass_color": grass, "foliage_color": 0x112233,
+                "dry_foliage_color": 0x445566, "water_color": 0x3F76E4,
+                "grass_color_modifier": modifier}})
+        };
+        let list = vec![
+            BiomeInfo::from_json("minecraft:plains".into(), &effects(0x91BD59, "none"), &maps),
+            BiomeInfo::from_json(
+                "minecraft:dark_forest".into(),
+                &effects(0x91BD59, "dark_forest"),
+                &maps,
+            ),
+        ];
+        Biomes {
+            builtin: Arc::new(list.clone()),
+            index: list
+                .iter()
+                .enumerate()
+                .map(|(i, b)| (b.name.clone(), i as u16))
+                .collect(),
+            list,
+            info_noise: SimplexNoise::with_skipped_offsets(&mut LegacyRandom::new(2345), true),
+            colormaps: Arc::new(maps),
+            packs: BTreeMap::new(),
+        }
+    }
+
+    #[test]
+    fn a_change_reaches_the_tints_the_mesher_reads() {
+        let autumn = biomes()
+            .with_colors(|name, c| {
+                c.foliage = 0xD2691E;
+                if name == "minecraft:plains" {
+                    c.grass = 0xBFA055;
+                }
+            })
+            .expect("changed");
+        let plains = autumn.id("minecraft:plains");
+        assert_eq!(autumn.grass(plains, 0.0, 0.0), 0xBFA055);
+        assert_eq!(autumn.get(plains).foliage, 0xD2691E);
+        assert_eq!(autumn.get(plains).dry_foliage, 0x445566);
+        assert_eq!(autumn.get(plains).water, 0x3F76E4);
+        // The dark forest's modifier still darkens its (unchanged) grass:
+        // ((0x91BD59 & 0xFEFEFE) + 0x28340A) >> 1.
+        let dark = autumn.id("minecraft:dark_forest");
+        assert_eq!(autumn.grass(dark, 0.0, 0.0), 0x5C7831);
+        assert_eq!(autumn.get(dark).foliage, 0xD2691E);
+    }
+
+    #[test]
+    fn no_change_gives_none_and_alpha_bits_are_dropped() {
+        assert!(biomes().with_colors(|_, _| {}).is_none());
+        assert!(
+            biomes()
+                .with_colors(|_, c| c.water |= 0xFF00_0000)
+                .is_none()
+        );
+        let blue = biomes()
+            .with_colors(|_, c| c.water = 0xFF00_00FF)
+            .expect("changed");
+        assert_eq!(blue.get(0).water, 0x0000FF);
     }
 }
 

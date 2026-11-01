@@ -285,6 +285,53 @@ impl GitHub {
         }
     }
 
+    /// The address of the open pull request from `branch`, if there is one.
+    pub fn open_pull(&self, branch: &str) -> Result<Option<String>> {
+        let owner = self.repo.split('/').next().unwrap_or("");
+        let pulls = self
+            .call("GET", "/pulls")
+            .query("head", &format!("{owner}:{branch}"))
+            .query("state", "open")
+            .call()
+            .map_err(failure)
+            .and_then(read)?;
+        Ok(pulls
+            .as_array()
+            .and_then(|p| p.first())
+            .map(|p| p["html_url"].as_str().unwrap_or("").to_owned()))
+    }
+
+    /// The messages of `branch`'s commits that aren't on main.
+    pub fn commits(&self, branch: &str) -> Result<Vec<String>> {
+        let compare = self
+            .call("GET", &format!("/compare/main...{branch}"))
+            .call()
+            .map_err(failure)
+            .and_then(read)?;
+        Ok(compare["commits"]
+            .as_array()
+            .map(|c| {
+                c.iter()
+                    .map(|c| c["commit"]["message"].as_str().unwrap_or("").to_owned())
+                    .collect()
+            })
+            .unwrap_or_default())
+    }
+
+    /// Moves branch `name` back to main, dropping its own commits.
+    pub fn reset(&self, name: &str) -> Result<()> {
+        let main = self
+            .call("GET", "/git/ref/heads/main")
+            .call()
+            .map_err(failure)
+            .and_then(read)?;
+        let sha = main["object"]["sha"].as_str().unwrap_or("");
+        self.call("PATCH", &format!("/git/refs/heads/{name}"))
+            .send_json(json!({"sha": sha, "force": true}))
+            .map_err(failure)?;
+        Ok(())
+    }
+
     /// Writes `path` on `branch` in one commit; `sha` is the blob it replaces.
     pub fn put(
         &self,

@@ -1,6 +1,7 @@
 //! Overlay reuse validated by source topology and filesystem stamps.
 //! Published output is an owned cache artifact; hits do not traverse its tree.
 use super::{Pack, Source, build_overlay_uncached};
+use crate::zip::Zip;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::io::Read;
@@ -76,6 +77,24 @@ fn content(hash: &mut Sha256, path: &Path) -> io::Result<()> {
         hash.update(&buffer[..n]);
     }
     Ok(())
+}
+/// The largest zip hashed by its bytes: vanilla's limit on a server pack.
+const WHOLE_ZIP: u64 = 250 << 20;
+/// A zip up to `whole` by its bytes, which also catches an edit its checksums
+/// don't show (a pack may leave them empty, nothing reads them). A larger one
+/// would take minutes on every check, so by its stamp and its directory: what a
+/// local pack changes when it is replaced, and the directory reads in a moment.
+fn zip_content(hash: &mut Sha256, path: &Path, whole: u64) -> io::Result<()> {
+    let meta = fs::metadata(path)?;
+    match Zip::open(path) {
+        Ok(zip) if meta.len() > whole => {
+            hash.update(meta.len().to_le_bytes());
+            field(hash, format!("{:?}", meta.modified()?).as_bytes());
+            hash.update(zip.directory());
+            Ok(())
+        }
+        _ => content(hash, path),
+    }
 }
 /// `path`'s stamp; `read` lets platforms without a change timestamp hash a file's bytes.
 fn stamp(hash: &mut Sha256, path: &Path, read: bool) -> io::Result<()> {
@@ -250,8 +269,8 @@ fn pack_signature(packs: &[Pack]) -> io::Result<String> {
                 field(&mut hash, absolute(path)?.as_os_str().as_encoded_bytes());
                 // By its bytes, not its stamp: a server pack found in the download cache is
                 // marked used on every join (`HttpUtil.updateModificationTime`), and a new
-                // time rebuilt the whole overlay each time. One file reads in a moment.
-                content(&mut hash, path)?;
+                // time rebuilt the whole overlay each time.
+                zip_content(&mut hash, path, WHOLE_ZIP)?;
             }
         }
     }
@@ -633,6 +652,36 @@ mod tests {
     }
 
     #[test]
+    fn a_large_zip_is_stamped_by_its_directory_and_time() {
+        let f = Fixture::new();
+        let path = f.0.join("large.zip");
+        let at = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1 << 30);
+        let write = |name: &str, first: u8, modified| {
+            let mut body = vec![0u8; 1 << 18];
+            body[0] = first;
+            fs::write(&path, archive(&[(name, body)], false)).unwrap();
+            let file = fs::File::options().write(true).open(&path).unwrap();
+            file.set_modified(modified).unwrap();
+        };
+        let signature = |whole| {
+            let mut hash = Sha256::new();
+            zip_content(&mut hash, &path, whole).unwrap();
+            finish(hash)
+        };
+        write("a", 0, at);
+        let (bytes, directory) = (signature(u64::MAX), signature(0));
+        // Above the limit the entries' bytes go unread; at or under it they count.
+        write("a", 1, at);
+        assert_eq!(signature(0), directory);
+        assert_ne!(signature(u64::MAX), bytes);
+        write("b", 0, at);
+        assert_ne!(signature(0), directory);
+        write("a", 0, at + std::time::Duration::from_secs(60));
+        assert_ne!(signature(0), directory);
+        assert_eq!(signature(u64::MAX), bytes);
+    }
+
+    #[test]
     fn zip_content_and_failed_build_invalidate() {
         let f = Fixture::new();
         f.write("vanilla/facts.json", b"[]");
@@ -658,15 +707,16 @@ mod tests {
         f.write("pack.zip", &archive(&files(b"bbb"), false));
         f.rebuild_matches(std::slice::from_ref(&pack));
         assert_eq!(fs::read(f.0.join("cached").join(name)).unwrap(), b"bbb");
-        // The ZIP opens and enumerates, then its unsupported method fails after
-        // mirror has created directories. No reusable marker survives.
+        // A central directory whose second name runs past the archive fails
+        // the build (an unreadable entry alone only costs that file). No
+        // reusable marker survives.
         let mut broken = archive(&files(b"ccc"), false);
         let central = broken
             .windows(4)
             .position(|s| s == [0x50, 0x4b, 0x01, 0x02])
             .unwrap();
         let second = central + 46 + "pack.mcmeta".len();
-        broken[second + 10..second + 12].copy_from_slice(&99u16.to_le_bytes());
+        broken[second + 28..second + 30].copy_from_slice(&u16::MAX.to_le_bytes());
         f.write("pack.zip", &broken);
         let out = f.0.join("cached");
         assert!(

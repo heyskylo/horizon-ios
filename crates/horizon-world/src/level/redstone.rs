@@ -34,7 +34,8 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         if self.b.is_block(state, self.b.named.redstone_wire) {
             return !self.wire_signal_off.get();
         }
-        self.b.has_flag(state, state_flags::SIGNAL_SOURCE)
+        self.level
+            .adjust_signal_source(state, self.b.has_flag(state, state_flags::SIGNAL_SOURCE))
     }
     /// `BlockState.getSignal(level, pos, direction)`.
     pub(crate) fn state_signal(
@@ -43,6 +44,11 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         pos: BlockPos,
         direction: Direction,
     ) -> i32 {
+        let vanilla = self.vanilla_signal(state, pos, direction);
+        self.level
+            .adjust_signal(pos, state, direction, false, vanilla)
+    }
+    fn vanilla_signal(&self, state: BlockStateId, pos: BlockPos, direction: Direction) -> i32 {
         let b = self.b;
         // BlockBehaviour.getSignal is `ownSignal` for a TestBlock, which is
         // not an `isSignalSource`.
@@ -75,6 +81,16 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         pos: BlockPos,
         direction: Direction,
     ) -> i32 {
+        let vanilla = self.vanilla_direct_signal(state, pos, direction);
+        self.level
+            .adjust_signal(pos, state, direction, true, vanilla)
+    }
+    fn vanilla_direct_signal(
+        &self,
+        state: BlockStateId,
+        pos: BlockPos,
+        direction: Direction,
+    ) -> i32 {
         let b = self.b;
         if !b.has_flag(state, state_flags::SIGNAL_SOURCE) {
             return 0;
@@ -87,7 +103,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
                     self.wire_signal(state, pos, direction)
                 }
             }
-            Class::Comparator => self.state_signal(state, pos, direction),
+            Class::Comparator => self.vanilla_signal(state, pos, direction),
             Class::TrappedChest => {
                 if direction == Direction::Up {
                     self.level.block_entity_signal(pos, state, direction)
@@ -498,13 +514,13 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         };
         if b.instance_of(state, Class::Comparator) {
             let target_state = self.state(target);
-            if b.has_flag(target_state, state_flags::ANALOG_OUTPUT) {
+            if self.has_analog_output(target_state) {
                 result = self.analog_output(target_state, target, facing.opposite());
             } else if result < 15 && self.is_redstone_conductor(target_state, target) {
                 let further = rel(target, facing);
                 let further_state = self.state(further);
-                let block = b
-                    .has_flag(further_state, state_flags::ANALOG_OUTPUT)
+                let block = self
+                    .has_analog_output(further_state)
                     .then(|| self.analog_output(further_state, further, facing.opposite()));
                 // ComparatorBlock.getInputSignal: an item frame behind the
                 // conductor counts too, the larger signal winning.
@@ -651,8 +667,25 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         }
     }
 
-    /// `getAnalogOutputSignal` for state-only sources; others ask the caller.
+    /// `BlockState.hasAnalogOutputSignal`, as the level answers it (a mod's block).
+    pub(crate) fn has_analog_output(&self, state: BlockStateId) -> bool {
+        let vanilla = self.b.has_flag(state, state_flags::ANALOG_OUTPUT);
+        self.level.adjust_has_analog_output(state, vanilla)
+    }
+    /// `BlockState.getAnalogOutputSignal`, as the level answers it (a mod's block), 0 to 15.
     pub(crate) fn analog_output(
+        &self,
+        state: BlockStateId,
+        pos: BlockPos,
+        direction: Direction,
+    ) -> i32 {
+        let vanilla = self.vanilla_analog_output(state, pos, direction);
+        self.level
+            .adjust_analog_output(pos, state, direction, vanilla)
+            .clamp(0, 15)
+    }
+    /// `getAnalogOutputSignal` for state-only sources; others ask the caller.
+    fn vanilla_analog_output(
         &self,
         state: BlockStateId,
         pos: BlockPos,

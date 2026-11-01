@@ -105,7 +105,7 @@ fn projectile_kind(kind: &str) -> Option<ProjectileKind> {
             seed: 0,
         },
         "minecraft:wither_skull" => ProjectileKind::WitherSkull { dangerous: false },
-        _ => return None,
+        _ => ProjectileKind::Thrown(horizon_client::projectiles::thrown_type(kind)?),
     })
 }
 
@@ -127,6 +127,12 @@ fn remote_arrow_tick(p: &mut Projectile, w: &impl ProjectileWorld) {
     if water {
         p.velocity = p.velocity.scale(0.6);
     }
+    let (movement_x, movement_y, movement_z) = (p.velocity.x, p.velocity.y, p.velocity.z);
+    let sd = (movement_x * movement_x + movement_z * movement_z).sqrt();
+    let y_rot = horizon_core::geometry::trig::atan2_degrees(movement_x, movement_z);
+    let x_rot = horizon_core::geometry::trig::atan2_degrees(movement_y, sd);
+    p.pitch = horizon_client::arrows::lerp_rotation(p.pitch, x_rot);
+    p.yaw = horizon_client::arrows::lerp_rotation(p.yaw, y_rot);
     let to = p.position.add_vector(p.velocity);
     if let Some((at, _, _)) = w.clip(p.position, to) {
         p.position = at;
@@ -152,6 +158,35 @@ fn remote_arrow_tick(p: &mut Projectile, w: &impl ProjectileWorld) {
 pub(super) fn remote_projectile_tick(p: &mut Projectile, w: &impl ProjectileWorld) {
     if !matches!(p.tick(w).1, Hit::None) {
         p.velocity = Vec3::ZERO;
+    }
+}
+
+/// `Entity.getRandomX(0.5)` / `getRandomY` / `getRandomZ(0.5)` for a shulker
+/// bullet (`EntityType.SHULKER_BULLET` is 0.3125 x 0.3125).
+fn shulker_bullet_trail_at(at: Vec3, random: &mut impl RandomSource) -> [f64; 3] {
+    const SIZE: f64 = 0.3125;
+    [
+        at.x + SIZE * (2.0 * random.next_double() - 1.0) * 0.5,
+        at.y + SIZE * random.next_double(),
+        at.z + SIZE * (2.0 * random.next_double() - 1.0) * 0.5,
+    ]
+}
+
+/// `ClientPacketListener.handleProjectilePowerPacket`: the power a hurting
+/// projectile (`AbstractHurtingProjectile`) accelerates by, found by id;
+/// anything else is ignored.
+pub(super) fn remote_projectile_power(projectiles: &mut [Projectile], id: i32, power: f64) {
+    if let Some(p) = projectiles.iter_mut().find(|p| p.id == id as u32)
+        && matches!(
+            p.kind,
+            ProjectileKind::SmallFireball
+                | ProjectileKind::LargeFireball { .. }
+                | ProjectileKind::WitherSkull { .. }
+                | ProjectileKind::WindCharge
+                | ProjectileKind::BreezeWindCharge
+        )
+    {
+        p.acceleration = power;
     }
 }
 
@@ -244,6 +279,25 @@ impl Game<'_> {
         }
     }
 
+    /// `ShulkerBullet.tick` on a client: two `END_ROD` particles in its
+    /// 0.3125 box (`getRandomX(0.5)`, `getRandomY`, `getRandomZ(0.5)`).
+    pub(super) fn shulker_bullet_trails(&mut self) {
+        let bullets: Vec<Vec3> = self
+            .creatures
+            .projectiles
+            .iter()
+            .filter(|p| matches!(p.kind, ProjectileKind::ShulkerBullet { .. }))
+            .map(|p| p.position)
+            .collect();
+        let options = ParticleOptions::simple(ParticleType::EndRod);
+        for at in bullets {
+            for _ in 0..2 {
+                let p = shulker_bullet_trail_at(at, self.particles.random());
+                self.particles.add(&options, p, [0.0; 3]);
+            }
+        }
+    }
+
     /// `handleAddEntity` for these types; false when `kind` isn't one.
     pub(super) fn spawn_remote_projectile(
         &mut self,
@@ -268,6 +322,8 @@ impl Game<'_> {
                 velocity,
                 fuse: 80,
                 on_ground: false,
+                owner: None,
+                guest: None,
             }),
             // FallingBlockEntity.recreateFromPacket: the block state is the data.
             "minecraft:falling_block" => self.falling.push(FallingBlock {
@@ -279,6 +335,7 @@ impl Game<'_> {
                 velocity,
                 age: 0,
                 no_gravity: false,
+                portal: Default::default(),
                 drop_item: false,
                 fall_distance: 0.0,
                 stuck: Vec3::ZERO,
@@ -588,6 +645,7 @@ impl Game<'_> {
             .map(|p| p.position)
             .collect();
         self.smoke_trails(trails);
+        self.shulker_bullet_trails();
         // FireworkRocketEntity.tick: a rocket attached to an entity follows it
         // and boosts it client-side too (attachedToEntity.isFallFlying), and
         // every rocket leaves its spark trail on a client.
@@ -724,7 +782,13 @@ impl Game<'_> {
             out.push(json!({"id": t.id, "kind": "minecraft:tnt", "position": at(t.position), "fuse": t.fuse}));
         }
         for f in &self.falling {
-            out.push(json!({"id": f.id, "kind": "minecraft:falling_block", "position": at(f.position), "state": f.state.0}));
+            out.push(json!({"id": f.id, "kind": "minecraft:falling_block", "position": at(f.position), "velocity": at(f.velocity), "state": f.state.0}));
+        }
+        for b in &self.boats {
+            out.push(json!({"id": b.id, "kind": "minecraft:boat", "position": at(b.position), "velocity": at(b.velocity)}));
+        }
+        for c in &self.carts {
+            out.push(json!({"id": c.id, "kind": "minecraft:minecart", "position": at(c.position), "velocity": at(c.velocity)}));
         }
         for c in &self.crystals {
             out.push(json!({"id": c.id, "kind": "minecraft:end_crystal", "position": at(c.position), "show_bottom": c.show_bottom}));
@@ -776,6 +840,23 @@ mod tests {
         p
     }
 
+    /// The same, under the id a server tracks it by.
+    fn tracked(kind: ProjectileKind, id: u32) -> Projectile {
+        Projectile { id, ..thrown(kind) }
+    }
+
+    #[test]
+    fn a_shulker_bullet_trail_stays_inside_its_box() {
+        let at = Vec3::new(10.0, 20.0, 30.0);
+        let mut random = horizon_core::random::LegacyRandom::new(1);
+        for _ in 0..32 {
+            let [x, y, z] = shulker_bullet_trail_at(at, &mut random);
+            assert!((x - at.x).abs() <= 0.3125 * 0.5 + 1e-12, "{x}");
+            assert!((0.0..0.3125 + 1e-12).contains(&(y - at.y)), "{y}");
+            assert!((z - at.z).abs() <= 0.3125 * 0.5 + 1e-12, "{z}");
+        }
+    }
+
     #[test]
     fn a_thrown_item_flies_on_between_the_server_updates() {
         // A thrown egg, an ender pearl and a wind charge (#1762): the server
@@ -809,5 +890,43 @@ mod tests {
         remote_projectile_tick(&mut p, &Empty);
         assert!((p.velocity.x - 1.5).abs() < 1e-9, "{p:?}");
         assert!((p.velocity.y - 0.0).abs() < 1e-9, "{p:?}");
+    }
+
+    #[test]
+    fn a_power_packet_gives_a_fireball_the_power_its_next_tick_uses() {
+        // ClientPacketListener.handleProjectilePowerPacket: the fireball with
+        // id 12 gets the power the server sends bundled with its motion.
+        let mut list = vec![tracked(ProjectileKind::LargeFireball { power: 1 }, 12)];
+        remote_projectile_power(&mut list, 12, 0.5);
+        assert_eq!(list[0].acceleration, 0.5);
+        // AbstractHurtingProjectile.applyInertia: (v + v/|v| * 0.5) * 0.95,
+        // where the default 0.1 would have made 1.52.
+        remote_projectile_tick(&mut list[0], &Empty);
+        assert!((list[0].velocity.x - 1.9).abs() < 1e-9, "{:?}", list[0]);
+    }
+
+    #[test]
+    fn a_power_packet_ignores_an_arrow_an_unknown_id_and_a_thrown_item() {
+        // Vanilla's instanceof AbstractHurtingProjectile: an arrow and a
+        // thrown egg are none, and no entity is id 99.
+        let mut list = vec![
+            tracked(
+                ProjectileKind::Arrow {
+                    base_damage: 2.0,
+                    critical: false,
+                    effect: None,
+                },
+                3,
+            ),
+            tracked(ProjectileKind::Egg, 4),
+            tracked(ProjectileKind::LargeFireball { power: 1 }, 12),
+        ];
+        remote_projectile_power(&mut list, 3, 0.5);
+        remote_projectile_power(&mut list, 4, 0.5);
+        remote_projectile_power(&mut list, 99, 0.5);
+        assert_eq!(
+            list.iter().map(|p| p.acceleration).collect::<Vec<_>>(),
+            [0.1; 3]
+        );
     }
 }

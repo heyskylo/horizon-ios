@@ -202,6 +202,8 @@ pub struct BlockData {
     pub link: Option<BlockId>,
     /// Second block link: attached stem (stems) or stem (attached stems).
     pub link2: Option<BlockId>,
+    /// Support blocks (stems, plants); a content mod's connecting block's
+    /// `connects_to` (a `PipeBlock` alone in its chain).
     pub support_tag: Option<Arc<BlockSet>>,
     pub support_tag2: Option<Arc<BlockSet>>,
     pub feature: Option<Arc<str>>,
@@ -956,7 +958,7 @@ fn build_with_gameplay<G: GameplayStateSource>(
             (state < table.state_count() as u64).then(|| table.block(BlockStateId(state as u32)))
         });
         let link2 = ["attachedStem", "stem"].into_iter().find_map(block_field);
-        let support_tag = ["stemSupportBlocks", "supportBlocks"]
+        let support_tag = ["stemSupportBlocks", "supportBlocks", "connectsTo"]
             .into_iter()
             .find_map(|k| field(k).and_then(Value::as_str))
             .and_then(tag);
@@ -1089,6 +1091,7 @@ fn build_with_gameplay<G: GameplayStateSource>(
         );
     }
 
+    let potted_by_content = potted_by_content(&blocks, &table);
     let liquid_blocks = FluidBlockBindings::new(registry)?;
     let mut dynamic = HashMap::new();
     for (id, fact) in facts.iter().enumerate() {
@@ -1113,11 +1116,29 @@ fn build_with_gameplay<G: GameplayStateSource>(
         fluid_tags,
         blocks,
         items,
+        potted_by_content,
         liquid_blocks,
         dynamic,
         occlusion_cache: Default::default(),
         growth: Default::default(),
     })
+}
+
+pub(super) fn potted_by_content(
+    blocks: &[BlockData],
+    table: &StateTable,
+) -> HashMap<BlockId, BlockId> {
+    let air = table.block_by_name("minecraft:air");
+    let mut map = HashMap::new();
+    for (index, block) in blocks.iter().enumerate() {
+        if block.is(Class::FlowerPot)
+            && let Some(potted) = block.link
+            && Some(potted) != air
+        {
+            map.insert(potted, BlockId(index as u16));
+        }
+    }
+    map
 }
 
 /// `NoteBlockInstrument` serialized names in declaration order.

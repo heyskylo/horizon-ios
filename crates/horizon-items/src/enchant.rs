@@ -146,8 +146,33 @@ pub fn level_name(level: u32) -> String {
 
 impl Enchantments {
     pub fn load(root: &Path) -> Self {
+        Self::load_with(root, &horizon_world::loot::PackOverlay::NONE)
+    }
+    /// Load from a resource root; `overlay` (a world's data packs' content
+    /// files) joins the game's own enchantment tags in pack order, a
+    /// `replace` file dropping the lower sources' (`TagLoader.load`).
+    pub fn load_with(root: &Path, overlay: &horizon_world::loot::PackOverlay) -> Self {
         let data = root.join("data/minecraft");
-        let raw_tags = read_tag_dir(&data.join("tags/enchantment"));
+        let mut raw_tags = read_tag_dir(&data.join("tags/enchantment"));
+        for (id, files) in overlay.tag_kind("enchantment") {
+            let slot = raw_tags.entry(id).or_default();
+            for bytes in files {
+                let Ok(v) = serde_json::from_slice::<Value>(bytes) else {
+                    continue;
+                };
+                if v["replace"].as_bool() == Some(true) {
+                    slot.clear();
+                }
+                if let Some(values) = v["values"].as_array() {
+                    slot.extend(
+                        values
+                            .iter()
+                            .filter_map(|e| e.as_str().or_else(|| e["id"].as_str()))
+                            .map(str::to_owned),
+                    );
+                }
+            }
+        }
         let tags: HashMap<String, Vec<Arc<str>>> = raw_tags
             .keys()
             .map(|k| {
@@ -247,9 +272,7 @@ impl Enchantments {
             .map(|(i, e)| (e.id.clone(), i))
             .collect();
         let mut props = HashMap::new();
-        if let Ok(bytes) = fs::read(root.join("items.json"))
-            && let Ok(raw) = serde_json::from_slice::<BTreeMap<String, Value>>(&bytes)
-        {
+        if let Ok(raw) = horizon_world::item_defaults::read(root) {
             for (id, c) in raw {
                 props.insert(
                     Arc::from(id.as_str()),
@@ -337,7 +360,7 @@ impl Enchantments {
         let language = horizon_client_core::lang::current();
         self.full_name_in(language.as_deref(), id, level)
     }
-    /// `full_name` against `language`; `None` (no language loaded: a
+    /// `Enchantment.getFullname` against `language`; `None` (no language loaded: a
     /// dedicated server, the probes) keeps the English names loaded above.
     pub fn full_name_in(
         &self,
@@ -352,9 +375,17 @@ impl Enchantments {
         let mut name = tr(&e.description_key).unwrap_or_else(|| e.description.clone());
         if level != 1 || e.max_level != 1 {
             name.push(' ');
-            name.push_str(
-                &tr(&format!("enchantment.level.{level}")).unwrap_or_else(|| level_name(level)),
-            );
+            let key = format!("enchantment.level.{level}");
+            let suffix = tr(&key)
+                .or_else(|| self.lang.get(&key).cloned())
+                .unwrap_or_else(|| {
+                    if (1..=10).contains(&level) {
+                        level_name(level)
+                    } else {
+                        key
+                    }
+                });
+            name.push_str(&suffix);
         }
         (name, self.is_curse(id))
     }
@@ -1129,6 +1160,22 @@ pub mod tests {
         assert_eq!(lines, ["sharpness II", "unbreaking III", "mending"]);
         assert!(!e.compatible("minecraft:sharpness", "minecraft:smite"));
         assert!(e.compatible("minecraft:sharpness", "minecraft:unbreaking"));
+    }
+
+    #[test]
+    fn high_enchantment_names_keep_the_untranslated_key() {
+        let mut e = sample();
+        assert_eq!(
+            e.full_name_in(None, "minecraft:sharpness", 255).0,
+            "sharpness enchantment.level.255"
+        );
+        // A pack may supply names beyond vanilla's I through X, including
+        // the English fallback used when no client language is loaded.
+        e.lang.insert("enchantment.level.11".into(), "XI".into());
+        assert_eq!(
+            e.full_name_in(None, "minecraft:sharpness", 11).0,
+            "sharpness XI"
+        );
     }
 
     /// The enchantment's name and its level come from the selected language,

@@ -78,6 +78,18 @@ impl SceneSound {
             Self::Block(_) => None,
         }
     }
+    /// The sound event a block plays where it is (`Level.playSound(null, pos,
+    /// ..)`, which every player hears), if this is one: a turtle egg breaking
+    /// (`TurtleEggBlock.decreaseEggs`), a shelf mushroom bouncing.
+    pub fn block_sound(self) -> Option<&'static str> {
+        match self {
+            Self::Block(LandingSound::TurtleEggBreak) => Some("minecraft:block.turtle_egg.break"),
+            Self::Block(LandingSound::ShelfMushroomBounce) => {
+                Some("minecraft:block.shelf_mushroom.bounce")
+            }
+            _ => None,
+        }
+    }
     fn name(self) -> &'static str {
         match self {
             Self::SmallFall => "small",
@@ -124,6 +136,8 @@ pub enum FallEvent {
     Destroy {
         position: BlockPos,
         drops: bool,
+        /// The block it destroyed, for `Level.destroyBlock`'s level event 2001.
+        state: BlockStateId,
     },
     BlockEvent {
         kind: LandingEvent,
@@ -194,7 +208,9 @@ impl FallEvent {
                 state,
                 flags,
             } => format!("write {} {} {}", p(position), state.0, flags),
-            Self::Destroy { position, drops } => format!("destroy {} {}", p(position), drops),
+            Self::Destroy {
+                position, drops, ..
+            } => format!("destroy {} {}", p(position), drops),
             Self::BlockEvent {
                 kind,
                 position,
@@ -220,8 +236,69 @@ impl FallEvent {
     }
 }
 impl MotionWorld<'_, '_, '_> {
+    fn mod_block_fall(
+        &self,
+        state: BlockStateId,
+        position: BlockPos,
+        distance: f64,
+        damage: f32,
+    ) -> f32 {
+        let block = self
+            .assets
+            .registry
+            .state(state)
+            .map(|s| s.name.as_str())
+            .unwrap_or("minecraft:air");
+        crate::block_contact::fall(
+            crate::block_contact::Contact {
+                entity: self.player.entity_id,
+                kind: "minecraft:player",
+                block,
+                state,
+                position,
+            },
+            distance,
+            damage,
+        )
+    }
     fn fall_event(&mut self, event: FallEvent) {
         self.player.events.push(MotionEvent::Fall(event));
+    }
+    fn player_fall_damage(
+        &mut self,
+        distance: f64,
+        multiplier: f32,
+        source: LandingDamage,
+        contact: Option<(BlockStateId, BlockPos, f64)>,
+    ) -> Result<bool> {
+        // Player.causeFallDamage exempts players with the mayfly ability,
+        // including creative players who are currently walking.
+        if self.player.may_fly {
+            if let Some((state, position, original_distance)) = contact {
+                self.mod_block_fall(state, position, original_distance, 0.0);
+            }
+            return Ok(false);
+        }
+        // Record centimeters before delegating to LivingEntity.
+        if distance >= 2.0 || distance.is_nan() {
+            let scaled = distance * 100.0;
+            let floor = scaled.floor();
+            let rounded = (if scaled - floor >= 0.5 {
+                floor + 1.0
+            } else {
+                floor
+            }) as i64;
+            self.fall_event(FallEvent::Statistic(rounded as i32));
+        }
+        living_fall::cause_living_fall_damage(
+            &mut FallCall {
+                world: self,
+                source,
+                contact,
+            },
+            distance,
+            multiplier,
+        )
     }
     /// `Entity.propagateFallToPassengers`: the call on this player, whose
     /// vehicle fell `distance` blocks at `multiplier`, so the player takes
@@ -243,11 +320,33 @@ impl FallDamageWorld for MotionWorld<'_, '_, '_> {
         self.player.fall_distance = value;
     }
     fn fall_on(&mut self, state: BlockStateId, position: BlockPos, distance: f64) -> Result<()> {
-        self.resources
+        let block = self
+            .assets
+            .registry
+            .state(state)
+            .map(|s| s.name.as_str())
+            .unwrap_or("minecraft:air");
+        let previous = self.player.block_landing.take();
+        if !block.starts_with("minecraft:") {
+            self.player.block_landing = Some((state, position, distance));
+        }
+        // Keep template landing rules (hay, honey, slime, etc.) in control.
+        let result = self
+            .resources
             .landing
             .fall_on(self, state, position, LandingEntityKind::Player, distance)
-            .map_err(|e| e.to_string().into())
+            .map_err(|e| e.to_string().into());
+        let pending = self.player.block_landing.take();
+        self.player.block_landing = previous;
+        if result.is_ok()
+            && let Some((state, position, distance)) = pending
+        {
+            // Some landing rules never call causeFallDamage.
+            self.mod_block_fall(state, position, distance, 0.0);
+        }
+        result
     }
+
     fn position(&self) -> Vec3 {
         self.player.position
     }
@@ -378,30 +477,8 @@ impl BlockLandingWorld for MotionWorld<'_, '_, '_> {
         multiplier: f32,
         source: LandingDamage,
     ) -> Result<bool> {
-        // Player.causeFallDamage exempts players with the mayfly ability,
-        // including creative players who are currently walking.
-        if self.player.may_fly {
-            return Ok(false);
-        }
-        // Record centimeters before delegating to LivingEntity.
-        if distance >= 2.0 || distance.is_nan() {
-            let scaled = distance * 100.0;
-            let floor = scaled.floor();
-            let rounded = (if scaled - floor >= 0.5 {
-                floor + 1.0
-            } else {
-                floor
-            }) as i64;
-            self.fall_event(FallEvent::Statistic(rounded as i32));
-        }
-        living_fall::cause_living_fall_damage(
-            &mut FallCall {
-                world: self,
-                source,
-            },
-            distance,
-            multiplier,
-        )
+        let contact = self.player.block_landing.take();
+        self.player_fall_damage(distance, multiplier, source, contact)
     }
     fn known_sound(&self, s: LandingSound) -> SceneSound {
         SceneSound::Block(s)
@@ -447,8 +524,13 @@ impl BlockLandingWorld for MotionWorld<'_, '_, '_> {
             .registry
             .default_state("minecraft:air")
             .ok_or("missing air")?;
+        let state = self.scene.block(position.x, position.y, position.z);
         self.scene.set(position.x, position.y, position.z, air)?;
-        self.fall_event(FallEvent::Destroy { position, drops });
+        self.fall_event(FallEvent::Destroy {
+            position,
+            drops,
+            state,
+        });
         Ok(true)
     }
     fn set_block(&mut self, position: BlockPos, state: BlockStateId, flags: u32) -> Result<bool> {
@@ -487,6 +569,7 @@ impl BlockLandingWorld for MotionWorld<'_, '_, '_> {
 struct FallCall<'a, 'p, 'w, 'r> {
     world: &'a mut MotionWorld<'p, 'w, 'r>,
     source: LandingDamage,
+    contact: Option<(BlockStateId, BlockPos, f64)>,
 }
 impl LivingFallWorld for FallCall<'_, '_, '_, '_> {
     type Error = Box<dyn std::error::Error>;
@@ -518,6 +601,11 @@ impl LivingFallWorld for FallCall<'_, '_, '_, '_> {
         self.world
             .player
             .attribute("minecraft:fall_damage_multiplier")
+    }
+    fn modify_fall_damage(&mut self, _distance: f64, damage: f32) -> Result<f32> {
+        Ok(self.contact.map_or(damage, |(state, position, distance)| {
+            self.world.mod_block_fall(state, position, distance, damage)
+        }))
     }
     fn fall_sound(&mut self, big: bool) -> Result<SceneSound> {
         self.world.living_fall_sound(big)
@@ -562,5 +650,24 @@ mod tests {
             SceneSound::Block(LandingSound::HoneyFall).player_fall_sound(),
             None
         );
+    }
+
+    /// The sounds a block plays where it is; the honey block's are the
+    /// entity's own (`Entity.playSound`) and the fall sounds the player's.
+    #[test]
+    fn block_sounds_map_to_block_events() {
+        assert_eq!(
+            SceneSound::Block(LandingSound::TurtleEggBreak).block_sound(),
+            Some("minecraft:block.turtle_egg.break")
+        );
+        assert_eq!(
+            SceneSound::Block(LandingSound::ShelfMushroomBounce).block_sound(),
+            Some("minecraft:block.shelf_mushroom.bounce")
+        );
+        assert_eq!(
+            SceneSound::Block(LandingSound::HoneySlide).block_sound(),
+            None
+        );
+        assert_eq!(SceneSound::BigFall.block_sound(), None);
     }
 }

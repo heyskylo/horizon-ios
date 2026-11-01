@@ -109,7 +109,8 @@ impl Game<'_> {
             "mob_attack" | "mob_attack_no_aggro" => DamageKind::MobAttack,
             "arrow" => DamageKind::Arrow,
             "thrown" | "trident" | "mob_projectile" => DamageKind::Thrown,
-            "fireball" | "unattributed_fireball" | "wither_skull" => DamageKind::Fireball,
+            "fireball" | "unattributed_fireball" => DamageKind::Fireball,
+            "wither_skull" => DamageKind::WitherSkull,
             "explosion" | "player_explosion" | "bad_respawn_point" => DamageKind::Explosion,
             "fall" | "ender_pearl" | "fly_into_wall" => DamageKind::Fall,
             "on_fire" => DamageKind::OnFire,
@@ -185,10 +186,13 @@ impl Game<'_> {
                     _ => Some(None),
                 };
                 self.for_player(target, |g| {
+                    if g.spectator() {
+                        return false;
+                    }
                     if let Some(name) = named {
                         g.note_direct_entity(&ty, name);
                     }
-                    !g.spectator() && g.hurt_player_from(amount, from, &ty, attacker)
+                    g.hurt_player_from(amount, from, &ty, attacker)
                 })
                 .unwrap_or(false)
             }
@@ -1169,7 +1173,7 @@ impl Game<'_> {
             };
             let vehicle_name = self.target_name(v);
             match target {
-                Target::Player => self.dismount_mount(),
+                Target::Player => self.stop_riding(),
                 Target::Mob(rider) => self.dismount_mob(rider),
                 _ => {}
             }
@@ -1202,24 +1206,67 @@ impl Game<'_> {
             }
             up = self.ride_vehicle(v);
         }
-        // Players and mobs can ride mobs.
-        let Target::Mob(mob_id) = vehicle else {
-            return Err(err(
-                "commands.ride.mount.failure.generic",
-                &[&name.plain(), &vehicle_name.plain()],
-            ));
-        };
         let rider = match target {
             Target::Mob(id) => Some(id),
             _ => None,
         };
-        if !(target == Target::Player || rider.is_some())
-            || !self.mobs.iter().any(|m| m.id == mob_id && m.alive())
-        {
-            return Err(err(
+        let generic = || {
+            err(
                 "commands.ride.mount.failure.generic",
                 &[&name.plain(), &vehicle_name.plain()],
-            ));
+            )
+        };
+        // Only players and mobs ride.
+        if !(target == Target::Player || rider.is_some()) {
+            return Err(generic());
+        }
+        // `RideCommand.mount` forces the ride (`startRiding(vehicle, true, true)`),
+        // which skips `canRide` and `canAddPassenger`: a boat under water still
+        // takes the rider. Horizon's boats seat at most `max_passengers`, so a
+        // full boat still refuses. Minecarts carry only players here: Horizon's
+        // carts have no mob passengers yet.
+        match vehicle {
+            Target::Boat(id) => {
+                let Some(i) = self.boats.iter().position(|b| b.id == id) else {
+                    return Err(generic());
+                };
+                if self.boat_passengers(id) >= self.boats[i].max_passengers() {
+                    return Err(generic());
+                }
+                if let Some(rider) = rider {
+                    self.mount_mob(rider, id);
+                } else {
+                    self.riding = Some(id);
+                    self.yaw = self.boats[i].yaw;
+                    // sendEventAndTriggers: START_RIDING_TRIGGER.
+                    self.trigger_player("minecraft:started_riding");
+                }
+                self.feedback(Text::translate(
+                    "commands.ride.mount.success",
+                    &[name, vehicle_name],
+                ));
+                return Ok(1);
+            }
+            Target::Cart(id) => {
+                if target != Target::Player || self.ridden_by_guest(id) {
+                    return Err(generic());
+                }
+                self.riding = Some(id);
+                self.trigger_player("minecraft:started_riding");
+                self.feedback(Text::translate(
+                    "commands.ride.mount.success",
+                    &[name, vehicle_name],
+                ));
+                return Ok(1);
+            }
+            _ => {}
+        }
+        // Mobs carry players and mobs.
+        let Target::Mob(mob_id) = vehicle else {
+            return Err(generic());
+        };
+        if !self.mobs.iter().any(|m| m.id == mob_id && m.alive()) {
+            return Err(generic());
         }
         if let Some(rider) = rider {
             // Entity.startRiding.
@@ -1248,12 +1295,14 @@ impl Game<'_> {
     /// Entity.getVehicle: the player's mount, or a mob's.
     pub(super) fn ride_vehicle(&self, t: Target) -> Option<Target> {
         let id = match t {
-            Target::Player => return self.riding.map(Target::Mob),
+            Target::Player => self.riding?,
             Target::Mob(id) => self.mobs.iter().find(|m| m.id == id)?.extra.mount?,
             _ => return None,
         };
         Some(if self.boats.iter().any(|b| b.id == id) {
             Target::Boat(id)
+        } else if self.carts.iter().any(|c| c.id == id) {
+            Target::Cart(id)
         } else {
             Target::Mob(id)
         })

@@ -10,8 +10,8 @@ use super::{
 };
 use crate::items::ItemStack;
 use crate::sculk::{self, Context, Info};
-use horizon_core::geometry::Vec3;
 use horizon_core::geometry::trig::Mth;
+use horizon_core::geometry::{Aabb, Vec3};
 
 // Allay state: `main_hand` the held item, `ints[1]` how many it carries,
 // `tame` a liked player, `point` the wanted item (set by the game),
@@ -72,6 +72,21 @@ pub fn dimension(w: &MobWorld) -> &'static str {
 // `StackData` does not keep; upgrade when it does.
 pub fn considers_item_equal(held: &ItemStack, candidate: &ItemStack) -> bool {
     held.item == candidate.item && held.potion() == candidate.potion()
+}
+
+/// `Allay.setDancing` marks an allay dancing only under `isEffectiveAi()`, so
+/// `NoAI` never dances; panicking stops it, and 10 blocks is the jukebox reach
+/// (`distance_sq` to the nearest playing jukebox's centre, infinite for none).
+pub fn dances(no_ai: bool, panicking: bool, distance_sq: f64) -> bool {
+    !no_ai && !panicking && distance_sq <= 100.0
+}
+
+/// `Mob.getPickupReach` (1, 1, 1) around the box: `Mob.aiStep`'s looting loop
+/// takes an equal drop from here with or without AI, so it is the only pickup a
+/// `NoAI` allay has (`canPickUpLoot` and `wantsToPickUp` never ask for AI;
+/// walking to a drop is the sensor's and throwing it is the brain's).
+pub fn pickup_reach(bounds: Aabb) -> Aabb {
+    bounds.inflate(Vec3::new(1.0, 1.0, 1.0))
 }
 
 /// An allay's vibration listener (`Allay.vibrationData`) and the brain
@@ -457,5 +472,33 @@ mod allay_parity_tests {
             &ItemStack::new("minecraft:potion", 1),
             &potion("minecraft:swiftness")
         ));
+    }
+
+    #[test]
+    fn a_no_ai_allay_does_not_dance_to_a_playing_jukebox() {
+        // Beside a playing jukebox and at the edge of its 10-block reach.
+        for distance_sq in [0.0, 1.5 * 1.5, 99.0, 100.0] {
+            assert!(!dances(true, false, distance_sq), "NoAI at {distance_sq}");
+            assert!(dances(false, false, distance_sq), "AI at {distance_sq}");
+        }
+        // Out of reach, or panicking: no allay dances.
+        assert!(!dances(false, false, 100.5));
+        assert!(!dances(false, true, 1.0));
+    }
+
+    #[test]
+    fn a_no_ai_allay_takes_only_a_drop_already_in_pickup_reach() {
+        // An allay at 0.5, 64, 0.5: 0.6 wide and tall.
+        let bounds = Aabb::new(Vec3::new(0.2, 64.0, 0.2), Vec3::new(0.8, 64.6, 0.8));
+        let reach = pickup_reach(bounds);
+        // `Mob.aiStep`'s looting loop takes a drop at its feet, and one just
+        // past the box, with no AI.
+        assert!(reach.contains(Vec3::new(0.5, 64.0, 0.5)));
+        assert!(reach.contains(Vec3::new(0.5, 64.0, 1.7)));
+        // Past the one-block grow it would have to walk (`GoToWantedItem` is
+        // the brain's), and 32 blocks is the sensor's reach, not this one.
+        assert!(!reach.contains(Vec3::new(0.5, 64.0, 1.9)));
+        assert!(!reach.contains(Vec3::new(0.5, 64.0, 20.0)));
+        assert!(!reach.contains(Vec3::new(0.5, 66.0, 0.5)));
     }
 }

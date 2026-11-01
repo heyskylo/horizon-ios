@@ -339,10 +339,13 @@ fn submit_quads(
                 translucent
             }
         };
-        // Translucent item sheets draw without depth writes (ITEM_TRANSLUCENT).
-        // Without back-face cull, both sides of a jelly shell (slime/honey) stack
-        // their partial alpha and look opaque (#4508). Glass is fine either way:
-        // most of its texels discard at alpha 0.
+        // Every item render type culls back faces: `Sheets.solidBlockSheet`
+        // (`entitySolid`), `cutoutBlockSheet` (`entityCutout`) and
+        // `translucentItemSheet` (`entityTranslucentCull`). Drawing both sides
+        // z-fights the coplanar pairs a two-sided model already carries (a
+        // calibrated sculk sensor's tendrils and amethyst planes, #4856; big
+        // dripleaf, #4855; the inside of a held hay block, #4801) and stacks a
+        // jelly shell's partial alpha until it looks opaque (#4508).
         let translucent = translucent || q.material.force_translucent;
         sink.quad(ItemQuad {
             pos,
@@ -352,7 +355,7 @@ fn submit_quads(
             color: argb(color),
             foil,
             light_emission: q.light_emission,
-            cull_back: translucent,
+            cull_back: true,
             translucent,
             oit: false,
         });
@@ -514,8 +517,10 @@ impl ItemRenderer {
         root: &Path,
         library: std::result::Result<Arc<ModelLibrary>, String>,
     ) -> crate::Result<Self> {
-        let prototypes: BTreeMap<String, Components> =
-            serde_json::from_slice(&fs::read(root.join("items.json"))?)?;
+        let prototypes: BTreeMap<String, Components> = horizon_world::item_defaults::read(root)?
+            .into_iter()
+            .map(|(item, components)| Ok((item, serde_json::from_value(components)?)))
+            .collect::<serde_json::Result<_>>()?;
         let models = ItemModels {
             definitions: definitions::load(root),
             prototypes,

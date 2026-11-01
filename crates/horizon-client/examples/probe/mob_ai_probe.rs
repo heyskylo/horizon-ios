@@ -179,7 +179,7 @@ fn state(registry: &BlockRegistry, text: &str) -> BlockStateId {
     registry
         .resolve(&BlockState {
             name: name.to_owned(),
-            properties,
+            properties: properties.into(),
         })
         .unwrap_or_else(|e| panic!("{text}: {e}"))
 }
@@ -529,8 +529,12 @@ impl HiveHost for ProbeHive<'_, '_> {
     }
     fn load(&mut self, tag: &horizon_world::nbt::Tag) -> Option<Mob> {
         let index = self.first + self.added.len();
-        let mut m =
-            horizon_client::entity_nbt::mob_from_nbt(tag, self.types, 100_000 + index as u32)?;
+        let mut m = horizon_client::entity_nbt::mob_from_nbt(
+            tag,
+            self.types,
+            100_000 + index as u32,
+            None,
+        )?;
         if m.species() != Species::Bee {
             return None;
         }
@@ -1178,8 +1182,10 @@ pub fn main() -> horizon_client::Result<()> {
                     thundering: s.thunder,
                     nether: false,
                     block_tags: &items.block_tags,
+                    landing: &motion.landing,
                     biomes: &biomes,
                     mob_griefing: true,
+                    universal_anger: false,
                     mob_drops: true,
                     max_entity_cramming: 24,
                     difficulty: LocalDifficulty::new(s.difficulty, world.day_time, 0, 0.0),
@@ -1189,6 +1195,7 @@ pub fn main() -> horizon_client::Result<()> {
                     sea_level: -63,
                     items: Some(&items),
                     lid_openers: &lid_openers,
+                    mod_effects: None,
                 }
             };
         }
@@ -1309,7 +1316,7 @@ pub fn main() -> horizon_client::Result<()> {
                     continue;
                 }
                 if let Some(Some((name, volume, pitch))) =
-                    horizon_client::mobs::ai::feed_animal(&mut mobs[i], &mut level_random)
+                    horizon_client::mobs::ai::feed_animal(&mut mobs[i], &mut level_random, None)
                 {
                     events.push(MobEvent::Sound(name, [0.0; 3], volume, pitch));
                 }
@@ -1426,7 +1433,7 @@ pub fn main() -> horizon_client::Result<()> {
                     else {
                         continue;
                     };
-                    let tag = horizon_client::entity_nbt::mob_to_nbt(&mobs[i], [0; 4], None);
+                    let tag = horizon_client::entity_nbt::mob_to_nbt(&mobs[i], [0; 4], None, None);
                     let flower = horizon_client::mobs::bee::get(&mobs[i]).and_then(|b| b.flower);
                     let mut honey = Vec::new();
                     let stored = {

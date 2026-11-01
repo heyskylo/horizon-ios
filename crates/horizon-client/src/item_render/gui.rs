@@ -168,6 +168,7 @@ pub fn draw(
         time,
         glint_speed,
         glint_alpha,
+        None,
     );
     if let Some(key) = key
         && let Ok(mut drawn) = renderer.gui_drawn.lock()
@@ -178,6 +179,38 @@ pub fn draw(
         }
         drawn.insert(key, batch.vertices[start..].into());
     }
+}
+
+/// [`draw`] clipped to `scissor` (`[x0, y0, x1, y1]`) as well as the item's slot:
+/// a list's scissor cuts the item of a half-visible row exactly. Not cached, the
+/// scissor is not part of the cache key.
+#[allow(clippy::too_many_arguments)]
+pub fn draw_scissored(
+    state: &ItemRenderState,
+    renderer: &ItemRenderer,
+    sprites: &HashMap<String, Rect>,
+    host: &dyn SpecialHost,
+    batch: &mut HudBatch,
+    x: f32,
+    y: f32,
+    scissor: [f32; 4],
+) {
+    if state.is_empty() {
+        return;
+    }
+    draw_now(
+        state,
+        renderer,
+        sprites,
+        host,
+        batch,
+        x,
+        y,
+        0.0,
+        0.0,
+        0.0,
+        Some(scissor),
+    );
 }
 
 /// Entries of `ItemRenderer::gui_drawn` before it starts over.
@@ -244,6 +277,7 @@ fn draw_now(
     time: f32,
     glint_speed: f32,
     glint_alpha: f32,
+    scissor: Option<[f32; 4]>,
 ) {
     let pose = Mat4::from_translation(Vec3::new(x + 8.0, y + 8.0, 0.0))
         * Mat4::from_scale(Vec3::new(16.0, -16.0, 16.0));
@@ -263,6 +297,15 @@ fn draw_now(
         ]
     } else {
         [x, y, x + 16.0, y + 16.0]
+    };
+    let rect = match scissor {
+        Some([x0, y0, x1, y1]) => [
+            rect[0].max(x0),
+            rect[1].max(y0),
+            rect[2].min(x1),
+            rect[3].min(y1),
+        ],
+        None => rect,
     };
     let glint = sprites
         .contains_key("misc/enchanted_glint_item")

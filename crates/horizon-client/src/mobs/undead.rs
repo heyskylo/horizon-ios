@@ -129,7 +129,9 @@ pub fn register(m: &mut Mob) {
             );
             // DrownedMoveControl, AmphibiousPathNavigation, no water malus.
             m.ai.mov.kind = super::control::MoveKind::Custom;
-            m.ai.nav.kind = super::nav::NavKind::Amphibious;
+            m.ai.nav.kind = super::nav::NavKind::Amphibious {
+                prefers_shallow: false,
+            };
             m.ai.nav.can_float = false;
             m.set_malus(super::path::PathType::Water, 0.0);
         }

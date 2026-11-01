@@ -81,6 +81,8 @@ SCENE = [
     # Primed TNT that won't go off (one falling), a floating falling block, an arrow that lands, an end crystal.
     'summon minecraft:tnt 6.5 -60 6.5 {fuse:2000s}',
     'summon minecraft:tnt 6.5 -56 4.5 {fuse:2000s}',
+    # Passengers of primed TNT (EntityType.loadEntityRecursive).
+    'summon minecraft:tnt 4.5 -60 4.5 {fuse:2000s,Passengers:[{id:"minecraft:pig",NoAI:1b}]}',
     'summon minecraft:falling_block 2.5 -58 -0.5 {BlockState:{Name:"minecraft:sand"},NoGravity:1b}',
     # Sand dropped into a cobweb, which holds it (WebBlock.entityInside).
     'setblock -7 -58 0 minecraft:cobweb',

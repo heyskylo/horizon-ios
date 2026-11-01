@@ -789,6 +789,8 @@ pub struct Scene<'a> {
     pub glyphs: u64,
 }
 
+/// Empty by default (a dedicated server): no state has a block entity model.
+#[derive(Default)]
 pub struct BlockEntityRenderer {
     models: HashMap<&'static str, ModelPart>,
     kinds: Vec<Kind>,
@@ -883,25 +885,26 @@ impl BlockEntityRenderer {
         let mut renderer = Self::new(models, registry);
         renderer.visibility = Some(Mutex::new(visibility));
         // Sherd items: provides_pottery_pattern -> decorated_pot_pattern asset id.
-        if let Ok(bytes) = std::fs::read(root.join("items.json")) {
-            let items: Value = serde_json::from_slice(&bytes)?;
-            for (item, components) in items.as_object().into_iter().flatten() {
-                let Some(pattern) = components["minecraft:provides_pottery_pattern"].as_str()
-                else {
-                    continue;
-                };
-                let name = pattern.strip_prefix("minecraft:").unwrap_or(pattern);
-                let file = root.join(format!("data/minecraft/decorated_pot_pattern/{name}.json"));
-                let Ok(def) = std::fs::read(file) else {
-                    continue;
-                };
-                let def: Value = serde_json::from_slice(&def)?;
-                if let Some(asset) = def["asset_id"].as_str() {
-                    let asset = asset.strip_prefix("minecraft:").unwrap_or(asset);
-                    renderer
-                        .pot_patterns
-                        .insert(item.clone(), format!("entity/decorated_pot/{asset}"));
-                }
+        let items = match horizon_world::item_defaults::read(root) {
+            Ok(items) => items,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Default::default(),
+            Err(e) => return Err(e.into()),
+        };
+        for (item, components) in &items {
+            let Some(pattern) = components["minecraft:provides_pottery_pattern"].as_str() else {
+                continue;
+            };
+            let name = pattern.strip_prefix("minecraft:").unwrap_or(pattern);
+            let file = root.join(format!("data/minecraft/decorated_pot_pattern/{name}.json"));
+            let Ok(def) = std::fs::read(file) else {
+                continue;
+            };
+            let def: Value = serde_json::from_slice(&def)?;
+            if let Some(asset) = def["asset_id"].as_str() {
+                let asset = asset.strip_prefix("minecraft:").unwrap_or(asset);
+                renderer
+                    .pot_patterns
+                    .insert(item.clone(), format!("entity/decorated_pot/{asset}"));
             }
         }
         Ok(renderer)
@@ -1116,9 +1119,10 @@ impl BlockEntityRenderer {
     }
     /// `submitCrumblingOverlay` of ChestRenderer.submit, BannerRenderer.submit,
     /// SkullBlockRenderer.submitSkull, ShulkerBoxRenderer.submit,
-    /// BellRenderer.submit, LecternRenderer.submit (the book) and
-    /// CopperGolemStatueBlockRenderer.submit: the model drawn again under the
-    /// destroy stage.
+    /// BellRenderer.submit, LecternRenderer.submit (the book),
+    /// CopperGolemStatueBlockRenderer.submit, ConduitRenderer.submit (the shell
+    /// or cage) and EnchantTableRenderer.submit (the book): the model drawn
+    /// again under the destroy stage.
     pub fn render_breaking(
         &self,
         scene: &Scene,
@@ -1136,6 +1140,8 @@ impl BlockEntityRenderer {
                 | Kind::Bell
                 | Kind::Lectern { .. }
                 | Kind::CopperGolem { .. }
+                | Kind::Conduit
+                | Kind::EnchantingTable
         ) {
             return;
         }
@@ -1680,6 +1686,10 @@ impl BlockEntityRenderer {
                         * Mat4::from_translation(lift)
                         * Mat4::from_quat(Quat::from_axis_angle(axis, degrees * (PI / 180.0)));
                     draw_part(model, "root", m, &none, paint, out);
+                }
+                // The crumbling overlay covers the shell and the cage only.
+                if crumbling {
+                    return;
                 }
                 let wind = if phase == 1 {
                     "entity/conduit/wind_vertical"

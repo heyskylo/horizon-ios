@@ -155,6 +155,32 @@ class ParityRunnerTests(unittest.TestCase):
                 parity.exit_on_termination()
                 self.assertEqual(handled, list(numbers.values()))
 
+    def test_remote_executor_marks_setup_failure_as_dead(self):
+        executor = parity.RemoteExecutor.__new__(parity.RemoteExecutor)
+        executor.name = "remote"
+        executor.config = {"ssh": "host", "root": "/tmp"}
+        executor.mirror = "/tmp/mirror"
+        executor.dead = False
+        executor._log = mock.Mock()
+        with mock.patch.object(parity.subprocess, "run", side_effect=OSError("ssh not found")):
+            executor._connect([])
+        self.assertTrue(executor.dead)
+        executor._log.assert_called_once()
+
+    def test_remote_executor_marks_worker_start_failure_as_dead(self):
+        executor = parity.RemoteExecutor.__new__(parity.RemoteExecutor)
+        executor.name = "remote"
+        executor.config = {"ssh": "host", "root": "/tmp"}
+        executor.mirror = "/tmp/mirror"
+        executor.dead = False
+        executor._log = mock.Mock()
+        successful = SimpleNamespace(returncode=0, stderr="")
+        with mock.patch.object(parity.subprocess, "run", return_value=successful), \
+                mock.patch.object(parity.subprocess, "Popen", side_effect=OSError("ssh not found")):
+            executor._connect([])
+        self.assertTrue(executor.dead)
+        executor._log.assert_called_once()
+
     def test_a_hosts_excludes_are_skipped_when_it_runs_parity_itself(self):
         config = {"hosts": {"playhorizon": {"exclude": {"remote_fireworks": "starved"}}, "macmini": {"exclude": {}}}}
         with mock.patch.object(parity.sys, "platform", "linux"):

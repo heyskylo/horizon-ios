@@ -33,7 +33,7 @@ InventoryScreen.extractBackground	inline	crates/horizon-client/src/game.rs::Game
 InventoryScreen.extractEntityInInventoryFollowsMouse	port	crates/horizon-client/src/game/perspective.rs::Game::draw_player_preview	gap: minor: player only; mounts use mount_menu.rs::draw_mob_preview. Head and body turn toward the cursor as vanilla
 InventoryScreen.mouseReleased	inline	crates/horizon-client/src/game.rs::Game::inventory_mouse_release	release goes through the slot path; a recipe-book press is handled first and has no separate release flag
 ItemCombinerScreen.extractBackground	inline	crates/horizon-client/src/game/stations.rs::Game::draw_station	anvil and smithing backgrounds, with the error sprite
-JigsawBlockEditScreen	missing		player: creative operators cannot open a jigsaw block's editor; no jigsaw UI exists in Horizon
+JigsawBlockEditScreen	home	crates/horizon-client/src/game/block_editor.rs	
 LecternScreen.createMenuControls	inline	crates/horizon-client/src/game/books.rs::Game::draw_book	gap: player: Take Book and Done are drawn on every lectern; vanilla shows Take Book only with build permission (mayBuild)
 LoomScreen.init	skip:ui		bakes the banner flag model for the preview; the loom is drawn by screen_layout::loom
 LoomScreen.isScrollBarActive	port	crates/horizon-client/src/game/loom.rs::LoomState::offscreen_rows	gap: minor: more than 16 patterns (four rows of four); the displayPatterns check is at the call sites
@@ -71,9 +71,9 @@ StonecutterScreen.mouseDragged	missing		player: the recipe list scroller cannot 
 StonecutterScreen.mouseScrolled	port	crates/horizon-client/src/game/stations.rs::Game::station_scroll	one row of recipes per wheel step, only with more than 12 recipes
 StonecutterScreen.isScrollBarActive	inline	crates/horizon-client/src/game/stations.rs::Game::station_scroll	more than 12 visible recipes
 StonecutterScreen.getOffscreenRows	inline	crates/horizon-client/src/game/stations.rs::Game::station_scroll	rows beyond the 3 visible rows, ceil(recipes/4) - 3
-StructureBlockEditScreen	missing		player: creative operators cannot open a structure block's editor; no structure block UI exists in Horizon
-TestBlockEditScreen	missing		player: creative operators cannot open a test block's editor; gametest setup has no UI in Horizon
-TestInstanceBlockEditScreen	missing		player: creative operators cannot open a test instance block's editor; gametest setup has no UI in Horizon
+StructureBlockEditScreen	home	crates/horizon-client/src/game/block_editor.rs	
+TestBlockEditScreen	home	crates/horizon-client/src/game/block_editor.rs	
+TestInstanceBlockEditScreen	home	crates/horizon-client/src/game/block_editor.rs	
 BelowOrAboveWidgetTooltipPositioner.positionTooltip	missing		minor: unsure: widget-anchored tooltip placement (below the widget, flipped above when it does not fit); Horizon places tooltips at the cursor (ui::tooltip)
 ClientActivePlayersTooltip.getWidth	missing		player: hovering a server's player count in the server list shows no online player names; the ping sample is not read (multiplayer.rs)
 ClientActivePlayersTooltip.extractImage	missing		player: no online player heads and names are drawn for a server; the ping sample is not read (multiplayer.rs)

@@ -448,8 +448,16 @@ fn read_meta(source: &Source) -> Option<serde_json::Value> {
         Source::Dir(d) => fs::read(d.join("pack.mcmeta")).ok()?,
         Source::Zip(z) => Zip::open(z).ok()?.read("pack.mcmeta").ok()?,
     };
-    // Gson reads past a UTF-8 byte order mark; serde_json rejects it.
-    serde_json::from_slice(bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(&bytes)).ok()
+    parse_meta(&bytes)
+}
+/// The first JSON value of a `pack.mcmeta`: what follows it is ignored, as some packs sign the
+/// file with a comment after the closing brace. Gson reads past a UTF-8 byte order mark;
+/// serde_json rejects it.
+fn parse_meta(bytes: &[u8]) -> Option<serde_json::Value> {
+    serde_json::Deserializer::from_slice(bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(bytes))
+        .into_iter()
+        .next()?
+        .ok()
 }
 fn pack(id: String, title: Text, source: Source) -> Option<Pack> {
     pack_for(id, title, source, RESOURCE_FORMAT)
@@ -960,6 +968,30 @@ impl Selectable {
             compatible: true,
         }
     }
+    /// A server's downloaded pack (`DownloadedPackSource.DOWNLOADED_PACK_SELECTION`):
+    /// required, fixed at the top, so the pack screen cannot remove or reorder it.
+    pub fn downloaded(id: &str, compatible: bool) -> Self {
+        Self {
+            id: id.to_owned(),
+            required: true,
+            position: Position::Top,
+            fixed: true,
+            compatible,
+        }
+    }
+}
+
+/// Ids from `DownloadedPackSource` (`server/…`); they must not go into
+/// `options.txt` `resourcePacks`.
+pub fn is_downloaded_pack_id(id: &str) -> bool {
+    id.starts_with("server/")
+}
+
+/// The player's own selection: drop every downloaded server/world pack id.
+pub fn player_pack_ids(ids: impl IntoIterator<Item = String>) -> Vec<String> {
+    ids.into_iter()
+        .filter(|id| !is_downloaded_pack_id(id))
+        .collect()
 }
 
 /// `Pack.Position.insert`: below or above the packs fixed at that end.
@@ -1093,16 +1125,55 @@ impl SelectionModel {
         ok
     }
     /// `commit`: the repository's selection, bottom first, as options.txt
-    /// stores it.
+    /// stores it (downloaded `server/…` packs stay out of that file).
     pub fn commit(&self) -> Vec<String> {
         let ids: Vec<String> = self.selected.iter().rev().map(|p| p.id.clone()).collect();
-        self.rebuild(&ids).into_iter().map(|p| p.id).collect()
+        player_pack_ids(self.rebuild(&ids).into_iter().map(|p| p.id))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `DownloadedPackSource.DOWNLOADED_PACK_SELECTION`: the pack is selected,
+    /// fixed at the top, cannot be removed, and stays out of options.txt.
+    #[test]
+    fn a_downloaded_server_pack_is_fixed_selected_and_not_committed() {
+        let server = "server/00000000000000000000000000000001/hash.zip";
+        let available = vec![
+            Selectable::optional("file/Mine", true),
+            Selectable::downloaded(server, true),
+            Selectable::vanilla(),
+        ];
+        let model = SelectionModel::new(available, &["file/Mine".into()]);
+        assert_eq!(
+            model
+                .selected
+                .iter()
+                .map(|p| p.id.as_str())
+                .collect::<Vec<_>>(),
+            [server, "file/Mine", "vanilla"]
+        );
+        assert!(!model.can_unselect(true, 0));
+        // A neighbour cannot move up past the fixed server pack.
+        assert!(!model.can_move_up(true, 1));
+        assert_eq!(
+            model.commit(),
+            vec!["vanilla".to_owned(), "file/Mine".to_owned()]
+        );
+        assert!(is_downloaded_pack_id(server));
+        assert!(!is_downloaded_pack_id("file/Mine"));
+    }
+
+    #[test]
+    fn a_comment_after_the_metadata_does_not_hide_a_pack() {
+        let meta = br#"{"pack":{"description":"d","pack_format":97}}
+// Signed by the pack's author"#;
+        assert!(parse_meta(meta).is_some());
+        assert!(parse_meta(b"not json").is_none());
+    }
+
     #[test]
     fn mcmeta_with_utf8_bom_is_read() {
         let dir = std::env::temp_dir().join(format!("horizon-bom-{}", std::process::id()));

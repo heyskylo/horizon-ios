@@ -285,6 +285,12 @@ impl PalettedContainer {
             }
         }
     }
+    /// Whether `other` is stored the same way (bits, palette and words): then
+    /// it holds the same values, found without unpacking either. (Containers
+    /// stored differently can still hold the same values.)
+    pub fn same_storage(&self, other: &Self) -> bool {
+        self.bits == other.bits && self.palette == other.palette && self.words == other.words
+    }
     /// Whether all entries equal `value`.
     pub fn is_uniform(&self, value: u32) -> bool {
         match &self.palette {
@@ -438,6 +444,25 @@ impl PalettedContainer {
                 }
             }
         }
+    }
+    /// The palette id of every entry in index order, and the list palette
+    /// they index (`get(i)` is `list[ids[i]]`), without looking the values
+    /// up; `None` (and `ids` untouched) for a single-value or global palette.
+    pub fn unpack_ids(&self, ids: &mut [u16]) -> Option<&[u32]> {
+        let Palette::List(list) = &self.palette else {
+            return None;
+        };
+        assert_eq!(ids.len(), self.strategy.entries());
+        let bits = usize::from(self.bits);
+        let per = 64 / bits;
+        let m = mask(self.bits);
+        for (chunk, &word) in ids.chunks_mut(per).zip(&self.words) {
+            for (slot, cell) in chunk.iter_mut().enumerate() {
+                // List palettes stay at a few bits (eight at most for blocks).
+                *cell = ((word >> (slot * bits)) & m) as u16;
+            }
+        }
+        Some(list)
     }
     /// A container holding `values` in the smallest configuration for their
     /// distinct count, with palette ids in first-occurrence order, like a
@@ -709,6 +734,27 @@ mod tests {
         *state ^= *state >> 7;
         *state ^= *state << 17;
         *state
+    }
+    #[test]
+    fn containers_stored_alike_are_the_same() {
+        let values: Vec<u32> = (0..4096).map(|i| (i % 7) as u32).collect();
+        let a = PalettedContainer::from_values(BLOCKS, &values);
+        assert!(a.same_storage(&a.clone()));
+        let mut b = a.clone();
+        b.set(100, 3);
+        assert!(!a.same_storage(&b));
+        // the same values stored another way are not found alike (the caller unpacks those)
+        let mut c = PalettedContainer::new(BLOCKS, 0);
+        for (i, &v) in values.iter().enumerate() {
+            c.set(i, v);
+        }
+        assert!(PalettedContainer::new(BLOCKS, 5).same_storage(&PalettedContainer::new(BLOCKS, 5)));
+        assert!(
+            !PalettedContainer::new(BLOCKS, 5).same_storage(&PalettedContainer::new(BLOCKS, 6))
+        );
+        let mut out = vec![0; 4096];
+        c.unpack(&mut out);
+        assert_eq!(out, values);
     }
     #[test]
     fn grows_through_vanilla_widths() {

@@ -1,14 +1,21 @@
-//! Read-only block queries for a native server tick hook.
+//! Read-only block and tag queries for native server hooks.
 use super::{Dim, Game, native_lifecycle::NativeLifecycleContext};
-use horizon_client::{items::ItemStack, world::World};
+use horizon_client::{
+    items::{ItemStack, Items},
+    world::World,
+};
 use horizon_world::{chunk::BlockState, registry::BlockRegistry};
 
-/// Why a server block cannot be read.
+/// Why a server block or tag cannot be read.
 #[allow(dead_code)]
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum NativeBlockReadError {
     /// The context is stale or the call is outside its server tick hook.
     InactiveContext,
+    /// Tag queries require an authoritative server.
+    NotServer,
+    /// The world has not loaded its tag tables yet.
+    TagsUnavailable,
     /// The dimension is unknown or is not currently open on the server.
     UnavailableDimension,
     OutOfBounds,
@@ -17,7 +24,18 @@ pub(super) enum NativeBlockReadError {
 }
 
 impl Game<'_> {
-    /// Test a block state's name against the world's merged block tags. API 28.
+    /// The world lock is installed after its tag tables are built.
+    fn native_tag_items(&self) -> Result<&Items, NativeBlockReadError> {
+        if self.options.execution_role.is_client() {
+            return Err(NativeBlockReadError::NotServer);
+        }
+        if self.session_lock.is_none() {
+            return Err(NativeBlockReadError::TagsUnavailable);
+        }
+        Ok(self.items())
+    }
+
+    /// Test a block state's name in an active server tick hook. API 28.
     #[allow(dead_code)]
     pub(super) fn native_block_in_tag(
         &self,
@@ -28,10 +46,10 @@ impl Game<'_> {
         if !self.native_lifecycle.permits_read(context) {
             return Err(NativeBlockReadError::InactiveContext);
         }
-        Ok(self.items().block_in_tag(tag, &state.name))
+        self.native_server_block_in_tag(state, tag)
     }
 
-    /// Test an item stack against the world's merged item tags. API 28.
+    /// Test an item stack in an active server tick hook. API 28.
     #[allow(dead_code)]
     pub(super) fn native_item_in_tag(
         &self,
@@ -42,12 +60,33 @@ impl Game<'_> {
         if !self.native_lifecycle.permits_read(context) {
             return Err(NativeBlockReadError::InactiveContext);
         }
+        self.native_server_item_in_tag(stack, tag)
+    }
+
+    /// Test a block state's name against the server's merged block tags.
+    #[allow(dead_code)]
+    pub(super) fn native_server_block_in_tag(
+        &self,
+        state: &BlockState,
+        tag: &str,
+    ) -> Result<bool, NativeBlockReadError> {
+        Ok(self.native_tag_items()?.block_in_tag(tag, &state.name))
+    }
+
+    /// Test an item stack against the server's merged item tags.
+    #[allow(dead_code)]
+    pub(super) fn native_server_item_in_tag(
+        &self,
+        stack: &ItemStack,
+        tag: &str,
+    ) -> Result<bool, NativeBlockReadError> {
+        let items = self.native_tag_items()?;
         let item = if stack.count == 0 {
             "minecraft:air"
         } else {
             &stack.item
         };
-        Ok(self.items().item_in_tag(tag, item))
+        Ok(items.item_in_tag(tag, item))
     }
 
     /// Read a loaded block in a server tick hook, without loading a chunk.

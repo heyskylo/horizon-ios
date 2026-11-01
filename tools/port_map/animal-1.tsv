@@ -20,7 +20,7 @@ Allay.addAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::mob_to
 Allay.readAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::mob_from_nbt	
 Allay.updateDuplicationCooldown	inline	crates/horizon-client/src/mobs/allay.rs::ai_step	egg_time counts down
 Allay.setDuplicationCooldown	inline	crates/horizon-client/src/game/allays.rs::Game::interact_allay	6000 set here; can_duplicate is derived from egg_time in mob_meta
-Allay.getLeashOffset	missing		lead hangs at the default offset (eye height), not 0.6 of it; leash::leash_offset only special-cases llamas
+Allay.getLeashOffset	port	crates/horizon-client/src/mobs/leash.rs::Holder::leash_offset	ticked in #3512; `Allay.getLeashOffset` is cited at crates/horizon-client/src/mobs/leash.rs:455 (in a comment, so `where` names the enclosing fn)
 Allay.handleEntityEvent	port	crates/horizon-client-render/src/particles.rs::entity_event_burst	event 18, three hearts
 Allay.spawnHeartParticle	port	crates/horizon-client-render/src/particles.rs::around_self	one heart's random placement
 Allay.VibrationUser.canReceiveVibration	port	crates/horizon-client/src/mobs/allay.rs::can_receive_vibration	no AI; the liked block only, within 1024 blocks in its dimension
@@ -54,7 +54,7 @@ Axolotl.mobInteract	port	crates/horizon-client/src/game/creatures.rs::Game::inte
 Axolotl.loadFromBucketTag	port	crates/horizon-client/src/entity_nbt.rs::load_bucket_data	age, age lock and hunting cooldown
 Axolotl.applySupportingEffects	inline	crates/horizon-client/src/game/creatures.rs::Game::handle_mob_events	the AxolotlSupportPlayer event: regeneration and no mining fatigue, host player only
 Axolotl.usePlayerItem	port	crates/horizon-client/src/game/creatures.rs::Game::interact_mob	a fed tropical fish bucket leaves a water bucket in its place (creative keeps the fish bucket and adds the bucket)
-Axolotl.Variant.getSpawnVariant	port	crates/horizon-client/src/mobs/finalize.rs::Ctx::finalize	gap: the common pick for spawn groups only; the rare (blue) pick is never drawn
+Axolotl.Variant.getSpawnVariant	port	crates/horizon-client/src/mobs/finalize.rs::Ctx::finalize	the common pick for a spawn group; the 1-in-1200 blue draw is the breeding path's (crates/horizon-client/src/game/creatures.rs::Game::breed)
 AxolotlAi.initPlayDeadActivity	port	crates/horizon-client/src/mobs/animal_brain.rs::axolotl_package	
 AxolotlAi.initFightActivity	port	crates/horizon-client/src/mobs/animal_brain.rs::axolotl_package	
 AxolotlAi.initCoreActivity	port	crates/horizon-client/src/mobs/animal_brain.rs::axolotl_package	
@@ -71,8 +71,8 @@ Bee.doesHiveHaveSpace	inline	crates/horizon-client/src/mobs/bee.rs::hives_with_s
 Bee.getFlag	port	crates/horizon-client/src/mobs/bee.rs::flag	
 Bee.createAttributes	skip:data		attributes come from entity-types.json
 Bee.createNavigation	port	crates/horizon-client/src/mobs/bee.rs::register	flying navigation; stable_destination is the isStableDestination override
-Bee.isFlapping	missing		a flying bee gives off no flap vibration, so sculk sensors never hear it
-Bee.getLeashOffset	missing		lead hangs at the default offset, not half the eye height
+Bee.isFlapping	port	crates/horizon-client/src/mobs/living.rs::Mob::movement_emission	ticked in #3512; `Bee.isFlapping` is cited at crates/horizon-client/src/mobs/living.rs:800 (in a comment, so `where` names the enclosing fn)
+Bee.getLeashOffset	port	crates/horizon-client/src/mobs/leash.rs::Holder::leash_offset	ticked in #3512; `Bee.getLeashOffset` is cited at crates/horizon-client/src/mobs/leash.rs:463 (in a comment, so `where` names the enclosing fn)
 Bee.registerDebugValues	skip:debug		
 Bee.BaseBeeGoal.canContinueToUse	port	crates/horizon-client/src/mobs/bee.rs::calm	not angry
 Bee.BeeBecomeAngryTargetGoal.canContinueToUse	port	crates/horizon-client/src/mobs/bee.rs::BecomeAngryTarget::can_continue	
@@ -88,18 +88,18 @@ Camel.readAdditionalSaveData	inline	crates/horizon-client/src/entity_nbt.rs::mob
 Camel.createAttributes	skip:data		attributes come from entity-types.json
 Camel.defineSynchedData	port	crates/horizon-client/src/game/lan.rs::mob_meta	dash and last pose change tick
 Camel.checkCamelSpawnRules	port	crates/horizon-client/src/mobs/spawn_rules.rs::check_spawn_rules	
-Camel.getDefaultDimensions	missing		a sitting camel keeps its standing hitbox; Mob::dims has no sitting size
-Camel.updateWalkAnimation	missing		legs use the default walk animation: no zero while sitting or dashing, 0.4 smoothing, no x3 for babies
+Camel.getDefaultDimensions	port	crates/horizon-client/src/mobs/living.rs::Mob::awake_dims_in	ticked in #3512; `Camel.getDefaultDimensions` is cited at crates/horizon-client/src/mobs/living.rs:442 (in a comment, so `where` names the enclosing fn)
+Camel.updateWalkAnimation	port	crates/horizon-client/src/mobs/camel.rs::walk_target	ticked in #3512; `Camel.updateWalkAnimation` is cited at crates/horizon-client/src/mobs/camel.rs:208
 Camel.travel	inline	crates/horizon-client/src/mobs/camel.rs::ai_step	refuse_to_move zeroes horizontal motion and input
 Camel.getRiddenSpeed	inline	crates/horizon-client/src/mobs/equine.rs::ridden_step	0.1 sprint bonus when the dash is ready
-Camel.getRiddenRotation	missing		a ridden camel that is sitting or changing pose still turns with the rider's view; vanilla holds its rotation
+Camel.getRiddenRotation	port	crates/horizon-client/src/mobs/equine.rs::Goal::ridden_step	ticked in #3512; `Camel.getRiddenRotation` is cited at crates/horizon-client/src/mobs/equine.rs:589 (in a comment, so `where` names the enclosing fn)
 Camel.onPlayerJump	inline	crates/horizon-client/src/mobs/camel.rs::dash	the cooldown, ground and refuse_to_move gates
 Camel.handleStartJump	port	crates/horizon-client/src/mobs/camel.rs::dash	dash sound and dashing flag; no entity_action game event
 Camel.mobInteract	port	crates/horizon-client/src/game/mounts.rs::Game::interact_mount	inventory on sneak, feeding, riding
-Camel.onElasticLeashPull	missing		a leashed sitting camel does not stand up when the lead pulls
+Camel.onElasticLeashPull	port	crates/horizon-client/src/mobs/camel.rs::on_elastic_leash_pull	
 Camel.canMate	port	crates/horizon-client/src/mobs/goals.rs::Breed::can_use	gap: no canParent checks for camels (full health, not ridden)
 Camel.getBodyAnchorAnimationYOffset	port	crates/horizon-client/src/game/mounts.rs::Game::position_rider	gap: sitting or standing height only, no sit/stand transition interpolation
-Camel.getLeashOffset	missing		lead hangs at the default offset, not at the camel's body anchor
+Camel.getLeashOffset	port	crates/horizon-client/src/mobs/camel.rs::leash_offset	ticked in #3512; `Camel.getLeashOffset` is cited at crates/horizon-client/src/mobs/camel.rs:187
 Camel.isCamelSitting	port	crates/horizon-client/src/mobs/camel.rs::sitting	
 Camel.isCamelVisuallySitting	inline	crates/horizon-client/src/mobs/camel.rs::animation_states	
 Camel.isInPoseTransition	port	crates/horizon-client/src/mobs/camel.rs::in_transition	
@@ -133,11 +133,11 @@ MushroomCow.getWalkTargetValue	port	crates/horizon-client/src/mobs/spawn_selecti
 MushroomCow.checkMushroomSpawnRules	port	crates/horizon-client/src/mobs/spawn_rules.rs::check_spawn_rules	
 MushroomCow.thunderHit	port	crates/horizon-client/src/game/lightning.rs::Game::thunder_hit	swaps colour once per bolt, convert sound
 MushroomCow.defineSynchedData	port	crates/horizon-client/src/game/lan.rs::mob_meta	the type entry
-MushroomCow.mobInteract	port	crates/horizon-client/src/game/creatures.rs::Game::interact_mob	gap: bowl stew and shearing are done; feeding a flower to a brown mooshroom (suspicious stew) is missing
-MushroomCow.addAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::mob_to_nbt	Type; gap: stew_effects (not modelled) is not written
-MushroomCow.readAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::mob_from_nbt	Type, red when missing; gap: stew_effects (not modelled) is not read
-MushroomCow.getEffectsFromItemStack	missing		no suspicious stew effects from flowers: a brown mooshroom never takes a flower
-MushroomCow.get	missing		mooshroom/variant component is not reported; species_variant_component has no mooshroom
-MushroomCow.applyImplicitComponent	missing		mooshroom/variant component on a spawn egg is ignored
+MushroomCow.mobInteract	port	crates/horizon-client/src/game/creatures.rs::Game::interact_mob	bowl (plain or suspicious stew), shears and the brown flower branch
+MushroomCow.addAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::mob_to_nbt	Type and stew_effects, written only while it holds any
+MushroomCow.readAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::mob_from_nbt	Type, red when missing; stew_effects decoded like the component's list
+MushroomCow.getEffectsFromItemStack	port	crates/horizon-items/src/flowers.rs::stew_effect	the flower block's one entry, floor(seconds * 20)
+MushroomCow.get	port	crates/horizon-client/src/mobs/finalize.rs::species_variant_component	the variant component, red (0) or brown (1)
+MushroomCow.applyImplicitComponent	port	crates/horizon-client/src/entity_nbt.rs::apply_item_components	an egg's mooshroom/variant sets the colour
 MushroomCow.getBreedOffspring	port	crates/horizon-client/src/game/creatures.rs::Game::breed	see getOffspringVariant
-MushroomCow.getOffspringVariant	missing		baby copies the first parent's colour: no 50/50 mix, no 1-in-1024 chance of the other colour
+MushroomCow.getOffspringVariant	port	crates/horizon-client/src/game/creatures.rs::breed	ticked in #3512; `MushroomCow.getOffspringVariant` is cited at crates/horizon-client/src/game/creatures.rs:2566 (in a comment, so `where` names the enclosing fn)

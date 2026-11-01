@@ -29,14 +29,17 @@ impl Game<'_> {
                     .map(|(k, _)| *k)
                     .collect()
             });
-            let dancing = jukeboxes.iter().any(|k| {
-                (f64::from(k.0) + 0.5 - pos.x).powi(2)
-                    + (f64::from(k.1) + 0.5 - pos.y).powi(2)
-                    + (f64::from(k.2) + 0.5 - pos.z).powi(2)
-                    <= 100.0
-            });
-            self.mobs[i].extra.flag =
-                dancing && !horizon_client::mobs::goals::should_panic(&self.mobs[i]);
+            let nearest = jukeboxes
+                .iter()
+                .map(|k| {
+                    (f64::from(k.0) + 0.5 - pos.x).powi(2)
+                        + (f64::from(k.1) + 0.5 - pos.y).powi(2)
+                        + (f64::from(k.2) + 0.5 - pos.z).powi(2)
+                })
+                .fold(f64::INFINITY, f64::min);
+            // `Allay.setDancing` wants effective AI: a `NoAI` allay never dances.
+            let panicking = horizon_client::mobs::goals::should_panic(&self.mobs[i]);
+            self.mobs[i].extra.flag = allay::dances(self.mobs[i].no_ai, panicking, nearest);
             let Some(held) = self.mobs[i].extra.main_hand_stack().cloned() else {
                 self.mobs[i].extra.point = None;
                 continue;
@@ -47,9 +50,23 @@ impl Game<'_> {
                 .items()
                 .get(&held.item)
                 .map_or(64, |i| i.max_stack as i32);
-            // GoToWantedItem / wantsToPickUp: a stack it considers equal within 32
-            // that the allay sees (NearestItemSensor's hasLineOfSight, eye to eye).
-            let wanted = if griefing && carried < max && self.mobs[i].extra.ints[3] <= 0 {
+            // `Mob.aiStep`'s looting loop asks for no AI: `canPickUpLoot`, the
+            // inventory room in `wantsToPickUp` and mob_griefing are its gates.
+            let wants = self.mobs[i].can_pick_up_loot() && griefing && carried < max;
+            let reach = allay::pickup_reach(self.mobs[i].bounds());
+            // GoToWantedItem: a stack it considers equal within 32 that the
+            // allay sees (NearestItemSensor's hasLineOfSight, eye to eye). The
+            // sensor is the brain's, so without AI only `Mob.aiStep`'s looting
+            // loop runs: it takes an equal drop already in `getPickupReach`.
+            let wanted = if !wants {
+                None
+            } else if self.mobs[i].no_ai {
+                self.dropped.iter().position(|e| {
+                    e.pickup_delay == 0
+                        && allay::considers_item_equal(&held, &e.stack)
+                        && reach.contains(e.position)
+                })
+            } else {
                 let w = self.mob_world_base(&[]);
                 let eye = horizon_core::geometry::Vec3::new(pos.x, self.mobs[i].eye_y(), pos.z);
                 // The sensor looks in the allay's box grown by (32, 16, 32).
@@ -78,20 +95,18 @@ impl Game<'_> {
                         w.line_of_sight(eye, at)
                     })
                     .min_by(|a, b| a.1.total_cmp(&b.1))
-            } else {
-                None
+                    .map(|(j, _)| j)
             };
-            let Some((j, _)) = wanted else {
+            let Some(j) = wanted else {
                 self.mobs[i].extra.point = None;
-                self.allay_deliver(i);
+                // `GiveInventoryToLookTargetPlayer` is the brain's too.
+                if !self.mobs[i].no_ai {
+                    self.allay_deliver(i);
+                }
                 continue;
             };
             let e = &self.dropped[j];
-            // getPickupReach (1, 1, 1) around the box.
-            let b = self.mobs[i]
-                .bounds()
-                .inflate(horizon_core::geometry::Vec3::new(1.0, 1.0, 1.0));
-            if b.contains(e.position) {
+            if reach.contains(e.position) {
                 let take = (max - carried).min(e.stack.count as i32);
                 let (item, id) = (e.clone(), self.mobs[i].id);
                 // It carries the fetched stack, potion and all, not just its id.
@@ -107,7 +122,7 @@ impl Game<'_> {
                 let e = &mut self.dropped[j];
                 e.stack.count -= take as u32;
                 if e.stack.count == 0 {
-                    self.dropped.remove(j);
+                    self.remove_dropped(j);
                 }
                 let at = [pos.x, pos.y, pos.z];
                 let pitch =
@@ -221,7 +236,7 @@ impl Game<'_> {
         self.spawn_item(stack, from, v, 10);
         // BehaviorUtils.throwItem: ItemEntity.setThrower(the allay).
         let allay = self.mob_uuid(self.mobs[i].id);
-        if let Some(thrown) = self.dropped.last_mut() {
+        if let Some(thrown) = self.just_spawned_item() {
             thrown.thrower = Some(allay);
         }
         if self.world.game_time % 7 == 0 && self.world.random.next_double() < 0.9 {

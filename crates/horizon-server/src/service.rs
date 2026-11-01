@@ -463,12 +463,23 @@ mod tests {
         );
         assert!(unit.contains("User=mc\n"));
         assert!(unit.contains("WantedBy=multi-user.target"));
+        let dir = Path::new("/srv/R&D");
         let plist = launchd_plist(
             "dev.horizon.server.mc",
             Path::new("/opt/h/horizon-server"),
-            Path::new("/srv/R&D"),
+            dir,
         );
         assert!(plist.contains("<string>/srv/R&amp;D</string>"));
+        // The log is `dir.join("logs/supervisor.log")`, which a `Path` prints with the host's own
+        // separator where it adds one (a `\` on Windows), and the `&` of the folder's name is escaped.
+        let log = dir
+            .join("logs/supervisor.log")
+            .display()
+            .to_string()
+            .replace('&', "&amp;");
+        assert!(plist.contains(&format!("<string>{log}</string>")));
+        // Where the separator is `/`, the path is the one a launchd agent has on macOS.
+        #[cfg(unix)]
         assert!(plist.contains("<string>/srv/R&amp;D/logs/supervisor.log</string>"));
     }
 

@@ -4,7 +4,7 @@
 //! `/op`, `/deop`, `/ban`, `/ban-ip`, `/banlist`, `/pardon`, `/pardon-ip` and
 //! `/whitelist`.
 use super::{
-    Dispatcher,
+    Dispatcher, Suggests,
     args::ArgType,
     vanilla::{ENTITY, GAMEMASTERS, PLAYER, PLAYERS},
 };
@@ -229,16 +229,22 @@ pub fn register_dedicated(d: &mut Dispatcher, root: usize) {
     }
 
     // OpCommand, DeOpCommands, BanPlayerCommands, PardonCommand
-    for (name, id) in [("op", "op"), ("deop", "deop"), ("pardon", "pardon")] {
+    for (name, id, suggests) in [
+        ("op", "op", Suggests::NonOperators),
+        ("deop", "deop", Suggests::Operators),
+        ("pardon", "pardon", Suggests::BannedPlayers),
+    ] {
         let n = d.literal(root, name);
         d.requires(n, ADMINS);
         let t = d.argument(n, "targets", ArgType::GameProfile);
+        d.suggests(t, suggests);
         d.executes(t, id);
     }
     // PardonIpCommand
     let pardon_ip = d.literal(root, "pardon-ip");
     d.requires(pardon_ip, ADMINS);
     let t = d.argument(pardon_ip, "target", ArgType::Word);
+    d.suggests(t, Suggests::BannedIps);
     d.executes(t, "pardon-ip");
 
     let ban = d.literal(root, "ban");
@@ -259,9 +265,13 @@ pub fn register_dedicated(d: &mut Dispatcher, root: usize) {
         let w = d.literal(whitelist, word);
         d.executes(w, id);
     }
-    for (word, id) in [("add", "whitelist.add"), ("remove", "whitelist.remove")] {
+    for (word, id, suggests) in [
+        ("add", "whitelist.add", Suggests::NonWhitelisted),
+        ("remove", "whitelist.remove", Suggests::Whitelisted),
+    ] {
         let w = d.literal(whitelist, word);
         let t = d.argument(w, "targets", ArgType::GameProfile);
+        d.suggests(t, suggests);
         d.executes(t, id);
     }
     let reload = d.literal(whitelist, "reload");

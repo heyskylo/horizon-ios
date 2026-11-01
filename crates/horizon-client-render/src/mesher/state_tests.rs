@@ -241,6 +241,9 @@ fn quads_keep_the_state_of_their_block() {
         blend_radius: 0,
         smooth_lighting: true,
         cutout_leaves: true,
+        leaf_culling: Default::default(),
+        shader_pack_lighting: false,
+        translucent_layers: &[],
     };
     let mut mesh = mesher.mesh(&region, 8);
     let blocks: Vec<([i32; 3], u32)> = placed.iter().map(|&(_, s, cell, _)| (cell, s)).collect();
@@ -340,6 +343,7 @@ fn quads_keep_the_state_of_their_block() {
                 false,
                 &tables.info[planks as usize],
                 planks,
+                false,
             );
         }
         let moved = quads(&out);

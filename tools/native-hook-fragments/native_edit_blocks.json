@@ -1,0 +1,8 @@
+{
+  "hooks": [],
+  "rust_summary": "bulk block edits for server mods (`native_edit_blocks`).",
+  "doc_summary": "`native_edit_blocks(dimension, edit)` for server mods: runs up columns, from a height or a heightmap's, of block states and filters written as commands write them, made at once straight into the chunks of the level being ticked with what `fill ... strict` does for block entities; the chunks changed go to the players whole. Bundles need `\"hooks\": @API:native_edit_blocks@`.",
+  "comments": [
+    "crates/horizon-client/src/game/native_world_edit.rs"
+  ]
+}

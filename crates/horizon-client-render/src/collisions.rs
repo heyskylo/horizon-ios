@@ -199,8 +199,9 @@ where
 }
 impl SceneCollisions<'_, '_> {
     /// Position contexts permit geometric movement probes without inventing a
-    /// player, inventory, effects or fluid-standing behavior; a lava walker
-    /// collides as the living entity it is, empty-handed.
+    /// player, inventory, effects or fluid-standing behavior; a lava walker or
+    /// a living entity in leather boots collides as the living entity it is,
+    /// empty-handed.
     pub fn resolve(
         &mut self,
         bounds: Aabb,
@@ -236,7 +237,10 @@ impl SceneCollisions<'_, '_> {
     }
     fn context(&self, bounds: Aabb) -> CollisionContext<'static> {
         let y = bounds.min_position().y;
-        if !self.subject.is_some_and(|s| s.lava_walker) {
+        if !self
+            .subject
+            .is_some_and(|s| s.lava_walker || s.leather_boots)
+        {
             return CollisionContext::position(y);
         }
         CollisionContext::for_entity(
@@ -343,8 +347,15 @@ impl EntityMovementWorld for SceneCollisions<'_, '_> {
 }
 impl DynamicSupportWorld for SceneCollisions<'_, '_> {
     type Error = io::Error;
-    fn shulker_is_closed(&mut self, _: [i32; 3]) -> io::Result<Option<bool>> {
-        Ok(None)
+    /// `ShulkerBoxBlockEntity.isClosed`: whether the lid is still shut. A
+    /// closed box collides as its plain block (`ShulkerBoxBlock.getShape`
+    /// asks the block entity, which has grown once the lid starts to open).
+    fn shulker_is_closed(&mut self, p: [i32; 3]) -> io::Result<Option<bool>> {
+        Ok(self
+            .world
+            .shulkers
+            .get(&p)
+            .map(|s| s.status == crate::block_entity_anim::ShulkerStatus::Closed))
     }
     /// `MovingPistonBlock.getCollisionShape`: the block entity's moving shape
     /// (`PistonMovingBlockEntity.getCollisionShape`), outside any push.
@@ -373,11 +384,17 @@ impl PistonCollisionWorld for SceneCollisions<'_, '_> {
     }
 }
 impl DynamicCollisionWorld for SceneCollisions<'_, '_> {
+    /// `ShulkerBoxBlockEntity.getBoundingBox`: the box's collision shape
+    /// (`getShape`) is the free shape grown by the lid's progress, which is
+    /// what lets an entity sink into an opening box. None: no such box here.
     fn shulker_collision_state(
         &mut self,
-        _: [i32; 3],
+        p: [i32; 3],
     ) -> io::Result<Option<ShulkerCollisionState>> {
-        Ok(None)
+        Ok(self.world.shulkers.get(&p).map(|s| ShulkerCollisionState {
+            previous_progress: s.progress_old,
+            progress: s.progress,
+        }))
     }
 }
 impl LiquidCollisionWorld for SceneCollisions<'_, '_> {
@@ -497,6 +514,8 @@ impl EntityMovementWorld for LookupCollisions<'_, '_> {
 }
 impl DynamicSupportWorld for LookupCollisions<'_, '_> {
     type Error = io::Error;
+    /// No block-entity data: a lookup world has no shulker box to ask, so the
+    /// box collides as a shut one (`VoxelShape::block()`).
     fn shulker_is_closed(&mut self, _: [i32; 3]) -> io::Result<Option<bool>> {
         Ok(None)
     }
@@ -505,6 +524,8 @@ impl DynamicSupportWorld for LookupCollisions<'_, '_> {
     }
 }
 impl DynamicCollisionWorld for LookupCollisions<'_, '_> {
+    /// No block-entity data: the block table's own shape stands in for the lid
+    /// (`ShulkerBoxBlockEntity.getBoundingBox` needs a block entity).
     fn shulker_collision_state(
         &mut self,
         _: [i32; 3],
@@ -609,5 +630,142 @@ mod border_movement_tests {
             (moved.x - 0.51).abs() < 1.0e-9,
             "the body did not move the whole way: {moved:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod shulker_collision_tests {
+    use super::*;
+    use crate::block_entity_anim::{Shulker, ShulkerStatus, progress_delta_aabb};
+    use horizon_core::geometry::{Aabb, Axis, Direction, Vec3, VoxelShape};
+
+    /// A shulker box facing up at progress 0.0 (closed): collision is a 1x1x1 block.
+    #[test]
+    fn shulker_closed_collision_is_full_block() {
+        let shulker = Shulker {
+            status: ShulkerStatus::Closed,
+            progress: 0.0,
+            progress_old: 0.0,
+            ..Shulker::default()
+        };
+
+        let state = ShulkerCollisionState {
+            previous_progress: shulker.progress_old,
+            progress: shulker.progress,
+        };
+        let aabb = state.bounding_box(Direction::Up);
+
+        // Closed box: height 1.0
+        assert!((aabb.min(Axis::Y) - 0.0).abs() < 1.0e-9);
+        assert!((aabb.max(Axis::Y) - 1.0).abs() < 1.0e-9);
+        // Full horizontal extent
+        assert!((aabb.min(Axis::X) - 0.0).abs() < 1.0e-9);
+        assert!((aabb.max(Axis::X) - 1.0).abs() < 1.0e-9);
+    }
+
+    /// A shulker box facing up at progress 1.0 (fully open): collision is 1.5 tall.
+    #[test]
+    fn shulker_open_collision_grows_upward() {
+        let shulker = Shulker {
+            status: ShulkerStatus::Opened,
+            progress: 1.0,
+            progress_old: 1.0,
+            ..Shulker::default()
+        };
+
+        let state = ShulkerCollisionState {
+            previous_progress: shulker.progress_old,
+            progress: shulker.progress,
+        };
+        let aabb = state.bounding_box(Direction::Up);
+
+        // Fully open: height 1.5 (lid extends 0.5 above the block)
+        assert!((aabb.min(Axis::Y) - 0.0).abs() < 1.0e-9);
+        assert!((aabb.max(Axis::Y) - 1.5).abs() < 1.0e-9);
+    }
+
+    /// A shulker box halfway open: collision height is 1.25.
+    #[test]
+    fn shulker_half_open_collision_height() {
+        let shulker = Shulker {
+            status: ShulkerStatus::Opening,
+            progress: 0.5,
+            progress_old: 0.5,
+            ..Shulker::default()
+        };
+
+        let state = ShulkerCollisionState {
+            previous_progress: shulker.progress_old,
+            progress: shulker.progress,
+        };
+        let aabb = state.bounding_box(Direction::Up);
+
+        // Half open: height 1.25
+        assert!((aabb.min(Axis::Y) - 0.0).abs() < 1.0e-9);
+        assert!((aabb.max(Axis::Y) - 1.25).abs() < 1.0e-9);
+    }
+
+    /// Vanilla clip quirk: an entity whose feet are *inside* the grown lid box
+    /// moving DOWN is not stopped by the box (collision only triggers when
+    /// approaching from outside). An entity ABOVE the box moving DOWN is stopped.
+    #[test]
+    fn shulker_grown_box_allows_clip_when_inside() {
+        // Box at progress 1.0: spans y=0..1.5
+        let shulker = Shulker {
+            status: ShulkerStatus::Opened,
+            progress: 1.0,
+            progress_old: 1.0,
+            ..Shulker::default()
+        };
+        let state = ShulkerCollisionState {
+            previous_progress: shulker.progress_old,
+            progress: shulker.progress,
+        };
+        let aabb = state.bounding_box(Direction::Up);
+        let box_shape = VoxelShape::from_box(aabb).expect("shulker box is a valid shape");
+
+        // Entity box whose feet are at y=0.5 (inside the grown box), height 1.8
+        let entity = Aabb::new(Vec3::new(0.2, 0.5, 0.2), Vec3::new(0.8, 2.3, 0.8));
+
+        // Moving DOWN from inside the box: collide() should NOT stop it
+        // (the entity is already intersecting the box, so the downward movement
+        // sees no face to hit from above).
+        let down = -0.1;
+        let moved_down = box_shape.collide(Axis::Y, entity, down);
+        assert!(
+            (moved_down - down).abs() < 1.0e-9,
+            "entity inside grown box should fall through (clip): moved_down={moved_down}, expected={down}"
+        );
+
+        // Entity box whose feet are at y=1.6 (just ABOVE the grown box)
+        let entity_above = Aabb::new(Vec3::new(0.2, 1.6, 0.2), Vec3::new(0.8, 3.4, 0.8));
+
+        // Moving DOWN from above: collide() SHOULD stop it at y=1.5
+        let moved_down_above = box_shape.collide(Axis::Y, entity_above, -0.2);
+        // The box's top is at y=1.5, entity bottom at 1.6, so max down is -0.1
+        assert!(
+            (moved_down_above - (-0.1)).abs() < 1.0e-9,
+            "entity above grown box should be stopped: moved_down_above={moved_down_above}, expected=-0.1"
+        );
+    }
+
+    /// An entity standing on the lid (y=1.0 when closed, y=1.5 when open)
+    /// and pushed up by the lid: the lid's swept AABB pushes it along the facing.
+    /// This is tested at the integration level via `push_shulker_entities`;
+    /// here we only verify the swept box geometry matches vanilla's
+    /// `Shulker.getProgressDeltaAabb`.
+    #[test]
+    fn shulker_swept_box_matches_vanilla_delta() {
+        // From closed (0.0) to progress 0.5: the lid sweeps from y=0..1 (closed box)
+        // to y=0..1.5 (half open), so the swept volume in world coords at position
+        // [0.5, 0.0, 0.5] (bottom center of block at y=0) is y=1.0..1.5.
+        let delta = progress_delta_aabb(1.0, Direction::Up as u8, 0.0, 0.5, [0.5, 0.0, 0.5]);
+        assert!((delta[1] - 1.0).abs() < 1.0e-9); // minY
+        assert!((delta[4] - 1.5).abs() < 1.0e-9); // maxY
+
+        // From progress 0.5 to 1.0: swept y=1.5..2.0 in world coords
+        let delta2 = progress_delta_aabb(1.0, Direction::Up as u8, 0.5, 1.0, [0.5, 0.0, 0.5]);
+        assert!((delta2[1] - 1.5).abs() < 1.0e-9);
+        assert!((delta2[4] - 2.0).abs() < 1.0e-9);
     }
 }

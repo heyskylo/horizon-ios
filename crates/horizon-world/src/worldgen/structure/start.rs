@@ -813,8 +813,23 @@ impl NoiseColumn {
 
 /// Biome and height queries for one structure generation attempt.
 pub trait StartContext: JigsawContext {
+    /// A chunk an older version generated: its structure starts are the ones
+    /// it saved, which are in its blocks, not the ones this generator would
+    /// make there.
+    fn is_old_chunk(&self, _chunk: ChunkPos) -> bool {
+        false
+    }
+    /// The starts that old chunk saved: see `OldWorld::saved_starts`.
+    fn saved_starts(&self, _chunk: ChunkPos) -> Vec<crate::worldgen::blending::SavedStart> {
+        Vec::new()
+    }
     fn seed(&self) -> i64;
     fn sea_level(&self) -> i32;
+    /// `ChunkGenerator.getMinY`: the noise settings' minimum Y, or a superflat generator's 0
+    /// (`MineshaftStructure` and `StrongholdStructure` read it, not the level's).
+    fn generator_min_y(&self) -> i32 {
+        self.min_y()
+    }
     /// ChunkGenerator.getBaseColumn as heightmap opacity, indexed from min_y.
     fn base_column(&mut self, x: i32, z: i32, kind: HeightmapType) -> Vec<bool>;
     /// base_column for several heightmap kinds from one noise-column pass.
@@ -1130,7 +1145,7 @@ pub(crate) fn try_generate(
             (stub, legacy(pieces))
         }
         StructureKind::Mineshaft { mesa, blocking } => {
-            let (sea, min) = (context.sea_level(), context.min_y());
+            let (sea, min) = (context.sea_level(), context.generator_min_y());
             let (position, pieces) = super::mineshaft::generate(
                 &mut random,
                 [chunk.x, chunk.z],
@@ -1143,7 +1158,7 @@ pub(crate) fn try_generate(
             (position, legacy(pieces))
         }
         StructureKind::Stronghold => {
-            let (sea, min) = (context.sea_level(), context.min_y());
+            let (sea, min) = (context.sea_level(), context.generator_min_y());
             let pieces =
                 super::stronghold::generate(&mut random, seed, [chunk.x, chunk.z], sea, min);
             ([chunk.x * 16, 0, chunk.z * 16], legacy(pieces))

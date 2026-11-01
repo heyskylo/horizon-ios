@@ -35,6 +35,25 @@ impl Game<'_> {
             )
             .collect()
     }
+    /// `EntityGetter.getEntityCollisions` for a dropped item: the entities whose
+    /// `canBeCollidedWith(item)` is true. A boat and a minecart always, a living shulker,
+    /// and a happy ghast only while it is held still (`isOnStillTimeout`): a player on its
+    /// back keeps it still, so an item dropped there stays on top.
+    pub(super) fn item_entity_collisions(&self) -> Vec<Aabb> {
+        self.mobs
+            .iter()
+            .filter(|m| {
+                (m.species() == horizon_client::mobs::Species::HappyGhast
+                    && m.alive()
+                    && !m.is_baby()
+                    && happy_ghast::on_still_timeout(m))
+                    || (m.species() == horizon_client::mobs::Species::Shulker && m.alive())
+            })
+            .map(|m| m.bounds())
+            .chain(self.boats.iter().map(super::boats::Boat::bounds))
+            .chain(self.carts.iter().map(|c| c.bounds()))
+            .collect()
+    }
     /// `HappyGhast.mobInteract`. Returns whether the click was used.
     pub(super) fn interact_happy_ghast(&mut self, index: usize, item: &str) -> bool {
         let m = &self.mobs[index];

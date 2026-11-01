@@ -812,8 +812,12 @@ def hardware():
 
 def windows_version():
     """"Microsoft Windows [Version 10.0.26200.8037]", as horizon_bench reports it (`ver`)."""
-    out = subprocess.run(["cmd", "/C", "ver"], capture_output=True, text=True).stdout.strip()
-    return out or f"Windows {platform.version()}"
+    # `cmd` answers in the console's OEM code page, not UTF-8: a reader thread that decodes the
+    # other way fails and leaves `stdout` None, which is what `pr_ready` (it sets PYTHONUTF8=1
+    # for the tests) used to get.
+    out = subprocess.run(["cmd", "/C", "ver"], capture_output=True, text=True,
+                         encoding="oem", errors="replace").stdout
+    return (out or "").strip() or f"Windows {platform.version()}"
 
 
 def windows_cpu():
@@ -932,8 +936,9 @@ def table(labels):
             loads = [v["mean"] for k, v in m.items() if k.endswith(".load_ms")]
             sec = lambda k: f"{m[k]['mean'] / 1000:.1f}" if k in m else "–"
             mb = lambda k: f"{m[k]['mean']:.0f}" if k in m else "–"
+            mean_load = f"{statistics.mean(loads) / 1000:.1f}" if loads else "–"
             cells.append(f"{sec('startup.title_ms')} / {sec('startup.world_ms')}, "
-                         f"{statistics.mean(loads) / 1000 if loads else 0:.1f}, "
+                         f"{mean_load}, "
                          f"{mb('memory.rss_steady_mb')} / {mb('memory.rss_peak_mb')}, "
                          f"{mb('memory.footprint_steady_mb')} / {mb('memory.footprint_peak_mb')}, "
                          f"{r['conditions'].get('load_avg_1m', '–')}")

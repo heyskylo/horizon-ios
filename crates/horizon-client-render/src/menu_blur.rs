@@ -178,6 +178,7 @@ impl MenuBlur {
         target: &wgpu::TextureView,
         size: [u32; 2],
         radius: f32,
+        mut timing: Option<&mut crate::gfx::pack_timing::PassTiming>,
     ) {
         self.ensure(device, size);
         encoder.copy_texture_to_texture(
@@ -230,6 +231,7 @@ impl MenuBlur {
             })];
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Menu blur pass"),
+                timestamp_writes: timing.as_deref_mut().and_then(|t| t.writes("Menu blur")),
                 color_attachments: &attachments,
                 ..Default::default()
             });

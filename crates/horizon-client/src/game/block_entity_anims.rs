@@ -303,6 +303,7 @@ impl Game<'_> {
             .get("minecraft:conduit_effect_block")
             .cloned()
             .unwrap_or_default();
+        let mut shulker_pushes = Vec::new();
         for &(pos, ticker) in &positions {
             match ticker {
                 Ticker::Lid => self.be_anims.chests.entry(pos).or_default().tick(),
@@ -315,13 +316,20 @@ impl Game<'_> {
                         .tick(pos, &players, &mut anims.book_random);
                 }
                 Ticker::Shulker { facing } => {
-                    // The lid's push of entities in its way (moveCollidedEntities)
-                    // and the neighbour updates are left to the level.
-                    self.be_anims
-                        .shulkers
-                        .entry(pos)
-                        .or_default()
-                        .tick(pos, facing);
+                    // `ShulkerBoxBlockEntity.tick` runs on both sides: the
+                    // client moves its own player, including with a menu open.
+                    // The server ticks its boxes in `tick_block_entities`.
+                    if self.remote.is_some() {
+                        let tick = self
+                            .be_anims
+                            .shulkers
+                            .entry(pos)
+                            .or_default()
+                            .tick(pos, facing);
+                        if let Some(push) = tick.push {
+                            shulker_pushes.push((pos, facing, push));
+                        }
+                    }
                 }
                 Ticker::Skull { powered } => {
                     self.be_anims.skulls.entry(pos).or_default().tick(powered);
@@ -427,6 +435,10 @@ impl Game<'_> {
             }
         }
         self.be_anims.present = positions;
+        if self.remote.is_some() {
+            self.sync_shulkers();
+            self.push_shulker_entities(shulker_pushes);
+        }
     }
     /// `ConduitBlockEntity.serverTick` of every conduit in the chunks that
     /// tick blocks, with or without a renderer. The conduits are looked for
@@ -773,6 +785,15 @@ impl Game<'_> {
             return None;
         };
         let skin = skull.skin.as_ref()?;
+        // PlayerSkin.Patch: a `texture` override replaces the profile's skin.
+        if let Some(texture) = &skin.texture
+            && let Some(sprite) =
+                skins::patch_skin(texture, &mut self.skin_downloads.borrow_mut(), |location| {
+                    self.gui.atlas.sprites.contains_key(location)
+                })
+        {
+            return Some(sprite);
+        }
         // The texture a packed or resolved `textures` property fetches: the
         // download of a static profile, or the one the services answer for a
         // `Dynamic` (name- or id-only) profile.

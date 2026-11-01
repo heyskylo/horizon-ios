@@ -244,7 +244,11 @@ fn a_mod_folder_packs_into_a_bundle_the_registry_checks_accept() {
     write(&root.join("horizon-mixin.toml"), &mixin("zoom", true));
     write(&root.join("src/zoom.rs"), "pub fn f() {}");
     write(&root.join("data/a.json"), "{}");
-    write(&root.join("README.md"), "not shipped");
+    write(&root.join("README.md"), "# Zoom");
+    // A crate of the mod keeps its own data and the text files it may include.
+    write(&root.join("engine/data/table.bin"), "t");
+    write(&root.join("engine/LICENSE"), "MIT");
+    write(&root.join("engine/logo.png"), "not shipped");
     let bundle = &find_mods(&root).unwrap()[0];
     let bytes = pack(bundle).unwrap();
     assert_eq!(bytes, pack(bundle).unwrap(), "the same files pack the same");
@@ -257,7 +261,13 @@ fn a_mod_folder_packs_into_a_bundle_the_registry_checks_accept() {
     let read = format::Bundle::read(&packed.file).unwrap();
     assert!(read.files.contains_key("mixins/zoom/src/zoom.rs"));
     assert!(read.files.contains_key("mixins/zoom/data/a.json"));
-    assert!(!read.files.keys().any(|n| n.contains("README")));
+    for shipped in ["README.md", "engine/data/table.bin", "engine/LICENSE"] {
+        assert!(
+            read.files.contains_key(&format!("mixins/zoom/{shipped}")),
+            "{shipped}"
+        );
+    }
+    assert!(!read.files.keys().any(|n| n.contains("logo")));
     let _ = fs::remove_dir_all(root);
 }
 

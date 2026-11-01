@@ -1,0 +1,6 @@
+{
+  "hooks": [],
+  "rust_summary": "other players' inventories for server mods, online or from their file (`native_inventory`, `native_move_stack`), and maps a mod draws (`native_send_map`).",
+  "doc_summary": "`native_inventory(uuid, kind)`: a player's inventory (`Player`: 41 slots, main, armour, off hand; `Ender`: 27), live when they are on the server, else from their file, never while they log in or are dead; `native_move_stack((from, kind, slot), expected, (to, kind))`: one stack moved, checked against `expected`, where it fits whole, or nothing moves (at most one side a file, written first); `native_send_map(uuid, map_id, colors)`: a 128 x 128 map picture sent to a player, for a filled map with that `map_id`. What an operator's `/invsee` and a price chart on a map need. Bundles need \"hooks\": @API:native_inventories@.",
+  "comments": ["crates/horizon-client/src/game/native_inventories.rs"]
+}

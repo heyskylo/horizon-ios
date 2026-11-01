@@ -31,7 +31,7 @@ pub(crate) fn native_menu_inventory_slot(size: usize, slot: i32) -> Option<usize
 /// Adds every stack of `gets` to the 36 slots of `inventory`, onto matching
 /// stacks first, then into empty slots, hotbar first; false when one doesn't
 /// fit whole. `max` is an item's stack size.
-fn fit(
+pub(super) fn fit(
     inventory: &mut [Option<ItemStack>],
     gets: &[ItemStack],
     max: &impl Fn(&ItemStack) -> u32,
@@ -129,9 +129,14 @@ impl Game<'_> {
         items: Vec<Option<ItemStack>>,
     ) -> Option<i32> {
         let conn = self.native_conn(uuid)?;
-        let host = self.lan.as_mut()?;
-        host.hub
-            .open_native_menu(conn, rows, component_nbt(&title.component()), items)
+        let mut host = self.lan.take()?;
+        // ServerPlayer.openMenu closes the menu that was open.
+        self.guest_close_all(&mut host, conn);
+        let window =
+            host.hub
+                .open_native_menu(conn, rows, component_nbt(&title.component()), items);
+        self.lan = Some(host);
+        window
     }
     /// Replaces what the player's open native menu shows; sent with the
     /// tick's container sync.

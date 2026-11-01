@@ -10,7 +10,16 @@ use horizon_client::{
 impl Game<'_> {
     /// `Minecraft.tick` -> `MusicManager.tick`, once per client tick.
     pub(super) fn tick_music(&mut self) {
-        let (music, volume) = self.situational_music();
+        // Splitscreen: one music, P1's.
+        if self.options.split_guest {
+            return;
+        }
+        let (mut music, mut volume) = self.situational_music();
+        // A native mod's own choice of track and volume, then its layers.
+        self.native_music(&mut music, &mut volume);
+        let mut layers = Vec::new();
+        self.native_music_layers(&mut layers);
+        self.music_layers.tick(&layers, &mut self.audio);
         // Options.musicFrequency's listener: MusicManager.setMinutesBetweenSongs.
         let frequency = MusicFrequency::parse(&self.settings.file.name("musicFrequency"));
         if frequency != self.music.frequency {
@@ -160,6 +169,8 @@ impl Game<'_> {
             player_fall_flying,
             ridden,
         };
+        self.audio
+            .set_listener_reserve(self.settings.extras.ui_sound_reserve);
         self.audio.tick(self.pause, &ctx);
     }
     /// `Minecraft.setLevel` -> `updateLevelInEngines`: `SoundManager.stop()`.
@@ -223,7 +234,7 @@ impl Game<'_> {
             .chunks
             .get(&(x >> 4, z >> 4))
             .map_or("minecraft:plains", |c| {
-                self.res.biomes().list[c.biome(x, y, z) as usize]
+                world_biomes!(self).list[c.biome(x, y, z) as usize]
                     .name
                     .as_str()
             })

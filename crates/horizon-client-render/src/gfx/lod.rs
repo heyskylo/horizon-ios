@@ -1,4 +1,4 @@
-//! Far meshes share the terrain arena and passes, with their actual bounds
+//! Far meshes share the terrain arenas and passes, with their actual bounds
 //! rather than the 16³ boxes used by the near-section residency walk.
 use super::{Frustum, Renderer, SectionGpu};
 use crate::{
@@ -96,21 +96,8 @@ struct Bounds {
 
 impl Bounds {
     fn mesh(mesh: &SectionMesh) -> Option<Self> {
-        let mut positions = mesh
-            .solid
-            .iter()
-            .chain(&mesh.translucent)
-            .map(|v| Vec3::from(v.pos));
-        let first = positions.next()?;
-        let mut bounds = Self {
-            min: first,
-            max: first,
-        };
-        for pos in positions {
-            bounds.min = bounds.min.min(pos);
-            bounds.max = bounds.max.max(pos);
-        }
-        Some(bounds)
+        let [min, max] = mesh.bounds?;
+        Some(Self { min, max })
     }
 
     /// In view: the plan alone decides which tiles are in range (a circle),
@@ -164,6 +151,10 @@ impl Tile {
             Some((mesh, _)) => mesh,
             None => &mut self.mesh,
         }
+    }
+    /// Both meshes it holds in the arena: its own and the stand-in, if any.
+    pub fn meshes_mut(&mut self) -> impl Iterator<Item = &mut SectionGpu> {
+        std::iter::once(&mut self.mesh).chain(self.previous.as_mut().map(|(mesh, _)| mesh))
     }
     pub fn visible(
         &self,
@@ -419,7 +410,8 @@ impl Renderer {
             let mesh = pending.meshes.remove(&key).expect("pending tile");
             let [x, _, z] = key.origin();
             let size = key.size();
-            let keep = around_new.contains(&key)
+            let keep = mesh.keep
+                || around_new.contains(&key)
                 || taken.iter().any(|&(cx, cz)| {
                     (x..x + size).contains(&(cx * 16)) && (z..z + size).contains(&(cz * 16))
                 });
@@ -511,6 +503,7 @@ mod tests {
         let mesh = SectionMesh {
             solid: vec![vertex([0.0, -64.0, 0.0]), vertex([1024.0, 100.0, 1024.0])],
             translucent: vec![vertex([512.0, 120.0, 512.0])],
+            bounds: Some([Vec3::new(0.0, -64.0, 0.0), Vec3::new(1024.0, 120.0, 1024.0)]),
             ..Default::default()
         };
         let bounds = Bounds::mesh(&mesh).unwrap();

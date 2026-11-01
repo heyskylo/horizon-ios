@@ -109,11 +109,16 @@ impl Game<'_> {
         let mut tags = Vec::new();
         let players = self.other_players();
         let named = self.mobs.iter().filter_map(|m| {
-            let name = m.custom_name.as_ref()?;
+            // A mannequin with no name still shows its description.
+            let name = match &m.custom_name {
+                Some(name) => name.clone(),
+                None if m.species() == horizon_client::mobs::Species::Mannequin => String::new(),
+                None => return None,
+            };
             // The tag's 64 block distance is measured to the entity: copy the
             // name only for a mob the frame can show it on.
             let at = glam::DVec3::new(m.position.x, m.position.y, m.position.z);
-            (at.distance_squared(camera) < 64.0 * 64.0).then(|| (m, name.clone(), false))
+            (at.distance_squared(camera) < 64.0 * 64.0).then_some((m, name, false))
         });
         let players = players
             .into_iter()
@@ -144,7 +149,7 @@ impl Game<'_> {
             let team = if player {
                 self.score.board.players_team(&name)
             } else {
-                self.mob_team(m.id)
+                self.mob_team_of(m)
             };
             // LivingEntityRenderer.shouldShowName (team rules included), then
             // MobRenderer: a visible name, or the mob under the crosshair.
@@ -166,9 +171,30 @@ impl Game<'_> {
             };
             // MobRenderer.shouldShowName: a visible name, or the mob under the
             // crosshair; players (LivingEntityRenderer) need neither.
-            if !sb::name_shown(team, viewer, view)
-                || !(player || m.name_visible || Some(m.id) == target)
-            {
+            // `ClientMannequin.belowNameDisplay`: the description is `scoreText`, drawn
+            // within the below-name distance (10) whether the name shows or not.
+            let description = (m.species() == horizon_client::mobs::Species::Mannequin
+                && distance_sqr < 10.0 * 10.0)
+                .then(|| m.extra.description.component())
+                .flatten()
+                .map(|tag| horizon_client::entity_nbt::name_text(&tag).resolve_legacy());
+            let name_shown = sb::name_shown(team, viewer, view)
+                && (player || m.name_visible || Some(m.id) == target)
+                && (player || m.custom_name.is_some());
+            if !name_shown {
+                if let Some(text) = description {
+                    let l = self.world.light(
+                        m.position.x.floor() as i32,
+                        (m.position.y + f64::from(m.height())).floor() as i32,
+                        m.position.z.floor() as i32,
+                    );
+                    tags.push(NameTag {
+                        at: p,
+                        lines: vec![(text, 0.0)],
+                        light: l,
+                        discrete,
+                    });
+                }
                 continue;
             }
             // getDisplayName: the name in the team's prefix, suffix and colour.
@@ -190,7 +216,12 @@ impl Game<'_> {
             // EntityRenderer.extractNameTags: the score shows within the
             // below-name distance (10), under the name.
             let mut lift = 0.0;
-            if distance_sqr < 10.0 * 10.0
+            if m.species() == horizon_client::mobs::Species::Mannequin {
+                if let Some(text) = description {
+                    lines.push((text, 0.0));
+                    lift = f64::from(9.0f32 * 1.15 * 0.025);
+                }
+            } else if distance_sqr < 10.0 * 10.0
                 && let Some(score) = holder.and_then(|h| self.below_name_text(&h))
             {
                 lines.push((score.resolve_legacy(), 0.0));
@@ -256,13 +287,15 @@ impl Game<'_> {
                 lift = f64::from(9.0f32 * 1.15 * 0.025);
             }
             lines.push((shown, lift));
+            // The tag rides with the body, between last tick's position and this one's.
+            let at = a.render_position(alpha);
             let l = self.world.light(
-                a.position.x.floor() as i32,
-                (a.position.y + height).floor() as i32,
-                a.position.z.floor() as i32,
+                at.x.floor() as i32,
+                (at.y + height).floor() as i32,
+                at.z.floor() as i32,
             );
             tags.push(NameTag {
-                at: glam::DVec3::new(a.position.x, a.position.y + height + 0.5, a.position.z),
+                at: glam::DVec3::new(at.x, at.y + height + 0.5, at.z),
                 lines,
                 light: l,
                 discrete: false,

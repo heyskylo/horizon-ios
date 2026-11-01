@@ -28,7 +28,10 @@ fn parse_state(text: &str) -> Result<BlockState> {
         let (k, v) = pair.split_once('=').ok_or("properties are key=value")?;
         properties.insert(k.to_owned(), v.to_owned());
     }
-    Ok(BlockState { name, properties })
+    Ok(BlockState {
+        name,
+        properties: properties.into(),
+    })
 }
 
 impl Game<'_> {

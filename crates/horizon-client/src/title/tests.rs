@@ -67,6 +67,23 @@ impl Fixture {
         self.title.enter_singleplayer();
         self.title.click(240.0, 60.0, (480.0, 262.0));
     }
+    /// Create New World, past the preparing read: the screen the pack
+    /// screens hand their selection to.
+    fn enter_create_world_for_packs(&mut self) {
+        // A world, so Singleplayer opens the list and its Create New World
+        // goes through preparing (an empty list opens Create directly).
+        self.world("World", "World");
+        self.title.enter_singleplayer();
+        // The Select screen's Create button reads the worldgen data first
+        // (`openCreateWorldScreen` behind `createWorld.preparing`).
+        assert_eq!(self.click_with_sound("Create New World").0, Action::None);
+        assert!(
+            self.title.preparing(),
+            "Create New World goes through preparing"
+        );
+        self.title.finish_preparing();
+        assert!(matches!(self.title.creation_packs(), Some((_, _))));
+    }
     fn finish_backup(&mut self) {
         self.title.backup_shown.set(true);
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
@@ -112,6 +129,7 @@ fn direct_connection_remembers_the_address_on_cancel_escape_and_join() {
         f.click("Join Server"),
         Action::Connect {
             address: "localhost:25569".into(),
+            lan: false,
         }
     );
     assert_eq!(f.title.last_server, "localhost:25569");
@@ -579,10 +597,15 @@ fn classic_navigation_buttons_sound_even_without_a_game_action() {
         (Action::None, false)
     );
     assert_eq!(f.click_with_sound("Create New World"), (Action::None, true));
-    assert_eq!(
-        f.title.click(240.0, 55.0, (480.0, 262.0)),
-        (Action::None, false)
+    // Create New World prepares the world generation first
+    // (`CreateWorldScreen.openCreateWorldScreen`); the game opens the
+    // screen once that is done.
+    assert!(f.title.click(240.0, 55.0, (480.0, 262.0)).0 == Action::None);
+    assert!(
+        f.title.preparing(),
+        "Create New World goes through preparing"
     );
+    f.title.finish_preparing();
     // The Game tab's game mode cycle button.
     let mode = f
         .title
@@ -597,6 +620,93 @@ fn classic_navigation_buttons_sound_even_without_a_game_action() {
     assert_eq!(f.click_with_sound("Cancel"), (Action::None, true));
     assert_eq!(f.click_with_sound("Back"), (Action::None, true));
     assert_eq!(f.click_with_sound("Options..."), (Action::Options, true));
+}
+
+/// A feature pack the resources root ships (`PackSource.FEATURE`).
+fn feature_pack(root: &Path) {
+    let pack = root.join("data/minecraft/datapacks/test_feature");
+    fs::create_dir_all(&pack).unwrap();
+    fs::write(pack.join("pack.mcmeta"), r#"{"pack":{"description":"t"}}"#).unwrap();
+}
+
+#[test]
+fn offer_data_packs_without_a_feature_applies_at_once() {
+    let mut f = Fixture::new();
+    f.enter_create_world_for_packs();
+    f.title
+        .offer_data_packs(&f.root, vec!["vanilla".into(), "file/t.zip".into()]);
+    // `tryApplyNewDataPacks`: no confirm screen, the selection applies and
+    // the data is read again.
+    assert!(f.title.confirm_experiments.borrow().is_none());
+    assert!(f.title.preparing());
+    assert_eq!(
+        f.title.creation_packs().map(|(_, ids)| ids),
+        Some(vec!["vanilla".to_owned(), "file/t.zip".to_owned()])
+    );
+}
+
+#[test]
+fn offer_data_packs_with_a_feature_asks_and_the_confirm_screen_decides() {
+    let mut f = Fixture::new();
+    feature_pack(&f.root);
+    f.enter_create_world_for_packs();
+    f.title
+        .offer_data_packs(&f.root, vec!["vanilla".into(), "test_feature".into()]);
+    // The confirm screen is up, the selection waits.
+    assert!(f.title.confirm_experiments.borrow().is_some());
+    assert!(!f.title.preparing());
+    assert_eq!(
+        f.title.creation_packs().map(|(_, ids)| ids),
+        Some(vec!["vanilla".to_owned()])
+    );
+    // Back (`onAbort`): the Data Packs screen reopens with the selection
+    // it had, the confirm screen is gone.
+    let atlas = crate::hud::HudAtlas::build(Path::new("/nonexistent/horizon-test-assets")).unwrap();
+    // confirm_experiments::footer_pair's Back, for a 480-wide screen
+    // (COLUMN_SPACING is 10).
+    let back_x = ((480.0_f32 - (150.0 * 2.0 + 10.0)) / 2.0).trunc() + 150.0 + 10.0 + 1.0;
+    f.title
+        .press_rules(&atlas, (back_x, 262.0 - 45.0 + 1.0), (480.0, 262.0));
+    assert!(f.title.confirm_experiments.borrow().is_none());
+    assert!(f.title.take_reopen_data_packs());
+    assert_eq!(
+        f.title.creation_packs().map(|(_, ids)| ids),
+        Some(vec!["vanilla".to_owned()])
+    );
+    // The screen is offered again, and Proceed applies the selection and
+    // asks for the read.
+    f.title
+        .offer_data_packs(&f.root, vec!["vanilla".into(), "test_feature".into()]);
+    // The Proceed button, left of the pair.
+    let proceed_x = ((480.0_f32 - (150.0 * 2.0 + 10.0)) / 2.0).trunc() + 1.0;
+    f.title
+        .press_rules(&atlas, (proceed_x, 262.0 - 45.0 + 1.0), (480.0, 262.0));
+    assert!(f.title.confirm_experiments.borrow().is_none());
+    assert!(f.title.preparing());
+    assert_eq!(
+        f.title.creation_packs().map(|(_, ids)| ids),
+        Some(vec!["vanilla".to_owned(), "test_feature".to_owned()])
+    );
+}
+
+#[test]
+fn preparing_takes_no_input() {
+    let mut f = Fixture::new();
+    f.enter_create_world_for_packs();
+    f.title
+        .offer_data_packs(&f.root, vec!["vanilla".into(), "file/t.zip".into()]);
+    assert!(f.title.preparing());
+    // Escape during the read: nothing closes, the options survive
+    // (GenericMessageScreen.shouldCloseOnEsc is false).
+    f.title.escape();
+    assert!(f.title.preparing());
+    assert!(f.title.creation_packs().is_some());
+    // Typed text doesn't reach the focused field either.
+    let before = format!("{:?}", f.title.mode);
+    f.title.type_text("typed during the read");
+    assert_eq!(format!("{:?}", f.title.mode), before);
+    f.title.finish_preparing();
+    assert!(!f.title.preparing());
 }
 
 #[test]
@@ -1001,13 +1111,13 @@ fn create_world_tabs_follow_vanilla_and_their_choices_reach_the_action() {
             bonus_chest: true
         }
     );
-    // The More tab: Experiments has no screen yet; Data
+    // The More tab: Game Rules, Experiments and Data Packs all open; Data
     // Packs opens on a new pack folder, and its selection reaches the action.
     f.title.click(54.0 + 248.0 + 10.0, 10.0, size);
     let more = labels(&f);
     assert_eq!(
         more[..3].iter().map(|b| b.3).collect::<Vec<_>>(),
-        [true, false, true]
+        [true, true, true]
     );
     let (action, sound) = f.title.click(more[2].1 + 10.0, more[2].2 + 10.0, size);
     let Action::DataPacks { dir, selected } = action else {
@@ -1287,8 +1397,11 @@ fn world_with_unreadable_level_dat_is_listed_and_recovers_from_level_dat_old() {
     assert_eq!(issues[1], None);
     assert_eq!(fs::read(dir.join("level.dat")).unwrap(), b"truncated");
 
-    // restoreLevelDataFromOld: level.dat_old back in place, the broken file kept aside.
+    // attemptRestore backs the world up first, then restoreLevelDataFromOld: level.dat_old
+    // back in place, the broken file kept aside.
     f.click("Attempt to Restore");
+    assert!(matches!(f.title.mode, Mode::Backup { .. }));
+    f.finish_backup();
     assert!(matches!(
         f.title.mode,
         Mode::Recovered { success: true, .. }
@@ -1349,6 +1462,88 @@ fn world_with_nothing_to_recover_from_is_listed_but_never_opened() {
     assert_eq!(fs::read(dir.join("level.dat")).unwrap(), b"garbage");
     f.click("Back");
     assert!(matches!(f.title.mode, Mode::Select { .. }));
+}
+
+#[test]
+fn title_screen_keyboard_navigation_and_activation() {
+    let mut f = Fixture::new();
+    f.world("w1", "World 1");
+    let size = (480.0, 262.0);
+    assert_eq!(f.title.focused_button, None);
+
+    // Tab forwards focuses the first button (Singleplayer, id 1)
+    f.title.tab_dir(false, size);
+    assert_eq!(f.title.focused_button, Some(1));
+
+    // Tab again focuses Multiplayer (id 4)
+    f.title.tab_dir(false, size);
+    assert_eq!(f.title.focused_button, Some(4));
+
+    // Shift+Tab reverses focus to Singleplayer
+    f.title.tab_dir(true, size);
+    assert_eq!(f.title.focused_button, Some(1));
+
+    // Enter confirms focused button (Singleplayer opens world select) and triggers sound
+    let (action, sound) = f.title.confirm_key_size(size);
+    assert_eq!(action, Action::None);
+    assert!(sound);
+    assert!(matches!(f.title.mode, Mode::Select { .. }));
+    assert_eq!(f.title.focused_button, None);
+
+    // Navigate to Create New World button (id 11) on the select screen: the
+    // "Preparing for world creation" screen comes first, then the create screen.
+    f.title.focused_button = Some(11);
+    let (action, sound) = f.title.confirm_key_size(size);
+    assert_eq!(action, Action::None);
+    assert!(sound);
+    assert!(f.title.preparing());
+    f.title.finish_preparing();
+    assert!(matches!(f.title.mode, Mode::Create { .. }));
+
+    // Focus and toggle Game Mode cycle button (id 20) from Survival to Hardcore
+    f.title.focused_button = Some(20);
+    let (action, sound) = f.title.confirm_key_size(size);
+    assert_eq!(action, Action::None);
+    assert!(sound);
+
+    // In Hardcore, Difficulty button (id 23) is disabled, so confirming it does not sound
+    f.title.focused_button = Some(23);
+    let (action, sound) = f.title.confirm_key_size(size);
+    assert_eq!(action, Action::None);
+    assert!(!sound);
+
+    // Toggle Game Mode cycle button again (Hardcore to Creative)
+    f.title.focused_button = Some(20);
+    let (action, sound) = f.title.confirm_key_size(size);
+    assert_eq!(action, Action::None);
+    assert!(sound);
+
+    // Now Difficulty button (id 23) is enabled in Creative, so confirming it sounds
+    f.title.focused_button = Some(23);
+    let (action, sound) = f.title.confirm_key_size(size);
+    assert_eq!(action, Action::None);
+    assert!(sound);
+}
+
+#[test]
+fn mouse_opening_singleplayer_does_not_steal_select_world_enter() {
+    let mut f = Fixture::new();
+    f.world("w1", "World 1");
+
+    assert_eq!(f.click("Singleplayer"), Action::None);
+    assert!(matches!(f.title.mode, Mode::Select { .. }));
+    assert_eq!(f.title.focused_button, None);
+
+    // Select the row, then press Enter as a keyboard user would.
+    f.title.click(240.0, 60.0, (480.0, 262.0));
+    let (action, sound) = f.title.confirm_key_size((480.0, 262.0));
+    assert_eq!(
+        action,
+        Action::Play {
+            folder: "w1".to_owned()
+        }
+    );
+    assert!(sound);
 }
 
 /// Rewrites a test world's `WorldGenSettings` (in level.dat, where `world_gen_settings` falls back).

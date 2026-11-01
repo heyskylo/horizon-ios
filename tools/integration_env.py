@@ -27,7 +27,7 @@ def run_game(command, **kwargs):
     with tempfile.TemporaryDirectory(prefix='hz-fixture-') as root:
         kwargs['env'] = game_environment(kwargs.pop('env', os.environ), root)
         if any(key in kwargs['env'] for key in
-               ('HORIZON_COMMAND_SCRIPT', 'HORIZON_DISPENSE_FIXTURE', 'HORIZON_SCULK_FIXTURE')):
+               ('HORIZON_DISPENSE_FIXTURE', 'HORIZON_SCULK_FIXTURE')):
             # These compare seeded rule/callback traces, not the client/server boundary.
             command = [*command, '--in-frame']
         return subprocess.run(command, **kwargs)

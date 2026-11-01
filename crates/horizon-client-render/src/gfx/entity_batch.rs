@@ -20,6 +20,8 @@ const MATERIALS: usize = 10;
 /// (`RenderTypes.entityTranslucent`, `entityTranslucentEmissive`, `eyes`,
 /// `breezeWind`). Only the improved transparency path reads it.
 pub const OIT_ENTITY: u32 = 1 << 24;
+/// `RenderPipelines.DRAGON_RAYS`: untextured colour, additive with depth writes.
+pub const DRAGON_RAYS_OVERLAY: u32 = 37;
 /// Tags quads as drawn by a render type vanilla gives an `OitPipelineSet`
 /// (`OIT_ENTITY`): improved transparency draws them in its stages.
 pub fn mark_oit(quads: &mut [Vertex]) {
@@ -46,12 +48,13 @@ pub const TRANSLUCENT_GLINT_ITEM_OVERLAY: u32 = 33;
 /// drawn like an ordinary entity, pulled toward the camera.
 pub const TEXT_POLYGON_OFFSET_OVERLAY: u32 = 35;
 
-/// The material of a quad by its overlay (`MATERIALS` order).
+/// The material of a quad by its overlay (`MATERIALS` order): the overlay is the layer's low 16
+/// bits, as entity.wgsl reads it; HDR output's tier rides in the high ones.
 fn material(layer: u32, oit: bool) -> usize {
     if oit && layer & OIT_ENTITY != 0 {
         return 9;
     }
-    match layer {
+    match layer & 0xffff {
         TEXT_POLYGON_OFFSET_OVERLAY => 1,
         11 => 2,
         12 => 3,
@@ -78,6 +81,11 @@ pub(super) struct EntityBatch {
 }
 
 impl EntityBatch {
+    /// After `update`: quads only a native pack's shadow pass draws, at the buffer's end.
+    pub(super) fn append_shadow_only(&mut self, shadow_only: &[Vertex]) {
+        self.combined.extend_from_slice(shadow_only);
+    }
+
     pub(super) fn update(
         &mut self,
         entities: &[Vertex],
@@ -211,6 +219,15 @@ mod tests {
             bytemuck::cast_slice::<_, u8>(&batch.combined),
             bytemuck::cast_slice::<_, u8>(&expected)
         );
+    }
+
+    #[test]
+    fn a_tier_in_the_high_bits_keeps_the_material() {
+        for layer in [0u32, 11, 12, 15, 32, 33, 35, OIT_ENTITY] {
+            for oit in [false, true] {
+                assert_eq!(material(layer | 4 << 16, oit), material(layer, oit));
+            }
+        }
     }
 
     #[test]

@@ -144,6 +144,13 @@ impl Game<'_> {
     /// DialogScreen over the pause menu: `menu.server_links.title`, the
     /// scrollable link buttons and `gui.back` in the footer.
     pub(super) fn draw_server_links(&mut self, batch: &mut HudBatch) {
+        // ServerLinksDialogScreen: the dialog's title.
+        horizon_client::widgets::begin_screen(|| {
+            horizon_client::widgets::ScreenInfo::new(
+                "server_links",
+                super::screen_info::tr("menu.server_links.title", &[]),
+            )
+        });
         let atlas = &self.gui.atlas;
         let (w, h) = (batch.width, batch.height);
         ui::menu_background(batch, atlas, 0.0, 0.0, w, h, true);
@@ -160,6 +167,20 @@ impl Game<'_> {
         batch.text_styled(atlas, &title, tx, 12.0, u32::MAX, true);
         let (wx, wy) = warning_button(w, h, tw);
         let wh = ui::hovered(self.cursor, wx, wy, WARNING_BUTTON, WARNING_BUTTON);
+        // DialogScreen.createWarningButton: an ImageButton with its own
+        // message and its tooltip.
+        horizon_client::widgets::narratable(|| {
+            horizon_client::widgets::Narratable::button(
+                super::screen_info::tr("menu.custom_screen_info.button_narration", &[]),
+                [wx, wy, WARNING_BUTTON, WARNING_BUTTON],
+                true,
+            )
+            .hovered(wh)
+            .hint(super::screen_info::tr(
+                "menu.custom_screen_info.tooltip",
+                &[],
+            ))
+        });
         horizon_client::widgets::record(
             "menu.custom_screen_info.tooltip",
             [wx, wy, WARNING_BUTTON, WARNING_BUTTON],
@@ -297,7 +318,20 @@ impl Game<'_> {
         let (w, h) = (batch.width, batch.height);
         ui::menu_background(batch, atlas, 0.0, 0.0, w, h, true);
         let url = self.links_ui.confirm.clone().unwrap_or_default();
-        let layout = confirm_link_layout(atlas, (w, h), &url, self.links_ui.trusted);
+        let trusted = self.links_ui.trusted;
+        horizon_client::widgets::begin_screen(|| {
+            let title = if trusted {
+                "chat.link.confirmTrusted"
+            } else {
+                "chat.link.confirm"
+            };
+            super::screen_info::confirm(
+                "server_links/confirm_link",
+                &super::screen_info::tr(title, &[]),
+                &url,
+            )
+        });
+        let layout = confirm_link_layout(atlas, (w, h), &url, trusted);
         for (line, x, y) in &layout.lines {
             batch.text_styled(atlas, line, *x, *y, u32::MAX, true);
         }
@@ -342,6 +376,13 @@ impl Game<'_> {
     /// `DialogScreen.WarningScreen`: the custom-screens note, a disconnect
     /// button ("Custom screen rejected" is the shown reason) and Back.
     pub(super) fn draw_dialog_warning(&mut self, batch: &mut HudBatch) {
+        horizon_client::widgets::begin_screen(|| {
+            super::screen_info::confirm(
+                "dialog_warning",
+                &super::screen_info::tr("menu.custom_screen_info.title", &[]),
+                &super::screen_info::tr("menu.custom_screen_info.contents", &[]),
+            )
+        });
         let atlas = &self.gui.atlas;
         let (w, h) = (batch.width, batch.height);
         ui::menu_background(batch, atlas, 0.0, 0.0, w, h, true);

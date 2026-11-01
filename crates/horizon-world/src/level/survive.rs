@@ -13,7 +13,9 @@ use horizon_core::{geometry::Direction, position::BlockPos};
 impl<L: LevelAccess + ?Sized> Sim<'_, L> {
     /// `BlockState.canSurvive(level, pos)`.
     pub fn can_survive(&self, state: BlockStateId, pos: BlockPos) -> bool {
-        self.can_survive_at(0, state, pos)
+        let mut survives = None;
+        self.level.before_can_survive(pos, state, &mut survives);
+        survives.unwrap_or_else(|| self.can_survive_at(0, state, pos))
     }
     fn can_survive_at(&self, depth: usize, state: BlockStateId, pos: BlockPos) -> bool {
         let chain = &self.b.data(state).chain;
@@ -357,6 +359,12 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         ground: BlockStateId,
         ground_pos: BlockPos,
     ) -> bool {
+        let mut may = None;
+        self.level
+            .before_may_place_on(state, ground, ground_pos, &mut may);
+        if let Some(may) = may {
+            return may;
+        }
         let b = self.b;
         let t = &b.tags;
         let data = b.data(state);

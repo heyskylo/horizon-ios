@@ -226,6 +226,20 @@ impl Game<'_> {
             })
             .collect()
     }
+    /// The same guests' cast fishing hooks, for `GameLevel::trigger_projectiles`.
+    pub(super) fn lan_hook_triggers(&self, out: &mut Vec<(Aabb, bool)>) {
+        let Some(host) = self.lan.as_ref() else {
+            return;
+        };
+        out.extend(
+            host.hub
+                .guests
+                .iter()
+                .filter(|g| host.hub.here(g) && g.loaded && !g.dead && !g.spectator())
+                .filter_map(|g| host.play.get(&g.conn)?.hook.as_ref())
+                .map(|hook| (hook.bounds(), hook.applies_block_effects())),
+        );
+    }
     /// The same guests' feet and whether they stand on the ground, for the
     /// blocks that also ask that (`BigDripleafBlock.canEntityTilt`).
     pub(super) fn lan_guest_feet(&self) -> Vec<([f64; 3], bool)> {

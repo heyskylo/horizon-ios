@@ -547,6 +547,17 @@ impl HandSway {
         let y_bob = crate::camera::lerp(partial, self.y_bob_o, self.y_bob);
         [(view_x_rot - x_bob) * 0.1, (view_y_rot - y_bob) * 0.1]
     }
+    /// The hands' view space to camera-relative world space, turned by the
+    /// sway. The hand pass draws with the camera's view, whose rotation a
+    /// ridden boat's turn spreads over the frames of a tick
+    /// (`LocalPlayer.getViewYRot`): anything else swings the hands back and
+    /// forth by that turn, up to 10 degrees, 20 times a second (#4583).
+    pub fn to_world(&self, partial: f32, camera: &crate::camera::Camera) -> glam::Mat4 {
+        let [x, y] = self.rotation(partial, camera.x_rot, camera.y_rot);
+        crate::camera::view_matrix(camera.y_rot, camera.x_rot).inverse()
+            * glam::Mat4::from_rotation_x(x.to_radians())
+            * glam::Mat4::from_rotation_y(y.to_radians())
+    }
 }
 
 /// `HitResult` at the crosshair (`Minecraft.hitResult`).
@@ -966,6 +977,30 @@ mod tests {
         );
     }
 
+    /// #4583: while a boat turns the player steadily, the hands keep their
+    /// place on screen through every frame of a tick.
+    #[test]
+    fn the_hands_hold_still_on_screen_while_a_boat_turns() {
+        const TURN: f32 = 10.0;
+        let mut sway = HandSway::default();
+        let mut yaw = 0.0;
+        for _ in 0..30 {
+            sway.tick(0.0, yaw);
+            yaw += TURN;
+        }
+        let on_screen = |partial: f32| {
+            let camera = crate::camera::Camera {
+                y_rot: yaw - TURN * (1.0 - partial),
+                ..Default::default()
+            };
+            crate::camera::view_matrix(camera.y_rot, 0.0) * sway.to_world(partial, &camera)
+        };
+        let first = on_screen(0.0);
+        for partial in [0.25, 0.5, 0.75, 0.99] {
+            let frame = on_screen(partial);
+            assert!(frame.abs_diff_eq(first, 1.0e-3), "{partial}: {frame:?}");
+        }
+    }
     #[test]
     fn drawing_a_bow_or_holding_a_charged_crossbow_hides_a_hand() {
         let (bow, apple) = (

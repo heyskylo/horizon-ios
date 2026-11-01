@@ -20,6 +20,54 @@ pub fn own_random(shooter: &crate::mobs::Mob) -> horizon_core::random::LegacyRan
     )
 }
 
+/// a content mod's thrown item projectile, a copy of `Snowball` that deals
+/// `damage` and flies as its `item`.
+#[derive(Debug, PartialEq)]
+pub struct ThrownType {
+    /// `<mod id>:<path>`.
+    pub id: &'static str,
+    pub item: &'static str,
+    pub damage: f32,
+}
+/// the thrown types content mods declare, in registry order.
+static THROWN_TYPES: std::sync::OnceLock<Vec<ThrownType>> = std::sync::OnceLock::new();
+/// registers the content mods' thrown types, `(id, item, damage)`, a list
+/// set once per process (false when it already was).
+pub fn register_thrown_types(types: impl IntoIterator<Item = (String, String, f32)>) -> bool {
+    if THROWN_TYPES.get().is_some() {
+        return false;
+    }
+    let leak = |s: String| -> &'static str { Box::leak(s.into_boxed_str()) };
+    let types = types.into_iter().map(|(id, item, damage)| ThrownType {
+        id: leak(id),
+        item: leak(item),
+        damage,
+    });
+    THROWN_TYPES.set(types.collect()).is_ok()
+}
+/// the content mods' thrown types, in registry order.
+pub fn thrown_types() -> &'static [ThrownType] {
+    THROWN_TYPES.get().map_or(&[], Vec::as_slice)
+}
+/// the lib's tests' one mod type, `ruby:bolt` thrown from `ruby:gem`: the
+/// registry is set once per process, so every test registers the same.
+#[cfg(test)]
+pub(crate) fn register_test_types() {
+    let _ = register_thrown_types([("ruby:bolt".into(), "ruby:gem".into(), 2.0)]);
+}
+/// the mod type with entity type `id`; out of line, as vanilla's never are.
+#[cold]
+#[inline(never)]
+pub fn thrown_type(id: &str) -> Option<&'static ThrownType> {
+    thrown_types().iter().find(|t| t.id == id)
+}
+/// the mod type `item` throws (the first in registry order).
+#[cold]
+#[inline(never)]
+pub fn thrown_by_item(item: &str) -> Option<&'static ThrownType> {
+    thrown_types().iter().find(|t| t.item == item)
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum ProjectileKind {
     /// Arrow with its base damage, critical flag and tipped/stray/bogged effect.
@@ -64,8 +112,23 @@ pub enum ProjectileKind {
         amplifier: i32,
         color: u32,
     },
+    /// a content mod's type.
+    Thrown(&'static ThrownType),
 }
 impl ProjectileKind {
+    /// Wind charges take no push from an explosion (vanilla leaves their motion at 0).
+    pub fn ignores_blast(&self) -> bool {
+        matches!(self, Self::WindCharge | Self::BreezeWindCharge)
+    }
+    /// `EntityType.Builder.eyeHeight`: 0.13 for arrows and tridents, 0 for
+    /// wind charges, else the default 0.85 of the box height.
+    pub fn eye_height(&self) -> f64 {
+        match self {
+            Self::Arrow { .. } | Self::Trident => f64::from(0.13_f32),
+            Self::WindCharge | Self::BreezeWindCharge => 0.0,
+            _ => f64::from(self.size() as f32 * 0.85_f32),
+        }
+    }
     /// The width and height of its entity type's `sized(...)`.
     pub fn size(&self) -> f64 {
         match self {
@@ -74,7 +137,8 @@ impl ProjectileKind {
             | Self::Egg
             | Self::EnderPearl
             | Self::LlamaSpit
-            | Self::Potion { .. } => 0.25,
+            | Self::Potion { .. }
+            | Self::Thrown(_) => 0.25,
             Self::SmallFireball
             | Self::WindCharge
             | Self::BreezeWindCharge
@@ -99,6 +163,7 @@ impl ProjectileKind {
             Self::ShulkerBullet { .. } => "minecraft:shulker_bullet",
             Self::WitherSkull { .. } => "minecraft:wither_skull",
             Self::Potion { .. } => "minecraft:splash_potion",
+            Self::Thrown(t) => t.id,
         }
     }
 }
@@ -108,6 +173,9 @@ pub struct Projectile {
     pub id: u32,
     pub kind: ProjectileKind,
     pub owner: Option<Who>,
+    /// `Projectile.owner`'s UUID, kept while the owner is away (a guest who
+    /// left, a mob not loaded): what its save writes as `Owner`.
+    pub owner_uuid: Option<[i32; 4]>,
     /// On a server, the guest (by connection) who shot it: `Who::Player`
     /// then means them, not the host.
     pub guest: Option<u32>,
@@ -133,6 +201,8 @@ pub struct Projectile {
     /// `updateFluidInteraction` found around the box after the move, read by
     /// the next tick's inertia (false until the first tick has moved it).
     pub touching_water: bool,
+    /// `Entity.noGravity` (`NoGravity` in its save): `getGravity` is 0.
+    pub no_gravity: bool,
 }
 /// What a projectile struck this tick.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -156,6 +226,8 @@ pub trait ProjectileWorld {
     /// block's surface reaches the bottom of the box (deflated by 0.001).
     fn in_water(&self, bounds: Aabb) -> bool;
     fn targets(&self) -> &[(Who, Aabb)];
+    /// Server-only mod-block contacts along the completed movement.
+    fn block_contacts(&self, _entity: i32, _kind: &str, _from: Vec3, _to: Vec3, _bounds: Aabb) {}
     /// `Level.isEmptyBlock`.
     fn empty(&self, _p: [i32; 3]) -> bool {
         true
@@ -206,6 +278,7 @@ impl Projectile {
             id: 0,
             kind,
             owner,
+            owner_uuid: None,
             guest: None,
             position,
             previous: position,
@@ -219,6 +292,7 @@ impl Projectile {
             acceleration,
             needs_sync: false,
             touching_water: false,
+            no_gravity: false,
             arrow: kind_is_arrow.then(|| {
                 // Entity.random: seeded unpredictably, the position stands in.
                 Box::new(crate::arrows::ArrowState::new(
@@ -347,7 +421,11 @@ impl Projectile {
                 | ProjectileKind::WitherSkull { .. }
         )
     }
+    /// `Entity.getGravity`: none with `NoGravity`, else the kind's default.
     fn gravity(&self) -> f64 {
+        if self.no_gravity {
+            return 0.0;
+        }
         match self.kind {
             ProjectileKind::Arrow { .. } | ProjectileKind::Trident => 0.05,
             ProjectileKind::SmallFireball
@@ -690,6 +768,18 @@ impl Projectile {
 
     /// One tick: returns whether to keep the projectile and what it hit.
     pub fn tick(&mut self, w: &impl ProjectileWorld) -> (bool, Hit) {
+        let from = self.position;
+        let result = self.tick_inner(w);
+        w.block_contacts(
+            self.id as i32,
+            self.kind.id(),
+            from,
+            self.position,
+            self.bounds(),
+        );
+        result
+    }
+    fn tick_inner(&mut self, w: &impl ProjectileWorld) -> (bool, Hit) {
         self.previous = self.position;
         self.age += 1;
         if matches!(self.kind, ProjectileKind::ShulkerBullet { .. }) {
@@ -825,11 +915,14 @@ impl Projectile {
         }
         damage as f32
     }
-    /// The item a thrown potion is drawn as (`ThrownItemRenderer`): the
-    /// splash potion `Witch.performRangedAttack` makes for the effect.
-    pub fn potion_item(&self) -> Option<crate::items::ItemStack> {
-        let ProjectileKind::Potion { effect, .. } = self.kind else {
-            return None;
+    /// the item a thrown potion or a mod's type is drawn as with its model
+    /// (`ThrownItemRenderer`): the splash potion `Witch.performRangedAttack`
+    /// makes for the effect, or the type's item.
+    pub fn drawn_item(&self) -> Option<crate::items::ItemStack> {
+        let effect = match self.kind {
+            ProjectileKind::Potion { effect, .. } => effect,
+            ProjectileKind::Thrown(t) => return Some(crate::items::ItemStack::new(t.item, 1)),
+            _ => return None,
         };
         let potion = match effect {
             "minecraft:instant_health" => "minecraft:healing",
@@ -856,7 +949,9 @@ impl Projectile {
             ProjectileKind::WitherSkull { dangerous: false } => "entity/wither/wither",
             ProjectileKind::WitherSkull { dangerous: true } => "entity/wither/wither_invulnerable",
             // Drawn as their models by the game.
-            ProjectileKind::Arrow { .. } | ProjectileKind::Trident => return None,
+            ProjectileKind::Arrow { .. } | ProjectileKind::Trident | ProjectileKind::Thrown(_) => {
+                return None;
+            }
         })
     }
     /// Render scale of the item billboard (fireball renderers).
@@ -895,6 +990,77 @@ mod tests {
         assert!((p.velocity.y - (-0.03 * 0.99)).abs() < 1e-9);
         assert!((p.position.x - 0.99).abs() < 1e-9);
     }
+    #[test]
+    fn a_snowball_with_no_gravity_stays_where_it_was_summoned() {
+        // Entity.getGravity is 0 with NoGravity: at rest, it never moves.
+        let start = Vec3::new(0.5, 100.0, 0.5);
+        let mut p = Projectile::new(ProjectileKind::Snowball, start, None);
+        p.no_gravity = true;
+        let w = Empty(vec![]);
+        for _ in 0..20 {
+            p.tick(&w);
+        }
+        assert_eq!((p.position, p.velocity), (start, Vec3::ZERO));
+    }
+    #[test]
+    fn a_mod_thrown_type_flies_tick_for_tick_as_a_snowball() {
+        static BOLT: ThrownType = ThrownType {
+            id: "ruby:bolt",
+            item: "ruby:gem",
+            damage: 2.0,
+        };
+        let start = Vec3::new(0.0, 100.0, 0.0);
+        let mut snowball = Projectile::new(ProjectileKind::Snowball, start, None);
+        let mut bolt = Projectile::new(ProjectileKind::Thrown(&BOLT), start, None);
+        for p in [&mut snowball, &mut bolt] {
+            p.velocity = Vec3::new(0.3, 0.4, -0.2);
+        }
+        let air = Empty(Vec::new());
+        for _ in 0..40 {
+            assert_eq!(snowball.tick(&air), bolt.tick(&air));
+            assert_eq!(
+                (snowball.position, snowball.velocity, snowball.bounds()),
+                (bolt.position, bolt.velocity, bolt.bounds())
+            );
+        }
+        assert_eq!(bolt.kind.id(), "ruby:bolt");
+        assert_eq!(bolt.drawn_item().unwrap().item.as_ref(), "ruby:gem");
+        // thrown at a mob, it hits it and is gone, as a snowball is.
+        let mut bolt = Projectile::new(ProjectileKind::Thrown(&BOLT), start, Some(Who::Player));
+        (bolt.left_owner, bolt.velocity) = (true, Vec3::new(1.5, 0.0, 0.0));
+        let pig = Aabb::new(Vec3::new(1.0, 99.5, -0.5), Vec3::new(2.0, 100.5, 0.5));
+        let (keep, hit) = bolt.tick(&Empty(vec![(Who::Mob(7), pig)]));
+        assert!(!keep);
+        assert!(matches!(
+            hit,
+            Hit::Entity {
+                who: Who::Mob(7),
+                ..
+            }
+        ));
+    }
+
+    /// the registry is set once per process: every test registers the same.
+    #[test]
+    fn mod_thrown_types_are_found_by_id_and_item_once_registered() {
+        register_test_types();
+        assert!(!register_thrown_types([(
+            "ruby:late".into(),
+            "ruby:x".into(),
+            1.0
+        )]));
+        let bolt = thrown_type("ruby:bolt").unwrap();
+        assert_eq!((bolt.item, bolt.damage), ("ruby:gem", 2.0));
+        assert_eq!(thrown_by_item("ruby:gem"), Some(bolt));
+        assert!(
+            thrown_type("ruby:late").is_none() && thrown_by_item("minecraft:snowball").is_none()
+        );
+        // its template's tracking settings, not the builder defaults.
+        let settings = crate::lan::tracking::settings;
+        assert_eq!(settings("ruby:bolt"), settings("minecraft:snowball"));
+        assert_eq!(settings("ruby:late"), (5, 3, true));
+    }
+
     #[test]
     fn llama_spit_moves_first_then_drags_and_falls() {
         let mut p = Projectile::new(ProjectileKind::LlamaSpit, Vec3::new(0.0, 100.0, 0.0), None);

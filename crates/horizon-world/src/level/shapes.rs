@@ -354,6 +354,13 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
                     table.set_bool(state, self.direction_prop(dir), connect)
                 }
             }
+            // A content mod's connecting block; the chorus plant's PipeBlock
+            // keeps its state (vanilla's has no updateShape).
+            Class::Pipe if b.data(state).class == Class::Pipe => table.set_bool(
+                state,
+                self.direction_prop(dir),
+                self.pipe_connects(state, nstate),
+            ),
             Class::Cocoa => survive_or_air!(dir == b.facing(state)),
             Class::Comparator => {
                 if dir == Direction::Down && !b.is_face_sturdy_rigid(nstate, Direction::Up) {

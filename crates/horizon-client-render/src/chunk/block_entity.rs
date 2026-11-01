@@ -120,6 +120,21 @@ pub struct ModContainer {
     pub outputs: Vec<usize>,
     pub menu: Option<String>,
 }
+/// The fluid tanks of a mod block's block entity, in the container's shape:
+/// each tank's capacity in millibuckets, the tanks each face reaches, and
+/// the tanks a fill may reach and a drain may take. The tanks' contents are
+/// not here: they live in the entity's saved compound, under `fluids`, so
+/// they survive restarts and the block's own tick reads them.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ModFluidTanks {
+    /// Each tank's capacity in millibuckets, in tank order.
+    pub tanks: Vec<i32>,
+    pub faces: [Vec<usize>; 6],
+    /// The tanks a fill may reach (`canPlaceItemThroughFace`).
+    pub inputs: Vec<usize>,
+    /// The tanks a drain may take from (`canTakeItemThroughFace`).
+    pub outputs: Vec<usize>,
+}
 /// The vanilla menus a mod container can open, with the slot count each
 /// shows: slot grids, and the furnaces' (input, fuel, result), whose four
 /// data slots draw the flame (`data[0]` of `data[1]`) and the arrow
@@ -218,6 +233,9 @@ pub struct SkullSkin {
     /// `ResolvableProfile.nameOrId` when the profile is `Dynamic` (a name or
     /// an id only): the key `skins::Resolver` resolves it by.
     pub dynamic: Option<NameOrId>,
+    /// `PlayerSkin.Patch.body`: the profile's `texture`, a resource pack
+    /// texture drawn instead of any skin.
+    pub texture: Option<String>,
     pub fallback: &'static str,
 }
 /// `Either<String, UUID>`: the key a `Dynamic` `ResolvableProfile` resolves
@@ -276,10 +294,18 @@ pub struct Beacon {
 }
 #[derive(Clone, Debug, Default)]
 pub struct Jukebox {
-    pub record: Option<ItemStack>,
+    /// `JukeboxBlockEntity`'s one slot (`ContainerSingleItem`), so a hopper or
+    /// a dropper reaches it as it reaches any container.
+    pub items: [Option<ItemStack>; 1],
     /// `ticks_since_song_started`, while a song plays.
     pub ticks: i64,
     pub playing: bool,
+}
+impl Jukebox {
+    /// `JukeboxBlockEntity.getTheItem`: the disc it holds.
+    pub fn record(&self) -> Option<&ItemStack> {
+        self.items[0].as_ref()
+    }
 }
 /// `BrewingStandBlockEntity` state. Slots: 0-2 bottles, 3 ingredient, 4 fuel.
 #[derive(Clone, Debug, Default)]

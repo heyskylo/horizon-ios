@@ -133,7 +133,7 @@ fn main() -> Result<()> {
                 .collect();
             let descriptor = BlockState {
                 name: name.clone(),
-                properties,
+                properties: properties.into(),
             };
             let Some(id) = registry.id(&descriptor) else {
                 states.insert(key.clone(), Value::Null);

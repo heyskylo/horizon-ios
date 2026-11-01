@@ -100,12 +100,15 @@ import net.minecraft.world.phys.Vec3;
  * recorded too, as component JSON), {@code state on|off} (whether each player
  * also records what the server changes about it: its game mode, teleports,
  * motion, inventory slots, effects and death) and {@code end}, which writes each
- * player's lines to OUT.
+ * player's lines to OUT. {@code boats on|off} records boat paddle metadata;
+ * {@code paddle NAME LEFT RIGHT} sends the two boolean paddle states.
  */
 public final class LocatorBarClient {
+    private static volatile boolean tickSteps;
     private static volatile String step = "start";
     private static volatile boolean players;
     private static volatile boolean chat;
+    private static volatile boolean boats;
     private static volatile boolean state;
     private static final Map<UUID, String> NAMES = new LinkedHashMap<>();
 
@@ -138,9 +141,14 @@ public final class LocatorBarClient {
                         abilities.flying = w[2].equals("on");
                         players.get(w[1]).send(new net.minecraft.network.protocol.game.ServerboundPlayerAbilitiesPacket(abilities));
                     }
+                    case "ticksteps" -> tickSteps = w[1].equals("on");
                     case "still" -> players.get(w[1]).still();
                     case "respawn" -> players.get(w[1]).send(new net.minecraft.network.protocol.game.ServerboundClientCommandPacket(
                         net.minecraft.network.protocol.game.ServerboundClientCommandPacket.Action.PERFORM_RESPAWN));
+                    case "use-on" -> {
+                        String[] a = w[2].split(" ");
+                        players.get(w[1]).useOn(new net.minecraft.core.BlockPos(Integer.parseInt(a[0]), Integer.parseInt(a[1]), Integer.parseInt(a[2])));
+                    }
                     case "use" -> players.get(w[1]).use(Float.parseFloat(w[2]));
                     case "stab" -> players.get(w[1]).stab();
                     case "arc" -> players.get(w[1]).arc(Integer.parseInt(w[2]));
@@ -158,6 +166,12 @@ public final class LocatorBarClient {
                     case "quit" -> players.get(w[1]).close();
                     case "players" -> LocatorBarClient.players = w[1].equals("on");
                     case "chat" -> chat = w[1].equals("on");
+                    case "boats" -> boats = w[1].equals("on");
+                    case "paddle" -> {
+                        String[] sides = w[2].split(" ");
+                        players.get(w[1]).send(new net.minecraft.network.protocol.game.ServerboundPaddleBoatPacket(
+                            Boolean.parseBoolean(sides[0]), Boolean.parseBoolean(sides[1])));
+                    }
                     case "state" -> state = w[1].equals("on");
                     case "end" -> {
                         try (PrintWriter out = new PrintWriter(Files.newBufferedWriter(output, StandardCharsets.UTF_8))) {
@@ -205,6 +219,11 @@ public final class LocatorBarClient {
     }
 
     /** One connection: login and configuration in the caller's thread, then play on its own. */
+    private static boolean isBoat(net.minecraft.world.entity.EntityType<?> type) {
+        String id = net.minecraft.core.registries.BuiltInRegistries.ENTITY_TYPE.getKey(type).toString();
+        return id.endsWith("_boat") || id.endsWith("_raft");
+    }
+
     private static final class Player {
         final String name;
         final List<String> lines = new ArrayList<>();
@@ -218,7 +237,9 @@ public final class LocatorBarClient {
         private boolean loaded;
         /** This player's own entity id (ClientboundLoginPacket). */
         private volatile int id = -1;
+        private int vehicle = -1;
         /** The other players this one was sent, by entity id. */
+        private final java.util.Set<Integer> boatIds = new java.util.HashSet<>();
         private final Map<Integer, String> seen = new java.util.HashMap<>();
         private final Object replyLock = new Object();
         private int replies;
@@ -269,18 +290,20 @@ public final class LocatorBarClient {
          * this player sent since. A sleep of 50 ms drifts from the server's ticks, and a jump then gets a tick of
          * gravity more or less. Vanilla runs commands between ticks and movement in the tick (its PacketProcessor),
          * Horizon both at the tick's start: the latest reply, not a new sync, is the tick to wait past on both.
+         * Returns how many ticks the server ran: more than one when it caught up on a busy machine.
          */
-        void nextTick() throws Exception {
+        long nextTick() throws Exception {
             long now = gameTime;
             long until = System.nanoTime() + 30_000_000_000L;
             while (gameTime == now) {
                 if (System.nanoTime() > until) {
                     record("error no tick after " + now);
-                    return;
+                    return 0;
                 }
                 Thread.sleep(1);
                 sync();
             }
+            return gameTime - now;
         }
 
         void record(String line) {
@@ -294,6 +317,14 @@ public final class LocatorBarClient {
         void use(float pitch) throws Exception {
             send(new net.minecraft.network.protocol.game.ServerboundUseItemPacket(
                 net.minecraft.world.InteractionHand.MAIN_HAND, ++sequence, position.yRot(), pitch));
+        }
+
+        /** Use the named block's top face independently of the player's last look direction. */
+        void useOn(net.minecraft.core.BlockPos pos) throws Exception {
+            send(new net.minecraft.network.protocol.game.ServerboundUseItemOnPacket(
+                net.minecraft.world.InteractionHand.MAIN_HAND,
+                new net.minecraft.world.phys.BlockHitResult(Vec3.atBottomCenterOf(pos).add(0, 1, 0),
+                    net.minecraft.core.Direction.UP, pos, false), ++sequence));
         }
 
         void stab() throws Exception {
@@ -329,7 +360,12 @@ public final class LocatorBarClient {
                 boolean landed = tick > 0 && y == start.y;
                 send(new ServerboundMovePlayerPacket.PosRot(new Vec3(start.x, y, z), at.yRot(), at.xRot(), landed, false));
                 send(net.minecraft.network.protocol.game.ServerboundClientTickEndPacket.INSTANCE);
-                nextTick();
+                long ran = nextTick();
+                // A server catching up runs a tick with no move in it: up to the jab, its copy of the player then
+                // falls a tick of gravity more, and the motion the jab sends says nothing about the jump (#5656).
+                if (ran > 1 && tick <= stabTick) {
+                    record("error the server ran " + ran + " ticks for move " + tick + " of the jump");
+                }
                 if (landed) break;
             }
             position = new PositionMoveRotation(new Vec3(start.x, y, z), Vec3.ZERO, at.yRot(), at.xRot());
@@ -414,7 +450,24 @@ public final class LocatorBarClient {
                     if (p instanceof net.minecraft.network.protocol.game.ClientboundLoginPacket l) {
                         id = l.playerId();
                     }
+                    if (tickSteps && p instanceof net.minecraft.network.protocol.game.ClientboundTickingStepPacket t)
+                        record("tick-step " + t.tickSteps());
+                    if (tickSteps && p instanceof net.minecraft.network.protocol.game.ClientboundBlockEventPacket e
+                        && e.getPos().equals(new net.minecraft.core.BlockPos(0, 80, 0)))
+                        record("piston-event " + e.getB0() + " " + e.getB1());
                     if (state) recordState(p);
+                    if (boats && p instanceof net.minecraft.network.protocol.game.ClientboundAddEntityPacket a
+                        && isBoat(a.getType())) {
+                        boatIds.add(a.getId());
+                    }
+                    if (boats && p instanceof net.minecraft.network.protocol.game.ClientboundSetEntityDataPacket data
+                        && boatIds.contains(data.id())) {
+                        for (var value : data.packedItems()) {
+                            if ((value.id() == 11 || value.id() == 12) && value.value() instanceof Boolean) {
+                                record("paddle " + value.id() + " " + value.value());
+                            }
+                        }
+                    }
                     if (p instanceof net.minecraft.network.protocol.game.ClientboundAddEntityPacket a
                         && a.getType() == net.minecraft.world.entity.EntityTypes.PLAYER) {
                         String who = NAMES.getOrDefault(a.getUUID(), "uuid?");
@@ -490,6 +543,12 @@ public final class LocatorBarClient {
             if (p instanceof net.minecraft.network.protocol.game.ClientboundGameEventPacket g
                 && g.getEvent() == net.minecraft.network.protocol.game.ClientboundGameEventPacket.CHANGE_GAME_MODE) {
                 record("gamemode " + (int) g.getParam());
+            } else if (p instanceof net.minecraft.network.protocol.game.ClientboundSetPassengersPacket passengers) {
+                boolean aboard = java.util.Arrays.stream(passengers.getPassengers()).anyMatch(passenger -> passenger == id);
+                if (aboard || passengers.getVehicle() == vehicle) {
+                    vehicle = aboard ? passengers.getVehicle() : -1;
+                    record("passenger " + aboard);
+                }
             } else if (p instanceof net.minecraft.network.protocol.game.ClientboundContainerSetSlotPacket c) {
                 record("slot " + c.getContainerId() + " " + c.getSlot() + " " + item(c.getItem()));
             } else if (p instanceof net.minecraft.network.protocol.game.ClientboundSetPlayerInventoryPacket i) {

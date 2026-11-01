@@ -212,7 +212,7 @@ fn operating_system() -> String {
     } else if cfg!(target_os = "macos") {
         command_output("sw_vers", &["-productVersion"]).map(|v| format!("macOS {v}"))
     } else if cfg!(windows) {
-        command_output("cmd", &["/C", "ver"])
+        horizon_telemetry::system::windows_version()
     } else {
         None
     };
@@ -235,6 +235,8 @@ pub fn cpu() -> String {
         })
     } else if cfg!(target_os = "macos") {
         command_output("sysctl", &["-n", "machdep.cpu.brand_string"])
+    } else if cfg!(windows) {
+        horizon_telemetry::system::windows_cpu()
     } else {
         std::env::var("PROCESSOR_IDENTIFIER").ok()
     };
@@ -354,7 +356,8 @@ fn deliver(home: &Path, report: Report) -> Option<PathBuf> {
     );
     crate::logging::flush();
     crate::telemetry::keep_crash(home, &report);
-    match report.save(home) {
+    // A player of a shared game folder (`--player-dir`) finds the report beside its own log.
+    match report.save(crate::logging::player_dir_override().unwrap_or(home)) {
         Ok(path) => {
             eprintln!("{SAVED_LINE}{}", path.display());
             Some(path)
@@ -384,6 +387,30 @@ pub fn report_watchdog(home: &Path, side: &'static str, message: String) -> Opti
             log: crate::logging::recent_lines(),
         },
     )
+}
+
+/// The report for a game that went over the player's RAM limit (`ram_limit`), written by the
+/// watcher thread: it says nothing about where the memory went, so it carries no stack. The player
+/// chose this limit, so it is no bug to send (`telemetry::keep_crash`), and leaving that out ends
+/// the game seconds sooner: it keeps running, over its limit, until the report is written.
+pub fn report_memory_limit(home: &Path, side: &'static str, message: String) {
+    if REPORTED.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let report = Report {
+        time: Local::now(),
+        description: "RAM limit reached".into(),
+        error: message,
+        stack: String::new(),
+        thread: thread_name(side),
+        side,
+        details: system_details(side),
+        log: crate::logging::recent_lines(),
+    };
+    match report.save(home) {
+        Ok(path) => eprintln!("{SAVED_LINE}{}", path.display()),
+        Err(e) => eprintln!("Horizon: could not save a crash report: {e}"),
+    }
 }
 
 fn payload_text(payload: &(dyn std::any::Any + Send)) -> String {

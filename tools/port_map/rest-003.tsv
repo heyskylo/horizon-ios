@@ -15,7 +15,7 @@ ShotCrossbowTrigger.TriggerInstance.shotCrossbow	skip:data		criterion factory
 ShotCrossbowTrigger.TriggerInstance.matches	port	crates/horizon-client/src/game/advancements.rs::Game::trigger_item	fired from crossbow.rs with the shot item
 SlideDownBlockTrigger.TriggerInstance.slidesDownBlock	skip:data		criterion factory
 SlideDownBlockTrigger.TriggerInstance.matches	port	crates/horizon-client/src/game/advancements.rs::Game::trigger_honey_slide	block and state match
-SpearMobsTrigger.TriggerInstance.matches	missing		player: the spear_many_mobs advancement is never granted; spear hits do not count the mobs they hit (spear.rs fires no trigger)
+SpearMobsTrigger.TriggerInstance.matches	port	crates/horizon-client/src/game/advancements.rs::Game::trigger_spear_mobs	the criterion fires from there; its test is the closure given to `trigger`
 SummonedEntityTrigger.trigger	port	crates/horizon-client/src/game/advancements.rs::Game::trigger_entity	summoned_entity fired from wither.rs
 SummonedEntityTrigger.TriggerInstance.matches	port	crates/horizon-client/src/game/advancements.rs::Game::trigger_entity	entity predicate
 TameAnimalTrigger.trigger	port	crates/horizon-client/src/game/advancements.rs::Game::trigger_entity	tame_animal fired from creatures.rs, nautili.rs and mounts.rs
@@ -89,7 +89,7 @@ Minecraft.debugClientMetricsStart	skip:debug		metrics recording
 Minecraft.archiveProfilingReport	skip:debug		profiling archive
 Minecraft.isLevelRunningNormally	port	crates/horizon-client/src/clock.rs::TickRateManager::runs_normally	
 Minecraft.isMultiplayerServer	skip:other		no single predicate; remote and LAN code test their own state
-Minecraft.getQuickActionsDialog	missing		minor: no key.quickActions binding, so the quick actions dialog cannot open
+Minecraft.getQuickActionsDialog	port	crates/horizon-client/src/game/quick_actions.rs::Game::open_quick_actions	key.quickActions opens the tag's dialog, or minecraft:quick_actions when it names several
 Minecraft.disconnectFromWorld	port	crates/horizon-client/src/game/remote.rs::Game::leave_server	gap: minor: only the remote exit; local worlds exit via close_world
 Minecraft.disconnectWithProgressScreen	inline	crates/horizon-client/src/game.rs::Game::close_world	the exit is folded into the world close
 Minecraft.clearClientLevel	inline	crates/horizon-client/src/game/remote.rs::Game::leave_server	level teardown is part of leave_server

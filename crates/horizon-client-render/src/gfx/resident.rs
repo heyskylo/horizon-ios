@@ -2,7 +2,9 @@
 //! per-frame culling walk: a column whose box misses the frustum or lies past
 //! the render distance rejects all of its sections with one test, and the
 //! sections that remain are reached by index rather than by hashing keys.
-use super::{Frustum, SectionKey};
+#[cfg(test)]
+use super::Frustum;
+use super::{Cull, SectionKey};
 use crate::{fast_hash::FxHashMap, streaming::in_view_distance};
 use glam::{DVec3, Vec3};
 
@@ -58,6 +60,9 @@ impl<T> Resident<T> {
     }
     pub fn values(&self) -> impl Iterator<Item = &T> {
         self.items.iter().map(|(_, v)| v)
+    }
+    pub fn values_mut(&mut self) -> impl Iterator<Item = &mut T> {
+        self.items.iter_mut().map(|(_, v)| v)
     }
     /// `key`'s value, when it is resident.
     pub fn find(&self, key: SectionKey) -> Option<&T> {
@@ -226,7 +231,7 @@ fn in_frustum(
     key: SectionKey,
     min_y: i32,
     camera: DVec3,
-    frustum: &Frustum,
+    frustum: &impl Cull,
     inside: bool,
     bounds: Option<[Vec3; 2]>,
 ) -> Option<(f64, Vec3)> {
@@ -258,7 +263,7 @@ impl<T> Resident<T> {
         &self,
         camera: DVec3,
         radius: i32,
-        frustum: &Frustum,
+        frustum: &impl Cull,
         reachable: impl Fn(SectionKey) -> bool,
         beyond: impl Fn(i32, i32) -> bool,
         out: &mut Vec<Visible>,

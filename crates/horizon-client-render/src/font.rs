@@ -112,6 +112,8 @@ struct Region {
     cursor: (u32, u32),
     row: u32,
     pending: Vec<Patch>,
+    /// A glyph did not fit since the last `Font::begin_frame`.
+    full: bool,
 }
 struct Cache {
     /// Every font by id, the default one first (the common lookup).
@@ -546,6 +548,7 @@ impl Region {
             self.row = 0;
         }
         if y + h > region.1 {
+            self.full = true;
             return None;
         }
         let (ax, ay) = (x, region.0 + y);
@@ -603,6 +606,7 @@ impl Font {
                     cursor: (0, 0),
                     row: 0,
                     pending: Vec::new(),
+                    full: false,
                 },
                 random: horizon_core::random::LegacyRandom::new(
                     std::time::SystemTime::now()
@@ -669,7 +673,18 @@ impl Font {
         }
         cache.region.cursor = (0, 0);
         cache.region.row = 0;
+        cache.region.full = false;
         self.generation.set(next_generation());
+    }
+    /// Call once per frame before any text is laid out. When the dynamic
+    /// region ran out of room (vanilla's glyph textures grow instead), the
+    /// glyphs are forgotten so they are rasterized again from the start; it
+    /// waits for the frame boundary because quads already queued hold the old
+    /// rects.
+    pub fn begin_frame(&self) {
+        if self.cache.borrow().region.full {
+            self.reset_cache();
+        }
     }
     /// Changes whenever a glyph may come out different: another font, a
     /// cache reset (glyphs move in the atlas) or other font options. Text laid
@@ -706,7 +721,16 @@ impl Font {
         if let Some(g) = set.glyphs.get(&c) {
             return *g;
         }
-        let glyph = self.resolve(set, region, c).unwrap_or(self.missing);
+        let was_full = std::mem::replace(&mut region.full, false);
+        let found = self.resolve(set, region, c);
+        // No room: the missing glyph for now, not remembered, so the
+        // character is tried again once `begin_frame` cleared the region.
+        let overflowed = std::mem::replace(&mut region.full, was_full);
+        region.full |= overflowed;
+        if overflowed {
+            return self.missing;
+        }
+        let glyph = found.unwrap_or(self.missing);
         set.glyphs.insert(c, glyph);
         glyph
     }
@@ -1417,5 +1441,57 @@ mod tests {
         font.uniform = true;
         font.reset_cache();
         assert_eq!(font.glyph('a').advance, 2.0);
+    }
+
+    #[test]
+    fn a_full_glyph_region_recovers_at_the_next_frame() {
+        // Two 8x8 glyphs from a sheet outside the atlas; the region holds one row.
+        let sheet = png(16, 8, |x, _| x % 8 < 4);
+        let default = br#"{"providers":[{"type":"bitmap","file":"pack:font/s.png","ascent":7,"chars":["ab"]}]}"#;
+        let root = root(
+            "full",
+            &[
+                ("assets/minecraft/font/default.json", default),
+                ("assets/pack/textures/font/s.png", &sheet),
+            ],
+        );
+        // A 10 wide atlas fits one 8 pixel glyph per row; the region two rows.
+        let font = Font::load(&root, &HashMap::new(), &[], (10, 64), (0, 8), white());
+        let _ = std::fs::remove_dir_all(&root);
+        let epoch = font.epoch();
+        let a = font.glyph('a');
+        assert!(a.rect.is_some());
+        // No room for 'b': missing for now, and asked again next time.
+        assert!(font.glyph('b').rect.is_none());
+        assert!(font.glyph('b').rect.is_none());
+        assert_eq!(font.epoch(), epoch);
+        font.begin_frame();
+        assert_ne!(font.epoch(), epoch);
+        let b = font.glyph('b');
+        assert!(b.rect.is_some());
+        assert_eq!(b.advance, a.advance);
+        // Nothing overflowed since: the next frame keeps the glyphs.
+        let epoch = font.epoch();
+        font.begin_frame();
+        assert_eq!(font.epoch(), epoch);
+    }
+
+    #[test]
+    fn a_character_without_a_provider_does_not_reset_the_region() {
+        let sheet = png(8, 8, |x, _| x < 4);
+        let default = br#"{"providers":[{"type":"bitmap","file":"pack:font/s.png","ascent":7,"chars":["a"]}]}"#;
+        let root = root(
+            "nofill",
+            &[
+                ("assets/minecraft/font/default.json", default),
+                ("assets/pack/textures/font/s.png", &sheet),
+            ],
+        );
+        let font = Font::load(&root, &HashMap::new(), &[], (10, 64), (0, 8), white());
+        let _ = std::fs::remove_dir_all(&root);
+        let epoch = font.epoch();
+        assert!(font.glyph('z').rect.is_none());
+        font.begin_frame();
+        assert_eq!(font.epoch(), epoch);
     }
 }

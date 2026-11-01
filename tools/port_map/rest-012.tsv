@@ -32,7 +32,7 @@ ClientboundBossEventPacket.createUpdateNamePacket	missing		player: boss bar name
 ClientboundBossEventPacket.createUpdateStylePacket	missing		player: boss bar colour and overlay changes are never sent to other players; the LAN host has no BossEvent sender
 ClientboundBossEventPacket.createUpdatePropertiesPacket	missing		player: boss bar fog, music and darkening flags are never sent to other players; the LAN host has no BossEvent sender
 ClientboundBossEventPacket.encodeProperties	port	crates/horizon-protocol/src/packets/play.rs::boss_flags	the three flag bits (darken, music, fog)
-ClientboundBossEventPacket.AddOperation.dispatch	missing		player: boss bars from a server (wither, dragon fight) never appear; remote.rs has no BossEvent arm
+ClientboundBossEventPacket.AddOperation.dispatch	port	crates/horizon-client/src/boss_overlay.rs::BossOverlay::apply	
 ClientboundChunksBiomesPacket.ChunkBiomeData.calculateChunkSize	missing		minor: biome-only chunk updates are never sent; no ChunksBiomes packet in ids.rs
 ClientboundChunksBiomesPacket.ChunkBiomeData.extractChunkData	missing		minor: biome-only chunk updates are never sent; no ChunksBiomes packet in ids.rs
 ClientboundCommandSuggestionsPacket.toSuggestions	port	crates/horizon-client/src/game/remote.rs::Game::handle_command_suggestions	start, length and tooltip become the suggestion range

@@ -13,7 +13,7 @@ reopened; labels never start it):
 
 | Job | Runs on | What | Time |
 | --- | --- | --- | --- |
-| `verify` | GitHub `ubuntu-latest` | Public-tree check, Python tests, rustfmt, clippy with warnings denied, Rust tests. Dependencies and the workspace build come from a cache saved by main's runs | ~4 min cold, less warm |
+| `verify` | GitHub `ubuntu-latest`; with `SELF_HOSTED_CI=all`, playhorizon's checks runners for main's pushes and this repository's own pull requests, never a fork's ([CI runners](ci-runners.md)) | Public-tree check, Python tests, rustfmt, clippy with warnings denied, Rust tests, one after another in one job (one runner from the organisation's shared pool per run). Dependencies and the workspace build come from a cache saved by main's runs (GitHub) or the runner's own build folder (playhorizon) | ~8 min |
 | `parity / parity` | A runner with the label `horizon-game`: the Mac mini's and playhorizon's (below) | Only for a change to a harness, an oracle, a probe or the runner (or the `run-parity` label): the vanilla harnesses the change can affect (`tools/parity.py --changed <base>`). Other pull requests skip it: [parity-main](#parity-on-main) checks them on main | seconds when nothing is affected; minutes per affected harness |
 
 Pushes to main run `verify` only; the nightly audit covers main's harnesses.
@@ -21,7 +21,8 @@ Pushes to main run `verify` only; the nightly audit covers main's harnesses.
 `verify` is the check main requires, so it has no condition and runs in every run of `checks`: GitHub counts a
 *skipped* required check as passed, and labels used to start runs whose `verify` was skipped, which let
 auto-merge merge before the real `verify` finished. A pull request that changes no Rust (docs, tools) runs only its
-quick steps and finishes in seconds.
+quick steps and finishes in about a minute. A pull request's public-tree check reads only
+its own commits (`--range base..head`); main's pushes read every ref's history.
 
 ### The parity job
 
@@ -275,6 +276,7 @@ the notes.
 | `horizon-server-linux-x86_64.tar.gz` | the same Linux job, after the client archive: `horizon-server`, `horizon-prepare` and the game built with `--no-default-features` as `horizon-engine` (docs/server.md) | as above, and neither `libasound.so.2` nor `libudev.so.1` (`tools/check_imports.py --server`) |
 | `horizon-windows-x64.zip` | GitHub `windows-latest`, C runtime linked in | system DLLs only (`tools/check_imports.py`) |
 | `horizon-macos-arm64.zip` | The Mac mini's runner (`vars.MAC_RUNNER=macos-latest` sends it to GitHub) | system libraries only (`otool -L`); a 1500-frame offscreen run of a new world (about 12 s; 300 frames end before the world has loaded) with resources prepared from the runner's own Minecraft (`--offscreen --world smoke --frames 1500 --smoke-report`: frames drawn, chunks generated and meshed, a player, no error) |
+| `horizon-macos-x64.zip` | The same runner, cross-built for `x86_64-apple-darwin` (#1161) | as `horizon-macos-arm64.zip`, every program and the 1500-frame run under Rosetta 2; only the arm64 build's `smoke-test.json` is published |
 
 Each builds `horizon-client`, `horizon-ctl` and `horizon-prepare` in release mode, checks all three exist, starts
 each one (`--help`, `--version`), packages the folder with `cargo run -p xtask -- package` and archives it. The
@@ -397,7 +399,7 @@ Making a launcher release GitHub's latest instead would break servers: every `ho
 can't update can't fetch the fix either. So the game release stays the latest, and it sends people to the launcher
 (#1647): its notes open with a "Want to play? Download the Horizon launcher" block (`PLAYERS` in
 `tools/release_train.py`: raw HTML, which GitHub shows and launchers' notes skip; the site's Releases page leaves
-it out too), and its archives carry labels ("Game files the
+it out too), which `PLAYERS_FOOTER` repeats above the disclaimer at the end, and its archives carry labels ("Game files the
 launcher installs: Linux (…)") that GitHub shows in place of the file names. Everything that downloads matches
 the asset's name, which is unchanged.
 

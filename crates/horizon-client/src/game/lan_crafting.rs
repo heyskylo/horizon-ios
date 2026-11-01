@@ -21,7 +21,7 @@ pub(super) struct GuestCrafting {
     /// The inventory menu; its grid lives in the hub's guest.
     inventory: Option<Box<Menu>>,
     /// The open crafting table: its window, state id, menu and block.
-    table: Option<(i32, i32, Box<Menu>, [i32; 3])>,
+    pub(super) table: Option<(i32, i32, Box<Menu>, [i32; 3])>,
     /// The open furnace's or brewing stand's window and menu (`AbstractFurnaceMenu`,
     /// `BrewingStandMenu`); its slots live in the block entity and the hub's
     /// container menu keeps the client in sync.
@@ -208,8 +208,9 @@ impl Game<'_> {
 
     /// A click on the guest's open furnace, blast furnace, smoker or brewing stand:
     /// the host's `AbstractFurnaceMenu` (fuel slot, take-only result, quick moves by
-    /// recipe and fuel) or `BrewingStandMenu` (one bottle per slot, ingredient and
-    /// blaze powder slots) over the block entity's slots. False for other windows.
+    /// recipe and fuel), `BrewingStandMenu` (one bottle per slot, ingredient and
+    /// blaze powder slots) or a content mod's menu type (`Kind::Mod`) over the
+    /// block entity's slots. False for other windows.
     pub(super) fn lan_machine_click(
         &mut self,
         host: &mut LanHost,
@@ -219,12 +220,12 @@ impl Game<'_> {
         let Some(gi) = host.hub.guests.iter().position(|g| g.conn == conn) else {
             return false;
         };
-        let Some(pos) = host.hub.guests[gi]
+        let Some((pos, mod_type, hidden)) = host.hub.guests[gi]
             .menu
             .as_ref()
             .filter(|m| p.container != 0 && m.window == p.container)
             .and_then(|m| match m.slots {
-                Slots::Block(pos) => Some(pos),
+                Slots::Block(pos) => Some((pos, m.mod_type, m.hidden.clone())),
                 _ => None,
             })
         else {
@@ -241,6 +242,15 @@ impl Game<'_> {
             }
             Some(BlockEntity::Brewing(b)) => (Kind::Brewing, b.items.to_vec()),
             Some(BlockEntity::Crafter(c)) => (Kind::CrafterBlock, c.items.to_vec()),
+            // A content mod's menu type, with its slots' rules.
+            Some(BlockEntity::Mod(m)) => match mod_type {
+                Some(t) => {
+                    let mut items = m.items.clone();
+                    items.resize(t.slots, None);
+                    (Kind::Mod(t), items)
+                }
+                None => return false,
+            },
             _ => return false,
         };
         let furnace = matches!(kind, Kind::Furnace(_));
@@ -262,8 +272,11 @@ impl Game<'_> {
             .crafting
             .machine
             .take()
-            .filter(|(window, _)| *window == p.container)
+            .filter(|(window, m)| *window == p.container && m.kind() == kind)
             .map_or_else(|| Box::new(Menu::new(kind)), |(_, m)| m);
+        for &slot in &hidden {
+            menu.hide_slot(slot);
+        }
         let changed = self.guest_menu_op(host, gi, &mut menu, |menu, env| {
             for (k, s) in items.iter().enumerate() {
                 menu.set_slot(env, k, s.clone());
@@ -295,6 +308,16 @@ impl Game<'_> {
             Some(BlockEntity::Brewing(b)) => {
                 for k in 0..5 {
                     b.items[k] = menu.slot(k).cloned();
+                }
+            }
+            // The mod's items past its menu's slots stay as they were.
+            Some(BlockEntity::Mod(m)) => {
+                let n = items.len();
+                if m.items.len() < n {
+                    m.items.resize(n, None);
+                }
+                for (k, slot) in m.items.iter_mut().take(n).enumerate() {
+                    *slot = menu.slot(k).cloned();
                 }
             }
             // CrafterBlockEntity.setItem: filling a disabled slot enables it.
@@ -373,9 +396,10 @@ impl Game<'_> {
         if g.spectator() {
             return;
         }
-        let Some(id) = self
-            .res
-            .stations()
+        // The server menu uses the world's active data-pack tables, the same
+        // tables used by the guest menu below. The base resources can have a
+        // different display registry or placement for an overridden recipe.
+        let Some(id) = world_stations!(self)
             .recipe_index
             .recipe_of_display(p.recipe)
             .map(str::to_owned)
@@ -384,9 +408,7 @@ impl Game<'_> {
         };
         // An unknown or impossible recipe is refused outright.
         if !g.recipe_book.knows(&id)
-            || self
-                .res
-                .recipes()
+            || world_recipes!(self)
                 .placement(&id)
                 .is_none_or(|placement| placement.impossible())
         {
@@ -437,10 +459,8 @@ impl Game<'_> {
 
     /// The guest opened a crafting table (`CraftingTableBlock.getMenuProvider`).
     pub(super) fn lan_open_crafting(&mut self, host: &mut LanHost, conn: u32, pos: [i32; 3]) {
-        self.lan_crafting_closed(host, conn, None);
-        self.lan_station_closed(host, conn, None);
-        // The container it replaces loses its opener.
-        self.guest_container_closed(host, conn);
+        // ServerPlayer.openMenu closes the menu that was open.
+        self.guest_close_all(host, conn);
         let title = horizon_protocol::text::translatable("container.crafting", &[]);
         let Some(window) = host.hub.open_window(conn, "minecraft:crafting", title) else {
             return;
@@ -510,7 +530,7 @@ impl Game<'_> {
 
     /// `CraftingMenu.stillValid`: the block is still a crafting table and the
     /// guest is within reach of it.
-    fn lan_table_valid(&self, g: &Guest, pos: [i32; 3]) -> bool {
+    pub(super) fn lan_table_valid(&self, g: &Guest, pos: [i32; 3]) -> bool {
         let name = &self
             .res
             .facts()

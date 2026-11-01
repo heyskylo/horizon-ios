@@ -92,8 +92,9 @@ impl BlockRegistry {
     pub fn from_facts_json_with_flags(
         reader: impl io::Read,
     ) -> io::Result<(Self, Vec<(bool, bool)>)> {
-        let facts: facts::Facts = serde_json::from_reader(io::BufReader::new(reader))
-            .map_err(|e| invalid(e.to_string()))?;
+        let facts: facts::Facts =
+            facts::with_shared_strings(|| serde_json::from_reader(io::BufReader::new(reader)))
+                .map_err(|e| invalid(e.to_string()))?;
         let flags = facts.states.iter().map(|r| (r.air, r.fluid)).collect();
         let states = facts.states.into_iter().map(|r| r.state).collect();
         Ok((Self::from_states(states, facts.defaults)?, flags))
@@ -109,7 +110,10 @@ impl BlockRegistry {
             collided: BTreeMap::new(),
             defaults: BTreeMap::new(),
         };
-        for (i, state) in states.into_iter().enumerate() {
+        // The states' property names and values: a few hundred strings, shared.
+        let mut strings = crate::block_state_properties::SharedStrings::default();
+        for (i, mut state) in states.into_iter().enumerate() {
+            state.properties.share(&mut strings);
             if result.id(&state).is_some() {
                 return Err(invalid("duplicate block registry state"));
             }

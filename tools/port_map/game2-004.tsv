@@ -47,7 +47,7 @@ PiglinAi.initIdleActivity	inline	crates/horizon-client/src/mobs/piglin.rs::regis
 PiglinAi.initFightActivity	inline	crates/horizon-client/src/mobs/piglin.rs::register_piglin	gap: minor: no spear approach or attack, no back-off for crossbow piglins, no erase of the attack target near zombified piglins
 PiglinAi.initCelebrateActivity	inline	crates/horizon-client/src/mobs/piglin.rs::Celebrate::walk	gap: minor: walks to the spot only; no look at gold-holding players and no random strolls
 PiglinAi.initAdmireItemActivity	inline	crates/horizon-client/src/mobs/piglin.rs::GoToWantedItem::can_use	gap: minor: no give-up after 9 blocks or 200 ticks of trying to reach the item
-PiglinAi.initRetreatActivity	missing		player: piglins never retreat from hoglins or other avoid targets; they keep fighting or idling instead
+PiglinAi.initRetreatActivity	port	crates/horizon-client/src/mobs/piglin.rs::register_piglin	
 PiglinAi.initRideHoglinActivity	missing		player: baby piglins never ride baby hoglins
 PiglinAi.createLookBehaviors	inline	crates/horizon-client/src/mobs/piglin.rs::register_piglin	gap: minor: looks at players only; piglins and random look targets are not there
 PiglinAi.createIdleLookBehaviors	inline	crates/horizon-client/src/mobs/piglin.rs::register_piglin	gap: minor: looks at players only, no idle look at piglins or random points

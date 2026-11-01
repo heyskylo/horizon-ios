@@ -16,6 +16,27 @@ pub(super) struct ModsState {
     stopped: Vec<String>,
 }
 
+/// Freeze native component IDs before reading content or opening a connection.
+/// With no mod registering any, nothing is installed, which every reader
+/// treats as no custom components, and `registries.json` isn't read.
+pub(super) fn register_components(root: &std::path::Path) -> horizon_client::Result<()> {
+    let mut names = Vec::new();
+    Game::native_component_types(&mut names);
+    if names.is_empty() {
+        return Ok(());
+    }
+    let path =
+        horizon_protocol::registry::Builtin::find(root).ok_or("registries.json not found")?;
+    let builtin = horizon_protocol::registry::Builtin::load(&path)?;
+    let types = builtin
+        .get("minecraft:data_component_type")
+        .ok_or("missing data component registry")?;
+    let first = i32::try_from(types.names.len())?;
+    horizon_protocol::item::custom::install(first, names)
+        .map_err(|error| format!("invalid native component registration: {error}"))?;
+    Ok(())
+}
+
 /// `root` with the content mods that are on layered over it
 /// (docs/modpacks.md): their blocks, items, data and assets. Read once at
 /// start, before the resources load; a mod whose content is refused is left
@@ -31,6 +52,7 @@ pub(super) fn content_root(
     let mut paths = horizon_mods::find(&here.join(mod_list::DIR));
     paths.retain(|p| !dev.contains(p));
     paths.extend(dev.iter().cloned());
+    let mut known = None;
     let mut mods: Vec<ContentMod> = Vec::new();
     for path in &paths {
         let Ok(package) = Package::read(path) else {
@@ -44,23 +66,30 @@ pub(super) fn content_root(
         {
             continue;
         }
-        let content = Content::read(path, m).and_then(|content| {
-            // The first of two mods owning one namespace stays on.
-            let own = (m.id.as_str(), content.namespaces.as_slice());
-            match mods
-                .iter()
-                .find_map(|c| horizon_mods::content::clash((&c.id, &c.content.namespaces), own))
-            {
-                Some(e) => Err(e),
-                None => Ok(content),
+        let content = match Content::read(path, m) {
+            Ok(content) => content,
+            Err(e) => {
+                log::warn!("Horizon: mod {} content not loaded: {e}", m.id);
+                continue;
             }
-        });
-        match content {
-            Ok(content) => mods.push(ContentMod {
-                id: m.id.clone(),
-                content,
-            }),
-            Err(e) => log::warn!("Horizon: mod {} content not loaded: {e}", m.id),
+        };
+        let known = match &mut known {
+            Some(types) => types,
+            None => match mod_content::known_components(root) {
+                Ok(types) => known.insert(types),
+                Err(e) => {
+                    log::warn!("Horizon: content mods not loaded: {e}");
+                    register_mob_effects(&[]);
+                    return root.to_owned();
+                }
+            },
+        };
+        let candidate = ContentMod {
+            id: m.id.clone(),
+            content,
+        };
+        if let Err(e) = mod_content::accept_mod(&mut mods, candidate, known) {
+            log::warn!("Horizon: mod {} content not loaded: {e}", m.id);
         }
     }
     match mod_content::resource_root(root, &mods, &here.join(".horizon-cache")) {
@@ -73,11 +102,15 @@ pub(super) fn content_root(
                 );
             }
             register_mob_effects(&mods);
+            register_entity_types(&mods);
+            register_menu_types(&mods);
             out
         }
         Err(e) => {
             log::warn!("Horizon: content mods not loaded: {e}");
             register_mob_effects(&[]);
+            register_entity_types(&[]);
+            register_menu_types(&[]);
             root.to_owned()
         }
     }
@@ -110,8 +143,53 @@ fn register_mob_effects(mods: &[horizon_client::mod_content::ContentMod]) {
     }
 }
 
+/// the mods' thrown entity types, as their mob effects: set once, from the
+/// startup root.
+fn register_entity_types(mods: &[horizon_client::mod_content::ContentMod]) {
+    use horizon_client::projectiles;
+    let types = horizon_client::mod_content::entity_types(mods);
+    let set = projectiles::register_thrown_types(
+        types
+            .iter()
+            .map(|t| (t.id.clone(), t.item.clone(), t.damage)),
+    );
+    if !set
+        && projectiles::thrown_types()
+            .iter()
+            .map(|t| t.id)
+            .ne(types.iter().map(|t| t.id.as_str()))
+    {
+        log::warn!("Horizon: the mods' entity types changed; restart the game to use them");
+    }
+}
+
+/// the mods' menu types, as their entity types: set once, from the startup
+/// root.
+fn register_menu_types(mods: &[horizon_client::mod_content::ContentMod]) {
+    use horizon_client::containers;
+    let menus = horizon_client::mod_content::menu_types(mods);
+    let set = containers::register_mod_menu_types(menus.iter().map(|m| {
+        let results = m.results.iter().map(|&r| usize::from(r)).collect();
+        (m.id.clone(), m.slots.into(), m.data_slots.into(), results)
+    }));
+    if !set
+        && containers::mod_menu_types()
+            .iter()
+            .map(|m| m.id)
+            .ne(menus.iter().map(|m| m.id.as_str()))
+    {
+        log::warn!("Horizon: the mods' menu types changed; restart the game to use them");
+    }
+}
+
 /// What the launcher writes beside a game it built with native mods: their ids under `mods`.
 const BUILD_INFO: &str = "native-mods.json";
+
+/// Whether the launcher built this game with native mods (`built`: its [`BUILD_INFO`]).
+fn built_with_mods(built: &str) -> bool {
+    let info: serde_json::Value = serde_json::from_str(built).unwrap_or_default();
+    info["mods"].as_array().is_some_and(|mods| !mods.is_empty())
+}
 
 /// A row for each native mod the launcher installed in `dir` (`<id>.hnmod`) that this game wasn't
 /// built with (`built`: its [`BUILD_INFO`], empty for a release or Nightly) and that has no row
@@ -161,7 +239,7 @@ impl Game<'_> {
     /// mods don't run any more: their rows say so, and the player hears it once in the chat
     /// (`tell_native_now`).
     pub(super) fn start_mods(&mut self) {
-        let dir = Self::options_path().with_file_name(mod_list::DIR);
+        let dir = Self::game_dir().join(mod_list::DIR);
         let mut paths = horizon_mods::find(&dir);
         paths.retain(|p| !self.mods.dev.contains(p));
         paths.extend(self.mods.dev.iter().cloned());
@@ -200,7 +278,16 @@ impl Game<'_> {
             .ok()
             .and_then(|exe| std::fs::read_to_string(exe.with_file_name(BUILD_INFO)).ok())
             .unwrap_or_default();
-        let native_dir = Self::options_path().with_file_name(mod_list::NATIVE_DIR);
+        horizon_client::gfx::native_render::set_mods_built_in(
+            built_with_mods(&built)
+                || self
+                    .settings
+                    .mods
+                    .installed
+                    .iter()
+                    .any(|m| m.native.is_some()),
+        );
+        let native_dir = Self::game_dir().join(mod_list::NATIVE_DIR);
         let unbuilt = not_built(&native_dir, &built, &self.settings.mods.installed);
         self.settings.mods.installed.extend(unbuilt);
         let installed = &self.settings.mods.installed;
@@ -216,9 +303,7 @@ impl Game<'_> {
             return;
         }
         let names = std::mem::take(&mut self.mods.stopped).join(", ");
-        let seen = Self::options_path()
-            .with_file_name(mod_list::DIR)
-            .join(NOTICE_SEEN);
+        let seen = Self::game_dir().join(mod_list::DIR).join(NOTICE_SEEN);
         if seen.exists() {
             return;
         }

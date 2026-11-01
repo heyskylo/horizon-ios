@@ -434,6 +434,10 @@ pub struct Camera {
     pub up: [f32; 3],
     pub left: [f32; 3],
     pub detached: bool,
+    /// The entity's eye and view rotation (yaw, pitch), where a detached camera backs off
+    /// from.
+    pub eye: [f64; 3],
+    pub eye_rotation: [f32; 2],
 }
 impl Default for Camera {
     fn default() -> Self {
@@ -450,6 +454,8 @@ impl Default for Camera {
             up: [0.0, 1.0, 0.0],
             left: [-1.0, 0.0, 0.0],
             detached: false,
+            eye: [0.0; 3],
+            eye_rotation: [0.0; 2],
         }
     }
 }
@@ -495,6 +501,19 @@ impl Camera {
         entity: &CameraEntity,
         partial: f32,
         camera_type: CameraType,
+        clip: impl FnMut([f64; 3], [f64; 3]) -> Option<[f64; 3]>,
+    ) {
+        self.align_with_entity_distance(entity, partial, camera_type, |distance| distance, clip);
+    }
+    /// Adjust the detached distance after entity/mount scaling, before collision clipping.
+    /// Only finite overrides in 0..=1024 blocks are accepted (within the game's ray budget).
+    /// First-person views do not call `adjust_distance`.
+    pub fn align_with_entity_distance(
+        &mut self,
+        entity: &CameraEntity,
+        partial: f32,
+        camera_type: CameraType,
+        adjust_distance: impl FnOnce(f32) -> f32,
         mut clip: impl FnMut([f64; 3], [f64; 3]) -> Option<[f64; 3]>,
     ) {
         self.set_rotation(entity.view_y_rot(partial), entity.view_x_rot(partial));
@@ -505,6 +524,8 @@ impl Camera {
                 + f64::from(lerp(partial, self.eye_height_old, self.eye_height)),
             lerp_d(p, entity.previous[2], entity.position[2]),
         ];
+        self.eye = self.position;
+        self.eye_rotation = [self.y_rot, self.x_rot];
         self.detached = !camera_type.is_first_person();
         if self.detached {
             if camera_type.is_mirrored() {
@@ -520,10 +541,14 @@ impl Camera {
                 mount_scale = s;
                 mount_distance = d as f32;
             }
-            let zoom = self.max_zoom(
-                java_max(scale * distance, mount_scale * mount_distance),
-                &mut clip,
-            );
+            let vanilla = java_max(scale * distance, mount_scale * mount_distance);
+            let adjusted = adjust_distance(vanilla);
+            let distance = if adjusted.is_finite() && (0.0..=1024.0).contains(&adjusted) {
+                adjusted
+            } else {
+                vanilla
+            };
+            let zoom = self.max_zoom(distance, &mut clip);
             self.move_by(-zoom, 0.0, 0.0);
         } else if let Some(LivingCamera {
             sleeping: Some(bed),
@@ -959,6 +984,100 @@ mod tests {
             Some([0.0, 0.0, -1.0])
         });
         assert!(camera.position[2] > -1.1 && camera.position[2] < -0.9);
+    }
+    #[test]
+    fn detached_distance_override_keeps_collision_clipping() {
+        let entity = CameraEntity {
+            position: [0.0; 3],
+            previous: [0.0; 3],
+            x_rot: 0.0,
+            y_rot: 0.0,
+            x_rot_o: 0.0,
+            y_rot_o: 0.0,
+            eye_height: 1.62,
+            living: Some(LivingCamera {
+                scale: 2.0,
+                camera_distance: 3.0,
+                sleeping: None,
+                dead: None,
+            }),
+            mount: Some((3.0, 4.0)),
+        };
+        for kind in [CameraType::ThirdPersonBack, CameraType::ThirdPersonFront] {
+            let mut camera = Camera::default();
+            let mut calls = 0;
+            let mut rays = 0;
+            let z = if kind.is_mirrored() { 1.0 } else { -1.0 };
+            camera.align_with_entity_distance(
+                &entity,
+                1.0,
+                kind,
+                |distance| {
+                    assert_eq!(distance, 12.0);
+                    8.0
+                },
+                |_, _| None,
+            );
+            assert!((camera.position[2] - z * 8.0).abs() < 1e-5);
+            camera.align_with_entity_distance(
+                &entity,
+                1.0,
+                kind,
+                |distance| {
+                    calls += 1;
+                    assert_eq!(distance, 12.0);
+                    8.0
+                },
+                |_, _| {
+                    rays += 1;
+                    Some([0.0, 0.0, z])
+                },
+            );
+            assert_eq!((calls, rays), (1, 8));
+            assert!((camera.position[2] - z).abs() < 0.2);
+        }
+    }
+    #[test]
+    fn detached_distance_rejects_invalid_values_and_accepts_zero() {
+        let entity = CameraEntity {
+            position: [0.0; 3],
+            previous: [0.0; 3],
+            x_rot: 0.0,
+            y_rot: 0.0,
+            x_rot_o: 0.0,
+            y_rot_o: 0.0,
+            eye_height: 1.62,
+            living: None,
+            mount: None,
+        };
+        for distance in [f32::NAN, f32::INFINITY, -1.0, 1025.0] {
+            let mut camera = Camera::default();
+            camera.align_with_entity_distance(
+                &entity,
+                1.0,
+                CameraType::ThirdPersonBack,
+                |_| distance,
+                |_, _| None,
+            );
+            assert!((camera.position[2] + 4.0).abs() < 1e-6);
+        }
+        let mut camera = Camera::default();
+        camera.align_with_entity_distance(
+            &entity,
+            1.0,
+            CameraType::ThirdPersonBack,
+            |_| 0.0,
+            |_, _| None,
+        );
+        assert_eq!(camera.position, camera.eye);
+        camera.align_with_entity_distance(
+            &entity,
+            1.0,
+            CameraType::FirstPerson,
+            |_| panic!("first person has no detached distance"),
+            |_, _| None,
+        );
+        assert_eq!(camera.position, camera.eye);
     }
     #[test]
     fn fov_modifier_combines_speed_flight_and_bow() {

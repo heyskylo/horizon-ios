@@ -176,7 +176,11 @@ impl Game<'_> {
         if volume > i64::from(limit) {
             return Err(err("commands.fillbiome.toobig", &[&limit, &volume]));
         }
-        let Some(target) = self.res.biomes().list.iter().position(|b| b.name == biome) else {
+        let Some(target) = world_biomes!(self)
+            .list
+            .iter()
+            .position(|b| b.name == biome)
+        else {
             return Err(err(
                 "argument.resource.not_found",
                 &[&biome, &"minecraft:worldgen/biome"],
@@ -203,7 +207,7 @@ impl Game<'_> {
                         continue;
                     };
                     let current = chunk.biome(x, y, z);
-                    let current_name = &self.res.biomes().list[usize::from(current)].name;
+                    let current_name = &world_biomes!(self).list[usize::from(current)].name;
                     if let Some(f) = &filter
                         && !self.biome_matches(f, current_name)
                     {
@@ -235,7 +239,7 @@ impl Game<'_> {
         // ChunkMap.resendBiomesForChunks: the players who see the changed
         // columns are sent their new biomes, in the order the columns were
         // gathered (z, then x).
-        if let Some(host) = self.lan.as_ref() {
+        if let Some(host) = self.lan.as_mut() {
             let columns: Vec<(i32, i32)> = ((lo[2] >> 4)..=(hi[2] >> 4))
                 .flat_map(|cz| ((lo[0] >> 4)..=(hi[0] >> 4)).map(move |cx| (cx, cz)))
                 .filter(|key| touched.contains(key))
@@ -512,9 +516,7 @@ impl Game<'_> {
                     let drops = match world_items!(self).loot_sequence(&table) {
                         Some(seq) => {
                             let random = self.rand_sequences.get(&seq, self.level.seed);
-                            self.res
-                                .items()
-                                .loot_table(&table, false, held.as_ref(), random)
+                            world_items!(self).loot_table(&table, false, held.as_ref(), random)
                         }
                         None => world_items!(self).loot_table(
                             &table,
@@ -547,9 +549,7 @@ impl Game<'_> {
                 let drops = match world_items!(self).loot_sequence(&table) {
                     Some(seq) => {
                         let random = self.rand_sequences.get(&seq, self.level.seed);
-                        self.res
-                            .items()
-                            .entity_drops(&ty, by_player, held.as_ref(), random)
+                        world_items!(self).entity_drops(&ty, by_player, held.as_ref(), random)
                     }
                     None => world_items!(self).entity_drops(
                         &ty,

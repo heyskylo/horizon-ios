@@ -5,7 +5,7 @@
 //! the shield (`Player.blockUsingItem`, `BlocksAttacks.disable`).
 use super::Game;
 use horizon_client::{
-    health::{BlockOutcome, Blocking},
+    health::{BlockOutcome, Blocking, HurtSource},
     items::ItemStack,
 };
 use horizon_core::random::RandomSource;
@@ -30,11 +30,12 @@ impl Game<'_> {
             &mut self.inventory[slot]
         }
     }
+    /// The stack's `blocks_attacks`: its own component, else its item's.
     pub(super) fn blocks_attacks(
         &self,
         stack: &ItemStack,
-    ) -> Option<&horizon_client::items::BlocksAttacks> {
-        self.items().get(&stack.item)?.blocks_attacks.as_ref()
+    ) -> Option<std::borrow::Cow<'_, horizon_client::items::BlocksAttacks>> {
+        horizon_client::items::BlocksAttacks::of_stack(stack, self.items().get(&stack.item))
     }
     /// `ShieldItem.use` (ItemUtils.startUsingInstantly) for the hand at `slot`;
     /// false when that hand holds no blocking item or it is on cooldown.
@@ -45,8 +46,8 @@ impl Game<'_> {
         if self.blocks_attacks(stack).is_none() {
             return false;
         }
-        if self.shield_cooldown == 0 && self.using.is_none() {
-            self.using = Some((slot, 0));
+        if self.shield_cooldown == 0 {
+            self.start_using_item();
         }
         true
     }
@@ -113,19 +114,21 @@ impl Game<'_> {
         })
     }
     /// After a hurt with the shield raised: `hurtBlockingItem`, `onBlocked`
-    /// and, for melee from a mob, `blockUsingItem`.
+    /// and, for melee from a mob, `blockUsingItem`. `source` is the hit's.
     pub(super) fn after_block(
         &mut self,
         outcome: BlockOutcome,
-        damage: f32,
-        attacker: Option<u32>,
-        projectile: bool,
+        (attacker, projectile): (Option<u32>, bool),
+        source: HurtSource<'_>,
     ) {
         let Some((slot, _)) = self.using else { return };
         let Some(stack) = self.stack_in(slot).cloned() else {
             return;
         };
-        let Some(component) = self.blocks_attacks(&stack).cloned() else {
+        let Some(component) = self
+            .blocks_attacks(&stack)
+            .map(std::borrow::Cow::into_owned)
+        else {
             return;
         };
         let at = self
@@ -161,14 +164,16 @@ impl Game<'_> {
             {
                 s.damage += loss;
                 if s.damage >= max {
+                    let broken = s.clone();
                     *cell = None;
                     self.using = None;
-                    self.audio.play(
-                        "minecraft:item.shield.break",
-                        at,
-                        0.8,
-                        0.8 + self.world.random.next_float() * 0.4,
-                    );
+                    // ItemStack.hurtAndBreak: onEquippedItemBroken for the hand it was used from.
+                    let hand = if slot == OFFHAND_SLOT {
+                        horizon_world::player_inventory::EquipmentSlot::OffHand
+                    } else {
+                        horizon_world::player_inventory::EquipmentSlot::MainHand
+                    };
+                    self.player_equipment_broke(hand, &broken);
                     return;
                 }
             }
@@ -179,12 +184,13 @@ impl Game<'_> {
         let Some(id) = attacker else {
             // Another player's melee hit has no mob behind it.
             if let Some((from, disable)) = self.combat.player_attacker {
-                let fully = outcome.blocked >= damage;
-                self.blocked_by_attacker(&component, [from[0], from[2]], fully, disable, at);
+                let fully = outcome.fully_blocked;
+                let attacker = ([from[0], from[2]], disable);
+                self.blocked_by_attacker(&component, attacker, fully, at, source);
             }
             return;
         };
-        let fully = outcome.blocked >= damage;
+        let fully = outcome.fully_blocked;
         let Some(m) = self.mobs.iter().find(|m| m.id == id) else {
             return;
         };
@@ -226,36 +232,26 @@ impl Game<'_> {
             let _ = self.handle_mob_events(events);
             return;
         }
-        self.blocked_by_attacker(&component, [mx, mz], fully, disable, at);
+        self.blocked_by_attacker(&component, ([mx, mz], disable), fully, at, source);
     }
 
     /// What a blocked melee hit does to the defender once the shield took
     /// it: `LivingEntity.blockedByItem` knocks them back unless fully
-    /// blocked, then `Player.blockUsingItem` disables the shield.
+    /// blocked, then `Player.blockUsingItem` disables the shield. `attacker`
+    /// is where the attacker stands (x, z) and its seconds of disabling.
     fn blocked_by_attacker(
         &mut self,
         component: &horizon_client::items::BlocksAttacks,
-        attacker: [f64; 2],
+        ([mx, mz], disable): ([f64; 2], f32),
         fully: bool,
-        disable: f32,
         at: Option<[f64; 3]>,
+        source: HurtSource<'_>,
     ) {
-        let [mx, mz] = attacker;
-        // LivingEntity.blockedByItem: defender.knockback(0.5, defender - attacker),
-        // which moves the defender along -(xd, zd).
-        if !fully && let Some(p) = self.player.as_mut() {
+        // LivingEntity.blockedByItem: defender.knockback(0.5, defender - attacker,
+        // source), which moves the defender along -(xd, zd).
+        if !fully && let Some(p) = self.player.as_ref() {
             let (xd, zd) = (p.position.x - mx, p.position.z - mz);
-            let len = (xd * xd + zd * zd).sqrt();
-            if len >= 1.0e-5 {
-                let (dx, dz) = (xd / len * 0.5, zd / len * 0.5);
-                let v = p.velocity;
-                let y = if p.ground.on_ground {
-                    (v.y / 2.0 + 0.5).min(0.4)
-                } else {
-                    v.y
-                };
-                p.velocity = horizon_core::geometry::Vec3::new(v.x / 2.0 - dx, y, v.z / 2.0 - dz);
-            }
+            self.knock_back_player(0.5, xd, zd, source);
         }
         // BlocksAttacks.disable: item cooldown and stopUsingItem.
         let ticks = disable * component.disable_scale;

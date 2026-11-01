@@ -2,7 +2,7 @@
 
 Thanks for helping. Horizon is Minecraft: Java Edition 26.3 rewritten in Rust, and the one rule that shapes
 everything is that **it plays exactly like vanilla**. This page is the short version of how we work; questions are
-welcome on [Discord](https://discord.gg/HcTeMZxe5E).
+welcome on [Discord](https://discord.gg/playhorizon).
 
 This repository holds the game and the launcher, plus the tools, tests and docs that build, check and release them.
 The website (playhorizon.dev) is built in a separate repository from this one's README, `docs/api/` and roadmap. Anything else (videos, Discord and other community material) lives elsewhere.
@@ -113,6 +113,10 @@ it (edited on every push, never repeated): talk to its author in the thread befo
   can see.
 - **Tick "Allow edits by maintainers".** When something small is left (a lint, a rebase, a nit) we push the fixup
   ourselves instead of sending it back to you; only design questions come back.
+- **Once we've pushed to your branch, merge main into it; don't rebase or force-push.** A rebase or force-push
+  replaces our commits with yours and erases the fixes we added (it happened on #5188 and #5203). Tell your agent
+  too: `git merge origin/main`, never `git rebase` or `git push --force` on a branch a maintainer has touched. If
+  our fixes get erased anyway, we finish the work in our own pull request that keeps your commits and credits you.
 - **Tick its kind** in the template: `parity` (Horizon now does what vanilla does), `bug` (a crash or breakage),
   `perf`, `feature` (new for players), `extra` (Horizon-only, off by default), `tooling` or `docs`. A workflow sets
   that label, and area labels (`launcher`, `mobs`, `worldgen`, `rendering`...) from the paths you change.
@@ -136,5 +140,5 @@ new pushes, we add it again.
 
 ## Talk to us
 
-[Discord](https://discord.gg/HcTeMZxe5E) for questions and ideas, [issues](https://github.com/horizon-rust/horizon/issues)
+[Discord](https://discord.gg/playhorizon) for questions and ideas, [issues](https://github.com/horizon-rust/horizon/issues)
 for bugs. To take something on, `/claim` its issue ([above](#claim-before-you-start)).

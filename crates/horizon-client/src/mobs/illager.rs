@@ -10,7 +10,7 @@ use super::{
 };
 use crate::items::ItemStack;
 use crate::projectiles::{Projectile, ProjectileKind};
-use horizon_core::geometry::trig::Mth;
+use horizon_core::geometry::trig::{DEG_TO_RAD, Mth};
 use horizon_core::{geometry::Vec3, random::RandomSource};
 use std::f32::consts::PI;
 
@@ -110,6 +110,42 @@ enum Spell {
     Vexes = 1,
     Fangs = 2,
     Wololo = 3,
+}
+/// `IllagerSpell.spellColor` as `(float)` red, green and blue, by spell id
+/// (1 summon vex, 2 fangs, 3 wololo, 4 disappear, 5 blindness).
+fn spell_color(id: u8) -> [f32; 3] {
+    match id {
+        1 => [0.7, 0.7, 0.8],
+        2 => [0.4, 0.3, 0.35],
+        3 => [0.7, 0.5, 0.2],
+        4 => [0.3, 0.3, 0.8],
+        5 => [0.1, 0.1, 0.2],
+        _ => [0.0; 3],
+    }
+}
+/// The client half of `SpellcasterIllager.tick`: while the casting-spell data
+/// is above 0, two `entity_effect` particles in the spell's colour, one at each
+/// hand, which swing with the body and a wobble of the age.
+pub fn cast_particles(m: &Mob, events: &mut Vec<MobEvent>) {
+    if m.extra.variant2 == 0 {
+        return;
+    }
+    let [r, g, b] = spell_color(m.extra.variant2);
+    let angle = m.body_yaw * DEG_TO_RAD + (m.age as f32 * 0.6662).mcos() * 0.25;
+    let (cos, sin) = (f64::from(angle.mcos()), f64::from(angle.msin()));
+    let scale = super::riders::scale(m);
+    let (reach, height) = (0.6 * scale, 1.8 * scale);
+    let p = m.position;
+    for side in [1.0, -1.0] {
+        events.push(MobEvent::ParticleColored {
+            at: [
+                p.x + side * cos * reach,
+                p.y + height,
+                p.z + side * sin * reach,
+            ],
+            color: [r, g, b],
+        });
+    }
 }
 /// `SpellcasterCastingSpellGoal`: stand still facing the target while a
 /// spell is cast.
@@ -801,6 +837,53 @@ mod tests {
     use crate::mobs::Species;
     use crate::mobs::sensor_scan_tests::kind;
     use std::sync::Arc;
+
+    fn evoker(spell: u8) -> Mob {
+        let mut kind = kind();
+        let k = Arc::make_mut(&mut kind);
+        k.id = "minecraft:evoker".into();
+        k.species = Species::Evoker;
+        let mut m = Mob::new(1, kind, Vec3::new(10.0, 64.0, -5.0), 0.0);
+        m.extra.variant2 = spell;
+        m.body_yaw = 90.0;
+        m.age = 7;
+        m
+    }
+
+    /// `SpellcasterIllager.tick`: two coloured particles at the hands while a
+    /// spell is cast, none otherwise; the colours are `IllagerSpell.spellColor`.
+    #[test]
+    fn a_casting_evoker_has_a_particle_in_each_hand() {
+        let mut events = Vec::new();
+        cast_particles(&evoker(0), &mut events);
+        assert!(events.is_empty());
+        for (id, want) in [
+            (1, [0.7, 0.7, 0.8]),
+            (2, [0.4, 0.3, 0.35]),
+            (3, [0.7, 0.5, 0.2]),
+            (4, [0.3, 0.3, 0.8]),
+            (5, [0.1, 0.1, 0.2]),
+        ] {
+            events.clear();
+            cast_particles(&evoker(id), &mut events);
+            assert_eq!(events.len(), 2);
+            let hands: Vec<([f64; 3], [f32; 3])> = events
+                .iter()
+                .map(|e| match e {
+                    MobEvent::ParticleColored { at, color } => (*at, *color),
+                    _ => panic!("not a coloured particle"),
+                })
+                .collect();
+            assert_eq!(hands[0].1, want);
+            assert_eq!(hands[1].1, want);
+            // Both at y + 1.8, mirrored about the mob, 0.6 away.
+            assert!((hands[0].0[1] - 65.8).abs() < 1e-9);
+            assert!((hands[0].0[0] + hands[1].0[0] - 20.0).abs() < 1e-9);
+            assert!((hands[0].0[2] + hands[1].0[2] + 10.0).abs() < 1e-9);
+            let (dx, dz) = (hands[0].0[0] - 10.0, hands[0].0[2] + 5.0);
+            assert!((dx.hypot(dz) - 0.6).abs() < 1e-6);
+        }
+    }
 
     fn pillager() -> Mob {
         let mut kind = kind();

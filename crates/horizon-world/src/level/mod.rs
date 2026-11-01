@@ -138,11 +138,11 @@ pub use bonemeal::TemplateSettings;
 pub use buckets::BucketContent;
 pub use data::{BlockData, ItemBinding, ItemKind, Named, Props, PushReaction, StateFacts, Tags};
 pub use falling::Landing;
-pub use interact::{InteractionResult, PlayerContext, PlayerEffect, hit_slot};
+pub use interact::{InteractionResult, PlayerContext, PlayerEffect, UseBranch, hit_slot};
 pub use pistons::{BlockEventData, MovingPiston};
-pub use place::{PlaceContext, PlaceOutcome};
+pub use place::{PlaceContext, PlaceOutcome, PlacementContext};
 pub use states::{BlockId, PropKey, StateTable};
-pub use tick::{Precipitation, PrecipitationKind};
+pub use tick::{Precipitation, PrecipitationKind, RandomTickMask};
 pub use ticks::Ticks;
 
 /// `Block.UPDATE_*` flags accepted by [`Behaviours::set_block`].
@@ -362,6 +362,45 @@ pub trait LevelAccess {
         _handled: &mut bool,
     ) {
     }
+    /// `BlockState.tick` from `ServerLevel.tickBlock` (a due scheduled tick
+    /// whose block is still there), before the block handles it. The level
+    /// may change the block (`Behaviours::set_block` with `ticks`); setting
+    /// `handled` skips the block's own tick. A level that changed the block
+    /// without setting `handled` must put the block's state as it is now in
+    /// `state`: the block's own tick runs on it. The default does nothing.
+    fn before_tick_block(
+        &mut self,
+        _ticks: &mut Ticks,
+        _pos: BlockPos,
+        _state: &mut BlockStateId,
+        _handled: &mut bool,
+    ) {
+    }
+    /// `BonemealableBlock.isValidBonemealTarget` for the block `state` at
+    /// `pos`, a block the port knows no `BonemealableBlock` for: a native mod
+    /// answers it for its own blocks, and bone meal is then used up on one as
+    /// vanilla uses it up (the caller fires the growth particles and consumes
+    /// the meal). Asked on both sides, as vanilla asks it on both (a client
+    /// predicts the use with it), so a mod that can only grow on a server says
+    /// so with `is_client_side`. `Some(false)` refuses it, even a block whose
+    /// template takes bone meal; `None` (the default) leaves the block its own
+    /// `BonemealableBlock`, or none.
+    fn is_valid_bonemeal_target(&self, _pos: BlockPos, _state: BlockStateId) -> Option<bool> {
+        None
+    }
+    /// `BonemealableBlock.isBonemealSuccess` for the block `state` at `pos`,
+    /// after `is_valid_bonemeal_target` said yes: whether it grows this time.
+    /// Vanilla draws the level's random here, so a mod's draws through
+    /// [`LevelAccess::random`] stay in vanilla's order. The default says no.
+    fn is_bonemeal_success(&mut self, _pos: BlockPos, _state: BlockStateId) -> bool {
+        false
+    }
+    /// `BonemealableBlock.performBonemeal` for the block `state` at `pos`:
+    /// the growth itself, after `is_bonemeal_success` said yes. The meal is
+    /// used up either way, as vanilla uses it up. `ticks` schedules the ticks
+    /// the growth schedules, as `before_update_shape` hands them. The default
+    /// does nothing.
+    fn perform_bonemeal(&mut self, _ticks: &mut Ticks, _pos: BlockPos, _state: BlockStateId) {}
     /// `BlockState.updateShape` for `state` at `pos` after its neighbour in
     /// `direction` became `neighbour`, before the block computes it. `state`
     /// may not be in the level yet (a piston landing it). A state put in
@@ -378,6 +417,50 @@ pub trait LevelAccess {
         _neighbour_pos: BlockPos,
         _neighbour: BlockStateId,
         _new: &mut Option<BlockStateId>,
+    ) {
+    }
+    /// `Block.getStateForPlacement(BlockPlaceContext)` for the block whose
+    /// default state is `state`, before the block computes the state it is
+    /// placed in: a native mod chooses it for its own blocks (a block that
+    /// faces the player, sits on the clicked face, or comes waterlogged).
+    /// `context` is vanilla's `BlockPlaceContext`, `fluid` the fluid in the
+    /// position the block would go in. `answer` starts empty: `Some(Some(s))`
+    /// places `s`, a state of the block's own, `Some(None)` refuses the
+    /// placement (vanilla's `null` return: the block goes nowhere and nothing
+    /// is consumed), and `None` leaves the block's own `getStateForPlacement`
+    /// to run. The default does nothing.
+    #[allow(clippy::option_option)]
+    fn before_state_for_placement(
+        &self,
+        _state: BlockStateId,
+        _context: &PlacementContext,
+        _fluid: FluidState,
+        _answer: &mut Option<Option<BlockStateId>>,
+    ) {
+    }
+    /// `BlockState.canSurvive(level, pos)` for `state` at `pos`, before the
+    /// block answers it: placing it (`BlockItem.canPlace`), a plant's or an
+    /// attached block's shape update, and every other rule that asks. `state`
+    /// may not be in the level yet (it is being placed). An answer put in
+    /// `survives` is the result, and the block's own rule doesn't run. The
+    /// default does nothing.
+    fn before_can_survive(
+        &self,
+        _pos: BlockPos,
+        _state: BlockStateId,
+        _survives: &mut Option<bool>,
+    ) {
+    }
+    /// `VegetationBlock.mayPlaceOn(ground, level, groundPos)` for the plant
+    /// `state`, before the plant answers it: the blocks a plant can stand on,
+    /// which its `canSurvive` asks. An answer put in `may` is the result. The
+    /// default does nothing.
+    fn before_may_place_on(
+        &self,
+        _state: BlockStateId,
+        _ground: BlockStateId,
+        _ground_pos: BlockPos,
+        _may: &mut Option<bool>,
     ) {
     }
     /// `Level.isClientSide`: this level is a client's copy (false on a
@@ -491,6 +574,40 @@ pub trait LevelAccess {
     /// `PotentSulfurBlockEntity.resetCountdown` for the potent sulfur block
     /// entity at `pos` (`PotentSulfurBlock.validBlockState`).
     fn reset_potent_sulfur_countdown(&mut self, _pos: BlockPos) {}
+    /// `BlockState.isSignalSource` once the library answered `vanilla`: the
+    /// answer to use. The default keeps it.
+    fn adjust_signal_source(&self, _state: BlockStateId, vanilla: bool) -> bool {
+        vanilla
+    }
+    /// `BlockState.hasAnalogOutputSignal` once the library answered `vanilla`:
+    /// whether comparators read the block. The default keeps it.
+    fn adjust_has_analog_output(&self, _state: BlockStateId, vanilla: bool) -> bool {
+        vanilla
+    }
+    /// `BlockState.getAnalogOutputSignal(level, pos, direction)` once the
+    /// library answered `vanilla`, `direction` pointing from the block to the
+    /// comparator reading it: the output to use. The default keeps it.
+    fn adjust_analog_output(
+        &self,
+        _pos: BlockPos,
+        _state: BlockStateId,
+        _direction: Direction,
+        vanilla: i32,
+    ) -> i32 {
+        vanilla
+    }
+    /// `BlockState.getSignal` (or `getDirectSignal` when `direct`) once the
+    /// library answered `vanilla`: the signal to use. The default keeps it.
+    fn adjust_signal(
+        &self,
+        _pos: BlockPos,
+        _state: BlockStateId,
+        _direction: Direction,
+        _direct: bool,
+        vanilla: i32,
+    ) -> i32 {
+        vanilla
+    }
     /// Weak/strong signal of a block-entity-driven source (trapped chest
     /// openers); other sources are evaluated by the library.
     fn block_entity_signal(
@@ -530,6 +647,12 @@ pub trait LevelAccess {
         _side_effects: bool,
     ) -> u8 {
         0
+    }
+    /// Whether a block entity a mod made lives at `pos` (`native_block_entity`),
+    /// whatever its block's template: it is removed with its block and no piston
+    /// moves it, as for a template that has one.
+    fn has_mod_block_entity(&self, _pos: BlockPos) -> bool {
+        false
     }
     /// Load saved block-entity data into the block entity of the block just
     /// placed at `pos` (`BlockEntity.loadWithComponents`): a bee nest a grown
@@ -580,6 +703,7 @@ pub struct Behaviours {
     pub fluid_tags: data::FluidTags,
     blocks: Vec<BlockData>,
     items: HashMap<String, ItemBinding>,
+    potted_by_content: HashMap<BlockId, BlockId>,
     liquid_blocks: FluidBlockBindings,
     /// Uncached (position- or block-entity-dependent) collision shapes.
     dynamic: HashMap<BlockStateId, crate::dynamic_support::DynamicSupport>,
@@ -630,6 +754,11 @@ impl Behaviours {
     }
     pub fn item_binding(&self, item: &str) -> Option<&ItemBinding> {
         self.items.get(item)
+    }
+    /// FlowerPotBlock.POTTED_BY_CONTENT: the potted flower pot block that
+    /// holds plant, if any.
+    pub fn potted_block(&self, plant: BlockId) -> Option<BlockId> {
+        self.potted_by_content.get(&plant).copied()
     }
     pub fn tag(&self, name: &str) -> Option<&data::BlockSet> {
         self.all_tags.get(name).map(|s| &**s)

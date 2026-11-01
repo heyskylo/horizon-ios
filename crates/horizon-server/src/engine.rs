@@ -230,7 +230,22 @@ fn sha256_file(path: &Path) -> std::io::Result<String> {
 
 /// Starts the engine in the server folder, with its console and log piped to the supervisor and its status
 /// on the control endpoint.
-pub fn spawn(program: &Path, resources: &Path, dir: &Path) -> std::io::Result<Child> {
+pub fn spawn(
+    program: &Path,
+    resources: &Path,
+    dir: &Path,
+    low_memory: bool,
+) -> std::io::Result<Child> {
+    command(program, resources, dir, low_memory)?.spawn()
+}
+
+/// The command `spawn` runs.
+fn command(
+    program: &Path,
+    resources: &Path,
+    dir: &Path,
+    low_memory: bool,
+) -> std::io::Result<Command> {
     // The game runs in the server folder, so a folder given relative to ours (`--dir srv`) would put its
     // control endpoint in `srv/srv/.horizon`, which doesn't exist.
     let dir = std::path::absolute(dir)?;
@@ -256,7 +271,12 @@ pub fn spawn(program: &Path, resources: &Path, dir: &Path) -> std::io::Result<Ch
         windows_sys::Win32::System::Threading::CREATE_NEW_PROCESS_GROUP
             | windows_sys::Win32::System::Threading::CREATE_NO_WINDOW,
     );
-    command.spawn()
+    // `[engine] low_memory`: mimalloc then keeps transparent huge pages off. Mostly empty huge pages cost
+    // 60 MB idle and 190 MB at 20 players, and save ~1 % of tick time (docs/hosting.md).
+    if low_memory {
+        command.env("MIMALLOC_ALLOW_THP", "0");
+    }
+    Ok(command)
 }
 
 /// The game's control endpoint in a server folder (`--control-socket`): TCP on 127.0.0.1 with a token, on every OS.
@@ -311,6 +331,20 @@ impl Control {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn low_memory_turns_huge_pages_off_for_the_game() {
+        let thp = |low_memory| {
+            let dir = std::env::temp_dir();
+            let command = command(Path::new("horizon-client"), &dir, &dir, low_memory).unwrap();
+            command
+                .get_envs()
+                .find(|(k, _)| *k == "MIMALLOC_ALLOW_THP")
+                .and_then(|(_, v)| v.map(|v| v.to_owned()))
+        };
+        assert_eq!(thp(true).as_deref(), Some(std::ffi::OsStr::new("0")));
+        assert_eq!(thp(false), None);
+    }
 
     #[test]
     fn resources_are_searched_in_order() {
@@ -477,6 +511,7 @@ mod tests {
                 &std::path::absolute(&game).unwrap(),
                 &root.join("res"),
                 &server,
+                false,
             ) {
                 Err(e) if e.raw_os_error() == Some(26) && tries < 50 => {
                     tries += 1;

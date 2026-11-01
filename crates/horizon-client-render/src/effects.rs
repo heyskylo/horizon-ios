@@ -235,10 +235,12 @@ impl PlayerEffects {
         i8::from(e.ambient) | i8::from(e.visible) << 1 | 4
     }
     /// `LivingEntity.tickEffects` (server part) with the omens' effect ticks:
-    /// `omen` answers `BadOmenMobEffect` (every tick) and `RaidOmenMobEffect`
-    /// (on its last tick); `absorption_empty` is `AbsorptionMobEffect`'s
-    /// answer: the effect ends once the absorption is used up. Returns the
-    /// actions to apply, in order, and whether Raid Omen was newly added.
+    /// `omen` answers `BadOmenMobEffect` (every tick), `RaidOmenMobEffect`
+    /// (on its last tick) and a content mod's effect (every tick, with the
+    /// tick count `shouldApplyEffectTickThisTick` takes); `absorption_empty`
+    /// is `AbsorptionMobEffect`'s answer: the effect ends once the
+    /// absorption is used up. Returns the actions to apply, in order, and
+    /// whether Raid Omen was newly added.
     ///
     /// Bad Omen turning into a new Raid Omen adds an entry to the map being
     /// iterated: vanilla's iterator then throws a
@@ -247,7 +249,7 @@ impl PlayerEffects {
     /// ticked; the next tick refreshes Raid Omen and drops Bad Omen.
     pub fn tick_with(
         &mut self,
-        omen: &mut dyn FnMut(&EffectInstance) -> OmenTick,
+        omen: &mut dyn FnMut(&EffectInstance, i32) -> OmenTick,
         absorption_empty: bool,
     ) -> (Vec<EffectAction>, bool) {
         self.tick_count = self.tick_count.wrapping_add(1);
@@ -269,8 +271,9 @@ impl PlayerEffects {
                 actions.push(a);
             }
             let answer = match e.id {
-                "bad_omen" => omen(e),
-                "raid_omen" if t == 1 => omen(e),
+                "bad_omen" => omen(e, t),
+                "raid_omen" if t == 1 => omen(e, t),
+                id if potions::is_mod_effect(id) => omen(e, t),
                 "absorption" if absorption_empty => OmenTick::Remove,
                 _ => OmenTick::Continue,
             };
@@ -508,7 +511,7 @@ mod tests {
         let mut fx = PlayerEffects::default();
         fx.add(EffectInstance::new("bad_omen", 100, 1));
         fx.add(EffectInstance::new("speed", 50, 0));
-        let mut convert = |e: &EffectInstance| match e.id {
+        let mut convert = |e: &EffectInstance, _: i32| match e.id {
             "bad_omen" => OmenTick::Add(EffectInstance::new("raid_omen", 600, e.amplifier)),
             _ => OmenTick::Continue,
         };
@@ -550,12 +553,39 @@ mod tests {
                 .is_empty()
         );
     }
+    /// A content mod's effect answers each tick before it counts down (an
+    /// infinite one with the tick count), and goes at once on Remove.
+    #[test]
+    fn a_mod_effect_answers_before_it_counts_down() {
+        let mut fx = PlayerEffects::default();
+        fx.add(EffectInstance::new("ruby:glow", 3, 1));
+        fx.add(EffectInstance::new("ruby:bleed", -1, 0));
+        let mut seen = Vec::new();
+        let mut answer = |e: &EffectInstance, t: i32| {
+            seen.push((e.id, t));
+            match (e.id, t) {
+                ("ruby:glow", 2) => OmenTick::Remove,
+                _ => OmenTick::Continue,
+            }
+        };
+        fx.tick_with(&mut answer, false);
+        fx.tick_with(&mut answer, false);
+        let ticks = [
+            ("ruby:glow", 3),
+            ("ruby:bleed", 1),
+            ("ruby:glow", 2),
+            ("ruby:bleed", 2),
+        ];
+        assert_eq!(seen, ticks);
+        assert!(fx.get("ruby:glow").is_none());
+        assert_eq!(fx.get("ruby:bleed").unwrap().duration, -1);
+    }
     #[test]
     fn raid_omen_acts_on_its_last_tick() {
         let mut fx = PlayerEffects::default();
         fx.add(EffectInstance::new("raid_omen", 2, 0));
         let mut seen = Vec::new();
-        let mut watch = |e: &EffectInstance| {
+        let mut watch = |e: &EffectInstance, _: i32| {
             seen.push(e.duration);
             OmenTick::Remove
         };

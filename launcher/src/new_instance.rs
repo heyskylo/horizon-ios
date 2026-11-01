@@ -248,7 +248,7 @@ impl Launcher {
             .flex()
             .items_center()
             .gap(px(8.))
-            .child(self.field(Field::InstanceVersion, "Search versions", 240., cx))
+            .child(self.field(Field::InstanceVersion, tr("Search versions"), 240., cx))
             .child(
                 toggle("mc-snapshots", "Snapshots", choice.snapshots).on_click(cx.listener(
                     |this, _: &ClickEvent, _, cx| {

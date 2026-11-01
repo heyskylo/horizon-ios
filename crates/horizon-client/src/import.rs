@@ -220,12 +220,15 @@ impl Pack {
         }
         let archive = ZipArchive::new(File::open(path)?)?;
         // `name_for_index` borrows the archive, so the list is finished before anything is read out.
-        let mut names: Vec<String> = (0..archive.len())
-            .filter_map(|index| {
-                let name = archive.name_for_index(index)?.replace('\\', "/");
-                (!name.ends_with('/') && !is_junk(&name)).then_some(name)
-            })
-            .collect();
+        let mut names = Vec::new();
+        for index in 0..archive.len() {
+            if let Some(name) = archive.name_for_index(index) {
+                let name = name?.replace('\\', "/");
+                if !name.ends_with('/') && !is_junk(&name) {
+                    names.push(name);
+                }
+            }
+        }
         if names.len() > MAX_ENTRIES {
             return Err("the archive holds more files than this will unpack".into());
         }
@@ -288,7 +291,7 @@ impl Pack {
         let mut written = 0u64;
         for index in 0..self.archive.len() {
             let file = self.archive.by_index(index)?;
-            let name = file.name().replace('\\', "/");
+            let name = file.name()?.replace('\\', "/");
             let failure = |message: String| {
                 let _ = fs::remove_dir_all(into);
                 Err::<(usize, u64), _>(message.into())

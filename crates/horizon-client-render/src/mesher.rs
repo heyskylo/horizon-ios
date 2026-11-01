@@ -4,6 +4,7 @@
 //! cardinal shading, tint sources, block offsets; see `lighting`). Fluids
 //! follow `FluidRenderer` (see `fluid`).
 mod fluid;
+mod leaf_culling;
 mod lighting;
 mod sides;
 use crate::{
@@ -11,6 +12,7 @@ use crate::{
     biome::Biomes,
     blocks::{BlockFacts, RenderShape},
     chunk::{Chunk, MIN_Y},
+    graphics::LeafCullingMode,
     models::catalog::BakedFace,
 };
 use horizon_core::{
@@ -125,6 +127,8 @@ mod vertex_tests {
         assert_eq!(super::emitting(rgb, 0), rgb);
         assert_eq!(super::emitting(rgb, super::INCANDESCENT), 0xFD56_3412);
         assert_eq!(super::emitting(rgb, super::VERY_BRIGHT), 0xFB56_3412);
+        assert_eq!(super::emitting(rgb, super::LOW | super::WHOLE), 0xFA56_3412);
+        assert_eq!(super::emitting(rgb, super::WHOLE), rgb);
         assert_eq!(
             super::emitting(rgb, super::VERY_BRIGHT) | super::EMISSION_BITS,
             rgb
@@ -132,20 +136,52 @@ mod vertex_tests {
     }
     #[test]
     fn light_sources_shine_by_kind_not_light_level() {
-        use super::{BRIGHT, INCANDESCENT, LOW, hdr_tier};
+        use super::{BRIGHT, INCANDESCENT, LOW, WHOLE, hdr_tier};
         assert_eq!(hdr_tier("glowstone", 15), BRIGHT);
         // A candle's flame is a particle: the block keeps only its wick.
         assert_eq!(hdr_tier("torch", 14), INCANDESCENT);
         assert_eq!(hdr_tier("red_candle", 3), LOW);
         assert_eq!(hdr_tier("glow_lichen", 7), 0);
         assert_eq!(hdr_tier("stone", 0), 0);
-        assert_eq!(hdr_tier("ochre_froglight", 15), LOW);
+        assert_eq!(hdr_tier("ochre_froglight", 15), LOW | WHOLE);
+        assert_eq!(hdr_tier("lava", 15), INCANDESCENT | WHOLE);
+        assert_eq!(hdr_tier("red_candle_cake", 3), 0);
         assert_eq!(hdr_tier("respawn_anchor", 3), INCANDESCENT);
         assert_eq!(hdr_tier("waxed_copper_bulb", 15), LOW);
         assert_eq!(hdr_tier("sea_pickle", 15), 0);
         // Unlisted ones by their light level.
         assert_eq!(hdr_tier("vault", 12), INCANDESCENT);
         assert_eq!(hdr_tier("sculk_sensor", 1), LOW);
+    }
+    #[test]
+    fn fluid_faces_keep_the_colour_and_the_emission() {
+        let lit = super::emitting(super::pack_rgb([0x12, 0x34, 0x56]), super::INCANDESCENT);
+        assert_eq!(super::fluid_face(lit, 0), 0x8D56_3412);
+        assert_eq!(super::fluid_face(lit, 5), 0xDD56_3412);
+        // Another face replaces the first.
+        assert_eq!(super::fluid_face(super::fluid_face(lit, 5), 1), 0x9D56_3412);
+    }
+    /// What `gfx/native_material.rs` reads back from the colour's alpha byte: the face of a
+    /// fluid quad, and the HDR tier.
+    fn decoded(color: u32) -> (Option<u32>, u32) {
+        let flags = color >> 24;
+        let high = flags >> 4;
+        let fluid = high >= 8 && (high & 7) < 6;
+        (fluid.then_some(high & 7), 15 - (flags & 15))
+    }
+    #[test]
+    fn the_material_stage_reads_back_what_the_mesher_encodes() {
+        let rgb = super::pack_rgb([0x12, 0x34, 0x56]);
+        for tier in 0..=super::VERY_BRIGHT {
+            let lit = super::emitting(rgb, tier);
+            assert_eq!(decoded(lit), (None, u32::from(tier)));
+            for face in 0..6 {
+                assert_eq!(
+                    decoded(super::fluid_face(lit, face)),
+                    (Some(face as u32), u32::from(tier))
+                );
+            }
+        }
     }
 }
 
@@ -285,8 +321,17 @@ pub struct SectionMesh {
     /// each frame by `block_entity_render` like vanilla's per-section
     /// `SectionCompiler.Results.blockEntities`.
     pub block_entities: Vec<([i32; 3], u32)>,
+    /// Blocks that give off light (world position, state id), for the colour of block light
+    /// Horizon's shader packs read (`gfx::block_light`).
+    pub lights: Vec<([i32; 3], u32)>,
+    /// Sprite layers emitted while building this mesh. Kept distinct before
+    /// upload so the renderer does not rescan every terrain vertex.
+    pub sprite_layers: Vec<u16>,
     /// Axis-aligned bounding box [min, max] of actual terrain mesh vertices in section-local space [0, 16].
     pub bounds: Option<[glam::Vec3; 2]>,
+    /// A far mesh was clipped around finer tiles or resident chunks. Keep
+    /// the previous GPU mesh while its replacements fade in.
+    pub keep: bool,
 }
 impl Default for SectionMesh {
     fn default() -> Self {
@@ -298,11 +343,28 @@ impl Default for SectionMesh {
             translucent_states: Vec::new(),
             visibility: ALL_VISIBLE,
             block_entities: Vec::new(),
+            lights: Vec::new(),
+            sprite_layers: Vec::new(),
             bounds: None,
+            keep: false,
         }
     }
 }
 impl SectionMesh {
+    /// Record a sprite layer used by a quad. Opaque is a vertex-only flag and
+    /// is removed here so the renderer can compare the actual atlas layer.
+    pub fn note_sprite_layer(&mut self, layer: u16) {
+        let layer = layer & !crate::mesher::OPAQUE_LAYER;
+        if !self.sprite_layers.contains(&layer) {
+            self.sprite_layers.push(layer);
+        }
+    }
+    /// Finish the compact layer list after meshing has emitted all faces.
+    pub fn finish_sprite_layers(&mut self) {
+        self.sprite_layers.sort_unstable();
+        self.sprite_layers.dedup();
+    }
+
     /// Padding applied to mesh vertex bounds to prevent clipping at the frustum
     /// boundary when shader packs with vertex displacement (e.g. waving foliage, water) are active.
     pub const BOUNDS_PAD: f32 = 0.5;
@@ -314,9 +376,12 @@ impl SectionMesh {
         self.translucent.clear();
         self.translucent_states.clear();
         self.block_entities.clear();
+        self.lights.clear();
+        self.sprite_layers.clear();
         self.sides = Sides::default();
         self.visibility = ALL_VISIBLE;
         self.bounds = None;
+        self.keep = false;
     }
     pub(crate) fn capacity_bytes(&self) -> usize {
         self.solid.capacity() * std::mem::size_of::<TerrainVertex>()
@@ -324,6 +389,8 @@ impl SectionMesh {
             + self.solid_states.capacity() * std::mem::size_of::<QuadState>()
             + self.translucent_states.capacity() * std::mem::size_of::<QuadState>()
             + self.block_entities.capacity() * std::mem::size_of::<([i32; 3], u32)>()
+            + self.lights.capacity() * std::mem::size_of::<([i32; 3], u32)>()
+            + self.sprite_layers.capacity() * std::mem::size_of::<u16>()
     }
     /// Sorts the solid quads by the side they face, for the renderer to
     /// leave out those facing away from the eye (`sides`). Their states move
@@ -530,6 +597,9 @@ struct Info {
     overlay: bool,
     /// `LeavesBlock`: with opaque leaves the faces between two leaf blocks are skipped.
     leaves: bool,
+    /// A full opaque cube: `RenderShape::Model`, `can_occlude`, `solid_render`
+    /// and a full collision shape. The only block leaf culling treats as solid.
+    opaque_cube: bool,
     blocks_flow: bool,
     ice: bool,
     sturdy: u8,
@@ -560,6 +630,7 @@ pub struct MeshTables {
     water_overlay: u16,
     lava_still: u16,
     lava_flow: u16,
+    animated_layers: Vec<bool>,
 }
 fn stem_color(age: u8) -> u32 {
     let a = u32::from(age);
@@ -594,6 +665,11 @@ impl MeshTables {
                 .map(|&l| l as u16)
                 .ok_or_else(|| format!("missing fluid sprite {name}").into())
         };
+        let max_animated = render.animations.iter().map(|a| a.layer).max().unwrap_or(0);
+        let mut animated_layers = vec![false; max_animated as usize + 1];
+        for animation in &render.animations {
+            animated_layers[animation.layer as usize] = true;
+        }
         let mut covers = std::collections::HashMap::new();
         let mut info = Vec::with_capacity(facts.states.len());
         for (id, s) in facts.states.iter().enumerate() {
@@ -670,7 +746,12 @@ impl MeshTables {
             });
             let mut face = [0u8; 6];
             let mut cover = [0f32; 6];
-            for d in Direction::ALL {
+            // A server's visibility knows no state (`FaceVisibility::empty`):
+            // it meshes no fluid, so these stay unset.
+            for d in Direction::ALL
+                .into_iter()
+                .filter(|_| !visibility.is_empty())
+            {
                 let (face_id, shape) = visibility
                     .occlusion_face(BlockStateId(id as u32), d)
                     .ok_or("missing occlusion face")?;
@@ -696,6 +777,12 @@ impl MeshTables {
                 legacy_solid: s.legacy_solid,
                 overlay: s.has_class("HalfTransparentBlock") || s.has_class("LeavesBlock"),
                 leaves: s.has_class("LeavesBlock"),
+                opaque_cube: leaf_culling::opaque_cube(
+                    s.render_shape,
+                    s.can_occlude,
+                    s.solid_render,
+                    s.full_collision,
+                ),
                 blocks_flow: assets.blocks_fluid_flow.contains(&*s.name),
                 ice: s.has_class("IceBlock"),
                 sturdy: s.sturdy_full,
@@ -711,7 +798,15 @@ impl MeshTables {
             water_overlay: layer("minecraft:block/water_overlay")?,
             lava_still: layer("minecraft:block/lava_still")?,
             lava_flow: layer("minecraft:block/lava_flow")?,
+            animated_layers,
         })
+    }
+    /// Whether a terrain sprite layer has an animated clip.
+    pub fn is_animated(&self, layer: u16) -> bool {
+        self.animated_layers
+            .get(layer as usize)
+            .copied()
+            .unwrap_or(false)
     }
     pub fn facts(&self, state: BlockStateId) -> Option<MeshFacts> {
         let i = self.info.get(state.0 as usize)?;
@@ -726,6 +821,14 @@ impl MeshTables {
             overlay: i.overlay,
             tint_sources: i.tint_count,
         })
+    }
+    /// Whether `state` is a full opaque cube: the only block leaf culling
+    /// treats as a solid neighbour. Glass, fluids, slabs, stairs and models
+    /// that only partly fill their block are not.
+    pub fn opaque_cube(&self, state: BlockStateId) -> bool {
+        self.info
+            .get(state.0 as usize)
+            .is_some_and(|i| i.opaque_cube)
     }
     /// `BlockTintSource.color(state)`: block-model colour without a level.
     /// `grass` is `GrassColor.getDefaultColor()` from the active pack's colormap.
@@ -901,20 +1004,26 @@ impl Padded {
     }
 }
 /// Per-worker temporary arrays. They never hold resource-pack references or
-/// geometry still owned by the renderer, and total about 88 KiB per worker.
+/// geometry still owned by the renderer, and total about 150 KiB per worker
+/// (the leaf mask adds 8,000 cells, depths and a queue).
 #[derive(Default)]
 pub(crate) struct MeshScratch {
     padded: Padded,
     own: Option<Box<[u32; 4096]>>,
     visibility: Vec<usize>,
+    leaf: leaf_culling::LeafMask,
 }
+#[cfg(test)]
+mod leaf_culling_tests;
 #[cfg(test)]
 mod reuse_tests;
 /// Set on a terrain vertex's sprite layer when its texture alpha must be ignored.
 pub const OPAQUE_LAYER: u16 = 1 << 15;
 /// The bits of `TerrainVertex::color`'s alpha byte that hold how brightly its face shines
-/// in HDR output (`gfx/hdr.rs`): 15 minus the tier, so the usual 0xFF means none. The
-/// byte's other four bits stay set.
+/// in HDR output (`gfx/hdr.rs`): 15 minus the tier, plus 4 for one that shines all over
+/// (`WHOLE`), so the usual 0xFF means none. The byte's high nibble carries the fluid face
+/// flags (`fluid_face`); the shaders ignore the vertex alpha, so both travel to the
+/// material stage untouched.
 pub const EMISSION_BITS: u32 = 0x0F00_0000;
 /// HDR tiers, by the kind of light rather than its level: a candle's flame is as bright as
 /// a torch's, it only lights less around it. 0 stays as in SDR.
@@ -923,34 +1032,64 @@ pub const INCANDESCENT: u8 = 2;
 pub const BRIGHT: u8 = 3;
 /// The sun and lightning.
 pub const VERY_BRIGHT: u8 = 4;
-/// `color` marked as shining at `tier` (0 to `VERY_BRIGHT`).
+/// Added to a tier: the light source shines all over (a froglight), not only where its
+/// sprite is brightest (a torch's flame, not its handle). See `gfx/hdr.rs` `Masks`.
+pub const WHOLE: u8 = 8;
+/// `color` marked as shining at `tier` (0 to `VERY_BRIGHT`, plus `WHOLE`).
 pub fn emitting(color: u32, tier: u8) -> u32 {
-    color & !EMISSION_BITS | u32::from(15 - tier.min(VERY_BRIGHT)) << 24
+    let level = (tier & !WHOLE).min(VERY_BRIGHT);
+    let code = if level > 0 && tier & WHOLE != 0 {
+        level + 4
+    } else {
+        level
+    };
+    color & !EMISSION_BITS | u32::from(15 - code) << 24
+}
+/// The high nibble of `TerrainVertex::color`'s alpha byte: 8 plus the face (`Direction`
+/// as usize) on a fluid quad, 0xF on every other. `terrain.wgsl` reads only the low nibble
+/// (the emission), so only the material stage of Horizon's own packs reads it
+/// (`gfx/native_material.rs`); whether the fluid is water or lava follows from the pass
+/// that draws it.
+pub const FLUID_FACE_BITS: u32 = 0xF000_0000;
+/// `color` marked as a fluid quad of face `face` (`Direction` as usize, 0 to 5).
+pub fn fluid_face(color: u32, face: usize) -> u32 {
+    debug_assert!(face < 6);
+    color & !FLUID_FACE_BITS | 0x8000_0000 | (face as u32) << 28
 }
 /// The HDR tier of block `name` (no namespace), which emits light `level`.
 pub fn hdr_tier(name: &str, level: u8) -> u8 {
     match name {
         _ if level == 0 => 0,
-        "glowstone" | "jack_o_lantern" | "campfire" | "soul_campfire" | "soul_lantern"
-        | "soul_torch" | "soul_wall_torch" | "soul_fire" | "beacon" | "end_rod" | "furnace"
-        | "redstone_lamp" => BRIGHT,
-        "torch" | "wall_torch" | "lantern" | "lava" | "crying_obsidian" | "fire"
-        | "sea_lantern" => INCANDESCENT,
+        "glowstone"
+        | "soul_lantern"
+        | "soul_torch"
+        | "soul_wall_torch"
+        | "beacon"
+        | "end_rod"
+        | "furnace"
+        | "redstone_lamp"
+        | "brewing_stand"
+        | "enchanting_table"
+        | "medium_amethyst_bud"
+        | "small_amethyst_bud" => BRIGHT,
+        "campfire" | "soul_campfire" | "soul_fire" | "lava_cauldron" | "crying_obsidian"
+        | "amethyst_cluster" | "large_amethyst_bud" => BRIGHT | WHOLE,
+        "torch" | "wall_torch" | "lantern" | "sea_lantern" => INCANDESCENT,
+        "fire" | "lava" => INCANDESCENT | WHOLE,
         // Glowing at every charge, not only the brighter ones.
         "respawn_anchor" => INCANDESCENT,
-        "redstone_torch"
-        | "redstone_wall_torch"
-        | "magma_block"
-        | "ochre_froglight"
-        | "verdant_froglight"
-        | "pearlescent_froglight"
-        | "shroomlight" => LOW,
-        // Its flame is a particle.
-        _ if name.ends_with("candle") || name.ends_with("candle_cake") => LOW,
+        "ochre_froglight" | "verdant_froglight" | "pearlescent_froglight" | "jack_o_lantern" => {
+            LOW | WHOLE
+        }
+        "redstone_torch" | "redstone_wall_torch" | "magma_block" | "shroomlight" => LOW,
+        // Its flame is a particle; the cake's frosting must not shine in daylight.
+        _ if name.ends_with("candle_cake") => 0,
+        _ if name.ends_with("candle") => LOW,
         // One tier at every oxidation stage, waxed or not.
         _ if name.ends_with("copper_bulb") => LOW,
         // A faint glow in the dark, as in SDR.
-        "glow_lichen" | "sea_pickle" | "brown_mushroom" | "dragon_egg" | "end_portal_frame" => 0,
+        "glow_lichen" | "sea_pickle" | "brown_mushroom" | "dragon_egg" | "end_portal_frame"
+        | "ender_chest" => 0,
         _ if level >= 10 => INCANDESCENT,
         _ => LOW,
     }
@@ -1073,6 +1212,8 @@ fn pack_coords(coords: u32) -> u16 {
 pub struct Mesher<'a> {
     /// CardinalLighting.NETHER: brighter up/down faces.
     pub nether_shading: bool,
+    /// A shader pack lights the faces (its `oldLighting` off): no face shading in the colours.
+    pub shader_pack_lighting: bool,
     pub assets: &'a Assets,
     pub render: &'a RenderAssets,
     pub tables: &'a MeshTables,
@@ -1086,6 +1227,10 @@ pub struct Mesher<'a> {
     pub smooth_lighting: bool,
     /// The `cutoutLeaves` option (fancy graphics); off makes leaves opaque.
     pub cutout_leaves: bool,
+    /// Sprite layers a shader pack moves into the translucent pass, by layer.
+    pub translucent_layers: &'a [bool],
+    /// What the worker does with leaf faces inside a canopy.
+    pub leaf_culling: LeafCullingMode,
 }
 impl Mesher<'_> {
     /// `region[dz][dx]` are the chunks around the meshed column (centre 1,1).
@@ -1115,6 +1260,11 @@ impl Mesher<'_> {
         let pad = &scratch.padded;
         out.visibility = visibility_reusing(pad, &self.tables.info, &mut scratch.visibility);
         let base_y = center.min_y() + sy * 16;
+        if self.leaf_culling.is_interior() {
+            scratch
+                .leaf
+                .prepare(self.leaf_culling, pad, &self.tables.info, region, base_y);
+        }
         let mut tints = Tints::new(
             region,
             self.biomes,
@@ -1137,6 +1287,10 @@ impl Mesher<'_> {
                         out.block_entities
                             .push(([center.x * 16 + x, base_y + y, center.z * 16 + z], id));
                     }
+                    if state.emission > 0 {
+                        out.lights
+                            .push(([center.x * 16 + x, base_y + y, center.z * 16 + z], id));
+                    }
                     if state.solid
                         && Direction::ALL.iter().all(|d| {
                             let [dx, dy, dz] = d.normal();
@@ -1147,8 +1301,8 @@ impl Mesher<'_> {
                     }
                     if state.fluid.kind() != FluidKind::Empty {
                         let water = tints.get(Resolver::Water, x, y, z);
-                        let nether = self.nether_shading;
-                        fluid::tesselate(self.tables, nether, pad, water, &mut out, [x, y, z], id);
+                        let shade = (self.nether_shading, self.shader_pack_lighting);
+                        fluid::tesselate(self.tables, shade, pad, water, &mut out, [x, y, z], id);
                     }
                     if !state.model {
                         continue;
@@ -1175,13 +1329,21 @@ impl Mesher<'_> {
                         None => [x as f32, y as f32, z as f32],
                     };
                     let mut visible = [false; 6];
+                    let interior_leaf = state.leaves
+                        && self.leaf_culling.is_interior()
+                        && scratch.leaf.interior(self.leaf_culling, x, y, z);
                     for d in Direction::ALL {
                         let [dx, dy, dz] = d.normal();
                         let neighbor = pad.blocks[pi(x + dx, y + dy, z + dz)];
                         let other = &info[neighbor as usize];
                         // LeavesBlock.skipRendering with opaque leaves.
                         let opaque_leaves = !self.cutout_leaves && state.leaves && other.leaves;
+                        let hollow_leaf = self.leaf_culling == LeafCullingMode::Hollow
+                            && state.leaves
+                            && other.leaves
+                            && leaf_culling::in_section(x + dx, y + dy, z + dz);
                         visible[d as usize] = !opaque_leaves
+                            && !hollow_leaf
                             && self
                                 .visibility
                                 .should_render_face(
@@ -1207,6 +1369,7 @@ impl Mesher<'_> {
                                 ao,
                                 state,
                                 id,
+                                interior_leaf,
                             );
                         }
                     }
@@ -1216,6 +1379,7 @@ impl Mesher<'_> {
         debug_assert!(out.states_match(), "a quad was emitted without its state");
         debug_assert_eq!(out.solid_states.len() * 4, out.solid.len());
         debug_assert_eq!(out.translucent_states.len() * 4, out.translucent.len());
+        out.finish_sprite_layers();
         out
     }
     /// `BlockColors` tint source `index`, or `None` for an untinted (-1) layer.
@@ -1248,11 +1412,18 @@ impl Mesher<'_> {
         ao: bool,
         state: &Info,
         id: u32,
+        interior_leaf: bool,
     ) {
         let q = &face.quad;
-        let tier = state.tier.max(hdr_tier("", q.light_emission));
+        // A quad's own light (a model's glowing part) may raise the tier; whether it
+        // shines all over stays the block's.
+        let tier = (state.tier & !WHOLE).max(hdr_tier("", q.light_emission)) | state.tier & WHOLE;
         let shade_face = q.shade_direction_override.unwrap_or(q.facing);
-        let directional = lighting::cardinal(self.nether_shading, shade_face);
+        let directional = if self.shader_pack_lighting {
+            1.0
+        } else {
+            lighting::cardinal(self.nether_shading, shade_face)
+        };
         // Grey level per vertex before tinting, and vanilla light coords.
         let (gray, ao_gray, coords) = if ao {
             let info = &self.tables.info;
@@ -1268,7 +1439,16 @@ impl Mesher<'_> {
             ([lighting::gray(directional); 4], [255; 4], [coords; 4])
         };
         let tint = Self::tint(state, q.tint_index, tints, pos);
-        let (target, states) = if face.translucent {
+        if self.tables.is_animated(face.layer as u16) {
+            out.note_sprite_layer(face.layer as u16);
+        }
+        let translucent = face.translucent
+            || self
+                .translucent_layers
+                .get(face.layer as usize)
+                .copied()
+                .unwrap_or(false);
+        let (target, states) = if translucent {
             (&mut out.translucent, &mut out.translucent_states)
         } else {
             (&mut out.solid, &mut out.solid_states)
@@ -1278,6 +1458,17 @@ impl Mesher<'_> {
             lighting: Some(model_lighting(tint, directional, ao_gray)),
             ..QuadState::new(id, pos, false)
         });
+        // Opaque leaves (forceOpaque), quads over opaque texels and leaves a
+        // leaf-culling mode proved internal draw in the solid layer: no alpha
+        // cutout. All four vertices of the quad share the layer.
+        let layer = if face.opaque && !translucent
+            || !self.cutout_leaves && state.leaves
+            || interior_leaf
+        {
+            face.layer as u16 | OPAQUE_LAYER
+        } else {
+            face.layer as u16
+        };
         for i in 0..4 {
             let g = gray[i] as u32;
             let rgb = tinted(g, tint);
@@ -1285,13 +1476,7 @@ impl Mesher<'_> {
             target.push(TerrainVertex::new(
                 [p[0] + origin[0], p[1] + origin[1], p[2] + origin[2]],
                 q.uv[i],
-                // Opaque leaves (forceOpaque) and quads over opaque texels draw in the
-                // solid layer: no alpha cutout (a dirt path's side skips its clear top row).
-                if face.opaque && !face.translucent || !self.cutout_leaves && state.leaves {
-                    face.layer as u16 | OPAQUE_LAYER
-                } else {
-                    face.layer as u16
-                },
+                layer,
                 emitting(pack_rgb(rgb), tier),
                 pack_coords(lighting::with_emission(coords[i], q.light_emission)),
             ));

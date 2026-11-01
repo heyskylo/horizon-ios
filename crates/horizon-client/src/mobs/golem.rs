@@ -20,8 +20,8 @@ use horizon_core::{geometry::Vec3, random::RandomSource};
 fn golem_prey(s: &super::Seen) -> bool {
     s.hostile && s.species != Species::Creeper
 }
-/// `IronGolem.registerGoals`, without `ResetUniversalAngerTargetGoal`
-/// (nothing reads the `universal_anger` rule yet).
+/// `IronGolem.registerGoals`, without `ResetUniversalAngerTargetGoal` (that
+/// goal is not ported).
 pub fn register_iron(m: &mut Mob) {
     let g = &mut m.ai.goals;
     g.add(1, MeleeAttack::new(1.0, true));
@@ -534,4 +534,196 @@ pub fn snow_ai_step(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
         }
     }
     let _ = z;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::mobs::world::{test_player, with_test_world};
+    use std::sync::Arc;
+
+    fn mob(id: u32, species: Species, at: Vec3) -> Mob {
+        let mut kind = (*crate::mobs::sensor_scan_tests::kind()).clone();
+        kind.species = species;
+        Mob::new(id, Arc::new(kind), at, 0.0)
+    }
+
+    /// `IronGolem.canAttack` refuses creepers, and `HurtByTargetGoal.canUse`
+    /// asks it: the creeper that hurt the golem is never fought back, while
+    /// a zombie that hurts it is.
+    #[test]
+    fn a_creeper_that_hurts_an_iron_golem_is_never_fought_back() {
+        let creeper = mob(2, Species::Creeper, Vec3::new(1.5, 64.0, 0.5));
+        let zombie = mob(3, Species::Zombie, Vec3::new(1.5, 64.0, 0.5));
+        with_test_world(&[creeper.seen(None), zombie.seen(None)], |w, _| {
+            let mut golem = mob(1, Species::IronGolem, Vec3::new(0.5, 64.0, 0.5));
+            let mut goal = HurtByTarget::new();
+            let mut events = Vec::new();
+            let mut lr = horizon_core::random::LegacyRandom::new(0);
+            let mut cx = Cx {
+                w,
+                lr: &mut lr,
+                events: &mut events,
+            };
+
+            golem.ai.last_hurt_by = Some(Who::Mob(2));
+            golem.ai.last_hurt_by_time = 1;
+            assert!(!goal.can_use(&mut golem, &mut cx));
+            assert_eq!(golem.ai.target, None, "a creeper is refused");
+
+            golem.ai.last_hurt_by = Some(Who::Mob(3));
+            golem.ai.last_hurt_by_time = 2;
+            assert!(goal.can_use(&mut golem, &mut cx));
+            goal.start(&mut golem, &mut cx);
+            assert_eq!(golem.ai.target, Some(Who::Mob(3)));
+        });
+    }
+
+    /// A village golem (not built by a player) still goes after the player
+    /// who angered it.
+    #[test]
+    fn a_village_golem_still_targets_the_player_who_angered_it() {
+        with_test_world(&[], |w, _| {
+            let mut w = w.clone();
+            w.player = Some(test_player(Vec3::new(3.5, 64.0, 0.5)));
+            let mut golem = mob(1, Species::IronGolem, Vec3::new(0.5, 64.0, 0.5));
+            golem.extra.anger = 100;
+            let mut events = Vec::new();
+            let mut lr = horizon_core::random::LegacyRandom::new(0);
+            let mut cx = Cx {
+                w: &w,
+                lr: &mut lr,
+                events: &mut events,
+            };
+            let mut goal = NearestTarget::player(true)
+                .interval(0)
+                .when(|m, _| m.extra.anger > 0);
+            assert!(goal.can_use(&mut golem, &mut cx));
+            goal.start(&mut golem, &mut cx);
+            assert_eq!(golem.ai.target, Some(Who::Player));
+        });
+    }
+}
+
+#[cfg(test)]
+mod created_golem_tests {
+    use super::*;
+    use crate::mobs::world::{test_player, with_test_world};
+    use std::sync::Arc;
+
+    /// The target `m`'s target goals pick over `ticks` ticks in `w`.
+    fn target(m: &mut Mob, w: &MobWorld<'_>, ticks: u32) -> Option<Who> {
+        let mut events = Vec::new();
+        let mut lr = horizon_core::random::LegacyRandom::new(0);
+        let mut goals = std::mem::take(&mut m.ai.targets);
+        {
+            let mut cx = Cx {
+                w,
+                lr: &mut lr,
+                events: &mut events,
+            };
+            for _ in 0..ticks {
+                goals.tick(m, &mut cx);
+            }
+        }
+        m.ai.targets = goals;
+        m.ai.target
+    }
+    /// A player-built and a village iron golem, both angry at a player, and a
+    /// zombie; `None` without the extracted vanilla data.
+    fn angry_golems() -> Option<(Mob, Mob, crate::mobs::Seen)> {
+        let mut out = None;
+        with_test_world(&[], |_, types| {
+            let golem = |id: u32, created: bool| {
+                let kind = Arc::new(types.types["minecraft:iron_golem"].clone());
+                let mut m = Mob::new(id, kind, Vec3::new(0.5, 64.0, 0.5), 0.0);
+                // `CarvedPumpkinBlock.trySpawnGolem`: setPlayerCreated(true).
+                m.extra.player_created = created;
+                // The anger a player's hit gives it (`after_hurt`).
+                m.extra.anger = 400;
+                m
+            };
+            let zombie = Mob::new(
+                3,
+                Arc::new(types.types["minecraft:zombie"].clone()),
+                Vec3::new(0.5, 64.0, 2.5),
+                0.0,
+            );
+            out = Some((golem(1, true), golem(2, false), zombie.seen(None)));
+        });
+        out
+    }
+
+    /// `IronGolem.canAttack`: a golem a player built never takes a player as
+    /// its target, though a village golem does and both still go after
+    /// monsters. The world holds one player, so "its builder" and "a player"
+    /// are the same check, as they are in vanilla.
+    #[test]
+    fn a_golem_a_player_built_never_targets_one() {
+        let Some((mut built, mut village, zombie)) = angry_golems() else {
+            return;
+        };
+        with_test_world(&[], |w, _| {
+            let mut w = w.clone();
+            w.player = Some(test_player(Vec3::new(2.5, 64.0, 0.5)));
+            assert_eq!(
+                target(&mut built, &w, 200),
+                None,
+                "a golem a player built turned on its builder"
+            );
+            assert_eq!(
+                target(&mut village, &w, 200),
+                Some(Who::Player),
+                "a village golem goes after the player"
+            );
+        });
+        with_test_world(&[zombie], |w, _| {
+            assert_eq!(
+                target(&mut built, w, 200),
+                Some(Who::Mob(3)),
+                "a golem a player built still fights monsters"
+            );
+        });
+    }
+}
+
+#[cfg(test)]
+mod crack_sound_tests {
+    use super::*;
+    use crate::mobs::Damage;
+    use std::sync::Arc;
+
+    /// An iron golem of its 100 health, from a made-up type.
+    fn golem() -> Mob {
+        let mut kind = crate::mobs::sensor_scan_tests::kind();
+        let k = Arc::make_mut(&mut kind);
+        k.id = "minecraft:iron_golem".into();
+        k.species = Species::IronGolem;
+        k.max_health = 100.0;
+        Mob::new(1, kind, Vec3::ZERO, 0.0)
+    }
+    /// One hit of `amount` past the golem's hurt frames: how often it played
+    /// `entity.iron_golem.damage`.
+    fn cracks(m: &mut Mob, amount: f32) -> usize {
+        m.outbox.clear();
+        m.invulnerable = 0;
+        assert!(m.damage(amount, Damage::player([0.0, 0.0, 1.0])));
+        m.outbox
+            .iter()
+            .filter(|e| matches!(e, MobEvent::Sound("entity.iron_golem.damage", ..)))
+            .count()
+    }
+
+    /// `IronGolem.hurtServer`: a hit that leaves the golem in a new
+    /// `Crackiness.Level` (`Crackiness.GOLEM` is 0.75, 0.5, 0.25) plays
+    /// `entity.iron_golem.damage` once, and hits inside one level play none.
+    #[test]
+    fn a_crack_is_heard_once_at_the_threshold() {
+        let mut m = golem();
+        assert_eq!(cracks(&mut m, 30.0), 1, "100 to 70 crosses 0.75");
+        assert_eq!(cracks(&mut m, 10.0), 0, "70 to 60 stays at the same crack");
+        assert_eq!(cracks(&mut m, 20.0), 1, "60 to 40 crosses 0.5");
+        assert_eq!(cracks(&mut m, 10.0), 0, "40 to 30 stays at the same crack");
+        assert_eq!(cracks(&mut m, 10.0), 1, "30 to 20 crosses 0.25");
+    }
 }

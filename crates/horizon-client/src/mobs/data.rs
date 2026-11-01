@@ -33,7 +33,7 @@ pub struct StateData {
     /// Collision shape top (0 when the shape is empty).
     pub top: f32,
 }
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Placement {
     OnGround,
     InWater,
@@ -48,6 +48,10 @@ pub struct MobData {
     pub animations: HashMap<String, Animation>,
     /// Replaced when the resource packs change (the rest of `MobData` never is).
     pub villager_hats: std::sync::RwLock<super::villager_hats::VillagerHats>,
+    /// The packs' custom entity models (OptiFine CEM); replaced when the resource packs change.
+    pub cem: std::sync::RwLock<std::sync::Arc<super::cem::CemModels>>,
+    /// The packs' random entity textures, replaced with them too.
+    pub random_textures: std::sync::RwLock<horizon_optifine::random_textures::RandomTextures>,
     /// Biome tags (spawns_warm_variant_farm_animals, is_ocean...) by tag id.
     pub biome_tags: HashMap<String, std::collections::HashSet<String>>,
     /// Entity type tags (`data/*/tags/entity_type`).
@@ -55,6 +59,9 @@ pub struct MobData {
     /// The villager POI type of every block state (`PoiTypes.forState`),
     /// worked out the first time a villager looks for one.
     pub pois: std::sync::OnceLock<Vec<Option<super::villager_brain::Poi>>>,
+    /// [`MobData::placement`] of each species' entity type (by `Species as
+    /// usize`), worked out the first time a spawn asks.
+    pub species_placements: std::sync::OnceLock<Vec<Placement>>,
 }
 impl MobData {
     pub fn load(root: &Path, facts: &BlockFacts) -> Self {
@@ -81,6 +88,9 @@ impl MobData {
             crate::items::load_tags(root, "entity_type", &horizon_world::loot::PackOverlay::NONE)
                 .unwrap_or_default();
         data.villager_hats = std::sync::RwLock::new(super::villager_hats::VillagerHats::load(root));
+        data.random_textures = std::sync::RwLock::new(
+            horizon_optifine::random_textures::RandomTextures::scan(root),
+        );
         data
     }
     /// Only the keyframe animation definitions of `mob-data.json`.
@@ -142,9 +152,12 @@ impl MobData {
             heightmaps,
             animations,
             villager_hats: Default::default(),
+            cem: Default::default(),
+            random_textures: Default::default(),
             biome_tags: HashMap::new(),
             entity_tags: HashMap::new(),
             pois: Default::default(),
+            species_placements: Default::default(),
         }
     }
     /// Without the export, approximate path types from the gameplay facts.
@@ -198,9 +211,12 @@ impl MobData {
             heightmaps: HashMap::new(),
             animations: HashMap::new(),
             villager_hats: Default::default(),
+            cem: Default::default(),
+            random_textures: Default::default(),
             biome_tags: HashMap::new(),
             entity_tags: HashMap::new(),
             pois: Default::default(),
+            species_placements: Default::default(),
         }
     }
     pub fn state(&self, id: horizon_world::registry::BlockStateId) -> StateData {
@@ -222,7 +238,28 @@ impl MobData {
     pub fn placement(&self, entity: &str) -> Placement {
         self.placements
             .get(entity)
-            .cloned()
+            .copied()
             .unwrap_or(Placement::OnGround)
+    }
+    /// [`MobData::placement`] of the species' entity type, without building
+    /// its id: natural spawning asks it for every position it tries.
+    pub fn species_placement(&self, s: super::Species) -> Placement {
+        let table = self.species_placements.get_or_init(|| {
+            let defs = super::species::ALL;
+            let len = defs
+                .iter()
+                .map(|d| d.species as usize + 1)
+                .max()
+                .unwrap_or(0);
+            let mut table = vec![Placement::OnGround; len];
+            // `species::def` takes a species' first definition: so does this.
+            for d in defs.iter().rev() {
+                table[d.species as usize] = self.placement(&format!("minecraft:{}", d.name));
+            }
+            table
+        });
+        table.get(s as usize).copied().unwrap_or_else(|| {
+            self.placement(&format!("minecraft:{}", super::species::def(s).name))
+        })
     }
 }

@@ -21,6 +21,17 @@ fn components(stack: &ItemStack) -> Compound {
     }
 }
 
+/// `BlockState.getCloneItemStack`'s item: a stem's seed (`StemBlock` and
+/// `AttachedStemBlock` override it; a stem has no block item), else the
+/// block's own item.
+fn clone_item<'a>(name: &str, block_item: &'a str) -> &'a str {
+    match name {
+        "minecraft:pumpkin_stem" | "minecraft:attached_pumpkin_stem" => "minecraft:pumpkin_seeds",
+        "minecraft:melon_stem" | "minecraft:attached_melon_stem" => "minecraft:melon_seeds",
+        _ => block_item,
+    }
+}
+
 impl Game<'_> {
     /// The block entity at `key` as vanilla saves it, with its custom name.
     fn saved_block_entity(&self, key: (i32, i32, i32)) -> Option<Tag> {
@@ -54,7 +65,7 @@ impl Game<'_> {
                 Some(t) if t == "sticky" => "minecraft:sticky_piston",
                 _ => "minecraft:piston",
             });
-        let item = head.unwrap_or(&*facts.item);
+        let item = clone_item(&facts.name, head.unwrap_or(&facts.item));
         if item == "minecraft:air" {
             return None;
         }
@@ -141,6 +152,31 @@ impl Game<'_> {
         Some(stack)
     }
 
+    /// `ShulkerBoxBlock.playerWillDestroy`: a Creative player's filled box is
+    /// one item at the block center, with collectComponents and the default pickup delay.
+    /// This direct spawn intentionally does not use the block_drops gamerule.
+    pub(super) fn drop_creative_shulker(&mut self, pos: [i32; 3]) {
+        let key = (pos[0], pos[1], pos[2]);
+        let filled = matches!(self.world.block_entities.get(&key), Some(BlockEntity::Chest(items))
+            if items.iter().flatten().any(|s| s.count > 0));
+        if !filled {
+            return;
+        }
+        let Some(saved) = self.saved_block_entity(key) else {
+            return;
+        };
+        let state = self.world.block(pos[0], pos[1], pos[2]);
+        let mut stack = ItemStack::new(&self.res.facts().get(state).item, 1);
+        let patch = block_entity_item::collected_components(&saved);
+        (stack.damage, stack.extra) = item_data::decode_components(Some(&Tag::Compound(patch)));
+        self.spawn_item(
+            stack,
+            pos.map(|v| f64::from(v) + 0.5),
+            super::dispenser::new_item_motion(),
+            10,
+        );
+    }
+
     /// `BlockItem.updateBlockStateFromTag`: the properties of the item's
     /// `block_state` component (a hive's honey level, a statue's pose) set on
     /// the block just placed at `pos`. Returns the state it has now.
@@ -214,5 +250,29 @@ impl Game<'_> {
         }
         self.world.block_entities.insert(key, entity);
         self.update_spawner_display(key);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::clone_item;
+
+    /// `StemBlock.getCloneItemStack` and `AttachedStemBlock.getCloneItemStack`:
+    /// pumpkin and melon stems, attached or not, pick the seed they grew from;
+    /// a block without an override still picks its own item.
+    #[test]
+    fn stems_pick_their_seeds_and_blocks_their_item() {
+        for (stem, seed) in [
+            ("minecraft:pumpkin_stem", "minecraft:pumpkin_seeds"),
+            ("minecraft:attached_pumpkin_stem", "minecraft:pumpkin_seeds"),
+            ("minecraft:melon_stem", "minecraft:melon_seeds"),
+            ("minecraft:attached_melon_stem", "minecraft:melon_seeds"),
+        ] {
+            assert_eq!(clone_item(stem, "minecraft:air"), seed, "{stem}");
+        }
+        assert_eq!(
+            clone_item("minecraft:stone", "minecraft:stone"),
+            "minecraft:stone"
+        );
     }
 }

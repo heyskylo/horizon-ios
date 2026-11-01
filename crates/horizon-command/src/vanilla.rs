@@ -38,15 +38,35 @@ pub fn build() -> Dispatcher {
 pub fn build_with(dev: bool) -> Dispatcher {
     build_for(dev, false)
 }
-/// [`build_with`], plus with `dedicated` the commands only a dedicated server
-/// has (Commands.CommandSelection.DEDICATED: `/op`, `/ban`, `/whitelist`...).
+/// [`build_with`] for a server of the given kind (Commands.CommandSelection):
+/// an integrated server's tree, or with `dedicated` a dedicated server's.
 pub fn build_for(dev: bool, dedicated: bool) -> Dispatcher {
     let mut d = registered(dev);
     if dedicated {
-        super::tree_extra::register_dedicated(&mut d, 0);
+        dedicated_selection(&mut d);
     }
     apply_vanilla_order(&mut d);
     d
+}
+/// Commands(CommandSelection.DEDICATED) where it differs from INTEGRATED:
+/// `seed` and `version` check permissions (SeedCommand.register and
+/// VersionCommand.register get `selection != INTEGRATED`), `publish` and
+/// `unpublish` are not registered (`includeIntegrated`), and the dedicated
+/// commands are (`includeDedicated`: `/op`, `/ban`, `/whitelist`...).
+fn dedicated_selection(d: &mut Dispatcher) {
+    for name in ["seed", "version"] {
+        if let Some(n) = d.find(name) {
+            d.requires(n, GAMEMASTERS);
+        }
+    }
+    let kept: Vec<usize> = d.nodes[0]
+        .children
+        .iter()
+        .copied()
+        .filter(|&c| !matches!(d.nodes[c].name(), "publish" | "unpublish"))
+        .collect();
+    d.nodes[0].children = kept;
+    super::tree_extra::register_dedicated(d, 0);
 }
 /// The tree in the order Horizon's code registers it, before
 /// [`vanilla_order`](super::vanilla_order) puts children in vanilla's order
@@ -297,7 +317,8 @@ pub fn registered(dev: bool) -> Dispatcher {
         d.executes(l, "difficulty");
     }
 
-    // seed and version: everyone in the integrated server.
+    // seed and version: everyone in the integrated server, game masters on a
+    // dedicated one (`dedicated_selection`).
     let seed = d.literal(root, "seed");
     d.executes(seed, "seed");
     let version = d.literal(root, "version");

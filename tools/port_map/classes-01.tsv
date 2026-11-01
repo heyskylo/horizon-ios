@@ -1,6 +1,6 @@
-GlowSquid.aiStep	missing		player: glow squids shed no glow particles and their dark timer is not kept, so a hit squid does not dim
+GlowSquid.aiStep	port	crates/horizon-client/src/mobs/aquatic.rs::glow_squid_ai_step	
 GlowSquid.checkGlowSquidSpawnRules	port	crates/horizon-client/src/mobs/spawn_rules.rs::check_spawn_rules	S::GlowSquid arm: 33 blocks below sea level, dark, in water
-GlowSquid.hurtServer	missing		player: a glow squid hit does not get the 100-tick dark timer, so it does not dim
+GlowSquid.hurtServer	port	crates/horizon-client/src/mobs/aquatic.rs::hurt_server	
 WolfSoundVariants	skip:data		registry bootstrap of the wolf sound sets; sounds are in species.rs and finalize.rs
 AbstractDragonPhaseInstance.getTurnSpeed	inline	crates/horizon-client/src/game/dragon.rs::Game::tick_dragon	0.7 / dist / rot turn for every phase but Landing; only applied while a fly target is set
 DragonChargePlayerPhase.doServerTick	inline	crates/horizon-client/src/game/dragon.rs::Game::tick_phase	Charging arm: 10-tick countdown once close; gap: minor: no collision re-target
@@ -28,12 +28,12 @@ DragonTakeoffPhase.navigateToNextPathNode	port	crates/horizon-client/src/game/dr
 EnderDragonPhase.create	skip:data		phase registry; the ids are fixed in Phase::id
 EnderDragonPhase.createInstance	port	crates/horizon-client/src/game/dragon.rs::Phase::from_id	builds the default instance for an id
 EnderDragonPhase.getById	port	crates/horizon-client/src/game/dragon.rs::Phase::from_id	id to phase, unknown ids fall back to Holding
-Mannequin.addAdditionalSaveData	missing		player: a saved mannequin is written without its profile, so after a reload it wears the default skin
+Mannequin.addAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::Base::mob_to_nbt	ticked in #3514; `Mannequin.addAdditionalSaveData` is cited at crates/horizon-client/src/entity_nbt.rs:376 (in a comment, so `where` names the enclosing fn)
 Mannequin.applyImplicitComponent	missing		minor: the profile from a spawning item is not applied; Horizon has no mannequin item, only summon with a profile tag
-Mannequin.defineSynchedData	inline	crates/horizon-client/src/game/remote_mob_data.rs::apply	gap: player: reads the profile (slot 17) only; DATA_IMMOVABLE and DATA_DESCRIPTION are not read
+Mannequin.defineSynchedData	inline	crates/horizon-client/src/game/remote_mob_data.rs::apply	slots 17 to 19: the profile, DATA_IMMOVABLE and DATA_DESCRIPTION are all read now
 Mannequin.get	skip:other		data-component getter for the PROFILE component; the profile is Mob.profile, read directly
-Mannequin.readAdditionalSaveData	missing		player: the profile is not read back, so a reloaded mannequin wears the default skin
-Mannequin.updateDescription	missing		player: the mannequin's description (default 'Mannequin') is never drawn under its name
+Mannequin.readAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::mob_from_nbt	ticked in #3514; `Mannequin.readAdditionalSaveData` is cited at crates/horizon-client/src/entity_nbt.rs:1380 (in a comment, so `where` names the enclosing fn)
+Mannequin.updateDescription	port	crates/horizon-client/src/mobs.rs::MannequinDescription::component	the description component: the default `entity.minecraft.mannequin.label`, none when hidden, or the server's own (the text drawn under the name tag)
 Giant.createAttributes	skip:data		attributes come from entity-types.json
 ShootWhenStuck.checkExtraStartConditions	inline	crates/horizon-client/src/mobs/breeze.rs::register	
 Evoker.createAttributes	skip:data		attributes come from entity-types.json
@@ -51,7 +51,7 @@ PiglinBrute.createAttributes	skip:data		attributes come from entity-types.json
 PiglinBrute.customServerAiStep	inline	crates/horizon-client/src/mobs/piglin.rs::register_brute	gap: minor: the brain tick is replaced by the goals set in register_brute; the activity update is in PiglinBruteAi rows
 PiglinBrute.finalizeSpawn	inline	crates/horizon-client/src/mobs/finalize.rs::Ctx::mob	golden axe in the main hand via populate; initMemories is missing
 PiglinBrute.hurtServer	inline	crates/horizon-client/src/mobs/piglin.rs::register_brute	gap: minor: retaliation is the HurtByTarget goal; no PiglinAi.maybeRetaliate for non-piglin attackers
-PiglinBrute.wantsToPickUp	missing		player: a piglin brute does not pick up a golden axe lying on the ground; piglin_pickups only serves piglins
+PiglinBrute.wantsToPickUp	port	crates/horizon-client/src/mobs/equip.rs::wants_to_pick_up	
 PiglinBruteAi.createIdleLookBehaviors	inline	crates/horizon-client/src/mobs/piglin.rs::register_brute	gap: minor: looks at players only (LookAtPlayer); no look at piglins, random look or do-nothing pause
 PiglinBruteAi.createIdleMovementBehaviors	inline	crates/horizon-client/src/mobs/piglin.rs::register_brute	gap: minor: strolls anywhere; no visits to piglins and no return to its home point
 PiglinBruteAi.findNearestValidAttackTarget	inline	crates/horizon-client/src/mobs/piglin.rs::register_brute	gap: minor: targets nearest player or wither skeleton through the target goals; no anger memory first
@@ -106,7 +106,7 @@ AbstractMinecartContainer.remove	inline	crates/horizon-client/src/game/minecarts
 MinecartChest.interact	inline	crates/horizon-client/src/game/minecarts.rs::Game::interact_cart	chest arm: opens the cart's items and plays the chest sound
 MinecartCommandBlock.activateMinecart	inline	crates/horizon-client/src/game/minecarts.rs::Game::activate_cart	gap: minor: no command ever runs; the cart holds no command since its editor is missing
 MinecartCommandBlock.defineSynchedData	missing		minor: the command text and last output are not synced; no command cart holds a command
-MinecartCommandBlock.interact	missing		player: a creative player right-clicking a command minecart gets no command editor; vanilla opens it
+MinecartCommandBlock.interact	port	crates/horizon-client/src/game/remote.rs::Game::remote_use_entity	the client opens the command editor of the cart it right-clicked
 MinecartCommandBlock.onSyncedDataUpdated	missing		minor: no synced command text to load into the cart
 MinecartCommandBlock.readAdditionalSaveData	inline	crates/horizon-client/src/game/minecarts.rs::Minecart::from_nbt	gap: minor: the saved Command text is not read
 MinecartCommandBlock.MinecartCommandBase.createCommandSourceStack	missing		minor: no command runs from a cart, so no source stack is built
@@ -120,7 +120,11 @@ MinecartFurnace.getMaxSpeed	port	crates/horizon-client/src/game/minecarts.rs::Ga
 MinecartFurnace.interact	inline	crates/horizon-client/src/game/minecarts.rs::Game::interact_cart	furnace arm
 MinecartFurnace.readAdditionalSaveData	port	crates/horizon-client/src/game/minecarts.rs::Minecart::from_nbt	
 MinecartFurnace.tick	inline	crates/horizon-client/src/game/minecarts.rs::Game::tick_cart	furnace variant: fuel counts down, push clears at zero, smoke puffs
-MinecartSpawner	missing		player: spawner minecarts do not exist in Horizon: no cart kind, so a spawner minecart item does nothing on a rail
+MinecartSpawner.tick	port	crates/horizon-client/src/game/minecarts.rs::Game::tick_cart	BaseSpawner.serverTick at the cart's block (spawner.rs server_tick_spawner_of); its broadcastEvent is an entity event on the cart
+MinecartSpawner.createTicker	port	crates/horizon-client/src/game/minecarts.rs::Game::tick_cart	the server ticker: the CartKind::Spawner arm
+MinecartSpawner.readAdditionalSaveData	port	crates/horizon-client/src/game/minecarts.rs::Minecart::from_nbt	BaseSpawner.load
+MinecartSpawner.addAdditionalSaveData	port	crates/horizon-client/src/game/minecarts.rs::Minecart::to_nbt	BaseSpawner.save
+MinecartSpawner.getDefaultDisplayBlockState	port	crates/horizon-client/src/game/minecarts.rs::Game::display_state	the spawner block
 NewMinecartBehavior	skip:other		experimental minecart_improvements physics; Horizon always runs the old behaviour in minecarts.rs and writes that pack disabled in save.rs
 NewMinecartBehavior.TrackIteration	skip:other		part of the experimental minecart_improvements physics; see NewMinecartBehavior
 FeatureFlagRegistry	skip:data		name table of the feature packs (functions.rs FEATURE_PACKS); codecs are not needed
@@ -182,7 +186,7 @@ CreativeModeTabs.generatePresetPaintings	skip:data		creative contents come from 
 CreativeModeTabs.generateSuspiciousStews	skip:data		creative contents come from the data file
 CreativeModeTabs.registerColoredItems	skip:data		creative contents come from the data file
 CreativeModeTabs.tryRebuildTabContents	port	crates/horizon-client/src/creative.rs::Creative::items	contents rebuilt on demand
-DebugStickItem	missing		player: the debug stick does nothing in creative; no block state cycling or marker
+DebugStickItem	home	crates/horizon-client/src/game/debug_stick.rs	
 DoubleHighBlockItem.placeBlock	missing		unsure: no code found that places the upper half of a tall block
 DyeItem.interactLivingEntity	missing		unsure: no dye use on mobs (sheep, collars) found in the client
 DyeItem.tryApplyToSign	inline	crates/horizon-client/src/game/sign_edit.rs::Game::use_sign_applicator	dye colours the sign text

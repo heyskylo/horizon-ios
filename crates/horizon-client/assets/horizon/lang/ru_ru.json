@@ -195,5 +195,18 @@
   "Threads that generate, light and mesh chunks. Next start.": "Потоки, которые генерируют, освещают и строят чанки. Со следующего запуска.",
   "Vulkan, then DirectX 12 (Windows) or OpenGL (Linux) where it fails. Next start.": "Vulkan, при сбое — DirectX 12 (Windows) или OpenGL (Linux). Со следующего запуска.",
   "Mesh data sent to the GPU per frame. Lower is smoother while loading.": "Данных меша в видеокарту за кадр. Меньше — плавнее во время загрузки.",
-  "Frame rate and frame times over the game, with a graph.": "Частота кадров и их время поверх игры, с графиком."
+  "Frame rate and frame times over the game, with a graph.": "Частота кадров и их время поверх игры, с графиком.",
+  "horizon.multiplayer.finding_friend": "Ищем мир друга…",
+  "horizon.loading.opening_world": "Открытие мира",
+  "horizon.loading.cancelling_world": "Отмена",
+  "horizon.multiplayer.not_signed_in": "Этот сервер работает в онлайн-режиме. Войдите с помощью аккаунта Microsoft в лаунчере Horizon, чтобы присоединиться.",
+  "horizon.multiplayer.invalid_address": "Недействительный адрес сервера: %s",
+  "horizon.multiplayer.connected_friend_direct": "Установлено прямое соединение с другом…",
+  "horizon.multiplayer.connected_friend_relay": "Соединение с другом через релей…",
+  "horizon.pages.shader_options": "Настройки шейдеров",
+  "horizon.pages.split_profiles": "Кто играет?",
+  "horizon.pages.split_profiles.tooltip": "Кто играет: профиль, хранимый в этой папке игры.",
+  "horizon.shader_options.open": "Настройки шейдеров…",
+  "horizon.shader_options.profile": "Профиль",
+  "horizon.shader_options.loading": "Чтение настроек набора шейдеров…"
 }

@@ -66,7 +66,7 @@ impl Game<'_> {
     /// and the hit distance along the view.
     pub(super) fn interaction_hit(&self) -> Option<(i32, f64)> {
         let (eye, dir) = self.aim()?;
-        let reach = if self.creative { 5.0 } else { 3.0 };
+        let reach = self.entity_reach;
         self.interactions
             .iter()
             .filter_map(|(&id, i)| ray_box(eye, dir, reach, i.bounds()).map(|d| (id, d)))

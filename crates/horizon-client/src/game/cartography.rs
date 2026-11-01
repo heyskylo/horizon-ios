@@ -191,7 +191,8 @@ impl MapData {
         m.unlimited = self.unlimited;
         m
     }
-    /// `MapItemSavedData.locked`: the same pixels and banner markers, locked.
+    /// `MapItemSavedData.locked`: the same pixels, banner markers and
+    /// decorations, locked (the frame markers are not copied).
     pub(super) fn locked_copy(&self) -> MapData {
         let mut m = MapData::fresh(
             f64::from(self.center[0]),
@@ -202,6 +203,7 @@ impl MapData {
         m.center = self.center;
         m.colors = self.colors.clone();
         m.banners = self.banners.clone();
+        m.decorations = self.decorations.clone();
         m.tracking = self.tracking;
         m.unlimited = self.unlimited;
         m.locked = true;
@@ -212,7 +214,7 @@ impl MapData {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::game::maps::Decoration;
+    use crate::game::maps::{Decoration, Key};
 
     fn close(a: [[f32; 2]; 4], b: [[f32; 2]; 4]) {
         for (a, b) in a.iter().zip(&b) {
@@ -239,7 +241,8 @@ mod tests {
             x,
             y,
             rot,
-            holder: None,
+            name: None,
+            key: Key::Item,
         };
         // The centre, facing north: 8 map pixels wide, nudged by (-0.5, 0.5).
         close(

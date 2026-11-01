@@ -7,7 +7,11 @@
 use super::{Game, commands::Target};
 use horizon_client::advancements::EntityView;
 use horizon_client::mobs::{Damage, DamageKind, MobEvent, SpawnSetup, Species};
-use horizon_core::{position::BlockPos, random::RandomSource};
+use horizon_core::{
+    geometry::{Aabb, Vec3},
+    position::BlockPos,
+    random::RandomSource,
+};
 
 pub(super) struct Bolt {
     /// The entity id a server's players know it by (0 until it has one).
@@ -47,7 +51,7 @@ impl Game<'_> {
     pub(super) fn tick_thunder(&mut self) {
         // isRaining (rain level > 0.2) and isThundering (> 0.9, sky light, no ceiling).
         let (rain, thunder) = self.world.weather.levels(1.0);
-        if rain <= 0.2 || thunder <= 0.9 || self.dim != super::Dim::Overworld {
+        if rain <= 0.2 || thunder <= 0.9 || self.dim != super::Dim::Overworld || self.world_debug {
             return;
         }
         let mut scratch = std::mem::take(&mut self.spawn_scratch);
@@ -452,10 +456,26 @@ impl Game<'_> {
             }
         });
     }
-    /// `thunderHit` for entities within 3 blocks (up to 9 above). Returns the
-    /// mobs in that box before the hit, as `CHANNELED_LIGHTNING` counts them.
+    /// `thunderHit` for entities whose box meets the strike box, 3 blocks
+    /// around and up to 9 above (`getEntities(this, AABB)` tests boxes, not
+    /// positions). Returns the mobs in that box before the hit, as
+    /// `CHANNELED_LIGHTNING` counts them. Boats, minecarts and experience
+    /// orbs are hit too (`VehicleEntity.hurtServer` adds 5 x 10 > 40 and
+    /// destroys them; an orb has 5 health).
     fn thunder_hit(&mut self, b: &mut Bolt) -> Vec<EntityView> {
         let at = b.at;
+        let strike = Aabb::new(
+            Vec3::new(at[0] - 3.0, at[1] - 3.0, at[2] - 3.0),
+            Vec3::new(at[0] + 3.0, at[1] + 9.0, at[2] + 3.0),
+        );
+        // Whether the box of an entity standing at `p` (half width `w`,
+        // height `h`) meets the strike box.
+        let meets = move |p: [f64; 3], w: f64, h: f64| {
+            strike.intersects(Aabb::new(
+                Vec3::new(p[0] - w, p[1], p[2] - w),
+                Vec3::new(p[0] + w, p[1] + h, p[2] + w),
+            ))
+        };
         let inside = move |p: [f64; 3]| {
             (p[0] - at[0]).abs() <= 3.0
                 && (p[2] - at[2]).abs() <= 3.0
@@ -465,7 +485,14 @@ impl Game<'_> {
         let struck: Vec<(u32, EntityView)> = self
             .mobs
             .iter()
-            .filter(|m| m.alive() && inside([m.position.x, m.position.y, m.position.z]))
+            .filter(|m| {
+                m.alive()
+                    && meets(
+                        [m.position.x, m.position.y, m.position.z],
+                        m.kind.width / 2.0,
+                        m.kind.height,
+                    )
+            })
             .map(|m| (m.id, self.mob_entity(m)))
             .collect();
         b.hit.extend(struck.iter().map(|(id, _)| *id));
@@ -477,7 +504,11 @@ impl Game<'_> {
         let mut events = Vec::new();
         let peaceful = self.ui.difficulty == 0;
         for m in self.mobs.iter_mut().filter(|m| m.alive()) {
-            if !inside([m.position.x, m.position.y, m.position.z]) {
+            if !meets(
+                [m.position.x, m.position.y, m.position.z],
+                m.kind.width / 2.0,
+                m.kind.height,
+            ) {
                 continue;
             }
             let setup = |m: &horizon_client::mobs::Mob| SpawnSetup {
@@ -554,10 +585,34 @@ impl Game<'_> {
                 b.spared.extend(self.dropped[before..].iter().map(|e| e.id));
             }
         }
-        // Every player in the box, the server's players too.
-        let strike = move |g: &mut Self| {
+        // Boats, then minecarts: `VehicleEntity.hurtServer` for 5 damage
+        // (x 10 over the 40 a vehicle takes) destroys them. Lightning is no
+        // fire source, so a TNT cart does not prime.
+        let mut i = self.boats.len();
+        while i > 0 {
+            i -= 1;
+            let bb = self.boats[i].bounds();
+            if strike.intersects(bb) {
+                self.hurt_boat(i, 5.0, false);
+            }
+        }
+        let mut i = self.carts.len();
+        while i > 0 {
+            i -= 1;
+            let bb = self.carts[i].bounds();
+            if strike.intersects(bb) {
+                self.hurt_cart(i, 5.0, false, false);
+            }
+        }
+        // `ExperienceOrb.hurtServer`: 5 damage off 5 health.
+        let orbs_before = self.orb_ids();
+        self.orbs
+            .retain_mut(|o| !(strike.intersects(o.bounds()) && o.hurt(5.0)));
+        self.native_orbs_left_since(&orbs_before);
+        // Every player in the box, the server's players too (0.6 x 1.8).
+        let strike_players = move |g: &mut Self| {
             if let Some(p) = g.player.as_ref().map(|p| p.position)
-                && inside([p.x, p.y, p.z])
+                && meets([p.x, p.y, p.z], 0.3, 1.8)
             {
                 if let Some(p) = g.player.as_mut() {
                     p.fire_ticks += 1;
@@ -570,20 +625,22 @@ impl Game<'_> {
                 g.hurt_player_by("minecraft:lightning_bolt", 5.0);
             }
         };
-        strike(self);
-        self.each_guest_hit(strike);
+        strike_players(self);
+        self.each_guest_hit(strike_players);
         b.hit_items.extend(
             self.dropped
                 .iter()
-                .filter(|e| inside([e.position.x, e.position.y, e.position.z]))
+                .filter(|e| meets([e.position.x, e.position.y, e.position.z], 0.125, 0.25))
                 .map(|e| e.id),
         );
         // Dropped items burn up (ItemEntity health 5), save fire-resistant ones.
+        let before = self.dropped_ids();
         self.dropped.retain(|e| {
-            !inside([e.position.x, e.position.y, e.position.z])
+            !meets([e.position.x, e.position.y, e.position.z], 0.125, 0.25)
                 || e.stack.item.contains("netherite")
                 || (e.age < 20 && b.spared.contains(&e.id))
         });
+        self.native_items_left_since(&before);
         struck.into_iter().map(|(_, view)| view).collect()
     }
     /// `LightningBolt.shouldRenderAtSqrDistance`: a bolt is drawn within 64

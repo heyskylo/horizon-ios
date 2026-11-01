@@ -657,7 +657,9 @@ impl Launcher {
                             v.number.clone(),
                             Some(detail.join(" · ").into_any_element()),
                             list[i].verdict.as_ref().map(|verdict| {
-                                caps(verdict.label()).text_color(t.muted).into_any_element()
+                                caps(tr(verdict.label()))
+                                    .text_color(t.muted)
+                                    .into_any_element()
                             }),
                             &t,
                         )

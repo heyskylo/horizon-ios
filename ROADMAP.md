@@ -742,13 +742,13 @@ Open: the GUI Scale is clamped to 2 after a restart under Hyprland, while XWayla
 
 </details>
 
-#### AppImage and a Nix flake
+#### A Nix flake
 
-Install Horizon on any Linux distribution as an AppImage, and on NixOS through a Nix flake.
+Install Horizon on NixOS through a Nix flake.
 
 <details><summary>Technical</summary>
 
-A player's idea (#horizon-ideas). An AppImage of the launcher and game from the release workflow, and a flake.nix packaging the release binaries with their runtime libraries (Vulkan loader, X11/Wayland, ALSA), the way horizon-parity's NixOS setup runs them today.
+A player's idea (#horizon-ideas). The launcher's AppImage ships with each launcher release ([packaging/linux/appimage.sh](packaging/linux/appimage.sh)): one file with the libraries GPUI needs, which replaces itself when it updates. A flake.nix packaging the release binaries with their runtime libraries (Vulkan loader, X11/Wayland, ALSA) is still missing, the way horizon-parity's NixOS setup runs them today.
 
 </details>
 

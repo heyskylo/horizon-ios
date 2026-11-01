@@ -6,7 +6,7 @@ use axum::{
     body::{Body, Bytes},
     extract::{Path as UrlPath, Query, State},
     http::{Request, StatusCode, header},
-    routing::{get, post},
+    routing::{get, patch, post},
 };
 use base64::{Engine, engine::general_purpose::STANDARD};
 use horizon_mod_registry::{App, Config, github, router};
@@ -38,6 +38,10 @@ struct Mock {
     login: String,
     /// GitHub takes this long to find the staging release.
     slow: Option<std::time::Duration>,
+    /// GitHub takes this long to open a pull request, and then doesn't.
+    slow_pull: Option<std::time::Duration>,
+    /// Branches moved back to main.
+    resets: Vec<String>,
 }
 
 type Shared = Arc<Mutex<Mock>>;
@@ -131,12 +135,53 @@ async fn mock_github() -> (String, Shared) {
             }),
         )
         .route(
+            "/repos/o/r/git/refs/heads/{*name}",
+            patch(|State(s): State<Shared>, UrlPath(name): UrlPath<String>, Json(b): Json<Value>| async move {
+                assert_eq!((&b["sha"], &b["force"]), (&json!("abc123"), &json!(true)));
+                let mut s = s.lock().unwrap();
+                s.commits.retain(|(branch, _), _| *branch != name);
+                s.resets.push(name);
+                Json(json!({}))
+            }),
+        )
+        .route(
+            "/repos/o/r/compare/{*spec}",
+            get(|State(s): State<Shared>, UrlPath(spec): UrlPath<String>| async move {
+                let branch = spec.strip_prefix("main...").unwrap();
+                let s = s.lock().unwrap();
+                let commits: Vec<Value> = s
+                    .commits
+                    .iter()
+                    .filter(|((b, _), _)| b == branch)
+                    .map(|(_, (_, message, _))| json!({"commit": {"message": message}}))
+                    .collect();
+                Json(json!({"ahead_by": commits.len(), "commits": commits}))
+            }),
+        )
+        .route(
             "/repos/o/r/pulls",
-            post(|State(s): State<Shared>, Json(b): Json<Value>| async move {
+            get(|State(s): State<Shared>, Query(q): Query<HashMap<String, String>>| async move {
+                assert_eq!(q["state"], "open");
+                let s = s.lock().unwrap();
+                let open: Vec<Value> = s
+                    .pulls
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, p)| format!("o:{}", p["head"].as_str().unwrap()) == q["head"] && p["state"] != "closed")
+                    .map(|(i, _)| json!({"html_url": format!("https://github.com/o/r/pull/{}", i + 1)}))
+                    .collect();
+                Json(json!(open))
+            })
+            .post(|State(s): State<Shared>, Json(b): Json<Value>| async move {
+                let slow = s.lock().unwrap().slow_pull;
+                if let Some(slow) = slow {
+                    tokio::time::sleep(slow).await;
+                    return Err(StatusCode::INTERNAL_SERVER_ERROR);
+                }
                 let mut s = s.lock().unwrap();
                 s.pulls.push(b);
                 let n = s.pulls.len();
-                Json(json!({"html_url": format!("https://github.com/o/r/pull/{n}"), "number": n}))
+                Ok(Json(json!({"html_url": format!("https://github.com/o/r/pull/{n}"), "number": n})))
             }),
         )
         .route(
@@ -376,9 +421,16 @@ async fn a_submission_becomes_a_pull_request() {
         assert!(body.contains("/mods/submit) by @alice."), "{body}");
         assert!(body.contains("may draw text on your screen"), "{body}");
     }
-    // The same version again: its branch is there.
+    // The same version again: its pull request is open.
     let (status, json) = client.submit(&csrf, &form(), &file).await;
     assert_eq!(status, StatusCode::CONFLICT, "{json}");
+    assert!(
+        json["error"]
+            .as_str()
+            .unwrap()
+            .ends_with("its pull request is open (https://github.com/o/r/pull/1)"),
+        "{json}"
+    );
     assert_eq!(mock.lock().unwrap().assets.len(), 1, "uploaded once");
 }
 
@@ -696,6 +748,187 @@ async fn a_refusal_waits_for_the_upload() {
     .unwrap();
     assert!(answer.starts_with("HTTP/1.1 401"), "{answer}");
     assert!(answer.contains("{\"error\":"), "{answer}");
+}
+
+/// A submission that GitHub broke off after making its branch: the same
+/// submitter's retry takes the branch up again; anyone else's is refused,
+/// and so is any retry once the pull request is open.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_retry_takes_up_its_own_branch() {
+    let (mut client, mock) =
+        setup_with(|gh| gh.call_timeout = std::time::Duration::from_millis(300)).await;
+    let file = std::fs::read(fixtures().join("coords_hud-0.1.0.hmod")).unwrap();
+    let branch = "submit/coords_hud-0.1.0".to_owned();
+    let key = (branch.clone(), "mods/coords_hud.toml".to_owned());
+
+    // Someone else's branch, with no pull request: not taken over, even when
+    // its commit copies the form's words for alice (only the service signs them).
+    let csrf = client.sign_in().await;
+    {
+        let mut m = mock.lock().unwrap();
+        m.branches.push(branch.clone());
+        m.commits.insert(
+            key.clone(),
+            (
+                "x".into(),
+                "Add coords_hud 0.1.0\n\nSubmitted by @alice through the form.\n\nSubmission: forged".into(),
+                None,
+            ),
+        );
+    }
+    let (status, json) = client.submit(&csrf, &form(), &file).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{json}");
+    assert!(
+        json["error"].as_str().unwrap().contains("by someone else"),
+        "{json}"
+    );
+    {
+        let mut m = mock.lock().unwrap();
+        assert!(m.resets.is_empty() && m.pulls.is_empty());
+        m.branches.clear();
+        m.commits.clear();
+    }
+
+    // GitHub times out opening the pull request: the branch and its commit are there.
+    mock.lock().unwrap().slow_pull = Some(std::time::Duration::from_secs(2));
+    let (status, json) = client.submit(&csrf, &form(), &file).await;
+    assert_eq!(status, StatusCode::GATEWAY_TIMEOUT, "{json}");
+    {
+        let mut m = mock.lock().unwrap();
+        assert_eq!(m.branches, [branch.as_str()]);
+        assert!(m.commits.contains_key(&key) && m.pulls.is_empty());
+        m.slow_pull = None;
+    }
+    // The retry starts the branch again from main and opens the pull request.
+    let (status, json) = client.submit(&csrf, &form(), &file).await;
+    assert_eq!(status, StatusCode::OK, "{json}");
+    assert_eq!(json["pull_request"], "https://github.com/o/r/pull/1");
+    {
+        let m = mock.lock().unwrap();
+        assert_eq!(m.resets, [branch.as_str()]);
+        let message = &m.commits[&key].1;
+        assert!(
+            message.contains("Submitted by @alice through the form.\n\nSubmission: "),
+            "{message}"
+        );
+        assert_eq!(m.pulls[0]["head"], branch.as_str());
+    }
+    // Now its pull request is open: refused, the branch left alone.
+    let (status, json) = client.submit(&csrf, &form(), &file).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{json}");
+    assert!(
+        json["error"]
+            .as_str()
+            .unwrap()
+            .contains("pull request is open"),
+        "{json}"
+    );
+    assert_eq!(mock.lock().unwrap().resets.len(), 1);
+    // A closed one doesn't hold the version: a new pull request.
+    mock.lock().unwrap().pulls[0]["state"] = json!("closed");
+    let (status, json) = client.submit(&csrf, &form(), &file).await;
+    assert_eq!(status, StatusCode::OK, "{json}");
+    assert_eq!(json["pull_request"], "https://github.com/o/r/pull/2");
+
+    // A branch with no commit yet (cut off before the entry was written) is taken up too.
+    {
+        let mut m = mock.lock().unwrap();
+        m.pulls.clear();
+        m.commits.clear();
+        m.resets.clear();
+    }
+    let (status, json) = client.submit(&csrf, &form(), &file).await;
+    assert_eq!(status, StatusCode::OK, "{json}");
+    assert_eq!(mock.lock().unwrap().resets, [branch.as_str()]);
+}
+
+/// A native rewrite (`.hnmod`) of `coords_hud` at `version`.
+fn hnmod(version: &str) -> Vec<u8> {
+    use std::io::Write;
+    let revision = "a".repeat(40);
+    let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    let options = zip::write::SimpleFileOptions::default();
+    zip.start_file("horizon-native.json", options).unwrap();
+    let manifest = json!({"schema": 1, "id": "coords_hud", "version": version, "game": "26.3", "horizon": revision, "mixins": "b".repeat(40)});
+    zip.write_all(manifest.to_string().as_bytes()).unwrap();
+    zip.start_file("mixins/coords_hud/horizon-mixin.toml", options)
+        .unwrap();
+    write!(
+        zip,
+        "[mod]\nid = \"coords_hud\"\nversion = \"{version}\"\n[compatibility]\nhorizon_revision = \"{revision}\"\n"
+    )
+    .unwrap();
+    zip.finish().unwrap().into_inner()
+}
+
+/// A WebAssembly mod's entry turns `native-mod` once, by its owner; its
+/// `.hmod` versions stay. No other kind change.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_mod_turns_native_once() {
+    let (mut client, mock) = setup().await;
+    let published = format!(
+        "id = \"coords_hud\"\nkind = \"mod\"\nname = \"C\"\nsummary = \"s\"\nowners = [\"Alice\"]\nlicense = \"MIT\"\nsource = \"https://x.test\"\n\n[[versions]]\nversion = \"0.1.0\"\npublished = \"2026-01-01\"\ngame = \"26.3\"\nfile = \"coords_hud-0.1.0.hmod\"\nsha256 = \"{HMOD_SHA}\"\n"
+    );
+    mock.lock()
+        .unwrap()
+        .main
+        .insert("mods/coords_hud.toml".into(), published.clone());
+    let csrf = client.sign_in().await;
+    let mut native = form();
+    native["kind"] = json!("native-mod");
+    native["version"] = json!("0.2.0");
+    native["key"] = Value::Null;
+    native["signature"] = Value::Null;
+    let file = hnmod("0.2.0");
+
+    // Not by someone who isn't an owner.
+    mock.lock().unwrap().main.insert(
+        "mods/coords_hud.toml".into(),
+        published.replace("\"Alice\"", "\"bob\""),
+    );
+    let (status, json) = client.submit(&csrf, &native, &file).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{json}");
+
+    mock.lock()
+        .unwrap()
+        .main
+        .insert("mods/coords_hud.toml".into(), published);
+    let (status, json) = client.submit(&csrf, &native, &file).await;
+    assert_eq!(status, StatusCode::OK, "{json}");
+    let text = {
+        let m = mock.lock().unwrap();
+        let (text, _, replaced) = &m.commits[&(
+            "submit/coords_hud-0.2.0".into(),
+            "mods/coords_hud.toml".into(),
+        )];
+        assert_eq!(replaced.as_deref(), Some("blob1"));
+        assert!(m.assets[0].0.ends_with(".hnmod"), "{:?}", m.assets);
+        let body = m.pulls[0]["body"].as_str().unwrap();
+        assert!(body.contains("(native-mod, update: turns native"), "{body}");
+        // Reviewed by hand: never merged as an owner update.
+        assert!(
+            !body.contains("owner-update") && m.labels.is_empty(),
+            "{body}"
+        );
+        text.clone()
+    };
+    let entry: Entry = toml::from_str(&text).unwrap();
+    assert_eq!(entry.kind.name(), "native-mod");
+    let files: Vec<&str> = entry.versions.iter().map(|v| v.file.as_str()).collect();
+    assert_eq!(files, ["coords_hud-0.2.0.hnmod", "coords_hud-0.1.0.hmod"]);
+
+    // Once native, never back.
+    mock.lock()
+        .unwrap()
+        .main
+        .insert("mods/coords_hud.toml".into(), text);
+    let wasm = std::fs::read(fixtures().join("coords_hud-0.1.0.hmod")).unwrap();
+    let (status, json) = client.submit(&csrf, &form(), &wasm).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{json}");
+    assert_eq!(
+        json["error"],
+        "coords_hud is a native-mod, not a mod: a project's kind never changes (only a mod may turn native-mod, once)"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

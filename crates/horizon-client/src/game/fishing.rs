@@ -14,7 +14,7 @@ use horizon_client::{
     pose::Pose,
 };
 use horizon_core::{
-    geometry::{Aabb, Vec3, trig},
+    geometry::{Aabb, Vec3, traverse_blocks, trig},
     position::BlockPos,
     random::RandomSource,
 };
@@ -64,9 +64,25 @@ fn bounds(p: Vec3) -> Aabb {
         Vec3::new(p.x + h, p.y + SIZE, p.z + h),
     )
 }
+impl Hook {
+    pub(super) fn bounds(&self) -> Aabb {
+        bounds(self.position)
+    }
+    /// `FishingHook.tick` returns before `applyEffectsFromBlocks` while it
+    /// holds an entity.
+    pub(super) fn applies_block_effects(&self) -> bool {
+        !matches!(self.state, State::Hooked(_))
+    }
+}
 /// RandomSource.triangle(mode, deviation).
 fn triangle(r: &mut impl RandomSource, mode: f64, deviation: f64) -> f64 {
     mode + deviation * (f64::from(r.next_float()) - f64::from(r.next_float()))
+}
+/// `FishingHook.onHitBlock`: `getDeltaMovement().normalize().scale(hit.distanceTo(this))`,
+/// where `HitResult.distanceTo` is the *squared* distance to the hook: the bobber
+/// springs back a little off a wall instead of stopping dead.
+fn rebound(velocity: Vec3, hit: Vec3, at: Vec3) -> Vec3 {
+    velocity.normalize().scale(hit.distance_squared(at))
 }
 impl Game<'_> {
     fn holds_rod(&self) -> bool {
@@ -291,7 +307,7 @@ impl Game<'_> {
         let (x, y, z) = (p.x.floor() as i32, p.y.floor() as i32, p.z.floor() as i32);
         let c = self.world.chunks.get(&(x >> 4, z >> 4))?;
         Some(
-            self.res.biomes().list[c.biome(x, y, z) as usize]
+            world_biomes!(self).list[c.biome(x, y, z) as usize]
                 .name
                 .clone(),
         )
@@ -484,6 +500,7 @@ impl Game<'_> {
             spread,
             speed,
             count: count as i32,
+            randomization: 0,
         });
     }
     /// `FishingHook.tick`.
@@ -563,10 +580,44 @@ impl Game<'_> {
                             .map(|i| i.id)
                     });
                 if let Some(id) = hit {
+                    // Projectile.onHit on an entity: PROJECTILE_LAND.
+                    self.projectile_event(
+                        "minecraft:projectile_land",
+                        Some(horizon_client::mobs::Who::Player),
+                        [h.position.x, h.position.y, h.position.z],
+                    );
                     h.state = State::Hooked(id);
                     h.velocity = Vec3::ZERO;
                     self.hook = Some(h);
                     return;
+                }
+                // checkCollision: the block the path hits before the move, then
+                // `onHitBlock`'s rebound.
+                let to = h.position.add_vector(h.velocity);
+                let mut scene = SceneCollisions {
+                    world: &self.world,
+                    binding: &self.collision,
+                    subject: None,
+                };
+                let hit = traverse_blocks(h.position, to, 1024, |p: BlockPos| {
+                    let state = self.world.block(p.x, p.y, p.z);
+                    if self.res.facts().is_air(state) {
+                        return None;
+                    }
+                    let shape = self
+                        .collision
+                        .collision_shape(&mut scene, state, [p.x, p.y, p.z])
+                        .ok()?;
+                    shape.clip(h.position, to, p)
+                });
+                if let Some(hit) = hit.ok().flatten() {
+                    // Projectile.onHit on a block: PROJECTILE_LAND.
+                    self.projectile_event(
+                        "minecraft:projectile_land",
+                        Some(horizon_client::mobs::Who::Player),
+                        [hit.location.x, hit.location.y, hit.location.z],
+                    );
+                    h.velocity = rebound(h.velocity, hit.location, h.position);
                 }
             }
             State::Hooked(id) => {
@@ -1289,5 +1340,19 @@ impl Game<'_> {
                 Some((lerp(h.previous, h.position), hand))
             })
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::rebound;
+    use horizon_core::geometry::Vec3;
+
+    /// `HitResult.distanceTo` is squared: a hit 0.5 away rebounds at 0.25.
+    #[test]
+    fn a_block_hit_rebounds_by_the_squared_distance() {
+        let v = Vec3::new(0.0, 0.0, -2.0);
+        let hit = Vec3::new(0.0, 0.0, -0.5);
+        assert_eq!(rebound(v, hit, Vec3::ZERO), Vec3::new(0.0, 0.0, -0.25));
     }
 }

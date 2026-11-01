@@ -252,6 +252,7 @@ impl Hub {
             menu: kind,
             title,
         }));
+        let mod_type = crate::containers::mod_menu_type(menu_kind);
         g.menu = Some(Menu {
             window,
             kind,
@@ -263,6 +264,7 @@ impl Hub {
             drag: None,
             sent_data: Vec::new(),
             hidden: Vec::new(),
+            mod_type,
         });
         self.send_menu_content(i, items);
     }
@@ -321,6 +323,7 @@ impl Hub {
             drag: None,
             sent_data: Vec::new(),
             hidden: Vec::new(),
+            mod_type: None,
         });
         self.send_menu_content(i, items);
         Some(window)
@@ -791,23 +794,31 @@ impl Hub {
                 .chain([&c.triggered])
                 .map(|&d| i32::from(d))
                 .collect(),
-            // A mod's menu: the data slots its tick set.
-            Some(BlockEntity::Mod(m)) if !m.data.is_empty() => m.data.clone(),
+            // A mod's menu: the data slots its tick set. A mod menu type's
+            // `ContainerData` has as many as it declares, all sent on open
+            // (`sendInitialData`), 0 where the tick set none.
+            Some(BlockEntity::Mod(e)) if m.mod_type.is_some() || !e.data.is_empty() => {
+                let mut data = e.data.clone();
+                if let Some(t) = m.mod_type {
+                    data.resize(t.data_slots, 0);
+                }
+                data
+            }
             _ => return,
         }
         .into_iter()
         .map(|v| v as i16)
         .collect::<Vec<i16>>();
-        m.sent_data.resize(data.len(), i16::MIN);
+        m.sent_data.resize(data.len(), None);
         let window = m.window;
         let changed: Vec<(usize, i16)> = data
             .iter()
             .enumerate()
-            .filter(|&(k, v)| m.sent_data[k] != *v)
+            .filter(|&(k, v)| m.sent_data[k] != Some(*v))
             .map(|(k, &v)| (k, v))
             .collect();
         for &(k, value) in &changed {
-            m.sent_data[k] = value;
+            m.sent_data[k] = Some(value);
         }
         for (k, value) in changed {
             g.send(&C::ContainerSetData(play::ContainerSetData {

@@ -57,7 +57,7 @@ mod log { pub(crate) use crate::warn; }
 mod preedit { pub fn set_preedit(_: Option<()>) {} }
 mod books { pub enum BookScreen { Edit {}, View } }
 mod osk { pub enum Output { Text(String), Backspace, Enter, Close } }
-#[derive(Default, PartialEq)] enum Screen { #[default] Playing, Chat, CommandBlock, WorldOptions, Creative, Inventory, Options }
+#[derive(Default, PartialEq)] enum Screen { #[default] Playing, Chat, CommandBlock, WorldOptions, Creative, Inventory, Options, Social, DebugOptions, BlockEditor }
 #[derive(Clone, Copy, PartialEq)] enum KeyCode { Backspace, Enter }
 mod smol_str { pub type SmolStr = String; }
 #[derive(Clone, Copy, PartialEq)] enum ElementState { Pressed, Released }
@@ -71,15 +71,18 @@ impl Window { fn set_ime_allowed(&self, value: bool) { self.requests.borrow_mut(
 #[derive(Default)] struct Menu { osk: Option<()>, system_keyboard: bool, system_keyboard_hidden: bool, osk_dismissed: bool }
 #[derive(Default)] struct Pad { menu: Menu }
 struct Title { focused: bool }
-impl Title { fn focused_field(&mut self) -> Option<()> { self.focused.then_some(()) } fn confirm_edit(&mut self) {} }
+impl Title { fn has_caret_field(&self) -> bool { self.focused } fn focused_field(&mut self) -> Option<()> { self.focused.then_some(()) } fn confirm_edit(&mut self) {} }
 #[derive(Default)] struct Creative { search: bool }
 impl Creative { fn tab(&self) -> &Self { self } }
 #[derive(Default)] struct Options { typing: bool }
 impl Options { fn typing(&self) -> bool { self.typing } fn type_text(&mut self, _: &(), _: &str) {} }
 #[derive(Default)] struct Ui { options: Options }
+#[derive(Default)] struct FocusEditor { focused: bool }
+impl FocusEditor { fn search_focused(&self)->bool{self.focused} fn text_focused(&self)->bool{self.focused} }
 #[derive(Default)] struct Gui { atlas: () }
 #[derive(Default)] struct Game {
  ios: bool, screen: Screen, title: Option<Title>, sign_edit: Option<()>, book: Option<books::BookScreen>,
+ debug_options: Option<FocusEditor>, block_editor: Option<FocusEditor>,
  creative_screen: Creative, pad: Pad, window: Option<Window>, ui: Ui, gui: Gui,
  dialog: bool, dialog_text: bool, recipe: bool, station: bool, command: String, submitted: bool, block_typing: bool, key_code_calls: usize,
 }
@@ -90,6 +93,8 @@ impl Game {
  fn dialog_has_text_field(&self)->bool{self.dialog_text} fn recipe_search_focused(&self)->bool{self.recipe}
  fn station_typing(&self)->bool{self.station} fn mod_browser_typing(&self)->bool{false}
  fn world_options_typing(&self)->bool{false} fn mod_browser_text(&mut self,_:Option<&str>,_:bool){}
+ fn screen_text_typed(&self,t:&str)->Option<String>{Some(t.into())}
+ fn social_type(&mut self,_:&str){} fn debug_options_type(&mut self,_:&str){} fn block_editor_type(&mut self,_:&str){}
  fn command_block_type(&mut self,t:&str){self.command.push_str(t)}
  fn types_text(&self)->bool{!self.block_typing}
  fn edit_shortcut(&self,_:&KeyEvent)->Option<()>{None}
@@ -105,6 +110,13 @@ impl Game {
 '''
 
 CASES = r'''
+#[test] fn new_upstream_text_fields_request_the_mobile_keyboard() {
+ let mut g=Game::new(); g.screen=Screen::Social; g.sync_system_keyboard(); assert!(g.system_keyboard_up());
+ g.screen=Screen::DebugOptions; g.sync_system_keyboard(); assert!(!g.system_keyboard_up());
+ g.debug_options=Some(FocusEditor{focused:true});g.sync_system_keyboard();assert!(g.system_keyboard_up());
+ g.screen=Screen::BlockEditor;g.sync_system_keyboard();assert!(!g.system_keyboard_up());
+ g.block_editor=Some(FocusEditor{focused:true});g.sync_system_keyboard();assert!(g.system_keyboard_up());
+}
 #[test] fn command_editor_requests_keyboard_and_receives_ime_text() {
  let mut g=Game::new(); g.screen=Screen::CommandBlock;
  assert!(g.field_focused()); assert!(g.text_field_focused());
@@ -199,7 +211,7 @@ class MobileCommandKeyboardTests(unittest.TestCase):
             self.assertEqual(build.returncode, 0, build.stdout + build.stderr)
             run = subprocess.run([str(binary)], capture_output=True, text=True, timeout=10)
             self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
-            self.assertIn('10 passed', run.stdout)
+            self.assertIn('11 passed', run.stdout)
 
 
 if __name__ == '__main__':

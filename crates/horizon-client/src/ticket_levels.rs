@@ -54,9 +54,11 @@ pub struct Sources {
 
 /// Each chunk's (loading, simulation) level, for the chunks where either is
 /// block ticking or lower; `None` ticks everywhere (a game with no server and
-/// no player: the headless fixtures).
+/// no player: the headless fixtures). With them sits the box
+/// `(min_x, min_z, max_x, max_z)` that holds every chunk that can random tick,
+/// so a scan of the residents need not ask each one of them.
 #[derive(Clone, Default)]
-pub struct Levels(Option<Arc<Map>>);
+pub struct Levels(Option<Arc<Map>>, Option<(i32, i32, i32, i32)>);
 
 /// The levels by chunk: a grid over the tickets' bounding box while it is
 /// small (players near each other, the usual case), a map otherwise. Every
@@ -120,6 +122,13 @@ impl Levels {
         self.get(x, z)
             .is_none_or(|(l, s)| l <= BLOCK_TICKING && s <= ENTITY_TICKING)
     }
+    /// The box that holds every chunk `random_ticking` can answer for, or
+    /// `None` with no tickets at all, where it ticks everywhere. A box whose
+    /// minimum is past its maximum holds nothing: the tickets hold no player,
+    /// no forced chunk and no `PORTAL` one, so nothing random ticks.
+    pub fn random_tick_bounds(&self) -> Option<(i32, i32, i32, i32)> {
+        self.1
+    }
     /// `ChunkHolder.getFullStatus` is block ticking or more: the chunk's
     /// ticking future can complete (its saved ticks unpack then).
     pub fn loaded_ticking(&self, x: i32, z: i32) -> bool {
@@ -158,7 +167,15 @@ impl ChunkTickets {
         if sources == self.sources {
             return;
         }
-        self.levels = Levels(sources.as_ref().map(|s| Arc::new(compute(s))));
+        self.levels = match sources.as_ref() {
+            Some(s) => {
+                let map = Some(Arc::new(compute(s)));
+                // Tickets with no random tick of their own still get a box, an
+                // empty one: `None` is for a game with no tickets at all.
+                Levels(map, Some(random_bounds(s).unwrap_or((1, 1, 0, 0))))
+            }
+            None => Levels(None, None),
+        };
         self.sources = sources;
     }
     pub fn levels(&self) -> Levels {
@@ -185,6 +202,28 @@ impl ChunkTickets {
     pub fn portal_chunks(&self) -> impl Iterator<Item = (i32, i32)> + '_ {
         self.portal.iter().map(|&(c, _)| c)
     }
+}
+
+/// The box that holds every chunk `random_ticking` can answer for: a player's
+/// simulation ticket reaches its simulation distance, a forced chunk only ever
+/// random ticks in the chunk itself, and a `PORTAL` ticket inside its whole
+/// area. Each is a superset of that ticket's random-ticking chunks, so the box
+/// never rejects a chunk that random ticks.
+fn random_bounds(s: &Sources) -> Option<(i32, i32, i32, i32)> {
+    let sim = s.simulation_distance.clamp(0, 32);
+    let boxes = s
+        .players
+        .iter()
+        .map(|&p| (p, sim))
+        .chain(s.forced.iter().map(|&f| (f, 0)))
+        .chain(s.portal.iter().map(|&p| (p, PORTAL_RADIUS)));
+    boxes.fold(None, |b, ((x, z), r)| {
+        let (lo_x, lo_z, hi_x, hi_z) = (x - r, z - r, x + r, z + r);
+        Some(match b {
+            None => (lo_x, lo_z, hi_x, hi_z),
+            Some((a, b, c, d)) => (lo_x.min(a), lo_z.min(b), hi_x.max(c), hi_z.max(d)),
+        })
+    })
 }
 
 /// How far a player's tickets reach, and the simulation ticket's level.
@@ -443,6 +482,42 @@ mod tests {
         assert!(matches!(**l.0.as_ref().unwrap(), Map::Sparse(_)));
         assert!(l.entity_ticking(100_010, -100_010) && !l.block_ticking(50_000, 0));
         assert!(l.entity_ticking(i32::MAX - 2, i32::MIN + 2));
+    }
+
+    /// `tick_blocks` filters its candidates with the bounds box before it asks
+    /// `random_ticking`: whatever random ticks is inside it, every ticket's
+    /// own area, a `PORTAL` ticket's with no player near it included.
+    #[test]
+    fn random_tick_bounds_cover_every_random_ticking_chunk() {
+        let mut t = ChunkTickets::default();
+        // A view distance shorter than the simulation one, two players far
+        // apart, a forced chunk, and `PORTAL` tickets that outlive them.
+        let sources = || {
+            Some(Sources {
+                players: vec![(0, 0), (60, 40)],
+                forced: vec![(-30, 17)],
+                portal: Vec::new(),
+                view_distance: 4,
+                simulation_distance: 12,
+            })
+        };
+        t.update(sources());
+        for portal in [(0, 0), (25, -25), (300, 300), (-80, 95)] {
+            t.add_portal(portal);
+            t.update(sources());
+            let levels = t.levels();
+            let (min_x, min_z, max_x, max_z) = levels.random_tick_bounds().unwrap();
+            for z in -100..=310 {
+                for x in -100..=310 {
+                    if levels.random_ticking(x, z) {
+                        assert!(
+                            x >= min_x && x <= max_x && z >= min_z && z <= max_z,
+                            "({x}, {z}) random ticks outside the box"
+                        );
+                    }
+                }
+            }
+        }
     }
 
     /// cargo test --release -p horizon-client --lib ticket_levels::tests::levels_cost -- --ignored --nocapture

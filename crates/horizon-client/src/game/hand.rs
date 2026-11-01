@@ -104,7 +104,12 @@ impl Game<'_> {
     /// `getAttributeValue` of an interaction range of the player in place (a
     /// guest swapped in on a server): creative's modifiers are on it
     /// (`update_player_attributes`), as are `/attribute`'s and the items'.
-    fn interaction_range(&mut self, attribute: &str, survival: f64, creative: f64) -> f64 {
+    pub(super) fn interaction_range(
+        &mut self,
+        attribute: &str,
+        survival: f64,
+        creative: f64,
+    ) -> f64 {
         let otherwise = if self.creative { creative } else { survival };
         self.player
             .as_mut()
@@ -333,7 +338,7 @@ impl Game<'_> {
             || before(self.redirectable_hit().map(|h| h.1))
     }
     /// `LocalPlayer.isHandsBusy`: paddling a boat.
-    fn hands_busy(&self) -> bool {
+    pub(super) fn hands_busy(&self) -> bool {
         self.riding
             .is_some_and(|id| self.boats.iter().any(|b| b.id == id))
             && [
@@ -569,6 +574,16 @@ impl Game<'_> {
     pub(super) fn attack_item_info(&self) -> Option<&horizon_client::items::ItemInfo> {
         self.items().get(self.attack_item.as_deref()?)
     }
+
+    /// `Player.attack`: the attack damage attribute, with the held weapon's
+    /// and the effects' modifiers on it.
+    pub(super) fn attack_damage(&mut self) -> f32 {
+        self.player
+            .as_mut()
+            .and_then(|p| p.attribute("minecraft:attack_damage").ok())
+            .unwrap_or(1.0) as f32
+    }
+
     /// `evaluateWhichHandsToRender`: which of the main and off hand show.
     pub(super) fn hands_to_render(&self) -> [bool; 2] {
         let held = |slot| {

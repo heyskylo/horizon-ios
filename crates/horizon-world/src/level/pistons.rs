@@ -54,6 +54,25 @@ impl MovingPiston {
     }
 }
 
+/// `MovingPistonBlock.getDrops`: a broken moving piston drops as the block its
+/// block entity is moving, and drops nothing when that block entity is gone
+/// (vanilla returns `Collections.emptyList()`). Every other block drops as
+/// itself.
+pub(crate) fn dropped_state(
+    b: &Behaviours,
+    moving: &[(BlockPos, MovingPiston)],
+    state: BlockStateId,
+    pos: BlockPos,
+) -> Option<BlockStateId> {
+    if !b.is_block(state, b.named.moving_piston) {
+        return Some(state);
+    }
+    moving
+        .iter()
+        .find(|(p, _)| *p == pos)
+        .map(|(_, piston)| piston.moved_state)
+}
+
 /// `BlockEventData`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BlockEventData {
@@ -342,6 +361,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
             return false;
         }
         !b.has_flag(state, super::data::state_flags::BLOCK_ENTITY)
+            && !self.level.has_mod_block_entity(pos)
     }
     fn is_slime_or_honey(&self, state: BlockStateId) -> bool {
         self.b.is_block(state, self.b.named.slime_block)

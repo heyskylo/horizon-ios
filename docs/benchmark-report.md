@@ -57,9 +57,9 @@ one (histogram edges included) makes it 2.
 **`app`.** What was measured: `name` (`horizon-client`, `horizon-launcher`, `minecraft`), `version`,
 optionally `commit` (Horizon builds) and `mods` (`[{ "name", "version" }]`, vanilla with mods).
 
-**`hardware`.** `os` (`macos`, `linux`, `windows`), `os_version`, `arch`, `cpu` (brand string),
-`cpu_threads`, `cpu_cores` (physical), `cpu_base_mhz` and `cpu_boost_mhz` (where the OS gives them; not on
-Apple silicon), `ram_mb`, `storage` (the drive under the game folder: `nvme`, `ssd`, `hdd`), `form` (`laptop`,
+**`hardware`.** `os` (`macos`, `linux`, `windows`), `os_version`, `arch`, `cpu` (brand string; on Windows
+without one in the registry, `PROCESSOR_IDENTIFIER`), `cpu_threads`, `cpu_cores` (physical), `cpu_base_mhz` and
+`cpu_boost_mhz` (where the OS gives them; not on Apple silicon), `ram_mb`, `storage` (the drive under the game folder: `nvme`, `ssd`, `hdd`), `form` (`laptop`,
 `desktop`); `gpu` (`name`, `vendor`, `driver`, `backend`: `metal`, `vulkan`, `dx12`, `gl`;
 `kind`: `integrated`, `discrete`, `virtual`, `cpu`, `other`; `vram_mb`, a discrete GPU's own memory) and
 `display` (the screen the window was on: `width`, `height` in physical pixels, `scale`, `refresh_hz`) when

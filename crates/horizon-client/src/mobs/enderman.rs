@@ -71,7 +71,8 @@ pub fn stared_at(m: &Mob, w: &MobWorld) -> bool {
             Vec3::new(m.position.x, m.eye_y(), m.position.z),
         )
 }
-/// Enderman.teleport(x, y, z): drop to standing ground, require free space without liquid.
+/// Enderman.teleport(x, y, z): never while riding something; drop to standing
+/// ground, require free space without liquid.
 pub fn teleport_to(
     m: &mut Mob,
     w: &MobWorld,
@@ -80,6 +81,9 @@ pub fn teleport_to(
     z: f64,
     events: &mut Vec<MobEvent>,
 ) -> bool {
+    if m.extra.passenger {
+        return false;
+    }
     let (bx, bz) = (x.floor() as i32, z.floor() as i32);
     if !w.world.loaded(bx, bz) {
         return false;
@@ -219,6 +223,13 @@ pub fn ai_step(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
     if m.extra.counter2 > 0 {
         let tries = m.extra.counter2;
         m.extra.counter2 = 0;
+        // repeatedlyTryToTeleport (64 tries) returns before any draw while riding;
+        // a single `teleport()` still draws its target first.
+        let tries = if tries > 1 && m.extra.passenger {
+            0
+        } else {
+            tries
+        };
         for _ in 0..tries {
             if teleport_random(m, w, events) {
                 break;
@@ -335,7 +346,7 @@ impl Goal for LookForPlayer {
                     1.0,
                 ));
             }
-        } else if m.ai.target == Some(Who::Player) {
+        } else if m.ai.target == Some(Who::Player) && !m.extra.passenger {
             if stared_at(m, cx.w) {
                 if m.distance_sqr(p.position) < 16.0 {
                     teleport_random(m, cx.w, cx.events);
@@ -519,6 +530,57 @@ mod tests {
             assert_eq!(seated.extra.counter2, 0, "no teleport while seated");
             assert!(!dodges(&seated, &Damage::of(kind)), "{kind:?}");
         }
+    }
+
+    /// Enderman.teleport(x, y, z) fails for a passenger (#4865: one in a boat
+    /// played the teleport sound every tick and snapped back to its seat).
+    /// `repeatedlyTryToTeleport` returns before drawing; `teleport()` still
+    /// draws its three values first.
+    #[test]
+    fn a_seated_enderman_never_teleports() {
+        let build = |world: &mut crate::world::World, registry: &BlockRegistry| {
+            let stone = registry.default_state("minecraft:stone").unwrap();
+            for cx in -2..2 {
+                for cz in -2..2 {
+                    world
+                        .chunks
+                        .insert((cx, cz), Arc::new(crate::chunk::Chunk::empty(cx, cz)));
+                }
+            }
+            for x in -32..32 {
+                for z in -32..32 {
+                    world.set(x, -1, z, stone).unwrap();
+                }
+            }
+        };
+        crate::mobs::world::with_built_test_world(&[], build, |w, _| {
+            let mut events = Vec::new();
+            let mut free = enderman();
+            assert!((0..64).any(|_| teleport_random(&mut free, w, &mut events)));
+            assert!(!events.is_empty());
+
+            let mut seated = enderman();
+            seated.extra.passenger = true;
+            events.clear();
+            assert!(!(0..64).any(|_| teleport_random(&mut seated, w, &mut events)));
+            assert!(events.is_empty());
+            assert_eq!(seated.position, Vec3::ZERO);
+
+            for tries in [64, 1] {
+                let mut seated = enderman();
+                seated.extra.passenger = true;
+                let mut expected = enderman().random;
+                if tries == 1 {
+                    expected.next_double();
+                    expected.next_int_bound(64).unwrap();
+                    expected.next_double();
+                }
+                seated.extra.counter2 = tries;
+                ai_step(&mut seated, w, &mut events);
+                assert!(events.is_empty(), "{tries}");
+                assert_eq!(seated.random.next_int(), expected.next_int(), "{tries}");
+            }
+        });
     }
 
     /// Enderman.dropCustomDeathLoot (#3513): a killed enderman drops the

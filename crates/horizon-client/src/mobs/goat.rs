@@ -430,11 +430,13 @@ fn ram_tick(m: &mut Mob, cx: &mut Cx) {
         let factor = (m.ai.speed * 1.65).clamp(0.2, 3.0) + boost;
         let force = if m.is_baby() { 1.0 } else { 2.5 };
         let d = m.extra.goat.ram_direction;
+        // The knockback's source is `mobAttack`, not the hurt's `noAggroMobAttack`.
         cx.events.push(MobEvent::Knockback {
             target,
             power: f64::from(factor * force),
             x: d.x,
             z: d.z,
+            source: Damage::mob(m.id, from),
         });
         finish_ram(m, cx.events);
         play(m, cx.events, impact, 1.0);
@@ -498,12 +500,38 @@ fn drop_horn(m: &mut Mob, events: &mut Vec<MobEvent>) -> bool {
         m.random.next_boolean()
     };
     m.extra.lost_horns[usize::from(!lose_left)] = true;
-    events.push(MobEvent::DropItem {
-        item: "minecraft:goat_horn".into(),
-        count: 1,
+    // `Mth.randomBetween(this.random, ..)` for the push, drawn after createHorn.
+    let mut between = |min: f32, max: f32| f64::from(m.random.next_float() * (max - min) + min);
+    let motion = [between(-0.2, 0.2), between(0.3, 0.7), between(-0.2, 0.2)];
+    events.push(MobEvent::DropGoatHorn {
+        mob: m.id,
+        screaming: m.extra.screaming,
         at: [m.position.x, m.position.y, m.position.z],
+        motion,
     });
     true
+}
+/// `Goat.createHorn`: the instrument is a random pick (by a random seeded
+/// with the goat's UUID hash) from `#regular_goat_horns` or, for a screaming
+/// goat, `#screaming_goat_horns`.
+pub fn create_horn(uuid: [i32; 4], screaming: bool) -> &'static str {
+    const REGULAR: [&str; 4] = [
+        "minecraft:ponder_goat_horn",
+        "minecraft:sing_goat_horn",
+        "minecraft:seek_goat_horn",
+        "minecraft:feel_goat_horn",
+    ];
+    const SCREAMING: [&str; 4] = [
+        "minecraft:admire_goat_horn",
+        "minecraft:call_goat_horn",
+        "minecraft:yearn_goat_horn",
+        "minecraft:dream_goat_horn",
+    ];
+    // The UUID's Java hash code: the two halves xored, then folded to an int.
+    let [a, b, c, d] = uuid;
+    let mut random = horizon_core::random::LegacyRandom::new(i64::from(a ^ b ^ c ^ d));
+    let list = if screaming { SCREAMING } else { REGULAR };
+    list[random.next_int_bound(list.len() as i32).unwrap_or(0) as usize]
 }
 /// `RamTarget.finishRam`.
 fn finish_ram(m: &mut Mob, events: &mut Vec<MobEvent>) {

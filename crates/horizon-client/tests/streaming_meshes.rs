@@ -9,6 +9,7 @@ use horizon_client::{
     biome::Biomes,
     blocks::BlockFacts,
     chunk::{Chunk, HEIGHT},
+    graphics::LeafCullingMode,
     light::LightTables,
     mesher::{MeshTables, Mesher, Region, SectionMesh, borrow},
     models,
@@ -214,10 +215,13 @@ fn relit_columns_keep_every_mesh_current() {
         });
         let mut mesher = Mesher {
             nether_shading: false,
+            shader_pack_lighting: false,
             zoom: BiomeZoom::new(0),
             blend_radius: 2,
             smooth_lighting: true,
             cutout_leaves: true,
+            translucent_layers: &[],
+            leaf_culling: LeafCullingMode::Off,
             assets: &context.assets,
             render: &context.render,
             tables: &context.tables,

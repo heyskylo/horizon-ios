@@ -8,6 +8,8 @@ use crate::{
 use horizon_world::nbt::Tag;
 use std::sync::Arc;
 
+#[doc(hidden)]
+pub mod custom;
 mod hash;
 mod skip;
 
@@ -35,6 +37,8 @@ pub mod component {
     pub const ENCHANTMENT_GLINT_OVERRIDE: i32 = 21;
     /// `AttackRange`: six floats, in the record's field order.
     pub const ATTACK_RANGE: i32 = 30;
+    pub const EQUIPPABLE: i32 = 32;
+    pub const GLIDER: i32 = 34;
     pub const STORED_ENCHANTMENTS: i32 = 45;
     pub const PROFILE: i32 = 72;
     pub const BANNER_PATTERNS: i32 = 74;
@@ -55,7 +59,10 @@ pub mod component {
     pub const FIREWORKS: i32 = 71;
     pub const BLOCK_ENTITY_DATA: i32 = 62;
     pub const OMINOUS_BOTTLE_AMPLIFIER: i32 = 65;
+    pub const USE_REMAINDER: i32 = 25;
+    pub const POT_DECORATIONS: i32 = 76;
     pub const CONTAINER: i32 = 77;
+    pub const SULFUR_CUBE_CONTENT: i32 = 80;
     pub const PAINTING_VARIANT: i32 = 109;
 }
 
@@ -481,6 +488,7 @@ impl Component {
                     None => Self::Raw(bytes.to_vec()),
                 }
             }
+            other if custom::contains(other) => Self::Nbt(r.nbt()?),
             other => {
                 let start = r.position();
                 skip::component(other, r)?;
@@ -787,7 +795,12 @@ fn read_stack(r: &mut Reader, delimited: bool) -> Result<Option<Stack>> {
         let (component, value) = if delimited {
             let len = r.count(r.remaining())?;
             let value = r.bytes(len)?;
-            (Component::read(kind, &mut Reader::new(value))?, value)
+            let mut component_reader = Reader::new(value);
+            let component = Component::read(kind, &mut component_reader)?;
+            if custom::contains(kind) && component_reader.remaining() != 0 {
+                return Err(crate::Error::new("trailing custom component data"));
+            }
+            (component, value)
         } else {
             let start = r.position();
             (Component::read(kind, r)?, r.since(start))

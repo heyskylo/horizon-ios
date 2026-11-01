@@ -76,7 +76,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
                 Class::Note => self.note_neighbor_changed(pos, state),
                 Class::PistonBase => self.piston_check_if_extend(pos, state),
                 Class::PistonHead => {
-                    if self.piston_head_can_survive(state, pos) {
+                    if self.can_survive(state, pos) {
                         let base = rel(pos, b.facing(state).opposite());
                         self.neighbor_changed_at(base, changed);
                     }

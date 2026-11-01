@@ -302,6 +302,16 @@ impl Post {
         Mat4::from_translation(jitter.extend(0.0))
     }
 
+    /// This frame's jitter in rendered pixels, y down (FSR's `jitterOffset`); zero
+    /// without TAA.
+    pub fn jitter_pixels(&self) -> [f32; 2] {
+        let Some(size) = self.size().filter(|_| self.taa_on) else {
+            return [0.0; 2];
+        };
+        let j = self.taa_this_frame.jitter;
+        [j[0] * size[0] as f32 * 0.5, -j[1] * size[1] as f32 * 0.5]
+    }
+
     /// The world's colour and depth targets this frame, or `None` to draw
     /// it straight to the screen.
     /// `always`: a target even at scale 1 without anti-aliasing (a shader pack reads it).
@@ -338,8 +348,11 @@ impl Post {
                     view_formats: &[],
                 })
             };
-            let sampled =
-                wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING;
+            // COPY_SRC: a native pack's material stage reads copies of them (`opaque_depth`,
+            // `opaque_color`).
+            let sampled = wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_SRC;
             let color = make_tex("Scaled world", size, self.format, sampled)
                 .create_view(&Default::default());
             // TEXTURE_BINDING: occlusion culling and TAA read it.
@@ -437,14 +450,15 @@ impl Post {
         queue: &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,
         screen: &wgpu::TextureView,
+        mut timing: Option<&mut super::pack_timing::PassTiming>,
     ) {
         let Some(target) = &self.target else { return };
         let Some(taa) = target.taa.as_ref().filter(|_| self.taa_previous.is_some()) else {
-            self.finish_with(encoder, screen, &target.group);
+            self.finish_with(encoder, screen, &target.group, timing.as_deref_mut());
             return;
         };
         let Some(res) = &self.taa_resources else {
-            self.finish_with(encoder, screen, &target.group);
+            self.finish_with(encoder, screen, &target.group, timing.as_deref_mut());
             return;
         };
         let i = (self.taa_frame % 2) as usize;
@@ -460,6 +474,7 @@ impl Post {
         })];
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("Horizon TAA"),
+            timestamp_writes: timing.as_deref_mut().and_then(|t| t.writes("TAA")),
             color_attachments: &attachments,
             ..Default::default()
         });
@@ -467,7 +482,7 @@ impl Post {
         pass.set_bind_group(0, &taa.resolve[i], &[]);
         pass.draw(0..3, 0..1);
         drop(pass);
-        self.finish_with(encoder, screen, &taa.show[i]);
+        self.finish_with(encoder, screen, &taa.show[i], timing);
     }
 
     /// Draw what `group` binds (`bind`) onto `screen`.
@@ -476,6 +491,7 @@ impl Post {
         encoder: &mut wgpu::CommandEncoder,
         screen: &wgpu::TextureView,
         group: &wgpu::BindGroup,
+        timing: Option<&mut super::pack_timing::PassTiming>,
     ) {
         let attachments = [Some(wgpu::RenderPassColorAttachment {
             view: screen,
@@ -488,6 +504,7 @@ impl Post {
         })];
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("Horizon post"),
+            timestamp_writes: timing.and_then(|t| t.writes("Post")),
             color_attachments: &attachments,
             ..Default::default()
         });
@@ -503,7 +520,12 @@ impl Post {
 
 /// This frame's clip space to the previous frame's, for camera-relative projections:
 /// a point `camera - previous_camera` further from the previous camera than from this one.
-fn reprojection(previous: DMat4, previous_camera: DVec3, current: DMat4, camera: DVec3) -> DMat4 {
+pub(super) fn reprojection(
+    previous: DMat4,
+    previous_camera: DVec3,
+    current: DMat4,
+    camera: DVec3,
+) -> DMat4 {
     previous * DMat4::from_translation(camera - previous_camera) * current.inverse()
 }
 

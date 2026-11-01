@@ -5,18 +5,15 @@ use horizon_core::{geometry::Vec3, position::BlockPos, random::RandomSource};
 use horizon_world::level::LevelEvent;
 
 impl Game<'_> {
-    pub(super) fn finish_falling_block(&mut self, mut block: FallingBlock, pos: [i32; 3]) {
+    /// `FallingBlockEntity.causeFallDamage`: impact damage and anvil wear,
+    /// before block effects and portal handling can transfer the entity.
+    pub(super) fn falling_block_impact(&mut self, block: &mut FallingBlock) {
         let name = self.res.facts().get(block.state).name.clone();
         let anvil = name.ends_with("anvil");
         let stalactite = matches!(
             &*name,
             "minecraft:pointed_dripstone" | "minecraft:sulfur_spike"
         );
-        let sound_event = match &*name {
-            "minecraft:pointed_dripstone" => Some(1045),
-            "minecraft:sulfur_spike" => Some(1052),
-            _ => None,
-        };
         if let Some(impact) = block.damage.impact(block.fall_distance) {
             if impact.amount > 0.0 {
                 let mob_kind = if stalactite {
@@ -79,6 +76,16 @@ impl Game<'_> {
                 }
             }
         }
+    }
+
+    pub(super) fn finish_falling_block(&mut self, block: FallingBlock, pos: [i32; 3]) {
+        let name = self.res.facts().get(block.state).name.clone();
+        let anvil = name.ends_with("anvil");
+        let sound_event = match &*name {
+            "minecraft:pointed_dripstone" => Some(1045),
+            "minecraft:sulfur_spike" => Some(1052),
+            _ => None,
+        };
         if block.damage.cancel_drop {
             if let Some(id) = sound_event {
                 self.level_events.push(LevelEvent::LevelEvent {

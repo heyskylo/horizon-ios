@@ -16,7 +16,12 @@ pub enum NavKind {
         breach: bool,
     },
     Flying,
-    Amphibious,
+    /// `AmphibiousPathNavigation` (`Axolotl`, `Drowned`, `Turtle`, and the
+    /// `Frog`, whose `FrogPathNavigation.prefersShallowSwimming` costs the
+    /// water nodes deeper than ten blocks under sea level.
+    Amphibious {
+        prefers_shallow: bool,
+    },
 }
 #[derive(Clone, Debug)]
 pub struct Navigation {
@@ -107,9 +112,7 @@ impl Navigation {
             NavKind::Ground | NavKind::WallClimber => Evaluator::Walk,
             NavKind::Water { breach } => Evaluator::Swim { breach },
             NavKind::Flying => Evaluator::Fly,
-            NavKind::Amphibious => Evaluator::Amphibious {
-                prefers_shallow: false,
-            },
+            NavKind::Amphibious { prefers_shallow } => Evaluator::Amphibious { prefers_shallow },
         }
     }
     pub fn can_cut_corner(t: PathType) -> bool {
@@ -169,7 +172,7 @@ impl Mob {
         match self.ai.nav.kind {
             NavKind::Ground | NavKind::WallClimber => self.on_ground || self.is_in_liquid(),
             NavKind::Water { breach } => breach || self.is_in_liquid(),
-            NavKind::Flying | NavKind::Amphibious => true,
+            NavKind::Flying | NavKind::Amphibious { .. } => true,
         }
     }
     fn temp_mob_pos(&self, w: &MobWorld) -> Vec3 {
@@ -179,7 +182,7 @@ impl Mob {
                 f64::from(self.surface_y(w)),
                 self.position.z,
             ),
-            NavKind::Water { .. } | NavKind::Amphibious => Vec3::new(
+            NavKind::Water { .. } | NavKind::Amphibious { .. } => Vec3::new(
                 self.position.x,
                 self.position.y + f64::from(self.height()) * 0.5,
                 self.position.z,
@@ -580,7 +583,7 @@ impl Mob {
                 Vec3::new(to.x, to.y + f64::from(self.height()) * 0.5, to.z),
                 false,
             ),
-            NavKind::Amphibious if self.is_in_liquid() => w.clear_between(
+            NavKind::Amphibious { .. } if self.is_in_liquid() => w.clear_between(
                 from,
                 Vec3::new(to.x, to.y + f64::from(self.height()) * 0.5, to.z),
                 false,
@@ -655,7 +658,7 @@ impl Mob {
             NavKind::Flying => {
                 w.data.state(w.world.block(p[0], p[1], p[2])).flags & super::data::STURDY_TOP != 0
             }
-            NavKind::Amphibious => !w.facts.is_air(w.world.block(p[0], p[1] - 1, p[2])),
+            NavKind::Amphibious { .. } => !w.facts.is_air(w.world.block(p[0], p[1] - 1, p[2])),
         }
     }
 }
@@ -707,5 +710,38 @@ mod recompute_tests {
         m.ai.nav.delayed_recompute = false;
         m.ai.nav.path.as_mut().unwrap().next = 11;
         assert!(!m.should_recompute_path([5, 0, 0]), "the path is done");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    /// `Frog.FrogPathNavigation.prefersShallowSwimming` has to reach the path
+    /// finder, or the shallow-water malus never applies to a frog.
+    #[test]
+    fn the_amphibious_navigation_keeps_its_shallow_preference() {
+        let mut nav = Navigation::default();
+        assert!(
+            matches!(nav.evaluator(), Evaluator::Walk),
+            "ground by default"
+        );
+        nav.kind = NavKind::Amphibious {
+            prefers_shallow: true,
+        };
+        assert!(matches!(
+            nav.evaluator(),
+            Evaluator::Amphibious {
+                prefers_shallow: true
+            }
+        ));
+        nav.kind = NavKind::Amphibious {
+            prefers_shallow: false,
+        };
+        assert!(matches!(
+            nav.evaluator(),
+            Evaluator::Amphibious {
+                prefers_shallow: false
+            }
+        ));
     }
 }

@@ -40,7 +40,7 @@ CopperGolemModel.createBodyLayer	skip:data		geometry baked into entity-models.js
 CopperGolemModel.createRunningPoseBodyLayer	skip:data		geometry baked into entity-models.json, which Horizon loads as a resource
 CopperGolemModel.createSittingPoseBodyLayer	skip:data		geometry baked into entity-models.json, which Horizon loads as a resource
 CopperGolemModel.createStarPoseBodyLayer	skip:data		geometry baked into entity-models.json, which Horizon loads as a resource
-CopperGolemModel.translateToHand	missing		player: an item a copper golem holds sits at the humanoid hand offset; vanilla turns it (IDLE) or scales it to 0.55 with its own grip (mobs/render.rs hand_base has only the vex case)
+CopperGolemModel.translateToHand	port	crates/horizon-client/src/mobs/render.rs::hand_base	
 CopperGolemModel.translateToHead	skip:other		only CustomHeadLayer calls it, and a copper golem has no head slot (its only extra slot is the antenna)
 CopperGolemModel.applyBlockOnAntennaTransform	missing		player: a block or flower on the copper golem antenna is not drawn; vanilla draws it with BlockDecorationLayer (nothing in mobs/render.rs draws the antenna item)
 IronGolemModel.createBodyLayer	skip:data		geometry baked into entity-models.json, which Horizon loads as a resource

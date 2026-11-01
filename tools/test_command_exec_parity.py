@@ -12,6 +12,8 @@ command reported to the player's CommandResultCallback. World, entity and item
 changes are observed through probe commands whose feedback reports them
 (execute if, clear with a zero count, data get, scoreboard queries...).
 Messages that depend on time or a random UUID are compared after masking.
+Direct falling-block probes also compare the physical entities in each level,
+independently of the command selector's support for those entity types.
 """
 import argparse
 import json
@@ -42,6 +44,7 @@ def main():
     parser.add_argument('--limit', type=int, default=40, help='print at most this many mismatches')
     parser.add_argument('--allow-gaps', action='store_true', help='report mismatches without failing')
     parser.add_argument('--only', help='run only corpus groups whose name contains this')
+    parser.add_argument('--binary', type=Path, help='use an already built Horizon game instead of building it')
     args = parser.parse_args()
     build = lab.LOCAL / 'command-exec-parity'
     build.mkdir(parents=True, exist_ok=True)
@@ -57,7 +60,7 @@ def main():
 
     def run(command, name, **kw):
         with (build / (name + '.log')).open('w', encoding='utf-8') as log:
-            runner = run_game if Path(command[0]).name == 'horizon-client' else subprocess.run
+            runner = run_game if kw.pop('game', False) else subprocess.run
             result = runner(list(map(str, command)), stdout=log, stderr=subprocess.STDOUT, **kw)
         if result.returncode:
             tail = (build / (name + '.log')).read_text(errors='replace')[-3000:]
@@ -79,9 +82,12 @@ def main():
     run(['java', '-Xmx3G', '-Duser.timezone=UTC', '-cp', os.pathsep.join([str(classes), str(jars['server']), dependency_path]),
          'dev.horizonlab.parity.VanillaCommandExecOracle', vanilla_dir / 'universe', script_path, build / 'vanilla.jsonl', SEED], 'java', cwd=vanilla_dir)
 
-    run(['cargo', 'build', '--profile', 'fast', '-p', 'horizon-client', '--bin', 'horizon-client'], 'compile-rust', cwd=lab.ROOT)
-    metadata = json.loads(subprocess.check_output(['cargo', 'metadata', '--no-deps', '--format-version', '1'], cwd=lab.ROOT, text=True))
-    binary = Path(metadata['target_directory']) / 'fast' / ('horizon-client.exe' if os.name == 'nt' else 'horizon-client')
+    if args.binary:
+        binary = args.binary.resolve(strict=True)
+    else:
+        run(['cargo', 'build', '--profile', 'fast', '-p', 'horizon-client', '--bin', 'horizon-client'], 'compile-rust', cwd=lab.ROOT)
+        metadata = json.loads(subprocess.check_output(['cargo', 'metadata', '--no-deps', '--format-version', '1'], cwd=lab.ROOT, text=True))
+        binary = Path(metadata['target_directory']) / 'fast' / ('horizon-client.exe' if os.name == 'nt' else 'horizon-client')
     rust_dir = build / 'rust'
     shutil.rmtree(rust_dir, ignore_errors=True)
     rust_dir.mkdir()
@@ -89,7 +95,7 @@ def main():
     # either, a discovery address that refuses at once, rather than Mojang's over the network.
     env = lab.game_env(HORIZON_SERVER_THREAD=1, HORIZON_PLAYER_NAME="Player", HORIZON_COMMAND_SCRIPT=script_path,
                        HORIZON_COMMAND_OUTPUT=build / 'rust.jsonl', HORIZON_API_DISCOVERY='http://127.0.0.1:9/')
-    run([binary, '--resources', lab.RESOURCES, '--world', 'harness', '--seed', SEED, '--radius', 4], 'rust', cwd=rust_dir, env=env)
+    run([binary, '--resources', lab.RESOURCES, '--world', 'harness', '--seed', SEED, '--radius', 4], 'rust', game=True, cwd=rust_dir, env=env)
 
     vanilla = [json.loads(l) for l in (build / 'vanilla.jsonl').open(encoding='utf-8')]
     rust = [json.loads(l) for l in (build / 'rust.jsonl').open(encoding='utf-8')]
@@ -98,20 +104,23 @@ def main():
     commands_by_group = []
     index = 0
     for name, lines in groups:
-        n = sum(1 for op in lines if (op['op'] == 'cmd' and op.get('record', True)) or (op['op'] == 'tick' and op.get('record')))
+        n = sum(1 for op in lines if op['op'] == 'falling' or (op['op'] == 'cmd' and op.get('record', True)) or (op['op'] == 'tick' and op.get('record')))
         commands_by_group.append((name, index, index + n))
         index += n
     mismatches = []
-    for v, r in zip(vanilla, rust):
+    failed_positions = set()
+    for position, (v, r) in enumerate(zip(vanilla, rust)):
         assert v['cmd'] == r['cmd'], (v['cmd'], r['cmd'])
         kind = compare(v, r)
         if kind:
+            failed_positions.add(position)
             mismatches.append({'kind': kind, 'cmd': v['cmd'], 'vanilla': v, 'rust': r})
     (build / 'mismatches.jsonl').write_text(''.join(json.dumps(m, ensure_ascii=False) + '\n' for m in mismatches), encoding='utf-8')
     summary = []
-    bad = {m['cmd'] for m in mismatches}
     for name, lo, hi in commands_by_group:
-        failed = sum(1 for rec in vanilla[lo:hi] if rec['cmd'] in bad)
+        # By position: two groups that run the same probe command (the orb
+        # groups' `data get` lines) must not be charged each other's failures.
+        failed = sum(1 for position in failed_positions if lo <= position < hi)
         summary.append({'group': name, 'commands': hi - lo, 'mismatches': failed})
         print(f'{name}: {hi - lo - failed}/{hi - lo} commands match', flush=True)
     for m in mismatches[:args.limit]:

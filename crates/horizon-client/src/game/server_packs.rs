@@ -473,7 +473,11 @@ impl Game<'_> {
             );
         }
         ui::menu_background(batch, atlas, 0.0, 0.0, w, h, self.player.is_some());
-        let (_, _, [yes, no]) = prompt.texts();
+        let (title, message, [yes, no]) = prompt.texts();
+        // PackConfirmScreen is a ConfirmScreen.
+        horizon_client::widgets::begin_screen(|| {
+            super::screen_info::confirm("pack_prompt", &title.plain(), &message.plain())
+        });
         prompt
             .layout(atlas, (w, h))
             .draw(batch, atlas, self.cursor, [&yes, &no]);
@@ -541,6 +545,7 @@ impl Game<'_> {
                 toast.draw(&self.gui.atlas, batch, 32.0 * slot as f32);
             }
         }
+        self.draw_split_hud(batch, hidden);
     }
     /// A left click on the prompt: its answer when it hit a button.
     pub(super) fn pack_prompt_click(&mut self) -> Result<()> {

@@ -500,6 +500,12 @@ impl LpVec3 {
     fn pack(v: f64) -> u64 {
         ((v * 0.5 + 0.5) * 32766.0).round() as u64
     }
+    /// `v` as a reader decodes it after it was written.
+    pub fn quantize(v: [f64; 3]) -> [f64; 3] {
+        let mut w = Writer::new();
+        Self::write(&v, &mut w);
+        Self::read(&mut Reader::new(&w.data)).unwrap_or([0.0; 3])
+    }
     fn sanitize(v: f64) -> f64 {
         if v.is_nan() {
             0.0

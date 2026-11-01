@@ -452,8 +452,10 @@ pub(crate) fn with_built_test_world(
         thundering: false,
         nether: false,
         block_tags: &items.block_tags,
+        landing: &motion.landing,
         biomes: &biomes,
         mob_griefing: true,
+        universal_anger: false,
         mob_drops: true,
         max_entity_cramming: 24,
         difficulty: super::spawning::LocalDifficulty::new(2, 18000, 0, 0.0),
@@ -462,6 +464,7 @@ pub(crate) fn with_built_test_world(
         sea_level: 63,
         items: Some(&items),
         lid_openers: &lid_openers,
+        mod_effects: None,
     };
     f(&w, &types);
     true

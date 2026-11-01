@@ -178,7 +178,9 @@ of the main action. The game's menus keep `LIGHT` and `DARK`.
   browser. The sidebar of the other pages shows a card made for its width instead: Sculk's characters
   and logo cropped from the same banner, and the text drawn by the launcher in its language, so it
   stays readable; it keeps Sculk's dark card, cyan and rounded corners in both themes, as an ad does,
-  and turns compact (characters beside the text) when the window is too short. The website shows the
+  and turns compact (characters beside the text) when the window is too short. After three minutes
+  on screen, over every start and on any page, a "Hide" appears beside the label of the card and of
+  the Servers banner alike; either one hides both for good (`Settings::partner_hidden`). The website shows the
   banner the same way on Home and the hosting docs, as a `rel="sponsored"` link.
 - **Pixel art drawn in code.** The stone behind the pages is close shades of the page colour
   (`TILE_SHADES`), never Minecraft's stone; the landscape is a banded sky, a sun cut in slices like

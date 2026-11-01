@@ -70,6 +70,9 @@ pub struct World {
     pub light_edits: Vec<((i32, i32, i32), u32, u32)>,
     /// Saved entities of chunks that just loaded, spawned by the game.
     pub loaded_entities: Vec<((i32, i32), Vec<horizon_world::nbt::Tag>)>,
+    /// Chunks that just came into this level from a worker, and whether each
+    /// was generated rather than read from the save: the game tells native mods.
+    pub loaded_chunks: Vec<(i32, i32, bool)>,
     /// Chunks changed since the last save.
     pub modified: FxHashSet<(i32, i32)>,
     /// Block entities, and the order they tick in.
@@ -97,6 +100,9 @@ pub struct World {
     /// for `ServerLevel.sendBlockUpdated`'s path recomputing; kept only while
     /// the mobs of this world tick (`game/creatures.rs`).
     pub path_writes: Option<Vec<((i32, i32, i32), u32, u32)>>,
+    /// The chunks changed in bulk (`edit_runs`) since the log was last
+    /// drained, kept while `block_log` is: sent to the players whole.
+    pub bulk_log: FxHashSet<(i32, i32)>,
     /// The sections whose light changed since the log was last drained, as
     /// a bit per section of each column, kept while `block_log` is
     /// (`ChunkHolder.sectionLightChanged`).
@@ -109,6 +115,10 @@ pub struct World {
     /// The moving-piston block entities of the level, by position, copied
     /// from the block ticks after each tick: collision and rendering read them.
     pub moving_pistons: Vec<([i32; 3], horizon_world::piston_shape::MovingPistonState)>,
+    /// The `ShulkerBoxBlockEntity` lid state of the level, by position, copied
+    /// from the block entities after each tick: the collision queries read it
+    /// (`ShulkerBoxBlockEntity.getBoundingBox`), as `moving_pistons` for pistons.
+    pub shulkers: FxHashMap<[i32; 3], crate::block_entity_anim::Shulker>,
 }
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Weather {
@@ -188,6 +198,7 @@ impl World {
             dirty_light: Default::default(),
             light_edits: Vec::new(),
             loaded_entities: Vec::new(),
+            loaded_chunks: Vec::new(),
             modified: FxHashSet::default(),
             block_entities: Default::default(),
             chest_openers: FxHashMap::default(),
@@ -200,9 +211,11 @@ impl World {
             weather: Weather::default(),
             block_log: None,
             path_writes: None,
+            bulk_log: Default::default(),
             light_log: None,
             moving_piston_fallback: Vec::new(),
             moving_pistons: Vec::new(),
+            shulkers: FxHashMap::default(),
             pois: Default::default(),
         }
     }
@@ -428,6 +441,84 @@ impl World {
     }
     pub fn loaded(&self, x: i32, z: i32) -> bool {
         self.chunks.contains_key(&(x >> 4, z >> 4))
+    }
+    /// `LockCode`: the `lock` a container block entity refuses to open
+    /// without, as the tag it was loaded or set with carries it (Horizon's
+    /// model holds no field for it).
+    pub fn block_lock(&self, key: (i32, i32, i32)) -> Option<&horizon_world::nbt::Tag> {
+        self.chunks
+            .get(&(key.0 >> 4, key.2 >> 4))?
+            .saved
+            .as_ref()?
+            .block_entity_sources
+            .iter()
+            .find(|(p, _)| *p == key)?
+            .1
+            .get("lock")
+    }
+    /// `LockCode.addToTag` for a tag a command gives a container (`setblock`,
+    /// `data merge`): the tag it was set with keeps the lock, so `data get`
+    /// shows it, a player's open checks it and the save writes it.
+    pub fn set_block_lock(&mut self, key: (i32, i32, i32), tag: &horizon_world::nbt::Tag) {
+        use horizon_world::nbt::Tag;
+        let lock = tag.get("lock").and_then(|lock| match lock {
+            Tag::Compound(_) => Some(lock.clone()),
+            _ => None,
+        });
+        self.with_chunk_extras(key, |extras| {
+            let at = extras
+                .block_entity_sources
+                .iter()
+                .position(|(p, _)| *p == key);
+            match at {
+                Some(i) => {
+                    if let Tag::Compound(source) = &mut extras.block_entity_sources[i].1 {
+                        match lock {
+                            Some(lock) => {
+                                source.insert("lock".into(), lock);
+                            }
+                            None => {
+                                source.remove(&"lock".into());
+                            }
+                        }
+                    }
+                }
+                // A container set at runtime has no source yet: the tag the
+                // command gave is the one it was set with, `id` and position
+                // included (the save checks the id before merging).
+                None if lock.is_some() => extras.block_entity_sources.push((key, tag.clone())),
+                None => {}
+            }
+        });
+    }
+    /// `LevelChunk.removeBlockEntity`: the tag a block entity was loaded or set
+    /// with goes with it, so a container placed there later starts unlocked.
+    pub fn forget_block_entity_source(&mut self, key: (i32, i32, i32)) {
+        self.with_chunk_extras(key, |extras| {
+            extras.block_entity_sources.retain(|(p, _)| *p != key);
+        });
+    }
+    /// Run `f` on the keep-as-loaded data of the chunk holding `key`, put back
+    /// for the next save (`block_entity_sources` is where Horizon restores the
+    /// block entity fields its model does not hold).
+    fn with_chunk_extras(
+        &mut self,
+        key: (i32, i32, i32),
+        f: impl FnOnce(&mut crate::chunk::ChunkExtras),
+    ) {
+        let chunk_key = (key.0 >> 4, key.2 >> 4);
+        let Some(chunk) = self.chunks.get_mut(&chunk_key) else {
+            return;
+        };
+        let chunk = Arc::make_mut(chunk);
+        let mut extras = chunk
+            .saved
+            .take()
+            .map(Arc::unwrap_or_clone)
+            .unwrap_or_default();
+        f(&mut extras);
+        chunk.saved = Some(Arc::new(extras));
+        self.modified.insert(chunk_key);
     }
 }
 

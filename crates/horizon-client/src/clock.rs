@@ -278,6 +278,16 @@ impl ServerTickRateManager {
 const SPRINT_PER_FRAME: i64 = 40;
 const SAMPLES: usize = 100;
 
+/// A step command's broadcast value and the ticks still owed to a new client.
+/// `ServerTickRateManager.updateStepTicks` sends the former immediately;
+/// `ServerTickRateManager.updateJoiningPlayer` sends the latter on a join.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct StepState {
+    pub revision: u32,
+    pub requested: i32,
+    pub remaining: i32,
+}
+
 /// The game's clock: `DeltaTracker.Timer` pacing driven by the
 /// `ServerTickRateManager` the `/tick` command controls, over a virtual
 /// millisecond clock built from the frame times it is fed. The integrated
@@ -300,6 +310,7 @@ pub struct FixedStep {
     /// How many times `/tick step` started or stopped a step
     /// (`ServerTickRateManager.updateStepTicks` broadcasts each one).
     step_changes: u32,
+    step_requested: i32,
     /// In-frame ticks dropped since the last overload warning (`drop_ticks`).
     dropped: u32,
     /// When the last overload warning was due, on the frame clock.
@@ -320,6 +331,7 @@ impl Default for FixedStep {
             tick_count: 0,
             client: false,
             step_changes: 0,
+            step_requested: 0,
             dropped: 0,
             last_overload_warning: std::time::Duration::ZERO,
         }
@@ -488,18 +500,29 @@ impl FixedStep {
         let started = self
             .manager
             .step_game_if_paused(ticks.min(i32::MAX as u32) as i32);
-        self.step_changes += u32::from(started);
+        if started {
+            self.step_changes += 1;
+            self.step_requested = self.manager.base.frozen_ticks_to_run();
+        }
         started
     }
     pub fn stop_step(&mut self) -> bool {
         let stopped = self.manager.stop_stepping();
-        self.step_changes += u32::from(stopped);
+        if stopped {
+            self.step_changes += 1;
+            self.step_requested = 0;
+        }
         stopped
     }
-    /// What `ClientboundTickingStepPacket` carries (`frozenTicksToRun`), and
-    /// a count that changes each time `updateStepTicks` would broadcast it.
-    pub fn step_state(&self) -> (u32, i32) {
-        (self.step_changes, self.manager.base.frozen_ticks_to_run())
+    /// Preserve the command's count until the network pass, even if a world
+    /// tick has already consumed it.
+    /// New arrivals instead receive the current remaining ticks.
+    pub fn step_state(&self) -> StepState {
+        StepState {
+            revision: self.step_changes,
+            requested: self.step_requested,
+            remaining: self.manager.base.frozen_ticks_to_run(),
+        }
     }
     /// Record how long a tick took (`MinecraftServer.tickServer` bookkeeping
     /// and `endTickWork`).
@@ -607,15 +630,55 @@ mod tests {
     fn only_a_started_or_stopped_step_is_broadcast() {
         let mut clock = FixedStep::default();
         assert!(!clock.start_step(5), "not frozen");
-        assert_eq!(clock.step_state(), (0, 0));
+        assert_eq!(clock.step_state(), StepState::default());
         clock.set_frozen(true);
         assert!(clock.start_step(5));
-        assert_eq!(clock.step_state(), (1, 5));
+        assert_eq!(
+            clock.step_state(),
+            StepState {
+                revision: 1,
+                requested: 5,
+                remaining: 5
+            }
+        );
         clock.world_runs();
-        assert_eq!(clock.step_state(), (1, 4), "a step tick is not broadcast");
+        assert_eq!(
+            clock.step_state(),
+            StepState {
+                revision: 1,
+                requested: 5,
+                remaining: 4
+            },
+            "consuming a tick preserves the command broadcast"
+        );
         assert!(clock.stop_step());
         assert!(!clock.stop_step());
-        assert_eq!(clock.step_state(), (2, 0));
+        assert_eq!(
+            clock.step_state(),
+            StepState {
+                revision: 2,
+                requested: 0,
+                remaining: 0
+            }
+        );
+    }
+    #[test]
+    fn a_consumed_single_step_still_advances_the_client_once() {
+        let mut server = FixedStep::default();
+        server.set_frozen(true);
+        assert!(server.start_step(1));
+        assert!(server.world_runs());
+        assert!(!server.world_runs());
+        let state = server.step_state();
+        assert_eq!(state.remaining, 0, "a late join has no pending ticks");
+        let mut client = FixedStep::client();
+        client.set_frozen(true);
+        client.set_frozen_ticks_to_run(state.requested);
+        assert!(
+            client.world_runs(),
+            "the connected client runs the command's tick"
+        );
+        assert!(!client.world_runs(), "then remains frozen");
     }
     #[test]
     fn a_servers_tick_rate_only_slows_its_client_down() {

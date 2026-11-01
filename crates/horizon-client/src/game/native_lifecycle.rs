@@ -422,7 +422,7 @@ mod tests {
             .find("self.native_lifecycle_open_started();")
             .unwrap();
         let load = integrated
-            .find("self.load_world(WorldRequest::new(")
+            .find("self.finish_open_world(opening.world?.finish()?)?;")
             .unwrap();
         assert!(open < load);
     }

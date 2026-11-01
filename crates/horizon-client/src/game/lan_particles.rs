@@ -6,7 +6,7 @@ use horizon_client::lan::hub::Hub;
 use horizon_client::particles::{ParticleOptions, ParticleType};
 use horizon_core::{geometry::Vec3, random::RandomSource};
 use horizon_protocol::{
-    entity_data::{Particle, ParticleData},
+    entity_data::{MOD_PARTICLE_ID, Particle, ParticleData},
     packets::play::{self, Clientbound as C},
 };
 use horizon_world::registry::BlockStateId;
@@ -20,12 +20,15 @@ pub(super) struct QueuedParticle {
     pub spread: [f64; 3],
     pub speed: f64,
     pub count: i32,
+    /// The packet's `RandomizationType` (0 DEFAULT, 1 ALTERNATIVE).
+    pub randomization: i32,
 }
 
 fn send_native_nearby(
     host: &LanHost,
     dimension: &str,
     packet: Vec<u8>,
+    horizon_only: bool,
     within_range: impl Fn([f64; 3]) -> bool,
 ) {
     for guest in host
@@ -34,7 +37,44 @@ fn send_native_nearby(
         .iter()
         .filter(|g| g.placed && g.dimension == dimension && within_range(g.position))
     {
+        // A vanilla client cannot decode a native mod's particle id; see
+        // `mod_particle_only_for_horizon`.
+        if horizon_only && guest.brand != "horizon" {
+            continue;
+        }
         guest.sender.send(packet.clone());
+    }
+}
+
+/// A native mod's particle travels as `MOD_PARTICLE_ID` (-1) plus its name.
+/// Vanilla reads the id with `IdMap.byIdOrThrow`, which throws on -1 and
+/// drops the connection, so such a particle may only go to Horizon clients.
+fn mod_particle_only_for_horizon(particle: &Particle) -> bool {
+    matches!(particle.data, Some(ParticleData::Mod(_)))
+}
+
+/// One of a packet's `count` particles (`handleParticleEvent`): its position
+/// and speed. DEFAULT (0) draws both from a Gaussian; ALTERNATIVE (1) and
+/// ALTERNATIVE_WITH_SPEED (2) spread over `[0, dist)`, the first keeping
+/// the speeds as they are, the second scaling each by `nextDouble`.
+fn spread(
+    r: &mut impl RandomSource,
+    randomization: i32,
+    pos: [f64; 3],
+    dist: [f64; 3],
+    speed: [f64; 3],
+) -> ([f64; 3], [f64; 3]) {
+    if matches!(randomization, 1 | 2) {
+        let at = [0, 1, 2].map(|k| pos[k] + r.next_double() * dist[k]);
+        let v = if randomization == 2 {
+            [0, 1, 2].map(|k| speed[k] * r.next_double())
+        } else {
+            speed
+        };
+        (at, v)
+    } else {
+        let at = [0, 1, 2].map(|k| pos[k] + r.next_gaussian() * dist[k]);
+        (at, [0, 1, 2].map(|k| r.next_gaussian() * speed[k]))
     }
 }
 
@@ -70,6 +110,39 @@ pub(super) fn send_soul_particle(host: &super::lan::LanHost, at: [f64; 3], veloc
         max_speed: [1.0; 3],
         count: 0,
         randomization: 0,
+    });
+    for g in host.hub.guests.iter().filter(|g| host.hub.here(g)) {
+        let distance: f64 = (0..3)
+            .map(|k| (g.position[k].floor() + 0.5 - at[k]).powi(2))
+            .sum();
+        if distance < 32.0 * 32.0 {
+            g.send(&packet);
+        }
+    }
+}
+
+/// `PowderSnowBlock.entityInside`'s `ServerLevel.sendParticles` of one
+/// snowflake (`count` 1, no spread, `RandomizationType.ALTERNATIVE`).
+pub(super) fn send_snowflake_particle(
+    host: &super::lan::LanHost,
+    at: [f64; 3],
+    velocity: [f64; 3],
+) {
+    let Some(id) = host
+        .hub
+        .registry_id("minecraft:particle_type", "minecraft:snowflake")
+    else {
+        return;
+    };
+    let packet = C::LevelParticles(play::LevelParticles {
+        particle: Particle { id, data: None },
+        override_limiter: false,
+        always_show: false,
+        pos: at,
+        dist: [0.0; 3],
+        max_speed: velocity.map(|v| v as f32),
+        count: 1,
+        randomization: 1,
     });
     for g in host.hub.guests.iter().filter(|g| host.hub.here(g)) {
         let distance: f64 = (0..3)
@@ -125,6 +198,7 @@ impl Game<'_> {
         else {
             return;
         };
+        let horizon_only = mod_particle_only_for_horizon(&particle);
         let packet = C::LevelParticles(play::LevelParticles {
             particle,
             override_limiter: false,
@@ -136,6 +210,9 @@ impl Game<'_> {
             randomization: 0,
         });
         for g in host.hub.guests.iter().filter(|g| host.hub.here(g)) {
+            if horizon_only && g.brand != "horizon" {
+                continue;
+            }
             // ServerLevel compares the player's block centre, strictly within 32.
             let distance: f64 = (0..3)
                 .map(|k| (g.position[k].floor() + 0.5 - at[k]).powi(2))
@@ -225,6 +302,13 @@ impl Game<'_> {
         options: &ParticleOptions,
         state: Option<BlockStateId>,
     ) -> Option<Particle> {
+        // A native mod's own type: no registry id, so the sentinel and the name.
+        if let Some(name) = &options.mod_particle {
+            return Some(Particle {
+                id: MOD_PARTICLE_ID,
+                data: Some(ParticleData::Mod(name.clone())),
+            });
+        }
         let name = format!("minecraft:{}", options.ty.name());
         let id = hub.registry_id("minecraft:particle_type", &name)?;
         use ParticleType as T;
@@ -265,6 +349,11 @@ impl Game<'_> {
         p: &Particle,
         at: [f64; 3],
     ) -> Option<ParticleOptions> {
+        if p.id == MOD_PARTICLE_ID
+            && let Some(ParticleData::Mod(name)) = &p.data
+        {
+            return Some(ParticleOptions::named(name.clone()));
+        }
         let name = self
             .remote
             .as_ref()?
@@ -334,17 +423,7 @@ impl Game<'_> {
             return;
         }
         for _ in 0..p.count {
-            let r = self.particles.random();
-            let at = [
-                p.pos[0] + r.next_gaussian() * d[0],
-                p.pos[1] + r.next_gaussian() * d[1],
-                p.pos[2] + r.next_gaussian() * d[2],
-            ];
-            let v = [
-                r.next_gaussian() * s[0],
-                r.next_gaussian() * s[1],
-                r.next_gaussian() * s[2],
-            ];
+            let (at, v) = spread(self.particles.random(), p.randomization, p.pos, d, s);
             add(&mut self.particles, at, v);
         }
     }
@@ -409,6 +488,7 @@ impl Game<'_> {
             spread,
             speed,
             count,
+            randomization,
         } = request;
         let Some(particle) = self.network_particle(&options, state) else {
             return;
@@ -416,6 +496,7 @@ impl Game<'_> {
         let Some(host) = self.lan.as_ref() else {
             return;
         };
+        let horizon_only = mod_particle_only_for_horizon(&particle);
         let body = C::LevelParticles(play::LevelParticles {
             particle,
             override_limiter: false,
@@ -424,12 +505,12 @@ impl Game<'_> {
             dist: spread.map(|d| d as f32),
             max_speed: [speed as f32; 3],
             count,
-            randomization: 0,
+            randomization,
         })
         .encode();
         // BlockPos.closerToCenterThan(at, 32): from the centre of the
         // player's block.
-        send_native_nearby(host, dimension, body, |position| {
+        send_native_nearby(host, dimension, body, horizon_only, |position| {
             let d: f64 = (0..3)
                 .map(|k| (position[k].floor() + 0.5 - at[k]).powi(2))
                 .sum();
@@ -437,14 +518,16 @@ impl Game<'_> {
         });
     }
 
-    /// Native sounds wait until the server host is available.
+    /// Native sounds wait until the server host is available. An unknown
+    /// `minecraft:` event is dropped; a mod's goes by name (`sound_packet`).
     pub(super) fn flush_native_sounds(&mut self) {
         let Some(host) = &self.lan else { return };
         for sound in std::mem::take(&mut self.creatures.lan_sounds) {
-            if host
-                .hub
-                .registry_id("minecraft:sound_event", &sound.sound)
-                .is_none()
+            if sound.sound.starts_with("minecraft:")
+                && host
+                    .hub
+                    .registry_id("minecraft:sound_event", &sound.sound)
+                    .is_none()
             {
                 continue;
             }
@@ -460,11 +543,38 @@ impl Game<'_> {
                 )
                 .encode();
             let range = f64::from(sound.volume.max(1.0)) * 16.0;
-            send_native_nearby(host, sound.dimension, packet, |position| {
+            send_native_nearby(host, sound.dimension, packet, false, |position| {
                 let distance: f64 = (0..3).map(|k| (position[k] - sound.at[k]).powi(2)).sum();
                 distance <= range * range
             });
         }
+    }
+
+    /// `BucketItem.emptyContents` where water evaporates: `sendParticles(
+    /// LARGE_SMOKE, x, y, z, 8, 1, 1, 1, 0, ALTERNATIVE)` from the block's
+    /// corner, so each puff lands inside the block. The window draws its own.
+    pub(super) fn evaporation_smoke(&mut self, pos: [i32; 3]) {
+        let options = ParticleOptions::simple(ParticleType::LargeSmoke);
+        let at = pos.map(f64::from);
+        for _ in 0..8 {
+            let r = self.particles.random();
+            let p = [
+                at[0] + r.next_double(),
+                at[1] + r.next_double(),
+                at[2] + r.next_double(),
+            ];
+            self.particles.add(&options, p, [0.0; 3]);
+        }
+        self.lan_send_particles(QueuedParticle {
+            dimension: self.dim.id(),
+            options,
+            state: None,
+            at,
+            spread: [1.0; 3],
+            speed: 0.0,
+            count: 8,
+            randomization: 1,
+        });
     }
 
     /// The particles guests' turns put off.
@@ -612,5 +722,32 @@ impl Game<'_> {
                 None => g.sender.send(plain.clone()),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::spread;
+    use horizon_core::random::LegacyRandom;
+
+    /// The Nether's evaporation smoke (ALTERNATIVE, dist 1, speed 0) lands
+    /// inside the block from its corner and stands still; DEFAULT spreads
+    /// both ways.
+    #[test]
+    fn alternative_particles_spread_from_the_corner_over_dist() {
+        let mut r = LegacyRandom::new(1);
+        let mut below = false;
+        for _ in 0..200 {
+            let (at, v) = spread(&mut r, 1, [3.0, 64.0, -7.0], [1.0; 3], [0.0; 3]);
+            assert!((3.0..4.0).contains(&at[0]), "{at:?}");
+            assert!((64.0..65.0).contains(&at[1]), "{at:?}");
+            assert!((-7.0..-6.0).contains(&at[2]), "{at:?}");
+            assert_eq!(v, [0.0; 3]);
+            let (_, v) = spread(&mut r, 2, [0.0; 3], [0.0; 3], [0.5, 0.0, 2.0]);
+            assert!((0.0..0.5).contains(&v[0]) && v[1] == 0.0 && (0.0..2.0).contains(&v[2]));
+            let (at, _) = spread(&mut r, 0, [0.0; 3], [1.0; 3], [0.0; 3]);
+            below |= at.iter().any(|&c| c < 0.0);
+        }
+        assert!(below, "DEFAULT is a Gaussian around the position");
     }
 }

@@ -63,9 +63,15 @@ impl Game<'_> {
                     .map(str::trim)
                     .filter(|v| !v.is_empty())
                     .ok_or("options-set KEY VALUE: missing the value")?;
+                let narrator = self.settings.narrator();
                 self.settings = self.settings.with_option(key, value)?;
-                // As the options screen applies a change.
-                self.handle_option_events(vec![Event::Changed])?;
+                // As the options screen applies a change (OptionInstance.set
+                // runs the narrator's onValueUpdate for a new value only).
+                let mut events = vec![Event::Changed];
+                if self.settings.narrator() != narrator {
+                    events.push(Event::Narrator);
+                }
+                self.handle_option_events(events)?;
                 match *key {
                     "lang" => self.load_language(&self.settings.language.clone()),
                     "resourcePacks" | "incompatibleResourcePacks" => self.reload_packs(),
@@ -79,14 +85,22 @@ impl Game<'_> {
             _ => Ok(None),
         }
     }
+    /// This player's `options.txt`: in the game folder, or in `--player-dir` when several
+    /// players share one (`logging::set_player_dir`).
     pub(super) fn options_path() -> std::path::PathBuf {
-        std::env::current_dir()
-            .unwrap_or_default()
-            .join("options.txt")
+        // Splitscreen's second player has its own options (`split::options_path`).
+        if let Some(path) = super::split::options_path() {
+            return path;
+        }
+        horizon_client::logging::player_dir().join("options.txt")
     }
-    /// `shaderpacks/` beside `options.txt`.
+    /// The game folder (the working directory): what its players share, saves, packs, mods.
+    pub(super) fn game_dir() -> std::path::PathBuf {
+        std::env::current_dir().unwrap_or_default()
+    }
+    /// `shaderpacks/` in the game folder.
     pub(super) fn shader_packs_dir() -> std::path::PathBuf {
-        Self::options_path().with_file_name(horizon_client::shader_pack_list::DIR)
+        Self::game_dir().join(horizon_client::shader_pack_list::DIR)
     }
     pub(super) fn gui_size(&self) -> (f32, f32) {
         let size = self
@@ -149,7 +163,7 @@ impl Game<'_> {
             .is_some_and(|(_, seen)| *seen != signature);
         self.pack_folder = Some((now, signature));
         if changed {
-            let infos = super::packs::pack_infos(&self.vanilla_root());
+            let infos = super::packs::pack_infos(&self.vanilla_root(), &self.server_packs.active);
             self.ui.options.update_pack_infos(infos);
         }
     }
@@ -158,6 +172,42 @@ impl Game<'_> {
         let mut ui = std::mem::take(&mut self.ui.options);
         ui.draw(&self.settings, batch, &self.gui.atlas, self.cursor);
         self.ui.options = ui;
+        self.show_calibration(batch.height);
+    }
+    /// HDR calibration's test picture to the renderer, full screen while it runs: the
+    /// window goes fullscreen for it and back after, if it wasn't already.
+    pub(super) fn show_calibration(&mut self, h: f32) {
+        let picture = (self.screen == Screen::Options)
+            .then(|| self.ui.options.calibration_picture(h))
+            .flatten();
+        if let Some(r) = self.renderer.as_mut() {
+            r.set_hdr_calibration(picture.map(|(step, nits, band)| {
+                horizon_client::gfx::HdrCalibration {
+                    step: step.number(),
+                    nits,
+                    band,
+                }
+            }));
+        }
+        let Some(window) = &self.window else {
+            return;
+        };
+        match (picture.is_some(), self.ui.options.calibration_fullscreen) {
+            (true, None) => {
+                let was = window.fullscreen().is_some();
+                if !was {
+                    window.set_fullscreen(Some(Fullscreen::Borderless(None)));
+                }
+                self.ui.options.calibration_fullscreen = Some(was);
+            }
+            (false, Some(was)) => {
+                if !was {
+                    window.set_fullscreen(None);
+                }
+                self.ui.options.calibration_fullscreen = None;
+            }
+            _ => {}
+        }
     }
     pub(super) fn options_mouse(&mut self, pressed: bool, right: bool) -> Result<()> {
         if !pressed {
@@ -176,6 +226,7 @@ impl Game<'_> {
             [r.config.width as i32, r.config.height as i32]
         });
         let mut ui = std::mem::take(&mut self.ui.options);
+        ui.shift = self.modifiers.shift_key();
         let events = ui.click(
             &mut self.settings,
             &self.gui.atlas,
@@ -209,8 +260,15 @@ impl Game<'_> {
         self.handle_option_events(events)
     }
     pub(super) fn options_key(&mut self, key: KeyCode, text: Option<&str>) -> Result<()> {
+        let size = self.gui_size();
+        let shift = self.has_shift_down();
+        let framebuffer = self.renderer.as_ref().map_or([1280, 720], |r| {
+            [r.config.width as i32, r.config.height as i32]
+        });
+        self.ui.options.size = size;
+        self.ui.options.framebuffer = framebuffer;
         let mut ui = std::mem::take(&mut self.ui.options);
-        let events = ui.key(&mut self.settings, &self.gui.atlas, key, text);
+        let events = ui.key_modifiers(&mut self.settings, &self.gui.atlas, key, text, shift);
         self.ui.options = ui;
         self.handle_option_events(events)
     }
@@ -288,6 +346,8 @@ impl Game<'_> {
                         self.capture(true);
                     }
                     self.dragging = false;
+                    // Closed from calibration (horizon-ctl, a lost window): out of it.
+                    self.show_calibration(0.0);
                 }
                 Event::Language(code) => {
                     self.load_language(&code);
@@ -302,8 +362,9 @@ impl Game<'_> {
                     super::packs::open_folder(&dir);
                 }
                 Event::DataPacks(ids) => {
+                    let resources = self.vanilla_root();
                     if let Some(title) = &mut self.title {
-                        title.set_data_packs(ids);
+                        title.offer_data_packs(&resources, ids);
                     }
                 }
                 Event::OpenDataPackFolder(dir) => {
@@ -311,7 +372,7 @@ impl Game<'_> {
                     super::packs::open_folder(&dir);
                 }
                 Event::OpenModFolder => {
-                    let dir = Self::options_path().with_file_name(horizon_client::mod_list::DIR);
+                    let dir = Self::game_dir().join(horizon_client::mod_list::DIR);
                     let _ = std::fs::create_dir_all(&dir);
                     super::packs::open_folder(&dir);
                 }
@@ -321,6 +382,13 @@ impl Game<'_> {
                 }
                 // Saved; the next frame's `shader_pack_inputs` loads the pick.
                 Event::ShaderPack => self.settings.save(&Self::options_path()),
+                Event::OpenShaderOptions => self.open_shader_options(),
+                Event::ShaderOptions => self.save_shader_options(),
+                Event::NativePackOptions(i) => {
+                    if let Some(pack) = self.settings.shader_packs.get(i) {
+                        pack.save_values(&Self::shader_packs_dir());
+                    }
+                }
                 Event::OpenShaderPackFolder => {
                     let dir = Self::shader_packs_dir();
                     let _ = std::fs::create_dir_all(&dir);
@@ -329,6 +397,7 @@ impl Game<'_> {
                 Event::NativeSettings(i) => self.native_settings_refresh(i),
                 Event::NativeButton(i, b) => self.native_settings_event(i, b),
                 Event::Credits => self.open_win_screen(false, super::win::Finish::Options),
+                Event::Narrator => self.narrator_status_changed(),
             }
         }
         Ok(())
@@ -345,12 +414,18 @@ impl Game<'_> {
     /// window to change, so applying settings never undoes a fullscreen
     /// the compositor set up.
     fn apply_fullscreen(&mut self) {
+        // A splitscreen guest draws in a window it shares: its option never changes the window.
+        if self.options.split_guest {
+            return;
+        }
         if let Some(w) = self.window.clone() {
-            let modes = w
-                .current_monitor()
-                .or_else(|| w.primary_monitor())
-                .map(|m| horizon_client::window::monitor_video_modes(&m))
-                .unwrap_or_default();
+            let monitor = w.current_monitor().or_else(|| w.primary_monitor());
+            if let Some(modes) = self
+                .video_modes
+                .refresh(monitor, horizon_client::window::monitor_video_modes)
+            {
+                self.settings.video_modes = modes;
+            }
             let in_video_screen = self.screen == Screen::Options
                 && self.ui.options.page() == horizon_client::options_ui::Page::Video;
             let wanted = self.settings.fullscreen;
@@ -361,13 +436,21 @@ impl Game<'_> {
                 .fullscreen_resolution
                 .as_deref()
                 .and_then(horizon_client::window::VideoMode::read);
+            let leaving = !wanted && w.fullscreen().is_some();
             self.fullscreen
                 .apply(&w, wanted, exclusive, preferred, in_video_screen);
-            self.settings.video_modes = modes;
+            if leaving {
+                windowed_again(&w);
+            }
         }
     }
     /// Settings that Horizon applies beyond render distance, volume and GUI scale.
     pub(super) fn apply_ui_settings(&mut self) {
+        if horizon_client_render::mipmap::set_dither_cutouts(
+            self.settings.horizon.dither_cutout_mips,
+        ) {
+            self.reload_packs();
+        }
         self.apply_fullscreen();
         let s = &self.settings;
         if let Some(r) = self.renderer.as_mut() {
@@ -376,6 +459,7 @@ impl Game<'_> {
             r.improved_transparency = s.improved_transparency;
             r.set_present_mode(s.vsync, s.horizon.present_mode);
             r.animated_textures = s.horizon.animated_textures;
+            r.screenshot_quality = s.horizon.screenshot_quality;
             r.set_mipmap_levels(s.mipmap_levels.max(0) as u32);
             r.set_texture_filtering(
                 s.file.int("textureFiltering"),
@@ -386,6 +470,9 @@ impl Game<'_> {
                 s.horizon.fxaa,
                 s.horizon.taa,
                 s.horizon.upscaling.ratio(),
+            );
+            r.set_frame_generation(
+                s.horizon.frame_generation != horizon_client::graphics::FrameGeneration::Off,
             );
             r.set_hdr(
                 s.horizon.hdr,
@@ -398,7 +485,11 @@ impl Game<'_> {
         }
         let mut volumes = s.volumes;
         volumes[0] = 1.0;
-        horizon_client::settings::set_source_volumes(volumes);
+        // Splitscreen: the speakers are P1's, and so are their volumes.
+        if !self.options.split_guest {
+            horizon_client::settings::set_source_volumes(volumes);
+        }
+        super::narrator::sync(s);
         let chat = s.chat_options();
         let rescale = {
             let o = &self.ui.chat.options;
@@ -419,7 +510,15 @@ impl Game<'_> {
     /// `Window.updateFullscreenState`: a fullscreen change made by the window
     /// system is adopted by the option (`Minecraft.fullscreenStateChanged`).
     pub(super) fn observe_fullscreen(&mut self) {
+        // HDR calibration's own fullscreen is not the player's option: it
+        // goes back to what it was when the calibration ends.
+        if self.ui.options.calibration_fullscreen.is_some() {
+            return;
+        }
         let Some(w) = &self.window else { return };
+        if self.options.split_guest {
+            return;
+        }
         if let Some(now) = self.fullscreen.observe(w.fullscreen().is_some())
             && self.settings.fullscreen != now
         {
@@ -429,6 +528,22 @@ impl Game<'_> {
     }
     /// F11 (key.fullscreen): Window.toggleFullScreen, remembered in options.txt.
     pub(super) fn toggle_fullscreen(&mut self) {
+        // Splitscreen: another player's F11 toggles the window it plays in, kept out of its
+        // options (a profile that saved it would turn the next window fullscreen on joining).
+        if self.options.split_guest {
+            // Window 1 is P1's: its fullscreen follows P1's option, not a guest's key.
+            if self.options.split_in_main_window {
+                return;
+            }
+            if let Some(w) = &self.window {
+                let on = w.fullscreen().is_none();
+                w.set_fullscreen(on.then_some(Fullscreen::Borderless(None)));
+                if !on {
+                    windowed_again(w);
+                }
+            }
+            return;
+        }
         self.settings.fullscreen = !self.settings.fullscreen;
         self.settings.save(&Self::options_path());
         self.apply_ui_settings();
@@ -467,7 +582,7 @@ impl Game<'_> {
     /// below 260 frames per second, sleeping then spin-waiting until the
     /// frame's slot ends (not in scripted frame-count runs).
     pub(super) fn limit_frame(&mut self) {
-        if self.options.frames.is_some() {
+        if self.options.frames.is_some() || self.options.paced_by_split {
             return;
         }
         let limit = self.framerate_limit();
@@ -480,5 +595,30 @@ impl Game<'_> {
                 horizon_client::window::end_frame(&mut self.limiter, limit, &mut clock);
             }
         }
+    }
+}
+
+/// Out of fullscreen, a window that splitscreen opened to fill a monitor (no border, the
+/// monitor's size) is a window again: its border back and, still covering the monitor, the game's
+/// first size (854 x 480) in the middle of it, to be moved and sized.
+fn windowed_again(w: &winit::window::Window) {
+    // Only those: an ordinary window has its border, and its own size comes back by itself.
+    if w.is_decorated() {
+        return;
+    }
+    w.set_decorations(true);
+    let Some(m) = w.current_monitor() else {
+        return;
+    };
+    let (size, screen) = (w.inner_size(), m.size());
+    if size.width >= screen.width && size.height >= screen.height {
+        let scale = m.scale_factor();
+        let small = winit::dpi::LogicalSize::new(854.0, 480.0).to_physical::<u32>(scale);
+        let _ = w.request_inner_size(small);
+        let at = m.position();
+        w.set_outer_position(winit::dpi::PhysicalPosition::new(
+            at.x + (screen.width.saturating_sub(small.width) / 2) as i32,
+            at.y + (screen.height.saturating_sub(small.height) / 2) as i32,
+        ));
     }
 }

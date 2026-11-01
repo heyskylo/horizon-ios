@@ -291,6 +291,8 @@ pub fn main() -> horizon_client::Result<()> {
             for d in items {
                 let _ = match d {
                     drops::Drop::Item(s) => writeln!(out, "{}", line(&s)),
+                    // The fixture's mobs keep no whole stacks.
+                    drops::Drop::Stack(s) => writeln!(out, "drop {} {}", s.item, s.count),
                     drops::Drop::CarriedBlock(state) => {
                         let stacks = enderman::carried_block_drops(
                             &block_items,

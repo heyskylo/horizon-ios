@@ -17,9 +17,9 @@ const BOARDING_COOLDOWN: i32 = 60;
 /// `Piglin.startRiding`: how many baby piglins stack on one hoglin.
 const MAX_PASSENGERS_ON_ONE_HOGLIN: i32 = 3;
 
-/// `LivingEntity.getScale`: the `minecraft:scale` a player or mannequin
-/// carries (`extra.model_scale`, 0 when none came), 1 for every other mob.
-fn scale(m: &Mob) -> f64 {
+/// `LivingEntity.getScale`: the `minecraft:scale` the server sent on any
+/// living entity (`extra.model_scale`, 0 when none came), 1 when unset.
+pub(super) fn scale(m: &Mob) -> f64 {
     if m.extra.model_scale > 0.0 {
         f64::from(m.extra.model_scale)
     } else {
@@ -56,7 +56,11 @@ fn base_attachment(v: &Mob) -> [f64; 3] {
         Species::Hoglin => [0.0, 1.49375, 0.0],
         Species::Nautilus | Species::ZombieNautilus => [0.0, 1.1375, 0.0],
         Species::Camel | Species::CamelHusk => super::camel::passenger_attachment(v),
-        // The default attachments: the top of the bounding box.
+        // The default attachments: the top of the bounding box, before
+        // `passenger_attachment`'s scale — a player's or mannequin's
+        // `height()` carries `minecraft:scale` since `getDimensions` grew it;
+        // any other mob's `height()` stays unscaled (`awake_dims_in`).
+        _ if avatar(v) => [0.0, f64::from(v.height()) / scale(v), 0.0],
         _ => [0.0, f64::from(v.height()), 0.0],
     }
 }
@@ -375,6 +379,17 @@ mod tests {
             0.0,
         );
         assert!(close(seat.y, 54.1));
+    }
+    /// A scaled vehicle that is not an avatar: `remote_mob_attributes` puts
+    /// `minecraft:scale` on any living entity, but `awake_dims_in` grows only
+    /// avatars' boxes, so the seat still rides at the scaled box height.
+    #[test]
+    fn a_scaled_vehicle_seat_stays_scaled() {
+        let close = |a: f64, b: f64| (a - b).abs() < 1e-6;
+        let mut cow = Mob::new(1, crate::mobs::sensor_scan_tests::kind(), Vec3::ZERO, 0.0);
+        assert!(close(passenger_attachment(&cow)[1], 1.4));
+        cow.extra.model_scale = 2.0;
+        assert!(close(passenger_attachment(&cow)[1], 2.8));
     }
     #[test]
     fn archers_keep_their_distance_and_brawlers_close_in() {

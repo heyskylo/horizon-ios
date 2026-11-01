@@ -101,10 +101,20 @@ impl Launcher {
                     .rounded(px(theme::RADIUS))
                     .cursor_pointer()
                     .hover(move |s| s.bg(t.plate_soft))
+                    .child(self.profile_heads.draw(
+                        match &who {
+                            Player::Microsoft(uuid) => Some(uuid),
+                            _ => None,
+                        },
+                        24.,
+                        self.scale,
+                        &t,
+                    ))
                     .child(
                         div()
                             .flex()
                             .flex_col()
+                            .flex_1()
                             .min_w_0()
                             .child(text(theme::LABEL).truncate().text_color(t.ink).child(name))
                             .child(text(theme::CAPTION).text_color(t.muted).child(how)),

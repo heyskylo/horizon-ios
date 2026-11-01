@@ -86,16 +86,21 @@ impl Launcher {
                     cx,
                     ClipboardItem::new_image(&Image::from_bytes(format, bytes)),
                 );
-                Ok("Copied to the clipboard.".into())
+                Ok(tr("Copied to the clipboard.").into())
             }
-            Err(e) => Err(format!("Could not read {}: {e}", shot.name)),
+            Err(e) => Err(trf(
+                "Could not read {name}: {error}",
+                &[("name", &shot.name), ("error", &e.to_string())],
+            )),
         });
     }
 
     fn delete_screenshot(&mut self, shot: &Shot) {
         self.screenshots.confirm_delete = false;
-        self.screenshots.note =
-            Some(screenshots::delete(shot).map(|()| format!("{} moved to the trash.", shot.name)));
+        self.screenshots.note = Some(
+            screenshots::delete(shot)
+                .map(|()| trf("{name} moved to the trash.", &[("name", &shot.name)])),
+        );
         self.screenshots.stale();
     }
 
@@ -127,8 +132,8 @@ impl Launcher {
         let mut buttons = div().flex().items_center().gap(px(6.));
         if list.len() > FIRST {
             let label = match self.screenshots.all {
-                true => "Show fewer".to_string(),
-                false => format!("Show all {}", list.len()),
+                true => tr("Show fewer").to_string(),
+                false => trf("Show all {count}", &[("count", &list.len().to_string())]),
             };
             buttons = buttons.child(button("screenshots-all", label, Kind::Ghost, &t).on_click(
                 cx.listener(|this, _: &ClickEvent, _, cx| {
@@ -201,7 +206,7 @@ impl Launcher {
                     .child(
                         text(theme::CAPTION)
                             .text_color(t.danger)
-                            .child("Move it to the trash?"),
+                            .child(tr("Move it to the trash?")),
                     )
                     .child(button("screenshot-keep", "Keep", Kind::Ghost, &t).on_click(
                         cx.listener(|this, _: &ClickEvent, _, cx| {
@@ -268,7 +273,14 @@ impl Launcher {
                         text(theme::CAPTION)
                             .text_color(t.muted)
                             .truncate()
-                            .child(format!("{} · {} of {count}", shot.name, i + 1)),
+                            .child(trf(
+                                "{name} · {index} of {count}",
+                                &[
+                                    ("name", &shot.name),
+                                    ("index", &(i + 1).to_string()),
+                                    ("count", &count.to_string()),
+                                ],
+                            )),
                     ),
             )
             .child(step("screenshot-newer", "← Newer", false, i > 0))
@@ -301,7 +313,7 @@ impl Launcher {
                 .px(px(32.))
                 .py(px(24.))
                 .bg(t.page.opacity(0.96))
-                .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+                .on_scroll(|_, _, cx| cx.stop_propagation())
                 .occlude()
                 .child(top)
                 .child(

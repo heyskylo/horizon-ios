@@ -53,6 +53,7 @@
   "lan_integration": "the whole lan_e2e suite: ~40 min a run on a loaded runner, and single checks flake under load; run it by name, or tools/lan_e2e.py"
  },
  "known_flaky": {
-  "world_reopen": "counted 4 minecarts instead of 3 once on a loaded Mac mini runner, then passed at the same head (10-26)"
+  "world_reopen": "counted 4 minecarts instead of 3 once on a loaded Mac mini runner, then passed at the same head (10-26)",
+  "lunge_motion": "a loaded Mac mini runner: the server catches up with two ticks for one of the jump's moves (Alice falls a tick of gravity more, -0.3015 vs -0.2277; the harness now names it), and vanilla's own run once sent an extra motion while sprinting; the same trees pass alone (#5656, 11-01)"
  }
 }

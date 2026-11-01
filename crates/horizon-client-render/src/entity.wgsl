@@ -22,6 +22,10 @@ struct Globals {
     outline_params: vec4<f32>,
     // Horizon Extras' dynamic lights: camera-relative position and level (dynamic_light.rs).
     dynamic_lights: array<vec4<f32>, 16>,
+    colored_lights: array<array<vec4<f32>, 2>, 16>,
+    colored_count: vec4<u32>,
+    emissive_layers: array<vec4<u32>, 32>,
+    emissive_count: vec4<u32>,
     sunrise_fan: array<vec4<f32>, 32>,
     filtering: vec4<f32>,
 }
@@ -90,6 +94,15 @@ fn dynamic_block_light(pos: vec3<f32>) -> f32 {
     }
     return level * 16.0;
 }
+fn native_colored_light(pos: vec3<f32>) -> vec3<f32> {
+    var rgb = vec3(0.0);
+    for (var i = 0u; i < min(globals.colored_count.x, 16u); i++) {
+        let at = globals.colored_lights[i][0];
+        let color = globals.colored_lights[i][1];
+        rgb += color.rgb * max(0.0, 1.0 - distance(pos, at.xyz) / at.w) * color.a;
+    }
+    return min(rgb, vec3(1.0));
+}
 fn entity_vertex(position: vec3<f32>, uv: vec2<f32>,
     overlay: u32, color: vec4<f32>, light: vec4<u32>, normal: vec4<f32>) -> Out {
     var out: Out;
@@ -103,6 +116,9 @@ fn entity_vertex(position: vec3<f32>, uv: vec2<f32>,
     let unlit = overlay == 2u || overlay == 4u || overlay == 6u || overlay == 9u || overlay == 10u
         || overlay == 11u || overlay == 12u;
     out.light_color = select(lm, vec4(1.0), unlit);
+    if globals.colored_count.x > 0u && !unlit {
+        out.light_color = vec4(min(out.light_color.rgb + native_colored_light(position), vec3(1.0)), out.light_color.a);
+    }
     // Overlay 6 (beacon beams): the light bytes carry the sprite's v range; 11 and 12
     // (cracks): the destroy stage sprite's origin.
     out.wrap = vec2(f32(light.x | (light.y << 8u)), f32(light.z | (light.w << 8u))) / 65535.0;
@@ -141,7 +157,9 @@ fn entity_vertex(position: vec3<f32>, uv: vec2<f32>,
 @vertex fn vs_lightning(@location(0) position: vec3<f32>, @location(1) uv: vec2<f32>,
     @location(2) overlay: u32, @location(3) color: vec4<f32>, @location(4) light: vec4<u32>, @location(5) normal: vec4<f32>,
     @location(7) offset: vec3<f32>) -> Out {
-    return entity_vertex(offset + position, uv, overlay, color, light, normal);
+    var out = entity_vertex(offset + position, uv, overlay & 0xffffu, color, light, normal);
+    out.tier = (overlay >> 16u) & 0xffu;
+    return out;
 }
 struct CloudInfo {
     offset: vec4<f32>,
@@ -294,11 +312,21 @@ fn shadow_color(in: Out) -> vec4<f32> {
 // way terrain.wgsl marks a light source's, drawn again after the entities with
 // only alpha written, so its colour stays as blended.
 @fragment fn fs_hdr_mark(in: Out) -> @location(0) vec4<f32> {
-    if in.tier == 0u || textureSample(atlas, atlas_sampler, in.uv).a < 0.1 { discard; }
+    // Beams wrap their v in the sprite as fs_entity does: sample where they draw.
+    var uv = in.uv;
+    if in.overlay == 6u { uv.y = in.wrap.x + fract(in.uv.y) * in.wrap.y; }
+    if in.tier == 0u || textureSample(atlas, atlas_sampler, uv).a < 0.1 { discard; }
     return vec4(0.0, 0.0, 0.0, 0.7 * f32(4u - min(in.tier, 4u)) / 4.0);
 }
 
 fn celestial_color(in: Out) -> vec4<f32> {
+    // RenderPipelines.DRAGON_RAYS / rendertype_lightning.fsh: untextured
+    // vertex colour, with fog fading both RGB and alpha before additive blending.
+    if in.overlay == 37u {
+        let fog = max(linear_fog(in.spherical, globals.fog.x, globals.fog.y),
+                      linear_fog(in.cylindrical, globals.fog.z, globals.fog.w));
+        return in.color * (1.0 - fog);
+    }
     return textureSample(atlas, atlas_sampler, in.uv) * in.color * in.light_color;
 }
 @fragment fn fs_celestial(in: Out) -> @location(0) vec4<f32> {

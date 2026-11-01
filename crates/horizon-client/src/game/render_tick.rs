@@ -13,7 +13,7 @@ use horizon_client::{
 };
 use horizon_client::{
     hud_overlays,
-    screen_effects::{ScreenInputs, ScreenQuad, lightmap_brightness},
+    screen_effects::{ScreenInputs, ScreenQuad, lightmap_brightness, nausea_has_effect},
 };
 use horizon_core::random::{LegacyRandom, RandomSource};
 use horizon_world::{heightmap::HeightmapType, worldgen::terrain::TerrainBlockStates};
@@ -140,7 +140,59 @@ impl Game<'_> {
         if !self.settings.horizon.fog {
             horizon_client::fog::clear_distance_fog(&mut fog, &input);
         }
+        if self.title.is_none() {
+            fog.color =
+                self.native_fog_color_now(self.clock.fraction() as f32, at, fog_type, fog.color);
+            fog = self.native_fog_now(self.clock.fraction() as f32, at, fog_type, fog);
+        }
         fog
+    }
+    fn native_fog_color_now(
+        &self,
+        partial: f32,
+        camera: [f64; 3],
+        fog_type: FogType,
+        color: [f32; 4],
+    ) -> [f32; 4] {
+        let mut rgb = [color[0], color[1], color[2]];
+        self.native_compute_fog_color(partial, camera, fog_type, &mut rgb);
+        if rgb.iter().all(|v| v.is_finite() && (0.0..=1.0).contains(v)) {
+            [rgb[0], rgb[1], rgb[2], color[3]]
+        } else {
+            color
+        }
+    }
+    fn native_fog_now(
+        &self,
+        partial: f32,
+        camera: [f64; 3],
+        fog_type: FogType,
+        original: FogData,
+    ) -> FogData {
+        let mut fog = original;
+        self.native_render_fog(partial, camera, fog_type, &mut fog);
+        let distances = [
+            fog.environmental_start,
+            fog.environmental_end,
+            fog.render_distance_start,
+            fog.render_distance_end,
+            fog.sky_end,
+            fog.cloud_end,
+        ];
+        if fog
+            .color
+            .iter()
+            .all(|v| v.is_finite() && (0.0..=1.0).contains(v))
+            && distances.iter().all(|v| v.is_finite())
+            && fog.environmental_end > fog.environmental_start
+            && fog.render_distance_end > fog.render_distance_start
+            && fog.sky_end >= 0.0
+            && fog.cloud_end >= 0.0
+        {
+            fog
+        } else {
+            original
+        }
     }
     /// `FogRenderer.computeFogColor`'s night vision brightenFactor:
     /// `GameRenderer.nightVisionScale`, but not while Darkness is on.
@@ -267,7 +319,7 @@ impl Game<'_> {
         // drawn on the HUD by draw_spyglass.
         let fx = &self.screen_fx;
         let overlays = hud_overlays::CameraOverlays {
-            vignette: self.settings.vignette.then_some((
+            vignette: self.vignette_shown().then_some((
                 fx.vignette_brightness,
                 self.border.warning_strength(p.position.x, p.position.z),
             )),
@@ -327,11 +379,7 @@ impl Game<'_> {
             if self.remote.is_some() && self.portals.player.cooldown > 0 {
                 self.portals.player.cooldown -= 1;
             }
-            let nausea = self
-                .potions
-                .effects
-                .get("nausea")
-                .map(|e| !e.ends_within(60));
+            let nausea = self.potions.effects.get("nausea").map(nausea_has_effect);
             self.screen_fx.tick_spinning(nausea);
             // LocalPlayer water vision and AtmosphericFogEnvironment rain fog.
             let in_water =
@@ -352,7 +400,7 @@ impl Game<'_> {
                 .chunks
                 .get(&(b[0] >> 4, b[2] >> 4))
                 .map_or(0, |c| c.biome(b[0], b[1], b[2]));
-            let rains = self.res.biomes().get(biome).precipitation;
+            let rains = world_biomes!(self).get(biome).precipitation;
             update_rain_fog(
                 &mut self.fog,
                 rain,
@@ -382,7 +430,7 @@ impl Game<'_> {
         };
         let world = &self.world;
         let facts = self.res.facts();
-        let biomes = self.res.biomes();
+        let biomes = world_biomes!(self);
         let properties = &self.pack.assets.properties;
         let raining = rain > 0.2;
         let raining_at = |p: [i32; 3]| {

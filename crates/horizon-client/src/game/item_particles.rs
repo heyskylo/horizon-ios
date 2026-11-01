@@ -93,7 +93,7 @@ impl Game<'_> {
     /// the component is removed), heard by this client only
     /// (`playLocalSound`) at the entity's feet, at 0.8 volume and a pitch of
     /// 0.8 to 1.2.
-    fn break_sound_at(&mut self, stack: &ItemStack, at: [f64; 3]) {
+    pub(super) fn break_sound_at(&mut self, stack: &ItemStack, at: [f64; 3]) {
         let models = &self.pack.item_renderer.models;
         let sound = match models
             .components(&stack_view(stack))

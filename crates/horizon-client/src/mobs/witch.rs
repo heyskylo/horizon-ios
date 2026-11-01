@@ -259,8 +259,14 @@ pub fn ai_step(m: &mut Mob, cx_events: &mut Vec<MobEvent>, target_far: bool) {
     // healRaidersGoal.decrementCooldown (the attack goal's canAttack reads it).
     m.extra.counter2 -= 1;
     drink(m, cx_events, target_far);
-    // The angry-witch particles (entity event 15).
-    let _ = m.random.next_float();
+    // `broadcastEntityEvent(this, 15)`: the magic puffs over its hat on every client.
+    if m.random.next_float() < 7.5E-4 {
+        cx_events.push(MobEvent::EntityEvent {
+            mob: m.id,
+            event: 15,
+            at: [m.position.x, m.position.y, m.position.z],
+        });
+    }
 }
 fn drink(m: &mut Mob, cx_events: &mut Vec<MobEvent>, target_far: bool) {
     if m.extra.flag {

@@ -170,7 +170,10 @@ The submission form's service (`crates/horizon-mod-registry`) lists a new projec
 reads the repository's address and the page, and opens the pull request. It no longer takes updates for a project listed
 with a `repo`: "publish a GitHub release in <repo>". Projects without a `repo` can still be updated through the form
 (it uploads the file to the repository's `staging` release as `<sha256>.<extension>` and opens a pull request; an
-owner's update with nothing else changed is merged by `owner-update` once the checks pass).
+owner's update with nothing else changed is merged by `owner-update` once the checks pass). An owner may turn a `mod` into a `native-mod` once by sending an `.hnmod`
+(reviewed by hand, never an owner update); no other kind change goes through. A submission that GitHub broke off after
+making its `submit/<id>-<version>` branch can be sent again: the same account's retry starts that branch again from
+`main` while it has no open pull request; anyone else's is refused.
 
 Unknown keys in an entry are refused. Its CI runs `cargo-horizon-mod` (`crates/cargo-horizon-mod`):
 

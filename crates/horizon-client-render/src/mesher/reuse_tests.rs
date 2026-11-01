@@ -46,6 +46,58 @@ fn padded_reuse_resets_missing_neighbors_and_matches_chunk_reads_across_layouts(
 }
 
 /// Run explicitly with prepared assets; never silently pass without exercising geometry.
+/// With a shader pack lighting the faces, every face of a lone stone block has one colour; the
+/// game's face shading (up 1.0, down 0.5, north/south 0.8, east/west 0.6) is left to the pack.
+#[test]
+#[ignore = "requires prepared 26.3 resources (HORIZON_MESH_TEST_RESOURCES or .local/horizon-client/26.3)"]
+fn a_shader_pack_lights_the_faces_itself() {
+    let root = std::env::var_os("HORIZON_MESH_TEST_RESOURCES")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../.local/horizon-client/26.3")
+        });
+    let assets = Assets::load(&root).unwrap();
+    let facts = BlockFacts::load(&root, assets.registry).unwrap();
+    let biomes = Biomes::load(&root).unwrap();
+    let render = assets.reload(&root).unwrap();
+    let visibility = crate::models::load_visibility(&root, assets.registry).unwrap();
+    let tables = MeshTables::new(&assets, &render, &facts, visibility.clone()).unwrap();
+    let stone = assets.registry.default_state("minecraft:stone").unwrap().0;
+    let mut chunk = Chunk::empty(0, 0);
+    chunk.set(8, MIN_Y + 8, 8, stone);
+    let mut region = [[None; 3]; 3];
+    region[1][1] = Some(&chunk);
+    let colours = |shader_pack_lighting| {
+        let mut mesher = Mesher {
+            nether_shading: false,
+            shader_pack_lighting,
+            assets: &assets,
+            render: &render,
+            tables: &tables,
+            biomes: &biomes,
+            visibility: visibility.clone(),
+            zoom: BiomeZoom::new(0),
+            blend_radius: 0,
+            smooth_lighting: false,
+            cutout_leaves: true,
+            translucent_layers: &[],
+            leaf_culling: LeafCullingMode::Off,
+        };
+        let mut colours: Vec<u32> = mesher
+            .mesh(&region, 0)
+            .solid
+            .iter()
+            .map(|v| v.color)
+            .collect();
+        colours.sort_unstable();
+        colours.dedup();
+        colours
+    };
+    assert_eq!(colours(false).len(), 4);
+    assert_eq!(colours(true).len(), 1);
+}
+
 #[test]
 #[ignore = "requires prepared 26.3 resources (HORIZON_MESH_TEST_RESOURCES or .local/horizon-client/26.3)"]
 fn reused_mesh_matches_fresh_geometry_across_sections_and_resource_reload() {
@@ -96,6 +148,7 @@ fn reused_mesh_matches_fresh_geometry_across_sections_and_resource_reload() {
         let tables = MeshTables::new(&assets, &render, &facts, visibility.clone()).unwrap();
         let mut mesher = Mesher {
             nether_shading: false,
+            shader_pack_lighting: false,
             assets: &assets,
             render: &render,
             tables: &tables,
@@ -105,6 +158,8 @@ fn reused_mesh_matches_fresh_geometry_across_sections_and_resource_reload() {
             blend_radius: 2,
             smooth_lighting: reload == 0,
             cutout_leaves: reload == 0,
+            translucent_layers: &[],
+            leaf_culling: LeafCullingMode::Off,
         };
         for (case, (center, east)) in [
             (&empty, None),

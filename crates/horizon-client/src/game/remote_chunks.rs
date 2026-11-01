@@ -284,7 +284,14 @@ impl Game<'_> {
             }
         };
         let (x, z) = (p.x, p.z);
-        self.streaming.insert_remote(&mut self.world, chunk);
+        // A column sent again while it is resident (a bulk edit): only what changed is lit and meshed again.
+        if self.world.chunks.contains_key(&(x, z)) {
+            horizon_client::spans::time("replace_remote", || {
+                self.streaming.replace_remote(&mut self.world, chunk)
+            });
+        } else {
+            self.streaming.insert_remote(&mut self.world, chunk);
+        }
         self.world
             .block_entities
             .retain(|k, _| (k.0 >> 4, k.2 >> 4) != (x, z));
@@ -295,7 +302,7 @@ impl Game<'_> {
                 z * 16 + i32::from(info.packed_xz as u8 & 15),
             );
             let state = self.world.block(pos.0, pos.1, pos.2);
-            self.sync_block_entity(pos, state);
+            self.sync_block_entity(pos, None, state);
             // LevelChunk.replaceWithPacketData: the block entity loads its update tag.
             self.remote_block_entity_data([pos.0, pos.1, pos.2], info.kind, &info.tag);
         }

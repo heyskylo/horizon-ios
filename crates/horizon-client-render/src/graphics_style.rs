@@ -147,6 +147,34 @@ impl Style {
             dragging && active,
         );
     }
+    pub fn slider_ext(
+        &self,
+        batch: &mut HudBatch,
+        atlas: &HudAtlas,
+        (x, y, w): (f32, f32, f32),
+        label: &Text,
+        value: f32,
+        hover: bool,
+        focused: bool,
+        can_change_value: bool,
+        active: bool,
+        dragging: bool,
+    ) {
+        ui::slider_ext(
+            batch,
+            atlas,
+            x,
+            y,
+            w,
+            label,
+            value,
+            hover && active,
+            focused,
+            can_change_value,
+            active,
+            dragging && active,
+        );
+    }
     /// The cost tag and the description beside a control, wrapped to two lines.
     pub fn description(
         &self,

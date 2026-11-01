@@ -126,12 +126,16 @@ impl Game<'_> {
             (g.vehicle, g.vehicle_good) = (None, None);
             return;
         }
+        let mut ejected = false;
         if let Some(i) = boat {
             // AbstractBoat.tick on the server for a boat its rider drives:
             // only the hurt animation and the damage wear off here.
             let b = &mut self.boats[i];
             b.hurt_time = (b.hurt_time - 1).max(0);
             b.damage = (b.damage - 1.0).max(0.0);
+            // `Entity.ejectPassengers`: every player in the boat must see
+            // the request; the common boat tick clears it once nobody rides.
+            ejected = b.eject_riders;
         }
         // ServerGamePacketListenerImpl.tick: the vehicle's last good position
         // is where it is now, so a move the server made (a piston, a push)
@@ -161,7 +165,7 @@ impl Game<'_> {
                 return Some([p.x, p.y, p.z]);
             }
             if let Some(i) = game.boats.iter().position(|b| Some(b.id) == game.riding) {
-                if keys.shift {
+                if keys.shift || ejected {
                     game.dismount(i);
                     return None;
                 }

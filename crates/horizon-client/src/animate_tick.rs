@@ -301,7 +301,9 @@ fn candle_offsets(count: u8) -> &'static [[f64; 3]] {
     }
 }
 
-/// Per-state animate behaviour and the block tags it needs.
+/// Per-state animate behaviour and the block tags it needs. Empty by default
+/// (a dedicated server): every lookup finds nothing to animate.
+#[derive(Default)]
 pub struct AnimateTables {
     kinds: Vec<Animate>,
     impermeable: Vec<bool>,

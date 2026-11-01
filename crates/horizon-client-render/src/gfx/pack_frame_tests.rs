@@ -1,7 +1,6 @@
 //! Executes a synthetic, clean-room shader pack through the real `PackPost::run` frame flow.
 use super::super::Frame;
 use super::*;
-use horizon_shaders::ComputeGroup;
 
 const WINDOW: [u32; 2] = [4, 4];
 
@@ -152,13 +151,19 @@ pub(super) fn empty_frame(hud: &crate::hud::HudBatch) -> Frame<'_> {
         yaw: 0.0,
         pitch: 10.0,
         fov_degrees: 85.0,
+        eye: glam::DVec3::new(0.5, 100.0, 0.5),
+        eye_rotation: [0.0, 10.0],
+        first_person: true,
         bob: glam::Mat4::IDENTITY,
         spin: glam::Mat4::IDENTITY,
         sky: crate::environment::Sky::default(),
+        shadow_scene_revision: (0, 0),
+        shadow_cache: false,
         distance: 12.0,
         detail_distance: 12.0,
         depth_far: 1000.0,
         underwater: false,
+        water_plane: None,
         cave_culling: false,
         title: false,
         sky_blocked: false,
@@ -180,12 +185,16 @@ pub(super) fn empty_frame(hud: &crate::hud::HudBatch) -> Frame<'_> {
         glint_ticks: 0.0,
         nether_lighting: false,
         entities: &[],
+        entity_motion: &[],
         entity_spans: &[],
         dynamic_lights: &[],
+        colored_lights: &[],
+        emissive_layers: &[],
         clouds: None,
         lightning: Default::default(),
         additive: &[],
         see_through: &[],
+        shadow_only: &[],
         glowing: &[],
         celestial: &[],
         stars: None,
@@ -215,6 +224,7 @@ fn no_terrain(
     _: &mut wgpu::RenderPass<'_>,
     list: TerrainList,
     _: &dyn Fn(&mut wgpu::RenderPass<'_>, u32),
+    _: Option<(u32, &wgpu::BindGroupLayout)>,
 ) {
     panic!("the pack has no terrain program, but {list:?} was requested");
 }
@@ -384,30 +394,29 @@ fn check_upscaled(pixels: &Pixels, red: u8, label: &str) {
     }
 }
 
+fn image_of<'a>(post: &'a PackPost, name: &str) -> &'a pack_images::PackImage {
+    post.images
+        .iter()
+        .find(|image| image.def.name == name)
+        .expect("image was allocated")
+}
 fn extent(post: &PackPost, name: &str) -> [u32; 3] {
-    let image = &post.images.0[post.images.image(name).unwrap()];
-    [
-        image.size.width,
-        image.size.height,
-        image.size.depth_or_array_layers,
-    ]
+    let size = texture_of(post, name).size();
+    [size.width, size.height, size.depth_or_array_layers]
 }
 fn texture_of(post: &PackPost, name: &str) -> wgpu::Texture {
-    post.images.0[post.images.image(name).unwrap()]
-        .texture
+    image_of(post, name)
+        .view
+        .as_ref()
+        .expect("image view")
+        .texture()
         .clone()
-}
-fn ran(post: &PackPost, group: ComputeGroup) -> bool {
-    let mut passes = post.compute.iter().filter(|p| p.group == group);
-    let pass = passes.next().expect("the compute stage was built");
-    assert!(passes.next().is_none(), "exactly one {group:?} stage");
-    pass.ran
 }
 
 /// `PackPost::run` end to end: `setup` once per render-size change, `begin` every frame reading
 /// its own previous output through the sampler alias, and the real final path (render
 /// resolution, then the non-flipping upscale, or straight to the screen at 1:1). Calling
-/// `run_compute` by hand cannot prove that ordering, the lifecycle, or the final orientation.
+/// Manual dispatch cannot prove that ordering, the lifecycle, or the final orientation.
 #[test]
 #[ignore = "requires a Metal adapter; run explicitly on macOS"]
 fn run_executes_setup_begin_and_final_across_resize_on_metal() {
@@ -468,13 +477,18 @@ fn run_executes_setup_begin_and_final_across_resize_on_metal() {
         world,
     );
     assert!(post.complete, "pipeline notes: {:?}", post.notes);
-    assert_eq!(post.compute.len(), 2, "setup and begin must both be built");
-    assert_eq!(post.images.0.len(), 2);
+    assert_eq!(post.setup.len(), 1, "setup must be built");
+    assert_eq!(post.begin.len(), 1, "begin must be built");
+    assert!(matches!(post.setup[0].pipeline, Pipeline::Compute { .. }));
+    assert!(matches!(post.begin[0].pipeline, Pipeline::Compute { .. }));
+    assert_eq!(post.images.len(), 2);
     assert_eq!(
-        post.images.0[post.images.image("volume").unwrap()].dimension,
+        image_of(&post, "volume").dimension,
         wgpu::TextureViewDimension::D3
     );
-    // Allocated for a 1x1 screen, before any frame: 0.5 x 0.5 of it, at least one texel.
+    // The upstream backend allocates lazily. Prime its 1x1 targets without
+    // executing setup/begin, then verify actual-extent reuse on the first frame.
+    post.resize(&device, [1, 1]);
     assert_eq!(extent(&post, "volume"), [2, 2, 2]);
     assert_eq!(extent(&post, "history"), [1, 1, 1]);
     let volume = texture_of(&post, "volume");
@@ -486,8 +500,8 @@ fn run_executes_setup_begin_and_final_across_resize_on_metal() {
     // setup seeds 0.125 and begin adds 0.125.
     let pixels = harness.frame(&mut post, 2);
     assert!(post.complete, "frame 1 notes: {:?}", post.notes);
-    assert!(ran(&post, ComputeGroup::Setup), "frame 1 must run setup");
-    assert!(ran(&post, ComputeGroup::Begin), "frame 1 must run begin");
+    assert!(post.setup_ran, "frame 1 completes setup");
+    // Exact readback proves setup seeded the image and begin then incremented it.
     check_upscaled(&pixels, red[0], "frame 1");
     assert_eq!(extent(&post, "history"), [1, 1, 1], "0.5 x 2 pixels");
     assert!(
@@ -500,11 +514,8 @@ fn run_executes_setup_begin_and_final_across_resize_on_metal() {
     // snapshot, not the image it is storing to) and the volume keeps its history.
     let pixels = harness.frame(&mut post, 2);
     assert!(post.complete, "frame 2 notes: {:?}", post.notes);
-    assert!(
-        !ran(&post, ComputeGroup::Setup),
-        "frame 2 must not rerun setup"
-    );
-    assert!(ran(&post, ComputeGroup::Begin), "frame 2 must run begin");
+    // A repeated setup would reset red to frame one; a skipped begin would leave
+    // it unchanged. The distinct frame-two pixel value rejects both mistakes.
     check_upscaled(&pixels, red[1], "frame 2");
     assert!(
         texture_of(&post, "history") == history,
@@ -517,8 +528,8 @@ fn run_executes_setup_begin_and_final_across_resize_on_metal() {
     // Render size equals the window, so the final pass draws straight onto the screen.
     let pixels = harness.frame(&mut post, 4);
     assert!(post.complete, "frame 3 notes: {:?}", post.notes);
-    assert!(ran(&post, ComputeGroup::Setup), "a resize must rerun setup");
-    assert!(ran(&post, ComputeGroup::Begin), "frame 3 must run begin");
+    assert!(post.setup_ran, "resize completes setup");
+    // The reset red value verifies setup reran before begin after the resize.
     check_native(&pixels, red[2], "frame 3");
     assert_eq!(extent(&post, "history"), [2, 2, 1], "0.5 x 4 pixels");
     assert!(
@@ -613,7 +624,11 @@ void main(){
             assert_eq!(pixel, [128, 128, 0, 255]);
         }
     }
-    assert!(ran(&post, ComputeGroup::ShadowComp));
+    assert!(
+        post.shadow_comp
+            .iter()
+            .any(|pass| matches!(pass.pipeline, Pipeline::Compute { .. }))
+    );
 }
 
 /// A compute-only depth consumer must receive converted GL depth after the world blit.
@@ -678,5 +693,8 @@ void main(){float d=texelFetch(depthtex0,ivec2(0),0).r;imageStore(volume,ivec3(g
             assert_eq!(pixel, [255; 4]);
         }
     }
-    assert!(ran(&post, ComputeGroup::Composite));
+    assert!(
+        post.passes.iter().any(|pass| pass.group == Group::Composite
+            && matches!(pass.pipeline, Pipeline::Compute { .. }))
+    );
 }

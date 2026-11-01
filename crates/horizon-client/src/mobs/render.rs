@@ -512,6 +512,10 @@ pub fn body_color(m: &Mob, alpha: f32) -> u32 {
     match m.species() {
         Species::Wolf => super::tame::tint(m, alpha),
         Species::TropicalFish => abgr(DYE[m.extra.variant2 as usize & 15]),
+        // LivingEntityRenderer.submit: a spectator is invisible
+        // (Player.updateInvisibilityStatus) but not to another spectator or
+        // itself, so its body is forced translucent (654311423, alpha 38).
+        _ if avatar(m) && m.extra.spectator => 0x26FF_FFFF,
         _ => 0xFFFF_FFFF,
     }
 }
@@ -982,8 +986,26 @@ pub fn base_transform(m: &Mob, alpha: f32, camera: glam::DVec3) -> glam::Mat4 {
         m.previous.x + (m.position.x - m.previous.x) * a,
         m.previous.y + (m.position.y - m.previous.y) * a,
         m.previous.z + (m.position.z - m.previous.z) * a,
-    ) - camera;
+    ) - camera
+        + enderman_render_offset(m, alpha);
     base_transform_at(m, alpha, glam::Mat4::from_translation(p.as_vec3()))
+}
+/// `EndermanRenderer.getRenderOffset`: a creepy (angry) enderman is moved by
+/// a gaussian 0.02 blocks sideways in x and z every frame. Vanilla draws from
+/// the renderer's own random; this one is seeded by the mob and the frame's
+/// age, so the body, its carried block and its eyes agree within a frame.
+fn enderman_render_offset(m: &Mob, alpha: f32) -> glam::DVec3 {
+    use horizon_core::random::{LegacyRandom, RandomSource};
+    if m.species() != Species::Enderman || !m.extra.flag {
+        return glam::DVec3::ZERO;
+    }
+    let frame = (m.age as f32 + alpha).to_bits();
+    let mut random = LegacyRandom::new((i64::from(m.id) << 32) ^ i64::from(frame));
+    // `0.02 * state.scale`, the enderman's scale being 1.
+    let d = 0.02;
+    let x = random.next_gaussian() * d;
+    let z = random.next_gaussian() * d;
+    glam::DVec3::new(x, 0.0, z)
 }
 /// `base_transform` from a pose of the entity's origin (`EntityRenderDispatcher.submit`
 /// under a pose stack, as `SpawnerRenderer` draws the mob inside a spawner).
@@ -1682,17 +1704,53 @@ fn render_visible(
     let overlay = u32::from(red_overlay(m));
     let s = anim::state(m, alpha);
     let (model_key, texture) = body(m);
-    let model = m
-        .kind
-        .layer(&model_key)
-        .cloned()
-        .unwrap_or_else(|| m.kind.model.clone());
+    // The packs' custom entity models replace a layer's parts and maybe its texture. The read
+    // guard, not a clone of the Arc: one uncontended lock per mob, nothing else without a pack.
+    let cem = data
+        .cem
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    // `main` is the wide player model, `kind.model`.
+    let cem_key = if model_key == "main" {
+        "player#main"
+    } else {
+        model_key.as_str()
+    };
+    let body_animation = cem.layer(cem_key).and_then(|c| c.animation.as_ref());
+    let (model, texture) = match cem.layer(cem_key) {
+        Some(custom) => (
+            custom.model.clone(),
+            custom.texture.clone().unwrap_or(texture),
+        ),
+        None => (
+            m.kind
+                .layer(&model_key)
+                .cloned()
+                .unwrap_or_else(|| m.kind.model.clone()),
+            texture,
+        ),
+    };
+    // OptiFine random textures: the sprite of the variant the mob wears for a texture, when
+    // the atlas has it. The texture keeps its name for everything else.
+    let random = data
+        .random_textures
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let random_uv = |texture: &str| {
+        if random.is_empty() {
+            return None;
+        }
+        atlas(super::random_textures::texture(m, &random, texture)?)
+    };
     let mut poses = Poses::new(&model);
     anim::setup(m, &s, &mut poses, &data.animations);
+    if let Some(animation) = body_animation {
+        animation.run(m, &s, &mut poses);
+    }
     let draw_body = |out: &mut Vec<Vertex>| {
         // A player or mannequin whose skin has no atlas sprite (an evicted or
         // never stored download) draws with its default skin, not invisibly.
-        let uv = atlas(&texture).or_else(|| {
+        let uv = random_uv(&texture).or_else(|| atlas(&texture)).or_else(|| {
             if avatar(m) {
                 atlas(&m.kind.texture)
             } else {
@@ -1748,15 +1806,28 @@ fn render_visible(
     // One Poses refilled for every layer (armour draws up to seven): it keeps
     // its maps' capacity.
     let mut layer_poses = Poses::default();
-    for layer in all_layers {
-        let Some(part) = m.kind.layer(&layer.model).cloned() else {
-            continue;
+    for mut layer in all_layers {
+        let custom = cem.layer(&layer.model);
+        let part = match custom {
+            Some(custom) => {
+                if let Some(texture) = &custom.texture {
+                    layer.texture.clone_from(texture);
+                }
+                custom.model.clone()
+            }
+            None => match m.kind.layer(&layer.model) {
+                Some(part) => part.clone(),
+                None => continue,
+            },
         };
-        let Some(uv) = atlas(&layer.texture) else {
+        let Some(uv) = random_uv(&layer.texture).or_else(|| atlas(&layer.texture)) else {
             continue;
         };
         layer_poses.reset(&part);
         anim::setup(m, &s, &mut layer_poses, &data.animations);
+        if let Some(animation) = custom.and_then(|c| c.animation.as_ref()) {
+            animation.run(m, &s, &mut layer_poses);
+        }
         if matches!(m.species(), Species::Villager | Species::ZombieVillager)
             && let Some((folder, variant)) = layer
                 .texture
@@ -2008,6 +2079,17 @@ fn hand_base(
             0.078_125,
         ));
     }
+    if m.species() == Species::CopperGolem {
+        // `CopperGolemModel.translateToHand`: a still golem holds the item
+        // across the arm, a working one scaled down in front of it.
+        if m.extra.variant3 == super::copper_golem::IDLE {
+            t *= glam::Mat4::from_rotation_y((if left { 90.0f32 } else { -90.0 }).to_radians())
+                * glam::Mat4::from_translation(glam::Vec3::new(0.0, 0.0, 0.125));
+        } else {
+            t *= glam::Mat4::from_scale(glam::Vec3::splat(0.55))
+                * glam::Mat4::from_translation(glam::Vec3::new(-0.125, 0.3125, -0.1875));
+        }
+    }
     let (ox, oy, oz) = if m.is_baby() {
         (0.0, 1.0, -4.5)
     } else {
@@ -2143,6 +2225,20 @@ pub fn held_item_transform(
     if m.species() == Species::Fox {
         return (!left).then(|| fox_item_transform(m, alpha, camera, data));
     }
+    // DolphinCarryingItemLayer: the main hand's item at the snout, lifted and
+    // pulled in as the dolphin pitches (up or down) toward 60 degrees.
+    if m.species() == Species::Dolphin {
+        return (!left).then(|| {
+            let pitch = anim::state(m, alpha).x_rot;
+            let percent = pitch.abs() / 60.0;
+            let offset = if pitch < 0.0 {
+                glam::Vec3::new(0.0, 1.0 - percent * 0.5, -1.0 + percent * 0.5)
+            } else {
+                glam::Vec3::new(0.0, 1.0 + percent * 0.8, -1.0 + percent * 0.2)
+            };
+            base_transform(m, alpha, camera) * glam::Mat4::from_translation(offset)
+        });
+    }
     if !super::illager::shows_item(m) {
         return None;
     }
@@ -2216,9 +2312,60 @@ pub fn held_item_transform(
     Some(t)
 }
 
+/// `ArmedEntityRenderState.extractArmedEntityRenderState`: each arm's item
+/// model reads the stack held by that arm. Only the main hand currently
+/// retains a full stack; the off hand must not inherit its item or components.
+pub fn held_item_stack(extra: &super::Extra, off_hand: bool) -> Option<crate::items::ItemStack> {
+    let item = if off_hand {
+        extra.off_hand.as_ref()?
+    } else {
+        if let Some(stack) = extra.main_hand_stack() {
+            return Some(stack.clone());
+        }
+        extra.main_hand.as_ref()?
+    };
+    Some(crate::items::ItemStack::new(item, 1))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn offhand_does_not_inherit_mainhand_components() {
+        use crate::items::ItemStack;
+        let mut extra = super::super::Extra::default();
+        let mut main = ItemStack::new("minecraft:crossbow", 1);
+        main.data_mut().custom_name = Some(horizon_world::nbt::Tag::String("Main hand".into()));
+        extra.set_main_hand_stack(Some(main));
+        extra.off_hand = Some("minecraft:crossbow".into());
+        assert_eq!(
+            held_item_stack(&extra, false)
+                .unwrap()
+                .custom_name()
+                .as_deref(),
+            Some("Main hand")
+        );
+        assert!(
+            held_item_stack(&extra, true)
+                .unwrap()
+                .custom_name()
+                .is_none()
+        );
+        // An admiring piglin holds gold beside its crossbow. Both the item
+        // id and the model components must come from the appropriate hand.
+        extra.off_hand = Some("minecraft:gold_ingot".into());
+        assert_eq!(
+            &*held_item_stack(&extra, true).unwrap().item,
+            "minecraft:gold_ingot"
+        );
+        assert_eq!(
+            &*held_item_stack(&extra, false).unwrap().item,
+            "minecraft:crossbow"
+        );
+        extra.off_hand = None;
+        assert!(held_item_stack(&extra, true).is_none());
+    }
 
     /// The elytra's flight yaw (`AvatarRenderer.extractFlightData`) lerps
     /// the velocity of the previous tick towards this tick's, so the model
@@ -2405,7 +2552,10 @@ mod tests {
             biome_tags: Default::default(),
             entity_tags: Default::default(),
             villager_hats: Default::default(),
+            cem: Default::default(),
+            random_textures: Default::default(),
             pois: Default::default(),
+            species_placements: Default::default(),
         };
         let atlas = |name: &str| {
             Some(if name.contains("_inner") {
@@ -2493,7 +2643,10 @@ mod tests {
             biome_tags: Default::default(),
             entity_tags: Default::default(),
             villager_hats: Default::default(),
+            cem: Default::default(),
+            random_textures: Default::default(),
             pois: Default::default(),
+            species_placements: Default::default(),
         };
         let atlas = |name: &str| {
             Some(if name.contains("copper_golem_eyes") {
@@ -2545,7 +2698,10 @@ mod tests {
             biome_tags: Default::default(),
             entity_tags: Default::default(),
             villager_hats: Default::default(),
+            cem: Default::default(),
+            random_textures: Default::default(),
             pois: Default::default(),
+            species_placements: Default::default(),
         };
         for left in [false, true] {
             let t = held_item_transform(&mob, 0.5, glam::DVec3::ZERO, &data, left).unwrap();
@@ -2653,7 +2809,10 @@ mod tests {
             biome_tags: Default::default(),
             entity_tags: Default::default(),
             villager_hats: Default::default(),
+            cem: Default::default(),
+            random_textures: Default::default(),
             pois: Default::default(),
+            species_placements: Default::default(),
         };
         let atlas = |_: &str| Some([0.0, 0.0, 0.25, 0.25]);
         let part = &*kind.model;

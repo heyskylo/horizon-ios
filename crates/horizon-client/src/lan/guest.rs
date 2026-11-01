@@ -124,6 +124,7 @@ pub struct Guest {
     /// The bed (its head) the player sleeps in (`LivingEntity.getSleepingPos`),
     /// `Player.sleepCounter`, and the bed last told to the player itself.
     pub bed: Option<[i32; 3]>,
+    pub woke_from: Option<[i32; 3]>,
     pub sleep_timer: u32,
     pub sent_bed: Option<[i32; 3]>,
     /// Where the player respawns (a bed's spot; `ServerPlayer.respawnConfig`),
@@ -136,6 +137,8 @@ pub struct Guest {
     /// Pending ClientboundPlayerPositionPacket id; movement is ignored until
     /// the client accepts it (ServerGamePacketListenerImpl.awaitingPositionFromClient).
     pub awaiting_teleport: Option<(i32, [f64; 3])>,
+    /// The teleport awaited keeps the player's motion (`Hub::teleport_keeping_motion`).
+    pub awaiting_keeps_motion: bool,
     /// Through a portal, until `LanHub::land` gives the client its position:
     /// the moves it sent from the old level are ignored, as they would be
     /// while it had a teleport to accept.
@@ -163,11 +166,17 @@ pub struct Guest {
     pub anticheat: horizon_anticheat::Player,
     /// The movement prediction's replay of the client's own moves (only while it runs).
     pub replay: Option<Box<super::prediction::Replay>>,
+    /// What the server sent this tick that changes how the client moves (only while it records).
+    pub changes: std::sync::Mutex<Vec<horizon_anticheat::prediction::Change>>,
     /// It accepted a move since the last entity range checks
     /// (ServerChunkCache.move), which then check all of its pairs again.
     pub moved: bool,
     /// The client finished loading terrain (ServerboundPlayerLoadedPacket).
     pub loaded: bool,
+    /// Since it joined or respawned, the client hasn't said it loaded the level
+    /// (ServerboundPlayerLoadedPacket): it may still be on its loading screen, where it doesn't
+    /// move, even once the server stops waiting for it (`load_timeout`).
+    pub loading: bool,
     /// Ticks left before the server stops waiting for that packet
     /// (ServerGamePacketListenerImpl.clientLoadedTimeoutTimer): 60 at join and
     /// after a respawn, 0 once it comes.
@@ -176,6 +185,8 @@ pub struct Guest {
     pub center: Option<(i32, i32)>,
     pub sent_chunks: crate::fast_hash::FxHashSet<(i32, i32)>,
     pub chunk_queue: Vec<(i32, i32)>,
+    /// The far ring's chunks still to send, past the view distance (`lan::far`), closest first.
+    pub far_queue: Vec<(i32, i32)>,
     /// PlayerChunkSender: batches sent but not yet acknowledged, how many
     /// may be (1 until the client's first acknowledgement, then 10), the
     /// rate the client asks for and the chunks the next batch may hold.
@@ -267,6 +278,9 @@ pub struct Guest {
     pub death_time: u32,
     /// The join packets were sent (PlayerList.placeNewPlayer ran).
     pub placed: bool,
+    /// `Abilities.flyingSpeed`: vanilla's 0.05, unless a server mod set
+    /// another (`native_set_flying_speed`). Saved with the player.
+    pub flying_speed: f32,
     /// The level the player is in (`ServerPlayer.level().dimension()`): the
     /// hub's level passes only reach the players in theirs.
     pub dimension: String,
@@ -341,11 +355,13 @@ impl Guest {
             stuck: (0, 0),
             shoulders: [None; 2],
             bed: None,
+            woke_from: None,
             sleep_timer: 0,
             sent_bed: None,
             spawn: None,
             respawn_elsewhere: None,
             awaiting_teleport: None,
+            awaiting_keeps_motion: false,
             landing: false,
             teleport_counter: 0,
             watching: false,
@@ -358,12 +374,15 @@ impl Guest {
             position_this_tick: false,
             anticheat: Default::default(),
             replay: None,
+            changes: Default::default(),
             moved: false,
             loaded: false,
+            loading: true,
             load_timeout: CLIENT_LOADED_TIMEOUT,
             center: None,
             sent_chunks: Default::default(),
             chunk_queue: Vec::new(),
+            far_queue: Vec::new(),
             unacknowledged: 0,
             max_unacknowledged: 1,
             chunks_per_tick: 9.0,
@@ -411,6 +430,7 @@ impl Guest {
             dead: false,
             death_time: 0,
             placed: false,
+            flying_speed: 0.05,
             dimension: "minecraft:overworld".into(),
             menu: None,
             next_window: 0,
@@ -428,8 +448,66 @@ impl Guest {
             recipes_unlocked: Vec::new(),
         }
     }
+    /// `ServerPlayer.onUpdateAbilities`: the guest's abilities, flying speed included.
+    pub fn abilities(&self) -> play::Clientbound {
+        play::Clientbound::PlayerAbilities(play::PlayerAbilities {
+            flags: self.ability_flags(),
+            flying_speed: self.flying_speed,
+            walking_speed: 0.1,
+        })
+    }
     pub fn send(&self, packet: &play::Clientbound) {
+        if self.anticheat.record.is_some() {
+            self.note_change(packet);
+        }
         self.sender.send(packet.encode());
+    }
+    /// What `packet` changes about how the client moves, for the prediction's replay: kept until
+    /// the tick's ping places it (`Hub::anticheat_ping`).
+    fn note_change(&self, packet: &play::Clientbound) {
+        use horizon_anticheat::prediction::Change;
+        use play::Clientbound as C;
+        let own = |id: i32| id == self.entity_id;
+        let change = match packet {
+            C::SetEntityMotion(p) if own(p.id) => {
+                Change::Velocity(horizon_protocol::buf::LpVec3::quantize(p.velocity))
+            }
+            C::Explode(p) => match p.knockback {
+                Some(k) => Change::Knockback(k),
+                None => return,
+            },
+            C::UpdateAttributes(p) if own(p.id) => {
+                let speed = self.motion.as_ref().and_then(|m| {
+                    m.attributes
+                        .key("minecraft:movement_speed")
+                        .map(|k| k.attribute().registry_id())
+                });
+                let sprint = p
+                    .values
+                    .iter()
+                    .find(|a| Some(a.attribute) == speed)
+                    .map(|a| a.modifiers.iter().any(|m| m.id == "minecraft:sprinting"));
+                Change::Attributes { sprint }
+            }
+            // Entity.DATA_SHARED_FLAGS_ID: its sprinting bit (0x08).
+            C::SetEntityData(p) if own(p.id) => match p.values.iter().find(|v| v.0 == 0) {
+                Some(&(_, _, horizon_protocol::entity_data::Value::Byte(flags))) => {
+                    Change::Sprinting(flags & 0x08 != 0)
+                }
+                _ => return,
+            },
+            C::UpdateMobEffect(p) if own(p.id) => Change::Effects,
+            C::RemoveMobEffect(p) if own(p.id) => Change::Effects,
+            C::PlayerAbilities(_) => Change::Abilities,
+            // The chest slot (InventoryMenu's slot 6): a glider.
+            C::ContainerSetSlot(p) if p.container == 0 && p.slot == 6 => Change::Abilities,
+            C::ContainerSetContent(p) if p.container == 0 => Change::Abilities,
+            _ => return,
+        };
+        self.changes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(change);
     }
     /// `Entity.stopRiding`: out of the vehicle it rode.
     pub fn stop_riding(&mut self) {
@@ -682,6 +760,33 @@ fn network_stack(
         ));
     }
     if let Some(d) = s.data() {
+        // Unbreakable is a unit component; clients need its presence for the
+        // durability bar, tooltip and item model, including in single player.
+        if d.other("minecraft:unbreakable").is_some() {
+            stack.added.push((
+                horizon_protocol::item::component::UNBREAKABLE,
+                horizon_protocol::item::Component::Unit,
+            ));
+        }
+        for (name, value) in &d.other {
+            let (removed, kind) = match name.strip_prefix('!') {
+                Some(kind) => (true, kind),
+                None => (false, name.as_str()),
+            };
+            if horizon_protocol::item::custom::id(kind).is_some() {
+                if let Some(id) = synced_id("minecraft:data_component_type", kind) {
+                    if removed {
+                        stack.removed.push(id);
+                    } else {
+                        stack
+                            .added
+                            .push((id, horizon_protocol::item::Component::Nbt(value.clone())));
+                    }
+                } else {
+                    log::warn!("Cannot send custom component {kind} to this peer");
+                }
+            }
+        }
         if let Some(rgb) = d.dyed_color {
             stack.added.push((
                 horizon_protocol::item::component::DYED_COLOR,
@@ -935,6 +1040,16 @@ fn network_stack(
             horizon_protocol::item::Component::Text(name.clone()),
         ));
     }
+    // Lore lines as loaded or as a server mod wrote them (a list of text
+    // components), so a server menu's items can say more than their name.
+    if let Some(horizon_world::nbt::Tag::List(lines)) =
+        s.data().and_then(|d| d.other("minecraft:lore"))
+    {
+        stack.added.push((
+            horizon_protocol::item::component::LORE,
+            horizon_protocol::item::Component::Lore(lines.clone()),
+        ));
+    }
     // The component as loaded, so a translatable name stays one.
     if let Some(name) = s.data().and_then(|d| d.other("minecraft:item_name")) {
         stack.added.push((
@@ -942,7 +1057,79 @@ fn network_stack(
             horizon_protocol::item::Component::Text(name.clone()),
         ));
     }
+    // The model a pack or mod picks for this stack, which the client's item model reads.
+    if let Some(model) = s
+        .data()
+        .and_then(|d| crate::save::text(d.other("minecraft:item_model")))
+    {
+        stack.added.push((
+            horizon_protocol::item::component::ITEM_MODEL,
+            horizon_protocol::item::Component::Ident(model),
+        ));
+    }
+    // Arbitrary NBT other mods and item models read back client-side
+    // (`item_model.rs`'s `custom_data_at`), as vanilla's DataComponentPatch does.
+    if let Some(tag @ horizon_world::nbt::Tag::Compound(_)) =
+        s.data().and_then(|d| d.other("minecraft:custom_data"))
+    {
+        stack.added.push((
+            horizon_protocol::item::component::CUSTOM_DATA,
+            horizon_protocol::item::Component::Nbt(tag.clone()),
+        ));
+    }
+    if let Some(t) = s
+        .data()
+        .and_then(|d| d.other("minecraft:custom_model_data"))
+    {
+        stack.added.push((
+            horizon_protocol::item::component::CUSTOM_MODEL_DATA,
+            custom_model_data(t),
+        ));
+    }
     Some(stack)
+}
+
+/// `CustomModelData.CODEC` read from its saved form, for its stream codec.
+fn custom_model_data(t: &horizon_world::nbt::Tag) -> horizon_protocol::item::Component {
+    use horizon_world::nbt::Tag;
+    // NbtOps writes a list of ints or bytes as an int or byte array.
+    let entries = |key: &str| -> Vec<Tag> {
+        match t.get(key) {
+            Some(Tag::List(l)) => l.clone(),
+            Some(Tag::IntArray(a)) => a.iter().map(|v| Tag::Int(*v)).collect(),
+            Some(Tag::ByteArray(a)) => a.iter().map(|v| Tag::Byte(*v as i8)).collect(),
+            _ => Vec::new(),
+        }
+    };
+    // `ARGB.as8BitChannel`.
+    let channel = |v: f64| ((v as f32) * 255.0).floor() as i32 & 255;
+    horizon_protocol::item::Component::CustomModelData {
+        floats: entries("floats")
+            .iter()
+            .filter_map(|v| crate::save::float(Some(v)))
+            .map(|v| v as f32)
+            .collect(),
+        flags: entries("flags")
+            .iter()
+            .filter_map(|v| crate::save::number(Some(v)))
+            .map(|v| v != 0)
+            .collect(),
+        strings: entries("strings")
+            .iter()
+            .filter_map(|v| crate::save::text(Some(v)))
+            .collect(),
+        // `ExtraCodecs.RGB_COLOR_CODEC`: an int, or an opaque colour from three floats.
+        colors: entries("colors")
+            .iter()
+            .filter_map(|v| match v {
+                Tag::List(rgb) if rgb.len() == 3 => {
+                    let c = |i: usize| crate::save::float(rgb.get(i)).map(channel);
+                    Some(0xFF << 24 | c(0)? << 16 | c(1)? << 8 | c(2)?)
+                }
+                v => crate::save::number(Some(v)).map(|v| v as i32),
+            })
+            .collect(),
+    }
 }
 
 /// `Player.isWithinBlockInteractionRange`: `eye` closer than `range` to the
@@ -963,6 +1150,32 @@ mod tests {
     use horizon_protocol::buf::{Codec, Reader, Writer};
     use horizon_protocol::item::{Component, component};
     use horizon_world::nbt::Tag;
+
+    #[test]
+    fn lore_lines_reach_the_client() {
+        let lines = vec![
+            Tag::compound([("text", Tag::String("Buy 400".into()))]),
+            Tag::compound([
+                ("text", Tag::String("▲ 2.0%".into())),
+                ("color", Tag::String("green".into())),
+            ]),
+        ];
+        let mut item = ItemStack::new("minecraft:diamond", 1);
+        item.data_mut()
+            .other
+            .push(("minecraft:lore".into(), Tag::List(lines.clone())));
+        let sent = stack_to_network(|_| 7, |_, _| None, &Some(item));
+        let mut writer = Writer::new();
+        horizon_protocol::item::Slot::write(&sent, &mut writer);
+        let mut reader = Reader::new(&writer.data);
+        let received = horizon_protocol::item::Slot::read(&mut reader)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            received.component(component::LORE),
+            Some(&Component::Lore(lines))
+        );
+    }
 
     #[test]
     fn styled_custom_name_survives_inventory_sync() {

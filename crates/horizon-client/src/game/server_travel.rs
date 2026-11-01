@@ -11,7 +11,7 @@ use super::end::GatewayJob;
 use super::nether_portal::{PLAYER_DELAY, Plan};
 use super::respawn_anchor::RespawnConfig;
 use super::{Dim, Game, Mob, boats, lan::LanHost, minecarts};
-use horizon_client::{lan::hub::TickCtx, text::Text, world_spawn::PlayerSpawnFinder};
+use horizon_client::{lan::hub::TickCtx, world_spawn::PlayerSpawnFinder};
 use horizon_core::{geometry::Vec3, position::BlockPos};
 use horizon_protocol::packets::play::{self, Clientbound as C};
 
@@ -99,6 +99,16 @@ impl Rideable for minecarts::Minecart {
 
 /// The vehicle `id` leaves the level it is in, at the point its rider
 /// arrives. It keeps its entity id, so the ride is never broken.
+/// A guest leaving for another level leaves its fishing hook behind in the
+/// old one, where vanilla's hook stays until its distance check ends it. A
+/// guest's hook lives on the guest here, so it ends now: it must not act on
+/// the blocks of the level the guest arrives in.
+fn drop_hook(host: &mut LanHost, conn: u32) {
+    if let Some(play) = host.play.get_mut(&conn) {
+        play.hook = None;
+    }
+}
+
 fn take_vehicle<T: Rideable>(list: &mut Vec<T>, id: u32, at: Vec3, yaw: f32) -> Option<T> {
     let i = list.iter().position(|v| v.id() == id)?;
     let mut v = list.remove(i);
@@ -126,6 +136,13 @@ impl Trip {
 }
 
 impl Game<'_> {
+    pub(super) fn gateway_source_chunks(&self) -> Vec<(i32, i32)> {
+        self.server_trips
+            .iter()
+            .filter(|t| t.dim == self.dim)
+            .filter_map(|t| t.gateway.and_then(GatewayJob::source_chunk))
+            .collect()
+    }
     /// Whether `conn` is between two levels: the server leaves its body
     /// alone until it arrives.
     pub(super) fn on_server_trip(&self, conn: u32) -> bool {
@@ -330,6 +347,9 @@ impl Game<'_> {
         let Some(i) = host.hub.guests.iter().position(|g| g.conn == conn) else {
             return;
         };
+        if target != self.dim {
+            drop_hook(host, conn);
+        }
         let g = &host.hub.guests[i];
         let from = Vec3::new(g.position[0], g.position[1], g.position[2]);
         let yaw = g.yaw;
@@ -422,8 +442,8 @@ impl Game<'_> {
 
     /// `findRespawnAndUseSpawnBlock` for the player in place, at its point
     /// in the level in place: where it stands up, facing the anchor (with
-    /// the deplete sound) or the bed; else the point is forgotten
-    /// (`block.minecraft.spawn.not_valid`).
+    /// the deplete sound) or the bed; else the point is forgotten, and the
+    /// caller tells the player (`Hub::missing_respawn_block`).
     pub(super) fn resolve_server_respawn(&mut self, config: RespawnConfig) -> Option<(Vec3, f32)> {
         let [x, y, z] = config.pos;
         let anchor = self.is_anchor(self.world.block(x, y, z));
@@ -442,7 +462,6 @@ impl Game<'_> {
             }
             Ok(None) | Err(_) => {
                 self.respawn_config = None;
-                self.system_message(Text::translate("block.minecraft.spawn.not_valid", &[]));
                 None
             }
         }
@@ -538,6 +557,10 @@ impl Game<'_> {
             );
             if trip.dim != self.dim
                 || !(-2..=2).all(|dz| (-2..=2).all(|dx| self.streaming.is_lit(cx + dx, cz + dz)))
+                || trip
+                    .gateway
+                    .and_then(GatewayJob::source_chunk)
+                    .is_some_and(|c| !self.world.chunks.contains_key(&c))
             {
                 k += 1;
                 continue;
@@ -554,6 +577,7 @@ impl Game<'_> {
                 match self.as_guest(host, trip.conn, |g| g.resolve_server_respawn(config)) {
                     Some(Some(found)) => found,
                     _ => {
+                        host.hub.missing_respawn_block(trip.conn);
                         self.respawn_at_world_spawn(host, trip.conn);
                         continue;
                     }
@@ -674,6 +698,9 @@ impl Game<'_> {
                 continue;
             };
             let source = self.dim;
+            if t.dim != source {
+                drop_hook(host, t.conn);
+            }
             if let Err(e) = self.enter_level(Some(host), t.dim) {
                 log::error!("could not open {}: {e}", t.dim.id());
                 continue;

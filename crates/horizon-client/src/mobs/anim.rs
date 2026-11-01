@@ -121,7 +121,8 @@ impl Poses {
     /// a mob draws its body and every equipment layer each frame.
     pub fn reset(&mut self, model: &Part) {
         fn walk(p: &Part, map: &mut HashMap<String, [f32; 9]>) {
-            map.insert(p.name.clone(), p.pose);
+            // ModelPart.createPartLookup fills its map with putIfAbsent: the first part keeps a name.
+            map.entry(p.name.clone()).or_insert(p.pose);
             for c in &p.children {
                 walk(c, map);
             }
@@ -1349,5 +1350,25 @@ mod flight_pose_tests {
         assert_eq!(p.get("left_arm")[4], 0.0);
         assert!((p.get("right_arm")[3] + PI / 10.0).abs() < 1e-6);
         assert_eq!(p.get("right_arm")[4], 0.0);
+    }
+
+    /// ModelPart.createPartLookup fills the name map with putIfAbsent, so of two
+    /// parts sharing a name the first registered keeps it, not the last.
+    #[test]
+    fn a_name_two_parts_share_belongs_to_the_first() {
+        let child = |xrot: f32| Part {
+            name: "leg".into(),
+            pose: [0.0, 0.0, 0.0, xrot, 0.0, 0.0, 1.0, 1.0, 1.0],
+            polygons: Vec::new(),
+            children: Vec::new(),
+        };
+        let root = Part {
+            name: "root".into(),
+            pose: [0.0; 9],
+            polygons: Vec::new(),
+            children: vec![child(0.5), child(-0.5)],
+        };
+        let mut p = Poses::new(&root);
+        assert_eq!(p.get("leg")[3], 0.5);
     }
 }

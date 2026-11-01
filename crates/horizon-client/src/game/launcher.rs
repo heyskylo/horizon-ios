@@ -7,6 +7,7 @@
 //!
 //! The loading window answers the start, the state and imports before there is a `Game` to ask; anything else
 //! waits for the title.
+use super::event_loop::EventLoopCtl;
 use super::{Game, Loading};
 use horizon_client::{
     Result,
@@ -17,7 +18,6 @@ use std::{
     cell::RefCell,
     sync::mpsc::{self, Receiver, TryRecvError},
 };
-use winit::event_loop::ActiveEventLoop;
 
 /// The portrait launcher and landscape game share a UIWindow. Permit the
 /// launcher's orientation before acknowledging its presentation request.
@@ -138,7 +138,7 @@ fn installed_json(installed: &Installed) -> Value {
 impl Game<'_> {
     /// The launcher's requests, once a frame: its own lines here, the rest through the control socket's
     /// dispatcher, as if horizon-ctl had sent them.
-    pub(super) fn poll_launcher(&mut self, event_loop: &ActiveEventLoop) {
+    pub(super) fn poll_launcher(&mut self, event_loop: &dyn EventLoopCtl) {
         for request in horizon_ios_launcher::take() {
             let command = request.line.split_whitespace().next().unwrap_or_default();
             match command {
@@ -362,6 +362,7 @@ impl Loading {
                     .to_string(),
                 ),
                 "launcher-start" => {
+                    horizon_client::ram_limit::launcher_waiting(false);
                     horizon_ios_launcher::start();
                     request.answer(r#"{"ok":true}"#);
                 }

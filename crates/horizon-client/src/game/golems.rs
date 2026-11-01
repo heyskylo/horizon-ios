@@ -160,6 +160,7 @@ impl Game<'_> {
         mob.previous_head_yaw = yaw;
         let id = mob.id;
         self.mobs.push(mob);
+        self.native_mobs_joined(self.mobs.len() - 1, false);
         Some(id)
     }
     /// `CarvedPumpkinBlock.clearPatternBlocks`: every cell of the match

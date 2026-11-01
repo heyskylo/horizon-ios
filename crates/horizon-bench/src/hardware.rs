@@ -227,12 +227,12 @@ fn key_value<'a>(text: &'a str, key: &str, sep: char) -> Option<&'a str> {
 
 #[cfg(target_os = "windows")]
 fn os_version() -> Option<String> {
-    output("cmd", &["/C", "ver"])
+    horizon_telemetry::system::windows_version()
 }
 
 #[cfg(target_os = "windows")]
 fn cpu() -> Option<String> {
-    std::env::var("PROCESSOR_IDENTIFIER").ok()
+    horizon_telemetry::system::windows_cpu()
 }
 
 #[cfg(target_os = "windows")]
@@ -280,5 +280,17 @@ mod tests {
             assert!(rss_bytes(std::process::id()).unwrap() > 1 << 20);
             assert!(cpu_seconds(std::process::id()).unwrap() >= 0.0);
         }
+    }
+
+    /// `hardware.cpu` is the brand name, not the family and model `PROCESSOR_IDENTIFIER` holds.
+    #[cfg(windows)]
+    #[test]
+    fn windows_reports_the_cpu_brand() {
+        let cpu = Hardware::detect().cpu.expect("a CPU name");
+        assert!(
+            !cpu.is_empty() && !cpu.contains(" Family ") && !cpu.contains("Stepping"),
+            "family and model, not a name: {cpu:?}"
+        );
+        assert_eq!(cpu, cpu.trim());
     }
 }

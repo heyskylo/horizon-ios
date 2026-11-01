@@ -99,7 +99,7 @@ WorldCoordinates.parseDouble	port	crates/horizon-command/src/args.rs::parse_worl
 WorldCoordinates.absolute	skip:java		builder: Horizon constructs Coordinates::World with absolute Coord values
 FunctionArgument.getFunction	port	crates/horizon-client/src/game/functions.rs::Game::functions_named	arguments.function.unknown
 FunctionArgument.getFunctionTag	port	crates/horizon-client/src/game/functions.rs::Game::functions_named	player: an unknown #tag is empty here, so /function says no functions; vanilla says arguments.function.tag.unknown
-ItemInput.createItemStack	missing		player: /item replace ... with <item> <count> accepts counts up to 99 above the item's max stack; vanilla rejects them (arguments.item.overstacked)
+ItemInput.createItemStack	port	crates/horizon-client/src/game/commands/items.rs::Game::item_from_input	
 ItemParser.State.readItem	port	crates/horizon-command/src/item.rs::ItemState::parse	item id check
 ItemParser.State.readComponent	inline	crates/horizon-command/src/item.rs::ItemState::read_components	component value decode and malformed error
 ItemParser.State.suggestStartComponents	inline	crates/horizon-command/src/item.rs::ItemState::fill	[ suggestion

@@ -23,6 +23,21 @@ pub fn equipment_break_slot(event: i8) -> Option<EquipmentSlot> {
     })
 }
 
+/// `LivingEntity.entityEventForEquipmentBreak`: the event whose client side
+/// breaks the item in `slot` (the inverse of `equipment_break_slot`).
+pub fn equipment_break_event(slot: EquipmentSlot) -> i8 {
+    match slot {
+        EquipmentSlot::MainHand => 47,
+        EquipmentSlot::OffHand => 48,
+        EquipmentSlot::Head => 49,
+        EquipmentSlot::Chest => 50,
+        EquipmentSlot::Legs => 51,
+        EquipmentSlot::Feet => 52,
+        EquipmentSlot::Body => 65,
+        EquipmentSlot::Saddle => 68,
+    }
+}
+
 impl Mob {
     /// `LivingEntity.getItemBySlot` for a mob or another player a server
     /// sends: the stack it wears or holds in `slot`, with the components
@@ -69,6 +84,18 @@ mod tests {
         k.id = id.into();
         k.species = species;
         Mob::new(1, kind, Vec3::ZERO, 0.0)
+    }
+
+    /// `LivingEntity.entityEventForEquipmentBreak` and its inverse agree for
+    /// every slot a mob or another player can wear something in.
+    #[test]
+    fn the_break_event_and_its_slot_are_inverses() {
+        for slot in EquipmentSlot::ALL {
+            let event = equipment_break_event(slot);
+            assert_eq!(equipment_break_slot(event), Some(slot), "event {event}");
+        }
+        assert_eq!(equipment_break_event(EquipmentSlot::Body), 65);
+        assert_eq!(equipment_break_event(EquipmentSlot::Saddle), 68);
     }
 
     /// `LivingEntity.entityEventForEquipmentBreak`: 47 main hand, 48 off hand,

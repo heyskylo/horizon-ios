@@ -26,6 +26,44 @@ pub fn command_output(program: &str, args: &[&str]) -> Option<String> {
     (out.status.success() && !text.is_empty()).then_some(text)
 }
 
+/// `Windows 11 (26100.2033)`: the build numbers from the registry. `cmd /C ver`
+/// prints the display language's own word for "Version" in the console's OEM
+/// code page, so the same build read as UTF-8 carries U+FFFD in it and differs
+/// between two machines running the same build.
+pub fn windows_version() -> Option<String> {
+    if !cfg!(windows) {
+        return None;
+    }
+    const KEY: &str = r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion";
+    let value = |name: &str| command_output("reg", &["query", KEY, "/v", name]);
+    windows_version_text(&value("CurrentBuild")?, value("UBR").as_deref())
+}
+
+/// The build and its update revision from the last column of two `reg query`
+/// replies (`CurrentBuild    REG_SZ    26100`, `UBR    REG_DWORD    0x7f1`).
+/// Build 22000 is the first Windows 11.
+fn windows_version_text(build: &str, ubr: Option<&str>) -> Option<String> {
+    let build = number(last_column(build)?)?;
+    let release = if build >= 22_000 { "11" } else { "10" };
+    Some(match ubr.and_then(last_column).and_then(number) {
+        Some(ubr) => format!("Windows {release} ({build}.{ubr})"),
+        None => format!("Windows {release} ({build})"),
+    })
+}
+
+/// The value a `reg query` reply prints in its last column.
+fn last_column(reply: &str) -> Option<&str> {
+    reply.split_whitespace().last()
+}
+
+/// A decimal, or the `0x`-prefixed hex a `REG_DWORD` prints.
+fn number(text: &str) -> Option<u32> {
+    match text.strip_prefix("0x") {
+        Some(hex) => u32::from_str_radix(hex, 16).ok(),
+        None => text.parse().ok(),
+    }
+}
+
 fn read(path: &str) -> Option<String> {
     std::fs::read_to_string(path).ok()
 }
@@ -45,7 +83,7 @@ fn os_version() -> Option<String> {
     } else if cfg!(target_os = "macos") {
         command_output("sw_vers", &["-productVersion"]).map(|v| format!("macOS {v}"))
     } else if cfg!(windows) {
-        command_output("cmd", &["/C", "ver"])
+        windows_version()
     } else {
         None
     }
@@ -56,9 +94,51 @@ fn cpu() -> Option<String> {
         read("/proc/cpuinfo").and_then(|t| field(&t, "model name"))
     } else if cfg!(target_os = "macos") {
         command_output("sysctl", &["-n", "machdep.cpu.brand_string"])
+    } else if cfg!(windows) {
+        windows_cpu()
     } else {
-        std::env::var("PROCESSOR_IDENTIFIER").ok()
+        None
     }
+}
+
+/// The CPU's brand string on Windows (`AMD Ryzen 7 7700X 8-Core Processor`), from the registry's
+/// `ProcessorNameString`. `PROCESSOR_IDENTIFIER` is only the fallback: it always holds the family,
+/// model and stepping (`AMD64 Family 25 Model 97 Stepping 2, AuthenticAMD`), which neither names the
+/// chip nor tells two chips of one family apart. The game, its crash report, the benchmark report
+/// and telemetry all read the CPU through this. Read once: every telemetry item and benchmark
+/// report would run `reg` again.
+pub fn windows_cpu() -> Option<String> {
+    static CPU: OnceLock<Option<String>> = OnceLock::new();
+    CPU.get_or_init(|| {
+        command_output(
+            "reg",
+            &[
+                "query",
+                r"HKLM\HARDWARE\DESCRIPTION\System\CentralProcessor\0",
+                "/v",
+                "ProcessorNameString",
+            ],
+        )
+        .and_then(|query| processor_name_from_reg_query(&query))
+        .or_else(|| {
+            std::env::var("PROCESSOR_IDENTIFIER")
+                .ok()
+                .map(|id| id.trim().to_owned())
+                .filter(|id| !id.is_empty())
+        })
+    })
+    .clone()
+}
+
+/// The value of `ProcessorNameString` in `reg query ... /v ProcessorNameString` output
+/// (`    ProcessorNameString    REG_SZ    AMD Ryzen 7 7700X 8-Core Processor  `), trimmed: the
+/// registry pads some names with spaces. Lines end in `\r\n`, and the key's own line has no value.
+fn processor_name_from_reg_query(query: &str) -> Option<String> {
+    query.lines().find_map(|line| {
+        let rest = line.trim().strip_prefix("ProcessorNameString")?;
+        let value = rest.trim_start().strip_prefix("REG_SZ")?.trim();
+        (!value.is_empty()).then(|| value.to_owned())
+    })
 }
 
 fn ram_bytes() -> Option<u64> {
@@ -87,6 +167,25 @@ fn ram_bytes() -> Option<u64> {
     } else {
         None
     }
+}
+
+/// The machine's hardware threads. On Linux the processors /proc/cpuinfo lists, as `cores` counts
+/// them: `available_parallelism` is this process's share (its CPU affinity, a cgroup's quota), so a
+/// game pinned to some CPUs would report fewer threads than cores.
+fn threads() -> u16 {
+    let processors = if cfg!(target_os = "linux") {
+        read("/proc/cpuinfo").map_or(0, |t| {
+            t.lines()
+                .filter(|l| {
+                    l.split_once(':')
+                        .is_some_and(|(k, _)| k.trim() == "processor")
+                })
+                .count() as u16
+        })
+    } else {
+        0
+    };
+    processors.max(std::thread::available_parallelism().map_or(0, |n| n.get() as u16))
 }
 
 /// Physical cores.
@@ -459,7 +558,7 @@ impl System {
             os_version: os_version().unwrap_or_default(),
             arch: std::env::consts::ARCH.to_owned(),
             cpu: cpu().unwrap_or_default(),
-            threads: std::thread::available_parallelism().map_or(0, |n| n.get() as u16),
+            threads: threads(),
             cores: fixed.cores,
             cpu_base_mhz: fixed.base,
             cpu_boost_mhz: fixed.boost,
@@ -532,6 +631,23 @@ mod tests {
     }
 
     #[test]
+    fn the_windows_version_comes_from_the_build_numbers() {
+        assert_eq!(
+            windows_version_text(
+                "    CurrentBuild    REG_SZ    26100",
+                Some("    UBR    REG_DWORD    0x7f1")
+            )
+            .as_deref(),
+            Some("Windows 11 (26100.2033)")
+        );
+        assert_eq!(
+            windows_version_text("    CurrentBuild    REG_SZ    19045", None).as_deref(),
+            Some("Windows 10 (19045)")
+        );
+        assert_eq!(windows_version_text("", None), None);
+    }
+
+    #[test]
     fn cores_are_counted_once_per_package() {
         let two_cores_four_threads = "processor : 0\nphysical id : 0\ncore id : 0\n\nprocessor : 1\nphysical id : 0\ncore id : 1\n\nprocessor : 2\nphysical id : 0\ncore id : 0\n\nprocessor : 3\nphysical id : 0\ncore id : 1\n";
         assert_eq!(cores_from_cpuinfo(two_cores_four_threads), Some(2));
@@ -569,6 +685,111 @@ mod tests {
         );
         assert_eq!(size_mb(" 8 GB"), Some(8192));
         assert_eq!(size_mb(" 1536 MB"), Some(1536));
+    }
+
+    #[test]
+    fn the_registry_cpu_name_is_read_from_reg_query() {
+        let name = "AMD Ryzen 7 7700X 8-Core Processor";
+        let key = r"HKEY_LOCAL_MACHINE\HARDWARE\DESCRIPTION\System\CentralProcessor\0";
+        let query = format!("\r\n{key}\r\n    ProcessorNameString    REG_SZ    {name}\r\n\r\n");
+        // CRLF line endings, as `reg query` prints them.
+        assert_eq!(processor_name_from_reg_query(&query).as_deref(), Some(name));
+        // The same with LF only.
+        assert_eq!(
+            processor_name_from_reg_query(&query.replace("\r\n", "\n")).as_deref(),
+            Some(name)
+        );
+        // The registry pads some names with spaces; the name comes without them.
+        let padded = format!("{key}\n    ProcessorNameString    REG_SZ        {name}      \n");
+        assert_eq!(
+            processor_name_from_reg_query(&padded).as_deref(),
+            Some(name)
+        );
+        assert_eq!(
+            processor_name_from_reg_query(&format!(
+                "
+{key}
+    ProcessorNameString    REG_SZ    13th Gen Intel(R) Core(TM) i7-13700F
+"
+            ))
+            .as_deref(),
+            Some("13th Gen Intel(R) Core(TM) i7-13700F")
+        );
+        // Spaces inside the name stay as they are, runs of them too (older Intel names).
+        assert_eq!(
+            processor_name_from_reg_query(
+                "    ProcessorNameString    REG_SZ    Intel(R) Core(TM) i7 CPU         920  @ 2.67GHz\r\n"
+            )
+            .as_deref(),
+            Some("Intel(R) Core(TM) i7 CPU         920  @ 2.67GHz")
+        );
+        // Columns split by tabs.
+        assert_eq!(
+            processor_name_from_reg_query(&format!("\tProcessorNameString\tREG_SZ\t{name}\r\n"))
+                .as_deref(),
+            Some(name)
+        );
+    }
+
+    #[test]
+    fn a_reg_query_without_a_name_gives_none() {
+        // The value is missing: `reg query` prints an error and nothing on stdout, or only the key.
+        assert_eq!(processor_name_from_reg_query(""), None);
+        assert_eq!(
+            processor_name_from_reg_query(
+                "HKEY_LOCAL_MACHINE\\HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0\r\n"
+            ),
+            None
+        );
+        // Present but empty.
+        assert_eq!(
+            processor_name_from_reg_query("    ProcessorNameString    REG_SZ    \r\n"),
+            None
+        );
+        assert_eq!(
+            processor_name_from_reg_query("    ProcessorNameString    REG_SZ"),
+            None
+        );
+        // Another value, or another type, is not the name.
+        assert_eq!(
+            processor_name_from_reg_query(
+                "    Identifier    REG_SZ    AMD64 Family 25 Model 97 Stepping 2\r\n"
+            ),
+            None
+        );
+        assert_eq!(
+            processor_name_from_reg_query("    ProcessorNameString    REG_DWORD    0x1\r\n"),
+            None
+        );
+        // Garbage.
+        assert_eq!(processor_name_from_reg_query("REG_SZ\n\n   \n"), None);
+        assert_eq!(
+            processor_name_from_reg_query("\u{0}\u{fffd}\u{fffd}REG_SZ"),
+            None
+        );
+        assert_eq!(
+            processor_name_from_reg_query(
+                "ERROR: The system was unable to find the specified registry key or value."
+            ),
+            None
+        );
+    }
+
+    /// The CPU is the registry's name for it, as PowerShell reads it (not through `reg`), trimmed;
+    /// `PROCESSOR_IDENTIFIER`'s family and model only where the registry has no name, as on some
+    /// VMs. No CI runner tests this crate on Windows: it runs on a contributor's machine.
+    #[cfg(windows)]
+    #[test]
+    fn windows_names_the_cpu_by_its_brand() {
+        let registry = powershell(
+            r"(Get-ItemProperty 'HKLM:\HARDWARE\DESCRIPTION\System\CentralProcessor\0').ProcessorNameString",
+        );
+        let expected = registry.or_else(|| {
+            std::env::var("PROCESSOR_IDENTIFIER")
+                .ok()
+                .map(|id| id.trim().to_owned())
+        });
+        assert_eq!(cpu(), expected);
     }
 
     #[test]

@@ -28,6 +28,36 @@ fn set_key(tag: &mut Tag, key: &str, value: Tag) {
         c.insert(JavaString::from(key), value);
     }
 }
+/// `EntityType.loadEntityRecursive` snaps every entity of the stack,
+/// passengers included, to the position (`/summon`, `native_summon`).
+pub(in crate::game) fn place_summoned(tag: &mut Tag, pos: [f64; 3]) {
+    let p = pos.map(|v| Tag::Double(v.to_bits()));
+    set_key(tag, "Pos", Tag::List(p.to_vec()));
+    // Entity.load: an absent Fire reads as 0 (until the entity moves).
+    if tag.get("Fire").is_none() {
+        set_key(tag, "Fire", Tag::Short(0));
+    }
+    if tag.get("Rotation").is_none() {
+        set_key(
+            tag,
+            "Rotation",
+            Tag::List(vec![
+                Tag::Float(0.0f32.to_bits()),
+                Tag::Float(0.0f32.to_bits()),
+            ]),
+        );
+    }
+    if let Tag::Compound(c) = tag
+        && let Some(Tag::List(riders)) = c.get_mut(&"Passengers".into())
+    {
+        for r in riders {
+            if matches!(r, Tag::Compound(_)) {
+                place_summoned(r, pos);
+            }
+        }
+    }
+}
+
 impl Game<'_> {
     // ---- entity data ---------------------------------------------------
 
@@ -134,7 +164,8 @@ impl Game<'_> {
                     .and_then(|a| a.last_state)
                     .map(|s| self.state_to_nbt(s));
                 entity_nbt::arrow_to_nbt(p, random_uuid(), owner, in_block, None)
-                    .or_else(|| entity_nbt::fireball_to_nbt(p, random_uuid(), owner, None))?
+                    .or_else(|| entity_nbt::fireball_to_nbt(p, random_uuid(), owner, None))
+                    .or_else(|| entity_nbt::throwable_to_nbt(p, random_uuid(), owner, None))?
             }
             Target::Crystal(id) => {
                 let c = self.crystals.iter().find(|c| c.id == id)?;
@@ -146,11 +177,42 @@ impl Game<'_> {
                 let (uuid, raw) = self.persist_anon("minecraft:ender_dragon", d.position);
                 d.to_nbt(uuid.unwrap_or_else(random_uuid), raw)
             }
+            Target::Tnt(id) => {
+                let uuid = self.uuid_for(id);
+                let t = self.tnts.iter().find(|t| t.id == id)?;
+                entity_nbt::tnt_to_nbt(
+                    t.position,
+                    t.velocity,
+                    t.on_ground,
+                    t.fuse,
+                    uuid,
+                    self.persist.raw.get(&id),
+                )
+            }
+            Target::Falling(id) => {
+                let f = self.falling.iter().find(|f| f.id == id)?.clone();
+                let (uuid, raw) = match &f.saved {
+                    Some(saved) => (saved.0, Some(&saved.1)),
+                    None => (self.uuid_for(id), None),
+                };
+                let tag = entity_nbt::falling_block_to_nbt(
+                    self.state_to_nbt(f.state),
+                    f.position,
+                    f.velocity,
+                    f.age,
+                    f.drop_item,
+                    f.damage,
+                    f.fall_distance,
+                    uuid,
+                );
+                crate::game::persist::with_raw(tag, raw)
+            }
         })
     }
     /// `Entity.load` of new data (`EntityDataAccessor.setData`): the entity is
-    /// rebuilt from its compound, keeping its id and UUID.
-    fn apply_entity_nbt(&mut self, t: Target, mut tag: Tag) -> R<()> {
+    /// rebuilt from its compound, keeping its id and UUID. Also what
+    /// `TypedEntityData.loadInto` is: a spawn egg's data on the mob it spawned.
+    pub(in crate::game) fn apply_entity_nbt(&mut self, t: Target, mut tag: Tag) -> R<()> {
         let stale = || err("commands.data.merge.failed", &[]);
         match t {
             Target::Player => return Err(err("commands.data.entity.invalid", &[])),
@@ -165,8 +227,13 @@ impl Game<'_> {
                 if let Some(k) = kind {
                     set_key(&mut tag, "id", Tag::String(k.as_str().into()));
                 }
-                let new =
-                    entity_nbt::mob_from_nbt(&tag, self.res.mob_types(), id).ok_or_else(stale)?;
+                let new = entity_nbt::mob_from_nbt(
+                    &tag,
+                    self.res.mob_types(),
+                    id,
+                    Some(self.pack.assets.registry),
+                )
+                .ok_or_else(stale)?;
                 if let Some(slot) = self.mobs.iter_mut().find(|m| m.id == id) {
                     // Runtime-only state (AI, animation) carries over.
                     let old = std::mem::replace(slot, new);
@@ -298,11 +365,9 @@ impl Game<'_> {
                     .block_entities
                     .get(&key)
                     .ok_or_else(|| err("commands.data.block.invalid", &[]))?;
-                // BlockEntity.saveWithFullMetadata: no chunk-only keepPacked.
-                let mut tag = save::encode_block_entity(key, e, &name);
-                if let Tag::Compound(c) = &mut tag {
-                    c.remove(&"keepPacked".into());
-                }
+                // BlockEntity.saveWithFullMetadata: no chunk-only keepPacked,
+                // and the lock the model does not hold.
+                let mut tag = save::block_entity_data(key, e, &name, self.world.block_lock(key));
                 self.restore_loot_table(key, &mut tag);
                 Ok(tag)
             }
@@ -317,6 +382,7 @@ impl Game<'_> {
                 if let Some((_, mut new)) = save::decode_block_entity(&tag) {
                     self.take_loot_table(key, &tag, &mut new);
                     self.world.block_entities.insert(key, new);
+                    self.world.set_block_lock(key, &tag);
                     self.update_spawner_display(key);
                     // BlockDataAccessor.setData: setChanged and sendBlockUpdated(3),
                     // even when the block state itself stays the same.
@@ -714,6 +780,8 @@ impl Game<'_> {
         // take the ids counted as this stack's.
         let mut waiting = std::mem::take(&mut self.world.loaded_entities);
         let before = self.next_entity;
+        let mut tag = tag;
+        crate::game::persist::mark_fresh(&mut tag);
         self.world.loaded_entities.push((key, vec![tag]));
         self.spawn_loaded_entities();
         waiting.append(&mut self.world.loaded_entities);
@@ -739,6 +807,10 @@ impl Game<'_> {
             Some(Target::Cart(id))
         } else if self.others.iter().any(|o| o.id == id) {
             Some(Target::Other(id))
+        } else if self.tnts.iter().any(|t| t.id == id) {
+            Some(Target::Tnt(id))
+        } else if self.falling.iter().any(|f| f.id == id) {
+            Some(Target::Falling(id))
         } else {
             None
         }
@@ -755,36 +827,15 @@ impl Game<'_> {
             return Err(err("argument.nbt.expected.compound", &[]));
         }
         set_key(&mut tag, "id", Tag::String(kind.into()));
-        // EntityType.loadEntityRecursive snaps every entity of the stack,
-        // passengers included, to the position.
-        fn place(tag: &mut Tag, pos: [f64; 3]) {
-            let p = pos.map(|v| Tag::Double(v.to_bits()));
-            set_key(tag, "Pos", Tag::List(p.to_vec()));
-            // Entity.load: an absent Fire reads as 0 (until the entity moves).
-            if tag.get("Fire").is_none() {
-                set_key(tag, "Fire", Tag::Short(0));
-            }
-            if tag.get("Rotation").is_none() {
-                set_key(
-                    tag,
-                    "Rotation",
-                    Tag::List(vec![
-                        Tag::Float(0.0f32.to_bits()),
-                        Tag::Float(0.0f32.to_bits()),
-                    ]),
-                );
-            }
-            if let Tag::Compound(c) = tag
-                && let Some(Tag::List(riders)) = c.get_mut(&"Passengers".into())
-            {
-                for r in riders {
-                    if matches!(r, Tag::Compound(_)) {
-                        place(r, pos);
-                    }
-                }
-            }
+        place_summoned(&mut tag, pos);
+        let from = self.mobs.len();
+        let canceled = self.persist.joins_canceled;
+        let target = self.spawn_entity_from_nbt(tag);
+        self.native_mobs_joined(from, false);
+        // A mod kept the entity out: tryAddFreshEntityWithPassengers is false.
+        if target.is_none() && self.persist.joins_canceled != canceled {
+            return Err(err("commands.summon.failed.uuid", &[]));
         }
-        place(&mut tag, pos);
-        Ok(self.spawn_entity_from_nbt(tag))
+        Ok(target)
     }
 }

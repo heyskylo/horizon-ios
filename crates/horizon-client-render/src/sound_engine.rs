@@ -25,6 +25,9 @@ pub const UI: usize = 10;
 /// sources: `clamp((int) sqrt(255), 2, 8)` streaming, the rest static.
 pub const STATIC_CHANNELS: usize = 247;
 pub const STREAMING_CHANNELS: usize = 8;
+/// Static channels only sounds played to the listener (no position) may take
+/// while the `uiSoundReserve` extra is on.
+pub const HEARD_RESERVE: usize = 16;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PlayResult {
@@ -65,6 +68,9 @@ pub enum Ticking {
     /// `RidingEntitySoundInstance` for the player riding a happy ghast
     /// (`underwater_sound` false) or a nautilus (true).
     RidingEntity { entity: u32, underwater_sound: bool },
+    /// A native mod's music layer (`MusicLayers`), whose volume its owner
+    /// sets each tick.
+    MusicLayer,
 }
 /// What a minecart's sound instances read about it.
 #[derive(Clone, Copy, Debug)]
@@ -229,6 +235,25 @@ impl SoundInstance {
             [0.0; 3],
             true,
         )
+    }
+    /// A native mod's music layer: a looping, unattenuated track on the music
+    /// source that starts silent (`MusicLayers` fades it in).
+    pub fn for_music_layer(id: &str, random: LegacyRandom) -> Self {
+        let mut s = Self::new(
+            id,
+            MUSIC,
+            0.0,
+            1.0,
+            random,
+            true,
+            0,
+            Attenuation::None,
+            [0.0; 3],
+            true,
+        );
+        s.can_start_silent = true;
+        s.ticking = Ticking::MusicLayer;
+        s
     }
     /// `SimpleSoundInstance.forJukeboxSong`.
     pub fn for_jukebox_song(id: &str, at: [f64; 3], random: LegacyRandom) -> Self {
@@ -519,7 +544,7 @@ impl SoundInstance {
     /// `TickableSoundInstance.tick`.
     pub fn tick(&mut self, ctx: &TickContext) {
         match &mut self.ticking {
-            Ticking::No => {}
+            Ticking::No | Ticking::MusicLayer => {}
             Ticking::BiomeLoop { fade, direction } => {
                 let stop = *fade < 0;
                 *fade += *direction;
@@ -792,6 +817,9 @@ pub struct SoundEngine {
     pub source_volumes: [f32; 11],
     /// A `SoundEventListener` is registered.
     pub listening: bool,
+    /// Static channels positional sounds leave free for the ones played to the
+    /// listener: 0 as vanilla, `HEARD_RESERVE` with the `uiSoundReserve` extra.
+    pub listener_reserve: usize,
     pub notifications: Vec<Notification>,
 }
 fn handle_channel(h: &Handle) -> Option<ChannelId> {
@@ -819,6 +847,7 @@ impl SoundEngine {
             limits: [STATIC_CHANNELS, STREAMING_CHANNELS],
             source_volumes: [1.0; 11],
             listening: false,
+            listener_reserve: 0,
             notifications: Vec::new(),
         }
     }
@@ -1100,7 +1129,15 @@ impl SoundEngine {
         let looping = instance.looping && instance.delay <= 0;
         let streaming = sound.stream;
         let pool = usize::from(streaming);
-        let channel = if self.used[pool] >= self.limits[pool] {
+        // With the `uiSoundReserve` extra, sounds out in the world leave a few static channels free, so a flood of
+        // them (a crater's worth of blocks breaking) can't stop the ones played to the listener.
+        let positional = !instance.relative && instance.attenuation != Attenuation::None;
+        let reserved = if positional && !streaming {
+            self.listener_reserve
+        } else {
+            0
+        };
+        let channel = if self.used[pool] + reserved >= self.limits[pool] {
             None
         } else {
             backend.create(streaming)
@@ -1548,5 +1585,48 @@ mod tests {
         s.tick(&ctx);
         assert_eq!(s.volume, 0.0);
         assert!(!s.stopped);
+    }
+    #[test]
+    fn world_sounds_leave_channels_for_the_listener_only_with_the_extra() {
+        use test_backend::Null;
+        let mut registry = SoundRegistry::default();
+        registry.add_file(
+            "minecraft",
+            br#"{"block.stone.break": {"sounds": ["dig/stone1"]},
+                 "ui.button.click": {"sounds": ["random/click"]}}"#,
+            &|_, _| true,
+        );
+        let random = || LegacyRandom::new(0);
+        let block = |i: usize| {
+            let at = [i as f64, 64.0, 0.0];
+            let source = crate::settings::sound_source("minecraft:block.stone.break");
+            SoundInstance::at(
+                "minecraft:block.stone.break",
+                source,
+                1.0,
+                1.0,
+                random(),
+                at,
+            )
+        };
+        let click = || SoundInstance::for_ui("minecraft:ui.button.click", 1.0, 0.25, random());
+        for reserve in [0, HEARD_RESERVE] {
+            let mut engine = SoundEngine::new(registry.clone());
+            engine.listener_reserve = reserve;
+            let mut backend = Null::default();
+            // Positional sounds take the static channels the reserve leaves; then their plays fail.
+            let started = (0..STATIC_CHANNELS)
+                .filter(|&i| {
+                    engine.play_new(block(i), false, &mut backend).1 == PlayResult::Started
+                })
+                .count();
+            assert_eq!(started, STATIC_CHANNELS - reserve);
+            let heard = engine.play_new(click(), false, &mut backend).1;
+            assert_eq!(
+                heard == PlayResult::Started,
+                reserve > 0,
+                "reserve {reserve}"
+            );
+        }
     }
 }

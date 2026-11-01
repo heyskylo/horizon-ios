@@ -133,7 +133,7 @@ SharedSuggestionProvider.suggestRegistryElements	port	crates/horizon-command/src
 SharedSuggestionProvider.listSuggestions	port	crates/horizon-command/src/args.rs::ArgType::suggest	suggestions per argument type
 SharedSuggestionProvider.suggest2DCoordinates	port	crates/horizon-command/src/args.rs::suggest_coordinates	x z suggestions
 AngleArgument.SingleAngle.getAngle	port	crates/horizon-command/src/args.rs::Coord::get	gap: minor: the wrap to -180..180 is not confirmed
-ArgumentSignatures.signCommand	skip:service		chat message signing
+ArgumentSignatures.signCommand	port	crates/horizon-client/src/game/remote_chat.rs::Game::send_command	each message argument at the next chain link
 DimensionArgument.listSuggestions	port	crates/horizon-command/src/args.rs::ArgType::suggest	dimension suggestions
 DimensionArgument.getDimension	inline	crates/horizon-client/src/game/commands/execute.rs::Game::modify	dimension resolved where execute in reads it
 EntityAnchorArgument.parse	port	crates/horizon-command/src/args.rs::ArgType::parse	eyes or feet
