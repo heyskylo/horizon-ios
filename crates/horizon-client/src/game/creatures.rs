@@ -3,8 +3,8 @@
 //! breeding, conversions, drops), projectiles, player interactions
 //! (feeding, shearing, milking, spawn eggs, throwing) and rendering.
 use super::{
-    Dim, Game, Hand, InteractTarget, dispenser, native_mob_draw::NativePlayerRender,
-    native_projectiles::Impact, view_vector,
+    Dim, Game, Hand, InteractTarget, dispenser, entity_culling::EntityCullDecision,
+    native_mob_draw::NativePlayerRender, native_projectiles::Impact, view_vector,
 };
 use horizon_assets::item_model::DisplayContext;
 use horizon_client::{
@@ -12,6 +12,7 @@ use horizon_client::{
     arrows::EntityHit,
     blocks::Fluid,
     collisions::SceneCollisions,
+    graphics::EntityCullingMode,
     health::{HurtSource, Hurting, Knock, knockback_canceled},
     items::ItemStack,
     mesher::Vertex,
@@ -159,6 +160,7 @@ impl ProjectileWorld for ProjWorld<'_, '_> {
 /// `ProjectileUtil.getEntityHitResult` can strike it (`ThrownEnderpearl.onHit`).
 /// `WIND_CHARGE_IDS + j` is `projectiles[j]` during `tick_projectiles`, below
 /// the dragon's reserved ids.
+const ASYNC_MOB_AABB_PRECHECK_MIN: usize = 512;
 const WIND_CHARGE_IDS: u32 = super::dragon::SPECIAL - 0x10000;
 
 /// The index of the wind charge a `wind_charge_hitboxes` id stands for.
@@ -6367,6 +6369,26 @@ impl Game<'_> {
     }
 
     pub(super) fn mob_geometry(&self, camera: glam::DVec3, alpha: f64, out: &mut Vec<Vertex>) {
+        // The coarse mob bounds pay off only in dense async scenes; otherwise,
+        // keep the existing exact mesh-culling path.
+        if self.settings.horizon.entity_culling == EntityCullingMode::Asynchronous
+            && self.async_occlusion_culler.is_some()
+            && self.mobs.len() >= ASYNC_MOB_AABB_PRECHECK_MIN
+            && !self.pack_shadow_casters.0
+            && horizon_client::mod_api::mods().is_empty()
+        {
+            self.mob_geometry_inner::<true>(camera, alpha, out);
+        } else {
+            self.mob_geometry_inner::<false>(camera, alpha, out);
+        }
+    }
+
+    fn mob_geometry_inner<const PRECHECK: bool>(
+        &self,
+        camera: glam::DVec3,
+        alpha: f64,
+        out: &mut Vec<Vertex>,
+    ) {
         let atlas = &self.gui.atlas;
         let lookup = |name: &str| atlas.sprites.get(name).map(|r| [r.u0, r.v0, r.u1, r.v1]);
         let scale = self.view_scale();
@@ -6436,6 +6458,29 @@ impl Game<'_> {
                 if !view.intersects(lo, hi) {
                     continue;
                 }
+            }
+            let culling = if PRECHECK
+                && outline.is_none()
+                && !is_player
+                && mob.kind.id.starts_with("minecraft:")
+                && [
+                    &mob.extra.head,
+                    &mob.extra.chest,
+                    &mob.extra.legs,
+                    &mob.extra.feet,
+                    &mob.extra.main_hand,
+                    &mob.extra.off_hand,
+                ]
+                .iter()
+                .all(|item| item.is_none())
+                && horizon_client::mobs::guardian::beam(mob, alpha as f32).is_none()
+            {
+                self.entity_cull_decision(mob, alpha)
+            } else {
+                EntityCullDecision::CheckVertices
+            };
+            if culling.hides_entity() {
+                continue;
             }
             self.mark_entity(entity_start, &mob.kind.id);
             self.rendered_mobs.set(self.rendered_mobs.get() + 1);
@@ -6621,6 +6666,7 @@ impl Game<'_> {
             // Glowing outlines and a guardian's beam remain visible independently
             // of whether the body is hidden behind terrain.
             if outline.is_none()
+                && culling.checks_vertices()
                 && horizon_client::mobs::guardian::beam(mob, alpha as f32).is_none()
             {
                 // What the GPU draws of the mob counts by its bounds' corners.

@@ -245,6 +245,29 @@ pub(super) trait Entity: EntityRules {
 pub(super) trait RenderEntityBounds {
     fn render_id(&self) -> u32;
     fn render_bounds(&self, alpha: f64) -> Aabb;
+    fn render_glowing(&self, game: &Game<'_>) -> bool {
+        game.entity_glowing(self.render_id())
+    }
+}
+
+impl RenderEntityBounds for Mob {
+    fn render_id(&self) -> u32 {
+        self.id
+    }
+
+    fn render_bounds(&self, alpha: f64) -> Aabb {
+        // A loose rotation-independent envelope for vanilla model animations.
+        // Standing dimensions keep sleeping poses from shrinking it; equipment
+        // and custom rendering bypass this pre-check at the call site.
+        let (width, height, _) = self.awake_dims();
+        let radius = width.max(height) * 2.5 + 3.0;
+        let at = self.previous.lerp(self.position, f64::from(alpha as f32));
+        Aabb::of_size(at, Vec3::new(radius * 2.0, radius * 2.0, radius * 2.0))
+    }
+
+    fn render_glowing(&self, _game: &Game<'_>) -> bool {
+        self.is_currently_glowing()
+    }
 }
 
 macro_rules! moving_render_entity_bounds {

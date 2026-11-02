@@ -58,7 +58,7 @@ impl Game<'_> {
     ) -> EntityCullDecision {
         if self.settings.horizon.entity_culling == EntityCullingMode::Off
             || self.pack_shadow_casters.0
-            || self.entity_glowing(entity.render_id())
+            || entity.render_glowing(self)
         {
             return EntityCullDecision::Bypass;
         }
@@ -116,9 +116,7 @@ impl Game<'_> {
         vertices: &mut Vec<Vertex>,
         start: usize,
     ) {
-        if decision.checks_vertices()
-            && !self.pack_shadow_casters.0
-            && !self.entity_glowing(entity.render_id())
+        if decision.checks_vertices() && !self.pack_shadow_casters.0 && !entity.render_glowing(self)
         {
             self.cull_entity_vertices(vertices, start);
         }

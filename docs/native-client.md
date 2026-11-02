@@ -74,6 +74,10 @@ cargo run --release -p horizon-client -- --render-distance 12
 
 Development builds that link quickly: `cargo build --profile fast -p horizon-client`.
 
+`HORIZON_OCCLUSION_PROFILE=1` enables detailed entity-occlusion phase and bounds-scan timings
+in `horizon-ctl stats` and `bench`. The normal benchmark keeps these CPU-clock reads disabled;
+query, cache-hit and cull counters remain available without profiling.
+
 Optional Windows allocator build features are documented in
 [Windows allocator experiments](windows-allocators.md).
 

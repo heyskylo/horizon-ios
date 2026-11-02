@@ -27,6 +27,7 @@ type ChunkKey = (i32, i32);
 type SectionKey = (i32, i32, i32);
 const MAX_SNAPSHOT_CHUNKS: i64 = 4_096;
 const MAX_OCCLUSION_RESULT_CACHE_ENTRIES: usize = 16_384;
+const RESULT_CACHE_IDLE_FRAMES: u64 = 2;
 const OCCLUSION_LOOKUP_BUDGET: usize = 8_192;
 const OPACITY_GRID_SIZE: usize = 1_024;
 const MAX_OCCLUSION_RAY_STEPS: usize = 512;
@@ -475,6 +476,7 @@ struct CachedQueryResult {
     stamp: SnapshotKey,
     camera_cell: Option<[i32; 3]>,
     proof: Option<OcclusionProof>,
+    last_used_frame: Cell<u64>,
 }
 
 #[derive(Default)]
@@ -489,6 +491,7 @@ struct AsyncCullingStats {
     entity_mesh_cache_misses: u64,
     result_cache_evictions: u64,
     result_cache_capacity_evictions: u64,
+    result_cache_idle_evictions: u64,
     result_cache_invalidation_replacements: u64,
     cache_miss_empty_set: u64,
     cache_miss_key_mismatch: u64,
@@ -563,6 +566,7 @@ pub(super) struct AsyncOcclusionCuller {
     camera: [f64; 3],
     stamp: SnapshotKey,
     pending: bool,
+    frame: u64,
     proof_validation_sample_counter: Cell<u64>,
 }
 
@@ -640,7 +644,9 @@ impl AsyncOcclusionCuller {
             cache_merge: Vec::new(),
             stats: RefCell::new(AsyncCullingStats::default()),
             proof_validation_cache: RefCell::new(FrameProofValidationCache::default()),
-            measure_bounds_timing: Cell::new(false),
+            measure_bounds_timing: Cell::new(
+                std::env::var("HORIZON_OCCLUSION_PROFILE").is_ok_and(|v| v == "1"),
+            ),
             query_cache_stamp: None,
             query_cache_camera_cell: None,
             camera: [0.0; 3],
@@ -650,6 +656,7 @@ impl AsyncOcclusionCuller {
                 bottom_y: 0,
             },
             pending: false,
+            frame: 0,
             proof_validation_sample_counter: Cell::new(0),
         })
     }
@@ -661,6 +668,7 @@ impl AsyncOcclusionCuller {
     }
 
     fn begin_frame_inner(&mut self, camera: glam::DVec3, world: &World) {
+        self.frame = self.frame.saturating_add(1);
         self.proof_validation_cache.get_mut().clear();
         self.camera = camera.to_array();
         self.stamp = SnapshotKey {
@@ -826,7 +834,10 @@ impl AsyncOcclusionCuller {
                 && self
                     .query_cache_camera_cell
                     .is_some_and(|cell| entry.camera_cell == Some(cell));
-            (exact || reusable_visible).then(|| (entry.proof.is_some(), entry.proof.as_ref()))
+            (exact || reusable_visible).then(|| {
+                entry.last_used_frame.set(self.frame);
+                (entry.proof.is_some(), entry.proof.as_ref())
+            })
         });
         let miss_reason = result.is_none().then(|| {
             cache_miss_reason(
@@ -987,6 +998,7 @@ impl AsyncOcclusionCuller {
                     stamp: results.stamp,
                     camera_cell: result_camera_cell,
                     proof: None,
+                    last_used_frame: Cell::new(self.frame),
                 }));
         } else {
             results.visible.clear();
@@ -1017,6 +1029,7 @@ impl AsyncOcclusionCuller {
                     stamp: results.stamp,
                     camera_cell: result_camera_cell,
                     proof: Some(proof),
+                    last_used_frame: Cell::new(self.frame),
                 });
             }
         } else {
@@ -1045,6 +1058,7 @@ impl AsyncOcclusionCuller {
         let mut updates_iter = updates.drain(..).peekable();
         let mut invalidation_replacements = 0_u64;
         let mut capacity_evictions = 0_u64;
+        let mut idle_evictions = 0_u64;
         while existing_iter.peek().is_some() || updates_iter.peek().is_some() {
             let entry = match (existing_iter.peek(), updates_iter.peek()) {
                 (Some(old), Some(new)) => {
@@ -1068,7 +1082,12 @@ impl AsyncOcclusionCuller {
                 (None, Some(_)) => updates_iter.next().unwrap(),
                 (None, None) => unreachable!(),
             };
-            if merged.len() < MAX_OCCLUSION_RESULT_CACHE_ENTRIES {
+            // Animated mesh extrema often never repeat. Drop their unused
+            // answers during this existing merge, while frequently queried
+            // AABBs and mesh bounds retain their entries without extra scans.
+            if self.frame.saturating_sub(entry.last_used_frame.get()) > RESULT_CACHE_IDLE_FRAMES {
+                idle_evictions = idle_evictions.saturating_add(1);
+            } else if merged.len() < MAX_OCCLUSION_RESULT_CACHE_ENTRIES {
                 merged.push(entry);
             } else {
                 capacity_evictions = capacity_evictions.saturating_add(1);
@@ -1080,7 +1099,11 @@ impl AsyncOcclusionCuller {
         let mut stats = self.stats.borrow_mut();
         stats.result_cache_evictions = stats
             .result_cache_evictions
-            .saturating_add(capacity_evictions);
+            .saturating_add(capacity_evictions)
+            .saturating_add(idle_evictions);
+        stats.result_cache_idle_evictions = stats
+            .result_cache_idle_evictions
+            .saturating_add(idle_evictions);
         stats.result_cache_capacity_evictions = stats
             .result_cache_capacity_evictions
             .saturating_add(capacity_evictions);
@@ -1279,6 +1302,8 @@ impl AsyncOcclusionCuller {
             "entity_budget_exhausted_jobs": stats.entity_budget_exhausted_jobs,
             "result_cache_slots": MAX_OCCLUSION_RESULT_CACHE_ENTRIES,
             "result_cache_entries": self.query_results.len(),
+            "profiling_enabled": self.measure_bounds_timing.get(),
+            "state_bytes": std::mem::size_of::<Self>(),
         });
         value["entity_aabb_cache_hits"] = serde_json::json!(stats.entity_aabb_cache_hits);
         value["entity_aabb_cache_misses"] = serde_json::json!(stats.entity_aabb_cache_misses);
@@ -1286,6 +1311,7 @@ impl AsyncOcclusionCuller {
         value["entity_mesh_cache_misses"] = serde_json::json!(stats.entity_mesh_cache_misses);
         value["result_cache_capacity_evictions"] =
             serde_json::json!(stats.result_cache_capacity_evictions);
+        value["result_cache_idle_evictions"] = serde_json::json!(stats.result_cache_idle_evictions);
         value["result_cache_invalidation_replacements"] =
             serde_json::json!(stats.result_cache_invalidation_replacements);
         value["cache_miss_empty_set"] = serde_json::json!(stats.cache_miss_empty_set);
@@ -1322,7 +1348,6 @@ impl AsyncOcclusionCuller {
 
     pub(super) fn reset_stats(&self) {
         *self.stats.borrow_mut() = AsyncCullingStats::default();
-        self.measure_bounds_timing.set(true);
         self.proof_validation_sample_counter.set(0);
     }
 }
@@ -1606,7 +1631,7 @@ impl Game<'_> {
         if wants_async {
             if self.async_occlusion_culler.is_none() && !self.async_occlusion_culling_failed {
                 match AsyncOcclusionCuller::new() {
-                    Ok(culler) => self.async_occlusion_culler = Some(culler),
+                    Ok(culler) => self.async_occlusion_culler = Some(Box::new(culler)),
                     Err(error) => {
                         log::warn!("Horizon: cannot start world-occlusion-culling worker: {error}");
                         self.async_occlusion_culling_failed = true;
@@ -1771,3 +1796,7 @@ mod tests {
         drop(live);
     }
 }
+
+#[cfg(test)]
+#[path = "occlusion_culling_precheck_tests.rs"]
+mod precheck_tests;

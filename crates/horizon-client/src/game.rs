@@ -2845,7 +2845,7 @@ struct Game<'a> {
     /// This frame's view frustum, for culling entities and block entities.
     view_frustum: Option<horizon_client::gfx::Frustum>,
     sync_occlusion_culler: Option<horizon_client::entity_culling::Culler>,
-    async_occlusion_culler: Option<occlusion_culling::AsyncOcclusionCuller>,
+    async_occlusion_culler: Option<Box<occlusion_culling::AsyncOcclusionCuller>>,
     async_occlusion_culling_failed: bool,
     /// `Renderer::pack_shadow_casters` for this frame's entities: (keep what the culler hides,
     /// build the player's model in first person); (false, false) without a shader pack.
