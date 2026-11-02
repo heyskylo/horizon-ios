@@ -27,6 +27,7 @@ mod internet;
 mod language_page;
 mod launch_page;
 mod line_edit;
+mod location_page;
 mod markdown;
 mod mcp;
 mod microsoft;
@@ -242,6 +243,10 @@ struct Launcher {
     skin: Option<skin_page::SkinPanel>,
     /// Why the last picture for Home's background was refused.
     background_error: Option<String>,
+    /// Settings' data relocation confirmation and the worker's last result.
+    location_target: Option<std::path::PathBuf>,
+    location_error: Option<String>,
+    location_note: Option<String>,
     settings: Settings,
     /// The Discord, sponsor and website links: built in until links.json on main has been read.
     links: backend::Links,
@@ -500,6 +505,9 @@ impl Launcher {
             menu_closed_at: None,
             skin: None,
             background_error: None,
+            location_target: None,
+            location_error: location_page::startup_error(),
+            location_note: location_page::startup_note(),
             args_input: line_edit::LineEdit::new(settings.game_args.clone(), 1024, 38),
             args_focused: false,
             args_focus: cx.focus_handle(),
@@ -594,6 +602,9 @@ impl Launcher {
             sky_wake: None,
             scale: window.scale_factor(),
         };
+        if this.location_error.is_some() || this.location_note.is_some() {
+            this.page = Page::Settings;
+        }
         this.reload_instances();
         if this.bench.is_some() {
             this.perf.keep_local_log(false);
@@ -3475,13 +3486,7 @@ impl Launcher {
                         launcher_action,
                         &t,
                     ))
-                    .child(index_row(
-                        n + 9,
-                        tr("Data folder"),
-                        Some(mono(short(&backend::data_dir()))),
-                        None,
-                        &t,
-                    ))
+                    .child(self.location_row(n + 9, cx))
                     .child(index_row(
                         n + 10,
                         tr("Logs"),
@@ -4945,6 +4950,20 @@ fn main() {
     #[cfg(windows)]
     if let Some(code) = horizon_launcher::installer::run_quiet() {
         std::process::exit(code);
+    }
+    if let Some(code) = horizon_launcher::relocation::run_worker() {
+        std::process::exit(code);
+    }
+    let _location_lease = match horizon_launcher::data_location::acquire_startup_lock() {
+        Ok(lease) => lease,
+        Err(error) => {
+            eprintln!("Could not open the data location: {error}");
+            std::process::exit(1);
+        }
+    };
+    if let Err(error) = horizon_launcher::data_location::validate() {
+        eprintln!("Could not open the data location: {error}");
+        std::process::exit(1);
     }
     perf::process_started();
     backend::exe_path();

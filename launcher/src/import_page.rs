@@ -14,6 +14,12 @@ pub(super) struct Importing {
     note: Option<Result<String, String>>,
 }
 
+impl Importing {
+    pub(super) fn location_busy(&self) -> bool {
+        self.busy > 0
+    }
+}
+
 impl Launcher {
     pub(super) fn import_dropped(&mut self, files: Vec<PathBuf>, cx: &mut Context<Self>) {
         for file in files {

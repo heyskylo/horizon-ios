@@ -537,6 +537,11 @@ pub fn data_dir() -> PathBuf {
     if let Some(home) = std::env::var_os("HORIZON_LAUNCHER_HOME").filter(|h| !h.is_empty()) {
         return PathBuf::from(home);
     }
+    if let Some(roots) = crate::data_location::configured_roots()
+        .expect("data location must be validated before using launcher data")
+    {
+        return roots.launcher.clone();
+    }
     dirs::data_dir()
         .unwrap_or_else(std::env::temp_dir)
         .join("horizon-launcher")
@@ -570,6 +575,13 @@ fn tool_safe(path: &Path) -> bool {
 /// link (horizon-mixins refuses one, and macOS's /tmp is one). On Windows, when the resolved
 /// path isn't [`tool_safe`], [`windows_build_dir`] names the same folder a way MinGW-w64 can open.
 pub fn build_dir() -> PathBuf {
+    if std::env::var_os("HORIZON_LAUNCHER_HOME").is_none_or(|p| p.is_empty()) {
+        if let Some(roots) = crate::data_location::configured_roots()
+            .expect("data location must be validated before using build data")
+        {
+            return roots.build.clone();
+        }
+    }
     let data = data_dir();
     let _ = fs::create_dir_all(&data);
     let real = data.canonicalize().map(plain).unwrap_or(data);
@@ -2006,6 +2018,11 @@ pub fn game_home() -> PathBuf {
     if let Some(home) = std::env::var_os("HORIZON_HOME").filter(|h| !h.is_empty()) {
         return PathBuf::from(home);
     }
+    if let Some(roots) = crate::data_location::configured_roots()
+        .expect("data location must be validated before using game data")
+    {
+        return roots.game.clone();
+    }
     dirs::data_dir()
         .unwrap_or_else(std::env::temp_dir)
         .join("horizon")
@@ -2236,7 +2253,10 @@ pub fn client_command(tag: &str) -> Command {
     let home = game_home();
     let _ = fs::create_dir_all(&home);
     let mut cmd = Command::new(client_program(tag));
-    cmd.current_dir(home).arg("--resources").arg(resources(tag));
+    cmd.current_dir(&home)
+        .env("HORIZON_HOME", &home)
+        .arg("--resources")
+        .arg(resources(tag));
     // How the game asks for a renewed session (`account session`) while it runs.
     if let Ok(exe) = std::env::current_exe() {
         cmd.env("HORIZON_LAUNCHER_EXE", exe);

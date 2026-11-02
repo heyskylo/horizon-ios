@@ -16,6 +16,12 @@ pub(super) struct ExportPanel {
     done: Option<Result<(String, PathBuf), String>>,
 }
 
+impl ExportPanel {
+    pub(super) fn location_busy(&self) -> bool {
+        self.busy
+    }
+}
+
 impl Launcher {
     pub(super) fn toggle_export(&mut self) {
         if self.export.take().is_some() {
