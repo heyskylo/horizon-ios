@@ -1313,6 +1313,44 @@ pub trait Host {
         let _ = level;
         unimplemented!("Host::level_day_time")
     }
+    /// The world's seed (`WorldOptions.seed`), as `/seed` shows it. API
+    /// @API:level_world@.
+    fn level_seed(&self, level: LevelRef) -> Option<i64> {
+        let _ = level;
+        unimplemented!("Host::level_seed")
+    }
+    /// The difficulty (`Level.getDifficulty`): `peaceful`, `easy`, `normal`
+    /// or `hard`, as `/difficulty` names it. API @API:level_world@.
+    fn level_difficulty(&self, level: LevelRef) -> Option<&'static str> {
+        let _ = level;
+        unimplemented!("Host::level_difficulty")
+    }
+    /// Game rule `rule` (`minecraft:keep_inventory` or `keep_inventory`), as
+    /// `/gamerule` queries it: None for an unknown rule. API @API:level_world@.
+    fn level_game_rule(&self, level: LevelRef, rule: &str) -> Option<GameRuleValue> {
+        let _ = level;
+        let _ = rule;
+        unimplemented!("Host::level_game_rule")
+    }
+    /// The rain and thunder levels, each 0.0 to 1.0 (`Level.getRainLevel`,
+    /// `getThunderLevel`): both 0 in a level with no weather, as the Nether
+    /// and the End. API @API:level_world@.
+    fn level_weather(&self, level: LevelRef) -> Option<(f32, f32)> {
+        let _ = level;
+        unimplemented!("Host::level_weather")
+    }
+    /// Whether it rains (`Level.isRaining`: a rain level above 0.2). API
+    /// @API:level_world@.
+    fn level_is_raining(&self, level: LevelRef) -> Option<bool> {
+        let _ = level;
+        unimplemented!("Host::level_is_raining")
+    }
+    /// Whether it thunders (`Level.isThundering`: a thunder level above 0.9).
+    /// API @API:level_world@.
+    fn level_is_thundering(&self, level: LevelRef) -> Option<bool> {
+        let _ = level;
+        unimplemented!("Host::level_is_thundering")
+    }
 }
 impl EntityRef {
     /// The entity's position (`Entity.position`): its feet, the middle of
@@ -1384,5 +1422,36 @@ impl LevelRef {
     /// every level; it keeps counting past 24000. API @API:level_reads@.
     pub fn day_time(self, host: &dyn Host) -> Option<i64> {
         host.level_day_time(self)
+    }
+    /// The world's seed (`WorldOptions.seed`), as `/seed` shows it. API
+    /// @API:level_world@.
+    pub fn seed(self, host: &dyn Host) -> Option<i64> {
+        host.level_seed(self)
+    }
+    /// The difficulty (`Level.getDifficulty`): `peaceful`, `easy`, `normal`
+    /// or `hard`, as `/difficulty` names it. API @API:level_world@.
+    pub fn difficulty(self, host: &dyn Host) -> Option<&'static str> {
+        host.level_difficulty(self)
+    }
+    /// Game rule `rule` (`minecraft:keep_inventory` or `keep_inventory`), as
+    /// `/gamerule` queries it: None for an unknown rule. API @API:level_world@.
+    pub fn game_rule(self, host: &dyn Host, rule: &str) -> Option<GameRuleValue> {
+        host.level_game_rule(self, rule)
+    }
+    /// The rain and thunder levels, each 0.0 to 1.0 (`Level.getRainLevel`,
+    /// `getThunderLevel`): both 0 in a level with no weather, as the Nether
+    /// and the End. API @API:level_world@.
+    pub fn weather(self, host: &dyn Host) -> Option<(f32, f32)> {
+        host.level_weather(self)
+    }
+    /// Whether it rains (`Level.isRaining`: a rain level above 0.2). API
+    /// @API:level_world@.
+    pub fn is_raining(self, host: &dyn Host) -> Option<bool> {
+        host.level_is_raining(self)
+    }
+    /// Whether it thunders (`Level.isThundering`: a thunder level above 0.9).
+    /// API @API:level_world@.
+    pub fn is_thundering(self, host: &dyn Host) -> Option<bool> {
+        host.level_is_thundering(self)
     }
 }

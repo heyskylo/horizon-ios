@@ -540,4 +540,22 @@ impl Host for super::Game<'_> {
     fn level_day_time(&self, level: LevelRef) -> Option<i64> {
         self.native_level_day_time(level)
     }
+    fn level_seed(&self, level: LevelRef) -> Option<i64> {
+        self.native_level_seed(level)
+    }
+    fn level_difficulty(&self, level: LevelRef) -> Option<&'static str> {
+        self.native_level_difficulty(level)
+    }
+    fn level_game_rule(&self, level: LevelRef, rule: &str) -> Option<GameRuleValue> {
+        self.native_level_game_rule(level, rule)
+    }
+    fn level_weather(&self, level: LevelRef) -> Option<(f32, f32)> {
+        self.native_level_weather(level)
+    }
+    fn level_is_raining(&self, level: LevelRef) -> Option<bool> {
+        self.native_level_is_raining(level)
+    }
+    fn level_is_thundering(&self, level: LevelRef) -> Option<bool> {
+        self.native_level_is_thundering(level)
+    }
 }

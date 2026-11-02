@@ -21,6 +21,7 @@ pub use crate::game::{
     NativeHit, NativeMapDecoration, NativeMapInfo, NativeMobRender, NativeModEvent,
     NativePlayerRender, NativeShake,
 };
+pub use crate::gamerules::Value as GameRuleValue;
 pub use crate::gfx::native_render::{
     RenderHooks, RenderNeeds, RenderNeedsEvent, WorldDrawn, WorldDrawnEvent, wgpu,
 };
