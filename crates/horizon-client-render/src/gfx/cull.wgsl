@@ -11,9 +11,11 @@ struct Globals {
     view_proj: mat4x4<f32>,
 }
 
-// One test per section: its visible index (which names its origin), its
-// first draw in `phase2` and how many draws it has there (0: phase 1 drew
-// it, and the test only tells whether it is still in sight).
+// One test per section: its visible index (which names its origin), then
+// its draws in `phase2` for each solid pass (gfx/cull.rs's `place`): the first
+// pass's first draw, both passes' draw counts (the second's in the high 16
+// bits), the second pass's first draw. No draws: phase 1 drew it, and the
+// test only tells whether it is still in sight.
 @group(0) @binding(0) var<storage, read> tests: array<vec4<u32>>;
 // Per test: the stamp of the frame whose test saw the box.
 @group(0) @binding(1) var<storage, read_write> results: array<u32>;
@@ -92,8 +94,11 @@ fn see(t: u32) {
     if results[t] != params.stamp {
         results[t] = params.stamp;
         let test = tests[t];
-        for (var k = 0u; k < test.z; k++) {
+        for (var k = 0u; k < (test.z & 0xffffu); k++) {
             phase2[(test.y + k) * 5u + 1u] = 1u;
+        }
+        for (var k = 0u; k < (test.z >> 16u); k++) {
+            phase2[(test.w + k) * 5u + 1u] = 1u;
         }
     }
 }

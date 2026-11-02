@@ -131,7 +131,9 @@ pub struct Cull {
     phase2_capacity: u64,
     tests: wgpu::Buffer,
     tests_capacity: u64,
-    /// This frame's tests: visible index, first phase 2 draw, phase 2 draws.
+    /// This frame's tests: visible index, then its phase 2 draws in each
+    /// solid pass (`place`): the first of the first pass's, both counts (the
+    /// second's in the high half), the first of the second pass's.
     test_data: Vec<[u32; 4]>,
     test_slots: Vec<u32>,
     test_indices: Vec<u32>,
@@ -411,12 +413,23 @@ impl Cull {
         }
     }
 
-    /// A section left to phase 2: its `draws` from phase 2's `first`.
-    pub fn deferred(&mut self, index: usize, slot: u32, first: usize, draws: usize, indices: u32) {
+    /// A section left to phase 2, with `draws` draws there: its test, whose
+    /// draws `place` gives once phase 2's list is in its final order.
+    pub fn deferred(&mut self, index: usize, slot: u32, draws: usize, indices: u32) -> Option<u32> {
         self.total += u64::from(indices);
-        if draws > 0 {
-            self.push([index as u32, first as u32, draws as u32, 0], slot, indices);
-        }
+        (draws > 0).then(|| {
+            self.push([index as u32, 0, 0, 0], slot, indices);
+            self.test_data.len() as u32 - 1
+        })
+    }
+
+    /// `test`'s draws in solid pass `pass` (0 or 1): `draws` from phase 2's
+    /// `first`. Each pass draws its own part of the section's quads.
+    pub fn place(&mut self, test: u32, pass: u32, first: u32, draws: u32) {
+        debug_assert!(pass < 2 && draws < 1 << 16);
+        let t = &mut self.test_data[test as usize];
+        t[1 + 2 * pass as usize] = first;
+        t[2] |= draws << (16 * pass);
     }
 
     fn push(&mut self, test: [u32; 4], slot: u32, indices: u32) {

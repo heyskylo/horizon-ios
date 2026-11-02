@@ -320,8 +320,10 @@ fn fade_code(w: f32) -> u32 {
 // (`mesher::Part`): first the quads with no cutout that are not fading, through
 // `fs_opaque`, which never discards, so a tiled GPU (Apple's) keeps hiding the pixels
 // behind them; then the rest through `fs_solid`. One discard anywhere in a pipeline's shader turned that hiding off for
-// all the terrain it drew. A quad the pass leaves out is decided before any of the
-// vertex's work and lies outside the clip volume: it makes no pixel.
+// all the terrain it drew. The draw lists give each pass only its own part; a mesh that
+// was not sorted (`Sides::unsorted`) gives both passes all of its quads, so each pass
+// still leaves out the other's: decided before any of the vertex's work, outside the
+// clip volume, it makes no pixel.
 fn opaque_quad(layer: u32, w: f32) -> bool {
     return (layer & 0x8000u) != 0u && fade_code(w) == 0u;
 }

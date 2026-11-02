@@ -42,8 +42,9 @@ struct Plan {
     solid_calls: usize,
     /// Where the shadow camera's solid and translucent calls begin.
     shadow_calls: [usize; 2],
-    /// Where Metal's opaque pass ends and its cutout pass begins in phase 1's calls.
-    pass_calls: [usize; 2],
+    /// Where Metal's opaque pass ends and its cutout pass begins in phase 1's calls,
+    /// and where its cutout pass begins in phase 2's.
+    pass_calls: [usize; 3],
     total: u64,
 }
 const QUADS: u32 = u32::MAX;
@@ -81,8 +82,9 @@ pub struct Flat {
     /// The solid draws in one pass (`fs_solid`), where the GPU doesn't hide pixels
     /// by tiles (`split_solid` in `Renderer::draw_frame`: elsewhere than Metal).
     pub solid: wgpu::RenderPipeline,
-    /// The solid draws in two passes over the same draws (terrain.wgsl's `opaque_quad`):
-    /// the quads with no cutout first, through a shader that never discards, then the rest.
+    /// The solid draws in two passes, each over its own part of the draws (terrain.wgsl's
+    /// `opaque_quad`): the quads with no cutout first, through a shader that never discards,
+    /// then the rest.
     pub solid_opaque: wgpu::RenderPipeline,
     pub solid_cutout: wgpu::RenderPipeline,
     /// The solid draws as the water mirror's camera draws them (`fs_solid_mirror`).
@@ -128,8 +130,9 @@ pub struct Flat {
     pub phase1_calls: usize,
     pub solid_calls: usize,
     /// Metal's two solid passes over phase 1: the opaque one draws
-    /// `calls[..pass_calls[0]]`, the cutout one `calls[pass_calls[1]..phase1_calls]`.
-    pub pass_calls: [usize; 2],
+    /// `calls[..pass_calls[0]]`, the cutout one `calls[pass_calls[1]..phase1_calls]`;
+    /// over phase 2, `calls[phase1_calls..pass_calls[2]]` and the rest.
+    pub pass_calls: [usize; 3],
     /// Where a shader pack's shadow camera's solid and translucent calls
     /// begin (`calls.len()` without them): the camera's translucent calls
     /// end at the first.
@@ -247,7 +250,8 @@ fn buffer(
 /// instead of a destination: the call's room holds all of its draws. Draws
 /// from `shadow[0]` (solid) and `shadow[1]` (translucent) on are a shader
 /// pack's shadow camera's, with calls of their own. Phase 1's draws before
-/// `passes[0]` and from `passes[1]` on, the two solid passes' on Metal, too.
+/// `passes[0]` and from `passes[1]` on, the two solid passes' on Metal, too,
+/// and phase 2's from `passes[2]` on (its cutout pass's).
 #[allow(clippy::too_many_arguments)]
 fn plan(
     draws: &[[u32; 5]],
@@ -255,7 +259,7 @@ fn plan(
     phase1_draws: usize,
     solid_draws: usize,
     shadow: [usize; 2],
-    passes: [usize; 2],
+    passes: [usize; 3],
     align: u64,
     key: impl Fn(u32, Option<u32>) -> u32,
     calls: &mut Vec<Call>,
@@ -267,7 +271,7 @@ fn plan(
     segments.clear();
     let (mut phase1_calls, mut solid_calls) = (None, None);
     let mut shadow_calls = [None; 2];
-    let mut pass_calls = [None; 2];
+    let mut pass_calls = [None; 3];
     let mut total = 0u64;
     let mut by_source: Vec<(Source, Vec<Range>)> = Vec::new();
     for (i, (d, &(page, sorted))) in draws.iter().zip(pages).enumerate() {
@@ -329,7 +333,14 @@ fn plan(
         phase1_calls,
         solid_calls,
         shadow_calls: shadow_calls.map(|c| c.unwrap_or(calls.len())),
-        pass_calls: pass_calls.map(|c| c.unwrap_or(calls.len()).min(phase1_calls)),
+        pass_calls: {
+            let [opaque, cutout, phase2] = pass_calls.map(|c| c.unwrap_or(calls.len()));
+            [
+                opaque.min(phase1_calls),
+                cutout.min(phase1_calls),
+                phase2.clamp(phase1_calls, solid_calls),
+            ]
+        },
         total,
     }
 }
@@ -490,7 +501,7 @@ impl Flat {
             calls: Vec::new(),
             phase1_calls: 0,
             solid_calls: 0,
-            pass_calls: [0; 2],
+            pass_calls: [0; 3],
             shadow_calls: [0; 2],
             min_sections,
             range_align: (u64::from(device.limits().min_storage_buffer_offset_alignment) / 16)
@@ -606,7 +617,7 @@ impl Flat {
         phase1_draws: usize,
         solid_draws: usize,
         shadow: [usize; 2],
-        passes: [usize; 2],
+        passes: [usize; 3],
         phase2: Option<&wgpu::Buffer>,
         translucent_arena: bool,
         origins: impl Iterator<Item = (u32, [f32; 4])>,
@@ -680,7 +691,7 @@ impl Flat {
             self.phase1_calls = 0;
             self.solid_calls = 0;
             self.shadow_calls = [0; 2];
-            self.pass_calls = [0; 2];
+            self.pass_calls = [0; 3];
             return false;
         }
         if self.range_data.len() as u64 > self.range_capacity {
@@ -896,19 +907,22 @@ impl Flat {
             pass.draw(call.first..call.first + call.count, 0..instances);
         }
     }
-    /// Draws phase 2's calls, as `flatten_phase2` left them.
+    /// Draws phase 2's `calls` (`calls[phase1_calls..solid_calls]` counted from 0), as
+    /// `flatten_phase2` left them.
     pub fn draw_phase2<'a>(
         &self,
         pass: &mut wgpu::RenderPass<'_>,
+        calls: std::ops::Range<usize>,
         vertices: impl Fn(u32) -> wgpu::BufferSlice<'a>,
     ) {
         pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
-        for (k, call) in self.calls[self.phase1_calls..self.solid_calls]
+        let first = self.phase1_calls + calls.start;
+        for (k, call) in self.calls[first..self.phase1_calls + calls.end]
             .iter()
             .enumerate()
         {
             self.bind_page(pass, call.page, &vertices);
-            pass.draw_indexed_indirect(&self.phase2_calls, k as u64 * 20);
+            pass.draw_indexed_indirect(&self.phase2_calls, (calls.start + k) as u64 * 20);
         }
     }
     fn bind_page<'a>(
@@ -968,7 +982,7 @@ mod tests {
             solid,
             solid,
             [draws.len(); 2],
-            [draws.len(), 0],
+            [draws.len(), 0, solid],
             4,
             |page, _| page,
             &mut calls,
@@ -1017,14 +1031,14 @@ mod tests {
             solid,
             solid,
             [draws.len(); 2],
-            [3, 1],
+            [3, 1, solid],
             4,
             |page, _| page,
             &mut calls,
             &mut ranges,
             &mut segments,
         );
-        assert_eq!((plan.pass_calls, plan.solid_calls), ([3, 1], 4));
+        assert_eq!((plan.pass_calls, plan.solid_calls), ([3, 1, 4], 4));
         let call = |page, first, count| Call { page, first, count };
         assert_eq!(
             calls,
@@ -1053,7 +1067,7 @@ mod tests {
             solid,
             solid,
             [camera, camera + 2],
-            [camera, 0],
+            [camera, 0, solid],
             4,
             |page, _| page,
             &mut calls,
@@ -1082,7 +1096,7 @@ mod tests {
             2,
             solid,
             [draws.len(); 2],
-            [draws.len(), 0],
+            [draws.len(), 0, solid],
             4,
             |page, _| page,
             &mut calls,
@@ -1095,7 +1109,7 @@ mod tests {
                 phase1_calls: 1,
                 solid_calls: 3,
                 shadow_calls: [4, 4],
-                pass_calls: [1, 0],
+                pass_calls: [1, 0, 3],
                 total: 6 * 13
             }
         );
@@ -1200,7 +1214,7 @@ mod tests {
                 phase1,
                 solid,
                 [draws.len(); 2],
-                [draws.len(), 0],
+                [draws.len(), 0, solid],
                 align,
                 |page, _| page,
                 &mut calls,
