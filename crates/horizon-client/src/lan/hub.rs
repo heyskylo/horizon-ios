@@ -3886,7 +3886,7 @@ impl Hub {
         let Some(g) = self.guest_mut(conn) else {
             return;
         };
-        g.game_mode = mode;
+        g.change_game_mode(mode);
         // GameType.updatePlayerAbilities: a spectator flies, survival and
         // adventure don't, creative keeps what it had.
         if g.spectator() {

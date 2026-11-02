@@ -140,6 +140,7 @@ pub fn apply(guest: &mut Guest, level: &Level) {
     guest.xp_seed = level.xp_seed;
     guest.effects = crate::effects::PlayerEffects::from_saved(&level.active_effects);
     guest.game_mode = level.mode();
+    guest.previous_game_mode = level.previous_game_mode;
     guest.flying = level.flying;
     guest.flying_speed = level.fly_speed.filter(|s| s.is_finite()).unwrap_or(0.05);
     guest.selected = (level.selected_slot.max(0) as usize).min(8);
@@ -405,6 +406,9 @@ pub fn store(guest: &Guest, level: &mut Level, vehicle: Option<Tag>) {
     level.xp_seed = guest.xp_seed;
     level.active_effects = guest.effects.saved();
     level.game_mode = guest.game_mode;
+    // ServerPlayer.addAdditionalSaveData: previousPlayerGameType, when there
+    // is one (storeNullable).
+    level.previous_game_mode = guest.previous_game_mode;
     level.creative = guest.game_mode == 1;
     level.flying = guest.flying;
     level.fly_speed = Some(guest.flying_speed);
@@ -915,6 +919,27 @@ mod tests {
         assert_eq!(tag.get("foodTickTimer"), Some(&Tag::Int(37)));
         let body = back.loaded_body.expect("a body");
         assert_eq!((body.food_exhaustion, body.food_tick_timer), (2.75, 37));
+    }
+
+    #[test]
+    fn the_previous_game_mode_is_kept_and_saved() {
+        // ServerPlayerGameMode.changeGameModeForPlayer: the mode left becomes
+        // the previous one, and the mode in use changes nothing.
+        // ServerPlayer.addAdditionalSaveData writes previousPlayerGameType (an
+        // int) only when there is one.
+        let mut g = guest();
+        assert_eq!(g.previous_game_mode, None);
+        let (tag, _) = round_trip(&g);
+        assert_eq!(tag.get("previousPlayerGameType"), None);
+        g.change_game_mode(1);
+        assert_eq!((g.game_mode, g.previous_game_mode), (1, Some(0)));
+        g.change_game_mode(1);
+        assert_eq!((g.game_mode, g.previous_game_mode), (1, Some(0)));
+        g.change_game_mode(3);
+        assert_eq!((g.game_mode, g.previous_game_mode), (3, Some(1)));
+        let (tag, back) = round_trip(&g);
+        assert_eq!(tag.get("previousPlayerGameType"), Some(&Tag::Int(1)));
+        assert_eq!((back.game_mode, back.previous_game_mode), (3, Some(1)));
     }
 
     #[test]
