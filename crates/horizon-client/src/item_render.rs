@@ -7,6 +7,9 @@
 //! them: [`gui`] into the HUD batch with the GUI item lighting, [`WorldSink`]
 //! into entity vertices with the level's lighting.
 pub mod cit;
+mod glint_atlas;
+#[cfg(test)]
+mod glint_tests;
 pub mod gui;
 mod special;
 
@@ -45,6 +48,8 @@ pub struct ItemQuad {
     /// The model UVs `GLINT_TEXTURING` scrolls for the glint (vanilla's UV0,
     /// or UV3 for a special model).
     pub foil_uv: [[f32; 2]; 4],
+    /// Standard GUI glint uses the vanilla items atlas; CIT keeps sprite-local UVs.
+    pub gui_glint_uv: Option<[[f32; 2]; 4]>,
     pub normal: Vec3,
     pub color: u32,
     pub foil: Foil,
@@ -306,7 +311,10 @@ fn submit_quads(
         FoilType::Standard => Foil::Standard,
         FoilType::Special => Foil::Special,
     };
-    let _ = display;
+    let atlas = renderer
+        .glint_atlas
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     // Quads of one layer mostly share a sprite: look its translucency up once.
     let mut last: Option<(&str, bool)> = None;
     for q in &baked.quads {
@@ -354,6 +362,12 @@ fn submit_quads(
             pos,
             uv,
             foil_uv: q.uv,
+            gui_glint_uv: (display == DisplayContext::Gui && foil == Foil::Standard)
+                .then(|| atlas.get(sprite_name(&q.material.sprite)))
+                .flatten()
+                .map(|r| {
+                    q.uv.map(|[u, v]| [r.u0 + (r.u1 - r.u0) * u, r.v0 + (r.v1 - r.v0) * v])
+                }),
             normal: transform_normal(m, direction_vector(q.facing)),
             color: argb(color),
             foil,
@@ -504,6 +518,7 @@ pub struct ItemRenderer {
     /// The enabled packs' OptiFine CIT rules and their swapped bakes; `None`
     /// without rules.
     pub cit: Option<cit::CitModels>,
+    glint_atlas: Mutex<HashMap<String, Rect>>,
 }
 
 /// Every `items/**/*.json` client item definition, by identifier.
@@ -544,7 +559,26 @@ fn load_definitions(root: &Path) -> BTreeMap<String, ClientItem> {
     out
 }
 
+fn glint_padding(filtering: i32, bit: i32) -> usize {
+    if filtering == 2 {
+        bit.wrapping_sub(1).clamp(0, 4) as usize
+    } else {
+        0
+    }
+}
+
 impl ItemRenderer {
+    /// Prepare GUI glint after the device exists; propagate packing failures to pack rollback.
+    pub fn prepare_glint_atlas(&self, maximum: u32, filtering: (i32, i32)) -> crate::Result<()> {
+        let padding = glint_padding(filtering.0, filtering.1);
+        let sprites = glint_atlas::load(&self.sprites.root, 1 << padding, maximum)?;
+        *self
+            .glint_atlas
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = sprites;
+        Ok(())
+    }
+
     /// Load item definitions, item prototypes (`items.json`), every model,
     /// the special renderers' entity models and the grass colormap.
     pub fn load(root: &Path) -> crate::Result<Self> {
@@ -618,6 +652,7 @@ impl ItemRenderer {
             })
             .unwrap_or_default();
         Ok(Self {
+            glint_atlas: Mutex::default(),
             item_ids,
             models,
             library,

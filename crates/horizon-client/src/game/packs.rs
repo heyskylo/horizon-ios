@@ -319,6 +319,10 @@ impl Game<'_> {
                     self.settings.horizon.api,
                     self.settings.horizon.translucent_batching,
                     super::shader_packs::picked_pack_draws_flat(&self.settings),
+                    (
+                        self.settings.file.int("textureFiltering"),
+                        self.settings.file.int("maxAnisotropyBit"),
+                    ),
                 )
             })
             .transpose()
