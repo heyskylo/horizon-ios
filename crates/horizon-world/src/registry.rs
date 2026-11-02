@@ -334,11 +334,11 @@ mod session_registry_tests {
             vec![
                 BlockState {
                     name: "test:block".into(),
-                    properties: BTreeMap::from([("variant".into(), "a".into())]),
+                    properties: BTreeMap::from([("variant".into(), "a".into())]).into(),
                 },
                 BlockState {
                     name: "test:block".into(),
-                    properties: BTreeMap::from([("variant".into(), "b".into())]),
+                    properties: BTreeMap::from([("variant".into(), "b".into())]).into(),
                 },
             ],
             BTreeMap::from([("test:block".into(), default)]),
