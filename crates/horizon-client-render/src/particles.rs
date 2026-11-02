@@ -1097,6 +1097,43 @@ pub struct ParticleEngine {
 const MAX_PARTICLES: usize = 16384;
 /// `ParticleLimit.SPORE_BLOSSOM`, the only limited particle.
 const SPORE_BLOSSOM_LIMIT: usize = 1000;
+const PARTICLE_LIGHT_CACHE_SIZE: usize = 64;
+
+#[derive(Clone, Copy)]
+struct CachedParticleLight {
+    block: [i32; 3],
+    packed: u8,
+}
+
+struct ParticleLightCache {
+    entries: [Option<CachedParticleLight>; PARTICLE_LIGHT_CACHE_SIZE],
+}
+
+impl Default for ParticleLightCache {
+    fn default() -> Self {
+        Self {
+            entries: [None; PARTICLE_LIGHT_CACHE_SIZE],
+        }
+    }
+}
+
+impl ParticleLightCache {
+    fn get(&mut self, block: [i32; 3], light_at: &dyn Fn([i32; 3]) -> u8) -> u8 {
+        let hash = (block[0] as u32).wrapping_mul(73_856_093)
+            ^ (block[1] as u32).wrapping_mul(19_349_663)
+            ^ (block[2] as u32).wrapping_mul(83_492_791);
+        let slot = hash as usize & (PARTICLE_LIGHT_CACHE_SIZE - 1);
+        if let Some(entry) = self.entries[slot]
+            && entry.block == block
+        {
+            return entry.packed;
+        }
+        let packed = light_at(block);
+        self.entries[slot] = Some(CachedParticleLight { block, packed });
+        packed
+    }
+}
+
 const PARTICLE_SECTION_CACHE_SIZE: usize = 128;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -4318,6 +4355,7 @@ impl ParticleEngine {
         // Camera.setRotation: rotationYXZ(PI - yRot, -xRot, 0).
         let base = Quat::from_rotation_y(std::f32::consts::PI - yaw.to_radians())
             * Quat::from_rotation_x(-pitch.to_radians());
+        let mut light_cache = ParticleLightCache::default();
         let mut section_cache =
             (CULL && frustum.is_some()).then(ParticleSectionFrustumCache::default);
         for p in &self.particles {
@@ -4453,7 +4491,7 @@ impl ParticleEngine {
                 _ => {}
             }
             let block = ParticleLevel::block_at(p.position);
-            let packed = light_at(block);
+            let packed = light_cache.get(block, light_at);
             let (sky_light, block_light) = p.light_coords(
                 partial,
                 u32::from(packed >> 4) * 16,
@@ -4563,6 +4601,25 @@ const CREEPER: [[f64; 2]; 12] = [
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn particle_light_cache_reuses_exact_blocks_and_fails_open_on_collisions() {
+        let reads = std::cell::Cell::new(0);
+        let light_at = |block: [i32; 3]| {
+            reads.set(reads.get() + 1);
+            block[0] as u8
+        };
+        let mut cache = ParticleLightCache::default();
+        let first = [0, 0, 0];
+        let colliding = [64, 0, 0];
+
+        assert_eq!(cache.get(first, &light_at), 0);
+        assert_eq!(cache.get(first, &light_at), 0);
+        assert_eq!(reads.get(), 1);
+        assert_eq!(cache.get(colliding, &light_at), 64);
+        assert_eq!(cache.get(first, &light_at), 0);
+        assert_eq!(reads.get(), 3);
+    }
 
     #[test]
     fn subpixel_culling_uses_the_frame_projection_and_fails_open() {
