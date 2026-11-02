@@ -1982,7 +1982,7 @@ fn a_moving_piston_without_a_block_entity_is_removed_by_a_click() {
     );
 }
 
-/// `MovingPistonBlock.destroy`: a moving piston that goes away takes the
+/// `MovingPistonBlock.destroy`: a moving piston a player breaks takes the
 /// extended piston base behind it with it; an unextended base stays.
 #[test]
 fn breaking_a_moving_piston_removes_its_extended_base() {
@@ -1994,8 +1994,13 @@ fn breaking_a_moving_piston_removes_its_extended_base() {
     // The head at (1, 1, 0) faces east, so its base is at (0, 1, 0).
     w.put(BlockPos::new(0, 1, 0), extended);
     w.put(BlockPos::new(1, 1, 0), moving);
-    w.b()
-        .destroy_block(&mut w.level, &mut w.ticks, BlockPos::new(1, 1, 0), false);
+    w.b().player_destroy_block(
+        &mut w.level,
+        &mut w.ticks,
+        BlockPos::new(1, 1, 0),
+        false,
+        true,
+    );
     assert_eq!(
         w.get(BlockPos::new(0, 1, 0)),
         air,
@@ -2003,13 +2008,45 @@ fn breaking_a_moving_piston_removes_its_extended_base() {
     );
     w.put(BlockPos::new(5, 1, 0), retracted);
     w.put(BlockPos::new(6, 1, 0), moving);
-    w.b()
-        .destroy_block(&mut w.level, &mut w.ticks, BlockPos::new(6, 1, 0), false);
+    w.b().player_destroy_block(
+        &mut w.level,
+        &mut w.ticks,
+        BlockPos::new(6, 1, 0),
+        false,
+        true,
+    );
     assert_eq!(
         w.get(BlockPos::new(5, 1, 0)),
         retracted,
         "an unextended base is left alone"
     );
+}
+
+/// Level.removeBlock / destroyBlock do not call Block.destroy. In particular,
+/// a moving head becoming a settled head must not remove its own piston base.
+#[test]
+fn replacing_a_moving_piston_keeps_its_extended_base() {
+    for destroy in [false, true] {
+        let mut w = world!();
+        let base = BlockPos::new(0, 1, 0);
+        let head = BlockPos::new(1, 1, 0);
+        let extended = w.id("piston", &[("facing", "east"), ("extended", "true")]);
+        let moving = w.id("moving_piston", &[("facing", "east"), ("type", "normal")]);
+        w.put(base, extended);
+        w.put(head, moving);
+        if destroy {
+            assert!(w.b().destroy_block(&mut w.level, &mut w.ticks, head, false));
+        } else {
+            let settled = w.id("piston_head", &[("facing", "east"), ("type", "normal")]);
+            w.set(head, settled);
+            assert_eq!(w.get(head), settled);
+        }
+        assert_eq!(
+            w.get(base),
+            extended,
+            "only player destruction calls the hook"
+        );
+    }
 }
 
 #[test]

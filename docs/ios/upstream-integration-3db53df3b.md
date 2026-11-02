@@ -44,3 +44,13 @@ reported in the PR. Quick readiness does not run every affected Java-parity
 harness. Physical older-device behavior and full-world shader visual parity
 remain separate validation scopes. No private game data, archives or diagnostic
 reports are included.
+
+## Piston lifecycle correction found by the full suite
+
+The new upstream moving-piston destruction hook ran during generic block
+replacement, so completing an animation could destroy its own extended base.
+Java 26.3 invokes `MovingPistonBlock.destroy` after successful player removal,
+not from `Level.destroyBlock` or ordinary replacement. The hook now runs in that
+player-specific path. All six failing piston expectations are preserved and pass;
+314 world-library tests, three client piston tests, and four actual-Java method
+cases passed after the correction.

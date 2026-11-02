@@ -484,7 +484,14 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
             self.level_event(2001, pos, state.0 as i32);
         }
         self.game_event(pos, "minecraft:block_destroy");
-        self.remove_block(pos, false)
+        let removed = self.remove_block(pos, false);
+        // ServerPlayerGameMode.destroyBlock calls Block.destroy only after
+        // removeBlock succeeded. A moving head finishing its animation reaches
+        // chunk_set_block_state instead and must keep its extended base.
+        if removed && data.is(Class::MovingPiston) {
+            self.destroy_moving_piston_base(pos, state);
+        }
+        removed
     }
     /// `TurtleEggBlock.playerDestroy` (after the drops): `decreaseEggs` plays the
     /// break and puts back all but one egg of the mined stack. `destroyed` is the
