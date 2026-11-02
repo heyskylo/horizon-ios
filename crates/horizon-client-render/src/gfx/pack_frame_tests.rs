@@ -145,6 +145,9 @@ impl WorldTargets {
 /// An empty frame: no geometry, every list empty. `Frame` has no `Default`.
 pub(super) fn empty_frame(hud: &crate::hud::HudBatch) -> Frame<'_> {
     Frame {
+        static_block_entities: &[],
+        static_block_entity_stats: Default::default(),
+        visible_static_block_entity_sections: &[],
         skin: None,
         weather: &[],
         weather_time: crate::weather::Time::new(0, 0.0),
@@ -479,10 +482,11 @@ fn run_executes_setup_begin_and_final_across_resize_on_metal() {
         world,
     );
     assert!(post.complete, "pipeline notes: {:?}", post.notes);
-    assert_eq!(post.setup.len(), 1, "setup must be built");
-    assert_eq!(post.begin.len(), 1, "begin must be built");
-    assert!(matches!(post.setup[0].pipeline, Pipeline::Compute { .. }));
-    assert!(matches!(post.begin[0].pipeline, Pipeline::Compute { .. }));
+    for group in [Group::Setup, Group::Begin] {
+        let stages: Vec<_> = post.passes.iter().filter(|p| p.group == group).collect();
+        assert_eq!(stages.len(), 1, "{group:?} must be built once");
+        assert!(matches!(stages[0].pipeline, Pipeline::Compute { .. }));
+    }
     assert_eq!(post.images.len(), 2);
     assert_eq!(
         image_of(&post, "volume").dimension,
@@ -502,7 +506,7 @@ fn run_executes_setup_begin_and_final_across_resize_on_metal() {
     // setup seeds 0.125 and begin adds 0.125.
     let pixels = harness.frame(&mut post, 2);
     assert!(post.complete, "frame 1 notes: {:?}", post.notes);
-    assert!(post.setup_ran, "frame 1 completes setup");
+    assert!(!post.setup_pending, "frame 1 completes setup");
     // Exact readback proves setup seeded the image and begin then incremented it.
     check_upscaled(&pixels, red[0], "frame 1");
     assert_eq!(extent(&post, "history"), [1, 1, 1], "0.5 x 2 pixels");
@@ -530,7 +534,7 @@ fn run_executes_setup_begin_and_final_across_resize_on_metal() {
     // Render size equals the window, so the final pass draws straight onto the screen.
     let pixels = harness.frame(&mut post, 4);
     assert!(post.complete, "frame 3 notes: {:?}", post.notes);
-    assert!(post.setup_ran, "resize completes setup");
+    assert!(!post.setup_pending, "resize completes setup");
     // The reset red value verifies setup reran before begin after the resize.
     check_native(&pixels, red[2], "frame 3");
     assert_eq!(extent(&post, "history"), [2, 2, 1], "0.5 x 4 pixels");

@@ -37,9 +37,10 @@ import net.minecraft.world.phys.Vec3;
  *
  * Script (system property horizon.bench.script): {"world", "seed", "settle",
  * "seconds", "timeout", "scenes": [{"name", "from": [x,y,z], "to": [x,y,z],
- * "pitch"}]}, and "server" ("host:port") to join that server instead of
- * creating a world (the player needs op there for /tp and /time). Output:
- * horizon.bench.out.
+ * "pitch", "settle"?, "setup"?: [command...], "cleanup"?: [command...]}]}: a scene's own settle replaces
+ * the script's, its setup commands (tools/stress_scenes.py) run once its chunks are loaded and its cleanup
+ * commands after its flight. "server" ("host:port") joins that server instead of creating a world (the
+ * player needs op there for /tp and /time). Output: horizon.bench.out.
  */
 public final class VanillaBench implements ClientModInitializer {
     private static VanillaBench bench;
@@ -54,9 +55,14 @@ public final class VanillaBench implements ClientModInitializer {
     private long phaseStart;
     private long lastFrame;
     private long readyCheck;
+    private long lastTrace;
+    private static final boolean TRACE = System.getProperty("horizon.bench.trace") != null;
     private int lastLoaded = -1;
     private long lastChange;
     private final List<Float> frames = new ArrayList<>();
+    /** Client tick durations (Minecraft.tick) while flying, in milliseconds. */
+    private final List<Float> ticks = new ArrayList<>();
+    private long tickStart;
 
     /** Fabric's entrypoint instance; the benchmark itself is the static one. */
     public VanillaBench() {
@@ -81,6 +87,17 @@ public final class VanillaBench implements ClientModInitializer {
             throw new UncheckedIOException(e);
         }
         bench.event("init");
+    }
+
+    /** Called around every client tick (Minecraft.tick). */
+    public static void tick(boolean start) {
+        if (bench == null) return;
+        long now = System.nanoTime();
+        if (start) {
+            bench.tickStart = now;
+        } else if (bench.phase == Phase.FLY && bench.tickStart != 0) {
+            bench.ticks.add((now - bench.tickStart) / 1e6f);
+        }
     }
 
     /** Called at the start of every frame (Minecraft.runTick). */
@@ -146,18 +163,34 @@ public final class VanillaBench implements ClientModInitializer {
                 Vec3 from = vec(s.getAsJsonArray("from"));
                 // Once the teleport has arrived, hold the player there, flying.
                 if (mc.player != null && mc.player.position().distanceToSqr(from) < 1024.0) place(mc, s, 0);
+                if (TRACE && now - lastTrace >= 50_000_000L && mc.level != null) {
+                    // PERF_BENCH_TRACE: when the columns arrive, to compare with Horizon's trace.
+                    lastTrace = now;
+                    JsonObject e = named(s);
+                    e.addProperty("ms", (now - phaseStart) / 1e6);
+                    e.addProperty("chunks", mc.level.getChunkSource().getLoadedChunksCount());
+                    e.addProperty("compiled", mc.levelRenderer.hasRenderedAllSections());
+                    if (mc.player != null) e.addProperty("around", around(mc));
+                    event("progress", e);
+                }
                 if (ready(mc, from, now)) {
                     JsonObject e = named(s);
                     e.addProperty("load_ms", (lastChange - phaseStart) / 1e6);
                     e.addProperty("chunks", lastLoaded);
                     event("loaded", e);
+                    if (s.has("setup")) {
+                        for (var line : s.getAsJsonArray("setup")) mc.player.connection.sendCommand(line.getAsString());
+                    }
                     enter(Phase.SETTLE, now);
                 }
             }
             case SETTLE -> {
-                place(mc, scenes.get(scene), 0);
-                if (elapsed >= script.get("settle").getAsDouble()) {
+                JsonObject s = scenes.get(scene);
+                place(mc, s, 0);
+                double settle = (s.has("settle") ? s : script).get("settle").getAsDouble();
+                if (elapsed >= settle) {
                     frames.clear();
+                    ticks.clear();
                     event("fly", named(scenes.get(scene)));
                     enter(Phase.FLY, now);
                 }
@@ -171,8 +204,19 @@ public final class VanillaBench implements ClientModInitializer {
                     JsonArray times = new JsonArray();
                     frames.forEach(times::add);
                     e.add("frame_ms", times);
+                    JsonArray tickTimes = new JsonArray();
+                    ticks.forEach(tickTimes::add);
+                    e.add("tick_ms", tickTimes);
+                    JsonObject entities = new JsonObject();
+                    entities.addProperty("all", mc.level.getEntityCount());
+                    e.add("entities", entities);
                     e.addProperty("chunks", mc.level.getChunkSource().getLoadedChunksCount());
                     event("flown", e);
+                    if (scenes.get(scene).has("cleanup")) {
+                        for (var line : scenes.get(scene).getAsJsonArray("cleanup")) {
+                            mc.player.connection.sendCommand(line.getAsString());
+                        }
+                    }
                     next(mc, now);
                 }
             }
@@ -240,6 +284,21 @@ public final class VanillaBench implements ClientModInitializer {
             }
         }
         return true;
+    }
+
+    /** The chunks chunksAround waits for that are on the client, and how many it waits for. */
+    private static String around(Minecraft mc) {
+        int r = Math.max(1, mc.options.getEffectiveRenderDistance() - 1), have = 0, all = 0;
+        var center = mc.player.chunkPosition();
+        var chunks = mc.level.getChunkSource();
+        for (int dx = -r; dx <= r; dx++) {
+            for (int dz = -r; dz <= r; dz++) {
+                if (dx * dx + dz * dz > r * r) continue;
+                all++;
+                if (chunks.hasChunk(center.x() + dx, center.z() + dz)) have++;
+            }
+        }
+        return have + "/" + all;
     }
 
     /** Puts the player on the scene's line at fraction t, facing along it, as Horizon's flight. */

@@ -226,11 +226,14 @@ pub(super) struct PackIds {
     vignette: bool,
     /// `oldLighting`: `true` keeps the game's face shading in the block colours.
     old_lighting: bool,
+    /// `separateAo`: `true` passes AO factor in vertex alpha and keeps pure tint in RGB.
+    pub(super) separate_ao: bool,
 }
 
 #[derive(Clone, PartialEq, Eq)]
 struct LoadKey {
     path: std::path::PathBuf,
+    resources: std::path::PathBuf,
     dimension: i32,
     context: (u64, u64),
     options_revision: u64,
@@ -304,6 +307,7 @@ fn start_parser(
 ) -> Result<(), String> {
     let path = key.path.clone();
     let dimension = key.dimension;
+    let resources = key.resources.clone();
     let options = chosen_shader_options(path.file_name().and_then(|n| n.to_str()).unwrap_or(""));
     let (sender, result) = std::sync::mpsc::channel();
     let _worker = std::thread::Builder::new()
@@ -325,6 +329,13 @@ fn start_parser(
                     &macros,
                     &inputs,
                 );
+                let read = |namespace: &str, path: &str| {
+                    std::fs::read(resources.join("assets").join(namespace).join(path)).ok()
+                };
+                post.notes.extend(horizon_shaders::resolve_resources(
+                    &mut post.textures,
+                    &read,
+                ));
                 post.notes.extend(feature_notes);
                 post.notes.extend(
                     properties
@@ -362,6 +373,9 @@ fn start_parser(
                         .is_none_or(|v| v.trim() != "false"),
                     old_lighting: properties
                         .get("oldLighting")
+                        .is_some_and(|v| v.trim() == "true"),
+                    separate_ao: properties
+                        .get("separateAo")
                         .is_some_and(|v| v.trim() == "true"),
                     entities: entity_ids.plain(),
                     missing_entity: if entity_text.is_some() { 65535 } else { 0 },
@@ -439,6 +453,7 @@ impl Game<'_> {
             }
             let desired = LoadKey {
                 path: Self::shader_packs_dir().join(picked_pack(&self.settings)),
+                resources: self.options.resources.clone(),
                 options_revision: OPTIONS_REVISION.with(Cell::get),
                 dimension,
                 context: renderer.shader_context_key(),
@@ -479,6 +494,11 @@ impl Game<'_> {
         }
         self.poll_shader_workers();
         let completed = poll_parser();
+        let separate_ao = self.pack_ids.as_ref().is_some_and(|ids| ids.separate_ao);
+        if self.streaming.separate_ao != separate_ao {
+            self.streaming.separate_ao = separate_ao;
+            self.all_sections_changed();
+        }
         let picked = picked_pack(&self.settings).to_owned();
         if self.native_shaders.picked != picked {
             REPORT.with_borrow_mut(Option::take);
@@ -506,6 +526,7 @@ impl Game<'_> {
         } else if let Some(renderer) = &mut self.renderer {
             let key = LoadKey {
                 path: path.clone(),
+                resources: self.options.resources.clone(),
                 options_revision: OPTIONS_REVISION.with(Cell::get),
                 dimension,
                 context: renderer.shader_context_key(),
@@ -522,6 +543,7 @@ impl Game<'_> {
                             .collect();
                         parsed.post.custom.set_biomes(&names);
                         let table = state_material_table(&self.pack, &parsed.ids);
+                        renderer.set_separate_ao(parsed.entity_ids.separate_ao);
                         self.pack_ids = parsed.post.complete.then_some(parsed.entity_ids);
                         if let Some((programs, notes)) =
                             renderer.set_shader_pack(dimension, Some(parsed.post), &table)
@@ -1024,6 +1046,7 @@ mod integration_tests {
             *pending = Some(PendingLoad {
                 key: LoadKey {
                     path: "shutdown.zip".into(),
+                    resources: "resources".into(),
                     dimension: 0,
                     context: (0, 0),
                     options_revision: 0,
@@ -1125,6 +1148,7 @@ mod integration_tests {
         let (send, result) = std::sync::mpsc::channel();
         let key = LoadKey {
             path: "test.zip".into(),
+            resources: "resources".into(),
             dimension: 0,
             context: (1, 2),
             options_revision: 0,

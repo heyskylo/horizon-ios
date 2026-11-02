@@ -2,7 +2,6 @@
 use super::{Game, Screen};
 use horizon_client::{
     Result,
-    command::args::GameMode,
     confirm_screen::Confirm,
     dialog::Dialog,
     hud::{HudBatch, rgba},
@@ -276,12 +275,15 @@ impl Game<'_> {
             self.external_server(),
             links,
             additions.is_some(),
-            self.options.split_guest,
+            self.options.split_guest || self.split_hud.menu,
         ) {
             let is_focused = self.pause_focus == Some(id);
             let hover = active && (ui::hovered(self.cursor, x, y, bw, 20.0) || is_focused);
             let label = match (id, &additions) {
                 (14, Some((label, _))) => label.clone(),
+                _ if self.options.split_guest && key == "menu.disconnect" => {
+                    Text::translate("horizon.split.leave", &[])
+                }
                 _ => Text::translate(key, &[]),
             };
             ui::button(batch, atlas, x, y, bw, 20.0, &label, active, hover);
@@ -295,7 +297,7 @@ impl Game<'_> {
             h,
             links,
             additions.is_some(),
-            self.options.split_guest,
+            self.options.split_guest || self.split_hud.menu,
             self.pause_split(),
         )
         .into_iter()
@@ -448,7 +450,7 @@ impl Game<'_> {
             h,
             links,
             additions.is_some(),
-            self.options.split_guest,
+            self.options.split_guest || self.split_hud.menu,
             self.pause_split(),
         );
         let friends = icons[FRIENDS_ICON];
@@ -459,7 +461,7 @@ impl Game<'_> {
             self.external_server(),
             links,
             additions.is_some(),
-            self.options.split_guest,
+            self.options.split_guest || self.split_hud.menu,
         )
         .into_iter()
         .find(|b| b.5 && ui::hovered(self.cursor, b.0, b.1, b.2, 20.0))
@@ -504,7 +506,7 @@ impl Game<'_> {
             self.external_server(),
             links,
             self.pause_screen_additions().is_some(),
-            self.options.split_guest,
+            self.options.split_guest || self.split_hud.menu,
         );
         let mut active_ids: Vec<u8> = buttons.into_iter().filter(|b| b.5).map(|b| b.4).collect();
         let friends = self.friends_view().shown;
@@ -555,7 +557,7 @@ impl Game<'_> {
                     self.external_server(),
                     links,
                     self.pause_screen_additions().is_some(),
-                    self.options.split_guest,
+                    self.options.split_guest || self.split_hud.menu,
                 );
                 let mut rects: Vec<(u8, f32, f32, f32)> = buttons
                     .into_iter()
@@ -568,7 +570,7 @@ impl Game<'_> {
                     h,
                     links,
                     self.pause_screen_additions().is_some(),
-                    self.options.split_guest,
+                    self.options.split_guest || self.split_hud.menu,
                     self.pause_split(),
                 )
                 .into_iter()
@@ -739,56 +741,10 @@ impl Game<'_> {
     /// button, or at once with `immediate_respawn`).
     pub(super) fn respawn_player(&mut self) -> Result<()> {
         self.death_focus = None;
-        if self.remote.is_none() {
-            // PlayerList.respawn removes the dead player, and Player.remove's
-            // inventoryMenu.removed drops what the cursor held, whatever
-            // keep_inventory says (the 20-tick branch handles a later respawn).
-            if let Some(stack) = self.carried.take()
-                && let Some(eye) = self.eye_position()
-            {
-                self.throw_from_eyes(stack, eye, false);
-            }
-            let keep = self.ui.rules.bool("keep_inventory") || self.spectator();
-            self.experience.respawn(keep);
-            // The guests are sent the respawned host as a new entity, not the dead body.
-            if let Some(host) = self.lan.as_mut() {
-                let id = host.host_entity;
-                host.hub.respawned(id);
-            }
-            // Autosaves keep a login position; death must resolve the respawn point instead.
-            self.level.position = None;
-            // The dead player's Entity.setRemoved stopped its riding: the
-            // new one is not put back into the vehicle.
-            self.riding = None;
-        }
-        if self.remote.is_some() {
-            self.ui.death_text = None;
-            self.toggles.respawn();
-            self.remote_respawn();
-        } else if self.respawn_config.is_some() {
-            // LocalPlayer.respawn: KeyMapping.resetToggleKeys.
-            self.toggles.respawn();
-            // PlayerList.respawn at the respawn anchor, once it is loaded.
-            self.begin_anchor_respawn()?;
-            self.screen = Screen::Playing;
-            self.ui.death_text = None;
-            self.spawn_player()?;
-            self.capture(true);
-        } else {
-            // LocalPlayer.respawn: KeyMapping.resetToggleKeys.
-            self.toggles.respawn();
-            self.respawn_out_of_end()?;
-            self.player = None;
-            self.screen = Screen::Playing;
-            self.ui.death_text = None;
-            self.spawn_player()?;
-            self.capture(true);
-        }
-        // ServerGamePacketListenerImpl.handleClientCommand: a hardcore world's
-        // respawned player only watches.
-        if self.remote.is_none() && self.level.hardcore {
-            self.set_mode(GameMode::Spectator);
-        }
+        self.ui.death_text = None;
+        // LocalPlayer.respawn: KeyMapping.resetToggleKeys.
+        self.toggles.respawn();
+        self.remote_respawn();
         Ok(())
     }
     pub(super) fn death_click(&mut self) -> Result<()> {

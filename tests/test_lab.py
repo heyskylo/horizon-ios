@@ -175,7 +175,7 @@ class PublicationTests(unittest.TestCase):
     def test_private_paths_rejected(self):
         for path in [".local/minecraft/source.java", "decompiled/Foo.txt", "game.JAR", "capture.jfr", "source/Foo.java",
                      "Horizon.ipa", "signing/account.p12", "profile.mobileprovision", "project/xcuserdata/user.xcuserdatad/state",
-                     "export/Game.xcarchive/Info.plist", ".env", "config/.env.production"]:
+                     "export/Game.xcarchive/Info.plist", ".env", "config/.env.production", "fixtures/26.3/horizon-data.bin"]:
             self.assertTrue(check_public_tree.prohibited(path), path)
         for path in [".env.example", "config/.env.sample", ".env.template"]:
             self.assertFalse(check_public_tree.prohibited(path), path)

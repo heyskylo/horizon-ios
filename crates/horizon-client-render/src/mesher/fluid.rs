@@ -202,11 +202,12 @@ impl FluidFlowWorld for FlowView<'_> {
     }
 }
 /// Emits one fluid cell at section-relative `[x, y, z]`.
-/// `(nether, shader_pack_lighting)`: the Nether's face shading, or none when a shader pack lights
-/// the faces (`Mesher::shader_pack_lighting`).
+/// `(nether, shader_pack_lighting, separate_ao)`: the Nether's face shading, none when a shader pack
+/// lights the faces (`Mesher::shader_pack_lighting`), and the selected shader AO policy.
+/// AO itself is carried by quad sidecars so native alpha remains HDR-compatible.
 pub(super) fn tesselate(
     tables: &MeshTables,
-    (nether, shader_pack_lighting): (bool, bool),
+    (nether, shader_pack_lighting, _separate_ao): (bool, bool, bool),
     pad: &Padded,
     water_color: u32,
     out: &mut SectionMesh,

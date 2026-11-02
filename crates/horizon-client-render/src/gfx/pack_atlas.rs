@@ -12,6 +12,8 @@ pub(super) struct PackAtlas {
     pub sprite: u32,
     /// Layers per sprite array.
     split: u32,
+    /// Shader policy: expose the per-quad ambient occlusion in `hz_Color.a`.
+    pub separate_ao: bool,
 }
 
 impl PackAtlas {
@@ -57,6 +59,7 @@ impl PackAtlas {
             columns,
             sprite,
             split,
+            separate_ao: false,
         };
         atlas.copy(encoder, arrays, 0..layers);
         Some(atlas)
@@ -182,7 +185,8 @@ impl PackAtlas {
         ];
         let columns = self.columns;
         // UVs past a sprite (models up to 2, distant tiles) cannot repeat in an atlas: clamped.
-        // The colour's alpha holds HDR's emission level (`mesher::EMISSION_BITS`): packs get 1.
+        // The vertex alpha retains HDR flags for normal rendering; shader AO is
+        // reconstructed exactly from the sidecar below, not borrowed from those bits.
         let body = format!(
             "    vec4 hz_origin = {origin};\n    \
              uint hz_layer = hz_v_layer & 32767u;\n    \
@@ -246,7 +250,10 @@ impl PackAtlas {
                 .map(|&(n, v)| (n.to_owned(), v.to_owned()))
                 .collect(),
             after: String::new(),
-            terrain_lighting: Some(horizon_shaders::TerrainLighting::default()),
+            terrain_lighting: Some(horizon_shaders::TerrainLighting {
+                separate_ao: self.separate_ao,
+                ..Default::default()
+            }),
             alpha_test: None,
         }
     }
@@ -327,5 +334,53 @@ mod tests {
         // Layer 4 (second array, its second layer) is in row 1, column 1.
         assert_eq!([red(0, 0), red(2, 0), red(4, 0)], [0, 40, 80]);
         assert_eq!([red(1, 3), red(3, 2), red(5, 2)], [120, 160, 0]);
+    }
+
+    #[test]
+    fn terrain_inputs_separate_ao_uses_metadata_not_hdr_alpha() {
+        let instance = crate::gfx::test_gpu::instance();
+        let Ok(adapter) = pollster::block_on(instance.request_adapter(&Default::default())) else {
+            return;
+        };
+        let (device, _) = pollster::block_on(adapter.request_device(&Default::default())).unwrap();
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: None,
+            size: wgpu::Extent3d {
+                width: 16,
+                height: 16,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&Default::default());
+        let mut atlas = PackAtlas {
+            texture,
+            view,
+            columns: 1,
+            sprite: 16,
+            split: 1,
+            separate_ao: false,
+        };
+        let inputs_default = atlas.terrain_inputs(false);
+        assert!(
+            inputs_default
+                .body
+                .contains("hz_Color = vec4(hz_v_color.rgb, 1.0);")
+        );
+
+        atlas.separate_ao = true;
+        let inputs_separate = atlas.terrain_inputs(false);
+        assert!(inputs_separate.terrain_lighting.unwrap().separate_ao);
+        assert!(inputs_separate.body.contains("if(hz_separate_ao)"));
+        assert!(
+            inputs_separate
+                .body
+                .contains("hz_Color = vec4(hz_v_color.rgb, 1.0);")
+        );
     }
 }

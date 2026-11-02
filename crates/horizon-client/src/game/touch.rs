@@ -16,6 +16,7 @@ use winit::{
         DeviceId, ElementState, MouseButton, MouseScrollDelta, Touch, TouchPhase, WindowEvent,
     },
     keyboard::KeyCode,
+    window::WindowId,
 };
 
 /// GUI pixels a finger drags over a menu for one line of scrolling.
@@ -24,6 +25,9 @@ const SCROLL_LINE: f32 = 12.0;
 #[derive(Default)]
 pub(super) struct TouchInput {
     fingers: Touches,
+    /// A pointer event derived from a finger; the trace records the original
+    /// touch once, not this translation a second time.
+    synthetic: bool,
     /// A touch has been seen: the controls are drawn (from the start on iPhone and iPad).
     seen: bool,
     /// The last input device controls only the visibility of touch overlays.
@@ -467,6 +471,21 @@ impl Game<'_> {
         }
     }
 
+    pub(super) fn touch_synthetic_input(&self) -> bool {
+        self.touch.synthetic
+    }
+
+    fn touch_window_event(
+        &mut self,
+        event_loop: &dyn EventLoopCtl,
+        id: WindowId,
+        event: WindowEvent,
+    ) {
+        let previous = std::mem::replace(&mut self.touch.synthetic, true);
+        self.handle_window_event(event_loop, id, event, super::input_trace::InputOrigin::Game);
+        self.touch.synthetic = previous;
+    }
+
     fn touch_pointer(&mut self, event_loop: &dyn EventLoopCtl, at: (f32, f32)) {
         let (Some(id), Some(batch)) = (self.window.as_ref().map(|w| w.id()), self.screen_batch())
         else {
@@ -475,7 +494,7 @@ impl Game<'_> {
         let at = self.screen_point(at);
         let position =
             PhysicalPosition::new(f64::from(at.0 * batch.scale), f64::from(at.1 * batch.scale));
-        self.handle_window_event(
+        self.touch_window_event(
             event_loop,
             id,
             WindowEvent::CursorMoved {
@@ -494,7 +513,7 @@ impl Game<'_> {
         } else {
             ElementState::Released
         };
-        self.handle_window_event(
+        self.touch_window_event(
             event_loop,
             id,
             WindowEvent::MouseInput {
@@ -509,7 +528,7 @@ impl Game<'_> {
         let Some(id) = self.window.as_ref().map(|w| w.id()) else {
             return;
         };
-        self.handle_window_event(
+        self.touch_window_event(
             event_loop,
             id,
             WindowEvent::MouseWheel {

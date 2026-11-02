@@ -1,13 +1,7 @@
 //! Shared nearest-sampled sprite array for block and item textures.
 use crate::Result;
 use horizon_assets::animation::{AnimationClip, AnimationMetadata};
-use std::{
-    collections::BTreeMap,
-    fs::{self, File},
-    io::BufReader,
-    path::Path,
-    sync::Arc,
-};
+use std::{collections::BTreeMap, path::Path, sync::Arc};
 
 #[derive(Clone)]
 pub struct SpriteAnimation {
@@ -478,7 +472,9 @@ impl Sprites {
         per_tile: bool,
     ) -> Result<Vec<Option<u32>>> {
         let path = crate::atlas_sources::texture_path(root, name, "textures");
-        let metadata = match fs::read_to_string(path.with_extension("png.mcmeta")) {
+        let metadata = match horizon_core::prepared_files::read_to_string(
+            &path.with_extension("png.mcmeta"),
+        ) {
             Ok(text) => Some(serde_json::from_str::<
                 BTreeMap<String, Box<serde_json::value::RawValue>>,
             >(&text)?),
@@ -594,7 +590,9 @@ impl Sprites {
         Self::decode_file(&path, name)
     }
     fn decode_file(path: &Path, name: &str) -> Result<crate::sprite_cache::Decoded> {
-        let metadata = match fs::read_to_string(path.with_extension("png.mcmeta")) {
+        let metadata = match horizon_core::prepared_files::read_to_string(
+            &path.with_extension("png.mcmeta"),
+        ) {
             Ok(text) => Some(serde_json::from_str::<
                 BTreeMap<String, Box<serde_json::value::RawValue>>,
             >(&text)?),
@@ -756,9 +754,12 @@ impl Sprites {
     }
 }
 
-/// A PNG's width, height and pixels as RGBA.
+/// A PNG's width, height and pixels as RGBA. From the prepared data file
+/// when it holds the texture: no file opened per texture, nor for its absent
+/// LabPBR maps.
 fn read_rgba(path: &Path) -> Result<(u32, u32, Vec<u8>)> {
-    let mut decoder = png::Decoder::new(BufReader::new(File::open(path)?));
+    let bytes = horizon_core::prepared_files::read(path)?;
+    let mut decoder = png::Decoder::new(std::io::Cursor::new(bytes));
     decoder.ignore_checksums(true);
     decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
     let mut reader = decoder.read_info()?;
@@ -860,6 +861,7 @@ pub(crate) fn sprite_mipmap_limit(requested: u32, size: u32, minimum: u32, avail
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs::{self, File};
     /// A tiny valid PNG stream with a large, CRC-correct IHDR. Pixel decode
     /// would fail on its short IDAT; the allocation guard must reject first.
     fn png_with_canvas(color: png::ColorType, width: u32, height: u32) -> Vec<u8> {

@@ -15,6 +15,8 @@ ORIGINAL_JDK_TOOLS = {
     "tools/regex_reference/JavaCaseMappings.java",
     "tools/regex_reference/JavaPropertyRanges.java",
 }
+# Prepared game-data bundle; never publish Mojang data.
+PRIVATE_NAMES = {"horizon-data.bin"}
 
 
 def prohibited(path):
@@ -29,7 +31,11 @@ def prohibited(path):
     # Original Horizon mod sources may also be tracked.
     if parsed.suffix == ".java" and path.startswith(("mods/horizon/src/", "mods/horizon-lab/src/")):
         return not ("/dev/horizonlab/" in path)
-    return bool(parsed.parts and parsed.parts[0] in PRIVATE_ROOTS) or parsed.suffix.lower() in PRIVATE_EXTENSIONS
+    return (
+        bool(parsed.parts and parsed.parts[0] in PRIVATE_ROOTS)
+        or parsed.suffix.lower() in PRIVATE_EXTENSIONS
+        or parsed.name in PRIVATE_NAMES
+    )
 
 
 def paths_in_repository(history=False, revisions=None):

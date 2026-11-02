@@ -3,6 +3,8 @@ use super::*;
 /// The settings the Extras page shows, one per row.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Item {
+    ReproKeys,
+    WheelCyclesSettings,
     Fullbright,
     HideBlockParticles,
     UiSoundReserve,
@@ -80,6 +82,7 @@ pub fn rows() -> Vec<Result<Item, &'static str>> {
         Ok(UiSoundReserve),
         Ok(ChatAnimation),
         Ok(ChatIndicator),
+        Ok(WheelCyclesSettings),
     ]
 }
 /// "1 block", "2 blocks", "½ block".
@@ -100,6 +103,8 @@ fn next<T: Copy + PartialEq>(all: &[T], current: T, back: bool) -> T {
 impl Item {
     fn shared(self) -> Option<super::desktop_ui::Item> {
         Some(match self {
+            Self::ReproKeys => super::desktop_ui::Item::ReproKeys,
+            Self::WheelCyclesSettings => super::desktop_ui::Item::WheelCyclesSettings,
             Self::Fullbright => super::desktop_ui::Item::Fullbright,
             Self::DynamicLights => super::desktop_ui::Item::DynamicLights,
             Self::OwnNameTag => super::desktop_ui::Item::OwnNameTag,
@@ -130,7 +135,9 @@ impl Item {
 
     pub fn caption(self) -> &'static str {
         match self {
-            Item::HideBlockParticles
+            Item::ReproKeys
+            | Item::WheelCyclesSettings
+            | Item::HideBlockParticles
             | Item::UiSoundReserve
             | Item::ChatAnimation
             | Item::ChatIndicator
@@ -168,7 +175,8 @@ impl Item {
         use self::Item::*;
         Some(match self {
             ChatIndicator => ChatAnimation,
-            HideBlockParticles | UiSoundReserve | ChatAnimation | Splitscreen => return None,
+            HideBlockParticles | UiSoundReserve | ChatAnimation | Splitscreen | ReproKeys
+            | WheelCyclesSettings => return None,
             ZoomKey | ZoomLevel | ZoomSmooth | ZoomSensitivity => Zoom,
             MinimapCorner | MinimapSize | MinimapShape | MinimapZoom | MinimapRotate => Minimap,
             FpsCorner | FpsLows => Fps,
@@ -184,7 +192,9 @@ impl Item {
     /// What the row says under its caption.
     pub fn description(self) -> &'static str {
         match self {
-            Item::HideBlockParticles
+            Item::ReproKeys
+            | Item::WheelCyclesSettings
+            | Item::HideBlockParticles
             | Item::UiSoundReserve
             | Item::ChatAnimation
             | Item::ChatIndicator
@@ -250,7 +260,9 @@ impl Item {
     /// On/off items and their value.
     pub fn switch(self, e: &Extras) -> Option<bool> {
         Some(match self {
-            Item::HideBlockParticles
+            Item::ReproKeys
+            | Item::WheelCyclesSettings
+            | Item::HideBlockParticles
             | Item::UiSoundReserve
             | Item::ChatAnimation
             | Item::ChatIndicator
@@ -302,7 +314,9 @@ impl Item {
     /// A click (`back` for the right button). The zoom key binds instead.
     pub fn cycle(self, e: &mut Extras, back: bool) {
         match self {
-            Item::HideBlockParticles
+            Item::ReproKeys
+            | Item::WheelCyclesSettings
+            | Item::HideBlockParticles
             | Item::UiSoundReserve
             | Item::ChatAnimation
             | Item::ChatIndicator

@@ -91,7 +91,7 @@ jobs:
           python3 - <<'PYASSETS'
           import zipfile
           with zipfile.ZipFile('Horizon-game-unsigned.ipa') as ipa:
-              if any('horizon-resources.json' in name for name in ipa.namelist()):
+              if any('horizon-resources.json' in name or name.rsplit('/', 1)[-1] == 'horizon-data.bin' for name in ipa.namelist()):
                   raise SystemExit('::error::the .ipa carries prepared vanilla assets; refusing to publish it')
           PYASSETS
       - uses: actions/upload-artifact@v4
