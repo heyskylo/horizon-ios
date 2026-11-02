@@ -177,7 +177,12 @@ fn real_packs_read() {
                 clouds: Some(terrain.clone()),
                 weather: Some(terrain.clone()),
                 lines: Some(terrain.clone()),
-                hand: Some(terrain.clone()),
+                // As the game's hand (`pack_hand::inputs`): it may read `currentRenderedItemId`
+                // undeclared.
+                hand: Some(horizon_shaders::GbuffersInputs {
+                    item_id_declared: true,
+                    ..terrain.clone()
+                }),
                 terrain_geometry: Some(horizon_shaders::GeometryInputs {
                     inputs: horizon_shaders::GbuffersInputs {
                         declarations: format!(

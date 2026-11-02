@@ -252,6 +252,7 @@ impl PackAtlas {
                 .collect(),
             after: String::new(),
             alpha_test: None,
+            item_id_declared: false,
         }
     }
 }

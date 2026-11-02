@@ -134,6 +134,11 @@ pub(super) struct PackIds {
     /// −1, or 0 without the file (5.3).
     items: HashMap<String, i32>,
     missing_item: i32,
+    /// `currentRenderedItemId` of each block item (`StateFacts::item` of its block's default
+    /// state): that state's `block.properties` id, or 0.
+    block_items: HashMap<String, i32>,
+    /// Whether the pack has `item.properties` (`currentRenderedItemId` of an item it lacks).
+    item_file: bool,
     /// `oldHandLight` (3.2): the first held item and light are those of the brighter hand.
     old_hand_light: bool,
     /// `vignette`: `false` hides the game's vignette over the pack's image.
@@ -248,7 +253,11 @@ impl Game<'_> {
                             &Properties::parse(text.as_deref().unwrap_or_default(), &macros),
                             "item",
                         );
+                        let block_items =
+                            block_item_ids(self.res.facts(), self.pack.assets.registry, &ids);
                         self.pack_ids = Some(PackIds {
+                            block_items,
+                            item_file: text.is_some(),
                             items: items.plain(),
                             missing_item: if text.is_some() { -1 } else { 0 },
                             // OQ-21: on unless the pack turns it off.
@@ -445,6 +454,17 @@ impl Game<'_> {
         self.settings.vignette && self.pack_ids.as_ref().is_none_or(|ids| ids.vignette)
     }
 
+    /// `currentRenderedItemId` of a held `item`, [`rendered_item_id`]'s; 0 without a pack.
+    pub(super) fn rendered_item_id(&self, item: &str) -> i32 {
+        self.pack_ids.as_ref().map_or(0, |ids| {
+            rendered_item_id(
+                ids.block_items.get(item).copied(),
+                ids.items.get(item).copied(),
+                ids.item_file,
+            )
+        })
+    }
+
     /// `heldItemId(2)` and `heldBlockLightValue(2)`: main hand, then off hand (5.2, 5.3).
     fn held_for_pack(&mut self) -> ([i32; 2], [i32; 2]) {
         if self.pack_ids.is_none() {
@@ -592,6 +612,41 @@ impl Game<'_> {
             _ => spans.push(span),
         }
     }
+}
+
+/// `currentRenderedItemId` of an item (Iris 1.11.7, observed with probe packs): a block item
+/// (`block`: its block's `block.properties` id, 0 when the file lacks it) reads that, whatever
+/// `item.properties` says of it; any other item its `item.properties` id (`item`), and one the
+/// file lacks 65535, or 0 when the pack has no `item.properties` (`item_file`).
+fn rendered_item_id(block: Option<i32>, item: Option<i32>, item_file: bool) -> i32 {
+    block.or(item).unwrap_or(if item_file { 65535 } else { 0 })
+}
+
+/// The block items' `currentRenderedItemId`: for each block's default state, the item it gives
+/// (`StateFacts::item`) takes the state's id in `ids`, or 0. A block named as its item wins over
+/// another block giving that item.
+fn block_item_ids(
+    facts: &horizon_client::blocks::BlockFacts,
+    registry: &horizon_world::registry::BlockRegistry,
+    ids: &BlockIds,
+) -> HashMap<String, i32> {
+    let mut out = HashMap::new();
+    for (i, state) in facts.states.iter().enumerate() {
+        let id = horizon_world::registry::BlockStateId(i as u32);
+        if &*state.item == "minecraft:air" || registry.default_state(&state.name) != Some(id) {
+            continue;
+        }
+        let value = registry
+            .state(id)
+            .and_then(|s| ids.id(&s.name, |k| s.properties.get(k).map(String::as_str)))
+            .unwrap_or(0);
+        if state.item == state.name {
+            out.insert(state.item.to_string(), value);
+        } else {
+            out.entry(state.item.to_string()).or_insert(value);
+        }
+    }
+    out
 }
 
 /// Spans for a native mod (`native_render::RenderNeeds::entity_spans`), without a pack.
@@ -811,6 +866,27 @@ mod emission_tests {
             terrain_table(&[10, -1, 20, 1], &[14, 0]),
             [10, -1, 14, 20, 1, 0]
         );
+    }
+}
+
+#[cfg(test)]
+mod rendered_item_tests {
+    use super::rendered_item_id;
+
+    /// Iris 1.11.7's values (probe packs of ours): a block item reads its block's id, and 0 when
+    /// `block.properties` lacks it even if `item.properties` names it (oak planks as item 15);
+    /// other items read their `item.properties` id, or 65535 when the file lacks them, and 0
+    /// when the pack has no such file.
+    #[test]
+    fn a_held_item_reads_its_block_id_or_item_id() {
+        // Stone: block 21 and item 12.
+        assert_eq!(rendered_item_id(Some(21), Some(12), true), 21);
+        assert_eq!(rendered_item_id(Some(0), Some(15), true), 0);
+        assert_eq!(rendered_item_id(Some(0), None, true), 0);
+        assert_eq!(rendered_item_id(Some(0), None, false), 0);
+        assert_eq!(rendered_item_id(None, Some(11), true), 11);
+        assert_eq!(rendered_item_id(None, None, true), 65535);
+        assert_eq!(rendered_item_id(None, None, false), 0);
     }
 }
 

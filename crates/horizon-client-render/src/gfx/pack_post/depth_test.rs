@@ -315,7 +315,7 @@ fn check(sampler: &str, stage: Stage, scene: Scene, expected: [u8; 4]) {
     let hand = matches!(scene, Scene::Terrain { hand: true, .. });
     let water = matches!(scene, Scene::Terrain { water: true, .. } | Scene::WaterOnly);
     let inputs=horizon_shaders::GameInputs {
-        terrain:terrain.then(|| horizon_shaders::GbuffersInputs { declarations:"layout(location=0)in vec3 fixture_position;\n".into(),body:"hz_Vertex=vec4(fixture_position,1.0);hz_Color=vec4(1.0);hz_MultiTexCoord0=vec4(0.0);hz_MultiTexCoord1=vec4(240.0);hz_MultiTexCoord2=vec4(240.0);hz_Normal=vec3(0.0,0.0,1.0);\n".into(),attributes:vec![],after:String::new(),alpha_test:None }),
+        terrain:terrain.then(|| horizon_shaders::GbuffersInputs { declarations:"layout(location=0)in vec3 fixture_position;\n".into(),body:"hz_Vertex=vec4(fixture_position,1.0);hz_Color=vec4(1.0);hz_MultiTexCoord0=vec4(0.0);hz_MultiTexCoord1=vec4(240.0);hz_MultiTexCoord2=vec4(240.0);hz_Normal=vec3(0.0,0.0,1.0);\n".into(),attributes:vec![],after:String::new(),alpha_test:None,item_id_declared:false }),
         hand:hand.then(crate::gfx::pack_hand::inputs),..Default::default()
     };
     let mut post = gpu.load(
@@ -617,6 +617,7 @@ fn fixture_frame(hud: &HudBatch) -> Frame<'_> {
         celestial: &[],
         stars: None,
         hand: &[],
+        hand_items: &[],
         hand_fov_degrees: 70.0,
         screen: &[],
         pack: Default::default(),

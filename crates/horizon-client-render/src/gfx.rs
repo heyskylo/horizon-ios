@@ -719,6 +719,9 @@ pub struct Frame<'a> {
     pub stars: Option<(Mat4, f32)>,
     /// First-person hand and held item, drawn after clearing depth.
     pub hand: &'a [Vertex],
+    /// Where the arm and each held item start in `hand` (first vertex), with the
+    /// `currentRenderedItemId` a shader pack's `gbuffers_hand` reads for them.
+    pub hand_items: &'a [(u32, i32)],
     /// `CameraRenderState.hudFov`: the hand's own field of view
     /// (`GameRenderer.render3dHud`).
     pub hand_fov_degrees: f32,
