@@ -222,3 +222,151 @@ final class PackMutationTests: XCTestCase {
         XCTAssertEqual(events, ["disable", "delete"])
     }
 }
+
+@MainActor
+final class AutomaticGameFilesTests: XCTestCase {
+    private func temporarilyRemoveResourceMarker() -> () -> Void {
+        let marker = GameFolder.resources.appendingPathComponent("horizon-resources.json")
+        let previous = try? Data(contentsOf: marker)
+        try? FileManager.default.removeItem(at: marker)
+        return {
+            if let previous { try? previous.write(to: marker) }
+            else { try? FileManager.default.removeItem(at: marker) }
+        }
+    }
+
+    func testAutomaticSourceFailureNeedsExplicitRetry() async {
+        let restore = temporarilyRemoveResourceMarker()
+        defer { restore() }
+        var calls = 0
+        let model = GameFilesDownload(automaticSource: {
+            calls += 1
+            return ["error": "Fixture source is unavailable"]
+        })
+        model.link = "https://example.invalid/private.zip"
+        model.token = "private-test-token"
+        await model.startAutomatic()
+        XCTAssertEqual(model.state, .failed("Fixture source is unavailable"))
+        await model.startAutomaticallyIfNeeded()
+        XCTAssertEqual(calls, 1)
+        await model.startAutomatic()
+        XCTAssertEqual(calls, 2)
+        XCTAssertFalse(model.busy)
+        XCTAssertEqual(model.link, "https://example.invalid/private.zip")
+        XCTAssertEqual(model.token, "private-test-token")
+    }
+
+    func testCancelWhileResolvingSourceCannotStartLateDownload() async {
+        var resume: CheckedContinuation<[String: Any], Never>?
+        let model = GameFilesDownload(automaticSource: {
+            await withCheckedContinuation { resume = $0 }
+        })
+        let start = Task { await model.startAutomatic() }
+        while resume == nil { await Task.yield() }
+        XCTAssertTrue(model.busy)
+        model.cancel()
+        resume?.resume(returning: ["url": "https://example.invalid/must-not-fetch.zip"])
+        await start.value
+        XCTAssertEqual(model.state, .idle)
+        XCTAssertFalse(model.busy)
+    }
+
+    func testCancelledSetupTaskCannotStartLateDownload() async {
+        var resume: CheckedContinuation<[String: Any], Never>?
+        let model = GameFilesDownload(automaticSource: {
+            await withCheckedContinuation { resume = $0 }
+        })
+        let start = Task { await model.startAutomatic() }
+        while resume == nil { await Task.yield() }
+        start.cancel()
+        resume?.resume(returning: ["url": "http://127.0.0.1:1/must-not-fetch.zip"])
+        await start.value
+        XCTAssertEqual(model.state, .idle)
+        XCTAssertFalse(model.busy)
+    }
+
+    func testFilesArrivingDuringSourceLookupDoNotGetReplaced() async throws {
+        let marker = GameFolder.resources.appendingPathComponent("horizon-resources.json")
+        let previous = try? Data(contentsOf: marker)
+        try? FileManager.default.removeItem(at: marker)
+        defer {
+            if let previous { try? previous.write(to: marker) }
+            else { try? FileManager.default.removeItem(at: marker) }
+        }
+        var resume: CheckedContinuation<[String: Any], Never>?
+        let model = GameFilesDownload(automaticSource: {
+            await withCheckedContinuation { resume = $0 }
+        })
+        let start = Task { await model.startAutomaticallyIfNeeded() }
+        while resume == nil { await Task.yield() }
+        try FileManager.default.createDirectory(at: GameFolder.resources, withIntermediateDirectories: true)
+        try Data("manual-import-fixture".utf8).write(to: marker)
+        resume?.resume(returning: ["url": "http://127.0.0.1:1/must-not-fetch.zip"])
+        await start.value
+        XCTAssertEqual(model.state, .done("Game files are already installed."))
+        XCTAssertEqual(try Data(contentsOf: marker), Data("manual-import-fixture".utf8))
+        XCTAssertFalse(model.busy)
+    }
+
+    func testAlreadyInstalledFilesDoNotDownload() async throws {
+        let marker = GameFolder.resources.appendingPathComponent("horizon-resources.json")
+        let previous = try? Data(contentsOf: marker)
+        try FileManager.default.createDirectory(at: GameFolder.resources, withIntermediateDirectories: true)
+        try Data("{}".utf8).write(to: marker)
+        defer {
+            if let previous { try? previous.write(to: marker) }
+            else { try? FileManager.default.removeItem(at: marker) }
+        }
+        var calls = 0
+        let model = GameFilesDownload(automaticSource: { calls += 1; return [:] })
+        await model.startAutomaticallyIfNeeded()
+        XCTAssertEqual(calls, 0)
+        XCTAssertEqual(model.state, .idle)
+    }
+
+    func testAutomaticDownloadUsesResourceImporterAndKeepsCustomCredentials() async throws {
+        let restore = temporarilyRemoveResourceMarker()
+        defer { restore() }
+        guard let url = ProcessInfo.processInfo.environment["HORIZON_DOWNLOAD_FIXTURE_URL"] else {
+            throw XCTSkip("Requires the loopback download fixture")
+        }
+        let imported = expectation(description: "Downloaded fixture reaches importer")
+        let model = GameFilesDownload(importArchive: { line in
+            XCTAssertTrue(line.hasPrefix("import-game-files "))
+            let file = URL(fileURLWithPath: String(line.dropFirst("import-game-files ".count)))
+            XCTAssertEqual(try? Data(contentsOf: file), Data("horizon-download-fixture".utf8))
+            imported.fulfill()
+            return ["ok": true, "kind": "resources"]
+        }, automaticSource: { ["url": url] })
+        model.link = "https://example.invalid/private.zip"
+        model.token = "private-test-token"
+        await model.startAutomatic()
+        await fulfillment(of: [imported], timeout: 10)
+        if case .done = model.state {} else { XCTFail("Download did not finish: \(model.state)") }
+        XCTAssertEqual(model.link, "https://example.invalid/private.zip")
+        XCTAssertEqual(model.token, "private-test-token")
+    }
+
+    func testFilesArrivingDuringTransferDoNotGetReplaced() async throws {
+        let restore = temporarilyRemoveResourceMarker()
+        defer { restore() }
+        guard let url = ProcessInfo.processInfo.environment["HORIZON_DOWNLOAD_FIXTURE_URL"] else {
+            throw XCTSkip("Requires the loopback download fixture")
+        }
+        var imports = 0
+        let model = GameFilesDownload(importArchive: { _ in
+            imports += 1
+            return ["ok": true, "kind": "resources"]
+        }, automaticSource: { ["url": url + "?delay=1"] })
+        await model.startAutomatic()
+        let marker = GameFolder.resources.appendingPathComponent("horizon-resources.json")
+        try FileManager.default.createDirectory(at: GameFolder.resources, withIntermediateDirectories: true)
+        try Data("manual-transfer-fixture".utf8).write(to: marker)
+        for _ in 0..<100 where model.busy {
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        XCTAssertEqual(imports, 0)
+        XCTAssertEqual(model.state, .done("Game files are already installed."))
+        XCTAssertEqual(try Data(contentsOf: marker), Data("manual-transfer-fixture".utf8))
+    }
+}

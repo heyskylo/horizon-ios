@@ -348,20 +348,65 @@ impl AppendSelection {
     }
 }
 
+/// The longest prefix fitting Java's `String.length` budget (UTF-16 units).
+/// `EditBox.insertText` backs off when its limit would split a surrogate pair.
+pub fn utf16_prefix(text: &str, max_units: usize) -> &str {
+    let mut remaining = max_units;
+    for (byte, character) in text.char_indices() {
+        let units = character.len_utf16();
+        if units > remaining {
+            return &text[..byte];
+        }
+        remaining -= units;
+    }
+    text
+}
+
+/// Java substring-to-UTF-8 at a UTF-16 limit. Unlike `insertText`, `setValue`
+/// and chat normalization may split a pair: Java's UTF-8 encoder writes '?' for
+/// that unpaired surrogate. Preserve its wire/signature representation in Rust.
+pub fn utf16_truncate_utf8(text: &str, max_units: usize) -> String {
+    let prefix = utf16_prefix(text, max_units);
+    let mut result = prefix.to_owned();
+    if prefix.len() < text.len() && prefix.encode_utf16().count() < max_units {
+        result.push('?');
+    }
+    result
+}
+
 /// `EditBox.insertText` for a field without a cursor: the filtered text,
-/// cut to the room left by `max_chars`.
+/// cut to the UTF-16 room left by `max_chars` (Java's maximum string length).
 pub fn append_limited(value: &mut String, text: &str, max_chars: usize) -> bool {
-    let room = max_chars.saturating_sub(value.chars().count());
+    let room = max_chars.saturating_sub(value.encode_utf16().count());
     if room == 0 {
         return false;
     }
-    value.extend(filter_text(text, false).chars().take(room));
+    let filtered = filter_text(text, false);
+    value.push_str(utf16_prefix(&filtered, room));
     true
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn edit_box_limits_count_utf16_without_splitting_supplementary_characters() {
+        assert_eq!(utf16_prefix("a🦀b", 2), "a");
+        assert_eq!(utf16_prefix("a🦀b", 3), "a🦀");
+        assert_eq!(utf16_prefix("日本語", 2), "日本");
+        assert_eq!(utf16_prefix("🦀a", 1), "");
+        assert_eq!(utf16_truncate_utf8("a🦀b", 2), "a?");
+        assert_eq!(utf16_truncate_utf8("🦀", 0), "");
+        assert_eq!(utf16_truncate_utf8("a🦀b", 3), "a🦀");
+        let mut value = String::from("a🦀");
+        assert!(append_limited(&mut value, "b🦀c", 5));
+        assert_eq!(value, "a🦀b");
+        assert_eq!(value.encode_utf16().count(), 4);
+        assert!(append_limited(&mut value, "z", 5));
+        assert!(!append_limited(&mut value, "x", 5));
+        assert_eq!(value, "a🦀bz");
+    }
 
     #[test]
     fn altgr_types_text_where_it_is_ctrl_alt() {

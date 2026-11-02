@@ -994,11 +994,11 @@ impl Game<'_> {
         }
     }
 
-    /// A text field has keyboard focus: chat, a sign, a book being written,
+    /// A text field has keyboard focus: chat, a command block, a sign, a book being written,
     /// a search box, the anvil's name, the title screens' and the options'
     /// fields, the LAN port.
     fn pad_typing(&self) -> bool {
-        (self.screen == Screen::Chat && self.title.is_none())
+        (matches!(self.screen, Screen::Chat | Screen::CommandBlock) && self.title.is_none())
             || self.sign_edit.is_some()
             || matches!(self.book, Some(super::books::BookScreen::Edit { .. }))
             || (self.screen == Screen::Creative && self.creative_screen.tab().search)
@@ -1066,6 +1066,11 @@ impl Game<'_> {
             match text {
                 Some(t) => self.chat_type(t),
                 None => self.chat_key_code(key.expect("a key"), None),
+            }
+        } else if self.screen == Screen::CommandBlock && self.title.is_none() {
+            match text {
+                Some(t) => self.command_block_type(t),
+                None => self.command_block_key_code(key.expect("a key"), None, None),
             }
         } else if self.sign_edit.is_some() {
             self.sign_input(key, text);

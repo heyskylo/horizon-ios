@@ -3,6 +3,8 @@ use super::*;
 
 pub(super) struct WorldRequest {
     pub save_root: PathBuf,
+    pub allowlist: PathBuf,
+    pub session_lock: Option<horizon_client::save::SessionLock>,
     pub folder: String,
     pub name: Option<String>,
     pub seed: Option<i64>,
@@ -33,6 +35,8 @@ impl WorldRequest {
     ) -> Result<Self> {
         Ok(Self {
             save_root: std::env::current_dir()?.join("saves").join(folder),
+            allowlist: std::env::current_dir()?.join("saves/allowed_symlinks.txt"),
+            session_lock: None,
             folder: folder.to_owned(),
             name: name.map(str::to_owned),
             seed,
@@ -58,6 +62,8 @@ impl WorldRequest {
         );
         let Self {
             save_root,
+            allowlist,
+            session_lock,
             folder,
             name,
             seed,
@@ -66,32 +72,17 @@ impl WorldRequest {
         } = self;
         let name = name.as_deref();
         let create = create.as_ref();
-        // openWorldLoadLevelData: level data that does not read is RecoverWorldDataScreen's to
-        // handle (the title screen shows it); a world opened another way must not become a
-        // new one with a random seed under the same name.
-        // The dedicated server's `Main` takes level.dat_old without asking
-        // (`getUnfixedDataTagWithFallback`): there is no world list to recover from.
-        if options.dedicated.is_some()
-            && horizon_client::save::fall_back_to_level_dat_old(&save_root)
-        {
-            log::warn!(
-                "Horizon: level.dat of \"{folder}\" did not read; level.dat_old took its place"
-            );
-        }
-        if let Some(issue) = horizon_client::save::level_data_needs_recovery(&save_root) {
-            let why = match issue {
-                horizon_client::save::DatIssue::Missing => "level.dat is missing".to_owned(),
-                horizon_client::save::DatIssue::Unreadable(why) => why,
-            };
-            return Err(format!(
-                "Failed to load world \"{folder}\": its level data does not read ({why}). \
-                 Open it from the world list to try restoring level.dat_old."
-            )
-            .into());
-        }
-        horizon_client::save::upgrade_older_world_with(&save_root, upgrade)?;
-        horizon_client::save::migrate_legacy(&save_root)?;
-        let session_lock = horizon_client::save::SessionLock::acquire(&save_root)?;
+        let session_lock = match session_lock {
+            Some(lock) => lock,
+            None => horizon_client::save::SessionLock::acquire_validated(&save_root, &allowlist)?,
+        };
+        let session_lock = prepare_world_storage(
+            &save_root,
+            &folder,
+            options.dedicated.is_some(),
+            upgrade,
+            session_lock,
+        )?;
         // RandomSequences: the world's data/minecraft/random_sequences.dat.
         let rand_sequences =
             horizon_client::save::read_dat(&save_root.join("data/minecraft/random_sequences.dat"))
@@ -185,6 +176,39 @@ impl WorldRequest {
             locator,
         })
     }
+}
+
+/// LevelStorageAccess creates its DirectoryLock before reading/recovering or upgrading level data.
+/// Keep that ownership through every mutation and return it with the prepared world.
+fn prepare_world_storage(
+    save_root: &std::path::Path,
+    folder: &str,
+    dedicated: bool,
+    upgrade: &horizon_world::datafix::progress::UpgradeProgress,
+    session_lock: horizon_client::save::SessionLock,
+) -> Result<horizon_client::save::SessionLock> {
+    // openWorldLoadLevelData: level data that does not read is RecoverWorldDataScreen's to
+    // handle (the title screen shows it); a world opened another way must not become a
+    // new one with a random seed under the same name.
+    // The dedicated server's `Main` takes level.dat_old without asking
+    // (`getUnfixedDataTagWithFallback`): there is no world list to recover from.
+    if dedicated && horizon_client::save::fall_back_to_level_dat_old(save_root) {
+        log::warn!("Horizon: level.dat of \"{folder}\" did not read; level.dat_old took its place");
+    }
+    if let Some(issue) = horizon_client::save::level_data_needs_recovery(save_root) {
+        let why = match issue {
+            horizon_client::save::DatIssue::Missing => "level.dat is missing".to_owned(),
+            horizon_client::save::DatIssue::Unreadable(why) => why,
+        };
+        return Err(format!(
+            "Failed to load world \"{folder}\": its level data does not read ({why}). \
+         Open it from the world list to try restoring level.dat_old."
+        )
+        .into());
+    }
+    horizon_client::save::upgrade_older_world_with(save_root, upgrade)?;
+    horizon_client::save::migrate_legacy(save_root)?;
+    Ok(session_lock)
 }
 
 pub(super) struct WorldLoader {
@@ -541,6 +565,103 @@ pub(super) fn make_streaming(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn storage_fixture(label: &str) -> std::path::PathBuf {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "horizon-storage-{label}-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    #[test]
+    fn locked_world_cannot_be_recovered_or_migrated() {
+        use horizon_world::nbt::Tag;
+        let root = storage_fixture("locked");
+        std::fs::write(root.join("level.dat"), b"broken current data").unwrap();
+        horizon_client::save::write_dat(
+            &root.join("level.dat_old"),
+            Tag::compound([(
+                "Data",
+                Tag::compound([
+                    ("DataVersion", Tag::Int(horizon_world::DATA_VERSION)),
+                    ("LevelName", Tag::String("recovery fixture".into())),
+                ]),
+            )]),
+        )
+        .unwrap();
+        std::fs::create_dir(root.join("region")).unwrap();
+        std::fs::write(root.join("region/r.0.0.mca"), b"legacy region").unwrap();
+        let old = std::fs::read(root.join("level.dat_old")).unwrap();
+        let held = horizon_client::save::SessionLock::acquire(&root).unwrap();
+        let progress = horizon_world::datafix::progress::UpgradeProgress::new();
+        let error = prepare_storage_fixture(&root, true, &progress)
+            .err()
+            .unwrap();
+        assert!(error.to_string().contains("already open"));
+        assert_eq!(
+            std::fs::read(root.join("level.dat")).unwrap(),
+            b"broken current data"
+        );
+        assert_eq!(std::fs::read(root.join("level.dat_old")).unwrap(), old);
+        assert!(root.join("region/r.0.0.mca").is_file());
+        assert!(!root.join("dimensions").exists());
+        drop(held);
+        let opened = prepare_storage_fixture(&root, true, &progress).unwrap();
+        assert!(horizon_client::save::level_data_needs_recovery(&root).is_none());
+        assert!(
+            root.join("dimensions/minecraft/overworld/region/r.0.0.mca")
+                .is_file()
+        );
+        drop(opened);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    fn prepare_storage_fixture(
+        root: &std::path::Path,
+        dedicated: bool,
+        progress: &horizon_world::datafix::progress::UpgradeProgress,
+    ) -> Result<horizon_client::save::SessionLock> {
+        let lock = horizon_client::save::SessionLock::acquire_validated(
+            root,
+            &root.join("allowed_symlinks.txt"),
+        )?;
+        prepare_world_storage(root, "fixture", dedicated, progress, lock)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn forbidden_session_link_is_rejected_before_target_is_written() {
+        let root = storage_fixture("symlink");
+        let target = root.with_extension("sentinel");
+        std::fs::write(&target, b"must survive opening").unwrap();
+        std::os::unix::fs::symlink(&target, root.join("session.lock")).unwrap();
+        let progress = horizon_world::datafix::progress::UpgradeProgress::new();
+        let error = prepare_storage_fixture(&root, false, &progress)
+            .err()
+            .unwrap();
+        assert!(error.to_string().contains("forbidden symbolic links"));
+        assert_eq!(std::fs::read(&target).unwrap(), b"must survive opening");
+        std::fs::remove_dir_all(root).unwrap();
+        std::fs::remove_file(target).unwrap();
+    }
+
+    #[test]
+    fn failed_preparation_releases_world_lock() {
+        let root = storage_fixture("failed");
+        std::fs::write(root.join("level.dat"), b"broken current data").unwrap();
+        let progress = horizon_world::datafix::progress::UpgradeProgress::new();
+        assert!(prepare_storage_fixture(&root, false, &progress).is_err());
+        assert!(!horizon_client::save::SessionLock::is_locked(&root));
+        let retry = horizon_client::save::SessionLock::acquire(&root).unwrap();
+        drop(retry);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn used_preload_is_still_drained_before_shutdown() {

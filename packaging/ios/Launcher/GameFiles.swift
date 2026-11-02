@@ -2,11 +2,8 @@ import Security
 import SwiftUI
 import UIKit
 
-/// Game files from a link: the archive `horizon-prepare` made on the player's computer (or a world, or a
-/// resource pack), downloaded into `Documents` and handed to the game's own importer (`import PATH`, which
-/// checks and unpacks it as the Wi-Fi and cable routes do). The phone cannot prepare the files itself, since
-/// that runs Mojang's code on a JDK, so the link is wherever the player keeps their own copy: their computer
-/// on this network, or a server of their own behind a token.
+/// Prepared game files downloaded automatically on first launch, or imported from a custom link.
+/// Both routes use the game's checked importer. Raw Java assets are prepared on a computer.
 @MainActor
 final class GameFilesDownload: NSObject, ObservableObject {
     enum State: Equatable {
@@ -23,16 +20,26 @@ final class GameFilesDownload: NSObject, ObservableObject {
 
     typealias ImportArchive = @MainActor (String) async -> [String: Any]
     private let importArchive: ImportArchive
+    private let automaticSource: @MainActor () async -> [String: Any]
+    private var automaticAttempted = false
+    // Same packed-ZIP limit as horizon_client::import::MAX_PACKED. Enforce
+    // it during transfer, before an oversized archive fills the sandbox.
+    private nonisolated static let maximumArchiveBytes: Int64 = 2 << 30
+    private var resourcesOnly = false
+    private var resolvingAutomatic = false
     private var attempt = UUID()
     private var session: URLSession?
 
-    init(importArchive: @escaping ImportArchive = { await Bridge.send($0) }) {
+    init(importArchive: @escaping ImportArchive = { await Bridge.send($0) },
+         automaticSource: @escaping @MainActor () async -> [String: Any] = { await Bridge.send("game-files-source") }) {
         self.importArchive = importArchive
+        self.automaticSource = automaticSource
         super.init()
     }
     private var background: UIBackgroundTaskIdentifier = .invalid
 
     var busy: Bool {
+        if resolvingAutomatic { return true }
         switch state {
         case .downloading, .installing: return true
         default: return false
@@ -47,6 +54,7 @@ final class GameFilesDownload: NSObject, ObservableObject {
     func start() {
         guard !busy else { return }
         attempt = UUID()
+        resourcesOnly = false
         let text = link.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let url = URL(string: text), let scheme = url.scheme?.lowercased(),
               scheme == "https" || scheme == "http", url.host != nil
@@ -57,10 +65,41 @@ final class GameFilesDownload: NSObject, ObservableObject {
         UserDefaults.standard.set(text, forKey: "gameFilesLink")
         let token = token.trimmingCharacters(in: .whitespacesAndNewlines)
         Keychain.write(token.isEmpty ? nil : token)
-        var request = URLRequest(url: url)
-        if !token.isEmpty {
-            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        begin(url: url, token: token.isEmpty ? nil : token)
+    }
+
+    /// First-run setup stays in the launcher; it starts no game or renderer.
+    func startAutomaticallyIfNeeded() async {
+        guard !GameFolder.hasGameFiles, !automaticAttempted, state == .idle, !busy else { return }
+        await startAutomatic()
+    }
+
+    func startAutomatic() async {
+        guard !busy else { return }
+        automaticAttempted = true
+        resourcesOnly = true
+        resolvingAutomatic = true
+        attempt = UUID()
+        let generation = attempt
+        state = .downloading(received: 0, total: 0)
+        let answer = await automaticSource()
+        guard generation == attempt else { return }
+        resolvingAutomatic = false
+        guard !Task.isCancelled else { state = .idle; return }
+        // A cable/manual import can finish while the source request is pending.
+        guard !GameFolder.hasGameFiles else { state = .done("Game files are already installed."); return }
+        guard let text = answer["url"] as? String, let url = URL(string: text),
+              ["https", "http"].contains(url.scheme?.lowercased() ?? ""), url.host != nil else {
+            state = .failed(answer.error ?? "The automatic download is unavailable. Retry or use a download link.")
+            return
         }
+        // A custom link's token belongs only to that link, never the public source.
+        begin(url: url, token: nil)
+    }
+
+    private func begin(url: URL, token: String?) {
+        var request = URLRequest(url: url)
+        if let token { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
         // A prepared tree is ~600 MB: ask for the time to finish if the player looks away.
         background = UIApplication.shared.beginBackgroundTask(withName: "Horizon game files") { [weak self] in
             let download = self
@@ -74,6 +113,7 @@ final class GameFilesDownload: NSObject, ObservableObject {
 
     func cancel() {
         attempt = UUID()
+        resolvingAutomatic = false
         session?.invalidateAndCancel()
         session = nil
         state = .idle
@@ -100,8 +140,15 @@ final class GameFilesDownload: NSObject, ObservableObject {
             state = .failed(error.localizedDescription)
             Haptics.failed()
         case let .success(file):
+            defer { try? FileManager.default.removeItem(at: file) }
+            // A manual/cable import can also finish after the HTTP transfer began.
+            guard !resourcesOnly || !GameFolder.hasGameFiles else {
+                state = .done("Game files are already installed.")
+                break
+            }
             state = .installing
-            let answer = await importArchive("import \(file.path)")
+            let command = resourcesOnly ? "import-game-files" : "import"
+            let answer = await importArchive("\(command) \(file.path)")
             guard generation == attempt else { return }
             if let error = answer.error {
                 state = .failed(error)
@@ -131,8 +178,15 @@ final class GameFilesDownload: NSObject, ObservableObject {
 extension GameFilesDownload: URLSessionDownloadDelegate {
     nonisolated func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didWriteData _: Int64,
                                 totalBytesWritten: Int64, totalBytesExpectedToWrite: Int64) {
+        let oversized = totalBytesWritten > Self.maximumArchiveBytes || totalBytesExpectedToWrite > Self.maximumArchiveBytes
+        if oversized { downloadTask.cancel() }
         Task { @MainActor in
             guard self.session === session else { return }
+            if oversized {
+                self.cancel()
+                self.state = .failed("The archive exceeds the 2 GiB game-file limit.")
+                return
+            }
             self.state = .downloading(received: totalBytesWritten, total: max(totalBytesExpectedToWrite, 0))
         }
     }
@@ -142,7 +196,9 @@ extension GameFilesDownload: URLSessionDownloadDelegate {
         // The file at `location` is gone once this returns: move it now, on this queue.
         let outcome: Result<URL, Error>
         let status = (downloadTask.response as? HTTPURLResponse)?.statusCode ?? 200
-        if !(200..<300).contains(status) {
+        if downloadTask.countOfBytesReceived > Self.maximumArchiveBytes || downloadTask.countOfBytesExpectedToReceive > Self.maximumArchiveBytes {
+            outcome = .failure(DownloadError("The archive exceeds the 2 GiB game-file limit."))
+        } else if !(200..<300).contains(status) {
             let reason = status == 401 || status == 403
                 ? "The server refused the download (\(status)): check the access token."
                 : "The server answered \(status) \(HTTPURLResponse.localizedString(forStatusCode: status))."
@@ -162,9 +218,11 @@ extension GameFilesDownload: URLSessionDownloadDelegate {
 
     nonisolated func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
         guard let error else { return }
+        let failure: Error = task.countOfBytesReceived > Self.maximumArchiveBytes || task.countOfBytesExpectedToReceive > Self.maximumArchiveBytes
+            ? DownloadError("The archive exceeds the 2 GiB game-file limit.") : error
         Task { @MainActor in
             guard self.session === session else { return }
-            await self.finished(.failure(error), from: session)
+            await self.finished(.failure(failure), from: session)
         }
     }
 }
@@ -218,28 +276,40 @@ struct GameFilesCard: View {
                 Text(missing ? "Game files needed" : "Download game files")
                     .font(Theme.pixel(18)).foregroundStyle(Theme.text)
             }
-            Text("""
-            Horizon plays with the files your own Minecraft: Java Edition makes. Prepare them on a computer \
-            (horizon-prepare, then pack them as a zip), put the zip somewhere this phone can reach, such as your \
-            computer on this Wi-Fi or a server of your own, and paste its link. Worlds and resource packs \
-            (.zip) work too.
-            """)
-            .font(Theme.sans(12)).foregroundStyle(Theme.textMuted)
-            .fixedSize(horizontal: false, vertical: true)
-
-            Field(title: "LINK", placeholder: "https://example.com/horizon-26.3.zip", text: $download.link,
-                  secure: false)
-            Field(title: "ACCESS TOKEN (OPTIONAL)", placeholder: "Sent as a Bearer token", text: $download.token,
-                  secure: true)
-
+            if missing {
+                Text("Horizon downloads and installs the game files automatically. Keep this screen open until setup finishes.")
+                    .font(Theme.sans(12)).foregroundStyle(Theme.textMuted)
+            }
             progress
 
             if download.busy {
                 SecondaryButton(title: "Cancel", action: download.cancel)
                     .disabled(download.state == .installing)
             } else {
-                PrimaryButton(title: "Download", icon: "arrow.down", action: download.start)
-                    .disabled(download.link.trimmingCharacters(in: .whitespaces).isEmpty)
+                if missing {
+                    PrimaryButton(title: "Download game files", icon: "arrow.down") {
+                        Task { await download.startAutomatic() }
+                    }
+                    .accessibilityIdentifier("launcher-download-game-files")
+                }
+            }
+            DisclosureGroup(missing ? "Use a download link instead" : "Download from a link") {
+                Text("""
+                Horizon plays with the files your own Minecraft: Java Edition makes. Prepare them on a computer \
+                (horizon-prepare, then pack them as a zip), put the zip somewhere this phone can reach, such as your \
+                computer on this Wi-Fi or a server of your own, and paste its link. Worlds and resource packs \
+                (.zip) work too.
+                """)
+                .font(Theme.sans(12)).foregroundStyle(Theme.textMuted)
+                .fixedSize(horizontal: false, vertical: true)
+
+                Field(title: "LINK", placeholder: "https://example.com/horizon-26.3.zip", text: $download.link,
+                      secure: false)
+                Field(title: "ACCESS TOKEN (OPTIONAL)", placeholder: "Sent as a Bearer token", text: $download.token,
+                      secure: true)
+
+                PrimaryButton(title: "Download from link", icon: "arrow.down", action: download.start)
+                    .disabled(download.busy || download.link.trimmingCharacters(in: .whitespaces).isEmpty)
             }
             Text("You can also send the zip from the game's own screen over Wi-Fi, or drop it into Horizon's folder in the Files app.")
                 .font(Theme.sans(11)).foregroundStyle(Theme.textFaint)

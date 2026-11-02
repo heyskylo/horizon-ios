@@ -181,9 +181,13 @@ class PublicationTests(unittest.TestCase):
                      "mods/horizon-lab/src/main/java/dev/horizonlab/HorizonLab.java"]:
             self.assertFalse(check_public_tree.prohibited(path), path)
         self.assertTrue(check_public_tree.prohibited("mods/horizon/src/main/java/net/minecraft/Client.java"))
-        for path in ["tools/JfrSummary.java", "tests/java/JfrFixture.java"]:
+        for path in ["tools/JfrSummary.java", "tests/java/JfrFixture.java",
+                     "tools/regex_reference/JavaBlockRanges.java",
+                     "tools/regex_reference/JavaCaseMappings.java",
+                     "tools/regex_reference/JavaPropertyRanges.java"]:
             self.assertFalse(check_public_tree.prohibited(path), path)
-        for path in ["tools/Minecraft.java", "tests/java/Client.java", ".local/tools/JfrSummary.java"]:
+        for path in ["tools/Minecraft.java", "tests/java/Client.java", ".local/tools/JfrSummary.java",
+                     "tools/regex_reference/RecoveredGame.java"]:
             self.assertTrue(check_public_tree.prohibited(path), path)
 
     def test_force_added_ignored_file_is_detected_in_index_and_history(self):

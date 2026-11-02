@@ -13,6 +13,9 @@ public func horizonLauncherPresent(_ submit: HorizonSubmit?) -> Bool {
     return true
 }
 
+// Presentation requests can overlap while the Rust bridge acknowledges them.
+private var presentationPending = false
+
 private func present(attempts: Int) {
     guard let root = gameViewController(), root.view.window != nil else {
         // Not on screen yet: try again shortly, for a couple of seconds at most.
@@ -24,9 +27,10 @@ private func present(attempts: Int) {
         return
     }
     // Already up: a second request (Quit Game pressed twice) changes nothing.
-    if root is LauncherHostingController {
+    if root is LauncherHostingController || presentationPending {
         return
     }
+    presentationPending = true
     let host = LauncherHostingController(rootView: AnyView(EmptyView()))
     host.rootView = AnyView(
         HomeView(onPlay: { [weak host] in
@@ -34,18 +38,29 @@ private func present(attempts: Int) {
             GameAudio.start()
             let scene = host.view.window?.windowScene
             host.dismiss(animated: true) {
-                // Back to the game's landscape (its own view controller allows nothing else).
-                turn(scene, to: .landscape)
-                Task { _ = await Bridge.send("launcher-visible false") }
+                Task { @MainActor in
+                    _ = await Bridge.send("launcher-visible false")
+                    turn(scene, to: .landscape)
+                }
             }
         })
 
     )
     host.modalPresentationStyle = .fullScreen
     host.modalTransitionStyle = .crossDissolve
-    root.present(host, animated: false) {
-        Task { _ = await Bridge.send("launcher-visible true") }
-        turn(host.view.window?.windowScene, to: UIDevice.current.userInterfaceIdiom == .pad ? .all : .portrait)
+    Task { @MainActor in
+        // iOS 16 can retain the game's landscape geometry if presentation and
+        // rotation race the underlying controller's supported-mask change.
+        _ = await Bridge.send("launcher-visible true")
+        guard root.view.window != nil else {
+            presentationPending = false
+            _ = await Bridge.send("launcher-visible false")
+            return
+        }
+        root.present(host, animated: false) {
+            presentationPending = false
+            turn(host.view.window?.windowScene, to: UIDevice.current.userInterfaceIdiom == .pad ? .all : .portrait)
+        }
     }
 }
 
@@ -53,13 +68,16 @@ private func present(attempts: Int) {
 func turn(_ scene: UIWindowScene?, to orientations: UIInterfaceOrientationMask) {
     guard let scene else { return }
     for window in scene.windows {
+        window.rootViewController?.setNeedsUpdateOfSupportedInterfaceOrientations()
         var top = window.rootViewController
         while let next = top?.presentedViewController {
             top = next
         }
         top?.setNeedsUpdateOfSupportedInterfaceOrientations()
     }
-    scene.requestGeometryUpdate(.iOS(interfaceOrientations: orientations)) { _ in }
+    scene.requestGeometryUpdate(.iOS(interfaceOrientations: orientations)) { error in
+        NSLog("Horizon orientation request failed: %@", error.localizedDescription)
+    }
 }
 
 /// The view controller of winit's window: the one the launcher is presented from.
@@ -77,7 +95,7 @@ func gameViewController() -> UIViewController? {
 }
 
 /// The launcher stands upright, as the design does; the game under it is held sideways by its own view
-/// controller, which the phone turns back to when Play dismisses this one. GameInfo.plist allows both.
+/// controller after dismissal. While covered, that controller permits both orientations.
 private final class LauncherHostingController: UIHostingController<AnyView> {
     override var supportedInterfaceOrientations: UIInterfaceOrientationMask {
         UIDevice.current.userInterfaceIdiom == .pad ? .all : .portrait

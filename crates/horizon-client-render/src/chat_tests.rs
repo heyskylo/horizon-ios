@@ -26,6 +26,70 @@ fn font() -> Font {
     )
 }
 
+#[test]
+fn normalized_chat_respects_the_protocol_utf16_limit_for_supplementary_text() {
+    let font = font();
+    let m = Measure(&font);
+    let registries = Registries::default();
+    let commands = Commands {
+        dispatcher: crate::command::vanilla::game_dispatcher(),
+        registries: &registries,
+    };
+    let mut screen = ChatScreen::new(&m, &commands, "", 0, 640, 360, full());
+    // Direct assignment also exercises callers restoring a saved draft.
+    screen.input.value = "🦀".repeat(256);
+    assert_eq!(screen.normalized(), "🦀".repeat(128));
+    assert_eq!(screen.normalized().encode_utf16().count(), 256);
+    screen.input.value = format!("{}🦀", "a".repeat(255));
+    assert_eq!(screen.normalized(), format!("{}?", "a".repeat(255)));
+}
+
+#[test]
+fn chat_field_budgets_utf16_before_normalization_and_replaces_selected_units() {
+    let font = font();
+    let m = Measure(&font);
+    let registries = Registries::default();
+    let commands = Commands {
+        dispatcher: crate::command::vanilla::game_dispatcher(),
+        registries: &registries,
+    };
+    let mut screen = ChatScreen::new(&m, &commands, &"🦀".repeat(256), 0, 640, 360, full());
+    assert_eq!(screen.input.value, "🦀".repeat(128));
+    screen
+        .input
+        .set_value(&m, &format!("{}🦀", "a".repeat(255)));
+    assert_eq!(screen.input.value, format!("{}?", "a".repeat(255)));
+    screen.input.set_value(&m, &"a".repeat(255));
+    screen.input.insert_text(&m, "🦀");
+    assert_eq!(screen.input.value, "a".repeat(255));
+    screen.input.set_value(&m, "a🦀b");
+    screen.input.max_length = 5;
+    screen.input.cursor = 1;
+    screen.input.highlight = 2;
+    screen.input.insert_text(&m, "🦀z");
+    assert_eq!(screen.input.value, "a🦀zb");
+    assert_eq!(screen.input.cursor, 3);
+}
+
+#[test]
+fn chat_normalization_matches_java_apache_whitespace_and_surrogate_wire_bytes() {
+    for (input, expected) in [
+        ("a\u{a0}\u{a0}b", "a  b"),
+        ("a\u{85}b", "a\u{85}b"),
+        ("a\u{2003}b", "a b"),
+        ("\0a\0", "a"),
+        ("a\u{2007}b", "a\u{2007}b"),
+        ("a\u{202f}b", "a\u{202f}b"),
+        ("a\t\nb", "a b"),
+    ] {
+        assert_eq!(normalized_chat_message(input), expected);
+    }
+    assert_eq!(
+        normalized_chat_message(&format!("{}🦀", "a".repeat(255))),
+        format!("{}?", "a".repeat(255))
+    );
+}
+
 fn add(chat: &mut Chat, font: &Font, content: Text) {
     for content in font.wrap_components(&content, chat.max_width()) {
         chat.lines.insert(

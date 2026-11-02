@@ -2260,7 +2260,9 @@ fn a_candle_on_an_uneaten_cake_makes_a_candle_cake() {
     assert_ne!(w.get(pos), w.id("candle_cake", &[("lit", "false")]));
     w.put(pos, cake);
     w.use_item(pos, "minecraft:stone");
-    assert_eq!(w.get(pos), cake);
+    // CakeBlock.useItemOn falls through to ordinary eating. The fixture's
+    // player can eat, so holding a non-candle takes a bite instead of leaving it unchanged.
+    assert_eq!(w.get(pos), bitten);
 }
 
 #[test]

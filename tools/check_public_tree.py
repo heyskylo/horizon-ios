@@ -9,7 +9,12 @@ import sys
 PRIVATE_ROOTS = {".local", "decompiled", "minecraft", "assets", "run", "logs"}
 PRIVATE_EXTENSIONS = {".jar", ".class", ".jfr", ".hprof", ".java", ".ipa", ".p12", ".mobileprovision", ".xcuserstate"}
 ENV_TEMPLATES = {".env.example", ".env.sample", ".env.template"}
-ORIGINAL_JDK_TOOLS = {"tools/JfrSummary.java", "tests/java/JfrFixture.java"}
+ORIGINAL_JDK_TOOLS = {
+    "tools/JfrSummary.java", "tests/java/JfrFixture.java",
+    "tools/regex_reference/JavaBlockRanges.java",
+    "tools/regex_reference/JavaCaseMappings.java",
+    "tools/regex_reference/JavaPropertyRanges.java",
+}
 
 
 def prohibited(path):

@@ -418,6 +418,8 @@ pub struct Title {
     optimize_after_backup: Option<bool>,
     /// The running `WorldUpgrader` of `Mode::Optimize`.
     optimize: Option<WorldUpgrader>,
+    /// Declared after the worker so dropping Title joins it before unlocking.
+    optimize_lock: Option<crate::save::SessionLock>,
     /// The Erase Cached Data box as last drawn: x, y, width, height.
     erase_check: Cell<[f32; 4]>,
     /// The folder to open next, once that backup has finished.
@@ -685,6 +687,7 @@ impl Title {
             backup_then_open: None,
             optimize_after_backup: None,
             optimize: None,
+            optimize_lock: None,
             erase_check: Cell::new([0.0; 4]),
             open_request: None,
             toast: None,
@@ -1035,7 +1038,12 @@ impl Title {
         if world.locked {
             return Action::None;
         }
-        if crate::save::SessionLock::acquire(&self.saves.join(&world.folder)).is_err() {
+        if crate::save::SessionLock::acquire_validated(
+            &self.saves.join(&world.folder),
+            &self.saves.join("allowed_symlinks.txt"),
+        )
+        .is_err()
+        {
             self.toast = Some((
                 crate::toasts::Slide::default(),
                 WorldToast::AccessFailure(world.folder),
@@ -1128,6 +1136,16 @@ impl Title {
     /// (`restoreLevelDataFromOld`); anything else is a failure.
     fn attempt_restore(&mut self, world: WorldEntry) {
         let dir = self.saves.join(&world.folder);
+        let Ok(_lock) = crate::save::SessionLock::acquire_validated(
+            &dir,
+            &self.saves.join("allowed_symlinks.txt"),
+        ) else {
+            self.toast = Some((
+                crate::toasts::Slide::default(),
+                WorldToast::AccessFailure(world.folder),
+            ));
+            return;
+        };
         let issues = recover_issues(&dir);
         let success = issues[0].is_some()
             && issues[1].is_none()
@@ -1148,6 +1166,16 @@ impl Title {
     /// older DataVersion is what converts it whole.
     fn begin_optimize(&mut self, world: WorldEntry, erase_cache: bool) {
         let dir = self.saves.join(&world.folder);
+        let Ok(lock) = crate::save::SessionLock::acquire_validated(
+            &dir,
+            &self.saves.join("allowed_symlinks.txt"),
+        ) else {
+            self.toast = Some((
+                crate::toasts::Slide::default(),
+                WorldToast::AccessFailure(world.folder),
+            ));
+            return;
+        };
         // `getUnfixedDataTagWithFallback`: level.dat_old stands in for a level.dat that does not read.
         crate::save::fall_back_to_level_dat_old(&dir);
         if crate::save::needs_file_fixes(&dir)
@@ -1159,6 +1187,7 @@ impl Title {
         }
         let levels = world_upgrader::world_dimensions(&dir);
         self.optimize = Some(WorldUpgrader::new(&dir, levels, erase_cache, false));
+        self.optimize_lock = Some(lock);
         self.mode = Mode::Optimize { world };
     }
     /// `OptimizeWorldScreen.tick`: a finished upgrader ends the screen with `true`.
@@ -1190,6 +1219,7 @@ impl Title {
                 }
             }
         }
+        self.optimize_lock = None;
         self.return_to_list(Some(&folder));
     }
     /// `OptimizeWorldScreen.extractRenderState`.

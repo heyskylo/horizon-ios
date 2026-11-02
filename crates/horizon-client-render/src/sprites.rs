@@ -97,6 +97,22 @@ pub const SPRITE_SIZE: u32 = 16;
 /// Largest sprite array (all layers of the top mip level): resource packs
 /// with bigger textures are sampled down to fit.
 const MAX_ARRAY_BYTES: u64 = 256 << 20;
+
+/// Rectangular sprites are expanded to square array layers before atlas layout.
+/// Check that intermediate allocation too, including every animation frame.
+fn decoded_frame_bytes(side: u32, count: u32) -> Option<usize> {
+    let bytes = u64::from(side)
+        .checked_mul(u64::from(side))?
+        .checked_mul(4)?;
+    let total = bytes
+        .checked_add(std::mem::size_of::<Vec<u8>>() as u64)?
+        .checked_mul(u64::from(count))?;
+    if total > MAX_ARRAY_BYTES {
+        return None;
+    }
+    usize::try_from(bytes).ok()
+}
+
 /// Nearest-resample a square RGBA frame to another square size.
 pub(crate) fn resample(frame: &[u8], from: u32, to: u32) -> Vec<u8> {
     if from == to {
@@ -266,12 +282,20 @@ impl Sprites {
         let mut decoder = png::Decoder::new(BufReader::new(File::open(path)?));
         decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
         let mut reader = decoder.read_info()?;
-        let mut bytes = vec![
-            0;
-            reader
-                .output_buffer_size()
-                .ok_or("sprite exceeds decoder limits")?
-        ];
+        let output_size = reader
+            .output_buffer_size()
+            .ok_or("sprite exceeds decoder limits")?;
+        if output_size as u64 > MAX_ARRAY_BYTES {
+            return Err("decoded PNG exceeds the sprite array memory limit".into());
+        }
+        // Expanded grayscale/RGB data can need more bytes than the decoder's output.
+        // Check before either allocation, using the header dimensions alone.
+        let rgba_size = (reader.info().width as usize)
+            .checked_mul(reader.info().height as usize)
+            .and_then(|pixels| pixels.checked_mul(4))
+            .filter(|bytes| *bytes as u64 <= MAX_ARRAY_BYTES)
+            .ok_or("sprite RGBA pixels exceed the sprite array memory limit")?;
+        let mut bytes = vec![0; output_size];
         let info = reader.next_frame(&mut bytes)?;
         let (width, height) = if let Some(animation) = &animation {
             let [width, height] =
@@ -283,8 +307,15 @@ impl Sprites {
         if width == 0 || height == 0 || info.width % width != 0 || info.height % height != 0 {
             return Err(format!("sprite {name} has invalid frame dimensions").into());
         }
+        let columns = info.width / width;
+        let count = columns
+            .checked_mul(info.height / height)
+            .ok_or("too many sprite frames")?;
+        let side = width.max(height);
+        let frame_bytes = decoded_frame_bytes(side, count)
+            .ok_or("decoded sprite frames exceed the sprite array memory limit")?;
         let channels = info.color_type.samples();
-        let mut pixels = Vec::with_capacity(info.width as usize * info.height as usize * 4);
+        let mut pixels = Vec::with_capacity(rgba_size);
         for pixel in bytes[..info.buffer_size()].chunks_exact(channels) {
             let rgba = match info.color_type {
                 png::ColorType::Rgba => [pixel[0], pixel[1], pixel[2], pixel[3]],
@@ -295,16 +326,14 @@ impl Sprites {
             };
             pixels.extend(rgba);
         }
-        let columns = info.width / width;
-        let count = columns * (info.height / height);
+        drop(bytes);
         // Layers are square; a frame of another shape is nearest-resampled to
         // its longer side so UVs (normalized per layer) are unchanged.
-        let side = width.max(height);
         let mut frames = Vec::new();
         for index in 0..count {
             let x = index % columns * width;
             let y = index / columns * height;
-            let mut frame = Vec::with_capacity((side * side * 4) as usize);
+            let mut frame = Vec::with_capacity(frame_bytes);
             for row in 0..side {
                 let source_row = y + row * height / side;
                 for column in 0..side {
@@ -451,6 +480,120 @@ pub(crate) fn sprite_mipmap_limit(requested: u32, size: u32, minimum: u32, avail
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// A tiny valid PNG stream with a large, CRC-correct IHDR. Pixel decode
+    /// would fail on its short IDAT; the allocation guard must reject first.
+    fn png_with_canvas(color: png::ColorType, width: u32, height: u32) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut bytes, 1, 1);
+            encoder.set_color(color);
+            encoder.set_depth(png::BitDepth::Eight);
+            let mut writer = encoder.write_header().unwrap();
+            writer
+                .write_image_data(&vec![255; color.samples()])
+                .unwrap();
+            writer.finish().unwrap();
+        }
+        bytes[16..20].copy_from_slice(&width.to_be_bytes());
+        bytes[20..24].copy_from_slice(&height.to_be_bytes());
+        let mut crc = !0u32;
+        for byte in &bytes[12..29] {
+            crc ^= u32::from(*byte);
+            for _ in 0..8 {
+                crc = (crc >> 1) ^ if crc & 1 != 0 { 0xedb8_8320 } else { 0 };
+            }
+        }
+        bytes[29..33].copy_from_slice(&(!crc).to_be_bytes());
+        bytes
+    }
+
+    #[test]
+    fn huge_png_canvas_is_rejected_before_allocating_decoder_or_rgba_buffers() {
+        let root =
+            std::env::temp_dir().join(format!("horizon-canvas-sprite-{}", std::process::id()));
+        let dir = root.join("assets/test/textures/block");
+        fs::create_dir_all(&dir).unwrap();
+        for (name, color, width, height, error) in [
+            ("rgba", png::ColorType::Rgba, 65536, 65536, "decoded PNG"),
+            (
+                "gray",
+                png::ColorType::Grayscale,
+                16384,
+                8192,
+                "RGBA pixels",
+            ),
+        ] {
+            let bytes = png_with_canvas(color, width, height);
+            // Verify the real default decoder accepts the header and reports
+            // the oversized allocation; this test does not ask it to decode.
+            let mut decoder = png::Decoder::new(std::io::Cursor::new(&bytes));
+            decoder
+                .set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
+            let reader = decoder.read_info().unwrap();
+            let output = reader.output_buffer_size().unwrap() as u64;
+            assert_eq!(
+                output,
+                u64::from(width) * u64::from(height) * color.samples() as u64
+            );
+            fs::write(dir.join(format!("{name}.png")), bytes).unwrap();
+            let refused = Sprites::decode(&root, &format!("test:block/{name}"));
+            assert!(refused.err().unwrap().to_string().contains(error));
+            let mut sprites = Sprites::default();
+            let layer = sprites
+                .insert(&root, &format!("test:block/{name}"))
+                .unwrap();
+            assert_eq!(sprites.native[layer as usize].0, SPRITE_SIZE);
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn decoded_frame_budget_includes_all_frames_and_large_sides() {
+        assert_eq!(decoded_frame_bytes(16, 32), Some(16 * 16 * 4));
+        assert!(decoded_frame_bytes(65536, 1).is_none());
+        assert!(decoded_frame_bytes(1024, 100).is_none());
+        assert!(decoded_frame_bytes(u32::MAX, u32::MAX).is_none());
+    }
+
+    #[test]
+    fn oversized_rectangle_uses_missing_texture_without_expanding_it() {
+        let root = std::env::temp_dir().join(format!("horizon-wide-sprite-{}", std::process::id()));
+        let dir = root.join("assets/test/textures/block");
+        fs::create_dir_all(&dir).unwrap();
+        let mut encoder = png::Encoder::new(File::create(dir.join("wide.png")).unwrap(), 65536, 1);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        encoder
+            .write_header()
+            .unwrap()
+            .write_image_data(&vec![255; 65536 * 4])
+            .unwrap();
+        assert!(Sprites::decode(&root, "test:block/wide").is_err());
+        let mut sprites = Sprites::default();
+        let layer = sprites.insert(&root, "test:block/wide").unwrap();
+        assert_eq!(layer, 0);
+        assert_eq!(sprites.native[0].0, SPRITE_SIZE);
+        assert_eq!(
+            sprites.native[0].1[0].len(),
+            (SPRITE_SIZE * SPRITE_SIZE * 4) as usize
+        );
+        // Ordinary animated strips still keep every native-sized frame.
+        let mut encoder = png::Encoder::new(File::create(dir.join("strip.png")).unwrap(), 16, 32);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        encoder
+            .write_header()
+            .unwrap()
+            .write_image_data(&vec![255; 16 * 32 * 4])
+            .unwrap();
+        fs::write(dir.join("strip.png.mcmeta"), r#"{"animation":{}}"#).unwrap();
+        let strip = Sprites::decode(&root, "test:block/strip").unwrap();
+        assert_eq!(strip.side, 16);
+        assert_eq!(strip.frames.len(), 2);
+        assert!(strip.frames.iter().all(|frame| frame.len() == 16 * 16 * 4));
+        fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn mipmap_option_keeps_real_16px_reductions() {
         for levels in 0..=4 {

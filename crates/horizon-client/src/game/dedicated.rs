@@ -593,6 +593,11 @@ impl Game<'_> {
         // Main's WorldLoader: a new world's dimensions come from
         // server.properties before the server starts.
         let world_dir = std::env::current_dir()?.join(&universe).join(&level_name);
+        let allowlist = std::env::current_dir()?
+            .join(&universe)
+            .join("allowed_symlinks.txt");
+        let session_lock =
+            horizon_client::save::SessionLock::acquire_validated(&world_dir, &allowlist)?;
         let new_world = !world_dir.join("level.dat").exists();
         if new_world {
             self.write_world_gen(&world_dir, &props)?;
@@ -695,13 +700,16 @@ impl Game<'_> {
         log("INFO", &format!("Preparing level \"{level_name}\""));
         let folder = world_dir.to_string_lossy().into_owned();
         self.native_lifecycle_open_started();
-        self.load_world(WorldRequest::new(
+        let mut request = WorldRequest::new(
             &folder,
             Some(&level_name),
             Some(props.seed),
             game_mode == 1,
             None,
-        )?)?;
+        )?;
+        request.allowlist = allowlist;
+        request.session_lock = Some(session_lock);
+        self.load_world(request)?;
         if new_world {
             self.level.hardcore = props.hardcore;
         }

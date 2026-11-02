@@ -1721,15 +1721,32 @@ impl ChatScreen {
     }
     /// `ChatScreen.normalizeChatMessage`.
     pub fn normalized(&self) -> String {
-        let collapsed = self
-            .input
-            .value
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ");
-        collapsed.chars().take(256).collect()
+        normalized_chat_message(&self.input.value)
     }
     pub fn suggestions_visible(&self) -> bool {
         self.suggestions.is_some()
     }
+}
+
+/// `ChatScreen.normalizeChatMessage`: Java trim, Apache normalizeSpace, then
+/// StringUtil.trimChatMessage. A split surrogate from Java's final substring
+/// encodes as '?' in both SignedMessageBody and Utf8String; return those same
+/// wire/signature bytes in a valid Rust string.
+fn normalized_chat_message(input: &str) -> String {
+    let mut collapsed = String::new();
+    let mut whitespace = false;
+    for c in input.trim_matches(|c| c <= '\u{20}').chars() {
+        if crate::ui::java_whitespace(c) {
+            if !whitespace && !collapsed.is_empty() {
+                collapsed.push(' ');
+            }
+            whitespace = true;
+        } else {
+            // NBSP is replaced, but is not part of a collapsed whitespace run.
+            collapsed.push(if c == '\u{a0}' { ' ' } else { c });
+            whitespace = false;
+        }
+    }
+    let collapsed = collapsed.trim_matches(|c| c <= '\u{20}');
+    crate::clipboard::utf16_truncate_utf8(collapsed, 256)
 }

@@ -1,7 +1,7 @@
 //! `MultiLineEditBox` over `MultilineTextField` (and `AbstractTextAreaWidget`'s
 //! frame and scroll bar): a text area that wraps its text to the box, with a
 //! caret and selection that move by line, a character limit, a line limit and
-//! a scroll bar. Indices count characters, as `EditBox`'s do.
+//! a scroll bar. Caret, selection, line ranges and limits count Java UTF-16 units.
 use crate::{
     clipboard::{Clipboard, EditShortcut, filter_text},
     font::Font,
@@ -62,9 +62,57 @@ pub fn split_ranges(font: &Font, chars: &[char], width: f32) -> Vec<(usize, usiz
     out
 }
 
+/// UTF-8 encoding of a Java string: malformed UTF-16 writes '?' rather than
+/// the renderer's replacement glyph. Keep raw units internally so selecting or
+/// deleting half a pair can still expose/rejoin it as vanilla does.
+fn wire_text(units: &[u16]) -> String {
+    char::decode_utf16(units.iter().copied())
+        .map(|decoded| decoded.unwrap_or('?'))
+        .collect()
+}
+
+/// The decomposed glyphs and their original UTF-16 offsets. An unpaired
+/// surrogate is rendered as U+FFFD, while a valid pair is one glyph/two units.
+fn glyphs_and_offsets(units: &[u16]) -> (Vec<char>, Vec<usize>) {
+    let mut chars = Vec::new();
+    let mut offsets = vec![0];
+    let mut offset = 0;
+    for decoded in char::decode_utf16(units.iter().copied()) {
+        let (glyph, count) = match decoded {
+            Ok(glyph) => (glyph, glyph.len_utf16()),
+            Err(_) => ('\u{fffd}', 1),
+        };
+        chars.push(glyph);
+        offset += count;
+        offsets.push(offset);
+    }
+    (chars, offsets)
+}
+
+fn split_utf16_ranges(font: &Font, units: &[u16], width: f32) -> Vec<(usize, usize)> {
+    let (chars, offsets) = glyphs_and_offsets(units);
+    split_ranges(font, &chars, width)
+        .into_iter()
+        .map(|(begin, end)| (offsets[begin], offsets[end]))
+        .collect()
+}
+
+fn fit_utf16(font: &Font, units: &[u16], width: f32) -> usize {
+    let rendered = String::from_utf16_lossy(units);
+    rendered
+        .chars()
+        .take(font.fit(&rendered, width))
+        .map(char::len_utf16)
+        .sum()
+}
+
+fn unit_whitespace(unit: u16) -> bool {
+    char::from_u32(u32::from(unit)).is_some_and(java_whitespace)
+}
+
 /// `MultiLineEditBox` with its `MultilineTextField`.
 pub struct MultiLineEdit {
-    chars: Vec<char>,
+    units: Vec<u16>,
     cursor: usize,
     select_cursor: usize,
     selecting: bool,
@@ -85,7 +133,7 @@ pub struct MultiLineEdit {
 impl MultiLineEdit {
     pub fn new(font: &Font, x: f32, y: f32, width: f32, height: f32) -> Self {
         let mut edit = Self {
-            chars: Vec::new(),
+            units: Vec::new(),
             cursor: 0,
             select_cursor: 0,
             selecting: false,
@@ -115,7 +163,7 @@ impl MultiLineEdit {
         self.line_limit = Some(limit);
     }
     pub fn value(&self) -> String {
-        self.chars.iter().collect()
+        wire_text(&self.units)
     }
     pub fn cursor(&self) -> usize {
         self.cursor
@@ -138,32 +186,38 @@ impl MultiLineEdit {
     }
     pub fn selected_text(&self) -> String {
         let (begin, end) = self.selected();
-        self.chars[begin..end].iter().collect()
+        wire_text(&self.units[begin..end])
     }
 
     /// `setValue(value, false)`: kept as it was when the text has more lines
     /// than the limit allows.
     pub fn set_value(&mut self, font: &Font, value: &str) {
-        let mut chars: Vec<char> = value.chars().collect();
+        let mut units: Vec<u16> = value.encode_utf16().collect();
         if let Some(limit) = self.character_limit {
-            chars.truncate(limit);
+            units.truncate(limit);
         }
-        if !self.overflows_line_limit(font, &chars) {
-            self.chars = chars;
-            self.cursor = self.chars.len();
+        if !self.overflows_line_limit(font, &units) {
+            self.units = units;
+            self.cursor = self.units.len();
             self.select_cursor = self.cursor;
             self.on_value_change(font);
         }
     }
 
     /// `overflowsLineLimit`.
-    fn overflows_line_limit(&self, font: &Font, value: &[char]) -> bool {
+    fn overflows_line_limit(&self, font: &Font, value: &[u16]) -> bool {
         let Some(limit) = self.line_limit else {
             return false;
         };
-        let lines = split_ranges(font, value, self.text_width()).len();
+        let lines = split_utf16_ranges(font, value, self.text_width()).len();
         // `StringUtil.endsWithNewLine`.
-        lines + usize::from(value.last().is_some_and(|c| matches!(c, '\n' | '\r'))) > limit
+        lines
+            + usize::from(
+                value
+                    .last()
+                    .is_some_and(|&unit| unit == u16::from(b'\n') || unit == u16::from(b'\r')),
+            )
+            > limit
     }
 
     /// `insertText`.
@@ -171,16 +225,17 @@ impl MultiLineEdit {
         if input.is_empty() && !self.has_selection() {
             return;
         }
-        let mut text: Vec<char> = filter_text(input, true).chars().collect();
+        let mut text: Vec<u16> = filter_text(input, true).encode_utf16().collect();
+        // Selected units do not increase vanilla's truncateInsertionText room.
         if let Some(limit) = self.character_limit {
-            text.truncate(limit.saturating_sub(self.chars.len()));
+            text.truncate(limit.saturating_sub(self.units.len()));
         }
         let (begin, end) = self.selected();
-        let mut value = self.chars[..begin].to_vec();
+        let mut value = self.units[..begin].to_vec();
         value.extend_from_slice(&text);
-        value.extend_from_slice(&self.chars[end..]);
+        value.extend_from_slice(&self.units[end..]);
         if !self.overflows_line_limit(font, &value) {
-            self.chars = value;
+            self.units = value;
             self.cursor = begin + text.len();
             self.select_cursor = self.cursor;
             self.on_value_change(font);
@@ -190,7 +245,7 @@ impl MultiLineEdit {
     /// `deleteText`.
     pub fn delete_text(&mut self, font: &Font, dir: isize) {
         if !self.has_selection() {
-            self.select_cursor = self.cursor.saturating_add_signed(dir).min(self.chars.len());
+            self.select_cursor = self.cursor.saturating_add_signed(dir).min(self.units.len());
         }
         self.insert_text(font, "");
     }
@@ -203,12 +258,12 @@ impl MultiLineEdit {
 
     /// `reflowDisplayLines`.
     fn reflow(&mut self, font: &Font) {
-        self.lines = if self.chars.is_empty() {
+        self.lines = if self.units.is_empty() {
             vec![(0, 0)]
         } else {
-            let mut lines = split_ranges(font, &self.chars, self.text_width());
-            if self.chars.last() == Some(&'\n') {
-                lines.push((self.chars.len(), self.chars.len()));
+            let mut lines = split_utf16_ranges(font, &self.units, self.text_width());
+            if self.units.last() == Some(&u16::from(b'\n')) {
+                lines.push((self.units.len(), self.units.len()));
             }
             lines
         };
@@ -261,7 +316,7 @@ impl MultiLineEdit {
 
     /// `seekCursor` to `cursor`, then the cursor listener.
     fn seek_cursor(&mut self, cursor: usize) {
-        self.cursor = cursor.min(self.chars.len());
+        self.cursor = cursor.min(self.units.len());
         self.scroll_to_cursor();
         if !self.selecting {
             self.select_cursor = self.cursor;
@@ -274,11 +329,10 @@ impl MultiLineEdit {
             return;
         }
         let (begin, _) = self.cursor_line_view(0);
-        let before: String = self.chars[begin..self.cursor].iter().collect();
+        let before = String::from_utf16_lossy(&self.units[begin..self.cursor]);
         let old_left = font.width(&before) + 2.0;
         let (begin, end) = self.cursor_line_view(offset);
-        let line: String = self.chars[begin..end].iter().collect();
-        self.seek_cursor(begin + font.fit(&line, old_left));
+        self.seek_cursor(begin + fit_utf16(font, &self.units[begin..end], old_left));
     }
 
     /// `seekCursorToPoint`: `x` and `y` from the top left of the text.
@@ -286,41 +340,40 @@ impl MultiLineEdit {
         let left = x.floor();
         let top = (y / LINE).floor() as isize;
         let (begin, end) = self.line_view(top);
-        let line: String = self.chars[begin..end].iter().collect();
-        self.seek_cursor(begin + font.fit(&line, left));
+        self.seek_cursor(begin + fit_utf16(font, &self.units[begin..end], left));
     }
 
     /// `getPreviousWord`: where the word starts and ends.
     fn previous_word(&self) -> (usize, usize) {
-        if self.chars.is_empty() {
+        if self.units.is_empty() {
             return (0, 0);
         }
-        let mut start = self.cursor.min(self.chars.len() - 1);
-        while start > 0 && java_whitespace(self.chars[start - 1]) {
+        let mut start = self.cursor.min(self.units.len() - 1);
+        while start > 0 && unit_whitespace(self.units[start - 1]) {
             start -= 1;
         }
-        while start > 0 && !java_whitespace(self.chars[start - 1]) {
+        while start > 0 && !unit_whitespace(self.units[start - 1]) {
             start -= 1;
         }
         (start, self.word_end(start))
     }
     /// `getNextWord`.
     fn next_word(&self) -> (usize, usize) {
-        if self.chars.is_empty() {
+        if self.units.is_empty() {
             return (0, 0);
         }
-        let mut start = self.cursor.min(self.chars.len() - 1);
-        while start < self.chars.len() && !java_whitespace(self.chars[start]) {
+        let mut start = self.cursor.min(self.units.len() - 1);
+        while start < self.units.len() && !unit_whitespace(self.units[start]) {
             start += 1;
         }
-        while start < self.chars.len() && java_whitespace(self.chars[start]) {
+        while start < self.units.len() && unit_whitespace(self.units[start]) {
             start += 1;
         }
         (start, self.word_end(start))
     }
     fn word_end(&self, from: usize) -> usize {
         let mut end = from;
-        while end < self.chars.len() && !java_whitespace(self.chars[end]) {
+        while end < self.units.len() && !unit_whitespace(self.units[end]) {
             end += 1;
         }
         end
@@ -352,9 +405,9 @@ impl MultiLineEdit {
             KeyCode::Home if ctrl => self.seek_cursor(0),
             KeyCode::Home => self.seek_cursor(self.cursor_line_view(0).0),
             KeyCode::PageUp => self.seek_cursor(0),
-            KeyCode::End if ctrl => self.seek_cursor(self.chars.len()),
+            KeyCode::End if ctrl => self.seek_cursor(self.units.len()),
             KeyCode::End => self.seek_cursor(self.cursor_line_view(0).1),
-            KeyCode::PageDown => self.seek_cursor(self.chars.len()),
+            KeyCode::PageDown => self.seek_cursor(self.units.len()),
             KeyCode::ArrowRight if ctrl => self.seek_cursor(self.next_word().0),
             KeyCode::ArrowRight => self.seek_cursor(self.cursor + 1),
             KeyCode::ArrowLeft if ctrl => self.seek_cursor(self.previous_word().0),
@@ -381,10 +434,10 @@ impl MultiLineEdit {
         shortcut: EditShortcut,
         clipboard: &mut dyn Clipboard,
     ) -> bool {
-        let before = self.chars.len();
+        let before = self.units.len();
         match shortcut {
             EditShortcut::SelectAll => {
-                self.cursor = self.chars.len();
+                self.cursor = self.units.len();
                 self.select_cursor = 0;
             }
             EditShortcut::Copy => clipboard.set(&self.selected_text()),
@@ -395,7 +448,7 @@ impl MultiLineEdit {
             }
         }
         self.focused_at = Instant::now();
-        self.chars.len() != before
+        self.units.len() != before
     }
 
     /// `AbstractWidget.isMouseOver`: the box and its scroll bar.
@@ -510,7 +563,7 @@ impl MultiLineEdit {
         if let Some(limit) = self.character_limit {
             let count = crate::lang::tr(
                 "gui.multiLineEditBox.character_limit",
-                &[&self.chars.len(), &limit],
+                &[&self.units.len(), &limit],
             );
             let width = atlas.font.width(&count);
             batch.text(
@@ -526,18 +579,17 @@ impl MultiLineEdit {
 
     /// `MultiLineEditBox.extractContents` (the placeholder is empty).
     fn draw_contents(&self, batch: &mut HudBatch, atlas: &HudAtlas) {
-        if self.chars.is_empty() && !self.focused {
+        if self.units.is_empty() && !self.focused {
             return;
         }
         let font = &atlas.font;
         let text_color = rgba(224, 224, 224, 255);
         let cursor_color = rgba(208, 208, 208, 255);
-        let slice =
-            |begin: usize, end: usize| -> String { self.chars[begin..end].iter().collect() };
+        let slice = |begin: usize, end: usize| String::from_utf16_lossy(&self.units[begin..end]);
         let show_cursor =
             self.focused && (self.focused_at.elapsed().as_millis() / 300).is_multiple_of(2);
         let needs_valid_cursor_pos = self.focused;
-        let insert_cursor = self.cursor < self.chars.len();
+        let insert_cursor = self.cursor < self.units.len();
         let (inner_left, mut draw_top) = (self.x + PADDING, self.y + PADDING - self.scroll.amount);
         let (mut cursor_x, mut cursor_y) = (0.0f32, 0.0f32);
         let mut has_drawn_cursor = false;
@@ -687,6 +739,128 @@ mod tests {
         edit.key(&font, KeyCode::Backspace, false, false);
         edit.insert_text(&font, "wxyz");
         assert_eq!(edit.value(), "abcdw");
+    }
+
+    #[test]
+    fn multiline_utf16_budget_matches_raw_substring_and_selection_order() {
+        let font = font();
+        let mut edit = edit(&font, 80, 4);
+        edit.set_character_limit(4);
+        edit.set_value(&font, "a🦀b🦀");
+        assert_eq!(edit.value(), "a🦀b");
+        edit.set_value(&font, "a🦀");
+        edit.insert_text(&font, "🦀");
+        assert_eq!(edit.value(), "a🦀?");
+        assert_eq!(edit.cursor(), 4);
+        // At capacity, replacing a selection deletes it without gaining insertion room.
+        edit.cursor = 1;
+        edit.select_cursor = 3;
+        edit.insert_text(&font, "z");
+        assert_eq!(edit.value(), "a?");
+        assert_eq!(edit.cursor(), 1);
+        edit.set_value(&font, "🦀🦀🦀");
+        assert_eq!(edit.value(), "🦀🦀");
+    }
+
+    #[test]
+    fn wire_and_render_views_preserve_raw_utf16_boundaries() {
+        assert_eq!(wire_text(&[0xd83e, 0xdd80]), "🦀");
+        assert_eq!(wire_text(&[0xd83e]), "?");
+        assert_eq!(wire_text(&[0xdd80]), "?");
+        let (glyphs, offsets) = glyphs_and_offsets(&[0xd83e, 0xd83e, 0xdd80]);
+        assert_eq!(glyphs, ['\u{fffd}', '🦀']);
+        assert_eq!(offsets, [0, 1, 3]);
+        assert_eq!(String::from_utf16_lossy(&[0xd83e]), "\u{fffd}");
+    }
+
+    #[test]
+    fn raw_utf16_selection_can_split_and_rejoin_pairs_like_java() {
+        let font = font();
+        let mut edit = edit(&font, 80, 4);
+        edit.set_value(&font, "🦀🦀");
+        assert_eq!(edit.cursor(), 4);
+        edit.key(&font, KeyCode::ArrowLeft, false, false);
+        assert_eq!(edit.cursor(), 3);
+        edit.key(&font, KeyCode::ArrowLeft, false, true);
+        assert_eq!(edit.cursor(), 2);
+        // A single high surrogate is selected, not the whole second emoji.
+        assert_eq!(edit.selected_text(), "?");
+        let mut clipboard = crate::clipboard::MemoryClipboard::default();
+        edit.shortcut(&font, EditShortcut::Copy, &mut clipboard);
+        assert_eq!(clipboard.0, "?");
+        // Removing the middle low/high pair reconnects the surviving pair.
+        edit.cursor = 1;
+        edit.select_cursor = 3;
+        edit.insert_text(&font, "");
+        assert_eq!(edit.units, "🦀".encode_utf16().collect::<Vec<_>>());
+        assert_eq!(edit.value(), "🦀");
+        assert_eq!(edit.cursor(), 1);
+        edit.key(&font, KeyCode::ArrowRight, false, false);
+        edit.key(&font, KeyCode::Backspace, false, false);
+        assert_eq!(edit.units, [0xd83e]);
+        assert_eq!(edit.value(), "?");
+        assert_eq!(edit.cursor(), 1);
+        assert_eq!(String::from_utf16_lossy(&edit.units), "\u{fffd}");
+        edit.key(&font, KeyCode::ArrowLeft, false, false);
+        edit.key(&font, KeyCode::Delete, false, false);
+        assert_eq!(edit.value(), "");
+    }
+
+    #[test]
+    fn raw_truncated_surrogate_retains_its_unit_and_counts_toward_capacity() {
+        let font = font();
+        let mut edit = edit(&font, 80, 4);
+        edit.set_character_limit(1);
+        edit.set_value(&font, "🦀");
+        assert_eq!(edit.units, [0xd83e]);
+        assert_eq!(edit.cursor(), 1);
+        edit.insert_text(&font, "x");
+        assert_eq!(edit.units, [0xd83e]);
+        edit.cursor = 0;
+        edit.select_cursor = 1;
+        edit.insert_text(&font, "x");
+        // As in Java, a full field gets no insertion credit for its selection.
+        assert!(edit.units.is_empty());
+        assert_eq!(edit.cursor(), 0);
+    }
+
+    #[test]
+    fn glyph_hit_testing_and_wrapping_return_utf16_offsets() {
+        let font = font();
+        let mut edit = edit(&font, 80, 4);
+        edit.set_value(&font, "a🦀b\nc🦀d");
+        assert_eq!(edit.lines(), [(0, 4), (5, 9)]);
+        let left = font.width("c🦀") + 0.1;
+        edit.seek_cursor_to_point(&font, left, LINE + 0.1);
+        assert_eq!(edit.cursor(), 8);
+        edit.seek_cursor(3);
+        edit.key(&font, KeyCode::ArrowDown, false, false);
+        assert_eq!(edit.cursor(), 8);
+        let units: Vec<u16> = "a🦀b".encode_utf16().collect();
+        let (glyphs, offsets) = glyphs_and_offsets(&units);
+        assert_eq!(glyphs, ['a', '🦀', 'b']);
+        assert_eq!(offsets, [0, 1, 3, 4]);
+        let width = font.width("a🦀");
+        assert_eq!(split_utf16_ranges(&font, &units, width), [(0, 3), (3, 4)]);
+        assert!(!unit_whitespace(0xd83e));
+    }
+
+    #[test]
+    fn multiline_utf16_truncation_then_line_limit_rejects_the_entire_edit() {
+        let font = font();
+        let mut edit = edit(&font, 80, 4);
+        edit.set_character_limit(8);
+        edit.set_line_limit(2);
+        edit.set_value(&font, "🦀\nb");
+        edit.insert_text(&font, "\nc");
+        assert_eq!(edit.value(), "🦀\nb");
+        edit.cursor = 0;
+        edit.select_cursor = 2;
+        edit.insert_text(&font, "x\ny");
+        assert_eq!(edit.value(), "🦀\nb");
+        edit.set_value(&font, "🦀\n");
+        edit.insert_text(&font, "\n");
+        assert_eq!(edit.value(), "🦀\n");
     }
 
     #[test]

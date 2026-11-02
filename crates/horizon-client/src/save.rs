@@ -128,7 +128,7 @@ pub fn dimension_dir(world: &Path, dimension: &str) -> PathBuf {
         .unwrap_or(("minecraft", dimension));
     world.join("dimensions").join(namespace).join(path)
 }
-/// `DirectoryLock`: `session.lock` holds "\u{2603}" (UTF-16BE) under an exclusive
+/// `DirectoryLock`: `session.lock` holds "\u{2603}" (UTF-8) under an exclusive
 /// file lock for as long as the world is open, so two instances cannot share it.
 pub struct SessionLock(fs::File);
 impl Drop for SessionLock {
@@ -140,6 +140,20 @@ impl Drop for SessionLock {
     }
 }
 impl SessionLock {
+    /// LevelStorageSource validates links before LevelStorageAccess opens its lock.
+    pub fn acquire_validated(world: &Path, allowlist: &Path) -> Result<Self> {
+        let forbidden = crate::world_links::validate(world, allowlist)?;
+        if !forbidden.is_empty() {
+            let links = forbidden
+                .iter()
+                .map(|entry| format!("{} -> {}", entry.link.display(), entry.target.display()))
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(format!("World contains forbidden symbolic links: {links}").into());
+        }
+        Self::acquire(world)
+    }
+
     pub fn acquire(world: &Path) -> Result<Self> {
         use std::io::Write;
         fs::create_dir_all(world)?;
@@ -151,7 +165,7 @@ impl SessionLock {
         file.try_lock()
             .map_err(|_| format!("{} is already open in another instance", world.display()))?;
         file.set_len(0)?;
-        file.write_all(&[0x26, 0x03])?;
+        file.write_all("☃".as_bytes())?;
         file.flush()?;
         Ok(Self(file))
     }
@@ -5462,7 +5476,7 @@ mod tests {
         // locked, so the bytes are read once the lock is released.
         assert_eq!(
             std::fs::read(dir.join("session.lock")).unwrap(),
-            [0x26, 0x03]
+            "☃".as_bytes()
         );
         assert!(super::SessionLock::acquire(&dir).is_ok());
         let _ = std::fs::remove_dir_all(&dir);

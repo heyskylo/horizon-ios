@@ -288,14 +288,11 @@ impl MotionWorld<'_, '_, '_> {
         if self.player.flying {
             return Ok(());
         }
-        let v = self.player.velocity;
-        let y = match (empty, drag) {
-            (true, true) => (-0.9_f64).max(v.y - 0.03),
-            (true, false) => 1.8_f64.min(v.y + 0.1),
-            (false, true) => (-0.3_f64).max(v.y - 0.03),
-            (false, false) => 0.7_f64.min(v.y + 0.06),
-        };
-        self.player.velocity = Vec3::new(v.x, y, v.z);
+        super::fluids::BubbleColumn {
+            drag,
+            surface: empty,
+        }
+        .push(&mut self.player.velocity);
         if empty {
             // Entity.sendBubbleColumnParticles: two splashes and two bubbles
             // over the column's top, from the level random.

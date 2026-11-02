@@ -32,7 +32,7 @@ impl Game<'_> {
     /// part of AltGr.
     pub(super) fn types_text(&self) -> bool {
         let held = |keys: [KeyCode; 2]| keys.iter().any(|k| self.physical_keys.contains(k));
-        let edit = if cfg!(target_os = "macos") {
+        let edit = if cfg!(any(target_os = "macos", target_os = "ios")) {
             held([KeyCode::SuperLeft, KeyCode::SuperRight])
         } else {
             held([KeyCode::ControlLeft, KeyCode::ControlRight])

@@ -532,7 +532,7 @@ impl TextField {
     }
     /// `setValue`.
     pub fn set_value(&mut self, m: &Measure, value: &str) {
-        self.value = value.chars().take(self.max_length).collect();
+        self.value = crate::clipboard::utf16_truncate_utf8(value, self.max_length);
         self.move_cursor_to(m, chars(&self.value), false);
         self.set_highlight(m, self.cursor);
     }
@@ -543,16 +543,24 @@ impl TextField {
             self.cursor.min(self.highlight),
             self.cursor.max(self.highlight),
         );
-        let room = self.max_length as isize - chars(&self.value) as isize + (end - start) as isize;
-        if room <= 0 {
+        let selected_units = self
+            .value
+            .chars()
+            .skip(start)
+            .take(end - start)
+            .map(char::len_utf16)
+            .sum::<usize>();
+        let retained_units = self.value.encode_utf16().count() - selected_units;
+        let room = self.max_length.saturating_sub(retained_units);
+        if room == 0 {
             return false;
         }
         let filtered: String = input
             .chars()
             .filter(|c| *c >= ' ' && *c != '\u{7f}' && *c != '§')
             .collect();
-        let insert: String = filtered.chars().take(room as usize).collect();
-        let n = chars(&insert);
+        let insert = crate::clipboard::utf16_prefix(&filtered, room);
+        let n = chars(insert);
         self.value = format!(
             "{}{}{}",
             sub(&self.value, 0, start),
@@ -761,7 +769,7 @@ impl TextField {
             text(out, t, draw_x, ty, color, self.text_shadow);
             draw_x += w + 1;
         }
-        let insert = self.cursor < len || len >= self.max_length;
+        let insert = self.cursor < len || self.value.encode_utf16().count() >= self.max_length;
         let mut cursor_x = draw_x;
         if !on_screen {
             cursor_x = if rel_cursor > 0 { tx + self.width } else { tx };

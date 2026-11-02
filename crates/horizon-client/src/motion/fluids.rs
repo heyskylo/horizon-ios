@@ -166,11 +166,20 @@ impl BubbleColumn {
     /// else `handleOnInsideBubbleColumn`. Returns whether it was inside below
     /// the surface, which resets the fall distance.
     pub fn push(self, velocity: &mut Vec3) -> bool {
-        velocity.y = match (self.surface, self.drag) {
-            (true, true) => (-0.9_f64).max(velocity.y - 0.03),
-            (true, false) => 1.8_f64.min(velocity.y + 0.1),
-            (false, true) => (-0.3_f64).max(velocity.y - 0.03),
-            (false, false) => 0.7_f64.min(velocity.y + 0.06),
+        let (limit, candidate) = match (self.surface, self.drag) {
+            (true, true) => (-0.9_f64, velocity.y - 0.03),
+            (true, false) => (1.8_f64, velocity.y + 0.1),
+            (false, true) => (-0.3_f64, velocity.y - 0.03),
+            (false, false) => (0.7_f64, velocity.y + 0.06),
+        };
+        // Entity's Java minimum/maximum propagates NaN; Rust's min/max instead
+        // chooses the finite bound and would manufacture valid motion.
+        velocity.y = if candidate.is_nan() {
+            candidate
+        } else if self.drag {
+            limit.max(candidate)
+        } else {
+            limit.min(candidate)
         };
         !self.surface
     }
@@ -438,5 +447,49 @@ impl WaterSplashWorld for MotionWorld<'_, '_, '_> {
         // The SPLASH game event: sculk listens to the player's moves itself.
         self.player.events.push(MotionEvent::SplashEvent);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod bubble_column_tests {
+    use super::{BubbleColumn, Vec3};
+
+    #[test]
+    fn bubble_push_preserves_nan_and_matches_all_four_vanilla_limits() {
+        let initial = [f64::NAN, f64::NEG_INFINITY, -2.0, 0.0, 2.0, f64::INFINITY];
+        for (surface, drag, expected) in [
+            (
+                false,
+                false,
+                [f64::NAN, f64::NEG_INFINITY, -1.94, 0.06, 0.7, 0.7],
+            ),
+            (
+                false,
+                true,
+                [f64::NAN, -0.3, -0.3, -0.03, 1.97, f64::INFINITY],
+            ),
+            (
+                true,
+                false,
+                [f64::NAN, f64::NEG_INFINITY, -1.9, 0.1, 1.8, 1.8],
+            ),
+            (
+                true,
+                true,
+                [f64::NAN, -0.9, -0.9, -0.03, 1.97, f64::INFINITY],
+            ),
+        ] {
+            let column = BubbleColumn { surface, drag };
+            for (initial, expected) in initial.into_iter().zip(expected) {
+                let mut velocity = Vec3::new(0.125, initial, -0.25);
+                assert_eq!(column.push(&mut velocity), !surface);
+                assert_eq!((velocity.x, velocity.z), (0.125, -0.25));
+                if expected.is_nan() {
+                    assert!(velocity.y.is_nan(), "surface={surface}, drag={drag}");
+                } else {
+                    assert_eq!(velocity.y, expected);
+                }
+            }
+        }
     }
 }

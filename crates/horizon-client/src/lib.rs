@@ -124,6 +124,7 @@ pub mod toasts;
 pub mod ui_theme;
 pub mod vanillagen;
 pub mod win_screen;
+pub mod world_links;
 pub mod world_spawn;
 pub use horizon_client_core::Result;
 pub use horizon_client_core::block_entity_nbt;

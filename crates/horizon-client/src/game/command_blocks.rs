@@ -713,6 +713,17 @@ impl Game<'_> {
             return;
         }
         let PhysicalKey::Code(key) = event.physical_key else {
+            // UIKit's software keyboard commits characters without a physical
+            // HID key. Navigation/deletion still use the key-code path below.
+            if self.types_text()
+                && let Some(text) = super::chat_input::text_without_physical_key(
+                    event.physical_key,
+                    event.state,
+                    event.text.as_deref(),
+                )
+            {
+                self.command_block_type(text);
+            }
             return;
         };
         let shortcut = self.edit_shortcut(event);

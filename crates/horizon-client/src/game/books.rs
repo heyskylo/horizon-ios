@@ -27,6 +27,14 @@ const PAGE_CHARS: usize = 1024;
 const MAX_PAGES: usize = 100;
 const LINES: usize = 14;
 
+/// `MultilineTextField.truncateInsertionText`: the existing page consumes the
+/// UTF-16 budget before its selection is removed, and filtering retains newlines.
+fn page_insertion_text(value: &str, input: &str) -> String {
+    let room = PAGE_CHARS.saturating_sub(value.encode_utf16().count());
+    let filtered = horizon_client::clipboard::filter_text(input, true);
+    horizon_client::clipboard::utf16_truncate_utf8(&filtered, room)
+}
+
 fn book_title_box() -> ui::EditBox {
     let mut edit = ui::EditBox::new(0.0, 0.0, 114.0, 9.0);
     edit.bordered = false;
@@ -449,11 +457,13 @@ impl Game<'_> {
         }
         handled
     }
-    /// One character at a time, so a page stops at the last character that fits.
+    /// `MultilineTextField.insertText`: reject the entire edit if its resulting
+    /// wrapping exceeds the line limit; a paste is not a series of key presses.
     fn page_insert(&mut self, text: &str) {
-        for c in text.chars() {
-            self.page_change(|edit| edit.insert_text(&c.to_string()));
-        }
+        self.page_change(|edit| {
+            let text = page_insertion_text(&edit.value, text);
+            edit.insert_text(&text);
+        });
     }
     /// Ctrl+A/C/V/X: the title box while signing, else the page.
     pub(super) fn book_shortcut(&mut self, shortcut: horizon_client::clipboard::EditShortcut) {
@@ -466,6 +476,12 @@ impl Game<'_> {
                 title_edit.shortcut(shortcut, &mut self.clipboard);
                 title.clone_from(&title_edit.value);
             }
+            return;
+        }
+        if shortcut == horizon_client::clipboard::EditShortcut::Paste {
+            use horizon_client::clipboard::Clipboard;
+            let text = self.clipboard.get();
+            self.page_insert(&text);
             return;
         }
         let before = match self.book.as_ref() {
@@ -505,7 +521,7 @@ impl Game<'_> {
             Some(BookScreen::Edit { page_edit, .. }) => page_edit.value.clone(),
             _ => return false,
         };
-        let ok = next.chars().count() <= PAGE_CHARS && self.book_lines(&next).len() <= LINES;
+        let ok = next.encode_utf16().count() <= PAGE_CHARS && self.book_lines(&next).len() <= LINES;
         let Some(BookScreen::Edit {
             pages,
             page,
@@ -1407,5 +1423,18 @@ pub(super) fn lectern_signal(world: &horizon_client::world::World, pos: BlockPos
             (f * 14.0).floor() as i32 + 1
         })),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod text_budget_tests {
+    use super::*;
+
+    #[test]
+    fn page_insertions_use_utf16_units_before_removing_the_selection() {
+        assert_eq!(page_insertion_text(&"🦀".repeat(512), "replacement"), "");
+        assert_eq!(page_insertion_text(&"a".repeat(1023), "🦀"), "?");
+        assert_eq!(page_insertion_text(&"a".repeat(1022), "🦀x"), "🦀");
+        assert_eq!(page_insertion_text("", "a\nb§c"), "a\nbc");
     }
 }

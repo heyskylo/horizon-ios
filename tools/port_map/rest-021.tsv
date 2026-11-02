@@ -61,8 +61,8 @@ DependencySorter.visitDependenciesAndElement	port	crates/horizon-world/src/world
 DependencySorter.isCyclic	port	crates/horizon-world/src/worldgen/tags.rs::reaches	reach test used to refuse a cyclic edge
 DependencySorter.addDependencyIfNotCyclic	inline	crates/horizon-world/src/worldgen/tags.rs::TagDefinitions::build	adds the edge only when reaches is false
 DependencySorter.orderByDependencies	inline	crates/horizon-world/src/worldgen/tags.rs::TagDefinitions::build	required edges first, then optional ones, then the visit order
-DirectoryLock.create	port	crates/horizon-client/src/save.rs::SessionLock::acquire	exclusive file lock on session.lock with the two-byte snowman content
-DirectoryLock.isLocked	missing		player: a world another copy has open is listed as an ordinary world; vanilla flags it as locked in the list (LevelStorageSource.loadLevelSummaries), Horizon has no such check in title.rs list_worlds
+DirectoryLock.create	port	crates/horizon-client/src/save.rs::SessionLock::acquire	exclusive file lock on session.lock with the UTF-8 snowman content
+DirectoryLock.isLocked	port	crates/horizon-client/src/save.rs::SessionLock::is_locked	checks the lock for title.rs list_worlds, which exposes the locked flag
 Ease.inBack	missing		minor: named easing reached only through the EasingType registry; vanilla timeline data uses cubic_bezier and constant only
 Ease.inElastic	missing		minor: named easing reached only through the EasingType registry; vanilla timeline data uses cubic_bezier and constant only
 Ease.inExpo	missing		minor: named easing reached only through the EasingType registry; vanilla timeline data uses cubic_bezier and constant only

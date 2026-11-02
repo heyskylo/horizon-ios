@@ -14,6 +14,14 @@ developers, with upstream fixes applied
 [gfx-rs/wgpu#10714](https://github.com/gfx-rs/wgpu/pull/10714)). It is licensed under MIT or
 Apache-2.0; both licenses are in that folder (`LICENSE.MIT`, `LICENSE.APACHE`).
 
+## java_regex
+
+`third_party/java_regex` vendors [java_regex 0.1.0](https://github.com/MathieuDutSik/java_regex/tree/ed518dc23dacbe1a88d7cb3f26f0cfe31cc91393),
+Copyright (c) 2025 Mathieu Dutour Sikiric, under MIT or Apache-2.0. Both licenses
+are retained in that directory. Horizon's Java 25 compatibility patches,
+Unicode-16 data provenance, generator tools and native stack-growth feature are
+documented in `third_party/java_regex/HORIZON.md`.
+
 ## Pixelify Sans
 
 `crates/horizon-theme/fonts/PixelifySans-*.ttf` is [Pixelify Sans](https://github.com/eifetx/Pixelify-Sans)

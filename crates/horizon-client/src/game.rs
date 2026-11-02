@@ -5600,23 +5600,6 @@ impl Game<'_> {
             game_master: self.can_use_game_master_blocks(),
         }
     }
-    /// `Consumable.startConsuming` for a held consumable: food needs
-    /// `Player.canEat` (`Consumable.canConsume`), anything else is always
-    /// consumed. The right click is held for `consume_seconds`.
-    fn start_eating(&mut self, info: &horizon_client::items::ItemInfo) -> bool {
-        if info.consumable.is_none()
-            || (info.food.is_some()
-                && !self.player.as_ref().is_some_and(|p| {
-                    info.can_always_eat || p.health.food.food < 20 || self.creative
-                }))
-        {
-            return false;
-        }
-        if self.using.is_none() {
-            self.using = Some((self.held_slot(), 0));
-        }
-        true
-    }
     /// `InstrumentItem.use` for a goat horn: the player holds it up for the
     /// instrument's `use_duration`, its sound plays at the player
     /// (`SoundSource.RECORDS`, volume `range / 16`), `INSTRUMENT_PLAY` is
@@ -5811,9 +5794,7 @@ impl Game<'_> {
         if ticks >= duration {
             self.using = None;
             self.send_use_item_complete();
-            // ItemStack.finishUsingItem's applyAfterUseComponentSideEffects.
-            self.apply_use_cooldown(&stack);
-            self.finish_consuming(&info, consumable, &stack);
+            self.complete_consuming(&info, consumable, &stack);
         } else {
             self.using = Some((slot, ticks));
         }
@@ -10470,6 +10451,12 @@ impl Game<'_> {
         // Create World's data packs, in the world before it opens.
         if let Some(dir) = create.and_then(|o| o.pack_dir.as_deref()) {
             let world = std::env::current_dir()?.join("saves").join(folder);
+            // Create World's pack copy mutates the destination before its
+            // worker opens it. Do not write into another instance's save.
+            let _pack_lock = horizon_client::save::SessionLock::acquire_validated(
+                &world,
+                &std::env::current_dir()?.join("saves/allowed_symlinks.txt"),
+            )?;
             let packs = create.map_or(&[][..], |o| &o.data_packs[..]);
             if let Err(e) = horizon_client::datapack::install(dir, &world, packs) {
                 log::warn!("Horizon: data packs for {folder}: {e}");

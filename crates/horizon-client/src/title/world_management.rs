@@ -23,8 +23,18 @@ fn world_path(saves: &Path, folder: &str) -> crate::Result<PathBuf> {
     Ok(path)
 }
 
+/// EditWorldScreen holds a validated LevelStorageAccess while editing or
+/// backing up. File-command callers need the same ownership for the operation.
+fn world_access(saves: &Path, folder: &str) -> crate::Result<(PathBuf, crate::save::SessionLock)> {
+    let world = world_path(saves, folder)?;
+    let lock =
+        crate::save::SessionLock::acquire_validated(&world, &saves.join("allowed_symlinks.txt"))?;
+    Ok((world, lock))
+}
+
 pub fn rename(saves: &Path, folder: &str, name: &str) -> crate::Result<()> {
-    let path = world_path(saves, folder)?.join("level.dat");
+    let (world, _lock) = world_access(saves, folder)?;
+    let path = world.join("level.dat");
     let mut root = read_dat(&path).ok_or("Could not read level.dat")?;
     let Some(Tag::Compound(data)) = root.get_mut("Data") else {
         return Err("Missing level data".into());
@@ -34,7 +44,8 @@ pub fn rename(saves: &Path, folder: &str, name: &str) -> crate::Result<()> {
 }
 
 pub(super) fn reset_icon(saves: &Path, folder: &str) -> crate::Result<()> {
-    fs::remove_file(world_path(saves, folder)?.join("icon.png"))?;
+    let (world, _lock) = world_access(saves, folder)?;
+    fs::remove_file(world.join("icon.png"))?;
     Ok(())
 }
 
@@ -113,7 +124,7 @@ pub(super) fn open_folder(path: &Path) -> crate::Result<()> {
 }
 
 pub fn backup(saves: &Path, folder: &str) -> crate::Result<u64> {
-    let world = world_path(saves, folder)?;
+    let (world, _lock) = world_access(saves, folder)?;
     let backups = backups_path(saves);
     fs::create_dir_all(&backups)?;
     let base = format!(

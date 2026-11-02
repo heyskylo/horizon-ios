@@ -1,7 +1,7 @@
 import XCTest
 
 final class LauncherLayoutTests: XCTestCase {
-    private func launch(signedIn: Bool, optionsResponse: String? = nil) -> XCUIApplication {
+    private func launch(signedIn: Bool, optionsResponse: String? = nil, gameFilesURL: String? = nil) -> XCUIApplication {
         let app = XCUIApplication()
         let root = NSTemporaryDirectory() + "horizon-native-" + UUID().uuidString
         app.launchEnvironment = ["PREVIEW_SIGNED_IN": signedIn ? "1" : "0",
@@ -10,10 +10,52 @@ final class LauncherLayoutTests: XCTestCase {
             "HORIZON_LAUNCHER_TRASH": root + "/trash", "HORIZON_LAUNCHER_CLIPBOARD": root + "/clipboard",
             "HORIZON_LAUNCHER_DESKTOP": root + "/desktop", "HORIZON_LAUNCHER_NO_SELF_UPDATE": "1", "HORIZON_NO_AUDIO": "1"]
         if let optionsResponse { app.launchEnvironment["PREVIEW_OPTIONS_RESPONSE"] = optionsResponse }
+        if let gameFilesURL {
+            app.launchEnvironment["PREVIEW_MISSING_FILES"] = "1"
+            app.launchEnvironment["PREVIEW_GAME_FILES_URL"] = gameFilesURL
+        }
         app.launch()
         XCTAssertTrue(app.buttons["launcher-play-button"].waitForExistence(timeout: 15))
         return app
     }
+    func testFirstRunAutomaticallyDownloadsAndEnablesPlay() throws {
+        guard let url = ProcessInfo.processInfo.environment["HORIZON_DOWNLOAD_FIXTURE_URL"] else {
+            throw XCTSkip("Requires the loopback download fixture")
+        }
+        let app = launch(signedIn: false, gameFilesURL: url)
+        let play = app.buttons["launcher-play-button"]
+        XCTAssertTrue(play.waitForExistence(timeout: 15))
+        let ready = NSPredicate(format: "enabled == true AND label == 'Play'")
+        expectation(for: ready, evaluatedWith: play)
+        waitForExpectations(timeout: 20)
+        XCTAssertFalse(app.staticTexts["Game files needed"].exists)
+        XCTAssertFalse(app.alerts["Launcher UI preview"].exists, "Setup must not launch the game")
+    }
+
+    func testFirstRunDownloadFailureKeepsRetryAndManualFallbackAvailable() throws {
+        guard let url = ProcessInfo.processInfo.environment["HORIZON_DOWNLOAD_FIXTURE_URL"] else {
+            throw XCTSkip("Requires the loopback download fixture")
+        }
+        let app = launch(signedIn: false, gameFilesURL: url + "?fail=1")
+        let failure = app.staticTexts.matching(NSPredicate(format: "label CONTAINS '503'")).firstMatch
+        XCTAssertTrue(failure.waitForExistence(timeout: 10))
+        XCTAssertFalse(app.buttons["launcher-play-button"].isEnabled)
+        XCTAssertTrue(app.buttons["launcher-download-game-files"].isEnabled)
+        app.buttons["Use a download link instead"].tap()
+        XCTAssertTrue(app.staticTexts["Link"].firstMatch.waitForExistence(timeout: 5))
+    }
+
+    func testOversizedAutomaticArchiveStopsBeforeImport() throws {
+        guard let url = ProcessInfo.processInfo.environment["HORIZON_DOWNLOAD_FIXTURE_URL"] else {
+            throw XCTSkip("Requires the loopback download fixture")
+        }
+        let app = launch(signedIn: false, gameFilesURL: url + "?oversized=1")
+        let failure = app.staticTexts.matching(NSPredicate(format: "label CONTAINS '2 GiB'")).firstMatch
+        XCTAssertTrue(failure.waitForExistence(timeout: 10))
+        XCTAssertFalse(app.buttons["launcher-play-button"].isEnabled)
+        XCTAssertTrue(app.buttons["launcher-download-game-files"].isEnabled)
+    }
+
     func testPhoneLayoutAndSignedInIdentity() {
         XCUIDevice.shared.orientation = .portrait
         let app = launch(signedIn: true)

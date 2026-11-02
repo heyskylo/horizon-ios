@@ -523,6 +523,16 @@ fn backup_rejects_symlinks_and_removes_incomplete_archive() {
     f.world("World", "World");
     std::os::unix::fs::symlink(f.root.join("outside"), f.title.saves.join("World/link")).unwrap();
     assert!(world_management::backup(&f.title.saves, "World").is_err());
+    // Access validation refuses an untrusted link before reserving an archive.
+    assert!(!f.root.join("backups").exists());
+    // Permit it at the access layer to retain coverage of the archive writer's
+    // own link refusal and cleanup after an output file has been created.
+    fs::write(
+        f.title.saves.join("allowed_symlinks.txt"),
+        f.root.join("outside").to_string_lossy().as_bytes(),
+    )
+    .unwrap();
+    assert!(world_management::backup(&f.title.saves, "World").is_err());
     assert_eq!(fs::read_dir(f.root.join("backups")).unwrap().count(), 0);
 }
 
@@ -635,6 +645,91 @@ fn a_world_open_elsewhere_stays_closed_behind_a_toast() {
             folder: "World".into()
         }
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn playing_a_world_rejects_lock_links_before_touching_the_target() {
+    let mut f = Fixture::new();
+    f.world("World", "World");
+    let target = f.root.join("sentinel");
+    fs::write(&target, b"keep me").unwrap();
+    std::os::unix::fs::symlink(&target, f.title.saves.join("World/session.lock")).unwrap();
+    let world = list_worlds(&f.title.saves).remove(0);
+    assert_eq!(f.title.play(world), Action::None);
+    assert_eq!(fs::read(target).unwrap(), b"keep me");
+    assert!(matches!(
+        f.title.toast,
+        Some((_, WorldToast::AccessFailure(_)))
+    ));
+}
+
+#[test]
+fn recovery_does_not_replace_data_of_a_locked_world() {
+    let mut f = Fixture::new();
+    f.world("World", "World");
+    f.world("World", "World");
+    let dir = f.title.saves.join("World");
+    fs::write(dir.join("level.dat"), b"broken").unwrap();
+    let world = list_worlds(&f.title.saves).remove(0);
+    let _lock = crate::save::SessionLock::acquire(&dir).unwrap();
+    f.title.attempt_restore(world);
+    assert_eq!(fs::read(dir.join("level.dat")).unwrap(), b"broken");
+    assert!(matches!(
+        f.title.toast,
+        Some((_, WorldToast::AccessFailure(_)))
+    ));
+}
+
+#[test]
+fn metadata_edits_and_backups_refuse_another_instances_world_lock() {
+    let f = Fixture::new();
+    f.world("World", "Original name");
+    let dir = f.title.saves.join("World");
+    fs::write(dir.join("icon.png"), b"icon fixture").unwrap();
+    let original = fs::read(dir.join("level.dat")).unwrap();
+    let lock = crate::save::SessionLock::acquire(&dir).unwrap();
+    assert!(world_management::rename(&f.title.saves, "World", "Changed").is_err());
+    assert!(world_management::reset_icon(&f.title.saves, "World").is_err());
+    assert!(world_management::backup(&f.title.saves, "World").is_err());
+    assert_eq!(fs::read(dir.join("level.dat")).unwrap(), original);
+    assert_eq!(fs::read(dir.join("icon.png")).unwrap(), b"icon fixture");
+    assert!(!world_management::backups_path(&f.title.saves).exists());
+    drop(lock);
+    world_management::rename(&f.title.saves, "World", "Changed").unwrap();
+    world_management::reset_icon(&f.title.saves, "World").unwrap();
+    assert!(world_management::backup(&f.title.saves, "World").unwrap() > 0);
+    assert!(!crate::save::SessionLock::is_locked(&dir));
+}
+
+#[cfg(unix)]
+#[test]
+fn metadata_access_rejects_a_lock_symlink_before_touching_its_target() {
+    let f = Fixture::new();
+    f.world("World", "World");
+    let dir = f.title.saves.join("World");
+    fs::write(dir.join("icon.png"), b"icon fixture").unwrap();
+    let target = f.root.join("sentinel");
+    fs::write(&target, b"keep me").unwrap();
+    std::os::unix::fs::symlink(&target, dir.join("session.lock")).unwrap();
+    assert!(world_management::rename(&f.title.saves, "World", "Changed").is_err());
+    assert!(world_management::reset_icon(&f.title.saves, "World").is_err());
+    assert!(world_management::backup(&f.title.saves, "World").is_err());
+    assert_eq!(fs::read(target).unwrap(), b"keep me");
+    assert_eq!(fs::read(dir.join("icon.png")).unwrap(), b"icon fixture");
+}
+
+#[test]
+fn optimization_keeps_the_world_locked_until_the_worker_is_closed() {
+    let mut f = Fixture::new();
+    f.world("World", "World");
+    let world = list_worlds(&f.title.saves).remove(0);
+    let dir = f.title.saves.join("World");
+    f.title.begin_optimize(world, false);
+    assert!(f.title.optimize.is_some());
+    assert!(crate::save::SessionLock::is_locked(&dir));
+    f.title.end_optimize(false);
+    assert!(!crate::save::SessionLock::is_locked(&dir));
 }
 
 #[test]

@@ -88,6 +88,9 @@ struct HomeView: View {
             if profile != nil { editingName = false; nameDraft = "" }
         }
         .task { link.uncover = onPlay; await link.watch() }
+        .task(id: link.phase) {
+            if link.phase == .waiting { await download.startAutomaticallyIfNeeded() }
+        }
     }
 
     private func pageHeading(_ item: Destination) -> some View {

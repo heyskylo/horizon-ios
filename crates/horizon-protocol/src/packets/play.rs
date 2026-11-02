@@ -461,7 +461,18 @@ impl VecDelta {
         let mut out = base;
         for i in 0..3 {
             if delta[i] != 0 {
-                out[i] = ((base[i] * 4096.0).round() as i64 + i64::from(delta[i])) as f64 / 4096.0;
+                let value = base[i] * 4096.0;
+                let floor = value.floor();
+                // VecDeltaCodec.encode uses Java double rounding: half ties
+                // go toward positive infinity, including negative positions.
+                // Add to the integral floor only when a fraction remains so
+                // large already-integral doubles are not rounded a second time.
+                let quantized = if value - floor >= 0.5 {
+                    floor + 1.0
+                } else {
+                    floor
+                } as i64;
+                out[i] = quantized.wrapping_add(i64::from(delta[i])) as f64 / 4096.0;
             }
         }
         out
@@ -3468,6 +3479,32 @@ mod tests {
         assert_eq!(
             VecDelta::Stepped(vec![([4096, 0, 0], 1), ([4096, 0, 0], 2)]).end(base),
             [12.0, 64.0, -3.5]
+        );
+    }
+
+    #[test]
+    fn move_entity_half_steps_follow_java_rounding() {
+        // Pinned 26.3 VecDeltaCodec.encode -> Java double rounding, checked
+        // against the actual private client JAR through a reflection oracle.
+        let unit = 1.0 / 4096.0;
+        assert_eq!(
+            VecDelta::apply([-0.5 * unit, -1.5 * unit, 0.5 * unit], [1; 3]),
+            [unit, 0.0, 2.0 * unit]
+        );
+        let below_half = f64::from_bits(0.5f64.to_bits() - 1) * unit;
+        assert_eq!(
+            VecDelta::apply([below_half, -below_half, 0.0], [1, 1, 0]),
+            [unit, unit, 0.0]
+        );
+        let base = [-0.5 * unit, 0.123_456_789, -1.5 * unit];
+        assert_eq!(
+            VecDelta::Stepped(vec![([0, 0, 0], 1), ([1, 0, 1], 2)]).end(base),
+            [unit, base[1], 0.0]
+        );
+        // Java's long addition wraps after its double-to-long rounding saturates.
+        assert_eq!(
+            VecDelta::apply([f64::INFINITY, f64::NEG_INFINITY, f64::NAN], [1, -1, 1]),
+            [i64::MIN as f64 * unit, i64::MAX as f64 * unit, unit]
         );
     }
 

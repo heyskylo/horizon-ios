@@ -1,5 +1,5 @@
 [workspace]
-exclude = ["launcher", "crates/horizon-android", "crates/horizon-telemetry-server", "crates/horizon-mod-registry", "third_party/wgpu-hal", "third_party/winit"]
+exclude = ["launcher", "crates/horizon-android", "crates/horizon-telemetry-server", "crates/horizon-mod-registry", "third_party/wgpu-hal", "third_party/winit", "third_party/java_regex"]
 members = [
     "crates/horizon-core",
     "crates/horizon-dualsense",
@@ -62,6 +62,8 @@ large_enum_variant = "allow"
 # frame wait for the GPU to finish the one before (#4604).
 # Drop this and the folder once a wgpu release has these fixes.
 [patch.crates-io]
+# Java 25 matching fixes and pinned Unicode 16 facts; see third_party/java_regex/HORIZON.md.
+java_regex = { path = "third_party/java_regex" }
 wgpu-hal = { path = "third_party/wgpu-hal" }
 # winit 0.30.13 with UIKit hardware key press/release support; see third_party/winit/HORIZON.md.
 winit = { path = "third_party/winit" }

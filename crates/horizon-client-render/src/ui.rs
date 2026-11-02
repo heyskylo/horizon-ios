@@ -1002,7 +1002,7 @@ impl EditBox {
         self.focused && (self.focused_at.elapsed().as_millis() / 300).is_multiple_of(2)
     }
     pub fn set_value(&mut self, value: &str) {
-        self.value = value.chars().take(self.max_length).collect();
+        self.value = crate::clipboard::utf16_truncate_utf8(value, self.max_length);
         self.move_cursor_to_end(false);
     }
     fn selected(&self) -> (usize, usize) {
@@ -1019,13 +1019,16 @@ impl EditBox {
     pub fn insert_text(&mut self, text: &str) {
         let (a, b) = self.selected();
         let filtered = crate::clipboard::filter_text(text, self.multiline);
-        let room = self
-            .max_length
-            .saturating_sub(char_len(&self.value) - (b - a));
-        let insert: String = filtered.chars().take(room).collect();
         let (ba, bb) = (byte_index(&self.value, a), byte_index(&self.value, b));
-        self.value.replace_range(ba..bb, &insert);
-        let pos = a + char_len(&insert);
+        let retained_units =
+            self.value.encode_utf16().count() - self.value[ba..bb].encode_utf16().count();
+        let room = self.max_length.saturating_sub(retained_units);
+        if room == 0 {
+            return;
+        }
+        let insert = crate::clipboard::utf16_prefix(&filtered, room);
+        self.value.replace_range(ba..bb, insert);
+        let pos = a + char_len(insert);
         self.set_cursor(pos, false);
     }
     /// Delete `n` characters (negative: backwards) or the selection.
@@ -1247,8 +1250,8 @@ impl EditBox {
             batch.text_styled(atlas, &t, draw_x, ty, color, true);
             draw_x += atlas.font.width_text(&t) + 1.0;
         }
-        let insert =
-            self.cursor < char_len(&self.value) || char_len(&self.value) >= self.max_length;
+        let insert = self.cursor < char_len(&self.value)
+            || self.value.encode_utf16().count() >= self.max_length;
         let mut cursor_x = draw_x;
         if !on_screen {
             cursor_x = if rel_cursor > 0 { tx + self.width } else { tx };
@@ -1626,6 +1629,30 @@ mod tests {
         e.drag_to(&atlas, e.text_x() - 5.0);
         assert_eq!((e.cursor, e.highlight), (0, 6));
     }
+    #[test]
+    fn edit_box_utf16_limit_frees_the_selected_units_and_preserves_pairs() {
+        let mut e = EditBox::new(0.0, 0.0, 100.0, 20.0);
+        e.max_length = 256;
+        e.set_value(&format!("{}🦀", "a".repeat(255)));
+        assert_eq!(e.value, format!("{}?", "a".repeat(255)));
+        e.max_length = 5;
+        e.set_value("a🦀b🦀");
+        assert_eq!(e.value, "a🦀b?");
+        e.set_value("a🦀b");
+        e.insert_text("🦀x");
+        assert_eq!(e.value, "a🦀b");
+        e.set_cursor(1, false);
+        e.set_cursor(2, true);
+        e.insert_text("🦀z");
+        assert_eq!(e.value, "a🦀zb");
+        assert_eq!(e.value.encode_utf16().count(), 5);
+        assert_eq!(e.cursor, 3);
+        e.set_cursor(1, false);
+        e.set_cursor(3, true);
+        e.insert_text("");
+        assert_eq!(e.value, "ab");
+    }
+
     #[test]
     fn edit_box_editing() {
         let mut e = EditBox::new(0.0, 0.0, 100.0, 20.0);

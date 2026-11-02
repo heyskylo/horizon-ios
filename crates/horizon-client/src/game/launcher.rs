@@ -19,6 +19,23 @@ use std::{
 };
 use winit::event_loop::ActiveEventLoop;
 
+/// The portrait launcher and landscape game share a UIWindow. Permit the
+/// launcher's orientation before acknowledging its presentation request.
+fn launcher_visibility(window: Option<&winit::window::Window>, visible: bool) {
+    horizon_ios_launcher::set_covered(visible);
+    #[cfg(target_os = "ios")]
+    if let Some(window) = window {
+        use winit::platform::ios::{ValidOrientations, WindowExtIOS};
+        window.set_valid_orientations(if visible {
+            ValidOrientations::LandscapeAndPortrait
+        } else {
+            ValidOrientations::Landscape
+        });
+    }
+    #[cfg(not(target_os = "ios"))]
+    let _ = window;
+}
+
 /// What came back for a launcher request so far: a control answer, or an import's result.
 enum Waiting {
     Control(Receiver<String>),
@@ -60,10 +77,12 @@ fn deliver() -> bool {
 
 /// Install the archive named by `import PATH` on a worker: a prepared tree is hundreds of megabytes.
 fn start_import(request: horizon_ios_launcher::Request) {
+    let command = request.line.split_whitespace().next().unwrap_or_default();
+    let resources_only = command == "import-game-files";
     let path = request
         .line
         .trim_start()
-        .strip_prefix("import")
+        .strip_prefix(command)
         .map(str::trim)
         .filter(|p| !p.is_empty())
         .map(std::path::PathBuf::from);
@@ -76,15 +95,30 @@ fn start_import(request: horizon_ios_launcher::Request) {
     let spawned = std::thread::Builder::new()
         .name("horizon-import".into())
         .spawn(move || {
-            let installed = Pack::open(&path)
-                .and_then(|pack| pack.install(&home))
-                .map_err(|e| e.to_string());
+            let installed =
+                install_archive(&path, &home, resources_only).map_err(|e| e.to_string());
             let _ = sender.send(installed);
         });
     match spawned {
         Ok(_) => PENDING.with_borrow_mut(|p| p.push((Waiting::Import(receiver), request))),
         Err(error) => request.answer(&json!({ "error": error.to_string() }).to_string()),
     }
+}
+
+fn install_archive(
+    path: &std::path::Path,
+    home: &std::path::Path,
+    resources_only: bool,
+) -> Result<Installed> {
+    let pack = Pack::open(path)?;
+    if resources_only && pack.kind != Kind::Resources {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "The automatic download did not contain game files.",
+        )
+        .into());
+    }
+    pack.install(home)
 }
 
 fn installed_json(installed: &Installed) -> Value {
@@ -109,7 +143,7 @@ impl Game<'_> {
             let command = request.line.split_whitespace().next().unwrap_or_default();
             match command {
                 "launcher-visible" => {
-                    horizon_ios_launcher::set_covered(request.line.ends_with(" true"));
+                    launcher_visibility(self.window.as_deref(), request.line.ends_with(" true"));
                     request.answer(r#"{"ok":true}"#);
                 }
 
@@ -122,7 +156,7 @@ impl Game<'_> {
                     });
                     request.answer(&state.to_string());
                 }
-                "import" => start_import(request),
+                "import" | "import-game-files" => start_import(request),
                 // The game is up: the download screen has nothing left to show.
                 "download-state" => request.answer(r#"{"phase":"done"}"#),
                 "launcher-start" => request.answer(r#"{"ok":true}"#),
@@ -316,10 +350,17 @@ impl Loading {
             let command = request.line.split_whitespace().next().unwrap_or_default();
             match command {
                 "launcher-visible" => {
-                    horizon_ios_launcher::set_covered(request.line.ends_with(" true"));
+                    launcher_visibility(self.window.as_deref(), request.line.ends_with(" true"));
                     request.answer(r#"{"ok":true}"#);
                 }
 
+                "game-files-source" => request.answer(
+                    &json!({
+                        "url": horizon_client::import::download::url(horizon_core::VANILLA_VERSION),
+                        "version": horizon_core::VANILLA_VERSION,
+                    })
+                    .to_string(),
+                ),
                 "launcher-start" => {
                     horizon_ios_launcher::start();
                     request.answer(r#"{"ok":true}"#);
@@ -342,7 +383,7 @@ impl Loading {
                     };
                     request.answer(&answer.to_string());
                 }
-                "import" => start_import(request),
+                "import" | "import-game-files" => start_import(request),
                 "launcher-session" => session_request(request),
                 "options-get" | "options-set" => {
                     let answer = self.launcher_options(&request.line);
@@ -382,5 +423,37 @@ impl Loading {
             self.files_arrived()?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn automatic_import_rejects_world_before_writing_but_manual_import_allows_it() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "horizon-auto-import-{}-{nonce}",
+            std::process::id()
+        ));
+        let world = root.join("world");
+        std::fs::create_dir_all(&world).unwrap();
+        std::fs::write(world.join("level.dat"), b"synthetic world fixture").unwrap();
+        let archive = root.join("world.zip");
+        horizon_client::import::pack(&world, &archive, |_, _| {}).unwrap();
+        let home = root.join("home");
+        let error = super::install_archive(&archive, &home, true).unwrap_err();
+        assert!(error.to_string().contains("did not contain game files"));
+        assert!(
+            !home.exists(),
+            "Wrong-kind download must not touch player data"
+        );
+        assert!(archive.exists());
+        let installed = super::install_archive(&archive, &home, false).unwrap();
+        assert_eq!(installed.kind, horizon_client::import::Kind::World);
+        assert!(installed.path.join("level.dat").is_file());
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

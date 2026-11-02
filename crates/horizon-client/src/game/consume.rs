@@ -23,6 +23,43 @@ type ItemConsumable = Consumable<String, ConsumeEffect>;
 pub(super) const USE_ITEM_COMPLETE_EVENT: i8 = 9;
 
 impl Game<'_> {
+    /// `Consumable.startConsuming`: positive durations begin a held use;
+    /// zero-tick consumables execute onConsume in this interaction, not a later tick.
+    pub(super) fn start_eating(&mut self, info: &ItemInfo) -> bool {
+        let Some(consumable) = info.consumable.as_ref() else {
+            return false;
+        };
+        if info.food.is_some()
+            && !self
+                .player
+                .as_ref()
+                .is_some_and(|p| info.can_always_eat || p.health.food.food < 20 || self.creative)
+        {
+            return false;
+        }
+        if consumable.ticks() <= 0 {
+            let Some(stack) = self.held().cloned() else {
+                return false;
+            };
+            self.complete_consuming(info, consumable, &stack);
+        } else if self.using.is_none() {
+            self.using = Some((self.held_slot(), 0));
+        }
+        true
+    }
+
+    /// ItemStack.use/finishUsingItem apply remainder and cooldown side effects
+    /// after onConsume, using the original stack's components even if the hand changed.
+    pub(super) fn complete_consuming(
+        &mut self,
+        info: &ItemInfo,
+        consumable: &ItemConsumable,
+        stack: &ItemStack,
+    ) {
+        self.finish_consuming(info, consumable, stack);
+        self.apply_use_cooldown(stack);
+    }
+
     /// `ServerPlayer.completeUsingItem`: the player's own client is told
     /// first, and completes the use itself (eating the food there too).
     pub(super) fn send_use_item_complete(&mut self) {

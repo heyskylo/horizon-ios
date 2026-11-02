@@ -57,6 +57,7 @@ audio = ["horizon-client/audio"]
 controllers = []
 
 [patch.crates-io]
+java_regex = { path = "../../third_party/java_regex" }
 wgpu-hal = { path = "../../third_party/wgpu-hal" }
 winit = { path = "../../third_party/winit" }
 
