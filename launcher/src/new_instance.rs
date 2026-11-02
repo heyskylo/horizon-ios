@@ -1,5 +1,5 @@
 //! New instance's kinds (docs/design-system.md, "Night"; plan R0, screen 4): Horizon, Vanilla
-//! (Minecraft: Java Edition as Mojang ships it) and Modded (with Fabric or Quilt). A Java kind picks
+//! (Minecraft: Java Edition as Mojang ships it) and Modded (with Fabric, Quilt, Forge or NeoForge). A Java kind picks
 //! its version from Mojang's public list (`minecraft_versions`), fetched once when the dialog first
 //! needs it; the game itself comes with the first Play, for an account that owns it.
 use super::*;
@@ -272,7 +272,7 @@ impl Launcher {
             .child(list);
         if choice.kind == NewKind::Modded {
             let scale = self.scale;
-            let logos = [Loader::Fabric, Loader::Quilt].map(|l| (l, self.loader_logo(l.id(), 24.)));
+            let logos = Loader::ALL.map(|l| (l, self.loader_logo(l.id(), 24.)));
             let card = |loader: Loader| {
                 let logo = logos
                     .iter()
@@ -309,9 +309,9 @@ impl Launcher {
             rows = rows.child(heading("Loader")).child(
                 div()
                     .flex()
+                    .flex_wrap()
                     .gap(px(10.))
-                    .child(card(Loader::Fabric))
-                    .child(card(Loader::Quilt)),
+                    .children(Loader::ALL.map(card)),
             );
         }
         rows.child(shell::text(night::CAPTION, c(n.muted)).child(
