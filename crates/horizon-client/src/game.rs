@@ -10883,21 +10883,13 @@ impl Game<'_> {
                         self.res.block_entity_render().renders(*state)
                             && (off_screen(*state) || in_view(p))
                     });
-            if self.entity_culler.is_some()
-                || self.async_entity_culler.is_some()
-                || self.pack_ids.is_some()
-            {
+            if self.pack_ids.is_some() {
                 for block in visible {
                     let start = out.len();
                     self.mark_block_entity(start, block.1);
                     self.res
                         .block_entity_render()
                         .render(&scene, std::iter::once(block), &mut out);
-                    if !off_screen(block.1)
-                        && (self.entity_culler.is_some() || self.async_entity_culler.is_some())
-                    {
-                        self.cull_entity_vertices(&mut out, start);
-                    }
                 }
             } else {
                 self.res
