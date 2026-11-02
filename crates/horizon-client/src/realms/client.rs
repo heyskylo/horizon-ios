@@ -100,23 +100,37 @@ impl<'a> RealmsClient<'a> {
             .build()
     }
 
-    /// Builds cookie string required by Realms API: `sid=token:<access_token>:<uuid>:<name>;user=<name>;version=26.3`.
+    /// Builds cookie string required by Realms API: `sid=token:<access_token>:<uuid>; user=<name>; version=26.3`.
     fn cookie_header(&self) -> String {
+        let undashed_uuid = self.player_uuid.replace('-', "");
         format!(
-            "sid=token:{}:{}:{};user={};version=26.3",
-            self.access_token, self.player_uuid, self.player_name, self.player_name
+            "sid=token:{}:{}; user={}; version=26.3",
+            self.access_token, undashed_uuid, self.player_name
         )
     }
 
     /// Fetches the list of Realms available to the player.
     pub fn list_worlds(&self) -> Result<Vec<RealmServer>, String> {
         let url = format!("{}/worlds", self.base_url);
-        let resp = Self::agent()
+        let resp = match Self::agent()
             .get(&url)
             .set("Cookie", &self.cookie_header())
+            .set("Authorization", &format!("Bearer {}", self.access_token))
             .set("User-Agent", "Horizon/26.3")
             .call()
-            .map_err(|e| format!("Realms request failed: {e}"))?;
+        {
+            Ok(resp) => resp,
+            Err(ureq::Error::Status(code, resp)) => {
+                let body = resp.into_string().unwrap_or_default();
+                let detail = if body.is_empty() {
+                    format!("status code {code}")
+                } else {
+                    format!("{code}: {body}")
+                };
+                return Err(format!("Realms request failed: {url}: {detail}"));
+            }
+            Err(e) => return Err(format!("Realms network error: {e}")),
+        };
 
         let body = resp
             .into_string()
@@ -131,12 +145,25 @@ impl<'a> RealmsClient<'a> {
     /// Requests server address to connect to a Realm.
     pub fn join_world(&self, realm_id: i64) -> Result<RealmAddress, String> {
         let url = format!("{}/worlds/v1/{}/join/pc", self.base_url, realm_id);
-        let resp = Self::agent()
+        let resp = match Self::agent()
             .get(&url)
             .set("Cookie", &self.cookie_header())
+            .set("Authorization", &format!("Bearer {}", self.access_token))
             .set("User-Agent", "Horizon/26.3")
             .call()
-            .map_err(|e| format!("Realms join failed: {e}"))?;
+        {
+            Ok(resp) => resp,
+            Err(ureq::Error::Status(code, resp)) => {
+                let body = resp.into_string().unwrap_or_default();
+                let detail = if body.is_empty() {
+                    format!("status code {code}")
+                } else {
+                    format!("{code}: {body}")
+                };
+                return Err(format!("Realms join failed: {url}: {detail}"));
+            }
+            Err(e) => return Err(format!("Realms network error: {e}")),
+        };
 
         let body = resp
             .into_string()
@@ -155,16 +182,14 @@ mod tests {
 
     #[test]
     fn parse_realm_server_list() {
-        let json = r#"{
+        let raw = r#"{
             "servers": [
                 {
-                    "id": 123456,
-                    "name": "My Survival Realm",
+                    "id": 12345,
+                    "name": "Test Realm",
                     "motd": "Welcome to my Realm!",
                     "state": "OPEN",
-                    "owner": "Steve",
-                    "ownerUUID": "069a79f4-44e9-4726-a5be-fca90e38aaf5",
-                    "daysLeft": 30,
+                    "daysLeft": 25,
                     "expired": false,
                     "worldType": "NORMAL",
                     "activeSlot": 1
@@ -172,23 +197,22 @@ mod tests {
             ]
         }"#;
 
-        let list: RealmServerList = serde_json::from_str(json).unwrap();
-        assert_eq!(list.servers.len(), 1);
-        let s = &list.servers[0];
-        assert_eq!(s.id, 123456);
-        assert_eq!(s.name, "My Survival Realm");
-        assert!(s.is_open());
+        let parsed: RealmServerList = serde_json::from_str(raw).expect("Failed to parse");
+        assert_eq!(parsed.servers.len(), 1);
+        let server = &parsed.servers[0];
+        assert_eq!(server.id, 12345);
+        assert_eq!(server.name, "Test Realm");
+        assert_eq!(server.motd, "Welcome to my Realm!");
+        assert!(server.is_open());
     }
 
     #[test]
     fn parse_realm_address() {
-        let json = r#"{
-            "address": "192.168.1.100:25565",
-            "resourcePackUrl": null,
-            "resourcePackHash": null
+        let raw = r#"{
+            "address": "192.168.1.100:25565"
         }"#;
 
-        let addr: RealmAddress = serde_json::from_str(json).unwrap();
-        assert_eq!(addr.address, "192.168.1.100:25565");
+        let parsed: RealmAddress = serde_json::from_str(raw).expect("Failed to parse address");
+        assert_eq!(parsed.address, "192.168.1.100:25565");
     }
 }

@@ -6,10 +6,10 @@ use client::{RealmAddress, RealmServer, RealmsClient};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
+const HEADER: f32 = 33.0;
+const FOOTER: f32 = 60.0;
 const ROW_HEIGHT: f32 = 36.0;
-const ROW_WIDTH: f32 = 270.0;
-const LIST_TOP: f32 = 49.0;
-const LIST_BOTTOM: f32 = 60.0;
+const ROW_WIDTH: f32 = 308.0;
 
 #[derive(Clone, Debug)]
 pub enum FetchState {
@@ -46,7 +46,7 @@ impl Screen {
         if let Some(session) = horizon_client_render::auth::current() {
             let state_clone = Arc::clone(&state);
             let name = session.name.clone();
-            let uuid = horizon_protocol::crypto::uuid_string(session.uuid);
+            let uuid = format!("{:032x}", session.uuid);
             let token = session.access_token().to_owned();
 
             thread::spawn(move || {
@@ -78,7 +78,7 @@ impl Screen {
             }
             let state_clone = Arc::clone(&self.state);
             let name = session.name.clone();
-            let uuid = horizon_protocol::crypto::uuid_string(session.uuid);
+            let uuid = format!("{:032x}", session.uuid);
             let token = session.access_token().to_owned();
 
             thread::spawn(move || {
@@ -107,7 +107,7 @@ impl Screen {
                     Some((
                         server.id,
                         session.name.clone(),
-                        horizon_protocol::crypto::uuid_string(session.uuid),
+                        format!("{:032x}", session.uuid),
                         session.access_token().to_owned(),
                     ))
                 } else {
@@ -128,16 +128,13 @@ impl Screen {
                 Outcome::None
             }
             Some(2) => Outcome::Back,
-            Some(3) => {
-                self.refresh();
-                Outcome::None
-            }
             _ => {
-                // Check clicking on realms list item
-                if y >= LIST_TOP && y <= h - LIST_BOTTOM {
+                // Clicking on a realm list row
+                let (top, bottom) = (HEADER, h - FOOTER);
+                if y >= top && y <= bottom {
                     let rx = ((w - ROW_WIDTH) / 2.0).floor();
                     if x >= rx && x <= rx + ROW_WIDTH {
-                        let row = ((y - LIST_TOP) / ROW_HEIGHT).floor() as usize;
+                        let row = ((y - top - 2.0) / ROW_HEIGHT).floor() as usize;
                         if let Ok(lock) = self.state.lock()
                             && let FetchState::Loaded(servers) = &*lock
                             && row < servers.len()
@@ -164,27 +161,50 @@ impl Screen {
                 }
             });
 
+        // Exact vanilla footer layout: Play (100) and Back (100), centered
         vec![
             (
-                cx - 154.0,
+                cx - 104.0,
                 h - 52.0,
                 100.0,
-                "Play Realm".to_string(),
+                crate::lang::get_or("mco.selectServer.play", "Play"),
                 selected_can_join,
                 1,
             ),
-            (cx - 48.0, h - 52.0, 100.0, "Refresh".to_string(), true, 3),
-            (cx + 58.0, h - 52.0, 100.0, "Back".to_string(), true, 2),
+            (
+                cx + 4.0,
+                h - 52.0,
+                100.0,
+                crate::lang::get_or("gui.back", "Back"),
+                true,
+                2,
+            ),
         ]
     }
 
     pub fn draw(&self, batch: &mut HudBatch, atlas: &HudAtlas, w: f32, h: f32) {
+        let (w, h) = (w.ceil(), h.ceil());
         let cx = (w / 2.0).floor();
 
-        // Screen title
-        let title = "Minecraft Realms";
-        let tw = HudBatch::text_width(atlas, title);
-        batch.text(atlas, title, cx - tw / 2.0, 16.0, u32::MAX, true);
+        // 1. Classic Minecraft tiled dirt menu background
+        crate::ui::menu_background(batch, atlas, 0.0, 0.0, w, h, false);
+
+        // 2. Official Header title centered in the 33px header
+        let title = crate::lang::get_or("mco.title", "Minecraft Realms");
+        let tw = HudBatch::text_width(atlas, &title);
+        let tx = ((w - tw.ceil()) / 2.0).floor();
+        batch.text(
+            atlas,
+            &title,
+            tx,
+            ((HEADER - 9.0) / 2.0).floor(),
+            u32::MAX,
+            true,
+        );
+
+        // 3. Selection list background with standard separators
+        let (top, bottom) = (HEADER, h - FOOTER);
+        crate::ui::list_background(batch, atlas, top, bottom, false);
 
         let rx = ((w - ROW_WIDTH) / 2.0).floor();
 
@@ -202,19 +222,19 @@ impl Screen {
                     atlas,
                     msg,
                     cx - mw / 2.0,
-                    h / 2.0 - 10.0,
+                    (h / 2.0).floor() - 10.0,
                     rgba(160, 160, 160, 255),
                     true,
                 );
             }
             FetchState::Loading => {
-                let msg = "Loading Realms worlds...";
-                let mw = HudBatch::text_width(atlas, msg);
+                let msg = crate::lang::get_or("mco.selectServer.loading", "Loading Realms List");
+                let mw = HudBatch::text_width(atlas, &msg);
                 batch.text(
                     atlas,
-                    msg,
+                    &msg,
                     cx - mw / 2.0,
-                    h / 2.0 - 10.0,
+                    (h / 2.0).floor() - 10.0,
                     rgba(160, 160, 160, 255),
                     true,
                 );
@@ -226,50 +246,87 @@ impl Screen {
                     atlas,
                     &msg,
                     cx - mw / 2.0,
-                    h / 2.0 - 10.0,
+                    (h / 2.0).floor() - 10.0,
                     rgba(255, 85, 85, 255),
                     true,
                 );
             }
             FetchState::Loaded(servers) => {
                 if servers.is_empty() {
-                    let msg = "No active Realms found on this account.";
-                    let mw = HudBatch::text_width(atlas, msg);
-                    batch.text(
-                        atlas,
-                        msg,
-                        cx - mw / 2.0,
-                        h / 2.0 - 10.0,
-                        rgba(160, 160, 160, 255),
-                        true,
+                    let msg = crate::lang::get_or(
+                        "mco.selectServer.noRealms",
+                        "You don't seem to have a Realm. Add a Realm to play together with your friends.",
                     );
+                    let mw = HudBatch::text_width(atlas, &msg);
+                    if mw < w - 40.0 {
+                        batch.text(
+                            atlas,
+                            &msg,
+                            cx - mw / 2.0,
+                            (h / 2.0).floor() - 10.0,
+                            rgba(160, 160, 160, 255),
+                            true,
+                        );
+                    } else {
+                        let line1 = "You don't seem to have a Realm.";
+                        let line2 = "Add a Realm to play together with your friends.";
+                        let w1 = HudBatch::text_width(atlas, line1);
+                        let w2 = HudBatch::text_width(atlas, line2);
+                        batch.text(
+                            atlas,
+                            line1,
+                            cx - w1 / 2.0,
+                            (h / 2.0).floor() - 15.0,
+                            rgba(160, 160, 160, 255),
+                            true,
+                        );
+                        batch.text(
+                            atlas,
+                            line2,
+                            cx - w2 / 2.0,
+                            (h / 2.0).floor() + 2.0,
+                            rgba(160, 160, 160, 255),
+                            true,
+                        );
+                    }
                 } else {
                     for (i, server) in servers.iter().enumerate() {
-                        let top = LIST_TOP + i as f32 * ROW_HEIGHT;
-                        if top + ROW_HEIGHT > h - LIST_BOTTOM {
+                        let y = top + 2.0 + i as f32 * ROW_HEIGHT;
+                        if y + ROW_HEIGHT > bottom {
                             break;
                         }
 
                         let is_selected = self.selected == Some(i);
                         if is_selected {
-                            batch.fill(atlas, rx - 2.0, top - 2.0, ROW_WIDTH, ROW_HEIGHT, u32::MAX);
+                            batch.fill(atlas, rx - 2.0, y - 2.0, ROW_WIDTH, ROW_HEIGHT, u32::MAX);
                             batch.fill(
                                 atlas,
                                 rx - 1.0,
-                                top - 1.0,
+                                y - 1.0,
                                 ROW_WIDTH - 2.0,
                                 ROW_HEIGHT - 2.0,
                                 rgba(0, 0, 0, 255),
                             );
                         }
 
-                        // Server name
+                        // 32x32 server icon
+                        batch.sprite_scaled(
+                            atlas,
+                            "misc/unknown_server",
+                            rx + 2.0,
+                            y + 2.0,
+                            32.0,
+                            32.0,
+                            u32::MAX,
+                        );
+
+                        // Server name (White with shadow)
                         let name_color = if server.is_open() {
                             u32::MAX
                         } else {
                             rgba(160, 160, 160, 255)
                         };
-                        batch.text(atlas, &server.name, rx + 4.0, top + 2.0, name_color, true);
+                        batch.text(atlas, &server.name, rx + 38.0, y + 3.0, name_color, true);
 
                         // State & MOTD
                         let motd = if !server.motd.is_empty() {
@@ -280,9 +337,20 @@ impl Screen {
                         batch.text(
                             atlas,
                             motd,
-                            rx + 4.0,
-                            top + 14.0,
+                            rx + 38.0,
+                            y + 14.0,
                             rgba(128, 128, 128, 255),
+                            true,
+                        );
+
+                        // Owner / Info
+                        let owner = server.owner.as_deref().unwrap_or("");
+                        batch.text(
+                            atlas,
+                            owner,
+                            rx + 38.0,
+                            y + 24.0,
+                            rgba(160, 160, 160, 255),
                             true,
                         );
 
@@ -295,8 +363,8 @@ impl Screen {
                         batch.text(
                             atlas,
                             status_str,
-                            rx + ROW_WIDTH - 60.0,
-                            top + 2.0,
+                            rx + ROW_WIDTH - 52.0,
+                            y + 3.0,
                             status_col,
                             true,
                         );
