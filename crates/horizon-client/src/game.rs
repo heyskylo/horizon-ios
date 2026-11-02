@@ -557,6 +557,7 @@ impl Options {
             Ok(None) => {}
             Err(e) => eprintln!("Horizon: not signed in: {e}"),
         }
+        split::launcher::read_now();
         if let Some(dir) = o.game_dir.take() {
             // Paths given on the command line stay relative to where the game was started.
             o.resources = std::path::absolute(&o.resources)?;
@@ -2368,6 +2369,9 @@ struct Game<'a> {
     view_at: [u32; 2],
     /// Splitscreen: what it draws over this player's view (its badge, questions, notices).
     split_hud: split::Hud,
+    /// Splitscreen: this player's own Microsoft account session (one of the launcher's other
+    /// accounts), in place of the process's (P1's) for its connections and skin.
+    split_auth: Option<std::sync::Arc<horizon_client::auth::AuthSession>>,
     focused: bool,
     /// Whether the window currently accepts input method events.
     ime_allowed: bool,
@@ -18333,6 +18337,7 @@ impl<'a> Game<'a> {
             split_window: false,
             view_at: [0, 0],
             split_hud: Default::default(),
+            split_auth: None,
             focused: true,
             ime_allowed: false,
             ime_area: None,

@@ -2237,6 +2237,7 @@ pub fn client_command(tag: &str) -> Command {
     let _ = fs::create_dir_all(&home);
     let mut cmd = Command::new(client_program(tag));
     cmd.current_dir(home).arg("--resources").arg(resources(tag));
+    cmd.env_remove("HORIZON_ACCOUNT_SESSIONS");
     // How the game asks for a renewed session (`account session`) while it runs.
     if let Ok(exe) = std::env::current_exe() {
         cmd.env("HORIZON_LAUNCHER_EXE", exe);
@@ -2428,7 +2429,7 @@ pub fn client(tag: &str) -> Result<Command, String> {
 
 /// [`client`], playing as `who` for this launch only (`play --account`).
 pub fn client_as(tag: &str, who: Option<&account::Player>) -> Result<Command, String> {
-    let (session, offline) = match who {
+    let session = match who {
         None => account::session_for_game(&game_home(), false).map_err(|e| e.to_string()),
         Some(who) => account::session_for_game_as(&game_home(), who),
     }
@@ -2437,10 +2438,11 @@ pub fn client_as(tag: &str, who: Option<&account::Player>) -> Result<Command, St
     complete_assets(tag);
     crate::browser::horizon::before_play(&game_home());
     let mut cmd = client_command(tag);
-    if let Some(file) = session {
+    if let Some(file) = session.file {
         cmd.arg("--session-file").arg(file);
     }
-    if let Some(e) = offline {
+    cmd.envs(session.env);
+    if let Some(e) = session.offline {
         eprintln!("Playing offline: {e}");
     }
     if let Some(e) = account::take_unsaved() {
@@ -3112,7 +3114,7 @@ pub enum Msg {
     AccountRemoved(String, u64, Result<bool, String>),
     /// The owner gate's answer for the game about to start: the selected account's session
     /// file (none = offline) and why it plays offline, if it does.
-    Session(Result<(Option<PathBuf>, Option<String>), crate::account::NoOwner>),
+    Session(Result<crate::account::GameSession, crate::account::NoOwner>),
     /// A modpack step's line (`modpacks`).
     PackLine(String),
     /// A modpack step ended: the pack as it now is.

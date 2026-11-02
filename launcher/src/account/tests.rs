@@ -391,6 +391,70 @@ fn kept(store: &MemoryStore) -> Secrets {
 }
 
 #[test]
+fn splitscreen_gets_the_other_accounts_that_still_hold() {
+    let store = MemoryStore::default();
+    let mut accounts = signed_in(&store, &secrets("mc-token", true));
+    let other = |name: &str, uuid: &str| Account {
+        uuid: uuid.into(),
+        name: name.into(),
+        skin: None,
+        cape: None,
+    };
+    let expired = Secrets {
+        minecraft_expires_at: 0,
+        ..secrets("old", true)
+    };
+    for (name, uuid, s) in [
+        ("Bea", "b", secrets("bea-token", true)),
+        ("Cal", "c", expired),
+        ("Dan", "d", secrets("dan-token", false)),
+    ] {
+        accounts.add(&store, other(name, uuid), &s).unwrap();
+    }
+    accounts.selected = Some(UUID.into());
+    let dir = std::env::temp_dir().join(format!("hz-split-sessions-{}", std::process::id()));
+    // No network: Cal can't be renewed and Dan doesn't own the game; neither stops the launch.
+    let env = account_sessions(&offline(), Some("test-client"), &store, &dir, &mut accounts);
+    let (key, json) = &env[0];
+    assert_eq!(*key, "HORIZON_ACCOUNT_SESSIONS");
+    let list: Vec<Value> = serde_json::from_str(json).unwrap();
+    assert_eq!(list.len(), 3);
+    assert_eq!(list[0]["name"], "Bea");
+    assert_eq!(list[1]["name"], "Cal");
+    assert!(list[1]["skipped"]
+        .as_str()
+        .unwrap()
+        .contains("Sign in again"));
+    assert!(list[1].get("file").is_none());
+    assert_eq!(list[2]["name"], "Dan");
+    assert!(list[2]["skipped"].as_str().unwrap().contains("ownership"));
+    assert!(!json.contains("access_token") && !json.contains("dan-token"));
+    let file = std::fs::read_to_string(list[0]["file"].as_str().unwrap()).unwrap();
+    assert!(file.contains("bea-token") && !file.contains("mc-token"));
+    let _ = std::fs::remove_dir_all(&dir);
+    // Alone: nothing.
+    let mut alone = signed_in(&store, &secrets("mc-token", true));
+    let env = account_sessions(&offline(), Some("test-client"), &store, &dir, &mut alone);
+    assert!(env.is_empty());
+    // Only for a game whose Splitscreen setting is on.
+    std::fs::create_dir_all(&dir).unwrap();
+    assert!(!splitscreen_on(&dir));
+    std::fs::write(
+        dir.join("horizon-extras.txt"),
+        "zoom:false\nsplitscreen:false\n",
+    )
+    .unwrap();
+    assert!(!splitscreen_on(&dir));
+    std::fs::write(
+        dir.join("horizon-extras.txt"),
+        "zoom:false\nsplitscreen:true\n",
+    )
+    .unwrap();
+    assert!(splitscreen_on(&dir));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn an_owner_plays_with_a_session() {
     let (_, ep) = mock(|_| {});
     let store = MemoryStore::default();
@@ -2083,4 +2147,51 @@ fn a_launch_as_another_account_leaves_the_selected_one() {
     );
     assert_eq!(gone.unwrap_err(), "That account isn't signed in.");
     assert_eq!(accounts.player(), Player::Microsoft(UUID.into()));
+}
+
+#[test]
+fn splitscreen_stops_renewing_other_accounts_once_out_of_time() {
+    // A sign-in service that never answers: any request would hang the test.
+    let silent = TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}/x", silent.local_addr().unwrap());
+    let ep = Endpoints {
+        microsoft: url.clone(),
+        xbox_user: url.clone(),
+        xsts: url.clone(),
+        minecraft: url,
+    };
+    let store = MemoryStore::default();
+    let mut accounts = signed_in(&store, &secrets("mc-token", true));
+    let expired = Secrets {
+        minecraft_expires_at: 0,
+        ..secrets("old", true)
+    };
+    let cal = Account {
+        uuid: "c".into(),
+        name: "Cal".into(),
+        skin: None,
+        cape: None,
+    };
+    accounts.add(&store, cal, &expired).unwrap();
+    accounts.selected = Some(UUID.into());
+    let dir = std::env::temp_dir().join(format!("hz-split-late-{}", std::process::id()));
+    let start = std::time::Instant::now();
+    let env = account_sessions_until(
+        &ep,
+        Some("test-client"),
+        &store,
+        &dir,
+        &mut accounts,
+        std::time::Instant::now(),
+    );
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(2),
+        "no request started"
+    );
+    let list: Vec<Value> = serde_json::from_str(&env[0].1).unwrap();
+    assert!(list[0]["skipped"]
+        .as_str()
+        .unwrap()
+        .contains("Sign in again"));
+    let _ = std::fs::remove_dir_all(&dir);
 }
