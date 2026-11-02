@@ -7112,7 +7112,7 @@ fn mob_source(damage: &Damage) -> HurtSource<'static> {
 /// Whether a native mod's sound can be sent: a namespaced event, a sound
 /// source, a position inside the world's range and a finite, non-negative
 /// volume and pitch.
-pub(super) fn native_sound_ok(
+pub(super) fn mod_sound_ok(
     sound: &str,
     at: [f64; 3],
     source: usize,
@@ -7132,7 +7132,7 @@ pub(super) fn native_sound_ok(
 /// Whether a native mod's particles can be sent. Block particle types need
 /// a known state (`state_ok`); item, trail and vibration particles aren't
 /// supported by the network dispatch; a mod's own type must be namespaced.
-pub(super) fn native_particles_ok(
+pub(super) fn mod_particles_ok(
     options: &ParticleOptions,
     state: Option<BlockStateId>,
     state_ok: impl Fn(BlockStateId) -> bool,
@@ -7240,7 +7240,7 @@ impl GameLevel<'_> {
         volume: f32,
         pitch: f32,
     ) -> bool {
-        if !self.native_authoritative || !native_sound_ok(sound, at, source, volume, pitch) {
+        if !self.native_authoritative || !mod_sound_ok(sound, at, source, volume, pitch) {
             return false;
         }
         self.native_sounds.push(super::creatures::NativeSound {
@@ -7273,7 +7273,7 @@ impl GameLevel<'_> {
     ) -> bool {
         let state_ok = |id| self.registry.state(id).is_some();
         if !self.native_authoritative
-            || !native_particles_ok(options, state, state_ok, at, spread, speed)
+            || !mod_particles_ok(options, state, state_ok, at, spread, speed)
         {
             return false;
         }

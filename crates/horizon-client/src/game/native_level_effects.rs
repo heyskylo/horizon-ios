@@ -3,7 +3,7 @@
 //! Every player in range hears or sees them, as `ServerLevel.playSound` and
 //! `sendParticles` send them. They return false on a client, for a handle of
 //! an earlier open, or for arguments the network can't carry.
-use super::native_hooks::{native_particles_ok, native_sound_ok};
+use super::native_hooks::{mod_particles_ok, mod_sound_ok};
 use super::{Dim, Game, creatures::NativeSound, lan_particles::QueuedParticle};
 use horizon_client::mod_api::{LevelRef, ParticleOptions};
 use horizon_world::registry::BlockStateId;
@@ -35,7 +35,7 @@ impl Game<'_> {
         let Some(dimension) = self.native_level_dimension(level) else {
             return false;
         };
-        if !native_sound_ok(sound, at, source, volume, pitch) {
+        if !mod_sound_ok(sound, at, source, volume, pitch) {
             return false;
         }
         self.creatures.lan_sounds.push(NativeSound {
@@ -69,7 +69,7 @@ impl Game<'_> {
         };
         let registry = self.pack.assets.registry;
         let state_ok = |id| registry.state(id).is_some();
-        if !native_particles_ok(options, state, state_ok, at, spread, speed) {
+        if !mod_particles_ok(options, state, state_ok, at, spread, speed) {
             return false;
         }
         self.creatures.lan_particles.push(QueuedParticle {
