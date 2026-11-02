@@ -38,7 +38,7 @@ struct Globals {
     // [0] where the lift starts, [1] where it is full.
     hdr_windows: array<vec4<f32>, 2>,
     // HDR lighting: x how strongly the sky lights the world now (`Sky::sky_light_factor`),
-    // y what the sky and fog get: the same, but none under water.
+    // y what the sky and fog get: the same, but none under water; z 1 with HDR output on.
     hdr_light: vec4<f32>,
 }
 @group(0) @binding(0) var<uniform> globals: Globals;
@@ -448,7 +448,9 @@ fn hdr_mark(tier: u32, y: f32) -> f32 {
 }
 // `fs_solid` for the opaque pass (`opaque_quad`): no fade, no cutout, no discard.
 @fragment fn fs_opaque(in: TerrainOut) -> @location(0) vec4<f32> {
-    hdr_normal = normalize(cross(dpdy(in.local), dpdx(in.local)));
+    if globals.hdr_light.z != 0.0 {
+        hdr_normal = normalize(cross(dpdy(in.local), dpdx(in.local)));
+    }
     let texel = sprite(in.uv, in.layer & 0x7fffu);
     var color = texel * in.color;
     color = mix(globals.fog_color * vec4(1.0, 1.0, 1.0, color.a), color, in.visibility);
@@ -463,7 +465,9 @@ fn hdr_mark(tier: u32, y: f32) -> f32 {
 fn solid_color(in: TerrainOut) -> vec4<f32> {
     let dx = dpdx(in.local);
     let dy = dpdy(in.local);
-    hdr_normal = normalize(cross(dy, dx));
+    if globals.hdr_light.z != 0.0 {
+        hdr_normal = normalize(cross(dy, dx));
+    }
     if faded(in.fade, in.local, dx, dy) { discard; }
     // Bit 15 of the layer marks opaque leaves (forceOpaque): no alpha cutout.
     let texel = sprite(in.uv, in.layer & 0x7fffu);
@@ -482,22 +486,26 @@ fn solid_finish(in: TerrainOut, texel: vec4<f32>, color: vec4<f32>) -> vec4<f32>
     // parts, or all of it. Nothing else reads the frame's alpha.
     // Fog turns a far surface into the fog's colour: it takes the fog's light with it, or a
     // fully fogged mountain would stand out from the fog behind it.
-    let fogged = max(linear_fog(in.spherical, globals.fog.x, globals.fog.y),
-        linear_fog(in.cylindrical, globals.fog.z, globals.fog.w)) * globals.fog_color.a;
-    var emissive = hdr_scene_alpha(mix(hdr_scene(in.scene.x, in.scene.y, hdr_facing()),
-        globals.hdr_light.y, fogged));
-    if in.emission > 0u {
-        // A light source's own face shines as one or stays as drawn, without the lighting.
-        emissive = 1.0;
-        let whole = in.emission > 4u;
-        let tier = select(in.emission, in.emission - 4u, whole);
-        let l = in.layer & 0x7fffu;
-        let t = textureLoad(emission_thresholds, vec2(i32(l % SPRITE_SPLIT), i32(l / SPRITE_SPLIT)), 0);
-        let y = brightness(texel.rgb);
-        // All over means all over: the sprite's range is one frame's, and an animated sprite's
-        // other frames dip below it. Fog hides a light source as it hides everything else.
-        if whole || y >= t.r {
-            emissive = hdr_mark(tier, y * (1.0 - fogged));
+    // Without HDR output nothing reads the alpha, so its lighting is not worked out.
+    var emissive = 1.0;
+    if globals.hdr_light.z != 0.0 {
+        let fogged = max(linear_fog(in.spherical, globals.fog.x, globals.fog.y),
+            linear_fog(in.cylindrical, globals.fog.z, globals.fog.w)) * globals.fog_color.a;
+        emissive = hdr_scene_alpha(mix(hdr_scene(in.scene.x, in.scene.y, hdr_facing()),
+            globals.hdr_light.y, fogged));
+        if in.emission > 0u {
+            // A light source's own face shines as one or stays as drawn, without the lighting.
+            emissive = 1.0;
+            let whole = in.emission > 4u;
+            let tier = select(in.emission, in.emission - 4u, whole);
+            let l = in.layer & 0x7fffu;
+            let t = textureLoad(emission_thresholds, vec2(i32(l % SPRITE_SPLIT), i32(l / SPRITE_SPLIT)), 0);
+            let y = brightness(texel.rgb);
+            // All over means all over: the sprite's range is one frame's, and an animated sprite's
+            // other frames dip below it. Fog hides a light source as it hides everything else.
+            if whole || y >= t.r {
+                emissive = hdr_mark(tier, y * (1.0 - fogged));
+            }
         }
     }
     if in.emissive_layer != 0xffffffffu {

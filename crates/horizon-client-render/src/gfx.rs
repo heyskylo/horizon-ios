@@ -6489,7 +6489,8 @@ impl Renderer {
                 } else {
                     frame.sky.sky_light_factor
                 },
-                0.0,
+                // Only HDR output reads the solid terrain's lighting alpha.
+                if self.hdr.is_some() { 1.0 } else { 0.0 },
                 0.0,
             ],
         };
