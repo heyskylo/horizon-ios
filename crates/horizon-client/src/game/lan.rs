@@ -1133,7 +1133,7 @@ impl Game<'_> {
             // The hub is the server thread's.
             let status = server
                 .call(|g| g.lan_status())
-                .ok_or("the integrated server stopped")?;
+                .ok_or(super::integrated::NO_ANSWER)?;
             return Ok(Some(status));
         }
         match words.get(1).copied() {
@@ -1225,7 +1225,7 @@ impl Game<'_> {
             // ShareToLanScreen: IntegratedServer.publishServer.
             server
                 .call(move |g| g.publish(settings))
-                .ok_or("the integrated server stopped")??
+                .ok_or(super::integrated::NO_ANSWER)??
         } else if self.serving() {
             return self.publish(settings).map(drop).map_err(Into::into);
         } else {
@@ -1302,12 +1302,14 @@ impl Game<'_> {
             .get("minecraft:worldgen/biome")
             .map(|v| v.iter().map(|(n, _)| n.clone()).collect())
             .unwrap_or_default();
-        let mut encoder = ChunkEncoder::new(
-            self.res
-                .facts()
-                .states
-                .iter()
-                .map(|s| (s.name.clone(), s.fluid_level > 0 || s.waterlogged)),
+        let mut encoder = ChunkEncoder::with_signs(
+            self.res.facts().states.iter().map(|s| {
+                (
+                    s.name.clone(),
+                    s.fluid_level > 0 || s.waterlogged,
+                    s.sign_form(),
+                )
+            }),
             &sync.builtin,
             &biome_names,
             &registry,
@@ -1708,8 +1710,8 @@ impl Game<'_> {
             host.hub.config.guest_commands = effective;
             host.hub.config.force_game_mode = force;
             enforce_guest_game_mode(host, &self.world, self.collision);
-            host.hub.resend_commands();
         }
+        self.resend_commands_filtered();
     }
 
     pub(super) fn lan_port(&self) -> Option<u16> {
@@ -1819,8 +1821,13 @@ impl Game<'_> {
             e.position = [d.position.x, d.position.y, d.position.z];
             e.on_ground = d.on_ground;
             e.velocity = [d.velocity.x, d.velocity.y, d.velocity.z];
-            e.precise = d.needs_sync;
+            // `ServerEntity.getRequiresPrecisePosition` is false for an item:
+            // `needs_sync` asks for its data again, not for an exact position.
+            // The collision case is `full_precision_required` in the tracker.
+            e.precise = false;
             e.needs_sync = d.needs_sync;
+            e.vertical_collision = d.vertical_collision;
+            e.horizontal_collision = d.horizontal_collision;
             // Entity.DATA_SHARED_FLAGS_ID: glowing 0x40 (the Glowing tag).
             if self.entity_glowing(d.id) {
                 e.meta.push((0, serializer::BYTE, Value::Byte(0x40)));
@@ -1884,6 +1891,27 @@ impl Game<'_> {
                     }
                 }
                 HostEvent::Joined(conn) => {
+                    // The mods may refuse the login before the player is placed.
+                    if let Some((uuid, name)) =
+                        host.hub.guest(conn).map(|g| (g.uuid, g.name.clone()))
+                    {
+                        let mut cancel = false;
+                        let mut reason = None;
+                        self.native_player_login(uuid, &name, &mut cancel, &mut reason);
+                        if cancel {
+                            let reason = match reason {
+                                Some(text) => {
+                                    horizon_client::lan::data::component_nbt(&text.component())
+                                }
+                                None => horizon_protocol::text::translatable(
+                                    "multiplayer.disconnect.generic",
+                                    &[],
+                                ),
+                            };
+                            host.hub.kick(conn, reason);
+                            continue;
+                        }
+                    }
                     self.lan_guest_joined(&mut host, conn, state, entities, spawn);
                     if self.options.dedicated.is_some()
                         && let Some(g) = host.hub.guest(conn)
@@ -1995,6 +2023,18 @@ impl Game<'_> {
                 }
                 HostEvent::Flight { conn, flying } => {
                     self.lan_flight_toggled(&mut host, conn, flying);
+                }
+                HostEvent::MainHandChanged(conn, left) => {
+                    if let Some(g) = host.hub.guest(conn) {
+                        let (uuid, name) = (g.uuid, g.name.clone());
+                        self.native_player_change_main_hand(uuid, &name, left);
+                    }
+                }
+                HostEvent::LocaleChanged(conn, locale) => {
+                    if let Some(g) = host.hub.guest(conn) {
+                        let (uuid, name) = (g.uuid, g.name.clone());
+                        self.native_player_locale_change(uuid, &name, &locale);
+                    }
                 }
                 HostEvent::Packet(conn, packet) => {
                     self.lan_guest_packet(&mut host, conn, *packet);
@@ -2381,6 +2421,8 @@ impl Game<'_> {
             g.dimension = in_place;
         }
         self.load_guest_records(host, conn);
+        // The mods say which commands the newcomer's tree keeps.
+        self.native_filter_commands(host, Some(conn));
         let mut theirs = States::default();
         let entities = if elsewhere {
             if let Err(e) = self.enter_level(Some(host), level) {
@@ -2524,6 +2566,12 @@ impl Game<'_> {
             EquipmentSlot::Body => 65,
             EquipmentSlot::Saddle => 68,
         };
+        // The mods hear a server player's break (a creative player's gear takes no wear).
+        if !self.creative
+            && let (Some(uuid), Some(name)) = (self.lan_acting_uuid, self.lan_acting_name.clone())
+        {
+            self.native_player_destroy_item(uuid, &name, &stack.item, equipment_slot_name(slot));
+        }
         let Some(at) = self
             .player
             .as_ref()
@@ -2857,7 +2905,12 @@ impl Game<'_> {
                 .map(|s| s.as_ref().map(|s| s.item.clone()));
             m.extra.armor = g.armor.clone();
             m.extra.crouching = g.sneaking;
-            m.extra.avatar_pose = g.pose();
+            let from_pose = m.extra.avatar_pose;
+            let to_pose = g.pose();
+            m.extra.avatar_pose = to_pose;
+            if from_pose != to_pose {
+                self.native_entity_pose_change(g.uuid, &g.name, from_pose.name(), to_pose.name());
+            }
             m.extra.sprinting = g.sprinting;
             // Entity.DATA_POSE and the shared and living flags the others
             // get (hub::guest_body): gliding, swimming, Riptide's spin.
@@ -2974,30 +3027,33 @@ impl Game<'_> {
                 ),
                 out,
             );
-            self.player_elytra_geometry(
-                m,
-                m.extra.chest.as_deref(),
-                camera,
-                alpha as f32,
-                packed,
-                out,
-            );
-            if let Some(g) = host.hub.guest(*conn) {
-                self.player_ears_geometry(m, &g.name, camera, alpha as f32, packed, out);
+            // AvatarRenderer.shouldRenderLayers: a spectator draws no layers.
+            if horizon_client::mobs::render::layers_shown(m) {
+                self.player_elytra_geometry(
+                    m,
+                    m.extra.chest.as_deref(),
+                    camera,
+                    alpha as f32,
+                    packed,
+                    out,
+                );
+                if let Some(g) = host.hub.guest(*conn) {
+                    self.player_ears_geometry(m, &g.name, camera, alpha as f32, packed, out);
+                }
+                self.spin_attack_geometry(m, camera, alpha as f32, packed, out);
+                if let Some(g) = host.hub.guest(*conn) {
+                    self.stuck_in_body_geometry(m, g.entity_id, camera, alpha as f32, packed, out);
+                }
+                self.held_item_geometry(m, camera, alpha, packed, true, out);
+                self.player_pumpkin_geometry(
+                    m,
+                    host.hub.guest(*conn).and_then(|g| g.armor[0].as_ref()),
+                    camera,
+                    alpha,
+                    packed,
+                    out,
+                );
             }
-            self.spin_attack_geometry(m, camera, alpha as f32, packed, out);
-            if let Some(g) = host.hub.guest(*conn) {
-                self.stuck_in_body_geometry(m, g.entity_id, camera, alpha as f32, packed, out);
-            }
-            self.held_item_geometry(m, camera, alpha, packed, true, out);
-            self.player_pumpkin_geometry(
-                m,
-                host.hub.guest(*conn).and_then(|g| g.armor[0].as_ref()),
-                camera,
-                alpha,
-                packed,
-                out,
-            );
             // LivingEntity.isCurrentlyGlowing: the guest's Glowing effect.
             let guest = host.hub.guest(*conn);
             if m.glowing || guest.is_some_and(|g| g.effects.get("glowing").is_some()) {
@@ -3050,9 +3106,25 @@ pub(super) fn living_flags(using: Option<(usize, u32)>) -> i8 {
     using.map_or(0, |(slot, _)| if slot == OFFHAND_SLOT { 3 } else { 1 })
 }
 
+/// The name a mod hears for an equipment slot (the armor stand hook's names, plus
+/// the two slots a mount's gear uses).
+fn equipment_slot_name(slot: horizon_world::player_inventory::EquipmentSlot) -> &'static str {
+    use horizon_world::player_inventory::EquipmentSlot;
+    match slot {
+        EquipmentSlot::MainHand => "mainhand",
+        EquipmentSlot::OffHand => "offhand",
+        EquipmentSlot::Head => "head",
+        EquipmentSlot::Chest => "chest",
+        EquipmentSlot::Legs => "legs",
+        EquipmentSlot::Feet => "feet",
+        EquipmentSlot::Body => "body",
+        EquipmentSlot::Saddle => "saddle",
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{OFFHAND_SLOT, living_flags};
+    use super::{OFFHAND_SLOT, equipment_slot_name, living_flags};
 
     /// `LivingEntity.startUsingItem` sets flag 1 for the use and flag 2 for
     /// the off hand, so an off-hand use is 3, not 2. A reader takes bit 0 as
@@ -3062,5 +3134,20 @@ mod tests {
         assert_eq!(living_flags(None), 0);
         assert_eq!(living_flags(Some((0, 12))), 1);
         assert_eq!(living_flags(Some((OFFHAND_SLOT, 12))), 3);
+    }
+
+    /// The names a mod matches on for a broken item's slot (a contract).
+    #[test]
+    fn a_broken_items_slot_is_named_for_mods() {
+        use horizon_world::player_inventory::EquipmentSlot::*;
+        let named: Vec<_> = [MainHand, OffHand, Head, Chest, Legs, Feet, Body, Saddle]
+            .map(equipment_slot_name)
+            .to_vec();
+        assert_eq!(
+            named,
+            [
+                "mainhand", "offhand", "head", "chest", "legs", "feet", "body", "saddle"
+            ]
+        );
     }
 }

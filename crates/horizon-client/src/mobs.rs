@@ -73,6 +73,7 @@ pub mod render;
 pub mod riders;
 pub mod seen_grid;
 pub mod shulker;
+pub mod skin;
 pub mod sniffer;
 pub mod spawn_rules;
 pub mod spawn_selection;
@@ -98,7 +99,8 @@ pub mod warden_brain;
 pub mod witch;
 pub mod wither;
 mod world;
-pub use world::visual_clip;
+pub use world::{TargetInfo, visual_clip};
+pub mod dragon_contacts;
 pub mod zombie_villager;
 
 use crate::{blocks::BlockFacts, mesher::Vertex, world::World};
@@ -1282,11 +1284,27 @@ pub enum MobEvent {
         speed: f64,
         count: u32,
     },
+    /// `ServerLevel.sendParticles` of an `ItemParticleOption`: `count` crumbs of
+    /// `item`, drawn in this window.
+    ItemParticles {
+        item: &'static str,
+        at: [f64; 3],
+        spread: [f64; 3],
+        speed: f64,
+        count: u32,
+    },
     Sound(&'static str, [f64; 3], f32, f32),
     /// `Entity.sendBubbleColumnParticles`: a mob at the top of the bubble column
     /// block at `pos` (the splash and bubble particles over it).
     BubbleColumnParticles {
         pos: [i32; 3],
+    },
+    /// `LivingEntity.checkFallDamage`: `count` crumbs of the block `state` a mob
+    /// landed on, thrown up at `at`.
+    LandingDust {
+        state: horizon_world::registry::BlockStateId,
+        at: [f64; 3],
+        count: i32,
     },
     /// `UseBonemeal`: the villager's bone meal grows the crop at `pos`
     /// (`BoneMealItem.growCrop`, then level event 1505).
@@ -1620,6 +1638,7 @@ pub enum MobEvent {
     /// `BreakDoorGoal.tick` at its end: the door is removed (`removeBlock`),
     /// then level events 1021 and 2001 with the state that is left there.
     BreakDoor {
+        mob: u32,
         pos: [i32; 3],
     },
     /// `Level.destroyBlockProgress` for a mob's crack on a block (`-1`
@@ -1722,6 +1741,7 @@ pub enum MobEvent {
     /// Replace a block by name (sheep turning grass to dirt), optionally with
     /// the destroy effect.
     SetBlockName {
+        mob: Option<u32>,
         pos: [i32; 3],
         name: &'static str,
         effect: bool,
@@ -2430,6 +2450,8 @@ pub struct MobWorld<'a> {
     /// player in the level stands, alive or not (the despawn distance).
     pub nearest_player: Option<Vec3>,
     pub others: &'a [Seen],
+    /// The separately simulated dragon, visible to revenge and melee goals.
+    pub dragon: Option<(u32, TargetInfo)>,
     /// The boats and rafts a lead can hang on (`Holder::Boat`): id and state.
     pub leash_boats: &'a [(u32, leash::HolderState)],
     /// `others` by position, when the caller keeps one (the mob ticks).
@@ -3035,6 +3057,14 @@ impl Mob {
             if crack(before) != crack(after) {
                 self.outbox
                     .push(MobEvent::Sound("item.wolf_armor.crack", at, 1.0, 1.0));
+                // Twenty scutes fly off, a block above the wolf's feet.
+                self.outbox.push(MobEvent::ItemParticles {
+                    item: "minecraft:armadillo_scute",
+                    at: [at[0], at[1] + 1.0, at[2]],
+                    spread: [0.2, 0.1, 0.2],
+                    speed: 0.1,
+                    count: 20,
+                });
             }
         }
     }
