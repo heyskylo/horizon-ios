@@ -1,28 +1,36 @@
-//! GPU culling: the frame's near solid section draws listed by a compute pass
-//! and drawn with one `multi_draw_indexed_indirect_count` per arena page,
-//! where the device can draw a count the GPU wrote (`MULTI_DRAW_INDIRECT_COUNT`:
-//! DX12, Vulkan 1.2 or `VK_KHR_draw_indirect_count`). Listing those draws on
-//! the CPU, a few per section by the sides it shows the eye, and grouping them
-//! by page costs the render thread time in proportion to the sections in view:
-//! about a fifth of its frame at render distance 64.
+//! GPU culling: the frame's near solid sections culled and their draws listed
+//! by a compute pass, and drawn with one `multi_draw_indexed_indirect_count`
+//! per arena page, where the device can draw a count the GPU wrote
+//! (`MULTI_DRAW_INDIRECT_COUNT`: DX12, Vulkan 1.2 or
+//! `VK_KHR_draw_indirect_count`). Walking those sections on the CPU, listing a
+//! few draws per section by the sides it shows the eye and grouping them by
+//! page costs the render thread time in proportion to the sections in view.
 //!
 //! Every resident section with solid quads has a record here, under an id it
 //! keeps for as long as it stays (`SectionGpu::gpu_id`; resident slots move on
-//! every removal). The CPU's walk still decides what is drawn: it marks the ids
-//! of the whole sections it keeps within the render distance
-//! (`GpuCulling::choose`), and the pass draws exactly those, all the solid
-//! quads of each in one draw (the pipelines cull the faces turned away), with
-//! the origin the walk gives it: `resident::origin`'s f32 bits, copied, never
-//! computed on the GPU. Sections fading in or out, sections past the distance
-//! and translucent quads stay on the CPU's lists. The pass `apply`s the records
-//! that changed, then `cull` keeps the chosen ones and counts them per page and
-//! block of ids, `scan` turns the counts into where each block's draws start,
-//! and `scatter` writes every block's draws there in id order. Appended with
-//! atomics alone, a page's draws would come in the order the GPU happens to
-//! schedule them, and where faces of two sections meet at exactly the same
-//! depth the later draw keeps the pixel, so such pixels would flicker; in id
-//! order they differ from the CPU's front-to-back order only there, and stay
-//! put.
+//! every removal). The pass keeps the sections whose column is within the
+//! render distance (`streaming::in_view_distance`) and whose box is in the
+//! frustum, and draws all the solid quads of each in one draw (the pipelines
+//! cull the faces turned away), with the origin the walk would give it:
+//! `resident::origin`'s f32 bits, copied, never computed on the GPU. Within the
+//! render distance the CPU's walk then lists only the sections whose
+//! translucent quads it draws, or that have no record
+//! (`Resident::walk`); past it, it lists every section as before.
+//! Unlike the walk, the pass leaves in the sections the cave graph does not
+//! reach, and draws sections fading in or out whole.
+//!
+//! The integer frustum test (`tables`, `rounded_box`) keeps every section the
+//! walk's would and a thin shell more, alike on every backend; a frame whose
+//! sums could leave i32 is drawn by the CPU (`Prepared::Cpu`).
+//!
+//! The pass `apply`s the records that changed, then `cull` keeps the sections
+//! in view and counts them per page and block of ids, `scan` turns the counts
+//! into where each block's draws start, and `scatter` writes every block's
+//! draws there in id order. Appended with atomics alone, a page's draws would
+//! come in the order the GPU happens to schedule them, and where faces of two
+//! sections meet at exactly the same depth the later draw keeps the pixel, so
+//! such pixels would flicker; in id order they differ from the CPU's
+//! front-to-back order only there, and stay put.
 //!
 //! This is not `cull` (occlusion culling, `HORIZON_GPU_CULL`), which tests the
 //! CPU's lists against phase 1's depth: frames drawn from here leave it off.
@@ -36,14 +44,14 @@
 //! clamped to its region, which `scatter` never writes past. A region has room
 //! for every record of its page, so in practice nothing is clamped.
 use super::{
-    SectionKey,
+    Frustum, SectionKey,
     arena::{Arena, try_create},
     pack_timing::PassTiming,
     resident,
     submit::Queue,
     upload::Uploads,
 };
-use glam::DVec3;
+use glam::{DVec3, DVec4, Vec3};
 
 /// One section (`gpu_culling.wgsl`'s `Section`).
 #[repr(C)]
@@ -52,7 +60,8 @@ pub(super) struct Record {
     /// Section x, y (from the level's bottom), z and arena page; -1: a free id.
     key: [i32; 4],
     /// The first vertex of its solid quads (a draw's base vertex, an i32: a
-    /// page holds fewer vertices), its solid quads, then two words kept at 0.
+    /// page holds fewer vertices), its solid quads, its box (`rounded_box`),
+    /// then a word kept at 0.
     a: [u32; 4],
 }
 
@@ -62,16 +71,52 @@ impl Record {
         a: [0; 4],
     };
     const BYTES: u64 = std::mem::size_of::<Self>() as u64;
-    /// `quads` solid quads from vertex `start` of arena page `page`.
-    pub fn new(key: SectionKey, page: u32, start: u64, quads: u32) -> Self {
+    /// `quads` solid quads from vertex `start` of arena page `page`, within the
+    /// box `boxed` (`rounded_box`).
+    pub fn new(key: SectionKey, page: u32, start: u64, quads: u32, boxed: u32) -> Self {
         Self {
             key: [key.0, key.1, key.2, page as i32],
-            a: [start as u32, quads, 0, 0],
+            a: [start as u32, quads, boxed, 0],
         }
     }
     fn page(&self) -> Option<u32> {
         u32::try_from(self.key[3]).ok()
     }
+}
+
+/// `rounded_box` for bounds past what a box's codes hold, or not finite: no
+/// frustum plane rejects it, so it is drawn wherever its column is within the
+/// render distance.
+const UNBOUNDED: u32 = 1 << 31;
+/// What a box's ends, -8 to 23 blocks from its section's origin, add to make
+/// their 5-bit codes.
+const CODE_OFFSET: i32 = 8;
+
+/// A record's box: its section's quad bounds (`SectionMesh::bounds`; `None` is
+/// the whole cell) rounded out to whole blocks, each low end at most 16 and
+/// each high end at least 0, so that along every axis the box reaches its cell.
+/// A column the walk finds entirely inside the frustum then holds no box the
+/// frustum test rejects, whatever its bounds. Packed as 5-bit codes: the low
+/// ends along x, y and z in bits 0 to 14, the high ends in bits 15 to 29.
+/// `UNBOUNDED` where an end is past -8 to 23 (never clamped inward) or the
+/// bounds are not finite.
+pub(super) fn rounded_box(bounds: Option<[Vec3; 2]>) -> u32 {
+    let [min, max] = bounds.unwrap_or([Vec3::ZERO, Vec3::splat(16.0)]);
+    let mut packed = 0;
+    for axis in 0..3 {
+        // `as` takes NaN to 0: tested first.
+        if !(min[axis].is_finite() && max[axis].is_finite()) {
+            return UNBOUNDED;
+        }
+        let low = (min[axis].floor() as i32).min(16);
+        let high = (max[axis].ceil() as i32).max(0);
+        if low < -CODE_OFFSET || high > 31 - CODE_OFFSET {
+            return UNBOUNDED;
+        }
+        packed |= (((low + CODE_OFFSET) as u32) << (5 * axis))
+            | (((high + CODE_OFFSET) as u32) << (15 + 5 * axis));
+    }
+    packed
 }
 
 /// A changed record, for `apply` (`gpu_culling.wgsl`'s `Update`).
@@ -95,15 +140,21 @@ struct Params {
     ids: u32,
     updates: u32,
     /// Arena pages the counts and regions cover (at least one), and where the
-    /// regions and the chosen ids' bits start in `tables`, in words.
+    /// regions start in `tables`, in words.
     pages: u32,
     regions: u32,
-    mask: u32,
-    pad: [u32; 3],
+    /// Bits 3j, 3j + 1 and 3j + 2: frustum plane j's x, y and z are at least 0.
+    signs: u32,
+    /// The render distance in columns, and the camera's column.
+    near: i32,
+    cam_x: i32,
+    cam_z: i32,
     /// The tables' first column: x, 0, z, 0.
     first: [i32; 4],
     /// Their entries along x, y and z, and 0.
     cells: [u32; 4],
+    /// Each frustum plane's w term, its margin in (`tables`), then 0, 0.
+    w: [[i32; 4]; 2],
 }
 
 /// Counts before the pages' (the shader's `STATS`): the sections `cull` kept,
@@ -116,6 +167,14 @@ const ROW: u32 = 65535;
 /// Changed records past which the whole table is written at once: their
 /// updates would pass a megabyte, the staging belt's chunk (`upload::Uploads`).
 const DIRTY_LIMIT: usize = (1 << 20) / Update::BYTES as usize;
+/// The frustum test's unit: its terms are 256ths of a block.
+const SCALE: f64 = 256.0;
+/// f32's unit roundoff: one rounding of the walk's f32 frustum test is off by
+/// at most this share of its result.
+const UNIT: f64 = f32::EPSILON as f64 / 2.0;
+/// The most a plane's terms may sum to in magnitude: below it no partial sum of
+/// them, in any order, leaves i32.
+const HEADROOM: f64 = (1 << 30) as f64;
 
 /// Tests read the counts, draws and origins back.
 const TEST_READ: wgpu::BufferUsages = if cfg!(test) {
@@ -125,13 +184,132 @@ const TEST_READ: wgpu::BufferUsages = if cfg!(test) {
 };
 
 /// What a frame's pass works from.
-pub(super) struct FrameInputs {
+pub(super) struct FrameInputs<'a> {
     pub camera: DVec3,
     /// The level's lowest block y and its height in sections.
     pub min_y: i32,
     pub sections: i32,
     /// The render distance in columns, as the walk takes it.
     pub radius: i32,
+    /// The frustum the walk culls with (a GPU frame has no water mirror).
+    pub frustum: &'a Frustum,
+}
+
+/// What `GpuCulling::prepare` made of a frame.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Prepared {
+    /// The pass is ready: `dispatch` it, and `draw`.
+    Gpu,
+    /// The frame's frustum planes would leave the test's integers (`HEADROOM`),
+    /// or its camera is not finite: the CPU draws it, and the records that
+    /// changed are written by the next frame the GPU draws.
+    Cpu,
+    /// A buffer failed to grow.
+    OutOfMemory,
+}
+
+/// The frame's `tables` before the regions, into `words`, and the parameters
+/// the frustum test reads with them; `None` when the CPU draws the frame
+/// (`Prepared::Cpu`): a sum of a plane's terms could leave i32 (`HEADROOM`), or
+/// the camera is not finite.
+///
+/// The words: the origins' f32 bits along x (the columns within the render
+/// distance), y (the level's sections) and z, the walk's own
+/// `resident::origin(..).as_vec3()`; per plane, its terms for those origins
+/// along x, y and z; per plane and axis, its terms for the 32 box codes. A term
+/// is the plane's component times an origin or a box's end, in 256ths of a
+/// block, rounded up: the product of two f32 values is exact in f64, so a
+/// plane's terms for a section sum to at least 256 times its exact value at the
+/// corner of the box `Frustum::intersects` looks at. Its w carries a margin over
+/// what the walk's f32 test can round away, at most 6u |p| V + 2u |w| (u is
+/// `UNIT`, V the largest corner along each axis): the corner `fl(o + b)`, the
+/// products and sums of `intersects`, and the column top `fl(o + 16)` of
+/// `contains`, each off by at most u of its size. So the GPU keeps every box the
+/// walk keeps, and every box of a column the walk finds entirely inside the
+/// frustum, as each box reaches its cell (`rounded_box`). A plane that is not
+/// finite rejects nothing, as in `intersects`: its terms are 0, its w 1.
+fn tables(input: &FrameInputs<'_>, words: &mut Vec<u32>) -> Option<Params> {
+    words.clear();
+    // Before the origins: an infinite camera's column would take
+    // `resident::origin` past i32.
+    if !input.camera.is_finite() {
+        return None;
+    }
+    let radius = input.radius.max(0);
+    let side = 2 * radius + 1;
+    let height = input.sections.max(0);
+    let (cx, cz) = resident::camera_column(input.camera);
+    let (x0, z0) = (cx - radius, cz - radius);
+    let origin = |key| resident::origin(key, input.min_y, input.camera).as_vec3();
+    words.extend((x0..x0 + side).map(|x| origin((x, 0, 0)).x.to_bits()));
+    words.extend((0..height).map(|y| origin((0, y, 0)).y.to_bits()));
+    words.extend((z0..z0 + side).map(|z| origin((0, 0, z)).z.to_bits()));
+    let (nx, ny) = (side as usize, height as usize);
+    let axes = [0..nx, nx..nx + ny, nx + ny..words.len()];
+    // Along each axis, the largest origin plus 24: more than any corner of a box
+    // (its ends reach 23) or of a column's box.
+    let reach = axes.clone().map(|axis| {
+        let sizes = words[axis]
+            .iter()
+            .map(|&o| f64::from(f32::from_bits(o)).abs());
+        sizes.fold(0.0, f64::max) + 24.0
+    });
+    let planes = input.frustum.planes.map(|p| {
+        if p.is_finite() {
+            p.as_dvec4()
+        } else {
+            DVec4::ZERO
+        }
+    });
+    // Each plane's largest terms in magnitude, along each axis, which bound its
+    // sums.
+    let mut largest = [0.0; 6];
+    for (j, p) in planes.iter().enumerate() {
+        for (axis, origins) in axes.iter().enumerate() {
+            let mut most: f64 = 0.0;
+            for i in origins.clone() {
+                let term = (SCALE * (p[axis] * f64::from(f32::from_bits(words[i])))).ceil();
+                most = most.max(term.abs());
+                words.push(term as i32 as u32);
+            }
+            largest[j] += most;
+        }
+    }
+    let mut signs: u32 = 0;
+    for (j, p) in planes.iter().enumerate() {
+        for axis in 0..3 {
+            // `intersects` looks at a box's high end where the plane's component
+            // is at least 0 (alike in f64).
+            signs |= u32::from(p[axis] >= 0.0) << (3 * j + axis);
+            let mut most: f64 = 0.0;
+            for code in 0..32 {
+                let term = (SCALE * p[axis] * f64::from(code - CODE_OFFSET)).ceil();
+                most = most.max(term.abs());
+                words.push(term as i32 as u32);
+            }
+            largest[j] += most;
+        }
+    }
+    let w = planes.map(|p| {
+        let rounding: f64 = (0..3).map(|axis| p[axis].abs() * reach[axis]).sum();
+        let margin = (SCALE * (6.0 * UNIT * rounding + 2.0 * UNIT * p.w.abs())).ceil() + 1.0;
+        (SCALE * p.w).ceil() + margin
+    });
+    let fits = (0..6).all(|j| largest[j] + w[j].abs() <= HEADROOM);
+    if !fits {
+        return None;
+    }
+    let w = w.map(|w| w as i32);
+    Some(Params {
+        signs,
+        near: radius,
+        cam_x: cx,
+        cam_z: cz,
+        first: [x0, 0, z0, 0],
+        cells: [side as u32, height as u32, side as u32, 0],
+        w: [[w[0], w[1], w[2], w[3]], [w[4], w[5], 0, 0]],
+        ..Default::default()
+    })
 }
 
 /// Whether GPU culling is offered: where the device draws a count the GPU wrote
@@ -220,9 +398,10 @@ pub(super) struct Records {
 }
 
 impl Records {
-    /// A resident section with solid quads, `quads` of them from vertex `start`
-    /// of arena page `page`: its id, the lowest free one or a new one.
-    pub fn insert(&mut self, key: SectionKey, page: u32, start: u64, quads: u32) -> u32 {
+    /// A resident section with solid quads, `record` (`SectionGpu::record`):
+    /// its id, the lowest free one or a new one.
+    pub fn insert(&mut self, record: Record) -> u32 {
+        debug_assert!(record.page().is_some(), "a record names its page");
         let id = match self.take_free() {
             Some(id) => id,
             None => {
@@ -230,8 +409,8 @@ impl Records {
                 self.records.len() as u32 - 1
             }
         };
-        self.records[id as usize] = Record::new(key, page, start, quads);
-        self.add_to(page);
+        self.records[id as usize] = record;
+        self.add_to(record.key[3] as u32);
         self.mark(id);
         id
     }
@@ -240,9 +419,10 @@ impl Records {
         self.remove_all([id]);
     }
     /// The sections with `ids` went, a bit set for each (a teleport frees tens of
-    /// thousands at once, `Renderer::remove_columns_at_once`). Their records stay
-    /// on the GPU until their ids are taken again: the walk never chooses a free
-    /// id (`choose`), so nothing reads them there.
+    /// thousands at once, `Renderer::remove_columns_at_once`). Each is marked, so
+    /// the GPU has it free before the pass next culls: the pass keeps any record
+    /// in view, and a stale one would draw quads that are gone or another
+    /// section's.
     pub fn remove_all(&mut self, ids: impl IntoIterator<Item = u32>) {
         for id in ids {
             let page = self.records.get(id as usize).and_then(Record::page);
@@ -252,6 +432,10 @@ impl Records {
             };
             self.page_sections[page as usize] -= 1;
             self.records[id as usize] = Record::FREE;
+            // shortcut: a teleport frees more than `DIRTY_LIMIT`, so `prepare` writes the
+            // whole table (0.6-2.6 ms at render distance 64); upgrade to a list of freed ids
+            // the pass reads, a word each, if those frames need it.
+            self.mark(id);
             let word = id as usize / 64;
             if self.free.len() <= word {
                 self.free.resize(word + 1, 0);
@@ -304,7 +488,6 @@ impl Records {
         self.page_sections.clear();
     }
     /// The sections with a record.
-    #[cfg(any(test, debug_assertions))]
     pub fn live(&self) -> usize {
         let free: u32 = self.free.iter().map(|word| word.count_ones()).sum();
         self.records.len() - free as usize
@@ -370,11 +553,6 @@ pub(super) struct GpuCulling {
     ids: u32,
     n_updates: u32,
     pass_pages: u32,
-    /// The ids the walk chose this frame, a bit each, where they go in
-    /// `tables` (in words), and how many.
-    mask: Vec<u32>,
-    mask_at: u64,
-    chosen: u32,
     /// This frame's updates and table words, kept for their room.
     scratch: Vec<Update>,
     words: Vec<u32>,
@@ -488,9 +666,6 @@ impl GpuCulling {
             ids: 0,
             n_updates: 0,
             pass_pages: 1,
-            mask: Vec::new(),
-            mask_at: 0,
-            chosen: 0,
             scratch: Vec::new(),
             words: Vec::new(),
         })
@@ -498,23 +673,23 @@ impl GpuCulling {
 
     /// Records the frame's uploads into `encoder` and clears its counts, before
     /// the walk: the records that changed (through the queue when the whole
-    /// table goes), the origins along each axis, the pages' regions and the
-    /// parameters. Then the walk `choose`s, and `upload_choices` and `dispatch`
-    /// come before the world pass `draw`s. False when a buffer fails to grow:
-    /// nothing is written, and nothing of the frame is dispatched or drawn.
+    /// table goes), the origins along each axis and the frustum planes' terms
+    /// (`tables`), the pages' regions and the parameters. Then `dispatch` and the
+    /// world pass's `draw`. Unless the frame is `Prepared::Gpu`, nothing is
+    /// written, and nothing of the frame is dispatched or drawn.
     pub fn prepare(
         &mut self,
         device: &wgpu::Device,
         queue: &Queue,
         uploads: &mut Uploads,
         encoder: &mut wgpu::CommandEncoder,
-        input: &FrameInputs,
-    ) -> bool {
+        input: &FrameInputs<'_>,
+    ) -> Prepared {
         self.pages.clear();
         self.ids = 0;
         self.n_updates = 0;
         self.prepare_buffers(device, queue, uploads, encoder, input)
-            .is_some()
+            .unwrap_or(Prepared::OutOfMemory)
     }
 
     fn prepare_buffers(
@@ -523,11 +698,11 @@ impl GpuCulling {
         queue: &Queue,
         uploads: &mut Uploads,
         encoder: &mut wgpu::CommandEncoder,
-        input: &FrameInputs,
-    ) -> Option<()> {
+        input: &FrameInputs<'_>,
+    ) -> Option<Prepared> {
         // Every buffer grows before anything is written. One made anew drops
         // the bind group at once, and a new section table needs every record:
-        // a failure later keeps both for the next frame.
+        // a failure later, or a frame the CPU draws, keeps both for the next.
         let ids = self.records.ids();
         if self
             .sections
@@ -549,16 +724,11 @@ impl GpuCulling {
                 record: records[id as usize],
             }));
         }
-        // `tables`: the origins of the columns within the distance along x,
-        // of the level's sections along y and of the columns along z, then
-        // each page's region, then the chosen ids' bits.
-        let radius = input.radius.max(0);
-        let side = 2 * radius + 1;
-        let height = input.sections.max(0);
+        // The table words: the origins and the frustum planes' terms (`tables`),
+        // then each page's region.
+        let planes = tables(input, &mut self.words);
+        let regions = self.words.len() as u32;
         let pass_pages = self.records.page_sections.len().max(1) as u32;
-        let regions = (2 * side + height) as u32;
-        let mask_at = regions + 2 * pass_pages;
-        let mask_words = ids.div_ceil(32);
         // A region has room for a draw of every record on its page.
         let total: u32 = self.records.page_sections.iter().sum();
         // The statistics, each page's count, then each block's per page.
@@ -567,7 +737,7 @@ impl GpuCulling {
             (&mut self.updates, self.scratch.len() as u64 * Update::BYTES),
             (&mut self.origins, u64::from(ids) * 16),
             (&mut self.runs, u64::from(ids) * 4),
-            (&mut self.tables, u64::from(mask_at + mask_words) * 4),
+            (&mut self.tables, u64::from(regions + 2 * pass_pages) * 4),
             (&mut self.counts, count_words * 4),
             (&mut self.draws, u64::from(total.max(1)) * 20),
         ] {
@@ -575,6 +745,11 @@ impl GpuCulling {
                 self.group = None;
             }
         }
+        // The planes past what the test's integers hold: the CPU draws the
+        // frame, and the records that changed wait for the next.
+        let Some(params) = planes else {
+            return Some(Prepared::Cpu);
+        };
         if self.records.all_dirty {
             // The whole table, after it grew or more records changed than
             // updates take (GPU culling switched on in a loaded world, a
@@ -598,20 +773,10 @@ impl GpuCulling {
         }
         self.records.dirty.clear();
         self.records.all_dirty = false;
-        // `resident::origin(..).as_vec3()` takes each component from its axis
-        // alone: the walk's own expression, so the same bits.
-        let (cx, cz) = resident::camera_column(input.camera);
-        let (x0, z0) = (cx - radius, cz - radius);
-        let origin = |key| resident::origin(key, input.min_y, input.camera).as_vec3();
-        self.words.clear();
-        let words = &mut self.words;
-        words.extend((x0..x0 + side).map(|x| origin((x, 0, 0)).x.to_bits()));
-        words.extend((0..height).map(|y| origin((0, y, 0)).y.to_bits()));
-        words.extend((z0..z0 + side).map(|z| origin((0, 0, z)).z.to_bits()));
         let (sizes, mut first) = (&self.records.page_sections, 0);
         for page in 0..pass_pages {
             let size = sizes.get(page as usize).copied().unwrap_or(0);
-            words.extend([first, size]);
+            self.words.extend([first, size]);
             if size > 0 {
                 self.pages.push((page, first, size));
             }
@@ -628,10 +793,7 @@ impl GpuCulling {
             updates: self.scratch.len() as u32,
             pages: pass_pages,
             regions,
-            mask: mask_at,
-            first: [x0, 0, z0, 0],
-            cells: [side as u32, height as u32, side as u32, 0],
-            ..Default::default()
+            ..params
         };
         uploads.buffer(encoder, &self.params, 0, bytemuck::bytes_of(&params));
         encoder.clear_buffer(&self.counts.buffer, 0, Some(count_words * 4));
@@ -641,11 +803,7 @@ impl GpuCulling {
         self.ids = ids;
         self.n_updates = params.updates;
         self.pass_pages = pass_pages;
-        self.mask.clear();
-        self.mask.resize(mask_words as usize, 0);
-        self.mask_at = u64::from(mask_at);
-        self.chosen = 0;
-        Some(())
+        Some(Prepared::Gpu)
     }
 
     fn bind(&self, device: &wgpu::Device) -> wgpu::BindGroup {
@@ -671,36 +829,8 @@ impl GpuCulling {
         })
     }
 
-    /// The walk keeps the section with `id`, whole and within the render
-    /// distance: the pass draws it this frame, and the CPU does not.
-    pub fn choose(&mut self, id: u32) {
-        let (word, bit) = (id as usize / 32, 1 << (id % 32));
-        debug_assert!(
-            id < self.ids && self.mask[word] & bit == 0,
-            "id {id} chosen twice or past the table's {}",
-            self.ids
-        );
-        self.mask[word] |= bit;
-        self.chosen += 1;
-    }
-
-    /// The walk's choices, after it and before `dispatch`.
-    pub fn upload_choices(&self, uploads: &mut Uploads, encoder: &mut wgpu::CommandEncoder) {
-        uploads.buffer(
-            encoder,
-            &self.tables.buffer,
-            self.mask_at * 4,
-            bytemuck::cast_slice(&self.mask),
-        );
-    }
-
-    /// The sections chosen this frame.
-    pub fn chosen(&self) -> u32 {
-        self.chosen
-    }
-
-    /// The pass, after `upload_choices`: the changed records into the table,
-    /// then the chosen sections' draws.
+    /// The pass, after `prepare`: the changed records into the table, then the
+    /// draws of the sections it keeps.
     pub fn dispatch(&self, encoder: &mut wgpu::CommandEncoder, timing: Option<&mut PassTiming>) {
         let Some(group) = self.group.as_ref().filter(|_| self.ids > 0) else {
             return;
@@ -724,7 +854,7 @@ impl GpuCulling {
         pass.dispatch_workgroups(blocks.min(ROW), blocks.div_ceil(ROW), 1);
     }
 
-    /// The chosen sections' solid draws, a count draw per page, with the quad
+    /// The kept sections' solid draws, a count draw per page, with the quad
     /// indices bound. Leaves the origins at vertex slot 1.
     pub fn draw(&self, pass: &mut wgpu::RenderPass<'_>, arena: &Arena) {
         if self.pages.is_empty() {
@@ -753,6 +883,7 @@ impl GpuCulling {
 mod tests {
     use super::*;
     use crate::streaming::in_view_distance;
+    use glam::{Mat4, Vec4};
     use std::collections::BTreeMap;
 
     /// xorshift64*.
@@ -775,24 +906,144 @@ mod tests {
         }
     }
 
-    /// Where a section's solid quads are: key, arena page, first vertex, quads.
-    type Placed = (SectionKey, u32, u64, u32);
+    /// Where a section's solid quads are: key, arena page, first vertex, quads,
+    /// and its box.
+    type Placed = (SectionKey, u32, u64, u32, u32);
+
+    /// `gpu_culling.wgsl`'s `near`, on the CPU.
+    fn near(params: &Params, x: i32, z: i32) -> bool {
+        let r = params.near;
+        let gap = |d: i32| d.wrapping_abs().wrapping_sub(1).max(0);
+        let gx = gap(x.wrapping_sub(params.cam_x));
+        let gz = gap(z.wrapping_sub(params.cam_z));
+        if gx >= r || gz >= r {
+            return false;
+        }
+        gx.wrapping_mul(gx).wrapping_add(gz.wrapping_mul(gz)) < r.wrapping_mul(r)
+    }
+
+    /// `gpu_culling.wgsl`'s `in_frustum`, on the CPU and in its order: the box
+    /// `b` of the section in cell `c` of the tables.
+    fn in_frustum(params: &Params, words: &[u32], c: [u32; 3], b: u32) -> bool {
+        if (b & UNBOUNDED) != 0 {
+            return true;
+        }
+        let [nx, ny, nz, _] = params.cells;
+        let n = nx + ny + nz;
+        let term = |at: u32| words[at as usize] as i32;
+        (0..6u32).all(|j| {
+            let s = params.signs >> (3 * j);
+            // The box's code at the corner the plane looks at, along `axis`.
+            let code = |axis: u32| {
+                let high = ((s >> axis) & 1) != 0;
+                (b >> (5 * axis + if high { 15 } else { 0 })) & 31
+            };
+            let w = params.w[j as usize / 4][j as usize % 4];
+            let (origin_terms, code_terms) = (n + j * n, 7 * n + 96 * j);
+            let sum = w
+                .wrapping_add(term(origin_terms + c[0]))
+                .wrapping_add(term(origin_terms + nx + c[1]))
+                .wrapping_add(term(origin_terms + nx + ny + c[2]))
+                .wrapping_add(term(code_terms + code(0)))
+                .wrapping_add(term(code_terms + 32 + code(1)))
+                .wrapping_add(term(code_terms + 64 + code(2)));
+            sum >= 0
+        })
+    }
+
+    /// `gpu_culling.wgsl`'s `cull` on the CPU, the reference the pass is held
+    /// to: whether it draws `record` with the parameters and tables `tables`
+    /// makes (and the pages `prepare` gives them).
+    fn keeps(params: &Params, words: &[u32], record: &Record) -> bool {
+        let (key, a) = (record.key, record.a);
+        if key[3] < 0 || a[1] == 0 || !near(params, key[0], key[2]) {
+            return false;
+        }
+        let c: [u32; 3] = std::array::from_fn(|i| key[i].wrapping_sub(params.first[i]) as u32);
+        (key[3] as u32) < params.pages
+            && (0..3).all(|i| c[i] < params.cells[i])
+            && in_frustum(params, words, c, a[2])
+    }
+
+    /// A frame of the overworld's 24 sections.
+    fn inputs(camera: DVec3, radius: i32, frustum: &Frustum) -> FrameInputs<'_> {
+        FrameInputs {
+            camera,
+            min_y: crate::chunk::MIN_Y,
+            sections: 24,
+            radius,
+            frustum,
+        }
+    }
+
+    /// A frustum as `draw_frame` builds one, looking `yaw` and `pitch` out to
+    /// `far`: a field of view and aspect at random, and a little view bobbing.
+    fn looking(rng: &mut Rng, yaw: f32, pitch: f32, far: f32) -> Frustum {
+        let fov = 30.0 + rng.unit() * 80.0;
+        let aspect = 1.0 + rng.unit() * 1.4;
+        let bob = Vec3::new(rng.unit() - 0.5, rng.unit() - 0.5, 0.0) * 0.2;
+        let lens = super::super::world_projection(fov, aspect, far) * Mat4::from_translation(bob);
+        Frustum {
+            planes: super::super::frustum(lens * crate::camera::view_matrix(yaw, pitch)),
+        }
+    }
+
+    /// `looking` anywhere, straight up and down among them, out to 64 to 8,192.
+    fn view(rng: &mut Rng) -> Frustum {
+        let yaw = rng.unit() * 360.0;
+        let pitch = match rng.below(8) {
+            0 => 90.0,
+            1 => -90.0,
+            _ => rng.unit() * 180.0 - 90.0,
+        };
+        let far = 64.0 + rng.unit() * 8128.0;
+        looking(rng, yaw, pitch, far)
+    }
+
+    /// Bounds as `SectionMesh::compute_bounds` makes them, the quads' corners
+    /// padded by `BOUNDS_PAD`, of every kind along each axis: inside the cell,
+    /// overhanging it, a rotated model's reach, wholly outside it, flat; none
+    /// (the cell); and now and then past what a box holds.
+    fn bounds(rng: &mut Rng) -> Option<[Vec3; 2]> {
+        if rng.below(10) == 0 {
+            return None;
+        }
+        let pad = crate::mesher::SectionMesh::BOUNDS_PAD;
+        let sixteenths = |rng: &mut Rng| rng.below(257) as f32 / 16.0;
+        let (mut min, mut max) = (Vec3::ZERO, Vec3::ZERO);
+        for axis in 0..3 {
+            let (low, high) = match rng.below(12) {
+                0 => (-1.0, 17.0),
+                1 => (-5.5, 21.5),
+                2 => (18.5, 19.5),
+                3 => (-4.5, -3.5),
+                4 => (0.0, 0.0),
+                5 if rng.below(4) == 0 => (-9.0, 4.0),
+                _ => {
+                    let (a, b) = (sixteenths(rng), sixteenths(rng));
+                    (a.min(b), a.max(b))
+                }
+            };
+            (min[axis], max[axis]) = (low - pad, high + pad);
+        }
+        Some([min, max])
+    }
 
     /// Ids, page counts and changes against a plain list of what each id holds:
     /// the lowest free id comes back, free ids at the end leave, counts follow
-    /// moves (to pages past the last too), and more changes than updates take
-    /// mark the whole table.
+    /// moves (to pages past the last too), a move keeps the box, a free is a
+    /// change, and more changes than updates take mark the whole table.
     #[test]
     fn records_keep_ids_page_counts_and_moves() {
         let mut records = Records::default();
-        let a = records.insert((0, 0, 0), 0, 0, 1);
-        let b = records.insert((1, 0, 0), 0, 256, 2);
+        let a = records.insert(Record::new((0, 0, 0), 0, 0, 1, 7));
+        let b = records.insert(Record::new((1, 0, 0), 0, 256, 2, 9));
         records.relocate(b, 5, 512);
         assert_eq!(records.page_sections(), [1, 0, 0, 0, 0, 1]);
-        assert_eq!(records.at(b), Some(&Record::new((1, 0, 0), 5, 512, 2)));
+        assert_eq!(records.at(b), Some(&Record::new((1, 0, 0), 5, 512, 2, 9)));
         records.remove(a);
         assert_eq!((records.ids(), records.live(), records.at(a)), (2, 1, None));
-        assert_eq!(records.insert((2, 0, 0), 1, 0, 3), a);
+        assert_eq!(records.insert(Record::new((2, 0, 0), 1, 0, 3, 11)), a);
         records.remove(b);
         assert_eq!(
             (records.ids(), records.page_sections()),
@@ -819,7 +1070,7 @@ mod tests {
         };
         let mut rng = Rng(0x9E37_79B9_7F4A_7C15);
         // What each id holds; `None`: a free id.
-        let mut model: Vec<Option<Placed>> = vec![Some(((2, 0, 0), 1, 0, 3))];
+        let mut model: Vec<Option<Placed>> = vec![Some(((2, 0, 0), 1, 0, 3, 11))];
         for step in 0..4_000 {
             let live: Vec<u32> = (0..model.len() as u32)
                 .filter(|&id| model[id as usize].is_some())
@@ -831,16 +1082,17 @@ mod tests {
             match rng.below(5) {
                 op if op < 2 || live.is_empty() => {
                     let key = (rng.range(-9, 9), rng.range(0, 23), rng.range(-9, 9));
-                    let quads = 1 + rng.below(500);
+                    let (quads, boxed) = (1 + rng.below(500), rng.below(1 << 30));
                     let lowest = model
                         .iter()
                         .position(Option::is_none)
                         .unwrap_or(model.len());
-                    assert_eq!(records.insert(key, page, start, quads) as usize, lowest);
+                    let record = Record::new(key, page, start, quads, boxed);
+                    assert_eq!(records.insert(record) as usize, lowest);
                     if lowest == model.len() {
                         model.push(None);
                     }
-                    model[lowest] = Some((key, page, start, quads));
+                    model[lowest] = Some((key, page, start, quads, boxed));
                 }
                 op => {
                     let id = live[rng.below(live.len() as u32) as usize];
@@ -850,6 +1102,8 @@ mod tests {
                         (held.1, held.2) = (page, start);
                     } else {
                         records.remove(id);
+                        // Marked: the GPU must have it free before the pass culls.
+                        assert_eq!(records.dirty.last(), Some(&id), "step {step}");
                         model[id as usize] = None;
                         while model.last() == Some(&None) {
                             model.pop();
@@ -861,9 +1115,9 @@ mod tests {
             assert_eq!(records.live(), model.iter().flatten().count());
             let mut pages = vec![0; records.page_sections().len()];
             for (id, held) in model.iter().enumerate() {
-                let record = held.map(|(key, page, start, quads)| {
+                let record = held.map(|(key, page, start, quads, boxed)| {
                     pages[page as usize] += 1;
-                    Record::new(key, page, start, quads)
+                    Record::new(key, page, start, quads, boxed)
                 });
                 assert_eq!(
                     records.at(id as u32),
@@ -880,10 +1134,8 @@ mod tests {
         let (mut each, mut all) = (Records::default(), Records::default());
         for n in 0..1_000 {
             let (key, page, start) = ((n % 31, n % 24, n / 31), n as u32 % 3, n as u64 * 256);
-            assert_eq!(
-                each.insert(key, page, start, 1),
-                all.insert(key, page, start, 1)
-            );
+            let record = Record::new(key, page, start, 1, 0);
+            assert_eq!(each.insert(record), all.insert(record));
         }
         let gone: Vec<u32> = (0..1_000).filter(|id| id % 3 != 1 || *id >= 900).collect();
         for ids in [&[1u32, 4, 898][..], &gone[..]] {
@@ -894,6 +1146,7 @@ mod tests {
             assert_eq!((all.ids(), all.live()), (each.ids(), each.live()));
             assert_eq!(all.page_sections(), each.page_sections());
             assert_eq!(free_ids(&all), free_ids(&each));
+            assert_eq!(all.dirty, each.dirty);
             assert!((0..each.ids()).all(|id| all.at(id) == each.at(id)));
         }
         // The lowest free id comes back first, then the next (0 left with `gone`, 1 before).
@@ -909,14 +1162,52 @@ mod tests {
         assert_eq!((records.ids(), records.live()), (0, 0));
         assert!(records.page_sections().is_empty() && records.dirty.is_empty());
         for x in 0..DIRTY_LIMIT as i32 {
-            records.insert((x, 0, 0), 0, 0, 1);
+            records.insert(Record::new((x, 0, 0), 0, 0, 1, 0));
         }
         assert!(!records.all_dirty && records.dirty.len() == DIRTY_LIMIT);
         records.relocate(0, 1, 256);
         assert!(records.all_dirty && records.dirty.is_empty());
         records.clear();
         assert!(!records.all_dirty);
-        assert_eq!(records.insert((0, 0, 0), 0, 0, 1), 0);
+        assert_eq!(records.insert(Record::new((0, 0, 0), 0, 0, 1, 0)), 0);
+    }
+
+    /// A box holds the bounds it is made from, rounded out to whole blocks, and
+    /// reaches its cell along every axis; bounds past what it holds, or not
+    /// finite, are `UNBOUNDED`; no bounds are the cell.
+    #[test]
+    fn boxes_round_outward_and_meet_their_cell() {
+        // Each axis's low and high ends.
+        let ends = |packed: u32| -> [[i32; 2]; 3] {
+            std::array::from_fn(|axis| {
+                let code = |shift: usize| ((packed >> (shift + 5 * axis)) & 31) as i32;
+                [code(0) - CODE_OFFSET, code(15) - CODE_OFFSET]
+            })
+        };
+        assert_eq!(ends(rounded_box(None)), [[0, 16]; 3]);
+        for (low, high, rounded) in [
+            (-1.5, 17.5, Some([-2, 18])),
+            (-6.0, 22.0, Some([-6, 22])),
+            (18.0, 20.0, Some([16, 20])),
+            (-5.0, -3.0, Some([-5, 0])),
+            (-0.5, 0.5, Some([-1, 1])),
+            (-8.0, 23.0, Some([-8, 23])),
+            (-8.5, 4.0, None),
+            (3.0, 23.25, None),
+            (f32::NAN, 4.0, None),
+            (0.0, f32::INFINITY, None),
+            (f32::NEG_INFINITY, 0.0, None),
+        ] {
+            for axis in 0..3 {
+                let mut bounds = [Vec3::new(1.0, 2.0, 3.0), Vec3::new(14.0, 15.0, 16.0)];
+                (bounds[0][axis], bounds[1][axis]) = (low, high);
+                let packed = rounded_box(Some(bounds));
+                match rounded {
+                    Some(rounded) => assert_eq!(ends(packed)[axis], rounded, "{low}..{high}"),
+                    None => assert_eq!(packed, UNBOUNDED, "{low}..{high}"),
+                }
+            }
+        }
     }
 
     /// `Params`, `Section` and `Update` as the shader lays them out, and the
@@ -949,10 +1240,13 @@ mod tests {
             ("updates", offset_of!(Params, updates)),
             ("pages", offset_of!(Params, pages)),
             ("regions", offset_of!(Params, regions)),
-            ("mask", offset_of!(Params, mask)),
-            ("pad0", offset_of!(Params, pad)),
+            ("signs", offset_of!(Params, signs)),
+            ("near", offset_of!(Params, near)),
+            ("cam_x", offset_of!(Params, cam_x)),
+            ("cam_z", offset_of!(Params, cam_z)),
             ("first", offset_of!(Params, first)),
             ("cells", offset_of!(Params, cells)),
+            ("w", offset_of!(Params, w)),
         ] {
             assert!(members.contains(&(name.into(), offset)), "Params.{name}");
         }
@@ -987,9 +1281,340 @@ mod tests {
             ("ROW", u64::from(ROW)),
             ("BLOCK", u64::from(WORKGROUP)),
             ("STATS", STATS),
+            ("UNBOUNDED", u64::from(UNBOUNDED)),
         ] {
             assert_eq!(constant(name), value, "{name}");
         }
+    }
+
+    /// The shader's `near` is `in_view_distance`, on every column out to 140
+    /// from the camera's at every render distance to 130.
+    #[test]
+    fn the_shaders_near_is_in_view_distance() {
+        let (cam_x, cam_z) = (-37, 1_234_567);
+        for r in 0..=130 {
+            let params = Params {
+                near: r,
+                cam_x,
+                cam_z,
+                ..Default::default()
+            };
+            for dx in -140..=140 {
+                for dz in -140..=140 {
+                    let (x, z) = (cam_x + dx, cam_z + dz);
+                    assert_eq!(
+                        near(&params, x, z),
+                        in_view_distance((cam_x, cam_z), r, x, z),
+                        "distance {r}, ({dx}, {dz})"
+                    );
+                }
+            }
+        }
+    }
+
+    /// A frame whose planes' sums could leave i32 is the CPU's (`tables` gives
+    /// `None`): the camera 20 million blocks above or below the level, in any
+    /// view, or not finite. Three million blocks out, they fit.
+    #[test]
+    fn planes_past_i32_take_the_cpu_path() {
+        let mut rng = Rng(0x0F1E_2D3C_4B5A_6978);
+        let mut words = Vec::new();
+        for _ in 0..500 {
+            let frustum = view(&mut rng);
+            let x = f64::from(rng.range(-30_000_000, 30_000_000)) + f64::from(rng.unit());
+            let z = f64::from(rng.range(-30_000_000, 30_000_000)) + f64::from(rng.unit());
+            let radius = rng.range(2, 128);
+            for (y, fits) in [
+                (2.0e7, false),
+                (-2.0e7, false),
+                (3.0e6, true),
+                (-3.0e6, true),
+                (64.5, true),
+            ] {
+                let input = inputs(DVec3::new(x, y, z), radius, &frustum);
+                assert_eq!(tables(&input, &mut words).is_some(), fits, "y {y}");
+            }
+            for camera in [
+                DVec3::new(f64::NAN, 64.0, z),
+                DVec3::new(f64::INFINITY, 64.0, z),
+                DVec3::new(x, f64::INFINITY, z),
+            ] {
+                let input = inputs(camera, radius, &frustum);
+                assert!(tables(&input, &mut words).is_none(), "{camera}");
+            }
+        }
+    }
+
+    /// The integer test keeps every section the walk keeps (`Resident::visible`,
+    /// a GPU frame's camera alone), whatever its bounds: inside its cell,
+    /// overhanging it, a rotated model's reach, wholly outside it along an axis,
+    /// flat, none, or past what a box holds; in columns tested section by section
+    /// and in short columns entirely inside the frustum; around cameras out to 30
+    /// million blocks and 100,000 above and below the level, in views of every
+    /// shape, most of them toward the sections, one with a plane that is not
+    /// finite. It rejects a real share of the sections within the distance.
+    #[test]
+    fn the_integer_test_keeps_what_the_walk_keeps() {
+        let mut rng = Rng(0x5DEE_CE66_D1CE_4E5B);
+        let mut words = Vec::new();
+        let (mut listed, mut near_sections, mut rejected, mut inside) = (0, 0, 0, 0);
+        for case in 0..48 {
+            let radius = 2 + case % 11;
+            // Short columns of three sections, at the camera's height, in a view
+            // along them: many lie entirely inside the frustum.
+            let ahead = case % 4 == 3;
+            let aimed = matches!(case % 8, 0 | 1 | 4 | 5);
+            let wide = |rng: &mut Rng| {
+                let blocks = if case % 3 == 0 { 30_000_000 } else { 2_000 };
+                f64::from(rng.range(-blocks, blocks)) + f64::from(rng.unit())
+            };
+            let height = match case % 8 {
+                0 => 1.0e5,
+                4 => -1.0e5,
+                _ if ahead => 8.0,
+                _ => f64::from(rng.range(-2_100, 2_100)),
+            };
+            let camera = DVec3::new(
+                wide(&mut rng),
+                height + f64::from(rng.unit()),
+                wide(&mut rng),
+            );
+            let (cx, cz) = resident::camera_column(camera);
+            let mut frustum = if ahead {
+                let (yaw, pitch) = (rng.unit() * 360.0, rng.unit() * 10.0 - 5.0);
+                let lens = super::super::world_projection(70.0, 16.0 / 9.0, 512.0);
+                Frustum {
+                    planes: super::super::frustum(lens * crate::camera::view_matrix(yaw, pitch)),
+                }
+            } else if aimed {
+                // Toward the sections, give or take 10 degrees, and out past them.
+                let middle = DVec3::new(f64::from(cx * 16 + 8), 128.0, f64::from(cz * 16 + 8));
+                let to = middle - camera;
+                let yaw = (-to.x).atan2(to.z).to_degrees() as f32;
+                let pitch = (-to.y / to.length()).asin().to_degrees() as f32;
+                let turn = |rng: &mut Rng| (rng.unit() - 0.5) * 20.0;
+                let yaw = yaw + turn(&mut rng);
+                let pitch = (pitch + turn(&mut rng)).clamp(-90.0, 90.0);
+                looking(&mut rng, yaw, pitch, to.length() as f32 + 400.0)
+            } else {
+                view(&mut rng)
+            };
+            if case == 9 {
+                // Not finite: it rejects nothing, as in `intersects`.
+                frustum.planes[3] = Vec4::NAN;
+            }
+            let rows = if ahead { 3..6 } else { 0..24 };
+            // Each section's value is its record's box.
+            let mut r = resident::Resident::default();
+            let mut sections = Vec::new();
+            for x in cx - radius - 2..=cx + radius + 2 {
+                for z in cz - radius - 2..=cz + radius + 2 {
+                    let (mut low, mut high) = (i32::MAX, i32::MIN);
+                    for y in rows.clone() {
+                        if rng.below(4) == 0 {
+                            continue;
+                        }
+                        let b = bounds(&mut rng);
+                        r.insert_with_bounds((x, y, z), rounded_box(b), b);
+                        sections.push((x, y, z));
+                        (low, high) = (low.min(y), high.max(y));
+                    }
+                    if low > high || !in_view_distance((cx, cz), radius, x, z) {
+                        continue;
+                    }
+                    let min_y = crate::chunk::MIN_Y;
+                    let min = resident::origin((x, low, z), min_y, camera).as_vec3();
+                    let top = resident::origin((x, high, z), min_y, camera).as_vec3();
+                    inside += usize::from(frustum.contains(min, top + Vec3::splat(16.0)));
+                }
+            }
+            let mut params = tables(&inputs(camera, radius, &frustum), &mut words)
+                .unwrap_or_else(|| panic!("case {case}: the planes fit"));
+            params.pages = 1;
+            let [nx, ny, nz, _] = params.cells.map(|n| n as usize);
+            // Every term rounds up: at least the plane's component times its
+            // origin or box end, which f64 holds exactly.
+            let n = nx + ny + nz;
+            let planes = frustum.planes.iter().enumerate();
+            for (j, p) in planes.filter(|(_, p)| p.is_finite()) {
+                for i in 0..n {
+                    let axis = usize::from(i >= nx) + usize::from(i >= nx + ny);
+                    let exact = SCALE * f64::from(p[axis]) * f64::from(f32::from_bits(words[i]));
+                    assert!(
+                        f64::from(words[n + j * n + i] as i32) >= exact,
+                        "case {case}, plane {j}"
+                    );
+                }
+                for k in 0..96 {
+                    let exact =
+                        SCALE * f64::from(p[k / 32]) * f64::from(k as i32 % 32 - CODE_OFFSET);
+                    assert!(
+                        f64::from(words[7 * n + 96 * j + k] as i32) >= exact,
+                        "case {case}, plane {j}"
+                    );
+                }
+            }
+            let mut out = Vec::new();
+            r.visible(camera, radius, &frustum, |_| true, |_, _| false, &mut out);
+            for v in &out {
+                let record = Record::new(v.key, 0, 0, 1, *r.get(v.slot));
+                assert!(
+                    keeps(&params, &words, &record),
+                    "case {case}: {:?} in view",
+                    v.key
+                );
+            }
+            listed += out.len();
+            for &key in &sections {
+                if in_view_distance((cx, cz), radius, key.0, key.2) {
+                    let record = Record::new(key, 0, 0, 1, *r.find(key).expect("resident"));
+                    near_sections += 1;
+                    rejected += usize::from(!keeps(&params, &words, &record));
+                }
+            }
+        }
+        assert!(listed > 5_000, "{listed} in view");
+        assert!(
+            rejected * 10 > near_sections && rejected < near_sections,
+            "{rejected} of {near_sections} within the distance left out"
+        );
+        assert!(inside > 20, "{inside} columns entirely inside");
+    }
+
+    /// Where the walk's f32 test stops keeping a section, the integer test still
+    /// keeps it. A plane through a box's corner, or a column box's, and the
+    /// camera moved along its normal until `Frustum::intersects` (or `contains`)
+    /// flips, by bisection: at the last camera it keeps, the integer test keeps
+    /// the section (every section of the column), and the plane's exact value
+    /// there is below 0 by no more than the margin covers. 100,000 blocks above
+    /// the level and more, it is below by more than a 256th of a block
+    /// somewhere: the margin is needed.
+    #[test]
+    fn the_margin_covers_production_rounding() {
+        let mut rng = Rng(0x1405_7B7E_F767_814F);
+        let min_y = crate::chunk::MIN_Y;
+        let mut words = Vec::new();
+        // The largest shortfall found at each height.
+        let mut worst = [0.0f64; 4];
+        for (h, lift) in [64.0, 1.0e4, 1.0e5, 1.0e6].into_iter().enumerate() {
+            for trial in 0..400 {
+                let base = DVec3::new(
+                    f64::from(rng.range(-3_000, 3_000)) + f64::from(rng.unit()),
+                    lift + f64::from(rng.unit()),
+                    f64::from(rng.range(-3_000, 3_000)) + f64::from(rng.unit()),
+                );
+                let (cx, cz) = resident::camera_column(base);
+                let (x, z) = (cx + rng.range(-1, 1), cz + rng.range(-1, 1));
+                // Up to four sections of a column, each with whole-block bounds of
+                // its own (`rounded_box` keeps them as they are).
+                let low = rng.range(0, 20);
+                let high = low + rng.range(0, 3);
+                let mut rows: Vec<(i32, [Vec3; 2])> = (low..=high)
+                    .map(|y| {
+                        let [ex, ey, ez] = [0, 1, 2].map(|_| {
+                            let start = rng.range(-8, 16);
+                            [start, rng.range(start.max(0), 23)].map(|end| end as f32)
+                        });
+                        let min = Vec3::new(ex[0], ey[0], ez[0]);
+                        (y, [min, Vec3::new(ex[1], ey[1], ez[1])])
+                    })
+                    .collect();
+                // A normal leaning along y, where the origins are largest.
+                let normal = loop {
+                    let n = DVec3::new(
+                        f64::from(rng.unit()) - 0.5,
+                        f64::from(rng.unit()) - 0.5,
+                        f64::from(rng.unit()) - 0.5,
+                    );
+                    if n.length() > 0.1 && n.y.abs() > 0.3 * n.length() {
+                        break n.normalize();
+                    }
+                };
+                let column = trial % 2 == 1;
+                // The box the plane runs through. In a column, the section at the
+                // column box's corner gets that cell's lowest corner along the plane
+                // as its box: `keeps` there has only the margin to spare.
+                let at = usize::from(column && normal.y < 0.0) * (rows.len() - 1);
+                if column {
+                    let c = Vec3::from_array(std::array::from_fn(|i| {
+                        if normal[i] >= 0.0 { 0.0 } else { 16.0 }
+                    }));
+                    rows[at].1 = [c, c];
+                }
+                let origin = |camera: DVec3, y: i32| resident::origin((x, y, z), min_y, camera);
+                // Along an axis the plane is at least 0 along, `intersects` looks at a
+                // box's high end and `contains` at the column box's low end: on the
+                // `[c, c]` box, the same corner.
+                let (y, [min, max]) = rows[at];
+                let o = origin(base, y);
+                let corner = DVec3::from_array(std::array::from_fn(|i| {
+                    o[i] + f64::from(if normal[i] >= 0.0 { max[i] } else { min[i] })
+                }));
+                let plane = normal.extend(-normal.dot(corner)).as_vec4();
+                let plane = plane / plane.truncate().length();
+                let frustum = Frustum {
+                    planes: [plane, Vec4::W, Vec4::W, Vec4::W, Vec4::W, Vec4::W],
+                };
+                let walk_keeps = |t: f64| {
+                    let camera = base + normal * t;
+                    let o = origin(camera, low).as_vec3();
+                    if column {
+                        let top = origin(camera, high).as_vec3() + Vec3::splat(16.0);
+                        frustum.contains(o, top)
+                    } else {
+                        let [min, max] = rows[0].1;
+                        frustum.intersects(o + min, o + max)
+                    }
+                };
+                let (mut kept, mut left) = (-4.0, 4.0);
+                assert!(
+                    walk_keeps(kept) && !walk_keeps(left),
+                    "height {lift}, trial {trial}: the plane runs by"
+                );
+                for _ in 0..64 {
+                    let t = 0.5 * (kept + left);
+                    if walk_keeps(t) {
+                        kept = t;
+                    } else {
+                        left = t;
+                    }
+                }
+                let camera = base + normal * kept;
+                let mut params = tables(&inputs(camera, 3, &frustum), &mut words)
+                    .unwrap_or_else(|| panic!("height {lift}, trial {trial}: the planes fit"));
+                params.pages = 1;
+                let tested = if column { &rows[..] } else { &rows[..1] };
+                for &(y, b) in tested {
+                    let record = Record::new((x, y, z), 0, 0, 1, rounded_box(Some(b)));
+                    assert!(
+                        keeps(&params, &words, &record),
+                        "height {lift}, trial {trial}: ({x}, {y}, {z}) kept"
+                    );
+                }
+                // The plane's lowest exact value, from the f32 origins, at the corner
+                // the test looks at of each tested box (in a column the `[c, c]` box's,
+                // its cells' lowest), and the margin's bound on what the walk rounds.
+                let p = plane.as_dvec4();
+                let (mut value, mut most) = (f64::INFINITY, 0.0f64);
+                for &(y, [min, max]) in tested {
+                    let o = origin(camera, y).as_vec3();
+                    let end = |i: usize| f64::from(if p[i] >= 0.0 { max[i] } else { min[i] });
+                    let exact: f64 = (0..3).map(|i| p[i] * (f64::from(o[i]) + end(i))).sum();
+                    let corners: f64 = (0..3)
+                        .map(|i| p[i].abs() * (f64::from(o[i]).abs() + 24.0))
+                        .sum();
+                    value = value.min(exact + p.w);
+                    most = most.max(6.0 * UNIT * corners + 2.0 * UNIT * p.w.abs());
+                }
+                let short = (-value).max(0.0);
+                assert!(
+                    short <= most,
+                    "height {lift}, trial {trial}: {short} below 0, past {most}"
+                );
+                worst[h] = worst[h].max(short);
+            }
+        }
+        assert!(worst[2].max(worst[3]) > 1.0 / SCALE, "{worst:?}");
     }
 
     /// A device of `backends` that draws counts with first instances, if this
@@ -1067,15 +1692,17 @@ mod tests {
         bytemuck::pod_collect_to_vec(&rx.recv().unwrap())
     }
 
-    /// The pass lists exactly the draws of the sections it is given: one draw
+    /// The pass draws exactly what its CPU reference (`keeps`) keeps: one draw
     /// of all the solid quads of each, from its page and first vertex, with the
     /// instance the CPU path gives a whole section, every page's draws in id
     /// order. One table serves every case, changed between them as sections
     /// come, go and move (ids reused, records written as updates and whole),
-    /// and cleared once as for another world; cameras near the world's origin
-    /// and 20 million blocks out.
+    /// cleared once as for another world, and kept through a frame the CPU
+    /// draws; in frusta of every shape, one with a plane that is not finite,
+    /// with boxes of every kind, and from cameras near the world's origin and 20
+    /// million blocks out.
     #[test]
-    fn the_pass_lists_the_draws_of_the_sections_it_is_given() {
+    fn the_gpu_draws_what_the_integer_test_keeps() {
         on_each_device(draws_match);
     }
 
@@ -1085,7 +1712,8 @@ mod tests {
         let mut gpu = GpuCulling::new(device).expect("the pass");
         let mut uploads = Uploads::new(device);
         let mut held: BTreeMap<u32, Placed> = BTreeMap::new();
-        let (mut camera, mut compared) = (DVec3::ZERO, 0);
+        let (mut camera, mut compared, mut culled) = (DVec3::ZERO, 0, 0);
+        let mut words = Vec::new();
         for case in 0..24 {
             let radius = [2, 5, 9][case % 3];
             // Case 4 looks from case 3's camera, 20 million blocks out, while
@@ -1098,6 +1726,10 @@ mod tests {
                     f64::from(rng.range(-60, 300)) + f64::from(rng.unit()),
                     f64::from(rng.range(-2_000, 2_000)) * far(1) + f64::from(rng.unit()),
                 );
+            }
+            let mut frustum = view(&mut rng);
+            if case == 9 {
+                frustum.planes[rng.below(6) as usize] = Vec4::NAN;
             }
             let (cx, cz) = resident::camera_column(camera);
             if case == 12 {
@@ -1128,9 +1760,12 @@ mod tests {
                 let key = (cx + near(rng), rng.range(0, height - 1), cz + near(rng));
                 let (page, start) = (rng.below(3), u64::from(rng.below(40_000)) * 256);
                 let quads = 1 + rng.below(2_000);
-                let id = gpu.records.insert(key, page, start, quads);
+                let boxed = rounded_box(bounds(rng));
+                let id = gpu
+                    .records
+                    .insert(Record::new(key, page, start, quads, boxed));
                 assert!(
-                    held.insert(id, (key, page, start, quads)).is_none(),
+                    held.insert(id, (key, page, start, quads, boxed)).is_none(),
                     "id {id} twice"
                 );
             };
@@ -1152,8 +1787,21 @@ mod tests {
                 min_y,
                 sections: height,
                 radius,
+                frustum: &frustum,
             };
-            assert!(gpu.prepare(device, queue, &mut uploads, &mut encoder, &input));
+            if case == 7 {
+                // Planes past the integers: the CPU draws that frame, nothing is
+                // written, and the records that changed wait for the next.
+                let up = FrameInputs {
+                    camera: camera + DVec3::Y * 2.0e7,
+                    ..input
+                };
+                let prepared = gpu.prepare(device, queue, &mut uploads, &mut encoder, &up);
+                assert_eq!(prepared, Prepared::Cpu, "case 7");
+                assert!(gpu.records.all_dirty || !gpu.records.dirty.is_empty());
+            }
+            let prepared = gpu.prepare(device, queue, &mut uploads, &mut encoder, &input);
+            assert_eq!(prepared, Prepared::Gpu, "case {case}");
             match case {
                 4 => assert!(
                     whole && gpu.sections.bytes == room,
@@ -1162,21 +1810,19 @@ mod tests {
                 18 => assert!(gpu.sections.bytes > room, "case 18: the table grows"),
                 _ => {}
             }
-            // The walk's choice: some of the sections within the distance, and
-            // a few past the tables, which the pass leaves out.
+            let mut params = tables(&input, &mut words).expect("the planes fit");
+            params.pages = gpu.pass_pages;
             let mut expected = Vec::new();
-            for (&id, &(key, page, start, quads)) in &held {
-                let outside = (key.0 - cx).abs() > radius || (key.2 - cz).abs() > radius;
-                if in_view_distance((cx, cz), radius, key.0, key.2) && rng.below(3) > 0 {
-                    gpu.choose(id);
+            for &(key, page, start, quads, boxed) in held.values() {
+                let record = Record::new(key, page, start, quads, boxed);
+                if keeps(&params, &words, &record) {
                     let origin = resident::origin(key, min_y, camera).as_vec3();
                     let instance = super::super::section_instance(origin.to_array(), 0, 1.0);
                     expected.push((page, start as u32, quads * 6, instance.map(f32::to_bits)));
-                } else if outside && rng.below(16) == 0 {
-                    gpu.choose(id);
+                } else if in_view_distance((cx, cz), radius, key.0, key.2) {
+                    culled += 1;
                 }
             }
-            gpu.upload_choices(&mut uploads, &mut encoder);
             gpu.dispatch(&mut encoder, None);
             uploads.finish(&encoder);
             queue.submit([encoder.finish()]);
@@ -1217,19 +1863,21 @@ mod tests {
             );
             compared += expected.len();
         }
-        // Not a comparison of empty lists.
+        // Not a comparison of empty lists, nor of a test that keeps everything.
         assert!(compared > 2_000, "{compared} draws");
+        assert!(culled > 2_000, "{culled} within the distance left out");
     }
 
-    /// `draw`'s count draws draw what the pass listed, page by page: each
-    /// chosen section's quads from its own range, with its own origin, which
-    /// the draw's first instance picks out of the instance-rate origins (on
-    /// DirectX 12 too, where no count draw's first instance reaches
-    /// `instance_index`), and nothing past a page's count, though its region
-    /// still holds the frame before's longer list. Drawn through the terrain's
-    /// vertex layouts, each quad writes its origin's bits to a pixel of its own.
+    /// `draw`'s count draws draw what the pass kept, page by page: each kept
+    /// section's quads from its own range, with its own origin, which the
+    /// draw's first instance picks out of the instance-rate origins (on DirectX
+    /// 12 too, where no count draw's first instance reaches `instance_index`),
+    /// and nothing past a page's count, though its region still holds the frame
+    /// before's longer list. Nor the sections that went since, the table's last
+    /// among them. Drawn through the terrain's vertex layouts, each quad writes
+    /// its origin's bits to a pixel of its own.
     #[test]
-    fn the_count_draws_draw_each_chosen_section_with_its_origin() {
+    fn the_count_draws_draw_each_kept_section_with_its_origin() {
         on_each_device(draws_land);
     }
 
@@ -1284,7 +1932,9 @@ struct Quad {
             queue.write_buffer(arena.buffer(page), start * stride, bytes);
             let near = |rng: &mut Rng| rng.range(-radius, radius);
             let key = (near(&mut rng), rng.range(0, levels - 1), near(&mut rng));
-            sections.push((gpu.records.insert(key, page, start, quads), key, quads));
+            let record = Record::new(key, page, start, quads, rounded_box(bounds(&mut rng)));
+            gpu.records.insert(record);
+            sections.push((key, quads, record));
         }
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: None,
@@ -1348,32 +1998,58 @@ struct Quad {
         });
         let indices = super::super::Renderer::quad_indices(device, 4);
         let mut uploads = Uploads::new(device);
-        // The second frame chooses about half as many, from another camera in
-        // the same column.
-        let cameras = [
-            DVec3::new(8.375, 70.625, 3.125),
-            DVec3::new(2.75, -3.5, 13.875),
+        // The first frame's planes reject nothing: it keeps every section within
+        // the distance. The second, from another camera in the same column, keeps
+        // those in its view: fewer.
+        let all = Frustum {
+            planes: [Vec4::W; 6],
+        };
+        let lens = super::super::world_projection(70.0, 16.0 / 9.0, 512.0);
+        let ahead = Frustum {
+            planes: super::super::frustum(lens * crate::camera::view_matrix(0.0, 0.0)),
+        };
+        let frames = [
+            (DVec3::new(8.375, 70.625, 3.125), &all),
+            (DVec3::new(2.75, -3.5, 13.875), &ahead),
         ];
-        for (frame, camera) in cameras.into_iter().enumerate() {
+        let (mut words, mut before) = (Vec::new(), usize::MAX);
+        for (frame, (camera, frustum)) in frames.into_iter().enumerate() {
+            if frame == 1 {
+                // Every fifth section goes before the second frame, and the last 20,
+                // which the table's end leaves: the GPU still holds what the first
+                // frame drew of them.
+                for (id, section) in sections.iter_mut().enumerate() {
+                    if id % 5 == 0 || id >= SECTIONS as usize - 20 {
+                        gpu.records.remove(id as u32);
+                        section.2 = Record::FREE;
+                    }
+                }
+            }
             let mut encoder = device.create_command_encoder(&Default::default());
             let input = FrameInputs {
                 camera,
                 min_y,
                 sections: levels,
                 radius,
+                frustum,
             };
-            assert!(gpu.prepare(device, queue, &mut uploads, &mut encoder, &input));
+            let prepared = gpu.prepare(device, queue, &mut uploads, &mut encoder, &input);
+            assert_eq!(prepared, Prepared::Gpu, "frame {frame}");
+            let mut params = tables(&input, &mut words).expect("the planes fit");
+            params.pages = gpu.pass_pages;
             let mut expected = vec![[0; 4]; (width * height) as usize];
-            for (i, &(id, key, quads)) in sections.iter().enumerate() {
-                if rng.below(3) < 2 - frame as u32 {
-                    gpu.choose(id);
+            let mut kept = 0;
+            for (i, &(key, quads, record)) in sections.iter().enumerate() {
+                if keeps(&params, &words, &record) {
                     let origin = resident::origin(key, min_y, camera).as_vec3();
                     let instance = super::super::section_instance(origin.to_array(), 0, 1.0);
                     let at = i / 16 * width as usize + 4 * (i % 16);
                     expected[at..at + quads as usize].fill(instance.map(f32::to_bits));
+                    kept += 1;
                 }
             }
-            gpu.upload_choices(&mut uploads, &mut encoder);
+            assert!(kept > 0 && kept < before, "frame {frame}: {kept} kept");
+            before = kept;
             gpu.dispatch(&mut encoder, None);
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: None,
