@@ -1263,6 +1263,88 @@ pub trait Host {
         let _ = entity;
         unimplemented!("Host::entity_level")
     }
+    /// Whether the player holds the sneak key (`Entity.isShiftKeyDown`);
+    /// false for the other kinds. API @API:entity_state@.
+    fn entity_is_shift_key_down(&self, entity: EntityRef) -> Option<bool> {
+        let _ = entity;
+        unimplemented!("Host::entity_is_shift_key_down")
+    }
+    /// Whether the entity crouches (`Entity.isCrouching`: the crouching
+    /// pose). API @API:entity_state@.
+    fn entity_is_crouching(&self, entity: EntityRef) -> Option<bool> {
+        let _ = entity;
+        unimplemented!("Host::entity_is_crouching")
+    }
+    /// Whether the player sprints (`Entity.isSprinting`); false for the
+    /// other kinds. API @API:entity_state@.
+    fn entity_is_sprinting(&self, entity: EntityRef) -> Option<bool> {
+        let _ = entity;
+        unimplemented!("Host::entity_is_sprinting")
+    }
+    /// Whether the entity touched water at its last fluid update
+    /// (`Entity.isInWater`): players and mobs. API @API:entity_state@.
+    fn entity_is_in_water(&self, entity: EntityRef) -> Option<bool> {
+        let _ = entity;
+        unimplemented!("Host::entity_is_in_water")
+    }
+    /// Whether the entity is in lava (`Entity.isInLava`): players and mobs.
+    /// API @API:entity_state@.
+    fn entity_is_in_lava(&self, entity: EntityRef) -> Option<bool> {
+        let _ = entity;
+        unimplemented!("Host::entity_is_in_lava")
+    }
+    /// Whether the entity's type never burns (`EntityType.fireImmune`):
+    /// players and mobs. API @API:entity_state@.
+    fn entity_fire_immune(&self, entity: EntityRef) -> Option<bool> {
+        let _ = entity;
+        unimplemented!("Host::entity_fire_immune")
+    }
+    /// The ticks the entity burns for (`Entity.getRemainingFireTicks`):
+    /// players, mobs, armor stands and items. API @API:entity_state@.
+    fn entity_fire_ticks(&self, entity: EntityRef) -> Option<i32> {
+        let _ = entity;
+        unimplemented!("Host::entity_fire_ticks")
+    }
+    /// The entity's air (`Entity.getAirSupply`): players and mobs. API
+    /// @API:entity_state@.
+    fn entity_air_supply(&self, entity: EntityRef) -> Option<i32> {
+        let _ = entity;
+        unimplemented!("Host::entity_air_supply")
+    }
+    /// The most air the entity holds (`Entity.getMaxAirSupply`): 300, a
+    /// dolphin's 4800, an axolotl's 6000. API @API:entity_state@.
+    fn entity_max_air_supply(&self, entity: EntityRef) -> Option<i32> {
+        let _ = entity;
+        unimplemented!("Host::entity_max_air_supply")
+    }
+    /// Whether the mob makes no sounds (`Entity.isSilent`, its `Silent`
+    /// tag); false for a player. API @API:entity_state@.
+    fn entity_is_silent(&self, entity: EntityRef) -> Option<bool> {
+        let _ = entity;
+        unimplemented!("Host::entity_is_silent")
+    }
+    /// Silences the mob or lets it make sounds again (`Entity.setSilent`).
+    /// False for the other kinds. API @API:entity_state@.
+    fn entity_set_silent(&mut self, entity: EntityRef, silent: bool) -> bool {
+        let _ = entity;
+        let _ = silent;
+        unimplemented!("Host::entity_set_silent")
+    }
+    /// Whether the entity's model is hidden (`Entity.isInvisible`): the
+    /// invisibility effect on a player or a mob, a mob's or an armor stand's
+    /// flag.
+    /// API @API:entity_state@.
+    fn entity_is_invisible(&self, entity: EntityRef) -> Option<bool> {
+        let _ = entity;
+        unimplemented!("Host::entity_is_invisible")
+    }
+    /// The entity's pose (`Entity.getPose`) as `Pose` names it: `standing`,
+    /// `crouching`, `swimming`, `sleeping`, a warden's `roaring`... Kinds
+    /// with no pose stand. API @API:entity_state@.
+    fn entity_pose(&self, entity: EntityRef) -> Option<&'static str> {
+        let _ = entity;
+        unimplemented!("Host::entity_pose")
+    }
 }
 impl EntityRef {
     /// The entity's position (`Entity.position`): its feet, the middle of
@@ -1294,5 +1376,73 @@ impl EntityRef {
     /// The level the entity is in (`Entity.level`). API @API:entity_handles@.
     pub fn level(self, host: &dyn Host) -> Option<LevelRef> {
         host.entity_level(self)
+    }
+    /// Whether the player holds the sneak key (`Entity.isShiftKeyDown`);
+    /// false for the other kinds. API @API:entity_state@.
+    pub fn is_shift_key_down(self, host: &dyn Host) -> Option<bool> {
+        host.entity_is_shift_key_down(self)
+    }
+    /// Whether the entity crouches (`Entity.isCrouching`: the crouching
+    /// pose). API @API:entity_state@.
+    pub fn is_crouching(self, host: &dyn Host) -> Option<bool> {
+        host.entity_is_crouching(self)
+    }
+    /// Whether the player sprints (`Entity.isSprinting`); false for the
+    /// other kinds. API @API:entity_state@.
+    pub fn is_sprinting(self, host: &dyn Host) -> Option<bool> {
+        host.entity_is_sprinting(self)
+    }
+    /// Whether the entity touched water at its last fluid update
+    /// (`Entity.isInWater`): players and mobs. API @API:entity_state@.
+    pub fn is_in_water(self, host: &dyn Host) -> Option<bool> {
+        host.entity_is_in_water(self)
+    }
+    /// Whether the entity is in lava (`Entity.isInLava`): players and mobs.
+    /// API @API:entity_state@.
+    pub fn is_in_lava(self, host: &dyn Host) -> Option<bool> {
+        host.entity_is_in_lava(self)
+    }
+    /// Whether the entity's type never burns (`EntityType.fireImmune`):
+    /// players and mobs. API @API:entity_state@.
+    pub fn fire_immune(self, host: &dyn Host) -> Option<bool> {
+        host.entity_fire_immune(self)
+    }
+    /// The ticks the entity burns for (`Entity.getRemainingFireTicks`):
+    /// players, mobs, armor stands and items. API @API:entity_state@.
+    pub fn fire_ticks(self, host: &dyn Host) -> Option<i32> {
+        host.entity_fire_ticks(self)
+    }
+    /// The entity's air (`Entity.getAirSupply`): players and mobs. API
+    /// @API:entity_state@.
+    pub fn air_supply(self, host: &dyn Host) -> Option<i32> {
+        host.entity_air_supply(self)
+    }
+    /// The most air the entity holds (`Entity.getMaxAirSupply`): 300, a
+    /// dolphin's 4800, an axolotl's 6000. API @API:entity_state@.
+    pub fn max_air_supply(self, host: &dyn Host) -> Option<i32> {
+        host.entity_max_air_supply(self)
+    }
+    /// Whether the mob makes no sounds (`Entity.isSilent`, its `Silent`
+    /// tag); false for a player. API @API:entity_state@.
+    pub fn is_silent(self, host: &dyn Host) -> Option<bool> {
+        host.entity_is_silent(self)
+    }
+    /// Silences the mob or lets it make sounds again (`Entity.setSilent`).
+    /// False for the other kinds. API @API:entity_state@.
+    pub fn set_silent(self, host: &mut dyn Host, silent: bool) -> bool {
+        host.entity_set_silent(self, silent)
+    }
+    /// Whether the entity's model is hidden (`Entity.isInvisible`): the
+    /// invisibility effect on a player or a mob, a mob's or an armor stand's
+    /// flag.
+    /// API @API:entity_state@.
+    pub fn is_invisible(self, host: &dyn Host) -> Option<bool> {
+        host.entity_is_invisible(self)
+    }
+    /// The entity's pose (`Entity.getPose`) as `Pose` names it: `standing`,
+    /// `crouching`, `swimming`, `sleeping`, a warden's `roaring`... Kinds
+    /// with no pose stand. API @API:entity_state@.
+    pub fn pose(self, host: &dyn Host) -> Option<&'static str> {
+        host.entity_pose(self)
     }
 }

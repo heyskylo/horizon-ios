@@ -519,4 +519,43 @@ impl Host for super::Game<'_> {
     fn entity_level(&self, entity: EntityRef) -> Option<LevelRef> {
         self.native_entity_level(entity)
     }
+    fn entity_is_shift_key_down(&self, entity: EntityRef) -> Option<bool> {
+        self.native_entity_is_shift_key_down(entity)
+    }
+    fn entity_is_crouching(&self, entity: EntityRef) -> Option<bool> {
+        self.native_entity_is_crouching(entity)
+    }
+    fn entity_is_sprinting(&self, entity: EntityRef) -> Option<bool> {
+        self.native_entity_is_sprinting(entity)
+    }
+    fn entity_is_in_water(&self, entity: EntityRef) -> Option<bool> {
+        self.native_entity_is_in_water(entity)
+    }
+    fn entity_is_in_lava(&self, entity: EntityRef) -> Option<bool> {
+        self.native_entity_is_in_lava(entity)
+    }
+    fn entity_fire_immune(&self, entity: EntityRef) -> Option<bool> {
+        self.native_entity_fire_immune(entity)
+    }
+    fn entity_fire_ticks(&self, entity: EntityRef) -> Option<i32> {
+        self.native_entity_fire_ticks(entity)
+    }
+    fn entity_air_supply(&self, entity: EntityRef) -> Option<i32> {
+        self.native_entity_air_supply(entity)
+    }
+    fn entity_max_air_supply(&self, entity: EntityRef) -> Option<i32> {
+        self.native_entity_max_air_supply(entity)
+    }
+    fn entity_is_silent(&self, entity: EntityRef) -> Option<bool> {
+        self.native_entity_is_silent(entity)
+    }
+    fn entity_set_silent(&mut self, entity: EntityRef, silent: bool) -> bool {
+        self.native_entity_set_silent(entity, silent)
+    }
+    fn entity_is_invisible(&self, entity: EntityRef) -> Option<bool> {
+        self.native_entity_is_invisible(entity)
+    }
+    fn entity_pose(&self, entity: EntityRef) -> Option<&'static str> {
+        self.native_entity_pose(entity)
+    }
 }

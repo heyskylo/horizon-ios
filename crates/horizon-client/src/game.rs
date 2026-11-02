@@ -205,6 +205,7 @@ mod native_criteria;
 mod native_data_maps;
 mod native_entities;
 mod native_entity_refs;
+mod native_entity_state;
 mod native_explosions;
 mod native_falling;
 mod native_hooks;
