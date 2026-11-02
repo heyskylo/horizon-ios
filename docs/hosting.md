@@ -8,8 +8,9 @@ plan are in [docs/server.md](https://github.com/horizon-rust/horizon/blob/main/d
 ## Before you start
 
 - **Online mode checks accounts** (release v2026.10.17.07 and newer). With `online_mode = true`, the
-  default, players who sign in with the official Minecraft launcher join with their own accounts, as on a
-  vanilla server.
+  default, every player joins with their own account, as on a vanilla server: vanilla players signed in with
+  the official Minecraft launcher, Horizon players with the Microsoft account they signed in with in Horizon's
+  launcher ([docs/microsoft-account.md](https://github.com/horizon-rust/horizon/blob/main/docs/microsoft-account.md)).
 - **Names you add are accounts** (release v2026.10.17.14 and newer). `init --player`, `horizon-server
   whitelist add` and `op`, and the console's `whitelist add`, `op` and `ban` look a name up the way vanilla
   does: players already seen (kept in `usercache.json`), then Mojang's profile service. In online mode a name
@@ -17,15 +18,13 @@ plan are in [docs/server.md](https://github.com/horizon-rust/horizon/blob/main/d
   `horizon-server whitelist add` always writes the offline UUID, the one the player joins with, also while
   the server runs (it writes the entry and the game reloads the list): the console's own `whitelist add`
   takes the account's UUID when someone owns that name, as vanilla does, and that player is then refused.
-- **Horizon's own client can't sign in to a Microsoft account yet.** That needs an Azure app registration and
-  Mojang's approval, which the project doesn't have
-  ([docs/microsoft-account.md](https://github.com/horizon-rust/horizon/blob/main/docs/microsoft-account.md)).
-  Until then Horizon players can join offline servers only (`online_mode = false`). An offline server never
-  checks accounts: anyone who reaches it can join under any name. Keep it on your LAN or a tailnet
-  (Tailscale, ZeroTier), or share it only with friends you trust.
-- **Secure chat** works as on vanilla's server: in online mode, vanilla clients sign their chat, and with
-  `enforce-secure-profile=true` (the default) unsigned chat is refused. On an offline server, or for a player
-  without a chat session (Horizon's own client today), chat stays unsigned and shows as not secure.
+- **An offline server** (`online_mode = false`) never checks accounts: anyone who reaches it can join under
+  any name. Keep it on your LAN or a tailnet (Tailscale, ZeroTier), or share it only with friends you trust.
+  A Horizon player under an offline name can join only such a server.
+- **Secure chat** works as on vanilla's server: in online mode, vanilla clients and Horizon's (Nightly
+  2026-11-01 and newer) sign their chat, and with `enforce-secure-profile=true` (the default) unsigned chat is
+  refused. On an offline server, or for a player without a chat session, chat stays unsigned and shows as not
+  secure.
 - **Nether and End:** each player travels on their own through portals, and operators with `execute in
   <dimension> run tp`. The players in the level they leave stop seeing them, and the ones in the level they
   arrive in start to, as on vanilla (checked against vanilla with two players, by command and through an End
@@ -223,6 +222,21 @@ Already have a vanilla server? Run `horizon-server init` in its folder, or `hori
 server.properties` to write `server.toml` from it. The world, `ops.json`, `whitelist.json` and the ban lists
 keep vanilla's names and formats, so going back to vanilla works too.
 
+## Native server export
+
+A native-mods build exports a standalone engine
+(`horizon-launcher native-build FOLDER --server-output DIR --version TAG --trust-native-code`;
+see [Native mods](native-mods.md#standalone-server-export)). Point the server at it:
+
+    horizon-server --dir SERVER config set engine.path=/absolute/export/horizon-engine
+    horizon-server --dir SERVER restart
+
+Use the absolute engine path printed by the build. Build on the same OS and architecture as the server
+(no cross compilation), using a prepared installed launcher release. Updates do not rebuild a pinned `engine.path`: build a new
+export folder, set `engine.path` to it, restart, and keep the old folder for manual rollback. The supervisor does
+not auto-update or rebuild a pinned engine path, and there is no compatibility handshake yet (follow-up #6304).
+Native mods run unsandboxed: only build code you have read and trust.
+
 ### Behind a Velocity proxy
 
 A network can put one Velocity proxy in front of several servers: the proxy signs the players in with their
@@ -293,6 +307,10 @@ the ticks' time went, phase by phase (mobs, block ticks, block entities, the net
 sends, saving...), the slowest ticks, how many entities of each type, chunks, players, memory, CPU, and the
 settings that matter (view and simulation distance, max players). They hold no names, UUIDs or addresses, so you
 can attach them to an issue as they are. On the console it is `horizon-report [SECONDS]`.
+
+Between reports, the log keeps the spikes: a tick slower than 250 ms writes a `Horizon: slow tick` line with
+its phases (`HORIZON_SPIKES=MS` in the engine's environment sets another threshold), and a server more than
+two seconds behind says `Can't keep up!` as vanilla's does, at most every 15 seconds.
 
 `config set` changes `server.toml` without opening it: `horizon-server config set world.difficulty=hard
 server.max_players=10`. Each key is a section and a name from the file (`properties.spawn-protection=0` for any
@@ -371,7 +389,7 @@ Integrations → Webhooks → New Webhook → Copy Webhook URL, then:
 ```toml
 [discord]
 webhook = "https://discord.com/api/webhooks/..."   # a secret: whoever has it can post in the channel
-events = ["chat", "join", "leave", "death"]        # and "kick"
+events = ["chat", "join", "leave", "death"]        # and "kick", "announce" (lines native mods post)
 enabled = true                                     # false pauses it and keeps the webhook
 ```
 
@@ -444,8 +462,10 @@ read when the server starts. To turn it off again, set `enable-rcon = false`: ta
 `server.toml` leaves what `server.properties` already holds, as for any other key.
 
 Where it differs from vanilla: a connection that hasn't logged in within 30 seconds is closed, at most 16 are open
-at once, and a command a client's TCP splits in two still works. A command shows as the console's (`Server`, not
-`Rcon`), and `broadcast-rcon-to-ops` isn't honoured yet.
+at once, and a command a client's TCP splits in two still works.
+
+A command runs from a source named `Rcon`: operators in game see what it did as `[Rcon: ...]` (gray, italic) unless
+`broadcast-rcon-to-ops` is `false`, and a `say` shows as `[Rcon] ...`.
 
 ### Tools that read the query
 

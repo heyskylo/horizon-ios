@@ -19,7 +19,9 @@ pub fn register(m: &mut Mob) {
     g.add(2, Stroll::avoiding_water(1.0));
     g.add(3, LookAtPlayer::new(8.0));
     g.add(3, RandomLookAround::default());
-    m.ai.targets.add(1, HurtByTarget::new());
+    // HurtByTargetGoal(this, Raider.class): a witch ignores the raider that
+    // hit it, so raid friendly fire never turns the raid on itself.
+    m.ai.targets.add(1, hurt_by());
     m.ai.targets.add(2, HealRaiders::default());
     // NearestAttackableWitchTargetGoal: only while not healing raiders.
     m.ai.targets.add(
@@ -29,6 +31,10 @@ pub fn register(m: &mut Mob) {
             .gate(|m, _| m.extra.counter2 <= 0)
             .named("NearestAttackableWitchTargetGoal"),
     );
+}
+/// `Witch.registerGoals`' `HurtByTargetGoal(this, Raider.class)`.
+fn hurt_by() -> HurtByTarget {
+    HurtByTarget::new().ignoring(&super::raider::RAIDERS)
 }
 /// `NearestHealableRaiderTargetGoal`: in a raid, target another raider to
 /// heal, then wait 10 seconds (the cooldown lives in `extra.counter2`).
@@ -360,4 +366,43 @@ pub fn anim(m: &Mob, s: &State, p: &mut Poses) {
         n[3] = -0.9;
     }
     let _ = Species::Witch;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `Witch.registerGoals` passes `Raider.class` to `HurtByTargetGoal`, so a
+    /// raider that hits a witch is not taken as its target. The list is the
+    /// `Raider` class and nothing else: a vex is not a raider.
+    #[test]
+    fn a_witch_ignores_the_raider_that_hit_it() {
+        let goal = hurt_by();
+        assert_eq!(
+            goal.ignore,
+            vec![
+                Species::Pillager,
+                Species::Vindicator,
+                Species::Evoker,
+                Species::Illusioner,
+                Species::Witch,
+                Species::Ravager,
+            ]
+        );
+        assert!(!goal.ignore.contains(&Species::Vex));
+        assert!(!goal.ignore.contains(&Species::Zombie));
+    }
+
+    /// The hoisted list is exactly the set `is_raider` answers yes for.
+    #[test]
+    fn the_raider_list_is_the_raider_class() {
+        for def in crate::mobs::species::ALL {
+            assert_eq!(
+                crate::mobs::raider::is_raider(def.species),
+                super::super::raider::RAIDERS.contains(&def.species),
+                "{:?}",
+                def.species
+            );
+        }
+    }
 }

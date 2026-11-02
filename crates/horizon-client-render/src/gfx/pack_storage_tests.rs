@@ -76,6 +76,7 @@ fn storage_volume_compute_is_sampled_and_retains_history_on_metal() {
     let parsed = load_post(&pack, "", &properties, &macros, &GameInputs::default());
     assert!(parsed.complete, "parse notes: {:?}", parsed.notes);
     let world = World {
+        gui_size: [1, 1],
         adapter: &adapter,
         atlas: None,
         lightmap: texture(&device, &queue, "storage regression lightmap", 1, &[255; 4]),
@@ -250,6 +251,7 @@ fn mismatched_storage_image_dimension_is_rejected_before_first_frame() {
     let parsed = load_post(&pack, "", &properties, &macros, &GameInputs::default());
     assert!(parsed.complete, "{:?}", parsed.notes);
     let world = World {
+        gui_size: [1, 1],
         adapter: &adapter,
         atlas: None,
         lightmap: texture(&device, &queue, "mismatch test lightmap", 1, &[255; 4]),

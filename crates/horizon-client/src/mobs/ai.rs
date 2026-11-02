@@ -12,6 +12,7 @@ use super::{
     undead,
 };
 use crate::blocks::Fluid;
+use crate::breathing::{Breath, apply, breathe};
 use horizon_core::{
     geometry::Vec3,
     random::{LegacyRandom, RandomSource},
@@ -193,7 +194,7 @@ pub fn family(s: Species) -> Family {
         | S::Parched
         | S::WitherSkeleton
         | S::ZombifiedPiglin => Family::Undead,
-        S::Creeper | S::Spider | S::CaveSpider | S::Silverfish => Family::Hostile,
+        S::Creeper | S::Spider | S::CaveSpider | S::Silverfish | S::Endermite => Family::Hostile,
         S::Squid
         | S::GlowSquid
         | S::Cod
@@ -1013,18 +1014,26 @@ fn base_tick(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
             } else {
                 m.air = 300;
             }
-        } else if m.fluids.eye_in_water && !m.kind.flags.breathes_water {
-            m.air -= 1;
-            if m.air == -20 {
-                m.air = 0;
+        } else {
+            // LivingEntity.baseTick's air supply (LivingBreatheEvent): an
+            // entity with its eyes in water that can't breathe there loses
+            // air, any other gains it.
+            let drowns = m.fluids.eye_in_water && !m.kind.flags.breathes_water;
+            let vanilla = Breath {
+                can_breathe: !drowns,
+                consume: 1,
+                refill: if drowns { 0 } else { 4 },
+            };
+            let breath = breathe(m.id, &m.kind.id, vanilla);
+            let (air, drowned) = apply(m.air, 300, breath);
+            m.air = air;
+            if drowned {
                 events.push(MobEvent::Drown {
                     mob: m.id,
                     at: [m.position.x, m.position.y, m.position.z],
                 });
                 m.damage(2.0, Damage::of(DamageKind::Drown));
             }
-        } else if m.air < 300 {
-            m.air = (m.air + 4).min(300);
         }
 
         if m.kind.flags.water_sensitive && (m.fluids.in_water || in_rain(m, w)) {
@@ -1184,6 +1193,12 @@ fn play_ambient(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
         Species::Guardian if !m.fluids.in_water => "entity.guardian.ambient_land",
         Species::ElderGuardian if !m.fluids.in_water => "entity.elder_guardian.ambient_land",
         Species::Axolotl if !m.fluids.in_water => "entity.axolotl.idle_air",
+        // Villager.getAmbientSound: silent while asleep, the trade sound
+        // while a player has its menu open.
+        Species::Villager if super::villager::sleeping(m) => return,
+        Species::Villager if m.extra.flag2 => "entity.villager.trade",
+        // WanderingTrader.getAmbientSound: only the trade branch, it never sleeps.
+        Species::WanderingTrader if m.extra.flag2 => "entity.wandering_trader.trade",
         Species::Bat if m.extra.flag && m.random.next_int_bound(4).unwrap_or(1) != 0 => return,
         Species::Allay if m.extra.main_hand.is_some() => "entity.allay.ambient_with_item",
         // Strider.getAmbientSound: quiet while panicking or tempted.
@@ -2172,6 +2187,13 @@ pub fn walk_target_value(m: &Mob, w: &MobWorld, p: [i32; 3]) -> f32 {
     ) {
         return 0.0;
     }
+    // Silverfish.getWalkTargetValue: a block sitting on an infested host is
+    // the best place to walk to, so it goes back into the stone.
+    if m.species() == Species::Silverfish
+        && super::hostile::is_infested_host(w.block_name(p[0], p[1] - 1, p[2]))
+    {
+        return 10.0;
+    }
     if m.hostile()
         && !matches!(
             m.species(),
@@ -2899,6 +2921,49 @@ mod same_vehicle_push_tests {
     use super::*;
     use crate::mobs::world::with_test_world;
 
+    /// What a mob holds and wears, by `EquipmentSlot`: the hand's item, the
+    /// worn armour's stack (a dyed piece keeps its colour), a horse's
+    /// armour in the body slot and its saddle, and nothing else.
+    #[test]
+    fn a_mobs_equipment_is_listed_by_slot() {
+        with_test_world(&[], |_, types| {
+            let mob = |name: &str| {
+                Mob::new(
+                    1,
+                    std::sync::Arc::new(types.types[name].clone()),
+                    Vec3::new(0.5, 64.0, 0.5),
+                    0.0,
+                )
+            };
+            let mut zombie = mob("minecraft:zombie");
+            assert!(zombie.equipment_stacks().iter().all(Option::is_none));
+            zombie
+                .extra
+                .set_main_hand(Some(std::sync::Arc::from("minecraft:iron_sword")));
+            zombie.extra.feet = Some(std::sync::Arc::from("minecraft:iron_boots"));
+            let worn = zombie.equipment_stacks();
+            assert_eq!(
+                worn[0].as_ref().unwrap().item.as_ref(),
+                "minecraft:iron_sword"
+            );
+            assert_eq!(
+                worn[2].as_ref().unwrap().item.as_ref(),
+                "minecraft:iron_boots"
+            );
+            assert_eq!(worn.iter().flatten().count(), 2);
+            let mut horse = mob("minecraft:horse");
+            horse.extra.head = Some(std::sync::Arc::from("minecraft:iron_horse_armor"));
+            horse.set_saddle(Some(crate::items::ItemStack::new("minecraft:saddle", 1)));
+            let gear = horse.equipment_stacks();
+            assert_eq!(
+                gear[6].as_ref().unwrap().item.as_ref(),
+                "minecraft:iron_horse_armor"
+            );
+            assert_eq!(gear[7].as_ref().unwrap().item.as_ref(), "minecraft:saddle");
+            assert!(gear[5].is_none());
+        });
+    }
+
     /// `Entity.push(Entity)` returns at once for `isPassengerOfSameVehicle`
     /// (the same `getRootVehicle`): a camel and the husk on its back, seated
     /// half a block toward its front and so inside its box, never push each
@@ -3119,6 +3184,100 @@ mod forgiveness_tests {
         forgive_dead_player(&mut golem);
         assert_eq!(golem.extra.anger, 300, "anger at another mob stays");
         assert_eq!(golem.ai.target, Some(Who::Mob(7)));
+    }
+}
+
+#[cfg(test)]
+mod endermite_goal_tests {
+    use super::*;
+    use crate::mobs::world::with_test_world;
+
+    /// `Endermite.registerGoals` is the silverfish's family list without the
+    /// stone tricks: a powder-snow climb, a stroll at 1.0 and a
+    /// `HurtByTargetGoal` that alerts the others. The generic monster block
+    /// an unlisted species gets has none of those (stroll 0.8, no alert).
+    #[test]
+    fn an_endermite_takes_the_hostile_goal_list() {
+        let ran = with_test_world(&[], |_, types| {
+            let m = Mob::new(
+                1,
+                std::sync::Arc::new(types.types["minecraft:endermite"].clone()),
+                Vec3::ZERO,
+                0.0,
+            );
+            assert_eq!(family(m.species()), Family::Hostile);
+            assert!(
+                m.ai.goals.has("ClimbOnTopOfPowderSnow"),
+                "ClimbOnTopOfPowderSnowGoal"
+            );
+            assert!(m.ai.goals.has("Stroll"), "WaterAvoidingRandomStrollGoal");
+            assert!(m.ai.targets.has("HurtByTarget"));
+            assert!(m.ai.targets.has("NearestTarget"));
+        });
+        let _ = ran;
+    }
+}
+
+#[cfg(test)]
+mod villager_ambient_tests {
+    use super::*;
+    use crate::mobs::world::with_test_world;
+
+    /// The ambient sound one tick of `play_ambient` makes, after `setup`.
+    fn sound(
+        w: &MobWorld<'_>,
+        types: &crate::mobs::MobTypes,
+        kind: &str,
+        setup: impl FnOnce(&mut Mob),
+    ) -> Option<&'static str> {
+        let mut m = Mob::new(
+            1,
+            std::sync::Arc::new(types.types[kind].clone()),
+            Vec3::new(0.5, 64.0, 0.5),
+            0.0,
+        );
+        setup(&mut m);
+        let mut events = Vec::new();
+        play_ambient(&mut m, w, &mut events);
+        events.into_iter().find_map(|e| match e {
+            MobEvent::Sound(s, ..) => Some(s),
+            _ => None,
+        })
+    }
+
+    /// `Villager.getAmbientSound`: silent while asleep, the trade sound while a
+    /// player has its menu open, ambient otherwise. `WanderingTrader` only has
+    /// the trade branch.
+    #[test]
+    fn a_villager_is_silent_asleep_and_noisy_while_trading() {
+        with_test_world(&[], |w, types| {
+            assert_eq!(
+                sound(w, types, "minecraft:villager", |_| {}),
+                Some("entity.villager.ambient")
+            );
+            assert_eq!(
+                sound(w, types, "minecraft:villager", |m| m.extra.flag2 = true),
+                Some("entity.villager.trade")
+            );
+            assert_eq!(
+                sound(w, types, "minecraft:villager", |m| m.extra.ints[1] = 1),
+                None,
+                "asleep"
+            );
+            assert_eq!(
+                sound(w, types, "minecraft:villager", |m| {
+                    m.extra.ints[1] = 1;
+                    m.extra.flag2 = true;
+                }),
+                None,
+                "sleeping wins over trading"
+            );
+            let trading = |m: &mut Mob| m.extra.flag2 = true;
+            assert_eq!(
+                sound(w, types, "minecraft:wandering_trader", trading),
+                Some("entity.wandering_trader.trade")
+            );
+        });
     }
 }
 
@@ -3383,5 +3542,54 @@ mod burn_and_rose_tests {
             assert_eq!(m.health, start - 8.0, "second hit on tick 11");
             assert_eq!(m.fire_ticks, 300);
         });
+    }
+}
+
+#[cfg(test)]
+mod silverfish_walk_target_tests {
+    use super::*;
+    use crate::mobs::world::with_built_test_world;
+
+    /// `Silverfish.getWalkTargetValue`: a block standing on an infested host
+    /// (a stone-family block) is worth 10, and everywhere else falls through
+    /// to the monster's light value. Horizon treated stone like any other
+    /// block, so a silverfish had no reason to walk back into the wall.
+    #[test]
+    fn a_silverfish_prefers_a_block_on_an_infested_host() {
+        let build = |world: &mut crate::world::World,
+                     registry: &horizon_world::registry::BlockRegistry| {
+            let stone = registry.default_state("minecraft:stone").unwrap();
+            let dirt = registry.default_state("minecraft:dirt").unwrap();
+            for cx in -1..1 {
+                for cz in -1..1 {
+                    world.chunks.insert(
+                        (cx, cz),
+                        std::sync::Arc::new(crate::chunk::Chunk::empty(cx, cz)),
+                    );
+                }
+            }
+            for x in -4..4 {
+                for z in -4..4 {
+                    world.set(x, 64, z, stone).unwrap();
+                }
+            }
+            world.set(2, 64, 0, dirt).unwrap();
+        };
+        let ran = with_built_test_world(&[], build, |w, types| {
+            let m = Mob::new(
+                1,
+                std::sync::Arc::new(types.types["minecraft:silverfish"].clone()),
+                Vec3::new(0.5, 65.0, 0.5),
+                0.0,
+            );
+            assert_eq!(
+                walk_target_value(&m, w, [0, 65, 0]),
+                10.0,
+                "standing on stone"
+            );
+            let dirt = walk_target_value(&m, w, [2, 65, 0]);
+            assert!(dirt < 10.0, "standing on dirt falls through, got {dirt}");
+        });
+        let _ = ran;
     }
 }

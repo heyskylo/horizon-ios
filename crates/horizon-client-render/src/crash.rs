@@ -227,12 +227,7 @@ fn operating_system() -> String {
 pub fn cpu() -> String {
     let threads = std::thread::available_parallelism().map_or(0, |n| n.get());
     let name = if cfg!(target_os = "linux") {
-        read("/proc/cpuinfo").and_then(|t| {
-            t.lines()
-                .find(|l| l.starts_with("model name"))
-                .and_then(|l| l.split_once(':'))
-                .map(|(_, v)| v.trim().to_owned())
-        })
+        read("/proc/cpuinfo").and_then(|t| horizon_telemetry::system::linux_cpu_name(&t))
     } else if cfg!(target_os = "macos") {
         command_output("sysctl", &["-n", "machdep.cpu.brand_string"])
     } else if cfg!(windows) {
@@ -523,7 +518,8 @@ pub fn panic_report(info: &std::panic::PanicHookInfo, side: &'static str) -> Rep
     }
 }
 
-/// Whether `name` is one of the streaming pool's threads, vanilla's `Util` worker threads.
+/// Whether `name` is one of the shared worker pool's threads (`horizon_threads::jobs`), vanilla's
+/// `Util` worker threads.
 fn is_worker_thread(name: Option<&str>) -> bool {
     name.is_some_and(|n| n.starts_with("horizon-worker-"))
 }

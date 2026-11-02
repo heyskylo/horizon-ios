@@ -1096,7 +1096,7 @@ more accurate. No coding needed."""
 dev = """`horizon-launcher play --arg=--benchmark --arg=standard` writes a JSON report; `horizon-launcher data \
 benchmark <report>` shows what would be sent and uploads it (playhorizon.dev/docs/performance). Results from three \
 installs with the same hardware appear on the Benchmarks page. Example: #1711."""
-links = ["https://playhorizon.dev/docs/performance", "#1711"]
+links = ["https://playhorizon.dev/docs/performance"]
 
 [[item]]
 id = "end-city-banners"

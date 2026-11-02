@@ -122,6 +122,9 @@ impl Default for Pass {
 #[derive(Default)]
 pub(super) struct Levels {
     parked: HashMap<Dim, Parked>,
+    /// The levels whose open the mods heard (`native_level_load`), each to
+    /// be told closed once.
+    heard_open: Vec<Dim>,
 }
 
 impl Levels {
@@ -173,6 +176,7 @@ impl Game<'_> {
             &self.level.enabled_features,
         )?;
         let mut world = World::new(self.res.facts().air, self.level.seed);
+        world.attachments = save.load_attachments();
         world.shape = self.level_shapes.get(dim.id());
         world.fast_lava = dim == Dim::Nether;
         Ok(Parked {
@@ -337,6 +341,7 @@ impl Game<'_> {
             if opened {
                 // The new streaming's radius and meshing options.
                 self.apply_settings();
+                self.native_level_opened(target);
             }
         }
         let host = match host {
@@ -520,8 +525,14 @@ impl Game<'_> {
     /// The end of `MinecraftServer.runServer`'s loop for a server thread: a
     /// finished `/tick sprint` reports to the operators as the server, then
     /// the next tick starts one tick length after this one, or straight away
-    /// while the sprint runs (`checkShouldSprintThisTick`).
-    pub(super) fn wait_for_next_server_tick(&mut self, next: &mut Instant, paused: bool) {
+    /// while the sprint runs (`checkShouldSprintThisTick`). A server more
+    /// than two seconds behind skips the ticks it missed: that returns how far
+    /// behind it was, for the overload warning.
+    pub(super) fn wait_for_next_server_tick(
+        &mut self,
+        next: &mut Instant,
+        paused: bool,
+    ) -> Option<Duration> {
         if let Some(report) = self.clock.take_sprint_report() {
             // ServerTickRateManager.finishTickSprint: the server's sendSuccess.
             self.console_broadcast = Some(true);
@@ -536,7 +547,7 @@ impl Game<'_> {
         let now = Instant::now();
         if !paused && self.clock.sprinting() {
             *next = now;
-            return;
+            return None;
         }
         *next += self.clock.tick_duration();
         if *next > now {
@@ -548,8 +559,11 @@ impl Game<'_> {
                 std::thread::sleep(*next - now);
             }
         } else if now - *next > Duration::from_secs(2) {
+            let behind = now - *next;
             *next = now;
+            return Some(behind);
         }
+        None
     }
 
     /// The levels this server tick runs, in `MinecraftServer.levels` order
@@ -638,10 +652,46 @@ impl Game<'_> {
             let chunks: Vec<_> = self.world.chunks.values().cloned().collect();
             self.native_chunks_changed(&chunks);
             self.save_level(true)?;
+            // Its entities' attachments are saved with them; they leave memory too.
+            for uuid in self.persist.uuids.values() {
+                self.entity_attachments.remove(uuid);
+            }
             self.enter_level(None, back)?;
             self.levels.parked.remove(&dim);
+            self.native_level_closed(dim);
         }
         Ok(())
+    }
+
+    /// The mods hear `dim`'s level open (`LevelEvent.Load`), on a server.
+    pub(super) fn native_level_opened(&mut self, dim: Dim) {
+        if self.remote.is_some()
+            || self.options.execution_role.is_client()
+            || self.levels.heard_open.contains(&dim)
+        {
+            return;
+        }
+        self.levels.heard_open.push(dim);
+        self.native_level_load(dim.id());
+    }
+
+    /// The mods hear `dim`'s level close (`LevelEvent.Unload`), once for
+    /// each open they heard.
+    fn native_level_closed(&mut self, dim: Dim) {
+        let Some(i) = self.levels.heard_open.iter().position(|d| *d == dim) else {
+            return;
+        };
+        self.levels.heard_open.remove(i);
+        self.native_level_unload(dim.id());
+    }
+
+    /// Every level still open closes with the server, however it ends
+    /// (`MinecraftServer.stopServer`'s `level.close()` loop), in vanilla's
+    /// order of its levels: the Overworld, the Nether, the End.
+    pub(super) fn native_levels_closing(&mut self) {
+        for dim in [Dim::Overworld, Dim::Nether, Dim::End] {
+            self.native_level_closed(dim);
+        }
     }
 
     /// Save every parked level (`MinecraftServer.saveAllChunks`); the level

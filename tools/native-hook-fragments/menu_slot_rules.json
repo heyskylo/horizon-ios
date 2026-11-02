@@ -1,8 +1,0 @@
-{
-  "hooks": [
-    {"name": "menu_slot_rules", "target": "horizon_client::menu::native_menu_slot_rules", "side": "server", "cancellable": false}
-  ],
-  "rust_summary": "a content mod menu type's slot rules decided in code (`native_menu_slot_rules`, in\n`menu.rs`: whether a slot takes a stack, `Slot.mayPlace`, and how many it holds,\n`Slot.getMaxStackSize`), with mod menu types' clicks on the vanilla menu engine.",
-  "doc_summary": "slot rules a mod decides in code for its content menu types: `native_menu_slot_rules(menu, slot, stack, may_place, max_stack)`, in `horizon-client`'s `menu.rs`, is given the type's own answer (false on one of its `results`, [mods.md](mods.md#menu-types), true elsewhere, and 99) and may change both, as a NeoForge mod overrides `Slot.mayPlace` and `Slot.getMaxStackSize`. A mod menu type's clicks run on the vanilla menu engine (`menu::Kind::Mod`). Bundles need `\"hooks\": @API:menu_slot_rules@`.",
-  "comments": ["crates/horizon-client/src/menu.rs"]
-}

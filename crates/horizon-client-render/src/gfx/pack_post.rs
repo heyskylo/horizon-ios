@@ -410,6 +410,7 @@ pub(super) struct World<'a> {
     pub block_ids: &'a [i32],
     /// The atlas of the sun and moon's sprites.
     pub celestial: Option<wgpu::TextureView>,
+    pub gui_size: [u32; 2],
     /// Set 1 of the clouds' draw: their offset and palette.
     pub clouds: Option<&'a wgpu::BindGroupLayout>,
     /// The game can hand its rain and snow to the pack.
@@ -421,6 +422,7 @@ pub(super) struct World<'a> {
 /// Owned inputs that can move to the compilation worker. Binding layouts and
 /// texture views are shared wgpu handles; vertex attributes have static storage.
 pub(super) struct OwnedWorld {
+    pub gui_size: [u32; 2],
     pub adapter: wgpu::Adapter,
     pub atlas: Option<(wgpu::TextureView, [u32; 2])>,
     pub lightmap: wgpu::TextureView,
@@ -456,6 +458,7 @@ impl OwnedWorld {
             post,
             screen,
             World {
+                gui_size: self.gui_size,
                 adapter: &self.adapter,
                 atlas: self.atlas,
                 lightmap: self.lightmap,
@@ -569,8 +572,11 @@ pub struct PackPost {
     /// with the page buffer it was made for.
     block_ids: Option<(wgpu::BindGroupLayout, wgpu::Buffer)>,
     page_groups: HashMap<u32, (wgpu::Buffer, wgpu::Buffer, wgpu::BindGroup)>,
+    gui_size: [u32; 2],
     /// GPU time of each pass, while the renderer asks for it (`pack_timing.rs`).
     pub timing: Option<super::pack_timing::PassTiming>,
+    /// `depthtex0` at the screen's centre, read back for `centerDepthSmooth`.
+    center_depth: Option<super::pack_center_depth::CenterDepth>,
     /// `shaders.properties`' custom uniforms, after the frame's in `uniforms.values`.
     custom: horizon_shaders::Custom,
     atlas: Option<wgpu::TextureView>,
@@ -1428,11 +1434,16 @@ fn build_pass(
         } else if let Some(&buffer) = p.buffers.get(l) {
             let format = formats[buffer as usize];
             let mut state = target(format);
-            if let (Some(t), Some(b)) = (&mut state, p.blend)
-                && format
-                    .guaranteed_format_features(features)
-                    .flags
-                    .contains(wgpu::TextureFormatFeatureFlags::BLENDABLE)
+            if let (Some(t), Some(b)) = (
+                &mut state,
+                p.buffer_blends
+                    .iter()
+                    .find(|(n, _)| *n == buffer)
+                    .map_or(p.blend, |(_, b)| *b),
+            ) && format
+                .guaranteed_format_features(features)
+                .flags
+                .contains(wgpu::TextureFormatFeatureFlags::BLENDABLE)
             {
                 t.blend = Some(blend_state(b));
             }
@@ -1520,7 +1531,15 @@ fn build_pass(
                 depth_write_enabled: Some(g.depth_write),
                 depth_compare: Some(wgpu::CompareFunction::LessEqual),
                 stencil: Default::default(),
-                bias: Default::default(),
+                bias: if p.name == "gbuffers_damagedblock" {
+                    wgpu::DepthBiasState {
+                        constant: -10,
+                        slope_scale: -1.0,
+                        clamp: 0.0,
+                    }
+                } else {
+                    Default::default()
+                },
             }),
             multisample: Default::default(),
             fragment: Some(wgpu::FragmentState {
@@ -1735,6 +1754,7 @@ fn storage_image_names(post: &Post) -> std::collections::HashSet<String> {
         .chain(&post.block)
         .chain(&post.entities_translucent)
         .chain(&post.particles)
+        .chain(&post.damaged_block)
         .chain(&post.clouds)
         .chain(&post.weather)
         .chain(&post.hand)
@@ -2112,8 +2132,15 @@ impl PackPost {
             post.block,
             post.entities_translucent,
             post.particles,
+            post.damaged_block,
         ];
-        let late = [false, false, post.translucent_late, post.particles_late];
+        let late = [
+            false,
+            false,
+            post.translucent_late,
+            post.particles_late,
+            false,
+        ];
         let shadow_only = (post.shadow_only_player, post.shadow_only_lit_blocks);
         let shadow_programs = [post.shadow_entities, post.shadow_block];
         let entity_vertices = (programs.iter().chain(&shadow_programs))
@@ -2129,8 +2156,21 @@ impl PackPost {
             cull: false,
         });
         let entity_passes = programs.map(|p| {
-            p.zip(entity_geometry.as_ref())
-                .and_then(|(p, g)| build(p, Some(g)))
+            p.zip(entity_geometry.as_ref()).and_then(|(p, g)| {
+                if p.name == "gbuffers_damagedblock" {
+                    let decal = Geometry {
+                        buffers: g.buffers,
+                        table: g.table,
+                        depth_write: false,
+                        atlas: g.atlas.clone(),
+                        ids: g.ids,
+                        cull: false,
+                    };
+                    build(p, Some(&decal))
+                } else {
+                    build(p, Some(g))
+                }
+            })
         });
         let shadow_entities = shadow_programs.map(|p| {
             p.zip(entity_geometry.as_ref())
@@ -2492,7 +2532,9 @@ impl PackPost {
             begin,
             setup_ran: false,
             page_groups: HashMap::new(),
+            gui_size: world.gui_size,
             timing: None,
+            center_depth: None,
             custom,
             atlas: world.atlas.as_ref().map(|a| a.0.clone()),
             lightmap: world.lightmap,
@@ -2993,6 +3035,13 @@ impl PackPost {
                 let rp = &mut open.as_mut().expect("open").0;
                 rp.set_pipeline(pass.render());
                 rp.set_bind_group(0, group, &[]);
+                // A sky program that reads the pack's SSBOs (Noble's `gbuffers_textured`, the
+                // sun's fallback) binds them, as the other passes do.
+                if pass.buffers
+                    && let Some(g) = &self.buffers.group
+                {
+                    rp.set_bind_group(4, g, &[]);
+                }
                 sky.geometry.bind(rp, part.textured);
                 open.as_mut().expect("open").1 = i;
             }
@@ -3111,6 +3160,7 @@ impl PackPost {
         queue: &wgpu::Queue,
         entities: &[super::Vertex],
         spans: &[super::pack_draw::EntitySpan],
+        crumbling: [f32; 4],
         rest: &mut Vec<super::Vertex>,
     ) {
         let shadow = self.shadow_casters();
@@ -3127,6 +3177,7 @@ impl PackPost {
             entities,
             spans,
             drawn,
+            (crumbling, self.gui_size),
             shadow,
             rest,
         );
@@ -3146,6 +3197,13 @@ impl PackPost {
             only_player: e.only.0,
             blocks: e.shadow[1].is_some(),
             only_lit: e.only.1,
+        }
+    }
+
+    /// After the frame's submission: the centre depth it copied starts its way back.
+    pub fn submitted(&mut self) {
+        if let Some(center) = &mut self.center_depth {
+            center.submitted();
         }
     }
 
@@ -3973,6 +4031,10 @@ impl PackPost {
         if let Some(t) = &mut self.timing {
             t.begin(device, queue);
         }
+        self.uniforms.center_depth_raw = self
+            .center_depth
+            .get_or_insert_with(|| super::pack_center_depth::CenterDepth::new(device))
+            .collect(device);
         self.uniforms.update(frame, inputs, size);
         // Until the camera's biome is known, `smooth` waits for the world's values.
         if !inputs.biome_known {
@@ -4227,6 +4289,10 @@ impl PackPost {
             self.draw_translucent(device, queue, encoder, size, terrain);
         }
         let targets = self.targets.as_ref().expect("resized");
+        // depthtex0 as the frame leaves it, for next frames' `centerDepthSmooth`.
+        if let Some(center) = &mut self.center_depth {
+            center.copy(device, encoder, &targets.depth_texture);
+        }
         let view = |m: u16, i: usize, alt: bool| {
             targets.color[i]
                 .as_ref()
@@ -4371,6 +4437,7 @@ mod tests {
                 );
                 let parsed = post.complete;
                 let world = World {
+                    gui_size: [1, 1],
                     adapter: &adapter,
                     atlas: Some((atlas.view.clone(), atlas.size())),
                     lightmap: texture(&device, &queue, "test lightmap", 1, &[255; 4]),
@@ -4479,7 +4546,7 @@ mod tests {
     /// made. Such a panic skips the pass, as a validation error does, and the device goes on.
     #[test]
     fn a_shader_compiler_panic_skips_the_pass() {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let instance = crate::gfx::test_gpu::instance();
         let Ok(adapter) = pollster::block_on(instance.request_adapter(&Default::default())) else {
             return;
         };

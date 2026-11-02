@@ -290,6 +290,11 @@ pub fn can_be_leashed(m: &Mob) -> bool {
         | S::Pufferfish
         | S::Tadpole => false,
         S::Wolf => !super::tame::angry(m),
+        // Nautilus.canBeLeashed and ZombieNautilus.canBeLeashed: never while
+        // it is aggravated. The zombie also refuses while a mob is riding it
+        // (`isMobControlled`), which a mob alone cannot see.
+        // shortcut: isMobControlled, when a mob can ride a zombie nautilus.
+        S::Nautilus | S::ZombieNautilus => !super::nautilus::aggravated(m),
         _ => !m.hostile() && !m.removed,
     }
 }
@@ -574,6 +579,36 @@ mod tests {
         assert!(near(p[2], [lr, y, -fb + f]));
         assert!(near(p[3], [lr, y, fb + f]));
     }
+    /// `Nautilus.canBeLeashed` and `ZombieNautilus.canBeLeashed`: an
+    /// aggravated nautilus, one holding an `ANGRY_AT` or an `ATTACK_TARGET`
+    /// memory, cannot be put on a lead.
+    #[test]
+    fn an_aggravated_nautilus_cannot_be_leashed() {
+        let ran = crate::mobs::world::with_test_world(&[], |_, types| {
+            let new = |kind: &str| {
+                Mob::new(
+                    1,
+                    std::sync::Arc::new(types.types[kind].clone()),
+                    horizon_core::geometry::Vec3::ZERO,
+                    0.0,
+                )
+            };
+            let calm = new("minecraft:nautilus");
+            assert!(can_be_leashed(&calm), "a calm nautilus");
+            let mut angry = new("minecraft:nautilus");
+            angry.extra.anger = 400;
+            assert!(!can_be_leashed(&angry), "ANGRY_AT");
+            let mut charging = new("minecraft:zombie_nautilus");
+            charging.ai.target = Some(crate::mobs::Who::Player);
+            assert!(!can_be_leashed(&charging), "ATTACK_TARGET");
+            assert!(
+                can_be_leashed(&new("minecraft:zombie_nautilus")),
+                "a calm zombie nautilus"
+            );
+        });
+        let _ = ran;
+    }
+
     #[test]
     fn only_horses_camels_and_sniffers_support_a_quad_lead() {
         assert!(supports_quad_leash(Species::Horse));

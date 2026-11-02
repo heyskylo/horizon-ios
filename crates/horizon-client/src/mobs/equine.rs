@@ -643,8 +643,9 @@ pub fn ridden_step(m: &mut Mob) {
         m.ai.zza = forward;
         if r.jump > 0.0 {
             let mut ev = Vec::new();
-            super::camel::dash(m, r.jump, &mut ev);
-            if let Some(rider) = m.rider.as_mut() {
+            if super::camel::dash(m, r.jump, &mut ev)
+                && let Some(rider) = m.rider.as_mut()
+            {
                 rider.jump = 0.0;
             }
         }

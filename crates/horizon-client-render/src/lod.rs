@@ -26,6 +26,11 @@ const MAX_SAVED: usize = 1024;
 /// (`Lod::observing`).
 pub const OBSERVE_AHEAD: usize = 8;
 const SAMPLE_JOBS: usize = 4;
+/// Sample jobs queued per sampling thread once the near terrain is in.
+/// Results are taken and jobs started once a frame: with four in flight, a
+/// tile taking milliseconds left the threads idle for most of a slow frame
+/// (2-3 fps on a CPU renderer, with far terrain a few tiles a frame).
+const QUEUED_PER_SAMPLER: usize = 32;
 /// Threads that sample far tiles beside the mesher. Sampling is the cold-load
 /// bottleneck (each task evaluates a shared density lattice for 256 columns),
 /// so medium machines use half their cores, not a quarter.
@@ -898,8 +903,9 @@ struct Shared {
     /// On small machines, hold queued far meshing while near terrain loads.
     mesh_held: AtomicBool,
 }
-/// One background worker and at most two outstanding sample jobs. Only the
-/// current view's quadtree and a bounded set of visited summaries are retained.
+/// A background worker, sampling and meshing threads, and a bounded queue of
+/// sample jobs (`sample_jobs`). Only the current view's quadtree and a
+/// bounded set of visited summaries are retained.
 pub struct Lod {
     shared: Arc<Shared>,
     thread: Option<thread::JoinHandle<()>>,
@@ -1193,12 +1199,17 @@ impl Lod {
                                 if worker.stop.load(Ordering::Relaxed) {
                                     break;
                                 }
-                                if sampling.is_empty() {
+                                // Summaries and detail requests first: they
+                                // would otherwise wait behind a whole queue of
+                                // samples where no sampling threads take them.
+                                let other =
+                                    jobs.iter().position(|job| !matches!(job, Job::Sample(_)));
+                                if let Some(index) = other {
+                                    jobs.remove(index)
+                                } else if sampling.is_empty() {
                                     jobs.pop_front()
                                 } else {
-                                    jobs.iter()
-                                        .position(|job| !matches!(job, Job::Sample(_)))
-                                        .and_then(|index| jobs.remove(index))
+                                    None
                                 }
                             };
                             let Some(job) = job else { continue };
@@ -1260,7 +1271,7 @@ impl Lod {
             detail_request_pending: false,
             detail_request_at: std::time::Instant::now(),
             small: cores <= 4,
-            sample_jobs: SAMPLE_JOBS.max(sampling_threads(cores) + 1),
+            sample_jobs: sampling_threads(cores) * QUEUED_PER_SAMPLER,
             near_loading: false,
             held_sample_at: std::time::Instant::now(),
             retry: FxHashMap::default(),
@@ -1326,13 +1337,30 @@ impl Lod {
         }
         (desired, sampled)
     }
+    /// Drawn columns that take their chunk's generated detail (trees,
+    /// structures; `request_detail`), and how many of them have it.
+    /// `refined_samples` counts the detail of every drawn tile instead.
+    pub fn detail_progress(&self) -> (usize, usize) {
+        self.active
+            .iter()
+            .filter(|key| self.wants_detail(key))
+            .fold((0, 0), |(wanted, refined), key| {
+                let mask = self.detail_masks.get(key).map_or(0, detail_count);
+                (wanted + CELLS * CELLS, refined + mask)
+            })
+    }
     pub fn refined_samples(&self) -> usize {
         self.active
             .iter()
             .filter_map(|key| self.detail_masks.get(key))
-            .flat_map(|mask| mask.iter())
-            .map(|bits| bits.count_ones() as usize)
+            .map(detail_count)
             .sum()
+    }
+    /// An active tile whose columns take generated chunks' detail.
+    fn wants_detail(&self, key: &TileKey) -> bool {
+        key.level <= DETAIL_LEVEL
+            && !self.plan.split.contains(key)
+            && !(key.level == 0 && self.covered.contains(&(key.x, key.z)))
     }
     pub fn removed(&mut self) -> Vec<TileKey> {
         std::mem::take(&mut self.removed)
@@ -1611,6 +1639,11 @@ impl Lod {
     pub fn observing(&self) -> usize {
         self.shared.observed.lock().unwrap().len()
     }
+    /// Whether tiles new to the plan are being sampled: far terrain on its way,
+    /// meshed as soon as it is.
+    pub fn sampling(&self) -> bool {
+        !self.pending.is_empty()
+    }
     /// Keeps a visited chunk's summary, unless it is unchanged.
     fn finish_observed(&mut self, key: (i32, i32), columns: ReducedColumns) {
         if self
@@ -1733,9 +1766,43 @@ impl Lod {
         // neighbours. Coarser tiles do not read visited columns (stride > 16),
         // so re-meshing every tile touching the chunk was pure waste.
     }
-    /// Whether the near terrain is still loading: on small machines far
-    /// terrain then holds back (`HELD_SAMPLE_STEP`).
+    /// Whether the near terrain is still loading: far terrain then queues
+    /// `SAMPLE_JOBS` at most, and on small machines holds back
+    /// (`HELD_SAMPLE_STEP`).
     pub fn set_near_loading(&mut self, loading: bool) {
+        if loading && !self.near_loading {
+            // The queue filled while nothing loaded nearby; the near chunks
+            // must not wait behind it. Larger machines keep its first
+            // `SAMPLE_JOBS`, small ones none.
+            let mut keep = if self.small { 0 } else { SAMPLE_JOBS };
+            let dropped = drop_queued_samples(&self.shared, &mut self.pending, |_| {
+                let kept = keep > 0;
+                keep = keep.saturating_sub(1);
+                kept
+            });
+            // Back in line where `wanted_tiles` put them: the near terrain can
+            // start and stop loading every few frames, and rebuilding the whole
+            // queue each time cost more than the samples it held back.
+            let camera = self.plan.camera;
+            self.wanted.extend(dropped.into_iter().map(|key| {
+                let class = if self.plan.split.contains(&key) {
+                    BACKDROP
+                } else if key.reach(camera) < self.plan.first {
+                    SEAM
+                } else {
+                    REST
+                };
+                std::cmp::Reverse(Wanted {
+                    class,
+                    distance: i64::from(key.distance(camera)),
+                    x: key.x,
+                    z: key.z,
+                    level: key.level,
+                })
+            }));
+            // A sample may still be running: the held pace starts from now.
+            self.held_sample_at = std::time::Instant::now();
+        }
         self.near_loading = loading;
         let held = self.held();
         if self.shared.mesh_held.swap(held, Ordering::Release) && !held {
@@ -1764,10 +1831,7 @@ impl Lod {
             .active
             .iter()
             .filter(|key| {
-                key.level <= DETAIL_LEVEL
-                    && !self.plan.split.contains(key)
-                    && !(key.level == 0 && self.covered.contains(&(key.x, key.z)))
-                    && self.detail_masks.get(key) != Some(&[u64::MAX; 4])
+                self.wants_detail(key) && self.detail_masks.get(key) != Some(&[u64::MAX; 4])
             })
             .copied()
             .collect();
@@ -1876,6 +1940,11 @@ impl Lod {
             self.reduced_detail,
         );
         self.ready.retain(|key, _| self.plan.nodes.contains(key));
+        // Queued tiles the view left are not sampled (a running one is
+        // dropped when it finishes, `finish_sample`).
+        drop_queued_samples(&self.shared, &mut self.pending, |key| {
+            self.plan.nodes.contains(key)
+        });
         self.detail_masks
             .retain(|key, _| self.plan.nodes.contains(key));
         // Complete resident columns need no duplicate noise work.
@@ -2245,7 +2314,8 @@ impl Lod {
                 self.pending.is_empty() && self.held_sample_at.elapsed() >= HELD_SAMPLE_STEP,
             )
         } else {
-            // The extra sampling threads wait until the near terrain is in.
+            // `SAMPLE_JOBS` while the near terrain loads, the full queue
+            // (`QUEUED_PER_SAMPLER` a thread) once it is in.
             let slots = if self.near_loading {
                 SAMPLE_JOBS
             } else {
@@ -2466,6 +2536,28 @@ impl Drop for Lod {
             let _ = thread.join();
         }
     }
+}
+/// The columns of a tile's `detail_masks` entry that have their detail.
+fn detail_count(mask: &[u64; 4]) -> usize {
+    mask.iter().map(|bits| bits.count_ones() as usize).sum()
+}
+/// Removes the queued sample jobs `keep` rejects (in queue order, best
+/// first) and frees their slots; the tiles removed.
+fn drop_queued_samples(
+    shared: &Shared,
+    pending: &mut FxHashSet<TileKey>,
+    mut keep: impl FnMut(&TileKey) -> bool,
+) -> Vec<TileKey> {
+    let mut dropped = Vec::new();
+    shared.jobs.lock().unwrap().retain(|job| match job {
+        Job::Sample(key) if !keep(key) => {
+            pending.remove(key);
+            dropped.push(*key);
+            false
+        }
+        _ => true,
+    });
+    dropped
 }
 /// Fine retiring stand-ins need actual column detail before `Plan::replaces`
 /// can release their normal meshes. The caller keeps the usual detail-request
@@ -3593,6 +3685,100 @@ mod tests {
         lod.set_near_loading(false);
         lod.dispatch_meshes([0, 0]);
         assert_eq!(lod.shared.mesh_jobs.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn queued_samples_follow_the_view_and_make_way_for_the_near_terrain() {
+        let mut lod = Lod::scheduler_for_test();
+        lod.small = true;
+        lod.sample_jobs = 16;
+        let queued = |lod: &Lod| -> Vec<TileKey> {
+            let jobs = lod.shared.jobs.lock().unwrap();
+            jobs.iter()
+                .filter_map(|job| match job {
+                    Job::Sample(key) => Some(*key),
+                    _ => None,
+                })
+                .collect()
+        };
+        let observing = |lod: &Lod| {
+            let jobs = lod.shared.jobs.lock().unwrap();
+            jobs.iter().any(|job| matches!(job, Job::Observe((5, 5))))
+        };
+        let pending = |lod: &Lod| -> Vec<TileKey> {
+            let mut keys: Vec<_> = lod.pending.iter().copied().collect();
+            keys.sort();
+            keys
+        };
+        let sorted = |mut keys: Vec<TileKey>| {
+            keys.sort();
+            keys
+        };
+        let none = || Some(FxHashSet::default());
+        lod.update([8., 64., 8.], 2, 64, none());
+        let before = queued(&lod);
+        assert_eq!(before.len(), 16, "a full queue once the near terrain is in");
+        lod.shared
+            .jobs
+            .lock()
+            .unwrap()
+            .push_back(Job::Observe((5, 5)));
+
+        // A chunk's move: the tiles still planned keep their place in line.
+        lod.update([24., 64., 8.], 2, 64, none());
+        let moved = queued(&lod);
+        let kept: Vec<_> = before
+            .iter()
+            .copied()
+            .filter(|key| lod.plan.nodes.contains(key))
+            .collect();
+        assert!(!kept.is_empty());
+        assert_eq!(moved[..kept.len()], kept[..]);
+        assert_eq!(moved.len(), 16);
+        assert!(observing(&lod), "only sample jobs are dropped");
+
+        // A teleport: none of the old view's tiles is sampled any more.
+        lod.update([100_000., 64., 100_000.], 2, 64, none());
+        let after = queued(&lod);
+        assert_eq!(after.len(), 16);
+        assert!(after.iter().all(|key| !moved.contains(key)));
+        assert!(after.iter().all(|key| lod.plan.nodes.contains(key)));
+        assert_eq!(
+            pending(&lod),
+            sorted(after.clone()),
+            "dropped jobs free their slots"
+        );
+
+        // New chunks load nearby: the queue gives way at once, not after it
+        // drained, and the dropped tiles come back, best first, once they are in.
+        lod.set_near_loading(true);
+        assert!(queued(&lod).is_empty());
+        assert!(lod.pending.is_empty());
+        assert!(observing(&lod));
+        lod.set_near_loading(false);
+        lod.update([100_000., 64., 100_000.], 2, 64, none());
+        assert_eq!(queued(&lod), after);
+
+        // Larger machines keep the first `SAMPLE_JOBS` of the queue.
+        lod.small = false;
+        lod.set_near_loading(true);
+        assert_eq!(queued(&lod), after[..SAMPLE_JOBS]);
+        assert_eq!(pending(&lod), sorted(after[..SAMPLE_JOBS].to_vec()));
+    }
+
+    #[test]
+    fn detail_progress_counts_the_columns_that_take_generated_detail() {
+        let mut lod = Lod::scheduler_for_test();
+        let tile = |x, level| TileKey { x, z: 0, level };
+        let (fine, covered, coarse, split) = (tile(0, 0), tile(1, 0), tile(1, 3), tile(1, 2));
+        lod.active = [fine, covered, coarse, split].into_iter().collect();
+        lod.covered.insert((1, 0));
+        lod.plan.split.insert(split);
+        lod.detail_masks.insert(fine, [u64::MAX, 1, 0, 0]);
+        lod.detail_masks.insert(coarse, [u64::MAX; 4]);
+        // Only the fine tile: the covered one is the near chunk's, the split
+        // one stands in for finer tiles and the coarse one is past the detail.
+        assert_eq!(lod.detail_progress(), (256, 65));
     }
 
     /// Drives the scheduler by hand: every sample the new incremental path

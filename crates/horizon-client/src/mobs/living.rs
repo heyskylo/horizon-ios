@@ -630,16 +630,24 @@ impl Mob {
         // Entity.checkSupportingBlock
         self.supporting = self.supporting_block(w, moved);
         self.movement_emission(w, moved, events);
-        // Entity.applyEffectsFromBlocks: bubble columns push the mob.
-        if crate::motion::bubble_column_push(
+        // Entity.applyEffectsFromBlocks: bubble columns push the mob, and the
+        // server shows the surface of one it is at the top of.
+        let mut tops = Vec::new();
+        if crate::motion::bubble_column_push_over(
             w.world,
             w.registry,
             w.facts,
             w.collision,
             self.bounds(),
             &mut self.velocity,
+            |pos| tops.push(pos),
         ) {
             self.fall_distance = 0.0;
+        }
+        for pos in tops {
+            events.push(MobEvent::BubbleColumnParticles {
+                pos: [pos.x, pos.y, pos.z],
+            });
         }
     }
     /// LivingEntity.checkFallDamage: the fluid state refreshed out of water
@@ -1307,6 +1315,18 @@ impl Mob {
         {
             self.velocity.y = f64::from(0.3_f32);
         }
+        // `LivingEntity.travelInFluid` ends with
+        // `floatInLiquidWhileRidden(FluidTags.ENTITY_FLOATABLE)`: a mount with
+        // a passenger that is in `minecraft:can_float_while_ridden` and deeper
+        // in the water than its jump threshold rises 0.04 a tick, which is
+        // what keeps a ridden horse and its rider afloat.
+        if (self.rider.is_some() || self.extra.rider.is_some())
+            && w.data
+                .entity_has("minecraft:can_float_while_ridden", &self.kind.id)
+            && self.fluids.water > self.fluid_jump_threshold()
+        {
+            self.velocity.y += f64::from(0.04_f32);
+        }
     }
     /// The jump part of LivingEntity.aiStep.
     pub fn handle_jumping(&mut self, w: &MobWorld) {
@@ -1764,5 +1784,123 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// `LivingEntity.travelInFluid` ends with
+    /// `floatInLiquidWhileRidden(FluidTags.ENTITY_FLOATABLE)`: a mount that
+    /// carries a passenger, is in `minecraft:can_float_while_ridden` and sits
+    /// deeper in the water than its jump threshold gains 0.04 a tick upwards.
+    /// That is what keeps a ridden horse and its rider afloat; an empty horse
+    /// gets nothing and goes on sinking.
+    #[test]
+    fn a_ridden_horse_floats_in_deep_water() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        if !root.join("entity-types.json").exists()
+            || !root.join("movement-properties.nbt").exists()
+        {
+            return;
+        }
+        let assets = crate::assets::Assets::load(&root).unwrap();
+        let registry = assets.registry;
+        let facts = crate::blocks::BlockFacts::load(&root, registry).unwrap();
+        let motion = crate::motion::MotionResources::load(&root, &assets).unwrap();
+        let data = super::super::MobData::load(&root, &facts);
+        let types = super::super::MobTypes::load(&root).unwrap();
+        let biomes = crate::biome::Biomes::load(&root).unwrap();
+        let items = crate::items::Items::load(
+            &root,
+            registry,
+            &facts,
+            &horizon_world::loot::PackOverlay::NONE,
+        )
+        .unwrap();
+        let collision = crate::collisions::load(&root, registry).unwrap();
+        let lid_openers = std::collections::HashMap::new();
+        let air = registry.default_state("minecraft:air").unwrap();
+        let water = registry.default_state("minecraft:water").unwrap();
+        let mut world = crate::world::World::new(air, 0);
+        world.chunks.insert(
+            (0, 0),
+            std::sync::Arc::new(crate::chunk::Chunk::empty(0, 0)),
+        );
+        for x in 4..=12 {
+            for z in 4..=12 {
+                for y in 63..=66 {
+                    world.set(x, y, z, water).unwrap();
+                }
+            }
+        }
+        let w = MobWorld {
+            teams: Default::default(),
+            world: &world,
+            registry,
+            facts: &facts,
+            fluid_tables: &motion.fluids,
+            movement: &motion.blocks,
+            collision: &collision,
+            data: &data,
+            player: None,
+            nearest_player: None,
+            others: &[],
+            leash_boats: &[],
+            others_grid: None,
+            others_index: None,
+            daylight: true,
+            monsters_burn: false,
+            game_time: 1000,
+            day_time: 18000,
+            raining: false,
+            thundering: false,
+            nether: false,
+            block_tags: &items.block_tags,
+            landing: &motion.landing,
+            biomes: &biomes,
+            universal_anger: false,
+            mob_griefing: true,
+            mob_drops: true,
+            max_entity_cramming: 24,
+            difficulty: super::super::spawning::LocalDifficulty::new(2, 18000, 0, 0.0),
+            end: false,
+            world_seed: 0,
+            sea_level: 63,
+            items: Some(&items),
+            lid_openers: &lid_openers,
+            mod_effects: None,
+        };
+        let kind = std::sync::Arc::new(types.types["minecraft:horse"].clone());
+        let mut sank = 0.0;
+        let mut floated = 0.0;
+        for ridden in [false, true] {
+            let mut m = Mob::new(1, kind.clone(), Vec3::new(8.5, 64.0, 8.5), 0.0);
+            if ridden {
+                m.rider = Some(super::super::equine::Rider {
+                    strafe: 0.0,
+                    forward: 0.0,
+                    yaw: 0.0,
+                    pitch: 0.0,
+                    jump: 0.0,
+                    steer: false,
+                    sprint: false,
+                    jumping: false,
+                    client: false,
+                });
+            }
+            m.fluids.in_water = true;
+            m.fluids.water = 1.0;
+            m.travel(&w, Vec3::ZERO, &mut Vec::new());
+            if ridden {
+                floated = m.velocity.y;
+            } else {
+                sank = m.velocity.y;
+            }
+        }
+        assert!(sank < 0.0, "an empty horse sinks, got {sank}");
+        let lift = floated - sank;
+        assert!(
+            (lift - f64::from(0.04_f32)).abs() < 1.0e-9,
+            "a ridden horse gains 0.04 a tick, got {lift}"
+        );
     }
 }

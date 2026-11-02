@@ -18,7 +18,7 @@ pub(crate) struct NativeColumnBlocks {
 impl Game<'_> {
     /// For a server mod: each column's height by `heightmap` in the authoritative level `dimension` (the one being
     /// ticked), none for a column not loaded. `Err` says why nothing was read: another dimension or a client of a
-    /// server, or more than 65,536 columns (`MAX_COLUMNS`). API @API:native_read_columns@.
+    /// server, or more than 65,536 columns (`MAX_COLUMNS`). API 127.
     pub(super) fn native_surface_heights(
         &self,
         dimension: &str,
@@ -45,7 +45,7 @@ impl Game<'_> {
     /// game draws them: near a biome border they can differ from what players see. `Err` says why nothing was
     /// read: another dimension or a client of a server, `below + above` of 0 or more than the level's height, or
     /// a read of more than 1,048,576 blocks (`MAX_READ`; it runs on the server tick, so read big areas in pieces).
-    /// API @API:native_read_columns@.
+    /// API 127.
     pub(super) fn native_read_columns(
         &self,
         dimension: &str,

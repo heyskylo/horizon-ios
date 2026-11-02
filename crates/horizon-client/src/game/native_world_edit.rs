@@ -41,7 +41,7 @@ impl Game<'_> {
     /// Runs in chunks not loaded, and the parts of runs outside the column, are left out. The blocks changed, or
     /// why the edit was left out, with nothing changed: another dimension, a client of a server, a palette entry
     /// or filter that doesn't read or carries NBT (refused), a run naming a palette entry or filter past the end,
-    /// or more than 65536 filters. API @API:native_edit_blocks@.
+    /// or more than 65536 filters. API 126.
     pub(super) fn native_edit_blocks(
         &mut self,
         dimension: &str,

@@ -17,6 +17,7 @@ use super::{
     world_loading::{WorldLoader, WorldRequest},
 };
 use horizon_client::level_loading::{STATUS_RADIUS, Stage};
+use horizon_client::spans::startup;
 use horizon_client::{
     Result,
     audio::Audio,
@@ -707,7 +708,7 @@ impl Game<'_> {
         self.native_server_about_to_start(false);
         self.native_lifecycle_open_started();
         // `load_world`, with the world `serve` started preparing.
-        if let Err(error) = self.join_world_rest() {
+        if let Err(error) = startup::time("server.wait_rest", || self.join_world_rest()) {
             // A failed client/server transition must not leave the preparation worker
             // writing the world after the server reports that it has stopped.
             if let Ok(world) = opening.world {
@@ -716,7 +717,9 @@ impl Game<'_> {
             return Err(error);
         }
         self.perf.world_opening();
+        let open_step = startup::step("server.open_world");
         self.finish_open_world(opening.world?.finish()?)?;
+        drop(open_step);
         if let Some(sync) = opening.sync {
             sync.adopt(&self.pack_files());
         }
@@ -780,7 +783,9 @@ impl Game<'_> {
             guest_commands: false,
             force_game_mode: false,
         };
-        self.lan_host(settings, net, config, None)?;
+        startup::time("server.lan_host", || {
+            self.lan_host(settings, net, config, None)
+        })?;
         let commands = self.allow_commands();
         let pipe = {
             let host = self
@@ -810,7 +815,7 @@ impl Game<'_> {
         view.start(Stage::LoadInitialChunks, 0);
         view.finish(Stage::LoadInitialChunks);
         let _ = ready.send(Ok((pipe, self.level.name.clone())));
-        self.settle_spawn()
+        startup::time("server.settle_spawn", || self.settle_spawn())
     }
 
     /// `MinecraftServer.stopServer`: the players are saved and sent away,
@@ -898,7 +903,12 @@ impl Game<'_> {
                 self.lan = Some(host);
                 let lines = self.as_console(|g| {
                     g.chat_capture = Some(Vec::new());
-                    g.run_command(&command);
+                    // A command a native mod registered goes to the mods
+                    // first, as the owner's own chat does (the console is
+                    // level 4, so every registered usage is allowed).
+                    if !g.perform_native_command(conn, 4, command.trim()) {
+                        g.run_command(&command);
+                    }
                     g.chat_capture.take().unwrap_or_default()
                 });
                 host = self.lan.take().expect("a command puts the hub back");
@@ -1165,7 +1175,9 @@ fn serve(
         world,
         sync: preload_sync_data(&options.resources),
     };
-    let mut server = match server_game(res, pack, options, settings) {
+    let mut server = match startup::time("server.game_new", || {
+        server_game(res, pack, options, settings)
+    }) {
         Ok(server) => server,
         Err(e) => {
             // The world's session lock is let go before the failure is told.

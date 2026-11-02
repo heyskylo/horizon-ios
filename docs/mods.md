@@ -85,11 +85,22 @@ A block names its template and what differs from it:
   "item": true }
 ```
 
+`random_ticks` makes a block tick randomly whatever its template does, as vanilla's
+`isRandomlyTicking(state)` does for its own blocks, so a crop, sapling or soil on a template that never
+ticks still grows: `"random_ticks": true` for every state (or `false`, to stop a template that ticks), or
+`{ "property": "grown", "values": ["false"] }` for the states whose own state property (declared in
+`state_properties`) is one of the values. The block's native `native_random_tick` hook then fires as it does
+for a vanilla block that ticks, and its sections count it.
+
 A block copies its template's states. It can also declare state properties of
 its own, which its template does not have — how a pipe says which sides it
 connects to, or a machine whether it is running. Its states then become its
-template's states times the combinations of the ones it declares, in a fixed
-order with every declared default first, so ids do not move between loads:
+template's states times the combinations of the ones it declares, laid out as
+vanilla lays out a block's states (`StateDefinition`): every property, the
+template's and the declared ones, sorted by name with the first name varying
+slowest, and each declared property's default value first. The order is fixed,
+so ids do not move between loads, and a declared name may sort before one of
+the template's (`bites` on a carved pumpkin, whose `facing` comes after it):
 
 ```json
 { "template": "minecraft:stone",
@@ -133,8 +144,8 @@ round-trip through saved NBT; negative zero is not supported. A key such as
 recipe uses it, as a milk bucket leaves a bucket (vanilla's
 `Item.Properties.craftRemainder`, not a data component): a vanilla item or
 one of the mod's own, refused at load otherwise. It holds on the crafting
-table, the inventory grid and the crafter, not yet as furnace fuel or in a
-brewing stand. What the item leaves once eaten
+table, the inventory grid, the crafter and as furnace fuel (the last of the stack leaves it in
+the fuel slot, a stack with more left drops it), not yet in a brewing stand. What the item leaves once eaten
 or drunk is the `minecraft:use_remainder` component instead:
 
 ```json

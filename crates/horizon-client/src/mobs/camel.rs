@@ -399,10 +399,16 @@ fn animation_states(m: &mut Mob, pose_time: i64, sitting: bool) {
         st[2].animate_when(transition, age);
     }
 }
-/// `Camel.executeRidersJump`: the dash along the look, once cooled down.
-pub fn dash(m: &mut Mob, amount: f32, events: &mut Vec<MobEvent>) {
-    if m.extra.anim_ticks > 0 || !m.on_ground || refuse_to_move(m) {
-        return;
+/// `Camel.executeRidersJump`: the dash along the look, once cooled down. Returns whether the
+/// jump is used up: it is, by a dash or when the camel cannot dash at all (cooling down,
+/// refusing to move: `onPlayerJump` would not have taken it); it waits while the camel is off
+/// the ground (`AbstractHorse.tickRidden` runs a pending jump when it lands).
+pub fn dash(m: &mut Mob, amount: f32, events: &mut Vec<MobEvent>) -> bool {
+    if m.extra.anim_ticks > 0 || refuse_to_move(m) {
+        return true;
+    }
+    if !m.on_ground {
+        return false;
     }
     let yaw = m.yaw.to_radians();
     let (dx, dz) = (f64::from(-yaw.msin()), f64::from(yaw.mcos()));
@@ -414,6 +420,7 @@ pub fn dash(m: &mut Mob, amount: f32, events: &mut Vec<MobEvent>) {
     m.extra.anim_ticks = DASH_COOLDOWN;
     m.extra.flag2 = true;
     sound(m, voice(m, 3), events);
+    true
 }
 /// `CamelModel.setupAnim`.
 pub fn anim(

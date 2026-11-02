@@ -369,6 +369,7 @@ impl Gpu {
             vec![Some(vertex), Some(instance)]
         };
         let world = World {
+            gui_size: [1, 1],
             adapter: &self.adapter,
             atlas: Some((self.atlas.view.clone(), self.atlas.size())),
             lightmap: texture(

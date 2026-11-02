@@ -184,6 +184,10 @@ pub struct Projectile {
     pub velocity: Vec3,
     pub yaw: f32,
     pub pitch: f32,
+    /// `Entity.yRotO`/`xRotO`: the rotation the last tick ended with, which
+    /// the renderer interpolates from (`setOldPosAndRot`).
+    pub previous_yaw: f32,
+    pub previous_pitch: f32,
     pub age: u32,
     pub stuck: bool,
     /// Whether the projectile has left its owner's box (Projectile.leftOwner).
@@ -285,6 +289,8 @@ impl Projectile {
             velocity: Vec3::ZERO,
             yaw: 0.0,
             pitch: 0.0,
+            previous_yaw: 0.0,
+            previous_pitch: 0.0,
             age: 0,
             stuck: false,
             left_owner: false,
@@ -510,6 +516,17 @@ impl Projectile {
         let sd = (v.x * v.x + v.z * v.z).sqrt();
         self.yaw = v.x.atan2(v.z).to_degrees() as f32;
         self.pitch = v.y.atan2(sd).to_degrees() as f32;
+        // `Projectile.shoot` ends with `yRotO = getYRot(); xRotO = getXRot()`:
+        // a freshly shot projectile interpolates from the rotation it was
+        // aimed along, not from where it was created.
+        self.previous_yaw = self.yaw;
+        self.previous_pitch = self.pitch;
+    }
+    /// `Entity.setOldPosAndRot`: where the renderer interpolates from.
+    pub fn set_old_pos_and_rot(&mut self) {
+        self.previous = self.position;
+        self.previous_yaw = self.yaw;
+        self.previous_pitch = self.pitch;
     }
     /// A shulker's bullet from its block toward `target`, first leaving
     /// along an axis other than the one it is attached on.
@@ -656,7 +673,7 @@ impl Projectile {
         }
     }
     /// `ShulkerBullet.tick`.
-    fn tick_bullet(&mut self, w: &impl ProjectileWorld) -> (bool, Hit) {
+    fn tick_bullet(&mut self, w: &impl ProjectileWorld, impact: bool) -> (bool, Hit) {
         let target = self.target_box(w);
         let ProjectileKind::ShulkerBullet { delta, .. } = &mut self.kind else {
             return (false, Hit::None);
@@ -700,11 +717,11 @@ impl Projectile {
             self.left_owner =
                 owner_box.is_none_or(|b| !b.inflate(Vec3::new(1.0, 1.0, 1.0)).contains(from));
         }
-        if let Some((who, at, _)) = best {
+        if impact && let Some((who, at, _)) = best {
             self.position = at;
             return (false, Hit::Entity { who, at });
         }
-        if let Some((at, pos, face)) = block {
+        if impact && let Some((at, pos, face)) = block {
             self.position = at;
             return (false, Hit::Block { pos, at, face });
         }
@@ -768,8 +785,17 @@ impl Projectile {
 
     /// One tick: returns whether to keep the projectile and what it hit.
     pub fn tick(&mut self, w: &impl ProjectileWorld) -> (bool, Hit) {
+        self.tick_with(w, true)
+    }
+    /// One tick that meets nothing: what `tick` would have done had its hit been
+    /// canceled (`ProjectileImpactEvent`). The projectile goes the whole way of its
+    /// motion and flies on, with no hit to act on.
+    pub fn tick_through(&mut self, w: &impl ProjectileWorld) -> (bool, Hit) {
+        self.tick_with(w, false)
+    }
+    fn tick_with(&mut self, w: &impl ProjectileWorld, impact: bool) -> (bool, Hit) {
         let from = self.position;
-        let result = self.tick_inner(w);
+        let result = self.tick_inner(w, impact);
         w.block_contacts(
             self.id as i32,
             self.kind.id(),
@@ -779,11 +805,14 @@ impl Projectile {
         );
         result
     }
-    fn tick_inner(&mut self, w: &impl ProjectileWorld) -> (bool, Hit) {
-        self.previous = self.position;
+    fn tick_inner(&mut self, w: &impl ProjectileWorld, impact: bool) -> (bool, Hit) {
+        // `Entity.setOldPosAndRot` (the previous position and rotation the
+        // renderer interpolates from), kept across the `impact` flag's arrival
+        // from #6279.
+        self.set_old_pos_and_rot();
         self.age += 1;
         if matches!(self.kind, ProjectileKind::ShulkerBullet { .. }) {
-            return self.tick_bullet(w);
+            return self.tick_bullet(w, impact);
         }
         // ThrowableProjectile and AbstractHurtingProjectile.applyInertia read
         // `isInWater` before their move and `Projectile.tick`'s base tick;
@@ -852,11 +881,11 @@ impl Projectile {
             self.left_owner = owner_box
                 .is_none_or(|b| !b.inflate(Vec3::new(1.0, 1.0, 1.0)).contains(self.position));
         }
-        if let Some((who, at, _)) = best {
+        if impact && let Some((who, at, _)) = best {
             self.position = at;
             return (false, Hit::Entity { who, at });
         }
-        if let Some((at, pos, face)) = block {
+        if impact && let Some((at, pos, face)) = block {
             self.position = at;
             return (false, Hit::Block { pos, at, face });
         }
@@ -989,6 +1018,80 @@ mod tests {
         // ThrowableProjectile: gravity before inertia, then move.
         assert!((p.velocity.y - (-0.03 * 0.99)).abs() < 1e-9);
         assert!((p.position.x - 0.99).abs() < 1e-9);
+    }
+    /// A wall of blocks across x = 1.
+    struct Wall(Vec<(Who, Aabb)>);
+    impl ProjectileWorld for Wall {
+        fn clip(&self, from: Vec3, to: Vec3) -> Option<(Vec3, [i32; 3], [i32; 3])> {
+            (from.x < 1.0 && to.x >= 1.0)
+                .then(|| (Vec3::new(1.0, from.y, from.z), [1, 100, 0], [-1, 0, 0]))
+        }
+        fn in_water(&self, _: Aabb) -> bool {
+            false
+        }
+        fn targets(&self) -> &[(Who, Aabb)] {
+            &self.0
+        }
+    }
+    fn thrown(kind: ProjectileKind) -> Projectile {
+        let mut p = Projectile::new(kind, Vec3::new(0.0, 100.0, 0.0), Some(Who::Player));
+        (p.left_owner, p.velocity) = (true, Vec3::new(1.5, 0.0, 0.0));
+        p
+    }
+    #[test]
+    fn a_tick_through_a_wall_flies_the_whole_way_and_hits_nothing() {
+        for kind in [
+            ProjectileKind::Snowball,
+            ProjectileKind::SmallFireball,
+            ProjectileKind::LlamaSpit,
+        ] {
+            let wall = Wall(Vec::new());
+            let mut hit = thrown(kind.clone());
+            let (keep, hits) = hit.tick(&wall);
+            assert!(
+                !keep
+                    && matches!(
+                        hits,
+                        Hit::Block {
+                            pos: [1, 100, 0],
+                            ..
+                        }
+                    )
+            );
+            assert_eq!(hit.position.x, 1.0);
+            // The same tick, canceled: on, as in open air.
+            let mut through = thrown(kind.clone());
+            let mut open = thrown(kind);
+            let (kept, none) = through.tick_through(&wall);
+            assert_eq!(none, Hit::None);
+            let _ = open.tick(&Empty(Vec::new()));
+            assert_eq!(
+                (through.position, through.velocity),
+                (open.position, open.velocity)
+            );
+            assert!(kept);
+        }
+    }
+    #[test]
+    fn a_tick_through_an_entity_does_not_hit_it() {
+        let pig = Aabb::new(Vec3::new(1.0, 99.5, -0.5), Vec3::new(2.0, 100.5, 0.5));
+        let world = Empty(vec![(Who::Mob(7), pig)]);
+        let mut hit = thrown(ProjectileKind::EnderPearl);
+        assert!(matches!(
+            hit.tick(&world),
+            (
+                false,
+                Hit::Entity {
+                    who: Who::Mob(7),
+                    ..
+                }
+            )
+        ));
+        let mut through = thrown(ProjectileKind::EnderPearl);
+        let (keep, none) = through.tick_through(&world);
+        assert!(keep && none == Hit::None);
+        // Gravity and drag of the tick, then the whole of its motion.
+        assert!((through.position.x - 1.5 * 0.99).abs() < 1e-9);
     }
     #[test]
     fn a_snowball_with_no_gravity_stays_where_it_was_summoned() {

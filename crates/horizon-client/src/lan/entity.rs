@@ -16,6 +16,7 @@ use horizon_protocol::{
         SetEntityMotion, SetEquipment, SetPassengers, UpdateAttributes, VecDelta,
     },
 };
+use std::sync::Arc;
 
 /// The attribute instances of `now` that differ from what `sent` held (an
 /// instance is never removed: one that disappears is left as it was sent).
@@ -203,6 +204,8 @@ impl Riding {
 /// What a level's clients were last told about one entity (ServerEntity's
 /// fields), shared by every client that tracks it.
 struct ServerEntity {
+    /// What the mods hear of it when a client starts or stops tracking it.
+    tracked: Arc<Tracked>,
     /// The registry id of its type (None: a type the clients don't know,
     /// never paired).
     kind: Option<i32>,
@@ -265,6 +268,10 @@ impl ServerEntity {
     fn new(e: &EntityState, kind: Option<i32>, riding: &Riding) -> Self {
         let (range, interval, track_deltas) = tracking::settings(&e.kind);
         Self {
+            tracked: Arc::new(Tracked {
+                uuid: e.uuid,
+                kind: Arc::from(e.kind.as_str()),
+            }),
             kind,
             range: i32::from(range),
             interval,
@@ -583,33 +590,71 @@ impl ServerEntity {
     }
 }
 
+/// An entity a client tracks, as the mods hear of it.
+#[derive(Debug)]
+pub struct Tracked {
+    pub uuid: u128,
+    /// Its type's registry id (`minecraft:zombie`).
+    pub kind: Arc<str>,
+}
+
+/// A client started or stopped tracking an entity (`ServerEntity.addPairing`
+/// and `removePairing`).
+#[derive(Debug)]
+pub struct TrackEvent {
+    pub start: bool,
+    pub entity: i32,
+    pub tracked: Arc<Tracked>,
+}
+
 /// The entities one client tracks (`TrackedEntity.seenBy`, from the
-/// client's side).
+/// client's side), and what started and stopped since the game last took
+/// the events.
 #[derive(Default)]
 pub struct Tracker {
-    seen: crate::fast_hash::FxHashSet<i32>,
+    seen: crate::fast_hash::FxHashMap<i32, Arc<Tracked>>,
+    events: Vec<TrackEvent>,
 }
 
 impl Tracker {
     pub fn is_tracking(&self, id: i32) -> bool {
-        self.seen.contains(&id)
+        self.seen.contains_key(&id)
     }
     pub fn ids(&self) -> Vec<i32> {
-        self.seen.iter().copied().collect()
+        self.seen.keys().copied().collect()
     }
+    /// Stop tracking everything without a packet: the caller removes them
+    /// from the client.
     pub fn clear(&mut self) {
-        self.seen.clear();
+        let events = &mut self.events;
+        events.extend(self.seen.drain().map(|(entity, tracked)| TrackEvent {
+            start: false,
+            entity,
+            tracked,
+        }));
     }
     /// Stop tracking `id` without a packet: the caller removes it from the
     /// client, and the next tick pairs it again if it is still in range.
     pub fn forget(&mut self, id: i32) -> bool {
-        self.seen.remove(&id)
+        let Some(tracked) = self.seen.remove(&id) else {
+            return false;
+        };
+        self.events.push(TrackEvent {
+            start: false,
+            entity: id,
+            tracked,
+        });
+        true
     }
     pub fn len(&self) -> usize {
         self.seen.len()
     }
     pub fn is_empty(&self) -> bool {
         self.seen.is_empty()
+    }
+    /// The starts and stops since the last call, in order.
+    pub fn take_events(&mut self) -> Vec<TrackEvent> {
+        std::mem::take(&mut self.events)
     }
 }
 
@@ -693,6 +738,9 @@ pub struct Entities {
     probes: Vec<Probe>,
     chunks: Vec<(i32, i32)>,
     chunk_index: crate::fast_hash::FxHashMap<(i32, i32), u32>,
+    /// The entities in each of `chunks` (indices into `probes`): a client
+    /// that moved checks only the chunks within its view distance.
+    chunk_members: Vec<Vec<u32>>,
     held: Vec<u8>,
     flags: Vec<Vec<u8>>,
     /// Whether a client starts tracking each entity this tick.
@@ -742,6 +790,9 @@ impl Entities {
         self.probes.clear();
         self.chunks.clear();
         self.chunk_index.clear();
+        for members in &mut self.chunk_members {
+            members.clear();
+        }
         self.moved.clear();
         self.is_moved.clear();
         self.is_moved.resize(entities.len(), false);
@@ -777,7 +828,11 @@ impl Entities {
             let chunk = *self.chunk_index.entry(at).or_insert(next);
             if chunk == next {
                 self.chunks.push(at);
+                if self.chunk_members.len() == chunk as usize {
+                    self.chunk_members.push(Vec::new());
+                }
             }
+            self.chunk_members[chunk as usize].push(index as u32);
             self.probes.push(Probe {
                 x: e.position[0],
                 z: e.position[2],
@@ -816,6 +871,7 @@ impl Entities {
             self.held.clear();
             self.held.resize(self.chunks.len(), 0);
             let (chunks, held, pairs) = (&self.chunks, &mut self.held, &mut self.pairs);
+            let members = &self.chunk_members;
             let mut kept = 0;
             // A client that moved (ChunkMap.move), or whose own entity
             // appeared or changed section (ChunkMap.tick's movedPlayers), has
@@ -826,17 +882,34 @@ impl Entities {
                     .get(&v.entity_id)
                     .is_none_or(|s| s.seen != now || self.is_moved[s.index]);
             if all {
-                flags.extend(self.probes.iter().zip(pairs.iter_mut()).map(|(p, pairs)| {
-                    if p.id == v.entity_id || !sees(v, p, chunks, held) {
-                        0
-                    } else if v.tracker.seen.contains(&p.id) {
-                        kept += 1;
-                        SEES | TRACKS
-                    } else {
-                        *pairs = true;
-                        SEES
+                // `sees` caps the range at its view distance, so only the
+                // entities in chunks that far from its own can be seen; the
+                // rest stay 0, as checking each of them gave.
+                flags.resize(self.probes.len(), 0);
+                let reach = v.view_distance + 1;
+                let (vx, vz) = (
+                    (v.position[0].floor() as i32) >> 4,
+                    (v.position[2].floor() as i32) >> 4,
+                );
+                for (&(cx, cz), members) in chunks.iter().zip(members) {
+                    if (cx - vx).abs() > reach || (cz - vz).abs() > reach {
+                        continue;
                     }
-                }));
+                    for &index in members {
+                        let index = index as usize;
+                        let p = &self.probes[index];
+                        if p.id == v.entity_id || !sees(v, p, chunks, held) {
+                            continue;
+                        }
+                        if v.tracker.seen.contains_key(&p.id) {
+                            flags[index] = SEES | TRACKS;
+                            kept += 1;
+                        } else {
+                            flags[index] = SEES;
+                            pairs[index] = true;
+                        }
+                    }
+                }
             } else if v.tracker.seen.len() * 4 > self.probes.len() {
                 // Otherwise its pairs stay as they were, but for the entities
                 // that appeared or changed section; a client tracking much
@@ -844,7 +917,7 @@ impl Entities {
                 let is_moved = &self.is_moved;
                 flags.extend(self.probes.iter().zip(pairs.iter_mut()).zip(is_moved).map(
                     |((p, pairs), &moved)| {
-                        let tracks = v.tracker.seen.contains(&p.id);
+                        let tracks = v.tracker.seen.contains_key(&p.id);
                         if p.id == v.entity_id || (moved && !sees(v, p, chunks, held)) {
                             0
                         } else if tracks {
@@ -861,7 +934,7 @@ impl Entities {
             } else {
                 // One tracking little of it, from what it tracks.
                 flags.resize(self.probes.len(), 0);
-                for id in &v.tracker.seen {
+                for id in v.tracker.seen.keys() {
                     if let Some(s) = self.states.get(id).filter(|s| s.seen == now) {
                         flags[s.index] = SEES | TRACKS;
                         kept += 1;
@@ -885,13 +958,19 @@ impl Entities {
             let mut removed = Vec::new();
             if kept != v.tracker.seen.len() {
                 let states = &self.states;
-                v.tracker.seen.retain(|id| match states.get(id) {
+                let Tracker { seen, events } = &mut *v.tracker;
+                seen.retain(|id, tracked| match states.get(id) {
                     Some(s) if s.seen == now && flags[s.index] & TRACKS != 0 => true,
                     other => {
                         if let (Some(gone), Some(s)) = (v.gone.as_deref_mut(), other) {
                             gone.push(s.base);
                         }
                         removed.push(*id);
+                        events.push(TrackEvent {
+                            start: false,
+                            entity: *id,
+                            tracked: Arc::clone(tracked),
+                        });
                         false
                     }
                 });
@@ -938,7 +1017,17 @@ impl Entities {
                         packets.iter().map(play::Clientbound::encode).collect()
                     });
                     v.out.extend(bodies.iter().cloned());
-                    v.tracker.seen.insert(e.id);
+                    if v.tracker
+                        .seen
+                        .insert(e.id, Arc::clone(&s.tracked))
+                        .is_none()
+                    {
+                        v.tracker.events.push(TrackEvent {
+                            start: true,
+                            entity: e.id,
+                            tracked: Arc::clone(&s.tracked),
+                        });
+                    }
                 }
             }
         }
@@ -1592,6 +1681,47 @@ mod tests {
         two.watching = false;
         c.tick(&mut level, &[&one, &two]);
         assert!(c.trackers[0].is_tracking(2));
+    }
+
+    #[test]
+    fn pairing_and_unpairing_are_kept_for_the_game() {
+        let mut level = Entities::default();
+        let mut c = Clients::new();
+        let zombie = state(0.0);
+        c.tick(&mut level, &[&zombie]);
+        c.tick(&mut level, &[&zombie]);
+        // Both clients were paired with it, once.
+        for t in &mut c.trackers {
+            let events = t.take_events();
+            assert_eq!(events.len(), 1, "{events:?}");
+            assert!(events[0].start && events[0].entity == 7);
+            assert_eq!(&*events[0].tracked.kind, "minecraft:zombie");
+            assert_eq!(events[0].tracked.uuid, 1);
+            assert!(t.take_events().is_empty());
+        }
+        // It leaves the level: both clients lose it.
+        c.tick(&mut level, &[]);
+        for t in &mut c.trackers {
+            let events = t.take_events();
+            assert!(
+                matches!(&events[..], [e] if !e.start && e.entity == 7),
+                "{events:?}"
+            );
+        }
+        // Back, then forgotten and cleared without a tick.
+        c.tick(&mut level, &[&zombie]);
+        c.tick(&mut level, &[&zombie]);
+        c.trackers[0].take_events();
+        c.trackers[1].take_events();
+        assert!(c.trackers[0].forget(7));
+        c.trackers[1].clear();
+        for t in &mut c.trackers {
+            let events = t.take_events();
+            assert!(
+                matches!(&events[..], [e] if !e.start && e.entity == 7),
+                "{events:?}"
+            );
+        }
     }
 
     #[test]

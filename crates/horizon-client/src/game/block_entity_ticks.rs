@@ -28,6 +28,8 @@ impl Game<'_> {
             self.world.block_entities.set_mod_containers(containers);
             let fluids = self.native_fluid_tables();
             self.world.block_entities.set_mod_fluids(fluids);
+            let energy = self.native_energy_tables();
+            self.world.block_entities.set_mod_energy(energy);
         }
         // Only lingering cooldowns are dropped; a hopper that ticks checks
         // its own block. Once a second is soon enough for the rest.
@@ -216,11 +218,17 @@ impl Game<'_> {
         let Some(BlockEntity::Furnace(f)) = self.world.block_entities.get_mut(&pos) else {
             return Ok(());
         };
-        let Some(lit) = f.tick(
+        let mut drops = Vec::new();
+        let lit = f.tick(
             world_recipes!(self),
             world_items!(self),
             self.res.providers(),
-        ) else {
+            &mut drops,
+        );
+        for stack in drops {
+            self.campfire_drop(pos, stack);
+        }
+        let Some(lit) = lit else {
             return Ok(());
         };
         let state = self.world.block(pos.0, pos.1, pos.2);

@@ -560,10 +560,13 @@ mod tests {
         // a mod block's, as `Game::new_block_entity` makes it
         let made = |n: &str| {
             (n == "machines:press").then(|| {
-                BlockEntity::Mod(Box::new(horizon_client::containers::ModBlockEntity {
-                    id: "machines:press".into(),
-                    ..Default::default()
-                }))
+                BlockEntity::Mod(Box::new(
+                    horizon_client::containers::ModBlockEntityFields {
+                        id: "machines:press".into(),
+                        ..Default::default()
+                    }
+                    .into(),
+                ))
             })
         };
         replace_block_entities(&mut w, &out.tracked, names, made);
@@ -685,10 +688,13 @@ mod tests {
             |n| {
                 calls.push(n.to_string());
                 (n == "machines:press").then(|| {
-                    BlockEntity::Mod(Box::new(horizon_client::containers::ModBlockEntity {
-                        id: format!("press-{}", calls.len()),
-                        ..Default::default()
-                    }))
+                    BlockEntity::Mod(Box::new(
+                        horizon_client::containers::ModBlockEntityFields {
+                            id: format!("press-{}", calls.len()),
+                            ..Default::default()
+                        }
+                        .into(),
+                    ))
                 })
             },
         );

@@ -1,7 +1,6 @@
-# The game for Android phones and tablets: `horizon-client`'s bin code (main.rs, game.rs, game/) built as the
-# shared library a NativeActivity loads. rustc emits no library from a bin target, so this package names the
-# bin's own root as its lib; nothing is copied. Its own workspace (the root one excludes it) so that host
-# builds never compile the whole game twice. See packaging/android/README.md.
+# Android's NativeActivity builds the same gameplay library root as horizon-client.
+# Startup and trait-mod entry live in entry.rs; android.rs exports android_main.
+# Its separate workspace keeps host builds from compiling the game a second time.
 [package]
 name = "horizon-android"
 version = "0.1.0"
@@ -12,48 +11,88 @@ publish = false
 [workspace]
 
 [lib]
-path = "../horizon-client/src/main.rs"
+path = "../horizon-client/src/lib.rs"
 crate-type = ["cdylib"]
 
-# The crates main.rs and game/ name directly: keep in step with horizon-client's [dependencies].
+# Keep shared gameplay dependencies in step with horizon-client.
 [dependencies]
-horizon-client = { path = "../horizon-client", default-features = false }
+horizon-client-lib = { path = "../horizon-client-lib", default-features = false }
+horizon-assets = { path = "../horizon-assets" }
+horizon-client-core = { path = "../horizon-client-core" }
 horizon-client-input = { path = "../horizon-client-input" }
 horizon-client-render = { path = "../horizon-client-render" }
-horizon-assets = { path = "../horizon-assets" }
-# Shared game/dialog code now names the extracted item layer directly.
+horizon-command = { path = "../horizon-command" }
 horizon-items = { path = "../horizon-items" }
 horizon-core = { path = "../horizon-core" }
+# OptiFine-format pack files: custom entity models, random entity textures.
+horizon-optifine = { path = "../horizon-optifine" }
+# The server thread ahead of the workers (MinecraftServer.spin's Thread.setPriority).
 horizon-threads = { path = "../horizon-threads" }
+horizon-hdr = { path = "../horizon-hdr" }
 horizon-world = { path = "../horizon-world" }
 horizon-protocol = { path = "../horizon-protocol" }
+# server.properties, eula.txt and the user lists, shared with horizon-server.
+horizon-server-files = { path = "../horizon-server-files" }
+# The dedicated server's anticheat, off unless server.toml's [anticheat] turns it on (docs/anticheat.md).
+horizon-anticheat = { path = "../horizon-anticheat" }
+# The dedicated server's chat filter: [chat_filter], the slur list, mutes (docs/chat-filter.md).
+horizon-chat-filter = { path = "../horizon-chat-filter" }
+# Shader packs: reading them and turning their GLSL into naga modules.
 horizon-shaders = { path = "../horizon-shaders" }
+# Horizon's own shader packs: the format, the stages and the check (docs/shaders.md).
 horizon-shader-api = { path = "../horizon-shader-api" }
 horizon-friends = { path = "../horizon-friends" }
-horizon-mods = { path = "../horizon-mods", default-features = false }
-horizon-telemetry = { path = "../horizon-telemetry", default-features = false, features = ["live"] }
-horizon-bench = { path = "../horizon-bench" }
-horizon-anticheat = { path = "../horizon-anticheat" }
-horizon-server-files = { path = "../horizon-server-files" }
-horizon-chat-filter = { path = "../horizon-chat-filter" }
+# The narrator (GameNarrator): text-to-speech of chat, system messages and screens.
 horizon-narrator = { path = "../horizon-narrator" }
-horizon-optifine = { path = "../horizon-optifine" }
-horizon-theme = { path = "../horizon-theme" }
-horizon-gamecontroller = { path = "../horizon-gamecontroller" }
-horizon-airplay = { path = "../horizon-airplay" }
-horizon-ios-launcher = { path = "../horizon-ios-launcher" }
+# Horizon mods: sandboxed WebAssembly components, off unless installed and turned on (docs/mods.md).
+# Their runtime is the `mods` feature.
+horizon-mods = { path = "../horizon-mods", default-features = false, features = ["index"] }
 wgpu = { version = "30.0.1", default-features = false, features = ["std", "parking_lot", "vulkan", "wgsl", "naga-ir"] }
-# NativeActivity: an app with no Java in it (packaging/android/AndroidManifest.xml).
 winit = { version = "0.30.13", features = ["android-native-activity"] }
 pollster = "0.4"
-bytemuck = { version = "1.24", features = ["derive"] }
-zip = { version = "9.1.3", default-features = false, features = ["deflate"] }
+# A larger stack for the event handlers where the thread's own runs short: an iPhone's main thread has
+# 1 MB, and opening a world wants more (game.rs `deep`).
 stacker = "0.1"
+bytemuck = { version = "1.24", features = ["derive"] }
 glam = "0.30"
+png = "0.18"
+sha2 = "0.10.9"
+# Server resource packs are checked and cached by their SHA-1, as vanilla does.
+sha1 = "0.10"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1.0.151", features = ["raw_value"] }
+# hlsl-out: the gfx.rs tests translate every shader as wgpu's DirectX 12 backend does. A normal feature,
+# not a dev-dependency's, so builds, tests and examples share one build of naga, wgpu and this crate.
+naga = { version = "30.0.1", features = ["wgsl-in", "hlsl-out"] }
+miniz_oxide = "0.8"
+ab_glyph = "0.2.32"
 log = "0.4"
+# Java Pattern semantics for vanilla allowed_symlinks.txt, without a JVM or JIT.
+java_regex = { version = "=0.1.0", features = ["stack-growth"] }
+# Unicode 16 names match Java 25; pin before Unicode 17 table updates (~500 KB).
+unicode_names2 = "=2.0.0"
 chrono = { version = "0.4.42", default-features = false, features = ["clock", "std"] }
+flate2 = { version = "1.1.10", default-features = false, features = ["zlib-rs", "runtime_detection"] }
+horizon-theme = { path = "../horizon-theme" }
+# Opt-in data collection: the game keeps, the launcher sends (docs/telemetry.md); `live` is
+# the anonymous "I'm playing" ping the game sends itself (`heartbeat.rs`).
+horizon-telemetry = { path = "../horizon-telemetry", default-features = false, features = ["live"] }
+horizon-bench = { path = "../horizon-bench" }
+zip = { version = "9.1.3", default-features = false, features = ["deflate"] }
+# Controllers (evdev + libudev on Linux, IOKit on macOS, Windows.Gaming.Input); the `controllers` feature.
+gilrs = { version = "0.11", optional = true }
+# The DualSense's rumble, adaptive triggers and lights over HID (gilrs only reads it).
+horizon-dualsense = { path = "../horizon-dualsense", optional = true }
+# Controllers on iPhone and iPad (game/pad/ios.rs); an empty crate on every other target.
+horizon-gamecontroller = { path = "../horizon-gamecontroller" }
+# The game on an AirPlay display, the phone saying so; an empty crate on every other target.
+horizon-ios-launcher = { path = "../horizon-ios-launcher" }
+horizon-airplay = { path = "../horizon-airplay" }
+# HTTPS to the Minecraft services (online-mode session join).
+ureq = { version = "2", default-features = false, features = ["tls"] }
+unicode-bidi = "0.3.18"
+# `LevelStorageAccess.estimateDiskSpace`: usable disk space, without unsafe code on Windows.
+fs4 = { version = "1.1.0", default-features = false, features = ["sync"] }
 
 [target.'cfg(unix)'.dependencies]
 rustix = { version = "1", default-features = false, features = ["std", "time", "process", "fs"] }
@@ -61,7 +100,7 @@ rustix = { version = "1", default-features = false, features = ["std", "time", "
 [features]
 default = ["audio"]
 # AAudio, through cpal.
-audio = ["horizon-client/audio"]
+audio = ["horizon-client-lib/audio", "horizon-client-render/audio"]
 # Named because game/ asks for them; gilrs and hidapi have no Android backend, and wasmtime's JIT is untested here.
 controllers = []
 

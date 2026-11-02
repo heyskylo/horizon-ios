@@ -9,6 +9,7 @@
 mod components;
 mod definitions;
 pub use components::{custom_data_matches, tag_json};
+pub mod cit;
 pub mod gui;
 mod special;
 
@@ -206,6 +207,13 @@ pub struct ItemRenderState {
     pub layers: Vec<LayerRender>,
     pub oversized_in_gui: bool,
     pub animated: bool,
+    /// The OptiFine CIT glint layers the stack draws in the GUI (`cit_glint`).
+    pub cit_glint: Option<Arc<crate::cit_glint::StackGlint>>,
+    /// HDR output's tier of an item that glows (`dynamic_light::Luminance::hdr_tier`).
+    pub hdr_tier: u8,
+    /// In HDR output, the block light of an item that glows: its block's, as a placed one has
+    /// it, so a torch doesn't go dark in the shade while it shines. 0 for the rest.
+    pub hdr_light: u8,
 }
 impl ItemRenderState {
     pub fn is_empty(&self) -> bool {
@@ -500,6 +508,9 @@ pub struct ItemRenderer {
     grass: Vec<i32>,
     /// `minecraft:item` registry ids (`Item.getId`).
     item_ids: HashMap<String, i32>,
+    /// The enabled packs' OptiFine CIT rules and their swapped bakes; `None`
+    /// without rules.
+    pub cit: Option<cit::CitModels>,
 }
 
 impl ItemRenderer {
@@ -517,23 +528,52 @@ impl ItemRenderer {
         root: &Path,
         library: std::result::Result<Arc<ModelLibrary>, String>,
     ) -> crate::Result<Self> {
+        Self::load_tables(root, library, true)
+    }
+    /// What a dedicated server reads: the item prototypes (the stacks'
+    /// default components) and ids, without the client item definitions,
+    /// the special renderers' entity models and the grass colormap, which
+    /// only drawing reads (1.4 MB and ~1,500 files).
+    pub fn load_for_server(
+        root: &Path,
+        library: std::result::Result<Arc<ModelLibrary>, String>,
+    ) -> crate::Result<Self> {
+        Self::load_tables(root, library, false)
+    }
+    fn load_tables(
+        root: &Path,
+        library: std::result::Result<Arc<ModelLibrary>, String>,
+        drawn: bool,
+    ) -> crate::Result<Self> {
         let prototypes: BTreeMap<String, Components> = horizon_world::item_defaults::read(root)?
             .into_iter()
             .map(|(item, components)| Ok((item, serde_json::from_value(components)?)))
             .collect::<serde_json::Result<_>>()?;
         let models = ItemModels {
-            definitions: definitions::load(root),
+            definitions: if drawn {
+                definitions::load(root)
+            } else {
+                BTreeMap::new()
+            },
             prototypes,
         };
-        let library = library?;
+        let (library, cit) = cit::load(root, library?);
         let permutations = PalettedPermutations::from_atlas(
             &fs::read_to_string(root.join("assets/minecraft/atlases/items.json"))
                 .unwrap_or_default(),
         );
-        let parts = special::load_parts(root);
-        let grass = crate::hud::decode(&root.join("assets/minecraft/textures/colormap/grass.png"))
-            .map(|(_, _, rgba)| argb_pixels(&rgba).into_iter().map(|p| p as i32).collect())
-            .unwrap_or_default();
+        let parts = if drawn {
+            special::load_parts(root)
+        } else {
+            HashMap::new()
+        };
+        let grass = if drawn {
+            crate::hud::decode(&root.join("assets/minecraft/textures/colormap/grass.png"))
+                .map(|(_, _, rgba)| argb_pixels(&rgba).into_iter().map(|p| p as i32).collect())
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
         let item_ids = horizon_protocol::registry::Builtin::find(root)
             .and_then(|p| horizon_protocol::registry::Builtin::load(&p).ok())
             .and_then(|b| {
@@ -561,6 +601,7 @@ impl ItemRenderer {
             gui_drawn: Mutex::default(),
             parts,
             grass,
+            cit,
         })
     }
     /// `ModelBakery` item baking, cached per model.
@@ -596,16 +637,7 @@ impl ItemRenderer {
         {
             return hit.clone();
         }
-        let mut out: Vec<Vec3> = Vec::new();
-        for q in &baked.quads {
-            for p in q.positions {
-                let p = Vec3::from(p);
-                if !out.contains(&p) {
-                    out.push(p);
-                }
-            }
-        }
-        let out = Arc::new(out);
+        let out = Arc::new(corners(baked));
         if let Ok(mut cache) = self.extents.lock() {
             cache.insert(model.to_owned(), out.clone());
         }
@@ -634,6 +666,22 @@ impl ItemRenderer {
         seed: i32,
         env: &dyn ItemEnv,
     ) -> ItemRenderState {
+        self.resolve_with_rule(stack, display, owner, level, seed, env, None)
+    }
+    /// [`Self::resolve`] for a stack OptiFine CIT item rule `rule` (an index
+    /// into `cit.rules.rules`) matched: its model layers draw what the rule
+    /// swaps them for.
+    #[allow(clippy::too_many_arguments)]
+    pub fn resolve_with_rule(
+        &self,
+        stack: &StackView,
+        display: DisplayContext,
+        owner: Option<&OwnerState>,
+        level: Option<&LevelState>,
+        seed: i32,
+        env: &dyn ItemEnv,
+        rule: Option<usize>,
+    ) -> ItemRenderState {
         let ctx = Context {
             display,
             owner,
@@ -648,8 +696,13 @@ impl ItemRenderer {
             .map(|layer| {
                 let (geometry, baked, extents) = match layer.content {
                     LayerContent::Model { model } => {
-                        let baked = self.bake(&model);
-                        let extents = self.quad_extents(&model, &baked);
+                        let (baked, extents) = rule
+                            .and_then(|rule| self.cit_layer(rule, &model))
+                            .unwrap_or_else(|| {
+                                let baked = self.bake(&model);
+                                let extents = self.quad_extents(&model, &baked);
+                                (baked, extents)
+                            });
                         (LayerGeometry::Quads(baked.clone()), baked, extents)
                     }
                     LayerContent::Missing => {
@@ -687,6 +740,9 @@ impl ItemRenderer {
             layers,
             oversized_in_gui: resolved.oversized_in_gui,
             animated,
+            cit_glint: None,
+            hdr_tier: 0,
+            hdr_light: 0,
         }
     }
     /// `GrassColor.get` over the loaded colormap.
@@ -719,6 +775,19 @@ impl ItemRenderer {
     pub(crate) fn part(&self, key: &str) -> Option<&ModelPart> {
         self.parts.get(key)
     }
+}
+/// `CuboidItemModelWrapper.computeExtents`: the distinct quad corners.
+fn corners(baked: &BakedItemModel) -> Vec<Vec3> {
+    let mut out: Vec<Vec3> = Vec::new();
+    for q in &baked.quads {
+        for p in q.positions {
+            let p = Vec3::from(p);
+            if !out.contains(&p) {
+                out.push(p);
+            }
+        }
+    }
+    out
 }
 /// A `horizon-assets` (row-major, JOML-exact) matrix as glam's.
 pub fn glam_matrix(m: &horizon_assets::math::Mat4) -> Mat4 {
@@ -761,6 +830,8 @@ pub struct WorldSink<'a> {
     pub lights: Option<(Vec3, Vec3)>,
     /// The `GLINT_TEXTURING` sample for foil quads (`None` leaves them unglinted).
     pub glint: Option<Glint>,
+    /// HDR output's tier (`ItemRenderState::hdr_tier`): rides in the layer's high bits.
+    pub tier: u8,
 }
 impl ItemSink for WorldSink<'_> {
     fn quad(&mut self, q: ItemQuad) {
@@ -798,7 +869,7 @@ impl ItemSink for WorldSink<'_> {
                 normal: if q.cull_back { CULL_BACK } else { [0; 4] },
                 pos: p.to_array(),
                 uv,
-                layer: overlay | oit,
+                layer: overlay | oit | u32::from(self.tier) << 16,
                 color,
                 light,
                 glint_uv,
@@ -935,6 +1006,31 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
         assert!(loaded.contains_key("horizon:top"));
         assert!(loaded.contains_key("horizon:postman/head"));
+        Ok(())
+    }
+
+    /// A dedicated server keeps the stacks' default components but reads
+    /// none of the client item definitions.
+    #[test]
+    fn a_server_keeps_prototypes_without_definitions() -> crate::Result<()> {
+        let root = std::env::temp_dir().join(format!("horizon-item-server-{}", std::process::id()));
+        let definitions = root.join("assets/horizon/items");
+        fs::create_dir_all(&definitions)?;
+        fs::write(
+            definitions.join("top.json"),
+            r#"{"model":{"type":"minecraft:empty"}}"#,
+        )?;
+        fs::write(
+            root.join("items.json"),
+            r#"{"horizon:top":{"minecraft:max_stack_size":16}}"#,
+        )?;
+        let library = crate::model_library::ParsedModels::load(&root).into_item_library();
+        let client = ItemRenderer::load_with_library(&root, library.clone())?;
+        let server = ItemRenderer::load_for_server(&root, library)?;
+        let _ = fs::remove_dir_all(&root);
+        assert!(client.models.definitions.contains_key("horizon:top"));
+        assert!(server.models.definitions.is_empty());
+        assert_eq!(server.models.prototypes, client.models.prototypes);
         Ok(())
     }
 

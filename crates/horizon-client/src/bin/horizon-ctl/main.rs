@@ -1,6 +1,7 @@
 //! horizon-ctl: play and script a running Horizon client through its control
 //! socket, from a shell, a script or an AI agent (`horizon-ctl mcp`).
 #![forbid(unsafe_code)]
+extern crate horizon_client_lib as horizon_client;
 mod commands;
 mod launch;
 mod mcp;

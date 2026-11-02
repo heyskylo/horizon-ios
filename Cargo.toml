@@ -12,6 +12,7 @@ members = [
     "crates/horizon-hdr",
     "crates/horizon-world",
     "crates/horizon-client",
+    "crates/horizon-client-lib",
     "crates/horizon-client-core",
     "crates/horizon-client-input",
     "crates/horizon-client-render",

@@ -266,7 +266,7 @@ impl Game<'_> {
             self.remote_close_container();
         }
         self.book = None;
-        self.capture(true);
+        self.capture(self.screen == super::Screen::Playing && !self.screen_over_playing());
     }
     /// `BookEditScreen.saveChanges` and `BookSignScreen`'s Sign and Close:
     /// trailing empty pages dropped, the book in hand updated here and, on a

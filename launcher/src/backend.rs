@@ -1104,12 +1104,19 @@ fn files_under(dir: &Path, relative: &Path) -> Vec<PathBuf> {
 }
 
 pub(crate) fn copy_dir(from: &Path, to: &Path) -> std::io::Result<()> {
+    copy_dir_except(from, to, None)
+}
+
+/// Copy a folder, leaving out one directory when given.
+pub(crate) fn copy_dir_except(from: &Path, to: &Path, skip: Option<&Path>) -> std::io::Result<()> {
     fs::create_dir_all(to)?;
     for entry in fs::read_dir(from)? {
         let entry = entry?;
         let target = to.join(entry.file_name());
         if entry.file_type()?.is_dir() {
-            copy_dir(&entry.path(), &target)?;
+            if Some(entry.path().as_path()) != skip {
+                copy_dir_except(&entry.path(), &target, skip)?;
+            }
         } else {
             horizon_prepare::clone_or_copy(&entry.path(), &target)?;
         }
@@ -1463,7 +1470,9 @@ fn download_for_owner(
         account::store(),
         &mut accounts,
     );
-    let _ = accounts.save();
+    if let Err(e) = accounts.save() {
+        log(format!("Horizon: the accounts are not saved: {e}"));
+    }
     download_for(pins, dir, pass, !accounts.accounts.is_empty(), fetch, log)
 }
 
@@ -3369,11 +3378,18 @@ impl Settings {
         self.keep_versions.unwrap_or(KEEP_NEWEST).max(1)
     }
     pub fn save(&self) {
-        let _ = fs::create_dir_all(data_dir());
-        let _ = fs::write(
-            data_dir().join("settings.json"),
-            serde_json::to_string_pretty(self).unwrap(),
-        );
+        // A write that stops halfway leaves settings.json unreadable, and `load` answers
+        // defaults for it: the file is replaced only once it is whole.
+        let dir = data_dir();
+        let path = dir.join("settings.json");
+        let tmp = dir.join(format!("settings.{}.tmp", std::process::id()));
+        let written = fs::create_dir_all(&dir)
+            .and_then(|()| fs::write(&tmp, serde_json::to_string_pretty(self).unwrap()))
+            .and_then(|()| fs::rename(&tmp, &path));
+        if let Err(e) = written {
+            let _ = fs::remove_file(&tmp);
+            eprintln!("Horizon: settings.json is not saved: {e}");
+        }
     }
 }
 
@@ -3719,12 +3735,21 @@ pub fn {f}("
 
     /// Every asset a launcher looks for is one the release workflows build, sign and publish.
     #[test]
-    fn platform_assets_are_published() {
+    fn platform_assets_match_enabled_release_workflows() {
         let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
         let read = |path: &str| fs::read_to_string(repo.join(path)).unwrap();
         let build = read(".github/workflows/game-build.yml");
         let nightly = read(".github/workflows/nightly-build.yml");
-        let launcher = read(".github/workflows/launcher.yml");
+        // The mobile fork deliberately omits desktop-launcher publication.
+        // Keep checking it upstream, and require the mobile workflow if absent.
+        let launcher = match fs::read_to_string(repo.join(".github/workflows/launcher.yml")) {
+            Ok(workflow) => Some(workflow),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                assert!(repo.join(".github/workflows/ios.yml").is_file());
+                None
+            }
+            Err(error) => panic!("reading launcher publication workflow: {error}"),
+        };
         for (os, arch, game, launcher_asset) in PLATFORMS {
             assert!(
                 build.contains(&format!("asset: {game}")),
@@ -3736,10 +3761,12 @@ pub fn {f}("
                 2,
                 "nightly-build.yml must sign and publish {game} ({os} {arch})"
             );
-            assert!(
-                launcher.contains(&format!("asset: {launcher_asset}")),
-                "launcher.yml builds no {launcher_asset}"
-            );
+            if let Some(launcher) = &launcher {
+                assert!(
+                    launcher.contains(&format!("asset: {launcher_asset}")),
+                    "launcher.yml builds no {launcher_asset}"
+                );
+            }
         }
     }
 
@@ -4817,7 +4844,16 @@ pub fn {f}("
             &log,
         );
         assert_eq!(
-            *lines.borrow(),
+            lines
+                .borrow()
+                .iter()
+                // Concurrent asset copies may briefly wait for the preparation lock.
+                // This diagnostic is valid; the completed files are checked below.
+                .filter(
+                    |line| !line.starts_with("Waiting for another horizon-prepare to finish with ")
+                )
+                .cloned()
+                .collect::<Vec<_>>(),
             [
                 "Built-in pack assets ready: 2 files, 0.0 MB",
                 "Panorama assets ready: 7 files, 0.0 MB",

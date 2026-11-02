@@ -27,7 +27,15 @@ fn zombie_kind(s: Species) -> bool {
 impl Game<'_> {
     /// `Entity.startRiding` for two mobs.
     pub(super) fn mount_mob(&mut self, rider: u32, vehicle: u32) {
+        self.try_mount_mob(rider, vehicle);
+    }
+    /// `Entity.startRiding` for two mobs: false when a mod canceled it.
+    pub(super) fn try_mount_mob(&mut self, rider: u32, vehicle: u32) -> bool {
+        if !self.native_mob_may_ride(rider, vehicle, true) {
+            return false;
+        }
         riders::link(&mut self.mobs, rider, vehicle);
+        true
     }
     /// Riders sit on their vehicles (`Entity.positionRider`), mobs or boats,
     /// and let go when the vehicle dies or is gone.

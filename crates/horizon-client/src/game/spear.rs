@@ -276,6 +276,17 @@ impl Game<'_> {
                 0.2,
                 (actual * 0.5) as u32,
             );
+            // The players a server serves are sent them too (the window of the server thread).
+            self.lan_send_particles(super::lan_particles::QueuedParticle {
+                dimension: self.dim.id(),
+                options: indicator,
+                state: None,
+                at: [feet[0], feet[1] + height * 0.5, feet[2]],
+                spread: [0.1, 0.0, 0.1],
+                speed: 0.2,
+                count: (actual * 0.5) as u32 as i32,
+                randomization: 0,
+            });
         }
         if hurt {
             self.last_hurt_by_player.insert(id, self.lan_acting);

@@ -100,6 +100,15 @@ pub(super) fn blast_reaches(center: [f64; 3], diameter: f64, at: [f64; 3]) -> bo
     d / diameter <= 1.0
 }
 
+/// `ItemEntity.ignoreExplosion` through
+/// `ServerExplosion.shouldAffectBlocklikeEntities`: an explosion that does not
+/// affect blocklike entities is ignored entirely by a dropped item. With
+/// `mobGriefing` off that is every blast that keeps blocks; with it on, none
+/// (no wind charge goes through `server_explode`).
+fn items_ignore_explosion(mob_griefing: bool, interaction: BlockInteraction) -> bool {
+    !mob_griefing && interaction == BlockInteraction::Keep
+}
+
 /// Whether a blast leaves item frames, paintings, cushions and armour stands
 /// alone. Without `mobGriefing`, a blast that keeps blocks is ignored
 /// (`ServerExplosion.shouldAffectBlocklikeEntities` through their
@@ -259,6 +268,16 @@ impl Game<'_> {
             use horizon_world::level::LevelAccess;
             (level.min_y(), level.max_y())
         });
+        // WitherSkull.getBlockExplosionResistance: a dangerous skull's blast
+        // caps a block the wither may destroy at 0.8.
+        let cap = self.combat.blast_resistance_cap;
+        let wither_immune = cap.and_then(|_| {
+            self.res
+                .items()
+                .block_tags
+                .get("minecraft:wither_immune")
+                .cloned()
+        });
         let mut set: JavaHashMap<Key, ()> = JavaHashMap::default();
         for xx in 0..16 {
             for yy in 0..16 {
@@ -301,12 +320,14 @@ impl Game<'_> {
                                 power -= (resistance + 0.3) * 0.3;
                             }
                             _ if !self.res.facts().is_air(state) || f.fluid != Fluid::None => {
-                                let resistance = if spared {
+                                let base = if spared {
                                     0.0
                                 } else {
                                     f.explosion_resistance.max(fluid)
                                 };
-                                power -= (resistance + 0.3) * 0.3;
+                                let immune =
+                                    wither_immune.as_ref().is_some_and(|t| t.contains(&*f.name));
+                                power -= (blast_resistance(base, cap, immune) + 0.3) * 0.3;
                             }
                             _ => {}
                         }
@@ -593,9 +614,15 @@ impl Game<'_> {
         }
         self.mobs = mobs;
         // Dropped items: 5 health, destroyed by the explosion damage (nether stars resist).
+        // `ItemEntity.ignoreExplosion` asks `shouldAffectBlocklikeEntities`
+        // first, so a blast that keeps blocks leaves every item untouched.
+        let items_ignore = items_ignore_explosion(self.ui.rules.bool("mob_griefing"), interaction);
         let before = self.dropped_ids();
         let mut items = std::mem::take(&mut self.dropped);
         items.retain_mut(|item| {
+            if items_ignore {
+                return true;
+            }
             let feet = [item.position.x, item.position.y, item.position.z];
             let dist = distance(feet) / diameter;
             if dist > 1.0 {
@@ -1085,16 +1112,22 @@ impl Game<'_> {
             // tables' survives_explosion and explosion_decay draw from their
             // random sequence.
             let decay = (interaction == BlockInteraction::DestroyWithDecay).then_some(radius);
-            let mut drops = world_items!(self).block_drops_exploded(
-                self.pack.assets.registry,
-                state,
-                None,
-                &dynamic,
-                &mut self.world.random,
-                Some((&mut self.rand_sequences, self.level.seed)),
-                decay,
-                false,
+            let place = self.loot_place_at(
+                pos.map(|v| f64::from(v) + 0.5),
+                self.loot_block_entity(pos, &name),
             );
+            let mut drops = horizon_world::loot::with_native_loot_place(place, || {
+                world_items!(self).block_drops_exploded(
+                    self.pack.assets.registry,
+                    state,
+                    None,
+                    &dynamic,
+                    &mut self.world.random,
+                    Some((&mut self.rand_sequences, self.level.seed)),
+                    decay,
+                    false,
+                )
+            });
             self.native_block_drops(pos, state, None, None, Some(radius), &mut drops);
             for mut stack in drops {
                 if &*stack.item == "minecraft:air" || stack.count == 0 {
@@ -1164,9 +1197,44 @@ fn add_or_append_stack(
     stacks.push((pos, stack));
 }
 
+/// `WitherSkull.getBlockExplosionResistance`: `isDangerous() &&
+/// WitherBoss.canDestroy(state) ? min(0.8, resistance) : resistance`. Air has
+/// no resistance to begin with, and `#wither_immune` blocks keep theirs.
+fn blast_resistance(base: f32, cap: Option<f32>, wither_immune: bool) -> f32 {
+    match cap {
+        Some(cap) if !wither_immune => base.min(cap),
+        _ => base,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A dangerous wither skull's blast treats a block as at most 0.8 harder to
+    /// break, but a `#wither_immune` block keeps its own resistance and any
+    /// other blast is unchanged.
+    #[test]
+    fn a_dangerous_wither_skull_caps_block_resistance() {
+        assert_eq!(blast_resistance(4.0, Some(0.8), false), 0.8);
+        assert_eq!(blast_resistance(0.3, Some(0.8), false), 0.3, "already low");
+        assert_eq!(blast_resistance(4.0, Some(0.8), true), 4.0, "wither immune");
+        assert_eq!(blast_resistance(4.0, None, false), 4.0, "another blast");
+    }
+
+    /// A dropped item survives a mob's blast untouched while `mobGriefing` is
+    /// off, and is thrown and hurt as usual by one that destroys blocks or by
+    /// any blast with the rule back on.
+    #[test]
+    fn items_ignore_a_blast_that_keeps_blocks_with_griefing_off() {
+        assert!(items_ignore_explosion(false, BlockInteraction::Keep));
+        assert!(!items_ignore_explosion(false, BlockInteraction::Destroy));
+        assert!(!items_ignore_explosion(
+            false,
+            BlockInteraction::DestroyWithDecay
+        ));
+        assert!(!items_ignore_explosion(true, BlockInteraction::Keep));
+    }
 
     #[test]
     fn blasts_reach_entities_within_their_diameter() {

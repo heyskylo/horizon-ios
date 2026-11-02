@@ -142,6 +142,9 @@ pub(super) struct CombatTracker {
     /// The mob that owns the projectile exploding now (`getIndirectSourceEntity`):
     /// the mobs the blast hurts record it as their attacker.
     pub(super) explosion_owner: Option<u32>,
+    /// `WitherSkull.getBlockExplosionResistance`: a dangerous skull's blast
+    /// caps every destroyable block's resistance at this value.
+    pub(super) blast_resistance_cap: Option<f32>,
     /// Charged creepers whose blast just went off and that have not dropped
     /// a head yet (`Creeper.droppedSkulls`): they are gone from the mob list,
     /// but the mobs they killed still ask for their loot.

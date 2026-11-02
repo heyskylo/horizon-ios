@@ -54,7 +54,7 @@ impl Game<'_> {
     /// with nothing thrown, on a client's copy of the world, for another
     /// dimension, an air or unknown state, a chunk that isn't loaded, a value
     /// that isn't finite, or with 1024 falling blocks in the level already.
-    /// Each axis of `velocity` is cut to 3.9. API @API:native_falling_block@.
+    /// Each axis of `velocity` is cut to 3.9. API 81.
     pub(super) fn native_spawn_falling_block(
         &mut self,
         dimension: &str,

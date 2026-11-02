@@ -297,6 +297,9 @@ pub struct Menu {
     /// Recipes whose result was taken (`awardUsedRecipes`) and the stacks that
     /// went into each, for the caller.
     pub crafted: Vec<(String, Vec<Option<ItemStack>>)>,
+    /// A crafting grid's result taken (`ResultSlot.onTake`): the recipe and
+    /// the stack taken, for the caller (`native_item_crafted`).
+    pub item_crafted: Vec<(String, ItemStack)>,
     /// Potions taken from a brewing stand's bottle slots
     /// (`PotionSlot.onTake`), for the caller.
     pub brewed: Vec<ItemStack>,
@@ -394,7 +397,7 @@ fn tidy(slot: &mut Option<ItemStack>) {
 /// and the item's own stack size still caps it. Asked on the server, for each
 /// click, drag and shift-click that puts an item in a slot, several times for
 /// one shift-click: answer from `stack` alone, and fast. API
-/// @API:menu_slot_rules@.
+/// 130.
 #[inline(always)]
 pub fn native_menu_slot_rules(
     menu: &str,
@@ -729,6 +732,7 @@ impl Menu {
             sounds: Vec::new(),
             player_sounds: Vec::new(),
             crafted: Vec::new(),
+            item_crafted: Vec::new(),
             brewed: Vec::new(),
             equipped: Vec::new(),
             merchant: None,
@@ -1732,6 +1736,8 @@ impl Menu {
         let grid = self.containers[GRID].clone();
         if let Some((id, _)) = env.recipes.find(&grid, n) {
             self.crafted.push((format!("minecraft:{id}"), grid.clone()));
+            self.item_crafted
+                .push((format!("minecraft:{id}"), taken.clone()));
         }
         let remaining = env
             .recipes
@@ -3289,6 +3295,25 @@ pub(crate) mod tests {
             menu.settle(env);
             assert_eq!(menu.slot(0).map(|s| s.count), Some(4));
             assert_eq!(menu.quick_move_landing(env, 0), [45]);
+        });
+    }
+
+    /// A crafting grid's result taken is recorded for `native_item_crafted`:
+    /// the recipe the grid matched and the stack the player took.
+    #[test]
+    fn taking_a_crafting_result_records_the_crafted_stack() {
+        with_menu(Kind::Crafting, |env, menu| {
+            menu.creative = false;
+            menu.set_slot(env, 1, stack("oak_log", 1));
+            menu.settle(env);
+            menu.click(env, 0, 0, Input::Pickup).unwrap();
+            assert_eq!(
+                menu.item_crafted,
+                vec![(
+                    "minecraft:oak_planks".to_owned(),
+                    stack("oak_planks", 4).unwrap()
+                )]
+            );
         });
     }
 

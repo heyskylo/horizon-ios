@@ -1251,9 +1251,12 @@ impl Game<'_> {
         if self.potions.effects.get("conduit_power").is_some()
             && let Some(eye) = self.eye_position()
         {
-            let in_water =
-                horizon_client::fog::fog_type(&self.world, self.res.facts(), eye, self.forward())
-                    == FogType::Water;
+            let in_water = horizon_client::fog::fog_type(
+                &self.world,
+                self.res.facts(),
+                eye,
+                &self.near_plane(),
+            ) == FogType::Water;
             return self.fog.water_vision(in_water);
         }
         0.0
@@ -1713,6 +1716,7 @@ impl Game<'_> {
             Option<i64>,
             Option<u32>,
             u32,
+            bool,
         )> = self
             .mobs
             .iter()
@@ -1727,10 +1731,11 @@ impl Game<'_> {
                     m.last_damage.map(|(_, t)| t),
                     m.extra.mount,
                     m.age,
+                    m.species() == Species::Bat && horizon_client::mobs::bat::resting(m),
                 )
             })
             .collect();
-        for (id, at, on_ground, in_water, species, damaged, vehicle, age) in snapshot {
+        for (id, at, on_ground, in_water, species, damaged, vehicle, age, resting) in snapshot {
             if on_ground {
                 self.step_on_redstone_ore(at, false, false);
             }
@@ -1749,10 +1754,10 @@ impl Game<'_> {
                     false,
                     warden,
                 );
-                // Entity.processFlappingMovement with Bee.isFlapping: a bee off
-                // the ground over air flaps on every other tick (the mob's own
-                // `MobEvent::GameEvent` is not read here).
-                if species == Species::Bee && !on_ground && age.is_multiple_of(2) {
+                // Entity.processFlappingMovement: what flaps this move flaps
+                // over air only (the mob's own `MobEvent::GameEvent` is not
+                // read here).
+                if flaps(species, resting, on_ground, age) {
                     let below = self.world.block(
                         at[0].floor() as i32,
                         (at[1] - 1.0e-5).floor() as i32,
@@ -1954,6 +1959,17 @@ pub(super) fn darkness_blend_added(e: &EffectInstance, blend: bool) -> (f32, f32
     (factor, factor)
 }
 
+/// `Entity.processFlappingMovement`'s per-tick gate, before its air-below
+/// test: `Bee.isFlapping` (flying, every other tick) and `Bat.isFlapping`
+/// (awake, every tenth tick).
+fn flaps(species: Species, resting: bool, on_ground: bool, age: u32) -> bool {
+    match species {
+        Species::Bee => !on_ground && age.is_multiple_of(2),
+        Species::Bat => !resting && age.is_multiple_of(10),
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1971,6 +1987,20 @@ mod tests {
         assert_eq!(index.set.len(), 2);
         index.insert((41, 4, 0));
         assert_eq!(index.iter().last(), Some(&(41, 4, 0)));
+    }
+
+    /// A bat flaps every tenth tick while it is not resting, whether it is on
+    /// the ground or not; a resting bat never flaps and nothing else does.
+    #[test]
+    fn a_bat_flaps_every_tenth_tick_unless_it_is_resting() {
+        assert!(flaps(Species::Bat, false, false, 0));
+        assert!(flaps(Species::Bat, false, true, 10));
+        assert!(!flaps(Species::Bat, false, false, 11));
+        assert!(!flaps(Species::Bat, true, false, 20), "resting");
+        assert!(flaps(Species::Bee, false, false, 4));
+        assert!(!flaps(Species::Bee, false, true, 4), "a bee on the ground");
+        assert!(!flaps(Species::Bat, false, false, 5));
+        assert!(!flaps(Species::Cow, false, false, 0));
     }
 
     #[test]

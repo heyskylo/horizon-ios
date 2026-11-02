@@ -321,7 +321,9 @@ fn centered_left(x: f32, w: f32, width: f32) -> f32 {
     x + (w / 2.0).floor() - (width / 2.0).floor()
 }
 
-/// Centered text with a shadow, scrolled when wider than `w` (AbstractWidget.renderScrollingString).
+/// Centered text with a shadow, for titles and lines of text, which vanilla
+/// never scrolls: one wider than `w` keeps the characters that fit. Widget
+/// labels go through [`scrolling_text`] instead, as vanilla's do.
 pub fn centered_text(
     batch: &mut HudBatch,
     atlas: &HudAtlas,
@@ -336,7 +338,8 @@ pub fn centered_text(
     if width <= w {
         batch.text_styled(atlas, &text, centered_left(x, w, width), y, color, true);
     } else {
-        // Clip by characters (vanilla scrolls; we show the part that fits).
+        // Clip by characters: vanilla clips nothing here, but a title is as
+        // wide as the window.
         let mut shown = Text::empty();
         let mut used = 0.0;
         for (i, (c, s)) in text.chars().enumerate() {
@@ -349,6 +352,148 @@ pub fn centered_text(
         batch.text_styled(atlas, &shown, x + 1.0, y, color, true);
     }
 }
+/// `ActiveTextCollector.defaultScrollingHelper`'s slide: a label `overflow`
+/// pixels too wide moves from its end back to its start and out again, one
+/// sine period every `max(overflow * 0.5, 3)` seconds of `Util.getMillis`.
+fn scroll_offset(overflow: f32, now_ms: i64) -> f64 {
+    let period = (f64::from(overflow) * 0.5).max(3.0);
+    let seconds = now_ms as f64 / 1000.0;
+    let phase = (std::f64::consts::TAU * seconds / period).cos();
+    let pos = (std::f64::consts::FRAC_PI_2 * phase).sin() / 2.0 + 0.5;
+    f64::from(overflow) * pos
+}
+
+/// Where an overflowing label's left edge is drawn: `left - (int) pos`.
+fn scrolled_left(left: f32, overflow: f32, now_ms: i64) -> f32 {
+    left - scroll_offset(overflow, now_ms) as i32 as f32
+}
+
+/// A widget's label as `AbstractWidget.extractScrollingStringOverContents`
+/// draws it, at `now_ms`: centred between `left` and `right` when it fits,
+/// else drawn from the left and slid (`defaultScrollingHelper`) inside the
+/// widget's box. `y` is the label's top line.
+#[allow(clippy::too_many_arguments)]
+pub fn scrolling_text_at(
+    batch: &mut HudBatch,
+    atlas: &HudAtlas,
+    text: &Text,
+    left: f32,
+    right: f32,
+    top: f32,
+    bottom: f32,
+    y: f32,
+    now_ms: i64,
+    color: u32,
+) {
+    // `acceptScrollingWithDefaultCenter`: `centerX = (left + right) / 2`.
+    let center_x = left + ((right - left) / 2.0).floor();
+    scrolling_text_around_at(
+        batch, atlas, text, center_x, left, right, top, bottom, y, now_ms, color,
+    );
+}
+
+/// [`scrolling_text_at`] around an explicit `center_x`
+/// (`ActiveTextCollector.acceptScrolling`, which `SpriteIconButton.TextAndIcon`
+/// calls with the button's middle): a label that fits is centred on `center_x`
+/// moved as far as it must to stay between `left` and `right`
+/// (`Mth.clamp(centerX, left + lineWidth / 2, right - lineWidth / 2)`), so
+/// beside an icon it ends where the icon's room begins. A wider one is drawn
+/// from the left and slid inside the box.
+#[allow(clippy::too_many_arguments)]
+pub fn scrolling_text_around_at(
+    batch: &mut HudBatch,
+    atlas: &HudAtlas,
+    text: &Text,
+    center_x: f32,
+    left: f32,
+    right: f32,
+    top: f32,
+    bottom: f32,
+    y: f32,
+    now_ms: i64,
+    color: u32,
+) {
+    let text = text.resolved();
+    let width = atlas.font.width_text(&text);
+    let room = right - left;
+    if width <= room {
+        let half = (width / 2.0).floor();
+        let text_x = center_x.max(left + half).min(right - half);
+        batch.text_styled(atlas, &text, text_x - half, y, color, true);
+        return;
+    }
+    // Scissored to the widget: what does not fit is read as the label
+    // slides, never dropped.
+    let start = batch.vertices.len();
+    batch.text_styled(
+        atlas,
+        &text,
+        scrolled_left(left, width - room, now_ms),
+        y,
+        color,
+        true,
+    );
+    batch.clip_since(start, left, top, right, bottom);
+}
+
+/// [`scrolling_text_at`] at `Util.getMillis`.
+#[allow(clippy::too_many_arguments)]
+pub fn scrolling_text(
+    batch: &mut HudBatch,
+    atlas: &HudAtlas,
+    text: &Text,
+    left: f32,
+    right: f32,
+    top: f32,
+    bottom: f32,
+    y: f32,
+    color: u32,
+) {
+    scrolling_text_at(
+        batch,
+        atlas,
+        text,
+        left,
+        right,
+        top,
+        bottom,
+        y,
+        crate::hud_overlays::now_ms(),
+        color,
+    );
+}
+
+/// `MenuTabBar.MenuTabButton.renderLabel` for the tab at `x, y`: its label
+/// inside the tab less 1 px on each side, from the tab's top when selected
+/// and 3 px lower when not (`acceptScrollingWithDefaultCenter`, so one wider
+/// than the tab slides instead of running into the next tab). White, gray
+/// for an inactive tab (`WithInactiveMessage`).
+pub fn menu_tab_label(
+    batch: &mut HudBatch,
+    atlas: &HudAtlas,
+    label: &Text,
+    (x, y, width, height): (f32, f32, f32, f32),
+    selected: bool,
+    active: bool,
+    now_ms: i64,
+) {
+    let top = y + if selected { 0.0 } else { 3.0 };
+    let bottom = y + height;
+    scrolling_text_at(
+        batch,
+        atlas,
+        label,
+        x + 1.0,
+        x + width - 1.0,
+        top,
+        bottom,
+        // defaultScrollingHelper: `(top + bottom - lineHeight) / 2 + 1`.
+        ((top + bottom - 9.0) / 2.0).floor() + 1.0,
+        now_ms,
+        if active { u32::MAX } else { 0xFFA0_A0A0 },
+    );
+}
+
 /// Button (AbstractButton): nine-slice sprite plus the centred label.
 pub fn button(
     batch: &mut HudBatch,
@@ -397,13 +542,15 @@ pub fn button_as(
     } else {
         rgba(160, 160, 160, 255)
     };
-    centered_text(
+    scrolling_text(
         batch,
         atlas,
         label,
         x + 2.0,
+        x + w - 2.0,
+        y,
+        y + h,
         y + ((h - 8.0) / 2.0).floor(),
-        w - 4.0,
         color,
     );
 }
@@ -471,7 +618,17 @@ pub fn slider_ext(
     } else {
         rgba(160, 160, 160, 255)
     };
-    centered_text(batch, atlas, label, x + 2.0, y + 6.0, w - 4.0, color);
+    scrolling_text(
+        batch,
+        atlas,
+        label,
+        x + 2.0,
+        x + w - 2.0,
+        y,
+        y + 20.0,
+        y + 6.0,
+        color,
+    );
 }
 #[cfg(test)]
 fn slider_sprites(hover: bool, active: bool, dragging: bool) -> (&'static str, &'static str) {
@@ -1439,6 +1596,154 @@ mod tests {
         assert_eq!(centered_left(10.0, 196.0, 9.0), 104.0);
         assert_eq!(centered_left(2.0, 196.0, 7.0), 97.0);
     }
+    /// `defaultScrollingHelper`: one period every `max(overflow * 0.5, 3)`
+    /// seconds, a full sine: the label starts with its end showing, shows its
+    /// start half a period later, and never slides past either end.
+    #[test]
+    fn an_overflowing_label_slides_from_its_end_to_its_start_and_back() {
+        let overflow = 40.0;
+        // max(40 * 0.5, 3) = 20 s.
+        assert!((scroll_offset(overflow, 0) - 40.0).abs() < 1.0e-9);
+        assert!(scroll_offset(overflow, 10_000).abs() < 1.0e-9);
+        assert!((scroll_offset(overflow, 20_000) - 40.0).abs() < 1.0e-9);
+        // A label one pixel too wide waits the floor of three seconds.
+        assert!(scroll_offset(1.0, 1_500).abs() < 1.0e-9);
+        assert!((scroll_offset(1.0, 0) - 1.0).abs() < 1.0e-9);
+        for ms in 0..40_000 {
+            let offset = scroll_offset(overflow, ms);
+            assert!((0.0..=40.0).contains(&offset), "{ms} ms: {offset}");
+        }
+    }
+
+    fn atlas() -> HudAtlas {
+        HudAtlas::build(std::path::Path::new("/nonexistent/horizon-test-assets")).unwrap()
+    }
+
+    /// `defaultScrollingHelper` draws an overflowing label from `left` less the
+    /// integer part of the slide, so it shows its end first and its start half
+    /// a period later, and it moves a whole pixel at a time.
+    #[test]
+    fn an_overflowing_label_is_drawn_left_less_the_integer_slide() {
+        // max(40 * 0.5, 3) = 20 s: at 0 s the whole overflow is slid, at 10 s none.
+        assert_eq!(scrolled_left(10.0, 40.0, 0), -30.0);
+        assert_eq!(scrolled_left(10.0, 40.0, 10_000), 10.0);
+        // A fractional slide is cut, not rounded.
+        let offset = scroll_offset(40.0, 1_000) as i32 as f32;
+        assert!(offset > 0.0);
+        assert_eq!(scrolled_left(10.0, 40.0, 1_000), 10.0 - offset);
+    }
+
+    /// The label of a widget it does not fit is clipped to the widget's box
+    /// instead of being drawn past it (the bug: `so_so`'s 590 px Create World
+    /// label ran over the button beside it).
+    #[test]
+    fn a_label_wider_than_its_widget_stays_inside_it() {
+        let atlas = atlas();
+        let label = Text::literal("Graphics API: Prefer Vulkan (Experimental)");
+        assert!(atlas.font.width_text(&label.resolved()) > 96.0);
+        let mut batch = HudBatch::new([640, 480]);
+        scrolling_text_at(
+            &mut batch,
+            &atlas,
+            &label,
+            10.0,
+            106.0,
+            20.0,
+            40.0,
+            26.0,
+            0,
+            u32::MAX,
+        );
+        assert!(!batch.vertices.is_empty());
+        for v in &batch.vertices {
+            assert!(
+                (10.0..=106.0).contains(&v.pos[0]) && (20.0..=40.0).contains(&v.pos[1]),
+                "{:?} outside the widget",
+                v.pos
+            );
+        }
+        // A label that fits is centred and not cut: every glyph is drawn.
+        let mut batch = HudBatch::new([640, 480]);
+        let short = Text::literal("Done");
+        scrolling_text_at(
+            &mut batch,
+            &atlas,
+            &short,
+            10.0,
+            106.0,
+            20.0,
+            40.0,
+            26.0,
+            0,
+            u32::MAX,
+        );
+        let width = atlas.font.width_text(&short.resolved());
+        let left = centered_left(10.0, 96.0, width);
+        let lo = batch
+            .vertices
+            .iter()
+            .map(|v| v.pos[0])
+            .fold(f32::INFINITY, f32::min);
+        let hi = batch
+            .vertices
+            .iter()
+            .map(|v| v.pos[0])
+            .fold(f32::NEG_INFINITY, f32::max);
+        assert!(
+            (lo - left).abs() < 0.001,
+            "centred at {left}, drawn from {lo}"
+        );
+        assert!(
+            hi - lo >= width - 0.001,
+            "the whole label is drawn: {lo}..{hi}, {width} wide"
+        );
+    }
+
+    /// `MenuTabButton.renderLabel` on a 24 px tab: centred on the tab, its
+    /// text top at `(0 + 24 - 9) / 2 + 1 = 8` when selected and at
+    /// `(3 + 24 - 9) / 2 + 1 = 10` when not; white on an active tab, selected
+    /// or not, `0xA0A0A0` on an inactive one (`WithInactiveMessage`). The
+    /// Statistics tabs drew every label at 8 and an active unselected one gray.
+    #[test]
+    fn a_tab_label_sits_lower_on_an_unselected_tab_and_is_gray_only_when_inactive() {
+        let atlas = atlas();
+        let label = Text::literal("Items");
+        let half = (atlas.font.width_text(&label.resolved()) / 2.0).floor();
+        // A 124 px tab at x = 100: `(left + right) / 2 = (101 + 223) / 2 = 162`.
+        let left = 162.0 - half;
+        for (selected, active, y, color) in [
+            (true, true, 8.0, u32::MAX),
+            (false, true, 10.0, u32::MAX),
+            (false, false, 10.0, 0xFFA0_A0A0),
+        ] {
+            let mut tab = HudBatch::new([640, 480]);
+            menu_tab_label(
+                &mut tab,
+                &atlas,
+                &label,
+                (100.0, 0.0, 124.0, 24.0),
+                selected,
+                active,
+                0,
+            );
+            let mut want = HudBatch::new([640, 480]);
+            want.text_styled(&atlas, &label.resolved(), left, y, color, true);
+            let glyphs = |b: &HudBatch| -> Vec<([u32; 2], u32)> {
+                b.vertices
+                    .iter()
+                    .filter(|v| v.text == 1)
+                    .map(|v| ([v.pos[0].to_bits(), v.pos[1].to_bits()], v.color))
+                    .collect()
+            };
+            assert!(!glyphs(&want).is_empty());
+            assert_eq!(
+                glyphs(&tab),
+                glyphs(&want),
+                "selected {selected}, active {active}"
+            );
+        }
+    }
+
     #[test]
     fn slider_track_is_outlined_only_while_dragged() {
         let (track, handle) = slider_sprites(true, true, false);

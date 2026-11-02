@@ -1,8 +1,0 @@
-{
-  "hooks": [],
-  "rust_summary": "column reads for server mods (`native_surface_heights`, `native_read_columns`).",
-  "doc_summary": "column reads for server mods, in the level being ticked: `native_surface_heights(dimension, columns, heightmap)` and `native_read_columns(dimension, columns, heightmap, (below, above))`, the blocks round each column's height as a palette and indexes with the biome's grass, foliage and water tints. Bundles need `\"hooks\": @API:native_read_columns@`.",
-  "comments": [
-    "crates/horizon-client/src/game/native_world_columns.rs"
-  ]
-}

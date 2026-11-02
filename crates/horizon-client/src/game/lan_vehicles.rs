@@ -11,8 +11,9 @@
 //! is teleported where the player lands (`ServerPlayer.dismountTo`).
 use super::{Game, Keys, lan::LanHost, minecarts::SEAT};
 use horizon_client::collisions::SceneCollisions;
+use horizon_client::lan::hub::no_blocks_in;
 use horizon_client::mobs::equine;
-use horizon_core::geometry::{Aabb, Vec3};
+use horizon_core::geometry::{Aabb, Axis, Vec3};
 use horizon_protocol::{
     packets::play::{self, Clientbound as C},
     text::translatable,
@@ -367,7 +368,31 @@ impl Game<'_> {
             back(host, old, yaw);
             return;
         }
-        host.hub.guests[gi].vehicle_good = Some([target.x, target.y, target.z]);
+        // clientVehicleIsFloating: the move didn't go down a step, the vehicle hadn't come down onto
+        // something on its last move (`verticalCollisionBelow` before this one), and nothing but air is
+        // around its box grown by 0.0625 and stretched 0.55 down (water holds a boat up). A flying or
+        // no-gravity mount, and a server that allows flight, never float.
+        let (gravity, no_gravity) = match mount {
+            Some(i) => (0.08, self.mobs[i].no_gravity),
+            None => (0.04, false),
+        };
+        let around = moved_box
+            .inflate(Vec3::new(0.0625, 0.0625, 0.0625))
+            .expand_towards(Vec3::new(0.0, -0.55, 0.0));
+        let corner = |max: bool| {
+            [Axis::X, Axis::Y, Axis::Z].map(|a| if max { around.max(a) } else { around.min(a) })
+        };
+        let no_blocks = no_blocks_in(&self.world, corner(false), corner(true));
+        let allow_flight = host.hub.config.allow_flight;
+        let g = &mut host.hub.guests[gi];
+        g.vehicle_good = Some([target.x, target.y, target.z]);
+        let rested = std::mem::replace(
+            &mut g.vehicle_rests,
+            wanted.y < 0.0 && resolved.y != wanted.y,
+        );
+        g.vehicle_floating =
+            wanted.y >= -0.03125 && !rested && !allow_flight && !no_gravity && no_blocks;
+        g.vehicle_gravity = gravity;
         if let Some(i) = mount {
             // absSnapTo: where and how its rider's client turned it; the
             // rider sits on it from its own ride tick.
@@ -394,7 +419,25 @@ impl Game<'_> {
         g.position = [seat.x, seat.y, seat.z];
     }
 
-    /// `handlePaddleBoat`: the paddles of the boat the player drives.
+    /// `Entity.getControllingPassenger` of a vehicle a server player rides: a
+    /// boat has two seats, and only its first player passenger drives it. The
+    /// window player sits first when it rides; of the server's players it is
+    /// the one that got in first.
+    pub(super) fn guest_controls_vehicle(&self, host: &LanHost, conn: u32, vehicle: u32) -> bool {
+        if self.riding == Some(vehicle) {
+            return false;
+        }
+        host.hub
+            .guests
+            .iter()
+            .filter(|g| g.vehicle == Some(vehicle))
+            .min_by_key(|g| g.vehicle_order)
+            .is_some_and(|g| g.conn == conn)
+    }
+
+    /// `handlePaddleBoat`: the paddles of the boat the player controls
+    /// (`player.getControlledVehicle()`); a passenger in the second seat moves
+    /// no paddle.
     pub(super) fn guest_paddle_boat(&mut self, host: &LanHost, conn: u32, paddles: [bool; 2]) {
         let vehicle = host
             .hub
@@ -402,7 +445,10 @@ impl Game<'_> {
             .iter()
             .find(|g| g.conn == conn)
             .and_then(|g| g.vehicle);
-        if let Some(b) = self.boats.iter_mut().find(|b| Some(b.id) == vehicle) {
+        let Some(vehicle) = vehicle.filter(|&v| self.guest_controls_vehicle(host, conn, v)) else {
+            return;
+        };
+        if let Some(b) = self.boats.iter_mut().find(|b| b.id == vehicle) {
             b.paddling = paddles;
         }
     }

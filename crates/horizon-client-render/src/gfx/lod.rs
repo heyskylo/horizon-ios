@@ -276,6 +276,10 @@ impl Renderer {
     /// once all are in, fades them in over the tiles they replace.
     pub fn upload_lods(&mut self, budget: Duration) {
         let start = Instant::now();
+        if self.lod_pending.is_some() {
+            // Far tiles fill the arenas too: large translucent pages wait for them.
+            self.shrink_gate.wait(start, super::SHRINK_SETTLE);
+        }
         self.release_left(start);
         let faded: Vec<_> = self
             .lods

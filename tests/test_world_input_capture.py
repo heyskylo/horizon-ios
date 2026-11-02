@@ -110,7 +110,8 @@ struct Game {
     splitscreen: SplitScreen, left: bool, right: bool,
     focused: bool, agent_pointer: bool, window: Option<Window>, mouse: Mouse,
     keyboard_mouse: bool, view_at: [u32; 2],
-    captured: bool, title: Option<()>, screen: Screen, remote: Option<Remote>,
+    captured: bool, regrab_on_refocus: bool, title: Option<()>, screen: Screen,
+    remote: Option<Remote>,
     mining: bool, lan_acting: Option<u32>, renderer: Option<Renderer>, cursor: (f32, f32),
     server_packs: ServerPacks, options: Options,
 }
@@ -119,7 +120,7 @@ impl Default for Game {
         Self { splitscreen: SplitScreen::default(), left: false, right: false,
             focused: true, agent_pointer: false, window: Some(Window::default()),
             keyboard_mouse: true, view_at: [0, 0],
-            mouse: Mouse::default(), captured: false, title: None,
+            mouse: Mouse::default(), captured: false, regrab_on_refocus: false, title: None,
             screen: Screen::Playing, remote: None, mining: false, lan_acting: None,
             renderer: None, cursor: (0.0, 0.0), server_packs: ServerPacks::default(),
             options: Options::default() }
@@ -186,10 +187,51 @@ fn main() {
         assert!(game.agent_pointer);
         assert_eq!(game.window.as_ref().unwrap().grabs.get(), grabs);
         game.focused = true;
-        assert!(!game.captured); // Focus alone does not resume gameplay.
-        game.capture(true); // Click or resume action.
+        assert!(!game.captured); // Setting the flag is not a grab: `capture` is.
+        game.capture(true); // `regrab_on_refocus`, or a click on the world.
         assert!(game.captured);
         assert_eq!(game.cursor, (213.5, 120.0)); // The grab puts the mouse at the centre.
+    }
+    // A window that held the pointer asks for it back when the focus returns:
+    // the system drops a grabbed pointer with the focus and vanilla's grab
+    // outlives it (`MouseHandler.mouseGrabbed` stays true while GLFW keeps its
+    // cursor mode), so no click is needed to lock it again.
+    {
+        let mut game = Game::default();
+        game.capture(true);
+        assert!(game.captured);
+        let grabs = game.window.as_ref().unwrap().grabs.get();
+        game.focused = false; // Alt+Tab: the release `window_event` makes.
+        game.regrab_on_refocus = game.captured;
+        game.capture(false);
+        assert!(!game.captured);
+        game.focused = true;
+        game.regrab_on_refocus();
+        assert!(game.captured);
+        assert!(game.window.as_ref().unwrap().grabs.get() > grabs);
+        assert!(game.mouse.ignore_first);
+        // Taken once: a focus gain that follows a screen's release takes nothing.
+        game.capture(false);
+        let grabs = game.window.as_ref().unwrap().grabs.get();
+        game.regrab_on_refocus();
+        assert!(!game.captured);
+        assert_eq!(game.window.as_ref().unwrap().grabs.get(), grabs);
+        // A screen open while the window was away keeps the pointer free.
+        game.regrab_on_refocus = true;
+        game.screen = Screen::Inventory;
+        game.regrab_on_refocus();
+        assert!(!game.captured);
+        assert_eq!(game.window.as_ref().unwrap().grabs.get(), grabs);
+        // A window that never held the pointer does not take it on focus.
+        game.screen = Screen::Playing;
+        game.regrab_on_refocus();
+        assert!(!game.captured);
+        assert_eq!(game.window.as_ref().unwrap().grabs.get(), grabs);
+        // A prompt over the world keeps the pointer, as the grab itself checks.
+        game.regrab_on_refocus = true;
+        game.server_packs.prompt = Some(());
+        game.regrab_on_refocus();
+        assert!(!game.captured);
     }
     // A controller-only player's screens leave the shared native pointer alone.
     {
@@ -251,18 +293,21 @@ fn main() {
     // Grabbing and releasing put the pointer at the window's centre
     // (MouseHandler.grabMouse / releaseMouse), in the surface's pixels when it
     // has one; releasing an already released pointer leaves it where it is.
+    // Windows also warps before the Locked grab, which clips the pointer
+    // where it is (#6076).
+    let grab_warps = if cfg!(windows) { 2 } else { 1 };
     game.renderer = Some(Renderer { config: Config { width: 1000, height: 600 } });
     game.capture(true);
     assert!(game.captured);
     let window = game.window.as_ref().unwrap();
-    assert_eq!((window.warps.get(), window.at.get()), (1, (500.0, 300.0)));
+    assert_eq!((window.warps.get(), window.at.get()), (grab_warps, (500.0, 300.0)));
     game.capture(false);
     let window = game.window.as_ref().unwrap();
-    assert_eq!(window.warps.get(), 3);
+    assert_eq!(window.warps.get(), grab_warps + 2);
     assert_eq!(game.cursor, (250.0, 150.0));
     game.cursor = (1.0, 1.0);
     game.capture(false);
-    assert_eq!(game.window.as_ref().unwrap().warps.get(), 3);
+    assert_eq!(game.window.as_ref().unwrap().warps.get(), grab_warps + 2);
     assert_eq!(game.cursor, (1.0, 1.0));
     game.renderer = None;
     game.window.as_mut().unwrap().fail = true;
@@ -276,7 +321,8 @@ fn main() {
             "mouse_position_after_grab_change")
         fixture = fixture.replace("HELPER", function(mouse, "mouse_position_after_grab_change"))
         fixture = fixture.replace("METHODS", capture + "\n" +
-                                  method(source, "capture_loaded_world"))
+                                  method(source, "capture_loaded_world") + "\n" +
+                                  method(source, "regrab_on_refocus"))
         with tempfile.TemporaryDirectory(prefix="horizon-input-") as folder:
             folder = Path(folder)
             rust = folder / "capture.rs"

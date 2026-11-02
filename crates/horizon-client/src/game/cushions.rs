@@ -338,7 +338,15 @@ impl Game<'_> {
         }
         // `Entity.startRiding`: a passenger first gets off what it rides
         // (`stopRiding`), so a seated player moves to this cushion.
+        if !self.native_may_board(id) {
+            return true;
+        }
         self.stop_riding();
+        // startRiding stops when stopRiding left the passenger seated (a mod
+        // canceled the dismount).
+        if self.riding.is_some() {
+            return true;
+        }
         self.riding = Some(id);
         let p = self.cushions[i].position;
         self.audio.play(
@@ -454,6 +462,9 @@ impl Game<'_> {
     /// and `Cushion.removePassenger`'s get-up sound for a rider that left
     /// rather than one whose cushion was killed.
     pub(super) fn get_up_from_cushion(&mut self, c: &Cushion) {
+        if self.riding == Some(c.id) && !self.native_may_leave(c.id) {
+            return;
+        }
         let at = c.dismount();
         self.riding = None;
         if let Some(p) = self.player.as_mut() {

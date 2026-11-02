@@ -341,8 +341,8 @@ fn quads_keep_the_state_of_their_block() {
                 origin,
                 face,
                 false,
-                &tables.info[planks as usize],
-                planks,
+                (planks, &tables.info[planks as usize]),
+                BlockPos::new(cell[0], MIN_Y + 16 * 8 + cell[1], cell[2]),
                 false,
             );
         }

@@ -18,7 +18,7 @@ console` attaches through a pipe, runs two commands and shows what they log.
 
 Everything runs in a fresh temporary folder with fresh HORIZON_HOME and XDG folders and no audio. Logs go
 to --out. Build first:
-    cargo build --profile fast -p horizon-client --bins -p horizon-bots -p horizon-server
+    cargo build --profile fast -p horizon-client -p horizon-client-lib --bins -p horizon-bots -p horizon-server
 """
 import argparse
 import http.client

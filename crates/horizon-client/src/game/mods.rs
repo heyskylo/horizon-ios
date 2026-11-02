@@ -37,6 +37,32 @@ pub(super) fn register_components(root: &std::path::Path) -> horizon_client::Res
     Ok(())
 }
 
+/// The blocks and items native mods declare in code (`native_blocks`,
+/// `native_items`): asked once, so every content root of this run, a pack
+/// reload's included, has the same ones.
+fn native_declared() -> &'static (
+    Vec<horizon_mods::content::Block>,
+    Vec<horizon_mods::content::Item>,
+) {
+    static DECLARED: std::sync::OnceLock<(
+        Vec<horizon_mods::content::Block>,
+        Vec<horizon_mods::content::Item>,
+    )> = std::sync::OnceLock::new();
+    DECLARED.get_or_init(|| {
+        let (mut blocks, mut items) = (Vec::new(), Vec::new());
+        Game::native_blocks(&mut blocks);
+        Game::native_items(&mut items);
+        (blocks, items)
+    })
+}
+/// The native mods' standalone models (`native_standalone_models`), set once
+/// before the resources first load.
+pub(super) fn register_standalone_models() {
+    let mut names = Vec::new();
+    Game::native_standalone_models(&mut names);
+    horizon_client::models::register_standalone(names);
+}
+
 /// `root` with the content mods that are on layered over it
 /// (docs/modpacks.md): their blocks, items, data and assets. Read once at
 /// start, before the resources load; a mod whose content is refused is left
@@ -66,7 +92,14 @@ pub(super) fn content_root(
         {
             continue;
         }
-        let content = match Content::read(path, m) {
+        // The items this mod's native code declares may be a file item's crafting remainder.
+        let declared: Vec<String> = native_declared()
+            .1
+            .iter()
+            .filter(|i| i.id.split_once(':').is_some_and(|(ns, _)| ns == m.id))
+            .map(|i| i.id.clone())
+            .collect();
+        let content = match Content::read_declaring(path, m, &declared) {
             Ok(content) => content,
             Err(e) => {
                 log::warn!("Horizon: mod {} content not loaded: {e}", m.id);
@@ -90,6 +123,25 @@ pub(super) fn content_root(
         };
         if let Err(e) = mod_content::accept_mod(&mut mods, candidate, known) {
             log::warn!("Horizon: mod {} content not loaded: {e}", m.id);
+        }
+    }
+    let (blocks, items) = native_declared();
+    if !blocks.is_empty() || !items.is_empty() {
+        if known.is_none() {
+            match mod_content::known_components(root) {
+                Ok(types) => known = Some(types),
+                Err(e) => log::warn!("Horizon: native mods' blocks and items not loaded: {e}"),
+            }
+        }
+        if let Some(known) = &known {
+            for e in mod_content::accept_declared(&mut mods, blocks, items, known) {
+                log::warn!("Horizon: {e}");
+            }
+            // A file item's remainder named a code-declared item that was refused: that mod
+            // alone is left out, not every content mod through the overlay's check.
+            for e in mod_content::drop_dangling_remainders(&mut mods) {
+                log::warn!("Horizon: {e}");
+            }
         }
     }
     match mod_content::resource_root(root, &mods, &here.join(".horizon-cache")) {

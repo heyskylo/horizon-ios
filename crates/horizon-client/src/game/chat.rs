@@ -253,13 +253,14 @@ fn block_properties(registry: &'static BlockRegistry) -> Arc<BlockProperties> {
     properties
 }
 
-static COMMAND_EXPORTS: Mutex<Vec<(PathBuf, Option<Arc<serde_json::Value>>)>> =
-    Mutex::new(Vec::new());
+static COMMAND_EXPORTS: Mutex<Vec<(PathBuf, Option<Arc<Registries>>)>> = Mutex::new(Vec::new());
 
-/// A folder's `command-registries.json` (vanilla's built-in registries),
-/// read once like the resource ids: parsing its 1.6 MB again took about
-/// 15 ms of every world opening.
-fn command_export(dir: &Path) -> Option<Arc<serde_json::Value>> {
+/// What the registries take from a folder's `command-registries.json`
+/// (vanilla's built-in registries), read once like the resource ids: parsing
+/// its 1.6 MB again took about 15 ms of every world opening. Only the part
+/// the registries fill from stays, not the parsed export (4.2 MB, against
+/// 2.2 MB). A dedicated server opens its world once and keeps nothing.
+fn command_export(dir: &Path, keep: bool) -> Option<Arc<Registries>> {
     let mut cache = COMMAND_EXPORTS.lock().unwrap_or_else(|e| e.into_inner());
     if let Some((_, export)) = cache.iter().find(|(cached, _)| cached == dir) {
         return export.clone();
@@ -267,8 +268,10 @@ fn command_export(dir: &Path) -> Option<Arc<serde_json::Value>> {
     let export = std::fs::read(dir.join("command-registries.json"))
         .ok()
         .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-        .map(Arc::new);
-    cache.push((dir.to_owned(), export.clone()));
+        .map(|export| Arc::new(Registries::from_export(&export)));
+    if keep {
+        cache.push((dir.to_owned(), export.clone()));
+    }
     export
 }
 
@@ -532,8 +535,8 @@ impl Game<'_> {
         }
         // Vanilla's built-in registries (mob effects, components, dialogs...).
         for dir in [&self.options.resources, &self.ui.vanilla_root] {
-            if let Some(export) = command_export(dir) {
-                self.ui.registries.fill_from_export(&export);
+            if let Some(export) = command_export(dir, self.options.dedicated.is_none()) {
+                self.ui.registries.fill_from_exported(&export);
                 break;
             }
         }
@@ -572,6 +575,8 @@ impl Game<'_> {
     /// last time, when this method can restore it (a command draft only for
     /// /), else with its prefix.
     pub(super) fn open_chat_method(&mut self, prefix: &str) {
+        // handleKeybinds: the number keys select before key.chat and key.command.
+        self.select_queued_hotbar();
         let command = prefix == "/";
         let draft = self
             .ui
@@ -775,15 +780,11 @@ impl Game<'_> {
     }
     /// A key (and the text it typed) while the chat screen is open.
     pub(super) fn chat_key_code(&mut self, key: KeyCode, typed_text: Option<&str>) {
-        // InputQuirks.EDIT_SHORTCUT_KEY_MODIFIER: Cmd on macOS, Ctrl elsewhere.
-        let (left, right) = if cfg!(target_os = "macos") {
-            (KeyCode::SuperLeft, KeyCode::SuperRight)
-        } else {
-            (KeyCode::ControlLeft, KeyCode::ControlRight)
-        };
-        let ctrl = self.keys.contains(&left) || self.keys.contains(&right);
-        let shift =
-            self.keys.contains(&KeyCode::ShiftLeft) || self.keys.contains(&KeyCode::ShiftRight);
+        // The live modifiers, not `self.keys`: every ModifiersChanged runs
+        // sync_toggle, which drops ShiftLeft and ControlLeft from `self.keys`
+        // while a screen is open.
+        let ctrl = self.has_control_down_with_quirk();
+        let shift = self.has_shift_down();
         match key {
             // ChatScreen.keyPressed: the chat scrolls a page.
             KeyCode::PageUp | KeyCode::PageDown
@@ -1195,6 +1196,7 @@ impl Game<'_> {
                 h,
                 true,
                 horizon_client::screen_draw::inside(mouse, x, y, w, h),
+                horizon_client::hud_overlays::now_ms(),
             );
             horizon_client::screen_draw::paint(batch, &self.gui.atlas, &button);
         }
@@ -1559,11 +1561,22 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("horizon-export-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("command-registries.json"), r#"{"effects":["a"]}"#).unwrap();
-        let first = command_export(&dir).unwrap();
-        assert_eq!(first["effects"][0], "a");
+        let first = command_export(&dir, true).unwrap();
+        assert_eq!(first.effects, ["a"]);
         std::fs::write(dir.join("command-registries.json"), "{}").unwrap();
-        assert!(Arc::ptr_eq(&first, &command_export(&dir).unwrap()));
-        assert!(command_export(&dir.join("missing")).is_none());
+        assert!(Arc::ptr_eq(&first, &command_export(&dir, true).unwrap()));
+        assert!(command_export(&dir.join("missing"), true).is_none());
+        // A dedicated server's read is not kept.
+        let other = dir.join("other");
+        std::fs::create_dir_all(&other).unwrap();
+        std::fs::write(
+            other.join("command-registries.json"),
+            r#"{"effects":["b"]}"#,
+        )
+        .unwrap();
+        let once = command_export(&other, false).unwrap();
+        assert_eq!(once.effects, ["b"]);
+        assert!(!Arc::ptr_eq(&once, &command_export(&other, false).unwrap()));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

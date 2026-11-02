@@ -62,6 +62,8 @@ pub struct PackInputs {
     pub has_ceiling: bool,
     /// The values native mods hand their packs (`frame.mods`, `native_shader_params`).
     pub mod_params: [[f32; 4]; 8],
+    /// The player's state, for Iris's status uniforms.
+    pub status: PlayerStatus,
 }
 
 /// The `cloudHeight` uniform. Vanilla reads `visual/cloud_height` only while the cloud color
@@ -74,6 +76,35 @@ pub fn cloud_height(cloud_color_alpha: f32, height: f32) -> f32 {
         f32::NAN
     }
 }
+
+/// The local player's state behind Iris's status uniforms (`currentPlayerHealth`,
+/// `isSpectator`, `is_burning`...).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct PlayerStatus {
+    /// Survival or adventure: the vitals are -1 in creative and spectator.
+    pub survival: bool,
+    pub health: f32,
+    pub max_health: f32,
+    pub food: f32,
+    /// Air supply ticks, of 300.
+    pub air: f32,
+    /// Armor points (the `armor` attribute).
+    pub armor: f32,
+    pub spectator: bool,
+    pub riding: bool,
+    pub feet_in_water: bool,
+    pub swimming: bool,
+    pub burning: bool,
+    pub hurt: bool,
+    pub invisible: bool,
+    pub sneaking: bool,
+    pub sprinting: bool,
+}
+
+/// `maxPlayerHunger`, `maxPlayerAir` and `maxPlayerArmor`: Minecraft's own maximums.
+const MAX_HUNGER: f32 = 20.0;
+const MAX_AIR: f32 = 300.0;
+const MAX_ARMOR: f32 = 50.0;
 
 /// One uniform's value: up to 16 floats or 3 integers.
 #[derive(Clone, Copy, Debug)]
@@ -216,6 +247,24 @@ pub const NAMES: &[&str] = &[
     "shadowProjectionInverse",
     "playerBodyVector",
     "firstPersonCamera",
+    "currentPlayerHealth",
+    "maxPlayerHealth",
+    "currentPlayerHunger",
+    "maxPlayerHunger",
+    "currentPlayerAir",
+    "maxPlayerAir",
+    "currentPlayerArmor",
+    "maxPlayerArmor",
+    "isSpectator",
+    "isRiding",
+    "feetInWater",
+    "inSwimmingAnimation",
+    "is_burning",
+    "is_hurt",
+    "is_invisible",
+    "is_sneaking",
+    "is_sprinting",
+    "centerDepthSmooth",
     "isRightHanded",
     "is_on_ground",
     "bedrockLevel",
@@ -237,6 +286,9 @@ pub struct FrameUniforms {
     camera_origin: DVec3,
     wetness: f32,
     eye_smooth: [f32; 2],
+    /// `depthtex0` at the screen's centre as last read back, and `centerDepthSmooth`.
+    pub center_depth_raw: Option<f32>,
+    center_depth: Option<f32>,
     /// The pack's shadow settings (7.1).
     pub shadow: Shadow,
 }
@@ -253,6 +305,8 @@ impl Default for FrameUniforms {
             camera_origin: DVec3::ZERO,
             wetness: 0.0,
             eye_smooth: [0.0; 2],
+            center_depth_raw: None,
+            center_depth: None,
             shadow: Shadow::default(),
         }
     }
@@ -428,6 +482,7 @@ impl FrameUniforms {
             aspect,
             frame.depth_far,
         );
+        let first_frame = self.previous.is_none();
         let (previous_absolute, previous_view, previous_projection) =
             self.camera_history(frame.camera, view, projection);
         update_camera_origin(&mut self.camera_origin, frame.camera, previous_absolute);
@@ -452,9 +507,22 @@ impl FrameUniforms {
         };
         self.wetness = smooth(self.wetness, inputs.rain, half_life / 20.0, dt);
         let eye = inputs.eye_light.map(|l| (l * 16) as f32);
+        if first_frame {
+            self.wetness = inputs.rain;
+            self.eye_smooth = eye;
+        }
         for (smoothed, target) in self.eye_smooth.iter_mut().zip(eye) {
             *smoothed = smooth(*smoothed, target, 10.0 / 20.0, dt);
         }
+        // `centerDepthHalflife`'s default, 1 tick (OptiFine's shaders.txt); the first value
+        // read back is taken as it is.
+        if let Some(raw) = self.center_depth_raw {
+            self.center_depth = Some(match self.center_depth {
+                Some(v) => smooth(v, raw, 1.0 / 20.0, dt),
+                None => raw,
+            });
+        }
+        let center_depth = self.center_depth.unwrap_or(1.0);
         // Vanilla fades by the stronger of two linear fogs; a pack gets one: the pair (start
         // and end together) of the one that is complete nearer (OQ-36). Mixing the nearer start
         // of one with the nearer end of the other made fog begin at the camera on clear days.
@@ -509,6 +577,7 @@ impl FrameUniforms {
                 "eyeAltitude" => Value::f(&[frame.camera.y as f32]),
                 "upPosition" => v3(to_view(Vec3::new(0.0, 100.0, 0.0))),
                 "sunPosition" => v3(sun),
+                "centerDepthSmooth" => Value::f(&[center_depth]),
                 "moonPosition" => v3(moon),
                 "shadowLightPosition" => v3(if day { sun } else { moon }),
                 "sunAngle" => Value::f(&[sun_angle]),
@@ -566,7 +635,7 @@ impl FrameUniforms {
                 "heldBlockLightValue" => Value::i(&[inputs.held_light[0]]),
                 "heldBlockLightValue2" => Value::i(&[inputs.held_light[1]]),
                 // renderStage is NONE outside gbuffers draws.
-                _ => Value::i(&[0]),
+                _ => status_value(name, inputs).unwrap_or(Value::i(&[0])),
             }
         };
         self.values.clear();
@@ -610,6 +679,46 @@ impl FrameUniforms {
         self.values
             .extend(out.iter().map(|v| Value::f(&v.v.map(|x| x as f32)[..v.n])));
     }
+}
+
+/// Iris's player status and dimension uniforms, from `inputs`: the vitals are fractions of
+/// their maximum, and -1 (with the maximums of health and air) in creative and spectator.
+fn status_value(name: &str, inputs: &PackInputs) -> Option<Value> {
+    let status = inputs.status;
+    let vital = |v: f32| {
+        Value::f(&[if status.survival {
+            v.clamp(0.0, 1.0)
+        } else {
+            -1.0
+        }])
+    };
+    let flag = |b: bool| Value::i(&[i32::from(b)]);
+    Some(match name {
+        "currentPlayerHealth" => vital(status.health / status.max_health.max(1.0)),
+        "maxPlayerHealth" => Value::f(&[if status.survival {
+            status.max_health
+        } else {
+            -1.0
+        }]),
+        "currentPlayerHunger" => vital(status.food / MAX_HUNGER),
+        "maxPlayerHunger" => Value::f(&[MAX_HUNGER]),
+        "currentPlayerAir" => vital(status.air / MAX_AIR),
+        "maxPlayerAir" => Value::f(&[if status.survival { MAX_AIR } else { -1.0 }]),
+        "currentPlayerArmor" => vital(status.armor / MAX_ARMOR),
+        "maxPlayerArmor" => Value::f(&[MAX_ARMOR]),
+        "isSpectator" => flag(status.spectator),
+        "isRiding" => flag(status.riding),
+        "feetInWater" => flag(status.feet_in_water),
+        "inSwimmingAnimation" => flag(status.swimming),
+        "is_burning" => flag(status.burning),
+        "is_hurt" => flag(status.hurt),
+        // Spectators count as invisible.
+        "is_invisible" => flag(status.invisible || status.spectator),
+        "is_sneaking" => flag(status.sneaking),
+        "is_sprinting" => flag(status.sprinting),
+        "endFlashIntensity" => Value::f(&[inputs.end_flash_intensity]),
+        _ => return None,
+    })
 }
 
 /// How many components the uniform `name` has (16 for a matrix).
@@ -848,6 +957,77 @@ mod tests {
         assert_eq!(out[60..64], [0; 4], "a value past the block is dropped");
     }
 
+    /// Iris's status uniforms as its documentation defines them (shaders.properties, "Status").
+    #[test]
+    fn status_uniforms_follow_iris() {
+        let float = |name: &str, inputs: &PackInputs| match status_value(name, inputs) {
+            Some(Value::F(f)) => f[0],
+            other => panic!("{name}: {other:?}"),
+        };
+        let int = |name: &str, inputs: &PackInputs| match status_value(name, inputs) {
+            Some(Value::I(i)) => i[0],
+            other => panic!("{name}: {other:?}"),
+        };
+        let mut inputs = PackInputs {
+            status: PlayerStatus {
+                survival: true,
+                health: 15.0,
+                max_health: 20.0,
+                food: 10.0,
+                air: 150.0,
+                armor: 20.0,
+                sneaking: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        // The vitals are fractions of their maximums.
+        assert_eq!(float("currentPlayerHealth", &inputs), 0.75);
+        assert_eq!(float("maxPlayerHealth", &inputs), 20.0);
+        assert_eq!(float("currentPlayerHunger", &inputs), 0.5);
+        assert_eq!(float("maxPlayerHunger", &inputs), 20.0);
+        assert_eq!(float("currentPlayerAir", &inputs), 0.5);
+        assert_eq!(float("maxPlayerAir", &inputs), 300.0);
+        assert_eq!(float("currentPlayerArmor", &inputs), 0.4);
+        assert_eq!(float("maxPlayerArmor", &inputs), 50.0);
+        assert_eq!(int("is_sneaking", &inputs), 1);
+        assert_eq!(int("is_invisible", &inputs), 0);
+        // Creative and spectator: -1 for the vitals and the maximums of health and air;
+        // spectators are invisible.
+        inputs.status.survival = false;
+        inputs.status.spectator = true;
+        for name in [
+            "currentPlayerHealth",
+            "maxPlayerHealth",
+            "currentPlayerHunger",
+            "currentPlayerAir",
+            "maxPlayerAir",
+            "currentPlayerArmor",
+        ] {
+            assert_eq!(float(name, &inputs), -1.0, "{name}");
+        }
+        assert_eq!(float("maxPlayerHunger", &inputs), 20.0);
+        assert_eq!(float("maxPlayerArmor", &inputs), 50.0);
+        assert_eq!(int("isSpectator", &inputs), 1);
+        assert_eq!(int("is_invisible", &inputs), 1);
+        // Each is provided, not left at zero for the pack.
+        for name in [
+            "currentPlayerHealth",
+            "isSpectator",
+            "is_sprinting",
+            "bedrockLevel",
+        ] {
+            assert!(index(name).is_some(), "{name} is not provided");
+        }
+        assert!(
+            NAMES
+                .iter()
+                .filter(|n| status_value(n, &inputs).is_some())
+                .count()
+                == 18
+        );
+    }
+
     #[test]
     fn lightning_position_is_zero_without_a_bolt_and_camera_relative_with_one() {
         use crate::gfx::lightning::Bolt;
@@ -1022,5 +1202,162 @@ mod tests {
             origin.abs_diff_eq(Vec3::new(-0.5, 1.38, 2.5), 1e-3),
             "{origin}"
         );
+    }
+}
+
+#[cfg(test)]
+mod initial_history_tests {
+    use super::*;
+    use crate::hud::HudBatch;
+    fn float(u: &FrameUniforms, name: &str) -> [f32; 16] {
+        match u.values[index(name).unwrap()] {
+            Value::F(v) => v,
+            _ => panic!("float uniform expected"),
+        }
+    }
+    #[test]
+    fn first_history_is_current_then_tracks_the_actual_previous_frame() {
+        let hud = HudBatch::new([800, 450]);
+        let mut f = frame(&hud);
+        let mut u = FrameUniforms::default();
+        f.camera = DVec3::new(1024.25, -3.5, 11.75);
+        f.yaw = 21.0;
+        f.pitch = -16.0;
+        u.update(&f, &PackInputs::default(), [800, 450]);
+        assert_eq!(
+            float(&u, "previousCameraPosition"),
+            float(&u, "cameraPosition")
+        );
+        for (prior, current) in [
+            ("gbufferPreviousProjection", "gbufferProjection"),
+            ("gbufferPreviousModelView", "gbufferModelView"),
+        ] {
+            assert_eq!(float(&u, prior), float(&u, current));
+            assert!(float(&u, prior).iter().any(|v| *v != 0.0));
+        }
+        let previous_absolute = f.camera;
+        let view = float(&u, "gbufferModelView");
+        let projection = float(&u, "gbufferProjection");
+        f.camera = DVec3::new(-100.0, 20.0, 40.0);
+        f.yaw = 90.0;
+        f.pitch = 50.0;
+        f.fov_degrees = 100.0;
+        u.update(&f, &PackInputs::default(), [1000, 500]);
+        // A camera-origin rebase shifts both positions equally; it must not
+        // invent motion or lose the actual previous frame's camera.
+        let previous = float(&u, "previousCameraPosition");
+        let current = float(&u, "cameraPosition");
+        assert_eq!(
+            &previous[..3],
+            &(previous_absolute - u.camera_origin).as_vec3().to_array()
+        );
+        assert_eq!(
+            [0, 1, 2].map(|i| previous[i] - current[i]),
+            (previous_absolute - f.camera).as_vec3().to_array()
+        );
+        assert_eq!(float(&u, "gbufferPreviousModelView"), view);
+        assert_eq!(float(&u, "gbufferPreviousProjection"), projection);
+        assert_ne!(
+            float(&u, "previousCameraPosition"),
+            float(&u, "cameraPosition")
+        );
+    }
+    #[test]
+    fn environmental_smoothing_starts_at_the_first_inputs_without_resetting_each_frame() {
+        let hud = HudBatch::new([800, 450]);
+        let f = frame(&hud);
+        let mut u = FrameUniforms::default();
+        let mut input = PackInputs {
+            rain: 0.75,
+            eye_light: [3, 14],
+            ..Default::default()
+        };
+        u.update(&f, &input, [800, 450]);
+        assert_eq!(float(&u, "wetness")[0], 0.75);
+        match u.values[index("eyeBrightnessSmooth").unwrap()] {
+            Value::I(v) => assert_eq!(&v[..2], &[48, 224]),
+            _ => panic!("integer uniform expected"),
+        }
+        input.rain = 0.0;
+        input.eye_light = [0, 0];
+        u.update(&f, &input, [800, 450]);
+        assert!(float(&u, "wetness")[0] > 0.0);
+        assert!(u.eye_smooth.iter().all(|v| *v > 0.0));
+    }
+    fn frame(hud: &HudBatch) -> Frame<'_> {
+        Frame {
+            eye: glam::DVec3::ZERO,
+            eye_rotation: [0.0; 2],
+            first_person: true,
+            shadow_scene_revision: (0, 0),
+            shadow_cache: false,
+            water_plane: None,
+            weather: &[],
+            weather_time: crate::weather::Time::new(0, 0.0),
+            camera: glam::DVec3::new(0.5, 100.0, 0.5),
+            yaw: 0.0,
+            pitch: 10.0,
+            fov_degrees: 85.0,
+            bob: glam::Mat4::IDENTITY,
+            spin: glam::Mat4::IDENTITY,
+            sky: crate::environment::Sky::default(),
+            distance: 12.0,
+            detail_distance: 12.0,
+            depth_far: 1000.0,
+            underwater: false,
+            cave_culling: false,
+            title: true,
+            sky_blocked: false,
+            skybox: false,
+            end_sky: false,
+            end_sky_sprite: None,
+            environment_fog: None,
+            water_fog: [0.0; 3],
+            fog: None,
+            dark_disc: false,
+            outline: Vec::new(),
+            outline_after_terrain: false,
+            outline_high_contrast: false,
+            debug_lines: &[],
+            debug_lines_on_top: &[],
+            debug_crosshair: &[],
+            hud,
+            glint_alpha: 0.75,
+            glint_ticks: 0.0,
+            nether_lighting: false,
+            entities: &[],
+            entity_motion: &[],
+            colored_lights: &[],
+            emissive_layers: &[],
+            shadow_only: &[],
+            entity_spans: &[],
+            skin: None,
+            glowing: &[],
+            dynamic_lights: &[],
+            clouds: None,
+            lightning: Default::default(),
+            additive: &[],
+            see_through: &[],
+            celestial: &[],
+            stars: None,
+            hand: &[],
+            hand_spans: &[],
+            hand_fov_degrees: 70.0,
+            screen: &[],
+            pack: Default::default(),
+            border: None,
+            game_time: 0.0,
+            shader_game_time: 0.0,
+            end_portal_sprites: [[0.0; 4]; 2],
+            crumbling_sprite: [0.0; 4],
+            ticks: 0,
+            darkness: (0.0, 0.0),
+            night_vision: 0.0,
+            block_flicker: 0.0,
+            boss_darken: 0.0,
+            menu_blur: None,
+            chunk_fade: 0.0,
+            post_effects: crate::post_chain::Request::none(),
+        }
     }
 }

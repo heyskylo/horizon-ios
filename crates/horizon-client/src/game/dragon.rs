@@ -27,7 +27,7 @@ use horizon_world::nbt::Tag;
 /// Mob ids from here on are dragon parts (`SPECIAL + part`) and crystals
 /// (`SPECIAL + 16 + crystal`), so projectiles can target them.
 pub(super) const SPECIAL: u32 = u32::MAX - 4096;
-const CRYSTAL_IDS: u32 = SPECIAL + 16;
+pub(super) const CRYSTAL_IDS: u32 = SPECIAL + 16;
 const FIGHT_FILE: &str = "data/minecraft/ender_dragon_fight.dat";
 const MAX_HEALTH: f32 = 200.0;
 /// `Mob.getAmbientSoundInterval`.
@@ -1814,8 +1814,9 @@ impl Game<'_> {
                     {
                         y -= 1.0;
                     }
+                    let id = self.take_entity_id();
                     self.breath_clouds.push(Breath {
-                        id: 0,
+                        id,
                         at: [x, y.floor() + 1.0, z],
                         radius: 5.0,
                         age: 0,
@@ -2291,8 +2292,9 @@ impl Game<'_> {
         );
         // assignDirectionalMovement: the direction times the acceleration power 0.1.
         let velocity = Vec3::new(v.x * 0.1, v.y * 0.1, v.z * 0.1);
+        let id = self.take_entity_id();
         self.dragon_fireballs.push(DragonFireball {
-            id: 0,
+            id,
             position: at,
             previous: at,
             velocity,
@@ -2338,8 +2340,9 @@ impl Game<'_> {
                 ))
             });
             if hit_block || hit_player || b.age > 600 {
+                let id = self.take_entity_id();
                 self.breath_clouds.push(Breath {
-                    id: 0,
+                    id,
                     at: [next.x, next.y, next.z],
                     radius: 3.0,
                     age: 0,
@@ -2739,15 +2742,32 @@ impl Game<'_> {
         } else {
             0.0
         };
-        // The dissolve is approximated by fading out.
-        let color = if death > 0.0 {
-            let alpha = ((1.0 - death / 200.0) * 255.0).clamp(0.0, 255.0) as u32;
-            alpha << 24 | 0x00FF_FFFF
+        // Dying: DYING_RENDER_TYPE, `entityCutoutDissolve` of the skin with dragon_exploding as
+        // the mask, white at `ARGB.white(1 - deathTime / 200)` and no overlay.
+        let mask = sprite("entity/enderdragon/dragon_exploding").filter(|_| death > 0.0);
+        let (color, overlay) = if mask.is_some() {
+            (dissolve_color(death), horizon_client::gfx::DISSOLVE_OVERLAY)
         } else {
-            0xFFFF_FFFF
+            (0xFFFF_FFFF, u32::from(d.hurt_time > 0))
         };
-        let overlay = u32::from(d.hurt_time > 0);
+        let first = out.len();
         horizon_client::mobs::render::draw(model, base, &poses, skin, color, light, overlay, out);
+        if let Some(mask) = mask {
+            dissolve_mask(&mut out[first..], skin, mask);
+        }
+        // The skin's OptiFine emissive overlay, full bright.
+        let glow = self
+            .res
+            .mob_data()
+            .emissive
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .overlay("entity/enderdragon/dragon")
+            .and_then(sprite);
+        if let Some(glow) = glow.filter(|_| mask.is_none()) {
+            let full = horizon_client::mobs::render::FULL_BRIGHT;
+            horizon_client::mobs::render::draw(model, base, &poses, glow, color, full, 0, out);
+        }
         // RenderTypes.eyes: the glowing eyes, added on top.
         let mut eye_quads = Vec::new();
         horizon_client::mobs::render::draw(
@@ -3860,6 +3880,24 @@ impl Game<'_> {
     }
 }
 
+/// The dying model's colour, `ARGB.white(1 - deathTime / 200)`: `Mth.floor` of the alpha
+/// shifted as a Java int, so past 200 it wraps as vanilla's does.
+fn dissolve_color(death: f32) -> u32 {
+    let alpha = ((1.0 - death / 200.0) * 255.0).floor() as i32;
+    (alpha << 24) as u32 | 0x00FF_FFFF
+}
+/// `DissolveMaskSampler` at the vertex's `UV0`: the same place in the mask's sprite as in the
+/// skin's, as the dissolve overlay reads it from `glint_uv` (entity.wgsl).
+fn dissolve_mask(quads: &mut [Vertex], skin: [f32; 4], mask: [f32; 4]) {
+    for v in quads {
+        let u = (v.uv[0] - skin[0]) / (skin[2] - skin[0]);
+        let w = (v.uv[1] - skin[1]) / (skin[3] - skin[1]);
+        v.glint_uv = [
+            mask[0] + (mask[2] - mask[0]) * u,
+            mask[1] + (mask[3] - mask[1]) * w,
+        ];
+    }
+}
 /// `submitRays`: the death rays from a fixed seed, fading in white to magenta.
 fn dragon_rays(base: glam::Mat4, t: f32, white: horizon_client::hud::Rect, out: &mut Vec<Vertex>) {
     // Vanilla's dragonRays has no texture. Sample inside the white sprite:
@@ -3984,6 +4022,25 @@ mod tests {
             cases.push(triangles);
         }
         std::fs::write(path, serde_json::to_vec(&cases).unwrap()).unwrap();
+    }
+
+    #[test]
+    fn the_dying_model_reads_the_mask_where_it_reads_the_skin() {
+        // The skin in the atlas's top-left quarter, the mask in its bottom-right one.
+        let mut quad = [Vertex {
+            pos: [0.0; 3],
+            uv: [0.25, 0.125],
+            layer: 0,
+            color: 0,
+            light: 0,
+            normal: [0; 4],
+            glint_uv: [0.0; 2],
+        }];
+        dissolve_mask(&mut quad, [0.0, 0.0, 0.5, 0.5], [0.5, 0.5, 1.0, 1.0]);
+        assert_eq!(quad[0].glint_uv, [0.75, 0.625]);
+        // ARGB.white(1 - deathTime / 200): floor(127.5), and past 200 the int shift wraps.
+        assert_eq!(dissolve_color(100.0), 0x7FFF_FFFF);
+        assert_eq!(dissolve_color(200.5), 0xFFFF_FFFF);
     }
 
     #[test]

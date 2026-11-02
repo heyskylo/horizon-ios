@@ -11,7 +11,7 @@ A real Horizon client (horizon-ctl, offscreen) with LOD Distance 32 joins a dedi
 
 Each server and game runs in fresh folders with fresh HORIZON_HOME and XDG folders (lab.game_env), on a free
 port. Build first:
-    cargo build --profile fast -p horizon-client --bin horizon-client --bin horizon-ctl
+    cargo build --profile fast -p horizon-client -p horizon-client-lib --bin horizon-client --bin horizon-ctl
 """
 import argparse
 import os

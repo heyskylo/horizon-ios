@@ -73,6 +73,7 @@ pub mod render;
 pub mod riders;
 pub mod seen_grid;
 pub mod shulker;
+pub mod skin;
 pub mod sniffer;
 pub mod spawn_rules;
 pub mod spawn_selection;
@@ -1073,6 +1074,10 @@ pub struct Extra {
     /// What a piglin's or hoglin's brain remembers: its avoid target, the
     /// adults its sensor sees and the activity it is in.
     pub piglin: piglin::Memories,
+    /// What the native mods last heard it hold and wear
+    /// (`LivingEntity.lastEquipmentItems`, empty at first), by
+    /// `EquipmentSlot` ordinal: see `Mob::equipment_stacks`.
+    pub equipment_heard: Option<Box<[Option<crate::items::ItemStack>; 8]>>,
 }
 impl Extra {
     pub fn set_main_hand(&mut self, item: Option<Arc<str>>) {
@@ -1279,6 +1284,11 @@ pub enum MobEvent {
         count: u32,
     },
     Sound(&'static str, [f64; 3], f32, f32),
+    /// `Entity.sendBubbleColumnParticles`: a mob at the top of the bubble column
+    /// block at `pos` (the splash and bubble particles over it).
+    BubbleColumnParticles {
+        pos: [i32; 3],
+    },
     /// `UseBonemeal`: the villager's bone meal grows the crop at `pos`
     /// (`BoneMealItem.growCrop`, then level event 1505).
     Bonemeal {
@@ -1991,6 +2001,62 @@ impl Seen {
     }
 }
 impl Mob {
+    /// What the mob holds and wears, by `EquipmentSlot` ordinal: main hand,
+    /// off hand, feet, legs, chest, head, body and saddle
+    /// (`ClientboundSetEquipmentPacket`'s slots).
+    pub fn equipment_stacks(&self) -> [Option<crate::items::ItemStack>; 8] {
+        use crate::items::ItemStack;
+        let e = &self.extra;
+        // A horse's armour, a llama's carpet, a harness: Horizon keeps the body
+        // slot's item (6) in `head`.
+        let body = drops::head_is_body(self.species());
+        let wolf = self.species() == Species::Wolf;
+        let slots = [
+            (0usize, &e.main_hand, e.main_hand_stack()),
+            (1, &e.off_hand, None),
+            (2, &e.feet, e.armor[3].as_ref()),
+            (3, &e.legs, e.armor[2].as_ref()),
+            (4, &e.chest, e.armor[1].as_ref()),
+            // The body slot's item is no worn armour.
+            (
+                if body { 6 } else { 5 },
+                &e.head,
+                e.armor[0].as_ref().filter(|_| !body),
+            ),
+        ];
+        let mut out: [Option<ItemStack>; 8] = Default::default();
+        for (slot, item, worn) in slots {
+            let Some(item) = item else {
+                continue;
+            };
+            // The worn armour keeps its stack: a dyed leather piece keeps
+            // its colour.
+            out[slot] = Some(worn.cloned().unwrap_or_else(|| ItemStack {
+                item: item.clone(),
+                count: 1,
+                // A wolf's armor shows its cracks.
+                damage: if slot == 6 && wolf {
+                    e.body_damage.max(0) as u32
+                } else {
+                    0
+                },
+                extra: if slot == 6 && wolf {
+                    e.body_extra.clone()
+                } else {
+                    None
+                },
+            }));
+        }
+        if e.saddled {
+            out[7] = Some(e.saddle_stack.clone().unwrap_or(ItemStack {
+                item: Arc::from("minecraft:saddle"),
+                count: 1,
+                damage: 0,
+                extra: None,
+            }));
+        }
+        out
+    }
     pub fn burning_time(&self) -> f64 {
         let base = finalize::value(self, finalize::Attr::BurningTime);
         let protection: u32 = gear::ARMOR
@@ -2734,6 +2800,11 @@ impl Mob {
         } else {
             0.0
         };
+        // LivingEntity.getDamageAfterArmorAbsorb asks `hurtArmor` *before*
+        // `CombatRules.getDamageAfterAbsorb`, so a worn piece wears by the
+        // damage the armour, toughness and enchantment reductions have not
+        // touched yet, and only a hit outside `#bypasses_armor` asks at all.
+        let armor_hit = (!source.bypasses_armor() && amount > 0.0).then_some(amount);
         if !source.bypasses_armor() && self.kind.armor + worn + covered > 0.0 {
             // CombatRules.getDamageAfterAbsorb
             let armor = self.kind.armor + worn + covered;
@@ -2816,17 +2887,19 @@ impl Mob {
         if !absorbed && dealt != 0.0 {
             self.record_damage(source, dealt);
         }
-        // LivingEntity.hurtArmor: the body armour a mob wears (a horse's) wears
-        // on a hit that reached it. A wolf's armour has its own rule
-        // (`Wolf.actuallyHurt`, `hurt_wolf_armor`).
-        if dealt > 0.0
+        // LivingEntity.hurtArmor: `Horse` is the only mob that overrides it, and
+        // it hands `doHurtEquipment` the body slot alone. A wolf's armour has
+        // its own rule (`Wolf.actuallyHurt`, `hurt_wolf_armor`) and a player's
+        // four pieces theirs, so the other "body slot" species — donkey, mule,
+        // llama, camel, the skeleton and zombie horses — wear nothing, whatever
+        // `drops::head_is_body` says about where the item lives.
+        if let Some(damage) = armor_hit
+            && self.species() == Species::Horse
             && self.extra.head.is_some()
-            && self.species() != Species::Wolf
-            && drops::head_is_body(self.species())
         {
             self.outbox.push(MobEvent::ArmorHurt {
                 mob: self.id,
-                amount: dealt,
+                amount: damage,
                 kind: source.kind,
             });
         }
@@ -2858,6 +2931,9 @@ impl Mob {
         ai::after_hurt(self, &source);
         if self.health <= 0.0 {
             self.health = 0.0;
+            // `LivingEntity.hurtServer`: a killing blow is taken by a
+            // `death_protection` item in either hand instead of dying.
+            self.use_death_protection(&source);
         }
         if knock {
             // playHurtSound (Mob: also resets the ambient sound clock) or the
@@ -2989,8 +3065,10 @@ impl Mob {
         if creaking::is_creaking(self) && !creaking::can_move(self) {
             return;
         }
+        // The native hook runs first, on the raw strength (NeoForge's `LivingKnockBackEvent` fires
+        // at the start of `LivingEntity.knockback`), then the resistance scales what it left.
         let mut knock = crate::health::Knock {
-            strength: power * (1.0 - self.attrs.knockback_resistance),
+            strength: power,
             x: xd,
             z: zd,
         };
@@ -3003,6 +3081,7 @@ impl Mob {
             x: mut xd,
             z: mut zd,
         } = knock;
+        let power = power * (1.0 - self.attrs.knockback_resistance);
         if power <= 0.0 {
             return;
         }
@@ -3149,6 +3228,44 @@ impl Mob {
         let through = (damage - self.absorption).max(0.0);
         self.absorption = (self.absorption - (damage - through)).max(0.0);
         through
+    }
+    /// `LivingEntity.checkTotemDeathProtection`: the first hand with a
+    /// `death_protection` item uses it up, the mob survives at 1 health with
+    /// the totem's effects, and entity event 35 tells the clients.
+    fn use_death_protection(&mut self, source: &Damage) -> bool {
+        // `DamageTypeTags.BYPASSES_INVULNERABILITY`: the void and /kill take it.
+        if source.kind.bypasses_invulnerability() {
+            return false;
+        }
+        // `getItemInHand`: the main hand first. The totem is the only item in
+        // the shipped data with `minecraft:death_protection`.
+        const TOTEM: &str = "minecraft:totem_of_undying";
+        let main = self.extra.main_hand.as_deref() == Some(TOTEM);
+        let off = !main && self.extra.off_hand.as_deref() == Some(TOTEM);
+        if !main && !off {
+            return false;
+        }
+        if main {
+            self.extra.set_main_hand(None);
+        } else {
+            self.extra.off_hand = None;
+        }
+        // `setHealth(1.0F)`, then `DeathProtection.TOTEM_EFFECTS`.
+        self.health = 1.0;
+        for (effect, ticks, amplifier) in [
+            ("regeneration", 900, 1),
+            ("absorption", 100, 1),
+            ("fire_resistance", 800, 0),
+        ] {
+            self.add_effect(effect, ticks, amplifier);
+        }
+        let at = [self.position.x, self.position.y, self.position.z];
+        self.outbox.push(MobEvent::EntityEvent {
+            mob: self.id,
+            event: 35,
+            at,
+        });
+        true
     }
     /// `HealOrHarmMobEffect.applyInstantenousEffect`: a harming effect hurts a
     /// living mob (6 << amplifier, magic) and heals an undead one, a healing effect
@@ -4221,10 +4338,14 @@ mod armor_hurt_tests {
     use horizon_core::geometry::Vec3;
 
     fn horse() -> Mob {
+        mob("minecraft:horse", Species::Horse)
+    }
+
+    fn mob(id: &str, species: Species) -> Mob {
         let mut kind = kind();
         let k = Arc::make_mut(&mut kind);
-        k.id = "minecraft:horse".into();
-        k.species = Species::Horse;
+        k.id = id.into();
+        k.species = species;
         Mob::new(1, kind, Vec3::ZERO, 0.0)
     }
 
@@ -4257,6 +4378,149 @@ mod armor_hurt_tests {
                 .outbox
                 .iter()
                 .any(|e| matches!(e, MobEvent::ArmorHurt { .. }))
+        );
+    }
+
+    /// `Horse` is the only mob that overrides `LivingEntity.hurtArmor` (the
+    /// base one is empty, `LivingEntity.java:1887`), so a donkey wearing a body
+    /// item — `/item replace entity @e[type=minecraft:donkey,limit=1]
+    /// armor.body with minecraft:wolf_armor` — wears nothing, even though
+    /// `drops::head_is_body` stores a donkey's body item in the slot a horse's
+    /// goes in.
+    #[test]
+    fn a_donkey_wearing_a_body_item_wears_nothing() {
+        let mut donkey = mob("minecraft:donkey", Species::Donkey);
+        donkey.extra.head = Some("minecraft:wolf_armor".into());
+        assert!(
+            donkey.damage(6.0, Damage::of(DamageKind::MobAttack)),
+            "the hit landed"
+        );
+        assert!(
+            !donkey
+                .outbox
+                .iter()
+                .any(|e| matches!(e, MobEvent::ArmorHurt { .. })),
+            "only a horse's own override wears its body piece"
+        );
+    }
+
+    /// `getDamageAfterArmorAbsorb` asks `hurtArmor` only when the damage type
+    /// is not in `#bypasses_armor` (`LivingEntity.java:1907-1909`), so a horse
+    /// that falls keeps its body piece whole.
+    #[test]
+    fn a_fall_does_not_wear_the_body_piece() {
+        let mut m = horse();
+        m.extra.head = Some("minecraft:diamond_horse_armor".into());
+        assert!(
+            m.damage(6.0, Damage::of(DamageKind::Fall)),
+            "the fall landed"
+        );
+        assert!(
+            !m.outbox
+                .iter()
+                .any(|e| matches!(e, MobEvent::ArmorHurt { .. })),
+            "a #bypasses_armor hit asks for no wear"
+        );
+    }
+
+    /// The wear is measured by the damage `hurtArmor` is handed, which is the
+    /// one the armour, toughness and enchantment reductions have not touched
+    /// yet: 8 raw damage is `8 / 4 = 2` durability even though plate leaves far
+    /// less than 8 through to the health.
+    #[test]
+    fn the_wear_is_the_damage_before_the_armour_reduction() {
+        let mut m = horse();
+        let k = Arc::make_mut(&mut m.kind);
+        k.armor = 20.0;
+        m.extra.head = Some("minecraft:diamond_horse_armor".into());
+        let before = m.health;
+        assert!(m.damage(8.0, Damage::of(DamageKind::MobAttack)));
+        assert!(m.health < before, "the hit reached the health");
+        let owed = m.outbox.iter().find_map(|e| match e {
+            MobEvent::ArmorHurt { amount, .. } => Some(*amount),
+            _ => None,
+        });
+        assert_eq!(
+            owed,
+            Some(8.0),
+            "the pre-reduction damage, not the damage the health took"
+        );
+    }
+}
+
+#[cfg(test)]
+mod totem_tests {
+    use super::*;
+
+    fn fox() -> Mob {
+        let mut t = (*crate::mobs::sensor_scan_tests::kind()).clone();
+        t.species = Species::Fox;
+        t.max_health = 10.0;
+        Mob::new(1, Arc::new(t), Vec3::ZERO, 0.0)
+    }
+
+    /// `LivingEntity.checkTotemDeathProtection`: a totem in the mouth takes
+    /// the killing blow, the fox stays at 1 health with the totem's effects,
+    /// and entity event 35 tells the clients to draw it.
+    #[test]
+    fn a_totem_in_the_mouth_saves_a_fox() {
+        let mut m = fox();
+        m.extra
+            .set_main_hand(Some("minecraft:totem_of_undying".into()));
+        assert!(m.damage(1000.0, Damage::of(DamageKind::Generic)));
+        assert!(m.alive(), "the totem kept it alive");
+        assert_eq!(m.health, 1.0);
+        assert_eq!(m.extra.main_hand, None, "the totem was used up");
+        // DeathProtection.TOTEM_EFFECTS.
+        assert_eq!(
+            m.extra.effects,
+            vec![
+                ("minecraft:regeneration", 900, 1),
+                ("minecraft:absorption", 100, 1),
+                ("minecraft:fire_resistance", 800, 0),
+            ]
+        );
+        assert!(
+            m.outbox
+                .iter()
+                .any(|e| matches!(e, MobEvent::EntityEvent { event: 35, .. }))
+        );
+    }
+
+    /// `getItemInHand` asks the main hand first, then the off hand.
+    #[test]
+    fn a_totem_in_the_off_hand_saves_a_fox_too() {
+        let mut m = fox();
+        m.extra.off_hand = Some("minecraft:totem_of_undying".into());
+        assert!(m.damage(1000.0, Damage::of(DamageKind::Generic)));
+        assert!(m.alive());
+        assert_eq!(m.health, 1.0);
+        assert_eq!(m.extra.off_hand, None);
+    }
+
+    /// Without one in either hand the blow kills it as before.
+    #[test]
+    fn without_a_totem_the_blow_kills() {
+        let mut m = fox();
+        m.extra
+            .set_main_hand(Some("minecraft:sweet_berries".into()));
+        assert!(m.damage(1000.0, Damage::of(DamageKind::Generic)));
+        assert!(!m.alive());
+    }
+
+    /// `DamageTypeTags.BYPASSES_INVULNERABILITY` (`/kill`, the void) is not
+    /// something a totem answers.
+    #[test]
+    fn a_bypassing_killing_blow_ignores_the_totem() {
+        let mut m = fox();
+        m.extra
+            .set_main_hand(Some("minecraft:totem_of_undying".into()));
+        assert!(m.damage(1000.0, Damage::of(DamageKind::GenericKill)));
+        assert!(!m.alive());
+        assert_eq!(
+            m.extra.main_hand.as_deref(),
+            Some("minecraft:totem_of_undying"),
+            "the totem is still in the mouth"
         );
     }
 }

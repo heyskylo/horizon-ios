@@ -127,6 +127,9 @@ impl Game<'_> {
         if tame && !food {
             // doPlayerRide.
             let id = self.mobs[index].id;
+            if !self.native_may_board(id) {
+                return true;
+            }
             self.break_leash(id, true, false);
             self.yaw = self.mobs[index].yaw;
             self.riding = Some(id);

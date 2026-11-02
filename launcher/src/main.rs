@@ -2154,6 +2154,23 @@ fn plate(t: &Theme) -> Div {
     blocks::panel(t)
 }
 
+fn tab_action(
+    id: impl Into<SharedString>,
+    label: impl Into<SharedString>,
+    t: &Theme,
+) -> Stateful<Div> {
+    let label: SharedString = label.into();
+    shell::action(id, shell::Action::Raised, t).child(shell::label(tr(&label).to_string()))
+}
+
+/// Floating text with no background
+fn quiet_note(text_: impl Into<SharedString>, t: &Theme) -> Div {
+    plate(t)
+        .px(px(12.))
+        .py(px(8.))
+        .child(text(theme::CAPTION).text_color(t.muted).child(text_.into()))
+}
+
 /// Something went wrong: a dot in the danger colour, then what happened.
 fn notice(text_: String, t: &Theme) -> Div {
     plate(t)
@@ -2638,7 +2655,7 @@ impl Launcher {
                 .absolute()
                 .top(px(theme::night::PLAY + 6.))
                 .left_0()
-                .w(px(300.))
+                .w(px(340.))
                 .p(px(6.))
                 .rounded(px(theme::night::RADIUS_CONTROL))
                 .border_1()
@@ -2664,6 +2681,7 @@ impl Launcher {
                         .flex()
                         .items_center()
                         .justify_between()
+                        .gap(px(12.))
                         .h(px(32.))
                         .px(px(10.))
                         .rounded(px(theme::RADIUS))
@@ -2672,14 +2690,15 @@ impl Launcher {
                         .text_color(t.ink)
                         .cursor_pointer()
                         .hover(move |s| s.bg(t.plate_soft))
-                        .child(tag.clone())
+                        .child(div().min_w_0().truncate().child(tag.clone()))
                         .child(
                             div()
                                 .flex()
+                                .flex_none()
                                 .items_center()
                                 .gap(px(8.))
                                 .when(latest, |d| {
-                                    d.child(caps(tr("follows updates")).text_color(t.muted))
+                                    d.child(caps(tr("auto-update")).flex_none().text_color(t.muted))
                                 })
                                 .when(selected, |d| {
                                     d.child(div().size(px(6.)).rounded_full().bg(t.accent))

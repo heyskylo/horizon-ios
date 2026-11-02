@@ -177,16 +177,19 @@ impl EndFlash {
     fn intensity(&self, partial: f32) -> f32 {
         self.old_intensity + (self.intensity - self.old_intensity) * partial
     }
-    /// SkyRenderer.renderEndFlash's pose of the flash quad (built at height 100).
+    /// SkyRenderer.renderEndFlash's pose: the sprite at height 100 turned to the flash.
     fn pose(&self) -> glam::Mat4 {
-        glam::Mat4::from_rotation_y((180.0 - self.y_angle).to_radians())
-            * glam::Mat4::from_rotation_x((-90.0 - self.x_angle).to_radians())
+        flash_pose(self.x_angle, self.y_angle)
     }
-    /// The centre of the flash quad, in the sky's world axes around the camera.
     fn center(&self) -> glam::Vec3 {
         self.pose()
             .transform_point3(glam::Vec3::new(0.0, 100.0, 0.0))
     }
+}
+
+fn flash_pose(x_angle: f32, y_angle: f32) -> glam::Mat4 {
+    glam::Mat4::from_rotation_y((180.0 - y_angle).to_radians())
+        * glam::Mat4::from_rotation_x((-90.0 - x_angle).to_radians())
 }
 impl EndState {
     pub(super) fn locator(&self) -> Option<Arc<VanillaTerrain>> {
@@ -352,14 +355,14 @@ impl Game<'_> {
         out
     }
 
-    /// What a shader pack's `endFlashPosition` and `endFlashIntensity` read: the flash quad's
-    /// centre in the sky's world axes (before the view matrix) and its interpolated intensity.
-    /// Both zero outside the End.
+    /// Iris's `endFlashIntensity` and the flash's direction (camera-relative, length 100: the
+    /// sprite's centre), for shader packs; no flash outside the End.
     pub(super) fn end_flash_for_pack(&self, partial: f32) -> (glam::Vec3, f32) {
         if self.dim != Dim::End {
             return (glam::Vec3::ZERO, 0.0);
         }
-        (self.end.flash.center(), self.end.flash.intensity(partial))
+        let flash = &self.end.flash;
+        (flash.center(), flash.intensity(partial).clamp(0.0, 1.0))
     }
 
     /// LightmapRenderStateExtractor: End flashes add to the sky light factor
@@ -1298,8 +1301,10 @@ impl Game<'_> {
             target
         };
         let survive = self.world.random.next_int_bound(5).unwrap_or(0) > 0;
+        self.next_entity += 1;
+        let id = self.next_entity;
         self.end.eyes.push(EyeOfEnder {
-            id: 0,
+            id,
             position: start,
             previous: start,
             velocity: glam::DVec3::ZERO,
@@ -1567,7 +1572,7 @@ impl Game<'_> {
             // A gateway keeps the item in its level (teleportSameDimension
             // moves it): it doesn't leave, so no native_entity_leave_level.
             self.dropped.remove(i);
-            self.forget_entity(id);
+            self.detach_entity(id);
             tag
         } else if let Some(i) = self.mobs.iter().position(|m| m.id == id) {
             let mut tag = self.mob_tree_nbt(i);
@@ -1590,7 +1595,7 @@ impl Game<'_> {
             }
             self.mobs.retain(|m| !gone.contains(&m.id));
             for g in gone {
-                self.forget_entity(g);
+                self.detach_entity(g);
             }
             tag
         } else if let Some(i) = self.creatures.projectiles.iter().position(|p| p.id == id) {
@@ -1936,5 +1941,18 @@ mod tests {
         let corners = quad.map(|v| glam::Vec3::from_array(v.pos));
         let centre = corners.iter().copied().sum::<glam::Vec3>() / 4.0;
         assert!((centre - at).abs_diff_eq(up_dir * 0.125, 1e-5), "{centre}");
+    }
+
+    /// `endFlashPosition`'s direction: the flash sprite's centre, 100 blocks away.
+    #[test]
+    fn the_end_flash_is_where_its_sprite_is() {
+        let at =
+            |x: f32, y: f32| flash_pose(x, y).transform_point3(glam::Vec3::new(0.0, 100.0, 0.0));
+        // Straight up whatever the turn, and level toward the north at y_angle 180.
+        assert!(at(-90.0, 37.0).abs_diff_eq(glam::Vec3::new(0.0, 100.0, 0.0), 1e-3));
+        assert!(at(0.0, 180.0).abs_diff_eq(glam::Vec3::new(0.0, 0.0, -100.0), 1e-3));
+        for (x, y) in [(-60.0, -180.0), (10.0, 95.0), (-25.0, 3.0)] {
+            assert!((at(x, y).length() - 100.0).abs() < 1e-3);
+        }
     }
 }

@@ -363,6 +363,7 @@ pub fn main() -> Result<()> {
             max_y,
             world: &world,
             sprites: &sprites,
+            emissive: &Default::default(),
             nether: false,
             lid: &|_| open,
             sign: &|_| sign.as_ref(),

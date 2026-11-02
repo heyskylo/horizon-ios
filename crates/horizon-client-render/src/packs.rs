@@ -695,18 +695,20 @@ fn build_overlay_uncached(
             merged.insert(name.clone(), bytes);
         }
     }
+    /// A zip entry to write: its pack, its name in the zip and where it goes.
+    type Extract<'a> = (usize, &'a str, PathBuf);
     #[allow(clippy::too_many_arguments)]
-    fn mirror(
+    fn mirror<'a>(
         rel: &str,
         vanilla: &Path,
         out: &Path,
         touched: &BTreeSet<String>,
         hidden: &BTreeSet<String>,
-        files: &BTreeMap<String, (usize, Provided)>,
+        files: &'a BTreeMap<String, (usize, Provided)>,
         merged: &BTreeMap<String, Vec<u8>>,
         filters: &[&Filter],
-        zips: &[Option<Zip>],
         dependencies: &mut cache::Dependencies,
+        extract: &mut Vec<Extract<'a>>,
     ) -> io::Result<()> {
         let src = if rel.is_empty() {
             vanilla.to_path_buf()
@@ -733,7 +735,13 @@ fn build_overlay_uncached(
         } else {
             format!("{rel}/")
         };
-        for f in files.keys().filter_map(|f| f.strip_prefix(&prefix)) {
+        // The files under this directory are one run of the sorted map: walking only that run
+        // keeps a pack of tens of thousands of files in thousands of folders from being
+        // scanned once per folder.
+        for f in files
+            .range(prefix.clone()..)
+            .map_while(|(f, _)| f.strip_prefix(&prefix))
+        {
             names.insert(f.split('/').next().unwrap_or("").to_owned());
         }
         for name in names {
@@ -747,19 +755,8 @@ fn build_overlay_uncached(
                 let target = out.join(&child);
                 match path {
                     Some(p) => link(p, &target)?,
-                    None => {
-                        if let Some(Some(z)) = zips.get(*owner) {
-                            // One unreadable entry costs that file, not the
-                            // pack: an error here failed the build and the
-                            // reload dropped every server pack in the stack.
-                            match z.read(inner) {
-                                Ok(bytes) => fs::write(&target, bytes)?,
-                                Err(e) => log::warn!(
-                                    "Horizon: skipping unreadable pack entry {inner}: {e}"
-                                ),
-                            }
-                        }
-                    }
+                    // Inflated and written after the walk, on every thread.
+                    None => extract.push((*owner, inner.as_str(), target)),
                 }
             } else if filters.is_empty()
                 && !touched.contains(&child)
@@ -783,8 +780,8 @@ fn build_overlay_uncached(
                     files,
                     merged,
                     filters,
-                    zips,
                     dependencies,
+                    extract,
                 )?;
             } else if filters.iter().any(|f| f.blocks(&child)) {
                 // Hidden by a pack's filter.
@@ -798,6 +795,7 @@ fn build_overlay_uncached(
         }
         Ok(())
     }
+    let mut extract = Vec::new();
     mirror(
         "",
         vanilla,
@@ -807,9 +805,32 @@ fn build_overlay_uncached(
         &files,
         &merged,
         &filters,
-        &zips,
         dependencies,
-    )
+        &mut extract,
+    )?;
+    // Inflating and writing a big pack's files one by one was most of a cold build; its
+    // folders all exist by now.
+    let inflate = |(owner, inner, target): &Extract<'_>| {
+        let Some(Some(z)) = zips.get(*owner) else {
+            return Ok(());
+        };
+        // One unreadable entry costs that file, not the pack: an error here
+        // failed the build and the reload dropped every server pack in the stack.
+        match z.read(inner) {
+            Ok(bytes) => fs::write(target, bytes),
+            Err(e) => {
+                log::warn!("Horizon: skipping unreadable pack entry {inner}: {e}");
+                Ok(())
+            }
+        }
+    };
+    if cfg!(any(target_os = "ios", target_os = "android")) {
+        // Each entry is decoded into a Vec. Parallel inflation multiplies that
+        // peak on memory-constrained devices; retain parallel work on desktop.
+        extract.iter().try_for_each(inflate)
+    } else {
+        crate::par::par_map(&extract, inflate).into_iter().collect()
+    }
 }
 /// Files vanilla loads from every pack in turn (`getResourceStack`) rather
 /// than from the top pack only.
@@ -1486,6 +1507,72 @@ mod tests {
                 .file_type()
                 .is_symlink()
         );
+        let _ = fs::remove_dir_all(base);
+    }
+    #[test]
+    fn every_file_of_a_big_stack_comes_from_its_top_pack() {
+        use std::io::Write as _;
+        let base = std::env::temp_dir().join(format!("horizon-pack-stack-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let vanilla = base.join("vanilla");
+        // Folders whose names start alike (`item`, `item_extra`, `item2`) and files beside
+        // folders of almost their name: what a prefix lookup could mix up.
+        let names: Vec<String> = (0..400)
+            .map(|i| {
+                let folder = ["item", "item_extra", "item2", "item/sub", "block"][i % 5];
+                format!("assets/ns{}/textures/{folder}/f{i}.png", i % 3)
+            })
+            .chain(["assets/ns0/textures/item.png".to_owned()])
+            .collect();
+        let mut expected: BTreeMap<String, Vec<u8>> = BTreeMap::new();
+        for name in names.iter().step_by(4) {
+            let path = vanilla.join(name);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, format!("vanilla {name}")).unwrap();
+            expected.insert(name.clone(), format!("vanilla {name}").into_bytes());
+        }
+        let meta = br#"{"pack":{"description":"d","pack_format":97}}"#;
+        // Packs a and b are zips, c a folder; each provides a different part of the names.
+        fs::create_dir_all(base.join("packs/c")).unwrap();
+        fs::write(base.join("packs/c/pack.mcmeta"), meta).unwrap();
+        for (pack, every) in [("a", 2), ("b", 3)] {
+            let file = fs::File::create(base.join(format!("packs/{pack}.zip"))).unwrap();
+            let mut zip = zip::ZipWriter::new(file);
+            zip.start_file("pack.mcmeta", zip::write::SimpleFileOptions::default())
+                .unwrap();
+            zip.write_all(meta).unwrap();
+            for name in names.iter().step_by(every) {
+                zip.start_file(name, zip::write::SimpleFileOptions::default())
+                    .unwrap();
+                zip.write_all(format!("{pack} {name}").as_bytes()).unwrap();
+                expected.insert(name.clone(), format!("{pack} {name}").into_bytes());
+            }
+            zip.finish().unwrap();
+        }
+        for name in names.iter().skip(1).step_by(5) {
+            let path = base.join("packs/c").join(name);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, format!("c {name}")).unwrap();
+            expected.insert(name.clone(), format!("c {name}").into_bytes());
+        }
+        let all = folder(&base.join("packs"), RESOURCE_FORMAT);
+        let ids = ["file/a.zip", "file/b.zip", "file/c"].map(String::from);
+        let out = base.join("overlay");
+        build_overlay(&vanilla, &enabled(&all, &ids), &out).unwrap();
+        fn walk(dir: &Path, root: &Path, out: &mut BTreeMap<String, Vec<u8>>) {
+            for entry in fs::read_dir(dir).unwrap().flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    walk(&path, root, out);
+                } else {
+                    let name = path.strip_prefix(root).unwrap().to_string_lossy();
+                    out.insert(name.replace('\\', "/"), fs::read(&path).unwrap());
+                }
+            }
+        }
+        let mut built = BTreeMap::new();
+        walk(&out.join("assets"), &out, &mut built);
+        assert_eq!(built, expected);
         let _ = fs::remove_dir_all(base);
     }
     #[test]

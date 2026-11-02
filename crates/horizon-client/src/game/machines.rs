@@ -5,6 +5,7 @@
 use super::{Game, storage::is_shulker_box};
 
 mod crafter;
+pub(in crate::game) mod native_energy;
 pub(in crate::game) mod native_fluids;
 pub(in crate::game) mod native_items;
 use horizon_client::{
@@ -751,6 +752,95 @@ impl Game<'_> {
             self.container_changed(pos);
         }
     }
+    /// `HopperBlockEntity.entityInside` for the item entities that moved this
+    /// tick: an item whose box meets the hopper's bowl (`Hopper.INSIDE`) and
+    /// its suck area runs `tryMoveItems` with that item as the pickup, in the
+    /// entity phase, before the hopper's own tick counts its cooldown down.
+    pub(super) fn hoppers_catch_items(&mut self) {
+        let mut i = 0;
+        while i < self.dropped.len() {
+            let item = &self.dropped[i];
+            // `ItemEntity.tick` moves 1 of 4 ticks while resting (age was
+            // counted already); `checkInsideBlocks` only follows a move.
+            let moved = item.position != item.previous
+                || (item.age.wrapping_sub(1).wrapping_add(item.id)).is_multiple_of(4);
+            if !moved || item.stack.count == 0 {
+                i += 1;
+                continue;
+            }
+            let b = item.bounds();
+            let (lo, hi) = (b.min_position(), b.max_position());
+            let mut found = None;
+            'blocks: for x in lo.x.floor() as i32..=hi.x.floor() as i32 {
+                for y in lo.y.floor() as i32..=hi.y.floor() as i32 {
+                    for z in lo.z.floor() as i32..=hi.z.floor() as i32 {
+                        let state = self.world.block(x, y, z);
+                        if self.res.facts().get(state).name.as_ref() != "minecraft:hopper" {
+                            continue;
+                        }
+                        // Hopper.INSIDE: the bowl, 2..14 wide and from 11/16 up.
+                        let (fx, fy, fz) = (f64::from(x), f64::from(y), f64::from(z));
+                        if lo.x < fx + 0.875
+                            && hi.x > fx + 0.125
+                            && lo.y < fy + 1.0
+                            && hi.y > fy + 11.0 / 16.0
+                            && lo.z < fz + 0.875
+                            && hi.z > fz + 0.125
+                        {
+                            found = Some((x, y, z));
+                            break 'blocks;
+                        }
+                    }
+                }
+            }
+            let Some(pos) = found else {
+                i += 1;
+                continue;
+            };
+            if self.hopper_take_item(pos, i) {
+                continue; // the item left the list; `i` is the next one
+            }
+            i += 1;
+        }
+    }
+    /// `tryMoveItems(…, () -> addItem(hopper, itemEntity))`; true when the
+    /// item entity was taken whole.
+    fn hopper_take_item(&mut self, pos: Pos, i: usize) -> bool {
+        let state = self.world.block(pos.0, pos.1, pos.2);
+        let c = self.containers();
+        let Some(view) = c.view(pos, false) else {
+            return false;
+        };
+        if c.prop(state, "enabled") == Some("false")
+            || self.hoppers.get(&pos).is_some_and(|h| h.cooldown > 0)
+        {
+            return false;
+        }
+        let mut changed = false;
+        if !c.is_empty(&view) {
+            changed = self.hopper_eject(pos, &view);
+        }
+        let c = self.containers();
+        let full =
+            (0..view.len()).all(|n| c.get(&view, n).is_some_and(|s| s.count == c.max_stack(s)));
+        let mut taken = false;
+        if !full {
+            let stack = self.dropped[i].stack.clone();
+            match self.add_item(None, &view, stack, None) {
+                None => {
+                    self.remove_dropped(i);
+                    taken = true;
+                    changed = true;
+                }
+                Some(rest) => self.dropped[i].stack = rest,
+            }
+        }
+        if changed {
+            self.hoppers.entry(pos).or_default().cooldown = 8;
+            self.container_changed(pos);
+        }
+        taken
+    }
     /// `HopperBlockEntity.ejectItems`: into the block container in front, else
     /// a container entity there (`getContainerAt`).
     fn hopper_eject(&mut self, pos: Pos, hopper: &View) -> bool {
@@ -1302,6 +1392,7 @@ mod item_column_tests {
     fn item(id: u32, x: f64, y: f64, z: f64) -> ItemEntity {
         let at = Vec3::new(x, y, z);
         ItemEntity {
+            no_gravity: false,
             health: 5,
             fire_ticks: 0,
             id,
@@ -1317,6 +1408,7 @@ mod item_column_tests {
             bob_offset: 0.0,
             ticks: 0,
             needs_sync: false,
+            stuck: Vec3::ZERO,
         }
     }
     /// `hopper_suck`'s test: some item box meets the hopper's SUCK_AABB.

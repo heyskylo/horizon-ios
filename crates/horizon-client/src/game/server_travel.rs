@@ -44,6 +44,9 @@ pub(super) struct Trip {
     finder: Option<PlayerSpawnFinder>,
     /// Sent by a command: the player is already where it goes.
     placed: bool,
+    /// The level the player left for another one: the mods are told they
+    /// changed dimension when the trip ends (`tell_mods_changed_dimension`).
+    pub(super) left: Option<Dim>,
 }
 
 /// A vehicle a player rides: an animal, a boat or a minecart. It travels
@@ -414,6 +417,7 @@ impl Game<'_> {
             world_spawn: false,
             finder: None,
             placed: false,
+            left: Some(source),
         });
         if let Err(e) = self.enter_level(Some(host), source) {
             log::error!("could not reopen {}: {e}", source.id());
@@ -437,6 +441,7 @@ impl Game<'_> {
             world_spawn: false,
             finder: None,
             placed: false,
+            left: None,
         });
     }
 
@@ -488,6 +493,7 @@ impl Game<'_> {
             world_spawn: true,
             finder: None,
             placed: false,
+            left: None,
         });
     }
 
@@ -536,6 +542,7 @@ impl Game<'_> {
             world_spawn: false,
             finder: None,
             placed: false,
+            left: None,
         });
     }
 
@@ -567,6 +574,7 @@ impl Game<'_> {
             }
             let mut trip = self.server_trips.remove(k);
             if trip.placed {
+                self.tell_mods_changed_dimension(host, trip.conn, trip.left, trip.dim);
                 continue;
             }
             // A portal's trip (`start_server_trip`): its client waits to land.
@@ -579,6 +587,13 @@ impl Game<'_> {
                     _ => {
                         host.hub.missing_respawn_block(trip.conn);
                         self.respawn_at_world_spawn(host, trip.conn);
+                        // The move to the world spawn ends the player's move
+                        // from the level they left.
+                        if let Some(left) = trip.left
+                            && let Some(t) = self.server_trips.iter_mut().find(|t| t.is(trip.conn))
+                        {
+                            t.left = Some(left);
+                        }
                         continue;
                     }
                 }
@@ -589,7 +604,10 @@ impl Game<'_> {
                 match self.search_spawn(suggestion, &mut trip.finder) {
                     // The respawn already put the player on this column:
                     // vanilla teleports once, so no second move.
-                    Ok(at) if host.hub.guests[i].position == [at.x, at.y, at.z] => continue,
+                    Ok(at) if host.hub.guests[i].position == [at.x, at.y, at.z] => {
+                        self.tell_mods_changed_dimension(host, trip.conn, trip.left, trip.dim);
+                        continue;
+                    }
                     Ok(at) => (at, yaw),
                     Err(chunk) => {
                         self.spawn_wait.push(chunk);
@@ -652,14 +670,16 @@ impl Game<'_> {
             host.play.entry(trip.conn).or_default().portal.cooldown = 10;
             let g = &mut host.hub.guests[i];
             g.yaw = yaw;
-            // A new body at the exit: no fall distance or motion carried over.
-            g.motion = None;
+            // A new body at the exit: no fall distance or motion carried over,
+            // but the player's attributes (ServerPlayer.teleport keeps the entity).
+            g.new_body(true);
             let at = [position.x, position.y, position.z];
             if portal {
                 host.hub.land(i, at);
             } else {
                 host.hub.teleport(i, Some(at));
             }
+            self.tell_mods_changed_dimension(host, trip.conn, trip.left, trip.dim);
         }
     }
 
@@ -708,8 +728,9 @@ impl Game<'_> {
             let g = &mut host.hub.guests[i];
             let [yaw, pitch] = t.rotation.unwrap_or([g.yaw, g.pitch]);
             let origin = g.position;
-            // A new body there: no fall distance or motion carried over.
-            g.motion = None;
+            // A new body there: no fall distance or motion carried over, but
+            // the player's attributes (ServerPlayer.teleport keeps the entity).
+            g.new_body(true);
             let cooldown = host.play.get(&t.conn).map_or(0, |p| p.portal.cooldown);
             let ctx = self.server_ctx();
             host.hub
@@ -731,11 +752,34 @@ impl Game<'_> {
                 world_spawn: false,
                 finder: None,
                 placed: true,
+                left: Some(source),
             });
             if let Err(e) = self.enter_level(Some(host), source) {
                 log::error!("could not reopen {}: {e}", source.id());
             }
         }
+    }
+
+    /// `native_player_changed_dimension` for a guest who has ended a move
+    /// from the level `left` to the one in place, `to`, with their state
+    /// swapped in so that the helpers reach them. Nothing is heard when they
+    /// did not leave a level, or ended where they started.
+    pub(super) fn tell_mods_changed_dimension(
+        &mut self,
+        host: &mut LanHost,
+        conn: u32,
+        left: Option<Dim>,
+        to: Dim,
+    ) {
+        let Some(from) = left.filter(|from| *from != to) else {
+            return;
+        };
+        let Some((uuid, name)) = host.hub.guest(conn).map(|g| (g.uuid, g.name.clone())) else {
+            return;
+        };
+        self.as_guest(host, conn, |g| {
+            g.native_player_changed_dimension(uuid, &name, from.id(), to.id());
+        });
     }
 
     /// The hub's view of the server for packets sent outside its own tick.

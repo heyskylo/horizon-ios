@@ -632,7 +632,7 @@ impl Game<'_> {
         };
         if m.session.offers.len() > 7 {
             let max = m.session.offers.len() - 7;
-            m.scroll = (m.scroll as i32 - d.signum() as i32).clamp(0, max as i32) as usize;
+            m.scroll = scrolled(m.scroll, max, d);
         }
     }
     /// `MerchantScreen` rendering.
@@ -930,9 +930,29 @@ fn drag_scroll(y: f32, offers: usize) -> usize {
     ((offs * max as f32 + 0.5) as i32).clamp(0, max) as usize
 }
 
+/// `MerchantScreen.mouseScrolled`: `Mth.clamp((int)(scrollOff - scrollY), 0, max)`,
+/// so a fractional wheel step that truncates to zero does not move the list.
+fn scrolled(scroll: usize, max: usize, d: f32) -> usize {
+    ((scroll as f64 - f64::from(d)) as i32).clamp(0, max as i32) as usize
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `MerchantScreen.mouseScrolled`: the offset is `(int)(scrollOff - scrollY)`
+    /// clamped, so the list moves by as many rows as the event's delta and a
+    /// fractional delta still moves one row (the truncation is after the
+    /// subtraction). Horizon moved exactly one row per event.
+    #[test]
+    fn the_offers_scroll_by_the_wheel_delta() {
+        assert_eq!(scrolled(3, 5, 1.0), 2, "one notch down");
+        assert_eq!(scrolled(3, 5, -1.0), 4, "one notch up");
+        assert_eq!(scrolled(3, 5, 0.25), 2, "a fraction still moves a row");
+        assert_eq!(scrolled(3, 5, 2.5), 0, "a two-and-a-half notch event");
+        assert_eq!(scrolled(0, 5, 1.0), 0, "clamped at the top");
+        assert_eq!(scrolled(5, 5, -1.0), 5, "clamped at the bottom");
+    }
 
     #[test]
     fn scroller_takes_presses_only_with_more_than_seven_offers() {

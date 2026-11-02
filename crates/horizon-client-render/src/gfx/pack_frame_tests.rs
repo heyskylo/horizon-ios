@@ -145,6 +145,7 @@ impl WorldTargets {
 /// An empty frame: no geometry, every list empty. `Frame` has no `Default`.
 pub(super) fn empty_frame(hud: &crate::hud::HudBatch) -> Frame<'_> {
     Frame {
+        skin: None,
         weather: &[],
         weather_time: crate::weather::Time::new(0, 0.0),
         camera: glam::DVec3::new(0.5, 100.0, 0.5),
@@ -459,6 +460,7 @@ fn run_executes_setup_begin_and_final_across_resize_on_metal() {
     let parsed = load_post(&pack, "", &properties, &macros, &GameInputs::default());
     assert!(parsed.complete, "parse notes: {:?}", parsed.notes);
     let world = World {
+        gui_size: [1, 1],
         adapter: &adapter,
         atlas: None,
         lightmap: texture(&device, &queue, "frame regression lightmap", 1, &[255; 4]),
@@ -593,6 +595,7 @@ void main(){
     assert!(parsed.complete, "{:?}", parsed.notes);
     assert!(parsed.shadow_pass);
     let world = World {
+        gui_size: [1, 1],
         adapter: &adapter,
         atlas: None,
         lightmap: texture(&device, &queue, "shadow compute lightmap", 1, &[255; 4]),
@@ -668,6 +671,7 @@ void main(){float d=texelFetch(depthtex0,ivec2(0),0).r;imageStore(volume,ivec3(g
     let parsed = load_post(&pack, "", &properties, &macros, &GameInputs::default());
     assert!(parsed.complete, "{:?}", parsed.notes);
     let world = World {
+        gui_size: [1, 1],
         adapter: &adapter,
         atlas: None,
         lightmap: texture(&device, &queue, "compute depth lightmap", 1, &[255; 4]),

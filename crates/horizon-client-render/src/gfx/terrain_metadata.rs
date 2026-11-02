@@ -120,11 +120,14 @@ impl TerrainMetadata {
             .get(&page)
             .expect("quad metadata accompanies every terrain page")
     }
-    pub fn retain(&mut self, live: impl Fn(u32) -> bool) {
-        self.pages.retain(|&page, _| live(page));
+    pub fn retain(&mut self, live: impl Fn(u32) -> bool) -> Vec<wgpu::Buffer> {
+        self.pages
+            .extract_if(|&page, _| !live(page))
+            .map(|(_, buffer)| buffer)
+            .collect()
     }
-    pub fn clear(&mut self) {
-        self.pages.clear();
+    pub fn clear(&mut self) -> Vec<wgpu::Buffer> {
+        self.pages.drain().map(|(_, buffer)| buffer).collect()
     }
 }
 #[cfg(test)]
@@ -191,7 +194,7 @@ mod tests {
         assert_eq!(words[2], encode(second));
         drop(data);
         read.unmap();
-        metadata.retain(|page| page != 9 && page != 10);
+        drop(metadata.retain(|page| page != 9 && page != 10));
         assert!(metadata.pages.is_empty());
         let mut encoder = device.create_command_encoder(&Default::default());
         assert!(metadata.upload(
@@ -204,7 +207,7 @@ mod tests {
         uploads.finish(&encoder);
         queue.submit([encoder.finish()]);
         device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
-        metadata.clear();
+        drop(metadata.clear());
         assert!(metadata.pages.is_empty());
     }
 }

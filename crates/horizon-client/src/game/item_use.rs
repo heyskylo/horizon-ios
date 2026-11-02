@@ -32,6 +32,9 @@ impl Game<'_> {
         self.using = Some((self.held_slot(), 0));
         self.use_duration = duration;
         self.use_ticks_set = ticks_set;
+        // A new charge hears the crossbow's loading sounds again
+        // (`game/crossbow.rs`).
+        self.crossbow_sounds = [false; 2];
         true
     }
     /// `ItemStack.getUseDuration`: a consumable's time, 72000 for what is

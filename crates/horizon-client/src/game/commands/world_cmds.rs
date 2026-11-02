@@ -1234,8 +1234,13 @@ impl Game<'_> {
                     return Err(generic());
                 }
                 if let Some(rider) = rider {
-                    self.mount_mob(rider, id);
+                    if !self.try_mount_mob(rider, id) {
+                        return Err(generic());
+                    }
                 } else {
+                    if !self.native_may_board(id) {
+                        return Err(generic());
+                    }
                     self.riding = Some(id);
                     self.yaw = self.boats[i].yaw;
                     // sendEventAndTriggers: START_RIDING_TRIGGER.
@@ -1248,7 +1253,10 @@ impl Game<'_> {
                 return Ok(1);
             }
             Target::Cart(id) => {
-                if target != Target::Player || self.ridden_by_guest(id) {
+                if target != Target::Player
+                    || self.ridden_by_guest(id)
+                    || !self.native_may_board(id)
+                {
                     return Err(generic());
                 }
                 self.riding = Some(id);
@@ -1270,12 +1278,17 @@ impl Game<'_> {
         }
         if let Some(rider) = rider {
             // Entity.startRiding.
-            self.mount_mob(rider, mob_id);
+            if !self.try_mount_mob(rider, mob_id) {
+                return Err(generic());
+            }
             self.feedback(Text::translate(
                 "commands.ride.mount.success",
                 &[name, vehicle_name],
             ));
             return Ok(1);
+        }
+        if !self.native_may_board(mob_id) {
+            return Err(generic());
         }
         if let Some(m) = self.mobs.iter_mut().find(|m| m.id == mob_id) {
             m.extra.flag = false;
@@ -1314,9 +1327,13 @@ impl Game<'_> {
         let Some(i) = self.mobs.iter().position(|m| m.id == rider) else {
             return;
         };
-        let Some(v) = self.mobs[i].extra.mount.take() else {
+        let Some(v) = self.mobs[i].extra.mount else {
             return;
         };
+        if !self.native_mob_may_ride(rider, v, false) {
+            return;
+        }
+        self.mobs[i].extra.mount = None;
         let (width, yaw) = (f64::from(self.mobs[i].width()), self.mobs[i].yaw);
         let at = if let Some(b) = self.boats.iter().position(|b| b.id == v) {
             self.boat_dismount_target(b, width, yaw)

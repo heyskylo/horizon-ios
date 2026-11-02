@@ -38,7 +38,7 @@ ClientPacketListener.handleBlockEntityData	port	crates/horizon-client/src/game/r
 ClientPacketListener.handleContainerSetData	port	crates/horizon-client/src/game/remote.rs::Game::handle_packet	ContainerSetData arms (lectern, furnace, crafter, brewing); station containers go to remote_stations.rs::Game::remote_station_data
 ClientPacketListener.handleContainerClose	port	crates/horizon-client/src/game/remote.rs::Game::handle_packet	ContainerClose arm: closes the inventory screen; gap: minor: a server close while the creative screen is open is ignored
 ClientPacketListener.handleBlockEvent	port	crates/horizon-client/src/game/remote.rs::Game::handle_packet	BlockEvent arm: client block event, then the block entity event
-ClientPacketListener.handleGameEvent	port	crates/horizon-client/src/game/remote.rs::Game::handle_packet	GameEvent arm; gap: player: no handling for 0 (no spawn point message), 6 (arrow hit sound), 9 (puffer fish sting), 12 (limited crafting); 5 (demo) and 13 (chunk load start) are minor
+ClientPacketListener.handleGameEvent	port	crates/horizon-client/src/game/remote.rs::Game::handle_packet	GameEvent arm (weather, mode, credits, respawn, arrow hit, sting, limited crafting, chunks load start); gap: minor: demo mode (5) is not shown
 ClientPacketListener.openDemoIntroScreen	skip:other		demo mode only (GameEvent 5); Horizon has no demo mode
 ClientPacketListener.startWaitingForNewLevel	missing		player: no level loading screen after a dimension change or respawn on a dedicated server; a join shows only the 'Loading terrain' status text
 ClientPacketListener.handleMapItemData	port	crates/horizon-client/src/game/maps.rs::Game::remote_map_item_data	
