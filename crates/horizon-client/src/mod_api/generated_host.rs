@@ -1263,6 +1263,54 @@ pub trait Host {
         let _ = entity;
         unimplemented!("Host::entity_level")
     }
+    /// Plays sound event `sound` at `at` for the players in this level
+    /// within range (16 blocks, times the volume above 1), as
+    /// `ServerLevel.playSound(null, ...)` does: `source` indexes
+    /// `SoundSource` (`master` 0, `blocks` 4...). A `minecraft:` event must be
+    /// registered; a mod's goes by name and is heard where its resources
+    /// define it. True means queued, not heard. API @API:level_effects@.
+    fn level_play_sound(
+        &mut self,
+        level: LevelRef,
+        sound: &str,
+        at: [f64; 3],
+        source: usize,
+        volume: f32,
+        pitch: f32,
+    ) -> bool {
+        let _ = level;
+        let _ = sound;
+        let _ = at;
+        let _ = source;
+        let _ = volume;
+        let _ = pitch;
+        unimplemented!("Host::level_play_sound")
+    }
+    /// Sends `count` particles around `at` to the players in this level
+    /// within 32 blocks, as `ServerLevel.sendParticles` does: each offset is
+    /// a Gaussian times `spread`, and `speed` scales their motion (a zero
+    /// count sends one particle moving along `spread`). Block particle types
+    /// need `state`; item, trail and vibration particles aren't supported.
+    /// True means queued, not drawn. API @API:level_effects@.
+    fn level_send_particles(
+        &mut self,
+        level: LevelRef,
+        options: &ParticleOptions,
+        state: Option<BlockStateId>,
+        at: [f64; 3],
+        spread: [f64; 3],
+        speed: f64,
+        count: i32,
+    ) -> bool {
+        let _ = level;
+        let _ = options;
+        let _ = state;
+        let _ = at;
+        let _ = spread;
+        let _ = speed;
+        let _ = count;
+        unimplemented!("Host::level_send_particles")
+    }
     /// The block state at `pos` (`Level.getBlockState`) as `/setblock` takes
     /// it: `minecraft:oak_stairs[facing=east,half=bottom,shape=straight,waterlogged=false]`.
     /// None for a chunk that isn't loaded or a `y` outside the world. API
@@ -1347,6 +1395,41 @@ impl EntityRef {
     }
 }
 impl LevelRef {
+    /// Plays sound event `sound` at `at` for the players in this level
+    /// within range (16 blocks, times the volume above 1), as
+    /// `ServerLevel.playSound(null, ...)` does: `source` indexes
+    /// `SoundSource` (`master` 0, `blocks` 4...). A `minecraft:` event must be
+    /// registered; a mod's goes by name and is heard where its resources
+    /// define it. True means queued, not heard. API @API:level_effects@.
+    pub fn play_sound(
+        self,
+        host: &mut dyn Host,
+        sound: &str,
+        at: [f64; 3],
+        source: usize,
+        volume: f32,
+        pitch: f32,
+    ) -> bool {
+        host.level_play_sound(self, sound, at, source, volume, pitch)
+    }
+    /// Sends `count` particles around `at` to the players in this level
+    /// within 32 blocks, as `ServerLevel.sendParticles` does: each offset is
+    /// a Gaussian times `spread`, and `speed` scales their motion (a zero
+    /// count sends one particle moving along `spread`). Block particle types
+    /// need `state`; item, trail and vibration particles aren't supported.
+    /// True means queued, not drawn. API @API:level_effects@.
+    pub fn send_particles(
+        self,
+        host: &mut dyn Host,
+        options: &ParticleOptions,
+        state: Option<BlockStateId>,
+        at: [f64; 3],
+        spread: [f64; 3],
+        speed: f64,
+        count: i32,
+    ) -> bool {
+        host.level_send_particles(self, options, state, at, spread, speed, count)
+    }
     /// The block state at `pos` (`Level.getBlockState`) as `/setblock` takes
     /// it: `minecraft:oak_stairs[facing=east,half=bottom,shape=straight,waterlogged=false]`.
     /// None for a chunk that isn't loaded or a `y` outside the world. API

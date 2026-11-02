@@ -519,6 +519,29 @@ impl Host for super::Game<'_> {
     fn entity_level(&self, entity: EntityRef) -> Option<LevelRef> {
         self.native_entity_level(entity)
     }
+    fn level_play_sound(
+        &mut self,
+        level: LevelRef,
+        sound: &str,
+        at: [f64; 3],
+        source: usize,
+        volume: f32,
+        pitch: f32,
+    ) -> bool {
+        self.native_level_play_sound(level, sound, at, source, volume, pitch)
+    }
+    fn level_send_particles(
+        &mut self,
+        level: LevelRef,
+        options: &ParticleOptions,
+        state: Option<BlockStateId>,
+        at: [f64; 3],
+        spread: [f64; 3],
+        speed: f64,
+        count: i32,
+    ) -> bool {
+        self.native_level_send_particles(level, options, state, at, spread, speed, count)
+    }
     fn level_block_state(&self, level: LevelRef, pos: [i32; 3]) -> Option<String> {
         self.native_level_block_state(level, pos)
     }
