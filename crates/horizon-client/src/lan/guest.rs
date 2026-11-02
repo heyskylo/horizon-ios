@@ -32,15 +32,19 @@ pub struct SavedBody {
     pub fire_ticks: i32,
     pub air: i32,
     pub fall_distance: f64,
+    /// `Motion`: the delta movement, blocks a tick.
+    pub velocity: [f64; 3],
 }
 
 impl SavedBody {
     /// The body state of `motion`, to save.
     pub fn of(motion: &PlayerMotion) -> Self {
+        let v = motion.velocity;
         Self {
             fire_ticks: motion.fire_ticks,
             air: motion.air,
             fall_distance: motion.fall_distance,
+            velocity: [v.x, v.y, v.z],
         }
     }
     /// Put it on a new body.
@@ -48,6 +52,8 @@ impl SavedBody {
         motion.fire_ticks = self.fire_ticks;
         motion.air = self.air;
         motion.fall_distance = self.fall_distance;
+        let [x, y, z] = self.velocity;
+        motion.velocity = Vec3::new(x, y, z);
     }
 }
 

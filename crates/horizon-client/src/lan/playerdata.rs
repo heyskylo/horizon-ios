@@ -169,10 +169,13 @@ pub fn apply(guest: &mut Guest, level: &Level) {
             .and_then(|t| crate::save::number(t.get(key)))
             .unwrap_or(default) as i32
     };
+    // Entity.load: a component of Motion over 10 blocks a tick reads as 0.
+    let motion = level.motion.map(|v| if v.abs() > 10.0 { 0.0 } else { v });
     guest.loaded_body = Some(SavedBody {
         fire_ticks: short("Fire", -20),
         air: short("Air", 300),
         fall_distance: level.fall_distance,
+        velocity: motion,
     });
     guest.saved_vehicle = level.root_vehicle;
     guest.recipe_book = level.recipe_book.clone();
@@ -433,8 +436,9 @@ pub fn store(guest: &Guest, level: &mut Level, vehicle: Option<Tag>) {
             .get_or_insert_with(|| Tag::Compound(Default::default()));
         put(extra, "RootVehicle", vehicle);
     }
-    // The live body's fire, air and fall distance (Entity.saveWithoutId),
-    // or what the file had while the player has no body yet.
+    // The live body's fire, air, fall distance and motion
+    // (Entity.saveWithoutId), or what the file had while the player has no
+    // body yet.
     let body = guest
         .motion
         .as_deref()
@@ -442,6 +446,7 @@ pub fn store(guest: &Guest, level: &mut Level, vehicle: Option<Tag>) {
         .or(guest.loaded_body);
     if let Some(body) = body {
         level.fall_distance = body.fall_distance;
+        level.motion = body.velocity;
         let extra = level
             .player_extra
             .get_or_insert_with(|| horizon_world::nbt::Tag::Compound(Default::default()));
@@ -817,6 +822,7 @@ mod tests {
             fire_ticks: 96,
             air: 250,
             fall_distance: 9.5,
+            velocity: [0.0; 3],
         });
         let mut level = Level::default();
         store(&g, &mut level, None);
@@ -827,6 +833,41 @@ mod tests {
         let mut back = guest();
         apply(&mut back, &read);
         assert_eq!(back.loaded_body, g.loaded_body);
+    }
+
+    /// Store, write, read and apply a guest's file, as a server does between a
+    /// leave and the next join.
+    fn round_trip(g: &Guest) -> (Tag, Guest) {
+        let mut level = Level::default();
+        store(g, &mut level, None);
+        let tag = level.player_tag();
+        let mut read = Level::default();
+        read.read_player(&tag);
+        read.player_extra = Some(tag.clone());
+        let mut back = guest();
+        apply(&mut back, &read);
+        (tag, back)
+    }
+
+    #[test]
+    fn a_saved_motion_comes_back() {
+        // Entity.saveWithoutId writes Motion, the delta movement, as it is;
+        // Entity.load reads each component back, as 0 when it is over 10.
+        let mut g = guest();
+        g.loaded_body = Some(SavedBody {
+            fire_ticks: -20,
+            air: 300,
+            fall_distance: 0.0,
+            velocity: [0.25, -0.0784, 12.5],
+        });
+        let (tag, back) = round_trip(&g);
+        let mut read = Level::default();
+        read.read_player(&tag);
+        assert_eq!(read.motion, [0.25, -0.0784, 12.5]);
+        assert_eq!(
+            back.loaded_body.expect("a body").velocity,
+            [0.25, -0.0784, 0.0]
+        );
     }
 
     #[test]
