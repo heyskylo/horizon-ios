@@ -178,6 +178,7 @@ pub fn apply(guest: &mut Guest, level: &Level) {
         velocity: motion,
         food_exhaustion: level.food_exhaustion,
         food_tick_timer: level.food_tick_timer,
+        ticks_frozen: short("TicksFrozen", 0),
     });
     guest.saved_vehicle = level.root_vehicle;
     guest.recipe_book = level.recipe_book.clone();
@@ -460,6 +461,16 @@ pub fn store(guest: &Guest, level: &mut Level, vehicle: Option<Tag>) {
             let short = |v: i32| horizon_world::nbt::Tag::Short(v.clamp(-32768, 32767) as i16);
             map.insert("Fire".into(), short(body.fire_ticks));
             map.insert("Air".into(), short(body.air));
+            // Entity.saveWithoutId writes TicksFrozen only above 0, so a
+            // count from the file the player thawed since does not come back.
+            if body.ticks_frozen > 0 {
+                map.insert(
+                    "TicksFrozen".into(),
+                    horizon_world::nbt::Tag::Int(body.ticks_frozen),
+                );
+            } else {
+                map.remove(&"TicksFrozen".into());
+            }
         }
     }
     // LivingEntity.addAdditionalSaveData: the live body's AttributeMap.pack,
@@ -831,6 +842,7 @@ mod tests {
             velocity: [0.0; 3],
             food_exhaustion: 0.0,
             food_tick_timer: 0,
+            ticks_frozen: 0,
         });
         let mut level = Level::default();
         store(&g, &mut level, None);
@@ -869,6 +881,7 @@ mod tests {
             velocity: [0.25, -0.0784, 12.5],
             food_exhaustion: 0.0,
             food_tick_timer: 0,
+            ticks_frozen: 0,
         });
         let (tag, back) = round_trip(&g);
         let mut read = Level::default();
@@ -892,6 +905,7 @@ mod tests {
             velocity: [0.0; 3],
             food_exhaustion: 2.75,
             food_tick_timer: 37,
+            ticks_frozen: 0,
         });
         let (tag, back) = round_trip(&g);
         assert_eq!(
@@ -901,6 +915,33 @@ mod tests {
         assert_eq!(tag.get("foodTickTimer"), Some(&Tag::Int(37)));
         let body = back.loaded_body.expect("a body");
         assert_eq!((body.food_exhaustion, body.food_tick_timer), (2.75, 37));
+    }
+
+    #[test]
+    fn a_saved_freeze_comes_back_and_a_thaw_clears_it() {
+        // Entity.saveWithoutId writes TicksFrozen (an int) only when it is
+        // above 0; Entity.load reads it with 0 for a missing key.
+        let frozen = |ticks| SavedBody {
+            fire_ticks: -20,
+            air: 300,
+            fall_distance: 0.0,
+            velocity: [0.0; 3],
+            food_exhaustion: 0.0,
+            food_tick_timer: 0,
+            ticks_frozen: ticks,
+        };
+        let mut g = guest();
+        g.loaded_body = Some(frozen(120));
+        let (tag, back) = round_trip(&g);
+        assert_eq!(tag.get("TicksFrozen"), Some(&Tag::Int(120)));
+        assert_eq!(back.loaded_body.expect("a body").ticks_frozen, 120);
+        // Thawed since: the file the guest came from still says 120, and the
+        // key goes.
+        let mut g = back;
+        g.loaded_body = Some(frozen(0));
+        let (tag, back) = round_trip(&g);
+        assert_eq!(tag.get("TicksFrozen"), None);
+        assert_eq!(back.loaded_body.expect("a body").ticks_frozen, 0);
     }
 
     #[test]

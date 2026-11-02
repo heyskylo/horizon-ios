@@ -38,6 +38,8 @@ pub struct SavedBody {
     /// and saturation live on the guest.
     pub food_exhaustion: f32,
     pub food_tick_timer: i32,
+    /// `TicksFrozen`: the time spent in powder snow.
+    pub ticks_frozen: i32,
 }
 
 impl SavedBody {
@@ -51,6 +53,7 @@ impl SavedBody {
             velocity: [v.x, v.y, v.z],
             food_exhaustion: motion.health.food.exhaustion,
             food_tick_timer: motion.health.food.timer,
+            ticks_frozen: motion.ticks_frozen,
         }
     }
     /// Put it on a new body.
@@ -62,6 +65,7 @@ impl SavedBody {
         motion.velocity = Vec3::new(x, y, z);
         motion.health.food.exhaustion = self.food_exhaustion;
         motion.health.food.timer = self.food_tick_timer;
+        motion.ticks_frozen = self.ticks_frozen;
     }
 }
 
