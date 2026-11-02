@@ -4,7 +4,7 @@
 use crate::{
     graphics::{
         EntityCullingMode, FarDetail, FrameGeneration, GraphicsApi, LeafCullingMode, Overlay,
-        Pacing, PresentMode, Preset, Upscaling,
+        Pacing, ParticleCullingMode, PresentMode, Preset, Upscaling,
     },
     graphics_style::{Cost, STYLE},
     hud::{HudAtlas, HudBatch},
@@ -30,6 +30,7 @@ pub enum H {
     FarDetail,
     CaveCulling,
     EntityCulling,
+    ParticleCulling,
     LeafCulling,
     ChunkUpdates,
     UploadBudget,
@@ -208,6 +209,11 @@ pub fn rows(level: Level) -> Vec<Row> {
                 H::EntityCulling,
                 None,
                 "Hides entities behind opaque blocks.",
+            ),
+            h(
+                H::ParticleCulling,
+                None,
+                "Skips offscreen, subpixel and terrain-hidden particles.",
             ),
             h(
                 H::LeafCulling,
@@ -485,6 +491,15 @@ fn description(item: Item, s: &Settings, text: &'static str) -> &'static str {
             }
             LeafCullingMode::Hollow => "Drops faces between leaves: faster, but gaps look through.",
         },
+        (Item::Horizon(H::ParticleCulling), _) => match s.horizon.particle_culling {
+            ParticleCullingMode::Off => "Draws every particle.",
+            ParticleCullingMode::Synchronous => {
+                "Skips offscreen, subpixel and terrain-hidden particles."
+            }
+            ParticleCullingMode::Asynchronous => {
+                "Skips offscreen, subpixel and terrain-hidden particles with less render-thread work."
+            }
+        },
         _ => text,
     }
 }
@@ -555,6 +570,7 @@ impl H {
             H::FarDetail => labelled("Far Detail", g.far_detail.label()),
             H::CaveCulling => labelled("Cave Culling", on_off(g.cave_culling)),
             H::EntityCulling => labelled("Entity Culling", g.entity_culling.label()),
+            H::ParticleCulling => labelled("Particle Culling", g.particle_culling.label()),
             H::LeafCulling => labelled("Leaf Culling", g.leaf_culling.label()),
             H::ChunkUpdates => match g.chunk_updates {
                 0 => labelled("Chunk Updates", "Unlimited"),
@@ -694,6 +710,9 @@ impl H {
             H::CaveCulling => g.cave_culling = !g.cave_culling,
             H::EntityCulling => {
                 g.entity_culling = step(&EntityCullingMode::ALL, g.entity_culling, back)
+            }
+            H::ParticleCulling => {
+                g.particle_culling = step(&ParticleCullingMode::ALL, g.particle_culling, back)
             }
             H::LeafCulling => {
                 g.leaf_culling = step(&LeafCullingMode::ALL, g.leaf_culling, back);
@@ -1912,7 +1931,7 @@ mod tests {
         item.cycle(&mut s, true, [854, 480]);
         assert_eq!(s.horizon.leaf_culling, LeafCullingMode::Hollow);
 
-        // The three culling settings share one group, below Rendering's chunk
+        // The culling settings share one group, below Rendering's chunk
         // updates and above Quality.
         let rows = rows(Level::Advanced);
         let culling = rows
@@ -1929,10 +1948,14 @@ mod tests {
         ));
         assert!(matches!(
             rows.get(culling + 3),
-            Some(Row::Setting(setting)) if setting.item == item
+            Some(Row::Setting(setting)) if setting.item == Item::Horizon(H::ParticleCulling)
         ));
         assert!(matches!(
             rows.get(culling + 4),
+            Some(Row::Setting(setting)) if setting.item == item
+        ));
+        assert!(matches!(
+            rows.get(culling + 5),
             Some(Row::Header("Quality"))
         ));
 

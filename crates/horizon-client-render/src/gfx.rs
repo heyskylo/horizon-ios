@@ -8892,6 +8892,18 @@ impl Frustum {
             p.truncate().dot(v) + p.w < 0.0
         })
     }
+    /// Whether a camera-relative sphere is at least partly inside. Frustum
+    /// planes are normalized, so each test needs only one dot product and a
+    /// radius comparison.
+    pub fn intersects_sphere(&self, center: Vec3, radius: f32) -> bool {
+        if !center.is_finite() || !radius.is_finite() || radius < 0.0 {
+            return true;
+        }
+        !self
+            .planes
+            .iter()
+            .any(|plane| plane.truncate().dot(center) + plane.w < -radius)
+    }
     /// Whether the camera-relative box `min..max` is entirely inside. Then
     /// `intersects` accepts every box within it: each plane's distance only
     /// grows from this box's nearest corner to the inner box's farthest, and

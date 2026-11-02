@@ -228,6 +228,7 @@ mod nautili;
 mod net_harness;
 mod nether_portal;
 mod no_resources;
+mod occlusion_culling;
 mod ominous_item_spawner;
 mod options;
 mod packs;
@@ -235,6 +236,7 @@ mod pad;
 mod pad_menu;
 mod paintings;
 mod pandas;
+mod particle_culling;
 mod passengers;
 mod persist;
 mod perspective;
@@ -2755,9 +2757,9 @@ struct Game<'a> {
     pending_uploads: Vec<((i32, i32, i32), horizon_client::mesher::SectionMesh)>,
     /// This frame's view frustum, for culling entities and block entities.
     view_frustum: Option<horizon_client::gfx::Frustum>,
-    entity_culler: Option<horizon_client::entity_culling::Culler>,
-    async_entity_culler: Option<entity_culling::AsyncCuller>,
-    async_entity_culling_failed: bool,
+    sync_occlusion_culler: Option<horizon_client::entity_culling::Culler>,
+    async_occlusion_culler: Option<occlusion_culling::AsyncOcclusionCuller>,
+    async_occlusion_culling_failed: bool,
     /// `Renderer::pack_shadow_casters` for this frame's entities: (keep what the culler hides,
     /// build the player's model in first person); (false, false) without a shader pack.
     pack_shadow_casters: (bool, bool),
@@ -10607,6 +10609,7 @@ impl Game<'_> {
         &mut self,
         camera: glam::DVec3,
         alpha: f64,
+        fov_degrees: f32,
         mut out: Vec<Vertex>,
     ) -> Vec<Vertex> {
         // Its steps as spans (HORIZON_SPIKES): each lap names the step that just ended.
@@ -10615,7 +10618,8 @@ impl Game<'_> {
         self.entity_motion.borrow_mut().clear();
         // LevelExtractor.extract: the transient blocks queued since the last frame.
         self.drain_transient_block_queue();
-        self.prepare_entity_culling(camera);
+        self.prepare_entity_culling();
+        self.prepare_occlusion_culling(camera);
         self.prepare_trims();
         self.mark_entity(out.len(), "minecraft:entity_flame");
         // One scan for both passes that draw them (block entities below and the
@@ -11054,15 +11058,40 @@ impl Game<'_> {
         laps.lap("eg_objects");
         // Particles (ParticleEngine.extract): camera-facing quads.
         self.mark_stage(out.len(), "PARTICLES");
+        let particle_mode = self.settings.horizon.particle_culling;
+        let frustum = (particle_mode != horizon_client::graphics::ParticleCullingMode::Off)
+            .then_some(self.view_frustum)
+            .flatten();
+        let pixel_focal_length = self.renderer.as_ref().map_or(0.0, |renderer| {
+            let half_fov = f64::from(fov_degrees).to_radians() * 0.5;
+            let tangent = half_fov.tan();
+            if tangent.is_finite() && tangent > 0.0 {
+                f64::from(renderer.config.height.max(1)) / (2.0 * tangent)
+            } else {
+                0.0
+            }
+        }) as f32;
+        let mut particle_culling = (particle_mode
+            != horizon_client::graphics::ParticleCullingMode::Off)
+            .then(|| self.particle_occlusion_context());
         let world = &self.world;
-        self.particles.render(
+        self.particles.render_culled(
             camera,
             self.yaw,
             self.pitch,
             alpha as f32,
+            pixel_focal_length,
+            particle_culling.is_some(),
+            frustum.as_ref(),
+            &mut |min, max| {
+                particle_culling
+                    .as_mut()
+                    .is_some_and(|culling| culling.hidden(min, max))
+            },
             &|b| world.light(b[0], b[1], b[2]),
             &mut out,
         );
+        drop(particle_culling);
         laps.lap("eg_particles");
         // Breaking progress overlays (destroy_stage_0..9): ours and the other players'.
         self.mark_stage(out.len(), "DESTROY");
@@ -11095,7 +11124,7 @@ impl Game<'_> {
             }
         }
         laps.lap("eg_cracks");
-        self.finish_async_entity_culling();
+        self.finish_async_occlusion_culling();
         laps.lap("eg_culling_finish");
         out
     }
@@ -15458,7 +15487,7 @@ impl Game<'_> {
         self.shadow_only_vertices.get_mut().clear();
         if !title {
             entities = horizon_client::spans::time("entity_geometry", || {
-                self.entity_geometry(camera, alpha, entities)
+                self.entity_geometry(camera, alpha, fov_degrees, entities)
             });
         }
         let bolts = if title {
@@ -18492,9 +18521,9 @@ impl<'a> Game<'a> {
             events: Default::default(),
             agent: agent::Agent::default(),
             view_frustum: None,
-            entity_culler: None,
-            async_entity_culler: None,
-            async_entity_culling_failed: false,
+            sync_occlusion_culler: None,
+            async_occlusion_culler: None,
+            async_occlusion_culling_failed: false,
             pack_shadow_casters: (false, false),
             pending_uploads: Vec::new(),
             frame_graph: Default::default(),

@@ -3,7 +3,11 @@
 //! dropped items (`ItemEntityRenderer`) and items posed in the world (hands,
 //! frames, armour stands). This binds the resolver's host services
 //! (`ItemEnv`) and the special renderers' registries to the game.
-use super::{Dim, Game};
+use super::{
+    Dim, Game,
+    glowing::team_color,
+    pickups::{Taken, position},
+};
 use horizon_assets::item_model::{
     Components, DisplayContext, GlobalPos, ItemEnv, LevelState, OwnerState, StackView,
 };
@@ -478,9 +482,7 @@ impl Game<'_> {
         });
         // ItemPickupParticle: the render state extracted at partial tick 1.
         let taken = self.pickups.live.iter().filter_map(|p| match &p.taken {
-            super::pickups::Taken::Item(item) => {
-                Some((&**item, super::pickups::position(p, alpha), 1.0, false))
-            }
+            Taken::Item(item) => Some((&**item, position(p, alpha), 1.0, false)),
             _ => None,
         });
         for (item, at, partial, entity) in live.chain(taken) {
@@ -501,6 +503,10 @@ impl Game<'_> {
                 if !view.intersects(lo, hi) {
                     continue;
                 }
+            }
+            let culling = entity.then(|| self.entity_cull_decision(item, f64::from(partial)));
+            if culling.is_some_and(|decision| decision.hides_entity()) {
+                continue;
             }
             // `extractItemGroupRenderState`: GROUND, seeded by the entity id.
             let owner = owner_at([q.x, q.y, q.z], 0.0, "minecraft:item");
@@ -537,8 +543,10 @@ impl Game<'_> {
                 self.submit_item_world(&state, copy, vertex_light(packed), out);
             }
             if self.entity_glowing(item.id) {
-                let rgb = super::glowing::team_color(self.mob_team(item.id));
+                let rgb = team_color(self.mob_team(item.id));
                 self.mark_outline(&out[entity_start..], rgb);
+            } else if let Some(culling) = culling {
+                self.finish_entity_occlusion(culling, item, out, entity_start);
             } else {
                 self.cull_entity_vertices(out, entity_start);
             }

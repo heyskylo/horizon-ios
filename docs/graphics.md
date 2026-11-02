@@ -5,7 +5,7 @@
 Horizon's graphics settings are two screens built from vanilla's widgets, opened from the top of **Video Settings** (**Horizon Graphics...** and **Advanced Graphics...**) or from **Options → Horizon Settings...**:
 
 - **Graphics** (Simple): a preset (Performance, Balanced, Quality, Ultra or Custom) and LOD distance.
-- **Advanced Graphics**: every Horizon setting, grouped under Rendering, Quality, Display, Preferences, Performance and Overlay. Cave Culling, Entity Culling and Leaf Culling share the Culling group under Rendering.
+- **Advanced Graphics**: every Horizon setting, grouped under Rendering, Quality, Display, Preferences, Performance and Overlay. Cave Culling, Entity Culling, Particle Culling and Leaf Culling share the Culling group under Rendering.
 
 Vanilla's own settings (render distance, FOV, framerate, VSync, GUI scale, smooth lighting...) stay where vanilla has them, in Video Settings; both screens leave them out.
 
@@ -29,7 +29,9 @@ Every row has a one-line description and its cost in frame time (none, low, medi
 
 `options.txt` keeps exactly vanilla's keys and values, so the options harness still compares it with vanilla; Horizon's settings live in `horizon-graphics.txt` beside it. Their defaults render as vanilla does: cave culling on, entity and leaf culling off, no upload budgets, sky, fog and weather on, 100% resolution, no anti-aliasing, HDR off, the present mode following VSync. VSync on always waits for the display (Fifo), in a window and in fullscreen, as in vanilla; the present mode setting chooses how frames are shown only while VSync is off. Frame pacing defaults to Efficient: the limiter sleeps through the last half millisecond where vanilla spins, which changes timing, not pixels.
 
-**Entity Culling** is off by default and disabled with non-vanilla resource packs. It applies to entity models, not block entities, which retain their own frustum checks. Synchronous mode uses the existing same-frame CPU test. Asynchronous mode checks meshes on a worker and uses a result only when the camera and mesh bounds still match and the opaque chunks and rendered sections that proved occlusion are unchanged and ready. Until then, it leaves the mesh visible. Both modes leave simulation and interaction unchanged; older `entityCulling:true` settings select Synchronous.
+**Entity Culling** is off by default and disabled with non-vanilla resource packs. It applies to ordinary entity models, not block entities, which retain their own frustum checks. Synchronous mode uses the existing same-frame CPU test. Asynchronous mode checks conservative world-space bounds on a worker and reuses a result only while the camera and bounds match and any opaque chunks and rendered sections that proved occlusion remain unchanged and ready. Until then, it leaves the mesh visible. Both modes leave simulation and interaction unchanged; older `entityCulling:true` settings select Synchronous.
+
+**Particle Culling** is off by default. Synchronous and asynchronous modes skip particles outside the camera frustum, below half a projected pixel, or hidden by opaque terrain. The asynchronous mode spreads visibility checks across frames to reduce render-thread work. Uncertain or stale results leave particles visible. This setting changes rendering only; particle simulation remains unchanged.
 
 **Battery mode** (Performance, off by default) is for laptops and handhelds: at most 60 frames per second in a world, 30 in menus without a world or while another window has focus, and half the automatic worker threads (chunks load slower). It changes only when frames are drawn: what they show and the game's 20 ticks per second stay as they are.
 

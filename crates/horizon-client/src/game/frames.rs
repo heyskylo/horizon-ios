@@ -2,7 +2,9 @@
 //! `ItemFrame.survives`, `interact` (put an item in, then rotate it),
 //! `hurtServer` (take the item out, then break the frame) and
 //! `ItemFrameRenderer` (the frame model and the item at a 45 degree step).
-use super::{Game, Hit, InteractTarget};
+use super::{
+    Game, Hit, InteractTarget, explosion::BlockInteraction, item_draw::owner_at, maps::map_id,
+};
 use horizon_assets::{bake::bake_model, model::CuboidModel, resolve::ModelLibrary};
 use horizon_client::{entities::ItemFrame, items::ItemStack, mesher::Vertex};
 use horizon_core::{
@@ -343,7 +345,7 @@ impl Game<'_> {
         &mut self,
         blast: [f64; 3],
         diameter: f64,
-        interaction: super::explosion::BlockInteraction,
+        interaction: BlockInteraction,
     ) {
         if self.blast_spares_decorations(interaction) {
             return;
@@ -401,14 +403,13 @@ impl Game<'_> {
     /// ItemFrameRenderer: the frame model, then the item half size on its face.
     pub(super) fn frame_geometry(&mut self, camera: glam::DVec3, out: &mut Vec<Vertex>) {
         let sprites = &self.gui.atlas.sprites;
-        let mut maps: Vec<(i32, glam::Mat4, u32)> = Vec::new();
-        let mut items: Vec<(ItemStack, u32, glam::Mat4, u8)> = Vec::new();
+        let mut maps: Vec<(i32, glam::Mat4, u32, bool)> = Vec::new();
+        let mut items: Vec<(ItemStack, u32, glam::Mat4, u8, bool)> = Vec::new();
         // ItemFrame.shouldRenderAtSqrDistance: 1024 blocks at a view scale
         // of 1.
         let range = 16.0 * 64.0 * self.view_scale();
         for f in &self.item_frames {
-            let entity_start = out.len();
-            let map = f.item.as_ref().and_then(super::maps::map_id);
+            let map = f.item.as_ref().and_then(map_id);
             // EntityRenderer.shouldRender: its box (a block wide with a map),
             // measured from the box's centre.
             let (lo, hi) = f.bounds();
@@ -423,6 +424,10 @@ impl Game<'_> {
                 }
             }
             if !self.entity_in_view(camera, (lo + hi) / 2.0, range, lo, hi) {
+                continue;
+            }
+            let culling = self.entity_cull_decision(f, 1.0);
+            if culling.hides_entity() {
                 continue;
             }
             let s = f.step();
@@ -456,6 +461,7 @@ impl Game<'_> {
             };
             let frame_packed =
                 (u32::from(frame_light >> 4) * 16) | ((u32::from(frame_light & 15) * 16) << 8);
+            let entity_start = out.len();
             let frame_start = out.len();
             let mut quad =
                 |m: &glam::DMat4, corners: [[f64; 3]; 4], uv: [[f32; 2]; 4], light: u32| {
@@ -511,7 +517,8 @@ impl Game<'_> {
                     v.layer |= u32::from(horizon_client::mesher::INCANDESCENT) << 16;
                 }
             }
-            self.cull_entity_vertices(out, entity_start);
+            self.finish_entity_occlusion(culling, f, out, entity_start);
+            let cull_contents = culling.checks_vertices();
             if let Some(id) = map {
                 // ItemFrameRenderer: the map fills the face, in 90-degree steps.
                 let depth = if f.invisible { 0.5 } else { 0.4375 };
@@ -526,7 +533,7 @@ impl Game<'_> {
                     * glam::DMat4::from_rotation_z(std::f64::consts::PI)
                     * glam::DMat4::from_scale(glam::DVec3::splat(0.0078125))
                     * glam::DMat4::from_translation(glam::DVec3::new(-64.0, -64.0, -1.0));
-                maps.push((id, m.as_mat4(), item_light));
+                maps.push((id, m.as_mat4(), item_light, cull_contents));
                 continue;
             }
             let Some(stack) = f.item.clone() else {
@@ -539,12 +546,12 @@ impl Game<'_> {
                 * glam::DMat4::from_translation(glam::DVec3::new(0.0, 0.0, depth))
                 * glam::DMat4::from_rotation_z((f64::from(f.rotation) * 45.0).to_radians())
                 * glam::DMat4::from_scale(glam::DVec3::splat(0.5));
-            items.push((stack, f.id, m.as_mat4(), item_light));
+            items.push((stack, f.id, m.as_mat4(), item_light, cull_contents));
         }
         // `extractRenderState`: FIXED, seeded by the frame entity.
-        for (stack, id, m, light) in items {
+        for (stack, id, m, light, cull) in items {
             let entity_start = out.len();
-            let owner = super::item_draw::owner_at([0.0; 3], 0.0, "minecraft:item_frame");
+            let owner = owner_at([0.0; 3], 0.0, "minecraft:item_frame");
             let state = self.resolve_item(
                 &stack,
                 horizon_assets::item_model::DisplayContext::Fixed,
@@ -557,12 +564,16 @@ impl Game<'_> {
                 horizon_client::block_entity_render::vertex_light(light),
                 out,
             );
-            self.cull_entity_vertices(out, entity_start);
+            if cull {
+                self.cull_entity_vertices(out, entity_start);
+            }
         }
-        for (id, m, light) in maps {
+        for (id, m, light, cull) in maps {
             let entity_start = out.len();
             self.map_vertices(id, true, m, light, out);
-            self.cull_entity_vertices(out, entity_start);
+            if cull {
+                self.cull_entity_vertices(out, entity_start);
+            }
         }
     }
 }

@@ -4,7 +4,9 @@
 //! `MinecartItem` placement, `VehicleEntity` breaking, the chest, hopper,
 //! furnace and TNT variants, saving, and `AbstractMinecartRenderer`'s old
 //! rail-following render with the display block.
-use super::{Game, Hit, InteractTarget, Keys};
+use super::{
+    Dim, Game, Hit, InteractTarget, Keys, Screen, boat_passengers::push_impulse, boats::Boat,
+};
 use horizon_client::{
     blocks::Fluid,
     collisions::SceneCollisions,
@@ -434,7 +436,7 @@ impl Game<'_> {
             .iter()
             .filter(|o| o.id != c.id)
             .map(Minecart::bounds)
-            .chain(self.boats.iter().map(super::boats::Boat::bounds))
+            .chain(self.boats.iter().map(Boat::bounds))
             .chain(
                 self.mobs
                     .iter()
@@ -1256,7 +1258,7 @@ impl Game<'_> {
                 continue;
             }
             let other = self.mobs[j].position;
-            let Some(v) = super::boat_passengers::push_impulse(pos, other) else {
+            let Some(v) = push_impulse(pos, other) else {
                 continue;
             };
             if !occupied {
@@ -1699,7 +1701,7 @@ impl Game<'_> {
             .block_entities
             .insert(key, BlockEntity::Chest(c.items.clone()));
         self.container = Some(key);
-        self.screen = super::Screen::Inventory;
+        self.screen = Screen::Inventory;
         self.capture(false);
         self.right = false;
         if c.kind == CartKind::Chest {
@@ -2006,7 +2008,6 @@ impl Game<'_> {
         // edge, scaled by the view scale.
         let range = (WIDTH + HEIGHT + WIDTH) / 3.0 * 64.0 * self.view_scale();
         for c in &self.carts {
-            let entity_start = out.len();
             let Some(model) = self.cart_models.models.get(&c.kind) else {
                 continue;
             };
@@ -2039,6 +2040,11 @@ impl Game<'_> {
                     }
                 }
             }
+            let culling = self.entity_cull_decision(c, alpha);
+            if culling.hides_entity() {
+                continue;
+            }
+            let entity_start = out.len();
             let mut yaw =
                 c.previous_yaw + ((c.yaw - c.previous_yaw + 180.0).rem_euclid(360.0) - 180.0) * a;
             let mut pitch = 0.0f32;
@@ -2122,7 +2128,7 @@ impl Game<'_> {
             let m = base * glam::Mat4::from_scale(glam::Vec3::new(-1.0, -1.0, 1.0));
             let poses = Poses::new(model);
             horizon_client::mobs::render::draw(model, m, &poses, uv, 0xFFFF_FFFF, packed, 0, out);
-            self.cull_entity_vertices(out, entity_start);
+            self.finish_entity_occlusion(culling, c, out, entity_start);
         }
     }
     /// The model of a block drawn by its block-entity renderer, as a chest
@@ -2146,7 +2152,7 @@ impl Game<'_> {
             world: &self.world,
             sprites: &self.gui.atlas.sprites,
             emissive: &self.gui.atlas.emissive,
-            nether: self.dim == super::Dim::Nether,
+            nether: self.dim == Dim::Nether,
             lid: &lid,
             sign: &|_| None,
             banner: &|_| Vec::new(),

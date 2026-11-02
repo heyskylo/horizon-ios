@@ -1,0 +1,2035 @@
+//! Shared, conservative block-occlusion queries for renderable geometry.
+use super::{Game, Vertex};
+use horizon_client::{
+    blocks::{BlockFacts, RenderShape, StateFacts},
+    chunk::Chunk,
+    entity_culling::Culler as OcclusionCuller,
+    gfx::Renderer,
+    graphics::{EntityCullingMode, ParticleCullingMode},
+    mesher::SectionMesh,
+    spans,
+    streaming::Streaming,
+    world::World,
+};
+use horizon_core::geometry::Aabb;
+use std::{
+    cell::{Cell, RefCell},
+    sync::{
+        Arc, Weak,
+        atomic::{AtomicU64, Ordering},
+        mpsc::{self, Receiver, SyncSender, TrySendError},
+    },
+    thread::JoinHandle,
+    time::Instant,
+};
+
+type ChunkKey = (i32, i32);
+type SectionKey = (i32, i32, i32);
+const MAX_SNAPSHOT_CHUNKS: i64 = 4_096;
+const MAX_ASYNC_PARTICLE_CLUSTERS_PER_JOB: usize = 1_024;
+const MAX_OCCLUSION_RESULT_CACHE_ENTRIES: usize = 16_384;
+const OCCLUSION_LOOKUP_BUDGET: usize = 8_192;
+const ENTITY_LOOKUP_WEIGHT: u128 = 8;
+const OPACITY_GRID_SIZE: usize = 1_024;
+const MAX_OCCLUSION_RAY_STEPS: usize = 512;
+const TIMING_SAMPLE_CAPACITY: usize = 256;
+const PROOF_VALIDATION_TIMING_SAMPLE_STRIDE: u64 = 16;
+
+/// A bounded ring of recent timings. Recording a sample is allocation-free;
+/// percentile sorting only happens when a control client requests statistics.
+struct TimingSamples {
+    values: [u64; TIMING_SAMPLE_CAPACITY],
+    len: usize,
+    next: usize,
+}
+
+impl Default for TimingSamples {
+    fn default() -> Self {
+        Self {
+            values: [0; TIMING_SAMPLE_CAPACITY],
+            len: 0,
+            next: 0,
+        }
+    }
+}
+
+impl TimingSamples {
+    fn record(&mut self, nanoseconds: u64) {
+        self.values[self.next] = nanoseconds;
+        self.next = (self.next + 1) % TIMING_SAMPLE_CAPACITY;
+        self.len = (self.len + 1).min(TIMING_SAMPLE_CAPACITY);
+    }
+
+    /// Nearest-rank p50 and p95 of the most recent samples.
+    fn percentiles_ns(&self) -> (Option<u64>, Option<u64>) {
+        if self.len == 0 {
+            return (None, None);
+        }
+        let mut sorted = self.values;
+        sorted[..self.len].sort_unstable();
+        let p50 = (self.len * 50).div_ceil(100).max(1) - 1;
+        let p95 = (self.len * 95).div_ceil(100).max(1) - 1;
+        (Some(sorted[p50]), Some(sorted[p95]))
+    }
+}
+
+/// Sort entity queries before particles so they keep the original lookup budget.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum CullKind {
+    Entity,
+    Particle,
+}
+
+/// Identifies which geometry stage consumed a cached answer. Entity AABBs
+/// should usually avoid model generation; mesh bounds are the conservative
+/// refinement for visible or uncached AABBs.
+#[derive(Clone, Copy)]
+pub(super) enum QuerySource {
+    EntityAabb,
+    EntityMesh,
+    Particle,
+}
+
+#[derive(Clone, Copy)]
+enum TimingPhase {
+    ResultConsume,
+    FrameSubmit,
+    JobSend,
+    ResultLookup,
+}
+
+#[derive(Clone, Copy)]
+enum CacheMissReason {
+    EmptySet,
+    KeyMismatch,
+    CameraMismatch,
+    Invalidated,
+}
+
+#[derive(Clone, Copy)]
+struct TimingStart {
+    wall: Instant,
+    thread_cpu: Option<std::time::Duration>,
+}
+
+#[derive(Default)]
+struct PhaseTiming {
+    wall_ns: u64,
+    thread_cpu_ns: u64,
+    sample_weight: u64,
+    wall_samples: TimingSamples,
+    thread_cpu_samples: TimingSamples,
+}
+
+impl PhaseTiming {
+    fn record(&mut self, wall_ns: u64, thread_cpu_ns: Option<u64>, sample_weight: u64) {
+        self.wall_ns = self
+            .wall_ns
+            .saturating_add(wall_ns.saturating_mul(sample_weight));
+        self.sample_weight = sample_weight;
+        self.wall_samples.record(wall_ns);
+        if let Some(thread_cpu_ns) = thread_cpu_ns {
+            self.thread_cpu_ns = self
+                .thread_cpu_ns
+                .saturating_add(thread_cpu_ns.saturating_mul(sample_weight));
+            self.thread_cpu_samples.record(thread_cpu_ns);
+        }
+    }
+}
+
+struct EntityBoundsSample {
+    frame: u64,
+    entity_id: u32,
+    camera: [u64; 3],
+    min: [u64; 3],
+    max: [u64; 3],
+}
+
+#[derive(Clone, Copy, Default)]
+struct ProofValidationCounts {
+    chunk_checks: u64,
+    chunk_cache_hits: u64,
+    section_checks: u64,
+    section_cache_hits: u64,
+}
+
+#[derive(Clone, Copy)]
+struct CachedChunkValidation {
+    key: ChunkKey,
+    allocation: usize,
+    current: bool,
+}
+
+/// Proofs for nearby entities commonly name the same few occluding chunks and
+/// sections. Keep their frame-local validity in sorted vectors so each world,
+/// renderer, and streaming lookup is done once per unique key without hashing.
+#[derive(Default)]
+struct FrameProofValidationCache {
+    chunks: Vec<CachedChunkValidation>,
+    sections: Vec<(SectionKey, bool)>,
+}
+
+impl FrameProofValidationCache {
+    fn clear(&mut self) {
+        self.chunks.clear();
+        self.sections.clear();
+    }
+
+    fn chunk_is_current(
+        &mut self,
+        world: &World,
+        key: ChunkKey,
+        expected: &Weak<Chunk>,
+        counts: &mut ProofValidationCounts,
+    ) -> bool {
+        let allocation = expected.as_ptr() as usize;
+        let cache_key = (key, allocation);
+        match self
+            .chunks
+            .binary_search_by_key(&cache_key, |entry| (entry.key, entry.allocation))
+        {
+            Ok(index) => {
+                counts.chunk_cache_hits = counts.chunk_cache_hits.saturating_add(1);
+                self.chunks[index].current
+            }
+            Err(index) => {
+                counts.chunk_checks = counts.chunk_checks.saturating_add(1);
+                let current = world
+                    .chunks
+                    .get(&key)
+                    .is_some_and(|chunk| std::ptr::eq(Arc::as_ptr(chunk), expected.as_ptr()));
+                self.chunks.insert(
+                    index,
+                    CachedChunkValidation {
+                        key,
+                        allocation,
+                        current,
+                    },
+                );
+                current
+            }
+        }
+    }
+
+    fn section_is_current(
+        &mut self,
+        key: SectionKey,
+        world: &World,
+        renderer: Option<&Renderer>,
+        streaming: &Streaming,
+        pending_uploads: &[((i32, i32, i32), SectionMesh)],
+        counts: &mut ProofValidationCounts,
+    ) -> bool {
+        match self.sections.binary_search_by_key(&key, |(key, _)| *key) {
+            Ok(index) => {
+                counts.section_cache_hits = counts.section_cache_hits.saturating_add(1);
+                self.sections[index].1
+            }
+            Err(index) => {
+                counts.section_checks = counts.section_checks.saturating_add(1);
+                let current = renderer.is_some_and(|renderer| renderer.has_section(key))
+                    && !world.dirty_sections.contains(&key)
+                    && !streaming.is_meshing(key)
+                    && !pending_uploads.iter().any(|(pending, _)| *pending == key);
+                self.sections.insert(index, (key, current));
+                current
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) struct CullKey {
+    kind: CullKind,
+    camera: [u64; 3],
+    min: [u64; 3],
+    max: [u64; 3],
+}
+
+type QueryBoundsKey = (CullKind, [u64; 3], [u64; 3]);
+
+fn query_bounds_key(key: &CullKey) -> QueryBoundsKey {
+    (key.kind, key.min, key.max)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct SnapshotKey {
+    world_revision: u64,
+    chunks_revision: u64,
+    bottom_y: i32,
+}
+
+impl SnapshotKey {
+    fn same_layout(self, other: Self) -> bool {
+        self.chunks_revision == other.chunks_revision && self.bottom_y == other.bottom_y
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ChunkBounds {
+    min_x: i32,
+    max_x: i32,
+    min_z: i32,
+    max_z: i32,
+}
+
+/// Sorted weak chunk references avoid holding gameplay chunks or forcing
+/// copy-on-write. A worker keeps only its current chunk strongly referenced.
+#[derive(Clone)]
+struct OcclusionSnapshot {
+    chunks: Vec<(ChunkKey, Weak<Chunk>)>,
+    opaque_states: Arc<[bool]>,
+}
+
+impl OcclusionSnapshot {
+    fn chunk(&self, key: ChunkKey) -> Option<&Weak<Chunk>> {
+        self.chunks
+            .binary_search_by_key(&key, |(key, _)| *key)
+            .ok()
+            .map(|index| &self.chunks[index].1)
+    }
+
+    fn refresh_chunks(&mut self, world: &World, bounds: ChunkBounds) {
+        self.chunks.clear();
+        for x in bounds.min_x..=bounds.max_x {
+            for z in bounds.min_z..=bounds.max_z {
+                if let Some(chunk) = world.chunks.get(&(x, z)) {
+                    self.chunks.push(((x, z), Arc::downgrade(chunk)));
+                }
+            }
+        }
+    }
+
+    fn chunks_match(&self, world: &World) -> bool {
+        self.chunks.iter().all(|(key, expected)| {
+            world
+                .chunks
+                .get(key)
+                .is_some_and(|current| std::ptr::eq(expected.as_ptr(), Arc::as_ptr(current)))
+        })
+    }
+
+    fn opaque(&self, pos: [i32; 3], last_chunk: &mut LastChunk) -> bool {
+        let key = (pos[0] >> 4, pos[2] >> 4);
+        let Some(chunk) = last_chunk.get(self, key) else {
+            return false;
+        };
+        let state = chunk.block(pos[0] & 15, pos[1], pos[2] & 15);
+        self.opaque_states
+            .get(state.0 as usize)
+            .copied()
+            .unwrap_or(false)
+    }
+}
+
+#[derive(Default)]
+struct LastChunk {
+    key: Option<ChunkKey>,
+    value: Option<Arc<Chunk>>,
+}
+
+impl LastChunk {
+    fn get(&mut self, snapshot: &OcclusionSnapshot, key: ChunkKey) -> Option<&Arc<Chunk>> {
+        if self.key != Some(key) {
+            self.key = Some(key);
+            self.value = snapshot.chunk(key).and_then(Weak::upgrade);
+        }
+        self.value.as_ref()
+    }
+}
+
+#[derive(Clone, Copy)]
+struct OpacityCell {
+    position: [i32; 3],
+    opaque: bool,
+}
+
+/// A direct-mapped voxel cache shared by the rays and box checks in one job.
+struct OpacityGrid {
+    cells: [Option<OpacityCell>; OPACITY_GRID_SIZE],
+}
+
+impl Default for OpacityGrid {
+    fn default() -> Self {
+        Self {
+            cells: [None; OPACITY_GRID_SIZE],
+        }
+    }
+}
+
+impl OpacityGrid {
+    fn opaque(
+        &mut self,
+        snapshot: &OcclusionSnapshot,
+        position: [i32; 3],
+        last_chunk: &mut LastChunk,
+    ) -> bool {
+        let hash = (position[0] as u32).wrapping_mul(73_856_093)
+            ^ (position[1] as u32).wrapping_mul(19_349_663)
+            ^ (position[2] as u32).wrapping_mul(83_492_791);
+        let slot = hash as usize & (OPACITY_GRID_SIZE - 1);
+        if let Some(cell) = self.cells[slot]
+            && cell.position == position
+        {
+            return cell.opaque;
+        }
+        let opaque = snapshot.opaque(position, last_chunk);
+        self.cells[slot] = Some(OpacityCell { position, opaque });
+        opaque
+    }
+}
+
+fn bounds_have_clear_ray(
+    camera: [f64; 3],
+    min: [f64; 3],
+    max: [f64; 3],
+    snapshot: &OcclusionSnapshot,
+    last_chunk: &mut LastChunk,
+    opacity_grid: &mut OpacityGrid,
+) -> bool {
+    let center = std::array::from_fn(|axis| min[axis] + (max[axis] - min[axis]) * 0.5);
+    ray_reaches_without_opaque(camera, center, snapshot, last_chunk, opacity_grid)
+}
+
+/// A clear sample only short-circuits culling; blocked samples still need the
+/// conservative complete-plane test before the worker can hide geometry.
+fn ray_reaches_without_opaque(
+    from: [f64; 3],
+    to: [f64; 3],
+    snapshot: &OcclusionSnapshot,
+    last_chunk: &mut LastChunk,
+    opacity_grid: &mut OpacityGrid,
+) -> bool {
+    if from.into_iter().chain(to).any(|value| !value.is_finite()) {
+        return true;
+    }
+    let [Some(x), Some(y), Some(z)] = from.map(snapshot_cell) else {
+        return true;
+    };
+    let mut cell = [x, y, z];
+    let [Some(x), Some(y), Some(z)] = to.map(snapshot_cell) else {
+        return true;
+    };
+    let target = [x, y, z];
+    if opacity_grid.opaque(snapshot, cell, last_chunk) {
+        return false;
+    }
+    if cell == target {
+        return true;
+    }
+
+    let delta: [f64; 3] = std::array::from_fn(|axis| to[axis] - from[axis]);
+    let mut step = [0_i32; 3];
+    let mut t_max = [f64::INFINITY; 3];
+    let mut t_delta = [f64::INFINITY; 3];
+    for axis in 0..3 {
+        if delta[axis] > 0.0 {
+            step[axis] = 1;
+            t_max[axis] = (f64::from(cell[axis]) + 1.0 - from[axis]) / delta[axis];
+            t_delta[axis] = 1.0 / delta[axis];
+        } else if delta[axis] < 0.0 {
+            step[axis] = -1;
+            t_max[axis] = (from[axis] - f64::from(cell[axis])) / -delta[axis];
+            t_delta[axis] = -1.0 / delta[axis];
+        }
+    }
+
+    for _ in 0..MAX_OCCLUSION_RAY_STEPS {
+        let axis = if t_max[0] <= t_max[1] && t_max[0] <= t_max[2] {
+            0
+        } else if t_max[1] <= t_max[2] {
+            1
+        } else {
+            2
+        };
+        if t_max[axis] > 1.0 {
+            return true;
+        }
+        let Some(next) = cell[axis].checked_add(step[axis]) else {
+            return true;
+        };
+        cell[axis] = next;
+        if opacity_grid.opaque(snapshot, cell, last_chunk) {
+            return false;
+        }
+        if cell == target {
+            return true;
+        }
+        t_max[axis] += t_delta[axis];
+    }
+    // An overlong ray is not a proof of occlusion, so keep geometry visible.
+    true
+}
+
+#[derive(Clone)]
+pub(super) struct OcclusionProof {
+    sections: Vec<SectionKey>,
+    chunks: Vec<(ChunkKey, Weak<Chunk>)>,
+}
+
+struct CullResults {
+    stamp: SnapshotKey,
+    camera: [u64; 3],
+    generation: u64,
+    cancelled: bool,
+    hidden: Vec<(CullKey, OcclusionProof)>,
+    visible: Vec<CullKey>,
+    scratch_queries: Vec<CullKey>,
+    worker_ns: u64,
+    hidden_entities: usize,
+    visible_entities: usize,
+    hidden_particles: usize,
+    visible_particles: usize,
+    deferred_entities: usize,
+    deferred_particles: usize,
+}
+
+struct CachedQueryResult {
+    key: CullKey,
+    stamp: SnapshotKey,
+    camera_cell: Option<[i32; 3]>,
+    proof: Option<OcclusionProof>,
+}
+
+#[derive(Default)]
+struct AsyncCullingStats {
+    frames: u64,
+    entity_queries: u64,
+    particle_queries: u64,
+    entity_cache_hits: u64,
+    entity_cache_misses: u64,
+    entity_aabb_cache_hits: u64,
+    entity_aabb_cache_misses: u64,
+    entity_mesh_cache_hits: u64,
+    entity_mesh_cache_misses: u64,
+    particle_cache_hits: u64,
+    particle_cache_misses: u64,
+    result_cache_evictions: u64,
+    result_cache_capacity_evictions: u64,
+    result_cache_invalidation_replacements: u64,
+    cache_miss_empty_set: u64,
+    cache_miss_key_mismatch: u64,
+    cache_miss_camera_mismatch: u64,
+    cache_miss_invalidated: u64,
+    entity_vertices_scanned: u64,
+    entity_vertices_culled: u64,
+    entity_bytes_culled: u64,
+    entities_culled: u64,
+    particle_candidates: u64,
+    particle_candidates_culled: u64,
+    queued_queries: u64,
+    queries_dropped_while_pending: u64,
+    worker_jobs: u64,
+    worker_jobs_completed: u64,
+    worker_job_query_count_samples: TimingSamples,
+    worker_job_queries: u64,
+    job_send_full: u64,
+    job_send_disconnected: u64,
+    stale_camera_jobs: u64,
+    stale_world_jobs: u64,
+    worker_cancelled_jobs: u64,
+    worker_ns: u64,
+    worker_job_samples: TimingSamples,
+    bounds_scan_ns: u64,
+    bounds_scan_samples: TimingSamples,
+    worker_hidden_entities: u64,
+    worker_visible_entities: u64,
+    worker_hidden_particles: u64,
+    worker_visible_particles: u64,
+    worker_deferred_entities: u64,
+    worker_deferred_particles: u64,
+    entity_budget_exhausted_jobs: u64,
+    particle_budget_exhausted_jobs: u64,
+    result_consume_timing: PhaseTiming,
+    frame_submit_timing: PhaseTiming,
+    job_send_timing: PhaseTiming,
+    result_lookup_timing: PhaseTiming,
+    proof_validation_timing: PhaseTiming,
+    proof_validation_counts: ProofValidationCounts,
+    result_lookup_calls: u64,
+    sampled_entity_id: Option<u32>,
+    sampled_entity_last_frame: u64,
+    entity_bounds_samples: Vec<EntityBoundsSample>,
+    previous_world_revision: Option<u64>,
+    previous_chunks_revision: Option<u64>,
+    world_revision_changes: u64,
+    chunks_revision_changes: u64,
+}
+
+struct CullJob {
+    stamp: SnapshotKey,
+    generation: u64,
+    snapshot: Arc<OcclusionSnapshot>,
+    queries: Vec<CullKey>,
+}
+
+/// Non-blocking world occlusion shared by entity and particle rendering.
+/// Hidden proofs require byte-identical camera and bounds, and their chunks and
+/// rendered sections are revalidated. Fail-open visible results survive camera
+/// movement within one block because they can only reduce culling.
+pub(super) struct AsyncOcclusionCuller {
+    jobs: SyncSender<CullJob>,
+    results_rx: Receiver<CullResults>,
+    _thread: JoinHandle<()>,
+    job_generation: Arc<AtomicU64>,
+    snapshot: Option<(SnapshotKey, ChunkBounds, Arc<OcclusionSnapshot>)>,
+    opaque_states: Option<Arc<[bool]>>,
+    queries: RefCell<Vec<CullKey>>,
+    query_results: Vec<CachedQueryResult>,
+    cache_updates: Vec<CachedQueryResult>,
+    cache_merge: Vec<CachedQueryResult>,
+    stats: RefCell<AsyncCullingStats>,
+    proof_validation_cache: RefCell<FrameProofValidationCache>,
+    measure_bounds_timing: Cell<bool>,
+    particle_cluster_cursor: usize,
+    query_cache_stamp: Option<SnapshotKey>,
+    query_cache_camera_cell: Option<[i32; 3]>,
+    camera: [f64; 3],
+    stamp: SnapshotKey,
+    pending: bool,
+    proof_validation_sample_counter: Cell<u64>,
+}
+
+impl AsyncOcclusionCuller {
+    fn timing_start(&self) -> Option<TimingStart> {
+        self.measure_bounds_timing.get().then(|| TimingStart {
+            wall: Instant::now(),
+            thread_cpu: spans::thread_cpu(),
+        })
+    }
+
+    fn record_timing(&self, phase: TimingPhase, started: Option<TimingStart>) {
+        let Some(started) = started else {
+            return;
+        };
+        let wall_ns = started.wall.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64;
+        let thread_cpu_ns = spans::thread_cpu()
+            .zip(started.thread_cpu)
+            .map(|(end, start)| {
+                end.saturating_sub(start)
+                    .as_nanos()
+                    .min(u128::from(u64::MAX)) as u64
+            });
+        let mut stats = self.stats.borrow_mut();
+        let timing = match phase {
+            TimingPhase::ResultConsume => &mut stats.result_consume_timing,
+            TimingPhase::FrameSubmit => &mut stats.frame_submit_timing,
+            TimingPhase::JobSend => &mut stats.job_send_timing,
+            TimingPhase::ResultLookup => &mut stats.result_lookup_timing,
+        };
+        timing.record(wall_ns, thread_cpu_ns, 1);
+    }
+
+    fn timing_value(timing: &PhaseTiming) -> serde_json::Value {
+        let (wall_p50_ns, wall_p95_ns) = timing.wall_samples.percentiles_ns();
+        let (cpu_p50_ns, cpu_p95_ns) = timing.thread_cpu_samples.percentiles_ns();
+        serde_json::json!({
+            "wall_ms_total": timing.wall_ns as f64 / 1_000_000.0,
+            "wall_ns_p50_recent": wall_p50_ns,
+            "wall_ns_p95_recent": wall_p95_ns,
+            "wall_samples": timing.wall_samples.len,
+            "thread_cpu_ms_total": timing.thread_cpu_ns as f64 / 1_000_000.0,
+            "thread_cpu_ns_p50_recent": cpu_p50_ns,
+            "thread_cpu_ns_p95_recent": cpu_p95_ns,
+            "thread_cpu_samples": timing.thread_cpu_samples.len,
+            "sample_weight": timing.sample_weight.max(1),
+            "totals_are_sampled_estimates": timing.sample_weight > 1,
+        })
+    }
+
+    pub(super) fn new() -> std::io::Result<Self> {
+        let (job_tx, job_rx) = mpsc::sync_channel::<CullJob>(1);
+        let (result_tx, result_rx) = mpsc::channel::<CullResults>();
+        let job_generation = Arc::new(AtomicU64::new(0));
+        let worker_generation = Arc::clone(&job_generation);
+        let thread = std::thread::Builder::new()
+            .name("world-occlusion-culling".into())
+            .spawn(move || {
+                while let Ok(job) = job_rx.recv() {
+                    if result_tx.send(cull_job(job, &worker_generation)).is_err() {
+                        break;
+                    }
+                }
+            })?;
+        Ok(Self {
+            jobs: job_tx,
+            results_rx: result_rx,
+            _thread: thread,
+            job_generation,
+            snapshot: None,
+            opaque_states: None,
+            queries: RefCell::new(Vec::new()),
+            query_results: Vec::new(),
+            cache_updates: Vec::new(),
+            cache_merge: Vec::new(),
+            stats: RefCell::new(AsyncCullingStats::default()),
+            proof_validation_cache: RefCell::new(FrameProofValidationCache::default()),
+            measure_bounds_timing: Cell::new(false),
+            particle_cluster_cursor: 0,
+            query_cache_stamp: None,
+            query_cache_camera_cell: None,
+            camera: [0.0; 3],
+            stamp: SnapshotKey {
+                world_revision: 0,
+                chunks_revision: 0,
+                bottom_y: 0,
+            },
+            pending: false,
+            proof_validation_sample_counter: Cell::new(0),
+        })
+    }
+
+    pub(super) fn begin_frame(&mut self, camera: glam::DVec3, world: &World) {
+        let started = self.timing_start();
+        self.begin_frame_inner(camera, world);
+        self.record_timing(TimingPhase::ResultConsume, started);
+    }
+
+    fn begin_frame_inner(&mut self, camera: glam::DVec3, world: &World) {
+        self.proof_validation_cache.get_mut().clear();
+        self.camera = camera.to_array();
+        self.stamp = SnapshotKey {
+            world_revision: world.revision,
+            chunks_revision: world.chunks.membership_revision(),
+            bottom_y: world.bottom_y(),
+        };
+        {
+            let mut stats = self.stats.borrow_mut();
+            stats.frames = stats.frames.saturating_add(1);
+            if stats
+                .previous_world_revision
+                .is_some_and(|revision| revision != self.stamp.world_revision)
+            {
+                stats.world_revision_changes = stats.world_revision_changes.saturating_add(1);
+            }
+            if stats
+                .previous_chunks_revision
+                .is_some_and(|revision| revision != self.stamp.chunks_revision)
+            {
+                stats.chunks_revision_changes = stats.chunks_revision_changes.saturating_add(1);
+            }
+            stats.previous_world_revision = Some(self.stamp.world_revision);
+            stats.previous_chunks_revision = Some(self.stamp.chunks_revision);
+        }
+        let camera_key = self.camera.map(f64::to_bits);
+        let camera_cell = camera_cell(self.camera);
+        let cache_initialized = self.query_cache_stamp.is_some();
+        let layout_changed = self
+            .query_cache_stamp
+            .is_some_and(|stamp| !stamp.same_layout(self.stamp));
+        let camera_cell_changed = cache_initialized && self.query_cache_camera_cell != camera_cell;
+        if layout_changed || camera_cell_changed {
+            // Invalidate in-flight work in O(1). Cached entries carry their
+            // own stamp and are rejected lazily by query_result(). Individual
+            // block edits are handled by each hidden proof's chunk references.
+            self.job_generation.fetch_add(1, Ordering::Relaxed);
+        }
+        self.query_cache_stamp = Some(self.stamp);
+        self.query_cache_camera_cell = camera_cell;
+        while let Ok(mut results) = self.results_rx.try_recv() {
+            self.pending = false;
+            {
+                let mut stats = self.stats.borrow_mut();
+                stats.worker_jobs_completed = stats.worker_jobs_completed.saturating_add(1);
+                stats.worker_ns = stats.worker_ns.saturating_add(results.worker_ns);
+                stats.worker_job_samples.record(results.worker_ns);
+                stats.worker_hidden_entities = stats
+                    .worker_hidden_entities
+                    .saturating_add(results.hidden_entities as u64);
+                stats.worker_visible_entities = stats
+                    .worker_visible_entities
+                    .saturating_add(results.visible_entities as u64);
+                stats.worker_hidden_particles = stats
+                    .worker_hidden_particles
+                    .saturating_add(results.hidden_particles as u64);
+                stats.worker_visible_particles = stats
+                    .worker_visible_particles
+                    .saturating_add(results.visible_particles as u64);
+                stats.worker_deferred_entities = stats
+                    .worker_deferred_entities
+                    .saturating_add(results.deferred_entities as u64);
+                stats.worker_deferred_particles = stats
+                    .worker_deferred_particles
+                    .saturating_add(results.deferred_particles as u64);
+                stats.entity_budget_exhausted_jobs = stats
+                    .entity_budget_exhausted_jobs
+                    .saturating_add(u64::from(results.deferred_entities != 0));
+                stats.particle_budget_exhausted_jobs = stats
+                    .particle_budget_exhausted_jobs
+                    .saturating_add(u64::from(results.deferred_particles != 0));
+            }
+            let generation = self.job_generation.load(Ordering::Relaxed);
+            if results.stamp.same_layout(self.stamp)
+                && results.generation == generation
+                && !results.cancelled
+            {
+                if results.stamp.world_revision != self.stamp.world_revision {
+                    let mut stats = self.stats.borrow_mut();
+                    stats.stale_world_jobs = stats.stale_world_jobs.saturating_add(1);
+                }
+                if results.camera != camera_key {
+                    let mut stats = self.stats.borrow_mut();
+                    stats.stale_camera_jobs = stats.stale_camera_jobs.saturating_add(1);
+                }
+                if results.camera == camera_key {
+                    self.cache_query_results(&mut results);
+                } else {
+                    // A stale-camera visible answer is fail-open. Never carry a
+                    // hidden proof across viewpoints.
+                    self.cache_visible_results(&mut results);
+                }
+                let scratch = std::mem::take(&mut results.scratch_queries);
+                if scratch.capacity() > self.queries.get_mut().capacity() {
+                    *self.queries.get_mut() = scratch;
+                }
+            } else {
+                let mut stats = self.stats.borrow_mut();
+                stats.worker_cancelled_jobs = stats
+                    .worker_cancelled_jobs
+                    .saturating_add(u64::from(results.cancelled));
+                stats.stale_camera_jobs = stats.stale_camera_jobs.saturating_add(u64::from(
+                    results.camera != camera_key || results.generation != generation,
+                ));
+                stats.stale_world_jobs = stats
+                    .stale_world_jobs
+                    .saturating_add(u64::from(!results.stamp.same_layout(self.stamp)));
+            }
+        }
+        self.queries.get_mut().clear();
+    }
+
+    pub(super) fn query(&self, vertices: &[Vertex], start: usize) -> Option<CullKey> {
+        let scan_started = self.measure_bounds_timing.get().then(Instant::now);
+        let bounds = OcclusionCuller::bounds(self.camera, vertices, start);
+        let mut stats = self.stats.borrow_mut();
+        stats.entity_queries = stats.entity_queries.saturating_add(1);
+        stats.entity_vertices_scanned = stats
+            .entity_vertices_scanned
+            .saturating_add(vertices.len().saturating_sub(start) as u64);
+        if let Some(started) = scan_started {
+            let scan_ns = started.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64;
+            stats.bounds_scan_ns = stats.bounds_scan_ns.saturating_add(scan_ns);
+            stats.bounds_scan_samples.record(scan_ns);
+        }
+        drop(stats);
+        let (min, max) = bounds?;
+        self.query_bounds(CullKind::Entity, min, max)
+    }
+
+    pub(super) fn query_entity_bounds(&self, bounds: Aabb) -> Option<CullKey> {
+        let (min, max) = OcclusionCuller::aabb_bounds(bounds)?;
+        let mut stats = self.stats.borrow_mut();
+        stats.entity_queries = stats.entity_queries.saturating_add(1);
+        drop(stats);
+        self.query_bounds(CullKind::Entity, min, max)
+    }
+
+    pub(super) fn query_particle_bounds(&self, min: [f64; 3], max: [f64; 3]) -> Option<CullKey> {
+        let mut stats = self.stats.borrow_mut();
+        stats.particle_queries = stats.particle_queries.saturating_add(1);
+        drop(stats);
+        self.query_bounds(CullKind::Particle, min, max)
+    }
+
+    fn query_bounds(&self, kind: CullKind, min: [f64; 3], max: [f64; 3]) -> Option<CullKey> {
+        if (0..3)
+            .any(|axis| !min[axis].is_finite() || !max[axis].is_finite() || min[axis] > max[axis])
+        {
+            return None;
+        }
+        Some(CullKey {
+            kind,
+            camera: self.camera.map(f64::to_bits),
+            min: min.map(f64::to_bits),
+            max: max.map(f64::to_bits),
+        })
+    }
+
+    pub(super) fn query_result(
+        &self,
+        key: &CullKey,
+        source: QuerySource,
+    ) -> Option<(bool, Option<&OcclusionProof>)> {
+        let sample_lookup = {
+            let mut stats = self.stats.borrow_mut();
+            stats.result_lookup_calls = stats.result_lookup_calls.saturating_add(1);
+            self.measure_bounds_timing.get() && stats.result_lookup_calls.is_multiple_of(16)
+        };
+        let timing_start = sample_lookup.then(|| self.timing_start()).flatten();
+        let entry = self
+            .query_results
+            .binary_search_by_key(&query_bounds_key(key), |entry| query_bounds_key(&entry.key))
+            .ok()
+            .map(|index| &self.query_results[index]);
+        let result = entry.and_then(|entry| {
+            let exact = entry.key == *key
+                && entry.stamp.same_layout(self.stamp)
+                && (entry.proof.is_some()
+                    || entry.stamp.world_revision == self.stamp.world_revision);
+            let reusable_visible = entry.proof.is_none()
+                && entry.stamp == self.stamp
+                && self
+                    .query_cache_camera_cell
+                    .is_some_and(|cell| entry.camera_cell == Some(cell));
+            (exact || reusable_visible).then(|| (entry.proof.is_some(), entry.proof.as_ref()))
+        });
+        let miss_reason = result.is_none().then(|| {
+            cache_miss_reason(
+                entry,
+                key,
+                self.stamp,
+                self.query_cache_camera_cell,
+                self.query_results.is_empty(),
+            )
+        });
+        let mut stats = self.stats.borrow_mut();
+        match (key.kind, result.is_some()) {
+            (CullKind::Entity, true) => {
+                stats.entity_cache_hits = stats.entity_cache_hits.saturating_add(1);
+            }
+            (CullKind::Entity, false) => {
+                stats.entity_cache_misses = stats.entity_cache_misses.saturating_add(1);
+            }
+            (CullKind::Particle, true) => {
+                stats.particle_cache_hits = stats.particle_cache_hits.saturating_add(1);
+            }
+            (CullKind::Particle, false) => {
+                stats.particle_cache_misses = stats.particle_cache_misses.saturating_add(1);
+            }
+        }
+        match (source, result.is_some()) {
+            (QuerySource::EntityAabb, true) => {
+                stats.entity_aabb_cache_hits = stats.entity_aabb_cache_hits.saturating_add(1);
+            }
+            (QuerySource::EntityAabb, false) => {
+                stats.entity_aabb_cache_misses = stats.entity_aabb_cache_misses.saturating_add(1);
+            }
+            (QuerySource::EntityMesh, true) => {
+                stats.entity_mesh_cache_hits = stats.entity_mesh_cache_hits.saturating_add(1);
+            }
+            (QuerySource::EntityMesh, false) => {
+                stats.entity_mesh_cache_misses = stats.entity_mesh_cache_misses.saturating_add(1);
+            }
+            (QuerySource::Particle, _) => {}
+        }
+        match miss_reason {
+            Some(CacheMissReason::EmptySet) => {
+                stats.cache_miss_empty_set = stats.cache_miss_empty_set.saturating_add(1);
+            }
+            Some(CacheMissReason::KeyMismatch) => {
+                stats.cache_miss_key_mismatch = stats.cache_miss_key_mismatch.saturating_add(1);
+            }
+            Some(CacheMissReason::CameraMismatch) => {
+                stats.cache_miss_camera_mismatch =
+                    stats.cache_miss_camera_mismatch.saturating_add(1);
+            }
+            Some(CacheMissReason::Invalidated) => {
+                stats.cache_miss_invalidated = stats.cache_miss_invalidated.saturating_add(1);
+            }
+            None => {}
+        }
+        drop(stats);
+        if sample_lookup {
+            self.record_timing(TimingPhase::ResultLookup, timing_start);
+        }
+        result
+    }
+
+    pub(super) fn sample_entity_aabb(&self, entity_id: u32, key: &CullKey) {
+        if !self.measure_bounds_timing.get() {
+            return;
+        }
+        let mut stats = self.stats.borrow_mut();
+        if stats.entity_bounds_samples.len() >= 10 {
+            return;
+        }
+        let sampled_id = *stats.sampled_entity_id.get_or_insert(entity_id);
+        if sampled_id != entity_id || stats.sampled_entity_last_frame == stats.frames {
+            return;
+        }
+        let frame = stats.frames;
+        stats.sampled_entity_last_frame = frame;
+        stats.entity_bounds_samples.push(EntityBoundsSample {
+            frame,
+            entity_id,
+            camera: key.camera,
+            min: key.min,
+            max: key.max,
+        });
+    }
+
+    pub(super) fn proof_is_current(
+        &self,
+        world: &World,
+        renderer: Option<&Renderer>,
+        streaming: &Streaming,
+        pending_uploads: &[((i32, i32, i32), SectionMesh)],
+        proof: &OcclusionProof,
+    ) -> bool {
+        let started = if self.measure_bounds_timing.get() {
+            let sample = self.proof_validation_sample_counter.get().wrapping_add(1);
+            self.proof_validation_sample_counter.set(sample);
+            sample
+                .is_multiple_of(PROOF_VALIDATION_TIMING_SAMPLE_STRIDE)
+                .then(|| self.timing_start())
+                .flatten()
+        } else {
+            None
+        };
+        let (current, counts) = proof_is_current(
+            world,
+            renderer,
+            streaming,
+            pending_uploads,
+            proof,
+            &mut self.proof_validation_cache.borrow_mut(),
+        );
+        if self.measure_bounds_timing.get() {
+            let mut stats = self.stats.borrow_mut();
+            stats.proof_validation_counts.chunk_checks = stats
+                .proof_validation_counts
+                .chunk_checks
+                .saturating_add(counts.chunk_checks);
+            stats.proof_validation_counts.chunk_cache_hits = stats
+                .proof_validation_counts
+                .chunk_cache_hits
+                .saturating_add(counts.chunk_cache_hits);
+            stats.proof_validation_counts.section_checks = stats
+                .proof_validation_counts
+                .section_checks
+                .saturating_add(counts.section_checks);
+            stats.proof_validation_counts.section_cache_hits = stats
+                .proof_validation_counts
+                .section_cache_hits
+                .saturating_add(counts.section_cache_hits);
+            if let Some(started) = started {
+                let wall_ns = started.wall.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64;
+                let thread_cpu_ns =
+                    spans::thread_cpu()
+                        .zip(started.thread_cpu)
+                        .map(|(end, start)| {
+                            end.saturating_sub(start)
+                                .as_nanos()
+                                .min(u128::from(u64::MAX)) as u64
+                        });
+                stats.proof_validation_timing.record(
+                    wall_ns,
+                    thread_cpu_ns,
+                    PROOF_VALIDATION_TIMING_SAMPLE_STRIDE,
+                );
+            }
+        }
+        current
+    }
+
+    fn cache_query_results(&mut self, results: &mut CullResults) {
+        self.cache_results(results, true);
+    }
+
+    fn cache_visible_results(&mut self, results: &mut CullResults) {
+        self.cache_results(results, false);
+    }
+
+    fn cache_results(&mut self, results: &mut CullResults, cache_hidden: bool) {
+        self.cache_updates.clear();
+        let result_camera_cell = camera_cell(results.camera.map(f64::from_bits));
+
+        // Visible results are fail-open but can hide later culling opportunities
+        // after a block edit, so retain them only for the world revision tested.
+        if results.stamp.world_revision == self.stamp.world_revision {
+            self.cache_updates
+                .extend(results.visible.drain(..).map(|key| CachedQueryResult {
+                    key,
+                    stamp: results.stamp,
+                    camera_cell: result_camera_cell,
+                    proof: None,
+                }));
+        } else {
+            results.visible.clear();
+        }
+
+        if cache_hidden {
+            for (key, proof) in results.hidden.drain(..) {
+                let has_newer_hidden_proof = results.stamp.world_revision
+                    != self.stamp.world_revision
+                    && self
+                        .query_results
+                        .binary_search_by_key(&query_bounds_key(&key), |entry| {
+                            query_bounds_key(&entry.key)
+                        })
+                        .ok()
+                        .is_some_and(|index| {
+                            let entry = &self.query_results[index];
+                            entry.key == key
+                                && entry.proof.is_some()
+                                && entry.stamp.same_layout(self.stamp)
+                                && entry.stamp.world_revision == self.stamp.world_revision
+                        });
+                if has_newer_hidden_proof {
+                    continue;
+                }
+                self.cache_updates.push(CachedQueryResult {
+                    key,
+                    stamp: results.stamp,
+                    camera_cell: result_camera_cell,
+                    proof: Some(proof),
+                });
+            }
+        } else {
+            results.hidden.clear();
+        }
+
+        if self.cache_updates.is_empty() {
+            return;
+        }
+        self.cache_updates
+            .sort_unstable_by_key(|entry| query_bounds_key(&entry.key));
+
+        let existing_len = self.query_results.len();
+        let updates_len = self.cache_updates.len();
+        let mut existing = std::mem::take(&mut self.query_results);
+        let mut updates = std::mem::take(&mut self.cache_updates);
+        let mut merged = std::mem::take(&mut self.cache_merge);
+        merged.clear();
+        merged.reserve(
+            existing_len
+                .saturating_add(updates_len)
+                .min(MAX_OCCLUSION_RESULT_CACHE_ENTRIES),
+        );
+
+        let mut existing_iter = existing.drain(..).peekable();
+        let mut updates_iter = updates.drain(..).peekable();
+        let mut invalidation_replacements = 0_u64;
+        let mut capacity_evictions = 0_u64;
+        while existing_iter.peek().is_some() || updates_iter.peek().is_some() {
+            let entry = match (existing_iter.peek(), updates_iter.peek()) {
+                (Some(old), Some(new)) => {
+                    match query_bounds_key(&old.key).cmp(&query_bounds_key(&new.key)) {
+                        std::cmp::Ordering::Less => existing_iter.next().unwrap(),
+                        std::cmp::Ordering::Greater => updates_iter.next().unwrap(),
+                        std::cmp::Ordering::Equal => {
+                            let old = existing_iter.next().unwrap();
+                            let new = updates_iter.next().unwrap();
+                            let invalidated = !old.stamp.same_layout(self.stamp)
+                                || (old.proof.is_none()
+                                    && (old.stamp.world_revision != self.stamp.world_revision
+                                        || old.camera_cell != self.query_cache_camera_cell));
+                            invalidation_replacements =
+                                invalidation_replacements.saturating_add(u64::from(invalidated));
+                            new
+                        }
+                    }
+                }
+                (Some(_), None) => existing_iter.next().unwrap(),
+                (None, Some(_)) => updates_iter.next().unwrap(),
+                (None, None) => unreachable!(),
+            };
+            if merged.len() < MAX_OCCLUSION_RESULT_CACHE_ENTRIES {
+                merged.push(entry);
+            } else {
+                capacity_evictions = capacity_evictions.saturating_add(1);
+            }
+        }
+        drop(existing_iter);
+        drop(updates_iter);
+
+        let mut stats = self.stats.borrow_mut();
+        stats.result_cache_evictions = stats
+            .result_cache_evictions
+            .saturating_add(capacity_evictions);
+        stats.result_cache_capacity_evictions = stats
+            .result_cache_capacity_evictions
+            .saturating_add(capacity_evictions);
+        stats.result_cache_invalidation_replacements = stats
+            .result_cache_invalidation_replacements
+            .saturating_add(invalidation_replacements);
+        drop(stats);
+
+        self.query_results = merged;
+        self.cache_updates = updates;
+        self.cache_merge = existing;
+    }
+
+    pub(super) fn queue(&self, key: CullKey) {
+        let mut stats = self.stats.borrow_mut();
+        stats.queued_queries = stats.queued_queries.saturating_add(1);
+        drop(stats);
+        self.queries.borrow_mut().push(key);
+    }
+
+    pub(super) fn finish_frame(&mut self, world: &World, facts: &BlockFacts) {
+        let started = self.timing_start();
+        self.finish_frame_inner(world, facts);
+        self.record_timing(TimingPhase::FrameSubmit, started);
+    }
+
+    fn finish_frame_inner(&mut self, world: &World, facts: &BlockFacts) {
+        let queries = self.queries.get_mut();
+        if self.pending {
+            let mut stats = self.stats.borrow_mut();
+            stats.queries_dropped_while_pending = stats
+                .queries_dropped_while_pending
+                .saturating_add(queries.len() as u64);
+            drop(stats);
+            queries.clear();
+            return;
+        }
+        if queries.is_empty() {
+            return;
+        }
+        // Coalesce duplicates before spending the worker's bounded lookup budget.
+        queries.sort_unstable();
+        queries.dedup();
+        let entity_count = queries.partition_point(|query| query.kind == CullKind::Entity);
+        queries[..entity_count].sort_by(|a, b| {
+            query_priority(b)
+                .total_cmp(&query_priority(a))
+                .then_with(|| a.cmp(b))
+        });
+        schedule_particle_clusters(queries, &mut self.particle_cluster_cursor);
+        // If particle bounds alone make the combined snapshot too large, keep
+        // the entity snapshot valid and let those particle queries fail open.
+        let Some(bounds) = snapshot_bounds(self.camera, queries)
+            .or_else(|| snapshot_bounds_for(self.camera, queries, Some(CullKind::Entity)))
+        else {
+            queries.clear();
+            return;
+        };
+        let opaque_states = Arc::clone(
+            self.opaque_states
+                .get_or_insert_with(|| facts.states.iter().map(opaque).collect::<Vec<_>>().into()),
+        );
+        let snapshot = match &mut self.snapshot {
+            Some((stamp, cached_bounds, snapshot)) => {
+                if !stamp.same_layout(self.stamp)
+                    || *cached_bounds != bounds
+                    || !snapshot.chunks_match(world)
+                {
+                    let snapshot = Arc::make_mut(snapshot);
+                    snapshot.opaque_states = Arc::clone(&opaque_states);
+                    snapshot.refresh_chunks(world, bounds);
+                    *stamp = self.stamp;
+                    *cached_bounds = bounds;
+                }
+                Arc::clone(snapshot)
+            }
+            None => {
+                let mut snapshot = OcclusionSnapshot {
+                    chunks: Vec::new(),
+                    opaque_states,
+                };
+                snapshot.refresh_chunks(world, bounds);
+                let snapshot = Arc::new(snapshot);
+                self.snapshot = Some((self.stamp, bounds, Arc::clone(&snapshot)));
+                snapshot
+            }
+        };
+        let queries = std::mem::take(queries);
+        let job = CullJob {
+            stamp: self.stamp,
+            generation: self.job_generation.load(Ordering::Relaxed),
+            snapshot,
+            queries,
+        };
+        let mut stats = self.stats.borrow_mut();
+        stats.worker_jobs = stats.worker_jobs.saturating_add(1);
+        drop(stats);
+        let query_count = job.queries.len();
+        let send_started = self.timing_start();
+        match self.jobs.try_send(job) {
+            Ok(()) => {
+                self.pending = true;
+                let mut stats = self.stats.borrow_mut();
+                stats.worker_job_queries =
+                    stats.worker_job_queries.saturating_add(query_count as u64);
+                stats
+                    .worker_job_query_count_samples
+                    .record(query_count as u64);
+            }
+            Err(TrySendError::Full(job)) => {
+                let mut stats = self.stats.borrow_mut();
+                stats.worker_jobs = stats.worker_jobs.saturating_sub(1);
+                stats.job_send_full = stats.job_send_full.saturating_add(1);
+                drop(stats);
+                *self.queries.get_mut() = job.queries;
+            }
+            Err(TrySendError::Disconnected(job)) => {
+                let mut stats = self.stats.borrow_mut();
+                stats.worker_jobs = stats.worker_jobs.saturating_sub(1);
+                stats.job_send_disconnected = stats.job_send_disconnected.saturating_add(1);
+                drop(stats);
+                *self.queries.get_mut() = job.queries;
+            }
+        }
+        self.record_timing(TimingPhase::JobSend, send_started);
+    }
+
+    pub(super) fn record_entity_vertices_culled(&self, vertices: usize) {
+        let mut stats = self.stats.borrow_mut();
+        stats.entities_culled = stats.entities_culled.saturating_add(1);
+        stats.entity_vertices_culled = stats.entity_vertices_culled.saturating_add(vertices as u64);
+        stats.entity_bytes_culled = stats
+            .entity_bytes_culled
+            .saturating_add((vertices.saturating_mul(std::mem::size_of::<Vertex>())) as u64);
+    }
+
+    pub(super) fn record_entity_culled(&self) {
+        let mut stats = self.stats.borrow_mut();
+        stats.entities_culled = stats.entities_culled.saturating_add(1);
+    }
+
+    pub(super) fn record_particle_candidates(&self, candidates: u64, culled: u64) {
+        if candidates == 0 {
+            return;
+        }
+        let mut stats = self.stats.borrow_mut();
+        stats.particle_candidates = stats.particle_candidates.saturating_add(candidates);
+        stats.particle_candidates_culled = stats
+            .particle_candidates_culled
+            .saturating_add(culled.min(candidates));
+    }
+
+    pub(super) fn stats_value(&self) -> serde_json::Value {
+        let stats = self.stats.borrow();
+        let (worker_p50_ns, worker_p95_ns) = stats.worker_job_samples.percentiles_ns();
+        let (bounds_p50_ns, bounds_p95_ns) = stats.bounds_scan_samples.percentiles_ns();
+        let (job_queries_p50, job_queries_p95) =
+            stats.worker_job_query_count_samples.percentiles_ns();
+        let bounds_samples = stats
+            .entity_bounds_samples
+            .iter()
+            .map(|sample| {
+                let hex = |values: [u64; 3]| values.map(|value| format!("0x{value:016x}"));
+                serde_json::json!({
+                    "frame": sample.frame,
+                    "entity_id": sample.entity_id,
+                    "camera_bits": hex(sample.camera),
+                    "min_bits": hex(sample.min),
+                    "max_bits": hex(sample.max),
+                })
+            })
+            .collect::<Vec<_>>();
+        let completed_per_frame = if stats.frames == 0 {
+            0.0
+        } else {
+            stats.worker_jobs_completed as f64 / stats.frames as f64
+        };
+        let queued_per_frame = if stats.frames == 0 {
+            0.0
+        } else {
+            stats.worker_jobs as f64 / stats.frames as f64
+        };
+        let mut value = serde_json::json!({
+            "frames": stats.frames,
+            "entity_queries": stats.entity_queries,
+            "particle_cluster_queries": stats.particle_queries,
+            "entity_cache_hits": stats.entity_cache_hits,
+            "entity_cache_misses": stats.entity_cache_misses,
+            "particle_cache_hits": stats.particle_cache_hits,
+            "particle_cache_misses": stats.particle_cache_misses,
+            "result_cache_evictions": stats.result_cache_evictions,
+            "entity_vertices_scanned": stats.entity_vertices_scanned,
+            "entities_culled": stats.entities_culled,
+            "entity_vertices_culled": stats.entity_vertices_culled,
+            "entity_bytes_avoided": stats.entity_bytes_culled,
+            "particle_candidates": stats.particle_candidates,
+            "particle_candidates_culled": stats.particle_candidates_culled,
+            "queued_queries": stats.queued_queries,
+            "queries_dropped_while_pending": stats.queries_dropped_while_pending,
+            "worker_jobs": stats.worker_jobs,
+            "worker_jobs_completed": stats.worker_jobs_completed,
+            "stale_camera_jobs": stats.stale_camera_jobs,
+            "stale_world_jobs": stats.stale_world_jobs,
+            "worker_cancelled_jobs": stats.worker_cancelled_jobs,
+            "worker_ms": stats.worker_ns as f64 / 1_000_000.0,
+            "worker_job_ns_p50_recent": worker_p50_ns,
+            "worker_job_ns_p95_recent": worker_p95_ns,
+            "worker_job_timing_samples": stats.worker_job_samples.len,
+            "worker_jobs_completed_per_frame": completed_per_frame,
+            "worker_jobs_queued_per_frame": queued_per_frame,
+            "bounds_scan_ms": stats.bounds_scan_ns as f64 / 1_000_000.0,
+            "bounds_scan_ns_p50_recent": bounds_p50_ns,
+            "bounds_scan_ns_p95_recent": bounds_p95_ns,
+            "bounds_scan_timing_samples": stats.bounds_scan_samples.len,
+            "worker_hidden_entities": stats.worker_hidden_entities,
+            "worker_visible_entities": stats.worker_visible_entities,
+            "worker_hidden_particle_clusters": stats.worker_hidden_particles,
+            "worker_visible_particle_clusters": stats.worker_visible_particles,
+            "worker_deferred_entities": stats.worker_deferred_entities,
+            "worker_deferred_particle_clusters": stats.worker_deferred_particles,
+            "entity_budget_exhausted_jobs": stats.entity_budget_exhausted_jobs,
+            "particle_budget_exhausted_jobs": stats.particle_budget_exhausted_jobs,
+            "result_cache_slots": MAX_OCCLUSION_RESULT_CACHE_ENTRIES,
+            "result_cache_entries": self.query_results.len(),
+        });
+        value["entity_aabb_cache_hits"] = serde_json::json!(stats.entity_aabb_cache_hits);
+        value["entity_aabb_cache_misses"] = serde_json::json!(stats.entity_aabb_cache_misses);
+        value["entity_mesh_cache_hits"] = serde_json::json!(stats.entity_mesh_cache_hits);
+        value["entity_mesh_cache_misses"] = serde_json::json!(stats.entity_mesh_cache_misses);
+        value["result_cache_capacity_evictions"] =
+            serde_json::json!(stats.result_cache_capacity_evictions);
+        value["result_cache_invalidation_replacements"] =
+            serde_json::json!(stats.result_cache_invalidation_replacements);
+        value["cache_miss_empty_set"] = serde_json::json!(stats.cache_miss_empty_set);
+        value["cache_miss_key_mismatch"] = serde_json::json!(stats.cache_miss_key_mismatch);
+        value["cache_miss_camera_mismatch"] = serde_json::json!(stats.cache_miss_camera_mismatch);
+        value["cache_miss_invalidated"] = serde_json::json!(stats.cache_miss_invalidated);
+        value["worker_job_queries"] = serde_json::json!(stats.worker_job_queries);
+        value["worker_job_query_count_p50_recent"] = serde_json::json!(job_queries_p50);
+        value["worker_job_query_count_p95_recent"] = serde_json::json!(job_queries_p95);
+        value["worker_job_query_count_samples"] =
+            serde_json::json!(stats.worker_job_query_count_samples.len);
+        value["job_send_full"] = serde_json::json!(stats.job_send_full);
+        value["job_send_disconnected"] = serde_json::json!(stats.job_send_disconnected);
+        value["world_revision_changes"] = serde_json::json!(stats.world_revision_changes);
+        value["chunks_revision_changes"] = serde_json::json!(stats.chunks_revision_changes);
+        value["worker_blocking_wait_ms"] = serde_json::json!(0.0);
+        value["worker_wait_path"] = serde_json::json!("render thread uses try_recv/try_send");
+        value["phase_timings"] = serde_json::json!({
+            "result_consume": Self::timing_value(&stats.result_consume_timing),
+            "frame_submit": Self::timing_value(&stats.frame_submit_timing),
+            "job_send": Self::timing_value(&stats.job_send_timing),
+            "result_lookup_sampled_1_in_16": Self::timing_value(&stats.result_lookup_timing),
+            "proof_validation": Self::timing_value(&stats.proof_validation_timing),
+        });
+        value["proof_validation"] = serde_json::json!({
+            "unique_chunk_checks": stats.proof_validation_counts.chunk_checks,
+            "cached_chunk_checks": stats.proof_validation_counts.chunk_cache_hits,
+            "unique_section_checks": stats.proof_validation_counts.section_checks,
+            "cached_section_checks": stats.proof_validation_counts.section_cache_hits,
+        });
+        value["sampled_entity_bounds"] = serde_json::json!(bounds_samples);
+        value
+    }
+
+    pub(super) fn reset_stats(&self) {
+        *self.stats.borrow_mut() = AsyncCullingStats::default();
+        self.measure_bounds_timing.set(true);
+        self.proof_validation_sample_counter.set(0);
+    }
+}
+
+fn cache_miss_reason(
+    entry: Option<&CachedQueryResult>,
+    key: &CullKey,
+    stamp: SnapshotKey,
+    camera_cell: Option<[i32; 3]>,
+    cache_empty: bool,
+) -> CacheMissReason {
+    let Some(entry) = entry else {
+        return if cache_empty {
+            CacheMissReason::EmptySet
+        } else {
+            CacheMissReason::KeyMismatch
+        };
+    };
+    if !entry.stamp.same_layout(stamp)
+        || (entry.proof.is_none() && entry.stamp.world_revision != stamp.world_revision)
+    {
+        return CacheMissReason::Invalidated;
+    }
+    if entry.key.camera != key.camera
+        && (entry.proof.is_some()
+            || entry.stamp != stamp
+            || !camera_cell.is_some_and(|cell| entry.camera_cell == Some(cell)))
+    {
+        return CacheMissReason::CameraMismatch;
+    }
+    CacheMissReason::KeyMismatch
+}
+
+fn schedule_particle_clusters(queries: &mut Vec<CullKey>, cursor: &mut usize) {
+    let entity_count = queries.partition_point(|query| query.kind == CullKind::Entity);
+    let particle_count = queries.len() - entity_count;
+    if particle_count > MAX_ASYNC_PARTICLE_CLUSTERS_PER_JOB {
+        let start = *cursor % particle_count;
+        queries[entity_count..].rotate_left(start);
+        *cursor = (start + MAX_ASYNC_PARTICLE_CLUSTERS_PER_JOB) % particle_count;
+        queries.truncate(entity_count + MAX_ASYNC_PARTICLE_CLUSTERS_PER_JOB);
+    }
+    queries[entity_count..].sort_by(|a, b| {
+        query_priority(b)
+            .total_cmp(&query_priority(a))
+            .then_with(|| a.cmp(b))
+    });
+}
+
+fn query_priority(key: &CullKey) -> f64 {
+    let camera = key.camera.map(f64::from_bits);
+    let min = key.min.map(f64::from_bits);
+    let max = key.max.map(f64::from_bits);
+    let mut extent = 0.0_f64;
+    let mut distance_squared = 0.0_f64;
+    for axis in 0..3 {
+        let center = min[axis] + (max[axis] - min[axis]) * 0.5;
+        extent = extent.max(max[axis] - min[axis]);
+        distance_squared += (center - camera[axis]).powi(2);
+    }
+    if extent.is_finite() && distance_squared.is_finite() {
+        extent * extent / distance_squared.max(0.01)
+    } else {
+        0.0
+    }
+}
+
+fn camera_cell(camera: [f64; 3]) -> Option<[i32; 3]> {
+    let [Some(x), Some(y), Some(z)] = camera.map(snapshot_cell) else {
+        return None;
+    };
+    Some([x, y, z])
+}
+
+fn cull_job(mut job: CullJob, generation: &AtomicU64) -> CullResults {
+    let started = Instant::now();
+    let camera = job.queries[0].camera.map(f64::from_bits);
+    let entity_count = job
+        .queries
+        .partition_point(|query| query.kind == CullKind::Entity);
+    let particle_count = job.queries.len() - entity_count;
+    let (entity_budget, particle_budget) = split_lookup_budget(entity_count, particle_count);
+    let entity_culler = OcclusionCuller::new(camera, entity_budget);
+    let particle_culler = OcclusionCuller::new(camera, particle_budget);
+    let mut last_chunk = LastChunk::default();
+    let mut opacity_grid = OpacityGrid::default();
+    let mut hidden = Vec::with_capacity(job.queries.len());
+    let mut visible = Vec::new();
+    let mut covered = Vec::new();
+    let mut deferred_entities = 0;
+    let mut deferred_particles = 0;
+    let mut cancelled = false;
+    for &key in &job.queries {
+        if generation.load(Ordering::Relaxed) != job.generation {
+            cancelled = true;
+            break;
+        }
+        covered.clear();
+        let min = key.min.map(f64::from_bits);
+        let max = key.max.map(f64::from_bits);
+        if bounds_have_clear_ray(
+            camera,
+            min,
+            max,
+            &job.snapshot,
+            &mut last_chunk,
+            &mut opacity_grid,
+        ) {
+            visible.push(key);
+            continue;
+        }
+        let culler = match key.kind {
+            CullKind::Entity => &entity_culler,
+            CullKind::Particle => &particle_culler,
+        };
+        if culler.remaining() == 0 {
+            match key.kind {
+                CullKind::Entity => deferred_entities += 1,
+                CullKind::Particle => deferred_particles += 1,
+            }
+            continue;
+        }
+        let remaining_before = culler.remaining();
+        let is_hidden = culler.occluded(min, max, |pos| {
+            let opaque = opacity_grid.opaque(&job.snapshot, pos, &mut last_chunk);
+            if opaque {
+                covered.push(pos);
+            }
+            opaque
+        });
+        if !is_hidden && remaining_before != 0 && culler.remaining() == 0 {
+            match key.kind {
+                CullKind::Entity => deferred_entities += 1,
+                CullKind::Particle => deferred_particles += 1,
+            }
+            continue;
+        }
+        if !is_hidden {
+            visible.push(key);
+            continue;
+        }
+        let mut sections = Vec::with_capacity(covered.len());
+        let mut proof_chunks: Vec<(ChunkKey, Weak<Chunk>)> = Vec::new();
+        let mut valid = true;
+        for &pos in &covered {
+            let chunk_key = (pos[0] >> 4, pos[2] >> 4);
+            let Some(y) = pos[1].checked_sub(job.stamp.bottom_y) else {
+                valid = false;
+                break;
+            };
+            sections.push((chunk_key.0, y.div_euclid(16), chunk_key.1));
+            if let Err(index) = proof_chunks.binary_search_by_key(&chunk_key, |(key, _)| *key) {
+                let Some(chunk) = job.snapshot.chunk(chunk_key) else {
+                    valid = false;
+                    break;
+                };
+                if chunk.strong_count() == 0 {
+                    valid = false;
+                    break;
+                }
+                proof_chunks.insert(index, (chunk_key, chunk.clone()));
+            }
+        }
+        if valid {
+            sections.sort_unstable();
+            sections.dedup();
+            hidden.push((
+                key,
+                OcclusionProof {
+                    sections,
+                    chunks: proof_chunks,
+                },
+            ));
+        } else {
+            visible.push(key);
+        }
+    }
+    let hidden_entities = hidden
+        .iter()
+        .filter(|(key, _)| key.kind == CullKind::Entity)
+        .count();
+    let hidden_particles = hidden.len() - hidden_entities;
+    let visible_entities = visible
+        .iter()
+        .filter(|key| key.kind == CullKind::Entity)
+        .count();
+    let visible_particles = visible.len() - visible_entities;
+    hidden.sort_unstable_by_key(|(key, _)| *key);
+    visible.sort_unstable();
+    job.queries.clear();
+    CullResults {
+        stamp: job.stamp,
+        camera: camera.map(f64::to_bits),
+        generation: job.generation,
+        cancelled,
+        hidden,
+        visible,
+        scratch_queries: job.queries,
+        worker_ns: started.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64,
+        hidden_entities,
+        visible_entities,
+        hidden_particles,
+        visible_particles,
+        deferred_entities,
+        deferred_particles,
+    }
+}
+
+fn split_lookup_budget(entity_count: usize, particle_count: usize) -> (usize, usize) {
+    match (entity_count, particle_count) {
+        (0, 0) => (0, 0),
+        (0, _) => (0, OCCLUSION_LOOKUP_BUDGET),
+        (_, 0) => (OCCLUSION_LOOKUP_BUDGET, 0),
+        (entities, particles) => {
+            // Entity bounds are larger than the particle clusters. Weight each
+            // entity query more heavily so a burst of particles cannot starve it.
+            let entity_weight = entities as u128 * ENTITY_LOOKUP_WEIGHT;
+            let total = entity_weight + particles as u128;
+            let entities = ((OCCLUSION_LOOKUP_BUDGET as u128 * entity_weight) / total)
+                .clamp(1, (OCCLUSION_LOOKUP_BUDGET - 1) as u128)
+                as usize;
+            (entities, OCCLUSION_LOOKUP_BUDGET - entities)
+        }
+    }
+}
+
+pub(super) fn opaque(facts: &StateFacts) -> bool {
+    facts.render_shape == RenderShape::Model
+        && facts.can_occlude
+        && facts.solid_render
+        && facts.full_collision
+}
+
+fn snapshot_bounds(camera: [f64; 3], queries: &[CullKey]) -> Option<ChunkBounds> {
+    snapshot_bounds_for(camera, queries, None)
+}
+
+fn snapshot_bounds_for(
+    camera: [f64; 3],
+    queries: &[CullKey],
+    kind: Option<CullKind>,
+) -> Option<ChunkBounds> {
+    let mut min_x = camera[0];
+    let mut max_x = camera[0];
+    let mut min_z = camera[2];
+    let mut max_z = camera[2];
+    let mut included = false;
+    for query in queries {
+        if kind.is_some_and(|kind| query.kind != kind) {
+            continue;
+        }
+        included = true;
+        let min = query.min.map(f64::from_bits);
+        let max = query.max.map(f64::from_bits);
+        min_x = min_x.min(min[0]);
+        max_x = max_x.max(max[0]);
+        min_z = min_z.min(min[2]);
+        max_z = max_z.max(max[2]);
+    }
+    if !included {
+        return None;
+    }
+    // Culler::occluded expands projected cells by EPSILON. One block of slack
+    // also covers the camera's first cell when it lies exactly on a boundary.
+    let min_x = snapshot_cell(min_x - 1.0)? >> 4;
+    let max_x = snapshot_cell(max_x + 1.0)? >> 4;
+    let min_z = snapshot_cell(min_z - 1.0)? >> 4;
+    let max_z = snapshot_cell(max_z + 1.0)? >> 4;
+    let width = i64::from(max_x) - i64::from(min_x) + 1;
+    let depth = i64::from(max_z) - i64::from(min_z) + 1;
+    if width <= 0 || depth <= 0 || width.checked_mul(depth)? > MAX_SNAPSHOT_CHUNKS {
+        return None;
+    }
+    Some(ChunkBounds {
+        min_x,
+        max_x,
+        min_z,
+        max_z,
+    })
+}
+
+fn snapshot_cell(value: f64) -> Option<i32> {
+    let cell = value.floor();
+    (cell.is_finite() && cell >= f64::from(i32::MIN) && cell <= f64::from(i32::MAX))
+        .then_some(cell as i32)
+}
+
+fn proof_is_current(
+    world: &World,
+    renderer: Option<&Renderer>,
+    streaming: &Streaming,
+    pending_uploads: &[((i32, i32, i32), SectionMesh)],
+    proof: &OcclusionProof,
+    cache: &mut FrameProofValidationCache,
+) -> (bool, ProofValidationCounts) {
+    let mut counts = ProofValidationCounts::default();
+    for (key, expected) in &proof.chunks {
+        if !cache.chunk_is_current(world, *key, expected, &mut counts) {
+            return (false, counts);
+        }
+    }
+    for &section in &proof.sections {
+        if !cache.section_is_current(
+            section,
+            world,
+            renderer,
+            streaming,
+            pending_uploads,
+            &mut counts,
+        ) {
+            return (false, counts);
+        }
+    }
+    (true, counts)
+}
+
+pub(super) fn occluder_ready(
+    world: &World,
+    facts: &BlockFacts,
+    renderer: Option<&Renderer>,
+    streaming: &Streaming,
+    pending_uploads: &[((i32, i32, i32), SectionMesh)],
+    pos: [i32; 3],
+) -> bool {
+    let state = world.block(pos[0], pos[1], pos[2]);
+    if !opaque(facts.get(state)) {
+        return false;
+    }
+    let Some(y) = pos[1].checked_sub(world.bottom_y()) else {
+        return false;
+    };
+    let section = (pos[0] >> 4, y.div_euclid(16), pos[2] >> 4);
+    renderer.is_some_and(|r| r.has_section(section))
+        && !world.dirty_sections.contains(&section)
+        && !streaming.is_meshing(section)
+        && !pending_uploads.iter().any(|(key, _)| *key == section)
+}
+
+impl Game<'_> {
+    pub(super) fn prepare_occlusion_culling(&mut self, camera: glam::DVec3) {
+        let entity_mode = self.settings.horizon.entity_culling;
+        let particle_mode = self.settings.horizon.particle_culling;
+        let requested =
+            entity_mode != EntityCullingMode::Off || particle_mode != ParticleCullingMode::Off;
+        let at = camera.to_array().map(|v| v.floor() as i32);
+        let eligible = requested
+            // Packs can replace opaque models, so their terrain is not a safe occluder.
+            && self.model_packs_are_vanilla()
+            && self.player.is_some()
+            && !self.spectator()
+            && !opaque(self.res.facts().get(self.world.block(at[0], at[1], at[2])));
+        if !eligible {
+            self.sync_occlusion_culler = None;
+            self.async_occlusion_culler = None;
+            self.async_occlusion_culling_failed = false;
+            return;
+        }
+
+        let wants_async = entity_mode == EntityCullingMode::Asynchronous
+            || particle_mode == ParticleCullingMode::Asynchronous;
+        let wants_sync = entity_mode == EntityCullingMode::Synchronous
+            || particle_mode == ParticleCullingMode::Synchronous;
+        if wants_async {
+            if self.async_occlusion_culler.is_none() && !self.async_occlusion_culling_failed {
+                match AsyncOcclusionCuller::new() {
+                    Ok(culler) => self.async_occlusion_culler = Some(culler),
+                    Err(error) => {
+                        log::warn!("Horizon: cannot start world-occlusion-culling worker: {error}");
+                        self.async_occlusion_culling_failed = true;
+                    }
+                }
+            }
+            if let Some(culler) = &mut self.async_occlusion_culler {
+                culler.begin_frame(camera, &self.world);
+            }
+        } else {
+            self.async_occlusion_culler = None;
+            self.async_occlusion_culling_failed = false;
+        }
+
+        let async_unavailable = wants_async && self.async_occlusion_culler.is_none();
+        self.sync_occlusion_culler = (wants_sync || async_unavailable)
+            .then(|| OcclusionCuller::new(camera.to_array(), 8_192));
+    }
+
+    pub(super) fn finish_async_occlusion_culling(&mut self) {
+        if let Some(culler) = &mut self.async_occlusion_culler {
+            culler.finish_frame(&self.world, self.res.facts());
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use horizon_client::chunk::ColumnLayout;
+
+    #[test]
+    fn timing_samples_keep_a_bounded_recent_window_and_use_nearest_rank() {
+        let mut samples = TimingSamples::default();
+        assert_eq!(samples.percentiles_ns(), (None, None));
+        for value in 10..=270 {
+            samples.record(value);
+        }
+        assert_eq!(samples.len, TIMING_SAMPLE_CAPACITY);
+        assert_eq!(samples.percentiles_ns(), (Some(142), Some(258)));
+    }
+
+    #[test]
+    fn particle_candidate_stats_accept_batched_frame_counts() {
+        let culler = AsyncOcclusionCuller::new().unwrap();
+        culler.record_particle_candidates(12, 5);
+        culler.record_particle_candidates(7, 3);
+        let stats = culler.stats_value();
+        assert_eq!(stats["particle_candidates"], 19);
+        assert_eq!(stats["particle_candidates_culled"], 8);
+    }
+
+    fn wall(hole: Option<[i32; 3]>) -> (Arc<OcclusionSnapshot>, Vec<Arc<Chunk>>) {
+        let mut live = Vec::new();
+        let mut chunks = Vec::new();
+        for chunk_z in [-1, 0] {
+            let mut chunk = Chunk::with_layout(0, chunk_z, ColumnLayout::VANILLA);
+            for y in -1..=0 {
+                for z in -1..=0 {
+                    let pos = [4, y, z];
+                    if hole != Some(pos) {
+                        chunk.set(pos[0] & 15, pos[1], pos[2] & 15, 1);
+                    }
+                }
+            }
+            let chunk = Arc::new(chunk);
+            chunks.push(((0, chunk_z), Arc::downgrade(&chunk)));
+            live.push(chunk);
+        }
+        chunks.sort_unstable_by_key(|(key, _)| *key);
+        (
+            Arc::new(OcclusionSnapshot {
+                chunks,
+                opaque_states: Arc::from([false, true]),
+            }),
+            live,
+        )
+    }
+
+    fn run_job(job: CullJob) -> CullResults {
+        cull_job(job, &AtomicU64::new(0))
+    }
+
+    fn job(snapshot: Arc<OcclusionSnapshot>, kind: CullKind) -> CullJob {
+        let camera = [0.0; 3];
+        let min = [7.95, -0.55, -0.55];
+        let max = [10.05, 0.55, 0.55];
+        CullJob {
+            stamp: SnapshotKey {
+                world_revision: 1,
+                chunks_revision: 1,
+                bottom_y: ColumnLayout::VANILLA.min_y(),
+            },
+            generation: 0,
+            snapshot,
+            queries: vec![CullKey {
+                kind,
+                camera: camera.map(f64::to_bits),
+                min: min.map(f64::to_bits),
+                max: max.map(f64::to_bits),
+            }],
+        }
+    }
+
+    #[test]
+    fn async_snapshot_is_bounded_and_handles_negative_chunk_edges() {
+        let camera = [-16.0, 0.0, -16.0];
+        let key = CullKey {
+            kind: CullKind::Entity,
+            camera: camera.map(f64::to_bits),
+            min: [-8.0, -1.0, -8.0].map(f64::to_bits),
+            max: [8.0, 1.0, 8.0].map(f64::to_bits),
+        };
+        assert_eq!(
+            snapshot_bounds(camera, &[key]),
+            Some(ChunkBounds {
+                min_x: -2,
+                max_x: 0,
+                min_z: -2,
+                max_z: 0,
+            })
+        );
+
+        let huge = CullKey {
+            kind: CullKind::Entity,
+            camera: [0.0; 3].map(f64::to_bits),
+            min: [5_000.0, 0.0, 5_000.0].map(f64::to_bits),
+            max: [5_001.0, 1.0, 5_001.0].map(f64::to_bits),
+        };
+        assert_eq!(snapshot_bounds([0.0; 3], &[huge]), None);
+    }
+
+    #[test]
+    fn async_worker_only_hides_bounds_behind_a_complete_opaque_plane() {
+        for kind in [CullKind::Entity, CullKind::Particle] {
+            let (snapshot, live) = wall(None);
+            let results = run_job(job(snapshot, kind));
+            assert_eq!(results.hidden.len(), 1);
+            assert!(results.visible.is_empty());
+            assert_eq!(results.hidden[0].0.kind, kind);
+            assert_eq!(results.hidden[0].1.sections.len(), 4);
+            assert_eq!(results.hidden[0].1.chunks.len(), 2);
+            drop(live);
+
+            let (snapshot, live) = wall(Some([4, 0, 0]));
+            let results = run_job(job(snapshot, kind));
+            assert!(results.hidden.is_empty());
+            assert_eq!(results.visible.len(), 1);
+            assert_eq!(results.visible[0].kind, kind);
+            drop(live);
+        }
+    }
+
+    #[test]
+    fn entity_and_particle_rays_only_short_circuit_when_a_sample_path_is_clear() {
+        let (snapshot, live) = wall(None);
+        let mut last_chunk = LastChunk::default();
+        let mut opacity_grid = OpacityGrid::default();
+        assert!(!ray_reaches_without_opaque(
+            [0.0; 3],
+            [8.0, 0.0, 0.0],
+            &snapshot,
+            &mut last_chunk,
+            &mut opacity_grid,
+        ));
+        drop(live);
+
+        let (snapshot, live) = wall(Some([4, 0, 0]));
+        let mut last_chunk = LastChunk::default();
+        let mut opacity_grid = OpacityGrid::default();
+        assert!(bounds_have_clear_ray(
+            [0.0; 3],
+            [7.95, -0.55, -0.55],
+            [10.05, 0.55, 0.55],
+            &snapshot,
+            &mut last_chunk,
+            &mut opacity_grid,
+        ));
+        drop(live);
+    }
+
+    #[test]
+    fn particle_cluster_batches_round_robin_without_reordering_entity_queries() {
+        let camera = [0.0; 3].map(f64::to_bits);
+        let entity = CullKey {
+            kind: CullKind::Entity,
+            camera,
+            min: [1.0, 0.0, 0.0].map(f64::to_bits),
+            max: [2.0, 1.0, 1.0].map(f64::to_bits),
+        };
+        let all_queries = || {
+            std::iter::once(entity)
+                .chain((0..2_048).map(|index| {
+                    let x = f64::from(index);
+                    CullKey {
+                        kind: CullKind::Particle,
+                        camera,
+                        min: [x, 0.0, 0.0].map(f64::to_bits),
+                        max: [x + 1.0, 1.0, 1.0].map(f64::to_bits),
+                    }
+                }))
+                .collect::<Vec<_>>()
+        };
+        let mut cursor = 0;
+        let mut first = all_queries();
+        first.sort_unstable();
+        schedule_particle_clusters(&mut first, &mut cursor);
+        assert_eq!(first.len(), MAX_ASYNC_PARTICLE_CLUSTERS_PER_JOB + 1);
+        assert_eq!(first[0], entity);
+        let mut first_particles = first[1..].to_vec();
+        first_particles.sort_unstable();
+
+        let mut second = all_queries();
+        second.sort_unstable();
+        schedule_particle_clusters(&mut second, &mut cursor);
+        assert_eq!(second.len(), MAX_ASYNC_PARTICLE_CLUSTERS_PER_JOB + 1);
+        assert_eq!(second[0], entity);
+        for key in &second[1..] {
+            assert!(first_particles.binary_search(key).is_err());
+        }
+    }
+
+    #[test]
+    fn particle_queries_cannot_spend_the_entity_lookup_budget_first() {
+        let camera = [0.0; 3];
+        let entity = CullKey {
+            kind: CullKind::Entity,
+            camera: camera.map(f64::to_bits),
+            min: [7.95, -0.55, -0.55].map(f64::to_bits),
+            max: [10.05, 0.55, 0.55].map(f64::to_bits),
+        };
+        let mut queries = (0..1_024)
+            .map(|index| {
+                let offset = f64::from(index) * 1.0e-7;
+                CullKey {
+                    kind: CullKind::Particle,
+                    camera: camera.map(f64::to_bits),
+                    min: [7.95 + offset, -0.55, -0.55].map(f64::to_bits),
+                    max: [10.05 + offset, 0.55, 0.55].map(f64::to_bits),
+                }
+            })
+            .collect::<Vec<_>>();
+        queries.push(entity);
+        queries.sort_unstable();
+
+        assert_eq!(queries[0], entity);
+        let (snapshot, live) = wall(None);
+        let results = run_job(CullJob {
+            stamp: SnapshotKey {
+                world_revision: 1,
+                chunks_revision: 1,
+                bottom_y: ColumnLayout::VANILLA.min_y(),
+            },
+            generation: 0,
+            snapshot,
+            queries,
+        });
+
+        assert!(results.hidden.iter().any(|(key, _)| *key == entity));
+        drop(live);
+    }
+}

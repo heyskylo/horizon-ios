@@ -1091,6 +1091,149 @@ pub struct ParticleEngine {
 const MAX_PARTICLES: usize = 16384;
 /// `ParticleLimit.SPORE_BLOSSOM`, the only limited particle.
 const SPORE_BLOSSOM_LIMIT: usize = 1000;
+const PARTICLE_LIGHT_CACHE_SIZE: usize = 64;
+const PARTICLE_SECTION_CACHE_SIZE: usize = 128;
+
+#[derive(Clone, Copy)]
+struct CachedParticleLight {
+    block: [i32; 3],
+    packed: u8,
+}
+
+struct ParticleLightCache {
+    entries: [Option<CachedParticleLight>; PARTICLE_LIGHT_CACHE_SIZE],
+}
+
+impl Default for ParticleLightCache {
+    fn default() -> Self {
+        Self {
+            entries: [None; PARTICLE_LIGHT_CACHE_SIZE],
+        }
+    }
+}
+
+impl ParticleLightCache {
+    fn get(&mut self, block: [i32; 3], light_at: &dyn Fn([i32; 3]) -> u8) -> u8 {
+        let hash = (block[0] as u32).wrapping_mul(73_856_093)
+            ^ (block[1] as u32).wrapping_mul(19_349_663)
+            ^ (block[2] as u32).wrapping_mul(83_492_791);
+        let slot = hash as usize & (PARTICLE_LIGHT_CACHE_SIZE - 1);
+        if let Some(entry) = self.entries[slot]
+            && entry.block == block
+        {
+            return entry.packed;
+        }
+        let packed = light_at(block);
+        self.entries[slot] = Some(CachedParticleLight { block, packed });
+        packed
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SectionFrustumResult {
+    Outside,
+    Intersects,
+    Inside,
+}
+
+#[derive(Clone, Copy)]
+struct CachedSectionFrustum {
+    section: [i32; 3],
+    radius_quarters: i32,
+    result: SectionFrustumResult,
+}
+
+struct ParticleSectionFrustumCache {
+    entries: [Option<CachedSectionFrustum>; PARTICLE_SECTION_CACHE_SIZE],
+}
+
+impl Default for ParticleSectionFrustumCache {
+    fn default() -> Self {
+        Self {
+            entries: [None; PARTICLE_SECTION_CACHE_SIZE],
+        }
+    }
+}
+
+impl ParticleSectionFrustumCache {
+    fn result(
+        &mut self,
+        world: [f64; 3],
+        camera: DVec3,
+        radius: f64,
+        frustum: &crate::gfx::Frustum,
+    ) -> SectionFrustumResult {
+        let Some(section) = world_section(world) else {
+            return SectionFrustumResult::Intersects;
+        };
+        if !radius.is_finite() || radius < 0.0 || radius * 4.0 > f64::from(i32::MAX) {
+            return SectionFrustumResult::Intersects;
+        }
+        let radius_quarters = (radius * 4.0).ceil() as i32;
+        let hash = (section[0] as u32).wrapping_mul(73_856_093)
+            ^ (section[1] as u32).wrapping_mul(19_349_663)
+            ^ (section[2] as u32).wrapping_mul(83_492_791)
+            ^ (radius_quarters as u32).wrapping_mul(2_654_435_761);
+        let slot = hash as usize & (PARTICLE_SECTION_CACHE_SIZE - 1);
+        if let Some(entry) = self.entries[slot]
+            && entry.section == section
+            && entry.radius_quarters == radius_quarters
+        {
+            return entry.result;
+        }
+
+        let pad = f64::from(radius_quarters) * 0.25;
+        let camera = camera.to_array();
+        let min = std::array::from_fn(|axis| f64::from(section[axis]) * 16.0 - pad - camera[axis]);
+        let max = std::array::from_fn(|axis| min[axis] + 16.0 + 2.0 * pad);
+        let result = if min.into_iter().chain(max).any(|v| !v.is_finite()) {
+            SectionFrustumResult::Intersects
+        } else {
+            let min = FVec3::from_array(min.map(|v| v as f32));
+            let max = FVec3::from_array(max.map(|v| v as f32));
+            if !min.is_finite() || !max.is_finite() {
+                SectionFrustumResult::Intersects
+            } else if frustum.contains(min, max) {
+                SectionFrustumResult::Inside
+            } else if frustum.intersects(min, max) {
+                SectionFrustumResult::Intersects
+            } else {
+                SectionFrustumResult::Outside
+            }
+        };
+        self.entries[slot] = Some(CachedSectionFrustum {
+            section,
+            radius_quarters,
+            result,
+        });
+        result
+    }
+}
+
+fn world_section(position: [f64; 3]) -> Option<[i32; 3]> {
+    let mut block = [0; 3];
+    for axis in 0..3 {
+        let value = position[axis].floor();
+        if !value.is_finite() || value < f64::from(i32::MIN) || value > f64::from(i32::MAX) {
+            return None;
+        }
+        block[axis] = value as i32;
+    }
+    Some([block[0] >> 4, block[1] >> 4, block[2] >> 4])
+}
+
+fn below_half_pixel(radius: f64, distance_squared: f64, pixel_focal_length: f32) -> bool {
+    let projected_limit = 4.0 * radius * f64::from(pixel_focal_length);
+    radius.is_finite()
+        && radius >= 0.0
+        && distance_squared.is_finite()
+        && distance_squared > 0.0
+        && pixel_focal_length.is_finite()
+        && pixel_focal_length > 0.0
+        && projected_limit.is_finite()
+        && projected_limit * projected_limit < distance_squared
+}
+
 impl ParticleEngine {
     pub fn new(root: &Path, atlas: &HashMap<String, Rect>, translucent: &HashSet<String>) -> Self {
         let mut engine = Self {
@@ -4144,9 +4287,41 @@ impl ParticleEngine {
         light_at: &dyn Fn([i32; 3]) -> u8,
         out: &mut Vec<Vertex>,
     ) {
+        self.render_culled(
+            camera,
+            yaw,
+            pitch,
+            partial,
+            0.0,
+            false,
+            None,
+            |_, _| false,
+            light_at,
+            out,
+        );
+    }
+
+    /// Render particles after rejecting view-frustum misses and any particles
+    /// the caller proves hidden behind opaque terrain.
+    pub fn render_culled(
+        &self,
+        camera: DVec3,
+        yaw: f32,
+        pitch: f32,
+        partial: f32,
+        pixel_focal_length: f32,
+        culling_enabled: bool,
+        frustum: Option<&crate::gfx::Frustum>,
+        mut occluded: impl FnMut([f64; 3], [f64; 3]) -> bool,
+        light_at: &dyn Fn([i32; 3]) -> u8,
+        out: &mut Vec<Vertex>,
+    ) {
         // Camera.setRotation: rotationYXZ(PI - yRot, -xRot, 0).
         let base = Quat::from_rotation_y(std::f32::consts::PI - yaw.to_radians())
             * Quat::from_rotation_x(-pitch.to_radians());
+        let mut light_cache = ParticleLightCache::default();
+        let mut section_cache =
+            (culling_enabled && frustum.is_some()).then(ParticleSectionFrustumCache::default);
         for p in &self.particles {
             if p.no_render {
                 continue;
@@ -4158,6 +4333,40 @@ impl ParticleEngine {
             {
                 continue;
             }
+            if matches!(p.behaviour, Behaviour::Shriek { delay } if delay > 0) {
+                continue;
+            }
+            let culled_geometry = if culling_enabled {
+                let a = f64::from(partial);
+                let world =
+                    std::array::from_fn(|i| p.previous[i] + (p.position[i] - p.previous[i]) * a);
+                let center = (DVec3::from_array(world) - camera).as_vec3();
+                let size = p.quad_size(partial);
+                // Every generated quad vertex is sqrt(2) * size from its center,
+                // including the rotated two-quad particle types.
+                let radius = f64::from(size.abs()) * std::f64::consts::SQRT_2 + 0.05;
+                if let (Some(frustum), Some(section_cache)) = (frustum, section_cache.as_mut()) {
+                    match section_cache.result(world, camera, radius, frustum) {
+                        SectionFrustumResult::Outside => continue,
+                        SectionFrustumResult::Intersects
+                            if !frustum.intersects_sphere(center, radius as f32) =>
+                        {
+                            continue;
+                        }
+                        SectionFrustumResult::Inside | SectionFrustumResult::Intersects => {}
+                    }
+                }
+                let distance_squared = f64::from(center.length_squared());
+                if below_half_pixel(radius, distance_squared, pixel_focal_length) {
+                    continue;
+                }
+                if occluded(world.map(|v| v - radius), world.map(|v| v + radius)) {
+                    continue;
+                }
+                Some((center, size))
+            } else {
+                None
+            };
             // `SubmitNodeCollection.submitQuadParticleGroup`: the translucent
             // layer draws after translucent terrain, so a crumb of stained
             // glass cannot hide the glass behind it (`getLayer`).
@@ -4172,19 +4381,20 @@ impl ParticleEngine {
                 },
             };
             let Some(r) = rect else { continue };
-            let a = f64::from(partial);
-            let pos = DVec3::new(
-                p.previous[0] + (p.position[0] - p.previous[0]) * a,
-                p.previous[1] + (p.position[1] - p.previous[1]) * a,
-                p.previous[2] + (p.position[2] - p.previous[2]) * a,
-            ) - camera;
-            let center = pos.as_vec3();
+            let (center, size) = culled_geometry.unwrap_or_else(|| {
+                let a = f64::from(partial);
+                let pos = DVec3::new(
+                    p.previous[0] + (p.position[0] - p.previous[0]) * a,
+                    p.previous[1] + (p.position[1] - p.previous[1]) * a,
+                    p.previous[2] + (p.position[2] - p.previous[2]) * a,
+                ) - camera;
+                (pos.as_vec3(), p.quad_size(partial))
+            });
             let rotation = if p.roll != 0.0 {
                 base * Quat::from_rotation_z(p.o_roll + (p.roll - p.o_roll) * partial)
             } else {
                 base
             };
-            let size = p.quad_size(partial);
             let mut alpha = p.rgba[3];
             // OverlayParticle.extract: the flash fades as it pulses.
             if p.ty == ParticleType::Flash {
@@ -4197,10 +4407,7 @@ impl ParticleEngine {
             let mut rgb = [p.rgba[0], p.rgba[1], p.rgba[2]];
             match p.behaviour {
                 // ShriekParticle.extract: two tilted quads, fading out.
-                Behaviour::Shriek { delay } => {
-                    if delay > 0 {
-                        continue;
-                    }
+                Behaviour::Shriek { .. } => {
                     alpha = 1.0 - ((p.age as f32 + partial) / p.lifetime as f32).clamp(0.0, 1.0);
                     rotations = [
                         Some(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_3)),
@@ -4246,7 +4453,7 @@ impl ParticleEngine {
                 _ => {}
             }
             let block = ParticleLevel::block_at(p.position);
-            let packed = light_at(block);
+            let packed = light_cache.get(block, light_at);
             let (sky_light, block_light) = p.light_coords(
                 partial,
                 u32::from(packed >> 4) * 16,
@@ -4356,6 +4563,26 @@ const CREEPER: [[f64; 2]; 12] = [
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn subpixel_culling_uses_the_frame_projection_and_fails_open() {
+        assert!(below_half_pixel(0.01, 41.0_f64.powi(2), 1_000.0));
+        assert!(!below_half_pixel(0.01, 40.0_f64.powi(2), 1_000.0));
+        assert!(!below_half_pixel(0.01, 41.0_f64.powi(2), 0.0));
+        assert!(!below_half_pixel(0.01, f64::NAN, 1_000.0));
+        assert!(!below_half_pixel(f64::NAN, 41.0_f64.powi(2), 1_000.0));
+
+        for distance in [0.25_f32, 1.0, 8.0, 40.0, 128.0] {
+            for radius in [0.01, 0.05, 0.2] {
+                let center = FVec3::new(distance, distance * 0.3, -distance * 0.8);
+                let old = 2.0 * radius * 900.0 / f64::from(center.length()) < 0.5;
+                assert_eq!(
+                    below_half_pixel(radius, f64::from(center.length_squared()), 900.0),
+                    old
+                );
+            }
+        }
+    }
 
     #[test]
     fn a_mod_particles_json_becomes_its_sprite_set() {

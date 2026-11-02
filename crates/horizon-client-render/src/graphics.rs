@@ -87,9 +87,8 @@ impl Preset {
     }
 }
 
-/// Entity occlusion strategy. The synchronous mode preserves the original
-/// same-frame CPU test; asynchronous results only hide a mesh when their
-/// camera, bounds and occluder evidence still match.
+/// Entity occlusion strategy. Asynchronous results only hide geometry when
+/// their camera, bounds and occluder evidence still match.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum EntityCullingMode {
     #[default]
@@ -120,6 +119,45 @@ impl EntityCullingMode {
     fn parse(s: &str) -> Self {
         match s {
             // Keep graphics files written before the mode selector readable.
+            "true" | "synchronous" | "sync" => Self::Synchronous,
+            "false" | "off" => Self::Off,
+            "asynchronous" | "async" => Self::Asynchronous,
+            _ => Self::default(),
+        }
+    }
+}
+
+/// Particle visibility strategy. Its asynchronous mode shares the entity
+/// occlusion worker, while the setting remains independent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum ParticleCullingMode {
+    #[default]
+    Off,
+    Synchronous,
+    Asynchronous,
+}
+impl ParticleCullingMode {
+    pub const ALL: [ParticleCullingMode; 3] = [
+        ParticleCullingMode::Off,
+        ParticleCullingMode::Synchronous,
+        ParticleCullingMode::Asynchronous,
+    ];
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Synchronous => "sync",
+            Self::Asynchronous => "async",
+        }
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Off => "Off",
+            Self::Synchronous => "Synchronous",
+            Self::Asynchronous => "Asynchronous",
+        }
+    }
+    fn parse(s: &str) -> Self {
+        match s {
             "true" | "synchronous" | "sync" => Self::Synchronous,
             "false" | "off" => Self::Off,
             "asynchronous" | "async" => Self::Asynchronous,
@@ -547,6 +585,9 @@ pub struct Graphics {
     pub cave_culling: bool,
     /// Skip drawing entities hidden behind opaque terrain, synchronously or asynchronously.
     pub entity_culling: EntityCullingMode,
+    /// Skip particles outside the view or hidden behind opaque terrain. The
+    /// asynchronous mode shares Entity Culling's worker.
+    pub particle_culling: ParticleCullingMode,
     /// Terrain leaf faces inside a canopy (see [`LeafCullingMode`]); `Off` draws
     /// vanilla's fancy leaves. Ignored with a resource pack that may replace
     /// the vanilla leaf models ([`Graphics::leaf_culling_effective`]).
@@ -629,6 +670,7 @@ impl Default for Graphics {
             far_detail: FarDetail::Full,
             cave_culling: true,
             entity_culling: EntityCullingMode::Off,
+            particle_culling: ParticleCullingMode::Off,
             leaf_culling: LeafCullingMode::Off,
             chunk_updates: 0,
             upload_budget_kib: 0,
@@ -700,6 +742,7 @@ impl Graphics {
                 "farDetail" => g.far_detail = FarDetail::parse(value),
                 "caveCulling" => g.cave_culling = flag(g.cave_culling),
                 "entityCulling" => g.entity_culling = EntityCullingMode::parse(value),
+                "particleCulling" => g.particle_culling = ParticleCullingMode::parse(value),
                 "leafCulling" => g.leaf_culling = LeafCullingMode::parse(value),
                 "chunkUpdates" => g.chunk_updates = number(g.chunk_updates).min(512),
                 "uploadBudgetKiB" => g.upload_budget_kib = number(g.upload_budget_kib).min(65536),
@@ -767,12 +810,13 @@ impl Graphics {
     }
     pub fn serialize(&self) -> String {
         format!(
-            "preset:{}\nlodDistance:{}\nfarDetail:{}\ncaveCulling:{}\nentityCulling:{}\nleafCulling:{}\nchunkUpdates:{}\nuploadBudgetKiB:{}\ntextureBudgetMiB:{}\nsky:{}\nfog:{}\nweather:{}\nanimatedTextures:{}\nditherCutoutMips:{}\npresentMode:{}\nframePacing:{}\nworkers:{}\noverlay:{}\nresolutionScale:{}\nfxaa:{}\ntaa:{}\nupscaling:{}\nscreenshotQuality:{}\nframeGeneration:{}\nhdr:{}\nhdrPaperWhite:{}\nhdrPeak:{}\nhdrBlackLevel:{}\nhdrUiBrightness:{}\nhdrKey:{}\nbatteryMode:{}\nshadowCache:{}\ngraphicsApi:{}\npickedShaderPack:{}\nbatchTranslucent:{}\n",
+            "preset:{}\nlodDistance:{}\nfarDetail:{}\ncaveCulling:{}\nentityCulling:{}\nparticleCulling:{}\nleafCulling:{}\nchunkUpdates:{}\nuploadBudgetKiB:{}\ntextureBudgetMiB:{}\nsky:{}\nfog:{}\nweather:{}\nanimatedTextures:{}\nditherCutoutMips:{}\npresentMode:{}\nframePacing:{}\nworkers:{}\noverlay:{}\nresolutionScale:{}\nfxaa:{}\ntaa:{}\nupscaling:{}\nscreenshotQuality:{}\nframeGeneration:{}\nhdr:{}\nhdrPaperWhite:{}\nhdrPeak:{}\nhdrBlackLevel:{}\nhdrUiBrightness:{}\nhdrKey:{}\nbatteryMode:{}\nshadowCache:{}\ngraphicsApi:{}\npickedShaderPack:{}\nbatchTranslucent:{}\n",
             self.preset.name(),
             self.lod_distance,
             self.far_detail.name(),
             bool_text(self.cave_culling),
             self.entity_culling.name(),
+            self.particle_culling.name(),
             self.leaf_culling.name(),
             self.chunk_updates,
             self.upload_budget_kib,
@@ -939,6 +983,7 @@ mod tests {
             far_detail: FarDetail::Reduced,
             cave_culling: false,
             entity_culling: EntityCullingMode::Synchronous,
+            particle_culling: ParticleCullingMode::Asynchronous,
             leaf_culling: LeafCullingMode::SolidAggressive,
             chunk_updates: 12,
             upload_budget_kib: 4096,
@@ -976,7 +1021,18 @@ mod tests {
                 entity_culling: mode,
                 ..Graphics::default()
             };
-            assert_eq!(Graphics::parse(&graphics.serialize()), graphics);
+            let parsed = Graphics::parse(&graphics.serialize());
+            assert_eq!(parsed.entity_culling, mode);
+        }
+        for mode in ParticleCullingMode::ALL {
+            let graphics = Graphics {
+                particle_culling: mode,
+                ..Graphics::default()
+            };
+            assert_eq!(
+                Graphics::parse(&graphics.serialize()).particle_culling,
+                mode
+            );
         }
         assert_eq!(
             Graphics::parse("entityCulling:true\n").entity_culling,

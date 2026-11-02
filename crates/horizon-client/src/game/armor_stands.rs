@@ -2,7 +2,10 @@
 //! falling, `interactAt` equipment swaps by clicked height, the two-hit break
 //! of `hurtServer` (creative breaks at once), and `ArmorStandRenderer` with
 //! the default pose, the hit wobble and humanoid armor layers.
-use super::{Game, InteractTarget};
+use super::{
+    Dim, Game, Hit, InteractTarget, entity_culling::at as entity_at, item_draw::owner_at,
+    mace::Spared, perspective::player_preview_quads,
+};
 use horizon_client::{
     cit::{Hand, Kind, Rule},
     cit_armor,
@@ -395,7 +398,7 @@ impl Game<'_> {
     /// stands in and the stand.
     pub(super) fn armor_stand_spawn(
         &self,
-        hit: &super::Hit,
+        hit: &Hit,
         stack: &ItemStack,
     ) -> Option<([i32; 3], ArmorStand)> {
         if hit.face == [0, -1, 0] {
@@ -446,7 +449,7 @@ impl Game<'_> {
         }
         Some((pos, stand))
     }
-    pub(super) fn place_armor_stand(&mut self, hit: &super::Hit, stack: &ItemStack) -> bool {
+    pub(super) fn place_armor_stand(&mut self, hit: &Hit, stack: &ItemStack) -> bool {
         if &*stack.item != "minecraft:armor_stand" {
             return false;
         }
@@ -645,7 +648,7 @@ impl Game<'_> {
             g.attack_effects(
                 area,
                 Some(id as i32),
-                super::mace::Spared::Stand(id),
+                Spared::Stand(id),
                 magic.then_some(id as i32),
             );
         });
@@ -835,7 +838,6 @@ impl Game<'_> {
         out: &mut Vec<Vertex>,
     ) {
         for a in &self.armor_stands {
-            let entity_start = out.len();
             // ArmorStand.shouldRenderAtSqrDistance: 256 times the box's mean
             // edge (4 for a marker's empty box), whatever the entity distance.
             // LivingEntityRenderer grows the culling box by 0.5 for a dragon head.
@@ -855,8 +857,8 @@ impl Game<'_> {
                 .is_some_and(|i| &*i.item == "minecraft:dragon_head");
             if !self.standing_entity_in_view(
                 camera,
-                super::entity_culling::at(a.previous),
-                super::entity_culling::at(a.position),
+                entity_at(a.previous),
+                entity_at(a.position),
                 alpha,
                 width,
                 height,
@@ -865,9 +867,14 @@ impl Game<'_> {
             ) {
                 continue;
             }
+            let culling = self.entity_cull_decision(a, alpha);
+            if culling.hides_entity() {
+                continue;
+            }
+            let entity_start = out.len();
             // EntityRenderer: drawn between last tick's position and this one's.
             let at = a.render_position(alpha);
-            let p = super::entity_culling::at(at) - camera;
+            let p = entity_at(at) - camera;
             // setupRotations: 180 - body yaw, plus the wobble for 5 ticks after a hit.
             let wiggle = (self.world.game_time - a.last_hit) as f32 + alpha as f32;
             let wobble = if wiggle < 5.0 {
@@ -888,7 +895,7 @@ impl Game<'_> {
             );
             let packed = (u32::from(light >> 4) * 16) | ((u32::from(light & 15) * 16) << 8);
             self.armor_stand_vertices(a, base, packed, out);
-            self.cull_entity_vertices(out, entity_start);
+            self.finish_entity_occlusion(culling, a, out, entity_start);
         }
     }
     /// `ArmorStandRenderer.submit` for stand `a` under `base` (its
@@ -1114,8 +1121,7 @@ impl Game<'_> {
                 * glam::Mat4::from_translation(glam::Vec3::new(0.0, 1.0, 0.0))
                 * glam::Mat4::from_rotation_x(0.436_332_32)
                 * glam::Mat4::from_rotation_z(std::f32::consts::PI);
-        let quads =
-            super::perspective::player_preview_quads(verts, gui, None, &self.gui.atlas.sprites);
+        let quads = player_preview_quads(verts, gui, None, &self.gui.atlas.sprites);
         let start = batch.vertices.len();
         for (_, p, uv, color) in quads {
             batch.quad_3d(p, uv, color);
@@ -1285,7 +1291,7 @@ impl Game<'_> {
     ) {
         use horizon_assets::item_model::DisplayContext;
         use horizon_client::mobs::render::part_matrix;
-        let owner = super::item_draw::owner_at(
+        let owner = owner_at(
             [a.position.x, a.position.y, a.position.z],
             a.yaw,
             "minecraft:armor_stand",
@@ -1345,7 +1351,7 @@ impl Game<'_> {
                 out,
                 light,
                 lights: Some(horizon_client::block_entity_render::diffuse_lights(
-                    self.dim == super::Dim::Nether,
+                    self.dim == Dim::Nether,
                 )),
                 glint: self.glint(),
                 tier: 0,

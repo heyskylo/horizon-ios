@@ -2,7 +2,14 @@
 //! paddling controls, collisions, riding (`positionRider`, `clampRotation`,
 //! dismounting), `BoatItem` placement, `VehicleEntity.hurtServer` breaking,
 //! saving and `AbstractBoatRenderer` with animated paddles.
-use super::{Game, InteractTarget, Keys, entity_culling::at, view_vector};
+use super::{
+    Game, InteractTarget, Keys, Screen,
+    dispenser::new_item_motion,
+    entity_culling::{at, default_range},
+    minecarts::CART_KEY_Y,
+    native_ticks::TickRound,
+    view_vector,
+};
 use horizon_client::{
     blocks::Fluid,
     collisions::{EntityCollisions, SceneCollisions},
@@ -800,7 +807,7 @@ impl Game<'_> {
         id: u32,
         driven: &[u32],
         ticking: &impl Fn(i32, i32) -> bool,
-        round: &super::native_ticks::TickRound,
+        round: &TickRound,
     ) {
         let Some(i) = self.boats.iter().position(|b| b.id == id) else {
             return;
@@ -1315,14 +1322,14 @@ impl Game<'_> {
     /// `CONTAINER_OPEN` and angers the piglins that see it.
     pub(super) fn open_chest_boat_container(&mut self, i: usize) {
         let b = &self.boats[i];
-        let key = (i32::MAX - 15, super::minecarts::CART_KEY_Y, b.id as i32);
+        let key = (i32::MAX - 15, CART_KEY_Y, b.id as i32);
         let at = [b.position.x, b.position.y, b.position.z];
         let items = b.items.clone();
         self.world
             .block_entities
             .insert(key, horizon_client::containers::BlockEntity::Chest(items));
         self.container = Some(key);
-        self.screen = super::Screen::Inventory;
+        self.screen = Screen::Inventory;
         self.capture(false);
         self.right = false;
         let ctx = self.player_context(None);
@@ -1396,7 +1403,7 @@ impl Game<'_> {
             // `Containers.dropContents` for every destroying removal reason;
             // that has no `entity_drops` gate of its own.
             for stack in b.items.iter().flatten() {
-                self.spawn_item(stack.clone(), at, super::dispenser::new_item_motion(), 10);
+                self.spawn_item(stack.clone(), at, new_item_motion(), 10);
             }
             // `VehicleEntity.destroy(level, dropItem)` drops the boat item on
             // the death path only, and only with `entity_drops` on.
@@ -1420,12 +1427,8 @@ impl Game<'_> {
     /// AbstractBoatRenderer.
     pub(super) fn boat_geometry(&self, camera: glam::DVec3, alpha: f64, out: &mut Vec<Vertex>) {
         let a = alpha as f32;
-        let range = super::entity_culling::default_range(
-            glam::DVec3::new(WIDTH, HEIGHT, WIDTH),
-            self.view_scale(),
-        );
+        let range = default_range(glam::DVec3::new(WIDTH, HEIGHT, WIDTH), self.view_scale());
         for b in &self.boats {
-            let entity_start = out.len();
             // EntityRenderer.shouldRender.
             let (previous, position) = (at(b.previous), at(b.position));
             if !self.standing_entity_in_view(
@@ -1433,6 +1436,11 @@ impl Game<'_> {
             ) {
                 continue;
             }
+            let culling = self.entity_cull_decision(b, alpha);
+            if culling.hides_entity() {
+                continue;
+            }
+            let entity_start = out.len();
             let models = if b.chest {
                 &self.boat_models.chest_models
             } else {
@@ -1527,7 +1535,7 @@ impl Game<'_> {
                     out,
                 );
             }
-            self.cull_entity_vertices(out, entity_start);
+            self.finish_entity_occlusion(culling, b, out, entity_start);
         }
     }
 }
