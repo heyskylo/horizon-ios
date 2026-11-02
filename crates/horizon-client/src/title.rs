@@ -980,7 +980,11 @@ impl Title {
             Mode::Realms(screen) => screen
                 .buttons(w, h)
                 .into_iter()
-                .map(|(x, y, bw, label, enabled, id)| b(x, y, bw, &label, enabled, id))
+                .map(|(x, y, bw, label, enabled, id, icon)| {
+                    let mut btn = b(x, y, bw, &label, enabled, id);
+                    btn.icon = icon;
+                    btn
+                })
                 .collect(),
         }
     }
@@ -1328,7 +1332,15 @@ impl Title {
                 self.started,
                 cursor,
             ),
-            Mode::Realms(screen) => screen.draw(batch, atlas, w, h),
+            Mode::Realms(screen) => screen.draw(
+                batch,
+                atlas,
+                &mut self.caret.borrow_mut(),
+                self.started,
+                cursor,
+                w,
+                h,
+            ),
         }
         for b in self.buttons(w, h) {
             crate::widgets::record(&b.label, [b.x, b.y, b.w, 20.0], b.enabled);
@@ -1679,6 +1691,7 @@ impl Title {
         }
         match &mut self.mode {
             Mode::Multiplayer(screen) => screen.focused_text(),
+            Mode::Realms(screen) => screen.focused_text(),
             mode => caret_field(mode, self.search_focused, &mut self.search),
         }
     }
@@ -1741,6 +1754,7 @@ impl Title {
                 .filter(|(id, _)| id == focus)
                 .map(|(_, rect)| rect),
             Mode::Multiplayer(screen) => screen.focused_box((w, h)),
+            Mode::Realms(screen) => screen.focused_box((w, h)),
             _ => None,
         }
     }
@@ -1820,6 +1834,9 @@ impl Title {
         if let Mode::Multiplayer(screen) = &mut self.mode {
             screen.tab();
         }
+        if let Mode::Realms(screen) = &mut self.mode {
+            screen.tab();
+        }
         // The open tab's one text box, then nothing.
         if let Mode::Create { focus, options, .. } = &mut self.mode {
             let field = if options.tab == 1 { 1 } else { 0 };
@@ -1894,6 +1911,11 @@ impl Title {
         self.remember_direct_address();
         if let Mode::Multiplayer(screen) = &mut self.mode
             && !screen.escape(&self.saves)
+        {
+            return;
+        }
+        if let Mode::Realms(screen) = &mut self.mode
+            && !screen.escape()
         {
             return;
         }
@@ -1976,6 +1998,7 @@ fn caret_field<'a>(
             _ => None,
         },
         Mode::Multiplayer(screen) => screen.focused_text(),
+        Mode::Realms(screen) => screen.focused_text(),
         Mode::CreateFlat { flat, .. } if flat.page == flat::Page::Presets && flat.share_focused => {
             Some((FLAT_SHARE, &mut flat.share, 1230))
         }

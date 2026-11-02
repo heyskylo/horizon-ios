@@ -62,6 +62,27 @@ pub struct RealmAddress {
     pub resource_pack_hash: Option<String>,
 }
 
+/// A pending invite to a Realm.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+pub struct PendingInviteDto {
+    #[serde(rename = "invitationId", default)]
+    pub invitation_id: String,
+    #[serde(rename = "worldName", default)]
+    pub world_name: String,
+    #[serde(rename = "worldOwnerName", default)]
+    pub world_owner_name: String,
+    #[serde(rename = "worldOwnerUuid", default)]
+    pub world_owner_uuid: Option<String>,
+    #[serde(default)]
+    pub date: i64,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, Default)]
+struct PendingInvitesResponse {
+    #[serde(default)]
+    pub invites: Vec<PendingInviteDto>,
+}
+
 /// Client for making requests to the Realms API using the player's AuthSession.
 pub struct RealmsClient<'a> {
     base_url: &'a str,
@@ -180,6 +201,136 @@ impl<'a> RealmsClient<'a> {
             .map_err(|e| format!("Failed to parse Realms address: {e}"))?;
 
         Ok(addr)
+    }
+
+    /// Fetches pending invites for the player.
+    pub fn pending_invites(&self) -> Result<Vec<PendingInviteDto>, String> {
+        let url = format!("{}/invites/pending", self.base_url);
+        let resp = match Self::agent()
+            .get(&url)
+            .set("Cookie", &self.cookie_header())
+            .set("Authorization", &format!("Bearer {}", self.access_token))
+            .set("Client-Ref", "26.3")
+            .set("X-NetworkProtocolVersion", "777")
+            .set("Is-Prerelease", "false")
+            .set("User-Agent", "Horizon/26.3")
+            .call()
+        {
+            Ok(resp) => resp,
+            Err(ureq::Error::Status(code, resp)) => {
+                let body = resp.into_string().unwrap_or_default();
+                return Err(format!("Realms invites failed: {code}: {body}"));
+            }
+            Err(e) => return Err(format!("Realms network error: {e}")),
+        };
+
+        let body = resp.into_string().map_err(|e| format!("{e}"))?;
+        let res: PendingInvitesResponse = serde_json::from_str(&body)
+            .map_err(|e| format!("Failed to parse pending invites: {e}"))?;
+        Ok(res.invites)
+    }
+
+    /// Accepts an invitation to a Realm.
+    pub fn accept_invite(&self, invitation_id: &str) -> Result<(), String> {
+        let url = format!("{}/invites/accept/{}", self.base_url, invitation_id);
+        match Self::agent()
+            .put(&url)
+            .set("Cookie", &self.cookie_header())
+            .set("Authorization", &format!("Bearer {}", self.access_token))
+            .set("Client-Ref", "26.3")
+            .set("X-NetworkProtocolVersion", "777")
+            .set("User-Agent", "Horizon/26.3")
+            .send_string("")
+        {
+            Ok(_) => Ok(()),
+            Err(e) => Err(format!("Failed to accept invite: {e}")),
+        }
+    }
+
+    /// Rejects an invitation to a Realm.
+    pub fn reject_invite(&self, invitation_id: &str) -> Result<(), String> {
+        let url = format!("{}/invites/reject/{}", self.base_url, invitation_id);
+        match Self::agent()
+            .put(&url)
+            .set("Cookie", &self.cookie_header())
+            .set("Authorization", &format!("Bearer {}", self.access_token))
+            .set("Client-Ref", "26.3")
+            .set("X-NetworkProtocolVersion", "777")
+            .set("User-Agent", "Horizon/26.3")
+            .send_string("")
+        {
+            Ok(_) => Ok(()),
+            Err(e) => Err(format!("Failed to reject invite: {e}")),
+        }
+    }
+
+    /// Leaves an invited Realm (uninvites self).
+    pub fn uninvite_myself(&self, realm_id: i64) -> Result<(), String> {
+        let url = format!("{}/invites/{}", self.base_url, realm_id);
+        match Self::agent()
+            .delete(&url)
+            .set("Cookie", &self.cookie_header())
+            .set("Authorization", &format!("Bearer {}", self.access_token))
+            .set("Client-Ref", "26.3")
+            .set("X-NetworkProtocolVersion", "777")
+            .set("User-Agent", "Horizon/26.3")
+            .call()
+        {
+            Ok(_) => Ok(()),
+            Err(e) => Err(format!("Failed to leave Realm: {e}")),
+        }
+    }
+
+    /// Redeems an invite code / link.
+    pub fn redeem_invite_code(&self, code: &str) -> Result<(), String> {
+        let code = code
+            .trim()
+            .trim_start_matches("https://realms.gg/")
+            .trim_start_matches("http://realms.gg/")
+            .trim_start_matches("realms.gg/");
+        if code.is_empty() {
+            return Err("Invite code cannot be empty".to_string());
+        }
+
+        let v2_url = format!(
+            "https://java.frontend.realms.minecraft-services.net/api/v1.0/invite/codes/use/{code}"
+        );
+        let res = Self::agent()
+            .post(&v2_url)
+            .set("x-mojangauth", self.access_token)
+            .set("Cookie", &self.cookie_header())
+            .set("Accept", "application/json")
+            .set("Client-Ref", "26.3")
+            .set("X-NetworkProtocolVersion", "777")
+            .set("User-Agent", "Horizon/26.3")
+            .send_string("");
+
+        match res {
+            Ok(_) => Ok(()),
+            Err(_) => {
+                let legacy_url = format!("{}/invites/v1/link/accept/{code}", self.base_url);
+                match Self::agent()
+                    .post(&legacy_url)
+                    .set("Cookie", &self.cookie_header())
+                    .set("Authorization", &format!("Bearer {}", self.access_token))
+                    .set("Client-Ref", "26.3")
+                    .set("X-NetworkProtocolVersion", "777")
+                    .set("User-Agent", "Horizon/26.3")
+                    .send_string("")
+                {
+                    Ok(_) => Ok(()),
+                    Err(ureq::Error::Status(status, resp)) => {
+                        let text = resp.into_string().unwrap_or_default();
+                        Err(if text.is_empty() {
+                            format!("Code rejected (status {status})")
+                        } else {
+                            text
+                        })
+                    }
+                    Err(e) => Err(format!("Failed to redeem invite code: {e}")),
+                }
+            }
+        }
     }
 }
 
