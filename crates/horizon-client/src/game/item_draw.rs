@@ -585,6 +585,10 @@ impl Game<'_> {
                     continue;
                 }
             }
+            let culling = entity.then(|| self.entity_cull_decision(item, f64::from(partial)));
+            if culling.is_some_and(|decision| decision.hides_entity()) {
+                continue;
+            }
             // `extractItemGroupRenderState`: GROUND, seeded by the entity id.
             let owner = owner_at([q.x, q.y, q.z], 0.0, "minecraft:item");
             let state = self.resolve_item(
@@ -630,6 +634,8 @@ impl Game<'_> {
             if glowing {
                 let rgb = super::glowing::team_color(self.mob_team(item.id));
                 self.mark_outline(&out[entity_start..], rgb);
+            } else if let Some(culling) = culling {
+                self.finish_entity_occlusion(culling, item, out, entity_start);
             } else {
                 self.cull_skinned(out, entity_start, skinned);
             }

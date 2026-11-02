@@ -13,7 +13,9 @@ use super::{FallingBlock, Game};
 use super::{
     boats::Boat, fireworks::Rocket, minecarts::Minecart, tnt::PrimedTnt, trident::ThrownTrident,
 };
-use horizon_client::entities::{ArmorStand, ExperienceOrb, ItemEntity};
+use horizon_client::entities::{
+    ArmorStand, Cushion, ExperienceOrb, ItemEntity, ItemFrame, Painting,
+};
 use horizon_client::entity_rules::EntityRules;
 use horizon_client::mobs::{Mob, Species};
 use horizon_client::projectiles::Projectile;
@@ -235,6 +237,73 @@ pub(super) trait Entity: EntityRules {
     fn piston_slime_bounce(&mut self, movement: Direction) {
         let velocity = self.velocity_mut();
         *velocity = piston_push::bounce_velocity(movement, *velocity);
+    }
+}
+
+/// Bounds and identity needed by the render occlusion culler. Moving renderers
+/// use interpolated entity bounds; attached entities use their own world bounds.
+pub(super) trait RenderEntityBounds {
+    fn render_id(&self) -> u32;
+    fn render_bounds(&self, alpha: f64) -> Aabb;
+}
+
+macro_rules! moving_render_entity_bounds {
+    ($($kind:ty),* $(,)?) => {
+        $(
+            impl RenderEntityBounds for $kind {
+                fn render_id(&self) -> u32 {
+                    self.id
+                }
+
+                fn render_bounds(&self, alpha: f64) -> Aabb {
+                    let rendered = self.previous.lerp(self.position, alpha);
+                    self.bounds().move_by(Vec3::new(
+                        rendered.x - self.position.x,
+                        rendered.y - self.position.y,
+                        rendered.z - self.position.z,
+                    ))
+                }
+            }
+        )*
+    };
+}
+
+moving_render_entity_bounds!(ArmorStand, ItemEntity, Boat, Minecart);
+
+fn aabb_from_extents(bounds: ([f64; 3], [f64; 3])) -> Aabb {
+    Aabb::new(
+        Vec3::new(bounds.0[0], bounds.0[1], bounds.0[2]),
+        Vec3::new(bounds.1[0], bounds.1[1], bounds.1[2]),
+    )
+}
+
+impl RenderEntityBounds for Painting {
+    fn render_id(&self) -> u32 {
+        self.id
+    }
+
+    fn render_bounds(&self, _alpha: f64) -> Aabb {
+        aabb_from_extents(self.bounds())
+    }
+}
+
+impl RenderEntityBounds for ItemFrame {
+    fn render_id(&self) -> u32 {
+        self.id
+    }
+
+    fn render_bounds(&self, _alpha: f64) -> Aabb {
+        aabb_from_extents(self.bounds())
+    }
+}
+
+impl RenderEntityBounds for Cushion {
+    fn render_id(&self) -> u32 {
+        self.id
+    }
+
+    fn render_bounds(&self, _alpha: f64) -> Aabb {
+        aabb_from_extents(self.bounds())
     }
 }
 

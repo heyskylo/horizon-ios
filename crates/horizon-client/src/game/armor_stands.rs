@@ -919,7 +919,6 @@ impl Game<'_> {
         // The stands' models posed on the GPU path (`mobs::skin`), when it runs this frame.
         let skinning = self.skinning();
         for a in &self.armor_stands {
-            let entity_start = out.len();
             // ArmorStand.shouldRenderAtSqrDistance: 256 times the box's mean
             // edge (4 for a marker's empty box), whatever the entity distance.
             // LivingEntityRenderer grows the culling box by 0.5 for a dragon head.
@@ -949,6 +948,11 @@ impl Game<'_> {
             ) {
                 continue;
             }
+            let culling = self.entity_cull_decision(a, alpha);
+            if culling.hides_entity() {
+                continue;
+            }
+            let entity_start = out.len();
             // EntityRenderer: drawn between last tick's position and this one's.
             let at = a.render_position(alpha);
             let p = super::entity_culling::at(at) - camera;
@@ -986,7 +990,9 @@ impl Game<'_> {
                 self.armor_stand_vertices(a, base, packed, None, out);
                 None
             };
-            self.cull_skinned(out, entity_start, skinned);
+            if !self.entity_glowing(a.id) {
+                self.cull_skinned(out, entity_start, skinned);
+            }
         }
     }
     /// `ArmorStandRenderer.submit` for stand `a` under `base` (its
