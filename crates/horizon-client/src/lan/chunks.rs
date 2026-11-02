@@ -362,11 +362,122 @@ impl Warm {
     }
 }
 
+/// Columns below which their bodies are written on the tick's thread alone.
+const BODIES_MIN: usize = 4;
+
+/// A column's body with what reads the level done: its sections' bytes, its
+/// heightmaps and its block entities. What is left, the light layers and the
+/// writing, reads only its own sections, so any thread can finish it.
+struct Prepared {
+    x: i32,
+    z: i32,
+    heightmaps: ColumnHeightmaps,
+    wires: Vec<Arc<[u8]>>,
+    /// The block entities as `List<BlockEntityInfo>` writes them.
+    tags: Vec<u8>,
+    /// The level's sections of the column.
+    sections: Vec<Arc<Section>>,
+    around: SectionMask,
+    sky: bool,
+}
+impl Prepared {
+    /// The body as `Clientbound::encode` gives it for LevelChunkWithLight,
+    /// written once into a buffer of its final size.
+    fn write(&self) -> Vec<u8> {
+        let lights = light_sections(&self.sections, self.around, SectionLight::of);
+        let buffer: usize = self.wires.iter().map(|w| w.len()).sum();
+        // The masks, counts and lengths fit the 64 bytes.
+        let size = 64
+            + self
+                .heightmaps
+                .iter()
+                .map(|(_, h)| 10 + 8 * h.len())
+                .sum::<usize>()
+            + buffer
+            + self.tags.len()
+            + lights.len() * 2 * (2048 + 3);
+        let mut w = Writer {
+            data: Vec::with_capacity(size),
+        };
+        w.varint(horizon_protocol::ids::play::clientbound::LEVEL_CHUNK_WITH_LIGHT);
+        w.i32(self.x);
+        w.i32(self.z);
+        Heightmaps::write(&*self.heightmaps, &mut w);
+        w.varint(buffer as i32);
+        for wire in &self.wires {
+            w.bytes(wire);
+        }
+        w.bytes(&self.tags);
+        write_light(&lights, self.sky, &mut w);
+        w.data
+    }
+}
+
+/// Bodies to finish, each taken by whichever thread is free first. A body
+/// another thread is still writing is waited for (`OnceLock::get_or_init`).
+struct Bodies {
+    columns: Vec<Prepared>,
+    next: AtomicUsize,
+    done: Vec<OnceLock<std::sync::Mutex<Vec<u8>>>>,
+}
+impl Bodies {
+    /// Take work until none is left.
+    fn run(&self) {
+        loop {
+            let i = self.next.fetch_add(1, Ordering::Relaxed);
+            let Some(column) = self.columns.get(i) else {
+                return;
+            };
+            self.done[i].get_or_init(|| std::sync::Mutex::new(column.write()));
+        }
+    }
+}
+
+/// What the warm-up threads take.
+#[derive(Clone)]
+enum Job {
+    Warm(Arc<Warm>),
+    Bodies(Arc<Bodies>),
+}
+impl Job {
+    fn run(&self) {
+        match self {
+            Self::Warm(job) => job.run(),
+            Self::Bodies(job) => job.run(),
+        }
+    }
+    /// Whether this is the job behind `ptr`.
+    fn is(&self, ptr: *const ()) -> bool {
+        match self {
+            Self::Warm(job) => Arc::as_ptr(job).cast::<()>() == ptr,
+            Self::Bodies(job) => Arc::as_ptr(job).cast::<()>() == ptr,
+        }
+    }
+}
+
 /// The warm-up threads (one per core besides the tick's) and the job they
-/// take: its number, and the job while it has sections left to take.
+/// take: its number, and the job while it has work left to take.
 struct WarmPool {
-    job: std::sync::Mutex<(u64, Option<Arc<Warm>>)>,
+    job: std::sync::Mutex<(u64, Option<Job>)>,
     ready: std::sync::Condvar,
+}
+impl WarmPool {
+    /// Hand `job` to the threads.
+    fn post(&self, job: Job) {
+        {
+            let mut slot = self.job.lock().unwrap();
+            slot.0 += 1;
+            slot.1 = Some(job);
+        }
+        self.ready.notify_all();
+    }
+    /// Everything of the job behind `ptr` is claimed: it leaves the slot.
+    fn clear(&self, ptr: *const ()) {
+        let mut slot = self.job.lock().unwrap();
+        if slot.1.as_ref().is_some_and(|j| j.is(ptr)) {
+            slot.1 = None;
+        }
+    }
 }
 
 /// The warm-up threads, started the first time; none on a single core or
@@ -740,20 +851,9 @@ impl ChunkEncoder {
             return;
         };
         let job = Arc::new(job);
-        {
-            let mut slot = pool.job.lock().unwrap();
-            slot.0 += 1;
-            slot.1 = Some(job.clone());
-        }
-        pool.ready.notify_all();
+        pool.post(Job::Warm(job.clone()));
         job.run();
-        // Everything is claimed: the job leaves the slot.
-        {
-            let mut slot = pool.job.lock().unwrap();
-            if slot.1.as_ref().is_some_and(|j| Arc::ptr_eq(j, &job)) {
-                slot.1 = None;
-            }
-        }
+        pool.clear(Arc::as_ptr(&job).cast());
         self.keep(&job);
     }
 
@@ -828,36 +928,72 @@ impl ChunkEncoder {
         block_entities: &HashMap<(i32, i32, i32), BlockEntity>,
         around: SectionMask,
     ) -> Vec<u8> {
+        self.prepare(chunk, block_entities, around).write()
+    }
+
+    /// What of a column's body reads the level or the caches.
+    fn prepare(
+        &self,
+        chunk: &Chunk,
+        block_entities: &HashMap<(i32, i32, i32), BlockEntity>,
+        around: SectionMask,
+    ) -> Prepared {
         let (wires, entities) = self.blocks(chunk, block_entities);
         let heightmaps = self.heightmaps_of(chunk);
-        let lights = self.light_sections(chunk, around);
-        let buffer: usize = wires.iter().map(|w| w.len()).sum();
         // Before the light: their tags' size is only known once written.
         let mut tags = Writer::new();
         List::<BlockEntityInfo>::write(&entities, &mut tags);
-        // The masks, counts and lengths fit the 64 bytes.
-        let size = 64
-            + heightmaps
-                .iter()
-                .map(|(_, h)| 10 + 8 * h.len())
-                .sum::<usize>()
-            + buffer
-            + tags.data.len()
-            + lights.len() * 2 * (2048 + 3);
-        let mut w = Writer {
-            data: Vec::with_capacity(size),
-        };
-        w.varint(horizon_protocol::ids::play::clientbound::LEVEL_CHUNK_WITH_LIGHT);
-        w.i32(chunk.x);
-        w.i32(chunk.z);
-        Heightmaps::write(&*heightmaps, &mut w);
-        w.varint(buffer as i32);
-        for wire in &wires {
-            w.bytes(wire);
+        Prepared {
+            x: chunk.x,
+            z: chunk.z,
+            heightmaps,
+            wires,
+            tags: tags.data,
+            sections: chunk.sections[self.sections.clone()].to_vec(),
+            around,
+            sky: self.sky,
         }
-        w.bytes(&tags.data);
-        write_light(&lights, self.sky, &mut w);
-        w.data
+    }
+
+    /// [`Self::body_with`] for each of `chunks`, in their order. What reads
+    /// the level is done here, column by column as `body_with` does; the
+    /// light layers and the writing, most of a body's cost, go to the warm-up
+    /// threads too when there are enough columns. This thread takes bodies
+    /// as well and waits only for the ones still being written.
+    pub fn bodies_with(
+        &self,
+        chunks: &[&Chunk],
+        world: &crate::world::World,
+        protos: &dyn Fn(i32, i32) -> Option<SectionMask>,
+    ) -> Vec<Vec<u8>> {
+        let columns: Vec<Prepared> = chunks
+            .iter()
+            .map(|c| self.prepare(c, &world.block_entities, self.around(c, world, protos)))
+            .collect();
+        let pool = if columns.len() >= BODIES_MIN {
+            warm_pool()
+        } else {
+            None
+        };
+        let Some(pool) = pool else {
+            return columns.iter().map(Prepared::write).collect();
+        };
+        let job = Arc::new(Bodies {
+            done: columns.iter().map(|_| OnceLock::new()).collect(),
+            columns,
+            next: AtomicUsize::new(0),
+        });
+        pool.post(Job::Bodies(job.clone()));
+        job.run();
+        pool.clear(Arc::as_ptr(&job).cast());
+        job.columns
+            .iter()
+            .zip(&job.done)
+            .map(|(c, done)| {
+                let body = done.get_or_init(|| std::sync::Mutex::new(c.write()));
+                std::mem::take(&mut *body.lock().unwrap())
+            })
+            .collect()
     }
 
     /// ClientboundLightUpdatePacket for the light sections over `changed` (a
