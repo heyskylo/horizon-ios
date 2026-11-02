@@ -1,7 +1,7 @@
 //! Vanilla item-atlas coordinates for GUI glint; the HUD's unrelated packing cannot supply them.
 use crate::{atlas_sources, hud::Rect};
 use horizon_assets::animation::AnimationMetadata;
-use std::{collections::HashMap, fs, path::Path};
+use std::{collections::HashMap, path::Path};
 
 type Entry = (String, u32, u32);
 
@@ -29,11 +29,17 @@ pub(super) fn load(
                 let (w, h, _) = decode(texture, "textures")?;
                 let path = atlas_sources::texture_path(root, texture, "textures")
                     .with_extension("png.mcmeta");
-                let metadata = fs::read_to_string(path)
+                let metadata = horizon_core::prepared_files::read_to_string(&path)
                     .ok()
                     .map(|text| serde_json::from_str::<serde_json::Value>(&text))
                     .transpose()
                     .ok()?;
+                if let Some(metadata) = &metadata {
+                    metadata.as_object()?;
+                    if let Some(texture) = metadata.get("texture") {
+                        texture_metadata(texture)?;
+                    }
+                }
                 let size = match metadata.as_ref().and_then(|v| v.get("animation")) {
                     Some(animation) => AnimationMetadata::from_json(&animation.to_string())
                         .ok()?
@@ -68,6 +74,26 @@ pub(super) fn load(
         }
     }
     Ok(sprites)
+}
+
+/// `TextureMetadataSection.CODEC`: invalid fields reject the sprite, even without mipmaps.
+fn texture_metadata(section: &serde_json::Value) -> Option<()> {
+    let fields = section.as_object()?;
+    for (name, value) in fields.iter().filter(|(_, value)| !value.is_null()) {
+        let valid = match name.as_str() {
+            "blur" | "clamp" => value.is_boolean(),
+            "mipmap_strategy" => matches!(
+                value.as_str(),
+                Some("auto" | "mean" | "cutout" | "strict_cutout" | "dark_cutout")
+            ),
+            "alpha_cutoff_bias" => value.is_number(),
+            _ => true,
+        };
+        if !valid {
+            return None;
+        }
+    }
+    Some(())
 }
 
 #[derive(Default)]

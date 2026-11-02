@@ -25,6 +25,40 @@ use std::{
 /// generator's scratch buffers ([`ChunkGenerator::idle`]).
 pub const IDLE_RELEASE: std::time::Duration = std::time::Duration::from_secs(5);
 
+/// Worker CPU time and job counts by kind, for benchmarks
+/// (`examples/gen_light_bench.rs`). Off unless enabled: a relaxed load per
+/// job then.
+pub mod job_stats {
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    pub const KINDS: [&str; 7] = [
+        "load", "generate", "decorate", "finish", "light", "mesh", "other",
+    ];
+    static ENABLED: AtomicBool = AtomicBool::new(false);
+    static NANOS: [AtomicU64; 7] = [const { AtomicU64::new(0) }; 7];
+    static COUNT: [AtomicU64; 7] = [const { AtomicU64::new(0) }; 7];
+    pub fn enable(on: bool) {
+        ENABLED.store(on, Ordering::Relaxed);
+    }
+    pub(super) fn enabled() -> bool {
+        ENABLED.load(Ordering::Relaxed)
+    }
+    pub(super) fn add(kind: usize, nanos: u64) {
+        NANOS[kind].fetch_add(nanos, Ordering::Relaxed);
+        COUNT[kind].fetch_add(1, Ordering::Relaxed);
+    }
+    /// (kind, nanoseconds, count) since the last call; resets them.
+    pub fn take() -> Vec<(&'static str, u64, u64)> {
+        (0..KINDS.len())
+            .map(|i| {
+                (
+                    KINDS[i],
+                    NANOS[i].swap(0, Ordering::Relaxed),
+                    COUNT[i].swap(0, Ordering::Relaxed),
+                )
+            })
+            .collect()
+    }
+}
 /// A chunk under generation, opaque to the streamer.
 pub type Proto = Box<dyn std::any::Any + Send>;
 /// Chunk generation in vanilla's stages: a neighbour-independent proto chunk
@@ -139,6 +173,8 @@ pub trait LodSampler: Send {
     fn drain_details(&mut self) -> Vec<LodDetail> {
         Vec::new()
     }
+    /// A loaded chunk's summary, made on the far-terrain worker.
+    fn observed(&mut self, _key: (i32, i32), _columns: &Arc<[crate::lod::Column; 256]>) {}
     /// Reduced far detail (`graphics::FarDetail::Reduced`): `grid` may then
     /// approximate wide cells.
     fn set_approximate(&mut self, _approximate: bool) {}
@@ -148,6 +184,13 @@ pub trait LodSampler: Send {
     }
     fn reduced_column(&mut self, x: i32, z: i32, _width: i32) -> crate::lod::Column {
         self.column(x, z)
+    }
+    /// Whether a column since the last call was left empty because its data
+    /// is still on its way (a BlueMap tile downloading, nothing coarser to
+    /// stand in): that sample isn't drawn, what it would replace is
+    /// (`Lod::finish_any_sample`), and it is taken again later.
+    fn waited(&mut self) -> bool {
+        false
     }
     /// `side` x `side` columns from (`x`, `z`), `stride` blocks apart; none
     /// when sampling failed and should be tried again later.
@@ -167,6 +210,11 @@ pub trait LodSampler: Send {
 }
 pub trait LodSource: Send + Sync {
     fn sampler(self: Arc<Self>) -> Box<dyn LodSampler>;
+    /// Whether its samplers' `observed` chunks become its own (a server's
+    /// kept terrain): tiles sampled without one are sampled again.
+    fn keeps_observed(&self) -> bool {
+        false
+    }
 }
 struct GeneratorSampler<G: ChunkGenerator> {
     generator: Arc<G>,
@@ -200,6 +248,7 @@ impl<G: ChunkGenerator> Saves for G {
 struct MeshSettings {
     nether: bool,
     shader_pack_lighting: bool,
+    separate_ao: bool,
     zoom: BiomeZoom,
     blend_radius: i32,
     smooth_lighting: bool,
@@ -431,6 +480,9 @@ pub struct Streaming {
     /// A shader pack lights the faces: sections mesh without face shading
     /// (`Mesher::shader_pack_lighting`).
     pub shader_pack_lighting: bool,
+    /// OptiFine/Iris separate ambient occlusion: vertex RGB has pure tint and alpha holds AO factor
+    /// (`Mesher::separate_ao`).
+    pub separate_ao: bool,
     /// `BiomeManager`'s zoom seed (the hashed world seed) and `biomeBlendRadius`.
     pub biome_zoom: BiomeZoom,
     pub biome_blend: i32,
@@ -716,6 +768,17 @@ impl<G: ChunkGenerator> Source for Jobs<G> {
         let Some(job) = self.shared.queue.lock().unwrap().pop() else {
             return false;
         };
+        let started = job_stats::enabled().then(|| {
+            let kind = match &job.job {
+                Job::Generate(..) => 1,
+                Job::Decorate(..) => 2,
+                Job::Finish(..) => 3,
+                Job::Light(..) => 4,
+                Job::Mesh(..) => 5,
+                _ => 6,
+            };
+            (kind, crate::spans::thread_cpu().unwrap_or_default())
+        });
         let done = self.locals.with(
             worker,
             || WorkerLocal {
@@ -725,6 +788,16 @@ impl<G: ChunkGenerator> Source for Jobs<G> {
             },
             |local| self.run_job(job.job, local),
         );
+        if let Some((kind, started)) = started {
+            // A generation job that found the column saved loaded it.
+            let kind = if kind == 1 && matches!(done, Some(Done::Generated(_))) {
+                0
+            } else {
+                kind
+            };
+            let cpu = crate::spans::thread_cpu().unwrap_or_default();
+            job_stats::add(kind, cpu.saturating_sub(started).as_nanos() as u64);
+        }
         if let Some(done) = done {
             self.shared.done.send(done);
         }
@@ -823,6 +896,7 @@ impl<G: ChunkGenerator> Jobs<G> {
                 let mut mesher = Mesher {
                     nether_shading: settings.nether,
                     shader_pack_lighting: settings.shader_pack_lighting,
+                    separate_ao: settings.separate_ao,
                     zoom: settings.zoom,
                     blend_radius: settings.blend_radius,
                     smooth_lighting: settings.smooth_lighting,
@@ -924,6 +998,7 @@ impl Streaming {
             sky_light: true,
             nether_shading: false,
             shader_pack_lighting: false,
+            separate_ao: false,
             biome_zoom: BiomeZoom::new(0),
             biome_blend: 2,
             smooth_lighting: true,
@@ -1865,6 +1940,7 @@ impl Streaming {
                         MeshSettings {
                             nether: self.nether_shading,
                             shader_pack_lighting: self.shader_pack_lighting,
+                            separate_ao: self.separate_ao,
                             zoom: self.biome_zoom,
                             blend_radius: self.biome_blend,
                             smooth_lighting: self.smooth_lighting,
@@ -2627,14 +2703,7 @@ fn keep_unchanged_sections(
 }
 /// Whether two sections' packed light (4,096 cells) holds the same values.
 fn same_light(a: &crate::chunk::Light, b: &crate::chunk::Light) -> bool {
-    use crate::chunk::Light;
-    match (a, b) {
-        (Light::Uniform(x), Light::Uniform(y)) => x == y,
-        (Light::Full(x), Light::Full(y)) => x == y,
-        (Light::Uniform(v), Light::Full(f)) | (Light::Full(f), Light::Uniform(v)) => {
-            f.iter().all(|c| c == v)
-        }
-    }
+    a.same_as(b)
 }
 /// Whether two biome containers (64 cells) hold the same values.
 fn same_values(

@@ -334,6 +334,78 @@ fn invalid_and_generated_sprites_match_vanilla() {
 }
 
 #[test]
+fn invalid_texture_metadata_does_not_move_book_glint() {
+    let root = fixture("texture-metadata");
+    let image = root.join("assets/minecraft/textures/item/large.png");
+    png(&image, 512, 256, [255; 4]);
+    let metadata = image.with_extension("png.mcmeta");
+    for invalid in [
+        r#"{"texture":[]}"#,
+        r#"{"texture":null}"#,
+        r#"{"texture":{"mipmap_strategy":"issue5851_invalid"}}"#,
+        r#"{"texture":{"blur":"true"}}"#,
+        r#"{"texture":{"clamp":1}}"#,
+        r#"{"texture":{"alpha_cutoff_bias":"0.5"}}"#,
+    ] {
+        fs::write(&metadata, invalid).unwrap();
+        let atlas = glint_atlas::load(&root, 1, 16384).unwrap();
+        let rejected = atlas["item/large"];
+        let missing = atlas["missingno"];
+        assert_eq!(
+            [rejected.u0, rejected.v0, rejected.u1, rejected.v1],
+            [missing.u0, missing.v0, missing.u1, missing.v1],
+            "{invalid}"
+        );
+        // Existing real-vanilla fixture: rejecting the extra image leaves its book unchanged.
+        let book = atlas["item/enchanted_book"];
+        assert_eq!(
+            [book.u0, book.v0, book.u1, book.v1],
+            [1.0 / 64.0, 33.0 / 64.0, 17.0 / 64.0, 49.0 / 64.0],
+            "{invalid}"
+        );
+    }
+    for strategy in ["auto", "mean", "cutout", "strict_cutout", "dark_cutout"] {
+        fs::write(
+            &metadata,
+            serde_json::json!({"texture":{"blur":true,"clamp":false,
+                "mipmap_strategy":strategy,"alpha_cutoff_bias":0.5}})
+            .to_string(),
+        )
+        .unwrap();
+        let atlas = glint_atlas::load(&root, 1, 16384).unwrap();
+        assert_eq!((atlas["item/large"].w, atlas["item/large"].h), (512, 256));
+    }
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn glint_atlas_reads_prepared_images_and_metadata_together() {
+    let root = fixture("prepared-metadata");
+    let image = root.join("assets/minecraft/textures/item/large.png");
+    png(&image, 512, 256, [255; 4]);
+    let metadata = image.with_extension("png.mcmeta");
+    fs::write(&metadata, r#"{"texture":[]}"#).unwrap();
+    fs::write(root.join("horizon-resources.json"), "{}").unwrap();
+    horizon_core::prepared_files::write(&root).unwrap();
+    // The renderer reads the prepared snapshot, even if loose files now differ.
+    fs::write(&metadata, r#"{"texture":{"blur":true}}"#).unwrap();
+    png(
+        &root.join("assets/minecraft/textures/item/enchanted_book.png"),
+        256,
+        256,
+        [0, 255, 0, 255],
+    );
+    let atlas = glint_atlas::load(&root, 1, 16384).unwrap();
+    assert_eq!(atlas["item/large"].u0, atlas["missingno"].u0);
+    let book = atlas["item/enchanted_book"];
+    assert_eq!(
+        [book.u0, book.v0, book.u1, book.v1],
+        [1.0 / 64.0, 33.0 / 64.0, 17.0 / 64.0, 49.0 / 64.0]
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 #[ignore = "requires the player's prepared pinned 26.3 resources in HORIZON_TEST_RESOURCES"]
 fn prepared_item_atlas_matches_pinned_vanilla() {
     let root =
@@ -390,5 +462,60 @@ fn external_item_atlas_oracle() {
                 "{name} {key}: {got} != vanilla {want}"
             );
         }
+    }
+    if let Some(rejected) = expected["rejected"].as_array() {
+        let missing = sprites["missingno"];
+        for name in rejected {
+            let actual = sprites[sprite_name(name.as_str().unwrap())];
+            assert_eq!(
+                [actual.u0, actual.v0, actual.u1, actual.v1],
+                [missing.u0, missing.v0, missing.u1, missing.v1]
+            );
+        }
+        let renderer = ItemRenderer::load(&root).unwrap();
+        renderer
+            .prepare_glint_atlas(32768, (if bit == 0 { 0 } else { 2 }, bit))
+            .unwrap();
+        let hud_sprites = HashMap::from([
+            ("item/enchanted_book".into(), missing),
+            ("misc/enchanted_glint_item".into(), missing),
+        ]);
+        let mut batch = crate::hud::HudBatch::new([64, 64]);
+        gui::draw(
+            &state(
+                "minecraft:item/enchanted_book",
+                FoilType::Standard,
+                DisplayContext::Gui,
+            ),
+            &renderer,
+            &hud_sprites,
+            &NoHost,
+            &mut batch,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.75,
+        );
+        let want = &expected["sprites"]["minecraft:item/enchanted_book"]["glint_uv_clock0"];
+        let mut seen = [false; 4];
+        for vertex in batch.vertices.iter().filter(|v| v.uv[0] >= 2.0) {
+            let index = match vertex.pos {
+                [0.0, 0.0] => 0,
+                [0.0, 16.0] => 3,
+                [16.0, 16.0] => 2,
+                [16.0, 0.0] => 1,
+                p => panic!("unexpected corner {p:?}"),
+            };
+            for (got, value) in vertex
+                .glint_uv
+                .into_iter()
+                .zip(want[index].as_array().unwrap())
+            {
+                assert!((got - value.as_f64().unwrap() as f32).abs() < 1e-5);
+            }
+            seen[index] = true;
+        }
+        assert!(seen.into_iter().all(|v| v));
     }
 }
