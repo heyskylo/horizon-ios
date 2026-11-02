@@ -395,7 +395,7 @@ impl HudAtlas {
         }
         files.retain(|p| {
             let s = p.to_string_lossy();
-            !s.contains("title/background") && !s.contains("realms") && !s.contains("presets")
+            !s.contains("title/background") && !s.contains("presets")
         });
         type Decoded = (PackedImage, Option<TextureFlags>, Option<(u32, u32)>, bool);
         let decode_one = |path: &PathBuf| -> Option<Decoded> {

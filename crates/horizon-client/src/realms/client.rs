@@ -100,11 +100,12 @@ impl<'a> RealmsClient<'a> {
             .build()
     }
 
-    /// Builds cookie string required by Realms API: `sid=token:<access_token>:<uuid>; user=<name>; version=26.3`.
+    /// Exact vanilla cookie format from `RealmsClient.java` / `Request.java`:
+    /// `sid=token:<accessToken>:<undashedUuid>;user=<username>;version=26.3`
     fn cookie_header(&self) -> String {
         let undashed_uuid = self.player_uuid.replace('-', "");
         format!(
-            "sid=token:{}:{}; user={}; version=26.3",
+            "sid=token:{}:{};user={};version=26.3",
             self.access_token, undashed_uuid, self.player_name
         )
     }
@@ -116,6 +117,9 @@ impl<'a> RealmsClient<'a> {
             .get(&url)
             .set("Cookie", &self.cookie_header())
             .set("Authorization", &format!("Bearer {}", self.access_token))
+            .set("Client-Ref", "26.3")
+            .set("X-NetworkProtocolVersion", "777")
+            .set("Is-Prerelease", "false")
             .set("User-Agent", "Horizon/26.3")
             .call()
         {
@@ -149,6 +153,9 @@ impl<'a> RealmsClient<'a> {
             .get(&url)
             .set("Cookie", &self.cookie_header())
             .set("Authorization", &format!("Bearer {}", self.access_token))
+            .set("Client-Ref", "26.3")
+            .set("X-NetworkProtocolVersion", "777")
+            .set("Is-Prerelease", "false")
             .set("User-Agent", "Horizon/26.3")
             .call()
         {
