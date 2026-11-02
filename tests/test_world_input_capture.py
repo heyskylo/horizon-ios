@@ -366,6 +366,10 @@ use mouse::{MouseLook, LookOptions, Rotation};
 struct ActiveEventLoop;
 struct DeviceId;
 enum DeviceEvent { MouseMotion { delta: (f64, f64) }, Other }
+mod input_trace {
+    pub enum InputOrigin { User }
+    pub enum TraceKind { Motion { x: f64, y: f64 } }
+}
 #[derive(PartialEq)] enum Screen { Playing, Paused }
 struct Options { offscreen: bool }
 struct Game {
@@ -373,6 +377,7 @@ struct Game {
     options: Options, screen: Screen, mouse: MouseLook, last_input: Instant,
 }
 impl Game {
+    fn note_input(&mut self, _: input_trace::InputOrigin, _: input_trace::TraceKind) {}
 METHOD
 }
 fn main() {
