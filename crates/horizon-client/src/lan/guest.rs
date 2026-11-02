@@ -34,6 +34,10 @@ pub struct SavedBody {
     pub fall_distance: f64,
     /// `Motion`: the delta movement, blocks a tick.
     pub velocity: [f64; 3],
+    /// `foodExhaustionLevel` and `foodTickTimer` (FoodData); the food level
+    /// and saturation live on the guest.
+    pub food_exhaustion: f32,
+    pub food_tick_timer: i32,
 }
 
 impl SavedBody {
@@ -45,6 +49,8 @@ impl SavedBody {
             air: motion.air,
             fall_distance: motion.fall_distance,
             velocity: [v.x, v.y, v.z],
+            food_exhaustion: motion.health.food.exhaustion,
+            food_tick_timer: motion.health.food.timer,
         }
     }
     /// Put it on a new body.
@@ -54,6 +60,8 @@ impl SavedBody {
         motion.fall_distance = self.fall_distance;
         let [x, y, z] = self.velocity;
         motion.velocity = Vec3::new(x, y, z);
+        motion.health.food.exhaustion = self.food_exhaustion;
+        motion.health.food.timer = self.food_tick_timer;
     }
 }
 

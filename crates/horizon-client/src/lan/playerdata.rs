@@ -176,6 +176,8 @@ pub fn apply(guest: &mut Guest, level: &Level) {
         air: short("Air", 300),
         fall_distance: level.fall_distance,
         velocity: motion,
+        food_exhaustion: level.food_exhaustion,
+        food_tick_timer: level.food_tick_timer,
     });
     guest.saved_vehicle = level.root_vehicle;
     guest.recipe_book = level.recipe_book.clone();
@@ -447,6 +449,10 @@ pub fn store(guest: &Guest, level: &mut Level, vehicle: Option<Tag>) {
     if let Some(body) = body {
         level.fall_distance = body.fall_distance;
         level.motion = body.velocity;
+        // FoodData.addAdditionalSaveData: the exhaustion and the timer that
+        // regenerates or starves the player go with the food level.
+        level.food_exhaustion = body.food_exhaustion;
+        level.food_tick_timer = body.food_tick_timer;
         let extra = level
             .player_extra
             .get_or_insert_with(|| horizon_world::nbt::Tag::Compound(Default::default()));
@@ -823,6 +829,8 @@ mod tests {
             air: 250,
             fall_distance: 9.5,
             velocity: [0.0; 3],
+            food_exhaustion: 0.0,
+            food_tick_timer: 0,
         });
         let mut level = Level::default();
         store(&g, &mut level, None);
@@ -859,6 +867,8 @@ mod tests {
             air: 300,
             fall_distance: 0.0,
             velocity: [0.25, -0.0784, 12.5],
+            food_exhaustion: 0.0,
+            food_tick_timer: 0,
         });
         let (tag, back) = round_trip(&g);
         let mut read = Level::default();
@@ -868,6 +878,29 @@ mod tests {
             back.loaded_body.expect("a body").velocity,
             [0.25, -0.0784, 0.0]
         );
+    }
+
+    #[test]
+    fn a_saved_exhaustion_and_food_timer_come_back() {
+        // FoodData.addAdditionalSaveData writes foodExhaustionLevel (a float)
+        // and foodTickTimer (an int) with the food level and saturation.
+        let mut g = guest();
+        g.loaded_body = Some(SavedBody {
+            fire_ticks: -20,
+            air: 300,
+            fall_distance: 0.0,
+            velocity: [0.0; 3],
+            food_exhaustion: 2.75,
+            food_tick_timer: 37,
+        });
+        let (tag, back) = round_trip(&g);
+        assert_eq!(
+            tag.get("foodExhaustionLevel"),
+            Some(&Tag::Float(2.75f32.to_bits()))
+        );
+        assert_eq!(tag.get("foodTickTimer"), Some(&Tag::Int(37)));
+        let body = back.loaded_body.expect("a body");
+        assert_eq!((body.food_exhaustion, body.food_tick_timer), (2.75, 37));
     }
 
     #[test]
