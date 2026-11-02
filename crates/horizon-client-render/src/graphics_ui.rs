@@ -2315,36 +2315,47 @@ mod tests {
         let mut s = Settings::default();
         s.horizon.leaf_culling = LeafCullingMode::Hollow;
         s.horizon.entity_culling = EntityCullingMode::Asynchronous;
-        for (code, leaf, entity, leaf_text) in [
+        s.horizon.particle_culling = ParticleCullingMode::Asynchronous;
+        for (code, leaf, entity, leaf_text, particle, particle_text) in [
             (
                 "de_de",
                 "Laub-Culling: Hohl",
                 "Objekt-Culling: Asynchron",
                 "Lässt Flächen zwischen Blättern weg: schneller, aber Lücken sind durchsichtig.",
+                "Partikel-Culling: Asynchron",
+                "Überspringt Partikel außerhalb des Bildes, unterhalb eines Pixels oder hinter Terrain und entlastet den Render-Thread.",
             ),
             (
                 "pl_pl",
                 "Pomijanie liści: Puste",
                 "Pomijanie bytów: Asynchroniczne",
                 "Pomija ściany między liśćmi: szybciej, ale luki są przezroczyste.",
+                "Pomijanie cząsteczek: Asynchroniczne",
+                "Pomija cząsteczki poza ekranem, mniejsze niż piksel i zasłonięte przez teren, odciążając wątek renderowania.",
             ),
             (
                 "uk_ua",
                 "Відсікання листя: Порожнє",
                 "Відсік. сутностей: Асинхронно",
                 "Прибирає грані між листям: швидше, але прогалини прозорі.",
+                "Відсікання частинок: Асинхронно",
+                "Пропускає частинки поза екраном, менші за піксель і закриті місцевістю, зменшуючи роботу потоку рендерингу.",
             ),
             (
                 "zh_cn",
                 "树叶剔除: 镂空",
                 "实体剔除: 异步",
                 "省略树叶之间的面：更快，但缝隙会透视。",
+                "粒子剔除: 异步",
+                "跳过屏幕外、小于一个像素和被地形遮挡的粒子，减少渲染线程的工作量。",
             ),
             (
                 "fr_fr",
                 "Occlusion feuillage: Creux",
                 "Occlusion des entités: Asynchrone",
                 "Supprime les faces entre feuilles : plus rapide, mais on voit à travers les trous.",
+                "Occlusion des particules: Asynchrone",
+                "Ignore les particules hors écran, trop petites ou masquées par le terrain avec moins de travail sur le thread de rendu.",
             ),
         ] {
             let (shown, _) = lang::scoped(lang::Language::load(&[], code), || {
@@ -2353,11 +2364,19 @@ mod tests {
                     item(H::LeafCulling).label(&s).plain(),
                     item(H::EntityCulling).label(&s).plain(),
                     lang::get(description(item(H::LeafCulling), &s, "")),
+                    item(H::ParticleCulling).label(&s).plain(),
+                    lang::get(description(item(H::ParticleCulling), &s, "")),
                 )
             });
             assert_eq!(
                 shown,
-                (leaf.into(), entity.into(), leaf_text.into()),
+                (
+                    leaf.into(),
+                    entity.into(),
+                    leaf_text.into(),
+                    particle.into(),
+                    particle_text.into(),
+                ),
                 "{code}"
             );
         }
