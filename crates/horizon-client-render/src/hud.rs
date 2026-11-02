@@ -113,8 +113,19 @@ pub const MAX_ATLAS_SIZE: u32 = 16384;
 /// framed maps, so the pool holds a wall; too few slots re-upload every map
 /// every frame. 26.3's `MapTextureManager` keeps a texture per map instead.
 pub const MAP_SLOTS: usize = 256;
+/// The atlas sprite of map slot `slot` (`horizon/map{slot}`), named once:
+/// every map shown asks for its slot's each frame.
+pub fn map_slot_sprite(slot: usize) -> Option<&'static str> {
+    static NAMES: std::sync::LazyLock<Vec<String>> =
+        std::sync::LazyLock::new(|| (0..MAP_SLOTS).map(|i| format!("horizon/map{i}")).collect());
+    NAMES.get(slot).map(String::as_str)
+}
 /// The atlas slot the minimap extra draws into.
 pub const MINIMAP_SPRITE: &str = "horizon/minimap";
+/// A mod's own image (`native_mod_image`), drawn with `native_sprite`; big
+/// enough for a world map's 1024 blocks at a block a pixel.
+pub const MOD_IMAGE_SPRITE: &str = "horizon/modimage";
+pub const MOD_IMAGE_SIZE: u32 = 1024;
 /// Atlas slots for downloaded player skins (`skins/<sha1>`), 64x64 each.
 /// Vanilla registers a texture per skin. Here the slots are shared
 /// (`skins::SkinSlots`): skins drawn in the last frame keep theirs, and a
@@ -193,6 +204,16 @@ fn png_size(path: &Path) -> Option<(u32, u32)> {
         .then(|| (field(16), field(20)))
 }
 fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
+    // A prepared root's folder: from its data file, without listing the disk.
+    if let Some(files) = horizon_core::prepared_files::files_under(dir) {
+        out.extend(
+            files
+                .iter()
+                .filter(|file| file.ends_with(".png"))
+                .map(|file| dir.join(file)),
+        );
+        return;
+    }
     let Ok(entries) = fs::read_dir(dir) else {
         return;
     };
@@ -533,7 +554,62 @@ fn galactic_widths(
     }
     widths
 }
+/// `TextureAtlas.dumpContents` (`F3 + S`, vanilla's "dynamic textures"): the atlas
+/// written as `name.png` beside `name.txt`, every sprite in name order with its
+/// rect in texels (`dumpSpriteNames`). Vanilla names each file after its atlas
+/// with `/` and `:` as `_` (`Identifier.toDebugFileName`); Horizon packs the GUI,
+/// font, particle, map and skin sprites into one atlas, so one file stands in for
+/// the atlases vanilla dumps apart.
+pub fn dump_atlas(
+    dir: &Path,
+    name: &str,
+    width: u32,
+    height: u32,
+    pixels: &[u8],
+    sprites: &HashMap<String, Rect>,
+) -> std::io::Result<PathBuf> {
+    // A build whose pixels were freed (`fonts`) has the size and no texels:
+    // write nothing rather than a file every reader would reject.
+    if pixels.len() != (width as usize) * (height as usize) * 4 {
+        return Err(std::io::Error::other(format!(
+            "wrong data size, expected {} got {}",
+            (width as usize) * (height as usize) * 4,
+            pixels.len()
+        )));
+    }
+    fs::create_dir_all(dir)?;
+    let png_path = dir.join(format!("{name}.png"));
+    let mut encoder = png::Encoder::new(fs::File::create(&png_path)?, width, height);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    let mut writer = encoder.write_header().map_err(std::io::Error::other)?;
+    writer
+        .write_image_data(pixels)
+        .map_err(std::io::Error::other)?;
+    drop(writer);
+    let mut names = sprites.iter().collect::<Vec<_>>();
+    names.sort_by(|a, b| a.0.cmp(b.0));
+    let mut list = String::new();
+    for (sprite, rect) in names {
+        let (w, h) = rect.texels((width, height));
+        let x = (rect.u0 * width as f32).round() as u32;
+        let y = (rect.v0 * height as f32).round() as u32;
+        list.push_str(&format!("{sprite}\tx={x}\ty={y}\tw={w}\th={h}\n"));
+    }
+    fs::write(dir.join(format!("{name}.txt")), list)?;
+    Ok(png_path)
+}
+
 impl HudAtlas {
+    /// `TextureAtlas.dumpContents` for this atlas: `dir` is `screenshots/debug`,
+    /// the folder `TextureUtil.getDebugTexturePath` names.
+    pub fn dump_contents(&self, dir: &Path, name: &str) -> std::io::Result<PathBuf> {
+        // `pixels()`: the copy `pack_pixels` compressed once the GPU had the
+        // atlas, decompressed; vanilla reads the texture back from the GPU.
+        let pixels = self.pixels();
+        dump_atlas(dir, name, self.width, self.height, &pixels, &self.sprites)
+    }
+
     fn next_revision() -> u64 {
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
@@ -616,15 +692,24 @@ impl HudAtlas {
     /// The atlas of a resource root that layers packs over `defaults` (the
     /// game's own resources), whose textures give the sprites' GUI sizes.
     pub fn build_over(root: &Path, defaults: &Path) -> Result<Self> {
-        let mut atlas = Self::pack(root, defaults, WALKED_TEXTURE_FOLDERS, true)?;
+        Self::build_over_with_image(root, defaults, false)
+    }
+    /// The atlas above, with a slot for a native mod's own image
+    /// (`horizon/modimage`) only when `mod_image` says a mod is loaded that
+    /// draws one: the slot costs 4 MiB of pixels, so a game without native
+    /// mods holds none of them.
+    pub fn build_over_with_image(root: &Path, defaults: &Path, mod_image: bool) -> Result<Self> {
+        let mut atlas = Self::pack(root, defaults, WALKED_TEXTURE_FOLDERS, true, mod_image)?;
         atlas.text_shader = pack_text::load(root, defaults);
         Ok(atlas)
     }
     /// Empty slots written at run time: map textures (game/maps.rs), the
-    /// minimap, downloaded skins, world and pack icons and the on-screen keyboard's text.
-    fn slots(images: &mut Vec<PackedImage>, trim: (u32, u32)) {
+    /// minimap, a native mod's own image, downloaded skins, world and pack
+    /// icons and the on-screen keyboard's text.
+    fn slots(images: &mut Vec<PackedImage>, trim: (u32, u32), mod_image: bool) {
         for i in 0..MAP_SLOTS {
-            images.push((format!("horizon/map{i}"), 128, 128, vec![0; 128 * 128 * 4]));
+            let name = map_slot_sprite(i).unwrap_or_default();
+            images.push((name.into(), 128, 128, vec![0; 128 * 128 * 4]));
         }
         // The minimap extra's image (game/extras.rs).
         images.push((
@@ -633,6 +718,15 @@ impl HudAtlas {
             crate::minimap::SIZE as u32,
             vec![0; crate::minimap::SIZE * crate::minimap::SIZE * 4],
         ));
+        // A mod's own image (native `mod_image`), only when a mod is loaded.
+        if mod_image {
+            images.push((
+                MOD_IMAGE_SPRITE.into(),
+                MOD_IMAGE_SIZE,
+                MOD_IMAGE_SIZE,
+                vec![0; (MOD_IMAGE_SIZE * MOD_IMAGE_SIZE * 4) as usize],
+            ));
+        }
         // Downloaded skins (game/scoreboard.rs).
         for i in 0..SKIN_SLOTS {
             images.push((format!("horizon/skin{i}"), 64, 64, vec![0; 64 * 64 * 4]));
@@ -675,7 +769,7 @@ impl HudAtlas {
     /// holding its textures. The pixels are dropped once the glyph widths are
     /// read, since nothing uploads them.
     pub fn fonts(root: &Path) -> Result<Self> {
-        let mut atlas = Self::pack(root, root, &["font"], false)?;
+        let mut atlas = Self::pack(root, root, &["font"], false, false)?;
         atlas.pixels = Vec::new();
         Ok(atlas)
     }
@@ -821,7 +915,13 @@ impl HudAtlas {
     }
     /// Pack the textures under these folders of `textures/`, and for the
     /// `full` atlas the generated sprites and the run-time slots too.
-    fn pack(root: &Path, defaults: &Path, folders: &[&str], full: bool) -> Result<Self> {
+    fn pack(
+        root: &Path,
+        defaults: &Path,
+        folders: &[&str],
+        full: bool,
+        mod_image: bool,
+    ) -> Result<Self> {
         let textures = root.join("assets/minecraft/textures");
         let default_textures =
             (defaults != root).then(|| defaults.join("assets/minecraft/textures"));
@@ -1052,7 +1152,7 @@ impl HudAtlas {
         }
         images.push(("horizon/white".into(), 4, 4, vec![255; 64]));
         if full {
-            Self::slots(&mut images, crate::trims::slot_size(root));
+            Self::slots(&mut images, crate::trims::slot_size(root), mod_image);
             // MissingTextureAtlasSprite.generateMissingImage: 16x16, magenta
             // and black quarters.
             let missing = (0..256)
@@ -2566,6 +2666,61 @@ impl HudRenderer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The mod image slot is paid only by a game with a native mod loaded.
+    #[test]
+    fn the_mod_image_slot_exists_only_when_a_mod_is_loaded() {
+        let root = Path::new("/nonexistent/horizon-test-assets");
+        let plain = HudAtlas::build(root).unwrap();
+        assert!(!plain.sprites.contains_key(MOD_IMAGE_SPRITE));
+        let with_mod = HudAtlas::build_over_with_image(root, root, true).unwrap();
+        assert!(with_mod.sprites.contains_key(MOD_IMAGE_SPRITE));
+    }
+
+    #[test]
+    fn dumping_the_atlas_writes_its_pixels_and_sprite_rects() {
+        let root = std::env::temp_dir().join("horizon-atlas-dump-test");
+        let _ = fs::remove_dir_all(&root);
+        let pixels: Vec<u8> = (0..4u8).flat_map(|i| [i, 0, 0, 255]).collect();
+        let rect = |u0: f32, v0: f32| Rect {
+            u0,
+            v0,
+            u1: u0 + 0.5,
+            v1: v0 + 0.5,
+            w: 8,
+            h: 8,
+        };
+        let sprites = HashMap::from([
+            ("particle/smoke".to_string(), rect(0.5, 0.0)),
+            ("gui/sprites/bars/experience".to_string(), rect(0.0, 0.5)),
+        ]);
+        let path = dump_atlas(
+            &root,
+            "minecraft_textures_atlas_gui",
+            2,
+            2,
+            &pixels,
+            &sprites,
+        )
+        .expect("the dump writes");
+        assert_eq!(path, root.join("minecraft_textures_atlas_gui.png"));
+        let written = fs::read(&path).expect("the PNG is there");
+        let (width, height, rgba) = decode_bytes(&written).expect("the PNG decodes");
+        assert_eq!((width, height), (2, 2));
+        assert_eq!(rgba, pixels);
+        // Sorted by sprite name, rects in texels, as `dumpSpriteNames` writes them.
+        let mut expected = String::from("gui/sprites/bars/experience\tx=0\ty=1\tw=1\th=1\n");
+        expected.push_str("particle/smoke\tx=1\ty=0\tw=1\th=1\n");
+        assert_eq!(
+            fs::read_to_string(root.join("minecraft_textures_atlas_gui.txt")).unwrap(),
+            expected
+        );
+        // A build with no texels in hand writes no file at all.
+        let empty = dump_atlas(&root, "empty", 2, 2, &[], &sprites);
+        assert!(empty.is_err());
+        assert!(!root.join("empty.png").exists());
+        let _ = fs::remove_dir_all(&root);
+    }
 
     #[test]
     fn decode_bytes_ignores_crc_checksum_error() {

@@ -287,7 +287,8 @@ fn resource_ids(root: &Path) -> Arc<ResourceIds> {
     let ids = Arc::new(ResourceIds {
         recipes: ids_under(&data.join("recipe"), "json"),
         damage_types: ids_under(&data.join("damage_type"), "json"),
-        loot_tables: ids_under(&data.join("loot_table"), "json"),
+        // `/loot ... loot <id>` must find a content mod's tables too.
+        loot_tables: json_ids_of_every_namespace(root, "loot_table"),
         templates: templates_under(&root.join("worldgen/structure")),
         entity_types,
         enchantments: json_ids_in(&data.join("enchantment")),
@@ -364,6 +365,33 @@ fn ids_under(root: &Path, extension: &str) -> Vec<String> {
     ids_in(root, extension, "minecraft")
 }
 
+/// The ids of the `.json` files in `data/<namespace>/<kind>` of every
+/// namespace of `root` (vanilla's and the content mods'), sorted.
+fn json_ids_of_every_namespace(root: &Path, kind: &str) -> Vec<String> {
+    let data = root.join("data");
+    let mut namespaces: std::collections::BTreeSet<String> = std::fs::read_dir(&data)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| e.path().is_dir())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    // A prepared root's namespaces live in its data file, not on the disk.
+    if let Some(files) = horizon_core::prepared_files::files_under(&data) {
+        namespaces.extend(
+            files
+                .iter()
+                .filter_map(|f| Some(f.split_once('/')?.0.to_owned())),
+        );
+    }
+    let mut out: Vec<String> = namespaces
+        .iter()
+        .flat_map(|ns| ids_in(&data.join(ns).join(kind), "json", ns))
+        .collect();
+    out.sort();
+    out
+}
+
 /// The templates of every namespace folder under `root` (vanilla's and the
 /// content mods'), as `namespace:path`, sorted.
 fn templates_under(root: &Path) -> Vec<String> {
@@ -381,6 +409,18 @@ fn templates_under(root: &Path) -> Vec<String> {
 
 /// The `namespace:` ids of the `extension` files under `root`, sorted.
 fn ids_in(root: &Path, extension: &str, namespace: &str) -> Vec<String> {
+    let suffix = format!(".{extension}");
+    // A prepared root's folder: from its data file, without listing the disk.
+    if let Some(files) = horizon_core::prepared_files::files_under(root) {
+        let mut out: Vec<String> = files
+            .iter()
+            .filter_map(|file| file.strip_suffix(&suffix))
+            .filter(|path| !path.is_empty() && !path.ends_with('/'))
+            .map(|path| format!("{namespace}:{path}"))
+            .collect();
+        out.sort();
+        return out;
+    }
     let mut out = Vec::new();
     let mut stack = vec![root.to_owned()];
     while let Some(dir) = stack.pop() {
@@ -773,8 +813,8 @@ impl Game<'_> {
         // The Chat option's Hidden level takes the server's messages too.
         self.local_chat_line(text, Some(SYSTEM_INDICATOR), ChatSource::Server);
     }
-    /// A player's chat line on the window's own chat: a LAN guest's message
-    /// while the host runs in-frame (`HostEvent::Chat`). `ChatListener`
+    /// A player's chat line on the window's own chat: a guest's message on
+    /// the server's own chat (`HostEvent::Chat`). `ChatListener`
     /// checks `canReceivePlayerMessages` for these, so Commands Only and
     /// Hidden drop them; command feedback (`/list`, `/tp`) is a system
     /// message and takes the system-message permission instead.
@@ -957,7 +997,6 @@ impl Game<'_> {
                 self.ticks,
                 focused,
             );
-            self.lan_host_chat(&message);
         }
     }
     pub(super) fn chat_scroll(&mut self, amount: f32) {
@@ -1442,45 +1481,6 @@ impl Game<'_> {
             log::warn!("the world clocks were not written: {e}");
         }
     }
-    /// Death message in chat (CombatTracker.getDeathMessage, as far as the
-    /// cause is known to the client).
-    pub(super) fn death_message(&mut self) {
-        let cause = self.ui.death_cause.take();
-        let player = self.native_acting_id();
-        self.native_player_died(player, cause.as_deref());
-        self.ui.died_at = Some(std::time::Instant::now());
-        self.ui.death_text = None;
-        self.ui.death_confirm = None;
-        if !self.ui.rules.bool("show_death_messages") {
-            return;
-        }
-        let Some(p) = self.player.as_ref() else {
-            return;
-        };
-        let below_world = p.position.y < f64::from(self.world.bottom_y() - 64);
-        let name = self.player_display_text();
-        let message = match cause {
-            Some(key) => Text::translate(&key, &[name]),
-            None if below_world => Text::translate("death.attack.outOfWorld", &[name]),
-            None => self.combat_death_message(),
-        };
-        self.ui.death_text = Some(message.clone());
-        // ServerPlayer.die: the team's death message visibility decides who
-        // hears it, the dying player's own chat included (the death screen
-        // still shows it).
-        let board = &self.score.board;
-        if let Some(host) = &self.lan {
-            host.hub.system_message_to(
-                horizon_client::lan::data::component_nbt(&message.component()),
-                |other| {
-                    horizon_client::scoreboard::death_message_reaches(board, PLAYER_NAME, other)
-                },
-            );
-        }
-        if horizon_client::scoreboard::death_message_reaches(board, PLAYER_NAME, PLAYER_NAME) {
-            self.system_message(message);
-        }
-    }
     /// F1 hides the HUD (see `hud`); the screenshot key still works.
     pub(super) fn toggle_hide_gui(&mut self) {
         self.ui.hide_gui = !self.ui.hide_gui;
@@ -1604,6 +1604,27 @@ mod tests {
         assert!(first.loot_tables.is_empty());
         std::fs::write(recipe.join("c.json"), "{}").unwrap();
         assert!(Arc::ptr_eq(&first, &resource_ids(&root)));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A content mod's loot tables are listed with vanilla's, so `/loot`
+    /// finds them.
+    #[test]
+    fn loot_tables_of_every_namespace_are_listed() {
+        let root = std::env::temp_dir().join(format!("horizon-loot-ids-{}", std::process::id()));
+        for dir in [
+            "data/minecraft/loot_table/chests",
+            "data/mymod/loot_table/rooms",
+        ] {
+            std::fs::create_dir_all(root.join(dir)).unwrap();
+        }
+        std::fs::write(root.join("data/minecraft/loot_table/chests/a.json"), "{}").unwrap();
+        std::fs::write(root.join("data/mymod/loot_table/rooms/b.json"), "{}").unwrap();
+        std::fs::write(root.join("data/mymod/loot_table/notes.txt"), "").unwrap();
+        assert_eq!(
+            resource_ids(&root).loot_tables,
+            ["minecraft:chests/a", "mymod:rooms/b"]
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 

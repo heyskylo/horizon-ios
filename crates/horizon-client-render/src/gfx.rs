@@ -828,6 +828,12 @@ pub struct Renderer {
     /// Solid quads facing away from the eye are left out (`mesher::Sides`).
     sides_on: bool,
     sky: wgpu::RenderPipeline,
+    /// The main sky without the sunrise fan, which `sunrise_pipeline` draws as
+    /// geometry over it. The mirror keeps `sky`: its per-pixel fan is cheap at
+    /// the reflection's size and needs no second projection.
+    sky_base: wgpu::RenderPipeline,
+    sunrise_pipeline: wgpu::RenderPipeline,
+    sunrise_buffer: wgpu::Buffer,
     dark_disc: wgpu::RenderPipeline,
     /// Clears the world pass's depth to the far plane so the first-person hand draws in the
     /// same pass (`hand_in_world`), as the hand's own pass would clear it.
@@ -1447,6 +1453,13 @@ fn instance_descriptor(
     }
     descriptor.backends = backends.with_env();
     let dx12 = cfg!(windows) && descriptor.backends.contains(wgpu::Backends::DX12);
+    // FXC spends about 2.6 s on every start compiling the pipelines (DXC about
+    // 1 s); what it compiled once is kept in the game folder and read back
+    // after that (third_party/wgpu-hal/src/dx12/disk_cache.rs).
+    #[cfg(windows)]
+    if dx12 {
+        wgpu::hal::dx12::disk_cache::set_file(dx12_shader_cache(&crate::logging::game_home()));
+    }
     if !cfg!(debug_assertions) && !dx12 {
         descriptor
             .flags
@@ -1460,6 +1473,11 @@ fn instance_descriptor(
     }
     descriptor
 }
+/// Where DX12 keeps the shaders it compiled, inside a game folder.
+pub fn dx12_shader_cache(home: &std::path::Path) -> std::path::PathBuf {
+    home.join("cache").join("dx12-shaders.bin")
+}
+
 /// The window's display connection, so the OpenGL backend creates its EGL
 /// display from the X11 or Wayland connection the window lives on. Without
 /// one, wgpu-hal falls back to `EGL_MESA_platform_surfaceless`, whose configs
@@ -2361,6 +2379,47 @@ impl Renderer {
             false,
             None,
         );
+        let sky_base = pipeline(
+            "Sky base",
+            "vs_sky",
+            "fs_sky_base",
+            &[],
+            tri,
+            None,
+            false,
+            false,
+            None,
+        );
+        let sunrise_attributes = wgpu::vertex_attr_array![0=>Float32x4, 1=>Float32];
+        let sunrise_buffers = [Some(wgpu::VertexBufferLayout {
+            array_stride: 20,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &sunrise_attributes,
+        })];
+        let sunrise_blend = wgpu::BlendState {
+            color: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::SrcAlpha,
+                dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                operation: wgpu::BlendOperation::Add,
+            },
+            // The sky's HDR alpha is the destination's; the fan only tints it.
+            alpha: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::Zero,
+                dst_factor: wgpu::BlendFactor::One,
+                operation: wgpu::BlendOperation::Add,
+            },
+        };
+        let sunrise_pipeline = pipeline(
+            "Sunrise fan",
+            "vs_sunrise",
+            "fs_sunrise",
+            &sunrise_buffers,
+            tri,
+            None,
+            false,
+            false,
+            Some(sunrise_blend),
+        );
         let dark_disc = pipeline(
             "Dark disc",
             "vs_sky",
@@ -3131,14 +3190,16 @@ impl Renderer {
             "fs_entity_shadow",
             wgpu::ColorWrites::ALL,
         );
-        // RenderPipelines.ITEM_TRANSLUCENT: blended, depth tested. Drawn before
-        // translucent terrain, it cannot write depth: the water behind a
-        // glass item would fail the test and vanish (vanilla sorts these in
-        // its order independent transparency pass instead).
+        // RenderPipelines.ITEM_TRANSLUCENT: blended, depth tested and, like
+        // every vanilla pipeline that does not turn it off, depth writing.
+        // `LevelRenderer.executeClassicTransparency` draws the translucent
+        // features before the translucent terrain, so without the writes
+        // ice or water behind a dropped slime block or glass item would blend
+        // over it and the item would all but vanish (#7031, #7033).
         let translucent_item_pipeline = entity_pipeline(
             "Translucent items",
             None,
-            false,
+            true,
             wgpu::CompareFunction::GreaterEqual,
             Default::default(),
             alpha_blend,
@@ -3690,6 +3751,12 @@ impl Renderer {
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+        let sunrise_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Sunrise fan vertices"),
+            size: (sunrise_fan::VERTICES * 5 * std::mem::size_of::<f32>()) as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
         let entity_capacity = 1 << 14;
         let entity_skin = entity_skin::EntitySkin::new(
             &device,
@@ -3870,6 +3937,9 @@ impl Renderer {
             cull,
             flat,
             sky,
+            sky_base,
+            sunrise_pipeline,
+            sunrise_buffer,
             dark_disc,
             depth_reset,
             lines,
@@ -4803,11 +4873,13 @@ impl Renderer {
     ) -> impl Iterator<Item = (&'a ([i32; 3], u32), bool)> + 'a {
         let fade = fade_millis(fade_seconds);
         let now = Instant::now();
+        // No section uploaded within the fade: all are whole, none is looked up.
+        let all = !self.sections_fading_in(fade, now);
         let min_y = self.layout.min_y();
         self.block_entities
             .iter()
             .filter(move |(key, _)| {
-                chunk_visibility(self.section_elapsed_ms(**key, now), fade)
+                all || chunk_visibility(self.section_elapsed_ms(**key, now), fade)
                     >= CHUNK_VISIBILITY_THRESHOLD
             })
             .filter_map(move |(key, blocks)| {
@@ -5075,8 +5147,8 @@ impl Renderer {
             if self.detail_columns.remove(&(x, z)) == Some(complete) {
                 self.detail_revision += 1;
             }
-            self.occlusion.remove_column(x, z);
         }
+        self.occlusion.remove_columns(&gone);
         let kept = |key: &SectionKey| !gone.contains(&(key.0, key.2));
         let before = self.block_entities.len();
         self.block_entities.retain(|key, _| kept(key));
@@ -5318,6 +5390,15 @@ impl Renderer {
             && self.native.is_none()
     }
 
+    /// Whether the layers tagged `OIT_ENTITY` (the eyes render type's, horse
+    /// markings, a slime's outer cube) may be posed on the GPU too
+    /// (`mobs::skin::SkinModels::tagged`): only with improved transparency off,
+    /// where they are ordinary entity quads. On, `EntityBatch` sorts them into
+    /// its stages by the CPU vertices' `OIT_ENTITY` tag.
+    pub fn skins_tagged(&self) -> bool {
+        self.skins_entities() && !self.improved_transparency
+    }
+
     pub fn frame_generation_share(&self) -> Option<f32> {
         self.frame_gen.made_share
     }
@@ -5337,7 +5418,8 @@ impl Renderer {
         self.world_post.upscale = if taa { upscale.clamp(1.0, 4.0) } else { 1.0 };
     }
     /// Runs `post` over the world from now on (`None`: no pack), for the dimension `dimension`;
-    /// `block_ids` gives each block sprite layer's `mc_Entity` (id, fluid) pair.
+    /// `block_ids` gives each block sprite layer's `mc_Entity` (id, fluid) and `at_midBlock.w`
+    /// (its block's light), three values a layer.
     /// Returns the programs that run and the notes of loading them.
     pub fn set_shader_pack(
         &mut self,
@@ -6200,6 +6282,27 @@ impl Renderer {
         };
         self.uploads
             .buffer(&mut encoder, &self.globals, 0, bytemuck::bytes_of(&globals));
+        // The sunrise fan as sixteen triangles. Its clip positions use the sky's
+        // own view (no TAA jitter, bob or spin: `fs_sky`'s `view_ray` has none),
+        // and its apex weight interpolates the barycentric the shader used to
+        // compute for every sky pixel.
+        if frame.sky.sunrise_color[3] > 0.001 && !frame.title && frame.skybox {
+            let sky_view_proj = views.primary().view_proj(Mat4::IDENTITY);
+            let mut mesh = [[0.0f32; 5]; sunrise_fan::VERTICES];
+            for (to, from) in mesh
+                .iter_mut()
+                .zip(sunrise_fan::mesh(frame.sky.sunrise_color[3], sun))
+            {
+                let clip = sky_view_proj * glam::Vec4::new(from[0], from[1], from[2], 1.0);
+                *to = [clip.x, clip.y, clip.z, clip.w, from[3]];
+            }
+            self.uploads.buffer(
+                &mut encoder,
+                &self.sunrise_buffer,
+                0,
+                bytemuck::cast_slice(&mesh),
+            );
+        }
         laps.lap("r_targets");
         // GameRenderer.render3dHud: the hand's projection at hudFov, with the
         // bob in its pose rather than the projection (same product).
@@ -6209,8 +6312,9 @@ impl Renderer {
             self.config.height.max(1) as f32,
             frame.depth_far,
         ));
+        let hand_view_proj = hand_projection * frame.bob * view;
         let hand_globals = Globals {
-            view_proj: (hand_projection * frame.bob * view).to_cols_array_2d(),
+            view_proj: hand_view_proj.to_cols_array_2d(),
             ..globals
         };
         self.uploads.buffer(
@@ -6988,7 +7092,11 @@ impl Renderer {
         let additive_quads = (frame.additive.len() / 4) as u32 - self.entity_batch.moved_additive;
         let see_through_quads = (frame.see_through.len() / 4) as u32;
         let shadow_only_quads = (frame.shadow_only.len() / 4) as u32;
-        let entity_vertices = u64::from(posed) + all_entities.len() as u64;
+        // Glowing entities' silhouettes posed on the GPU go last, past every
+        // material (the outline pass draws them from there).
+        let outline_base = posed + all_entities.len() as u32;
+        let outlined = skin.map_or(0, |s| s.outline_vertices);
+        let entity_vertices = u64::from(outline_base) + u64::from(outlined);
         if entity_vertices > self.entity_capacity {
             self.entity_capacity = entity_vertices.next_power_of_two();
             self.entity_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
@@ -7014,6 +7122,7 @@ impl Renderer {
                 skin,
                 &self.entity_buffer,
                 0,
+                outline_base,
             );
         }
         let static_sections = frame.static_block_entities;
@@ -7140,6 +7249,7 @@ impl Renderer {
             &mut self.uploads,
             &mut encoder,
             frame.glowing,
+            (outline_base, outlined / 4),
             [self.config.width, self.config.height],
         );
         if let Some((rotation, brightness)) = frame.stars {
@@ -7171,7 +7281,8 @@ impl Renderer {
                     lightning::QUADS
                 })
                 .max(weather_quads)
-                .max(frame.glowing.len() as u32 / 4);
+                .max(frame.glowing.len() as u32 / 4)
+                .max(outlined / 4);
         if max_quads > self.index_quads {
             self.index_quads = max_quads.next_power_of_two();
             self.indices = Self::quad_indices(&self.device, self.index_quads);
@@ -7818,8 +7929,13 @@ impl Renderer {
                     {
                         Some((sky, native)) => sky.draw(&mut pass, native),
                         None => {
-                            pass.set_pipeline(&self.sky);
+                            pass.set_pipeline(&self.sky_base);
                             pass.draw(0..3, 0..1);
+                            if frame.sky.sunrise_color[3] > 0.001 {
+                                pass.set_pipeline(&self.sunrise_pipeline);
+                                pass.set_vertex_buffer(0, self.sunrise_buffer.slice(..));
+                                pass.draw(0..sunrise_fan::VERTICES as u32, 0..1);
+                            }
                         }
                     }
                 }
@@ -8075,6 +8191,23 @@ impl Renderer {
                 pass.draw_indexed(0..text_quads * 6, (entity_quads * 4) as i32, 0..1);
                 pass.set_bind_group(0, &self.group, &[]);
             }
+            // FeatureRenderDispatcher.PreparedFrame.executeTranslucent: the shadows
+            // come before the translucent items, which then cover them (#7026).
+            if shadow_quads > 0 && !oit_on {
+                pass.set_pipeline(&self.shadow_blob_pipeline);
+                pass.set_bind_group(0, &self.entity_group, &[]);
+                pass.set_vertex_buffer(0, self.entity_buffer.slice(..));
+                pass.draw_indexed(
+                    0..shadow_quads * 6,
+                    ((base_quads
+                        - translucent_item_quads
+                        - translucent_particle_quads
+                        - shadow_quads)
+                        * 4) as i32,
+                    0..1,
+                );
+                pass.set_bind_group(0, &self.group, &[]);
+            }
             if translucent_item_quads > 0 && !oit_on {
                 pass.set_pipeline(&self.translucent_item_pipeline);
                 pass.set_bind_group(0, &self.entity_group, &[]);
@@ -8102,21 +8235,6 @@ impl Renderer {
                 pass.draw_indexed(
                     0..crumbling_quads * 6,
                     ((entity_quads + text_quads) * 4) as i32,
-                    0..1,
-                );
-                pass.set_bind_group(0, &self.group, &[]);
-            }
-            if shadow_quads > 0 && !oit_on {
-                pass.set_pipeline(&self.shadow_blob_pipeline);
-                pass.set_bind_group(0, &self.entity_group, &[]);
-                pass.set_vertex_buffer(0, self.entity_buffer.slice(..));
-                pass.draw_indexed(
-                    0..shadow_quads * 6,
-                    ((base_quads
-                        - translucent_item_quads
-                        - translucent_particle_quads
-                        - shadow_quads)
-                        * 4) as i32,
                     0..1,
                 );
                 pass.set_bind_group(0, &self.group, &[]);
@@ -8723,6 +8841,8 @@ impl Renderer {
                     first_crosshair: debug_depth + debug_top,
                     world_depth: false,
                     real: false,
+                    hand_drawn: !pack_draws_hand,
+                    hand_view_proj,
                 };
                 self.draw_overlay(&mut encoder, frame, &generated_view, generated, &overlay);
             }
@@ -8754,6 +8874,7 @@ impl Renderer {
                 camera: frame.camera,
                 entities: frame.entities,
                 spans: frame.entity_spans,
+                motion: frame.entity_motion,
                 atlas: self.hud.atlas_texture.as_ref(),
                 quad_indices: &self.indices,
             });
@@ -8765,6 +8886,8 @@ impl Renderer {
             first_crosshair: debug_depth + debug_top,
             world_depth: scaled.is_none(),
             real: true,
+            hand_drawn: !pack_draws_hand,
+            hand_view_proj,
         };
         let readback =
             self.draw_overlay(&mut encoder, frame, &view_target, &target_texture, &overlay);
@@ -9052,12 +9175,30 @@ impl Renderer {
                 }
             }
         }
+        // A native mod's turn after the hand, on the real frame only.
+        if overlay.real && !frame.title {
+            native_render::native_hand_drawn(&mut native_render::HandDrawn {
+                device: &self.device,
+                queue: &self.queue,
+                encoder: &mut *encoder,
+                color: target_texture,
+                color_view: view_target,
+                color_format: self.config.format.remove_srgb_suffix(),
+                size: [self.config.width, self.config.height],
+                hand: if overlay.hand_drawn { frame.hand } else { &[] },
+                view_proj: overlay.hand_view_proj,
+                camera: frame.camera,
+                atlas: self.hud.atlas_texture.as_ref(),
+                quad_indices: &self.indices,
+            });
+        }
         // GameRenderer.render: LevelRenderer.blitEntityOutline after the level and the hand.
         self.entity_outline.draw(
             encoder,
             view_target,
             &self.entity_group,
             &self.indices,
+            &self.entity_buffer,
             timing.as_mut(),
         );
         // The world icon grabs here: after the level and the hand, before
@@ -9075,20 +9216,30 @@ impl Renderer {
                 .contains(wgpu::TextureUsages::COPY_SRC)
         {
             let device = &self.device;
-            self.post_effects
-                .get_or_insert_with(|| crate::post_chain::PostEffects::new(device))
-                .apply(
-                    &self.device,
-                    &self.queue,
-                    encoder,
-                    target_texture,
-                    view_target,
-                    [self.config.width, self.config.height],
-                    // The scaled world pass drew its own depth buffer.
-                    overlay.world_depth.then_some(&self.depth),
-                    &frame.post_effects,
-                    timing.as_mut(),
-                );
+            let post = self
+                .post_effects
+                .get_or_insert_with(|| crate::post_chain::PostEffects::new(device));
+            // The chains a spectated mob applies compile in the background from the
+            // first frame in a world, not in the frame that first needs one.
+            post.preload(
+                &self.device,
+                &self.queue,
+                frame.post_effects.root,
+                &crate::post_chain::SPECTATOR_CHAINS,
+                target_texture.format(),
+            );
+            post.apply(
+                &self.device,
+                &self.queue,
+                encoder,
+                target_texture,
+                view_target,
+                [self.config.width, self.config.height],
+                // The scaled world pass drew its own depth buffer.
+                overlay.world_depth.then_some(&self.depth),
+                &frame.post_effects,
+                timing.as_mut(),
+            );
         }
         if !frame.screen.is_empty() {
             let attachments = [Some(wgpu::RenderPassColorAttachment {
@@ -9588,6 +9739,11 @@ struct Overlay {
     world_depth: bool,
     /// The real frame, not frame generation's made one: the world icon grabs it.
     real: bool,
+    /// The game drew the first-person hand, in its own pass or at the end of the world's
+    /// (`hand_in_world`), not a shader pack.
+    hand_drawn: bool,
+    /// Camera-relative world to clip space for the hand: its own field of view and the bob.
+    hand_view_proj: Mat4,
 }
 
 fn world_projection(fov_degrees: f32, aspect: f32, far: f32) -> Mat4 {

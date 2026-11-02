@@ -117,6 +117,8 @@ use std::{collections::HashMap, fs, path::Path, sync::Arc};
 pub struct Polygon {
     pub normal: [f32; 3],
     pub vertices: [[f32; 5]; 4],
+    /// The model's render type culls back faces (`entityCutoutCull`: the bat).
+    pub cull_back: bool,
 }
 impl Polygon {
     fn vertex_normal(&self, pose: ModelNormals) -> [i8; 4] {
@@ -127,7 +129,12 @@ impl Polygon {
             n.normalize_or_zero()
         };
         let packed = n.to_array().map(|v| (v.clamp(-1.0, 1.0) * 127.0) as i8);
-        [packed[0], packed[1], packed[2], -127]
+        let w = if self.cull_back {
+            crate::mesher::SHADED_CULL_W
+        } else {
+            -127
+        };
+        [packed[0], packed[1], packed[2], w]
     }
 }
 
@@ -225,6 +232,15 @@ pub struct Part {
     pub children: Vec<Part>,
 }
 impl Part {
+    /// Marks every polygon as drawn by a back-face-culling render type.
+    fn set_cull_back(&mut self) {
+        for poly in &mut self.polygons {
+            poly.cull_back = true;
+        }
+        for child in &mut self.children {
+            child.set_cull_back();
+        }
+    }
     fn parse(name: &str, v: &Value) -> Self {
         let pose: Vec<f32> = v["pose"]
             .as_array()
@@ -271,6 +287,7 @@ impl Part {
                         |n| std::array::from_fn(|i| n[i].as_f64().unwrap_or(0.0) as f32),
                     ),
                     vertices: [verts[0], verts[1], verts[2], verts[3]],
+                    cull_back: false,
                 })
             })
             .collect();
@@ -374,7 +391,7 @@ pub struct MobType {
     pub model: Arc<Part>,
     /// Every baked layer of this entity's models keyed by `model#layer`
     /// (e.g. `sheep#wool`, `zombie_baby#main`).
-    pub layers: HashMap<String, Arc<Part>>,
+    pub layers: crate::fast_hash::FxHashMap<String, Arc<Part>>,
     pub texture: String,
     pub brain: Brain,
     pub anim: Anim,
@@ -448,7 +465,7 @@ impl MobTypes {
             };
             let defaults = exact.get(&id).cloned().unwrap_or_default();
             let attr = |k: &str| defaults.get(&format!("minecraft:{k}")).copied();
-            let mut layers = HashMap::new();
+            let mut layers = crate::fast_hash::FxHashMap::default();
             if let Some(all) = models.as_object() {
                 for prefix in def.layer_prefixes() {
                     let start = format!("minecraft:{prefix}#");
@@ -494,7 +511,14 @@ impl MobTypes {
                     max_head_y_rot: def.max_head_y_rot(),
                     ambient_interval: def.ambient_interval(),
                     flags,
-                    model: Arc::new(Part::parse("root", model)),
+                    model: Arc::new({
+                        let mut part = Part::parse("root", model);
+                        // BatModel: `RenderTypes::entityCutoutCull`.
+                        if def.name == "bat" {
+                            part.set_cull_back();
+                        }
+                        part
+                    }),
                     layers,
                     texture: def.texture.to_owned(),
                     brain: def.brain(),
@@ -806,6 +830,11 @@ pub fn anger_left(anger_end: i64, game_time: i64) -> i32 {
 /// Species-specific persistent state (variants, colours, taming, ageing...).
 #[derive(Clone, Debug, Default)]
 pub struct Extra {
+    /// `Mob.lootTable`: the table its death rolls instead of its type's
+    /// (saved as `DeathLootTable`).
+    pub death_loot_table: Option<String>,
+    /// `Mob.lootTableSeed` (`DeathLootTableSeed`): 0 for none.
+    pub death_loot_seed: i64,
     /// `Rabbit.moreCarrotTicks`: how long it is full of carrots (saved as `MoreCarrotTicks`).
     pub more_carrot_ticks: i32,
     /// `Ocelot.DATA_TRUSTING`: it no longer runs from players.
@@ -957,6 +986,10 @@ pub struct Extra {
     pub swing_stab: bool,
     pub flag: bool,
     pub flag2: bool,
+    /// `AbstractHorse`'s `Bred` save flag: nothing sets it at runtime (no
+    /// vanilla code calls `setBred` outside `readAdditionalSaveData`), so only
+    /// a save or `/summon` gives it, and `followMommy` reads it.
+    pub bred: bool,
     /// `AbstractHorse.allowStandSliding`: the rider's jump sets it, and a
     /// horse still rearing then goes on with the rider's keys until the rear
     /// ends (`tick` clears it).
@@ -1133,6 +1166,8 @@ pub struct Mob {
     pub previous_limb_speed: f32,
     pub swell: i32,
     pub previous_swell: i32,
+    /// Creeper.maxSwell (`Fuse`): local NBT state, not synced entity data.
+    pub max_swell: i32,
     pub ambient_timer: i32,
     pub fall_distance: f64,
     /// `Entity.stuckSpeedMultiplier`: the next move is scaled by it.
@@ -1517,6 +1552,18 @@ pub enum MobEvent {
         amount: f32,
         source: Damage,
     },
+    /// A melee hit on another mob whose effect rides the hit:
+    /// `CaveSpider`, `Husk` and `WitherSkeleton.doHurtTarget` add it inside
+    /// the `super.doHurtTarget` branch, to any `LivingEntity`, so a mob the
+    /// hit lands on gets it too.
+    AttackMobWithEffect {
+        target: u32,
+        amount: f32,
+        source: Damage,
+        effect: &'static str,
+        ticks: i32,
+        amplifier: i32,
+    },
     /// `AbstractCubeMob.dealDamage` on the player (`playerTouch`): the hit,
     /// then, only when `hurtServer` let it land, the cube's
     /// `entity.slime.attack` with its pitch drawn from the cube's random.
@@ -1533,6 +1580,16 @@ pub enum MobEvent {
         target: u32,
         amount: f32,
         source: Damage,
+    },
+    /// `Pufferfish.touch` on a mob (`Pufferfish.aiStep`): the hit, then, only
+    /// when `hurtServer` let it land, the fish's `entity.puffer_fish.sting`
+    /// and the poison it gives (`poison_ticks`, `60 * getPuffState()`).
+    PufferfishSting {
+        mob: u32,
+        target: u32,
+        amount: f32,
+        source: Damage,
+        poison_ticks: i32,
     },
     /// `LivingEntity.stabAttack`'s `target.stopRiding()`: a spear knocks the
     /// target off its mount.
@@ -1575,6 +1632,27 @@ pub enum MobEvent {
         vehicle: u32,
     },
     Projectile(crate::projectiles::Projectile),
+    /// An arrow `mob` shot with `weapon` (`AbstractSkeleton.performRangedAttack`):
+    /// the game asks for the ammunition (`getProjectile`) before it flies.
+    BowShot {
+        mob: u32,
+        weapon: crate::items::ItemStack,
+        arrow: crate::projectiles::Projectile,
+    },
+    /// `mob` finished charging `weapon` (`CrossbowItem.onUseTick`): the game
+    /// asks for the ammunition (`getProjectile`), and plays the end sound
+    /// at `at` only when the crossbow loaded.
+    CrossbowLoad {
+        mob: u32,
+        weapon: crate::items::ItemStack,
+        at: [f64; 3],
+        pitch: f32,
+    },
+    /// `arrow` shot from the `ammo` a mob's crossbow was charged with.
+    CrossbowShot {
+        ammo: crate::items::ItemStack,
+        arrow: crate::projectiles::Projectile,
+    },
     /// Spawn a new mob (breeding, slime splitting, chicken eggs...).
     Spawn(Box<Mob>),
     /// Spawn a mob by type id at a position (conversions, splits).
@@ -1592,6 +1670,7 @@ pub enum MobEvent {
         params: conversion::Params,
     },
     DropItem {
+        mob: u32,
         item: Arc<str>,
         count: u32,
         at: [f64; 3],
@@ -1944,6 +2023,8 @@ pub struct Seen {
     pub baby: bool,
     pub in_love: bool,
     pub tame: bool,
+    /// `AbstractHorse.isBred`: the `Bred` flag (`followMommy` reads it).
+    pub bred: bool,
     /// A tamed animal's owner (`getOwner`).
     pub owner: Option<[i32; 4]>,
     pub hostile: bool,
@@ -2145,6 +2226,7 @@ impl Mob {
                 m.extra.in_love > 0
             },
             tame: m.extra.tame,
+            bred: m.extra.bred,
             owner: m.extra.owner,
             hostile: m.hostile(),
             target: m.ai.target,
@@ -2502,6 +2584,9 @@ pub struct MobWorld<'a> {
     pub lid_openers: &'a HashMap<(i32, i32, i32), i32>,
     /// What a content mod's effects do, on a server (None on a client).
     pub mod_effects: Option<&'a dyn ModEffectTicks>,
+    /// The level's world border, whose walls stop a mob's moves
+    /// (`Entity.collectColliders`); None: nothing stops them there.
+    pub border: Option<&'a horizon_core::geometry::border::BorderGeometry>,
 }
 /// `MobEffectInstance.tickServer` for a content mod's effect: its
 /// `shouldApplyEffectTickThisTick` and `applyEffectTick`, which the game's
@@ -2558,6 +2643,7 @@ impl Mob {
             previous_limb_speed: 0.0,
             swell: 0,
             previous_swell: 0,
+            max_swell: 30,
             // Mob.ambientSoundTime starts at 0.
             ambient_timer: 0,
             fall_distance: 0.0,
@@ -3296,6 +3382,14 @@ impl Mob {
         });
         true
     }
+    /// `LivingEntity.heal`, with the native heal hook.
+    pub fn heal(&mut self, mut amount: f32) {
+        let mut cancel = false;
+        crate::hunger::native_living_heal(self.id, &mut amount, &mut cancel);
+        if !cancel && self.health > 0.0 {
+            self.health = (self.health + amount).clamp(0.0, self.attrs.max_health);
+        }
+    }
     /// `HealOrHarmMobEffect.applyInstantenousEffect`: a harming effect hurts a
     /// living mob (6 << amplifier, magic) and heals an undead one, a healing effect
     /// the reverse (4 << amplifier), both scaled by `scale`.
@@ -3308,7 +3402,7 @@ impl Mob {
             );
         } else {
             let heal = (scale * f64::from(4i32 << amp)) as i32 as f32;
-            self.health = (self.health + heal).min(self.attrs.max_health);
+            self.heal(heal);
         }
     }
     pub fn add_effect(&mut self, effect: &'static str, ticks: i32, amplifier: i32) {
@@ -3915,7 +4009,7 @@ pub(crate) mod sensor_scan_tests {
                 ..Default::default()
             },
             model: Arc::new(Part::parse("root", &json!({}))),
-            layers: HashMap::new(),
+            layers: Default::default(),
             texture: String::new(),
             brain: Brain::Passive,
             anim: Anim::Rabbit,

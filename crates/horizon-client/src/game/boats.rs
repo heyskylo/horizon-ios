@@ -2,7 +2,7 @@
 //! paddling controls, collisions, riding (`positionRider`, `clampRotation`,
 //! dismounting), `BoatItem` placement, `VehicleEntity.hurtServer` breaking,
 //! saving and `AbstractBoatRenderer` with animated paddles.
-use super::{Game, InteractTarget, Keys, entity::Entity, entity_culling::at, view_vector};
+use super::{Game, InteractTarget, entity::Entity, entity_culling::at, view_vector};
 use horizon_client::entity_rules::EntityRules;
 use horizon_client::{
     blocks::Fluid,
@@ -1063,43 +1063,6 @@ impl Game<'_> {
                 max_y: b.bounds().max_position().y,
             })
     }
-    /// The player's tick while riding: steer, tick the boat, sit in it.
-    pub(super) fn tick_riding(&mut self, keys: Keys) -> horizon_client::Result<()> {
-        if self.tick_cushion_riding(keys) {
-            return Ok(());
-        }
-        let Some(i) = self.boats.iter().position(|b| Some(b.id) == self.riding) else {
-            if self.tick_cart_riding(keys) || self.tick_mount_riding(keys) {
-                return Ok(());
-            }
-            self.riding = None;
-            return Ok(());
-        };
-        if keys.shift || self.boats[i].out_of_control >= 60.0 {
-            self.dismount(i);
-            return Ok(());
-        }
-        // The boat steers with the input `LocalPlayer.rideTick` latched on the
-        // previous tick; this tick's keys are latched after it ticked.
-        let mut b = self.tick_boat(self.boats[i].clone(), true);
-        b.input = [keys.left, keys.right, keys.forward, keys.backward];
-        // positionRider: the seat, turned with the boat; clampRotation to 105 degrees.
-        self.yaw += b.delta_rotation;
-        let delta = (self.yaw - b.yaw + 180.0).rem_euclid(360.0) - 180.0;
-        self.yaw += delta.clamp(-105.0, 105.0) - delta;
-        self.boats[i] = b;
-        let seat = self.player_boat_seat(i);
-        if let Some(p) = self.player.as_mut() {
-            self.previous_position = p.position;
-            p.position = seat;
-            p.velocity = Vec3::ZERO;
-            p.fall_distance = 0.0;
-        }
-        if self.boat_lava_tick(i) {
-            self.riding = None;
-        }
-        Ok(())
-    }
     /// `getDismountLocationForPassenger`: in front of the player if there is
     /// floor there, else on top of the boat.
     pub(super) fn dismount(&mut self, i: usize) {
@@ -1158,6 +1121,16 @@ impl Game<'_> {
         );
         self.world.modified.insert(key);
         self.boats.push(boat);
+        if self.serving.is_some() || self.options.dedicated.is_some() {
+            self.native_vehicle_create(
+                self.boats.last().unwrap().entity_type().as_str(),
+                [
+                    self.boats.last().unwrap().position.x,
+                    self.boats.last().unwrap().position.y,
+                    self.boats.last().unwrap().position.z,
+                ],
+            );
+        }
         if !self.creative {
             self.consume_held();
         }
@@ -1382,18 +1355,24 @@ impl Game<'_> {
     /// reason that destroys the boat (DISCARDED included), while the boat item
     /// itself only drops on the death path (`VehicleEntity.destroy`), not when
     /// a creative hit discards it. True when the boat was removed.
-    pub(super) fn hurt_boat(&mut self, i: usize, damage: f32, creative: bool) -> bool {
+    pub(super) fn hurt_boat(&mut self, i: usize, mut damage: f32, creative: bool) -> bool {
+        let mut cancel = false;
+        self.native_vehicle_damage("boat", &mut damage, &mut cancel);
+        if cancel {
+            return false;
+        }
         let b = &mut self.boats[i];
         b.hurt_dir = -b.hurt_dir;
         b.hurt_time = 10;
         b.damage += damage * 10.0;
         let destroyed = creative || b.damage > 40.0;
         if destroyed {
+            let at = [b.position.x, b.position.y, b.position.z];
+            self.native_vehicle_destroy("boat", at);
             self.eject_boat_mobs(i, true);
             let id = self.boats[i].id;
             self.release_vehicle_container(id);
             let b = self.boats.remove(i);
-            let at = [b.position.x, b.position.y, b.position.z];
             // AbstractBoat.remove: a destroyed boat drops its lead.
             self.boat_removed(&b);
             // `AbstractChestBoat.remove` spills the chest through
