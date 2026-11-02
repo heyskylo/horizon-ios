@@ -2100,8 +2100,8 @@ fn compress_records(
             .map(|tag| ChunkRecord::from_nbt(&tag, Compression::Zlib, timestamp, Limits::saved()))
             .transpose()
     };
-    let helpers = std::thread::available_parallelism()
-        .map_or(1, |n| n.get().div_ceil(2))
+    let helpers = horizon_threads::worker_count()
+        .div_ceil(2)
         .min(records.len() / CHUNKS_PER_HELPER);
     if helpers <= 1 {
         return records.iter().map(|(_, r)| compress(r)).collect();
@@ -3767,6 +3767,13 @@ impl Level {
                 })
                 .collect();
         }
+        if let Some(packs) = data.get("DataPacks") {
+            let ids = |key| match packs.get(key) {
+                Some(Tag::List(ids)) => ids.iter().filter_map(|id| text(Some(id))).collect(),
+                _ => Vec::new(),
+            };
+            level.data_packs = Some((ids("Enabled"), ids("Disabled")));
+        }
         let mut rules: BTreeMap<String, i32> = GAME_RULES
             .iter()
             .map(|(k, v)| ((*k).to_owned(), *v))
@@ -3780,6 +3787,26 @@ impl Level {
                     rules.insert(name, v as i32);
                 }
             }
+        }
+        // GameRules(enabledFeatures, map) removes disabled experimental rules
+        // and supplies their defaults when enabled but absent from saved data.
+        let minecart_rule = &crate::gamerules::MAX_MINECART_SPEED;
+        if level
+            .enabled_features
+            .iter()
+            .any(|f| f == crate::gamerules::MINECART_IMPROVEMENTS)
+        {
+            let crate::gamerules::Value::Int(default) = minecart_rule.default else {
+                unreachable!()
+            };
+            let value = rules
+                .entry(minecart_rule.name.to_owned())
+                .or_insert(default);
+            if !(minecart_rule.min..=minecart_rule.max).contains(value) {
+                *value = default;
+            }
+        } else {
+            rules.remove(minecart_rule.name);
         }
         level.game_rules = rules;
         // Seed: world_gen_settings.dat (26.3) or Data.WorldGenSettings.
@@ -4427,6 +4454,27 @@ impl Level {
                 };
                 put(&mut rules, &format!("minecraft:{name}"), tag);
             }
+            if self
+                .enabled_features
+                .iter()
+                .any(|f| f == crate::gamerules::MINECART_IMPROVEMENTS)
+            {
+                let rule = &crate::gamerules::MAX_MINECART_SPEED;
+                let crate::gamerules::Value::Int(default) = rule.default else {
+                    unreachable!()
+                };
+                let value = self
+                    .game_rules
+                    .get(rule.name)
+                    .copied()
+                    .filter(|v| (rule.min..=rule.max).contains(v))
+                    .unwrap_or(default);
+                put(
+                    &mut rules,
+                    &format!("minecraft:{}", rule.name),
+                    Tag::Int(value),
+                );
+            }
             write_saved_data(dir, "game_rules", rules)?;
         }
         if write_player {
@@ -4798,8 +4846,23 @@ fn decode_lod_surfaces(
             }
         }
     }
+    // Spans are pushed top down, so the reverse puts the topmost last, as
+    // `Column::from_chunk` leaves them. Open water is then lit as open sky,
+    // exactly as the live path does: without it a saved column kept each
+    // water block's own faded skylight and drew a dark band through the sea
+    // where saved columns met the generator's (`grid`'s stride limit).
+    // Only where there is a sky to be lit by: the Nether's water must not
+    // gain skylight it never had.
+    let is_water = |state| {
+        sky_light
+            && assets
+                .registry
+                .state(state)
+                .is_some_and(|block| block.name == "minecraft:water")
+    };
     for column in &mut *columns {
         column.spans.reverse();
+        column.light_open_water_where(is_water);
     }
     Some(Arc::from(columns))
 }
@@ -5194,6 +5257,7 @@ mod tests {
                 },
             }),
             copy_on_death: false,
+            sync: false,
         };
         let mut map = Attachments::default();
         map.set(&key, 7).unwrap();
@@ -5223,6 +5287,7 @@ mod tests {
                 },
             }),
             copy_on_death: false,
+            sync: false,
         };
         let mut chunk = Chunk::empty(2, 3);
         let mut extras = ChunkExtras::default();
@@ -5589,6 +5654,20 @@ mod tests {
         let underwater = surfaces[4 * 16 + 4].surface.unwrap();
         assert_eq!((underwater.height, underwater.state), (55, sand));
         assert_eq!(underwater.water, Some((64, water)));
+        // Open water reads as open sky, as the generator's far columns do.
+        // Saved columns that kept each block's own faded skylight drew a dark
+        // band through the sea where the two met.
+        let sea = &surfaces[4 * 16 + 4].spans;
+        let lit: Vec<_> = sea
+            .iter()
+            .filter(|span| span.state == water)
+            .map(|span| span.light & 0xf0)
+            .collect();
+        assert!(!lit.is_empty(), "the column keeps its water spans");
+        assert!(
+            lit.iter().all(|sky| *sky == 0xf0),
+            "saved open water is lit as open sky, got {lit:?}"
+        );
         let chorus_column = &surfaces[2 * 16 + 12];
         assert_eq!(
             chorus_column

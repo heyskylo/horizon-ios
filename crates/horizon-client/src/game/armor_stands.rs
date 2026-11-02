@@ -660,11 +660,12 @@ impl Game<'_> {
         if !self.before_block(d) || self.mob_hit().is_some_and(|m| m.1 < d) {
             return false;
         }
-        let (_, _, _, magic) = self.melee_damage("minecraft:armor_stand", true);
+        let (_, _, crit, magic) = self.melee_damage("minecraft:armor_stand", true);
         let hurt = self.hit_armor_stand(i, |g, area, id| {
             g.attack_effects(
                 area,
                 Some(id as i32),
+                crit,
                 super::mace::Spared::Stand(id),
                 magic.then_some(id as i32),
             );
@@ -809,17 +810,23 @@ impl Game<'_> {
                 subject: None,
             };
             let mut tops: Vec<BlockPos> = Vec::new();
-            a.tick(&mut scene, facts, in_water, &mut |bounds, velocity| {
-                horizon_client::motion::bubble_column_push_over(
-                    world,
-                    registry,
-                    facts,
-                    collision,
-                    bounds,
-                    velocity,
-                    |pos| tops.push(pos),
-                );
-            });
+            a.tick(
+                &mut scene,
+                facts,
+                in_water,
+                &mut |bounds, velocity| {
+                    horizon_client::motion::bubble_column_push_over(
+                        world,
+                        registry,
+                        facts,
+                        collision,
+                        bounds,
+                        velocity,
+                        |pos| tops.push(pos),
+                    );
+                },
+                Some(self.border.geometry()),
+            );
             for pos in tops {
                 self.bubble_column_particles(pos);
             }
@@ -1066,7 +1073,7 @@ impl Game<'_> {
                 );
             }
         }
-        self.armor_stand_items(a, model, base, &posed, packed, out);
+        self.armor_stand_items(a, model, base, &posed, packed, skin.as_deref_mut(), out);
         // HumanoidArmorLayer: head, chest, legs, feet. One pose map for every layer
         // (`reset` keeps its capacity).
         let mut layer_poses = Poses::default();
@@ -1379,7 +1386,9 @@ impl Game<'_> {
 impl Game<'_> {
     /// `ItemInHandLayer` and `CustomHeadLayer` of an armour stand: the hand
     /// items in the third-person contexts, and a non-armour head item on the
-    /// head (`translateToHead`: down a quarter, turned, 0.625 scale).
+    /// head (`translateToHead`: down a quarter, turned, 0.625 scale). With
+    /// `skin`, items that can are posed on the GPU with the stand.
+    #[allow(clippy::too_many_arguments)]
     fn armor_stand_items(
         &self,
         a: &ArmorStand,
@@ -1387,8 +1396,21 @@ impl Game<'_> {
         base: glam::Mat4,
         poses: &Poses,
         light: u32,
+        mut skin: Option<&mut horizon_client::mobs::skin::Skin>,
         out: &mut Vec<Vertex>,
     ) {
+        let lights =
+            horizon_client::block_entity_render::diffuse_lights(self.dim == super::Dim::Nether);
+        let mut submit = |state: &horizon_client::item_render::ItemRenderState,
+                          pose: glam::Mat4,
+                          out: &mut Vec<Vertex>| {
+            let on_gpu = skin
+                .as_deref_mut()
+                .is_some_and(|skin| self.skin_item(state, pose, light, lights, skin));
+            if !on_gpu {
+                self.submit_item_world(state, pose, light, out);
+            }
+        };
         use horizon_assets::item_model::DisplayContext;
         use horizon_client::mobs::render::part_matrix;
         let owner = super::item_draw::owner_at(
@@ -1428,7 +1450,7 @@ impl Game<'_> {
             } else {
                 self.resolve_item(stack, context, Some(&owner), seed)
             };
-            self.submit_item_world(&state, pose, light, out);
+            submit(&state, pose, out);
         }
         // `CustomHeadLayer`: a worn skull draws the skull model.
         if let Some(stack) = &a.equipment[5]
@@ -1489,7 +1511,7 @@ impl Game<'_> {
             // `updateForLiving`: seeded by the entity id plus HEAD's ordinal.
             let state =
                 self.resolve_item(stack, DisplayContext::Head, Some(&owner), a.id as i32 + 5);
-            self.submit_item_world(&state, pose, light, out);
+            submit(&state, pose, out);
         }
     }
 }

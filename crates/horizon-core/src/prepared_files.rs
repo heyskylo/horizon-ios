@@ -32,10 +32,12 @@ use std::{
 pub const FILE_NAME: &str = "horizon-data.bin";
 /// The file it checks its preparation against.
 const SOURCE: &str = "horizon-resources.json";
-/// The folders it holds, with their subfolders.
-const FOLDERS: [&str; 2] = ["data", "assets"];
+/// The folders it holds, with their subfolders: the resources, and the
+/// structure templates world generation loads one by one.
+const FOLDERS: [&str; 3] = ["data", "assets", "worldgen/structure"];
 const MAGIC: [u8; 8] = *b"HZDATA\0\0";
-const VERSION: u32 = 1;
+/// 2: `worldgen/structure` joined the folders (a version 1 file lacks it).
+const VERSION: u32 = 2;
 const HEADER: usize = 40;
 const ENTRY: usize = 24;
 
@@ -71,12 +73,16 @@ impl PreparedFiles {
     /// The bytes of `name` (`/`-separated, from the root); `None` when this
     /// doesn't hold it (read it from the folder).
     pub fn read(&self, name: &str) -> Option<io::Result<Vec<u8>>> {
+        self.read_head(name, u64::MAX)
+    }
+    /// At most the first `max` bytes of `name`, as [`PreparedFiles::read`].
+    pub fn read_head(&self, name: &str, max: u64) -> Option<io::Result<Vec<u8>>> {
         let i = self
             .entries
             .binary_search_by(|e| self.name(e).cmp(name))
             .ok()?;
         let (offset, len) = self.entries[i].data;
-        let mut bytes = vec![0; len as usize];
+        let mut bytes = vec![0; len.min(max) as usize];
         Some(read_at(&self.file, &mut bytes, offset).map(|()| bytes))
     }
     /// The files under `dir` (`/`-separated, from the root) and its
@@ -205,6 +211,54 @@ pub fn find(path: &Path) -> Option<(Arc<PreparedFiles>, String)> {
         holds_folder(&rel).then_some(())?;
         Some((open(root)?, rel))
     })
+}
+
+/// `path`'s bytes: from its prepared root's data file when that holds it,
+/// where a file the data file doesn't have is missing (`NotFound`, without
+/// asking the disk: a texture's `.mcmeta` or LabPBR maps, mostly absent);
+/// else from the disk.
+pub fn read(path: &Path) -> io::Result<Vec<u8>> {
+    match find(path) {
+        Some((files, rel)) if holds_file(&rel) => files
+            .read(&rel)
+            .unwrap_or_else(|| Err(io::ErrorKind::NotFound.into())),
+        _ => fs::read(path),
+    }
+}
+
+/// The files under `dir` (a folder of a prepared root) and its subfolders, as
+/// `/`-separated paths from `dir` in name order, from the root's data file
+/// without listing the disk: empty when it holds none there. `None` when no
+/// data file holds `dir` (walk the folder).
+pub fn files_under(dir: &Path) -> Option<Vec<String>> {
+    let (files, rel) = find(dir)?;
+    let names = files.list(&rel).unwrap_or_default();
+    Some(
+        names
+            .into_iter()
+            .map(|name| name[rel.len() + 1..].to_owned())
+            .collect(),
+    )
+}
+
+/// At most the first `max` bytes of `path`, from where [`read`] takes them:
+/// a header, without reading the whole file.
+pub fn read_head(path: &Path, max: u64) -> io::Result<Vec<u8>> {
+    match find(path) {
+        Some((files, rel)) if holds_file(&rel) => files
+            .read_head(&rel, max)
+            .unwrap_or_else(|| Err(io::ErrorKind::NotFound.into())),
+        _ => {
+            let mut bytes = Vec::new();
+            io::Read::read_to_end(&mut io::Read::take(File::open(path)?, max), &mut bytes)?;
+            Ok(bytes)
+        }
+    }
+}
+
+/// [`read`] as UTF-8 text.
+pub fn read_to_string(path: &Path) -> io::Result<String> {
+    String::from_utf8(read(path)?).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
 }
 
 /// Write `root`'s file from its folders: through a temporary file renamed
@@ -355,6 +409,11 @@ mod tests {
             ("data/minecraft/tags/item/logs.json", b"[1,2,3]"),
             ("assets/minecraft/textures/block/stone.png", b"\x89PNG..."),
             ("assets/minecraft/sounds/ambient/cave1.ogg", b"OggS"),
+            (
+                "worldgen/structure/minecraft/fossil/spine_1.nbt",
+                b"\x1f\x8b",
+            ),
+            ("worldgen/biomes.json", b"{}"),
             ("facts.json", b"{}"),
         ] {
             let path = root.join(name);
@@ -388,6 +447,14 @@ mod tests {
                 .is_none()
         );
         assert!(files.read("facts.json").is_none());
+        assert!(files.read("worldgen/biomes.json").is_none());
+        assert_eq!(
+            files
+                .read("worldgen/structure/minecraft/fossil/spine_1.nbt")
+                .unwrap()
+                .unwrap(),
+            b"\x1f\x8b"
+        );
         assert!(files.read("data/minecraft/recipe/missing.json").is_none());
         assert_eq!(
             files.list("data/minecraft/recipe").unwrap(),
@@ -446,6 +513,31 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
+    /// A folder's files come from the file, without the disk: one added since
+    /// isn't listed (as `read` doesn't find it), and a folder it holds nothing
+    /// in is empty. Outside its folders, the disk is walked.
+    #[test]
+    fn files_under_lists_a_folder_from_the_file() {
+        let root = root("under");
+        write(&root).unwrap();
+        fs::write(root.join("assets/minecraft/textures/block/added.png"), b"x").unwrap();
+        assert_eq!(
+            files_under(&root.join("assets/minecraft/textures")).unwrap(),
+            ["block/stone.png"]
+        );
+        assert_eq!(
+            files_under(&root.join("worldgen/structure")).unwrap(),
+            ["minecraft/fossil/spine_1.nbt"]
+        );
+        assert!(
+            files_under(&root.join("assets/minecraft/textures/entity"))
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(files_under(&root.join("worldgen")), None);
+        let _ = fs::remove_dir_all(&root);
+    }
+
     /// `find` gives the file and the path from its root for a folder under a
     /// root that has one, and nothing elsewhere.
     #[test]
@@ -454,7 +546,39 @@ mod tests {
         write(&root).unwrap();
         let (_, rel) = find(&root.join("data/minecraft/recipe")).unwrap();
         assert_eq!(rel, "data/minecraft/recipe");
-        assert!(find(&root.join("worldgen/structure")).is_none());
+        let (_, rel) = find(&root.join("worldgen/structure/minecraft")).unwrap();
+        assert_eq!(rel, "worldgen/structure/minecraft");
+        // The top-level tables beside the structures stay on the disk.
+        assert!(find(&root.join("worldgen")).is_none());
+        assert!(find(&root.join("worldgen/biomes.json")).is_none());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Under a root with a file, a file it holds reads from it and a file it
+    /// doesn't is missing even when the disk has one now; a file outside its
+    /// folders, or a sound, reads from the disk.
+    #[test]
+    fn read_takes_the_file_for_what_it_holds() {
+        let root = root("read");
+        write(&root).unwrap();
+        let stick = root.join("data/minecraft/recipe/stick.json");
+        fs::write(&stick, b"changed on disk").unwrap();
+        assert_eq!(read(&stick).unwrap(), b"{\"stick\":1}");
+        let added = root.join("assets/minecraft/textures/block/stone_n.png");
+        fs::write(&added, b"added after").unwrap();
+        assert_eq!(read(&added).unwrap_err().kind(), io::ErrorKind::NotFound);
+        assert_eq!(read(&root.join("facts.json")).unwrap(), b"{}");
+        let sound = root.join("assets/minecraft/sounds/ambient/cave1.ogg");
+        assert_eq!(read(&sound).unwrap(), b"OggS");
+        assert_eq!(read_to_string(&stick).unwrap(), "{\"stick\":1}");
+        // A header: from the file for what it holds, from the disk for the rest.
+        assert_eq!(read_head(&stick, 4).unwrap(), b"{\"st");
+        assert_eq!(read_head(&stick, 100).unwrap(), b"{\"stick\":1}");
+        assert_eq!(read_head(&sound, 2).unwrap(), b"Og");
+        assert_eq!(
+            read_head(&added, 2).unwrap_err().kind(),
+            io::ErrorKind::NotFound
+        );
         let _ = fs::remove_dir_all(&root);
     }
 }

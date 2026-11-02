@@ -4,6 +4,7 @@
 //! when the block goes, and despawning. The tick stops at an entity it hits:
 //! the game hurts the entity (`projectile_hit`), then `finish_entity_hit`
 //! spends the arrow or turns it back and ends the tick.
+use crate::entity_rules::EntityRules;
 use crate::{
     blocks::BlockFacts,
     collisions::SceneCollisions,
@@ -169,6 +170,8 @@ pub struct ArrowState {
     /// The block it stuck in (`lastState`).
     pub last_state: Option<BlockStateId>,
     pub pickup: Pickup,
+    /// Its entity type is `SpectralArrow` (the type is its own, not the pickup item's).
+    pub spectral: bool,
     /// `pickupItemStack`: what picking the arrow up gives.
     pub pickup_item: crate::items::ItemStack,
     /// `AbstractArrow.firedFromWeapon`: the crossbow or bow it was shot from.
@@ -226,6 +229,7 @@ impl ArrowState {
             shake: 0,
             last_state: None,
             pickup: Pickup::Disallowed,
+            spectral: false,
             pickup_item: crate::items::ItemStack::new("minecraft:arrow", 1),
             fired_from_weapon: None,
             no_physics: false,
@@ -777,9 +781,9 @@ impl Ticker<'_, '_, '_, '_> {
         if !self.st.was_touching_water {
             self.p.velocity = self.p.velocity.scale(f64::from(0.99f32));
         }
-        if physics && !self.st.in_ground && !self.p.no_gravity {
+        if physics && !self.st.in_ground {
             // Entity.applyGravity: AbstractArrow.getDefaultGravity, none with NoGravity.
-            self.add_velocity(-0.05);
+            self.add_velocity(-self.p.get_gravity());
         }
         // Projectile.tick, then Entity.baseTick's fluid and fire phases.
         if !self.st.has_been_shot {
