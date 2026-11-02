@@ -10991,20 +10991,21 @@ impl Game<'_> {
                     0.0
                 }
             });
-            let mut particle_culling = self.particle_occlusion_context(camera);
-            self.particles.render_culled(
-                camera,
-                self.yaw,
-                self.pitch,
-                alpha as f32,
-                pixel_focal_length,
-                true,
-                frustum.as_ref(),
-                &mut |min, max| particle_culling.hidden(min, max),
-                &|b| world.light(b[0], b[1], b[2]),
-                &mut out,
-            );
-            drop(particle_culling);
+            {
+                let mut particle_culling = self.particle_occlusion_context(camera);
+                self.particles.render_culled(
+                    camera,
+                    self.yaw,
+                    self.pitch,
+                    alpha as f32,
+                    pixel_focal_length,
+                    true,
+                    frustum.as_ref(),
+                    &mut |min, max| particle_culling.hidden(min, max),
+                    &|b| world.light(b[0], b[1], b[2]),
+                    &mut out,
+                );
+            }
             self.finish_async_particle_culling();
         }
         laps.lap("eg_particles");

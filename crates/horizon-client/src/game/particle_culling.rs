@@ -493,7 +493,7 @@ impl ParticleOcclusionContext<'_, '_> {
         let mode = self.mode;
         let game = self.game;
         let sync_culler = self.sync_culler.as_ref();
-        let hidden = self.clusters.get_or_compute(cluster, || match mode {
+        self.clusters.get_or_compute(cluster, || match mode {
             ParticleCullingMode::Off => false,
             ParticleCullingMode::Synchronous => {
                 sync_culler.is_some_and(|culler| game.particle_occluded_sync(culler, min, max))
@@ -503,8 +503,7 @@ impl ParticleOcclusionContext<'_, '_> {
                     sync_culler.is_some_and(|culler| game.particle_occluded_sync(culler, min, max))
                 })
             }
-        });
-        hidden
+        })
     }
 }
 
