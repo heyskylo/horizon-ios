@@ -41,6 +41,12 @@ pub enum SubScreen {
     PendingInvites {
         invites: Arc<Mutex<Option<Result<Vec<PendingInviteDto>, String>>>>,
     },
+    Configure {
+        server: RealmServer,
+        status_msg: Option<String>,
+        busy: bool,
+    },
+    AddRealm,
 }
 
 #[derive(Clone, Debug)]
@@ -217,8 +223,18 @@ impl Screen {
             Some(1) => self.play_selected(),
             Some(2) => Outcome::Back,
             Some(10) => {
-                // Configure Realm
-                open_link("https://www.minecraft.net/realms");
+                // Configure Realm: open in-game configure subscreen
+                if let Some(idx) = self.selected
+                    && let Ok(lock) = self.state.lock()
+                    && let FetchState::Loaded(ref list) = *lock
+                    && let Some(server) = list.get(idx)
+                {
+                    self.subscreen = SubScreen::Configure {
+                        server: server.clone(),
+                        status_msg: None,
+                        busy: false,
+                    };
+                }
                 Outcome::None
             }
             Some(11) => {
@@ -255,8 +271,8 @@ impl Screen {
                 Outcome::None
             }
             Some(13) => {
-                // Add Realm / Purchase
-                open_link("https://www.minecraft.net/realms");
+                // Add Realm: open in-game info & purchase subscreen
+                self.subscreen = SubScreen::AddRealm;
                 Outcome::None
             }
             Some(14) => {
@@ -335,9 +351,81 @@ impl Screen {
                 }
                 Outcome::None
             }
-            Some(21) | Some(22) => {
+            Some(21) | Some(22) | Some(32) | Some(41) => {
                 // Cancel/Back or Done in subscreens
                 self.subscreen = SubScreen::Main;
+                Outcome::None
+            }
+            Some(30) => {
+                // Toggle Realm open / close in Configure subscreen
+                let action_info = if let SubScreen::Configure { ref server, busy, .. } = self.subscreen {
+                    if !busy {
+                        Some((server.id, server.is_open()))
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+
+                if let Some((s_id, is_open)) = action_info {
+                    if let SubScreen::Configure { ref mut busy, .. } = self.subscreen {
+                        *busy = true;
+                    }
+                    let res = if let Some(session) = horizon_client_render::auth::current() {
+                        let name = session.name.clone();
+                        let uuid = format!("{:032x}", session.uuid);
+                        let token = session.access_token().to_owned();
+                        let client = RealmsClient::default_client(&name, &uuid, &token);
+                        if is_open {
+                            client.close_realm(s_id)
+                        } else {
+                            client.open_realm(s_id)
+                        }
+                    } else {
+                        Err("Not signed in".to_string())
+                    };
+
+                    match res {
+                        Ok(()) => {
+                            if let SubScreen::Configure {
+                                ref mut server,
+                                ref mut status_msg,
+                                ref mut busy,
+                            } = self.subscreen
+                            {
+                                server.state = if is_open {
+                                    "CLOSED".to_string()
+                                } else {
+                                    "OPEN".to_string()
+                                };
+                                *status_msg = Some(if is_open {
+                                    "Realm został pomyślnie zamknięty.".to_string()
+                                } else {
+                                    "Realm został pomyślnie otwarty.".to_string()
+                                });
+                                *busy = false;
+                            }
+                            self.refresh();
+                        }
+                        Err(e) => {
+                            if let SubScreen::Configure {
+                                ref mut status_msg,
+                                ref mut busy,
+                                ..
+                            } = self.subscreen
+                            {
+                                *status_msg = Some(format!("Błąd: {e}"));
+                                *busy = false;
+                            }
+                        }
+                    }
+                }
+                Outcome::None
+            }
+            Some(31) | Some(40) => {
+                // Open Minecraft Realms web portal
+                open_link("https://www.minecraft.net/realms");
                 Outcome::None
             }
             Some(btn @ 100..=200) => {
@@ -504,14 +592,72 @@ impl Screen {
                     }
                 }
             }
+            SubScreen::Configure { server, busy, .. } => {
+                let is_open = server.is_open();
+                let toggle_label = if is_open {
+                    crate::lang::get_or("mco.configure.world.buttons.close", "Zamknij Realm")
+                } else {
+                    crate::lang::get_or("mco.configure.world.buttons.open", "Otwórz Realm")
+                };
+                buttons.push((
+                    cx - 100.0,
+                    (h / 2.0).floor() + 10.0,
+                    200.0,
+                    toggle_label,
+                    !busy,
+                    30,
+                    None,
+                ));
+                buttons.push((
+                    cx - 100.0,
+                    (h / 2.0).floor() + 34.0,
+                    200.0,
+                    "Zarządzaj w przeglądarce".to_string(),
+                    true,
+                    31,
+                    None,
+                ));
+                buttons.push((
+                    cx - 100.0,
+                    h - 36.0,
+                    200.0,
+                    crate::lang::get_or("gui.back", "Wstecz"),
+                    true,
+                    32,
+                    None,
+                ));
+            }
+            SubScreen::AddRealm => {
+                buttons.push((
+                    cx - 110.0,
+                    (h / 2.0).floor() + 20.0,
+                    220.0,
+                    "Kup Realm / Otwórz stronę".to_string(),
+                    true,
+                    40,
+                    None,
+                ));
+                buttons.push((
+                    cx - 100.0,
+                    h - 36.0,
+                    200.0,
+                    crate::lang::get_or("gui.back", "Wstecz"),
+                    true,
+                    41,
+                    None,
+                ));
+            }
             SubScreen::Main => {
                 // RealmsHeader buttons:
-                // Left: Join Realm button (88px)
+                // Left: Join Realm button (comfortably fits localized text)
+                let join_text = crate::lang::get_or("mco.selectServer.joinRealm", "Join Realm");
+                let join_w = 112.0;
+                let join_x = cx - 68.0 - join_w;
                 buttons.push((
-                    left,
+                    join_x,
                     12.0,
-                    88.0,
-                    crate::lang::get_or("mco.selectServer.joinRealm", "Join Realm"),
+                    join_w,
+                    join_text,
                     true,
                     14,
                     None,
@@ -818,6 +964,92 @@ impl Screen {
                             );
                         }
                     }
+                }
+            }
+            SubScreen::Configure {
+                server,
+                status_msg,
+                ..
+            } => {
+                crate::ui::menu_background(batch, atlas, 0.0, 0.0, w, h, false);
+                let title = format!("Konfiguracja: {}", server.name);
+                let tw = HudBatch::text_width(atlas, &title);
+                batch.text(atlas, &title, cx - (tw / 2.0).floor(), 20.0, u32::MAX, true);
+
+                let info_y = (h / 2.0).floor() - 60.0;
+                let motd = if server.motd.is_empty() {
+                    "Minecraft Realm"
+                } else {
+                    &server.motd
+                };
+                let motd_w = HudBatch::text_width(atlas, motd);
+                batch.text(
+                    atlas,
+                    motd,
+                    cx - (motd_w / 2.0).floor(),
+                    info_y,
+                    rgba(160, 160, 160, 255),
+                    true,
+                );
+
+                let (state_text, state_col) = if server.is_open() {
+                    ("Stan: Otwarty", rgba(85, 255, 85, 255))
+                } else {
+                    ("Stan: Zamknięty", rgba(255, 85, 85, 255))
+                };
+                let st_w = HudBatch::text_width(atlas, state_text);
+                batch.text(
+                    atlas,
+                    state_text,
+                    cx - (st_w / 2.0).floor(),
+                    info_y + 14.0,
+                    state_col,
+                    true,
+                );
+
+                let days_txt = format!("Wygasa za: {} dni", server.days_left);
+                let days_w = HudBatch::text_width(atlas, &days_txt);
+                batch.text(
+                    atlas,
+                    &days_txt,
+                    cx - (days_w / 2.0).floor(),
+                    info_y + 28.0,
+                    rgba(160, 160, 160, 255),
+                    true,
+                );
+
+                if let Some(msg) = status_msg {
+                    let mw = HudBatch::text_width(atlas, msg);
+                    batch.text(
+                        atlas,
+                        msg,
+                        cx - (mw / 2.0).floor(),
+                        info_y + 46.0,
+                        u32::MAX,
+                        true,
+                    );
+                }
+            }
+            SubScreen::AddRealm => {
+                crate::ui::menu_background(batch, atlas, 0.0, 0.0, w, h, false);
+                let title = "Minecraft Realms";
+                let tw = HudBatch::text_width(atlas, title);
+                batch.text(atlas, title, cx - (tw / 2.0).floor(), 24.0, u32::MAX, true);
+
+                let info_y = (h / 2.0).floor() - 40.0;
+                let l1 = "Realms to Twój własny prywatny serwer Minecraft.";
+                let l2 = "Działa w bezpiecznej chmurze 24/7 dla Ciebie i przyjaciół.";
+                let l3 = "Możesz w każdej chwili zmienić minigrę lub wgrać własny świat.";
+                for (i, line) in [l1, l2, l3].into_iter().enumerate() {
+                    let lw = HudBatch::text_width(atlas, line);
+                    batch.text(
+                        atlas,
+                        line,
+                        cx - (lw / 2.0).floor(),
+                        info_y + i as f32 * 14.0,
+                        rgba(180, 180, 180, 255),
+                        true,
+                    );
                 }
             }
             SubScreen::Main => {

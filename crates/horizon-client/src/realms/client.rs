@@ -281,6 +281,40 @@ impl<'a> RealmsClient<'a> {
         }
     }
 
+    /// Opens a closed Realm.
+    pub fn open_realm(&self, realm_id: i64) -> Result<(), String> {
+        let url = format!("{}/worlds/{}/open", self.base_url, realm_id);
+        match Self::agent()
+            .put(&url)
+            .set("Cookie", &self.cookie_header())
+            .set("Authorization", &format!("Bearer {}", self.access_token))
+            .set("Client-Ref", "26.3")
+            .set("X-NetworkProtocolVersion", "777")
+            .set("User-Agent", "Horizon/26.3")
+            .send_string("")
+        {
+            Ok(_) => Ok(()),
+            Err(e) => Err(format!("Failed to open Realm: {e}")),
+        }
+    }
+
+    /// Closes an open Realm.
+    pub fn close_realm(&self, realm_id: i64) -> Result<(), String> {
+        let url = format!("{}/worlds/{}/close", self.base_url, realm_id);
+        match Self::agent()
+            .put(&url)
+            .set("Cookie", &self.cookie_header())
+            .set("Authorization", &format!("Bearer {}", self.access_token))
+            .set("Client-Ref", "26.3")
+            .set("X-NetworkProtocolVersion", "777")
+            .set("User-Agent", "Horizon/26.3")
+            .send_string("")
+        {
+            Ok(_) => Ok(()),
+            Err(e) => Err(format!("Failed to close Realm: {e}")),
+        }
+    }
+
     /// Redeems an invite code / link.
     pub fn redeem_invite_code(&self, code: &str) -> Result<(), String> {
         let code = code
