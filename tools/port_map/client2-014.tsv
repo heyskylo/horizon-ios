@@ -141,7 +141,7 @@ Screen.updateNarratorStatus	skip:other		narrator option toggle only; Horizon has
 TitleScreen.tick	skip:service		Realms notifications and the friend request count (social)
 TitleScreen.init	port	crates/horizon-client/src/title.rs::Title::buttons	main menu buttons; the splash text is chosen at load (choose_splash)
 TitleScreen.getHorizontalPosition	skip:ui		layout of the icon row only
-TitleScreen.createNormalMenuOptions	port	crates/horizon-client/src/title.rs::Title::buttons	gap: player: Minecraft Realms button is greyed out (service)
+TitleScreen.createNormalMenuOptions	port	crates/horizon-client/src/title.rs::Title::buttons	Singleplayer, Multiplayer, Minecraft Realms and Quit Game buttons
 TitleScreen.getMultiplayerDisabledReason	missing		minor: unsure: no ban check; Multiplayer is always enabled in title.rs
 TitleScreen.createDemoMenuOptions	skip:other		demo build only (isDemo); Horizon has no demo mode
 TitleScreen.checkDemoWorldPresence	skip:other		demo world only

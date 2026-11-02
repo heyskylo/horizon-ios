@@ -108,6 +108,7 @@ pub enum Mode {
         return_to: Box<Mode>,
     },
     Multiplayer(crate::multiplayer::Screen),
+    Realms(crate::realms::Screen),
     /// CreateFlatWorldScreen over Create New World: the fields that screen
     /// keeps and the superflat editor on top of them.
     CreateFlat {
@@ -740,8 +741,8 @@ impl Title {
                         y + 48.0,
                         200.0,
                         &lang::get_or("menu.online", "Minecraft Realms"),
-                        false,
-                        0,
+                        true,
+                        8,
                     ),
                     b(
                         cx - 100.0,
@@ -972,6 +973,11 @@ impl Title {
             }
             Mode::Backup { .. } => Vec::new(),
             Mode::Multiplayer(screen) => screen
+                .buttons(w, h)
+                .into_iter()
+                .map(|(x, y, bw, label, enabled, id)| b(x, y, bw, &label, enabled, id))
+                .collect(),
+            Mode::Realms(screen) => screen
                 .buttons(w, h)
                 .into_iter()
                 .map(|(x, y, bw, label, enabled, id)| b(x, y, bw, &label, enabled, id))
@@ -1322,6 +1328,7 @@ impl Title {
                 self.started,
                 cursor,
             ),
+            Mode::Realms(screen) => screen.draw(batch, atlas, w, h),
         }
         for b in self.buttons(w, h) {
             crate::widgets::record(&b.label, [b.x, b.y, b.w, 20.0], b.enabled);
@@ -1447,6 +1454,18 @@ impl Title {
                 self.mode = Mode::Multiplayer(crate::multiplayer::Screen::list(&self.saves));
                 Action::None
             }
+            (Mode::Main, Some(8)) => {
+                self.mode = Mode::Realms(crate::realms::Screen::new());
+                Action::None
+            }
+            (Mode::Realms(screen), hit) => match screen.click(hit, x, y, (w, h)) {
+                crate::realms::Outcome::Back => {
+                    self.mode = Mode::Main;
+                    Action::None
+                }
+                crate::realms::Outcome::Connect(address) => Action::Connect { address },
+                crate::realms::Outcome::None => Action::None,
+            },
             (Mode::Multiplayer(_), hit) => match self.multiplayer_click(hit, x, y, (w, h)) {
                 crate::multiplayer::Outcome::Back => {
                     self.mode = Mode::Main;
