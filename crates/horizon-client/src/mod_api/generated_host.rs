@@ -1318,6 +1318,66 @@ pub trait Host {
         let _ = pos;
         unimplemented!("Host::entity_distance_to_sqr")
     }
+    /// Moves the entity to `pos` in its level (`Entity.teleportTo`), as
+    /// `/tp` does: a player is placed there and told, a rider gets off. With
+    /// `rotation` (yaw, pitch in degrees) it also turns. False for a position
+    /// outside the world's bounds. API @API:entity_moves@.
+    fn entity_teleport_to(
+        &mut self,
+        entity: EntityRef,
+        pos: [f64; 3],
+        rotation: Option<[f32; 2]>,
+    ) -> bool {
+        let _ = entity;
+        let _ = pos;
+        let _ = rotation;
+        unimplemented!("Host::entity_teleport_to")
+    }
+    /// Turns the entity to `yaw` and `pitch` in degrees (`Entity.setYRot`,
+    /// `setXRot`), as `/rotate` does: the pitch is clamped to -90..90, and a
+    /// player's client is told. API @API:entity_moves@.
+    fn entity_set_rotation(&mut self, entity: EntityRef, yaw: f32, pitch: f32) -> bool {
+        let _ = entity;
+        let _ = yaw;
+        let _ = pitch;
+        unimplemented!("Host::entity_set_rotation")
+    }
+    /// The yaw of the entity's head (`Entity.getYHeadRot`): a mob's or a
+    /// player's own, the body's yaw for the kinds without a head. API
+    /// @API:entity_moves@.
+    fn entity_head_yaw(&self, entity: EntityRef) -> Option<f32> {
+        let _ = entity;
+        unimplemented!("Host::entity_head_yaw")
+    }
+    /// Turns a mob's head to `yaw` (`Entity.setYHeadRot`); its body follows
+    /// as its AI turns it. False for the other kinds. API @API:entity_moves@.
+    fn entity_set_head_yaw(&mut self, entity: EntityRef, yaw: f32) -> bool {
+        let _ = entity;
+        let _ = yaw;
+        unimplemented!("Host::entity_set_head_yaw")
+    }
+    /// The horizontal direction the entity faces (`Entity.getDirection`):
+    /// `north`, `south`, `east` or `west`. API @API:entity_moves@.
+    fn entity_direction(&self, entity: EntityRef) -> Option<&'static str> {
+        let _ = entity;
+        unimplemented!("Host::entity_direction")
+    }
+    /// The entity's width and height (`Entity.getBbWidth`, `getBbHeight`):
+    /// its box's, so a baby's or a scaled entity's own. API
+    /// @API:entity_moves@.
+    fn entity_dimensions(&self, entity: EntityRef) -> Option<[f64; 2]> {
+        let _ = entity;
+        unimplemented!("Host::entity_dimensions")
+    }
+    /// Adds `delta` to the entity's velocity (`Entity.push`,
+    /// `addDeltaMovement`). False for a player (its client moves it), an
+    /// entity Horizon doesn't simulate, or a value that isn't finite. API
+    /// @API:entity_moves@.
+    fn entity_push(&mut self, entity: EntityRef, delta: [f64; 3]) -> bool {
+        let _ = entity;
+        let _ = delta;
+        unimplemented!("Host::entity_push")
+    }
 }
 impl EntityRef {
     /// The entity's position (`Entity.position`): its feet, the middle of
@@ -1394,5 +1454,52 @@ impl EntityRef {
     /// (`Entity.distanceToSqr`). API @API:entity_motion@.
     pub fn distance_to_sqr(self, host: &dyn Host, pos: [f64; 3]) -> Option<f64> {
         host.entity_distance_to_sqr(self, pos)
+    }
+    /// Moves the entity to `pos` in its level (`Entity.teleportTo`), as
+    /// `/tp` does: a player is placed there and told, a rider gets off. With
+    /// `rotation` (yaw, pitch in degrees) it also turns. False for a position
+    /// outside the world's bounds. API @API:entity_moves@.
+    pub fn teleport_to(
+        self,
+        host: &mut dyn Host,
+        pos: [f64; 3],
+        rotation: Option<[f32; 2]>,
+    ) -> bool {
+        host.entity_teleport_to(self, pos, rotation)
+    }
+    /// Turns the entity to `yaw` and `pitch` in degrees (`Entity.setYRot`,
+    /// `setXRot`), as `/rotate` does: the pitch is clamped to -90..90, and a
+    /// player's client is told. API @API:entity_moves@.
+    pub fn set_rotation(self, host: &mut dyn Host, yaw: f32, pitch: f32) -> bool {
+        host.entity_set_rotation(self, yaw, pitch)
+    }
+    /// The yaw of the entity's head (`Entity.getYHeadRot`): a mob's or a
+    /// player's own, the body's yaw for the kinds without a head. API
+    /// @API:entity_moves@.
+    pub fn head_yaw(self, host: &dyn Host) -> Option<f32> {
+        host.entity_head_yaw(self)
+    }
+    /// Turns a mob's head to `yaw` (`Entity.setYHeadRot`); its body follows
+    /// as its AI turns it. False for the other kinds. API @API:entity_moves@.
+    pub fn set_head_yaw(self, host: &mut dyn Host, yaw: f32) -> bool {
+        host.entity_set_head_yaw(self, yaw)
+    }
+    /// The horizontal direction the entity faces (`Entity.getDirection`):
+    /// `north`, `south`, `east` or `west`. API @API:entity_moves@.
+    pub fn direction(self, host: &dyn Host) -> Option<&'static str> {
+        host.entity_direction(self)
+    }
+    /// The entity's width and height (`Entity.getBbWidth`, `getBbHeight`):
+    /// its box's, so a baby's or a scaled entity's own. API
+    /// @API:entity_moves@.
+    pub fn dimensions(self, host: &dyn Host) -> Option<[f64; 2]> {
+        host.entity_dimensions(self)
+    }
+    /// Adds `delta` to the entity's velocity (`Entity.push`,
+    /// `addDeltaMovement`). False for a player (its client moves it), an
+    /// entity Horizon doesn't simulate, or a value that isn't finite. API
+    /// @API:entity_moves@.
+    pub fn push(self, host: &mut dyn Host, delta: [f64; 3]) -> bool {
+        host.entity_push(self, delta)
     }
 }

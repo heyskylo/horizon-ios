@@ -543,4 +543,30 @@ impl Host for super::Game<'_> {
     fn entity_distance_to_sqr(&self, entity: EntityRef, pos: [f64; 3]) -> Option<f64> {
         self.native_entity_distance_to_sqr(entity, pos)
     }
+    fn entity_teleport_to(
+        &mut self,
+        entity: EntityRef,
+        pos: [f64; 3],
+        rotation: Option<[f32; 2]>,
+    ) -> bool {
+        self.native_entity_teleport_to(entity, pos, rotation)
+    }
+    fn entity_set_rotation(&mut self, entity: EntityRef, yaw: f32, pitch: f32) -> bool {
+        self.native_entity_set_rotation(entity, yaw, pitch)
+    }
+    fn entity_head_yaw(&self, entity: EntityRef) -> Option<f32> {
+        self.native_entity_head_yaw(entity)
+    }
+    fn entity_set_head_yaw(&mut self, entity: EntityRef, yaw: f32) -> bool {
+        self.native_entity_set_head_yaw(entity, yaw)
+    }
+    fn entity_direction(&self, entity: EntityRef) -> Option<&'static str> {
+        self.native_entity_direction(entity)
+    }
+    fn entity_dimensions(&self, entity: EntityRef) -> Option<[f64; 2]> {
+        self.native_entity_dimensions(entity)
+    }
+    fn entity_push(&mut self, entity: EntityRef, delta: [f64; 3]) -> bool {
+        self.native_entity_push(entity, delta)
+    }
 }

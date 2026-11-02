@@ -15,12 +15,15 @@ fn corners(b: Aabb) -> [[f64; 3]; 2] {
 
 impl Game<'_> {
     /// The simulated entity (one of the shared entity walk's lists) with `id`.
-    fn native_walk_entity(&self, id: u32) -> Option<EntityHandle> {
+    pub(super) fn native_walk_entity(&self, id: u32) -> Option<EntityHandle> {
         self.entity_handles()
             .find(|h| with_entity!(self, *h, e => e.id() == id))
     }
     /// The server's copy of the player a target names.
-    fn native_target_guest(&self, t: Target) -> Option<&horizon_client::lan::guest::Guest> {
+    pub(super) fn native_target_guest(
+        &self,
+        t: Target,
+    ) -> Option<&horizon_client::lan::guest::Guest> {
         match t {
             Target::Player => self.command_guest(self.lan_acting?),
             Target::Guest(conn) => self.command_guest(conn),
