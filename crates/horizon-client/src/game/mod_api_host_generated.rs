@@ -558,4 +558,22 @@ impl Host for super::Game<'_> {
     fn entity_pose(&self, entity: EntityRef) -> Option<&'static str> {
         self.native_entity_pose(entity)
     }
+    fn item_container_slots(&self, stack: &ItemStack) -> Option<Vec<Option<ItemStack>>> {
+        self.native_item_container_slots(stack)
+    }
+    fn item_container_insert(
+        &self,
+        stack: &ItemStack,
+        item: &ItemStack,
+    ) -> Option<(u32, ItemStack)> {
+        self.native_item_container_insert(stack, item)
+    }
+    fn item_container_extract(
+        &self,
+        stack: &ItemStack,
+        slot: usize,
+        max: u32,
+    ) -> Option<(Option<ItemStack>, ItemStack)> {
+        self.native_item_container_extract(stack, slot, max)
+    }
 }
