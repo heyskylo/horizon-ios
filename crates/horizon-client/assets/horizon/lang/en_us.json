@@ -440,5 +440,9 @@
   "horizon.repro.bundle": "Repro bundle: %s",
   "horizon.repro.error": "Repro: %s",
   "horizon.repro.no_recording": "There is no recording to export yet.",
-  "horizon.repro.replay_started": "Replay started: %s"
+  "horizon.repro.replay_started": "Replay started: %s",
+  "Particle Culling": "Particle Culling",
+  "Draws every particle.": "Draws every particle.",
+  "Skips offscreen, subpixel and terrain-hidden particles.": "Skips offscreen, subpixel and terrain-hidden particles.",
+  "Skips offscreen, subpixel and terrain-hidden particles with less render-thread work.": "Skips offscreen, subpixel and terrain-hidden particles with less render-thread work."
 }

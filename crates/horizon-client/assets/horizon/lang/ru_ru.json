@@ -206,5 +206,9 @@
   "horizon.pages.split_profiles.tooltip": "Кто играет: профиль, хранимый в этой папке игры.",
   "horizon.shader_options.open": "Настройки шейдеров…",
   "horizon.shader_options.profile": "Профиль",
-  "horizon.shader_options.loading": "Чтение настроек набора шейдеров…"
+  "horizon.shader_options.loading": "Чтение настроек набора шейдеров…",
+  "Particle Culling": "Particle Culling",
+  "Draws every particle.": "Draws every particle.",
+  "Skips offscreen, subpixel and terrain-hidden particles.": "Skips offscreen, subpixel and terrain-hidden particles.",
+  "Skips offscreen, subpixel and terrain-hidden particles with less render-thread work.": "Skips offscreen, subpixel and terrain-hidden particles with less render-thread work."
 }

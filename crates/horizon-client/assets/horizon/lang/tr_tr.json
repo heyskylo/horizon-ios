@@ -202,5 +202,9 @@
   "horizon.pages.split_profiles.tooltip": "Kim oynuyor: bu oyun klasöründe tutulan bir profil.",
   "horizon.shader_options.open": "Gölgelendirici Seçenekleri…",
   "horizon.shader_options.profile": "Profil",
-  "horizon.shader_options.loading": "Gölgelendirici paketinin seçenekleri okunuyor…"
+  "horizon.shader_options.loading": "Gölgelendirici paketinin seçenekleri okunuyor…",
+  "Particle Culling": "Particle Culling",
+  "Draws every particle.": "Draws every particle.",
+  "Skips offscreen, subpixel and terrain-hidden particles.": "Skips offscreen, subpixel and terrain-hidden particles.",
+  "Skips offscreen, subpixel and terrain-hidden particles with less render-thread work.": "Skips offscreen, subpixel and terrain-hidden particles with less render-thread work."
 }

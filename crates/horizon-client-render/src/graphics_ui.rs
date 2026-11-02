@@ -4,7 +4,7 @@
 use crate::{
     graphics::{
         EntityCullingMode, FarDetail, FrameGeneration, GraphicsApi, LeafCullingMode, Overlay,
-        Pacing, PresentMode, Preset, Upscaling,
+        Pacing, ParticleCullingMode, PresentMode, Preset, Upscaling,
     },
     graphics_style::{Cost, STYLE},
     hud::{HudAtlas, HudBatch},
@@ -32,6 +32,7 @@ pub enum H {
     BlueMapRadius,
     CaveCulling,
     EntityCulling,
+    ParticleCulling,
     LeafCulling,
     CacheShulkerBoxes,
     CacheSigns,
@@ -227,6 +228,11 @@ pub fn rows(level: Level) -> Vec<Row> {
                 H::EntityCulling,
                 None,
                 "Hides entities behind opaque blocks.",
+            ),
+            h(
+                H::ParticleCulling,
+                None,
+                "Skips offscreen, subpixel and terrain-hidden particles.",
             ),
             h(
                 H::LeafCulling,
@@ -542,6 +548,15 @@ fn description(item: Item, s: &Settings, text: &'static str) -> &'static str {
             }
             LeafCullingMode::Hollow => "Drops faces between leaves: faster, but gaps look through.",
         },
+        (Item::Horizon(H::ParticleCulling), _) => match s.horizon.particle_culling {
+            ParticleCullingMode::Off => "Draws every particle.",
+            ParticleCullingMode::Synchronous => {
+                "Skips offscreen, subpixel and terrain-hidden particles."
+            }
+            ParticleCullingMode::Asynchronous => {
+                "Skips offscreen, subpixel and terrain-hidden particles with less render-thread work."
+            }
+        },
         _ => text,
     }
 }
@@ -617,6 +632,7 @@ impl H {
             ),
             H::CaveCulling => labelled("Cave Culling", on_off(g.cave_culling)),
             H::EntityCulling => labelled("Entity Culling", g.entity_culling.label()),
+            H::ParticleCulling => labelled("Particle Culling", g.particle_culling.label()),
             H::LeafCulling => labelled("Leaf Culling", g.leaf_culling.label()),
             H::CacheShulkerBoxes => labelled("Shulker Boxes", on_off(g.cache_shulker_boxes)),
             H::CacheSigns => labelled("Signs", on_off(g.cache_signs)),
@@ -769,6 +785,9 @@ impl H {
             H::CaveCulling => g.cave_culling = !g.cave_culling,
             H::EntityCulling => {
                 g.entity_culling = step(&EntityCullingMode::ALL, g.entity_culling, back)
+            }
+            H::ParticleCulling => {
+                g.particle_culling = step(&ParticleCullingMode::ALL, g.particle_culling, back)
             }
             H::LeafCulling => {
                 g.leaf_culling = step(&LeafCullingMode::ALL, g.leaf_culling, back);
@@ -2053,10 +2072,14 @@ mod tests {
         ));
         assert!(matches!(
             rows.get(culling + 3),
-            Some(Row::Setting(setting)) if setting.item == item
+            Some(Row::Setting(setting)) if setting.item == Item::Horizon(H::ParticleCulling)
         ));
         assert!(matches!(
             rows.get(culling + 4),
+            Some(Row::Setting(setting)) if setting.item == item
+        ));
+        assert!(matches!(
+            rows.get(culling + 5),
             Some(Row::Header("Block Entities"))
         ));
         for (offset, cache) in [
@@ -2072,12 +2095,12 @@ mod tests {
         .enumerate()
         {
             assert!(matches!(
-                rows.get(culling + 5 + offset),
+                rows.get(culling + 6 + offset),
                 Some(Row::Setting(setting)) if setting.item == Item::Horizon(cache)
             ));
         }
         assert!(matches!(
-            rows.get(culling + 12),
+            rows.get(culling + 13),
             Some(Row::Header("Quality"))
         ));
 
@@ -2160,6 +2183,51 @@ mod tests {
             assert_eq!(s.horizon.preset, Preset::Custom);
         }
         assert_eq!(item.label(&s).plain(), "Entity Culling: Asynchronous");
+    }
+
+    #[test]
+    fn particle_culling_modes_are_opt_in_and_cycle_from_advanced_graphics() {
+        let mut s = Settings::default();
+        let item = Item::Horizon(H::ParticleCulling);
+        assert_eq!(s.horizon.particle_culling, ParticleCullingMode::Off);
+        assert_eq!(item.label(&s).plain(), "Particle Culling: Off");
+        for mode in ParticleCullingMode::ALL {
+            s.horizon.particle_culling = mode;
+            for preset in Preset::ALL {
+                crate::graphics::apply_preset(preset, &mut s);
+                assert_eq!(s.horizon.particle_culling, mode);
+            }
+            assert_eq!(
+                crate::graphics::Graphics::parse(&s.horizon.serialize()).particle_culling,
+                mode
+            );
+        }
+
+        let mut ui = GraphicsUi::default();
+        let size = (480.0, 4000.0);
+        let (widgets, _, _) = ui.layout(Level::Advanced, &s, size.0, size.1);
+        let control = widgets
+            .iter()
+            .find(|w| matches!(w.target, Target::Item(i) if i == item))
+            .unwrap();
+        s.horizon.particle_culling = ParticleCullingMode::Off;
+        for (mode, label) in [
+            (ParticleCullingMode::Synchronous, "Synchronous"),
+            (ParticleCullingMode::Asynchronous, "Asynchronous"),
+            (ParticleCullingMode::Off, "Off"),
+        ] {
+            ui.click(
+                Level::Advanced,
+                &mut s,
+                (control.x + 1.0, control.y + 1.0),
+                size,
+                [854, 480],
+                false,
+                false,
+            );
+            assert_eq!(s.horizon.particle_culling, mode);
+            assert_eq!(item.label(&s).plain(), format!("Particle Culling: {label}"));
+        }
     }
 
     /// Translucent Batching: a switch on Advanced (not Simple), on by default, no part of a
@@ -2446,36 +2514,47 @@ mod tests {
         let mut s = Settings::default();
         s.horizon.leaf_culling = LeafCullingMode::Hollow;
         s.horizon.entity_culling = EntityCullingMode::Asynchronous;
-        for (code, leaf, entity, leaf_text) in [
+        s.horizon.particle_culling = ParticleCullingMode::Asynchronous;
+        for (code, leaf, entity, leaf_text, particle, particle_text) in [
             (
                 "de_de",
                 "Laub-Culling: Hohl",
                 "Objekt-Culling: Asynchron",
                 "Lässt Flächen zwischen Blättern weg: schneller, aber Lücken sind durchsichtig.",
+                "Partikel-Culling: Asynchron",
+                "Überspringt Partikel außerhalb des Bildes, unterhalb eines Pixels oder hinter Terrain und entlastet den Render-Thread.",
             ),
             (
                 "pl_pl",
                 "Pomijanie liści: Puste",
                 "Pomijanie bytów: Asynchroniczne",
                 "Pomija ściany między liśćmi: szybciej, ale luki są przezroczyste.",
+                "Pomijanie cząsteczek: Asynchroniczne",
+                "Pomija cząsteczki poza ekranem, mniejsze niż piksel i zasłonięte przez teren, odciążając wątek renderowania.",
             ),
             (
                 "uk_ua",
                 "Відсікання листя: Порожнє",
                 "Відсік. сутностей: Асинхронно",
                 "Прибирає грані між листям: швидше, але прогалини прозорі.",
+                "Відсікання частинок: Асинхронно",
+                "Пропускає частинки поза екраном, менші за піксель і закриті місцевістю, зменшуючи роботу потоку рендерингу.",
             ),
             (
                 "zh_cn",
                 "树叶剔除: 镂空",
                 "实体剔除: 异步",
                 "省略树叶之间的面：更快，但缝隙会透视。",
+                "粒子剔除: 异步",
+                "跳过屏幕外、小于一个像素和被地形遮挡的粒子，减少渲染线程的工作量。",
             ),
             (
                 "fr_fr",
                 "Occlusion feuillage: Creux",
                 "Occlusion des entités: Asynchrone",
                 "Supprime les faces entre feuilles : plus rapide, mais on voit à travers les trous.",
+                "Occlusion des particules: Asynchrone",
+                "Ignore les particules hors écran, trop petites ou masquées par le terrain avec moins de travail sur le thread de rendu.",
             ),
         ] {
             let (shown, _) = lang::scoped(lang::Language::load(&[], code), || {
@@ -2484,11 +2563,19 @@ mod tests {
                     item(H::LeafCulling).label(&s).plain(),
                     item(H::EntityCulling).label(&s).plain(),
                     lang::get(description(item(H::LeafCulling), &s, "")),
+                    item(H::ParticleCulling).label(&s).plain(),
+                    lang::get(description(item(H::ParticleCulling), &s, "")),
                 )
             });
             assert_eq!(
                 shown,
-                (leaf.into(), entity.into(), leaf_text.into()),
+                (
+                    leaf.into(),
+                    entity.into(),
+                    leaf_text.into(),
+                    particle.into(),
+                    particle_text.into(),
+                ),
                 "{code}"
             );
         }

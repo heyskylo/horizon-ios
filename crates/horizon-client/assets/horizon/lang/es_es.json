@@ -207,5 +207,9 @@
   "horizon.pages.split_profiles.tooltip": "Quién juega: un perfil guardado en esta carpeta del juego.",
   "horizon.shader_options.open": "Opciones de sombreadores…",
   "horizon.shader_options.profile": "Perfil",
-  "horizon.shader_options.loading": "Leyendo las opciones del paquete de sombreadores…"
+  "horizon.shader_options.loading": "Leyendo las opciones del paquete de sombreadores…",
+  "Particle Culling": "Particle Culling",
+  "Draws every particle.": "Draws every particle.",
+  "Skips offscreen, subpixel and terrain-hidden particles.": "Skips offscreen, subpixel and terrain-hidden particles.",
+  "Skips offscreen, subpixel and terrain-hidden particles with less render-thread work.": "Skips offscreen, subpixel and terrain-hidden particles with less render-thread work."
 }

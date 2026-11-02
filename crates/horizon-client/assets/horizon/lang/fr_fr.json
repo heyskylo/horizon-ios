@@ -406,5 +406,9 @@
   "horizon.extras.hide_block_particles.tooltip": "Masque les débris qui jaillissent d'un bloc cassé et s'effritent de celui que vous minez. Les autres particules restent.",
   "horizon.extras.splitscreen.tooltip": "Dans un monde, une autre manette peut rejoindre en tant que nouveau joueur : appuyez sur A quand c'est demandé, puis choisissez un profil et où jouer.",
   "horizon.extras.ui_sound_reserve": "Canaux pour sons UI",
-  "horizon.extras.ui_sound_reserve.tooltip": "Les sons du monde laissent 16 des 247 canaux sonores libres, pour qu'un déluge de sons (une grosse explosion) ne couvre pas les clics de menu."
+  "horizon.extras.ui_sound_reserve.tooltip": "Les sons du monde laissent 16 des 247 canaux sonores libres, pour qu'un déluge de sons (une grosse explosion) ne couvre pas les clics de menu.",
+  "Particle Culling": "Occlusion des particules",
+  "Draws every particle.": "Dessine toutes les particules.",
+  "Skips offscreen, subpixel and terrain-hidden particles.": "Ignore les particules hors écran, trop petites ou masquées par le terrain.",
+  "Skips offscreen, subpixel and terrain-hidden particles with less render-thread work.": "Ignore les particules hors écran, trop petites ou masquées par le terrain avec moins de travail sur le thread de rendu."
 }

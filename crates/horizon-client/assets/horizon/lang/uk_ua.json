@@ -440,5 +440,9 @@
   "horizon.repro.bundle": "Пакет відтворення: %s",
   "horizon.repro.error": "Відтворення: %s",
   "horizon.repro.no_recording": "Поки немає запису для експорту.",
-  "horizon.repro.replay_started": "Відтворення почато: %s"
+  "horizon.repro.replay_started": "Відтворення почато: %s",
+  "Particle Culling": "Відсікання частинок",
+  "Draws every particle.": "Малює всі частинки.",
+  "Skips offscreen, subpixel and terrain-hidden particles.": "Пропускає частинки поза екраном, менші за піксель і закриті місцевістю.",
+  "Skips offscreen, subpixel and terrain-hidden particles with less render-thread work.": "Пропускає частинки поза екраном, менші за піксель і закриті місцевістю, зменшуючи роботу потоку рендерингу."
 }
