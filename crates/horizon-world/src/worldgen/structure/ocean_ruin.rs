@@ -358,3 +358,247 @@ pub fn post_process(piece: &TemplatePiece, c: &mut PieceContext<'_>) -> Result<(
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        fluid::FluidState,
+        nbt::{Compound, parse_snbt},
+        registry::{BlockRegistry, BlockStateId},
+        worldgen::{
+            placement::PlacementQueryError,
+            structure::{
+                BoundingBox, StateTransforms,
+                legacy::{PieceWorld, SolidRender, TemplatePiece},
+                processor::ProcessorList,
+            },
+        },
+    };
+    use horizon_core::{position::ChunkPos, random::LegacyRandom};
+    use std::{collections::BTreeMap, path::Path, sync::Mutex};
+
+    /// Air, the water and the floor the piece is placed in, and the structure
+    /// block that carries the piece's markers.
+    fn registry() -> &'static BlockRegistry {
+        let rows: Vec<serde_json::Value> = [
+            "minecraft:air",
+            "minecraft:cave_air",
+            "minecraft:void_air",
+            "minecraft:water",
+            "minecraft:sandstone",
+            "minecraft:structure_block",
+        ]
+        .into_iter()
+        .map(|name| {
+            serde_json::json!([name, name.ends_with("air"), false, "",
+                {"id": name, "properties": {}}])
+        })
+        .collect();
+        let defaults: serde_json::Map<String, serde_json::Value> = [
+            "minecraft:air",
+            "minecraft:cave_air",
+            "minecraft:void_air",
+            "minecraft:water",
+            "minecraft:sandstone",
+            "minecraft:structure_block",
+        ]
+        .iter()
+        .enumerate()
+        .map(|(i, name)| ((*name).to_owned(), serde_json::json!(i)))
+        .collect();
+        let facts = serde_json::json!({"states": rows, "defaults": defaults});
+        let registry = BlockRegistry::from_facts_json(facts.to_string().as_bytes()).unwrap();
+        Box::leak(Box::new(registry))
+    }
+
+    /// The piece world: a solid seabed at `height` everywhere, a sea level, and
+    /// every `set` recorded in call order.
+    struct World {
+        registry: &'static BlockRegistry,
+        floor: BlockStateId,
+        height: i32,
+        sea: i32,
+        sets: Vec<([i32; 3], BlockStateId, i32)>,
+    }
+    impl World {
+        fn new(registry: &'static BlockRegistry, sea: i32) -> Self {
+            Self {
+                registry,
+                floor: registry.default_state("minecraft:sandstone").unwrap(),
+                height: 77,
+                sea,
+                sets: Vec::new(),
+            }
+        }
+        fn name_of(&self, state: BlockStateId) -> &str {
+            self.registry.state(state).map(|s| s.name.as_str()).unwrap()
+        }
+    }
+    impl PieceWorld for World {
+        fn block(&mut self, _: [i32; 3]) -> Result<BlockStateId> {
+            Ok(self.floor)
+        }
+        fn set(&mut self, pos: [i32; 3], state: BlockStateId, flags: i32) -> Result<bool> {
+            self.sets.push((pos, state, flags));
+            Ok(true)
+        }
+        fn fluid(&mut self, _: [i32; 3]) -> Result<FluidState> {
+            Ok(FluidState::EMPTY)
+        }
+        fn height(&mut self, _: HeightmapType, _: i32, _: i32) -> Result<i32> {
+            Ok(self.height)
+        }
+        fn min_y(&mut self) -> Result<i32> {
+            Ok(-64)
+        }
+        fn max_y(&mut self) -> Result<i32> {
+            Ok(384)
+        }
+        fn block_entity(&mut self, _: [i32; 3], _: Compound) -> Result<()> {
+            Ok(())
+        }
+        fn entity(&mut self, _: Compound) -> Result<()> {
+            Ok(())
+        }
+        fn post_process(&mut self, _: [i32; 3]) -> Result<()> {
+            Ok(())
+        }
+        fn fluid_tick(&mut self, _: [i32; 3], _: crate::fluid::FluidKind, _: i32) -> Result<()> {
+            Ok(())
+        }
+        fn seed(&mut self) -> Result<i64> {
+            Ok(0)
+        }
+        fn level_boolean(&mut self) -> Result<bool> {
+            Ok(false)
+        }
+        fn level_float(&mut self) -> Result<f32> {
+            Ok(0.0)
+        }
+        fn level_int(&mut self, _: i32) -> Result<i32> {
+            Ok(0)
+        }
+        fn sea_level(&mut self) -> Result<i32> {
+            Ok(self.sea)
+        }
+        fn face_full(&mut self, _: [i32; 3], _: horizon_core::geometry::Direction) -> Result<bool> {
+            Ok(false)
+        }
+        fn face_sturdy(
+            &mut self,
+            _: [i32; 3],
+            _: horizon_core::geometry::Direction,
+        ) -> Result<bool> {
+            Ok(false)
+        }
+        fn center_sturdy(
+            &mut self,
+            _: [i32; 3],
+            _: horizon_core::geometry::Direction,
+        ) -> Result<bool> {
+            Ok(false)
+        }
+        fn biome(&mut self, _: [i32; 3]) -> Result<crate::worldgen::biome::BiomeId> {
+            Err(PlacementQueryError::Unavailable)
+        }
+        fn place_template(
+            &mut self,
+            _: &StructureResources,
+            _: &StructureTemplate,
+            _: [i32; 3],
+            _: [i32; 3],
+            _: &mut super::super::processor::PlaceSettings<'_>,
+            _: &mut dyn super::super::processor::ProcessorRandom,
+            _: i32,
+        ) -> Result<bool> {
+            Ok(true)
+        }
+    }
+    /// No block draws as a solid block here.
+    struct Blocks;
+    impl SolidRender for Blocks {
+        fn solid_render(&self, _: BlockStateId) -> bool {
+            false
+        }
+    }
+
+    /// One ocean ruin piece whose template holds a `drowned` data marker at
+    /// its own origin.
+    fn piece(registry: &BlockRegistry) -> TemplatePiece {
+        let (tag, _) = parse_snbt(
+            r#"{size:[1,1,1],palette:[{Name:"minecraft:structure_block"}],
+                blocks:[{pos:[0,0,0],state:0,nbt:{mode:"data",metadata:"drowned"}}]}"#,
+        )
+        .unwrap();
+        let template = StructureTemplate::from_nbt(&tag, registry, &StateTransforms::default());
+        TemplatePiece {
+            type_name: "minecraft:ocean_ruin",
+            template_name: "ocean_ruin/cold/brick_1".into(),
+            template: Arc::new(template),
+            position: [8, 0, 8],
+            rotation: Rotation::None,
+            mirror: Mirror::None,
+            pivot: [0; 3],
+            processors: Arc::new(ProcessorList(Vec::new())),
+            waterlogging: true,
+            ignore: Vec::new(),
+            bounding_box: BoundingBox::new([8, 0, 8], [8, 384, 8]),
+            handler: TemplateHandler::OceanRuin {
+                warm: false,
+                large: false,
+                integrity: 1.0,
+            },
+            state: Mutex::new(None),
+        }
+    }
+
+    /// The drowned marker's block, with the piece's world at sea level `sea`.
+    fn drowned_block(sea: i32) -> String {
+        let registry = registry();
+        let resources = StructureResources::new(
+            registry,
+            StateTransforms::default(),
+            Path::new("/nonexistent"),
+            BTreeMap::new(),
+            &BTreeMap::new(),
+        );
+        let piece = piece(registry);
+        let mut world = World::new(registry, sea);
+        let mut blocks = Blocks;
+        let mut random = LegacyRandom::new(0);
+        {
+            let mut c = PieceContext {
+                world: &mut world,
+                resources: &resources,
+                blocks: &mut blocks,
+                random: &mut random,
+                chunk_box: BoundingBox::new([0, -64, 0], [16, 384, 16]),
+                chunk: ChunkPos::new(0, 0),
+                reference: [8, 0, 8],
+            };
+            post_process(&piece, &mut c).unwrap();
+        }
+        // The drowned marker sits at the piece's own height, 77: above the old
+        // hardcoded sea level and below this world's.
+        let (_, state, flags) = world
+            .sets
+            .iter()
+            .find(|(pos, state, _)| {
+                *pos == [8, 77, 8] && world.name_of(*state) != "minecraft:structure_block"
+            })
+            .map(|(pos, state, flags)| (*pos, *state, *flags))
+            .expect("the drowned marker's block");
+        assert_eq!(flags, 2);
+        world.name_of(state).to_owned()
+    }
+
+    /// `OceanRuinPieces.OceanRuinPiece.postProcess` floods the drowned marker's
+    /// block when it is at or below `level.getSeaLevel()`, and leaves air above.
+    #[test]
+    fn a_drowned_marker_is_water_at_or_below_the_sea_level() {
+        assert_eq!(drowned_block(90), "minecraft:water");
+        assert_eq!(drowned_block(77), "minecraft:water");
+        assert_eq!(drowned_block(76), "minecraft:air");
+    }
+}
