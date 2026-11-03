@@ -308,16 +308,19 @@ impl Game<'_> {
     /// hand with the player's motion.
     pub(super) fn follow_own_player(&mut self, r: &mut Rocket) {
         let hand = self.rocket_hand_angle();
-        let look = view_vector(self.yaw, self.pitch);
+        // getLookAngle reads Mth's float sine table, as the server does; the
+        // f64 sin/cos of super::view_vector drift the boost off the server's
+        // path and trip the movement check while gliding under a rocket.
+        let look = horizon_world::view_direction::view_vector(self.pitch, self.yaw);
         let Some(p) = self.player.as_mut() else {
             return;
         };
         if p.fall_flying {
             let m = p.velocity;
             p.velocity = Vec3::new(
-                m.x + look[0] * 0.1 + (look[0] * 1.5 - m.x) * 0.5,
-                m.y + look[1] * 0.1 + (look[1] * 1.5 - m.y) * 0.5,
-                m.z + look[2] * 0.1 + (look[2] * 1.5 - m.z) * 0.5,
+                m.x + look.x * 0.1 + (look.x * 1.5 - m.x) * 0.5,
+                m.y + look.y * 0.1 + (look.y * 1.5 - m.y) * 0.5,
+                m.z + look.z * 0.1 + (look.z * 1.5 - m.z) * 0.5,
             );
         }
         r.position = p.position.add_vector(Vec3::new(hand[0], hand[1], hand[2]));
