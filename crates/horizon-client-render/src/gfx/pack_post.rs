@@ -566,6 +566,10 @@ pub struct PackPost {
     composite_pre: u16,
     formats: [wgpu::TextureFormat; BUFFERS],
     clears: [Option<[f32; 4]>; BUFFERS],
+    /// Buffers of a three-channel format, and whether their textures are new: then they get
+    /// alpha 1 before the next frame.
+    rgb: u16,
+    rgb_unset: bool,
     used: u16,
     /// `size.buffer.*`.
     sizes: [Option<horizon_shaders::BufferSize>; BUFFERS],
@@ -1039,6 +1043,8 @@ struct Resources<'a> {
     gpu: Gpu,
     /// The buffers whose format can be bound as an image.
     storable: u16,
+    /// The buffers of a three-channel format (`rgb`): they have no alpha to write, and read 1.
+    rgb: u16,
     /// The stage (`texture.<stage>`) of the programs built so far, and the buffers one of them
     /// flipped: a `texture.<stage>.colortexN` no longer stands in for buffer N in the stage's
     /// later programs, which read what was written, as in Iris. `final` continues
@@ -1441,6 +1447,12 @@ fn build_pass(
         } else if let Some(&buffer) = p.buffers.get(l) {
             let format = formats[buffer as usize];
             let mut state = target(format);
+            if !p.group.shadow()
+                && pack.rgb & 1 << buffer != 0
+                && let Some(t) = &mut state
+            {
+                t.write_mask = wgpu::ColorWrites::COLOR;
+            }
             if let (Some(t), Some(b)) = (
                 &mut state,
                 p.buffer_blends
@@ -1768,11 +1780,19 @@ impl PackPost {
         let sky_clear = Some(&post.config.buffers[0])
             .filter(|b| b.clear)
             .and_then(|b| b.clear_color);
+        // A three-channel buffer reads alpha 1 whatever is written or cleared, as in Iris: its
+        // passes leave alpha alone, and its clears and first contents set it to 1.
+        let rgb = (0..BUFFERS)
+            .filter(|&i| post.config.buffers[i].format.channels == 3)
+            .fold(0u16, |m, i| m | 1 << i);
         let clears = std::array::from_fn(|i| {
             let b = &post.config.buffers[i];
             b.clear.then(|| {
-                b.clear_color
-                    .unwrap_or(if i == 1 { [1.0; 4] } else { [0.0; 4] })
+                let mut c = (b.clear_color).unwrap_or(if i == 1 { [1.0; 4] } else { [0.0; 4] });
+                if rgb & 1 << i != 0 {
+                    c[3] = 1.0;
+                }
+                c
             })
         });
         let mut notes = post.notes;
@@ -1873,6 +1893,7 @@ impl PackPost {
             indices: indices.as_ref(),
             gpu,
             storable,
+            rgb,
             released: std::cell::Cell::new(("", 0)),
             stand_ins: &stand_ins,
         };
@@ -2318,7 +2339,13 @@ impl PackPost {
             }
         });
         let float = wgpu::TextureSampleType::Float { filterable: true };
-        let blit_targets = std::iter::once(target(formats[0]));
+        let mut world_target = target(formats[0]);
+        if rgb & 1 != 0
+            && let Some(t) = &mut world_target
+        {
+            t.write_mask = wgpu::ColorWrites::COLOR;
+        }
+        let blit_targets = std::iter::once(world_target);
         // Cleared by the pass's load operation; the shader writes nothing there.
         let blit_targets: Vec<_> = blit_targets
             .chain(cleared.iter().map(|&b| {
@@ -2443,6 +2470,8 @@ impl PackPost {
             composite_pre: mask(&post.composite_pre),
             formats,
             clears,
+            rgb,
+            rgb_unset: true,
             used,
             storage,
             copied,
@@ -3559,6 +3588,7 @@ impl PackPost {
             return;
         }
         self.setup_pending = true;
+        self.rgb_unset = true;
         let sizes: [[u32; 2]; BUFFERS] =
             std::array::from_fn(|i| self.sizes[i].map_or(size, |s| s.resolve(size)));
         let full_chain = |size: [u32; 2]| 32 - size[0].max(size[1]).max(1).leading_zeros();
@@ -4015,6 +4045,26 @@ impl PackPost {
                 ..Default::default()
             });
         }
+        // Three-channel buffers start out with alpha 1 on both sides: a pass writes the side the
+        // frame's clear didn't touch.
+        if self.rgb_unset {
+            self.rgb_unset = false;
+            let start = wgpu::Operations {
+                load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                store: wgpu::StoreOp::Store,
+            };
+            for b in (0..BUFFERS).filter(|&b| self.rgb & 1 << b != 0) {
+                for alt in [false, true] {
+                    if let Some(v) = view(self.main, b, alt) {
+                        encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                            label: Some("Shader pack three-channel start"),
+                            color_attachments: &[attach(v, start)],
+                            ..Default::default()
+                        });
+                    }
+                }
+            }
+        }
         let clear_op = |b: usize| {
             let c = self.clears[b].unwrap_or_default();
             wgpu::Operations {
@@ -4087,9 +4137,18 @@ impl PackPost {
             self.blit_group = Some(([world.clone(), world_depth.clone()], group));
         }
         {
+            // The blit leaves a three-channel colortex0's alpha at the 1 it starts with.
+            let world_ops = if self.rgb & 1 != 0 {
+                wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                    store: wgpu::StoreOp::Store,
+                }
+            } else {
+                overwrite
+            };
             let mut attachments = vec![attach(
                 view(self.main, 0, false).expect("colortex0"),
-                overwrite,
+                world_ops,
             )];
             for &b in &self.blit_clears {
                 attachments.push(attach(
@@ -4437,6 +4496,7 @@ mod tests {
             indices: None,
             gpu: Gpu::of(&adapter, device.features()),
             storable: 0,
+            rgb: 0,
             released: std::cell::Cell::new(("", 0)),
             stand_ins: &stand_ins,
         };
@@ -4514,6 +4574,7 @@ mod tests {
             indices: None,
             gpu: Gpu::of(&adapter, device.features()),
             storable: 0,
+            rgb: 0,
             released: std::cell::Cell::new(("", 0)),
             stand_ins: &stand_ins,
         };
@@ -4654,3 +4715,6 @@ mod tests {
 
 #[cfg(test)]
 mod destination_tests;
+
+#[cfg(test)]
+mod rgb_alpha_tests;
