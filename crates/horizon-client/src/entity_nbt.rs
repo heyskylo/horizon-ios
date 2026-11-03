@@ -4269,8 +4269,14 @@ fn read_variant(m: &mut Mob, tag: &Tag) {
             } else {
                 0
             };
-            m.extra.variant2 = ((packed >> 16) & 15) as u8;
-            m.extra.variant3 = ((packed >> 24) & 15) as u8;
+            // TropicalFish.getBaseColor/getPatternColor use DyeColor.byId:
+            // read the full byte, then default invalid color ids to white.
+            let color = |shift| match (packed >> shift) & 0xFF {
+                value @ 0..=15 => value as u8,
+                _ => 0,
+            };
+            m.extra.variant2 = color(16);
+            m.extra.variant3 = color(24);
         }
         _ => {}
     }
