@@ -1364,7 +1364,11 @@ impl Game<'_> {
         // around, the opener included (`playSound(null, …)`, which the capture
         // relay sends on to the guests). Without it the host's copy never
         // learned of the open, so a guest's box opened silently.
-        if counts_openers && self.container_openers_changed(pos, true) {
+        // A spectator never joins the openers (`startOpen` returns on
+        // `player.isSpectator()`): its menu opens but the lid stays shut, no
+        // sound plays, and `stopOpen` has nothing to decrement, which is why
+        // the count must not be raised here either (#8517).
+        if counts_openers && !spectator && self.container_openers_changed(pos, true) {
             self.container_edge_sound(pos, true);
         }
         true
