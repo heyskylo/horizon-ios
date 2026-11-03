@@ -48,7 +48,7 @@ pub struct Route {
 }
 
 /// Every endpoint `start` and [`route`] answer; a test checks the two agree.
-pub const ROUTES: [Route; 29] = [
+pub const ROUTES: [Route; 30] = [
     Route {
         method: "GET",
         path: "/api/v1/status",
