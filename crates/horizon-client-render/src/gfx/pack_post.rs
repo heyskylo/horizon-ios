@@ -7,7 +7,10 @@
 //! Every colortex buffer a program reads or writes has two textures, A and B. Programs read
 //! "main" and write "alt", and each buffer a program wrote flips afterwards (6.1.6). The
 //! mapping carries over to the next frame, so a buffer that is not cleared reads back what was
-//! written last (OQ-8). Buffers are cleared at the start of the frame, "main" only.
+//! written last (OQ-8). A cleared buffer has both textures cleared at the start of the frame:
+//! with an odd number of flips a frame, the texture a program writes was "main" the frame before
+//! and may still hold what was stored into it after that frame's clear (Iris 1.11.7 blends onto
+//! the clear value there, probed with a pack of our own).
 //! Pack buffers store rows as GL does (row 0 at the bottom: the translator negates clip y), so
 //! the world is copied in upside down, and its reverse-Z depth becomes GL window depth.
 
@@ -4035,26 +4038,35 @@ impl PackPost {
         // Attachments share a size and stay within the device's count and byte limits.
         let limits = device.limits();
         let max_attachments = (limits.max_color_attachments as usize).min(8);
-        let mut by_size: Vec<([u32; 2], Vec<usize>)> = Vec::new();
-        for &b in &self.other_clears {
+        // The buffers the blit doesn't clear, and the other texture of every cleared buffer.
+        let alt_clears = (0..BUFFERS)
+            .filter(|&b| self.clears[b].is_some() && view(self.main, b, true).is_some())
+            .map(|b| (b, true));
+        let mut by_size: Vec<([u32; 2], Vec<(usize, bool)>)> = Vec::new();
+        for (b, alt) in self
+            .other_clears
+            .iter()
+            .map(|&b| (b, false))
+            .chain(alt_clears)
+        {
             let at = targets.sizes[b];
             match by_size.iter_mut().find(|(s, buffers)| {
                 let bytes = buffers
                     .iter()
-                    .fold(0, |bytes, &b| attachment_bytes(bytes, self.formats[b]));
+                    .fold(0, |bytes, &(b, _)| attachment_bytes(bytes, self.formats[b]));
                 *s == at
                     && buffers.len() < max_attachments
                     && attachment_bytes(bytes, self.formats[b])
                         <= limits.max_color_attachment_bytes_per_sample
             }) {
-                Some((_, l)) => l.push(b),
-                None => by_size.push((at, vec![b])),
+                Some((_, l)) => l.push((b, alt)),
+                None => by_size.push((at, vec![(b, alt)])),
             }
         }
         for (_, chunk) in &by_size {
             let attachments: Vec<_> = chunk
                 .iter()
-                .map(|&b| attach(view(self.main, b, false).expect("used buffer"), clear_op(b)))
+                .map(|&(b, alt)| attach(view(self.main, b, alt).expect("used buffer"), clear_op(b)))
                 .collect();
             encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Shader pack clear"),
