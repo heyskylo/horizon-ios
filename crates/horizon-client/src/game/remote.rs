@@ -8242,6 +8242,9 @@ impl Game<'_> {
             return !self.may_build() || self.pick().is_none();
         }
         if id == "minecraft:glass_bottle" {
+            // A dragon's breath cloud never counts here: its owner is not
+            // synced, so this client's BottleItem.use finds none and PASSes;
+            // the packet still goes and the server fills the bottle.
             return !source(Some(Fluid::Water));
         }
         if super::boats::any_boat_wood(id).is_some() {
