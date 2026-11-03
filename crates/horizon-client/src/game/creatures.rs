@@ -1814,6 +1814,13 @@ impl Game<'_> {
             String::new()
         };
         let (id, kind) = (p.id, p.kind.id());
+        if let Some(a) = p.arrow.as_mut()
+            && !p.stuck
+        {
+            a.spawn_pos = Some(p.position);
+            a.spawn_velocity = Some(p.velocity);
+            a.spawn_rot = Some((p.pitch, p.yaw));
+        }
         self.creatures.projectiles.push(p);
         self.native_projectile_launch(player, &name, id, kind);
     }
