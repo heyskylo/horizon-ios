@@ -18,8 +18,8 @@ sent the same things over TLS, and every answer is compared exactly:
   `clear`; with no profile service, players named resolve to offline players on both), the live server
   message, difficulty, default and forced game mode read and changed (including saved properties), autosave
   read and changed (including its reset after restart), allow-flight read and changed (including invalid input,
-  saved properties and restart), status replies read and changed (including invalid input, saved properties
-  and restart), allowlist use and enforcement read and changed
+  saved properties and restart), hidden online players read and changed (including invalid input, saved properties
+  and restart), status replies read and changed (including invalid input, saved properties and restart), allowlist use and enforcement read and changed
   (including saved properties and restart), max players read and changed (including saved
   properties and restart), player idle timeout read and changed (including disabling it, invalid input,
   saved properties and restart), the live pause-when-empty timer read and changed (including its saved
@@ -163,6 +163,15 @@ MESSAGES = [
     '{"jsonrpc":"2.0","id":146,"method":"minecraft:serversettings/allow_flight"}',
     '{"jsonrpc":"2.0","id":147,"method":"minecraft:serversettings/allow_flight/set","params":[true]}',
     '{"jsonrpc":"2.0","id":148,"method":"minecraft:serversettings/allow_flight"}',
+    '{"jsonrpc":"2.0","id":190,"method":"minecraft:serversettings/hide_online_players"}',
+    '{"jsonrpc":"2.0","id":191,"method":"minecraft:serversettings/hide_online_players/set","params":[true]}',
+    '{"jsonrpc":"2.0","id":192,"method":"minecraft:serversettings/hide_online_players"}',
+    '{"jsonrpc":"2.0","id":193,"method":"minecraft:serversettings/hide_online_players/set","params":["yes"]}',
+    '{"jsonrpc":"2.0","id":194,"method":"minecraft:serversettings/hide_online_players"}',
+    '{"jsonrpc":"2.0","id":195,"method":"minecraft:serversettings/hide_online_players/set","params":[false]}',
+    '{"jsonrpc":"2.0","id":196,"method":"minecraft:serversettings/hide_online_players"}',
+    '{"jsonrpc":"2.0","id":197,"method":"minecraft:serversettings/hide_online_players/set","params":[true]}',
+    '{"jsonrpc":"2.0","id":198,"method":"minecraft:serversettings/hide_online_players"}',
     '{"jsonrpc":"2.0","id":210,"method":"minecraft:serversettings/status_replies"}',
     '{"jsonrpc":"2.0","id":211,"method":"minecraft:serversettings/status_replies/set","params":[false]}',
     '{"jsonrpc":"2.0","id":212,"method":"minecraft:serversettings/status_replies"}',
@@ -501,6 +510,9 @@ def main():
                 sides[side]['saved_allow_flight'] = next(
                     (line.partition('=')[2] for line in properties.splitlines()
                      if line.startswith('allow-flight=')), None)
+                sides[side]['saved_hide_online_players'] = next(
+                    (line.partition('=')[2] for line in properties.splitlines()
+                     if line.startswith('hide-online-players=')), None)
                 sides[side]['saved_status_replies'] = next(
                     (line.partition('=')[2] for line in properties.splitlines()
                      if line.startswith('enable-status=')), None)
@@ -521,6 +533,8 @@ def main():
                     sides[side]['saved_config_player_idle_timeout'] = 'player-idle-timeout = 30' in (
                         folder / 'server.toml').read_text()
                     sides[side]['saved_config_allow_flight'] = 'allow-flight = true' in (
+                        folder / 'server.toml').read_text()
+                    sides[side]['saved_config_hide_online_players'] = 'hide-online-players = true' in (
                         folder / 'server.toml').read_text()
                     sides[side]['saved_config_status_replies'] = 'enable-status = false' in (
                         folder / 'server.toml').read_text()
@@ -579,6 +593,12 @@ def main():
                         if not isinstance(reply, dict) or 'method' not in reply or 'id' in reply:
                             break
                     sides[side]['restarted_allow_flight'] = reply
+                    ws.send('{"jsonrpc":"2.0","id":199,"method":"minecraft:serversettings/hide_online_players"}')
+                    while True:
+                        reply = normal(ws.receive(timeout=60))
+                        if not isinstance(reply, dict) or 'method' not in reply or 'id' in reply:
+                            break
+                    sides[side]['restarted_hide_online_players'] = reply
                     ws.send('{"jsonrpc":"2.0","id":219,"method":"minecraft:serversettings/status_replies"}')
                     while True:
                         reply = normal(ws.receive(timeout=60))
@@ -663,6 +683,14 @@ def main():
         if vanilla['restarted_allow_flight'] != horizon['restarted_allow_flight'] or \
                 vanilla['restarted_allow_flight'] != {'jsonrpc': '2.0', 'id': 149, 'result': True}:
             failures.append(f"restarted allow-flight: vanilla {vanilla['restarted_allow_flight']!r}, Horizon {horizon['restarted_allow_flight']!r}")
+        if vanilla['saved_hide_online_players'] != horizon['saved_hide_online_players'] or \
+                vanilla['saved_hide_online_players'] != 'true':
+            failures.append(f"saved hide-online-players: vanilla {vanilla['saved_hide_online_players']!r}, Horizon {horizon['saved_hide_online_players']!r}")
+        if not horizon['saved_config_hide_online_players']:
+            failures.append('Horizon did not save hide-online-players in server.toml')
+        if vanilla['restarted_hide_online_players'] != horizon['restarted_hide_online_players'] or \
+                vanilla['restarted_hide_online_players'] != {'jsonrpc': '2.0', 'id': 199, 'result': True}:
+            failures.append(f"restarted hide-online-players: vanilla {vanilla['restarted_hide_online_players']!r}, Horizon {horizon['restarted_hide_online_players']!r}")
         if vanilla['saved_status_replies'] != horizon['saved_status_replies'] or vanilla['saved_status_replies'] != 'false':
             failures.append(f"saved status replies: vanilla {vanilla['saved_status_replies']!r}, Horizon {horizon['saved_status_replies']!r}")
         if not horizon['saved_config_status_replies']:

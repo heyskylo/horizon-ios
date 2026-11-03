@@ -1155,9 +1155,12 @@ impl Entities {
             };
             self.packets.clear();
             // Paired as it joined, then its first changes go to everyone
-            // tracking it, those just paired with it included.
+            // tracking it, those just paired with it included. Arrows wait for the
+            // next tick's send_changes so impact updates (e.g. IN_GROUND) arrive after
+            // the client's first tick (#7461).
             let synced = s.added
                 && e.kind != "minecraft:player"
+                && !s.arrow
                 && self
                     .synced
                     .iter()
@@ -1902,6 +1905,50 @@ mod tests {
         for synced in [vec![], vec![(i32::MIN, 6)], vec![(7, 9)]] {
             assert_eq!(passes(synced), (vec![], vec![move_by(-164)]));
         }
+    }
+
+    /// ChunkMap.addEntity (#7461): a fresh arrow (shot point-blank into a wall)
+    /// is paired with IN_GROUND=false, and its first update is deferred to the
+    /// next tick's send_changes so that IN_GROUND=true arrives after the client's
+    /// first tick has completed, satisfying AbstractArrow.onSyncedDataUpdated's
+    /// !this.firstTick guard and triggering the shake animation.
+    #[test]
+    fn fresh_arrow_pairs_as_joined_and_defers_in_ground_update_to_next_tick() {
+        let mut level = Entities {
+            synced: vec![(i32::MIN, 7)],
+            ..Entities::default()
+        };
+        let mut c = Clients::new();
+        let mut joined = state(0.0);
+        joined.kind = "minecraft:arrow".into();
+        joined.meta = vec![(8, serializer::BYTE, Value::Byte(0))];
+
+        let mut stuck = joined.clone();
+        stuck.meta = vec![(8, serializer::BYTE, Value::Byte(1))];
+
+        let mut entities = vec![&stuck];
+        let joins = level.joined_states(&entities, vec![joined.clone()]);
+        Entities::starting_from(&mut entities, &joins);
+        assert_eq!(
+            entities[0].meta,
+            vec![(8, serializer::BYTE, Value::Byte(0))]
+        );
+
+        // Tick 0: arrow is paired. Because it's an arrow, send_changes does not run on tick 0
+        // even though level.synced contains its id.
+        c.tick(&mut level, &entities);
+        let in_ground_true = body(play::Clientbound::SetEntityData(SetEntityData {
+            id: 7,
+            values: vec![(8, serializer::BYTE, Value::Byte(1))],
+        }));
+        assert!(!c.out[0].contains(&in_ground_true));
+
+        // Tick 1: arrow is in the wall (IN_GROUND = true).
+        let next_entities = vec![&stuck];
+        c.tick(&mut level, &next_entities);
+
+        // Tick 1 sends SetEntityData with IN_GROUND=true.
+        assert!(c.out[0].contains(&in_ground_true), "{:?}", c.out[0]);
     }
 
     #[test]
