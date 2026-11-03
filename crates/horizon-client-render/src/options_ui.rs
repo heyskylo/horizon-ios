@@ -6029,9 +6029,9 @@ mod tests {
                 matches!(
                     &w.kind,
                     WKind::Button {
-                        act: Act::Extra(_),
+                        act: Act::Extra(item),
                         ..
-                    }
+                    } if !matches!(item, crate::extras::Item::SortKey)
                 )
             })
             .unwrap();
@@ -6047,7 +6047,9 @@ mod tests {
         );
         // The pointer moved off the clicked widget: its description goes with
         // it. A mouse a click left focused (the look-up keeps the click's
-        // widget) does not hint (`focus_from_keyboard`).
+        // widget) does not hint (`focus_from_keyboard`). Clicking also cycled
+        // the extra, so the comparison UI carries the same value — the focus
+        // sprite only differs in its texture, not its vertices.
         let mut clicked = HudBatch::new([480, 480]);
         ui.draw(
             &s,
@@ -6057,6 +6059,13 @@ mod tests {
         );
         let mut fresh = OptionsUi::default();
         fresh.show(Page::Extras);
+        if let WKind::Button {
+            act: Act::Extra(item),
+            ..
+        } = extra.kind
+        {
+            item.cycle(&mut s.extras, false);
+        }
         let mut none = HudBatch::new([480, 480]);
         fresh.draw(
             &s,
