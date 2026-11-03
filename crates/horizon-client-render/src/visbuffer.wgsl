@@ -324,25 +324,50 @@ fn vis_corner(position: vec3<u32>, rest: vec3<u32>, origin: vec4<f32>) -> Terrai
     let toward = vec2(1.0) - 2.0 * odd;
     let bx = vis_bary(rows, vis_ndc(centre + vec2(toward.x, 0.0), size));
     let by = vis_bary(rows, vis_ndc(centre + vec2(0.0, toward.y), size));
-    // `terrain_vertex` on the triangle's corners; the first is the provoking one, whose flat
+    // `terrain_vertex` on the triangle's corners, one at a time into the sums, so that only
+    // one corner's outputs are held at once; the first is the provoking one, whose flat
     // outputs (layer, emission, fade, emissive layer) the rasteriser keeps.
-    let t0 = vis_corner(p0, r0, origin);
+    var t = vis_corner(p0, r0, origin);
+    let uv0 = t.uv;
+    t.uv = b.x * uv0;
+    var uv_x = bx.x * uv0;
+    var uv_y = by.x * uv0;
+    t.color = b.x * t.color;
+    t.spherical = b.x * t.spherical;
+    t.cylindrical = b.x * t.cylindrical;
+    t.visibility = b.x * t.visibility;
     let t1 = vis_corner(select(p1, p2, second), select(r1, r2, second), origin);
+    t.uv += b.y * t1.uv;
+    uv_x += bx.y * t1.uv;
+    uv_y += by.y * t1.uv;
+    t.color += b.y * t1.color;
+    t.spherical += b.y * t1.spherical;
+    t.cylindrical += b.y * t1.cylindrical;
+    t.visibility += b.y * t1.visibility;
     let t2 = vis_corner(select(p2, p3, second), select(r2, r3, second), origin);
-    var t = t0;
-    t.uv = b.x * t0.uv + b.y * t1.uv + b.z * t2.uv;
-    t.color = b.x * t0.color + b.y * t1.color + b.z * t2.color;
-    t.spherical = b.x * t0.spherical + b.y * t1.spherical + b.z * t2.spherical;
-    t.cylindrical = b.x * t0.cylindrical + b.y * t1.cylindrical + b.z * t2.cylindrical;
-    t.scene = b.x * t0.scene + b.y * t1.scene + b.z * t2.scene;
-    t.local = b.x * t0.local + b.y * t1.local + b.z * t2.local;
-    t.visibility = b.x * t0.visibility + b.y * t1.visibility + b.z * t2.visibility;
-    let du = (bx.x * t0.uv + bx.y * t1.uv + bx.z * t2.uv - t.uv) * toward.x;
-    let dv = (by.x * t0.uv + by.y * t1.uv + by.z * t2.uv - t.uv) * toward.y;
-    let dlx = (bx.x * t0.local + bx.y * t1.local + bx.z * t2.local - t.local) * toward.x;
-    let dly = (by.x * t0.local + by.y * t1.local + by.z * t2.local - t.local) * toward.y;
+    t.uv += b.z * t2.uv;
+    uv_x += bx.z * t2.uv;
+    uv_y += by.z * t2.uv;
+    t.color += b.z * t2.color;
+    t.spherical += b.z * t2.spherical;
+    t.cylindrical += b.z * t2.cylindrical;
+    t.visibility += b.z * t2.visibility;
+    let du = (uv_x - t.uv) * toward.x;
+    let dv = (uv_y - t.uv) * toward.y;
+    // HDR output alone reads the light levels and the face's normal (as in `fs_opaque`):
+    // `terrain_vertex` gives them as the block light over 16 and the sky light over 16, and the
+    // section-relative position.
+    if globals.hdr_light.z != 0.0 {
+        let local = array(bitcast<vec3<f32>>(p0), bitcast<vec3<f32>>(select(p1, p2, second)),
+            bitcast<vec3<f32>>(select(p2, p3, second)));
+        // `t.scene` is still the first corner's.
+        t.scene = b.x * t.scene + b.y * t1.scene + b.z * t2.scene;
+        t.local = b.x * local[0] + b.y * local[1] + b.z * local[2];
+        let dlx = (bx.x * local[0] + bx.y * local[1] + bx.z * local[2] - t.local) * toward.x;
+        let dly = (by.x * local[0] + by.y * local[1] + by.z * local[2] - t.local) * toward.y;
+        hdr_normal = normalize(cross(dly, dlx));
+    }
     // `fs_opaque` and `solid_color` past their discards, which pass 1 already made.
-    hdr_normal = normalize(cross(dly, dlx));
     let texel = vis_sprite(t.uv, t.layer & 0x7fffu, du, dv);
     var color = texel * t.color;
     color = mix(globals.fog_color * vec4(1.0, 1.0, 1.0, color.a), color, t.visibility);
