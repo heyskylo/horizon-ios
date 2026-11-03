@@ -234,6 +234,21 @@ impl Game<'_> {
             },
         }
     }
+    /// `LivingEntity.createEquipmentSlotAccess`: every slot but head, mainhand
+    /// and offhand takes only an empty stack or one whose
+    /// `getEquipmentSlotForItem` is that slot (a non-equippable item is mainhand).
+    fn equipment_slot_accepts(&self, s: &Slot, stack: Option<&ItemStack>) -> bool {
+        let name = match s {
+            Slot::Guest(_, inner) => return self.equipment_slot_accepts(inner, stack),
+            Slot::Armor(i @ 1..=3) => ["head", "chest", "legs", "feet"][*i],
+            Slot::Mob(_, key) if matches!(*key, "chest" | "legs" | "feet") => key,
+            _ => return true,
+        };
+        let Some(stack) = stack else { return true };
+        self.items()
+            .get(&stack.item)
+            .is_some_and(|info| info.equip_slot.as_deref() == Some(name))
+    }
     /// Put a stack (or nothing) in a slot; false when the slot cannot take it.
     pub(in crate::game) fn slot_set(&mut self, s: &Slot, stack: Option<ItemStack>) -> bool {
         match s {
@@ -751,7 +766,7 @@ impl Game<'_> {
                     s.count = s.count.min(max);
                     s
                 });
-                if self.slot_set(slot, new) {
+                if self.equipment_slot_accepts(slot, new.as_ref()) && self.slot_set(slot, new) {
                     changed += 1;
                 }
             }
@@ -888,7 +903,7 @@ impl Game<'_> {
                 // ItemStack.isEmpty: air (or a count of 0) is an empty slot.
                 // SlotAccess.set counts every slot it sets, the same item too.
                 let item = item.filter(|s| &*s.item != "minecraft:air" && s.count > 0);
-                if self.slot_set(slot, item) {
+                if self.equipment_slot_accepts(slot, item.as_ref()) && self.slot_set(slot, item) {
                     changed += 1;
                 }
             }
