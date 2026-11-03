@@ -293,7 +293,7 @@ Each `[[options]]` entry sets the WGSL `override` of the same name when the pipe
 
 ## Limits
 
-- 8 post passes, 64 options, `budget.gpu_ms` up to 16.
+- 12 post passes, 64 options, `budget.gpu_ms` up to 16.
 - 256 KiB per WGSL file, 8 MiB per pack.
 - Per stage: 20000 naga expressions over all its functions, 64 texture reads (samples,
   gathers and loads, the prelude's included).

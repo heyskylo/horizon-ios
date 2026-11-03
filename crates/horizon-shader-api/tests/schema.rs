@@ -300,8 +300,8 @@ fn refuses_what_this_build_does_not_read() {
     assert!(refused(no_stage).contains("no stage"));
     let mirror = format!("{no_stage}[sky]\nfile = \"sky.wgsl\"\n[reflection]\n");
     assert!(refused(&mirror).contains("[reflection] needs [material]"));
-    let many = (0..9).map(|i| format!("[[post]]\nfile = \"p{i}.wgsl\"\n"));
-    assert!(refused(&format!("{no_stage}{}", many.collect::<String>())).contains("9 post passes"));
+    let many = (0..13).map(|i| format!("[[post]]\nfile = \"p{i}.wgsl\"\n"));
+    assert!(refused(&format!("{no_stage}{}", many.collect::<String>())).contains("13 post passes"));
 }
 
 #[test]

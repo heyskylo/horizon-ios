@@ -9,7 +9,7 @@ pub const SCHEMA: u32 = 1;
 /// the inputs a pack's WGSL may read.
 pub const API: &str = "0.1";
 /// Full-screen passes a pack may chain.
-pub const MAX_POST_PASSES: usize = 8;
+pub const MAX_POST_PASSES: usize = 12;
 /// Options a pack may declare.
 pub const MAX_OPTIONS: usize = 64;
 /// Settings pages a pack may declare, and the items one page may hold.
