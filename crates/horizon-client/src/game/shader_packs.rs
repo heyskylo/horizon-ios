@@ -108,16 +108,14 @@ fn active_pack<'a>(picked: &'a str, mods: &horizon_client::mod_list::ModList) ->
     }
 }
 
-/// Whether the pack `settings` pick (or `HORIZON_SHADER_PACK`) is one of Horizon's own: only
-/// then do resource loads read the resource packs' LabPBR maps (`sprites::set_labpbr_maps`).
-pub(super) fn picks_native_pack(settings: &horizon_client::settings::Settings) -> bool {
+/// A selected pack may read resource-pack material maps, whether native or GLSL.
+pub(super) fn picks_material_pack(settings: &horizon_client::settings::Settings) -> bool {
     let dev = std::env::var("HORIZON_SHADER_PACK").ok();
     let picked = active_pack(
         dev.as_deref().unwrap_or(&settings.horizon.shader_pack),
         &settings.mods,
     );
     !picked.is_empty()
-        && horizon_shader_api::package::is_pack(&Game::shader_packs_dir().join(picked))
 }
 
 /// The ids a pack gives entities and block entities (4.1, 5.3), for the spans of the entity
@@ -176,6 +174,11 @@ impl Game<'_> {
             }
         }
         if picked.is_empty() {
+            return PackInputs::default();
+        }
+        if !horizon_client::sprites::labpbr_maps() {
+            horizon_client::sprites::set_labpbr_maps(true);
+            self.reload_packs();
             return PackInputs::default();
         }
         let name = picked;

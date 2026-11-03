@@ -93,13 +93,7 @@ enum SamplerKind {
 impl SamplerKind {
     fn of(source: Source, filtering: bool) -> Self {
         match source {
-            Source::Color(_)
-            | Source::ShadowColor(_)
-            | Source::Dummy
-            | Source::Normals
-            | Source::Specular
-                if !filtering =>
-            {
+            Source::Color(_) | Source::ShadowColor(_) | Source::Dummy if !filtering => {
                 Self::Nearest
             }
             Source::Depth | Source::Depth1 | Source::Depth2 | Source::ShadowDepth(_, false) => {
@@ -108,7 +102,7 @@ impl SamplerKind {
             Source::Noise => Self::Repeat,
             Source::Shadow | Source::ShadowDepth(_, true) => Self::Comparison,
             // Blocks look as the game draws them: nearest texels.
-            Source::Atlas => Self::NearestRepeat,
+            Source::Atlas | Source::Normals | Source::Specular => Self::NearestRepeat,
             Source::Image(_) if filtering => Self::Linear,
             Source::Image(_) => Self::Nearest,
             Source::Custom { blur, clamp, .. } => match (blur && filtering, clamp) {
@@ -117,12 +111,9 @@ impl SamplerKind {
                 (true, false) => Self::Repeat,
                 (false, false) => Self::NearestRepeat,
             },
-            Source::Color(_)
-            | Source::ShadowColor(_)
-            | Source::Dummy
-            | Source::Normals
-            | Source::Specular
-            | Source::Lightmap => Self::Linear,
+            Source::Color(_) | Source::ShadowColor(_) | Source::Dummy | Source::Lightmap => {
+                Self::Linear
+            }
         }
     }
 
@@ -363,6 +354,7 @@ struct Pass {
     draw: bool,
     /// What `texture` reads instead of the block atlas.
     atlas: Option<wgpu::TextureView>,
+    material_maps: bool,
     /// Reads `mc_Entity`'s table (`PackPost::block_ids`).
     ids: bool,
     /// Bind groups by the sides read (bits 0–15), the buffers whose mip chain is current (bits
@@ -432,6 +424,7 @@ struct Targets {
 pub(super) struct World<'a> {
     /// The block atlas and its size.
     pub atlas: Option<(wgpu::TextureView, [u32; 2])>,
+    pub material_maps: Option<[wgpu::TextureView; 2]>,
     pub lightmap: wgpu::TextureView,
     /// Terrain's geometry, when the pack draws it.
     pub terrain: Option<Geometry<'a>>,
@@ -564,6 +557,7 @@ pub struct PackPost {
     /// `shaders.properties`' custom uniforms, after the frame's in `uniforms.values`.
     custom: horizon_shaders::Custom,
     atlas: Option<wgpu::TextureView>,
+    material_maps: Option<[wgpu::TextureView; 2]>,
     lightmap: wgpu::TextureView,
     deferred_pre: u16,
     composite_pre: u16,
@@ -1024,6 +1018,8 @@ pub(super) struct Geometry<'a> {
     pub depth_write: bool,
     /// What `texture` reads instead of the block atlas.
     pub atlas: Option<wgpu::TextureView>,
+    /// This draw uses the block atlas's surface identities.
+    pub material_maps: bool,
     /// `mc_Entity`'s table at set 3 (flat terrain).
     pub ids: Option<&'a wgpu::BindGroupLayout>,
     /// Back faces are culled, as for the game's own terrain.
@@ -1606,6 +1602,7 @@ fn build_pass(
         mipmaps: p.mipmaps,
         draw,
         atlas: geometry.and_then(|g| g.atlas.clone()),
+        material_maps: geometry.is_some_and(|g| g.material_maps),
         ids: geometry.is_some_and(|g| g.ids.is_some()),
         groups: HashMap::new(),
         copies: image_buffers(&images) & reads,
@@ -1740,6 +1737,7 @@ fn build_compute(
         mipmaps: 0,
         draw: false,
         atlas: None,
+        material_maps: false,
         ids: false,
         groups: HashMap::new(),
         buffers: !interface.buffers.is_empty(),
@@ -1970,6 +1968,7 @@ impl PackPost {
             table: g.table,
             depth_write: g.depth_write,
             atlas: g.atlas.clone(),
+            material_maps: g.material_maps,
             ids: block_ids.as_ref().map(|i| &i.0),
             cull: g.cull,
         });
@@ -1997,6 +1996,7 @@ impl PackPost {
                 table: Some(&geometry.layout),
                 depth_write: false,
                 atlas: None,
+                material_maps: false,
                 ids: None,
                 cull: false,
             };
@@ -2006,6 +2006,7 @@ impl PackPost {
                 table: None,
                 depth_write: false,
                 atlas: world.celestial.clone(),
+                material_maps: false,
                 ids: None,
                 cull: false,
             };
@@ -2042,6 +2043,7 @@ impl PackPost {
             table: Some(&e.table),
             depth_write: true,
             atlas: world.celestial.clone(),
+            material_maps: false,
             ids: None,
             cull: false,
         });
@@ -2053,6 +2055,7 @@ impl PackPost {
                         table: g.table,
                         depth_write: false,
                         atlas: g.atlas.clone(),
+                        material_maps: g.material_maps,
                         ids: g.ids,
                         cull: false,
                     };
@@ -2080,6 +2083,7 @@ impl PackPost {
             table: Some(layout),
             depth_write: true,
             atlas: world.celestial.clone(),
+            material_maps: false,
             ids: None,
             cull: false,
         });
@@ -2089,6 +2093,7 @@ impl PackPost {
             table: None,
             depth_write: true,
             atlas: None,
+            material_maps: false,
             ids: None,
             cull: false,
         });
@@ -2099,6 +2104,7 @@ impl PackPost {
                 table: Some(&geometry.layout),
                 depth_write: true,
                 atlas: world.celestial.clone(),
+                material_maps: false,
                 ids: None,
                 cull: false,
             };
@@ -2441,6 +2447,7 @@ impl PackPost {
             center_depth: None,
             custom,
             atlas: world.atlas.as_ref().map(|a| a.0.clone()),
+            material_maps: world.material_maps,
             lightmap: world.lightmap,
             deferred_pre: mask(&post.deferred_pre),
             composite_pre: mask(&post.composite_pre),
@@ -2718,8 +2725,16 @@ impl PackPost {
                     Source::Dummy if s.dimension == wgpu::TextureViewDimension::D1 => {
                         &self.dummy_1d
                     }
-                    Source::Normals => &self.dummy_normal,
-                    Source::Specular => &self.dummy_black,
+                    Source::Normals => self
+                        .material_maps
+                        .as_ref()
+                        .filter(|_| pass.material_maps)
+                        .map_or(&self.dummy_normal, |maps| &maps[0]),
+                    Source::Specular => self
+                        .material_maps
+                        .as_ref()
+                        .filter(|_| pass.material_maps)
+                        .map_or(&self.dummy_black, |maps| &maps[1]),
                     Source::Dummy => &self.dummy,
                     Source::Image(k) if pass.image_copies & 1 << k != 0 => {
                         self.images[k].copy.as_ref().unwrap_or(&self.dummy)
@@ -4678,3 +4693,7 @@ mod tests {
 
 #[cfg(test)]
 mod destination_tests;
+
+#[cfg(test)]
+#[path = "pack_material_tests.rs"]
+mod material_tests;

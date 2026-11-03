@@ -967,8 +967,8 @@ pub struct Renderer {
     entity_skin: Option<entity_skin::EntitySkin>,
     group: wgpu::BindGroup,
     globals: wgpu::Buffer,
-    /// The resource packs' LabPBR maps (normals, specular), for native shader packs.
-    pbr_maps: Option<[wgpu::Texture; 2]>,
+    /// Resource-pack normal/specular maps, split like the colour sprite arrays.
+    pbr_maps: Option<Vec<[wgpu::Texture; 2]>>,
     lightmap: wgpu::Texture,
     /// The block sprites, `sprite_split` layers per array (the first is
     /// `sprites` in terrain.wgsl, the others `sprites_1`...).
@@ -997,6 +997,7 @@ pub struct Renderer {
     lightmap_view: wgpu::TextureView,
     lightmap_sampler: wgpu::Sampler,
     animations: animate::SpriteAnimator,
+    material_animations: Vec<SpriteAnimation>,
     active_animated_layers: Vec<u64>,
     uploads: upload::Uploads,
     /// Section meshes are staged through their own belt into
@@ -1137,6 +1138,7 @@ pub struct Renderer {
     pack_weather: Option<pack_weather::PackWeather>,
     /// The block sprites as one atlas, while a shader pack is loaded.
     pack_atlas: Option<pack_atlas::PackAtlas>,
+    pack_material_atlases: Option<[pack_atlas::PackAtlas; 2]>,
     /// The pack's terrain program reads flat draws' vertices (`pack_terrain_inputs`).
     pack_terrain_flat: bool,
     /// OptiFine/Iris separate ambient occlusion: pass vertex alpha to hz_Color.a.
@@ -2623,39 +2625,48 @@ impl Renderer {
         };
         let mut mip_levels = 1;
         let gl = adapter.get_info().backend == wgpu::Backend::Gl;
-        // The resource packs' LabPBR maps, for native shader packs: one array each, cut to
-        // the layers the GPU has (`block_normal_map` gives the default past them).
+        // Keep every colour layer's companion, split by the same device limit. Native
+        // material stages read the first array; terrain packs stitch all of them.
         let pbr_maps = prepared
             .pbr
-            .map(|(normals, specular, levels, layers, size)| {
-                let kept = layers.min(device.limits().max_texture_array_layers);
-                let count = array_layers(kept, gl);
-                [("LabPBR normals", normals), ("LabPBR specular", specular)].map(
-                    |(label, mut data)| {
-                        // The extra layers are empty.
-                        let layer_bytes = data.len() / layers as usize;
-                        data.resize(layer_bytes * count as usize, 0);
-                        device.create_texture_with_data(
-                            &queue,
-                            &wgpu::TextureDescriptor {
-                                label: Some(label),
-                                size: wgpu::Extent3d {
-                                    width: size,
-                                    height: size,
-                                    depth_or_array_layers: count,
-                                },
-                                mip_level_count: levels,
-                                sample_count: 1,
-                                dimension: wgpu::TextureDimension::D2,
-                                format: wgpu::TextureFormat::Rgba8Unorm,
-                                usage: wgpu::TextureUsages::TEXTURE_BINDING,
-                                view_formats: &[],
+            .map(|(normals, specular, levels, map_layers, size)| {
+                let layer_bytes = normals.len() / map_layers as usize;
+                (0..map_layers.div_ceil(split))
+                    .map(|array| {
+                        let first = array * split;
+                        let used = (map_layers - first).min(split);
+                        let count = array_layers(used, gl);
+                        [("LabPBR normals", &normals), ("LabPBR specular", &specular)].map(
+                            |(label, data)| {
+                                let start = first as usize * layer_bytes;
+                                let mut data =
+                                    data[start..start + used as usize * layer_bytes].to_vec();
+                                data.resize(layer_bytes * count as usize, 0);
+                                device.create_texture_with_data(
+                                    &queue,
+                                    &wgpu::TextureDescriptor {
+                                        label: Some(label),
+                                        size: wgpu::Extent3d {
+                                            width: size,
+                                            height: size,
+                                            depth_or_array_layers: count,
+                                        },
+                                        mip_level_count: levels,
+                                        sample_count: 1,
+                                        dimension: wgpu::TextureDimension::D2,
+                                        format: wgpu::TextureFormat::Rgba8Unorm,
+                                        usage: wgpu::TextureUsages::TEXTURE_BINDING
+                                            | wgpu::TextureUsages::COPY_SRC
+                                            | wgpu::TextureUsages::COPY_DST,
+                                        view_formats: &[],
+                                    },
+                                    wgpu::util::TextureDataOrder::LayerMajor,
+                                    &data,
+                                )
                             },
-                            wgpu::util::TextureDataOrder::LayerMajor,
-                            &data,
                         )
-                    },
-                )
+                    })
+                    .collect()
             });
         let sprite_textures: Vec<wgpu::Texture> = prepared
             .sprites
@@ -2692,6 +2703,11 @@ impl Renderer {
                     &mips,
                 )
             })
+            .collect();
+        let material_animations = animations
+            .iter()
+            .filter(|a| a.has_materials())
+            .cloned()
             .collect();
         let animations = animate::SpriteAnimator::new(
             &device,
@@ -4131,6 +4147,7 @@ impl Renderer {
             lightmap_view,
             lightmap_sampler,
             animations,
+            material_animations,
             active_animated_layers: vec![0; active_layer_words],
             uploads,
             section_uploads,
@@ -4202,6 +4219,7 @@ impl Renderer {
             cloud_bindings,
             pack_weather: None,
             pack_atlas: None,
+            pack_material_atlases: None,
             pack_terrain_flat: false,
             separate_ao: false,
             hud,
@@ -5663,6 +5681,7 @@ impl Renderer {
     ) -> Option<(Vec<String>, Vec<String>)> {
         if pack.is_none() {
             self.pack_atlas = None;
+            self.pack_material_atlases = None;
         }
         let instance = wgpu::vertex_attr_array![5=>Float32x4];
         let vertex = wgpu::VertexBufferLayout {
@@ -5680,6 +5699,10 @@ impl Renderer {
         let post = pack.map(|post| {
             let world = pack_post::World {
                 atlas: self.pack_atlas.as_ref().map(|a| (a.view.clone(), a.size())),
+                material_maps: self
+                    .pack_material_atlases
+                    .as_ref()
+                    .map(|a| [a[0].view.clone(), a[1].view.clone()]),
                 lightmap: self.lightmap_view.clone(),
                 gui_size: self
                     .hud
@@ -5691,6 +5714,7 @@ impl Renderer {
                     table: self.flat.as_ref().filter(|_| flat).map(|f| &f.draw_layout),
                     depth_write: true,
                     atlas: None,
+                    material_maps: true,
                     ids: None,
                     cull: true,
                 }),
@@ -5765,7 +5789,7 @@ impl Renderer {
             sprite_materials: &sprite_materials,
             entities: &self.entity_bindings,
             weather_groups: [&self.weather.entity_layout, &self.weather.time_layout],
-            pbr: self.pbr_maps.as_ref(),
+            pbr: self.pbr_maps.as_ref().and_then(|arrays| arrays.first()),
         };
         let (pack, labels) = native_pack::NativePack::new(
             &self.device,
@@ -5779,6 +5803,7 @@ impl Renderer {
         if self.native.is_some() {
             self.pack_post = None;
             self.pack_atlas = None;
+            self.pack_material_atlases = None;
         }
         Ok(labels)
     }
@@ -5833,6 +5858,20 @@ impl Renderer {
             if let Some(atlas) = &mut atlas {
                 atlas.separate_ao = self.separate_ao;
             }
+            self.pack_material_atlases = atlas.as_ref().and_then(|_| {
+                let maps = self.pbr_maps.as_ref()?;
+                let make = |kind: usize, encoder: &mut wgpu::CommandEncoder| {
+                    let arrays: Vec<_> = maps.iter().map(|pair| pair[kind].clone()).collect();
+                    pack_atlas::PackAtlas::material(
+                        &self.device,
+                        encoder,
+                        &arrays,
+                        self.sprite_split,
+                        layers,
+                    )
+                };
+                Some([make(0, &mut encoder)?, make(1, &mut encoder)?])
+            });
             self.pack_atlas = atlas;
             self.queue.submit([encoder.finish()]);
         }
@@ -6064,6 +6103,49 @@ impl Renderer {
             active,
             self.own_timing.as_mut(),
         );
+        if let Some(arrays) = &self.pbr_maps {
+            for animation in &self.material_animations {
+                if !self.animations.changed().contains(&animation.layer) {
+                    continue;
+                }
+                let Some(pair) = arrays.get((animation.layer / self.sprite_split) as usize) else {
+                    continue;
+                };
+                for kind in 0..2 {
+                    let Some(pixels) = animation.material_pixels(kind, tick) else {
+                        continue;
+                    };
+                    let texture = &pair[kind];
+                    let from = (pixels.len() / 4).isqrt() as u32;
+                    for level in 0..texture.mip_level_count() {
+                        let size = texture.width() >> level;
+                        let pixels = crate::sprites::resample(pixels, from, size);
+                        self.uploads.texture(
+                            encoder,
+                            wgpu::TexelCopyTextureInfo {
+                                texture,
+                                mip_level: level,
+                                origin: wgpu::Origin3d {
+                                    x: 0,
+                                    y: 0,
+                                    z: animation.layer % self.sprite_split,
+                                },
+                                aspect: wgpu::TextureAspect::All,
+                            },
+                            size,
+                            size,
+                            &pixels,
+                        );
+                    }
+                }
+            }
+            if let Some(atlases) = &self.pack_material_atlases {
+                for kind in 0..2 {
+                    let arrays: Vec<_> = arrays.iter().map(|pair| pair[kind].clone()).collect();
+                    atlases[kind].copy(encoder, &arrays, self.animations.changed().iter().copied());
+                }
+            }
+        }
         if let Some(atlas) = &self.pack_atlas {
             atlas.copy(
                 encoder,
