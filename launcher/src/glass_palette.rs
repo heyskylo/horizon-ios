@@ -85,7 +85,9 @@ impl Launcher {
             }
         }
         // `in_top_bar`: a page the top bar hides stays out of the palette too.
-        for (page, label, _) in Page::in_top_bar().chain([(Page::Settings, "Settings", "")]) {
+        for (page, label, _) in
+            Page::in_top_bar(self.wardrobe_shown()).chain([(Page::Settings, "Settings", "")])
+        {
             all.push(Command {
                 label: trf("Open {page}", &[("page", tr(label))]),
                 hint: tr("Page").to_string(),
@@ -319,29 +321,11 @@ impl Launcher {
 
         // The card is glass over the dimmed launcher (`hzl-glass` over the scrim): its piece of
         // the scene under the same dimming, and the plates' 6 % white.
-        let card = crate::glass::plate(20.)
+        let card = ui::dialog_plate(20.)
             .id("palette")
             .occlude()
             .w(px(560_f32.min(w - 32.)))
             .p(px(8.))
-            .child(
-                div()
-                    .absolute()
-                    .top_0()
-                    .left_0()
-                    .size_full()
-                    .rounded(px(20.))
-                    .bg(ui::color(SCRIM).opacity(0.5)),
-            )
-            .child(
-                div()
-                    .absolute()
-                    .top_0()
-                    .left_0()
-                    .size_full()
-                    .rounded(px(20.))
-                    .bg(white(horizon_theme::glass::TINT)),
-            )
             .child(div().relative().child(field).child(rows))
             .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation());
         Some(
@@ -357,9 +341,7 @@ impl Launcher {
                 .pt(px(h * 0.14))
                 .occlude()
                 .on_scroll(|_, _, cx| cx.stop_propagation())
-                // `backdrop-blur-xl` over the launcher: GPUI can't blur what it drew, so the
-                // scene's blurred copy covers it (as a menu's, `hzl-float`), then the scrim.
-                .child(crate::glass::backdrop(crate::glass::Kind::Float, 0.))
+                .child(ui::scrim_backdrop())
                 .child(
                     div()
                         .absolute()

@@ -298,6 +298,8 @@ impl Game<'_> {
                 names: &self.pack.names,
                 trade: None,
                 maps: None,
+                limited_crafting: self.limited_crafting(),
+                known_recipes: Some(&self.level.recipe_book),
             };
             for i in 0..36 {
                 menu.set_player_item(i, self.inventory[i].clone());
