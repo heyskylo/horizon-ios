@@ -49,8 +49,9 @@ impl SpawnScratch {
             p.position.z.floor() as i32 >> 4,
         )
     }
-    /// Keep the original player/dx/dz insertion order. Proximity is live even
-    /// when a player moves within a chunk or changes spectator state.
+    /// Cache the candidate input of `ChunkMap.collectSpawningChunks`, keeping
+    /// the port's player/dx/dz insertion order. Proximity is live even when a
+    /// player moves within a chunk or changes spectator state.
     fn prepare(&mut self, players: &[LevelPlayer]) {
         if players.len() != self.player_chunks.len()
             || players
