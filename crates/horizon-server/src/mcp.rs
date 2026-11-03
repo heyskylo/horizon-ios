@@ -38,7 +38,7 @@ const TOOLS: &[Tool] = &[
     },
     Tool {
         name: "players",
-        what: "Who is online (address, ping, op level), the operators, the whitelist and the bans",
+        what: "Who is online (address, ping, position, op level), the operators, the whitelist and the bans",
         args: &[],
         destructive: false,
     },
