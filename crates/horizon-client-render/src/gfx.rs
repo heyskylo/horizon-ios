@@ -149,6 +149,7 @@ pub mod pack_draw;
 mod pack_entities;
 mod pack_hand;
 mod pack_images;
+mod pack_lines;
 mod pack_post;
 mod pack_shadow;
 mod pack_sky;
@@ -3315,12 +3316,23 @@ impl Renderer {
             alpha_blend,
             false,
         );
+        // RenderPipelines.ENTITY_SOLID: a surface of an entity that is coplanar with
+        // terrain wins the tie in vanilla (the boat's floor over the trapdoor on the
+        // ground it is stopped by, #5950). Terrain and entities are separate draw
+        // paths here, so their fp32 depths of the same plane differ by a few dozen
+        // ulps and the tie came out either way, as a jagged strip of the trapdoor
+        // through the hull's floor. The same constant as the shadows' covers that
+        // spread; a model's feet sit 0.001 above the ground, far beyond it.
         let entity_pipeline = entity_pipeline(
             "Entities",
             None,
             true,
             wgpu::CompareFunction::GreaterEqual,
-            Default::default(),
+            wgpu::DepthBiasState {
+                constant: 128,
+                slope_scale: 0.0,
+                clamp: 0.0,
+            },
             alpha_blend,
             false,
         );
@@ -5763,11 +5775,13 @@ impl Renderer {
         horizon_shaders::GameInputs {
             terrain,
             terrain_geometry,
+            entity_geometry: Some(pack_entities::geometry_inputs()),
             sky: Some(pack_sky::inputs()),
             celestial: Some(pack_sky::celestial_inputs()),
             entities: Some(pack_entities::inputs()),
             clouds: Some(pack_entities::cloud_inputs()),
             weather: Some(pack_weather::inputs()),
+            lines: Some(pack_lines::inputs()),
             hand: Some(pack_hand::inputs()),
         }
     }
@@ -7777,6 +7791,12 @@ impl Renderer {
                 .as_ref()
                 .and_then(|p| p.1.as_ref())
                 .is_some_and(|p| p.has_clouds());
+        let pack_draws_outline = pack_post
+            && self
+                .pack_post
+                .as_ref()
+                .and_then(|p| p.1.as_ref())
+                .is_some_and(|p| p.has_lines());
         let pack_draws_hand = pack_post
             && self
                 .pack_post
@@ -8612,7 +8632,7 @@ impl Renderer {
                 }
                 pass.set_bind_group(0, &self.group, &[]);
             }
-            if outline_edges > 0 && !frame.outline_after_terrain {
+            if outline_edges > 0 && !frame.outline_after_terrain && !pack_draws_outline {
                 self.draw_outline(&mut pass, outline_edges as u32, frame.outline_high_contrast);
             }
             if debug_depth > 0 {
@@ -8916,7 +8936,7 @@ impl Renderer {
             }
             // LevelRenderer.executeClassicTransparency: translucent targets'
             // outlines follow terrain, so its blending cannot wash them out.
-            if outline_edges > 0 && frame.outline_after_terrain {
+            if outline_edges > 0 && frame.outline_after_terrain && !pack_draws_outline {
                 self.draw_outline(&mut pass, outline_edges as u32, frame.outline_high_contrast);
             }
             if translucent_crumbling_quads > 0 && !oit_on {
@@ -9074,6 +9094,11 @@ impl Renderer {
                         }
                     }
                 };
+            // Both strokes of a high contrast outline, the black one first.
+            post.set_lines(pack_draws_outline.then(|| pack_post::Lines {
+                edges: self.outline.clone(),
+                count: outline_edges as u32 * if frame.outline_high_contrast { 2 } else { 1 },
+            }));
             post.set_clouds(pack_draws_clouds.then(|| pack_post::Clouds {
                 vertices: self.cloud_buffer.clone(),
                 group: self.cloud_group.clone(),
@@ -9270,12 +9295,23 @@ impl Renderer {
             && (surface_frame.is_none() || self.config.present_mode != wgpu::PresentMode::Fifo)
         {
             let offscreen = surface_frame.is_none();
-            // Culling reads its results back as soon as the frame is submitted, as here.
-            let after = self
-                .cull
-                .as_mut()
-                .and_then(|c| c.submitted())
-                .map(|f| Box::new(f) as submit::AfterSubmit);
+            // Culling and a shader pack's centre depth read back as soon as the frame is
+            // submitted, as here.
+            let cull = self.cull.as_mut().and_then(|c| c.submitted());
+            let center = match &mut self.pack_post {
+                Some((_, Some(post))) => post.submitted(),
+                _ => None,
+            };
+            let after = (cull.is_some() || center.is_some()).then(|| {
+                Box::new(move || {
+                    if let Some(read) = cull {
+                        read();
+                    }
+                    if let Some(read) = center {
+                        read();
+                    }
+                }) as submit::AfterSubmit
+            });
             let job = submit::Job {
                 encoder,
                 surface: surface_frame,
@@ -9318,8 +9354,10 @@ impl Renderer {
         if let Some(timer) = &mut self.own_timing {
             timer.submitted(&self.queue);
         }
-        if let Some((_, Some(post))) = &mut self.pack_post {
-            post.submitted();
+        if let Some((_, Some(post))) = &mut self.pack_post
+            && let Some(read) = post.submitted()
+        {
+            read();
         }
         let failed = checks.and_then(GpuChecks::pop);
         if let Some((request, buffer)) = readback {
