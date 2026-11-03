@@ -1075,5 +1075,16 @@
   "Launcher settings are back to their defaults": "लॉन्चर की सेटिंग्स डिफ़ॉल्ट पर लौट आईं",
   "Opened {path}": "खोला गया: {path}",
   "Saved {name}": "{name} सहेजा गया",
-  "My Horizon": "मेरा Horizon"
+  "My Horizon": "मेरा Horizon",
+  "Game log": "गेम लॉग",
+  "1 line": "1 पंक्ति",
+  "{count} lines": "{count} पंक्तियाँ",
+  "{count} min": "{count} मिनट",
+  "1 hour": "1 घंटा",
+  "{count} hours": "{count} घंटे",
+  "just now": "अभी",
+  "{count} min ago": "{count} मिनट पहले",
+  "1 hour ago": "1 घंटा पहले",
+  "{count} hours ago": "{count} घंटे पहले",
+  "{count} on the official SMP": "आधिकारिक SMP पर {count}"
 }

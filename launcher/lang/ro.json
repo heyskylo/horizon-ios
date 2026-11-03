@@ -1075,5 +1075,16 @@
   "Shader pack": "Pachet de shadere",
   "soon": "în curând",
   "{support} in Horizon": "{support} în Horizon",
-  "My Horizon": "Horizon-ul meu"
+  "My Horizon": "Horizon-ul meu",
+  "Game log": "Jurnalul jocului",
+  "1 line": "1 linie",
+  "{count} lines": "{count} linii",
+  "{count} min": "{count} min",
+  "1 hour": "1 oră",
+  "{count} hours": "{count} ore",
+  "just now": "chiar acum",
+  "{count} min ago": "acum {count} min",
+  "1 hour ago": "acum o oră",
+  "{count} hours ago": "acum {count} ore",
+  "{count} on the official SMP": "{count} pe SMP-ul oficial"
 }

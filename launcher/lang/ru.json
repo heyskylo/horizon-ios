@@ -1075,5 +1075,16 @@
   "Launcher settings are back to their defaults": "Настройки лаунчера сброшены по умолчанию",
   "Opened {path}": "Открыто: {path}",
   "Saved {name}": "{name} сохранена",
-  "My Horizon": "Мой Horizon"
+  "My Horizon": "Мой Horizon",
+  "Game log": "Журнал игры",
+  "1 line": "1 строка",
+  "{count} lines": "{count} строк",
+  "{count} min": "{count} мин",
+  "1 hour": "1 час",
+  "{count} hours": "{count} ч",
+  "just now": "только что",
+  "{count} min ago": "{count} мин назад",
+  "1 hour ago": "час назад",
+  "{count} hours ago": "{count} ч назад",
+  "{count} on the official SMP": "{count} на официальном SMP"
 }

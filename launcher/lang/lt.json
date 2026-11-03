@@ -1075,5 +1075,16 @@
   "Shader pack": "Šešėliavimo paketas",
   "soon": "netrukus",
   "{support} in Horizon": "{support} Horizon",
-  "My Horizon": "Mano Horizon"
+  "My Horizon": "Mano Horizon",
+  "Game log": "Žaidimo žurnalas",
+  "1 line": "1 eilutė",
+  "{count} lines": "{count} eilučių",
+  "{count} min": "{count} min.",
+  "1 hour": "1 valanda",
+  "{count} hours": "{count} val.",
+  "just now": "ką tik",
+  "{count} min ago": "prieš {count} min.",
+  "1 hour ago": "prieš 1 valandą",
+  "{count} hours ago": "prieš {count} val.",
+  "{count} on the official SMP": "{count} oficialiame SMP"
 }

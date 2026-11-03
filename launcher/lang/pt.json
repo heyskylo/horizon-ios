@@ -1075,5 +1075,16 @@
   "Launcher settings are back to their defaults": "As definições do launcher voltaram às predefinições",
   "Opened {path}": "Aberto: {path}",
   "Saved {name}": "{name} guardada",
-  "My Horizon": "O meu Horizon"
+  "My Horizon": "O meu Horizon",
+  "Game log": "Registo do jogo",
+  "1 line": "1 linha",
+  "{count} lines": "{count} linhas",
+  "{count} min": "{count} min",
+  "1 hour": "1 hora",
+  "{count} hours": "{count} horas",
+  "just now": "agora mesmo",
+  "{count} min ago": "há {count} min",
+  "1 hour ago": "há 1 hora",
+  "{count} hours ago": "há {count} horas",
+  "{count} on the official SMP": "{count} no SMP oficial"
 }

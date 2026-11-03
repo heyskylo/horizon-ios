@@ -1075,5 +1075,16 @@
   "Launcher settings are back to their defaults": "启动器设置已恢复默认",
   "Opened {path}": "已打开 {path}",
   "Saved {name}": "已保存 {name}",
-  "My Horizon": "我的 Horizon"
+  "My Horizon": "我的 Horizon",
+  "Game log": "游戏日志",
+  "1 line": "1 行",
+  "{count} lines": "{count} 行",
+  "{count} min": "{count} 分钟",
+  "1 hour": "1 小时",
+  "{count} hours": "{count} 小时",
+  "just now": "刚刚",
+  "{count} min ago": "{count} 分钟前",
+  "1 hour ago": "1 小时前",
+  "{count} hours ago": "{count} 小时前",
+  "{count} on the official SMP": "官方 SMP 上 {count} 人"
 }

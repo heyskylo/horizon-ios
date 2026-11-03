@@ -1075,5 +1075,16 @@
   "Launcher settings are back to their defaults": "런처 설정이 기본값으로 돌아갔습니다",
   "Opened {path}": "열었음: {path}",
   "Saved {name}": "{name}을(를) 저장했습니다",
-  "My Horizon": "내 Horizon"
+  "My Horizon": "내 Horizon",
+  "Game log": "게임 로그",
+  "1 line": "1줄",
+  "{count} lines": "{count}줄",
+  "{count} min": "{count}분",
+  "1 hour": "1시간",
+  "{count} hours": "{count}시간",
+  "just now": "방금",
+  "{count} min ago": "{count}분 전",
+  "1 hour ago": "1시간 전",
+  "{count} hours ago": "{count}시간 전",
+  "{count} on the official SMP": "공식 SMP에 {count}명"
 }

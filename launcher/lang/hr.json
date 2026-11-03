@@ -1075,5 +1075,16 @@
   "Launcher settings are back to their defaults": "Postavke pokretača vraćene su na zadane",
   "Opened {path}": "Otvoreno: {path}",
   "Saved {name}": "{name} je spremljen",
-  "My Horizon": "Moj Horizon"
+  "My Horizon": "Moj Horizon",
+  "Game log": "Zapisnik igre",
+  "1 line": "1 redak",
+  "{count} lines": "{count} redaka",
+  "{count} min": "{count} min",
+  "1 hour": "1 sat",
+  "{count} hours": "{count} sati",
+  "just now": "upravo sada",
+  "{count} min ago": "prije {count} min",
+  "1 hour ago": "prije 1 sat",
+  "{count} hours ago": "prije {count} sati",
+  "{count} on the official SMP": "{count} na službenom SMP-u"
 }
