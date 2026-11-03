@@ -182,7 +182,8 @@ const ENTITIES_TRANSLUCENT: [&str; 5] = [
     "gbuffers_basic",
 ];
 
-/// `gbuffers_beaconbeam` and its fallbacks, as Iris has them: beacon and End gateway beams.
+/// `gbuffers_beaconbeam` and its fallbacks (the shaders.properties reference): beacon and End
+/// gateway beams.
 const BEACON_BEAM: [&str; 3] = ["gbuffers_beaconbeam", "gbuffers_textured", "gbuffers_basic"];
 
 /// `gbuffers_particles` and its fallbacks (2.3).

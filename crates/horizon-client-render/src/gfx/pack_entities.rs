@@ -618,7 +618,7 @@ fn extend_without_portals(rest: &mut Vec<Vertex>, run: &[Vertex]) {
     }
 }
 
-/// End portal faces for a pack's `gbuffers_block`, as Iris draws them: each face textured with
+/// End portal faces for a pack's `gbuffers_block` (block entities): each face textured with
 /// the whole of `end_portal.png` (`portal`: its atlas rect, u0, v0, width, height), white, at
 /// full light; the pack tells the portal by its `blockEntityId`.
 fn as_portal_texture(run: &mut [Vertex], portal: [f32; 4]) {
