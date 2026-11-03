@@ -28,16 +28,16 @@ jobs:
   # and every merge to main starting this workflow, three jobs a run left the pool's queue tens of minutes deep.
   #
   # Where (docs/ci-runners.md): our checks runners (label horizon-checks: the desktop's, an isolated user, so a fork's
-  # pull request runs there too) take main's pushes and the pull requests whose number ends in 0, 1 or 2; GitHub's
-  # runners take the others, so both pools work at once. The repository variable SELF_HOSTED_CI moves them: `all`
-  # every job to ours, `light` (the desktop paused) or `off` every job to GitHub's. On ours the build folder persists
+  # pull request runs there too) take the pull requests whose number ends in 0 or 1, about what their three runners
+  # can do; GitHub's runners take the others and main's pushes (which also save the Rust cache GitHub's pull request
+  # runs read), so both pools work at once. The repository variable SELF_HOSTED_CI moves them: `all` every job to
+  # ours, `light` (the desktop paused) or `off` every job to GitHub's. On ours the build folder persists
   # (CARGO_TARGET_DIR, outside the checkout), so the apt packages, Python and the Rust cache steps are GitHub's only.
   verify:
     runs-on: >-
       ${{ vars.SELF_HOSTED_CI != 'off' && vars.SELF_HOSTED_CI != 'light' && (vars.SELF_HOSTED_CI == 'all' ||
-      github.event_name != 'pull_request' || endsWith(format('{0}', github.event.pull_request.number), '0') ||
-      endsWith(format('{0}', github.event.pull_request.number), '1') ||
-      endsWith(format('{0}', github.event.pull_request.number), '2')) &&
+      github.event_name == 'pull_request' && (endsWith(format('{0}', github.event.pull_request.number), '0') ||
+      endsWith(format('{0}', github.event.pull_request.number), '1'))) &&
       fromJSON('["self-hosted", "linux", "horizon-checks"]') || 'ubuntu-latest' }}
     timeout-minutes: 45
     steps:
@@ -118,9 +118,8 @@ jobs:
   launcher:
     runs-on: >-
       ${{ vars.SELF_HOSTED_CI != 'off' && vars.SELF_HOSTED_CI != 'light' && (vars.SELF_HOSTED_CI == 'all' ||
-      github.event_name != 'pull_request' || endsWith(format('{0}', github.event.pull_request.number), '0') ||
-      endsWith(format('{0}', github.event.pull_request.number), '1') ||
-      endsWith(format('{0}', github.event.pull_request.number), '2')) &&
+      github.event_name == 'pull_request' && (endsWith(format('{0}', github.event.pull_request.number), '0') ||
+      endsWith(format('{0}', github.event.pull_request.number), '1'))) &&
       fromJSON('["self-hosted", "linux", "horizon-checks"]') || 'ubuntu-latest' }}
     timeout-minutes: 45
     steps:

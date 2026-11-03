@@ -7,7 +7,7 @@ we have to the max") every job that can runs on our own machines, and GitHub's p
 
 | Runner | Machine | Labels | Takes |
 | --- | --- | --- | --- |
-| `ludodesktop-checks-1`…`-3` | ludodesktop (the maintainer's desktop, 24 threads), isolated user `gha` | `horizon-checks` | `checks`' `verify` and `launcher` (main's pushes, and the pull requests whose number ends in 0, 1 or 2, forks included), `mod-registry`, `telemetry-server`, `pack load bench` |
+| `ludodesktop-checks-1`…`-3` | ludodesktop (the maintainer's desktop, 24 threads), isolated user `gha` | `horizon-checks` | `checks`' `verify` and `launcher` for the pull requests whose number ends in 0 or 1, forks included, `mod-registry`, `telemetry-server`, `pack load bench` |
 | `playhorizon-light-1`…`-12` | playhorizon (partner's server, 8 vCPU) | `horizon-light`, `playhorizon-light` | The bots that run main's own scripts: `pr labels`, `overlap note`, `cancel-on-close`, `claim command`, `triage command`, `mojang republish`, `nightly build`'s `answer`, and `checks`' `parity-scope` |
 | `playhorizon-ci-1`, `playhorizon-ci-2` | playhorizon | `playhorizon-ci` | Nothing routed since 2026-11-03 (they took `checks` of this repository's own pull requests with the old `SELF_HOSTED_CI=all`) |
 | `playhorizon-horizon`, `ludodesktop-horizon`, `ludodesktop-parity-2` | playhorizon, ludodesktop | `horizon-game` | Parity ([release-flow.md](release-flow.md#the-parity-job)) |
@@ -27,9 +27,11 @@ The desktop's runners are declared in the maintainer's NixOS configuration (his 
 - **Release builds**: Linux on `ubuntu-22.04` (players' binaries must link against its older glibc; our Linux
   machines have newer ones), Windows on `windows-latest` (no Windows machine). macOS builds already run on the Mac
   mini.
-- **Seven of ten pull requests' `verify` and `launcher`** (number ending in 3–9): three runners can't take
-  ~90 `checks` runs an hour alone (each brings `verify`, 10–18 minutes of work on GitHub, and `launcher`, 1–11),
-  so both pools work at once. `SELF_HOSTED_CI=all` sends them all to ours.
+- **Main's pushes and eight of ten pull requests' `verify` and `launcher`** (number ending in 2–9): `checks` runs
+  ~100 times an hour (2026-11-03: 21 pushes to main and 76 pull request runs an hour), each with `verify` (10–18
+  minutes of work on GitHub, 11–13 on a desktop runner with a cold build folder) and `launcher` (1–11). Three
+  runners give ~180 runner-minutes an hour: about the fifth of the pull requests they take. Main's pushes also save
+  the Rust cache GitHub's runs of pull requests read. `SELF_HOSTED_CI=all` sends them all to ours.
 
 ## Which jobs, and when
 
@@ -38,7 +40,7 @@ for):
 
 | `SELF_HOSTED_CI` | Bots (`horizon-light`) | `checks`, `mod-registry`, `telemetry-server`, `pack load bench` (`horizon-checks`) |
 | --- | --- | --- |
-| unset (default) | ours | ours for main's pushes and the pull requests ending in 0–2; GitHub's for the others (`verify`, `launcher`); ours for the rest |
+| unset (default) | ours | `verify`, `launcher`: ours for the pull requests ending in 0 or 1, GitHub's for the others and main's pushes; the rest ours |
 | `all` | ours | ours, every pull request |
 | `light` | ours | GitHub's: the desktop is paused |
 | `off` | GitHub's | GitHub's: everything back, in one switch |

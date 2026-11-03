@@ -107,8 +107,8 @@ class OwnRunnerTests(unittest.TestCase):
         ci = (WORKFLOWS / "ci.yml").read_text()
         verify = dict(jobs(ci))["verify"]
         value = runs_on(verify)
-        # Main's pushes on ours; a pull request by the last digit of its number unless SELF_HOSTED_CI=all.
-        self.assertIn("github.event_name != 'pull_request'", value)
+        # A pull request by the last digit of its number unless SELF_HOSTED_CI=all; main's pushes keep GitHub's cache.
+        self.assertIn("github.event_name == 'pull_request' && (", value)
         self.assertIn("vars.SELF_HOSTED_CI == 'all'", value)
         self.assertIn("endsWith(format('{0}', github.event.pull_request.number), '0')", value)
         self.assertNotIn(FORK_GUARD, value)
