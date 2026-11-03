@@ -2409,16 +2409,6 @@ impl Game<'_> {
             }
             S::SetBeacon(p) => self.lan_station_beacon(host, conn, p.primary, p.secondary),
             S::SelectTrade(p) => self.lan_select_trade(host, conn, p.item),
-            S::ContainerClose(p) if self.lan_merchant_closed(host, conn, Some(p.container)) => {
-                self.guest_carried_back(host, gi);
-            }
-            S::ContainerClose(p)
-                if self.lan_crafting_closed(host, conn, Some(p.container))
-                    || self.lan_station_closed(host, conn, Some(p.container))
-                    || self.lan_mount_closed(host, conn, Some(p.container)) =>
-            {
-                self.guest_carried_back(host, gi);
-            }
             S::SelectBundleItem(p) => {
                 // ServerGamePacketListenerImpl.handleBundleItemSelectedPacket: the slot
                 // is the open menu's (#4436).
@@ -2456,30 +2446,14 @@ impl Game<'_> {
                 }
                 self.drop_guest_items(host, gi, drops);
             }
-            S::ContainerClose(p) => {
-                // A vehicle's menu closed: its slots go back to the vehicle
-                // (`ContainerEntity`), and a chest boat's `stopOpen` fires
-                // CONTAINER_CLOSE with the player as the source.
-                let vehicle = host.hub.guests[gi]
-                    .menu
-                    .as_ref()
-                    .filter(|m| m.window == p.container)
-                    .and_then(|m| match m.slots {
-                        Slots::Block(key) if key.1 == super::minecarts::CART_KEY_Y => Some(key),
-                        _ => None,
-                    });
-                if host.hub.guests[gi]
-                    .menu
-                    .as_ref()
-                    .is_some_and(|m| m.window == p.container)
-                {
-                    self.guest_container_closed(host, conn);
+            S::ContainerClose(_) => {
+                // Java handleContainerClose calls doCloseContainer on the
+                // CURRENT menu, without testing the supplied window ID.
+                // InventoryMenu.removed also returns its crafting grid.
+                if self.guest_menu_window(host, conn) == 0 {
+                    self.lan_crafting_closed(host, conn, Some(0));
                 }
-                if let Some(key) = vehicle {
-                    self.close_guest_vehicle_menu(host, conn, key);
-                }
-                host.hub.container_closed(conn, p.container);
-                self.guest_carried_back(host, gi);
+                self.guest_close_all(host, conn);
             }
             S::ChatCommand(c) => self.guest_chat_command(host, conn, &c.command),
             S::CustomPayload(p) if p.channel == horizon_protocol::quiet::CHANNEL => {

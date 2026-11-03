@@ -3338,7 +3338,10 @@ def check_recipes(host, guest, out):
             else:
                 x, y, z = (int(v // 1) for v in pos_of(game))
                 game('command', command=f'setblock {x} {y} {z - 2} minecraft:furnace')
-                game.wait(5)
+                # Command acknowledgement can precede the client's block
+                # update. Wait for the observable block, not a frame count.
+                game.until(lambda: game.raw('block', x, y, z - 2),
+                           lambda b: b.get('block') == 'minecraft:furnace')
                 game.raw('interact', x, y, z - 2)
             game.wait(5)
             targets = game('screen')['recipe_book']['targets']

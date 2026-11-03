@@ -45,12 +45,29 @@ This is a window-ID check, not a new rejection rule for stale menu state IDs.
 
 Validation: the stale-window real-packet regression passes (640 items remain),
 the ownership helper/gate matrix passes, and the iOS Clippy check passes. Live
-containers, crafting, machines, stonecutter and lectern checks pass. Recipe
-placement also passes in an isolated run, but its later furnace/recipe-popup
-transition fails before sending an interaction: the control ray reports no
-visible face. That remains an investigation, not a full recipe-suite pass.
-The recipe fixture now isolates player positions and known recipes so earlier
-checks do not change which recipe tile is selected.
+containers, crafting, machines, stonecutter and lectern checks pass. The full
+recipe-popup test also passes after waiting for the client to observe
+its furnace block update. The diagnostic confirmed the client still saw air after
+the command acknowledgement; a fixed frame wait was not a valid readiness check.
+The fixture isolates positions and known recipes and now waits for actual block
+state before interacting.
+
+## Closing the current menu (verified and repaired)
+
+Java 26.3 ServerGamePacketListenerImpl.handleContainerClose calls the current
+menu's doCloseContainer without comparing the supplied ID. Horizon instead
+matched the ID and could leave the old menu active. A real bot closed with ID 9
+while chest ID 1 was open, then sent another click for ID 1: the baseline lost
+64 inventory items (640 to 576). The patched server keeps 640 because the chest
+is already closed. The cursor variant proves 64 move onto the cursor (576 remain
+in inventory) and return exactly once on close (640), with the stale click ignored.
+
+Closing now uses the common current-menu cleanup, preserving shared vehicle
+viewers and returning cursor/station inputs; when the current menu is inventory
+zero, its crafting grid is returned too. Reference is the pinned Java bytecode,
+not a rule invented to reject every mismatched packet. `--case close` and
+`--case cursor-close` extend the real-packet server regression. The test confirms
+chest creation in a loaded chunk before launching its timed bot.
 
 ## Java fidelity requirement
 
@@ -62,10 +79,6 @@ whole-game parity.
 
 ## Remaining investigation
 
-- Furnace visibility in the recipe-popup transition: inspect the client block
-  and outline before attributing the control-ray failure to geometry or timing.
-- Container-close handling: Java calls doCloseContainer on its current menu without
-  comparing the packet ID; trace Horizon cursor/grid cleanup before changing this.
 - Cursor and crafting-grid conservation during disconnect, death, menu replacement
   and vehicle destruction; include full inventories and overflow drops.
 - Save/reload consistency across player inventories and world-owned containers.
