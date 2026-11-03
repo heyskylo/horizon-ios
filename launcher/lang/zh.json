@@ -1025,5 +1025,13 @@
   "Use": "使用",
   "installed": "已安装",
   "played by {names}": "{names} 在使用",
-  "{day}, {time} UTC": "{day} {time} UTC"
+  "{day}, {time} UTC": "{day} {time} UTC",
+  "Microsoft account · online servers too": "Microsoft 账户 · 也可进在线服务器",
+  "Offline · single player and LAN worlds": "离线 · 单人游戏和局域网世界",
+  "Offline names": "离线名称",
+  "Add a name": "添加名称",
+  "3 to 16 letters, numbers or underscores. Switch names from the top bar too. Online servers don't take offline names.": "3 到 16 个字母、数字或下划线。也可以在顶栏切换名称。在线服务器不接受离线名称。",
+  "Play online with your Microsoft account": "用 Microsoft 账户在线游玩",
+  "Sign in with the account that owns Minecraft: Java Edition. Your name and skin come along to online servers, like in other launchers.": "使用拥有 Minecraft: Java Edition 的账户登录。和其他启动器一样，你的名称和皮肤会随你进入在线服务器。",
+  "Microsoft's own page opens in your browser. Horizon never sees your password.": "Microsoft 自己的页面会在浏览器中打开。Horizon 永远看不到你的密码。"
 }

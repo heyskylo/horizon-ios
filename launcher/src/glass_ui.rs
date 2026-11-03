@@ -14,6 +14,58 @@ thread_local! {
     static ON: Cell<bool> = const { Cell::new(false) };
     /// The look's colours for the player's accent.
     static LOOK: Cell<Glass> = Cell::new(Glass::default_look());
+    /// Whether the rows being built go in a Settings card ([`flat_rows`]).
+    static FLAT: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Builds `f`'s rows as the mockup's `SettingRow`s, for a Settings card: `index_row` and
+/// `section_title` ask [`flat`].
+pub fn flat_rows<R>(f: impl FnOnce() -> R) -> R {
+    let was = FLAT.replace(true);
+    let built = f();
+    FLAT.set(was);
+    built
+}
+
+/// Whether rows are being built for a Settings card.
+pub fn flat() -> bool {
+    FLAT.get()
+}
+
+/// A Settings row (`SettingRow`): the name in 15 px semibold, its note in 13 px on 1.5 at 60 %,
+/// the control on the right, 40 px away; 16 px around, no fill.
+pub fn setting_row(
+    title: impl IntoElement,
+    note: Option<gpui::AnyElement>,
+    control: Option<gpui::AnyElement>,
+) -> Div {
+    div()
+        .flex()
+        .items_center()
+        .gap(px(40.))
+        .px(px(16.))
+        .py(px(16.))
+        .rounded(px(radius::LARGE))
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .flex_1()
+                .min_w_0()
+                .gap(px(4.))
+                .child(
+                    text(15., FontWeight::SEMIBOLD, ink::FULL)
+                        .line_height(px(21.))
+                        .child(title),
+                )
+                .children(note.map(|n| {
+                    text(13., FontWeight::NORMAL, 0.6)
+                        .line_height(px(19.5))
+                        .max_w(px(560.))
+                        .child(n)
+                })),
+        )
+        .children(control.map(|c| div().flex().flex_none().items_center().gap(px(8.)).child(c)))
 }
 
 /// Whether the pages being built draw the glass look: helpers with no theme at hand ask.

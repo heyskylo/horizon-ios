@@ -1025,5 +1025,13 @@
   "Use": "Użyj",
   "installed": "zainstalowana",
   "played by {names}": "grają w nią: {names}",
-  "{day}, {time} UTC": "{day}, {time} UTC"
+  "{day}, {time} UTC": "{day}, {time} UTC",
+  "Microsoft account · online servers too": "Konto Microsoft · także serwery online",
+  "Offline · single player and LAN worlds": "Offline · gra jednoosobowa i światy LAN",
+  "Offline names": "Nazwy offline",
+  "Add a name": "Dodaj nazwę",
+  "3 to 16 letters, numbers or underscores. Switch names from the top bar too. Online servers don't take offline names.": "Od 3 do 16 liter, cyfr lub podkreśleń. Nazwę zmienisz też na górnym pasku. Serwery online nie przyjmują nazw offline.",
+  "Play online with your Microsoft account": "Graj online na koncie Microsoft",
+  "Sign in with the account that owns Minecraft: Java Edition. Your name and skin come along to online servers, like in other launchers.": "Zaloguj się kontem, które ma Minecraft: Java Edition. Twoja nazwa i skin trafią z tobą na serwery online, jak w innych launcherach.",
+  "Microsoft's own page opens in your browser. Horizon never sees your password.": "Strona Microsoftu otwiera się w przeglądarce. Horizon nigdy nie widzi twojego hasła."
 }

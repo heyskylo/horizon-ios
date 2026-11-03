@@ -1025,5 +1025,13 @@
   "Use": "사용",
   "installed": "설치됨",
   "played by {names}": "{names}에서 사용",
-  "{day}, {time} UTC": "{day} {time} UTC"
+  "{day}, {time} UTC": "{day} {time} UTC",
+  "Microsoft account · online servers too": "Microsoft 계정 · 온라인 서버도",
+  "Offline · single player and LAN worlds": "오프라인 · 싱글플레이와 LAN 월드",
+  "Offline names": "오프라인 이름",
+  "Add a name": "이름 추가",
+  "3 to 16 letters, numbers or underscores. Switch names from the top bar too. Online servers don't take offline names.": "영문자, 숫자, 밑줄 3~16자. 위쪽 막대에서도 이름을 바꿀 수 있습니다. 온라인 서버는 오프라인 이름을 받지 않습니다.",
+  "Play online with your Microsoft account": "Microsoft 계정으로 온라인 플레이",
+  "Sign in with the account that owns Minecraft: Java Edition. Your name and skin come along to online servers, like in other launchers.": "Minecraft: Java Edition을 소유한 계정으로 로그인하세요. 다른 런처처럼 이름과 스킨이 온라인 서버에서도 함께합니다.",
+  "Microsoft's own page opens in your browser. Horizon never sees your password.": "Microsoft의 자체 페이지가 브라우저에서 열립니다. Horizon은 비밀번호를 절대 보지 않습니다."
 }
