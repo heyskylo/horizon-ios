@@ -808,6 +808,10 @@ struct Snapshot {
     samples: FxHashMap<TileKey, Arc<Vec<Column>>>,
     saved: Saved,
     reduced: Reduced,
+    /// The plan's tiles, to tell terrain not drawn yet from terrain out of
+    /// range (`Snapshot::planned_leaf`).
+    nodes: FxHashSet<TileKey>,
+    split: FxHashSet<TileKey>,
 }
 /// One column of a mesh input, by reference into the snapshot. Mesh jobs used
 /// to clone all 256 columns of a tile (each with its own span allocation);
@@ -838,6 +842,8 @@ struct EdgeSource {
     start: i32,
     end: i32,
     column: ColumnSource,
+    /// Planned but not drawn yet (`mesh::EdgeColumn::unknown`).
+    unknown: bool,
 }
 struct MeshInput {
     /// The tile's samples, with `overrides` replacing some of them.
@@ -870,6 +876,7 @@ impl MeshInput {
                     start: edge.start,
                     end: edge.end,
                     column: edge.column.get(),
+                    unknown: edge.unknown,
                 })
                 .collect()
         })
@@ -2208,7 +2215,7 @@ impl Lod {
     /// Rebuilds the quadtree and the selection it implies. Only runs when the
     /// planned area changes (a chunk boundary), never per finished sample.
     fn replan(&mut self, camera: [i32; 2], detail: i32, distance: u32, elevation: i32) {
-        self.plan = Plan::with_previous(
+        let plan = Plan::with_previous(
             camera,
             detail,
             distance,
@@ -2216,6 +2223,17 @@ impl Lod {
             elevation,
             self.reduced_detail,
         );
+        // A tile that leaves the range before it was drawn stops being
+        // unknown to its neighbours (`Snapshot::planned_leaf`): they remesh
+        // with walls against it, as against any terrain out of range.
+        let gone: Vec<_> = self
+            .plan
+            .nodes
+            .iter()
+            .filter(|key| !plan.nodes.contains(key) && !self.ready.contains_key(key))
+            .copied()
+            .collect();
+        self.plan = plan;
         self.ready.retain(|key, _| self.plan.nodes.contains(key));
         // Queued tiles the view left are not sampled (a running one is
         // dropped when it finishes, `finish_sample`).
@@ -2238,6 +2256,9 @@ impl Lod {
         self.rebuild_selection();
         for key in standins {
             self.refresh_path(key);
+        }
+        for key in gone {
+            self.mark_side_neighbors_of(key);
         }
     }
     /// Recomputes every active tile after a plan change, then marks only the
@@ -2544,6 +2565,8 @@ impl Lod {
                 .collect(),
             saved: self.saved.clone(),
             reduced: self.reduced.clone(),
+            nodes: self.plan.nodes.clone(),
+            split: self.plan.split.clone(),
         });
         let covered = Arc::new(self.covered.clone());
         let mut queued = self.shared.mesh_jobs.lock().unwrap();
@@ -2691,6 +2714,8 @@ impl Lod {
                 .collect(),
             saved: self.saved.clone(),
             reduced: self.reduced.clone(),
+            nodes: self.plan.nodes.clone(),
+            split: self.plan.split.clone(),
         }
     }
     #[cfg(test)]
@@ -2762,6 +2787,23 @@ impl Snapshot {
         }
         None
     }
+    /// Whether block column (wx, wz) lies in a planned tile that is not
+    /// split, whatever drew it (nothing, here): the finest planned tile
+    /// there. Past a split tile's out-of-range children, or past the plan,
+    /// there is no terrain to wait for.
+    fn planned_leaf(&self, wx: i32, wz: i32) -> bool {
+        (0..=MAX_LEVEL)
+            .map(|level| {
+                let size = 16 << level;
+                TileKey {
+                    x: wx.div_euclid(size),
+                    z: wz.div_euclid(size),
+                    level,
+                }
+            })
+            .find(|key| self.nodes.contains(key))
+            .is_some_and(|key| !self.split.contains(&key))
+    }
     fn mesh_input(&self, key: TileKey, finer: Vec<TileKey>) -> MeshInput {
         let stride = key.size() / CELLS as i32;
         let [ox, _, oz] = key.origin();
@@ -2785,9 +2827,12 @@ impl Snapshot {
                     2 => (ox + offset, oz - 1),
                     _ => (ox + offset, oz + key.size()),
                 };
-                let (column, neighbor_stride) = self
-                    .neighbor_source(wx, wz)
-                    .unwrap_or((ColumnSource::Empty, stride));
+                // Nothing drawn across the edge: still to come when planned,
+                // so no wall is drawn against it; empty past the plan.
+                let (column, neighbor_stride, unknown) = match self.neighbor_source(wx, wz) {
+                    Some((column, stride)) => (column, stride, false),
+                    None => (ColumnSource::Empty, stride, self.planned_leaf(wx, wz)),
+                };
                 let coordinate = if direction < 2 { wz } else { wx };
                 let width = (neighbor_stride - coordinate.rem_euclid(neighbor_stride))
                     .min(key.size() - offset);
@@ -2795,6 +2840,7 @@ impl Snapshot {
                     start: offset,
                     end: offset + width,
                     column,
+                    unknown,
                 });
                 offset += width;
             }
@@ -4021,6 +4067,87 @@ mod tests {
         lod.active.remove(&key);
         lod.accept_mesh(key, next + 1, SectionMesh::default(), false, &mut meshes);
         assert_eq!(meshes.len(), 2, "a tile that left the view is dropped");
+    }
+
+    /// A neighbour inside the plan that is not drawn yet is unknown, not
+    /// empty, and its arrival remeshes the tile that faced it. One past the
+    /// planned range is still empty.
+    #[test]
+    fn a_planned_neighbor_that_is_not_ready_is_unknown_not_empty() {
+        let mut lod = Lod::scheduler_for_test();
+        let a = TileKey {
+            x: 0,
+            z: 0,
+            level: 0,
+        };
+        let b = TileKey {
+            x: 1,
+            z: 0,
+            level: 0,
+        };
+        lod.plan = Plan::default();
+        lod.plan.roots = vec![a, b];
+        lod.plan.nodes.extend([a, b]);
+        lod.finish_sample(a, vec![Column::default(); CELLS * CELLS]);
+        assert!(lod.active.contains(&a));
+        let sides = |lod: &Lod| {
+            let input = lod.snapshot().mesh_input(a, Vec::new());
+            [0, 1].map(|side| {
+                input.neighbors[side]
+                    .iter()
+                    .map(|edge| (edge.unknown, matches!(edge.column, ColumnSource::Tile(..))))
+                    .collect::<Vec<_>>()
+            })
+        };
+        let [west, east] = sides(&lod);
+        assert!(west.iter().all(|&edge| edge == (false, false)), "range end");
+        assert!(east.iter().all(|&edge| edge == (true, false)), "planned");
+
+        // Its arrival draws the neighbour and remeshes the tile facing it.
+        lod.dirty.clear();
+        lod.finish_sample(b, vec![Column::default(); CELLS * CELLS]);
+        assert!(lod.dirty.contains_key(&a), "the tile facing it is remeshed");
+        let [_, east] = sides(&lod);
+        assert!(east.iter().all(|&edge| edge == (false, true)), "drawn");
+
+        // Past a split tile's out-of-range child there is nothing to wait for.
+        let parent = TileKey {
+            x: 4,
+            z: 4,
+            level: 1,
+        };
+        lod.plan.nodes.insert(parent);
+        lod.plan.split.insert(parent);
+        lod.plan.nodes.extend(parent.children().into_iter().take(3));
+        let snapshot = lod.snapshot();
+        let [x, _, z] = parent.origin();
+        assert!(snapshot.planned_leaf(x + 1, z + 1), "a planned leaf");
+        assert!(!snapshot.planned_leaf(x + 17, z + 17), "no child planned");
+        assert!(!snapshot.planned_leaf(x - 40, z), "outside the plan");
+    }
+
+    #[test]
+    fn a_planned_neighbor_leaving_the_range_unready_remeshes_the_tile_that_waited() {
+        let mut lod = Lod::scheduler_for_test();
+        let a = TileKey {
+            x: 0,
+            z: 0,
+            level: 0,
+        };
+        let b = TileKey {
+            x: 1,
+            z: 0,
+            level: 0,
+        };
+        lod.plan = Plan::default();
+        lod.plan.roots = vec![a, b];
+        lod.plan.nodes.extend([a, b]);
+        lod.finish_sample(a, vec![Column::default(); CELLS * CELLS]);
+        lod.dirty.clear();
+        // A range of one chunk around (-10, 0) keeps `a` and drops `b`.
+        lod.replan([-10, 0], 0, 1, 0);
+        assert!(lod.plan.nodes.contains(&a) && !lod.plan.nodes.contains(&b));
+        assert!(lod.dirty.contains_key(&a), "its east wall is drawn now");
     }
 
     #[test]
