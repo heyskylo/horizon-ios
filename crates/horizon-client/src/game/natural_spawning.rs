@@ -36,6 +36,90 @@ pub(super) struct SpawnScratch {
     pub(super) candidates: Vec<(i32, i32)>,
     pub(super) seen: horizon_client::fast_hash::FxHashMap<(i32, i32), usize>,
     pub(super) close: Vec<bool>,
+    // Kept separate from candidates: spawning shuffles and drains that vector.
+    player_chunks: Vec<(i32, i32)>,
+    ordered: Vec<(i32, i32)>,
+    members: Vec<Vec<usize>>,
+    disjoint: bool,
+}
+impl SpawnScratch {
+    fn chunk(p: &LevelPlayer) -> (i32, i32) {
+        (
+            p.position.x.floor() as i32 >> 4,
+            p.position.z.floor() as i32 >> 4,
+        )
+    }
+    /// Keep the original player/dx/dz insertion order. Proximity is live even
+    /// when a player moves within a chunk or changes spectator state.
+    fn prepare(&mut self, players: &[LevelPlayer]) {
+        if players.len() != self.player_chunks.len()
+            || players
+                .iter()
+                .zip(&self.player_chunks)
+                .any(|(p, &c)| Self::chunk(p) != c)
+        {
+            // Disjoint player squares concatenate in vanilla insertion order.
+            // In that common spread-out case, only a moving player's 289
+            // coordinates change; all other slots and membership stay valid.
+            let disjoint = players.iter().enumerate().all(|(i, p)| {
+                let a = Self::chunk(p);
+                players[..i].iter().all(|p| {
+                    let b = Self::chunk(p);
+                    a.0.abs_diff(b.0) > 16 || a.1.abs_diff(b.1) > 16
+                })
+            });
+            if disjoint && self.disjoint && players.len() == self.player_chunks.len() {
+                for (i, (p, old)) in players.iter().zip(&mut self.player_chunks).enumerate() {
+                    let chunk = Self::chunk(p);
+                    if chunk != *old {
+                        for dx in -8..=8 {
+                            for dz in -8..=8 {
+                                let slot = i * 289 + ((dx + 8) * 17 + dz + 8) as usize;
+                                self.ordered[slot] = (chunk.0 + dx, chunk.1 + dz);
+                            }
+                        }
+                        *old = chunk;
+                    }
+                }
+            } else {
+                self.player_chunks.clear();
+                self.player_chunks.extend(players.iter().map(Self::chunk));
+                self.ordered.clear();
+                self.seen.clear();
+                self.members.resize_with(players.len(), Vec::new);
+                for (&(pcx, pcz), members) in self.player_chunks.iter().zip(&mut self.members) {
+                    members.clear();
+                    for dx in -8..=8 {
+                        for dz in -8..=8 {
+                            let key = (pcx + dx, pcz + dz);
+                            let i = if disjoint {
+                                let i = self.ordered.len();
+                                self.ordered.push(key);
+                                i
+                            } else {
+                                *self.seen.entry(key).or_insert_with(|| {
+                                    let i = self.ordered.len();
+                                    self.ordered.push(key);
+                                    i
+                                })
+                            };
+                            members.push(i);
+                        }
+                    }
+                }
+            }
+            self.disjoint = disjoint;
+        }
+        self.close.clear();
+        self.close.resize(self.ordered.len(), false);
+        for (p, members) in players.iter().zip(&self.members) {
+            for &i in members {
+                self.close[i] |= close_enough_for_spawning(p, self.ordered[i]);
+            }
+        }
+        self.candidates.clear();
+        self.candidates.extend_from_slice(&self.ordered);
+    }
 }
 
 /// A player in the level in place, as spawning and despawning see it.
@@ -611,32 +695,9 @@ impl<'a> Game<'a> {
         players: &[LevelPlayer],
         scratch: &mut SpawnScratch,
     ) -> i32 {
+        scratch.prepare(players);
         let candidates = &mut scratch.candidates;
-        candidates.clear();
-        candidates.reserve(289 * players.len());
-        let seen = &mut scratch.seen;
-        seen.clear();
-        seen.reserve(289 * players.len());
-        let close = &mut scratch.close;
-        close.clear();
-        for p in players {
-            let (pcx, pcz) = (
-                p.position.x.floor() as i32 >> 4,
-                p.position.z.floor() as i32 >> 4,
-            );
-            for dx in -8..=8 {
-                for dz in -8..=8 {
-                    let key = (pcx + dx, pcz + dz);
-                    let i = *seen.entry(key).or_insert_with(|| {
-                        let i = candidates.len();
-                        candidates.push(key);
-                        close.push(false);
-                        i
-                    });
-                    close[i] |= close_enough_for_spawning(p, key);
-                }
-            }
-        }
+        let close = &scratch.close;
         let count = candidates.len() as i32;
         let levels = self.tickets.levels();
         let mut i = 0;
@@ -663,7 +724,9 @@ impl<'a> Game<'a> {
             return;
         }
         let mut scratch = std::mem::take(&mut self.spawn_scratch);
-        let spawnable = self.spawning_chunks(&players, &mut scratch);
+        let spawnable = horizon_client::spans::time("spawning_chunks", || {
+            self.spawning_chunks(&players, &mut scratch)
+        });
         for &key in &scratch.candidates {
             *self.world.inhabited.entry(key).or_insert(0) += 1;
         }
@@ -823,6 +886,75 @@ mod tests {
             creative: false,
             spectator,
         }
+    }
+
+    #[test]
+    fn spawn_candidates_keep_order_and_live_proximity_across_cache_hits() {
+        let mut players = vec![
+            player(0.0, 64.0, 0.0, false),
+            player(16.0, 64.0, 0.0, false),
+        ];
+        let mut scratch = SpawnScratch::default();
+        scratch.prepare(&players);
+        // Two adjacent 17x17 squares: the first square, then the new east edge.
+        let expected: Vec<_> = (-8..=8)
+            .flat_map(|x| (-8..=8).map(move |z| (x, z)))
+            .chain((-8..=8).map(|z| (9, z)))
+            .collect();
+        assert_eq!(scratch.candidates, expected);
+        let west = scratch.seen[&(-8, 0)];
+        assert!(scratch.close[west]);
+        // The spawn pass consumes its working order; that must not corrupt the cache.
+        scratch.candidates.reverse();
+        scratch.candidates.clear();
+        players[0].position.x = 15.5;
+        scratch.prepare(&players);
+        assert_eq!(scratch.candidates, expected);
+        assert!(!scratch.close[west]);
+        for p in &mut players {
+            p.spectator = true;
+        }
+        scratch.prepare(&players);
+        assert_eq!(scratch.candidates, expected);
+        assert!(scratch.close.iter().all(|&close| !close));
+        players.swap(0, 1);
+        scratch.prepare(&players);
+        assert_eq!(scratch.candidates.first(), Some(&(-7, -8)));
+        assert_eq!(scratch.candidates.len(), 306);
+        players.pop();
+        scratch.prepare(&players);
+        assert_eq!(scratch.candidates.len(), 289);
+        players[0].position.x = -0.01;
+        scratch.prepare(&players);
+        assert_eq!(scratch.candidates.first(), Some(&(-9, -8)));
+        players.clear();
+        scratch.prepare(&players);
+        assert!(scratch.candidates.is_empty());
+    }
+
+    #[test]
+    fn separated_spawn_squares_move_without_changing_other_players_order() {
+        let mut players = vec![
+            player(0.0, 64.0, 0.0, false),
+            player(1200.0, 64.0, 0.0, false),
+        ];
+        let mut scratch = SpawnScratch::default();
+        scratch.prepare(&players);
+        let other = scratch.candidates[289..].to_vec();
+        assert_eq!(scratch.candidates.len(), 578);
+        players[0].position.x = 16.0;
+        scratch.prepare(&players);
+        assert_eq!(scratch.candidates.first(), Some(&(-7, -8)));
+        assert_eq!(scratch.candidates[289..], other);
+        // Merge into overlapping squares, then split them again.
+        players[1].position.x = 32.0;
+        scratch.prepare(&players);
+        assert_eq!(scratch.candidates.len(), 306);
+        assert_eq!(scratch.candidates.last(), Some(&(10, 8)));
+        players[1].position.x = 1200.0;
+        scratch.prepare(&players);
+        assert_eq!(scratch.candidates.len(), 578);
+        assert_eq!(scratch.candidates[289..], other);
     }
 
     /// The grid finds the same player a look at every one finds, the first of
