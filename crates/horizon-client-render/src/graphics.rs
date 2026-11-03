@@ -333,6 +333,13 @@ pub enum LeafCullingMode {
     /// Every leaf face, as vanilla's fancy leaves draw them.
     #[default]
     Off,
+    /// Drops a face between two leaves when the leaf it faces has a leaf or
+    /// a full opaque cube behind it too: that face only shows through two
+    /// cutout layers. The faces behind the outer layer stay, so a crown
+    /// looks the same from outside. The faced leaf must be in the section
+    /// (as `Hollow`), so the block behind it is at most a border cell of the
+    /// next section, whose edits remesh this one.
+    Hidden,
     /// Leaves surrounded on all six sides by leaves or full opaque cubes draw
     /// in the opaque layer, so their cutouts no longer show the layers behind.
     Solid,
@@ -344,8 +351,9 @@ pub enum LeafCullingMode {
     Hollow,
 }
 impl LeafCullingMode {
-    pub const ALL: [LeafCullingMode; 4] = [
+    pub const ALL: [LeafCullingMode; 5] = [
         LeafCullingMode::Off,
+        LeafCullingMode::Hidden,
         LeafCullingMode::Solid,
         LeafCullingMode::SolidAggressive,
         LeafCullingMode::Hollow,
@@ -353,6 +361,7 @@ impl LeafCullingMode {
     pub fn name(self) -> &'static str {
         match self {
             LeafCullingMode::Off => "off",
+            LeafCullingMode::Hidden => "hidden",
             LeafCullingMode::Solid => "solid",
             LeafCullingMode::SolidAggressive => "solid_aggressive",
             LeafCullingMode::Hollow => "hollow",
@@ -361,6 +370,7 @@ impl LeafCullingMode {
     pub fn label(self) -> &'static str {
         match self {
             LeafCullingMode::Off => "Off",
+            LeafCullingMode::Hidden => "Hidden Faces",
             LeafCullingMode::Solid => "Solid",
             LeafCullingMode::SolidAggressive => "Solid Aggressive",
             LeafCullingMode::Hollow => "Hollow",

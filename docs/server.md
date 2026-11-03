@@ -31,8 +31,9 @@ The dedicated server is the game itself, run headless:
   online. It supports `pause-when-empty-seconds`, `player-idle-timeout` and the autosave.
 - **Console (stdin).** `stop`, `save-all`, `save-on`/`save-off`, `list [uuids]`, `op`/`deop`,
   `whitelist on|off|list|reload|add|remove`, `ban`, `ban-ip`, `pardon`, `pardon-ip`, `banlist`, `kick` and
-  `say` behave as in `DedicatedServer`. Every other command goes to the game's own dispatcher as the server
-  (permission level 4). The log follows vanilla's Log4j pattern, in `logs/latest.log` and on stdout.
+  `say` behave as in `DedicatedServer`. `tempban <player> <duration> [reason]` is Horizon's own: a ban that
+  ends by itself ([hosting](hosting.md#temporary-bans)). Every other command goes to the game's own dispatcher as the
+  server (permission level 4). The log follows vanilla's Log4j pattern, in `logs/latest.log` and on stdout.
 - **Player names.** `usercache.json` in the universe folder works as vanilla's `CachedUserNameToIdResolver`.
   Players are added when they join and kept for a month, and the file keeps the 1000 most recently used,
   newest first. The console finds a player by name in it, in any case. A name it doesn't hold is asked of the
@@ -141,7 +142,7 @@ The supervisor/engine split stays even after the engine becomes headless, for th
 **The engine today** is `horizon-client --dedicated`. It needs one small, additive change: a status endpoint.
 With `--control-socket <dir>/.horizon/engine.json` (the existing control protocol: TCP on 127.0.0.1 plus a token, on
 every OS), the dedicated loop answers `server-status` with TPS, MSPT (average, P50/P95/P99 from the tick
-clock `/tick query` uses), players (name, UUID, address, ping), loaded chunks and uptime. It answers
+clock `/tick query` uses), players (name, UUID, address, ping, position), loaded chunks and uptime. It answers
 `console <line>` with the command's output.
 
 **The headless engine** comes after perf-ticks-2's work lands: Resources split into shared and per-game, the
@@ -182,7 +183,13 @@ prepared on their own computer to the server (`scp -r`). Planned wrappers:
 - **On this machine:** `horizon-server prepare --server-jar PATH` runs `horizon-prepare` on the owner's own
   server jar plus their launcher install.
 - **Prepared elsewhere:** `horizon-server import-resources DIR` copies a folder prepared on the owner's own
-  computer, for example by the launcher, to a headless machine.
+  computer, for example by the launcher, to a headless machine. It first checks the folder: `horizon-resources.json`
+  is there and names Minecraft 26.3, the derived files match their checksums, and the font and texture folders
+  aren't empty; otherwise it lists what is wrong and changes nothing. It copies next to the destination and
+  renames the copy in, so a failure partway keeps the old copy. The destination is the first place the server
+  reads: `[engine] resources` when set, else `resources/` in the server folder when it exists or the server
+  wasn't installed by `install.sh`, else the installer's `game-files/horizon-client/26.3` (where the release's
+  `.local/horizon-client` points). It ends by saying to start or restart the server.
 
 A server-only `prepare` (from `server.jar` alone, without the client jar or a JDK) is the follow-up that
 removes the last Java step. It needs a list of which prepared files the server really reads, and that list
@@ -338,9 +345,10 @@ horizon-server panel                     the panel's address and a one-time logi
 horizon-server update [--check] [--version vX.Y.Z] [--timeout S]     rollback [--timeout S]
 horizon-server update --archive FILE --version NAME     an archive you have (your own build)
 horizon-server mcp                       MCP server on stdio (section 8)
+horizon-server import-resources <dir>    copy game files prepared elsewhere into place (checked first)
 
 Planned:
-horizon-server import-resources <dir>      prepare --server-jar PATH
+horizon-server prepare --server-jar PATH
 ```
 
 - Every command takes `--dir` (the server folder; default: the current folder).
@@ -401,7 +409,10 @@ runtime or new dependency. Server-sent events can replace the polling later if a
 - **Restore.** `restore NAME` takes a file name, a unique prefix, or the name given to `backup` (the newest
   with it). The server stops. The current world is moved to `backups/replaced-<time>/` (never deleted), the
   backup is unpacked into a temporary folder and checked (`level.dat` is there), then moved in, and the server
-  starts again if it was running. One command, or one click with confirmation in the panel.
+  starts again if it was running. One command, or one click with confirmation in the panel. `restore NAME
+  --dimension minecraft:the_nether` (API: `dimension` in the body; MCP: `dimension`) brings back only that
+  dimension's folder (`dimensions/<namespace>/<path>`), the same way, and leaves the other dimensions,
+  `level.dat` and the players as they are; the folder it replaces goes to `backups/replaced-<time>/`.
 - **Crash restart.** If the engine exits without being asked to stop, the supervisor keeps the last 200 log
   lines and the engine's crash report (`crash-reports/`), restarts it after 5 s, and doubles the wait up to
   5 minutes. It gives up after 5 crashes in 10 minutes, so it doesn't loop on a broken world, and shows the
@@ -447,7 +458,7 @@ runtime or new dependency. Server-sent events can replace the polling later if a
     `POST stop`, `POST restart`, `GET backups`, `POST backups {name}`, `POST restore {name}`, `POST update
     {tag, timeout}` (without a tag: the newest release, downloaded first; `status` has an `update` object
     that says how it went), `GET metrics?since=`;
-  - built (server-admin): `GET players` (online with address, ping and op level; ops, whitelist, bans, IP
+  - built (server-admin): `GET players` (online with address, ping, position and op level; ops, whitelist, bans, IP
     bans), `POST players/{kick,ban,pardon,ban-ip,pardon-ip,op,deop}`, `POST whitelist {enabled}`,
     `POST whitelist/{add,remove}` (each runs vanilla's console command and answers `changed` and its lines),
     `GET metrics/prometheus` (Prometheus text);

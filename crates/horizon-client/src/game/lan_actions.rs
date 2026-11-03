@@ -3205,6 +3205,11 @@ impl Game<'_> {
             self.guest_mute_command(host, conn, &words);
             return;
         }
+        // Horizon's `/tempban` (game/tempban.rs), on dedicated servers.
+        if super::tempban::TEMPBAN_COMMANDS.contains(&words[0]) && self.server_lists.is_some() {
+            self.guest_tempban_command(host, conn, &words);
+            return;
+        }
         // A native mod's command, for every player its level allows,
         // whether the world allows commands or not (game/native_server.rs).
         let integrated = host.hub.config.integrated;
@@ -4247,6 +4252,36 @@ impl Game<'_> {
         }
     }
 
+    /// `LivingEntity.checkAutoSpinAttack` for a server's copy of a Riptide
+    /// spinner (it runs before `aiStep`'s countdown clears the damage): the
+    /// first mob touching the player's box takes `Player.attack` with the
+    /// spin's damage and the spin ends. A `ServerPlayer` is client
+    /// authoritative, so its `aiStep` does not travel and both boxes vanilla
+    /// passes are the current one: no sweep over the tick's moves.
+    pub(super) fn server_spin_attack(&mut self) {
+        let Some(p) = self.player.as_ref() else {
+            return;
+        };
+        if p.auto_spin_attack_ticks <= 0 {
+            return;
+        }
+        let swept = p.bounds();
+        let riding = self.riding;
+        let Some(index) = first_spin_target(
+            swept,
+            riding,
+            self.mobs.iter().map(|m| (m.id, m.removed, m.bounds())),
+        ) else {
+            return;
+        };
+        self.attack_mob(index);
+        if let Some(p) = self.player.as_mut() {
+            p.auto_spin_attack_ticks = 0;
+            p.auto_spin_attack_dmg = 0.0;
+            p.velocity = p.velocity.scale(-0.2);
+        }
+    }
+
     /// The guest's body on the server each tick: ServerPlayer.tick's damage
     /// clock and Entity.baseTick's fluid phase (burning), then for each move
     /// the guest made ServerGamePacketListenerImpl.handleMovePlayer's jump
@@ -4289,6 +4324,12 @@ impl Game<'_> {
         let at = g.position;
         let (sneaking, sleeping) = (g.sneaking, g.sleeping);
         let riding = g.vehicle.is_some();
+        if g.motion
+            .as_ref()
+            .is_some_and(|m| m.auto_spin_attack_ticks > 0)
+        {
+            self.as_guest(host, conn, |game| game.server_spin_attack());
+        }
         let mut soul = None;
         let mut jumps = 0;
         let events = self.as_guest(host, conn, |game| {
@@ -5570,6 +5611,51 @@ mod aim_point_tests {
         assert_eq!(
             visible_aim_point(EYE, LO, HI, behind_top_slab),
             visible_aim_point(EYE, LO, HI, behind_top_slab)
+        );
+    }
+}
+
+/// The first target `(id, removed, bounds)` whose box meets the swept box,
+/// skipping removed ones and the vehicle the player rides.
+fn first_spin_target(
+    swept: Aabb,
+    riding: Option<u32>,
+    mut targets: impl Iterator<Item = (u32, bool, Aabb)>,
+) -> Option<usize> {
+    targets.position(|(id, removed, b)| !removed && Some(id) != riding && b.intersects(swept))
+}
+
+#[cfg(test)]
+mod spin_target_tests {
+    use super::first_spin_target;
+    use horizon_core::geometry::{Aabb, Vec3};
+
+    fn cube(x: f64) -> Aabb {
+        Aabb::new(Vec3::new(x, 0.0, 0.0), Vec3::new(x + 1.0, 1.0, 1.0))
+    }
+
+    /// The spin hits the first mob in the swept box, not a removed one, the
+    /// vehicle, or one out of reach.
+    #[test]
+    fn the_spin_picks_the_first_live_mob_in_the_sweep() {
+        let swept = Aabb::new(Vec3::new(0.0, 0.0, 0.0), Vec3::new(3.0, 1.0, 1.0));
+        let targets = [
+            (1, false, cube(10.0)),
+            (2, true, cube(1.0)),
+            (3, false, cube(1.5)),
+            (4, false, cube(2.0)),
+        ];
+        assert_eq!(
+            first_spin_target(swept, None, targets.iter().copied()),
+            Some(2)
+        );
+        assert_eq!(
+            first_spin_target(swept, Some(3), targets.iter().copied()),
+            Some(3)
+        );
+        assert_eq!(
+            first_spin_target(swept, None, targets[..2].iter().copied()),
+            None
         );
     }
 }
