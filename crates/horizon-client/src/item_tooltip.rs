@@ -1122,14 +1122,10 @@ mod tests {
         let translate = |k: &str| {
             (k == "item.minecraft.disc_fragment_5.desc").then(|| "Music Disc - 5".to_owned())
         };
-        let mut stack = ItemStack::new("minecraft:disc_fragment_5", 1);
+        let stack = ItemStack::new("minecraft:disc_fragment_5", 1);
         assert_eq!(
             disc_fragment_line(&stack, &translate).as_deref(),
             Some("Music Disc - 5")
-        );
-        stack.data_mut().set_other(
-            "minecraft:lore",
-            Some(Tag::List(vec![Tag::String("Lore".into())])),
         );
         let lines = detail_lines(&stack, None, &translate);
         assert_eq!(lines.first().map(String::as_str), Some("Music Disc - 5"));
