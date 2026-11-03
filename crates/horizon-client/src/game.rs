@@ -19323,7 +19323,24 @@ fn load_core(
     progress: &Progress,
     launch_world: Option<&str>,
 ) -> std::result::Result<std::result::Result<CoreTables, String>, String> {
-    let assets = match startup::time("core.assets", || Assets::load(root)) {
+    // The model library reads every file under `assets/` and needs no
+    // block registry, so it is parsed beside `Assets::load` rather than
+    // after it. It used to sit inside `reload` behind both the registry
+    // read and the block facts; on a cold cache that read was most of a
+    // second on the critical path, and warm it is still ~30 ms.
+    // A server draws nothing and parses no models, so it skips this.
+    let (assets, parsed_models) = std::thread::scope(|scope| {
+        let models = (parallel && !headless).then(|| {
+            scope.spawn(|| {
+                let _step = startup::step("core.models_parse");
+                horizon_client::model_library::ParsedModels::load(root)
+            })
+        });
+        let assets = startup::time("core.assets", || Assets::load(root));
+        let models = models.map(|m| m.join().unwrap_or_else(|e| std::panic::resume_unwind(e)));
+        (assets, models)
+    });
+    let assets = match assets {
         Ok(assets) => assets,
         Err(e) => return Ok(Err(e.to_string())),
     };
@@ -19335,9 +19352,12 @@ fn load_core(
             let render = Step::spawn(scope, parallel, move || {
                 // A server reads no block sprites' pixels, which only the
                 // renderer draws (32 MB).
+                let parsed_models = parsed_models;
                 let render = startup::time("core.block_models_sprites", || {
                     if headless {
                         assets.reload_for_server(root)
+                    } else if let Some(parsed) = parsed_models {
+                        assets.reload_with_models(root, parsed)
                     } else {
                         assets.reload(root)
                     }
