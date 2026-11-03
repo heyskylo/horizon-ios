@@ -356,5 +356,9 @@
   "horizon.pages.open.split_setup": "Podzielony ekran…",
   "horizon.pages.split_settings": "Ustawienia podzielonego ekranu",
   "horizon.pages.split_setup": "Podzielony ekran",
-  "horizon.pages.split_setup.tooltip": "Gracze na tym komputerze: kontrolery mogą dołączyć do twojego świata."
+  "horizon.pages.split_setup.tooltip": "Gracze na tym komputerze: kontrolery mogą dołączyć do twojego świata.",
+  "Particle Culling": "Pomijanie cząsteczek",
+  "Draws every particle.": "Rysuje wszystkie cząsteczki.",
+  "Skips offscreen, subpixel and terrain-hidden particles.": "Pomija cząsteczki poza ekranem, mniejsze niż piksel i zasłonięte przez teren.",
+  "Skips offscreen, subpixel and terrain-hidden particles with less render-thread work.": "Pomija cząsteczki poza ekranem, mniejsze niż piksel i zasłonięte przez teren, odciążając wątek renderowania."
 }
