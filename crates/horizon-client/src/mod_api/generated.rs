@@ -4579,6 +4579,46 @@ pub trait Hooks: Send + Sync {
         let _ = host;
         let _ = event;
     }
+    /// The config files native mods keep (NeoForge's `registerConfig`):
+    /// push yours, each of a kind, with the text written to `config/` when
+    /// the file is missing. Asked by the window when the game starts (its
+    /// `Client` and `Common` configs), by a dedicated server when it starts
+    /// (`Common` and `Server`) and by a server before each world it opens
+    /// (`Server`); a game reads only its own kinds, so push them all every
+    /// time. A file outside `config/`, or one already registered, is skipped.
+    /// API @API:mod_configs@.
+    ///
+    /// Every mod gets `event.configs` in order and may add, change or remove configs.
+    fn register_configs(&self, host: &mut dyn Host, event: &mut RegisterConfigsEvent<'_>) {
+        let _ = host;
+        let _ = event;
+    }
+    /// A registered config was read (`ModConfigEvent.Loading`): `config`
+    /// says whose, which file and its text, which the mod parses (TOML by
+    /// convention). Every mod hears every config, so check `mod_id`. Fired
+    /// where the config's kind loads (`native_register_configs`), a `Server`
+    /// one before `native_server_about_to_start`. API @API:mod_configs@.
+    fn config_loading(&self, host: &mut dyn Host, event: &mut ConfigLoadingEvent<'_>) {
+        let _ = host;
+        let _ = event;
+    }
+    /// A loaded config's file changed on disk (`ModConfigEvent.Reloading`):
+    /// its new text. The game looks at the files' modification times once a
+    /// second, on the window and on the server's tick; a file saved with the
+    /// same text, removed or unreadable fires nothing and keeps its last
+    /// text. API @API:mod_configs@.
+    fn config_reloading(&self, host: &mut dyn Host, event: &mut ConfigReloadingEvent<'_>) {
+        let _ = host;
+        let _ = event;
+    }
+    /// A `Server` config is dropped as its server stops
+    /// (`ModConfigEvent.Unloading`), after `native_server_stopping`; the next
+    /// world reads it again. `Client` and `Common` configs stay until the
+    /// game quits. API @API:mod_configs@.
+    fn config_unloading(&self, host: &mut dyn Host, event: &mut ConfigUnloadingEvent<'_>) {
+        let _ = host;
+        let _ = event;
+    }
     /// Local player movement input, after reading it and before applying it.
     fn movement_input(&self, host: &dyn Host, event: &mut MovementInputEvent) {
         let _ = host;
@@ -14091,6 +14131,66 @@ pub fn dispatch_living_get_projectile(
     };
     for mod_hook in super::entered(mods, "living_get_projectile") {
         mod_hook.living_get_projectile(host, &mut event);
+    }
+}
+/// What [`Hooks::register_configs`] is told. Fields may be added: the struct is `#[non_exhaustive]`.
+#[non_exhaustive]
+pub struct RegisterConfigsEvent<'a> {
+    pub configs: &'a mut Vec<NativeConfig>,
+}
+pub fn dispatch_register_configs(
+    host: &mut dyn Host,
+    mods: &[Box<dyn Hooks>],
+    configs: &mut Vec<NativeConfig>,
+) {
+    let mut event = RegisterConfigsEvent { configs };
+    for mod_hook in super::entered(mods, "register_configs") {
+        mod_hook.register_configs(host, &mut event);
+    }
+}
+/// What [`Hooks::config_loading`] is told. Fields may be added: the struct is `#[non_exhaustive]`.
+#[non_exhaustive]
+pub struct ConfigLoadingEvent<'a> {
+    pub config: &'a NativeConfigFile,
+}
+pub fn dispatch_config_loading(
+    host: &mut dyn Host,
+    mods: &[Box<dyn Hooks>],
+    config: &NativeConfigFile,
+) {
+    let mut event = ConfigLoadingEvent { config };
+    for mod_hook in super::entered(mods, "config_loading") {
+        mod_hook.config_loading(host, &mut event);
+    }
+}
+/// What [`Hooks::config_reloading`] is told. Fields may be added: the struct is `#[non_exhaustive]`.
+#[non_exhaustive]
+pub struct ConfigReloadingEvent<'a> {
+    pub config: &'a NativeConfigFile,
+}
+pub fn dispatch_config_reloading(
+    host: &mut dyn Host,
+    mods: &[Box<dyn Hooks>],
+    config: &NativeConfigFile,
+) {
+    let mut event = ConfigReloadingEvent { config };
+    for mod_hook in super::entered(mods, "config_reloading") {
+        mod_hook.config_reloading(host, &mut event);
+    }
+}
+/// What [`Hooks::config_unloading`] is told. Fields may be added: the struct is `#[non_exhaustive]`.
+#[non_exhaustive]
+pub struct ConfigUnloadingEvent<'a> {
+    pub config: &'a NativeConfigFile,
+}
+pub fn dispatch_config_unloading(
+    host: &mut dyn Host,
+    mods: &[Box<dyn Hooks>],
+    config: &NativeConfigFile,
+) {
+    let mut event = ConfigUnloadingEvent { config };
+    for mod_hook in super::entered(mods, "config_unloading") {
+        mod_hook.config_unloading(host, &mut event);
     }
 }
 /// What [`Hooks::movement_input`] is told. Fields may be added: the struct is `#[non_exhaustive]`.
