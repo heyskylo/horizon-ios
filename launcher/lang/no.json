@@ -189,6 +189,7 @@
   "New instance": "Ny instans",
   "Loading filters": "Laster filtre",
   "Stopped": "Stoppet",
+  "{mode} · stopped": "{mode} · stoppet",
   "Extra arguments for the game, passed through as-is (quotes group a word with spaces). Applies the next time the game starts.": "Ekstra argumenter for spillet, sendt gjennom som de er (anførselstegn grupperer et ord med mellomrom). Gjelder neste gang spillet starter.",
   "Horizon never turns on Funnel: the server isn't put on the public internet, only shared with the people you invite.": "Horizon never turns on Funnel: the server isn't put on the public internet, only shared with the people you invite.",
   "Minecraft folder": "Minecraft mappe",
@@ -425,6 +426,7 @@
   "No version matches.": "Ingen versjon samsvarer.",
   "Invite a friend": "Inviter en venn",
   "Offline": "Frakoblet",
+  "{online} of {max}": "{online} av {max}",
   "Shortcut": "Snarvei",
   "Update to {version}": "Oppdater til {version}",
   "{name} is off.": "{name} er av.",
@@ -1073,5 +1075,16 @@
   "Shader pack": "Shaderpakke",
   "soon": "snart",
   "{support} in Horizon": "{support} i Horizon",
-  "My Horizon": "Min Horizon"
+  "My Horizon": "Mitt Horizon",
+  "Game log": "Spillogg",
+  "1 line": "1 linje",
+  "{count} lines": "{count} linjer",
+  "{count} min": "{count} min",
+  "1 hour": "1 time",
+  "{count} hours": "{count} timer",
+  "just now": "akkurat nå",
+  "{count} min ago": "for {count} min siden",
+  "1 hour ago": "for 1 time siden",
+  "{count} hours ago": "for {count} timer siden",
+  "{count} on the official SMP": "{count} på den offisielle SMP-en"
 }

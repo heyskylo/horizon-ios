@@ -62,6 +62,7 @@
   "Play offline": "Jogar offline",
   "Sign out": "Sair da conta",
   "Offline": "Offline",
+  "{online} of {max}": "{online} de {max}",
   "Microsoft": "Microsoft",
   "Offline, the game's name": "Offline, o nome usado no jogo",
   "Manage accounts": "Gerenciar contas",
@@ -94,6 +95,7 @@
   "Play": "Jogar",
   "Running": "Em execução",
   "Stopped": "Parado",
+  "{mode} · stopped": "{mode} · parado",
   "Start the game, or run a server for others to join.": "Inicie o jogo ou execute um servidor para que outras pessoas possam entrar.",
   "No version installed yet.": "Nenhuma versão instalada ainda.",
   "Choose a version": "Escolher uma versão",
@@ -1073,5 +1075,16 @@
   "Launcher settings are back to their defaults": "As configurações do launcher voltaram ao padrão",
   "Opened {path}": "Aberto: {path}",
   "Saved {name}": "{name} salva",
-  "My Horizon": "Meu Horizon"
+  "My Horizon": "Meu Horizon",
+  "Game log": "Log do jogo",
+  "1 line": "1 linha",
+  "{count} lines": "{count} linhas",
+  "{count} min": "{count} min",
+  "1 hour": "1 hora",
+  "{count} hours": "{count} horas",
+  "just now": "agora mesmo",
+  "{count} min ago": "há {count} min",
+  "1 hour ago": "há 1 hora",
+  "{count} hours ago": "há {count} horas",
+  "{count} on the official SMP": "{count} no SMP oficial"
 }

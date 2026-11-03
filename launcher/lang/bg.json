@@ -189,6 +189,7 @@
   "New instance": "Нов екземпляр",
   "Loading filters": "Зареждане на филтри",
   "Stopped": "Спряно",
+  "{mode} · stopped": "{mode} · спряно",
   "Extra arguments for the game, passed through as-is (quotes group a word with spaces). Applies the next time the game starts.": "Допълнителни аргументи за играта, предадени както са (кавичките групират дума с интервали). Прилага се при следващото стартиране на играта.",
   "Horizon never turns on Funnel: the server isn't put on the public internet, only shared with the people you invite.": "Horizon никога не включва Funnel: сървърът не се поставя в публичния интернет, а се споделя само с хората, които поканите.",
   "Minecraft folder": "Minecraft folder",
@@ -425,6 +426,7 @@
   "No version matches.": "Няма съответстваща версия.",
   "Invite a friend": "Поканете приятел",
   "Offline": "Офлайн",
+  "{online} of {max}": "{online} от {max}",
   "Shortcut": "Пряк път",
   "Update to {version}": "Актуализиране до {version}",
   "{name} is off.": "{name} е изключен.",
@@ -1073,5 +1075,16 @@
   "Shader pack": "Пакет с шейдъри",
   "soon": "скоро",
   "{support} in Horizon": "{support} в Horizon",
-  "My Horizon": "Моят Horizon"
+  "My Horizon": "Моят Horizon",
+  "Game log": "Дневник на играта",
+  "1 line": "1 ред",
+  "{count} lines": "{count} реда",
+  "{count} min": "{count} мин",
+  "1 hour": "1 час",
+  "{count} hours": "{count} часа",
+  "just now": "току-що",
+  "{count} min ago": "преди {count} мин",
+  "1 hour ago": "преди 1 час",
+  "{count} hours ago": "преди {count} часа",
+  "{count} on the official SMP": "{count} в официалния SMP"
 }

@@ -233,7 +233,7 @@ impl Launcher {
                         .top_0()
                         .left_0()
                         .size_full()
-                        .bg(ui::color(horizon_theme::glass::SCRIM).opacity(0.5))
+                        .bg(ui::scrim())
                         .on_mouse_down(gpui::MouseButton::Left, close),
                 )
                 .child(card),
@@ -809,7 +809,7 @@ impl Launcher {
             .child(match error {
                 Some(e) => ui::text(13., FontWeight::NORMAL, ink::FULL)
                     .min_w_0()
-                    .text_color(ui::color(horizon_theme::glass::DANGER))
+                    .text_color(ui::danger())
                     .child(e),
                 None => ui::text(13., FontWeight::NORMAL, ink::FAINT)
                     .min_w_0()

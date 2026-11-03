@@ -189,6 +189,7 @@
   "New instance": "Nueva instancia",
   "Loading filters": "Cargando filtros",
   "Stopped": "Detenido",
+  "{mode} · stopped": "{mode} · detenido",
   "Extra arguments for the game, passed through as-is (quotes group a word with spaces). Applies the next time the game starts.": "Argumentos adicionales para el juego, transmitidos tal cual (las comillas agrupan palabras con espacios). Se aplica la próxima vez que inicie el juego.",
   "Horizon never turns on Funnel: the server isn't put on the public internet, only shared with the people you invite.": "Horizon nunca activa Funnel: el servidor no se expone al internet público, solo se comparte con las personas que invites.",
   "Minecraft folder": "Carpeta de Minecraft",
@@ -425,6 +426,7 @@
   "No version matches.": "Ninguna versión coincide.",
   "Invite a friend": "Invitar a un amigo",
   "Offline": "Sin conexión",
+  "{online} of {max}": "{online} de {max}",
   "Shortcut": "Acceso directo",
   "Update to {version}": "Actualizar a {version}",
   "{name} is off.": "{name} está desactivado.",
@@ -1073,5 +1075,16 @@
   "Launcher settings are back to their defaults": "Los ajustes del launcher vuelven a sus valores predeterminados",
   "Opened {path}": "Abierto: {path}",
   "Saved {name}": "{name} guardado",
-  "My Horizon": "Mi Horizon"
+  "My Horizon": "Mi Horizon",
+  "Game log": "Registro del juego",
+  "1 line": "1 línea",
+  "{count} lines": "{count} líneas",
+  "{count} min": "{count} min",
+  "1 hour": "1 hora",
+  "{count} hours": "{count} horas",
+  "just now": "ahora mismo",
+  "{count} min ago": "hace {count} min",
+  "1 hour ago": "hace 1 hora",
+  "{count} hours ago": "hace {count} horas",
+  "{count} on the official SMP": "{count} en el SMP oficial"
 }
