@@ -2369,6 +2369,43 @@ def creeper_custom_fuse():
     return ops + setup('/gamerule mob_griefing true')
 
 
+def turtle_summon_home():
+    """Turtle load defaults precede summon placement; plain summons finalize (#8804)."""
+    ops = setup('/forceload add -32 -32 31 31',
+                '/fill 9 199 9 11 199 11 stone',
+                '/fill -12 200 -14 -9 200 -11 stone')
+    flags = 'NoAI:1b,NoGravity:1b,PersistenceRequired:1b'
+    modes = [('plain', ''), ('empty', '{}'), ('controlled', '{' + flags + '}'),
+             ('home', '{' + flags + ',home_pos:[I;4,5,6]}'),
+             ('invalid', '{' + flags + ',home_pos:[I;4,5]}'),
+             ('pos', '{' + flags + ',Pos:[-20.5d,210d,-20.5d]}')]
+    for site, pos in [('positive', '10.5 200 10.5'), ('negative', '-10.25 201 -12.75')]:
+        for mode, nbt in modes:
+            tag = f'turtle_home_{site}_{mode}'
+            target = f'@e[tag={tag},limit=1]'
+            ops += setup('/kill @e[type=turtle]',
+                         f'/summon turtle {pos} {nbt}'.rstrip(),
+                         f'/tag @e[type=turtle,tag=!h187_seen,limit=1] add {tag}',
+                         f'/tag {target} add h187_seen')
+            for tick in (0, 1):
+                if tick:
+                    ops.append({'op': 'tick', 'n': 1})
+                ops.append(cmd(f'/execute if entity {target}', expect_result=1))
+                if tick and mode in ('plain', 'empty'):
+                    # Check a finite position without pinning motion.
+                    ops.append(cmd(f'/execute as {target} at @s if entity @s[distance=..0.0001]',
+                                   expect_result=1))
+                else:
+                    ops.append(cmd(f'/data get entity {target} Pos'))
+                ops.append(cmd(f'/data get entity {target} home_pos'))
+                ops.append(cmd(f'/data get entity {target} has_egg'))
+            if mode == 'controlled':
+                ops += [cmd(f'/data remove entity {target} home_pos'),
+                        cmd(f'/data get entity {target} home_pos'),
+                        cmd(f'/data get entity {target} Pos')]
+    return ops + setup('/kill @e[type=turtle]')
+
+
 def groups():
     return [
         ('setup', group_setup()),
@@ -2381,6 +2418,7 @@ def groups():
         ('setblock destroy air', setblock_destroy_air()),
         ('forceload query order', forceload_query_order()),
         ('entities', entities()),
+        ('turtle summon home', turtle_summon_home()),
         ('aquatic FromBucket', aquatic_from_bucket()),
         ('villager command names', villager_command_names()),
         ('item lifetime counters', item_lifetime_counters()),
