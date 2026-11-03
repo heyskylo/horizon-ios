@@ -1829,7 +1829,10 @@ impl Game<'_> {
             return Err(err("commands.teleport.invalidPosition", &[]));
         }
         let rotation = match ctx.get("rotation") {
-            Some(Arg::Coords(c)) => Some(c.rotation(self.source_rotation())),
+            Some(Arg::Coords(c @ Coordinates::World(axes))) => Some((
+                c.rotation(self.source_rotation()),
+                [axes[0].relative, axes[1].relative],
+            )),
             _ => None,
         };
         // facing: look from the new position at a location or entity.
@@ -1874,8 +1877,19 @@ impl Game<'_> {
             None => self.dim,
         };
         for &t in &targets {
-            // TeleportCommand.performTeleport wraps angles at the command boundary.
-            let rotation = look_at(self, t).or(rotation).map(|r| r.map(wrap_degrees));
+            let rotation = look_at(self, t).or_else(|| {
+                let (angles, relative) = rotation?;
+                let current = self.target_rotation(t);
+                // performTeleport wraps relative deltas before calculateAbsolute
+                // adds them back; wrapping the resolved pitch changes its clamp.
+                Some(std::array::from_fn(|axis| {
+                    if relative[axis] {
+                        current[axis] + wrap_degrees(angles[axis] - current[axis])
+                    } else {
+                        wrap_degrees(angles[axis])
+                    }
+                }))
+            });
             if self.teleport_across(t, source_level, pos, rotation) {
                 continue;
             }
@@ -4014,6 +4028,24 @@ mod teleport_pitch_tests {
             assert!(game.run_command(command), "{command}");
             assert_eq!(game.mobs[0].head_pitch, expected, "{command}");
         }
+        for (source, target, angle, expected) in [
+            (90.0, 90.0, "~100", 90.0),
+            (-90.0, -90.0, "~-100", -90.0),
+            (0.0, -90.0, "~100", -90.0),
+            (0.0, 90.0, "~-100", 90.0),
+        ] {
+            game.pitch = source;
+            game.mobs[0].head_pitch = target;
+            assert!(game.run_command(&format!(
+                "tp @e[type=minecraft:zombie,limit=1] 0 0 0 0 {angle}"
+            )));
+            assert_eq!(game.mobs[0].head_pitch, expected);
+        }
+        game.yaw = 190.0;
+        game.mobs[0].yaw = 170.0;
+        assert!(game.run_command("tp @e[type=minecraft:zombie,limit=1] 0 0 0 ~ ~"));
+        assert_eq!(game.mobs[0].yaw, 190.0, "relative yaw wraps the delta");
+
         game.mobs[0].head_pitch = 360.0;
         assert!(
             game.run_command(
