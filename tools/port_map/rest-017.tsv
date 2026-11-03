@@ -11,7 +11,7 @@ DedicatedServer.fillServerSystemReport	skip:debug		adds rows to the system repor
 DedicatedServer.dumpServerProperties	skip:debug		writes server.properties.txt into the debug report only
 DedicatedServer.onServerExit	inline	crates/horizon-client/src/game/dedicated.rs::Game::stop_dedicated	gap: minor: closes no query, GUI or JSON-RPC (RCON is the supervisor's, which outlives the game); the LAN pinger and listener are closed by lan_close
 DedicatedServer.setMaxPlayers	port	crates/horizon-client/src/game/dedicated.rs::Game::set_max_players	live login limit and server.properties max-players via the management protocol
-DedicatedServer.setSpawnProtectionRadius	skip:server		JSON-RPC management API only; spawn-protection is read at start and used by Game::under_spawn_protection
+DedicatedServer.setSpawnProtectionRadius	port	crates/horizon-client/src/game/dedicated/management.rs::Game::management	updates the live spawn-protection radius and server.properties through management
 DedicatedServer.setRepliesToStatus	skip:server		JSON-RPC management API only (ServerSettingsService); Horizon has no such API
 DedicatedServer.setHidesOnlinePlayers	skip:server		JSON-RPC management API only (ServerSettingsService); Horizon has no such API
 DedicatedServer.setOperatorUserPermissions	skip:server		JSON-RPC management API only (ServerSettingsService); Horizon has no such API
@@ -29,6 +29,7 @@ MinecraftServerSettingsServiceImpl.setForceGameMode	port	crates/horizon-server/s
 MinecraftServerSettingsServiceImpl.setUsingWhitelist	port	crates/horizon-server/src/management_methods.rs::Game::allowlist_setting	forwards the live setting to the game and persists server.whitelist in server.toml
 MinecraftServerSettingsServiceImpl.setEnforceWhitelist	port	crates/horizon-server/src/management_methods.rs::Game::allowlist_setting	forwards the live setting to the game and persists server.enforce_whitelist in server.toml
 MinecraftServerSettingsServiceImpl.setMaxPlayers	port	crates/horizon-server/src/management_methods.rs::Game::max_players	forwards the live limit to the game and persists server.max_players
+MinecraftServerSettingsServiceImpl.setSpawnProtectionRadius	port	crates/horizon-server/src/management_methods.rs::Game::spawn_protection_radius	forwards the live radius to the game and persists properties.spawn-protection in server.toml
 MinecraftServerSettingsServiceImpl.setAutoSave	port	crates/horizon-server/src/management_methods.rs::Game::autosave	forwards the live save flag to the game; unlike a server property, it resets when the server restarts
 MinecraftServerSettingsServiceImpl.setPauseWhenEmptySeconds	port	crates/horizon-server/src/management_methods.rs::Game::pause_when_empty_seconds	forwards the live timer to the game and persists the server.properties setting
 DedicatedServer.setGameMode	port	crates/horizon-client/src/game/lan.rs::Game::set_default_game_mode	the /defaultgamemode command; gap: minor: the value is not written back to server.properties
