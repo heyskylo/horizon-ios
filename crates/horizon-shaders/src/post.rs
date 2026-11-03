@@ -182,6 +182,10 @@ const ENTITIES_TRANSLUCENT: [&str; 5] = [
     "gbuffers_basic",
 ];
 
+/// `gbuffers_beaconbeam` and its fallbacks (the shaders.properties reference): beacon and End
+/// gateway beams.
+const BEACON_BEAM: [&str; 3] = ["gbuffers_beaconbeam", "gbuffers_textured", "gbuffers_basic"];
+
 /// `gbuffers_particles` and its fallbacks (2.3).
 const PARTICLES: [&str; 4] = [
     "gbuffers_particles",
@@ -408,6 +412,8 @@ pub struct Post {
     pub entities_translucent: Option<PostProgram>,
     /// What draws particles.
     pub particles: Option<PostProgram>,
+    /// What draws beacon and End gateway beams (after deferred, blended).
+    pub beacon_beam: Option<PostProgram>,
     pub damaged_block: Option<PostProgram>,
     /// What draws the game's clouds.
     pub clouds: Option<PostProgram>,
@@ -605,6 +611,7 @@ pub fn load_post(
         block: None,
         entities_translucent: None,
         particles: None,
+        beacon_beam: None,
         damaged_block: None,
         clouds: None,
         lines: None,
@@ -780,6 +787,7 @@ pub fn load_post(
     let mut gbuffers_dyn = |names: &[&str], i: &GbuffersInputs| gbuffers(names, Group::Gbuffers, i);
     let entities_translucent = translucent(&ENTITIES_TRANSLUCENT, 0.0, &mut gbuffers_dyn);
     let particles = translucent(&PARTICLES, 0.1, &mut gbuffers_dyn);
+    let beacon_beam = translucent(&BEACON_BEAM, 0.0, &mut gbuffers_dyn);
     // Clouds blend, as vanilla's do (OQ-23).
     let clouds = inputs
         .clouds
@@ -842,6 +850,7 @@ pub fn load_post(
     loader.post.block = block;
     loader.post.entities_translucent = entities_translucent;
     loader.post.particles = particles;
+    loader.post.beacon_beam = beacon_beam;
     loader.post.damaged_block = damaged_block;
     loader.post.clouds_off = properties.get("clouds").is_some_and(|v| v.trim() == "off");
     loader.post.clouds = clouds.filter(|_| !loader.post.clouds_off);
@@ -888,6 +897,7 @@ fn load_shadow(
         &post.block,
         &post.entities_translucent,
         &post.particles,
+        &post.beacon_beam,
         &post.damaged_block,
         &post.clouds,
         &post.weather,

@@ -189,6 +189,7 @@
   "New instance": "Ny instans",
   "Loading filters": "Indlæser filtre",
   "Stopped": "Stoppet",
+  "{mode} · stopped": "{mode} · stoppet",
   "Extra arguments for the game, passed through as-is (quotes group a word with spaces). Applies the next time the game starts.": "Ekstra argumenter for spillet, som de er (anførselstegn grupperer et ord med mellemrum). Gælder næste gang spillet starter.",
   "Horizon never turns on Funnel: the server isn't put on the public internet, only shared with the people you invite.": "Horizon slår aldrig tragt til: Serveren sættes ikke på det offentlige internet, kun deles med de personer, du inviterer.",
   "Minecraft folder": "Minecraft mappe",
@@ -425,6 +426,7 @@
   "No version matches.": "Ingen version matcher.",
   "Invite a friend": "Inviter en ven",
   "Offline": "Offline",
+  "{online} of {max}": "{online} af {max}",
   "Shortcut": "Genvej",
   "Update to {version}": "Opdater til {version}",
   "{name} is off.": "{name} er slukket.",
@@ -1073,5 +1075,5 @@
   "Shader pack": "Shaderpakke",
   "soon": "snart",
   "{support} in Horizon": "{support} i Horizon",
-  "My Horizon": "Min Horizon"
+  "My Horizon": "Mit Horizon"
 }
