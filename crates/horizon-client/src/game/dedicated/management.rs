@@ -228,6 +228,26 @@ impl Game<'_> {
                     "value": self.lan.as_ref().map_or(0, |host| host.hub.spawn_protection)
                 });
             }
+            "serversettings/allow_flight" => {
+                return json!({
+                    "value": self.lan.as_ref().is_some_and(|host| host.hub.config.allow_flight)
+                });
+            }
+            "serversettings/allow_flight/set" => {
+                let Some(allow) = body["value"].as_bool() else {
+                    return json!({ "error": "allow flight must be a boolean" });
+                };
+                let current = self
+                    .lan
+                    .as_ref()
+                    .is_some_and(|host| host.hub.config.allow_flight);
+                rpc(format!("Update allow flight from {current} to {allow}"));
+                self.set_allow_flight(allow);
+                self.store_property("allow-flight", allow.to_string());
+                return json!({
+                    "value": self.lan.as_ref().is_some_and(|host| host.hub.config.allow_flight)
+                });
+            }
             "serversettings/player_idle_timeout" => {
                 return json!({ "value": state.lists.lock().unwrap().player_idle_timeout });
             }
