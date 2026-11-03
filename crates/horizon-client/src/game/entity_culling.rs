@@ -4,6 +4,7 @@ use horizon_client::{
     blocks::{BlockFacts, RenderShape, StateFacts},
     chunk::Chunk,
     entity_culling::Culler,
+    mobs::Species,
     world::World,
 };
 use std::{
@@ -657,6 +658,74 @@ mod async_tests {
         assert!(results.hidden.is_empty());
         drop(live);
     }
+}
+
+/// How far a renderer's `getBoundingBoxForCulling` grows the entity's own box.
+/// `EntityRenderer.shouldRender` culls with that box and inflates it by 0.5
+/// more; the growth here is what the renderer asks for on top.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(super) struct CullGrow {
+    /// Added to all three axes (`AABB.inflate(d)`).
+    all: f64,
+    /// Added to x and z only (`AABB.inflate(x, 0, z)`).
+    side: f64,
+    /// Taken off the bottom (`AABB.setMinY`).
+    down: f64,
+}
+
+impl CullGrow {
+    /// The growth a living entity's renderer asks for: none at all unless it
+    /// is an illusioner, a sniffer, a happy ghast or wearing a dragon head.
+    pub(super) fn of(species: Species, height: f64, dragon_head: bool) -> Self {
+        let mut grow = Self::default();
+        // LivingEntityRenderer.getBoundingBoxForCulling: `inflate(0.5)` while
+        // the head slot holds a dragon head, so the head does not pop out at
+        // the edge of the view.
+        if dragon_head {
+            grow.all += 0.5;
+        }
+        match species {
+            // IllusionerRenderer: `inflate(3, 0, 3)`, room for its mirrors.
+            Species::Illusioner => grow.side += 3.0,
+            // SnifferRenderer: `inflate(0.6)`.
+            Species::Sniffer => grow.all += f64::from(0.6_f32),
+            // HappyGhastRenderer: `setMinY(minY - getBbHeight() / 2)`.
+            Species::HappyGhast => grow.down += height / 2.0,
+            _ => {}
+        }
+        grow
+    }
+}
+
+/// `getBoundingBoxForCulling` for a mob at the frame's partial tick `alpha`,
+/// grown by what its renderer asks for.
+pub(super) fn cull_box(mob: &horizon_client::mobs::Mob, alpha: f64) -> (glam::DVec3, glam::DVec3) {
+    let (width, height, _) = mob.dims();
+    let grow = CullGrow::of(
+        mob.species(),
+        height,
+        mob.extra.head.as_deref() == Some("minecraft:dragon_head"),
+    );
+    let pos = glam::DVec3::new(
+        mob.previous.x + (mob.position.x - mob.previous.x) * alpha,
+        mob.previous.y + (mob.position.y - mob.previous.y) * alpha,
+        mob.previous.z + (mob.position.z - mob.previous.z) * alpha,
+    );
+    grown_box(pos, width, height, grow)
+}
+
+/// The entity's box standing on `pos`, grown by `grow`.
+pub(super) fn grown_box(
+    pos: glam::DVec3,
+    width: f64,
+    height: f64,
+    grow: CullGrow,
+) -> (glam::DVec3, glam::DVec3) {
+    let side = width / 2.0 + grow.side + grow.all;
+    (
+        pos - glam::DVec3::new(side, grow.all + grow.down, side),
+        pos + glam::DVec3::new(side, height + grow.all, side),
+    )
 }
 
 /// An entity's position as a `DVec3`.
