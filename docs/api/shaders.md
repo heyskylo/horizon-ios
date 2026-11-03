@@ -167,6 +167,8 @@ stages. `[displacement]`'s relief doesn't reach the shadow map yet: the flat fac
 
 ## Changelog
 
+- 2026-11-03: API 0.1 (no change to packs): float and int `[[options]]` are sliders on the options page, on their
+  `step`; the value is saved, and the pack rebuilt, when the slider is let go.
 - 2026-11-03: API 0.1 (additions): `[displacement]` draws: near the camera the faces with LabPBR relief are a
   grid moved by `displacement`, and `MaterialInput.displaced` says how much of it a point has.
 - 2026-11-03: API 0.1 (additions): the manifest's `[displacement]`, the material stage's

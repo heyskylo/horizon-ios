@@ -179,10 +179,12 @@ changes, from at most 2048 sources, the nearest first.
 
 ## Options
 
-A picked pack with options gets a Shader Options... button at the top of the Shader Packs page. A click picks an
-option's next value, a right click the one before, shift-click its default, and Reset all of them; hovering one shows its
-`description`. Each change is saved to `shaderpacks/<pack>.txt` (`id=value` lines, values at their defaults left out) and
-the pack reloads with it within half a second.
+A picked pack with options gets a Shader Options... button at the top of the Shader Packs page. Float and int options
+are sliders that take the nearest `step` (an int's whole numbers), and the arrow keys move a focused one a step at a
+time; bool and choice options are buttons, where a click picks the next value and a right click the one before.
+Shift-click puts either back to its default, and Reset all of them; hovering one shows its `description`. Each change
+is saved to `shaderpacks/<pack>.txt` (`id=value` lines, values at their defaults left out), a slider's when it is
+let go, and the pack reloads with it within half a second.
 
 The page shows every option two a row, unless the pack lays them out in `[[pages]]`: it opens on the first page, and an
 item `"page:<id>"` is a button opening another, so options can be grouped into categories. `""` leaves a slot empty, and
