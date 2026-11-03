@@ -57,6 +57,9 @@ Usage: horizon-server [--dir DIR] <command>
               a running server takes the difficulty, default game mode and whitelist at once, the rest
               at its next start
   import FILE Write server.toml from a vanilla server.properties
+  import-resources DIR
+              Copy game files prepared elsewhere (by the launcher or horizon-prepare) into place, after
+              checking they are complete and for this Minecraft version; the old copy stays on failure
   op NAME, deop NAME
   whitelist on|off|list, whitelist add|remove NAME
               Who may join (on the running server, or in the files when it is stopped)
