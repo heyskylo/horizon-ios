@@ -419,8 +419,13 @@ impl Game<'_> {
         // `ServerTickStart` before that level work, where NeoForge fires
         // `ServerTickEvent.Pre`. A paused pass and a held server tick nothing.
         let running = (!paused && !self.agent.hold_server).then(|| self.clock.world_runs());
+        let server = self.serving.is_some() || self.options.dedicated.is_some();
+        // A config edited while the server is paused (empty) still reloads.
+        if server {
+            self.native_configs_poll();
+        }
         if let Some(running) = running
-            && (self.serving.is_some() || self.options.dedicated.is_some())
+            && server
         {
             self.native_lifecycle_server_tick_start(running);
         }
