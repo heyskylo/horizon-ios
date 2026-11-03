@@ -17,7 +17,8 @@ sent the same things over TLS, and every answer is compared exactly:
   `server/system_message` with no one online, the four lists changed (`add`, `remove`, `set`,
   `clear`; with no profile service, players named resolve to offline players on both), the live server
   message, difficulty, default and forced game mode read and changed (including saved properties), autosave
-  read and changed (including its reset after restart), allowlist use and enforcement read and changed
+  read and changed (including its reset after restart), allow-flight read and changed (including invalid input,
+  saved properties and restart), allowlist use and enforcement read and changed
   (including saved properties and restart), max players read and changed (including saved
   properties and restart), player idle timeout read and changed (including disabling it, invalid input,
   saved properties and restart), the live pause-when-empty timer read and changed (including its saved
@@ -162,6 +163,15 @@ MESSAGES = [
     '{"jsonrpc":"2.0","id":61,"method":"minecraft:serversettings/force_game_mode"}',
     '{"jsonrpc":"2.0","id":62,"method":"minecraft:serversettings/force_game_mode/set","params":["yes"]}',
     '{"jsonrpc":"2.0","id":63,"method":"minecraft:serversettings/force_game_mode"}',
+    '{"jsonrpc":"2.0","id":140,"method":"minecraft:serversettings/allow_flight"}',
+    '{"jsonrpc":"2.0","id":141,"method":"minecraft:serversettings/allow_flight/set","params":[true]}',
+    '{"jsonrpc":"2.0","id":142,"method":"minecraft:serversettings/allow_flight"}',
+    '{"jsonrpc":"2.0","id":143,"method":"minecraft:serversettings/allow_flight/set","params":["yes"]}',
+    '{"jsonrpc":"2.0","id":144,"method":"minecraft:serversettings/allow_flight"}',
+    '{"jsonrpc":"2.0","id":145,"method":"minecraft:serversettings/allow_flight/set","params":[false]}',
+    '{"jsonrpc":"2.0","id":146,"method":"minecraft:serversettings/allow_flight"}',
+    '{"jsonrpc":"2.0","id":147,"method":"minecraft:serversettings/allow_flight/set","params":[true]}',
+    '{"jsonrpc":"2.0","id":148,"method":"minecraft:serversettings/allow_flight"}',
     '{"jsonrpc":"2.0","id":65,"method":"minecraft:serversettings/autosave"}',
     '{"jsonrpc":"2.0","id":66,"method":"minecraft:serversettings/autosave/set","params":[false]}',
     '{"jsonrpc":"2.0","id":67,"method":"minecraft:serversettings/autosave"}',
@@ -491,6 +501,9 @@ def main():
                 sides[side]['saved_entity_broadcast_range'] = next(
                     (line.partition('=')[2] for line in properties.splitlines()
                      if line.startswith('entity-broadcast-range-percentage=')), None)
+                sides[side]['saved_allow_flight'] = next(
+                    (line.partition('=')[2] for line in properties.splitlines()
+                     if line.startswith('allow-flight=')), None)
                 if side == 'horizon':
                     world = (folder / 'server.toml').read_text().partition('[world]')[2].split('\n[', 1)[0]
                     sides[side]['saved_config_difficulty'] = 'difficulty = "peaceful"' in world
@@ -508,6 +521,8 @@ def main():
                     sides[side]['saved_config_player_idle_timeout'] = 'player-idle-timeout = 30' in (
                         folder / 'server.toml').read_text()
                     sides[side]['saved_config_entity_broadcast_range'] = 'entity-broadcast-range-percentage = 80' in (
+                        folder / 'server.toml').read_text()
+                    sides[side]['saved_config_allow_flight'] = 'allow-flight = true' in (
                         folder / 'server.toml').read_text()
             finally:
                 server.stop()
@@ -558,6 +573,12 @@ def main():
                         if not isinstance(reply, dict) or 'method' not in reply or 'id' in reply:
                             break
                     sides[side]['restarted_player_idle_timeout'] = reply
+                    ws.send('{"jsonrpc":"2.0","id":149,"method":"minecraft:serversettings/allow_flight"}')
+                    while True:
+                        reply = normal(ws.receive(timeout=60))
+                        if not isinstance(reply, dict) or 'method' not in reply or 'id' in reply:
+                            break
+                    sides[side]['restarted_allow_flight'] = reply
                     ws.send('{"jsonrpc":"2.0","id":189,"method":"minecraft:serversettings/entity_broadcast_range"}')
                     while True:
                         reply = normal(ws.receive(timeout=60))
@@ -643,6 +664,13 @@ def main():
         if vanilla['restarted_entity_broadcast_range'] != horizon['restarted_entity_broadcast_range'] or \
                 vanilla['restarted_entity_broadcast_range'] != {'jsonrpc': '2.0', 'id': 189, 'result': 80}:
             failures.append(f"restarted entity broadcast range: vanilla {vanilla['restarted_entity_broadcast_range']!r}, Horizon {horizon['restarted_entity_broadcast_range']!r}")
+        if vanilla['saved_allow_flight'] != horizon['saved_allow_flight'] or vanilla['saved_allow_flight'] != 'true':
+            failures.append(f"saved allow-flight: vanilla {vanilla['saved_allow_flight']!r}, Horizon {horizon['saved_allow_flight']!r}")
+        if not horizon['saved_config_allow_flight']:
+            failures.append('Horizon did not save allow-flight in server.toml')
+        if vanilla['restarted_allow_flight'] != horizon['restarted_allow_flight'] or \
+                vanilla['restarted_allow_flight'] != {'jsonrpc': '2.0', 'id': 149, 'result': True}:
+            failures.append(f"restarted allow-flight: vanilla {vanilla['restarted_allow_flight']!r}, Horizon {horizon['restarted_allow_flight']!r}")
         (build / 'report.json').write_text(json.dumps(sides, indent=1))
         if failures:
             sys.exit(f'{NAME}: {len(failures)} differences (logs in {build}):\n' + '\n'.join(failures))
