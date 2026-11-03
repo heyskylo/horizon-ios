@@ -97,7 +97,8 @@ impl Game<'_> {
         let mut events = false;
         let entity_ticking = self.entity_ticking_area();
         loop {
-            let (done, born, announced) = (self.ordered.done, self.ordered.born, self.ordered.announced);
+            let (done, born, announced) =
+                (self.ordered.done, self.ordered.born, self.ordered.announced);
             let wanted = |j: JoinSeq| done.is_none_or(|d| j > d) && j < cut && j < born;
             let mut next: Option<(JoinSeq, Pending)> = None;
             let mut offer = |j: JoinSeq, kind: Pending| {
@@ -125,10 +126,10 @@ impl Game<'_> {
                         continue;
                     };
                     let at = self.tnts[i].position;
-                    if entity_ticking(at.x.floor() as i32, at.z.floor() as i32) {
-                        if let Err(e) = self.tick_one_tnt(i) {
-                            first_error.get_or_insert(e);
-                        }
+                    if entity_ticking(at.x.floor() as i32, at.z.floor() as i32)
+                        && let Err(e) = self.tick_one_tnt(i)
+                    {
+                        first_error.get_or_insert(e);
                     }
                 }
                 Pending::Falling => {

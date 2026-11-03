@@ -1,10 +1,10 @@
 //! Wind charges: the item a player throws (`WindChargeItem`), the charges
 //! breezes shoot, and the burst they make (`ServerExplosion` with
 //! `TRIGGER_BLOCK`: no damage, only knockback and the blocks that react).
-use horizon_client::join_seq::Joined as _;
 use super::Game;
 use super::entity::{Blast, Entity as _, for_each_entity_mut};
 use horizon_client::advancements::EntityView;
+use horizon_client::join_seq::Joined as _;
 use horizon_client::{
     Result,
     mobs::{Damage, DamageKind, Species, Who},

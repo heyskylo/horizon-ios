@@ -50,7 +50,6 @@ fn pack_files(world_tables: &Option<WorldTables>) -> horizon_world::loot::PackOv
 }
 
 mod advancements;
-mod ordered_tick;
 mod advancements_screen;
 mod agent;
 mod agent_settings;
@@ -246,6 +245,7 @@ mod nether_portal;
 mod no_resources;
 mod ominous_item_spawner;
 mod options;
+mod ordered_tick;
 mod packs;
 mod pad;
 mod pad_menu;
@@ -7604,8 +7604,6 @@ impl Game<'_> {
             // Primed TNT and falling blocks that joined since the spawn packets.
             self.run_ordered_ticks(horizon_client::join_seq::JoinSeq::MAX, true)?;
             self.apply_late_wind_pushes();
-        }
-        if running {
         }
         if running {
             horizon_client::spans::time("tick_block_entities", || self.tick_block_entities())?;
