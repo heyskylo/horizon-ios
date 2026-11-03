@@ -2347,3 +2347,99 @@ mod conversion_tests {
     }
 }
 
+#[cfg(test)]
+mod brute_home_tests {
+    use super::*;
+    use crate::mobs::sensor_scan_tests::kind;
+    use crate::mobs::world::with_built_test_world;
+    use horizon_world::registry::BlockRegistry;
+    use std::sync::Arc;
+
+    fn brute(at: Vec3, home: Option<[i32; 3]>) -> Mob {
+        let mut kind = kind();
+        Arc::make_mut(&mut kind).species = Species::PiglinBrute;
+        let mut m = Mob::new(1, kind, at, 0.0);
+        m.extra.home = home;
+        m.on_ground = true;
+        m
+    }
+    /// A stone floor under the brute, and the chunks the pathfinder reads.
+    fn build(world: &mut crate::world::World, registry: &BlockRegistry) {
+        let stone = registry.default_state("minecraft:stone").unwrap();
+        for cx in -4..4 {
+            for cz in -4..4 {
+                world
+                    .chunks
+                    .insert((cx, cz), Arc::new(crate::chunk::Chunk::empty(cx, cz)));
+            }
+        }
+        for x in -64..64 {
+            for z in -64..64 {
+                world.set(x, -1, z, stone).unwrap();
+            }
+        }
+    }
+    /// The brute's goals ticked as the AI ticks them (`ai_step` takes the
+    /// selector out, ticks it and puts it back). Answers whether the walk home
+    /// started and where its path ends.
+    fn tick_goals(m: &mut Mob, cx: &mut Cx) -> (bool, Option<[i32; 3]>) {
+        let mut goals = std::mem::take(&mut m.ai.goals);
+        goals.tick(m, cx);
+        let running = goals.is_running("BruteStrollHome");
+        m.ai.goals = goals;
+        (running, m.ai.nav.path.as_ref().map(|p| p.target))
+    }
+    /// `StrollToPoi(HOME, 0.6F, 2, 100)` of the brute's idle movement
+    /// behaviours, through the goal `register_brute` gives it: a brute more
+    /// than ten blocks from the spot it spawned at walks back to it, and one
+    /// that is near home, past a hundred blocks, or without the memory does
+    /// not.
+    #[test]
+    fn a_brute_that_wanders_off_walks_back_home() {
+        with_built_test_world(&[], build, |w, _| {
+            let mut lr = LegacyRandom::new(3);
+            let mut events = Vec::new();
+            for (label, home, walks) in [
+                ("far enough to walk back", Some([24, 0, 0]), true),
+                ("near home", Some([5, 0, 0]), false),
+                ("past the memory's reach", Some([120, 0, 0]), false),
+                ("no home", None, false),
+            ] {
+                let mut m = brute(Vec3::new(0.5, 0.0, 0.5), home);
+                register_brute(&mut m);
+                let mut cx = Cx {
+                    w,
+                    lr: &mut lr,
+                    events: &mut events,
+                };
+                let (running, target) = tick_goals(&mut m, &mut cx);
+                if walks {
+                    assert!(running, "{label}: the brute sets off home");
+                    assert_eq!(target, home, "{label}: and the walk ends at home");
+                } else {
+                    assert!(!running, "{label}: no walk home");
+                    assert_eq!(target, None, "{label}: and no path");
+                }
+            }
+        });
+    }
+    /// `PiglinBruteAi.wasHurtBy` erases nothing: a hit does not cost the brute
+    /// the home it walks back to. `PiglinAi.wasHurtBy` erases
+    /// CELEBRATE_LOCATION, which is the same field for a piglin.
+    #[test]
+    fn a_hit_leaves_the_brutes_home_alone() {
+        with_built_test_world(&[], build, |w, _| {
+            let mut lr = LegacyRandom::new(5);
+            let mut events = Vec::new();
+            let mut m = brute(Vec3::new(0.5, 0.0, 0.5), Some([24, 0, 0]));
+            piglin_hurt(&mut m, w, &mut lr, &mut events, Who::Mob(999));
+            assert_eq!(m.extra.home, Some([24, 0, 0]), "the brute keeps it");
+            let mut kind = kind();
+            Arc::make_mut(&mut kind).species = Species::Piglin;
+            let mut piglin = Mob::new(2, kind, Vec3::new(0.5, 0.0, 0.5), 0.0);
+            piglin.extra.home = Some([24, 0, 0]);
+            piglin_hurt(&mut piglin, w, &mut lr, &mut events, Who::Mob(999));
+            assert_eq!(piglin.extra.home, None, "the piglin drops its celebration");
+        });
+    }
+}
