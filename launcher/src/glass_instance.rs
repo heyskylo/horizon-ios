@@ -30,15 +30,6 @@ pub(super) fn loaders() -> Vec<Loader> {
         .collect()
 }
 
-/// What an existing instance plays.
-fn kind_of(i: &Instance) -> NewKind {
-    match &i.java {
-        None => NewKind::Horizon,
-        Some(j) if j.loader.is_some() => NewKind::Modded,
-        Some(_) => NewKind::Vanilla,
-    }
-}
-
 /// A choice card (`CHOICE`): round at 16, white at 12 % when chosen, else 4 %, 7 % under the
 /// pointer.
 pub(super) fn choice(id: impl Into<SharedString>, on: bool, t: &Theme) -> Stateful<Div> {
@@ -194,7 +185,7 @@ impl Launcher {
             .as_ref()
             .and_then(|id| self.instances.list.iter().find(|i| &i.id == id))
             .cloned();
-        let kind = editing.as_ref().map_or(d.java.kind, kind_of);
+        let kind = d.java.kind;
         let aside = self.instance_aside(editing.as_ref(), kind, cx);
         let main = self.instance_main(editing.as_ref(), kind, cx);
         let close = cx.listener(move |this, _: &MouseDownEvent, _, cx| {
@@ -241,26 +232,15 @@ impl Launcher {
     }
 
     /// The loader a modded instance plays (or will).
-    pub(super) fn draft_loader(&self, editing: Option<&Instance>) -> Loader {
-        match editing {
-            Some(i) => i
-                .java
-                .as_ref()
-                .and_then(|j| j.loader.as_ref())
-                .map_or(Loader::Fabric, |l| l.kind),
-            None => self
-                .instances
-                .dialog
-                .as_ref()
-                .map_or(Loader::Fabric, |d| d.java.loader),
-        }
+    pub(super) fn draft_loader(&self) -> Loader {
+        self.instances
+            .dialog
+            .as_ref()
+            .map_or(Loader::Fabric, |d| d.java.loader)
     }
 
     /// The Minecraft version a Java instance plays (or will), once Mojang's list says.
-    pub(super) fn draft_minecraft(&self, editing: Option<&Instance>) -> Option<String> {
-        if let Some(j) = editing.and_then(|i| i.java.as_ref()) {
-            return Some(j.minecraft.clone());
-        }
+    pub(super) fn draft_minecraft(&self) -> Option<String> {
         let versions = match &self.instances.versions {
             VersionList::Ready(v) => Some(v),
             _ => None,
@@ -379,7 +359,7 @@ impl Launcher {
                 None => letter_tile(ui::color(self.look.accent), name, size).into_any_element(),
             },
             None => {
-                let loader = self.draft_loader(editing);
+                let loader = self.draft_loader();
                 self.auto_mark(kind, loader, size)
             }
         }
@@ -399,12 +379,12 @@ impl Launcher {
         } else {
             typed
         };
-        let loader = self.draft_loader(editing);
+        let loader = self.draft_loader();
         let minecraft = trf(
             "Minecraft {version}",
             &[(
                 "version",
-                &self.draft_minecraft(editing).unwrap_or_else(|| "…".into()),
+                &self.draft_minecraft().unwrap_or_else(|| "…".into()),
             )],
         );
         let mut summary = match kind {
@@ -426,11 +406,10 @@ impl Launcher {
             }
             _ => tr("Play downloads the game from Mojang the first time, with the Java it needs."),
         };
-        // An instance keeps its kind: editing shows only its own.
-        let kinds: Vec<NewKind> = match editing {
-            Some(_) => vec![kind],
-            None => vec![NewKind::Horizon, NewKind::Vanilla, NewKind::Modded],
-        };
+        // One made in the launcher can switch what it plays; the game's home and modpacks
+        // play what they were made with.
+        let switches = editing.is_none_or(|i| i.kind == instances::Kind::Own);
+        let kinds = [NewKind::Horizon, NewKind::Vanilla, NewKind::Modded];
         let names: Vec<&str> = loaders().iter().map(|l| l.name()).collect();
         let modded = match names.split_last() {
             Some((last, [])) => last.to_string(),
@@ -474,8 +453,8 @@ impl Launcher {
                 .p(px(12.))
                 .child(tile)
                 .child(choice_text(title, note));
-            cards.push(if editing.is_some() {
-                card.cursor_default()
+            cards.push(if !switches {
+                card.cursor_default().when(k != kind, |c| c.opacity(0.5))
             } else {
                 card.on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                     this.pick_kind(k, cx);
@@ -671,20 +650,19 @@ impl Launcher {
             .px(px(36.))
             .pb(px(32.))
             .overflow_y_scroll();
-        match (editing, kind) {
-            (_, NewKind::Horizon) => {
-                body = body.child(self.horizon_versions(cx));
-                if editing.is_none() {
-                    body = body.child(self.start_from(copy, cx));
-                }
+        if let Some(i) = editing {
+            body = body.children(self.switch_notice(i));
+        }
+        if kind == NewKind::Horizon {
+            body = body.child(self.horizon_versions(cx));
+            if editing.is_none() {
+                body = body.child(self.start_from(copy, cx));
             }
-            // A Java instance keeps the game it was made for.
-            (Some(_), _) => {}
-            (None, _) => {
-                body = body.child(self.minecraft_versions(cx));
-                if kind == NewKind::Modded {
-                    body = body.child(self.loader_choice(cx));
-                }
+        } else {
+            self.load_versions(cx);
+            body = body.child(self.minecraft_versions(cx));
+            if kind == NewKind::Modded {
+                body = body.child(self.loader_choice(cx));
             }
         }
         let name = self
@@ -962,7 +940,7 @@ impl Launcher {
                     .into_any_element(),
             );
         }
-        let loader = self.draft_loader(editing);
+        let loader = self.draft_loader();
         let auto = self.auto_mark(kind, loader, 40.);
         first.push(
             icon_choice("icon-auto", !pictured && icon.is_none(), &t)
