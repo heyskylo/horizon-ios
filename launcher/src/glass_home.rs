@@ -163,8 +163,8 @@ impl Launcher {
                 Some(when) => trf(
                     "You've played for {time}! Last played {when}.",
                     &[
-                        ("time", &instances::play_time(i.played)),
-                        ("when", &worlds_page::ago(when)),
+                        ("time", &played_for(i.played)),
+                        ("when", &last_played(when)),
                     ],
                 ),
                 None => tr("You haven't played this one yet. Press Play to start.").into(),
@@ -193,7 +193,13 @@ impl Launcher {
         let official = self.official_players.map(|count| {
             link(
                 "official-players",
-                format!("· {} on the official SMP", thousands(count)),
+                format!(
+                    "· {}",
+                    trf(
+                        "{count} on the official SMP",
+                        &[("count", &thousands(count))]
+                    )
+                ),
             )
             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                 this.go(Page::Servers);
@@ -777,6 +783,41 @@ impl Launcher {
     }
 }
 
+/// How long an instance was played, as the mockup writes it: "41 hours", "1 hour", "25 min".
+fn played_for(played: Duration) -> String {
+    match played.as_secs() / 60 {
+        0 => tr("under a minute").into(),
+        m @ 1..=59 => trf("{count} min", &[("count", &m.to_string())]),
+        60..=119 => tr("1 hour").into(),
+        m => trf("{count} hours", &[("count", &(m / 60).to_string())]),
+    }
+}
+
+/// When something was last played, as the mockup writes it: "just now", "25 min ago", "2 hours
+/// ago" within a day, then "yesterday", then the day ("Oct 31").
+pub(super) fn last_played(when: std::time::SystemTime) -> String {
+    let local: chrono::DateTime<chrono::Local> = when.into();
+    since(
+        std::time::SystemTime::now()
+            .duration_since(when)
+            .unwrap_or_default(),
+        (chrono::Local::now().date_naive() - local.date_naive()).num_days(),
+        &local.format("%Y-%m-%d").to_string(),
+    )
+}
+
+/// [`last_played`] from how long ago it was, how many calendar days back, and its date.
+fn since(ago: Duration, days: i64, date: &str) -> String {
+    match ago.as_secs() / 60 {
+        0 => tr("just now").into(),
+        m @ 1..=59 => trf("{count} min ago", &[("count", &m.to_string())]),
+        60..=119 => tr("1 hour ago").into(),
+        m if m < 24 * 60 => trf("{count} hours ago", &[("count", &(m / 60).to_string())]),
+        _ if days <= 1 => tr("yesterday").into(),
+        _ => glass_versions::published(date, ""),
+    }
+}
+
 /// What a Play menu row does.
 #[derive(Clone, Copy)]
 enum PlayItem {
@@ -789,4 +830,29 @@ enum PlayItem {
 /// The command that plays instance `id` without the window, as its desktop shortcut runs it.
 fn launch_command(id: &str) -> String {
     format!("horizon-launcher play --instance {id}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn played_time_reads_as_the_mockup_writes_it() {
+        let h = |s: u64| played_for(Duration::from_secs(s));
+        assert_eq!(h(148_000), "41 hours");
+        assert_eq!(h(5_400), "1 hour");
+        assert_eq!(h(1_500), "25 min");
+    }
+
+    #[test]
+    fn last_played_counts_hours_within_a_day_then_days() {
+        let m = |min: u64| Duration::from_secs(min * 60);
+        assert_eq!(since(m(0), 0, "2026-11-03"), "just now");
+        assert_eq!(since(m(25), 0, "2026-11-03"), "25 min ago");
+        assert_eq!(since(m(130), 0, "2026-11-03"), "2 hours ago");
+        // Under 24 hours, even across midnight.
+        assert_eq!(since(m(20 * 60), 1, "2026-11-02"), "20 hours ago");
+        assert_eq!(since(m(30 * 60), 1, "2026-11-02"), "yesterday");
+        assert_eq!(since(m(3 * 24 * 60), 3, "2026-10-31"), "Oct 31");
+    }
 }
