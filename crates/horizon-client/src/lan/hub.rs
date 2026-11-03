@@ -307,6 +307,8 @@ pub struct Hub {
     pub far: Option<super::far::Far>,
     /// The `immediate_respawn` game rule, as the players were last told.
     immediate_respawn: bool,
+    /// The `reduced_debug_info` game rule, as the players were last told.
+    reduced_debug_info: bool,
     /// An integrated server's owner (`MinecraftServer.isSingleplayerOwner`),
     /// whose moves are never checked.
     pub singleplayer_owner: Option<u128>,
@@ -616,6 +618,7 @@ impl Hub {
             seat_order: 0,
             sound_seeds: Mutex::new(LegacyRandom::new(crate::sound_engine::unique_seed())),
             immediate_respawn: false,
+            reduced_debug_info: false,
             movement_checks: (true, true),
             anticheat: None,
             chat_filter: None,
@@ -724,6 +727,20 @@ impl Hub {
                 event: game_event::IMMEDIATE_RESPAWN,
                 param: if on { 1.0 } else { 0.0 },
             }));
+        }
+    }
+    /// MinecraftServer.onGameRuleChanged: every player gets entity event 22
+    /// (reduced) or 23 (full) for themselves when `reduced_debug_info`
+    /// changes; a joining player's Login carries it.
+    pub fn set_reduced_debug_info(&mut self, on: bool) {
+        if self.reduced_debug_info != on {
+            self.reduced_debug_info = on;
+            for g in self.guests.iter().filter(|g| g.placed) {
+                g.send(&C::EntityEvent(play::EntityEvent {
+                    id: g.entity_id,
+                    event: if on { 22 } else { 23 },
+                }));
+            }
         }
     }
     /// PlayerList.setViewDistance: every player is told the new radius,
@@ -1117,7 +1134,7 @@ impl Hub {
             max_players: self.config.max_players as i32,
             chunk_radius: self.chunk_radius(),
             simulation_distance: self.config.simulation_distance,
-            reduced_debug_info: false,
+            reduced_debug_info: self.reduced_debug_info,
             show_death_screen: !self.immediate_respawn,
             limited_crafting: false,
             spawn: self.spawn_info(i, 0),
@@ -4297,6 +4314,32 @@ mod tests {
         bob.dimension = "minecraft:overworld".into();
         hub.guests.push(bob);
         (hub, rx)
+    }
+
+    /// `onGameRuleChanged`: a changed `reduced_debug_info` reaches each player
+    /// as their own entity event 22 / 23, and an unchanged one sends nothing.
+    #[test]
+    fn reduced_debug_info_changes_reach_players_as_entity_events() {
+        let (mut hub, rx) = hub_with_a_guest();
+        let id = hub.guests[0].entity_id;
+        let events = |rx: &std::sync::mpsc::Receiver<crate::lan::Out>| {
+            let mut sent = Vec::new();
+            while let Ok(crate::lan::Out::Packet(body)) = rx.try_recv() {
+                let mut r = horizon_protocol::buf::Reader::new(&body);
+                let pid = r.varint().unwrap();
+                if let Ok(C::EntityEvent(p)) = C::decode(pid, r.rest()) {
+                    sent.push((p.id, p.event));
+                }
+            }
+            sent
+        };
+        hub.set_reduced_debug_info(false);
+        assert!(events(&rx).is_empty());
+        hub.set_reduced_debug_info(true);
+        hub.set_reduced_debug_info(true);
+        assert_eq!(events(&rx), vec![(id, 22)]);
+        hub.set_reduced_debug_info(false);
+        assert_eq!(events(&rx), vec![(id, 23)]);
     }
 
     /// `handlePlayerCommand` START_RIDING_JUMP (3) and STOP_RIDING_JUMP (4): the
