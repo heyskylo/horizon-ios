@@ -5,25 +5,48 @@
 //! [--warmup 60] [--yaw-offsets 0,90,180,270] [--texture-filtering 0|1|2] [--anisotropy-bit N]
 //! [--mipmaps N] [--lod-distance CHUNKS] [--render-distance CHUNKS] [--size WxH]
 //! [--section-draws flat|indirect] [--section-cull on|off] [--section-sides on|off]
-//! [--gpu-culling on|off] [--root RESOURCES] [--screenshot PNG]`
+//! [--gpu-culling on|off] [--root RESOURCES] [--screenshot PNG]
+//! [--world SAVE --leaf-culling MODE]`
 //! `--screenshot` saves the first view's last frame, after the timed frames.
+//! `--world` meshes the captured sections again from that save's region files
+//! (blocks, biomes and saved light; `ao`, `biomeBlendRadius` and `cutoutLeaves`
+//! from `./options.txt`) with `--leaf-culling` (default `off`), so a mesher
+//! change can be measured on the captured view. A section whose 3x3 columns are
+//! not all saved keeps its captured mesh.
 use horizon_client_render::{
-    assets::Assets,
-    chunk::ColumnLayout,
-    fast_hash::FxHashSet,
+    assets::{Assets, RenderAssets},
+    biome::Biomes,
+    blocks::BlockFacts,
+    chunk::{BIOME_STRATEGY, Chunk, ColumnLayout, Light, block_strategy},
+    fast_hash::{FxHashMap, FxHashSet},
     gfx::{
         PreparedTextures, Renderer, ScreenshotRequest,
         capture::{self, AtlasCheck, Scene},
         panorama::Faces,
     },
+    graphics::LeafCullingMode,
     hud::HudBatch,
     lod::TileKey,
-    mesher::SectionMesh,
+    mesher::{MeshScratch, MeshTables, Mesher, SectionMesh},
+    models,
+};
+use horizon_core::{
+    biome::{BiomeZoom, obfuscate_seed},
+    paletted::PalettedContainer,
+};
+use horizon_world::{
+    chunk::BlockState,
+    nbt::{Limits, NamedTag, Tag},
+    region::RegionFile,
+    registry::BlockRegistry,
 };
 use serde_json::{Value, json};
 use std::{
-    path::PathBuf,
-    sync::Arc,
+    path::{Path, PathBuf},
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
     time::{Duration, Instant},
 };
 use winit::{
@@ -51,6 +74,8 @@ struct Options {
     sides: Option<bool>,
     gpu_culling: Option<bool>,
     screenshot: Option<PathBuf>,
+    world: Option<PathBuf>,
+    leaf_culling: LeafCullingMode,
 }
 
 fn on_off(value: &str) -> Result<bool, String> {
@@ -101,6 +126,13 @@ fn options() -> Result<Options, String> {
             "--section-sides" => o.sides = Some(on_off(&value)?),
             "--gpu-culling" => o.gpu_culling = Some(on_off(&value)?),
             "--screenshot" => o.screenshot = Some(value.into()),
+            "--world" => o.world = Some(value.into()),
+            "--leaf-culling" => {
+                o.leaf_culling = LeafCullingMode::ALL
+                    .into_iter()
+                    .find(|mode| mode.name() == value)
+                    .ok_or(format!("no leaf culling mode {value}"))?;
+            }
             other => return Err(format!("unknown option {other}")),
         }
     }
@@ -228,12 +260,38 @@ fn replay(window: Arc<Window>) -> Result<(), Box<dyn std::error::Error>> {
     let camera = scene.frame.camera;
     let column = |x: f64| (x.floor() as i32) >> 4;
     let (cx, cz) = (column(camera[0]), column(camera[2]));
-    let mut sections = 0;
-    capture::read_meshes(&o.dir, "sections", |[x, y, z], mesh| {
-        let near = o
-            .render_distance
-            .is_none_or(|r| (x - cx).pow(2) + (z - cz).pow(2) <= r * r);
-        if near {
+    let near = |x: i32, z: i32| {
+        o.render_distance
+            .is_none_or(|r| (x - cx).pow(2) + (z - cz).pow(2) <= r * r)
+    };
+    let (mut remeshed, mut world_report) = (FxHashMap::default(), Value::Null);
+    if let Some(world) = &o.world {
+        let keys: Vec<[i32; 3]> = section_keys(&o.dir)?
+            .into_iter()
+            .filter(|&[x, _, z]| near(x, z))
+            .collect();
+        let started = Instant::now();
+        remeshed = remesh(world, &root, &assets, &render, o.leaf_culling, &keys)?;
+        world_report = json!({
+            "save": world.display().to_string(),
+            "leaf_culling": o.leaf_culling.name(),
+            "remeshed": remeshed.len(),
+            "kept": keys.len() - remeshed.len(),
+            "remesh_ms": ms(started.elapsed()),
+        });
+    }
+    let leaf_layers = leaf_layers(&render);
+    let (mut sections, mut quads, mut leaf_quads) = (0, 0usize, 0usize);
+    capture::read_meshes(&o.dir, "sections", |[x, y, z], captured| {
+        if near(x, z) {
+            let mesh = remeshed.remove(&[x, y, z]).unwrap_or(captured);
+            quads += mesh.solid.len() / 4;
+            leaf_quads += mesh
+                .solid
+                .iter()
+                .filter(|v| leaf_layers.contains(&v.layer))
+                .count()
+                / 4;
             renderer.upload((x, y, z), &mesh);
             sections += 1;
         }
@@ -351,6 +409,9 @@ fn replay(window: Arc<Window>) -> Result<(), Box<dyn std::error::Error>> {
         "captured_on": state.adapter,
         "size": [width, height],
         "sections": sections,
+        "solid_quads": quads,
+        "leaf_quads": leaf_quads,
+        "world": world_report,
         "tiles": tile_count,
         "load_ms": loaded_ms,
         "frames": o.frames,
@@ -393,4 +454,316 @@ impl ApplicationHandler for App {
 
 fn main() {
     EventLoop::new().unwrap().run_app(&mut App).unwrap();
+}
+
+/// The captured sections' keys, from the index alone.
+fn section_keys(dir: &Path) -> Result<Vec<[i32; 3]>, Box<dyn std::error::Error>> {
+    #[derive(serde::Deserialize)]
+    struct Key {
+        key: [i32; 3],
+    }
+    let records: Vec<Key> = serde_json::from_reader(std::io::BufReader::new(std::fs::File::open(
+        dir.join("sections.json"),
+    )?))?;
+    Ok(records.into_iter().map(|r| r.key).collect())
+}
+
+/// Sprite layers of every leaves block, as terrain vertices carry them (with or
+/// without `OPAQUE_LAYER`).
+fn leaf_layers(render: &RenderAssets) -> FxHashSet<u16> {
+    render
+        .sprite_layers
+        .iter()
+        .filter(|(name, _)| name.ends_with("_leaves"))
+        .flat_map(|(_, &layer)| {
+            [
+                layer as u16,
+                layer as u16 | horizon_client_render::mesher::OPAQUE_LAYER,
+            ]
+        })
+        .collect()
+}
+
+/// `--world`: the sections `keys` meshed again from `save`'s overworld region
+/// files, on every core, as the game's workers mesh them.
+fn remesh(
+    save: &Path,
+    root: &Path,
+    assets: &Assets,
+    render: &RenderAssets,
+    leaf_culling: LeafCullingMode,
+    keys: &[[i32; 3]],
+) -> Result<FxHashMap<[i32; 3], SectionMesh>, Box<dyn std::error::Error>> {
+    let facts = BlockFacts::load(root, assets.registry)?;
+    let visibility = models::load_visibility(root, assets.registry)?;
+    let tables = MeshTables::new(assets, render, &facts, visibility)?;
+    let biomes = Biomes::load(root)?;
+    let seed = world_seed(save).unwrap_or_else(|| {
+        eprintln!(
+            "scene_replay: no seed in {}, biome blending uses 0",
+            save.display()
+        );
+        0
+    });
+    let options = std::fs::read_to_string("options.txt").unwrap_or_default();
+    let option = |key: &str| {
+        options
+            .lines()
+            .find_map(|l| l.strip_prefix(key)?.strip_prefix(':').map(str::to_owned))
+    };
+    let smooth_lighting = option("ao").is_none_or(|v| v == "true");
+    let cutout_leaves = option("cutoutLeaves").is_none_or(|v| v == "true");
+    let blend_radius = option("biomeBlendRadius")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(2);
+
+    let mut columns: Vec<(i32, i32)> = keys
+        .iter()
+        .flat_map(|&[x, _, z]| {
+            (-1..=1).flat_map(move |dz| (-1..=1).map(move |dx| (x + dx, z + dz)))
+        })
+        .collect();
+    columns.sort_unstable();
+    columns.dedup();
+    let threads = std::thread::available_parallelism().map_or(4, |n| n.get());
+    let region_dir = save.join("dimensions/minecraft/overworld/region");
+    let next = AtomicUsize::new(0);
+    let chunks: FxHashMap<(i32, i32), Chunk> = std::thread::scope(|scope| {
+        let workers: Vec<_> = (0..threads)
+            .map(|_| {
+                scope.spawn(|| {
+                    let mut files: FxHashMap<(i32, i32), Option<RegionFile>> = FxHashMap::default();
+                    let mut out = Vec::new();
+                    loop {
+                        let i = next.fetch_add(1, Ordering::Relaxed);
+                        let Some(&(x, z)) = columns.get(i) else {
+                            break;
+                        };
+                        let file = files.entry((x >> 5, z >> 5)).or_insert_with(|| {
+                            RegionFile::open(region_dir.join(format!(
+                                "r.{}.{}.mca",
+                                x >> 5,
+                                z >> 5
+                            )))
+                            .ok()
+                        });
+                        let root = file
+                            .as_mut()
+                            .and_then(|f| {
+                                f.read(horizon_core::position::ChunkPos::new(x, z))
+                                    .ok()
+                                    .flatten()
+                            })
+                            .and_then(|record| record.nbt(Limits::default()).ok());
+                        if let Some(chunk) =
+                            root.and_then(|root| decode(&root, assets.registry, &biomes))
+                        {
+                            out.push(((x, z), chunk));
+                        }
+                    }
+                    out
+                })
+            })
+            .collect();
+        workers
+            .into_iter()
+            .flat_map(|w| w.join().unwrap())
+            .collect()
+    });
+
+    let meshable: Vec<[i32; 3]> = keys
+        .iter()
+        .copied()
+        .filter(|&[x, _, z]| {
+            (-1..=1).all(|dz| (-1..=1).all(|dx| chunks.contains_key(&(x + dx, z + dz))))
+        })
+        .collect();
+    let next = AtomicUsize::new(0);
+    let meshes = std::thread::scope(|scope| {
+        let workers: Vec<_> = (0..threads)
+            .map(|_| {
+                scope.spawn(|| {
+                    let mut mesher = Mesher {
+                        nether_shading: false,
+                        shader_pack_lighting: false,
+                        separate_ao: false,
+                        assets,
+                        render,
+                        tables: &tables,
+                        biomes: &biomes,
+                        visibility: tables.visibility.clone(),
+                        zoom: BiomeZoom::new(obfuscate_seed(seed)),
+                        blend_radius,
+                        smooth_lighting,
+                        cutout_leaves,
+                        translucent_layers: &[],
+                        leaf_culling,
+                    };
+                    let mut scratch = MeshScratch::default();
+                    let mut out = Vec::new();
+                    loop {
+                        let i = next.fetch_add(1, Ordering::Relaxed);
+                        let Some(&[x, y, z]) = meshable.get(i) else {
+                            break;
+                        };
+                        let region: [[Option<&Chunk>; 3]; 3] = std::array::from_fn(|dz| {
+                            std::array::from_fn(|dx| {
+                                chunks.get(&(x + dx as i32 - 1, z + dz as i32 - 1))
+                            })
+                        });
+                        let mut mesh =
+                            mesher.mesh_reusing(&region, y, SectionMesh::default(), &mut scratch);
+                        mesh.sort_solid();
+                        out.push(([x, y, z], mesh));
+                    }
+                    out
+                })
+            })
+            .collect();
+        workers
+            .into_iter()
+            .flat_map(|w| w.join().unwrap())
+            .collect::<FxHashMap<_, _>>()
+    });
+    Ok(meshes)
+}
+
+/// The world seed: `data/minecraft/world_gen_settings.dat`, or level.dat's
+/// `Data.WorldGenSettings` in older saves.
+fn world_seed(save: &Path) -> Option<i64> {
+    let read = |path: PathBuf| {
+        horizon_world::datafix::files::read_dat(&path)
+            .ok()
+            .flatten()
+    };
+    let seed = |tag: Option<&Tag>| match tag?.get("seed")? {
+        Tag::Long(seed) => Some(*seed),
+        _ => None,
+    };
+    seed(
+        read(save.join("data/minecraft/world_gen_settings.dat"))
+            .as_ref()
+            .and_then(|t| t.get("data")),
+    )
+    .or_else(|| {
+        seed(
+            read(save.join("level.dat"))?
+                .get("Data")?
+                .get("WorldGenSettings"),
+        )
+    })
+}
+
+/// A saved full chunk's blocks, biomes and light, as the client's own save
+/// loader reads them (`save::decode_lit`, in horizon-client).
+fn decode(root: &NamedTag, registry: &BlockRegistry, biomes: &Biomes) -> Option<Chunk> {
+    let tag = &root.tag;
+    let text = |t: Option<&Tag>| match t {
+        Some(Tag::String(s)) => Some(s.to_string_lossy().to_string()),
+        _ => None,
+    };
+    if text(tag.get("Status")).is_some_and(|s| s != "minecraft:full" && s != "full") {
+        return None;
+    }
+    if tag.get("isLightOn") != Some(&Tag::Byte(1)) {
+        return None;
+    }
+    let (Some(Tag::Int(x)), Some(Tag::Int(z))) = (tag.get("xPos"), tag.get("zPos")) else {
+        return None;
+    };
+    let mut chunk = Chunk::with_layout(*x, *z, ColumnLayout::VANILLA);
+    let air = registry.default_state("minecraft:air")?.0;
+    let Some(Tag::List(sections)) = tag.get("sections") else {
+        return Some(chunk);
+    };
+    let longs = |t: Option<&Tag>| match t {
+        Some(Tag::LongArray(data)) => Some(data.iter().map(|&w| w as u64).collect::<Vec<_>>()),
+        _ => None,
+    };
+    let mut layers = vec![(None, None); chunk.sections.len()];
+    for section in sections {
+        let Some(Tag::Byte(y)) = section.get("Y") else {
+            continue;
+        };
+        let Some(si) = chunk.section_index(i32::from(*y) * 16) else {
+            continue;
+        };
+        let target = Arc::make_mut(&mut chunk.sections[si]);
+        if let Some(states) = section.get("block_states")
+            && let Some(Tag::List(palette)) = states.get("palette")
+        {
+            let palette: Vec<u32> = palette
+                .iter()
+                .map(|p| {
+                    BlockState::from_nbt(p)
+                        .ok()
+                        .and_then(|s| {
+                            registry.id(&s).or_else(|| {
+                                let default = registry.default_state(&s.name)?;
+                                let mut full = registry.state(default)?.clone();
+                                for (k, v) in &s.properties {
+                                    if full.properties.contains_key(k) {
+                                        full.properties.insert(k.clone(), v.clone());
+                                    }
+                                }
+                                registry.id(&full).or(Some(default))
+                            })
+                        })
+                        .map_or(air, |id| id.0)
+                })
+                .collect();
+            let data = longs(states.get("data"));
+            if let Ok(blocks) =
+                PalettedContainer::from_packed(block_strategy(), palette, data.as_deref())
+            {
+                target.blocks = blocks;
+            }
+        }
+        if let Some(b) = section.get("biomes")
+            && let Some(Tag::List(palette)) = b.get("palette")
+        {
+            let palette: Vec<u32> = palette
+                .iter()
+                .map(|p| match p {
+                    Tag::String(s) => u32::from(biomes.id(&s.to_string_lossy())),
+                    _ => 0,
+                })
+                .collect();
+            let data = longs(b.get("data"));
+            if let Ok(container) =
+                PalettedContainer::from_packed(BIOME_STRATEGY, palette, data.as_deref())
+            {
+                target.biomes = container;
+            }
+        }
+        let layer = |name: &str| match section.get(name) {
+            Some(Tag::ByteArray(a)) if a.len() == 2048 => Some(a.clone()),
+            _ => None,
+        };
+        layers[si] = (layer("SkyLight"), layer("BlockLight"));
+    }
+    // `save::load_light`: a section without saved sky light takes the light
+    // of the blocks above it, from the top of the column down.
+    let mut above = [15u8; 256];
+    for (si, (sky, block)) in layers.into_iter().enumerate().rev() {
+        let mut data = Box::new([0u8; 4096]);
+        for (i, v) in data.iter_mut().enumerate() {
+            let nibble =
+                |layer: &Option<Vec<u8>>| layer.as_ref().map(|l| l[i >> 1] >> ((i & 1) << 2) & 15);
+            let s = nibble(&sky).unwrap_or(above[i & 255]);
+            let b = nibble(&block).unwrap_or(0);
+            *v = s << 4 | b;
+        }
+        if sky.is_some() {
+            for (i, a) in above.iter_mut().enumerate() {
+                *a = data[i] >> 4;
+            }
+        }
+        let section = Arc::make_mut(&mut chunk.sections[si]);
+        section.light = Light::Full(data);
+        section.compact();
+    }
+    chunk.lit = true;
+    chunk.light_loaded = true;
+    Some(chunk)
 }
