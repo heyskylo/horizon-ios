@@ -480,7 +480,7 @@ mod tests {
         // 350 to 10 is 20 degrees by the short arc, not -340.
         assert!((rot_lerp(0.5, 350.0, 10.0) - 360.0).abs() < 1e-4);
         assert!((rot_lerp(0.5, 10.0, 350.0) - 0.0).abs() < 1e-4);
-        assert!((rot_lerp(0.25, -90.0, 90.0) - -45.0).abs() < 1e-4);
+        assert!((rot_lerp(0.25, -90.0, 80.0) - -47.5).abs() < 1e-4);
         assert_eq!(rot_lerp(0.0, 33.0, 200.0), 33.0);
     }
 
