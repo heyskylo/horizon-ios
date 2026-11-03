@@ -959,12 +959,19 @@ impl Game<'_> {
                 t.position.z.floor() as i32,
             );
             if t.fire_ticks > 0 {
+                // The flames face the camera, turned round in the front view.
+                let fire_yaw =
+                    if self.camera_type == super::perspective::CameraType::ThirdPersonFront {
+                        self.yaw + 180.0
+                    } else {
+                        self.yaw
+                    };
                 horizon_client::fire_render::flames(
                     at,
                     0.5,
                     0.5,
                     camera,
-                    self.yaw,
+                    fire_yaw,
                     &self.gui.atlas.sprites,
                     l,
                     out,
