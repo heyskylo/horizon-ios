@@ -80,6 +80,10 @@ pub fn call(shared: &Shared, client: u32, short: &str, argument: &Value) -> Resu
                     .ok_or_else(|| invalid_params("Not a string"))?,
             ),
         ),
+        "serversettings/simulation_distance" => game.simulation_distance(client, None),
+        "serversettings/simulation_distance/set" => {
+            game.simulation_distance(client, Some(management_int(argument)?))
+        }
         "serversettings/force_game_mode" => game.force_game_mode(client, None),
         "serversettings/force_game_mode/set" => game.force_game_mode(
             client,
@@ -620,6 +624,29 @@ impl Game<'_> {
                 "world",
                 "difficulty",
                 toml::Value::String(value.into()),
+            )
+            .map_err(|e| (INTERNAL_ERROR, Some(e)))?;
+        }
+        Ok(reply["value"].clone())
+    }
+
+    /// `MinecraftServerSettingsServiceImpl.getSimulationDistance` and `setSimulationDistance`.
+    fn simulation_distance(&self, client: u32, value: Option<i32>) -> Result<Value, Failure> {
+        let mut request = json!({ "method": "serversettings/simulation_distance" });
+        if let Some(value) = value {
+            request["method"] = json!("serversettings/simulation_distance/set");
+            request["value"] = json!(value);
+        }
+        let reply = self.ask(&format!("management {client} {request}"))?;
+        if let Some(error) = reply["error"].as_str() {
+            return Err((INTERNAL_ERROR, Some(error.to_owned())));
+        }
+        if let Some(value) = value {
+            crate::config::update(
+                &self.shared.dir,
+                "server",
+                "simulation_distance",
+                toml::Value::Integer(i64::from(value)),
             )
             .map_err(|e| (INTERNAL_ERROR, Some(e)))?;
         }
