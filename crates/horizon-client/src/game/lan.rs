@@ -1675,6 +1675,20 @@ impl Game<'_> {
         }
     }
 
+    /// Update the live view distance used for player chunk tracking.
+    pub(super) fn set_view_distance(&mut self, distance: i32) {
+        if let Some(host) = self.lan.as_mut() {
+            host.hub.set_view_distance(distance);
+        }
+    }
+
+    /// Update the live spawn-protection radius.
+    pub(super) fn set_spawn_protection(&mut self, radius: i32) {
+        if let Some(host) = self.lan.as_mut() {
+            host.hub.spawn_protection = radius;
+        }
+    }
+
     /// Update the live simulation distance sent to player clients.
     pub(super) fn set_simulation_distance(&mut self, distance: i32) {
         if let Some(host) = self.lan.as_mut() {
