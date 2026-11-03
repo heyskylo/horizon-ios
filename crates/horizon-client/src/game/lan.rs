@@ -1369,7 +1369,7 @@ impl Game<'_> {
         self.award_leave_game_to_all(&mut host);
         self.save_leaving_guests(&mut host);
         host.hub.disconnect_all();
-        // Give the writer threads a moment to flush the disconnect packets.
+        // Give the network threads a moment to flush the disconnect packets.
         std::thread::sleep(std::time::Duration::from_millis(100));
         self.world.block_log = None;
         self.world.light_log = None;
@@ -1672,6 +1672,20 @@ impl Game<'_> {
             host.settings.force_game_mode = force;
             host.hub.config.force_game_mode = force;
             enforce_guest_game_mode(host, &self.world, self.collision);
+        }
+    }
+
+    /// Update the live movement check's flight policy.
+    pub(super) fn set_allow_flight(&mut self, allow: bool) {
+        if let Some(host) = self.lan.as_mut() {
+            host.hub.config.allow_flight = allow;
+        }
+    }
+
+    /// Update whether status responses include online player names.
+    pub(super) fn set_hide_online_players(&mut self, hide: bool) {
+        if let Some(host) = self.lan.as_ref() {
+            host.hub.lan.shared.set_hide_online_players(hide);
         }
     }
 
@@ -2335,6 +2349,8 @@ impl Game<'_> {
                 }
                 host.hub
                     .set_immediate_respawn(self.ui.rules.bool("immediate_respawn"));
+                host.hub
+                    .set_limited_crafting(self.ui.rules.bool("limited_crafting"));
                 // A server with several levels runs a pass for each
                 // (`tick_server`): the network is read once, before the first.
                 // Player packets may already have been drained before

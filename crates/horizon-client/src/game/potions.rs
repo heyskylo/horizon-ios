@@ -1364,6 +1364,7 @@ impl Game<'_> {
             age: 0,
             duration: 300,
             from_dragon: false,
+            victims: Vec::new(),
             potion: Some(PotionCloud {
                 effects,
                 hidden,
@@ -1732,6 +1733,7 @@ impl Game<'_> {
                     age: 0,
                     duration: 600,
                     from_dragon: false,
+                    victims: Vec::new(),
                     potion: Some(PotionCloud {
                         effects: def.effects.to_vec(),
                         hidden: Vec::new(),
