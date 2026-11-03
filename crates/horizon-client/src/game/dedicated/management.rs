@@ -251,6 +251,33 @@ impl Game<'_> {
                         .is_some_and(|host| host.hub.lan.shared.hide_online_players())
                 });
             }
+            "serversettings/accept_transfers" => {
+                return json!({
+                    "value": self
+                        .lan
+                        .as_ref()
+                        .is_some_and(|host| host.hub.lan.shared.accepts_transfers())
+                });
+            }
+            "serversettings/accept_transfers/set" => {
+                let Some(accept) = body["value"].as_bool() else {
+                    return json!({ "error": "accepts transfers must be a boolean" });
+                };
+                let current = self
+                    .lan
+                    .as_ref()
+                    .is_some_and(|host| host.hub.lan.shared.accepts_transfers());
+                rpc(format!(
+                    "Update accepts transfers from {current} to {accept}"
+                ));
+                self.set_accepts_transfers(accept);
+                return json!({
+                    "value": self
+                        .lan
+                        .as_ref()
+                        .is_some_and(|host| host.hub.lan.shared.accepts_transfers())
+                });
+            }
             "serversettings/player_idle_timeout" => {
                 return json!({ "value": state.lists.lock().unwrap().player_idle_timeout });
             }

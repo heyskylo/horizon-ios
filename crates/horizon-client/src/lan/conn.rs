@@ -479,7 +479,7 @@ fn serve_connection(
         // to status requests closes the connection.
         handshake::STATUS if !shared.config.enable_status => Ok(()),
         handshake::STATUS => serve_status(&mut c, &shared),
-        handshake::TRANSFER if !shared.config.accepts_transfers => {
+        handshake::TRANSFER if !shared.accepts_transfers() => {
             login_disconnect(
                 &mut c,
                 &translatable("multiplayer.disconnect.transfers_disabled", &[]),

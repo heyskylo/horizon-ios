@@ -338,6 +338,9 @@ pub struct Shared {
     motd: Mutex<String>,
     max_players: AtomicUsize,
     hide_online_players: AtomicBool,
+    /// `DedicatedServer.setAcceptsTransfers`: whether a login by transfer from another server
+    /// is accepted (`accepts-transfers`), live.
+    accepts_transfers: AtomicBool,
     /// PlayerList.players in join order: profile id and name.
     online: Mutex<Vec<(u128, String)>>,
     next: AtomicU32,
@@ -424,6 +427,14 @@ impl Shared {
     }
     pub fn set_hide_online_players(&self, hide: bool) {
         self.hide_online_players.store(hide, Ordering::Relaxed);
+    }
+    pub fn accepts_transfers(&self) -> bool {
+        self.accepts_transfers.load(Ordering::Relaxed)
+    }
+    /// `DedicatedServer.setAcceptsTransfers`: the handshake of a transfer is accepted or turned
+    /// away from now on.
+    pub fn set_accepts_transfers(&self, accept: bool) {
+        self.accepts_transfers.store(accept, Ordering::Relaxed);
     }
     pub fn release(&self, uuid: u128) {
         self.online.lock().unwrap().retain(|(u, _)| *u != uuid);
@@ -562,6 +573,7 @@ impl Lan {
             motd: Mutex::new(config.motd.clone()),
             max_players: AtomicUsize::new(config.max_players),
             hide_online_players: AtomicBool::new(hide_online_players),
+            accepts_transfers: AtomicBool::new(config.accepts_transfers),
             online: Mutex::new(Vec::new()),
             next: AtomicU32::new(1),
             stop: AtomicBool::new(false),
