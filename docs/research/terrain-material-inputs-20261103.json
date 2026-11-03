@@ -590,5 +590,14 @@
     "positive_controls": "Three15-pixel exact RGBA controls; nearest expected240/255, no source mip averaging at requestedLOD12.",
     "negative_control": "Substituting a filtering sampler must be rejected by the same production non-filtering binding; if both sampler and binding regressed, positive fractional samples would mix to180/191 rather than240/255.",
     "qualification": "Final all-target renderer Clippy, compiled-fixture GPU results and exact final hashes reported separately in PR; prior full product gate remains nonzero on2 independently reproduced main framegen assertions."
+  },
+  "readiness_followup_20261103": {
+    "worker": "fresh isolated replacement_finisher",
+    "public_mit_main": "4274948b50b44599c7826c60df2f096a61396c22",
+    "prior_head": "3a0132d80e4863b97f1cc21cb36da5c8105c1acb",
+    "integration": "Normal merge preserving both original material test module and new public-main rgb_alpha_tests module. No product conflict; current public main API compiled and checked separately.",
+    "research": "No new external shader research; no memory/history or closed original implementation access.",
+    "fixture_sha256": "cb0ed419d87449fca478b422a68cc4c5d7145ac7d285ae4bad3a3755c1352d3d",
+    "checks": "Pending; exact new-head results recorded in PR followup and own handoff. Prior-head results are historical."
   }
 }

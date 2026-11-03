@@ -74,10 +74,83 @@ pub fn main() -> Result<()> {
         }
     }
     let mut engine = ParticleEngine::new(root, &HashMap::new(), &Default::default());
+    // One all-campfire world per state the block tick cases name: the whole
+    // animateTick loop samples inside the box the barriers already fill.
+    let mut campfire_worlds: HashMap<String, World> = HashMap::new();
     let mut out = BufWriter::new(File::create(&args[2])?);
     for (index, line) in BufReader::new(File::open(&args[1])?).lines().enumerate() {
         let case: Value = serde_json::from_str(&line?)?;
         let kind = case["kind"].as_str().unwrap_or("marker");
+        // The campfire block's own tick through the whole ClientLevel.animateTick
+        // loop, over a world that is all campfire: the crackle sound and the
+        // lava particles it asks the engine for, from the level random seeded
+        // by the case.
+        if kind == "tick" {
+            let spec = case["state"].as_str().ok_or("state")?.to_owned();
+            if !campfire_worlds.contains_key(&spec) {
+                let state = assets.registry.resolve(&parse_state(&spec))?;
+                let mut world = World::new(facts.air, 0);
+                for cz in -2..2 {
+                    for cx in -2..2 {
+                        world
+                            .chunks
+                            .insert((cx, cz), Arc::new(Chunk::empty(cx, cz)));
+                        for y in 33..96 {
+                            for z in 0..16 {
+                                for x in 0..16 {
+                                    world.set(cx * 16 + x, y, cz * 16 + z, state)?;
+                                }
+                            }
+                        }
+                    }
+                }
+                campfire_worlds.insert(spec.clone(), world);
+            }
+            let world = &campfire_worlds[&spec];
+            let ctx = AnimateContext {
+                world,
+                facts: &facts,
+                collision: &collision,
+                biomes: &biomes,
+                registry: assets.registry,
+                raining_at: &|_| false,
+                height_no_leaves: &|_| 0,
+                firefly_bush_sounds: false,
+                creaking_active: false,
+                sky_darken: 0,
+                marker: None,
+                model_offset: &|_, _, _| None,
+                gateway_particles: &|_, _| 0,
+                thundering: false,
+                ultrawarm: false,
+            };
+            engine.clear();
+            engine.sounds.clear();
+            engine.created_requests = None;
+            // `requested` records before the 32-block limiter, as the oracle's
+            // level records at `addParticle` itself.
+            engine.requested = Some(Vec::new());
+            engine.camera = [0.5, 64.5, 0.5];
+            engine.seed_randoms(case["seed"].as_i64().ok_or("seed")?, 0, 0);
+            animate_tick(&tables, &mut engine, &ctx, [0, 64, 0]);
+            writeln!(out, "== {index} tick")?;
+            for (name, p, volume, pitch, _) in &engine.sounds {
+                write!(out, "sound {name}")?;
+                for x in p {
+                    write!(out, " {}", d(*x))?;
+                }
+                writeln!(out, " {:08x} {:08x}", volume.to_bits(), pitch.to_bits())?;
+            }
+            for (options, p, v) in engine.requested.take().ok_or("requests")? {
+                write!(out, "{}", options.ty.name())?;
+                for x in p.into_iter().chain(v) {
+                    write!(out, " {}", d(x))?;
+                }
+                writeln!(out)?;
+            }
+            writeln!(out, "next {}", engine.random().next_int())?;
+            continue;
+        }
         // The campfire's own particles: the block entity's tick and the smoke a
         // douse adds, both from the block at [0, 64, 0] with the level random
         // seeded by the case.

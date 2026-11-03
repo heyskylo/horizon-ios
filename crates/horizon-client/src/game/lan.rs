@@ -1074,10 +1074,21 @@ fn mob_freeze_meta(
     meta: &mut Vec<(u8, i32, Value)>,
     defaults: &mut Vec<(u8, i32, Value)>,
 ) {
-    if m.ticks_frozen > 0 {
+    // `setTicksFrozen` can go negative (a mob warming up), and a client reads
+    // the count as is, so anything but the default 0 goes out.
+    if m.ticks_frozen != 0 {
         meta.push((7, serializer::INT, Value::Int(m.ticks_frozen)));
     }
     defaults.push((7, serializer::INT, Value::Int(0)));
+    // Entity.DATA_AIR_SUPPLY_ID (1): only an axolotl ticks `Mob.air` (its
+    // default is its 6000 max air supply).
+    if m.species() == horizon_client::mobs::Species::Axolotl {
+        let max = horizon_client::mobs::axolotl::MAX_AIR;
+        if m.air != max {
+            meta.push((1, serializer::INT, Value::Int(m.air)));
+        }
+        defaults.push((1, serializer::INT, Value::Int(max)));
+    }
     if m.kind.id == "minecraft:strider" {
         if m.extra.flag {
             meta.push((19, serializer::BOOLEAN, Value::Bool(true)));
@@ -1369,7 +1380,7 @@ impl Game<'_> {
         self.award_leave_game_to_all(&mut host);
         self.save_leaving_guests(&mut host);
         host.hub.disconnect_all();
-        // Give the writer threads a moment to flush the disconnect packets.
+        // Give the network threads a moment to flush the disconnect packets.
         std::thread::sleep(std::time::Duration::from_millis(100));
         self.world.block_log = None;
         self.world.light_log = None;
@@ -2349,6 +2360,8 @@ impl Game<'_> {
                 }
                 host.hub
                     .set_immediate_respawn(self.ui.rules.bool("immediate_respawn"));
+                host.hub
+                    .set_limited_crafting(self.ui.rules.bool("limited_crafting"));
                 // A server with several levels runs a pass for each
                 // (`tick_server`): the network is read once, before the first.
                 // Player packets may already have been drained before
@@ -2997,7 +3010,53 @@ fn equipment_slot_name(slot: horizon_world::player_inventory::EquipmentSlot) -> 
 
 #[cfg(test)]
 mod tests {
-    use super::{OFFHAND_SLOT, equipment_slot_name, living_flags};
+    use super::{OFFHAND_SLOT, equipment_slot_name, living_flags, mob_freeze_meta};
+    use horizon_client::mobs::Mob;
+    use horizon_protocol::entity_data::{Value, serializer};
+
+    fn mob_of(kind: &str) -> Option<Mob> {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        let types = horizon_client::mobs::MobTypes::load(&root).ok()?;
+        let t = std::sync::Arc::new(types.types.get(kind)?.clone());
+        Some(Mob::new(
+            1,
+            t,
+            horizon_core::geometry::Vec3::new(0.0, 64.0, 0.0),
+            0.0,
+        ))
+    }
+
+    fn freeze_meta(m: &Mob) -> (Vec<(u8, i32, Value)>, Vec<(u8, i32, Value)>) {
+        let (mut meta, mut defaults) = (Vec::new(), Vec::new());
+        mob_freeze_meta(m, &mut meta, &mut defaults);
+        (meta, defaults)
+    }
+
+    /// Entity.setTicksFrozen can go negative; index 7 must carry it. Index 1
+    /// (air supply) goes out for an axolotl only, against its 6000 default.
+    #[test]
+    fn negative_frozen_ticks_and_axolotl_air_are_synced() {
+        let Some(mut cow) = mob_of("minecraft:cow") else {
+            return;
+        };
+        cow.ticks_frozen = -3;
+        let (meta, _) = freeze_meta(&cow);
+        assert!(meta.contains(&(7, serializer::INT, Value::Int(-3))));
+        cow.air = 100;
+        assert!(freeze_meta(&cow).0.iter().all(|e| e.0 != 1));
+
+        let Some(mut axolotl) = mob_of("minecraft:axolotl") else {
+            return;
+        };
+        axolotl.air = 5000;
+        let (meta, defaults) = freeze_meta(&axolotl);
+        assert!(meta.contains(&(1, serializer::INT, Value::Int(5000))));
+        assert!(defaults.contains(&(1, serializer::INT, Value::Int(6000))));
+        axolotl.air = 6000;
+        assert!(freeze_meta(&axolotl).0.iter().all(|e| e.0 != 1));
+    }
 
     /// `LivingEntity.startUsingItem` sets flag 1 for the use and flag 2 for
     /// the off hand, so an off-hand use is 3, not 2. A reader takes bit 0 as
