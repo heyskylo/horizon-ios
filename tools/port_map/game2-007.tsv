@@ -57,8 +57,8 @@ MinecartHopper.suckInItems	port	crates/horizon-client/src/game/machines.rs::Game
 MinecartTNT.explode	port	crates/horizon-client/src/game/minecarts.rs::Game::explode_cart	power 4 plus speed, with the cart gone before the blast; gap: minor: the saved explosion power and speed factor are not applied
 MinecartTNT.handleEntityEvent	port	crates/horizon-client/src/game/minecarts.rs::Game::prime_cart	event 70 primes the fuse; Horizon primes locally with the same sound
 MinecartTNT.primeFuse	port	crates/horizon-client/src/game/minecarts.rs::Game::prime_cart	fuse 80 and the primed sound; gap: minor: no ignition source is recorded for who caused the blast
-MinecartTNT.getBlockExplosionResistance	missing		minor: a primed TNT cart on rails gives rails zero blast resistance in vanilla; Horizon's blast uses the rail's normal resistance
-MinecartTNT.shouldBlockExplode	missing		minor: a primed TNT cart on rails does not block the blast in vanilla; Horizon's blast ray is not changed by a cart on rails
+MinecartTNT.getBlockExplosionResistance	port	crates/horizon-client/src/game/explosion.rs::Game::exploded_positions	while the cart is primed (`combat.rail_proof_blast`, set from `fuse >= 0` in `minecarts.rs`) a rail, and a block with a rail above it, has no resistance to its blast
+MinecartTNT.shouldBlockExplode	inline	crates/horizon-client/src/game/explosion.rs::Game::exploded_positions	the same ray march leaves a spared rail out of the destroyed set, so the blast goes through it
 MinecartTNT.readAdditionalSaveData	port	crates/horizon-client/src/game/minecarts.rs::Minecart::from_nbt	fuse read back; gap: minor: explosion_power and explosion_speed_factor are not read
 MinecartTNT.addAdditionalSaveData	port	crates/horizon-client/src/game/minecarts.rs::Minecart::to_nbt	fuse written; gap: minor: explosion_power and explosion_speed_factor are not written
 MinecartTNT.damageSourceIgnitesTnt	port	crates/horizon-client/src/game/minecarts.rs::Game::hurt_cart	the fire flag from the caller primes the cart instead of breaking it

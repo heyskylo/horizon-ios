@@ -637,7 +637,7 @@ pub fn layers(m: &Mob, age: f32) -> Vec<Layer> {
                 ("wolf#main", "entity/wolf/wolf_collar")
             };
             // The armor, then the cracks of its damage (`Crackiness.WOLF_ARMOR`).
-            if !m.is_baby() && m.extra.head.as_deref() == Some("minecraft:wolf_armor") {
+            if !m.is_baby() && m.extra.body.as_deref() == Some("minecraft:wolf_armor") {
                 let left = (super::WOLF_ARMOR_DURABILITY - m.extra.body_damage) as f32
                     / super::WOLF_ARMOR_DURABILITY as f32;
                 push(
@@ -672,7 +672,7 @@ pub fn layers(m: &Mob, age: f32) -> Vec<Layer> {
         S::HappyGhast => {
             let harness = m
                 .extra
-                .head
+                .body
                 .as_deref()
                 .and_then(super::happy_ghast::harness_texture);
             if !m.is_baby()
@@ -748,7 +748,7 @@ pub fn layers(m: &Mob, age: f32) -> Vec<Layer> {
                     false,
                 );
             }
-            if let Some(armor) = m.extra.head.as_deref()
+            if let Some(armor) = m.extra.body.as_deref()
                 && let Some(material) = armor
                     .strip_prefix("minecraft:")
                     .and_then(|a| a.strip_suffix("_horse_armor"))
@@ -808,7 +808,7 @@ pub fn layers(m: &Mob, age: f32) -> Vec<Layer> {
         S::Nautilus | S::ZombieNautilus if !m.is_baby() => {
             if let Some(texture) = m
                 .extra
-                .head
+                .body
                 .as_deref()
                 .and_then(super::nautilus::armor_texture)
             {
@@ -998,6 +998,18 @@ pub fn layers(m: &Mob, age: f32) -> Vec<Layer> {
     humanoid_armor(m, &mut v);
     v
 }
+/// `HumanoidArmorLayer.renderArmorPiece`: a baby wears the `humanoid_baby`
+/// layer type for every slot (leggings included), an adult the leggings layer
+/// for its legs and the `humanoid` one otherwise.
+fn humanoid_layer_folder(baby: bool, layer: &str) -> &'static str {
+    if baby {
+        "humanoid_baby"
+    } else if layer == "leggings" {
+        "humanoid_leggings"
+    } else {
+        "humanoid"
+    }
+}
 /// `HumanoidArmorLayer`: the armour models of the mob's main model with the
 /// equipment textures (leather tinted, with its overlay).
 fn humanoid_armor(m: &Mob, v: &mut Vec<Layer>) {
@@ -1031,11 +1043,7 @@ fn humanoid_armor(m: &Mob, v: &mut Vec<Layer>) {
             "turtle" => "turtle_scute",
             other => other,
         };
-        let folder = if layer == "leggings" {
-            "humanoid_leggings"
-        } else {
-            "humanoid"
-        };
+        let folder = humanoid_layer_folder(m.is_baby(), layer);
         let model = interned(format_args!("{base}#{layer}"));
         // EquipmentLayerRenderer.getColorForLayer: the leather layer takes
         // the stack's dye colour, the colour it has when undyed otherwise.
@@ -2680,6 +2688,45 @@ pub fn held_item_stack(extra: &super::Extra, off_hand: bool) -> Option<crate::it
 mod tests {
     use super::*;
 
+    /// A baby zombie's armour reads the `humanoid_baby` textures for every
+    /// slot, not the adult `humanoid`/`humanoid_leggings` ones (#7302).
+    #[test]
+    fn a_baby_zombies_armour_uses_the_humanoid_baby_textures() {
+        let mut kind = (*crate::mobs::sensor_scan_tests::kind()).clone();
+        kind.species = Species::Zombie;
+        let model = kind.model.clone();
+        kind.layers.insert("zombie_baby#main".into(), model);
+        let mut mob = Mob::new(
+            1,
+            std::sync::Arc::new(kind),
+            horizon_core::geometry::Vec3::ZERO,
+            0.0,
+        );
+        mob.extra.age = -24000;
+        mob.extra.head = Some("minecraft:iron_helmet".into());
+        mob.extra.legs = Some("minecraft:iron_leggings".into());
+        mob.extra.feet = Some("minecraft:leather_boots".into());
+        let mut layers = Vec::new();
+        humanoid_armor(&mob, &mut layers);
+        let textures: Vec<&str> = layers.iter().map(|l| &*l.texture).collect();
+        assert_eq!(
+            textures,
+            [
+                "entity/equipment/humanoid_baby/iron",
+                "entity/equipment/humanoid_baby/iron",
+                "entity/equipment/humanoid_baby/leather",
+                "entity/equipment/humanoid_baby/leather_overlay",
+            ]
+        );
+        mob.extra.age = 0;
+        let mut adult = Vec::new();
+        humanoid_armor(&mob, &mut adult);
+        assert_eq!(
+            &*adult[1].texture,
+            "entity/equipment/humanoid_leggings/iron"
+        );
+    }
+
     #[test]
     fn creeper_swelling_uses_local_fuse_and_keeps_java_zero_division() {
         let mut mob = Mob::new(
@@ -2975,7 +3022,7 @@ mod tests {
                 );
                 assert!(vertices[24..].iter().all(|v| v.uv[0] >= 0.5));
             }
-            mob.extra.head = Some("minecraft:stone".into());
+            mob.extra.body = Some("minecraft:stone".into());
             let mut vertices = Vec::new();
             render(
                 &mob,
