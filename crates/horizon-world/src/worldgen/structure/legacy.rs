@@ -429,14 +429,27 @@ impl PieceFrame {
         y: i32,
         z: i32,
     ) -> Result<()> {
+        self.place_block(c, state, x, y, z).map(|_| ())
+    }
+    /// `StructurePiece.placeBlock`, answering whether the block was written: the
+    /// piece's box or one of the blocks it keeps declines a placement, and then no
+    /// block entity is created at that position either.
+    pub fn place_block(
+        &self,
+        c: &mut PieceContext<'_>,
+        state: BlockStateId,
+        x: i32,
+        y: i32,
+        z: i32,
+    ) -> Result<bool> {
         let pos = self.world_pos(x, y, z);
         if !c.chunk_box.is_inside(pos) {
-            return Ok(());
+            return Ok(false);
         }
         if !self.keep.is_empty() {
             let current = c.world.block(pos)?;
             if self.keep.contains(&c.name(current)) {
-                return Ok(());
+                return Ok(false);
             }
         }
         let mut state = state;
@@ -468,7 +481,7 @@ impl PieceFrame {
         ) {
             c.world.post_process(pos)?;
         }
-        Ok(())
+        Ok(true)
     }
     pub fn get(&self, c: &mut PieceContext<'_>, x: i32, y: i32, z: i32) -> Result<BlockStateId> {
         let pos = self.world_pos(x, y, z);
@@ -678,8 +691,12 @@ impl PieceFrame {
             return Ok(false);
         }
         let state = c.state_with("dispenser", &[("facing", direction_name(facing))]);
-        self.place(c, state, x, y, z)?;
-        c.loot_table(pos, "minecraft:dispenser", table)?;
+        // `level.getBlockEntity(pos) instanceof DispenserBlockEntity` after
+        // `placeBlock`: a placement the piece declines leaves no block entity, and
+        // then no loot table is set and no seed is drawn.
+        if self.place_block(c, state, x, y, z)? {
+            c.loot_table(pos, "minecraft:dispenser", table)?;
+        }
         Ok(true)
     }
 }
