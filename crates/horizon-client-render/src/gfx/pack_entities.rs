@@ -194,6 +194,8 @@ pub(super) struct Draw {
     /// The pack's shadow program draws it into the shadow map too.
     pub shadow: bool,
     pub slot: u32,
+    /// End portal or gateway faces: drawn with `end_portal.png` bound as the atlas.
+    pub portal: bool,
 }
 
 /// Which entity runs a pack's shadow pass draws (2.4, 3.2).
@@ -350,7 +352,6 @@ impl PackEntities {
         spans: &[EntitySpan],
         drawn: [bool; PROGRAMS],
         crack: ([f32; 4], [u32; 2]),
-        portal: [f32; 4],
         shadow: Casters,
         rest: &mut Vec<Vertex>,
         skin: Option<&super::entity_skin::SkinFrame>,
@@ -376,6 +377,7 @@ impl PackEntities {
                     pack,
                     casts,
                     overlay,
+                    false,
                 );
             }
         }
@@ -440,11 +442,21 @@ impl PackEntities {
                     project_cracks(&mut self.scratch[start as usize..], crack.0, crack.1);
                 }
                 if part == Part::Portal {
-                    as_portal_texture(&mut self.scratch[start as usize..], portal);
+                    as_portal_texture(&mut self.scratch[start as usize..]);
                 }
                 let vertices = self.scratch.len() as u32 - start;
                 let overlay = self.scratch[start as usize].layer & 0xffff;
-                self.push_draw(span, posed + start, vertices, program, pack, casts, overlay);
+                let portal = part == Part::Portal;
+                self.push_draw(
+                    span,
+                    posed + start,
+                    vertices,
+                    program,
+                    pack,
+                    casts,
+                    overlay,
+                    portal,
+                );
             }
         }
         if self.draws.is_empty() && posed == 0 {
@@ -492,6 +504,7 @@ impl PackEntities {
         pack: bool,
         casts: bool,
         overlay: u32,
+        portal: bool,
     ) {
         let (entity_id, block_id) = match program {
             BLOCK => (0, span.id),
@@ -515,6 +528,7 @@ impl PackEntities {
             pack,
             shadow: casts,
             slot: self.draws.len() as u32,
+            portal,
         });
     }
 }
@@ -618,14 +632,14 @@ fn extend_without_portals(rest: &mut Vec<Vertex>, run: &[Vertex]) {
     }
 }
 
-/// End portal faces for a pack's `gbuffers_block` (block entities): each face textured with
-/// the whole of `end_portal.png` (`portal`: its atlas rect, u0, v0, width, height), white, at
-/// full light; the pack tells the portal by its `blockEntityId`.
-fn as_portal_texture(run: &mut [Vertex], portal: [f32; 4]) {
+/// End portal faces for a pack's `gbuffers_block` (block entities): each face textured with the
+/// whole of `end_portal.png`, which the draw binds as the atlas (a texture of its own, so a
+/// pack's own portal effect can wrap it), white, at full light; the pack tells the portal by its
+/// `blockEntityId`.
+fn as_portal_texture(run: &mut [Vertex]) {
     const CORNERS: [[f32; 2]; 4] = [[0.0, 0.0], [0.0, 1.0], [1.0, 1.0], [1.0, 0.0]];
     for (i, v) in run.iter_mut().enumerate() {
-        let [u, w] = CORNERS[i % 4];
-        v.uv = [portal[0] + u * portal[2], portal[1] + w * portal[3]];
+        v.uv = CORNERS[i % 4];
         v.layer = 0;
         v.color = 0xFFFF_FFFF;
         v.light = 0x0000_f0f0;
@@ -859,12 +873,9 @@ mod portal_beam_tests {
     #[test]
     fn portal_faces_take_the_whole_portal_texture_at_full_light() {
         let mut face = quad(9, 0, [([0.0; 3], [0.0; 2]); 4]).to_vec();
-        as_portal_texture(&mut face, [0.5, 0.25, 0.125, 0.0625]);
+        as_portal_texture(&mut face);
         let uvs: Vec<[f32; 2]> = face.iter().map(|v| v.uv).collect();
-        assert_eq!(
-            uvs,
-            [[0.5, 0.25], [0.5, 0.3125], [0.625, 0.3125], [0.625, 0.25]]
-        );
+        assert_eq!(uvs, [[0.0, 0.0], [0.0, 1.0], [1.0, 1.0], [1.0, 0.0]]);
         assert!(
             face.iter()
                 .all(|v| v.layer == 0 && v.color == 0xFFFF_FFFF && v.light == 0x0000_f0f0)
@@ -1089,7 +1100,6 @@ mod gpu_span_tests {
             &spans,
             [true; PROGRAMS],
             ([0.; 4], [1; 2]),
-            [0.; 4],
             shadows,
             &mut rest,
             Some(&skin),
@@ -1133,7 +1143,6 @@ mod gpu_span_tests {
             &spans,
             [true; PROGRAMS],
             ([0.; 4], [1; 2]),
-            [0.; 4],
             shadows,
             &mut rest,
             None,
@@ -1161,7 +1170,6 @@ mod gpu_span_tests {
             &[],
             [false; PROGRAMS],
             ([0.; 4], [1; 2]),
-            [0.; 4],
             Casters::default(),
             &mut rest,
             Some(&skin),
