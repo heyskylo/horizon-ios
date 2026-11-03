@@ -325,6 +325,7 @@ impl Launcher {
             .as_ref()
             .map(|p| p.as_ref().map(|c| c.png.clone()));
         let editing = d.editing.clone();
+        let edited = editing.is_some();
         let copy = selected.filter(|_| d.copy);
         // The Horizon version is Horizon's instances' alone: a Java one plays its own game.
         let plays_horizon = match &editing {
@@ -392,6 +393,12 @@ impl Launcher {
             let _ = this.update(cx, |this, cx| {
                 match result {
                     Ok(instance) => {
+                        let name = [("name", instance.name.as_str())];
+                        crate::glass_toast::say(if edited {
+                            trf("Saved {name}", &name)
+                        } else {
+                            trf("Created {name}", &name)
+                        });
                         this.instances.dialog = None;
                         this.select_instance(&instance);
                         this.reload_instances();
@@ -773,7 +780,7 @@ impl Launcher {
                 button("instance-folder", "Open folder", Kind::Ghost, &t).on_click(
                     move |_, _, cx| {
                         let _ = std::fs::create_dir_all(&home);
-                        cx.open_with_system(&home);
+                        crate::glass_toast::open(cx, &home);
                     },
                 ),
             )
@@ -875,8 +882,17 @@ impl Launcher {
         if self.client.is_some() || self.starting_client.is_some() {
             return;
         }
+        let name = self
+            .instances
+            .list
+            .iter()
+            .find(|i| i.id == id)
+            .map(|i| i.name.clone());
         match instances::delete_with_selection(id) {
             Ok((_, saved)) => {
+                if let Some(name) = name {
+                    crate::glass_toast::say(trf("Deleted {name}", &[("name", &name)]));
+                }
                 self.instances.confirm_delete = None;
                 self.instances.delete_error = None;
                 // Play starts Horizon again; the window's copy of the settings says so too.

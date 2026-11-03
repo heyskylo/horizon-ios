@@ -145,6 +145,27 @@ pub fn damage_bonus(levels: &[(Arc<str>, u32)], target: Option<Species>) -> f32 
     }
     bonus
 }
+/// `Mob.doHurtTarget`'s `getAttributeValue(ATTACK_DAMAGE)`: the mob's own
+/// value plus the `attack_damage` modifiers of the item in its main hand
+/// (an iron axe adds 8, a sword 4 to 7, a trident 8), which vanilla applies
+/// to the attribute map when the item is equipped.
+pub fn attack_damage(m: &Mob, items: Option<&crate::items::Items>) -> f32 {
+    let base = f64::from(m.attrs.attack_damage);
+    let modifiers = m
+        .extra
+        .main_hand
+        .as_deref()
+        .and_then(|id| items?.get(id))
+        .map(|i| i.modifiers.as_slice());
+    modifiers.map_or(base, |modifiers| {
+        super::equip::attribute_with(
+            modifiers,
+            "minecraft:attack_damage",
+            base,
+            super::equip::Slot::MainHand,
+        )
+    }) as f32
+}
 /// The extra damage of the mob's held weapon against a target species.
 pub fn melee_bonus(m: &Mob, target: Option<Species>) -> f32 {
     gear(m).map_or(0.0, |g| damage_bonus(&g.slots[MAIN], target))

@@ -2396,7 +2396,7 @@ pub fn do_hurt_target(m: &mut Mob, who: Who, cx: &mut Cx) {
     if super::creaking::is_creaking(m) {
         super::creaking::on_attack(m, cx.events);
     }
-    let mut amount = m.attrs.attack_damage;
+    let mut amount = super::gear::attack_damage(m, cx.w.items);
     let from = [m.position.x, m.position.y, m.position.z];
     let source = Damage::mob(m.id, from);
     let first_event = cx.events.len();
@@ -4249,5 +4249,62 @@ mod iron_golem_push_tests {
             Some(0),
             "a pushed animal is not an Enemy"
         );
+    }
+    /// #7309: a mob's melee hit is its attack damage attribute plus the
+    /// `attack_damage` modifier of the held item (`Mob.doHurtTarget`), for
+    /// every mob that holds a weapon. The modifiers are vanilla's, from the
+    /// items' components in the data reports (iron axe 8, iron sword 5,
+    /// diamond sword 6, stone sword 4, golden axe 6, trident 8, bow none).
+    #[test]
+    fn a_held_weapon_adds_its_attack_damage_to_the_melee_hit() {
+        // (mob, main hand, the item's attack_damage modifier)
+        let cases: [(&str, Option<&str>, f32); 9] = [
+            ("minecraft:vindicator", Some("minecraft:iron_axe"), 8.0),
+            ("minecraft:vindicator", None, 0.0),
+            ("minecraft:zombie", Some("minecraft:iron_sword"), 5.0),
+            ("minecraft:zombie", Some("minecraft:diamond_sword"), 6.0),
+            ("minecraft:zombie", None, 0.0),
+            (
+                "minecraft:wither_skeleton",
+                Some("minecraft:stone_sword"),
+                4.0,
+            ),
+            ("minecraft:skeleton", Some("minecraft:bow"), 0.0),
+            ("minecraft:piglin_brute", Some("minecraft:golden_axe"), 6.0),
+            ("minecraft:drowned", Some("minecraft:trident"), 8.0),
+        ];
+        let mut got = Vec::new();
+        let ran = with_test_world(&[], |w, types| {
+            for (kind, hand, _) in cases {
+                let mut m = Mob::new(
+                    1,
+                    Arc::new(types.types[kind].clone()),
+                    Vec3::new(0.5, 64.0, 0.5),
+                    0.0,
+                );
+                m.extra.main_hand = hand.map(Arc::from);
+                let (mut lr, mut events) = (horizon_core::random::LegacyRandom::new(0), Vec::new());
+                let mut cx = Cx {
+                    w,
+                    lr: &mut lr,
+                    events: &mut events,
+                };
+                do_hurt_target(&mut m, Who::Player, &mut cx);
+                got.push((
+                    m.attrs.attack_damage,
+                    events.iter().find_map(|e| match e {
+                        MobEvent::AttackPlayer(amount, _)
+                        | MobEvent::AttackPlayerWithEffect { amount, .. } => Some(*amount),
+                        _ => None,
+                    }),
+                ));
+            }
+        });
+        if !ran {
+            return;
+        }
+        for ((kind, hand, modifier), (base, hit)) in cases.iter().zip(got) {
+            assert_eq!(hit, Some(base + modifier), "{kind} holding {hand:?}");
+        }
     }
 }
