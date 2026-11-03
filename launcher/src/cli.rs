@@ -235,7 +235,7 @@ enum InstanceCmd {
         /// latest-snapshot) instead of a Horizon one
         #[arg(long, conflicts_with = "copy")]
         minecraft: Option<String>,
-        /// With this mod loader: fabric or quilt
+        /// With this mod loader: fabric, quilt, forge or neoforge
         #[arg(long, requires = "minecraft")]
         loader: Option<String>,
         /// The loader's version (default: its newest stable one)
@@ -270,7 +270,7 @@ enum InstanceCmd {
         #[arg(long)]
         window: Option<String>,
     },
-    /// A Java instance's mod loader: fabric or quilt, or none. --list shows its versions
+    /// A Java instance's mod loader: fabric, quilt, forge or neoforge, or none. --list shows its versions
     Loader {
         instance: String,
         loader: String,
@@ -835,7 +835,8 @@ enum Cmd {
     /// newest to keep; "default" is 2), opening-animation on|off, proxy http://host:port
     /// ("default" removes it), while-playing stay|minimize|hide (what the window does while the game runs), language
     /// system|en|fr|ru|de|zh|es|uk|pl (the window's language; system follows the computer's), accent
-    /// violet|blue|teal|green|amber|red|pink, background PATH (a picture behind Home; "default"
+    /// violet|blue|teal|green|amber|red|pink|#rrggbb|DEGREES (a named accent, any colour, or any
+    /// hue), background PATH (a picture behind Home; "default"
     /// shows Horizon's landscape), native-profile performance|dev|release (the profile native
     /// mods build with: performance is incremental, dev rebuilds a mod quickest for a slow game,
     /// release is slowest to build and slightly faster to play)
@@ -1039,7 +1040,7 @@ fn set_setting(s: &mut backend::Settings, key: &str, value: &str) -> Result<(), 
             s.accent = Accent::parse(value).ok_or_else(|| {
                 let names: Vec<_> = Accent::ALL.iter().map(|a| a.name()).collect();
                 format!(
-                    "{value}: say {} or a hue in degrees (0 to 360)",
+                    "{value}: say {}, a colour like #2563eb or a hue in degrees (0 to 360)",
                     names.join(", ")
                 )
             })?

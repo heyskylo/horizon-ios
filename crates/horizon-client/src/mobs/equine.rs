@@ -126,6 +126,26 @@ pub fn on_elastic_leash_pull(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEven
         super::camel::on_elastic_leash_pull(m, w, events);
     }
 }
+/// `AbstractHorse.getJumpSound` (`playJumpSound` plays it at 0.4): the donkey
+/// and the mule have their own, and a skeleton horse in water splashes.
+pub fn jump_sound(m: &Mob) -> &'static str {
+    match m.species() {
+        Species::Donkey => "entity.donkey.jump",
+        Species::Mule => "entity.mule.jump",
+        Species::SkeletonHorse if m.fluids.in_water => "entity.skeleton_horse.jump_water",
+        _ => "entity.horse.jump",
+    }
+}
+/// `PlayerRideableJumping.getPlayerJumpPendingScale`: the charge `data` out of
+/// 100 as the scale a mount leaps or dashes with (a full bar is 1.0 and the
+/// shortest is 0.4).
+pub fn jump_pending_scale(data: i32) -> f32 {
+    if data >= 90 {
+        1.0
+    } else {
+        0.4 + 0.4 * data as f32 / 90.0
+    }
+}
 /// `AbstractHorse.onPlayerJump`: a released jump bar lets the horse slide on
 /// the rider's keys (`allowStandSliding`) and makes it rear.
 pub fn on_player_jump(m: &mut Mob) {

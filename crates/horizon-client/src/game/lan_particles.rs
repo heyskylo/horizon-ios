@@ -6,7 +6,7 @@ use horizon_client::lan::hub::Hub;
 use horizon_client::particles::{ParticleOptions, ParticleType};
 use horizon_core::{geometry::Vec3, random::RandomSource};
 use horizon_protocol::{
-    entity_data::{MOD_PARTICLE_ID, Particle, ParticleData},
+    entity_data::{MOD_PARTICLE_ID, Particle, ParticleData, PositionSource},
     packets::play::{self, Clientbound as C},
 };
 use horizon_world::registry::BlockStateId;
@@ -414,8 +414,38 @@ impl Game<'_> {
             Some(ParticleData::Trail(target, color, duration)) => {
                 ParticleOptions::trail(*target, *color as u32 & 0xFF_FFFF, *duration)
             }
+            Some(ParticleData::Vibration { source, ticks }) => {
+                ParticleOptions::vibration(self.vibration_destination(source)?, *ticks)
+            }
             Some(_) => return None,
         })
+    }
+
+    /// `PositionSource.getPosition`: a block's centre, or an entity's feet
+    /// raised by the option's offset. An entity this client does not have is
+    /// no destination at all: vanilla makes the particle and removes it on its
+    /// first tick, so nothing of it is ever drawn.
+    fn vibration_destination(&self, source: &PositionSource) -> Option<[f64; 3]> {
+        match source {
+            PositionSource::Block([x, y, z]) => Some([
+                f64::from(*x) + 0.5,
+                f64::from(*y) + 0.5,
+                f64::from(*z) + 0.5,
+            ]),
+            PositionSource::Entity { id, y_offset } => {
+                let id = u32::try_from(*id).ok()?;
+                self.mobs
+                    .iter()
+                    .find(|m| m.id == id && !m.removed)
+                    .map(|m| {
+                        [
+                            m.position.x,
+                            m.position.y + f64::from(*y_offset),
+                            m.position.z,
+                        ]
+                    })
+            }
+        }
     }
 
     /// `ClientPacketListener.handleParticleEvent`: no count is one particle
@@ -465,13 +495,8 @@ impl Game<'_> {
         }
         // A wind charge's burst throws none.
         if !p.block_particles.is_empty() {
-            let (world, facts) = (&self.world, self.res.facts());
-            self.particles.explosion_blocks(
-                p.center,
-                p.radius,
-                p.block_count.max(0) as usize,
-                &|b| facts.is_air(world.block(b[0], b[1], b[2])),
-            );
+            self.particles
+                .track_explosion(p.center, p.radius, p.block_count.max(0) as usize);
         }
         // Entity.pushFromExplosion.
         if let (Some(push), Some(player)) = (p.knockback, self.player.as_mut()) {

@@ -124,6 +124,9 @@ const TERRAIN: [&str; 4] = [
     "gbuffers_basic",
 ];
 
+/// `gbuffers_line` and its fallback, as in Iris: lines such as the block outline.
+const LINES: [&str; 2] = ["gbuffers_line", "gbuffers_basic"];
+
 /// `gbuffers_skybasic` and its fallback (2.3).
 const SKY: [&str; 2] = ["gbuffers_skybasic", "gbuffers_basic"];
 
@@ -226,6 +229,9 @@ pub struct PostProgram {
     /// A geometry stage folded into the vertex stage (`translate_geometry`): drawn non-indexed,
     /// six vertices per quad, with this many instances. 0 without one.
     pub geometry_triangles: u32,
+    /// `scale.<name>`: (scale, offset x, offset y), the part of its buffers a program draws, as
+    /// fractions of their size from GL's bottom-left corner; [1, 0, 0] (all of them) without.
+    pub scale: [f32; 3],
 }
 
 /// `size.buffer.<buffer>`: a size of its own, relative to the render size (floats) or in
@@ -396,10 +402,14 @@ pub struct Post {
     pub damaged_block: Option<PostProgram>,
     /// What draws the game's clouds.
     pub clouds: Option<PostProgram>,
+    /// What draws lines (the block outline), with the pack's own transform and look.
+    pub lines: Option<PostProgram>,
     /// What draws rain and snow, after deferred.
     pub weather: Option<PostProgram>,
     /// What draws the first-person hand and held items.
     pub hand: Option<PostProgram>,
+    /// `clouds=off`: no clouds at all, neither the game's nor the pack's program for them.
+    pub clouds_off: bool,
     /// Some program reads a shadow buffer, or `shadow.enabled=true`: the shadow pass runs (2.5).
     pub shadow_pass: bool,
     /// When it runs: what draws solid and cutout terrain from the light (`shadow`), and
@@ -490,11 +500,48 @@ impl Post {
     }
 }
 
-/// The folder a dimension reads its programs from: `world<id>` when the pack has it, else the
-/// base folder `""` (1.2). `id` is the legacy number: 0 the Overworld, -1 the Nether, 1 the End.
+/// The folder for one of Minecraft's legacy dimension numbers. Named mappings use the
+/// corresponding Minecraft identifier; callers with an identifier should use
+/// [`dimension_folder_named`] instead.
 pub fn dimension_folder(pack: &Pack, id: i32) -> String {
-    let folder = format!("world{id}");
-    if pack.list("").iter().any(|f| f == &folder) || !pack.list(&folder).is_empty() {
+    let name = match id {
+        -1 => "minecraft:the_nether",
+        1 => "minecraft:the_end",
+        0 => "minecraft:overworld",
+        _ => "",
+    };
+    dimension_folder_named(pack, name, id)
+}
+
+/// Selects a dimension's program folder. `dimension.properties` mappings take precedence
+/// over legacy folders: explicit identifiers beat `*`, and an unmapped identifier uses the
+/// base folder. Without that file, preserve the `world<legacy_id>` selection.
+pub fn dimension_folder_named(pack: &Pack, id: &str, legacy_id: i32) -> String {
+    if let Some(text) = pack.read_text("dimension.properties") {
+        let mappings = Properties::parse(&text, &Macros::default());
+        let mut fallback = "";
+        for entry in &mappings.entries {
+            let Some(folder) = entry.key.strip_prefix("dimension.") else {
+                continue;
+            };
+            // A folder must stay inside shaders/, including on folder-backed packs.
+            let Some(path) = crate::pack::normalize(folder).filter(|p| !p.is_empty()) else {
+                continue;
+            };
+            for name in entry.value.split_whitespace() {
+                if name == "*" {
+                    fallback = folder;
+                } else if name == id
+                    || (!name.contains(':') && id.strip_prefix("minecraft:") == Some(name))
+                {
+                    return path;
+                }
+            }
+        }
+        return crate::pack::normalize(fallback).unwrap_or_default();
+    }
+    let folder = format!("world{legacy_id}");
+    if !pack.list(&folder).is_empty() {
         folder
     } else {
         String::new()
@@ -514,10 +561,14 @@ pub struct GameInputs {
     pub clouds: Option<GbuffersInputs>,
     /// Rain and snow.
     pub weather: Option<GbuffersInputs>,
+    /// Lines: the block outline.
+    pub lines: Option<GbuffersInputs>,
     /// The first-person hand and held items.
     pub hand: Option<GbuffersInputs>,
     /// Terrain read vertex by vertex, for a shadow program with a geometry stage.
     pub terrain_geometry: Option<crate::GeometryInputs>,
+    /// Entities and block entities read vertex by vertex, for the same.
+    pub entity_geometry: Option<crate::GeometryInputs>,
 }
 
 /// Loads the post-processing programs of `folder` and, for the geometry `inputs` describes, the
@@ -544,8 +595,10 @@ pub fn load_post(
         particles: None,
         damaged_block: None,
         clouds: None,
+        lines: None,
         weather: None,
         hand: None,
+        clouds_off: false,
         shadow_pass: false,
         shadow: None,
         shadow_water: None,
@@ -712,6 +765,15 @@ pub fn load_post(
         p.blend = blend(properties, &p.name).unwrap_or(Some(TRANSLUCENT_BLEND));
         p
     });
+    // The block outline blends, as vanilla's does.
+    let lines = inputs
+        .lines
+        .as_ref()
+        .and_then(|i| gbuffers_dyn(&LINES, i))
+        .map(|mut p| {
+            p.blend = blend(properties, &p.name).unwrap_or(Some(TRANSLUCENT_BLEND));
+            p
+        });
     // Rain and snow draw after deferred and blend, as vanilla's do (OQ-23).
     let weather = inputs
         .weather
@@ -757,7 +819,9 @@ pub fn load_post(
     loader.post.entities_translucent = entities_translucent;
     loader.post.particles = particles;
     loader.post.damaged_block = damaged_block;
-    loader.post.clouds = clouds;
+    loader.post.clouds_off = properties.get("clouds").is_some_and(|v| v.trim() == "off");
+    loader.post.clouds = clouds.filter(|_| !loader.post.clouds_off);
+    loader.post.lines = lines;
     loader.post.weather = weather;
     loader.post.hand = hand;
     let flag = |key: &str| properties.get(key).map(|v| v.trim() == "true");
@@ -773,7 +837,7 @@ pub fn load_post(
         &mut loader,
         inputs.terrain.as_ref(),
         inputs.entities.as_ref(),
-        inputs.terrain_geometry.as_ref(),
+        [&inputs.terrain_geometry, &inputs.entity_geometry].map(Option::as_ref),
     );
     post.config = std::mem::take(&mut post.config).finish();
     post
@@ -781,12 +845,14 @@ pub fn load_post(
 
 /// Whether the shadow pass runs (2.5) and, when it does, its programs: `shadow_solid` and
 /// `shadow_cutout` are not used (2.4, Legacy); the game's solid and cutout terrain is one draw.
-/// `shadow_entities` and `shadow_block` read the entities' vertices (`entities`).
+/// `shadow_entities` and `shadow_block` read the entities' vertices (`entities`). A program
+/// with a geometry stage reads its vertices itself: `geometry` holds how, for terrain and for
+/// entities.
 fn load_shadow(
     loader: &mut Loader<'_>,
     terrain: Option<&GbuffersInputs>,
     entities: Option<&GbuffersInputs>,
-    geometry: Option<&crate::GeometryInputs>,
+    geometry: [Option<&crate::GeometryInputs>; 2],
 ) {
     let post = &*loader.post;
     let gbuffers = [
@@ -843,7 +909,8 @@ fn load_shadow(
                 };
                 let mut inputs = inputs.clone();
                 inputs.alpha_test = test;
-                loader.geometry = geometry.filter(|_| terrain).cloned().map(|mut g| {
+                let geometry = if terrain { geometry[0] } else { geometry[1] };
+                loader.geometry = geometry.cloned().map(|mut g| {
                     g.inputs.alpha_test = test;
                     g
                 });
@@ -899,7 +966,7 @@ struct Loader<'a> {
     switches: BTreeSet<String>,
     /// `macros` with the pack's options, for the program switches.
     options: Macros,
-    /// The game's terrain read vertex by vertex, while loading shadow programs of terrain.
+    /// The game's geometry read vertex by vertex, while loading shadow programs.
     geometry: Option<crate::GeometryInputs>,
     post: &'a mut Post,
 }
@@ -951,6 +1018,7 @@ impl Loader<'_> {
                 mipmaps: 0,
                 compute,
                 geometry_triangles: 0,
+                scale: FULL,
             });
         }
         if !enabled(
@@ -965,7 +1033,7 @@ impl Loader<'_> {
         if self.pack.exists(&path("gsh")) {
             let Some(inputs) = self.geometry.clone() else {
                 self.post.notes.push(format!(
-                    "{name}: uses a geometry stage (supported for terrain's shadow only); skipped"
+                    "{name}: uses a geometry stage (supported for the shadow pass's terrain and entities only); skipped"
                 ));
                 return None;
             };
@@ -999,7 +1067,8 @@ impl Loader<'_> {
         };
         self.post.config.read(&vertex);
         self.post.config.read(&fragment);
-        let mut buffers = config::draw_buffers(&fragment).unwrap_or_else(|| (0..8).collect());
+        let mut buffers =
+            config::draw_buffers(&fragment).unwrap_or_else(|| default_draw_buffers(group.shadow()));
         if group.shadow() {
             // Output n writes shadowcolor n (6.3); there are two.
             let kept = buffers
@@ -1031,6 +1100,7 @@ impl Loader<'_> {
         Some(PostProgram {
             buffer_blends: buffer_blends(self.properties, &name),
             flips: flips(self.properties, &name),
+            scale: scale(self.properties, &name, group),
             name,
             group,
             program: Some(program),
@@ -1121,7 +1191,8 @@ impl Loader<'_> {
             };
         self.post.config.read(vertex);
         self.post.config.read(fragment);
-        let mut buffers = config::draw_buffers(fragment).unwrap_or_else(|| (0..8).collect());
+        let mut buffers =
+            config::draw_buffers(fragment).unwrap_or_else(|| default_draw_buffers(true));
         let kept = buffers
             .iter()
             .position(|&b| b >= 2)
@@ -1130,6 +1201,7 @@ impl Loader<'_> {
         Some(PostProgram {
             buffer_blends: buffer_blends(self.properties, &name),
             flips: flips(self.properties, &name),
+            scale: scale(self.properties, &name, group),
             name,
             group,
             program: Some(program),
@@ -1184,6 +1256,15 @@ impl Loader<'_> {
         }
         out
     }
+}
+
+/// The buffers a program writes without `RENDERTARGETS` or `DRAWBUFFERS`: only buffer 0, except
+/// in the shadow pass's own programs, where outputs 0 and 1 write shadowcolor0 and shadowcolor1.
+/// Measured in Iris 1.11.7 with probe packs: a `gbuffers_terrain`, `begin`, `prepare`, `deferred`
+/// or `composite` program that writes `gl_FragData[1..]` or `layout(location = n)` leaves those
+/// buffers untouched, while the second output of `shadow` and `shadowcomp` lands in shadowcolor1.
+fn default_draw_buffers(shadow: bool) -> Vec<u32> {
+    if shadow { (0..8).collect() } else { vec![0] }
 }
 
 fn diagnostics(pp: &Preprocessed) -> Vec<String> {
@@ -1270,6 +1351,29 @@ fn buffer_blends(properties: &Properties, program: &str) -> Vec<(u32, Option<Ble
         .collect()
 }
 
+/// A program drawing all of its buffers.
+const FULL: [f32; 3] = [1.0, 0.0, 0.0];
+
+/// `scale.<program>=<scale> [<offsetX> <offsetY>]` of a deferred or composite program (OptiFine's
+/// "Composite render scale"); prepare programs are treated the same, unverified. Iris 1.11.7
+/// applies the offsets too (a probe pack of our own, composite). A value that is not a scale in (0, 1] with offsets in [0, 1) draws all of them.
+fn scale(properties: &Properties, program: &str, group: Group) -> [f32; 3] {
+    if !matches!(group, Group::Prepare | Group::Deferred | Group::Composite) {
+        return FULL;
+    }
+    let Some(value) = properties.get(&format!("scale.{program}")) else {
+        return FULL;
+    };
+    let numbers: Option<Vec<f32>> = value.split_whitespace().map(|n| n.parse().ok()).collect();
+    let fraction = |s: f32| s > 0.0 && s <= 1.0;
+    let offset = |o: f32| (0.0..1.0).contains(&o);
+    match numbers.as_deref() {
+        Some(&[s]) if fraction(s) => [s, 0.0, 0.0],
+        Some(&[s, x, y]) if fraction(s) && offset(x) && offset(y) => [s, x, y],
+        _ => FULL,
+    }
+}
+
 /// `flip.<program>.<buffer>=<bool>` keys of one program.
 fn flips(properties: &Properties, program: &str) -> Vec<(u32, bool)> {
     let prefix = format!("flip.{program}.");
@@ -1291,6 +1395,115 @@ fn flips(properties: &Properties, program: &str) -> Vec<(u32, bool)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn named_dimension_folder_reaches_the_program_loader() {
+        let pack = Pack::from_zip_bytes(
+            "original-dimension-control",
+            crate::pack::tests::zip(&[
+                (
+                    "shaders/dimension.properties",
+                    "dimension.netherShaders = minecraft:the_nether\n",
+                ),
+                (
+                    "shaders/final.vsh",
+                    "#version 120\nvoid main() { gl_Position = gl_Vertex; }",
+                ),
+                (
+                    "shaders/final.fsh",
+                    "#version 120\n/* DRAWBUFFERS:0 */\nvoid main() { gl_FragColor = vec4(0.0); }",
+                ),
+                (
+                    "shaders/netherShaders/final.vsh",
+                    "#version 120\nvoid main() { gl_Position = gl_Vertex; }",
+                ),
+                (
+                    "shaders/netherShaders/final.fsh",
+                    "#version 120\n/* DRAWBUFFERS:3 */\nvoid main() { gl_FragColor = vec4(1.0); }",
+                ),
+            ]),
+        )
+        .unwrap();
+        let folder = dimension_folder_named(&pack, "minecraft:the_nether", -1);
+        assert_eq!(folder, "netherShaders");
+        let post = load_post(
+            &pack,
+            &folder,
+            &Properties::default(),
+            &Macros::standard(),
+            &GameInputs::default(),
+        );
+        assert!(post.notes.is_empty(), "{:?}", post.notes);
+        assert_eq!(post.programs.len(), 1);
+        assert_eq!(post.programs[0].buffers, [3]);
+    }
+
+    #[test]
+    fn named_dimensions_precede_wildcards_and_legacy_folders() {
+        for mappings in [
+            "dimension.other = *\ndimension.specific = the_nether example:moon\n",
+            "dimension.specific = the_nether example:moon\ndimension.other = *\n",
+        ] {
+            let pack = Pack::from_zip_bytes(
+                "t",
+                crate::pack::tests::zip(&[
+                    ("shaders/dimension.properties", mappings),
+                    ("shaders/world-1/final.fsh", "legacy"),
+                ]),
+            )
+            .unwrap();
+            assert_eq!(dimension_folder(&pack, -1), "specific");
+            assert_eq!(dimension_folder_named(&pack, "example:moon", 0), "specific");
+            assert_eq!(
+                dimension_folder_named(&pack, "example:the_nether", -1),
+                "other"
+            );
+            assert_eq!(dimension_folder(&pack, 1), "other");
+        }
+        let pack = Pack::from_zip_bytes(
+            "t",
+            crate::pack::tests::zip(&[
+                (
+                    "shaders/dimension.properties",
+                    "dimension.specific = the_end\ndimension.../../escape = *\n",
+                ),
+                ("shaders/world-1/final.fsh", "legacy"),
+            ]),
+        )
+        .unwrap();
+        assert_eq!(dimension_folder(&pack, -1), "");
+        assert_eq!(dimension_folder(&pack, 1), "specific");
+        let legacy = Pack::from_zip_bytes(
+            "t",
+            crate::pack::tests::zip(&[("shaders/world-1/final.fsh", "legacy")]),
+        )
+        .unwrap();
+        assert_eq!(dimension_folder(&legacy, -1), "world-1");
+        assert_eq!(dimension_folder(&legacy, 0), "");
+    }
+
+    #[test]
+    fn dimension_mapping_paths_and_unknown_legacy_ids() {
+        let mapped = |rules: &str| {
+            Pack::from_zip_bytes(
+                "t",
+                crate::pack::tests::zip(&[("shaders/dimension.properties", rules)]),
+            )
+            .unwrap()
+        };
+        let pack =
+            mapped("dimension.over = minecraft:overworld\ndimension.nested/./fallback = *\n");
+        assert_eq!(dimension_folder(&pack, 0), "over");
+        assert_eq!(dimension_folder(&pack, 2), "nested/fallback");
+        assert_eq!(
+            dimension_folder_named(&pack, "mod:moon", 2),
+            "nested/fallback"
+        );
+        let pack = mapped("dimension.over = overworld\ndimension.../escape = *\n");
+        assert_eq!(dimension_folder(&pack, 2), "");
+        let pack = mapped("dimension.over = overworld\n");
+        assert_eq!(dimension_folder(&pack, 2), "");
+    }
 
     #[test]
     fn image_dimensions_expand_default_and_chosen_options() {
@@ -1493,7 +1706,7 @@ mod tests {
         let names: Vec<&str> = post.programs.iter().map(|p| p.name.as_str()).collect();
         assert_eq!(names, ["deferred", "composite", "composite2", "final"]);
         let p = &post.programs;
-        assert_eq!(p[0].buffers, (0..8).collect::<Vec<_>>());
+        assert_eq!(p[0].buffers, [0]);
         assert_eq!((p[0].mipmaps, p[1].mipmaps), (1 << 5, 0));
         assert_eq!(p[1].buffers, [3]);
         assert_eq!(p[1].flips, [(3, false)]);
@@ -1503,7 +1716,7 @@ mod tests {
         let notes = post.notes.join("\n");
         assert!(
             notes.contains(
-                "composite4: uses a geometry stage (supported for terrain's shadow only)"
+                "composite4: uses a geometry stage (supported for the shadow pass's terrain and entities only)"
             ),
             "{notes}"
         );
@@ -1523,6 +1736,58 @@ mod tests {
         assert_eq!(names, ["final"]);
         let post = load_post(&pack, "", &properties, &macros, &GameInputs::default());
         assert!(post.programs.iter().any(|p| p.name == "composite3"));
+    }
+
+    #[test]
+    fn scale_keys_give_composite_style_programs_a_viewport() {
+        let names = [
+            "deferred",
+            "composite",
+            "composite1",
+            "composite2",
+            "composite3",
+            "final",
+        ];
+        let files: Vec<(String, &str)> = names
+            .iter()
+            .flat_map(|n| {
+                [
+                    (format!("shaders/{n}.vsh"), VSH),
+                    (format!("shaders/{n}.fsh"), FSH),
+                ]
+            })
+            .collect();
+        let files: Vec<(&str, &str)> = files.iter().map(|(n, t)| (n.as_str(), *t)).collect();
+        let pack = Pack::from_zip_bytes("t", zip(&files)).unwrap();
+        let properties = Properties::parse(
+            "scale.deferred = 0.5\nscale.composite = 0.25 0.5 0.25\nscale.composite1 = 2\n\
+             scale.composite2 = 0.5 0.5\nscale.final = 0.5\n",
+            &Macros::default(),
+        );
+        let post = load_post(
+            &pack,
+            "",
+            &properties,
+            &Macros::standard(),
+            &GameInputs::default(),
+        );
+        let scales: Vec<(&str, [f32; 3])> = post
+            .programs
+            .iter()
+            .map(|p| (p.name.as_str(), p.scale))
+            .collect();
+        assert_eq!(
+            scales,
+            [
+                ("deferred", [0.5, 0.0, 0.0]),
+                ("composite", [0.25, 0.5, 0.25]),
+                // Not a scale, an offset missing, a program that draws the screen: all of it.
+                ("composite1", FULL),
+                ("composite2", FULL),
+                ("composite3", FULL),
+                ("final", FULL),
+            ]
+        );
     }
 
     #[test]
@@ -1564,6 +1829,106 @@ mod tests {
             .map(|c| c.0.as_str())
             .collect();
         assert_eq!(compute, ["composite", "composite_a"], "{:?}", post.notes);
+    }
+
+    /// Without RENDERTARGETS or DRAWBUFFERS, a program writes colortex0 only, whatever outputs it
+    /// assigns, while the shadow program's outputs 0 and 1 still write shadowcolor0 and 1. The
+    /// programs are those of probe pack p8107 run in Iris 1.11.7 (the PR has the readings).
+    #[test]
+    fn a_program_without_a_directive_writes_buffer_0_only() {
+        let full = "#version 120\nvarying vec2 uv;\nvoid main() {\n\
+                    gl_Position = ftransform();\nuv = gl_MultiTexCoord0.xy;\n}\n";
+        let deferred = "#version 120\nuniform sampler2D colortex0;\nvarying vec2 uv;\nvoid main() {\n\
+                        gl_FragData[0] = texture2D(colortex0, uv);\n\
+                        gl_FragData[3] = vec4(1.1875);\ngl_FragData[7] = vec4(1.4375);\n}\n";
+        let composite = "#version 330 compatibility\nuniform sampler2D colortex0;\nin vec2 uv;\n\
+                         void main() {\ngl_FragData[0] = texture(colortex0, uv);\n\
+                         gl_FragData[4] = vec4(2.25);\ngl_FragData[5] = vec4(2.3125);\n}\n";
+        let composite1 = "#version 330 compatibility\nuniform sampler2D colortex0;\nin vec2 uv;\n\
+                          layout(location = 0) out vec4 o0;\nlayout(location = 2) out vec4 o2;\n\
+                          void main() {\no0 = texture(colortex0, uv);\no2 = vec4(3.125);\n}\n";
+        let composite3 = "#version 330 compatibility\nuniform sampler2D colortex0;\nin vec2 uv;\n\
+                          /* RENDERTARGETS: 0,12 */\nvoid main() {\n\
+                          gl_FragData[0] = texture(colortex0, uv);\ngl_FragData[1] = vec4(6.5);\n}\n";
+        let terrain_vsh = "#version 120\nvarying vec2 texcoord;\nvarying vec4 color;\nvoid main() {\n\
+                           gl_Position = ftransform();\n\
+                           texcoord = (gl_TextureMatrix[0] * gl_MultiTexCoord0).xy;\ncolor = gl_Color;\n}\n";
+        let terrain = "#version 120\nuniform sampler2D texture;\nvarying vec2 texcoord;\n\
+                       varying vec4 color;\nvoid main() {\n\
+                       vec4 c = texture2D(texture, texcoord) * color;\nif (c.a < 0.1) discard;\n\
+                       gl_FragData[0] = c;\ngl_FragData[6] = vec4(5.0);\n}\n";
+        let shadow_vsh = "#version 120\nvoid main() {\ngl_Position = ftransform();\n}\n";
+        let shadow = "#version 120\nvoid main() {\n\
+                      gl_FragData[0] = vec4(0.25);\ngl_FragData[1] = vec4(0.5);\n}\n";
+        let prepare = "#version 120\nvoid main() {\n\
+                       gl_FragData[0] = vec4(0.375);\ngl_FragData[2] = vec4(8.5);\n}\n";
+        let shadowcomp = "#version 120\nvoid main() {\n\
+                          gl_FragData[0] = vec4(0.75);\ngl_FragData[1] = vec4(0.875);\n}\n";
+        let reads_shadow = "#version 120\nuniform sampler2D shadowcolor1;\nvarying vec2 uv;\n\
+                            void main() { gl_FragColor = texture2D(shadowcolor1, uv); }\n";
+        let pack = Pack::from_zip_bytes(
+            "t",
+            zip(&[
+                ("shaders/deferred.vsh", full),
+                ("shaders/deferred.fsh", deferred),
+                ("shaders/composite.vsh", full),
+                ("shaders/composite.fsh", composite),
+                ("shaders/composite1.vsh", full),
+                ("shaders/composite1.fsh", composite1),
+                ("shaders/composite3.vsh", full),
+                ("shaders/composite3.fsh", composite3),
+                ("shaders/gbuffers_terrain.vsh", terrain_vsh),
+                ("shaders/gbuffers_terrain.fsh", terrain),
+                ("shaders/shadow.vsh", shadow_vsh),
+                ("shaders/shadow.fsh", shadow),
+                ("shaders/prepare.vsh", full),
+                ("shaders/prepare.fsh", prepare),
+                ("shaders/shadowcomp.vsh", full),
+                ("shaders/shadowcomp.fsh", shadowcomp),
+                ("shaders/final.vsh", full),
+                ("shaders/final.fsh", reads_shadow),
+            ]),
+        )
+        .unwrap();
+        let game = crate::GbuffersInputs {
+            declarations: "layout(location = 0) in vec3 hz_v_pos;".into(),
+            body: "    hz_Vertex = vec4(hz_v_pos, 1.0);\n    hz_Color = vec4(1.0);\n".into(),
+            ..Default::default()
+        };
+        let inputs = GameInputs {
+            terrain: Some(game.clone()),
+            entities: Some(game),
+            ..Default::default()
+        };
+        let post = load_post(
+            &pack,
+            "",
+            &Properties::default(),
+            &Macros::standard(),
+            &inputs,
+        );
+        let written: Vec<(&str, &[u32])> = (post.programs.iter())
+            .chain(&post.terrain)
+            .chain(&post.shadow)
+            .chain(&post.shadow_comp)
+            .map(|p| (p.name.as_str(), &p.buffers[..]))
+            .collect();
+        assert_eq!(
+            written,
+            [
+                ("prepare", &[0][..]),
+                ("deferred", &[0]),
+                ("composite", &[0]),
+                ("composite1", &[0]),
+                ("composite3", &[0, 12]),
+                ("final", &[0]),
+                ("gbuffers_terrain", &[0]),
+                ("shadow", &[0, 1]),
+                ("shadowcomp", &[0, 1]),
+            ],
+            "{:?}",
+            post.notes
+        );
     }
 
     /// The shadow pass runs when a program reads a shadow buffer or `shadow.enabled` says so;
@@ -1650,8 +2015,107 @@ mod tests {
         assert!(post.shadow.is_some() && post.shadow_water.is_none());
     }
 
+    /// A shadow program with a geometry stage draws terrain, entities and block entities, each
+    /// read vertex by vertex as the game says; a draw whose vertices can't be read so skips it.
+    #[test]
+    fn a_shadow_geometry_stage_draws_entities_and_block_entities() {
+        let reads = "#version 120\nuniform sampler2D shadowtex0;\nvarying vec2 uv;\n\
+                     void main() { gl_FragColor = texture2D(shadowtex0, uv); }\n";
+        let vsh = "#version 330\nout vec2 vUv;\nvoid main() { gl_Position = ftransform(); vUv = vec2(0.0); }\n";
+        let gsh = "#version 330\nlayout(triangles) in;\nlayout(triangle_strip, max_vertices = 3) out;\n\
+                   in vec2 vUv[];\nout vec2 gUv;\nvoid main() {\n    for (int i = 0; i < 3; i++) {\n        \
+                   gl_Position = gl_in[i].gl_Position;\n        gUv = vUv[i];\n        EmitVertex();\n    }\n    \
+                   EndPrimitive();\n}\n";
+        let fsh = "#version 330\nin vec2 gUv;\nlayout(location = 0) out vec4 c;\nvoid main() { c = vec4(gUv, 0.0, 1.0); }\n";
+        let files = [
+            ("shaders/composite.vsh", VSH),
+            ("shaders/composite.fsh", reads),
+            ("shaders/shadow.vsh", vsh),
+            ("shaders/shadow.gsh", gsh),
+            ("shaders/shadow.fsh", fsh),
+        ];
+        let pack = Pack::from_zip_bytes("t", zip(&files)).unwrap();
+        let game = crate::GbuffersInputs {
+            declarations: "layout(location = 0) in vec3 hz_v_pos;\n\
+                           layout(set = 1, binding = 0) readonly buffer V { uint v[]; };\n"
+                .into(),
+            body: "    hz_Vertex = vec4(hz_v_pos, 1.0);\n".into(),
+            ..Default::default()
+        };
+        let geometry = crate::GeometryInputs {
+            inputs: game.clone(),
+            pull: "        hz_v_pos = uintBitsToFloat(uvec3(v[hz_vertex_index], v[hz_vertex_index], v[hz_vertex_index]));\n"
+                .into(),
+            index: "uint(@)".into(),
+        };
+        let mut inputs = GameInputs {
+            terrain: Some(game.clone()),
+            entities: Some(game),
+            terrain_geometry: Some(geometry.clone()),
+            entity_geometry: Some(geometry),
+            ..Default::default()
+        };
+        let load = |inputs: &GameInputs| {
+            load_post(
+                &pack,
+                "",
+                &Properties::default(),
+                &Macros::standard(),
+                inputs,
+            )
+        };
+        let post = load(&inputs);
+        let triangles = |p: &Option<PostProgram>| p.as_ref().map(|p| p.geometry_triangles);
+        assert_eq!(
+            [&post.shadow, &post.shadow_entities, &post.shadow_block].map(triangles),
+            [Some(1); 3],
+            "{:?}",
+            post.notes
+        );
+        inputs.entity_geometry = None;
+        let post = load(&inputs);
+        assert!(post.shadow.is_some());
+        assert!(post.shadow_entities.is_none() && post.shadow_block.is_none());
+        assert!(
+            post.notes
+                .iter()
+                .any(|n| n.starts_with("shadow: uses a geometry stage")),
+            "{:?}",
+            post.notes
+        );
+    }
+
     /// Water falls back to the terrain chain and blends by default, as the sky does; entities
     /// and block entities fall back along theirs; `blend.*` overrides.
+    /// `clouds=off` hides the game's clouds and drops the pack's own cloud program.
+    #[test]
+    fn clouds_off_draws_no_clouds() {
+        let vsh = "#version 120\nvoid main() { gl_Position = ftransform(); }\n";
+        let fsh = "#version 120\nvoid main() { gl_FragColor = vec4(1.0); }\n";
+        let pack = Pack::from_zip_bytes(
+            "clouds.zip",
+            crate::pack::tests::zip(&[
+                ("shaders/gbuffers_clouds.vsh", vsh),
+                ("shaders/gbuffers_clouds.fsh", fsh),
+            ]),
+        )
+        .unwrap();
+        let macros = Macros::standard();
+        let inputs = GameInputs {
+            clouds: Some(crate::GbuffersInputs {
+                declarations: "layout(location = 0) in vec3 hz_v_pos;".into(),
+                body: "    hz_Vertex = vec4(hz_v_pos, 1.0);\n".into(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let on = load_post(&pack, "", &Properties::default(), &macros, &inputs);
+        assert!(on.clouds.is_some() && !on.clouds_off);
+        let off = Properties::parse("clouds = off\n", &macros);
+        let off = load_post(&pack, "", &off, &macros, &inputs);
+        assert!(off.clouds.is_none() && off.clouds_off);
+    }
+
     #[test]
     fn water_falls_back_to_terrain_and_blends() {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/packs/terrain-test");
@@ -1669,8 +2133,10 @@ mod tests {
             entities: Some(inputs.clone()),
             clouds: Some(inputs.clone()),
             weather: Some(inputs.clone()),
+            lines: Some(inputs.clone()),
             hand: Some(inputs),
             terrain_geometry: None,
+            entity_geometry: None,
         };
         let post = load_post(&pack, "", &Properties::default(), &macros, &inputs);
         let (terrain, water) = (post.terrain.unwrap(), post.water.unwrap());

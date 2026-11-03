@@ -10,6 +10,46 @@ fn on_profiles(game: &Game<'_>) -> bool {
 
 /// An offline profile on an online-mode server: the session service knows no such player.
 const ONLINE_ONLY: &str = "horizon.splitscreen.online_only";
+/// An offline profile on a server outside this computer and its local network.
+const LOCAL_ONLY: &str = "horizon.splitscreen.local_only";
+
+/// A loopback, private (RFC 1918, IPv6 unique local) or link-local address: this computer or
+/// its local network.
+fn local_ip(ip: std::net::IpAddr) -> bool {
+    use std::net::IpAddr;
+    match ip {
+        IpAddr::V4(v4) => v4.is_loopback() || v4.is_private() || v4.is_link_local(),
+        IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
+            Some(v4) => local_ip(IpAddr::V4(v4)),
+            None => {
+                let first = v6.segments()[0];
+                v6.is_loopback() || first & 0xfe00 == 0xfc00 || first & 0xffc0 == 0xfe80
+            }
+        },
+    }
+}
+
+/// Whether the server at `address` is on this computer or its local network, where an offline
+/// profile may join P1 (the project's rule: everyone who plays elsewhere owns the game). It
+/// resolves as the guest's connection will (the SRV redirect, then every address of its host)
+/// and needs all of them local; a friend's invite or an address that doesn't resolve isn't.
+fn local_server(address: &str) -> bool {
+    use std::net::ToSocketAddrs;
+    if address.starts_with(horizon_client::net::FRIEND) {
+        return false;
+    }
+    let Some((host, port)) = horizon_protocol::servers::parse_address(address) else {
+        return false;
+    };
+    let (host, port) = horizon_protocol::server_redirect(&host, port);
+    match (host.as_str(), port).to_socket_addrs() {
+        Ok(addresses) => {
+            let addresses: Vec<_> = addresses.collect();
+            !addresses.is_empty() && addresses.iter().all(|a| local_ip(a.ip()))
+        }
+        Err(_) => false,
+    }
+}
 
 /// Why a player's game left its server, when the server said (its Disconnected or error screen).
 fn turned_away(game: &Game<'_>) -> Option<String> {
@@ -98,21 +138,28 @@ impl Split<'_> {
     }
 
     /// Whether `name` can play in P1's world, said on the profile page before it tries: P1's
-    /// own world takes anyone, an online-mode server no offline profile.
+    /// own world takes anyone; offline profiles require a local, offline-mode server, while
+    /// Microsoft accounts require a valid session.
     fn can_join(&self, name: &str) -> std::result::Result<(), String> {
         if self.taken().iter().any(|n| n.eq_ignore_ascii_case(name)) {
             return Err(format!("{name} is already playing."));
         }
-        if self.p1_server().is_none() || !self.host.online_server() {
+        let Some(address) = self.p1_server() else {
+            return Ok(());
+        };
+        let account = self
+            .accounts
+            .iter()
+            .find(|a| a.name.eq_ignore_ascii_case(name));
+        if account.is_none() && !local_server(&address) {
+            return Err(horizon_client::lang::tr(LOCAL_ONLY, &[]));
+        }
+        if !self.host.online_server() && account.is_none() {
             return Ok(());
         }
         // An online-mode server: only a Microsoft account whose sign-in still holds (the
         // launcher renews it, and hands the game a session at start).
-        match self
-            .accounts
-            .iter()
-            .find(|a| a.name.eq_ignore_ascii_case(name))
-        {
+        match account {
             None if launcher::unavailable()
                 .iter()
                 .any(|a| a.eq_ignore_ascii_case(name)) =>
@@ -509,13 +556,40 @@ fn folder_name(name: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::folder_name;
+    use super::{folder_name, local_server};
 
     #[test]
     fn a_profile_name_never_leaves_the_profiles_folder() {
         assert!(folder_name("P2") && folder_name("Steve"));
         for bad in ["", ".", "..", "../x", "a/b", "a\\b"] {
             assert!(!folder_name(bad), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn offline_guests_join_only_local_servers() {
+        for local in [
+            "127.0.0.1:25565",
+            "localhost:25570",
+            "192.168.1.20",
+            "10.0.0.5:25566",
+            "172.20.1.2",
+            "169.254.3.4",
+            "[::1]:25565",
+            "[fd12:3456::1]:25565",
+            "[fe80::1]:25565",
+        ] {
+            assert!(local_server(local), "{local} is local");
+        }
+        for elsewhere in [
+            "8.8.8.8:25565",
+            "172.32.0.1",
+            "[2001:db8::1]:25565",
+            "[::ffff:1.1.1.1]:25565",
+            "friend:K7QM-3XPD",
+            "",
+        ] {
+            assert!(!local_server(elsewhere), "{elsewhere} is not local");
         }
     }
 }

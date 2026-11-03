@@ -461,7 +461,9 @@ impl VecDelta {
         let mut out = base;
         for i in 0..3 {
             if delta[i] != 0 {
-                out[i] = ((base[i] * 4096.0).round() as i64 + i64::from(delta[i])) as f64 / 4096.0;
+                out[i] = (horizon_core::jmath::round(base[i] * 4096.0) + i64::from(delta[i]))
+                    as f64
+                    / 4096.0;
             }
         }
         out
@@ -881,6 +883,12 @@ packet!(
 packet!(SetPlayerInventory { slot: i32 => VarInt, item: Option<Stack> => Slot });
 packet!(
     /// ClockNetworkState for one world clock (registry id).
+    ///
+    /// `ClientboundSetTimePacket` keys its map by `Holder<WorldClock>`, but
+    /// `WorldClock.STREAM_CODEC` is `ByteBufCodecs.holderRegistry`, not
+    /// `holder`: the key is the plain registry id, with no inline form and no
+    /// off-by-one. The test below is a join packet captured from a vanilla
+    /// 26.3 server.
     ClockState { clock: i32 => VarInt, total_ticks: i64 => VarLong, partial_tick: f32 => Float, rate: f32 => Float }
 );
 packet!(SetTime { game_time: i64 => Long, clocks: Vec<ClockState> => List<ClockState> });
@@ -891,7 +899,7 @@ impl Codec<(i32, Option<(String, Option<f32>)>)> for SoundHolder {
     fn read(r: &mut Reader) -> Result<(i32, Option<(String, Option<f32>)>)> {
         let id = r.varint()?;
         if id != 0 {
-            return Ok((id - 1, None));
+            return Ok((crate::adapter::ids::sound_event(id - 1), None));
         }
         let location = r.string(32767)?;
         let range = if r.bool()? { Some(r.f32()?) } else { None };
@@ -2589,6 +2597,7 @@ packet_enum!(Serverbound, crate::ids::play::serverbound {
     ChatSessionUpdate(ChatSessionUpdate) = CHAT_SESSION_UPDATE,
     PlaceRecipe(super::recipes::PlaceRecipe) = PLACE_RECIPE,
     RecipeBookChangeSettings(super::recipes::RecipeBookChangeSettings) = RECIPE_BOOK_CHANGE_SETTINGS,
+    RecipeBookSeenRecipe(super::recipes::RecipeBookSeenRecipe) = RECIPE_BOOK_SEEN_RECIPE,
     ChunkBatchReceived(ChunkBatchReceived) = CHUNK_BATCH_RECEIVED,
     ClientCommand(ClientCommand) = CLIENT_COMMAND,
     ClientInformation(ClientInformation) = CLIENT_INFORMATION,
@@ -2642,7 +2651,18 @@ packet_enum!(Serverbound, crate::ids::play::serverbound {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{chunk::BlockEntityInfo, packets::round_trip, text::literal};
+    use crate::{
+        chunk::BlockEntityInfo,
+        packets::{recipes::RecipeBookSeenRecipe, round_trip},
+        text::literal,
+    };
+
+    #[test]
+    fn vec_delta_quantizes_the_base_like_math_round() {
+        // Math.round(-2.5) is -2, so a delta of 1 lands on -1/4096, not -2/4096.
+        let out = VecDelta::apply([-2.5 / 4096.0, 0.0, 0.0], [1, 0, 0]);
+        assert_eq!(out[0], -1.0 / 4096.0);
+    }
 
     #[test]
     fn merchant_cost_predicate_is_a_typed_list_without_patch_counts() {
@@ -2754,6 +2774,38 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    /// ServerboundRecipeBookSeenRecipePacket is one `RecipeDisplayId`, a
+    /// VarInt: display 300 is the two bytes `AC 02`, and a byte list that
+    /// stops early is not a display id.
+    #[test]
+    fn a_seen_recipe_is_one_varint_display_id() {
+        let payload = [0xAC, 0x02];
+        let seen = Serverbound::RecipeBookSeenRecipe(RecipeBookSeenRecipe { recipe: 300 });
+        assert_eq!(
+            Serverbound::decode(
+                crate::ids::play::serverbound::RECIPE_BOOK_SEEN_RECIPE,
+                &payload
+            )
+            .unwrap(),
+            seen
+        );
+        assert_eq!(&seen.encode()[1..], payload);
+        assert!(
+            Serverbound::decode(
+                crate::ids::play::serverbound::RECIPE_BOOK_SEEN_RECIPE,
+                &payload[..1]
+            )
+            .is_err()
+        );
+        // Without the variant the packet was `Unknown`, which the server's
+        // dispatch has no arm for; an id still without one reads that way.
+        assert!(matches!(
+            Serverbound::decode(crate::ids::play::serverbound::SEEN_ADVANCEMENTS, &payload)
+                .unwrap(),
+            Serverbound::Unknown(crate::ids::play::serverbound::SEEN_ADVANCEMENTS, _)
+        ));
     }
 
     fn spawn() -> SpawnInfo {
@@ -3891,6 +3943,30 @@ mod tests {
             Serverbound::encode,
             Serverbound::decode,
         );
+    }
+
+    /// A `SetTime` packet captured from a vanilla 26.3 server at join, two
+    /// clocks: `Long 13071`, then `VarInt 2`, `(0, 66678, 0.0, 1.0)` and
+    /// `(1, 13071, 0.0, 1.0)`. Reading the clock as a holder id + 1 turns the
+    /// first key into an inline definition and the packet stops decoding.
+    #[test]
+    fn a_time_clock_is_a_plain_registry_id() {
+        let payload = [
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x33, 0x0f, // game_time 13071
+            0x02, // two clocks
+            0x00, 0xf6, 0x88, 0x04, 0x00, 0x00, 0x00, 0x00, 0x3f, 0x80, 0x00, 0x00, // clock 0
+            0x01, 0x8f, 0x66, 0x00, 0x00, 0x00, 0x00, 0x3f, 0x80, 0x00, 0x00, // clock 1
+        ];
+        let decoded =
+            Clientbound::decode(crate::ids::play::clientbound::SET_TIME, &payload).unwrap();
+        let Clientbound::SetTime(t) = decoded else {
+            panic!("expected SetTime")
+        };
+        assert_eq!(t.game_time, 13071);
+        assert_eq!(t.clocks.len(), 2);
+        assert_eq!((t.clocks[0].clock, t.clocks[0].total_ticks), (0, 66678));
+        assert_eq!((t.clocks[1].clock, t.clocks[1].total_ticks), (1, 13071));
+        assert_eq!(t.clocks[0].rate, 1.0);
     }
 
     #[test]

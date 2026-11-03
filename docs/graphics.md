@@ -30,7 +30,7 @@ Every setting applies at once, except worker threads, the graphics API and trans
 | Advanced | present mode, frame pacing, graphics API, translucent batching, performance overlay (FPS, frame/CPU/GPU times, frame-time graph) | `horizon-graphics.txt` |
 | HDR | HDR, calibration, black level, peak brightness, paper white, UI brightness, a shortcut key to the page | `horizon-graphics.txt` |
 
-`options.txt` keeps exactly vanilla's keys and values, so the options harness still compares it with vanilla; Horizon's settings live in `horizon-graphics.txt` beside it. Their defaults render as vanilla does: cave culling on, entity and leaf culling off, no upload budgets, sky, fog and weather on, 100% resolution, no anti-aliasing, HDR off, the present mode following VSync. VSync on always waits for the display (Fifo), in a window and in fullscreen, as in vanilla; the present mode setting chooses how frames are shown only while VSync is off. Frame pacing defaults to Efficient: the limiter sleeps through the last half millisecond where vanilla spins, which changes timing, not pixels.
+`options.txt` keeps exactly vanilla's keys and values, so the options harness still compares it with vanilla; Horizon's settings live in `horizon-graphics.txt` beside it. Their defaults render as vanilla does: cave culling on, entity and leaf culling off, no upload budgets, sky, fog and weather on, 100% resolution, no anti-aliasing, HDR off, the present mode following VSync. VSync on always waits for the display (Fifo), in a window and in fullscreen, as in vanilla; the present mode setting chooses how frames are shown only while VSync is off. Frame pacing defaults to Efficient: the limiter sleeps through the last half millisecond where vanilla spins, and paces frames on a fixed grid of slots (vanilla starts each slot when the thread wakes up, so every late wake-up lengthens a frame), which changes timing, not pixels.
 
 **Entity Culling** is off by default and disabled with non-vanilla resource packs. It applies to entity models; block entities keep their section and per-block frustum culling and use the separate Block Entities caches. Synchronous mode uses the existing same-frame CPU test. Asynchronous mode checks meshes on a worker and uses a result only when the camera and mesh bounds still match and the opaque chunks and rendered sections that proved occlusion are unchanged and ready. Until then, it leaves the mesh visible. Both modes leave simulation and interaction unchanged; older `entityCulling:true` settings select Synchronous.
 
@@ -47,6 +47,16 @@ HDR also lights the world past paper white: surfaces at block or sky light level
 HDR's light sources shine by the kind of light rather than its level (`mesher::hdr_tier`): the sun most, then glowstone, campfires and the soul fires, then flames and lava, torch and candle flames among them (particles too), then faint glowers such as a redstone torch or magma; glow lichen stays as in SDR. Each tier has its share of the headroom and the brightness its lift starts and ends at, the texel's own before lighting, so a light source shines alike at any light level and on every face (`gfx/hdr.rs` `TIERS`); `HORIZON_HDR_DEBUG=1` greys what isn't lifted and tints what is magenta.
 
 Which settings each page shows, their descriptions and costs are in `crates/horizon-client-render/src/graphics_ui.rs` (`rows`); `graphics_style.rs` holds its colours, sizes and controls.
+
+## Player skins
+
+**3D Skin Layers** (Options → Skin Customization, `threeDSkinLayers` in `options.txt`, off by
+default) draws the outer skin layer as its own geometry instead of one box inflated by 0.25 px:
+every texel the skin paints becomes a slab one texel deep, with its sides filled in where the next
+texel is transparent. Hats, hoods, hair, jackets, sleeves and cuffs then have a silhouette of their
+own, and the gaps between painted texels stay open instead of showing a coloured film over the
+body. The model is built once per skin (and slim/wide) from the 64×64 image the game already
+decodes and is cached with it, so the option costs nothing while it is off.
 
 ## Leaf culling
 

@@ -1,7 +1,7 @@
 # Horizon extras
 
 Optional conveniences built into the client: fullbright, dynamic lights, your own name tag, hiding block-break particles, auto-reconnect,
-Mouse Tweaks-style inventory controls, inventory sorting and a smooth chat. **Every one is off by default**: a fresh
+Mouse Tweaks-style inventory controls, inventory sorting, a smooth chat and a music page. **Every one is off by default**: a fresh
 install looks and behaves exactly like vanilla 26.3, and turning an extra off
 again restores vanilla's behaviour completely.
 
@@ -18,6 +18,8 @@ again restores vanilla's behaviour completely.
 | Game glue (input hooks, per-frame update) | `crates/horizon-client/src/game/extras.rs` |
 | Mouse Tweaks-style controls, sort buttons | `crates/horizon-client/src/game/tweaks.rs` |
 | Sort order and its clicks | `crates/horizon-client/src/inv_sort.rs` (pure, unit tested) |
+| The music page's rows, and the pools it filters | `options_ui.rs` (`Page::Music`), `crates/horizon-client/src/music.rs` (`track_groups`, `MusicManager::set_off`), `sound_events.rs` (`sound_except`) |
+| Cosmetics (show mine, show others'), off with their flag | `extras.rs`, `crates/horizon-client/src/game/cosmetics.rs` ([cosmetics.md](cosmetics.md)) |
 | The settings page | `options_ui.rs` (`Page::Extras`): **Options → Horizon Settings... → Extras...** |
 
 The settings are grouped by extra, under a header each, two buttons to a row as
@@ -224,12 +226,34 @@ press A; if nobody joins, the offer runs out, or it's declined, it drives P1 aga
 whose controller disconnected shows "(no controller)" on its tile. Other players' pause menus
 say **Leave** for disconnecting. `HORIZON_SPLIT_STATS=1` logs every 5 s where a frame's time
 goes (each player's turn and render, the presents, the GPU wait) and each player's frame rate.
-On a server P1 joined (a dedicated server, another computer's LAN world, a friend's invite) the
-others join the same server, each as its own profile; a name already on the server can't be
-picked, and an online-mode server refuses offline profiles, said on the profile page before it
-tries. A player the server turns away as it comes in picks again, told why; one kicked later
+On a server P1 joined on this computer or its local network (a dedicated server, another
+computer's LAN world: a loopback, private or link-local address, after the SRV redirect) the
+others join the same server, each as its own profile. Anywhere else (a public server, even in
+offline mode, or a friend's invite) an offline profile can't join: everyone who plays there owns
+the game, so each player needs its own signed-in account. A name already on the server can't be
+picked, and an online-mode server refuses offline profiles; both are said on the profile page
+before it tries. A player the server turns away as it comes in picks again, told why; one kicked later
 leaves; when P1 leaves the server, everyone does. The server's resource packs are asked once,
 of P1: the others follow P1's answer.
+
+### Music page (`musicPage`, default off; `musicOff`, none off by default)
+- An extra like the rest: off, Music & Sounds is exactly vanilla's page and every
+  pool plays as vanilla picks. On, it gains a **Music...** button.
+- The page lists every track the loaded `sounds.json` can play
+  (`SoundRegistry::tracks`): the built-in situations' own tracks first (menu,
+  overworld, creative, underwater, the End, boss, credits), then the tracks only a
+  biome's pool names, under **Overworld biomes** and **Nether biomes** (vanilla
+  shares those between several biomes, so no heading claims one). A track a few
+  pools share is listed once, from the first pool that names it, so every row has
+  a pool its "play now" can use.
+- **Left click** a track plays it now: it takes the music manager's slot (the track
+  already playing stops), and the situation's own music waits until it ends.
+- **On/Off** at the right of a row takes a track out of every pool it plays in, so
+  a situation with all its tracks off plays nothing. Every track is on by default,
+  so vanilla's random selection is unchanged; the off ones are `musicOff` in
+  `horizon-extras.txt`.
+- The pools are filtered where they are picked (`sound_except` in
+  `sound_events.rs`), the manager is `music.rs`, and the page is in `options_ui.rs`.
 
 ## Shared rules
 

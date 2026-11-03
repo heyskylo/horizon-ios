@@ -13,14 +13,14 @@ AmphibiousPathNavigation.isStableDestination	inline	crates/horizon-client/src/mo
 FlyingPathNavigation.createPathFinder	inline	crates/horizon-client/src/mobs/nav.rs::Navigation::evaluator	NavKind::Flying picks Evaluator::Fly
 FlyingPathNavigation.canUpdatePath	port	crates/horizon-client/src/mobs/nav.rs::Mob::can_update_path	gap: minor: always true, vanilla is false for a flier that rides something
 GroundPathNavigation.createPathFinder	inline	crates/horizon-client/src/mobs/nav.rs::Navigation::evaluator	NavKind::Ground picks Evaluator::Walk
-GroundPathNavigation.canUpdatePath	port	crates/horizon-client/src/mobs/nav.rs::Mob::can_update_path	gap: minor: on ground or in liquid, the isPassenger case is missing
+GroundPathNavigation.canUpdatePath	port	crates/horizon-client/src/mobs/nav.rs::Mob::can_update_path	onGround || isInLiquid || isPassenger: a mob riding a vehicle keeps making and following paths
 GroundPathNavigation.getTempMobPos	port	crates/horizon-client/src/mobs/nav.rs::Mob::temp_mob_pos	x, surface_y, z
 GroundPathNavigation.createPath	port	crates/horizon-client/src/mobs/nav.rs::Mob::create_path_to	unloaded chunk gives no path, then the surface search (surface_position) unless below_surface
 GroundPathNavigation.getSurfaceY	port	crates/horizon-client/src/mobs/nav.rs::Mob::surface_y	floats up through water up to 16 blocks when the mob can float, else floor(y + 0.5)
 GroundPathNavigation.trimPath	port	crates/horizon-client/src/mobs/nav.rs::Mob::trim_path	with avoid_sun on a ground or wall-climbing mob: the mob standing under sky keeps its path, otherwise the nodes are cut at the first one that can see the sky
 PathNavigation.getGroundY	inline	crates/horizon-client/src/mobs/nav.rs::Mob::nav_tick	target y is the floor level under the node unless the block below is air
 PathNavigation.shouldTargetNextNodeInDirection	port	crates/horizon-client/src/mobs/nav.rs::Mob::should_target_next_node	
-PathNavigation.trimPath	missing		minor: path nodes on a cauldron are not raised one block, so a route ending on a cauldron (leatherworker job site) aims into the block
+PathNavigation.trimPath	port	crates/horizon-client/src/mobs/path.rs::Path::raise_cauldron_nodes	the cauldron node moves onto the rim and the node after it follows when it is not above it; Mob::trim_path runs it from nav_move_to_path
 PathNavigation.isClearForMovementBetween	port	crates/horizon-client/src/mobs/world.rs::MobWorld::clear_between	collider clip from start to the target raised by half the height, optionally stopped by fluids
 PathNavigation.shouldRecomputePath	inline	crates/horizon-client/src/mobs/nav.rs::Mob::should_recompute_path	called for every block write that changes a collision shape (`mobs.rs::blocks_changed`, `World::path_writes`); the recompute happens at the start of the mob's next navigation tick, not inside sendBlockUpdated
 WallClimberNavigation.createPath	port	crates/horizon-client/src/mobs/nav.rs::Mob::create_path_to	WallClimber kind remembers climb_to before the ground path
@@ -102,7 +102,7 @@ PoiSection.refresh	inline	crates/horizon-client-render/src/poi_sections.rs::PoiS
 PoiSection.Packed.unpack	skip:other		POI files are not loaded into sections
 PoiTypes.registerBlockStates	inline	crates/horizon-client/src/save.rs::poi_type	state to POI type and max tickets in one match
 PoiTypes.bootstrap	port	crates/horizon-client/src/save.rs::poi_type	every POI type with its tickets (bed heads of the sixteen colours only, cauldrons, bell 32); villagers use villager_brain::state_poi for jobs, beds and bell
-Bat.isFlapping	missing		a flying bat's wing beat (every 10 ticks) sends no minecraft:flap vibration, so sculk sensors do not hear it; mobs/living.rs posts that event for a bee every other tick and for a parrot, and nothing else
+Bat.isFlapping	port	crates/horizon-client/src/game/sculk.rs::flaps	an awake bat flaps every tenth tick, and the movement pass posts minecraft:flap when the block below is air (a bee, every other tick in the air, shares the same fn)
 Bat.getAmbientSound	inline	crates/horizon-client/src/mobs/ai.rs::play_ambient	Species::Bat arm: a resting bat is silent three times in four
 Bat.isResting	port	crates/horizon-client/src/mobs/bat.rs::resting	
 Bat.addAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::mob_to_nbt	BatFlags byte, bit 0 resting
@@ -114,6 +114,7 @@ Dolphin.readAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::mob
 Dolphin.registerGoals	port	crates/horizon-client/src/mobs/aquatic.rs::register	gap: player: no MoveToItemGoal and PlayWithItemsGoal (dolphins ignore items thrown in the water), no FollowPlayerRiddenEntityGoal for boats or nautiluses, no AvoidEntity of guardians, and HurtByTarget does not skip guardians
 Dolphin.createAttributes	skip:data		attributes come from the entity tables
 Dolphin.canAttack	port	crates/horizon-client/src/mobs/goals.rs::spares_target	a baby dolphin takes nobody as its target
+Dolphin.playAttackSound	port	crates/horizon-client/src/mobs/ai.rs::do_hurt_target	the dolphin arm: DOLPHIN_ATTACK at 1.0/1.0 after the blow lands, skipped for a silent mob
 Dolphin.pickUpItem	port	crates/horizon-client/src/game/foxes.rs::Game::tick_dolphins	the game finds the first allowed item in the water within 8 blocks and takes it
 Dolphin.handleEntityEvent	port	crates/horizon-client-render/src/particles.rs::entity_event_burst	event 38: seven happy villager particles about the dolphin
 Dolphin.closeToNextPos	inline	crates/horizon-client/src/mobs/dolphin.rs::SwimToTreasure::tick	nav target within 12 blocks (144 squared) of the dolphin
