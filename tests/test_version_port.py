@@ -1,4 +1,5 @@
 import json
+import re
 from pathlib import Path
 import tempfile
 import unittest
@@ -138,6 +139,19 @@ class GcTests(unittest.TestCase):
                          [".datagen-x", "26.1", "26.2", "diff-26.2-26.3"])
         self.assertEqual(port.to_remove(entries, "26.3", {"26.1"}),
                          [".datagen-x", "26.2", "diff-26.2-26.3"])
+
+
+class LauncherVersionTests(unittest.TestCase):
+    """The launcher's mod-browser filter version agrees with the pinned version (issue #4758)."""
+
+    ROOT = Path(__file__).resolve().parent.parent
+
+    def test_game_matches_pinned_version(self):
+        pinned = re.search(r'pub const VERSION_ID: &str = "([^"]+)";',
+                           (self.ROOT / "crates/horizon-core/src/version.rs").read_text()).group(1)
+        line = re.search(r"pub const GAME: &str = (.+);", (self.ROOT / "launcher/src/browser.rs").read_text()).group(1)
+        # Either derived from the pinned constant (cannot drift) or a literal equal to it.
+        self.assertIn(line, ("horizon_core::version::VERSION_ID", f'"{pinned}"'))
 
 
 if __name__ == "__main__":
