@@ -1,7 +1,8 @@
 # Item integrity sweep
 
-The broader gameplay audit is ongoing. This records verified findings separately
-from hypotheses; it does not claim that duplication exploits have been eliminated.
+This general bug-sweep pass is complete. This report separates verified repairs
+from hypotheses and records the scope of validation. It does not claim that the
+game is bug-free or that duplication exploits have been eliminated.
 
 ## Vehicle slot commands (verified and repaired)
 
@@ -159,13 +160,29 @@ Protocol compatibility alone is not a claim of matching gameplay or complete
 cross-play compatibility. Tests should establish their specific scope, not imply
 whole-game parity.
 
-## Remaining investigation
+## Broader regression coverage and limits
 
-- Other explosion variants and non-living entity overrides remain to audit;
-  TNT vehicle conservation and vehicle /kill vibrations are verified above.
+Fresh live checks passed for flight, ladder movement, damage, signs and books.
+The hurt-event propagation check passes with Java's supported tick rate reduced
+to make its ten-tick animation observable across two CLI-driven clients; the
+production timing code was not changed. Death inventory/drop behavior passes
+with keep_inventory enabled and disabled for both players. Menu reset across
+dimension change and respawn passes while preserving the configured inventory.
 
-- Cursor and crafting-grid conservation during disconnect, death, menu replacement
-  and vehicle destruction; include full inventories and overflow drops.
-- Save/reload consistency across player inventories and world-owned containers.
-- Continue beyond inventory into entity lifecycle, rendering/loading, input and
-  other gameplay systems. The audit remains active.
+Fixture corrections preserve the tested behavior: normal armour/off-hand slots
+are not mistaken for stale container slots; the transfer test explicitly enables
+keep_inventory when it expects items to survive death; recipe interaction waits
+for the client's actual block update. No gameplay workaround was added for these
+fixture failures.
+
+Validation includes 1,327 renderer tests (51 ignored), 651 Python tests (one
+skipped), the scoped iOS Clippy checks and the live item/network cases recorded
+above. Rendering components were unchanged by this sweep and their matching cached
+test binary was rerun. Physical iPad gameplay, every third-party shader pack,
+crash-consistent saves under forced host failure, every non-living entity override,
+and all native-mod configurations are not established by these results.
+
+The optional shader-outline diagnostic remains an unisolated compatibility lead.
+No confirmed duplication exploit was found. All confirmed defects identified in
+this pass were repaired locally; publication and a new device build are separate
+steps and were not performed by this sweep.

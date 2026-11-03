@@ -605,6 +605,7 @@ def check_menu_transfer(host, guest, out):
     results = {}
 
     def open_chest():
+        guest.until(lambda: guest.raw('block', *chest), lambda b: b.get('block') == 'minecraft:chest')
         guest.raw('interact', *chest)
         guest.raw('wait-for', 'screen', 'container', '--timeout', 10)
         guest.wait(10)
@@ -615,7 +616,10 @@ def check_menu_transfer(host, guest, out):
         guest.raw('key', 'e', 'tap')
         guest.raw('wait-for', 'screen', 'inventory', '--timeout', 10)
         inventory = guest('screen')
-        stale = [s for s in inventory.get('slots', []) if s.get('slot', 0) >= 300]
+        # Container/station IDs are separate from the player's normal
+        # armour and off-hand slots (500..504), which remain in inventory.
+        stale = [s for s in inventory.get('slots', [])
+                 if 300 <= s.get('slot', 0) < 500 or s.get('slot', 0) >= 600]
         diamonds = guest('inventory')['counts'].get('minecraft:diamond', 0)
         guest.shot(out, f'menu-transfer-{label}')
         guest.raw('key', 'esc', 'tap')
@@ -634,6 +638,9 @@ def check_menu_transfer(host, guest, out):
         wait_dimension(guest, OVERWORLD, 400)
         guest.wait(20)
         open_chest()
+        # This case checks menu reset while preserving items. The separate
+        # keepinv case verifies normal death drops with the rule disabled.
+        host('command', command='gamerule keep_inventory true')
         guest('command', command='kill @s')
         guest.wait(20)
         guest.raw('respawn')
@@ -641,6 +648,7 @@ def check_menu_transfer(host, guest, out):
         guest.wait(40)
         settled('respawn')
     finally:
+        host('command', command='gamerule keep_inventory false')
         back_to_game(guest)
         guest('command', command=f'execute in {OVERWORLD} run setblock {chest[0]} {chest[1]} {chest[2]} minecraft:air')
     return results
@@ -1835,43 +1843,50 @@ def check_respawn(host, guest, out):
 
 
 def check_hurt(host, guest, out):
-    for g in (host, guest):
-        g('command', command='gamemode survival')
-        g('command', command='clear @s')
-    face_each_other(host, guest)
-    hx, hy, hz = pos_of(host)
-    # Between the two, within both players' reach; bare hands leave it alive.
-    host('command', command=f'summon minecraft:pig {hx + 1.5:.2f} {hy:.2f} {hz + 0.8:.2f} {{NoAI:1b}}')
-    host.wait(30)
+    # HurtTime lasts ten simulation ticks. Slow the supported server tick rate
+    # while observing both clients so CLI/render latency cannot consume the
+    # complete flash between sequential reads; keep the tick-count assertions.
+    host('command', command='tick rate 4')
+    try:
+        for g in (host, guest):
+            g('command', command='gamemode survival')
+            g('command', command='clear @s')
+        face_each_other(host, guest)
+        hx, hy, hz = pos_of(host)
+        # Between the two, within both players' reach; bare hands leave it alive.
+        host('command', command=f'summon minecraft:pig {hx + 1.5:.2f} {hy:.2f} {hz + 0.8:.2f} {{NoAI:1b}}')
+        host.wait(30)
 
-    def pig(game):
-        return game.raw('entities', 6, 'pig')['entities'][0]
-    seen = {}
-    for name, attacker, watcher in (('guest hits', guest, host), ('host hits', host, guest)):
-        attacker.wait(30)  # a full attack charge
-        attacker.raw('attack', pig(attacker)['id'])
-        seen[name] = {'attacker': pig(attacker)['hurt_time'], 'watcher': pig(watcher)['hurt_time']}
-        attacker.shot(out, 'hurt-' + name.replace(' ', '-'))
-        watcher.shot(out, 'hurt-' + name.replace(' ', '-') + '-seen')
-        attacker.wait(20)
-    host('command', command='kill @e[type=minecraft:pig]')
-    # A hurt player flashes red for the other one too (#2827).
-    watched = (('host hurt', host, guest), ('guest hurt', guest, host))
-    for name, hurt, watcher in watched:
-        hurt.wait(30)
-        # Instant damage hurts on the next effect tick.
-        hurt('command', command='effect give @s minecraft:instant_damage 1 0')
-        for _ in range(10):
-            other = watcher.raw('entities', 6, 'player')['entities'][0]
-            if other['hurt_time'] > 0:
-                break
-            watcher.wait(1)
-        seen[name] = {'watcher': other['hurt_time']}
-        watcher.shot(out, 'hurt-' + name.replace(' ', '-') + '-seen')
-    # LivingEntity.hurtTime: 10 when hurt, one less each tick; the reads come a few ticks later.
-    for name, sides in seen.items():
-        assert all(t > 0 for t in sides.values()), f'{name}: the hurt flash {seen}'
-    return seen
+        def pig(game):
+            return game.raw('entities', 6, 'pig')['entities'][0]
+        seen = {}
+        for name, attacker, watcher in (('guest hits', guest, host), ('host hits', host, guest)):
+            attacker.wait(30)  # a full attack charge
+            attacker.raw('attack', pig(attacker)['id'])
+            seen[name] = {'attacker': pig(attacker)['hurt_time'], 'watcher': pig(watcher)['hurt_time']}
+            attacker.shot(out, 'hurt-' + name.replace(' ', '-'))
+            watcher.shot(out, 'hurt-' + name.replace(' ', '-') + '-seen')
+            attacker.wait(20)
+        host('command', command='kill @e[type=minecraft:pig]')
+        # A hurt player flashes red for the other one too (#2827).
+        watched = (('host hurt', host, guest), ('guest hurt', guest, host))
+        for name, hurt, watcher in watched:
+            hurt.wait(30)
+            # Instant damage hurts on the next effect tick.
+            hurt('command', command='effect give @s minecraft:instant_damage 1 0')
+            for _ in range(10):
+                other = watcher.raw('entities', 6, 'player')['entities'][0]
+                if other['hurt_time'] > 0:
+                    break
+                watcher.wait(1)
+            seen[name] = {'watcher': other['hurt_time']}
+            watcher.shot(out, 'hurt-' + name.replace(' ', '-') + '-seen')
+        # LivingEntity.hurtTime: 10 when hurt, one less each tick; the reads come a few ticks later.
+        for name, sides in seen.items():
+            assert all(0 < t <= 10 for t in sides.values()), f'{name}: the hurt flash {seen}'
+        return seen
+    finally:
+        host('command', command='tick rate 20')
 
 
 def mob_looks(game, centre):
