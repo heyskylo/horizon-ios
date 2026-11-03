@@ -299,6 +299,7 @@ mod shelf;
 mod shield;
 mod shoulders;
 mod sign_edit;
+mod skin_models;
 mod sniffers;
 mod social;
 mod spawner;
@@ -2838,7 +2839,7 @@ struct Game<'a> {
     cosmetics: cosmetics::Cosmetics,
     /// 3D skin layers: each player's outer layer as one slab per painted
     /// texel, built once per (skin, slim) (`mobs::skin_layers`).
-    skin_3d: RefCell<HashMap<(String, bool), Arc<horizon_client::mobs::Part>>>,
+    skin_3d: RefCell<skin_models::SkinModels>,
     /// Atlas trim slots in use: (sprite name, slot), least recently drawn first.
     trim_slots: Vec<(String, usize)>,
     cart_models: minecarts::CartModels,

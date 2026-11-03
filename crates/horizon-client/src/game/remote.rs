@@ -5100,8 +5100,8 @@ impl Game<'_> {
             return None;
         }
         let key = (skin.to_owned(), slim);
-        if let Some(model) = self.skin_3d.borrow().get(&key) {
-            return Some(model.clone());
+        if let Some(model) = self.skin_3d.borrow_mut().get(&key) {
+            return Some(model);
         }
         let model_key = if slim { "player_slim#main" } else { "main" };
         let base = kind
@@ -5115,13 +5115,7 @@ impl Game<'_> {
             skin_layers::SIZE,
             skin_layers::DEPTH,
         )?);
-        let mut cache = self.skin_3d.borrow_mut();
-        // A long session on a busy server should not keep every skin's
-        // geometry: the next resolution rebuilds the ones dropped.
-        if cache.len() >= 512 {
-            cache.clear();
-        }
-        cache.insert(key, model.clone());
+        self.skin_3d.borrow_mut().insert(key, model.clone());
         Some(model)
     }
 
