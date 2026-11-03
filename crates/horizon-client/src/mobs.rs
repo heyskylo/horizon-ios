@@ -3573,7 +3573,13 @@ impl Mob {
     }
     /// Mob.playSound with LivingEntity.getVoicePitch.
     pub fn voice(&mut self, event: &'static str, events: &mut Vec<MobEvent>) {
+        // Java evaluates the arguments of `playSound(event, getSoundVolume(),
+        // getVoicePitch())` before the call, so the pitch is drawn even for a
+        // silent entity, whose `Entity.playSound` then plays nothing.
         let pitch = self.voice_pitch();
+        if self.silent {
+            return;
+        }
         // Entity.playSound: at the entity's feet.
         let at = [self.position.x, self.position.y, self.position.z];
         events.push(MobEvent::Sound(event, at, ai::sound_volume(self), pitch));
