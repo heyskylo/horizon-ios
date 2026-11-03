@@ -1057,5 +1057,13 @@
   "Mod": "Мод",
   "Resource pack": "Набор ресурсов",
   "Shader pack": "Набор шейдеров",
-  "Data pack": "Набор данных"
+  "Data pack": "Набор данных",
+  "Esc": "Esc",
+  "Mod · {instance}": "Мод · {instance}",
+  "Open the game folder": "Открыть папку игры",
+  "Open {page}": "Открыть {page}",
+  "Play {name}": "Играть в {name}",
+  "Install {name}": "Установить {name}",
+  "Remove {name}": "Удалить {name}",
+  "Play, install a mod, open a page": "Играть, установить мод, открыть страницу"
 }

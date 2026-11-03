@@ -28,6 +28,7 @@ mod glass_home_tabs;
 mod glass_instance;
 mod glass_instance_java;
 mod glass_notes;
+mod glass_palette;
 mod glass_settings;
 mod glass_ui;
 mod glass_versions;
@@ -307,6 +308,8 @@ struct Launcher {
     /// Its Friends over the internet panel (`internet.rs`).
     internet: internet::Internet,
     /// The window's own focus, so Tab reaches the controls when nothing else has the keyboard.
+    /// The palette (⌘K), while open (`glass_palette`).
+    palette: Option<glass_palette::Palette>,
     root_focus: FocusHandle,
     /// Microsoft accounts (accounts.json), the sign-in under way and what it last showed.
     accounts: Accounts,
@@ -599,6 +602,7 @@ impl Launcher {
             servers: servers_page::Servers::new(),
             internet: internet::Internet::new(),
             root_focus: cx.focus_handle(),
+            palette: None,
             accounts: Accounts::load(),
             auth_status: HashMap::new(),
             auth_progress: HashMap::new(),
@@ -5014,6 +5018,20 @@ impl Render for Launcher {
                 cx.stop_propagation();
                 cx.notify();
             }))
+            // ⌘K (Ctrl+K elsewhere) wherever the focus is, even in a field: the palette.
+            .capture_key_down(cx.listener(|this, ev: &KeyDownEvent, window, cx| {
+                let k = &ev.keystroke;
+                let command = if cfg!(target_os = "macos") {
+                    k.modifiers.platform
+                } else {
+                    k.modifiers.control
+                };
+                if this.theme.dark && command && !k.modifiers.shift && k.key == "k" {
+                    this.palette_toggle(window, cx);
+                    cx.stop_propagation();
+                    cx.notify();
+                }
+            }))
             .capture_any_mouse_down(|_, _, _| KEYBOARD.store(false, Ordering::Relaxed))
             .on_mouse_move(cx.listener(|this, ev: &gpui::MouseMoveEvent, window, cx| {
                 let size = window.viewport_size();
@@ -5098,6 +5116,9 @@ impl Render for Launcher {
             if let Some(viewer) = self.screenshot_viewer(cx) {
                 root = root.child(viewer);
             }
+        }
+        if let Some(palette) = self.palette_overlay(window, cx) {
+            root = root.child(palette);
         }
         if self.asking_consent() {
             root = root.child(self.consent_screen(cx));

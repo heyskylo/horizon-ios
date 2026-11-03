@@ -1057,5 +1057,13 @@
   "Mod": "Mod",
   "Resource pack": "Paquete de recursos",
   "Shader pack": "Paquete de shaders",
-  "Data pack": "Paquete de datos"
+  "Data pack": "Paquete de datos",
+  "Esc": "Esc",
+  "Mod · {instance}": "Mod · {instance}",
+  "Open the game folder": "Abrir la carpeta del juego",
+  "Open {page}": "Abrir {page}",
+  "Play {name}": "Jugar a {name}",
+  "Install {name}": "Instalar {name}",
+  "Remove {name}": "Quitar {name}",
+  "Play, install a mod, open a page": "Jugar, instalar un mod, abrir una página"
 }

@@ -1057,5 +1057,13 @@
   "Mod": "模组",
   "Resource pack": "资源包",
   "Shader pack": "光影包",
-  "Data pack": "数据包"
+  "Data pack": "数据包",
+  "Esc": "Esc",
+  "Mod · {instance}": "模组 · {instance}",
+  "Open the game folder": "打开游戏文件夹",
+  "Open {page}": "打开{page}",
+  "Play {name}": "玩 {name}",
+  "Install {name}": "安装 {name}",
+  "Remove {name}": "移除 {name}",
+  "Play, install a mod, open a page": "游玩、安装模组、打开页面"
 }

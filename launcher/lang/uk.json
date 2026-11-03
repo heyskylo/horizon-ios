@@ -1057,5 +1057,13 @@
   "Mod": "Мод",
   "Resource pack": "Пакет ресурсів",
   "Shader pack": "Пакет шейдерів",
-  "Data pack": "Пакет даних"
+  "Data pack": "Пакет даних",
+  "Esc": "Esc",
+  "Mod · {instance}": "Мод · {instance}",
+  "Open the game folder": "Відкрити теку гри",
+  "Open {page}": "Відкрити {page}",
+  "Play {name}": "Грати в {name}",
+  "Install {name}": "Встановити {name}",
+  "Remove {name}": "Вилучити {name}",
+  "Play, install a mod, open a page": "Грати, встановити мод, відкрити сторінку"
 }
