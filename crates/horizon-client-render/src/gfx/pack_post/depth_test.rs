@@ -322,12 +322,14 @@ fn check(sampler: &str, stage: Stage, scene: Scene, expected: [u8; 4]) {
         shaders(sampler, stage, scene),
         World {
             atlas: None,
+            material_maps: None,
             lightmap: color.clone(),
             terrain: terrain.then_some(Geometry {
                 buffers: &layouts,
                 table: None,
                 depth_write: true,
                 atlas: None,
+                material_maps: false,
                 ids: None,
                 cull: false,
             }),
