@@ -10500,12 +10500,29 @@ fn hold_server_fire(fire_ticks: i32, server_on_fire: bool) -> i32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{hold_server_fire, keep_client_state, remote_use_swings, synced_local_use};
+    use super::{
+        hold_server_fire, keep_client_state, player_voice_pitch, remote_use_swings,
+        synced_local_use,
+    };
     use horizon_client::{
         containers::{Beacon, BlockEntity},
         items::ItemStack,
     };
     use horizon_world::nbt::Tag;
+
+    /// `Player.getVoicePitch` is `fconst_1; freturn`: one, always, for the hurt
+    /// and death sounds this client plays for its own player. Unlike a mob's
+    /// voice pitch it takes no age and no random - it is not even handed the
+    /// level random - so the two draws this used to take from the world random
+    /// per hurt and per death are gone as well.
+    #[test]
+    fn the_players_own_voice_pitch_is_one() {
+        let first = player_voice_pitch();
+        let second = player_voice_pitch();
+        assert_eq!(first, 1.0);
+        // Repeated calls answer the same: no draw, no state to advance.
+        assert_eq!(second, first);
+    }
 
     /// `MultiPlayerGameMode.useItem`'s `shouldSwing`: the SUCCESS answers
     /// swing, CONSUME's do not (#6425).
