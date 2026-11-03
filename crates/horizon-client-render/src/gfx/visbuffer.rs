@@ -247,7 +247,7 @@ impl Visbuffer {
         flat: &Flat,
         vertices: impl Fn(u32) -> wgpu::BufferSlice<'a> + Copy,
     ) {
-        let [opaque, cutout] = flat.pass_calls;
+        let [opaque, cutout, _] = flat.pass_calls;
         pass.set_pipeline(&self.opaque);
         flat.draw_paged(pass, &flat.calls[..opaque], vertices);
         pass.set_pipeline(&self.cutout);
@@ -262,10 +262,13 @@ impl Visbuffer {
         flat: &Flat,
         vertices: impl Fn(u32) -> wgpu::BufferSlice<'a> + Copy,
     ) {
-        for pipeline in [&self.opaque, &self.cutout] {
-            pass.set_pipeline(pipeline);
-            flat.draw_phase2(pass, vertices);
-        }
+        // Phase 2 lists each section's opaque runs first, its cutout runs after.
+        let split = flat.pass_calls[2] - flat.phase1_calls;
+        let total = flat.solid_calls - flat.phase1_calls;
+        pass.set_pipeline(&self.opaque);
+        flat.draw_phase2(pass, 0..split, vertices);
+        pass.set_pipeline(&self.cutout);
+        flat.draw_phase2(pass, split..total, vertices);
     }
 
     /// Pass 2: shades the solid terrain the IDs show into `target`, the world's colour,
