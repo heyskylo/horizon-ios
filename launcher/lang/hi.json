@@ -1072,5 +1072,6 @@
   "Deleted {name}": "{name} हटाया गया",
   "Launcher settings are back to their defaults": "लॉन्चर की सेटिंग्स डिफ़ॉल्ट पर लौट आईं",
   "Opened {path}": "खोला गया: {path}",
-  "Saved {name}": "{name} सहेजा गया"
+  "Saved {name}": "{name} सहेजा गया",
+  "{online} of {max}": "{max} में से {online}"
 }

@@ -1072,5 +1072,6 @@
   "Deleted {name}": "{name}을(를) 삭제했습니다",
   "Launcher settings are back to their defaults": "런처 설정이 기본값으로 돌아갔습니다",
   "Opened {path}": "열었음: {path}",
-  "Saved {name}": "{name}을(를) 저장했습니다"
+  "Saved {name}": "{name}을(를) 저장했습니다",
+  "{online} of {max}": "{online}/{max}"
 }

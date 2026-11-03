@@ -1072,5 +1072,6 @@
   "Deleted {name}": "Usunięto {name}",
   "Launcher settings are back to their defaults": "Ustawienia launchera wróciły do domyślnych",
   "Opened {path}": "Otwarto: {path}",
-  "Saved {name}": "Zapisano {name}"
+  "Saved {name}": "Zapisano {name}",
+  "{online} of {max}": "{online} z {max}"
 }

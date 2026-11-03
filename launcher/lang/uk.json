@@ -1072,5 +1072,6 @@
   "Deleted {name}": "{name} видалено",
   "Launcher settings are back to their defaults": "Налаштування лаунчера скинуто до типових",
   "Opened {path}": "Відкрито: {path}",
-  "Saved {name}": "{name} збережено"
+  "Saved {name}": "{name} збережено",
+  "{online} of {max}": "{online} з {max}"
 }
