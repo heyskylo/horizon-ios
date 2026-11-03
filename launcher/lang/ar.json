@@ -1057,5 +1057,21 @@
   "Mod": "إضافة",
   "Resource pack": "حزمة موارد",
   "Shader pack": "حزمة تظليل",
-  "Data pack": "حزمة بيانات"
+  "Data pack": "حزمة بيانات",
+  "Esc": "Esc",
+  "Mod · {instance}": "إضافة · {instance}",
+  "Open the game folder": "فتح مجلد اللعبة",
+  "Open {page}": "فتح {page}",
+  "Play {name}": "العب {name}",
+  "Install {name}": "تثبيت {name}",
+  "Remove {name}": "إزالة {name}",
+  "Play, install a mod, open a page": "العب، ثبّت إضافة، افتح صفحة",
+  "Copied the picture": "تم نسخ الصورة",
+  "Copied {text}": "تم نسخ {text}",
+  "Created {name}": "تم إنشاء {name}",
+  "Deleted {name}": "تم حذف {name}",
+  "Launcher settings are back to their defaults": "عادت إعدادات المشغّل إلى قيمها الافتراضية",
+  "Opened {path}": "تم فتح {path}",
+  "Saved {name}": "تم حفظ {name}",
+  "My Horizon": "Horizon الخاص بي"
 }

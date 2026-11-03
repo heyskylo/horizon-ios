@@ -1057,5 +1057,21 @@
   "Mod": "Mod",
   "Resource pack": "Pacote de recursos",
   "Shader pack": "Pacote de shaders",
-  "Data pack": "Pacote de dados"
+  "Data pack": "Pacote de dados",
+  "Esc": "Esc",
+  "Mod · {instance}": "Mod · {instance}",
+  "Open the game folder": "Abrir a pasta do jogo",
+  "Open {page}": "Abrir {page}",
+  "Play {name}": "Jogar {name}",
+  "Install {name}": "Instalar {name}",
+  "Remove {name}": "Remover {name}",
+  "Play, install a mod, open a page": "Jogar, instalar um mod, abrir uma página",
+  "Copied the picture": "Imagem copiada",
+  "Copied {text}": "Copiado: {text}",
+  "Created {name}": "{name} criada",
+  "Deleted {name}": "{name} excluída",
+  "Launcher settings are back to their defaults": "As configurações do launcher voltaram ao padrão",
+  "Opened {path}": "Aberto: {path}",
+  "Saved {name}": "{name} salva",
+  "My Horizon": "Meu Horizon"
 }

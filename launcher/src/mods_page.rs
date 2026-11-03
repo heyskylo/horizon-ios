@@ -54,6 +54,8 @@ pub(super) enum Event {
     TakenDown(Vec<String>),
     /// A project page's part, an image or a filter's values (`mods_project`).
     Loaded(super::mods_project::Loaded),
+    /// The palette's registry mods for its search of that number.
+    Palette(u64, Vec<Project>),
 }
 
 /// Where a Java mod's check is.
@@ -322,6 +324,11 @@ impl Launcher {
             changed = true;
             let m = &mut self.mods;
             match event {
+                Event::Palette(search, found) => {
+                    if let Some(p) = self.palette.as_mut().filter(|p| p.search == search) {
+                        p.mods = found;
+                    }
+                }
                 Event::Found(search, offset, result) if search == m.search => {
                     m.searching = false;
                     m.searched = true;
@@ -356,6 +363,9 @@ impl Launcher {
                 Event::Done(result, modpack) => {
                     done = true;
                     m.busy = None;
+                    if let Ok(said) = &result {
+                        crate::glass_toast::say(said.clone());
+                    }
                     m.message = Some(result);
                     m.installed = installed::Installed::load(&m.home()).entries;
                     m.installed_list.reset();
@@ -942,19 +952,54 @@ impl Launcher {
     /// click.
     pub(super) fn mods_remove_click(&mut self, id: String) {
         if self.mods.confirm_remove.as_ref() == Some(&id) {
-            let home = self.mods.home();
-            let removed = match self.mods.java {
-                Some(_) => java_instance::remove(&home, &id),
-                None => installed::remove(&home, &id),
-            };
-            self.mods.message =
-                Some(removed.map(|e| trf("Removed {name}.", &[("name", &e.title)])));
-            self.mods.installed = installed::Installed::load(&home).entries;
-            self.mods.installed_list.reset();
-            self.mods.confirm_remove = None;
+            let _ = self.mods_remove(&id);
         } else {
             self.mods.confirm_remove = Some(id);
         }
+    }
+
+    /// The project `id` leaves the selected instance now; what happened, for the page's notice.
+    pub(super) fn mods_remove(&mut self, id: &str) -> Result<String, String> {
+        let home = self.mods.home();
+        let removed = match self.mods.java {
+            Some(_) => java_instance::remove(&home, id),
+            None => installed::remove(&home, id),
+        }
+        .map(|e| trf("Removed {name}.", &[("name", &e.title)]));
+        if let Ok(said) = &removed {
+            crate::glass_toast::say(said.clone());
+        }
+        self.mods.message = Some(removed.clone());
+        self.mods.installed = installed::Installed::load(&home).entries;
+        self.mods.installed_list.reset();
+        self.mods.confirm_remove = None;
+        removed
+    }
+
+    /// The palette's search (`glass_palette`): up to four of Horizon's registry mods for `text`,
+    /// answered as [`Event::Palette`]. None for a Java instance, which takes Modrinth's files.
+    pub(super) fn palette_mods(&mut self, text: &str, search: u64) {
+        self.mods_load();
+        if self.mods.java.is_some() {
+            return;
+        }
+        let tx = self.mods.tx.clone();
+        let query = Query {
+            limit: 4,
+            ..Query::new(text, PackKind::Mod)
+        };
+        std::thread::spawn(move || {
+            let found = browser::source(SourceId::Horizon)
+                .ok_or_else(|| "not set up".to_string())
+                .and_then(|s| s.search(&query))
+                .unwrap_or_default();
+            let _ = tx.send(Event::Palette(search, found));
+        });
+    }
+
+    /// Whether the selected instance has `p` (the palette's Install or Remove).
+    pub(super) fn mods_has(&self, p: &Project) -> bool {
+        self.mods.entry(p).is_some()
     }
 
     pub(super) fn mods_page(&mut self, cx: &mut Context<Self>) -> Div {
@@ -1355,7 +1400,7 @@ impl Launcher {
                     )
                     .on_click(move |_, _, cx| {
                         let _ = std::fs::create_dir_all(&folder);
-                        cx.open_with_system(&folder);
+                        crate::glass_toast::open(cx, &folder);
                     }),
                 );
             }

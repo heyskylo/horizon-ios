@@ -1057,5 +1057,21 @@
   "Mod": "Mod",
   "Resource pack": "Paket sumber daya",
   "Shader pack": "Paket shader",
-  "Data pack": "Paket data"
+  "Data pack": "Paket data",
+  "Esc": "Esc",
+  "Mod · {instance}": "Mod · {instance}",
+  "Open the game folder": "Buka folder game",
+  "Open {page}": "Buka {page}",
+  "Play {name}": "Main {name}",
+  "Install {name}": "Pasang {name}",
+  "Remove {name}": "Hapus {name}",
+  "Play, install a mod, open a page": "Main, pasang mod, buka halaman",
+  "Copied the picture": "Gambar disalin",
+  "Copied {text}": "Disalin: {text}",
+  "Created {name}": "{name} dibuat",
+  "Deleted {name}": "{name} dihapus",
+  "Launcher settings are back to their defaults": "Pengaturan launcher kembali ke bawaan",
+  "Opened {path}": "Dibuka: {path}",
+  "Saved {name}": "{name} disimpan",
+  "My Horizon": "Horizon Saya"
 }

@@ -1057,5 +1057,21 @@
   "Mod": "Мод",
   "Resource pack": "Пакет ресурсів",
   "Shader pack": "Пакет шейдерів",
-  "Data pack": "Пакет даних"
+  "Data pack": "Пакет даних",
+  "Esc": "Esc",
+  "Mod · {instance}": "Мод · {instance}",
+  "Open the game folder": "Відкрити теку гри",
+  "Open {page}": "Відкрити {page}",
+  "Play {name}": "Грати в {name}",
+  "Install {name}": "Встановити {name}",
+  "Remove {name}": "Вилучити {name}",
+  "Play, install a mod, open a page": "Грати, встановити мод, відкрити сторінку",
+  "Copied the picture": "Зображення скопійовано",
+  "Copied {text}": "Скопійовано: {text}",
+  "Created {name}": "{name} створено",
+  "Deleted {name}": "{name} видалено",
+  "Launcher settings are back to their defaults": "Налаштування лаунчера скинуто до типових",
+  "Opened {path}": "Відкрито: {path}",
+  "Saved {name}": "{name} збережено",
+  "My Horizon": "Мій Horizon"
 }

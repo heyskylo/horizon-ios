@@ -1057,5 +1057,21 @@
   "Mod": "Mod",
   "Resource pack": "Paket resursa",
   "Shader pack": "Paket shadera",
-  "Data pack": "Paket podataka"
+  "Data pack": "Paket podataka",
+  "Esc": "Esc",
+  "Mod · {instance}": "Mod · {instance}",
+  "Open the game folder": "Otvori mapu igre",
+  "Open {page}": "Otvori {page}",
+  "Play {name}": "Igraj {name}",
+  "Install {name}": "Instaliraj {name}",
+  "Remove {name}": "Ukloni {name}",
+  "Play, install a mod, open a page": "Igraj, instaliraj mod, otvori stranicu",
+  "Copied the picture": "Slika je kopirana",
+  "Copied {text}": "Kopirano: {text}",
+  "Created {name}": "{name} je stvoren",
+  "Deleted {name}": "{name} je izbrisan",
+  "Launcher settings are back to their defaults": "Postavke pokretača vraćene su na zadane",
+  "Opened {path}": "Otvoreno: {path}",
+  "Saved {name}": "{name} je spremljen",
+  "My Horizon": "Moj Horizon"
 }

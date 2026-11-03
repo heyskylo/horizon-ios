@@ -196,7 +196,7 @@ impl Launcher {
                 button("console-folder", "Open logs folder", Kind::Ghost, &t).on_click(
                     move |_, _, cx| {
                         let _ = std::fs::create_dir_all(&logs);
-                        cx.open_with_system(&logs);
+                        crate::glass_toast::open(cx, &logs);
                     },
                 )
             });
@@ -406,7 +406,7 @@ impl Launcher {
                 )
                 .on_click(move |_, _, cx| {
                     let _ = std::fs::create_dir_all(&logs);
-                    cx.open_with_system(&logs);
+                    crate::glass_toast::open(cx, &logs);
                 }),
             );
         let mut body = div()

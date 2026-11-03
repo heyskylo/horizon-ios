@@ -1057,5 +1057,21 @@
   "Mod": "모드",
   "Resource pack": "리소스 팩",
   "Shader pack": "셰이더 팩",
-  "Data pack": "데이터 팩"
+  "Data pack": "데이터 팩",
+  "Esc": "Esc",
+  "Mod · {instance}": "모드 · {instance}",
+  "Open the game folder": "게임 폴더 열기",
+  "Open {page}": "{page} 열기",
+  "Play {name}": "{name} 플레이",
+  "Install {name}": "{name} 설치",
+  "Remove {name}": "{name} 제거",
+  "Play, install a mod, open a page": "플레이, 모드 설치, 페이지 열기",
+  "Copied the picture": "그림을 복사했습니다",
+  "Copied {text}": "복사함: {text}",
+  "Created {name}": "{name}을(를) 만들었습니다",
+  "Deleted {name}": "{name}을(를) 삭제했습니다",
+  "Launcher settings are back to their defaults": "런처 설정이 기본값으로 돌아갔습니다",
+  "Opened {path}": "열었음: {path}",
+  "Saved {name}": "{name}을(를) 저장했습니다",
+  "My Horizon": "내 Horizon"
 }
