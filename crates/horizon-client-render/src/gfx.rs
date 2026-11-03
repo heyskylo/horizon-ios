@@ -46,6 +46,8 @@ mod crumbling_tests;
 mod entity_batch;
 mod entity_outline;
 #[cfg(test)]
+mod inter_stage_tests;
+#[cfg(test)]
 pub(crate) mod test_gpu;
 mod weather;
 use entity_batch::EntityBatch;
