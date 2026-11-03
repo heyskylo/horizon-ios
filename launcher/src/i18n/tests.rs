@@ -165,9 +165,10 @@ fn the_system_language_is_the_first_one_the_launcher_has() {
     assert_eq!(Language::parse("tr_TR.UTF-8"), Some(Language::Turkish));
     assert_eq!(Language::parse("pl_PL.UTF-8"), Some(Language::Polish));
     assert_eq!(Language::pick(["fr-CH", "en-US"]), Language::French);
-    assert_eq!(Language::pick(["it-IT", "ru_RU.UTF-8"]), Language::Italian);
-    assert_eq!(Language::pick(["it-IT", "zh-Hans-CN"]), Language::Italian);
     assert_eq!(Language::pick(["it-IT", "ja"]), Language::Italian);
+    assert_eq!(Language::pick(["eo", "ru_RU.UTF-8"]), Language::Russian);
+    assert_eq!(Language::pick(["eo", "zh-Hans-CN"]), Language::Chinese);
+    assert_eq!(Language::pick(["eo", "ja"]), Language::Japanese);
     assert_eq!(Language::pick(["de-CH", "ru_RU.UTF-8"]), Language::German);
     assert_eq!(Language::pick(["de-DE", "ja"]), Language::German);
     assert_eq!(Language::pick(["de-DE", "zh-Hans-CN"]), Language::German);
