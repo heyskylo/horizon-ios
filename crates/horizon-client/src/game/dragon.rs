@@ -107,6 +107,15 @@ enum Respawn {
     Pillars,
     Summoning,
 }
+impl Fight {
+    /// `EnderDragonFight.tick`'s ticket condition: the fight's boss bar has a
+    /// player (`dragonEvent.getPlayers()` is not empty), which holds the
+    /// arena's `TicketType.DRAGON` ticket. The bar is scanned every 20 ticks,
+    /// as `updatePlayers` is.
+    pub(super) fn arena_watched(&self) -> bool {
+        self.players
+    }
+}
 impl Respawn {
     fn name(self) -> &'static str {
         match self {

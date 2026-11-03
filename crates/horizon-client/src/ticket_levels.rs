@@ -9,6 +9,10 @@
 //! An entity that came through a portal leaves a `PORTAL` ticket of radius 3
 //! (`Entity.placePortalTicket`: level 30 of both kinds, for 300 ticks) on the
 //! chunk it arrived in; it keeps that level running with no player in it.
+//! The dragon fight holds a `DRAGON` ticket of radius 9 for as long as a player
+//! watches it (`EnderDragonFight.tick`: level 24 of both kinds on the arena,
+//! so its island ticks out to 7 chunks whatever the watcher's simulation
+//! distance), and drops it when the last watcher goes.
 //! Levels rise by one per chunk away from a ticket (`ChunkTracker`) and each
 //! chunk takes the lowest. The loading level gives the chunk's
 //! `FullChunkStatus` (`ChunkLevel.fullStatus`: 31 entity ticking, 32 block
@@ -40,14 +44,24 @@ const PORTAL_TIMEOUT: i32 = 300;
 /// minus it.
 const PORTAL_RADIUS: i32 = 3;
 const PORTAL_LEVEL: i32 = BLOCK_TICKING as i32 + 1 - PORTAL_RADIUS;
+/// `EnderDragonFight.tick`'s radius on the arena it holds a ticket on:
+/// `addTicketWithRadius(TicketType.DRAGON, new ChunkPos(0, 0), 9)`, whose level
+/// is `FULL` (33) minus the radius.
+const ARENA_RADIUS: i32 = 9;
+const ARENA_LEVEL: i32 = BLOCK_TICKING as i32 + 1 - ARENA_RADIUS;
 
 /// The tickets of one level: where its players are, its forced chunks, its
-/// portal tickets, and the server's view and simulation distances.
+/// portal tickets, the dragon fight's arena while a player watches it, and the
+/// server's view and simulation distances.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Sources {
     pub players: Vec<(i32, i32)>,
     pub forced: Vec<(i32, i32)>,
     pub portal: Vec<(i32, i32)>,
+    /// The arena the dragon fight holds a `TicketType.DRAGON` ticket on while
+    /// its boss bar has a watcher (`EnderDragonFight.tick`), `None` once none
+    /// has (its `removeTicketWithRadius`).
+    pub dragon: Option<(i32, i32)>,
     pub view_distance: i32,
     pub simulation_distance: i32,
 }
@@ -129,6 +143,10 @@ impl Tiled {
         for &p in &s.portal {
             // The radius-3 ring is level NONE and cannot lower a cell.
             map.add(p, PORTAL_RADIUS - 1, PORTAL_LEVEL, 0, PORTAL_LEVEL);
+        }
+        if let Some(arena) = s.dragon {
+            // The same for the ring at the ticket's own radius.
+            map.add(arena, ARENA_RADIUS - 1, ARENA_LEVEL, 0, ARENA_LEVEL);
         }
         map
     }
@@ -278,7 +296,8 @@ fn random_bounds(s: &Sources) -> Option<(i32, i32, i32, i32)> {
         .iter()
         .map(|&p| (p, sim))
         .chain(s.forced.iter().map(|&f| (f, 0)))
-        .chain(s.portal.iter().map(|&p| (p, PORTAL_RADIUS)));
+        .chain(s.portal.iter().map(|&p| (p, PORTAL_RADIUS)))
+        .chain(s.dragon.map(|arena| (arena, ARENA_RADIUS)));
     boxes.fold(None, |b, ((x, z), r)| {
         let (lo_x, lo_z, hi_x, hi_z) = (x - r, z - r, x + r, z + r);
         Some(match b {
@@ -306,7 +325,8 @@ fn compute(s: &Sources) -> Map {
         .iter()
         .map(|&p| (p, reach))
         .chain(s.forced.iter().map(|&f| (f, 1)))
-        .chain(s.portal.iter().map(|&p| (p, PORTAL_RADIUS)));
+        .chain(s.portal.iter().map(|&p| (p, PORTAL_RADIUS)))
+        .chain(s.dragon.map(|arena| (arena, ARENA_RADIUS)));
     let Some((x0, z0, x1, z1)) = boxes.fold(None, |b, ((x, z), r)| {
         let (lo_x, lo_z, hi_x, hi_z) = (
             i64::from(x) - i64::from(r),
@@ -362,6 +382,14 @@ fn compute(s: &Sources) -> Map {
             }
         }
     }
+    if let Some((ax, az)) = s.dragon {
+        for dz in -ARENA_RADIUS..=ARENA_RADIUS {
+            for dx in -ARENA_RADIUS..=ARENA_RADIUS {
+                let level = ARENA_LEVEL + dx.abs().max(dz.abs());
+                lower(ax + dx, az + dz, level, level);
+            }
+        }
+    }
     Map::Grid {
         x0,
         z0,
@@ -409,6 +437,14 @@ fn compute_sparse(s: &Sources) -> FxHashMap<(i32, i32), (u8, u8)> {
             }
         }
     }
+    if let Some((ax, az)) = s.dragon {
+        for dz in -ARENA_RADIUS..=ARENA_RADIUS {
+            for dx in -ARENA_RADIUS..=ARENA_RADIUS {
+                let level = ARENA_LEVEL + dx.abs().max(dz.abs());
+                lower((ax + dx, az + dz), level, level);
+            }
+        }
+    }
     levels.retain(|_, l| *l != NONE);
     levels
 }
@@ -423,6 +459,7 @@ mod tests {
             players: players.to_vec(),
             forced: forced.to_vec(),
             portal: Vec::new(),
+            dragon: None,
             view_distance: view,
             simulation_distance: sim,
         }));
@@ -479,6 +516,7 @@ mod tests {
                 players,
                 forced: Vec::new(),
                 portal: Vec::new(),
+                dragon: None,
                 view_distance: 2,
                 simulation_distance: 2,
             })
@@ -518,6 +556,7 @@ mod tests {
                 players,
                 forced,
                 portal: Vec::new(),
+                dragon: None,
                 view_distance: 2 + next(12).abs(),
                 simulation_distance: 2 + next(12).abs(),
             };
@@ -560,6 +599,7 @@ mod tests {
                 players: vec![(0, 0), (60, 40)],
                 forced: vec![(-30, 17)],
                 portal: Vec::new(),
+                dragon: None,
                 view_distance: 4,
                 simulation_distance: 12,
             })
@@ -610,6 +650,7 @@ mod tests {
                 players: at.clone(),
                 forced: Vec::new(),
                 portal: Vec::new(),
+                dragon: None,
                 view_distance: distance,
                 simulation_distance: distance,
             };
@@ -693,6 +734,7 @@ mod tiled_tests {
                     .map(|_| (next(100), next(100)))
                     .chain([(16, -16)])
                     .collect(),
+                dragon: None,
                 view_distance: [0, 2, 10, 32][case % 4],
                 simulation_distance: [32, 10, 2, 0][(case / 4) % 4],
             };
