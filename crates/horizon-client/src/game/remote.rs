@@ -3982,10 +3982,10 @@ impl Game<'_> {
                     self.remote_world_options_permission(p.event >= 26);
                 }
                 // Player.handleEntityEvent 22 / 23: reduced debug info on / off.
-                if (22..=23).contains(&p.event) {
-                    if let Some(r) = self.remote.as_mut().filter(|r| r.entity_id == p.id) {
-                        r.reduced_debug_info = p.event == 22;
-                    }
+                if (22..=23).contains(&p.event)
+                    && let Some(r) = self.remote.as_mut().filter(|r| r.entity_id == p.id)
+                {
+                    r.reduced_debug_info = p.event == 22;
                 }
                 // Ravager.handleEntityEvent 69: the roar's puff and push.
                 if p.event == 69 {
