@@ -31,6 +31,7 @@ mod anonymous_structs;
 mod atomic_vectors;
 mod geometry;
 mod image_parameters;
+mod array_constructors;
 mod integer_bounds;
 mod interface_blocks;
 mod ordering;
@@ -1135,7 +1136,7 @@ fn compile(stage: &Stage, text: &str, header_lines: usize) -> Result<naga::Modul
             message,
         }]
     })?;
-    let bounded = integer_bounds::rewrite(&specialized);
+    let bounded = integer_bounds::rewrite(&array_constructors::rewrite(&specialized));
     let text = bounded.as_str();
     let at = |text: &str, span: naga::Span, message: String| {
         let start = span.to_range().map_or(0, |r| r.start);
@@ -1596,6 +1597,24 @@ mod tests {
 
     const VSH_120: &str = "#version 120\nvarying vec2 texcoord;\nvoid main() {\n    gl_Position = ftransform();\n    \
                            texcoord = (gl_TextureMatrix[0] * gl_MultiTexCoord0).xy;\n}\n";
+
+
+    #[test]
+    fn mixed_type_array_constructor_arguments_validate() {
+        // Drivers take these; naga composed them unconverted ("Composing 0's component type").
+        for body in [
+            "int k[2] = int[2](1u, 2); return float(k[1]);",
+            "float k[] = float[](1u, 2); return k[1];",
+            "uint k[2] = uint[2](1.0, 2); return float(k[1]);",
+            "vec2 k[2] = vec2[](ivec2(1), texcoord); return k[1].x;",
+        ] {
+            let fsh = format!(
+                "#version 120\nvarying vec2 texcoord;\nfloat n2d() {{ {body} }}\nvoid main() {{ gl_FragColor = vec4(n2d()); }}\n"
+            );
+            let p = program(&[("composite.vsh", VSH_120), ("composite.fsh", &fsh)], Target::Window);
+            assert!(p.is_ok(), "{body}: {:?}", p.err());
+        }
+    }
 
     #[test]
     fn compatibility_programs_translate() {
