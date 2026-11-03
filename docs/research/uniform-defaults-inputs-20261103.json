@@ -1,0 +1,402 @@
+{
+  "purpose": "Proposed independently developed replacement for closed #7842, addressing #7811; not an eligibility certification. Maintainer process/code acceptance remains separate.",
+  "authoring_inputs": {
+    "boundary": "Fresh worker; no existing PR body/diff/commits/tests or earlier private source/reports read; no loader implementations or Iris docs read. No pack algorithms copied. Own synthetic code/fixtures. Maintainer eligibility decision separate.",
+    "external_implementation_inputs": [
+      {
+        "local_file": "repository.json",
+        "url": "https://api.github.com/repos/HaringPro/Revelation",
+        "revision": "d5911393856d9dd97375b46a1a088e6b8fddd755",
+        "license": "metadata",
+        "sha256": "d7ea42f3b5734cf1c4ed598ca22cdd3183ec69c79d63fca63875576718253bbc",
+        "read_scope": "GitHub repository license/ownership metadata"
+      },
+      {
+        "local_file": "revision.json",
+        "url": "https://api.github.com/repos/HaringPro/Revelation/commits/HEAD",
+        "revision": "d5911393856d9dd97375b46a1a088e6b8fddd755",
+        "license": "metadata",
+        "sha256": "ca9b8ac77e42457a1d36b8b4d3e808bb3c8fd66d7e12fdd8bdeed941dd2454bc",
+        "read_scope": "Pinned HEAD revision metadata"
+      },
+      {
+        "local_file": "tree.json",
+        "url": "https://api.github.com/repos/HaringPro/Revelation/git/trees/d5911393856d9dd97375b46a1a088e6b8fddd755?recursive=1",
+        "revision": "d5911393856d9dd97375b46a1a088e6b8fddd755",
+        "license": "metadata",
+        "sha256": "e21836034fa934f377bc7db24564ba1f3c5eadc1476614c96b62d766e33a0b09",
+        "read_scope": "Filenames only, used to locate license and uniform files"
+      },
+      {
+        "local_file": "metadata-LICENSE",
+        "url": "https://raw.githubusercontent.com/HaringPro/Revelation/d5911393856d9dd97375b46a1a088e6b8fddd755/LICENSE",
+        "revision": "d5911393856d9dd97375b46a1a088e6b8fddd755",
+        "license": "Apache-2.0",
+        "sha256": "50e6751797c50dedd75ef1b8a0d9e42f5f8472e9fbce91f34718e9f97b0c780a",
+        "read_scope": "Full root license; Apache2 modification and redistribution grants verified"
+      },
+      {
+        "local_file": "metadata-shaders_ffx_license.md",
+        "url": "https://raw.githubusercontent.com/HaringPro/Revelation/d5911393856d9dd97375b46a1a088e6b8fddd755/shaders/ffx/license.md",
+        "revision": "d5911393856d9dd97375b46a1a088e6b8fddd755",
+        "license": "custom/rejected",
+        "sha256": "b1ff86575bba155d782c8d1f12b0ad07113ce7e62956fadc2169eba29048b966",
+        "read_scope": "License metadata only; custom license rejected; no ffx implementation read"
+      },
+      {
+        "local_file": "pack-README.md",
+        "url": "https://raw.githubusercontent.com/HaringPro/Revelation/d5911393856d9dd97375b46a1a088e6b8fddd755/README.md",
+        "revision": "d5911393856d9dd97375b46a1a088e6b8fddd755",
+        "license": "Apache-2.0",
+        "sha256": "5ed421bbf575fc715e8e2d2c4e35a44075341071d84371ef42ffc0b45c9b6d63",
+        "read_scope": "Only Credits and License sections inspected"
+      },
+      {
+        "local_file": "pack-shaders_lib_universal_Uniform.glsl",
+        "url": "https://raw.githubusercontent.com/HaringPro/Revelation/d5911393856d9dd97375b46a1a088e6b8fddd755/shaders/lib/universal/Uniform.glsl",
+        "revision": "d5911393856d9dd97375b46a1a088e6b8fddd755",
+        "license": "Apache-2.0",
+        "sha256": "c018d6725d76eb3f9a8f01b516b0560eed8978b051edc099eb6abf211a11fe6a",
+        "read_scope": "Header checked first: no overriding license or third-party attribution. Root Apache2 applies. Entire file subsequently inspected; one mat4 identity initializer found."
+      }
+    ],
+    "discovery_only": "Two web searches for permissive shader-pack license metadata produced repository/license descriptions. Overly Simple Shaders rejected due README claim of Iris tutorial derivation; Noble GPL and AuraLite changed restrictive license rejected without opening source. Other results not followed. Revelation metadata only selected.",
+    "baseline": {
+      "public_commit": "7084e67744cbb4fe25961f24126e15b6b36f0523",
+      "isolated_snapshot_commit": "c019674bc4c093eb08d620979f4f145b25d66600",
+      "license": "MIT",
+      "allowed_purpose": "Implementation/build instructions/compiler tooling, not additional external behavior research",
+      "consulted_files": [
+        {
+          "file": "AGENTS.md",
+          "url": "https://github.com/horizon-rust/horizon/blob/7084e67744cbb4fe25961f24126e15b6b36f0523/AGENTS.md",
+          "revision": "7084e67744cbb4fe25961f24126e15b6b36f0523",
+          "license": "MIT",
+          "sha256": "acb84a1f4d7478eb6f63e9137f092f2e5939fd82fd430113ce3a540e3a5609a3",
+          "scope": "Baseline implementation/build/dependency tool; full or targeted lines/search excerpts only"
+        },
+        {
+          "file": "CONTRIBUTING.md",
+          "url": "https://github.com/horizon-rust/horizon/blob/7084e67744cbb4fe25961f24126e15b6b36f0523/CONTRIBUTING.md",
+          "revision": "7084e67744cbb4fe25961f24126e15b6b36f0523",
+          "license": "MIT",
+          "sha256": "69d36f19de42931e35a2995b552cc638df1f77e7c5b6afda6ad092982f636dd6",
+          "scope": "Baseline implementation/build/dependency tool; full or targeted lines/search excerpts only"
+        },
+        {
+          "file": "Cargo.toml",
+          "url": "https://github.com/horizon-rust/horizon/blob/7084e67744cbb4fe25961f24126e15b6b36f0523/Cargo.toml",
+          "revision": "7084e67744cbb4fe25961f24126e15b6b36f0523",
+          "license": "MIT",
+          "sha256": "a6f87e6778e19b60262a1809ba382f190d1fd82d13d23377fd4d3bfcd0b61780",
+          "scope": "Baseline implementation/build/dependency tool; full or targeted lines/search excerpts only"
+        },
+        {
+          "file": "LICENSE",
+          "url": "https://github.com/horizon-rust/horizon/blob/7084e67744cbb4fe25961f24126e15b6b36f0523/LICENSE",
+          "revision": "7084e67744cbb4fe25961f24126e15b6b36f0523",
+          "license": "MIT",
+          "sha256": "b4b374ae9d0f2d8f7be35c6783e41327431da3b5662605da9ba31493630621df",
+          "scope": "Baseline implementation/build/dependency tool; full or targeted lines/search excerpts only"
+        },
+        {
+          "file": "crates/horizon-shaders/Cargo.toml",
+          "url": "https://github.com/horizon-rust/horizon/blob/7084e67744cbb4fe25961f24126e15b6b36f0523/crates/horizon-shaders/Cargo.toml",
+          "revision": "7084e67744cbb4fe25961f24126e15b6b36f0523",
+          "license": "MIT",
+          "sha256": "ba72db06fe3e5834ee298f9e19c6a75293d2cd72499fe18d14b05eb6c4c117e3",
+          "scope": "Baseline implementation/build/dependency tool; full or targeted lines/search excerpts only"
+        },
+        {
+          "file": "crates/horizon-shaders/src/lib.rs",
+          "url": "https://github.com/horizon-rust/horizon/blob/7084e67744cbb4fe25961f24126e15b6b36f0523/crates/horizon-shaders/src/lib.rs",
+          "revision": "7084e67744cbb4fe25961f24126e15b6b36f0523",
+          "license": "MIT",
+          "sha256": "e348e0efb5d7fde32e166f0bf6289817dadf754ccd967bc870ca188407516b19",
+          "scope": "Baseline implementation/build/dependency tool; full or targeted lines/search excerpts only"
+        },
+        {
+          "file": "crates/horizon-shaders/src/preprocess.rs",
+          "url": "https://github.com/horizon-rust/horizon/blob/7084e67744cbb4fe25961f24126e15b6b36f0523/crates/horizon-shaders/src/preprocess.rs",
+          "revision": "7084e67744cbb4fe25961f24126e15b6b36f0523",
+          "license": "MIT",
+          "sha256": "b137b9f2ff6b5cec818eb04f56348985092d19c99cbae0439fa08401d911774f",
+          "scope": "Baseline implementation/build/dependency tool; full or targeted lines/search excerpts only"
+        },
+        {
+          "file": "crates/horizon-shaders/src/translate/mod.rs",
+          "url": "https://github.com/horizon-rust/horizon/blob/7084e67744cbb4fe25961f24126e15b6b36f0523/crates/horizon-shaders/src/translate/mod.rs",
+          "revision": "7084e67744cbb4fe25961f24126e15b6b36f0523",
+          "license": "MIT",
+          "sha256": "37325ad22dfb79db6028d67a1f1ae0d283b4dcbf4a634a86bbfe47fe6bf761a0",
+          "scope": "Baseline implementation/build/dependency tool; full or targeted lines/search excerpts only"
+        },
+        {
+          "file": "crates/horizon-shaders/src/translate/scan.rs",
+          "url": "https://github.com/horizon-rust/horizon/blob/7084e67744cbb4fe25961f24126e15b6b36f0523/crates/horizon-shaders/src/translate/scan.rs",
+          "revision": "7084e67744cbb4fe25961f24126e15b6b36f0523",
+          "license": "MIT",
+          "sha256": "a6cf683f8481ca0babb6ec59eeb1980591feb55d511344e8d889ddde5c4ae5ec",
+          "scope": "Baseline implementation/build/dependency tool; full or targeted lines/search excerpts only"
+        },
+        {
+          "file": "crates/horizon-shaders/src/translate/rewrite.rs",
+          "url": "https://github.com/horizon-rust/horizon/blob/7084e67744cbb4fe25961f24126e15b6b36f0523/crates/horizon-shaders/src/translate/rewrite.rs",
+          "revision": "7084e67744cbb4fe25961f24126e15b6b36f0523",
+          "license": "MIT",
+          "sha256": "b3a8d37c65b0763138f7e4a4ee9f1570f266e48aa90af044dd80f9fde0a5cecc",
+          "scope": "Baseline implementation/build/dependency tool; full or targeted lines/search excerpts only"
+        },
+        {
+          "file": "crates/horizon-shaders/tests/real_packs.rs",
+          "url": "https://github.com/horizon-rust/horizon/blob/7084e67744cbb4fe25961f24126e15b6b36f0523/crates/horizon-shaders/tests/real_packs.rs",
+          "revision": "7084e67744cbb4fe25961f24126e15b6b36f0523",
+          "license": "MIT",
+          "sha256": "d017eb2ac0a4c49d5c2d24a681c173697b8d0d077cf3a45c93fa8cd0e8c15fea",
+          "scope": "Baseline implementation/build/dependency tool; full or targeted lines/search excerpts only"
+        },
+        {
+          "file": "crates/horizon-client-render/Cargo.toml",
+          "url": "https://github.com/horizon-rust/horizon/blob/7084e67744cbb4fe25961f24126e15b6b36f0523/crates/horizon-client-render/Cargo.toml",
+          "revision": "7084e67744cbb4fe25961f24126e15b6b36f0523",
+          "license": "MIT",
+          "sha256": "bacc9d5d48b8d63419568155c4bf251f5ab02a703ea066dfdd7e8b7001bee7c1",
+          "scope": "Baseline implementation/build/dependency tool; full or targeted lines/search excerpts only"
+        },
+        {
+          "file": "crates/horizon-client-render/src/lib.rs",
+          "url": "https://github.com/horizon-rust/horizon/blob/7084e67744cbb4fe25961f24126e15b6b36f0523/crates/horizon-client-render/src/lib.rs",
+          "revision": "7084e67744cbb4fe25961f24126e15b6b36f0523",
+          "license": "MIT",
+          "sha256": "24e878d116cc70aa68bf846a71423220d3e70f17bf4850de4c18bb9db80f7ac7",
+          "scope": "Baseline implementation/build/dependency tool; full or targeted lines/search excerpts only"
+        },
+        {
+          "file": "crates/horizon-client-render/src/gfx.rs",
+          "url": "https://github.com/horizon-rust/horizon/blob/7084e67744cbb4fe25961f24126e15b6b36f0523/crates/horizon-client-render/src/gfx.rs",
+          "revision": "7084e67744cbb4fe25961f24126e15b6b36f0523",
+          "license": "MIT",
+          "sha256": "b8b3e3eacb945c0feccde3e5d6c1e83d4e54795be44fb6f6eeba5a5ae2fa02bf",
+          "scope": "Baseline implementation/build/dependency tool; full or targeted lines/search excerpts only"
+        },
+        {
+          "file": "crates/horizon-client-render/src/gfx/pack_uniforms.rs",
+          "url": "https://github.com/horizon-rust/horizon/blob/7084e67744cbb4fe25961f24126e15b6b36f0523/crates/horizon-client-render/src/gfx/pack_uniforms.rs",
+          "revision": "7084e67744cbb4fe25961f24126e15b6b36f0523",
+          "license": "MIT",
+          "sha256": "b59251beff450e3eb7d118076aa553971e101505bbdbcb2fbccb7ba257c9af6d",
+          "scope": "Baseline implementation/build/dependency tool; full or targeted lines/search excerpts only"
+        },
+        {
+          "file": "crates/horizon-client-render/src/gfx/pack_post.rs",
+          "url": "https://github.com/horizon-rust/horizon/blob/7084e67744cbb4fe25961f24126e15b6b36f0523/crates/horizon-client-render/src/gfx/pack_post.rs",
+          "revision": "7084e67744cbb4fe25961f24126e15b6b36f0523",
+          "license": "MIT",
+          "sha256": "12cd801eb958c45adc565243d8f904aaf72de31ae568fed78a456f6199c91706",
+          "scope": "Baseline implementation/build/dependency tool; full or targeted lines/search excerpts only"
+        },
+        {
+          "file": "crates/horizon-client-render/tests/sunrise_shader.rs",
+          "url": "https://github.com/horizon-rust/horizon/blob/7084e67744cbb4fe25961f24126e15b6b36f0523/crates/horizon-client-render/tests/sunrise_shader.rs",
+          "revision": "7084e67744cbb4fe25961f24126e15b6b36f0523",
+          "license": "MIT",
+          "sha256": "4f0aeb8aec342a831660dee74c421ac9a88cf873d25efa4e024a0338193ed5a4",
+          "scope": "Baseline implementation/build/dependency tool; full or targeted lines/search excerpts only"
+        },
+        {
+          "file": "third_party/naga/LICENSE.MIT",
+          "url": "https://github.com/horizon-rust/horizon/blob/7084e67744cbb4fe25961f24126e15b6b36f0523/third_party/naga/LICENSE.MIT",
+          "revision": "7084e67744cbb4fe25961f24126e15b6b36f0523",
+          "license": "MIT",
+          "sha256": "dc0d97139e8205818c703741c7be7cb3b96888bd5917b8d6fc6133731e403c21",
+          "scope": "Baseline implementation/build/dependency tool; full or targeted lines/search excerpts only"
+        },
+        {
+          "file": "third_party/naga/src/ir/mod.rs",
+          "url": "https://github.com/horizon-rust/horizon/blob/7084e67744cbb4fe25961f24126e15b6b36f0523/third_party/naga/src/ir/mod.rs",
+          "revision": "7084e67744cbb4fe25961f24126e15b6b36f0523",
+          "license": "MIT",
+          "sha256": "ed5330e8ffee42f29caeeff3c84803269a74155c6fc26648a8156313516fefec",
+          "scope": "Baseline implementation/build/dependency tool; full or targeted lines/search excerpts only"
+        },
+        {
+          "file": "third_party/naga/src/front/glsl/offset.rs",
+          "url": "https://github.com/horizon-rust/horizon/blob/7084e67744cbb4fe25961f24126e15b6b36f0523/third_party/naga/src/front/glsl/offset.rs",
+          "revision": "7084e67744cbb4fe25961f24126e15b6b36f0523",
+          "license": "MIT",
+          "sha256": "66bd524a2d17dc44f431430dcbbb74a771fdab43c9581e88bb1123e6cfec516b",
+          "scope": "Baseline implementation/build/dependency tool; full or targeted lines/search excerpts only"
+        },
+        {
+          "file": "tools/pr_ready.py",
+          "url": "https://github.com/horizon-rust/horizon/blob/7084e67744cbb4fe25961f24126e15b6b36f0523/tools/pr_ready.py",
+          "revision": "7084e67744cbb4fe25961f24126e15b6b36f0523",
+          "license": "MIT",
+          "sha256": "47860ea25234ace0eedb33081c21f334bf5c1f46aaf7a52e5e9cacf22a5aedd2",
+          "scope": "Targeted baseline build-instruction/tool source excerpts"
+        },
+        {
+          "file": "tools/check_public_tree.py",
+          "url": "https://github.com/horizon-rust/horizon/blob/7084e67744cbb4fe25961f24126e15b6b36f0523/tools/check_public_tree.py",
+          "revision": "7084e67744cbb4fe25961f24126e15b6b36f0523",
+          "license": "MIT",
+          "sha256": "f39f800a1dcfc9196a6919495267aa3a84415ae751b36d427df99d0c86d73854",
+          "scope": "Executed unchanged baseline static public-tree tool; source not inspected"
+        }
+      ]
+    }
+  },
+  "verification_inputs": {
+    "purpose": "Verification of two explicitly permitted new candidates; supplied public MIT baseline/build/compiler dependencies only. Targeted portions/search excerpts rather than full contents where applicable. No new external behavior source opened.",
+    "incidental_exposure": "Mandatory initial generic memory registry search exposed historical topic labels and file pointers only; no old implementation, test, old PR body/diff/branch or source-derived audit report opened or used. Disclosed promptly to parent.",
+    "files": [
+      {
+        "candidate": "7842",
+        "path": "AGENTS.md",
+        "head": "9501416ffd232b9a31c3519d0b69544aab871023",
+        "working_file_sha256": "acb84a1f4d7478eb6f63e9137f092f2e5939fd82fd430113ce3a540e3a5609a3",
+        "scope": "allowed independent candidate/baseline implementation/tooling; targeted read/search"
+      },
+      {
+        "candidate": "7842",
+        "path": "CONTRIBUTING.md",
+        "head": "9501416ffd232b9a31c3519d0b69544aab871023",
+        "working_file_sha256": "69d36f19de42931e35a2995b552cc638df1f77e7c5b6afda6ad092982f636dd6",
+        "scope": "allowed independent candidate/baseline implementation/tooling; targeted read/search"
+      },
+      {
+        "candidate": "7842",
+        "path": "crates/horizon-shaders/src/translate/defaults.rs",
+        "head": "9501416ffd232b9a31c3519d0b69544aab871023",
+        "working_file_sha256": "ea9c93b53806b1d5c663c52193771db20648be9fed0ff92d69eca2be047bc972",
+        "scope": "allowed independent candidate/baseline implementation/tooling; targeted read/search"
+      },
+      {
+        "candidate": "7842",
+        "path": "crates/horizon-shaders/src/translate/mod.rs",
+        "head": "9501416ffd232b9a31c3519d0b69544aab871023",
+        "working_file_sha256": "43b789612e5e90e5c0ca833973dddba0045a8184d1346fea8df8ff0adcc817d8",
+        "scope": "allowed independent candidate/baseline implementation/tooling; targeted read/search"
+      },
+      {
+        "candidate": "7842",
+        "path": "crates/horizon-shaders/src/translate/scan.rs",
+        "head": "9501416ffd232b9a31c3519d0b69544aab871023",
+        "working_file_sha256": "f47d2dc3193b9de97b9c53528ebf0760772b165b960146f25d51fe2b0f0125b2",
+        "scope": "allowed independent candidate/baseline implementation/tooling; targeted read/search"
+      },
+      {
+        "candidate": "7842",
+        "path": "crates/horizon-shaders/src/translate/rewrite.rs",
+        "head": "9501416ffd232b9a31c3519d0b69544aab871023",
+        "working_file_sha256": "b3a8d37c65b0763138f7e4a4ee9f1570f266e48aa90af044dd80f9fde0a5cecc",
+        "scope": "allowed independent candidate/baseline implementation/tooling; targeted read/search"
+      },
+      {
+        "candidate": "7842",
+        "path": "crates/horizon-shaders/tests/uniform_initial_values.rs",
+        "head": "9501416ffd232b9a31c3519d0b69544aab871023",
+        "working_file_sha256": "c71f353059cdcf50598b83063f265fbb2d621e4f70d5130ba571612295f66144",
+        "scope": "allowed independent candidate/baseline implementation/tooling; targeted read/search"
+      },
+      {
+        "candidate": "7842",
+        "path": "crates/horizon-client-render/src/gfx/pack_post.rs",
+        "head": "9501416ffd232b9a31c3519d0b69544aab871023",
+        "working_file_sha256": "70bac7b8ddd05e5639a5d35e73168e4c3c4e6efdc04102b47cf4a48d12eb5203",
+        "scope": "allowed independent candidate/baseline implementation/tooling; targeted read/search"
+      },
+      {
+        "candidate": "7842",
+        "path": "crates/horizon-client-render/src/gfx/pack_uniforms.rs",
+        "head": "9501416ffd232b9a31c3519d0b69544aab871023",
+        "working_file_sha256": "b59251beff450e3eb7d118076aa553971e101505bbdbcb2fbccb7ba257c9af6d",
+        "scope": "allowed independent candidate/baseline implementation/tooling; targeted read/search"
+      },
+      {
+        "candidate": "7842",
+        "path": "crates/horizon-client-render/tests/uniform_initial_render.rs",
+        "head": "9501416ffd232b9a31c3519d0b69544aab871023",
+        "working_file_sha256": "8c5c6f09bcd0e9405315d3f607d25f93b940e69757763a2ba5717d10e2229ec9",
+        "scope": "allowed independent candidate/baseline implementation/tooling; targeted read/search"
+      },
+      {
+        "candidate": "7842",
+        "path": "crates/horizon-client-render/tests/sunrise_shader.rs",
+        "head": "9501416ffd232b9a31c3519d0b69544aab871023",
+        "working_file_sha256": "4f0aeb8aec342a831660dee74c421ac9a88cf873d25efa4e024a0338193ed5a4",
+        "scope": "allowed independent candidate/baseline implementation/tooling; targeted read/search"
+      },
+      {
+        "candidate": "7842",
+        "path": "tools/pr_ready.py",
+        "head": "9501416ffd232b9a31c3519d0b69544aab871023",
+        "working_file_sha256": "47860ea25234ace0eedb33081c21f334bf5c1f46aaf7a52e5e9cacf22a5aedd2",
+        "scope": "allowed independent candidate/baseline implementation/tooling; targeted read/search"
+      },
+      {
+        "candidate": "7842",
+        "path": ".github/pull_request_template.md",
+        "head": "9501416ffd232b9a31c3519d0b69544aab871023",
+        "working_file_sha256": "ea124a13798cc74beed096a046f5314f17f32cb9e4b796dfe032e6e85fef7519",
+        "scope": "allowed independent candidate/baseline implementation/tooling; targeted read/search"
+      }
+    ]
+  },
+  "frozen_independent_candidate": {
+    "head": "2581ad2f8b4af59dcad12ebe0ab70bb53cf0e5b5",
+    "patch_sha256": "79feea4813cc39be606256654337024dc0f528e7a4739d8eed096e1358eb598a",
+    "source_files": {
+      "crates/horizon-client-render/src/gfx/pack_post.rs": "70bac7b8ddd05e5639a5d35e73168e4c3c4e6efdc04102b47cf4a48d12eb5203",
+      "crates/horizon-client-render/tests/uniform_initial_render.rs": "8c5c6f09bcd0e9405315d3f607d25f93b940e69757763a2ba5717d10e2229ec9",
+      "crates/horizon-shaders/src/translate/defaults.rs": "ea9c93b53806b1d5c663c52193771db20648be9fed0ff92d69eca2be047bc972",
+      "crates/horizon-shaders/src/translate/mod.rs": "43b789612e5e90e5c0ca833973dddba0045a8184d1346fea8df8ff0adcc817d8",
+      "crates/horizon-shaders/src/translate/scan.rs": "f47d2dc3193b9de97b9c53528ebf0760772b165b960146f25d51fe2b0f0125b2",
+      "crates/horizon-shaders/tests/uniform_initial_values.rs": "c71f353059cdcf50598b83063f265fbb2d621e4f70d5130ba571612295f66144"
+    }
+  },
+  "public_main_integration": {
+    "revision": "8dffb823a45d307988dcc0e9d0e1767d665510fb",
+    "license": "MIT",
+    "scope": "Only public main was fetched after the independent candidate was frozen; no old PR refs/history fetched. Frozen patch applied without API corrections."
+  },
+  "independent_baseline_validation": {
+    "rust": "1.99.0; default debug tests; no custom RUSTFLAGS; serialized builds, jobs=2",
+    "typed_tests": {
+      "passed": 4,
+      "binary_sha256": "370db9cd1e0e83e4df512d21da3eda6ceae55a3e2a1b156bcf08e629689bd04d"
+    },
+    "gpu": {
+      "adapter": "Intel Arc A770 / Mesa26.2.4 / Vulkan",
+      "binary_sha256": "02a1bce0af9b5eaf040d425d3d5bb7c1945da9e6817083521f80a68f75e19fb5",
+      "controls": {
+        "authored_defaults": [
+          0.75,
+          0.375,
+          3.0,
+          1.0
+        ],
+        "runtime_override": [
+          0.125,
+          0.375,
+          7.0,
+          0.0
+        ],
+        "explicit_zero": [
+          0.0,
+          0.375,
+          0.0,
+          1.0
+        ],
+        "zero_upload_negative": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      "passed": true
+    },
+    "limits": "Direct offscreen translator/Value::write oracle; no whole-pack or player gameplay claim. Final-main qualification is reported separately in the PR."
+  }
+}

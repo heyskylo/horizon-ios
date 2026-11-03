@@ -29,6 +29,7 @@ use crate::Preprocessed;
 
 mod anonymous_structs;
 mod atomic_vectors;
+mod defaults;
 mod geometry;
 mod image_parameters;
 mod integer_bounds;
@@ -50,6 +51,8 @@ pub struct Interface {
     /// colour) and `hz_fog` (density, start, end, 1 / (end - start)).
     pub uniform_size: u32,
     pub uniforms: Vec<Uniform>,
+    /// std140 initial contents; runtime values overwrite their members each frame.
+    pub initial_values: Vec<u8>,
     /// Each sampler: texture at `binding`, sampler object at `binding + 1`.
     pub samplers: Vec<Sampler>,
     /// The fragment stage's output locations.
@@ -521,6 +524,7 @@ fn translate(
         (Ok(v), Ok(f)) => (v, f),
         (a, b) => return Err(a.err().into_iter().chain(b.err()).flatten().collect()),
     };
+    let initial_values = defaults::merge([(&v, &vertex), (&f, &fragment)])?;
     let (uniform_size, offsets) = block_layout(&fragment);
     let uniforms = offsets
         .into_iter()
@@ -544,6 +548,7 @@ fn translate(
     Ok(Program {
         interface: Interface {
             uniform_size,
+            initial_values,
             uniforms,
             samplers,
             outputs,
@@ -730,8 +735,10 @@ pub fn translate_compute(compute: &Preprocessed) -> Result<ComputeProgram, Vec<E
         std::mem::take(&mut errors)
     })?;
     let (uniform_size, offsets) = block_layout(&module);
+    let initial_values = defaults::merge([(&c, &module)])?;
     let mut interface = Interface {
         uniform_size,
+        initial_values,
         uniforms: offsets
             .into_iter()
             .filter_map(|(member, offset)| {
