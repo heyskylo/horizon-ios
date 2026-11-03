@@ -1034,5 +1034,10 @@
   "Play online with your Microsoft account": "Igraj na mreži sa svojim Microsoft računom",
   "Sign in with the account that owns Minecraft: Java Edition. Your name and skin come along to online servers, like in other launchers.": "Prijavi se računom koji posjeduje Minecraft: Java Edition. Tvoje ime i skin idu s tobom na mrežne poslužitelje, kao u drugim pokretačima.",
   "Microsoft's own page opens in your browser. Horizon never sees your password.": "Microsoftova stranica otvara se u tvom pregledniku. Horizon nikad ne vidi tvoju lozinku.",
-  "Colours the buttons, the switches and the sky. Pick one, or type any hex colour.": "Boja gumbe, prekidače i nebo. Odaberi jednu ili upiši bilo koju hex boju."
+  "Colours the buttons, the switches and the sky. Pick one, or type any hex colour.": "Boja gumbe, prekidače i nebo. Odaberi jednu ili upiši bilo koju hex boju.",
+  "Accent colour, glass, blur, language and the options above go back to how Horizon ships.": "Boja naglaska, staklo, zamućenje, jezik i gornje opcije vraćaju se na Horizonove zadane.",
+  "Reset the launcher's look": "Vrati izgled pokretača",
+  "Reset to defaults": "Vrati na zadano",
+  "{value} px": "{value} px",
+  "{value}%": "{value} %"
 }

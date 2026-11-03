@@ -794,6 +794,9 @@ pub struct Scene {
     waking: bool,
     /// The accent's tint (the mockup's `mix-blend-mode: color` layer); none for the violet.
     tint: Option<u32>,
+    /// The glass plates' blur in px, and the one their backdrop was made with.
+    blur: f32,
+    backdrop_blur: Option<f32>,
 }
 
 impl Scene {
@@ -808,14 +811,18 @@ impl Scene {
             last: None,
             waking: false,
             tint: None,
+            blur: horizon_theme::glass::BLUR,
+            backdrop_blur: None,
         }
     }
 
-    /// The player's accent: none for the violet, else the colour every colour of the scene takes
-    /// the hue and chroma of. The scene is baked again when it changes.
-    pub fn set_tint(&mut self, tint: Option<u32>, cx: &mut Context<Self>) {
-        if self.tint != tint {
+    /// The player's accent (none for the violet, else the colour every colour of the scene takes
+    /// the hue and chroma of) and the plates' blur. The scene is baked again when the tint
+    /// changes, the plates' backdrop blurred again when the blur does.
+    pub fn set_look(&mut self, tint: Option<u32>, blur: f32, cx: &mut Context<Self>) {
+        if self.tint != tint || self.blur != blur {
             self.tint = tint;
+            self.blur = blur;
             cx.notify();
         }
     }
@@ -870,10 +877,15 @@ impl Render for Scene {
         let wanted = (key(width, height, scale), self.tint);
         if self.baked.as_ref().map(|b| (b.key, b.tint)) != Some(wanted) {
             let baked = Baked::new(width, height, scale, self.tint);
-            crate::glass::set_backdrop(&baked.model, self.tint);
+            self.backdrop_blur = None;
             if let Some(old) = self.baked.replace(baked) {
                 self.replaced.extend(old.images());
             }
+        }
+        if self.backdrop_blur != Some(self.blur) {
+            let model = &self.baked.as_ref().expect("baked above").model;
+            crate::glass::set_backdrop(model, self.tint, self.blur);
+            self.backdrop_blur = Some(self.blur);
         }
 
         let now = Instant::now();
