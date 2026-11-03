@@ -3200,7 +3200,8 @@ impl Launcher {
             .children((!t.dark).then(|| self.instance_row(1, cx)).flatten())
             .children(self.export_panel(cx))
             .children(self.launch_panel(cx))
-            .children(self.memory_row(cx));
+            // The glass look keeps Maximum memory in the instance's Edit dialog.
+            .children((!t.dark).then(|| self.memory_row(cx)).flatten());
         rows = match &java {
             Some(java) => rows.child(index_row(
                 2,
@@ -3236,9 +3237,10 @@ impl Launcher {
                 &t,
             )),
         };
-        {
-            // The top bar shows who plays; a row only when there is something to do about it:
-            // no account that owns the game (Play needs one), or offline.
+        // The top bar shows who plays; a row only when there is something to do about it: no
+        // account that owns the game (Play needs one), or offline. The glass look's top bar has
+        // Sign in with Microsoft and says Offline itself.
+        if !t.dark {
             if self.owner_shown() == Some(false) {
                 rows = rows.child(index_row(
                     5,
