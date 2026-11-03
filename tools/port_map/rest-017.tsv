@@ -14,9 +14,10 @@ DedicatedServer.setMaxPlayers	port	crates/horizon-client/src/game/dedicated.rs::
 DedicatedServer.setSpawnProtectionRadius	skip:server		JSON-RPC management API only; spawn-protection is read at start and used by Game::under_spawn_protection
 DedicatedServer.setRepliesToStatus	skip:server		JSON-RPC management API only (ServerSettingsService); Horizon has no such API
 DedicatedServer.setHidesOnlinePlayers	skip:server		JSON-RPC management API only (ServerSettingsService); Horizon has no such API
-DedicatedServer.setOperatorUserPermissions	skip:server		JSON-RPC management API only (ServerSettingsService); Horizon has no such API
+DedicatedServer.setOperatorUserPermissions	port	crates/horizon-client/src/game/dedicated/management.rs::Game::management	management updates the live default operator permission level and op-permission-level in server.properties
 DedicatedServer.setPlayerIdleTimeout	port	crates/horizon-client/src/game/dedicated.rs::Game::set_player_idle_timeout	updates the live idle sweep and player-idle-timeout via management; gap: minor: /setidletimeout remains unimplemented
 MinecraftServerSettingsServiceImpl.setPlayerIdleTimeout	port	crates/horizon-server/src/management_methods.rs::Game::player_idle_timeout	forwards the live idle timeout to the game and persists properties.player-idle-timeout in server.toml
+MinecraftServerSettingsServiceImpl.setOperatorUserPermissions	port	crates/horizon-server/src/management_methods.rs::Game::operator_user_permission_level	forwards the live default operator permission level and persists properties.op-permission-level in server.toml
 DedicatedServer.setStatusHeartbeatInterval	skip:server		JSON-RPC management API only (status heartbeat)
 DedicatedServer.setMotd	skip:server		JSON-RPC management API only (ServerSettingsService); Horizon has no such API
 DedicatedServer.enforceSecureProfile	inline	crates/horizon-client/src/game/dedicated.rs::Game::run_dedicated	gap: minor: services.canValidateProfileKeys() is not part of the check

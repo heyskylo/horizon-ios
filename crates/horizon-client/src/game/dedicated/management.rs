@@ -187,6 +187,28 @@ impl Game<'_> {
                 self.set_default_game_mode(state.game_mode);
                 return json!({ "value": GAME_MODES[state.game_mode as usize] });
             }
+            "serversettings/operator_user_permission_level" => {
+                return json!({ "value": state.op_level });
+            }
+            "serversettings/operator_user_permission_level/set" => {
+                let Some(level) = body["value"]
+                    .as_i64()
+                    .and_then(|value| i32::try_from(value).ok())
+                    .filter(|level| (0..=4).contains(level))
+                else {
+                    return json!({
+                        "error": "operator user permission level must be an integer between 0 and 4"
+                    });
+                };
+                rpc(format!(
+                    "Update operator user permission level from {} to {}",
+                    state.op_level, level
+                ));
+                state.op_level = level;
+                state.lists.lock().unwrap().op_level = level;
+                self.store_property("op-permission-level", level.to_string());
+                return json!({ "value": state.op_level });
+            }
             "serversettings/force_game_mode" => {
                 return json!({ "value": state.force_game_mode });
             }
