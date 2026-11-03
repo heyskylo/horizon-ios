@@ -650,6 +650,33 @@ fn texture_format(f: Format, features: wgpu::Features) -> wgpu::TextureFormat {
     }
 }
 
+/// The SNORM wgpu format of SNORM pack format `f`, where this adapter can render to it. Iris
+/// stores such a buffer clamped to [-1, 1] and quantised to its bits; elsewhere the half floats of
+/// [`texture_format`] stand in.
+fn snorm_format(
+    f: Format,
+    features: wgpu::Features,
+    adapter: &wgpu::Adapter,
+) -> Option<wgpu::TextureFormat> {
+    use wgpu::TextureFormat as T;
+    let format = match (f.kind, f.bits, f.channels) {
+        (Kind::Snorm, 8, 1) => T::R8Snorm,
+        (Kind::Snorm, 8, 2) => T::Rg8Snorm,
+        (Kind::Snorm, 8, _) => T::Rgba8Snorm,
+        (Kind::Snorm, 16, 1) => T::R16Snorm,
+        (Kind::Snorm, 16, 2) => T::Rg16Snorm,
+        (Kind::Snorm, 16, _) => T::Rgba16Snorm,
+        _ => return None,
+    };
+    let mut needs = wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES;
+    if f.bits == 16 {
+        needs |= wgpu::Features::TEXTURE_FORMAT_16BIT_NORM;
+    }
+    let renders = (adapter.get_texture_format_features(format).allowed_usages)
+        .contains(wgpu::TextureUsages::RENDER_ATTACHMENT);
+    (features.contains(needs) && renders).then_some(format)
+}
+
 /// The texture behind sampler `name` in a program of the shadow buffers (`shadow_space`: buffer
 /// n is shadowcolor n) or of the others, when the shadow pass runs (`shadow_pass`). `shadow` is
 /// `shadowtex1` when the program also declares `watershadow` (6.3).
@@ -1763,8 +1790,10 @@ impl PackPost {
         // What the pack's shaders need of its storage buffers, before its parts move out.
         let minimums = post.buffer_minimums();
         let features = device.features();
-        let formats: [wgpu::TextureFormat; BUFFERS] =
-            std::array::from_fn(|i| texture_format(post.config.buffers[i].format, features));
+        let formats: [wgpu::TextureFormat; BUFFERS] = std::array::from_fn(|i| {
+            let f = post.config.buffers[i].format;
+            snorm_format(f, features, adapter).unwrap_or_else(|| texture_format(f, features))
+        });
         let sky_clear = Some(&post.config.buffers[0])
             .filter(|b| b.clear)
             .and_then(|b| b.clear_color);
@@ -4290,6 +4319,9 @@ impl PackPost {
         }
     }
 }
+
+#[cfg(test)]
+mod snorm_tests;
 
 #[cfg(test)]
 #[path = "pack_post/depth_test.rs"]
