@@ -931,9 +931,19 @@ pub fn decode_block_entity(tag: &Tag) -> Option<((i32, i32, i32), crate::contain
         return Some((pos, BlockEntity::CreakingHeart(Box::new(heart))));
     }
     if id == "minecraft:lectern" {
+        // `LecternBlockEntity.loadAdditional`: the page is `Mth.clamp(Page, 0,
+        // getPageCount(book) - 1)`, so a stored page before the book's first
+        // page or past its last comes back as the page the block holds. A book
+        // with no pages leaves the maximum below the minimum, and vanilla's
+        // clamp answers the minimum it was given first: -1.
+        let book = tag.get("Book").and_then(item_from_nbt);
+        let count = book.as_ref().map_or(1, crate::menu::book_pages) as i32;
+        let stored = int("Page").unwrap_or(0);
         let lectern = crate::containers::Lectern {
-            book: tag.get("Book").and_then(item_from_nbt),
-            page: int("Page").unwrap_or(0),
+            book,
+            // `Mth.clamp`: a value under the minimum is the minimum, else the
+            // smaller of the value and the maximum.
+            page: if stored < 0 { 0 } else { stored.min(count - 1) },
         };
         return Some((pos, BlockEntity::Lectern(lectern)));
     }
