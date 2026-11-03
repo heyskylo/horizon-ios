@@ -3659,14 +3659,13 @@ fn a_level_can_answer_what_makes_a_campfire_signal() {
 }
 
 #[test]
-fn a_rail_on_a_block_a_piston_pushes_through_survives() {
+fn a_rail_on_a_block_a_piston_pushes_pops_off() {
     // PistonBaseBlock.moveBlocks writes the arriving blocks as `moving_piston`
-    // and then updates the neighbours of every source cell. A cell that is both
-    // a source and a destination of a chain push still holds `moving_piston`
-    // when that update runs, so the rail on top of it is asked whether it can
-    // survive. Vanilla reads the cell through its block entity, whose collision
-    // shape is the arriving block; the exported support facts saw the bare
-    // `moving_piston` and dropped the rail (#8111).
+    // and then updates the neighbours of every source cell. The rail on the
+    // second stone asks whether that cell supports it: vanilla reads the moving
+    // block's shape offset by `progress - 1`, a whole block back at progress 0,
+    // so nothing holds the rail and it pops, though another stone arrives under
+    // it. The redstone harness's fixed cases check the same against vanilla.
     let mut w = world!();
     w.floor(0, 10, "stone");
     let piston = w.id("piston", &[("facing", "east")]);
@@ -3674,22 +3673,52 @@ fn a_rail_on_a_block_a_piston_pushes_through_survives() {
     let rail = w.id("rail", &[]);
     let power = w.id("redstone_block", &[]);
     let piston_pos = BlockPos::new(0, 1, 0);
-    let first = BlockPos::new(1, 1, 0);
-    let second = BlockPos::new(2, 1, 0);
     let rail_pos = BlockPos::new(2, 2, 0);
     w.set(piston_pos, piston);
-    w.set(first, stone);
-    w.set(second, stone);
+    w.set(BlockPos::new(1, 1, 0), stone);
+    w.set(BlockPos::new(2, 1, 0), stone);
     w.set(rail_pos, rail);
     w.set(BlockPos::new(-1, 1, 0), power);
     for _ in 0..4 {
         w.full_tick();
     }
     assert_eq!(w.prop(piston_pos, "extended"), "true");
-    assert_eq!(w.name(second), "stone[]");
-    assert!(
-        w.name(rail_pos).starts_with("rail"),
-        "the rail on top of the pushed block must stay, got {}",
-        w.name(rail_pos)
-    );
+    assert_eq!(w.name(BlockPos::new(2, 1, 0)), "stone[]");
+    assert_eq!(w.name(BlockPos::new(3, 1, 0)), "stone[]");
+    assert_eq!(w.name(rail_pos), "air[]");
+}
+
+#[test]
+fn a_rail_riding_on_slime_stays_on_it() {
+    // #8111: the slime block carries the rail on top of it. The rail's block
+    // entity can finish while the slime's still holds `moving_piston` at
+    // progress 1, whose shape is the slime block in its cell, so the rail is
+    // supported both ways.
+    let mut w = world!();
+    w.floor(0, 10, "stone");
+    let piston = w.id("sticky_piston", &[("facing", "east")]);
+    let slime = w.id("slime_block", &[]);
+    let rail = w.id("rail", &[]);
+    let power = w.id("redstone_block", &[]);
+    let air = w.b().air();
+    let piston_pos = BlockPos::new(0, 1, 0);
+    let power_pos = BlockPos::new(-1, 1, 0);
+    w.set(piston_pos, piston);
+    w.set(BlockPos::new(1, 1, 0), slime);
+    w.set(BlockPos::new(1, 2, 0), rail);
+    w.set(power_pos, power);
+    for _ in 0..4 {
+        w.full_tick();
+    }
+    assert_eq!(w.prop(piston_pos, "extended"), "true");
+    assert_eq!(w.name(BlockPos::new(2, 1, 0)), "slime_block[]");
+    let pushed = w.name(BlockPos::new(2, 2, 0));
+    assert!(pushed.starts_with("rail"), "pushed: got {pushed}");
+    w.set(power_pos, air);
+    for _ in 0..4 {
+        w.full_tick();
+    }
+    assert_eq!(w.prop(piston_pos, "extended"), "false");
+    let pulled = w.name(BlockPos::new(1, 2, 0));
+    assert!(pulled.starts_with("rail"), "pulled back: got {pulled}");
 }
