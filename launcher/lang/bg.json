@@ -1076,5 +1076,13 @@
   "Game log": "Дневник на играта",
   "1 line": "1 ред",
   "{count} lines": "{count} реда",
-  "My Horizon": "Моят Horizon"
+  "My Horizon": "Моят Horizon",
+  "{count} min": "{count} мин",
+  "1 hour": "1 час",
+  "{count} hours": "{count} часа",
+  "just now": "току-що",
+  "{count} min ago": "преди {count} мин",
+  "1 hour ago": "преди 1 час",
+  "{count} hours ago": "преди {count} часа",
+  "{count} on the official SMP": "{count} в официалния SMP"
 }

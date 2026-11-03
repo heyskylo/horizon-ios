@@ -1076,5 +1076,13 @@
   "Game log": "Pelin loki",
   "1 line": "1 rivi",
   "{count} lines": "{count} riviä",
-  "My Horizon": "Oma Horizon"
+  "My Horizon": "Oma Horizon",
+  "{count} min": "{count} min",
+  "1 hour": "1 tunti",
+  "{count} hours": "{count} tuntia",
+  "just now": "juuri nyt",
+  "{count} min ago": "{count} min sitten",
+  "1 hour ago": "1 tunti sitten",
+  "{count} hours ago": "{count} tuntia sitten",
+  "{count} on the official SMP": "{count} virallisella SMP:llä"
 }

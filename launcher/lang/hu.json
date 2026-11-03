@@ -1076,5 +1076,13 @@
   "Game log": "Játéknapló",
   "1 line": "1 sor",
   "{count} lines": "{count} sor",
-  "My Horizon": "Saját Horizon"
+  "My Horizon": "Saját Horizon",
+  "{count} min": "{count} perc",
+  "1 hour": "1 óra",
+  "{count} hours": "{count} óra",
+  "just now": "az imént",
+  "{count} min ago": "{count} perce",
+  "1 hour ago": "1 órája",
+  "{count} hours ago": "{count} órája",
+  "{count} on the official SMP": "{count} a hivatalos SMP-n"
 }

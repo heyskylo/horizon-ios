@@ -1076,5 +1076,13 @@
   "Game log": "Spillog",
   "1 line": "1 linje",
   "{count} lines": "{count} linjer",
-  "My Horizon": "Min Horizon"
+  "My Horizon": "Min Horizon",
+  "{count} min": "{count} min.",
+  "1 hour": "1 time",
+  "{count} hours": "{count} timer",
+  "just now": "lige nu",
+  "{count} min ago": "for {count} min. siden",
+  "1 hour ago": "for 1 time siden",
+  "{count} hours ago": "for {count} timer siden",
+  "{count} on the official SMP": "{count} på den officielle SMP"
 }

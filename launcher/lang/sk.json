@@ -1076,5 +1076,13 @@
   "Game log": "Denník hry",
   "1 line": "1 riadok",
   "{count} lines": "{count} riadkov",
-  "My Horizon": "Môj Horizon"
+  "My Horizon": "Môj Horizon",
+  "{count} min": "{count} min",
+  "1 hour": "1 hodina",
+  "{count} hours": "{count} hodín",
+  "just now": "práve teraz",
+  "{count} min ago": "pred {count} min",
+  "1 hour ago": "pred hodinou",
+  "{count} hours ago": "pred {count} hodinami",
+  "{count} on the official SMP": "{count} na oficiálnom SMP"
 }

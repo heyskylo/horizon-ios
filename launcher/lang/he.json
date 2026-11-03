@@ -1076,5 +1076,13 @@
   "Game log": "יומן המשחק",
   "1 line": "שורה אחת",
   "{count} lines": "{count} שורות",
-  "My Horizon": "ה־Horizon שלי"
+  "My Horizon": "ה־Horizon שלי",
+  "{count} min": "{count} דק׳",
+  "1 hour": "שעה אחת",
+  "{count} hours": "{count} שעות",
+  "just now": "זה עתה",
+  "{count} min ago": "לפני {count} דק׳",
+  "1 hour ago": "לפני שעה",
+  "{count} hours ago": "לפני {count} שעות",
+  "{count} on the official SMP": "{count} ב־SMP הרשמי"
 }
