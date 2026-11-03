@@ -1033,5 +1033,14 @@
   "3 to 16 letters, numbers or underscores. Switch names from the top bar too. Online servers don't take offline names.": "3 till 16 bokstäver, siffror eller understreck. Du kan även byta namn från den övre raden. Onlineservrar tar inte emot offlinenamn.",
   "Play online with your Microsoft account": "Spela online med ditt Microsoft-konto",
   "Sign in with the account that owns Minecraft: Java Edition. Your name and skin come along to online servers, like in other launchers.": "Logga in med kontot som äger Minecraft: Java Edition. Ditt namn och din skin följer med till onlineservrar, precis som i andra launchers.",
-  "Microsoft's own page opens in your browser. Horizon never sees your password.": "Microsofts egen sida öppnas i din webbläsare. Horizon ser aldrig ditt lösenord."
+  "Microsoft's own page opens in your browser. Horizon never sees your password.": "Microsofts egen sida öppnas i din webbläsare. Horizon ser aldrig ditt lösenord.",
+  "Colours the buttons, the switches and the sky. Pick one, or type any hex colour.": "Färgar knapparna, reglagen och himlen. Välj en, eller skriv valfri hexfärg.",
+  "Accent colour, glass, blur, language and the options above go back to how Horizon ships.": "Accentfärg, glas, oskärpa, språk och alternativen ovan återställs till hur Horizon levereras.",
+  "Reset the launcher's look": "Återställ launcherns utseende",
+  "Reset to defaults": "Återställ standardvärden",
+  "{value} px": "{value} px",
+  "{value}%": "{value}%",
+  "Experimental. Builds the native mods you trust into a game of their own.": "Experimentellt. Bygger de native-moddar du litar på till ett eget spel.",
+  "Native mods": "Native-moddar",
+  "Nightly": "Nightly"
 }

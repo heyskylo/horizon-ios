@@ -38,7 +38,7 @@ const TOOLS: &[Tool] = &[
     },
     Tool {
         name: "players",
-        what: "Who is online (address, ping, op level), the operators, the whitelist and the bans",
+        what: "Who is online (address, ping, position, op level), the operators, the whitelist and the bans",
         args: &[],
         destructive: false,
     },
@@ -161,13 +161,19 @@ const TOOLS: &[Tool] = &[
     },
     Tool {
         name: "restore",
-        what: "Restart the server with a backup's world (the current one is kept in backups/)",
+        what: "Restart the server with a backup's world, or with one dimension of it (what it replaces is kept in backups/)",
         args: &[
             (
                 "name",
                 "string",
                 "The backup: file name, unique prefix or label",
                 true,
+            ),
+            (
+                "dimension",
+                "string",
+                "Bring back only this dimension, like minecraft:the_nether; the rest of the world stays",
+                false,
             ),
             CONFIRM,
         ],
@@ -336,7 +342,9 @@ fn request(name: &str, args: &Value) -> Result<(&'static str, String, Option<Val
             (
                 "POST",
                 "/api/v1/restore".into(),
-                Some(json!({ "name": need("name")? })),
+                Some(some(
+                    json!({ "name": need("name")?, "dimension": args["dimension"] }),
+                )),
             )
         }
         "get_config" => ("GET", "/api/v1/config".into(), None),

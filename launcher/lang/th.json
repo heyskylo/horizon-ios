@@ -1033,5 +1033,14 @@
   "3 to 16 letters, numbers or underscores. Switch names from the top bar too. Online servers don't take offline names.": "ตัวอักษร ตัวเลข หรือขีดล่าง 3 ถึง 16 ตัว เปลี่ยนชื่อจากแถบด้านบนได้ด้วย เซิร์ฟเวอร์ออนไลน์ไม่รับชื่อออฟไลน์",
   "Play online with your Microsoft account": "เล่นออนไลน์ด้วยบัญชี Microsoft ของคุณ",
   "Sign in with the account that owns Minecraft: Java Edition. Your name and skin come along to online servers, like in other launchers.": "ลงชื่อเข้าใช้ด้วยบัญชีที่เป็นเจ้าของ Minecraft: Java Edition ชื่อและสกินของคุณจะติดตัวไปยังเซิร์ฟเวอร์ออนไลน์ เหมือนในลันเชอร์อื่น ๆ",
-  "Microsoft's own page opens in your browser. Horizon never sees your password.": "หน้าของ Microsoft เองจะเปิดในเบราว์เซอร์ของคุณ Horizon ไม่เห็นรหัสผ่านของคุณเลย"
+  "Microsoft's own page opens in your browser. Horizon never sees your password.": "หน้าของ Microsoft เองจะเปิดในเบราว์เซอร์ของคุณ Horizon ไม่เห็นรหัสผ่านของคุณเลย",
+  "Colours the buttons, the switches and the sky. Pick one, or type any hex colour.": "ใช้ระบายสีปุ่ม สวิตช์ และท้องฟ้า เลือกหนึ่งสี หรือพิมพ์รหัสสี hex ใดก็ได้",
+  "Accent colour, glass, blur, language and the options above go back to how Horizon ships.": "สีเน้น กระจก ความเบลอ ภาษา และตัวเลือกด้านบนจะกลับเป็นค่าเริ่มต้นของ Horizon",
+  "Reset the launcher's look": "รีเซ็ตหน้าตาของลันเชอร์",
+  "Reset to defaults": "คืนค่าเริ่มต้น",
+  "{value} px": "{value} px",
+  "{value}%": "{value}%",
+  "Experimental. Builds the native mods you trust into a game of their own.": "ทดลอง สร้างม็อดเนทีฟที่คุณเชื่อถือเป็นเกมแยกต่างหาก",
+  "Native mods": "ม็อดเนทีฟ",
+  "Nightly": "Nightly"
 }
