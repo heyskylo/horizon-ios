@@ -1078,5 +1078,13 @@
   "My Horizon": "मेरा Horizon",
   "Game log": "गेम लॉग",
   "1 line": "1 पंक्ति",
-  "{count} lines": "{count} पंक्तियाँ"
+  "{count} lines": "{count} पंक्तियाँ",
+  "{count} min": "{count} मिनट",
+  "1 hour": "1 घंटा",
+  "{count} hours": "{count} घंटे",
+  "just now": "अभी",
+  "{count} min ago": "{count} मिनट पहले",
+  "1 hour ago": "1 घंटा पहले",
+  "{count} hours ago": "{count} घंटे पहले",
+  "{count} on the official SMP": "आधिकारिक SMP पर {count}"
 }

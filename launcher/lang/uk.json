@@ -1078,5 +1078,13 @@
   "My Horizon": "Мій Horizon",
   "Game log": "Журнал гри",
   "1 line": "1 рядок",
-  "{count} lines": "{count} рядків"
+  "{count} lines": "{count} рядків",
+  "{count} min": "{count} хв",
+  "1 hour": "1 годину",
+  "{count} hours": "{count} год",
+  "just now": "щойно",
+  "{count} min ago": "{count} хв тому",
+  "1 hour ago": "годину тому",
+  "{count} hours ago": "{count} год тому",
+  "{count} on the official SMP": "{count} на офіційному SMP"
 }

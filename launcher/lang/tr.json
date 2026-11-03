@@ -1078,5 +1078,13 @@
   "My Horizon": "Horizon'ım",
   "Game log": "Oyun günlüğü",
   "1 line": "1 satır",
-  "{count} lines": "{count} satır"
+  "{count} lines": "{count} satır",
+  "{count} min": "{count} dk",
+  "1 hour": "1 saat",
+  "{count} hours": "{count} saat",
+  "just now": "az önce",
+  "{count} min ago": "{count} dk önce",
+  "1 hour ago": "1 saat önce",
+  "{count} hours ago": "{count} saat önce",
+  "{count} on the official SMP": "resmi SMP'de {count}"
 }
