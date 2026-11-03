@@ -7517,7 +7517,7 @@ impl Game<'_> {
         if running {
             horizon_client::spans::time("tick_paintings", || self.tick_paintings());
             horizon_client::spans::time("tick_item_frames", || self.tick_item_frames());
-            self.ordered_before(ordered_tick::first_join(&self.armor_stands))?;
+            self.ordered_before(ordered_tick::Batch::ArmorStands)?;
             horizon_client::spans::time("tick_armor_stands", || self.tick_armor_stands())?;
             horizon_client::spans::time("tick_cushions", || self.tick_cushions());
             // ServerLevel.tick: the arrivals of this server tick are in the level
@@ -7525,9 +7525,9 @@ impl Game<'_> {
             // own tick opens.
             self.land_portal_arrivals();
             self.handle_vehicle_portals();
-            self.ordered_before(ordered_tick::first_join(&self.boats))?;
+            self.ordered_before(ordered_tick::Batch::Boats)?;
             horizon_client::spans::time("tick_boats", || self.tick_boats());
-            self.ordered_before(ordered_tick::first_join(&self.carts))?;
+            self.ordered_before(ordered_tick::Batch::Carts)?;
             horizon_client::spans::time("tick_carts", || self.tick_carts());
             self.tick_vehicle_watch();
             let from = self.lan_synced_from();
@@ -7538,9 +7538,9 @@ impl Game<'_> {
             self.tick_lodestone_compasses();
             horizon_client::spans::time("tick_bolts", || self.tick_bolts());
             horizon_client::spans::time("tick_fishing", || self.tick_fishing());
-            self.ordered_before(ordered_tick::first_join(&self.tridents))?;
+            self.ordered_before(ordered_tick::Batch::Tridents)?;
             horizon_client::spans::time("tick_tridents", || self.tick_tridents());
-            self.ordered_before(ordered_tick::first_join(&self.rockets))?;
+            self.ordered_before(ordered_tick::Batch::Rockets)?;
             horizon_client::spans::time("tick_rockets", || self.tick_rockets());
             horizon_client::spans::time("tick_ominous_item_spawners", || {
                 self.tick_ominous_item_spawners()
@@ -7551,7 +7551,7 @@ impl Game<'_> {
                 self.handle_entity_portals();
                 self.handle_end_gateway_portals();
             });
-            self.ordered_before(ordered_tick::first_join(&self.dropped))?;
+            self.ordered_before(ordered_tick::Batch::Items)?;
             horizon_client::spans::time("tick_items", || self.tick_items());
             if self.remote.is_none() {
                 self.hoppers_catch_items();
@@ -7565,7 +7565,7 @@ impl Game<'_> {
         // The ride the player's file names, once the vehicle is in the world.
         self.restore_root_vehicle();
         if running {
-            self.ordered_before(ordered_tick::first_join(&self.mobs))?;
+            self.ordered_before(ordered_tick::Batch::Mobs)?;
             horizon_client::spans::time("tick_mobs", || self.tick_mobs())?;
             // Dead, despawned or gone into a hive.
             self.native_leaves_flush();
@@ -7573,6 +7573,7 @@ impl Game<'_> {
             self.tick_mod_container_viewers();
             // Orbs, primed TNT and falling blocks still to tick, in join order.
             self.run_ordered_ticks(horizon_client::join_seq::JoinSeq::MAX)?;
+            self.apply_late_wind_pushes();
             horizon_client::spans::time("tick_experience", || self.tick_experience());
             // Merged, despawned or picked up.
             self.native_leaves_flush();
@@ -7599,7 +7600,6 @@ impl Game<'_> {
             self.keep_gateway_destinations();
         }
         if running {
-            self.apply_late_wind_pushes();
         }
         if running {
             horizon_client::spans::time("tick_block_entities", || self.tick_block_entities())?;

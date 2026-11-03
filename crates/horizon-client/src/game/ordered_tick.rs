@@ -19,9 +19,29 @@ pub(super) struct OrderedTicks {
     /// Joins at or above this started after the tick began; they tick next tick.
     born: JoinSeq,
     /// The last join number ticked, if any: later ones are still to come.
-    done: Option<JoinSeq>,
+    pub(super) done: Option<JoinSeq>,
+    /// For each batch of another kind, in tick order (see [`Batch`]): the
+    /// lowest join number among it and every batch after it.
+    suffix_min: [JoinSeq; Batch::COUNT],
     /// The orbs' lava random, made on first use.
     lava_random: Option<horizon_core::random::LegacyRandom>,
+}
+
+/// The batches of the other kinds, in the order they tick.
+#[derive(Clone, Copy)]
+pub(super) enum Batch {
+    ArmorStands,
+    Boats,
+    Carts,
+    Tridents,
+    Rockets,
+    Items,
+    Mobs,
+    Projectiles,
+}
+
+impl Batch {
+    const COUNT: usize = 8;
 }
 
 #[derive(Clone, Copy)]
@@ -39,9 +59,28 @@ pub(super) fn first_join<T: Joined>(list: &[T]) -> Option<JoinSeq> {
 impl Game<'_> {
     /// A level tick starts: what has joined so far ticks this tick.
     pub(super) fn begin_ordered_ticks(&mut self) {
+        let firsts = [
+            first_join(&self.armor_stands),
+            first_join(&self.boats),
+            first_join(&self.carts),
+            first_join(&self.tridents),
+            first_join(&self.rockets),
+            first_join(&self.dropped),
+            first_join(&self.mobs),
+            first_join(&self.creatures.projectiles),
+        ];
+        // A batch ticks whole, so an entity of the three kinds goes after the
+        // last batch that holds anything that joined before it.
+        let mut suffix_min = [JoinSeq::MAX; Batch::COUNT];
+        let mut lowest = JoinSeq::MAX;
+        for (slot, first) in suffix_min.iter_mut().zip(firsts).rev() {
+            lowest = lowest.min(first.unwrap_or(JoinSeq::MAX));
+            *slot = lowest;
+        }
         self.ordered = OrderedTicks {
             born: JoinSeq::upcoming(),
             done: None,
+            suffix_min,
             lava_random: None,
         };
     }
@@ -141,11 +180,12 @@ impl Game<'_> {
     }
 
     /// Before a batch of another kind ticks: the three kinds' entities that
-    /// joined before its first one tick first.
-    pub(super) fn ordered_before(&mut self, first: Option<JoinSeq>) -> Result<()> {
-        match first {
-            Some(first) => self.run_ordered_ticks(first),
-            None => Ok(()),
+    /// joined before everything still to tick in the batches from this one on.
+    pub(super) fn ordered_before(&mut self, batch: Batch) -> Result<()> {
+        let cut = self.ordered.suffix_min[batch as usize];
+        if cut == JoinSeq::MAX {
+            return Ok(());
         }
+        self.run_ordered_ticks(cut)
     }
 }
