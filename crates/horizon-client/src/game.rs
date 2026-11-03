@@ -3303,6 +3303,11 @@ fn gliding_pieces(items: &Items, armor: &[Option<ItemStack>; 4]) -> [bool; 4] {
             .is_some_and(|s| horizon_client::item_sync::can_glide_using(s, SLOTS[i], items))
     })
 }
+/// `Level.canHaveWeather`: sky light, no ceiling, and not the End (the one
+/// level the rule names by id).
+fn level_can_have_weather(sky_light: bool, has_ceiling: bool, is_end: bool) -> bool {
+    sky_light && !has_ceiling && !is_end
+}
 /// `Camera.setRotation` (`rotationYXZ(π - yaw, -pitch, 0)`) for the player's
 /// view, turned round in third-person front view (`Camera.setup`).
 fn camera_rotation(camera_type: perspective::CameraType, yaw: f32, pitch: f32) -> glam::Quat {
@@ -3319,6 +3324,25 @@ fn camera_rotation(camera_type: perspective::CameraType, yaw: f32, pitch: f32) -
     )
 }
 impl Game<'_> {
+    /// `Level.canHaveWeather`, from the level's dimension type (sky light, no
+    /// ceiling) and the End, which vanilla names by id. Every rain, thunder
+    /// and lightning rule asks this, never the dimension's id.
+    fn can_have_weather(&self) -> bool {
+        level_can_have_weather(
+            self.world.shape.sky_light,
+            self.world.shape.has_ceiling,
+            self.dim == Dim::End,
+        )
+    }
+    /// The rain and thunder levels (`Level.getRainLevel`, `getThunderLevel`):
+    /// the world's, where the level can have weather, else none.
+    fn weather_levels(&self, partial: f32) -> (f32, f32) {
+        if self.can_have_weather() {
+            self.world.weather.levels(partial)
+        } else {
+            (0.0, 0.0)
+        }
+    }
     fn eye_position(&self) -> Option<[f64; 3]> {
         let p = self.player.as_ref()?;
         Some([
@@ -4386,7 +4410,7 @@ impl Game<'_> {
         f: impl FnOnce(&Behaviours, &mut GameLevel<'_>, &mut Ticks) -> R,
     ) -> R {
         let darken = self.sky_darken();
-        let (rain, thunder) = self.world.weather.levels(1.0);
+        let (rain, thunder) = self.weather_levels(1.0);
         // Spectators ignore block triggers (Entity.isIgnoringBlockTriggers).
         let spectator = self.spectator();
         let player_box = self.player.as_ref().filter(|_| !spectator).map(|p| {
@@ -11417,7 +11441,7 @@ impl Game<'_> {
                 .sample(self.world.day_time, None, None);
             return (15.0 - 15.0 * sky.sky_light_level).round() as i32;
         }
-        let (rain, thunder) = self.world.weather.levels(1.0);
+        let (rain, thunder) = self.weather_levels(1.0);
         // Sampled once per (time, weather): every mob asks each tick.
         let key = (self.world.day_time, rain.to_bits(), thunder.to_bits());
         if let Some((k, darken)) = self.sky_darken_memo.get()
@@ -14259,7 +14283,7 @@ impl Game<'_> {
     /// `Level.isRainingAt`: it rains, the sky light is 15, nothing that stops
     /// motion is above, and the biome's precipitation there is rain.
     fn raining_at(&self, p: BlockPos) -> bool {
-        self.world.weather.levels(1.0).0 > 0.2
+        self.weather_levels(1.0).0 > 0.2
             && self.world.light(p.x, p.y, p.z) >> 4 == 15
             && self.rain_height(p.x, p.z) <= p.y
             && self.precipitation(p.x, p.y, p.z) == Some(false)
@@ -14282,7 +14306,7 @@ impl Game<'_> {
         alpha: f64,
     ) -> Vec<horizon_client::weather::Vertex> {
         use horizon_client::weather;
-        let (intensity, _) = self.world.weather.levels(alpha as f32);
+        let (intensity, _) = self.weather_levels(alpha as f32);
         if intensity <= 0.0 {
             return Vec::new();
         }
@@ -14663,7 +14687,7 @@ impl Game<'_> {
                 }
             }
             // Level.isRaining: the rain level is above 0.2.
-            if self.ui.rules.bool("advance_weather") && self.world.weather.levels(1.0).0 > 0.2 {
+            if self.ui.rules.bool("advance_weather") && self.weather_levels(1.0).0 > 0.2 {
                 self.world.weather.raining = false;
                 self.world.weather.thundering = false;
                 self.world.weather.rain_time = 0;
@@ -15597,11 +15621,7 @@ impl Game<'_> {
         // visual/water_fog_color: no dimension sets it, its default is #050533.
         let water_fog = blend(|b| Some(b.water_fog), [0.0; 3]);
         let mut sky = environment.sample(self.world.day_time, Some(biome_sky), Some(biome_fog));
-        let (rain, thunder) = if self.dim == Dim::Overworld {
-            self.world.weather.levels(alpha as f32)
-        } else {
-            (0.0, 0.0)
-        };
+        let (rain, thunder) = self.weather_levels(alpha as f32);
         horizon_client::environment::apply_weather(&mut sky, rain, thunder);
         self.end_flash_sky(&mut sky, alpha);
         if self.flash > 0 && !self.settings.file.bool("hideLightningFlashes") {
@@ -15859,7 +15879,7 @@ impl Game<'_> {
         if !title {
             self.end_geometry(camera, &mut entities);
         }
-        let weather = if !title && self.dim == Dim::Overworld && self.settings.horizon.weather {
+        let weather = if !title && self.can_have_weather() && self.settings.horizon.weather {
             horizon_client::spans::time("weather", || self.weather_geometry(camera, alpha))
         } else {
             Vec::new()
@@ -21743,6 +21763,15 @@ fn debug_crosshair_drawn(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn weather_follows_the_dimension_type_not_the_id() {
+        use super::level_can_have_weather as w;
+        assert!(w(true, false, false)); // open sky
+        assert!(!w(true, true, false)); // ceiling (Nether, overworld_caves)
+        assert!(!w(false, false, false)); // no sky light
+        assert!(!w(true, false, true)); // the End is named by id
+    }
+
     use super::*;
     use horizon_client::container_screen::{Button, Clicks, Release, Target};
 
