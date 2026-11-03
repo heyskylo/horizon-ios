@@ -57,7 +57,7 @@ impl Game<'_> {
             // TamableAnimal (wolf, cat, parrot) on a client: CONSUME once tame.
             Species::Wolf | Species::Cat | Species::Parrot => m.extra.tame,
             // Allay.mobInteract: gives an item or takes it back.
-            Species::Allay => !item.is_empty() || m.extra.main_hand.is_some(),
+            Species::Allay => allay_takes(hand, item, m.extra.main_hand.is_some(), m.extra.flag),
             Species::Cow | Species::Goat => item == "minecraft:bucket" && !baby,
             Species::Mooshroom => {
                 !baby
@@ -126,6 +126,21 @@ impl Game<'_> {
     }
 }
 
+/// `Allay.mobInteract` on the client's copy: a dancing allay with a
+/// `#minecraft:duplicates_allays` item duplicates, an empty-handed one takes
+/// what the used hand offers, and one that holds something gives it back only
+/// to a **main hand** that is empty (vanilla compares the hand and returns
+/// `PASS` otherwise, which lets the item be used).
+fn allay_takes(hand: Hand, item: &str, holding: bool, dancing: bool) -> bool {
+    if dancing && item == "minecraft:amethyst_shard" {
+        return true;
+    }
+    if !holding {
+        return !item.is_empty();
+    }
+    hand == Hand::Main && item.is_empty()
+}
+
 /// `AbstractHorse.handleEating` (and the llama and camel variants): this
 /// mouthful is the one that ages the baby up, which is the same moment the
 /// level draws one happy villager particle.
@@ -177,6 +192,36 @@ mod tests {
             horizon_core::geometry::Vec3::new(0.0, 4.0, 0.0),
             0.0,
         ))
+    }
+
+    /// `Allay.mobInteract` (#8629): a holding allay gives its item back only to
+    /// an empty **main** hand, so an item in hand is still used and an empty
+    /// off hand does not take the item.
+    #[test]
+    fn a_holding_allay_only_answers_an_empty_main_hand() {
+        assert!(allay_takes(Hand::Main, "", true, false), "main hand, empty");
+        assert!(!allay_takes(Hand::Off, "", true, false), "off hand, empty");
+        assert!(
+            !allay_takes(Hand::Main, "minecraft:bread", true, false),
+            "item in hand"
+        );
+        assert!(!allay_takes(Hand::Off, "minecraft:bread", true, false));
+        assert!(
+            allay_takes(Hand::Main, "minecraft:stick", false, false),
+            "give it one"
+        );
+        assert!(
+            allay_takes(Hand::Off, "minecraft:stick", false, false),
+            "either hand gives"
+        );
+        assert!(
+            !allay_takes(Hand::Main, "", false, false),
+            "empty hand gives nothing"
+        );
+        assert!(
+            allay_takes(Hand::Main, "minecraft:amethyst_shard", true, true),
+            "a dancing allay duplicates"
+        );
     }
 
     /// `AbstractHorse.handleEating` draws the particle only while the baby can
