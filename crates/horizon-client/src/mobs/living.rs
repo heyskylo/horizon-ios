@@ -410,7 +410,9 @@ impl Mob {
     /// `LivingEntity.onClimbable` (`Spider.onClimbable`: the climbing flag):
     /// the block it stands in is `#minecraft:climbable` (vines, ladders,
     /// scaffolding...), or an open trapdoor over a ladder facing the same way
-    /// (`trapdoorUsableAsLadder`).
+    /// (`trapdoorUsableAsLadder`). A mob gliding (`isFallFlying`) through a
+    /// `#minecraft:can_glide_through` block (vines) is not on it: that test
+    /// comes first.
     pub fn on_climbable(&self, w: &MobWorld) -> bool {
         if self.kind.flags.climber {
             return self.climbing;
@@ -422,6 +424,9 @@ impl Mob {
         );
         let state = w.world.block(x, y, z);
         let facts = w.facts.get(state);
+        if self.extra.fall_flying && w.has_tag("minecraft:can_glide_through", &facts.name) {
+            return false;
+        }
         if w.has_tag("minecraft:climbable", &facts.name) {
             return true;
         }
@@ -2356,5 +2361,33 @@ mod tests {
             (vine_fall - limit).abs() < 1.0e-9,
             "the vines reset the fall each tick, got {vine_fall}"
         );
+    }
+
+    /// `LivingEntity.onClimbable`: `isFallFlying` in a block of
+    /// `#minecraft:can_glide_through` (vines) answers false before the
+    /// climbable test; a ladder is not in that tag, so a glider still holds
+    /// on to it.
+    #[test]
+    fn a_gliding_mob_passes_through_vines_but_not_a_ladder() {
+        let build = |world: &mut crate::world::World,
+                     registry: &horizon_world::registry::BlockRegistry| {
+            world.chunks.insert(
+                (0, 0),
+                std::sync::Arc::new(crate::chunk::Chunk::empty(0, 0)),
+            );
+            let vine = registry.default_state("minecraft:vine").unwrap();
+            let ladder = registry.default_state("minecraft:ladder").unwrap();
+            world.set(1, 5, 1, vine).unwrap();
+            world.set(3, 5, 1, ladder).unwrap();
+        };
+        crate::mobs::world::with_built_test_world(&[], build, |w, types| {
+            let kind = std::sync::Arc::new(types.types["minecraft:zombie"].clone());
+            for (x, block, gliding_holds) in [(1.5, "vine", false), (3.5, "ladder", true)] {
+                let mut m = Mob::new(1, kind.clone(), Vec3::new(x, 5.0, 1.5), 0.0);
+                assert!(m.on_climbable(w), "{block}: climbable when not gliding");
+                m.extra.fall_flying = true;
+                assert_eq!(m.on_climbable(w), gliding_holds, "{block}: while gliding");
+            }
+        });
     }
 }
