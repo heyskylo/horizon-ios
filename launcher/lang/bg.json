@@ -1033,5 +1033,14 @@
   "3 to 16 letters, numbers or underscores. Switch names from the top bar too. Online servers don't take offline names.": "От 3 до 16 букви, цифри или долни черти. Можете да сменяте името и от горната лента. Онлайн сървърите не приемат офлайн имена.",
   "Play online with your Microsoft account": "Играйте онлайн с акаунта си в Microsoft",
   "Sign in with the account that owns Minecraft: Java Edition. Your name and skin come along to online servers, like in other launchers.": "Влезте с акаунта, който притежава Minecraft: Java Edition. Името и скинът ви остават с вас и в онлайн сървърите, както в другите лаунчери.",
-  "Microsoft's own page opens in your browser. Horizon never sees your password.": "Собствената страница на Microsoft се отваря в браузъра ви. Horizon никога не вижда паролата ви."
+  "Microsoft's own page opens in your browser. Horizon never sees your password.": "Собствената страница на Microsoft се отваря в браузъра ви. Horizon никога не вижда паролата ви.",
+  "Accent colour, glass, blur, language and the options above go back to how Horizon ships.": "Цвят на акцента, стъкло, замъгляване, език и опциите по-горе се връщат към начина, по който се доставя Horizon.",
+  "Colours the buttons, the switches and the sky. Pick one, or type any hex colour.": "Оцветява бутоните, превключвателите и небето. Изберете един или въведете произволен шестнадесетичен цвят.",
+  "Reset the launcher's look": "Нулирайте изгледа на стартера",
+  "Reset to defaults": "Възстановяване на настройките по подразбиране",
+  "{value} px": "{value} px",
+  "{value}%": "{value}%",
+  "Experimental. Builds the native mods you trust into a game of their own.": "Експериментален. Създава родните модове, на които имате доверие, в собствена игра.",
+  "Native mods": "Родни модове",
+  "Nightly": "Всяка нощ"
 }

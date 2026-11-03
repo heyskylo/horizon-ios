@@ -1033,5 +1033,14 @@
   "3 to 16 letters, numbers or underscores. Switch names from the top bar too. Online servers don't take offline names.": "3–16 kirjainta, numeroa tai alaviivaa. Nimeä voi vaihtaa myös yläpalkista. Verkkopalvelimet eivät hyväksy offline-nimiä.",
   "Play online with your Microsoft account": "Pelaa verkossa Microsoft-tililläsi",
   "Sign in with the account that owns Minecraft: Java Edition. Your name and skin come along to online servers, like in other launchers.": "Kirjaudu sisään tilillä, joka omistaa Minecraft: Java Editionin. Nimesi ja skinisi kulkevat mukanasi verkkopalvelimille, kuten muissakin käynnistysohjelmissa.",
-  "Microsoft's own page opens in your browser. Horizon never sees your password.": "Microsoftin oma sivu avautuu selaimessasi. Horizon ei koskaan näe salasanaasi."
+  "Microsoft's own page opens in your browser. Horizon never sees your password.": "Microsoftin oma sivu avautuu selaimessasi. Horizon ei koskaan näe salasanaasi.",
+  "Accent colour, glass, blur, language and the options above go back to how Horizon ships.": "Korostusväri, lasi, sumennus, kieli ja yllä olevat vaihtoehdot palaavat Horizon toimitustapaan.",
+  "Colours the buttons, the switches and the sky. Pick one, or type any hex colour.": "Värittää painikkeet, kytkimet ja taivaan. Valitse yksi tai kirjoita mikä tahansa kuusivärinen väri.",
+  "Reset the launcher's look": "Palauta käynnistysohjelman ulkoasu",
+  "Reset to defaults": "Palauta oletusasetukset",
+  "{value} px": "{value} px",
+  "{value}%": "{value}%",
+  "Experimental. Builds the native mods you trust into a game of their own.": "Kokeellinen. Rakentaa luotetut alkuperäiset modit omaksi peliksi.",
+  "Native mods": "Alkuperäiset modit",
+  "Nightly": "iltaisin"
 }
