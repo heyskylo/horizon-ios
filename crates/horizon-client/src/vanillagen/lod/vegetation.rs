@@ -350,11 +350,13 @@ impl Vegetation {
                     .exp();
             if coverage >= 0.25 {
                 let height = tree.height + ((n >> 32) & 1) as i32;
+                // The cell's representative tree stands in it: its trunk
+                // is drawn under the crown.
                 best = Some((
                     surface.height + height.max(4),
                     surface.height + height.max(4) - tree.radius * 2,
                     *tree,
-                    false,
+                    true,
                 ));
             }
         } else {
@@ -377,14 +379,26 @@ impl Vegetation {
                     let cap = ((tree.radius.pow(2) - d2) as f32).sqrt().ceil() as i32;
                     let top = surface.height + height + cap.min(2);
                     let bottom = surface.height + height - tree.radius;
+                    // `x`, `z` are the cell's centre: its trunk is the
+                    // cell's if it stands anywhere in the cell.
+                    let (x0, z0) = (x - width / 2, z - width / 2);
+                    let inside = (x0..x0 + width).contains(&tx) && (z0..z0 + width).contains(&tz);
                     if best.as_ref().is_none_or(|&(y, _, _, _)| top > y) {
-                        best = Some((top, bottom, tree, x == tx && z == tz));
+                        best = Some((top, bottom, tree, inside));
                     }
                 }
             }
         }
         if let Some((top, bottom, tree, trunk)) = best {
-            let bottom = bottom.max(surface.height + 1);
+            // In a cell wider than a block, a crown whose trunk stands in
+            // another cell reaches down to the ground, as reducing real
+            // chunks fills it (`Column::reduced`): a crown over air read from
+            // afar as a box hanging in the sky. Single blocks keep the gap.
+            let bottom = if trunk || width == 1 {
+                bottom.max(surface.height + 1)
+            } else {
+                surface.height
+            };
             if trunk {
                 column.push(Span {
                     min: surface.height as i16,
