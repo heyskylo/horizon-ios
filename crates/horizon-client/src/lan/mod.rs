@@ -1,9 +1,10 @@
 //! Hosting a world on the local network. The network side lives here: the
-//! listener, the per-connection handshake/login/configuration threads and the
-//! writer threads (`conn`), plus the data the configuration phase sends
-//! (`data`). The play state is driven by the game thread (`hub`), which only
-//! ever exchanges decoded packets with these threads through channels, so a
-//! world that is not open to the network pays nothing.
+//! listener, the per-connection handshake/login/configuration threads
+//! (`conn`), the network threads every player in the play state is served on
+//! (`io_pool`), plus the data the configuration phase sends (`data`). The play
+//! state is driven by the game thread (`hub`), which only ever exchanges
+//! decoded packets with these threads, so a world that is not open to the
+//! network pays nothing.
 mod advancements;
 pub mod anticheat;
 pub mod attributes;
@@ -23,6 +24,7 @@ pub mod forwarding;
 pub mod guest;
 pub mod handoff;
 pub mod hub;
+mod io_pool;
 pub mod menu;
 pub mod playerdata;
 pub mod prediction;
@@ -78,7 +80,7 @@ pub struct Joined {
     pub latency: Arc<AtomicI32>,
     pub address: SocketAddr,
 }
-/// Queued for a connection's writer thread.
+/// What a [`PlayerSender`] made for a test's channel gives it.
 pub enum Out {
     /// A packet body: VarInt id and payload.
     Packet(Vec<u8>),
@@ -86,7 +88,6 @@ pub enum Out {
     Packets(Vec<Vec<u8>>),
     /// Send a play disconnect with this component, then close.
     Disconnect(horizon_world::nbt::Tag),
-    Close,
 }
 
 /// PlayerList.canPlayerLogin for a dedicated server: the disconnect reason
@@ -876,7 +877,7 @@ fn accept_loop(listener: TcpListener, shared: Arc<Shared>, stop: &AtomicBool) {
                     .name("horizon-lan-conn".into())
                     .spawn(move || {
                         WAITING.set(Some(counted.2));
-                        handle(stream, addr, counted.0.clone());
+                        handle(stream, addr, counted);
                     });
             }
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
@@ -886,9 +887,10 @@ fn accept_loop(listener: TcpListener, shared: Arc<Shared>, stop: &AtomicBool) {
         }
     }
 }
-fn handle(stream: TcpStream, addr: SocketAddr, shared: Arc<Shared>) {
+fn handle(stream: TcpStream, addr: SocketAddr, counted: Counted) {
     let _ = stream.set_nonblocking(false);
-    if let Err(e) = conn::serve(stream, addr, shared)
+    let shared = counted.0.clone();
+    if let Err(e) = conn::serve(stream, addr, shared, counted)
         && std::env::var_os("HORIZON_NET_DEBUG").is_some()
     {
         log::warn!("[lan] {addr}: {e}");
