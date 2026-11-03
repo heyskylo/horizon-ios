@@ -269,6 +269,8 @@ pub struct Hub {
     pub native_menu_events: Vec<super::menu::NativeMenuEvent>,
     /// Kicks waiting for the game thread to notify native mods.
     pending_kicks: Vec<HostEvent>,
+    /// The players a proxy said would arrive (`player-expect`).
+    pub arrivals: super::arrivals::Expectations,
     /// The entities players started and stopped tracking, collected by
     /// `collect_tracking`, for the game to tell the mods.
     pub native_tracking: Vec<TrackingBatch>,
@@ -668,6 +670,7 @@ impl Hub {
             mod_commands: (serde_json::Value::Null, None),
             native_menu_events: Vec::new(),
             pending_kicks: Vec::new(),
+            arrivals: Default::default(),
             native_tracking: Vec::new(),
             attachment_snapshots: Vec::new(),
             sync_attachments: false,
@@ -991,6 +994,30 @@ impl Hub {
         );
     }
 
+    /// Lets go of what a proxy that stopped answering left behind: the players
+    /// it said would come and did not, and the freezes no hand-over ended.
+    /// Neither may last for ever.
+    fn expire_arrivals(&mut self, events: &mut Vec<HostEvent>) {
+        for uuid in self.arrivals.expire(std::time::Instant::now()) {
+            events.push(HostEvent::Warn(format!(
+                "player {} was expected from another server and never came",
+                horizon_protocol::crypto::uuid_string(uuid)
+            )));
+        }
+        for g in &mut self.guests {
+            if g.frozen_since
+                .is_some_and(|since| super::arrivals::frozen_too_long(since, self.ticks))
+            {
+                g.frozen_since = None;
+                events.push(HostEvent::Warn(format!(
+                    "{} was frozen for a hand-over for {} ticks and nothing finished it: let go",
+                    g.name,
+                    super::arrivals::FROZEN_MAX_TICKS
+                )));
+            }
+        }
+    }
+
     /// Whether a player of `permission` sees the player `uuid`: not one a
     /// native mod hid from players below a higher level.
     pub fn sees(&self, permission: u8, uuid: u128) -> bool {
@@ -1157,6 +1184,9 @@ impl Hub {
             let g = &self.guests[i];
             (g.name.clone(), g.uuid, g.entity_id, g.game_mode)
         };
+        // The login of a player a proxy said would arrive uses up the
+        // expectation (`arrivals`), so it is not reported as never come.
+        self.arrivals.take(uuid, std::time::Instant::now());
         let g = &self.guests[i];
         g.send(&C::Login(play::Login {
             player_id: entity_id,
@@ -1694,6 +1724,7 @@ impl Hub {
         self.ticks += 1;
         self.anticheat_tick(ctx.tick_rate);
         let mut events = std::mem::take(&mut self.pending_kicks);
+        self.expire_arrivals(&mut events);
         for event in self.lan.poll() {
             match event {
                 NetEvent::Joined(j) => {
@@ -1768,6 +1799,31 @@ impl Hub {
         events
     }
 
+    /// Keeps, in a frozen player's inbox, the packets that answer the server
+    /// (teleport, chunk batch, loaded, keep-alive, ping, tick end, client
+    /// information) and drops the rest.
+    fn keep_acknowledgements(&mut self, i: usize) {
+        let g = &mut self.guests[i];
+        let mut bytes = 0;
+        g.inbox.retain(|(packet, size)| {
+            let keep = matches!(
+                packet,
+                S::AcceptTeleportation(_)
+                    | S::PlayerLoaded(_)
+                    | S::ChunkBatchReceived(_)
+                    | S::ClientInformation(_)
+                    | S::ClientTickEnd(_)
+                    | S::KeepAlive(_)
+                    | S::Pong(_)
+            );
+            if keep {
+                bytes += *size;
+            }
+            keep
+        });
+        g.inbox_bytes = bytes;
+    }
+
     /// Handle the players in this level's packets (`ServerGamePacketListenerImpl`
     /// for each), before the level's scheduled block ticks so a place landed in
     /// the same tick as a falling block's schedule still sees the support
@@ -1778,6 +1834,10 @@ impl Hub {
         let timed = crate::spans::recording_here();
         for i in 0..self.guests.len() {
             if self.here(&self.guests[i]) {
+                if self.guests[i].frozen_since.is_some() {
+                    // Frozen for a hand-over: it answers the server and nothing more.
+                    self.keep_acknowledgements(i);
+                }
                 let started = timed.then(std::time::Instant::now);
                 let waiting = self.guests[i].inbox.len();
                 self.process_inbox(i, ctx, &mut events);

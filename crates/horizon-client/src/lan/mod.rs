@@ -7,6 +7,7 @@
 //! network pays nothing.
 mod advancements;
 pub mod anticheat;
+pub mod arrivals;
 pub mod attributes;
 pub mod border;
 pub mod chunks;

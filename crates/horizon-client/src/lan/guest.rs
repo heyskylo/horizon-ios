@@ -336,6 +336,10 @@ pub struct Guest {
     pub death_time: u32,
     /// The join packets were sent (PlayerList.placeNewPlayer ran).
     pub placed: bool,
+    /// The hub tick at which a proxy froze it for a hand-over (`player-export
+    /// <uuid> freeze`): what it sends, other than its acknowledgements, is not
+    /// acted on until the freeze is let go (`arrivals::FROZEN_MAX_TICKS`).
+    pub frozen_since: Option<u64>,
     /// Root command names the mods took out of this player's command tree
     /// (`native_player_commands_sent`); their tree is sent without them.
     pub hidden_commands: Vec<String>,
@@ -509,6 +513,7 @@ impl Guest {
             dead: false,
             death_time: 0,
             placed: false,
+            frozen_since: None,
             hidden_commands: Vec::new(),
             flying_speed: 0.05,
             dimension: "minecraft:overworld".into(),

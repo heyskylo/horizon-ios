@@ -212,8 +212,9 @@ pub fn apply(guest: &mut Guest, level: &Level) {
     }
 }
 
-/// The shared player compound for logout and autosave snapshots.
-fn player_tag(guest: &Guest) -> Tag {
+/// The shared player compound for logout and autosave snapshots, and for
+/// `player-export`'s record (`arrivals::export_record`).
+pub fn player_tag(guest: &Guest) -> Tag {
     let mut level = Level {
         player_uuid: Some(uuid_ints(guest.uuid)),
         ..Level::default()

@@ -38,6 +38,7 @@ pub(super) mod events;
 mod management;
 mod report;
 mod status;
+mod transfer;
 
 /// What the tick loop tells `ServerWatchdog`: when the tick in progress was
 /// due (`getNextTickTime`), how long a tick is, and whether the server runs.

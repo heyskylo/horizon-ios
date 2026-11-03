@@ -144,6 +144,51 @@ every OS), the dedicated loop answers `server-status` with TPS, MSPT (average, P
 clock `/tick query` uses), players (name, UUID, address, ping, position), loaded chunks and uptime. It answers
 `console <line>` with the command's output.
 
+**A proxy moving a player between two servers** uses two more requests on this endpoint (`lan/arrivals.rs`,
+`game/dedicated/transfer.rs`). Their answers are one JSON line, `{"ok": true, ...}` or `{"error": "..."}`, and a
+refused request changes nothing. A unique id is written as 32 hexadecimal digits with or without dashes in a
+request, and as lowercase text with dashes in an answer (`123e4567-e89b-12d3-a456-426614174000`).
+
+`player-expect <uuid> [seconds]` tells the target server that the player is about to log in: within 10 seconds by
+default, 60 at most (a longer time is cut to 60), and at most 64 players are expected at once. The reply is
+`{"ok": true, "renewed": false, "ttl_seconds": 10}`; asking again for the same player renews the time and says
+`"renewed": true`. It is refused for a missing or malformed id, a time that is not a whole number of seconds above
+zero, a player already connected, and a full table. The player's next login uses the expectation up, and an
+expectation no login used is reported in the log when its time runs out. For now that is all an expectation does:
+the player still logs in as any other.
+
+`player-export <uuid> [freeze]` reads a connected player out of the source server. It first closes the player's open
+menu as vanilla does when a menu closes (the cursor stack and the crafting grids go back into the inventory; the
+client is told to close it and is sent its inventory), then answers:
+
+```json
+{"ok": true, "record": {
+  "version": 1,
+  "data_version": 5023,
+  "uuid": "123e4567-e89b-12d3-a456-426614174000",
+  "name": "Alex",
+  "dimension": "minecraft:overworld",
+  "position": [10.5, 70.0, -3.25],
+  "rotation": [90.0, 15.0],
+  "velocity": [0.0, 0.0, 0.0],
+  "game_mode": 0,
+  "player": "<base64>",
+  "advancements": { }
+}}
+```
+
+`player` is the base64 of the uncompressed named NBT (root name empty) of the player compound: what the server
+writes to `players/data/<uuid>.dat` before it gzips it, taken from the connected player at that moment.
+`advancements` is the JSON the server keeps for the player, or null on a server with no advancements. `version` is
+the version of this record (1); `data_version` is the world data version of the server that made it (5023 for
+26.3). The other fields are a few of the compound's values, for a proxy that does not read NBT.
+
+With `freeze`, the player's own inputs (moves, clicks, commands) stop being acted on, while what answers the
+server (teleport confirmations, chunk batch acknowledgements, keep-alives, pings, tick ends, client information)
+still is. A freeze is let go after thirty seconds (600 ticks), with a warning in the log. A frozen player is still in
+the world: a mob can still hurt it, and the record is its state at the export. The request is refused for a player
+who is not connected, has not finished joining, is riding, is asleep or is dead.
+
 **The headless engine** comes after perf-ticks-2's work lands: Resources split into shared and per-game, the
 game built in `Game::new`, the integrated server on its own thread. On that base:
 
