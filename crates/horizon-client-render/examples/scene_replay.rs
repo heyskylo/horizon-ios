@@ -118,6 +118,8 @@ fn summary(samples: &[f32]) -> Value {
     let at = |q: f32| sorted[((sorted.len() - 1) as f32 * q).round() as usize];
     json!({
         "avg": samples.iter().sum::<f32>() / samples.len() as f32,
+        "min": sorted[0],
+        "p10": at(0.1),
         "p50": at(0.5),
         "p95": at(0.95),
         "max": sorted[sorted.len() - 1],
