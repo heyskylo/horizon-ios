@@ -912,5 +912,9 @@
   "Play downloads the game from Mojang the first time, with the Java it needs.": "初回のプレイ時に、必要な Java と一緒に Mojang からゲームをダウンロードします。",
   "Save changes": "変更を保存",
   "The big modpacks' home": "大型 Modpack の定番",
-  "{first} or {last}": "{first} または {last}"
+  "{first} or {last}": "{first} または {last}",
+  "Asking {loader} for its versions…": "{loader} のバージョンを取得中…",
+  "Newest stable": "最新の安定版",
+  "beta": "ベータ",
+  "Loader version": "ローダーのバージョン"
 }

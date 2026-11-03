@@ -912,5 +912,9 @@
   "Play downloads the game from Mojang the first time, with the Java it needs.": "Jogar baixa o jogo da Mojang na primeira vez, com o Java de que ele precisa.",
   "Save changes": "Salvar alterações",
   "The big modpacks' home": "A casa dos grandes modpacks",
-  "{first} or {last}": "{first} ou {last}"
+  "{first} or {last}": "{first} ou {last}",
+  "Asking {loader} for its versions…": "Pedindo as versões ao {loader}…",
+  "Newest stable": "Estável mais recente",
+  "beta": "beta",
+  "Loader version": "Versão do loader"
 }

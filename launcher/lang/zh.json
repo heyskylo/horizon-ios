@@ -912,5 +912,9 @@
   "Play downloads the game from Mojang the first time, with the Java it needs.": "首次游玩时会从 Mojang 下载游戏及所需的 Java。",
   "Save changes": "保存更改",
   "The big modpacks' home": "大型整合包的首选",
-  "{first} or {last}": "{first} 或 {last}"
+  "{first} or {last}": "{first} 或 {last}",
+  "Asking {loader} for its versions…": "正在向 {loader} 获取版本…",
+  "Newest stable": "最新稳定版",
+  "beta": "测试版",
+  "Loader version": "加载器版本"
 }

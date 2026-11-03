@@ -912,5 +912,9 @@
   "Play downloads the game from Mojang the first time, with the Java it needs.": "Під час першого запуску гра завантажується з Mojang разом із потрібною Java.",
   "Save changes": "Зберегти зміни",
   "The big modpacks' home": "Дім великих збірок",
-  "{first} or {last}": "{first} або {last}"
+  "{first} or {last}": "{first} або {last}",
+  "Asking {loader} for its versions…": "Запитуємо версії {loader}…",
+  "Newest stable": "Найновіша стабільна",
+  "beta": "бета",
+  "Loader version": "Версія завантажувача"
 }

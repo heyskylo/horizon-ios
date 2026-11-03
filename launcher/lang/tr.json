@@ -912,5 +912,9 @@
   "Play downloads the game from Mojang the first time, with the Java it needs.": "Oyna, oyunu ilk seferde gereken Java ile birlikte Mojang'dan indirir.",
   "Save changes": "Değişiklikleri kaydet",
   "The big modpacks' home": "Büyük mod paketlerinin evi",
-  "{first} or {last}": "{first} veya {last}"
+  "{first} or {last}": "{first} veya {last}",
+  "Asking {loader} for its versions…": "{loader} sürümleri isteniyor…",
+  "Newest stable": "En yeni kararlı",
+  "beta": "beta",
+  "Loader version": "Yükleyici sürümü"
 }
