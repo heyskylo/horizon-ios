@@ -100,7 +100,7 @@
         },
         {
             "name": "Online mode",
-            "description": "true checks players' Minecraft accounts; Horizon's own client can join offline servers only for now (docs/hosting.md). Read on the first start only.",
+            "description": "true checks players' Minecraft accounts, as vanilla's online mode does (docs/hosting.md). Read on the first start only.",
             "env_variable": "HORIZON_ONLINE",
             "default_value": "true",
             "user_viewable": true,
