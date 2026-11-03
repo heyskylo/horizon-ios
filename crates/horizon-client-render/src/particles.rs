@@ -47,6 +47,9 @@ pub struct ParticleOptions {
     /// `GeyserParticleOptions.waterBlocks` and `GeyserBaseParticleOptions`'
     /// `waterBlocks` and `burstImpulseBase` (0 where the type has none).
     pub geyser: Option<(i32, f32)>,
+    /// `VibrationParticleOption`: the listener the signal flies to and its
+    /// arrival time in ticks (`ParticleEngine::vibration` is the same particle).
+    pub vibration: Option<([f64; 3], i32)>,
     /// A native mod's own particle type, by its namespaced name (`mymod:spark`):
     /// `SimpleParticleType` plus the provider `particles/<name>.json` names.
     pub mod_particle: Option<String>,
@@ -62,6 +65,7 @@ impl ParticleOptions {
             trail: None,
             item: None,
             geyser: None,
+            vibration: None,
             mod_particle: None,
         }
     }
@@ -85,6 +89,13 @@ impl ParticleOptions {
         Self {
             geyser: Some((water_blocks, burst_impulse_base)),
             ..Self::simple(ty)
+        }
+    }
+    /// `VibrationParticleOption(destination, arrivalInTicks)`.
+    pub fn vibration(dest: [f64; 3], ticks: i32) -> Self {
+        Self {
+            vibration: Some((dest, ticks)),
+            ..Self::simple(ParticleType::Vibration)
         }
     }
     /// `ItemParticleOption`: the stack's layer particle sprites (`BreakingItemParticle`).
@@ -200,6 +211,10 @@ enum Light {
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Behaviour {
     Base,
+    Mod {
+        size: [f32; 2],
+        alpha: [f32; 2],
+    },
     /// BaseAshSmokeParticle / Explode / Dust / Snowflake / EmissiveRising: base tick, sprite from age.
     Animated,
     Lava,
@@ -339,6 +354,115 @@ enum DripStage {
     Land,
 }
 
+/// How a mod particle walks through its sprite set.
+#[derive(Clone, Copy, Debug, PartialEq, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum ModAnimation {
+    /// Over its lifetime, first to last sprite.
+    Age,
+    /// Cycles the sprites every `frame_ticks`.
+    Loop,
+    /// One random sprite, kept (what a particle without `animation` does).
+    Random,
+    /// The first sprite, kept.
+    First,
+}
+#[derive(Clone, Copy, Debug, Default, serde::Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct ModBehaviour {
+    velocity: Option<[f64; 3]>,
+    /// Random extra velocity, each axis uniform in `-jitter..=jitter`.
+    velocity_jitter: Option<[f64; 3]>,
+    animation: Option<ModAnimation>,
+    /// Ticks per frame of the `loop` animation.
+    frame_ticks: Option<u16>,
+    gravity: Option<f32>,
+    friction: Option<f32>,
+    lifetime: Option<i32>,
+    size: Option<[f32; 2]>,
+    alpha: Option<[f32; 2]>,
+}
+impl ModBehaviour {
+    fn parse(json: &serde_json::Value) -> Option<Self> {
+        let behaviour: Self = serde_json::from_value(json.clone()).ok()?;
+        if behaviour
+            .velocity
+            .is_some_and(|v| v.iter().any(|c| !c.is_finite() || c.abs() > 16.0))
+            || behaviour
+                .velocity_jitter
+                .is_some_and(|v| v.iter().any(|c| !(0.0..=16.0).contains(c)))
+            || behaviour.frame_ticks.is_some_and(|v| {
+                !(1..=200).contains(&v) || behaviour.animation != Some(ModAnimation::Loop)
+            })
+            || behaviour
+                .gravity
+                .is_some_and(|v| !v.is_finite() || v.abs() > 100.0)
+            || behaviour
+                .friction
+                .is_some_and(|v| !(0.0..=1.0).contains(&v))
+            || behaviour
+                .lifetime
+                .is_some_and(|v| !(1..=12000).contains(&v))
+            || behaviour
+                .size
+                .is_some_and(|v| v.iter().any(|c| !(0.0..=16.0).contains(c)))
+            || behaviour
+                .alpha
+                .is_some_and(|v| v.iter().any(|c| !(0.0..=1.0).contains(c)))
+        {
+            return None;
+        }
+        Some(behaviour)
+    }
+
+    /// `spawn` is the velocity the spawn call passed; a declared velocity is added to it,
+    /// with the jitter drawn from `random`.
+    fn apply(self, particle: &mut Particle, spawn: [f64; 3], random: &mut LegacyRandom) {
+        if self.velocity.is_some() || self.velocity_jitter.is_some() {
+            let base = self.velocity.unwrap_or([0.0; 3]);
+            let jitter = self.velocity_jitter.unwrap_or([0.0; 3]);
+            for axis in 0..3 {
+                let spread = if jitter[axis] > 0.0 {
+                    f64::from(random.next_float() * 2.0 - 1.0) * jitter[axis]
+                } else {
+                    0.0
+                };
+                particle.velocity[axis] = base[axis] + spawn[axis] + spread;
+            }
+        }
+        if let Some(gravity) = self.gravity {
+            particle.gravity = gravity;
+        }
+        if let Some(friction) = self.friction {
+            particle.friction = friction;
+        }
+        if let Some(lifetime) = self.lifetime {
+            particle.lifetime = lifetime;
+        }
+        match self.animation {
+            Some(ModAnimation::Loop) => particle.frame_ticks = self.frame_ticks.unwrap_or(2),
+            Some(ModAnimation::Age) => {}
+            // No `animation`, `random` or `first`: the sprite chosen at spawn is kept.
+            Some(ModAnimation::Random | ModAnimation::First) | None => particle.set = None,
+        }
+        if self.size.is_some() || self.alpha.is_some() {
+            let size = self.size.unwrap_or([particle.size; 2]);
+            let alpha = self.alpha.unwrap_or([particle.rgba[3]; 2]);
+            particle.size = size[0];
+            particle.rgba[3] = alpha[0];
+            particle.behaviour = Behaviour::Mod { size, alpha };
+        } else if matches!(self.animation, Some(ModAnimation::Age | ModAnimation::Loop)) {
+            // The tick that walks the sprite set (base tick, then `sprite_from_age`).
+            particle.behaviour = Behaviour::Animated;
+        }
+    }
+}
+
+fn mod_curve([start, end]: [f32; 2], age: i32, lifetime: i32) -> f32 {
+    let progress = (age as f32 / lifetime.max(1) as f32).clamp(0.0, 1.0);
+    start + (end - start) * progress
+}
+
 /// One live particle (`Particle` + `SingleQuadParticle` state).
 #[derive(Clone, Debug)]
 pub struct Particle {
@@ -368,6 +492,8 @@ pub struct Particle {
     sprite: Sprite,
     /// Age-driven sprite set (`setSpriteFromAge`).
     set: Option<u32>,
+    /// A mod particle's `loop` animation: ticks per sprite, 0 for none.
+    frame_ticks: u16,
     /// Sub-rectangle of the sprite (u0, v0, u1, v1) in 0..1.
     pub uv: [f32; 4],
     size_curve: Size,
@@ -714,6 +840,7 @@ impl Particle {
             behaviour: Behaviour::Base,
             no_render: false,
             pre_tick: false,
+            frame_ticks: 0,
             random: LegacyRandom::new(0),
         }
     }
@@ -1068,6 +1195,10 @@ pub struct ParticleEngine {
     /// When set, particles ask the level for other particles here instead
     /// (type, position, velocity), as the parity probe's stand-in level does.
     pub requested: Option<Vec<(ParticleOptions, [f64; 3], [f64; 3])>>,
+    /// When set, `create` records every particle the level is asked for here and
+    /// makes none: no particle's own random is drawn and no sprite is picked, so a
+    /// parity probe compares exactly what a block, fluid or entity asked for.
+    pub created_requests: Option<Vec<(ParticleOptions, [f64; 3], [f64; 3])>>,
     names: Vec<String>,
     rects: Vec<Option<Rect>>,
     /// Each named sprite, and whether `SingleQuadParticle.Layer.bySprite` puts
@@ -1075,7 +1206,7 @@ pub struct ParticleEngine {
     atlas: HashMap<String, (Rect, bool)>,
     sets: HashMap<ParticleType, u32>,
     /// A native mod's sprite sets, by namespaced particle name.
-    mod_sets: HashMap<String, u32>,
+    mod_sets: HashMap<String, (u32, Option<ModBehaviour>)>,
     set_sprites: Vec<Vec<u32>>,
     /// `TrackingEmitter`s: particle type, entity feet position, width, height, ticks left.
     emitters: Vec<(ParticleOptions, [f64; 3], f64, f64, u32)>,
@@ -1155,6 +1286,7 @@ impl ParticleEngine {
             scope_eye: None,
             seeds: LegacyRandom::new(0x7365_6564),
             requested: None,
+            created_requests: None,
             names: Vec::new(),
             rects: Vec::new(),
             atlas: HashMap::new(),
@@ -1261,6 +1393,13 @@ impl ParticleEngine {
             let Ok(json) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
                 continue;
             };
+            let behaviour = json.get("horizon:behaviour").and_then(|value| {
+                let behaviour = ModBehaviour::parse(value);
+                if behaviour.is_none() {
+                    log::warn!("Invalid particle behaviour in {}", path.display());
+                }
+                behaviour
+            });
             let sprites: Vec<u32> = json["textures"]
                 .as_array()
                 .map(|a| {
@@ -1282,7 +1421,8 @@ impl ParticleEngine {
                 })
                 .unwrap_or_default();
             if !sprites.is_empty() {
-                self.mod_sets.insert(key, self.set_sprites.len() as u32);
+                self.mod_sets
+                    .insert(key, (self.set_sprites.len() as u32, behaviour));
                 self.set_sprites.push(sprites);
             }
         }
@@ -1306,15 +1446,14 @@ impl ParticleEngine {
         self.particles.clear();
         self.pending.clear();
     }
-    /// A vibration signal flying from `from` to `to` in `ticks`
-    /// (`VibrationParticleOption`).
-    pub fn vibration(&mut self, from: [f64; 3], to: [f64; 3], ticks: i32) {
+    /// `VibrationSignalParticle`'s body: the signal leaves `from` aimed at the
+    /// listener at `to` and lands there in `ticks`.
+    fn vibration_particle(from: [f64; 3], to: [f64; 3], ticks: i32) -> Particle {
         let mut q = Particle::blank(ParticleType::Vibration, from);
         q.size = 0.3;
         q.lifetime = ticks;
         q.has_physics = false;
         q.light = Light::Block15;
-        q.set = self.set_of(ParticleType::Vibration);
         let d = [from[0] - to[0], from[1] - to[1], from[2] - to[2]];
         let rot = d[0].atan2(d[2]) as f32;
         let pitch = d[1].atan2((d[0] * d[0] + d[2] * d[2]).sqrt()) as f32;
@@ -1325,6 +1464,14 @@ impl ParticleEngine {
             pitch,
             pitch_o: pitch,
         };
+        q
+    }
+    /// A vibration signal flying from `from` to `to` in `ticks`
+    /// (`VibrationParticleOption`), as the client's own vibration system
+    /// (`VibrationSystem.Ticker`) spawns one.
+    pub fn vibration(&mut self, from: [f64; 3], to: [f64; 3], ticks: i32) {
+        let mut q = Self::vibration_particle(from, to, ticks);
+        q.set = self.set_of(ParticleType::Vibration);
         self.pending.push(q);
     }
     /// `ParticleEngine.add` (via `particlesToAdd`, applied on the next tick).
@@ -1575,6 +1722,10 @@ impl ParticleEngine {
     /// `ParticleEngine.createParticle`: always spawned, but `ParticleEngine.add`
     /// drops a spore blossom air particle once `ParticleLimit.SPORE_BLOSSOM` is full.
     pub fn create(&mut self, options: &ParticleOptions, p: [f64; 3], v: [f64; 3]) {
+        if let Some(requests) = &mut self.created_requests {
+            requests.push((options.clone(), p, v));
+            return;
+        }
         let seed = self.seeds.next_long();
         if let Some(particle) = self.make(options, p, v, seed) {
             *self.made.entry(options.ty.name()).or_default() += 1;
@@ -1699,8 +1850,12 @@ impl ParticleEngine {
                 return;
             };
             let lifetime = p.lifetime.max(1);
-            let index = (p.age.max(0) as i64 * (sprites.len() as i64 - 1) / i64::from(lifetime))
-                .clamp(0, sprites.len() as i64 - 1);
+            let index = if p.frame_ticks > 0 {
+                (p.age.max(0) as i64 / i64::from(p.frame_ticks)) % sprites.len() as i64
+            } else {
+                (p.age.max(0) as i64 * (sprites.len() as i64 - 1) / i64::from(lifetime))
+                    .clamp(0, sprites.len() as i64 - 1)
+            };
             p.sprite = Sprite::Index(sprites[index as usize]);
         }
     }
@@ -1719,7 +1874,7 @@ impl ParticleEngine {
         // A native mod's SimpleParticleType: vanilla's TextureSheetParticle with
         // the sprite set its particles/<name>.json names, no tint, 20..40 ticks.
         if let Some(name) = &o.mod_particle {
-            let set = *self.mod_sets.get(name)?;
+            let (set, behaviour) = *self.mod_sets.get(name)?;
             let mut r = LegacyRandom::new(seed);
             let mut q = Particle::moving(&mut r, ParticleType::Smoke, p, v);
             q.ty = ParticleType::Smoke;
@@ -1731,6 +1886,12 @@ impl ParticleEngine {
             q.sprite = Sprite::Index(
                 sprites[r.next_int_bound(sprites.len() as i32).unwrap_or(0) as usize],
             );
+            if let Some(behaviour) = behaviour {
+                behaviour.apply(&mut q, v, &mut r);
+                if behaviour.animation == Some(ModAnimation::First) {
+                    q.sprite = Sprite::Index(sprites[0]);
+                }
+            }
             return Some(q);
         }
         let set = self.set_of(ty);
@@ -2615,8 +2776,16 @@ impl ParticleEngine {
                 }
                 q
             }
-            // Vibration signals are created by `vibration`, aimed at a listener.
-            T::Vibration => return None,
+            // VibrationSignalParticle.Provider: `VibrationParticleOption` carries
+            // the listener the signal flies to and its arrival time; the sprite
+            // is the set's own draw from the engine's random.
+            T::Vibration => {
+                let (dest, ticks) = o.vibration?;
+                let mut q = Self::vibration_particle(p, dest, ticks);
+                q.set = set;
+                q.sprite = self.sprite_from_set(ty);
+                q
+            }
             // ShriekParticle.
             T::Shriek => {
                 let mut q = Particle::moving(r, ty, p, [0.0; 3]);
@@ -3435,6 +3604,12 @@ impl ParticleEngine {
     fn tick_particle(&mut self, p: &mut Particle, level: &ParticleLevel) {
         match p.behaviour {
             Behaviour::Base => p.base_tick(level),
+            Behaviour::Mod { size, alpha } => {
+                p.base_tick(level);
+                p.size = mod_curve(size, p.age, p.lifetime);
+                p.rgba[3] = mod_curve(alpha, p.age, p.lifetime);
+                self.sprite_from_age(p);
+            }
             Behaviour::Animated => {
                 p.base_tick(level);
                 self.sprite_from_age(p);
@@ -4254,7 +4429,8 @@ impl ParticleEngine {
             let (rect, layer) = match &p.sprite {
                 Sprite::Index(i) => (
                     self.rects.get(*i as usize).copied().flatten(),
-                    p.ty.translucent_layer(),
+                    p.ty.translucent_layer()
+                        || matches!(p.behaviour, Behaviour::Mod { alpha, .. } if alpha != [1.0; 2]),
                 ),
                 Sprite::Named(name) => match self.atlas.get(name) {
                     Some(&(rect, translucent)) => (Some(rect), translucent),
@@ -4479,7 +4655,7 @@ mod tests {
         .unwrap();
         assert!(particles.join("spark.json").exists());
         let mut engine = ParticleEngine::new(&dir, &HashMap::new(), &HashSet::new());
-        let set = *engine
+        let (set, _) = *engine
             .mod_sets
             .get("mymod:spark")
             .expect("the set is loaded");
@@ -4505,7 +4681,363 @@ mod tests {
                 )
                 .is_none()
         );
+        std::fs::write(
+            particles.join("spark.json"),
+            br#"{"textures":["mymod:spark/1"],"horizon:behaviour":{
+                "velocity":[0,0.5,0],"gravity":-1,"friction":0.5,
+                "lifetime":4,"size":[0.25,0.5],"alpha":[0.75,0]
+            }}"#,
+        )
+        .unwrap();
+        engine.reload(&dir, &HashMap::new(), &HashSet::new());
+        let custom = engine
+            .make(
+                &ParticleOptions::named("mymod:spark"),
+                [0.0; 3],
+                [0.0; 3],
+                7,
+            )
+            .unwrap();
+        assert_eq!(custom.velocity, [0.0, 0.5, 0.0]);
+        assert_eq!(custom.gravity, -1.0);
+        assert_eq!(custom.friction, 0.5);
+        assert_eq!(custom.lifetime, 4);
+        assert_eq!(custom.size, 0.25);
+        assert_eq!(custom.rgba[3], 0.75);
+        for suffix in [r#", "horizon:behaviour": {"lifetime":0}"#, ""] {
+            std::fs::write(
+                particles.join("spark.json"),
+                format!(r#"{{"textures":["mymod:spark/1","mymod:spark/2"]{suffix}}}"#,),
+            )
+            .unwrap();
+            engine.reload(&dir, &HashMap::new(), &HashSet::new());
+            let fallback = engine
+                .make(
+                    &ParticleOptions::named("mymod:spark"),
+                    [0.0; 3],
+                    [0.0; 3],
+                    7,
+                )
+                .unwrap();
+            assert_eq!(fallback.velocity, made.velocity);
+            assert_eq!(fallback.gravity, made.gravity);
+            assert_eq!(fallback.friction, made.friction);
+            assert_eq!(fallback.size, made.size);
+            assert_eq!(fallback.rgba, made.rgba);
+            assert_eq!(fallback.lifetime, made.lifetime);
+            assert_eq!(fallback.behaviour, made.behaviour);
+        }
+        assert_eq!(custom.lifetime, 4);
+        assert_eq!(custom.size, 0.25);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn mod_behaviour_validates_declarations() {
+        use serde_json::json;
+        for invalid in [
+            json!({"velocity": [0, 0]}),
+            json!({"velocity": [17, 0, 0]}),
+            json!({"gravity": 101}),
+            json!({"gravity": 1e100}),
+            json!({"friction": -0.1}),
+            json!({"friction": 1.1}),
+            json!({"lifetime": 0}),
+            json!({"lifetime": 12001}),
+            json!({"lifetime": 2.5}),
+            json!({"size": [-1, 1]}),
+            json!({"size": [0, 17]}),
+            json!({"alpha": [0, 1.1]}),
+            json!({"alpha": [-0.1, 1]}),
+            json!({"fricton": 0.9}),
+            json!(null),
+        ] {
+            assert!(ModBehaviour::parse(&invalid).is_none(), "{invalid}");
+        }
+        assert!(
+            ModBehaviour::parse(&json!({
+                "velocity": [-16, 0, 16], "gravity": -100, "friction": 0,
+                "lifetime": 12000, "size": [0, 16], "alpha": [0, 1]
+            }))
+            .is_some()
+        );
+        let mut particle = Particle::moving(
+            &mut LegacyRandom::new(7),
+            ParticleType::Smoke,
+            [0.0; 3],
+            [0.0; 3],
+        );
+        let original = particle.clone();
+        ModBehaviour::parse(&json!({})).unwrap().apply(
+            &mut particle,
+            [0.0; 3],
+            &mut LegacyRandom::new(1),
+        );
+        assert_eq!(particle.velocity, original.velocity);
+        assert_eq!(particle.lifetime, original.lifetime);
+        assert_eq!(particle.gravity, original.gravity);
+        assert_eq!(particle.friction, original.friction);
+        assert_eq!(particle.size, original.size);
+        assert_eq!(particle.rgba, original.rgba);
+        assert_eq!(particle.behaviour, original.behaviour);
+    }
+
+    #[test]
+    fn mod_velocity_adds_the_spawn_velocity_and_jitters_deterministically() {
+        use serde_json::json;
+        let mut base = Particle::blank(ParticleType::Smoke, [0.0; 3]);
+        ModBehaviour::parse(&json!({"velocity": [0.5, 0.0, 0.0]}))
+            .unwrap()
+            .apply(&mut base, [0.25, 1.0, -1.0], &mut LegacyRandom::new(1));
+        assert_eq!(base.velocity, [0.75, 1.0, -1.0]);
+        let jitter = ModBehaviour::parse(&json!({"velocity_jitter": [0.5, 0.0, 0.25]})).unwrap();
+        let mut first = Particle::blank(ParticleType::Smoke, [0.0; 3]);
+        let mut second = Particle::blank(ParticleType::Smoke, [0.0; 3]);
+        jitter.apply(&mut first, [1.0, 2.0, 3.0], &mut LegacyRandom::new(9));
+        jitter.apply(&mut second, [1.0, 2.0, 3.0], &mut LegacyRandom::new(9));
+        assert_eq!(first.velocity, second.velocity);
+        assert!((0.5..=1.5).contains(&first.velocity[0]));
+        assert_eq!(first.velocity[1], 2.0);
+        assert!((2.75..=3.25).contains(&first.velocity[2]));
+        for invalid in [
+            json!({"velocity_jitter": [-0.1, 0, 0]}),
+            json!({"velocity_jitter": [17, 0, 0]}),
+            json!({"frame_ticks": 2}),
+            json!({"animation": "age", "frame_ticks": 2}),
+            json!({"animation": "loop", "frame_ticks": 0}),
+            json!({"animation": "loop", "frame_ticks": 201}),
+            json!({"animation": "spin"}),
+        ] {
+            assert!(ModBehaviour::parse(&invalid).is_none(), "{invalid}");
+        }
+        assert!(ModBehaviour::parse(&json!({"animation": "loop", "frame_ticks": 3})).is_some());
+    }
+
+    #[test]
+    fn mod_animation_modes_pick_their_sprites() {
+        let mut engine = ParticleEngine::new(Path::new(""), &HashMap::new(), &HashSet::new());
+        engine.set_sprites.push(vec![10, 11, 12]);
+        let mut looping = Particle::blank(ParticleType::Smoke, [0.0; 3]);
+        looping.set = Some(0);
+        ModBehaviour::parse(&serde_json::json!({"animation": "loop", "frame_ticks": 2}))
+            .unwrap()
+            .apply(&mut looping, [0.0; 3], &mut LegacyRandom::new(1));
+        let mut seen = Vec::new();
+        for age in 0..8 {
+            looping.age = age;
+            engine.sprite_from_age(&mut looping);
+            seen.push(match looping.sprite {
+                Sprite::Index(i) => i,
+                Sprite::Named(_) => u32::MAX,
+            });
+        }
+        assert_eq!(seen, [10, 10, 11, 11, 12, 12, 10, 10]);
+        let mut kept = Particle::blank(ParticleType::Smoke, [0.0; 3]);
+        kept.set = Some(0);
+        ModBehaviour::parse(&serde_json::json!({"animation": "first"}))
+            .unwrap()
+            .apply(&mut kept, [0.0; 3], &mut LegacyRandom::new(1));
+        assert_eq!(kept.set, None);
+    }
+
+    #[test]
+    fn mod_curves_clamp_and_interpolate_over_lifetime() {
+        assert_eq!(mod_curve([0.0, 2.0], -1, 4), 0.0);
+        assert_eq!(mod_curve([0.0, 2.0], 0, 4), 0.0);
+        assert_eq!(mod_curve([0.0, 2.0], 1, 4), 0.5);
+        assert_eq!(mod_curve([0.0, 2.0], 4, 4), 2.0);
+        assert_eq!(mod_curve([0.0, 2.0], 5, 4), 2.0);
+        assert_eq!(mod_curve([1.0, 0.0], 1, 4), 0.75);
+        assert_eq!(mod_curve([0.5, 0.5], 2, 4), 0.5);
+        assert_eq!(mod_curve([0.0, 1.0], 1, 1), 1.0);
+    }
+
+    #[test]
+    fn mod_animation_advances_in_the_tick_with_and_without_curves() {
+        use horizon_world::{
+            DATA_VERSION,
+            collision::CachedCollisionRegistry,
+            nbt::Tag,
+            registry::{BlockRegistry, BlockStateId},
+        };
+        let registry = BlockRegistry::from_nbt(&Tag::compound([
+            ("DataVersion", Tag::Int(DATA_VERSION)),
+            (
+                "states",
+                Tag::List(vec![Tag::String("minecraft:air".into())]),
+            ),
+            ("defaults", Tag::compound([("minecraft:air", Tag::Int(0))])),
+        ]))
+        .unwrap();
+        let cached = CachedCollisionRegistry::from_nbt(
+            &Tag::compound([
+                ("DataVersion", Tag::Int(DATA_VERSION)),
+                (
+                    "states",
+                    Tag::List(vec![Tag::String("minecraft:air".into())]),
+                ),
+                ("shapes", Tag::List(vec![])),
+                ("cached_shapes", Tag::IntArray(vec![-1])),
+            ]),
+            &registry,
+        )
+        .unwrap();
+        let collision = BlockCollisionRegistry::new(std::sync::Arc::new(cached)).unwrap();
+        let facts = BlockFacts {
+            states: vec![],
+            air: BlockStateId(0),
+            woods: HashMap::new(),
+        };
+        let world = World::new(BlockStateId(0), 0);
+        let level = ParticleLevel {
+            world: &world,
+            facts: &facts,
+            collision: &collision,
+            player: None,
+        };
+        let mut engine = ParticleEngine::new(Path::new(""), &HashMap::new(), &HashSet::new());
+        engine.set_sprites.push(vec![10, 11, 12]);
+        let sprite = |p: &Particle| match p.sprite {
+            Sprite::Index(i) => i,
+            Sprite::Named(_) => u32::MAX,
+        };
+        for declaration in [
+            serde_json::json!({"animation": "loop", "frame_ticks": 2, "alpha": [1, 0], "lifetime": 100}),
+            serde_json::json!({"animation": "loop", "frame_ticks": 2, "lifetime": 100}),
+        ] {
+            let mut particle = Particle::blank(ParticleType::Smoke, [0.0; 3]);
+            particle.has_physics = false;
+            particle.set = Some(0);
+            ModBehaviour::parse(&declaration).unwrap().apply(
+                &mut particle,
+                [0.0; 3],
+                &mut LegacyRandom::new(1),
+            );
+            let mut seen = Vec::new();
+            for _ in 0..6 {
+                engine.tick_particle(&mut particle, &level);
+                seen.push(sprite(&particle));
+            }
+            assert_eq!(seen, [10, 11, 11, 12, 12, 10], "{declaration}");
+        }
+        let mut aged = Particle::blank(ParticleType::Smoke, [0.0; 3]);
+        aged.has_physics = false;
+        aged.set = Some(0);
+        ModBehaviour::parse(&serde_json::json!({"animation": "age", "lifetime": 4}))
+            .unwrap()
+            .apply(&mut aged, [0.0; 3], &mut LegacyRandom::new(1));
+        for _ in 0..4 {
+            engine.tick_particle(&mut aged, &level);
+        }
+        assert_eq!(sprite(&aged), 12);
+        let mut kept = Particle::blank(ParticleType::Smoke, [0.0; 3]);
+        kept.has_physics = false;
+        kept.set = Some(0);
+        kept.sprite = Sprite::Index(11);
+        ModBehaviour::parse(&serde_json::json!({"alpha": [1, 0], "lifetime": 4}))
+            .unwrap()
+            .apply(&mut kept, [0.0; 3], &mut LegacyRandom::new(1));
+        for _ in 0..4 {
+            engine.tick_particle(&mut kept, &level);
+        }
+        assert_eq!(sprite(&kept), 11, "no animation keeps the spawn sprite");
+    }
+
+    #[test]
+    fn mod_particle_ticks_motion_curves_and_removal() {
+        use horizon_world::{
+            DATA_VERSION,
+            collision::CachedCollisionRegistry,
+            nbt::Tag,
+            registry::{BlockRegistry, BlockStateId},
+        };
+        let registry = BlockRegistry::from_nbt(&Tag::compound([
+            ("DataVersion", Tag::Int(DATA_VERSION)),
+            (
+                "states",
+                Tag::List(vec![Tag::String("minecraft:air".into())]),
+            ),
+            ("defaults", Tag::compound([("minecraft:air", Tag::Int(0))])),
+        ]))
+        .unwrap();
+        let cached = CachedCollisionRegistry::from_nbt(
+            &Tag::compound([
+                ("DataVersion", Tag::Int(DATA_VERSION)),
+                (
+                    "states",
+                    Tag::List(vec![Tag::String("minecraft:air".into())]),
+                ),
+                ("shapes", Tag::List(vec![])),
+                ("cached_shapes", Tag::IntArray(vec![-1])),
+            ]),
+            &registry,
+        )
+        .unwrap();
+        let collision = BlockCollisionRegistry::new(std::sync::Arc::new(cached)).unwrap();
+        let facts = BlockFacts {
+            states: vec![],
+            air: BlockStateId(0),
+            woods: HashMap::new(),
+        };
+        let world = World::new(BlockStateId(0), 0);
+        let level = ParticleLevel {
+            world: &world,
+            facts: &facts,
+            collision: &collision,
+            player: None,
+        };
+        let mut engine = ParticleEngine::new(Path::new(""), &HashMap::new(), &HashSet::new());
+        let mut particle = Particle::blank(ParticleType::Smoke, [0.0; 3]);
+        particle.has_physics = false;
+        ModBehaviour::parse(&serde_json::json!({
+            "velocity": [1, 2, -1], "gravity": 1, "friction": 0.5,
+            "lifetime": 2, "size": [0.25, 0.75], "alpha": [1, 0]
+        }))
+        .unwrap()
+        .apply(&mut particle, [0.0; 3], &mut LegacyRandom::new(1));
+        assert_eq!(particle.size, 0.25);
+        assert_eq!(particle.rgba[3], 1.0);
+        engine.tick_particle(&mut particle, &level);
+        assert_eq!(particle.age, 1);
+        assert_eq!(particle.previous, [0.0; 3]);
+        assert_eq!(particle.position, [1.0, 1.96, -1.0]);
+        assert_eq!(particle.velocity, [0.5, 0.98, -0.5]);
+        assert_eq!(particle.size, 0.5);
+        assert_eq!(particle.rgba[3], 0.5);
+        engine.tick_particle(&mut particle, &level);
+        assert_eq!(particle.position, [1.5, 2.9, -1.5]);
+        assert_eq!(particle.velocity, [0.25, 0.47, -0.25]);
+        assert_eq!(particle.size, 0.75);
+        assert_eq!(particle.rgba[3], 0.0);
+        assert!(!particle.removed);
+        engine.tick_particle(&mut particle, &level);
+        assert!(particle.removed);
+        assert_eq!(particle.position, [1.5, 2.9, -1.5]);
+    }
+
+    #[test]
+    fn fading_mod_particles_use_the_blended_layer() {
+        let mut engine = ParticleEngine::new(Path::new(""), &HashMap::new(), &HashSet::new());
+        engine.rects.push(Some(Rect {
+            u0: 0.0,
+            v0: 0.0,
+            u1: 1.0,
+            v1: 1.0,
+            w: 16,
+            h: 16,
+        }));
+        let mut particle = Particle::blank(ParticleType::Smoke, [0.0; 3]);
+        ModBehaviour::parse(&serde_json::json!({"alpha": [0.5, 0]}))
+            .unwrap()
+            .apply(&mut particle, [0.0; 3], &mut LegacyRandom::new(1));
+        particle.sprite = Sprite::Index(0);
+        engine.particles.push(particle);
+        let mut vertices = Vec::new();
+        engine.render(DVec3::ZERO, 0.0, 0.0, 0.0, &|_| 0, &mut vertices);
+        assert_eq!(vertices.len(), 4);
+        assert!(vertices.iter().all(
+            |v| v.color >> 24 == 127 && v.layer & crate::gfx::TRANSLUCENT_PARTICLE_OVERLAY != 0
+        ));
     }
 
     #[test]
@@ -4669,6 +5201,41 @@ mod tests {
             engine.create(&smoke, [0.0; 3], [0.0; 3]);
         }
         assert_eq!(engine.pending.len(), 1010);
+    }
+    /// `VibrationSignalParticle.Provider.createParticle`: the provider path
+    /// the client's packet handler reaches (`add_with`) makes the signal from
+    /// the option's destination and arrival time, where it used to refuse it.
+    #[test]
+    fn a_vibration_option_makes_the_signal_its_provider_draws() {
+        let mut engine = ParticleEngine::new(Path::new(""), &HashMap::new(), &HashSet::new());
+        let options = ParticleOptions::vibration([10.5, 70.5, -3.5], 20);
+        // Within the camera's 32 blocks, so only the provider decides.
+        engine.add_with(&options, [0.5, 1.5, 0.5], [0.0; 3], false, false);
+        assert_eq!(engine.made().get("vibration"), Some(&1));
+        let q = engine.pending.first().expect("the signal is made");
+        assert_eq!(q.ty, ParticleType::Vibration);
+        assert_eq!(q.lifetime, 20);
+        assert!((q.size - 0.3).abs() < 1e-6);
+        assert!(!q.has_physics);
+        match &q.behaviour {
+            Behaviour::Vibration {
+                dest, rot, pitch, ..
+            } => {
+                assert_eq!(*dest, [10.5, 70.5, -3.5]);
+                // The constructor aims it from where it starts at the listener.
+                let d: [f64; 3] = [0.5 - 10.5, 1.5 - 70.5, 0.5 + 3.5];
+                assert!((*rot - d[0].atan2(d[2]) as f32).abs() < 1e-6);
+                let flat = (d[0] * d[0] + d[2] * d[2]).sqrt();
+                assert!((*pitch - d[1].atan2(flat) as f32).abs() < 1e-6);
+            }
+            _ => panic!("a vibration signal"),
+        }
+        // Only `VibrationParticleOption` carries a listener; a bare type has none.
+        let bare = ParticleOptions::simple(ParticleType::Vibration);
+        assert!(
+            engine.make(&bare, [0.0; 3], [0.0; 3], 1).is_none(),
+            "no destination, no signal"
+        );
     }
     #[test]
     fn particle_names_round_trip() {

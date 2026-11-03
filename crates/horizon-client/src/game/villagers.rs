@@ -368,7 +368,7 @@ impl Game<'_> {
     /// The UUID of the player who last hurt a mob (`last_hurt_by_player`:
     /// None for the host, else the guest's connection): the reputation a
     /// villager keeps is that player's, the one trading looks up.
-    fn player_uuid_of(&self, who: Option<u32>) -> Option<[i32; 4]> {
+    pub(super) fn player_uuid_of(&self, who: Option<u32>) -> Option<[i32; 4]> {
         let uuid = match who {
             None => return self.level.player_uuid,
             // While that guest acts its own UUID is swapped in.

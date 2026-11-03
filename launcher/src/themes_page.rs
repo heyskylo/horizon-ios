@@ -1,5 +1,7 @@
 //! Settings' accent colour and Home background rows (`horizon_launcher::themes`).
 use super::*;
+use crate::glass_ui as ui;
+use crate::servers_page::Field;
 use gpui::{
     canvas, fill, point, size, Bounds, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
     Pixels, Point,
@@ -14,12 +16,21 @@ const STRIP: f32 = 120.;
 
 impl Launcher {
     /// The theme Settings ask for, under the window's own light or dark.
+    /// The player's look; a launcher theme worn in the Wardrobe brings its own sky and accent.
     pub(super) fn settings_theme(&self, window: &Window) -> Theme {
-        Theme::for_appearance(
-            self.settings.appearance,
-            self.settings.accent,
-            window.appearance(),
-        )
+        let worn = self.worn_theme();
+        let theme =
+            Theme::for_appearance(self.settings.appearance, self.accent(), window.appearance());
+        match worn {
+            Some((sky, _)) => theme.with_sky(sky),
+            None => theme,
+        }
+    }
+
+    /// The accent worn: the player's, or a launcher theme's from the Wardrobe.
+    fn accent(&self) -> Accent {
+        self.worn_theme()
+            .map_or(self.settings.accent, |(_, hue)| Accent::custom(hue))
     }
 
     /// The picture behind Home, if the player keeps one.
@@ -87,6 +98,110 @@ impl Launcher {
             ),
             &t,
         )
+    }
+
+    /// The glass look's accent row (the mockup's): its seven swatches, the any-colour swatch
+    /// (a click shows the hue strip under them, the browser's colour picker in the mockup) and
+    /// the hex field, which takes the colour as soon as it is one.
+    pub(super) fn glass_accent_row(&mut self, cx: &mut Context<Self>) -> Div {
+        let t = self.theme;
+        self.sync_accent_hex(cx);
+        let current = self.settings.accent;
+        let custom = !Accent::ALL.contains(&current);
+        let swatch = |id: SharedString, on: bool| {
+            keyboard(
+                div()
+                    .id(id)
+                    .relative()
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .justify_center()
+                    .size(px(36.))
+                    .rounded(px(10.))
+                    .cursor_pointer()
+                    .when(on, |d| d.bg(ui::white(0.18)))
+                    .when(!on, |d| d.hover(|s| s.bg(ui::white(0.08)))),
+                &t,
+            )
+        };
+        let chip = |rgb: u32| div().size(px(24.)).rounded(px(7.)).bg(gpui::rgb(rgb));
+        let mut row = div().flex().flex_wrap().items_center().gap(px(4.));
+        for (accent, rgb) in Accent::ALL.into_iter().zip(themes::SWATCHES) {
+            row = row.child(
+                swatch(
+                    SharedString::from(format!("accent-{}", accent.name())),
+                    current == accent,
+                )
+                .child(chip(rgb))
+                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                    this.settings.accent = accent;
+                    this.save_settings();
+                    this.restyle = true;
+                    cx.notify();
+                })),
+            );
+        }
+        row = row
+            .child(
+                swatch("accent-any".into(), custom)
+                    .child(if custom {
+                        chip(current.rgb()).into_any_element()
+                    } else {
+                        ui::icon("color-picker", 18., ui::white(0.7)).into_any_element()
+                    })
+                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                        this.accent_strip = !this.accent_strip;
+                        cx.notify();
+                    })),
+            )
+            .child(self.field(Field::AccentHex, "#6b4bff", 96., cx).ml(px(4.)));
+        let control = div()
+            .flex()
+            .flex_col()
+            .items_end()
+            .gap(px(10.))
+            .child(row)
+            .when(self.accent_strip, |d| {
+                d.child(
+                    self.hue_strip(&t, cx)
+                        .w(px(212.))
+                        .h(px(24.))
+                        .rounded(px(6.))
+                        .overflow_hidden(),
+                )
+            });
+        ui::setting_row(
+            tr("Accent colour"),
+            Some(
+                div()
+                    .child(tr(
+                        "Colours the buttons, the switches and the sky. Pick one, or type any hex colour.",
+                    ))
+                    .into_any_element(),
+            ),
+            Some(control.into_any_element()),
+        )
+    }
+
+    /// The hex field shows the accent, except while typed in: then each whole colour typed is
+    /// the accent at once, as in the mockup.
+    fn sync_accent_hex(&mut self, cx: &mut Context<Self>) {
+        let shown = self.settings.accent.hex();
+        if !self.servers.has_focus(Field::AccentHex) {
+            if self.servers.value(Field::AccentHex) != shown {
+                self.servers.text(Field::AccentHex).set(shown);
+            }
+            return;
+        }
+        let typed = self.servers.value(Field::AccentHex).trim();
+        let hex = format!("#{}", typed.trim_start_matches('#'));
+        if let Some(accent) = Accent::parse(&hex).filter(|a| *a != self.settings.accent) {
+            self.settings.accent = accent;
+            self.save_settings();
+            self.restyle = true;
+            cx.notify();
+        }
     }
 
     /// A strip of every hue: a click or a drag picks any of them, the swatches being shortcuts.

@@ -349,6 +349,8 @@ impl Game<'_> {
         creative: bool,
         create: Option<&WorldOptions>,
     ) -> Result<()> {
+        // The window's mod configs before the server's, as on NeoForge.
+        self.native_configs_client_start();
         let auth = horizon_client::auth::current();
         let player = auth
             .as_ref()
@@ -716,6 +718,10 @@ impl Game<'_> {
         ready: &Sender<Ready>,
         opening: Opening,
     ) -> Result<()> {
+        // The mods' server configs, read before the server starts.
+        if let Ok(dir) = std::env::current_dir() {
+            self.native_configs_server_start(&dir.join("saves").join(&launch.folder), false);
+        }
         // MinecraftServer.loadLevel's start: nothing is loaded yet.
         self.native_server_about_to_start(false);
         self.native_lifecycle_open_started();
@@ -823,10 +829,13 @@ impl Game<'_> {
     /// `MinecraftServer.stopServer`: the players are saved and sent away,
     /// then the world is saved.
     fn stop_integrated(&mut self) -> Result<()> {
+        // Abort background terrain generation/decoration on shutdown, matching vanilla behavior.
+        self.streaming.abort_generation();
         // The close request: lifecycle observation stops.
         self.native_lifecycle.begin_close();
         // MinecraftServer.stopServer's start: everyone is still here.
         self.native_server_stopping(false);
+        self.native_configs_server_stop();
         self.native_players_leaving();
         // IntegratedServer.stopServer: teardownPublishedState.
         if let Some(s) = self.serving.take() {
@@ -844,9 +853,12 @@ impl Game<'_> {
                     translatable("multiplayer.disconnect.server_shutdown", &[]),
                 );
             }
+            let has_remote_guests = host.hub.guests.iter().any(|g| g.conn != 0);
             self.lan = Some(host);
+            if has_remote_guests {
+                std::thread::sleep(Duration::from_millis(50));
+            }
         }
-        std::thread::sleep(Duration::from_millis(100));
         // ServerPlayer.disconnect: nobody is left in a bed.
         self.free_player_beds()?;
         self.save_game()?;

@@ -636,9 +636,25 @@ fn on_off(on: bool) -> String {
 }
 /// A control's caption and its value, both through the language table: Horizon's captions are
 /// English sentences, and some of the values ("Off", "12 chunks") are words too.
+/// "Caption: value" (`options.generic_value`), both looked up in the language table.
 fn labelled(caption: &str, value: impl std::fmt::Display) -> Text {
     let value = value.to_string();
-    Text::literal(format!("{}: {}", lang::get(caption), lang::get(&value)))
+    Text::option_name_value(
+        Text::literal(lang::get(caption)),
+        Text::literal(lang::get(&value)),
+    )
+}
+/// "Caption: 50%" (`options.percent_value`, Options.percentValueLabel): French and German put a
+/// space before the `%`.
+fn labelled_percent(caption: &str, percent: u32) -> Text {
+    Text::translate_with_fallback(
+        "options.percent_value",
+        "%s: %s%%",
+        &[
+            Text::literal(lang::get(caption)),
+            Text::literal(percent.to_string()),
+        ],
+    )
 }
 
 impl H {
@@ -744,7 +760,7 @@ impl H {
                 ),
                 n => labelled("Worker Threads", n),
             },
-            H::ResolutionScale => labelled("Resolution Scale", format!("{}%", g.resolution_scale)),
+            H::ResolutionScale => labelled_percent("Resolution Scale", g.resolution_scale),
             H::Antialiasing => labelled(
                 "Anti-aliasing",
                 match (g.fxaa, g.taa) {
@@ -782,7 +798,7 @@ impl H {
                 ),
                 n => labelled("Black Level", format!("{:.2}", n as f32 / 100.0)),
             },
-            H::HdrUiBrightness => labelled("UI Brightness", format!("{}%", g.hdr_ui_brightness)),
+            H::HdrUiBrightness => labelled_percent("UI Brightness", g.hdr_ui_brightness),
             H::HdrKey => {
                 Text::translate("Shortcut: %s", &[crate::keybinds::display_name(&g.hdr_key)])
             }
@@ -1886,6 +1902,7 @@ impl GraphicsUi {
         framebuffer: [i32; 2],
         drag: bool,
         right: bool,
+        shift: bool,
     ) -> Vec<Action> {
         self.keep(s);
         let (cols, lines, content) = self.layout(s, w, h);
@@ -1963,7 +1980,7 @@ impl GraphicsUi {
             return Vec::new();
         }
         self.focus = Some(Target::Item(item));
-        let actions = self.activate(s, item, false, framebuffer, Some((x, &cols)));
+        let actions = self.activate(s, item, shift, framebuffer, Some((x, &cols)));
         self.mark(&actions);
         actions
     }
@@ -2342,7 +2359,15 @@ mod tests {
         [cols.list_x, ui.row_y(&cols, &line), cols.list_w, style::ROW]
     }
     fn press(ui: &mut GraphicsUi, s: &mut Settings, (x, y): (f32, f32)) -> Vec<Action> {
-        ui.click(s, (x, y), SIZE, FB, false, false)
+        ui.click(s, (x, y), SIZE, FB, false, false, false)
+    }
+    fn press_shift(
+        ui: &mut GraphicsUi,
+        s: &mut Settings,
+        (x, y): (f32, f32),
+        shift: bool,
+    ) -> Vec<Action> {
+        ui.click(s, (x, y), SIZE, FB, false, false, shift)
     }
 
     #[test]
@@ -2433,7 +2458,15 @@ mod tests {
         assert!(y >= 0.0 && x + w <= size.0);
         // Undo, over Done, stays clear of the page list.
         assert!(cols.button(1)[1] >= y + h);
-        ui.click(&mut s, (x + w / 2.0, y + h / 2.0), size, FB, false, false);
+        ui.click(
+            &mut s,
+            (x + w / 2.0, y + h / 2.0),
+            size,
+            FB,
+            false,
+            false,
+            false,
+        );
         let (_, lines, _) = ui.layout(&s, size.0, size.1);
         assert_eq!(ui.current(&lines), Some(Page::Hdr));
     }
@@ -2550,7 +2583,7 @@ mod tests {
         );
         assert_eq!(H::ChunkUpdates.slider(&s), Some(1.0));
         assert_eq!(
-            ui.click(&mut s, (-100.0, -100.0), SIZE, FB, true, false),
+            ui.click(&mut s, (-100.0, -100.0), SIZE, FB, true, false, false),
             [Action::SliderDrag]
         );
         assert_eq!(H::ChunkUpdates.slider(&s), Some(0.0));
@@ -2622,7 +2655,7 @@ mod tests {
         let (cols, _, content) = ui.layout(&s, SIZE.0, SIZE.1);
         let x = cols.bar_x() + 2.0;
         let drag = |ui: &mut GraphicsUi, s: &mut Settings, y, drag| {
-            ui.click(s, (x, y), SIZE, FB, drag, false)
+            ui.click(s, (x, y), SIZE, FB, drag, false, false)
         };
         assert!(drag(&mut ui, &mut s, cols.top + 5.0, false).is_empty());
         drag(&mut ui, &mut s, cols.top + 15.0, true);
@@ -2642,13 +2675,13 @@ mod tests {
         let mut ui = GraphicsUi::default();
         let (cols, ..) = ui.layout(&s, SIZE.0, SIZE.1);
         let x = cols.bar_x() + 2.0;
-        ui.click(&mut s, (x, cols.top + 5.0), SIZE, FB, false, false);
+        ui.click(&mut s, (x, cols.top + 5.0), SIZE, FB, false, false, false);
         assert!(ui.scroll.held());
         // A 130-high GUI leaves the list under the 40 px the scroller's thumb needs.
         let short = (SIZE.0, 130.0);
         assert!(!Columns::of(short.0, short.1).scrolls());
         assert!(
-            ui.click(&mut s, (x, 80.0), short, FB, true, false)
+            ui.click(&mut s, (x, 80.0), short, FB, true, false, false)
                 .is_empty()
         );
         assert!(!ui.scroll.held());
@@ -2958,6 +2991,56 @@ mod tests {
         assert_eq!(item.label(&s).plain(), "Entity Culling: Asynchronous");
     }
 
+    #[test]
+    fn graphics_cycle_button_cycles_forward_and_shift_click_cycles_backward_with_wrapping() {
+        let mut s = Settings::default();
+        let item = Item::Horizon(H::EntityCulling);
+        let mut ui = GraphicsUi::default();
+        let r = row(&mut ui, &s, item);
+        let at = (r[0] + 4.0, r[1] + 4.0);
+
+        // 1. Feature without shift (normal click): cycles forward (+1)
+        assert_eq!(s.horizon.entity_culling, EntityCullingMode::Off);
+        assert_eq!(
+            press_shift(&mut ui, &mut s, at, false),
+            [Action::ButtonClick, Action::Changed]
+        );
+        assert_eq!(s.horizon.entity_culling, EntityCullingMode::Synchronous);
+
+        assert_eq!(
+            press_shift(&mut ui, &mut s, at, false),
+            [Action::ButtonClick, Action::Changed]
+        );
+        assert_eq!(s.horizon.entity_culling, EntityCullingMode::Asynchronous);
+
+        // 3. Wrap-around forward (at max value, normal click wraps to min / 0)
+        assert_eq!(
+            press_shift(&mut ui, &mut s, at, false),
+            [Action::ButtonClick, Action::Changed]
+        );
+        assert_eq!(s.horizon.entity_culling, EntityCullingMode::Off);
+
+        // 4. Wrap-around backward (at min / 0, shift-click wraps to max)
+        assert_eq!(
+            press_shift(&mut ui, &mut s, at, true),
+            [Action::ButtonClick, Action::Changed]
+        );
+        assert_eq!(s.horizon.entity_culling, EntityCullingMode::Asynchronous);
+
+        // 2. Feature with shift: cycles backward (-1)
+        assert_eq!(
+            press_shift(&mut ui, &mut s, at, true),
+            [Action::ButtonClick, Action::Changed]
+        );
+        assert_eq!(s.horizon.entity_culling, EntityCullingMode::Synchronous);
+
+        assert_eq!(
+            press_shift(&mut ui, &mut s, at, true),
+            [Action::ButtonClick, Action::Changed]
+        );
+        assert_eq!(s.horizon.entity_culling, EntityCullingMode::Off);
+    }
+
     /// Translucent Batching: a switch on the Advanced page, on by default, no part of a
     /// preset, and greyed out, reading Off, where the device can't batch.
     #[test]
@@ -3198,6 +3281,51 @@ mod tests {
             .filter(|m| !["An", "Aus", "FSR 3.1", "key.keyboard.unknown"].contains(&m.as_str()))
             .collect();
         assert_eq!(missed, Vec::<String>::new());
+    }
+    /// Horizon's captions join label and value with the language's `options.generic_value` and
+    /// `options.percent_value`, as vanilla's beside them on the same page do (#6072). The
+    /// templates are 26.3's.
+    #[test]
+    fn horizon_captions_use_the_languages_separator() {
+        struct Vanilla;
+        impl lang::ResourceSource for Vanilla {
+            fn read(&self, path: &str) -> Option<Vec<u8>> {
+                let (generic, percent) = match path {
+                    "assets/minecraft/lang/en_us.json" => ("%s: %s", "%s: %s%%"),
+                    "assets/minecraft/lang/fr_fr.json" => ("%s : %s", "%s : %s %%"),
+                    "assets/minecraft/lang/zh_cn.json" => ("%s：%s", "%s：%s%%"),
+                    "assets/minecraft/lang/en_ud.json" => ("%2$s :%1$s", "%s: %s%%"),
+                    _ => return None,
+                };
+                serde_json::to_vec(&serde_json::json!({
+                    "options.generic_value": generic,
+                    "options.percent_value": percent,
+                }))
+                .ok()
+            }
+        }
+        let mut s = Settings::default();
+        s.horizon.leaf_culling = LeafCullingMode::Hollow;
+        s.horizon.resolution_scale = 75;
+        for (code, leaf, scale) in [
+            ("en_us", "Leaf Culling: Hollow", "Resolution Scale: 75%"),
+            (
+                "fr_fr",
+                "Occlusion feuillage : Creux",
+                "Échelle de résolution : 75 %",
+            ),
+            ("zh_cn", "树叶剔除：镂空", "渲染比例：75%"),
+            // Value first.
+            ("en_ud", "Hollow :Leaf Culling", "Resolution Scale: 75%"),
+        ] {
+            let (shown, _) = lang::scoped(lang::Language::load(&[&Vanilla], code), || {
+                (
+                    Item::Horizon(H::LeafCulling).label(&s).plain(),
+                    Item::Horizon(H::ResolutionScale).label(&s).plain(),
+                )
+            });
+            assert_eq!(shown, (leaf.into(), scale.into()), "{code}");
+        }
     }
     /// Leaf Culling, Frame Generation and Shadow Cache came with English captions only (#1927).
     #[test]
