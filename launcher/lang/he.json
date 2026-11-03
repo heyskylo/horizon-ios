@@ -1073,5 +1073,10 @@
   "Shader pack": "חבילת שיידרים",
   "soon": "בקרוב",
   "{support} in Horizon": "{support} ב-Horizon",
-  "My Horizon": "ה־Horizon שלי"
+  "My Horizon": "ה־Horizon שלי",
+  "What this change can't keep": "מה שהשינוי הזה לא יכול לשמור",
+  "Save changes switches it. Nothing in its folder is deleted.": "„שמירת השינויים” מחליפה אותו. שום דבר בתיקייה שלו לא נמחק.",
+  "Its mods made for {loader} stay in its folder but won't load.": "המודים שלו שנבנו ל־{loader} נשארים בתיקייה שלו אבל לא ייטענו.",
+  "Its mods made for Minecraft {from} stay in its folder; some may not load in {to}.": "המודים שלו שנבנו ל־Minecraft {from} נשארים בתיקייה שלו; חלקם אולי לא ייטענו ב־{to}.",
+  "Its worlds were saved by Minecraft {from}: {to} upgrades them for good, and can't open them if it is older.": "העולמות שלו נשמרו ב־Minecraft {from}: ‏{to} משדרג אותם לתמיד, ולא יכול לפתוח אותם אם הוא ישן יותר."
 }

@@ -1073,5 +1073,10 @@
   "Launcher settings are back to their defaults": "启动器设置已恢复默认",
   "Opened {path}": "已打开 {path}",
   "Saved {name}": "已保存 {name}",
-  "My Horizon": "我的 Horizon"
+  "My Horizon": "我的 Horizon",
+  "What this change can't keep": "此更改无法保留的内容",
+  "Save changes switches it. Nothing in its folder is deleted.": "“保存更改”会切换它。其文件夹中的任何内容都不会被删除。",
+  "Its mods made for {loader} stay in its folder but won't load.": "其为 {loader} 制作的模组会留在其文件夹中，但不会加载。",
+  "Its mods made for Minecraft {from} stay in its folder; some may not load in {to}.": "其为 Minecraft {from} 制作的模组会留在其文件夹中；部分可能无法在 {to} 中加载。",
+  "Its worlds were saved by Minecraft {from}: {to} upgrades them for good, and can't open them if it is older.": "其世界由 Minecraft {from} 保存：{to} 会永久升级它们；如果 {to} 更旧，则无法打开它们。"
 }

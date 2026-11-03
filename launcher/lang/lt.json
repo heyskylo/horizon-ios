@@ -1073,5 +1073,10 @@
   "Shader pack": "Šešėliavimo paketas",
   "soon": "netrukus",
   "{support} in Horizon": "{support} Horizon",
-  "My Horizon": "Mano Horizon"
+  "My Horizon": "Mano Horizon",
+  "What this change can't keep": "Ko šis pakeitimas negali išlaikyti",
+  "Save changes switches it. Nothing in its folder is deleted.": "„Išsaugoti pakeitimus“ jį perjungia. Iš jo aplanko niekas neištrinama.",
+  "Its mods made for {loader} stay in its folder but won't load.": "Jo modai, skirti {loader}, lieka jo aplanke, bet nebus įkelti.",
+  "Its mods made for Minecraft {from} stay in its folder; some may not load in {to}.": "Jo modai, skirti Minecraft {from}, lieka jo aplanke; kai kurie gali neįsikelti {to} versijoje.",
+  "Its worlds were saved by Minecraft {from}: {to} upgrades them for good, and can't open them if it is older.": "Jo pasauliai išsaugoti Minecraft {from}: {to} juos atnaujina visam laikui ir negali jų atidaryti, jei yra senesnė."
 }

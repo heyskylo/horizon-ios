@@ -1073,5 +1073,10 @@
   "Launcher settings are back to their defaults": "Postavke pokretača vraćene su na zadane",
   "Opened {path}": "Otvoreno: {path}",
   "Saved {name}": "{name} je spremljen",
-  "My Horizon": "Moj Horizon"
+  "My Horizon": "Moj Horizon",
+  "What this change can't keep": "Što ova promjena ne može zadržati",
+  "Save changes switches it. Nothing in its folder is deleted.": "Spremi promjene je prebacuje. Ništa se u njezinoj mapi ne briše.",
+  "Its mods made for {loader} stay in its folder but won't load.": "Njezini modovi za {loader} ostaju u njezinoj mapi, ali se neće učitati.",
+  "Its mods made for Minecraft {from} stay in its folder; some may not load in {to}.": "Njezini modovi za Minecraft {from} ostaju u njezinoj mapi; neki se možda neće učitati u {to}.",
+  "Its worlds were saved by Minecraft {from}: {to} upgrades them for good, and can't open them if it is older.": "Njezini svjetovi spremljeni su u Minecraftu {from}: {to} ih trajno nadograđuje i ne može ih otvoriti ako je stariji."
 }

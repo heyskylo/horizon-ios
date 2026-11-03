@@ -1073,5 +1073,10 @@
   "Launcher settings are back to their defaults": "Ustawienia launchera wróciły do domyślnych",
   "Opened {path}": "Otwarto: {path}",
   "Saved {name}": "Zapisano {name}",
-  "My Horizon": "Mój Horizon"
+  "My Horizon": "Mój Horizon",
+  "What this change can't keep": "Czego ta zmiana nie może zachować",
+  "Save changes switches it. Nothing in its folder is deleted.": "Zapisz zmiany ją przełącza. Nic z jej folderu nie zostanie usunięte.",
+  "Its mods made for {loader} stay in its folder but won't load.": "Jej mody dla {loader} zostają w jej folderze, ale nie zostaną wczytane.",
+  "Its mods made for Minecraft {from} stay in its folder; some may not load in {to}.": "Jej mody dla Minecraft {from} zostają w jej folderze; niektóre mogą nie wczytać się w {to}.",
+  "Its worlds were saved by Minecraft {from}: {to} upgrades them for good, and can't open them if it is older.": "Jej światy zapisał Minecraft {from}: {to} na stałe je aktualizuje i nie otworzy ich, jeśli jest starszy."
 }

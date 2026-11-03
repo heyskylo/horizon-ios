@@ -1073,5 +1073,10 @@
   "Launcher settings are back to their defaults": "Başlatıcı ayarları varsayılanlara döndü",
   "Opened {path}": "Açıldı: {path}",
   "Saved {name}": "{name} kaydedildi",
-  "My Horizon": "Horizon'ım"
+  "My Horizon": "Horizon'ım",
+  "What this change can't keep": "Bu değişikliğin koruyamayacakları",
+  "Save changes switches it. Nothing in its folder is deleted.": "Değişiklikleri kaydet onu değiştirir. Klasöründen hiçbir şey silinmez.",
+  "Its mods made for {loader} stay in its folder but won't load.": "{loader} için yapılmış modları klasöründe kalır ama yüklenmez.",
+  "Its mods made for Minecraft {from} stay in its folder; some may not load in {to}.": "Minecraft {from} için yapılmış modları klasöründe kalır; bazıları {to} sürümünde yüklenmeyebilir.",
+  "Its worlds were saved by Minecraft {from}: {to} upgrades them for good, and can't open them if it is older.": "Dünyaları Minecraft {from} ile kaydedildi: {to} onları kalıcı olarak yükseltir, daha eskiyse açamaz."
 }
