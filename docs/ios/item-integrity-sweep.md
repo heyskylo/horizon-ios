@@ -69,6 +69,25 @@ not a rule invented to reject every mismatched packet. `--case close` and
 `--case cursor-close` extend the real-packet server regression. The test confirms
 chest creation in a loaded chunk before launching its timed bot.
 
+## Vehicle contents on /kill (verified and repaired)
+
+The /kill path discarded chest minecarts, hopper minecarts, chest boats and chest
+rafts without spilling their inventories. The baseline live test lost all 64
+stored diamonds in each of eight cases (four vehicles, entity_drops on/off).
+The final build preserves exactly 64 in all cases, counting dropped and picked-up
+items together. Host compilation and the iOS Clippy check pass.
+
+Java reference: Entity.kill calls remove(KILLED); AbstractMinecartContainer.remove
+and AbstractChestBoat.remove call Containers.dropContents for destroying removal
+reasons without an entity_drops gate. Containers.dropItemStack floors the entity
+position and uses the same splitting/random-motion algorithm already implemented
+in horizon-world::level::removal. The fix reuses that routine, preserves item
+components, and spills chest-boat contents before leash removal. This scope does
+not claim full parity of all attack, explosion or non-living kill-event paths.
+
+`tools/lan_e2e.py --check vehicle-kill-contents` is the live regression. It uses
+fresh worlds and validates actual entity drops and player inventory counts.
+
 ## Java fidelity requirement
 
 Keep Java 26.3 as the behavioural reference for every gameplay repair. Verify the
@@ -78,6 +97,9 @@ cross-play compatibility. Tests should establish their specific scope, not imply
 whole-game parity.
 
 ## Remaining investigation
+
+- Vehicle attack/explosion contents and non-living /kill game-event propagation:
+  audit separately against Java; the verified repair above is command removal.
 
 - Cursor and crafting-grid conservation during disconnect, death, menu replacement
   and vehicle destruction; include full inventories and overflow drops.

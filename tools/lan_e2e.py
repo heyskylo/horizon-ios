@@ -13056,5 +13056,46 @@ CHECKS += ['vehicle-command-items']
 CHECK_FNS['vehicle-command-items'] = check_vehicle_command_items
 
 
+def check_vehicle_kill_contents(host, guest, out):
+    """KILLED removal spills container contents even with entity_drops disabled."""
+    x, y, z = apart(host, guest)['host']
+    at = (x + 2.5, y, z + 0.5)
+    rows = {}
+    try:
+        for rule in (True, False):
+            host('command', command=f'gamerule entity_drops {str(rule).lower()}')
+            for kind in ('chest_minecart', 'hopper_minecart', 'oak_chest_boat', 'bamboo_chest_raft'):
+                tag = 'kill_container_contents'
+                host('command', command='clear @s')
+                host('command', command='kill @e[type=minecraft:item,distance=..12]')
+                host('command', command=f'summon minecraft:{kind} {at[0]} {at[1]} {at[2]} {{Tags:["{tag}"]}}')
+                reply = server_reply(host, f'item replace entity @e[tag={tag},limit=1] container.0 with minecraft:diamond 64', 'slot')
+                assert 'Replaced' in reply, reply
+                host('command', command=f'kill @e[tag={tag}]')
+                host.wait(20)
+                def contents():
+                    dropped = sum(e['item']['count'] for e in host.raw('entities', 12, 'minecraft:item')['entities']
+                                  if e.get('item', {}).get('item') == 'minecraft:diamond')
+                    kept = host('inventory')['counts'].get('minecraft:diamond', 0)
+                    return {'dropped': dropped, 'picked_up': kept, 'total': dropped + kept}
+                seen = contents()
+                for _ in range(20):
+                    if seen['total'] == 64:
+                        break
+                    host.wait(2)
+                    seen = contents()
+                rows[f'{kind}:entity_drops={rule}'] = seen
+                lab.write_json(out / 'vehicle-kill-contents.json', rows)
+        assert all(row['total'] == 64 for row in rows.values()), rows
+    finally:
+        host('command', command='gamerule entity_drops true')
+        host('command', command='kill @e[tag=kill_container_contents]')
+    return rows
+
+
+CHECKS += ['vehicle-kill-contents']
+CHECK_FNS['vehicle-kill-contents'] = check_vehicle_kill_contents
+
+
 if __name__ == '__main__':
     main()

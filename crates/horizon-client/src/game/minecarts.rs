@@ -2117,6 +2117,38 @@ impl Game<'_> {
             self.container = None;
         }
     }
+    /// ContainerEntity's destroying removal spills its inventory regardless
+    /// of entity_drops. Containers.dropItemStack floors entity coordinates
+    /// before choosing positions and splitting stacks, just as for blocks.
+    pub(super) fn drop_removed_vehicle_contents(
+        &mut self,
+        at: Vec3,
+        items: Vec<Option<ItemStack>>,
+    ) {
+        let pos = horizon_core::position::BlockPos::new(
+            at.x.floor() as i32,
+            at.y.floor() as i32,
+            at.z.floor() as i32,
+        );
+        for stack in items {
+            let count = stack.as_ref().map_or(0, |s| s.count);
+            for piece in
+                horizon_world::level::removal::drop_item_stack(&mut self.world.random, pos, count)
+            {
+                let Some(stack) = &stack else { break };
+                self.spawn_item(
+                    ItemStack {
+                        count: piece.count,
+                        ..stack.clone()
+                    },
+                    piece.pos,
+                    piece.motion,
+                    0,
+                );
+            }
+        }
+    }
+
     /// The menu of a chest or hopper minecart or a chest boat works on the
     /// vehicle's own items (`ContainerEntity`): the placeholder under `key`
     /// that the menu edits is copied back to the vehicle.

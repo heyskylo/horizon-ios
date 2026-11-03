@@ -2161,13 +2161,20 @@ impl Game<'_> {
                 // AbstractBoat.remove: a killed boat drops its lead.
                 if let Some(i) = self.boats.iter().position(|b| b.id == id) {
                     self.release_vehicle_container(id);
-                    let b = self.boats.remove(i);
+                    let mut b = self.boats.remove(i);
+                    // AbstractChestBoat.remove spills before AbstractBoat
+                    // handles the leash removal.
+                    let items = std::mem::take(&mut b.items);
+                    self.drop_removed_vehicle_contents(b.position, items);
                     self.boat_removed(&b);
                 }
             }
             Target::Cart(id) => {
                 self.release_vehicle_container(id);
-                self.carts.retain(|c| c.id != id);
+                if let Some(i) = self.carts.iter().position(|c| c.id == id) {
+                    let c = self.carts.remove(i);
+                    self.drop_removed_vehicle_contents(c.position, c.items);
+                }
             }
             Target::Other(id) => self.others.retain(|o| o.id != id),
             Target::Fangs(id) => self.fangs.list.retain(|f| f.id != id),
