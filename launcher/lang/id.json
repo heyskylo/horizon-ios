@@ -1042,5 +1042,20 @@
   "{value}%": "{value}%",
   "Experimental. Builds the native mods you trust into a game of their own.": "Eksperimental. Membangun mod native yang kamu percayai menjadi game tersendiri.",
   "Native mods": "Mod native",
-  "Nightly": "Nightly"
+  "Nightly": "Nightly",
+  "Everything you install goes into {instance}. Pick another instance on the left to fill that one.": "Semua yang kamu pasang masuk ke {instance}. Pilih instance lain di kiri untuk mengisinya.",
+  "Import as an instance": "Impor sebagai instance",
+  "Install in {instance}": "Pasang di {instance}",
+  "Its page": "Halamannya",
+  "Nothing matches “{query}”.": "Tidak ada yang cocok dengan “{query}”.",
+  "Remove from {instance}": "Hapus dari {instance}",
+  "Search Horizon mods": "Cari mod Horizon",
+  "Search resource packs and modpacks": "Cari paket sumber daya dan modpack",
+  "Search {count} Horizon mods": "Cari {count} mod Horizon",
+  "soon": "segera",
+  "{support} in Horizon": "{support} di Horizon",
+  "Mod": "Mod",
+  "Resource pack": "Paket sumber daya",
+  "Shader pack": "Paket shader",
+  "Data pack": "Paket data"
 }

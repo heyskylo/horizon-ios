@@ -1042,5 +1042,20 @@
   "{value}%": "{value}٪",
   "Experimental. Builds the native mods you trust into a game of their own.": "تجريبي. يبني الإضافات الأصلية التي تثق بها في لعبة خاصة بها.",
   "Native mods": "الإضافات الأصلية",
-  "Nightly": "Nightly"
+  "Nightly": "Nightly",
+  "Everything you install goes into {instance}. Pick another instance on the left to fill that one.": "كل ما تثبّته يذهب إلى {instance}. اختر نسخة أخرى على اليسار لملئها.",
+  "Import as an instance": "استيراد كنسخة",
+  "Install in {instance}": "تثبيت في {instance}",
+  "Its page": "صفحته",
+  "Nothing matches “{query}”.": "لا شيء يطابق “{query}”.",
+  "Remove from {instance}": "إزالة من {instance}",
+  "Search Horizon mods": "ابحث في إضافات Horizon",
+  "Search resource packs and modpacks": "ابحث عن حزم الموارد وحزم الإضافات",
+  "Search {count} Horizon mods": "ابحث في {count} إضافة لـ Horizon",
+  "soon": "قريبًا",
+  "{support} in Horizon": "{support} في Horizon",
+  "Mod": "إضافة",
+  "Resource pack": "حزمة موارد",
+  "Shader pack": "حزمة تظليل",
+  "Data pack": "حزمة بيانات"
 }
