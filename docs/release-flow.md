@@ -277,6 +277,7 @@ the notes.
 | Archive | Runs on | Checks |
 | --- | --- | --- |
 | `horizon-linux-x86_64.tar.gz` | GitHub `ubuntu-22.04` (an older glibc, so it runs on any recent distribution) | the standard loader and libraries only (`tools/check_imports.py`) |
+| `horizon-linux-musl-x86_64.tar.gz` | Alpine 3.22 in Docker on GitHub `ubuntu-22.04`, targeting `x86_64-unknown-linux-musl` | musl loader and libraries only (`tools/check_imports.py --musl`), CPU baseline and every program's startup checked inside Alpine |
 | `horizon-server-linux-x86_64.tar.gz` | the same Linux job, after the client archive: `horizon-server`, `horizon-prepare` and the game built with `--no-default-features` as `horizon-engine` (docs/server.md) | as above, and neither `libasound.so.2` nor `libudev.so.1` (`tools/check_imports.py --server`) |
 | `horizon-windows-x64.zip` | GitHub `windows-latest`, C runtime linked in | system DLLs only (`tools/check_imports.py`) |
 | `horizon-macos-arm64.zip` | The Mac mini's runner (`vars.MAC_RUNNER=macos-latest` sends it to GitHub) | system libraries only (`otool -L`); a 1500-frame offscreen run of a new world (about 12 s; 300 frames end before the world has loaded) with resources prepared from the runner's own Minecraft (`--offscreen --world smoke --frames 1500 --smoke-report`: frames drawn, chunks generated and meshed, a player, no error) |
@@ -286,6 +287,13 @@ Each builds `horizon-client`, `horizon-ctl` and `horizon-prepare` in release mod
 each one (`--help`, `--version`), packages the folder with `cargo run -p xtask -- package` and archives it. The
 GitHub jobs keep their Cargo caches (`Swatinem/rust-cache`); the Mac mini keeps its `target/`. Only the Mac
 runs the game: GitHub's runners have neither a GPU worth the name nor the game files.
+
+The musl archive is a manual download for musl-based Linux desktops. The launcher still selects the glibc
+archive. It includes the same client and tools, with audio and controllers enabled. It links musl dynamically
+(`-C target-feature=-crt-static`) so graphics drivers and window libraries can be loaded at runtime. Install
+musl, libgcc, ALSA, libudev and the desktop's graphics drivers (on Alpine: `musl libgcc alsa-lib eudev-libs`,
+plus the appropriate Mesa/Vulkan driver). This is not a fully static binary. The Nightly signs and publishes
+both Linux archives. The dedicated-server archive remains the existing glibc build.
 
 ### Notes
 
