@@ -407,6 +407,29 @@ impl Mob {
     pub fn eye_y(&self) -> f64 {
         self.position.y + self.eye_height()
     }
+    /// `LivingEntity.onClimbable` (`Spider.onClimbable`: the climbing flag):
+    /// the block it stands in is `#minecraft:climbable` (vines, ladders,
+    /// scaffolding...), or an open trapdoor over a ladder facing the same way
+    /// (`trapdoorUsableAsLadder`).
+    pub fn on_climbable(&self, w: &MobWorld) -> bool {
+        if self.kind.flags.climber {
+            return self.climbing;
+        }
+        let (x, y, z) = (
+            self.position.x.floor() as i32,
+            self.position.y.floor() as i32,
+            self.position.z.floor() as i32,
+        );
+        let state = w.world.block(x, y, z);
+        let facts = w.facts.get(state);
+        if w.has_tag("minecraft:climbable", &facts.name) {
+            return true;
+        }
+        facts.has_class("TrapDoorBlock")
+            && w.prop(x, y, z, "open") == Some("true")
+            && w.block_name(x, y - 1, z) == "minecraft:ladder"
+            && w.prop(x, y - 1, z, "facing") == w.prop(x, y, z, "facing")
+    }
     /// `LivingEntity.getScale`: the `minecraft:scale` the server sent on this
     /// living entity (`extra.model_scale`, 0 when none came), through the
     /// species' `sanitizeScale` override. Every box, eye height, seat and
@@ -1295,6 +1318,15 @@ impl Mob {
     fn air_drag_modifier(&self) -> f32 {
         super::sulfur_cube::physics(self).map_or(1.0, |a| a.air_drag_modifier.clamp(0.0, 2048.0))
     }
+    /// `LivingEntity.handleOnClimbable` for a mob, which is never a `Player`
+    /// that holds still on a ladder: the move across clamped to 0.15 either
+    /// way and the fall to 0.15, both the float 0.15F (`Mth.clamp`,
+    /// `Math.max`, which keep a NaN).
+    fn climbable_velocity(v: Vec3) -> Vec3 {
+        let limit = f64::from(0.15f32);
+        let y = if v.y.is_nan() { v.y } else { v.y.max(-limit) };
+        Vec3::new(v.x.clamp(-limit, limit), y, v.z.clamp(-limit, limit))
+    }
     fn travel_in_air(&mut self, w: &MobWorld, input: Vec3, events: &mut Vec<MobEvent>) {
         let friction = if self.on_ground {
             // FRICTION_MODIFIER scales the block's slipperiness.
@@ -1306,21 +1338,15 @@ impl Mob {
         };
         let speed = self.friction_speed(friction);
         self.move_relative(speed, input);
-        if self.kind.flags.climber && self.horizontal_collision {
-            // Spider.onClimbable: handleOnClimbable clamps and resets the fall.
+        // LivingEntity.handleRelativeFrictionAndCalculateMovement:
+        // handleOnClimbable, the move, then the climb up a wall.
+        if self.on_climbable(w) {
             self.fall_distance = 0.0;
-            self.velocity = Vec3::new(
-                self.velocity.x.clamp(-0.15, 0.15),
-                self.velocity.y.max(-0.15),
-                self.velocity.z.clamp(-0.15, 0.15),
-            );
+            self.velocity = Self::climbable_velocity(self.velocity);
         }
         self.do_move(w, events);
         let mut movement = self.velocity;
-        if self.kind.flags.climber
-            && (self.horizontal_collision || self.ai.jumping)
-            && self.climbing
-        {
+        if (self.horizontal_collision || self.ai.jumping) && self.on_climbable(w) {
             movement.y = 0.2;
         }
         let mut y = movement.y;
