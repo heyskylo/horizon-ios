@@ -41,6 +41,12 @@ pub(super) struct ThrownTrident {
     creative_only: bool,
     /// `Entity.isNoGravity`: `AbstractArrow.applyGravity` then skips the pull.
     pub(super) no_gravity: bool,
+    /// `Entity.remainingFireTicks`; on clients, the synchronized on-fire flag.
+    pub(super) fire_ticks: i32,
+    /// Water membership from the preceding `baseTick` (not updated while stuck).
+    was_touching_water: bool,
+    /// `Entity.random`, used for the extinguishing sound.
+    random: horizon_core::random::LegacyRandom,
     /// `Entity.tickCount`: `ProjectileUtil.computeMargin` grows with it.
     age: u32,
     /// The entity id a server sent as its owner (the one Loyalty returns it to).
@@ -73,6 +79,7 @@ impl ThrownTrident {
         t.dealt_damage = n.dealt_damage;
         t.creative_only = n.creative_only;
         t.no_gravity = n.no_gravity;
+        t.fire_ticks = n.fire_ticks;
         t
     }
     /// `AbstractArrow.addAdditionalSaveData` + `DealtDamage`.
@@ -93,6 +100,7 @@ impl ThrownTrident {
                 dealt_damage: self.dealt_damage,
                 creative_only: self.creative_only,
                 no_gravity: self.no_gravity,
+                fire_ticks: self.fire_ticks,
                 item: &self.stack,
             },
             uuid,
@@ -119,6 +127,9 @@ impl ThrownTrident {
             returning: 0,
             creative_only: false,
             no_gravity: false,
+            fire_ticks: 0,
+            was_touching_water: false,
+            random: horizon_core::random::LegacyRandom::new(i64::from(id)),
             age: 0,
             owner: 0,
             guest: None,
@@ -439,6 +450,9 @@ impl Game<'_> {
             returning: 0,
             creative_only: self.creative,
             no_gravity: false,
+            fire_ticks: 0,
+            was_touching_water: false,
+            random: horizon_core::random::LegacyRandom::new(i64::from(id)),
             age: 0,
             owner: 0,
             guest: self.lan_acting,
@@ -542,6 +556,27 @@ impl Game<'_> {
         }
         true
     }
+    /// Apply the environment before impact callbacks can change the world.
+    fn trident_block_effects(&mut self, t: &mut ThrownTrident, from: Vec3, to: Vec3) {
+        let extinguished = {
+            let rain = self.arrow_rain();
+            // Block-contact hooks are already delivered by the game's inside pass.
+            let (ticks, extinguished) =
+                self.arrow_scene(&rain)
+                    .apply_block_effects(from, to, t.fire_ticks, |_, _, _| {});
+            t.fire_ticks = ticks;
+            extinguished
+        };
+        if extinguished {
+            let pitch = 1.6 + (t.random.next_float() - t.random.next_float()) * 0.4;
+            self.audio.play(
+                "minecraft:entity.generic.extinguish_fire",
+                Some([to.x, to.y, to.z]),
+                0.7,
+                pitch,
+            );
+        }
+    }
     pub(super) fn tick_tridents(&mut self) {
         if self.tridents.is_empty() {
             return;
@@ -576,8 +611,21 @@ impl Game<'_> {
                 }
                 t.returning += 1;
             }
+            // AbstractArrow clears cached water/rain before its stuck branch.
+            let in_rain = {
+                let rain = self.arrow_rain();
+                self.arrow_scene(&rain).in_rain(t.position)
+            };
+            if t.was_touching_water || in_rain {
+                t.fire_ticks = t.fire_ticks.min(0);
+            }
+            let stuck_tick = t.in_ground && !t.no_physics;
             if t.in_ground {
                 t.in_ground_time += 1;
+                if !t.no_physics {
+                    let at = t.position;
+                    self.trident_block_effects(&mut t, at, at);
+                }
             } else if t.no_physics {
                 t.position = Vec3::new(
                     t.position.x + t.velocity.x,
@@ -621,6 +669,8 @@ impl Game<'_> {
                         t.position.y + t.velocity.y * d,
                         t.position.z + t.velocity.z * d,
                     );
+                    let from = t.position;
+                    self.trident_block_effects(&mut t, from, at);
                     self.native_trident_impact(t.id, t.guest, Some(id), [0; 3], [0; 3], at)
                 });
                 if canceled_mob {
@@ -739,6 +789,9 @@ impl Game<'_> {
                     let flight = t.velocity;
                     let clip =
                         clip_block_hit(&self.world, self.res.facts(), self.collision, from, flight);
+                    // Block effects reach the clip location before onHitBlock backs off.
+                    let fire_to = clip.map_or(from.add_vector(flight), |(at, _, _)| at);
+                    self.trident_block_effects(&mut t, from, fire_to);
                     // ProjectileImpactEvent for the block hit: a canceled one
                     // doesn't stick the trident, which stays where it would
                     // have hit, still flying.
@@ -801,6 +854,15 @@ impl Game<'_> {
                     let h = (t.velocity.x * t.velocity.x + t.velocity.z * t.velocity.z).sqrt();
                     t.yaw = t.velocity.x.atan2(t.velocity.z).to_degrees() as f32;
                     t.pitch = t.velocity.y.atan2(h).to_degrees() as f32;
+                }
+            }
+            // The stuck branch returns before Entity.baseTick. A flight that
+            // just hit a block still reaches it, as does a noPhysics return.
+            if !stuck_tick {
+                let rain = self.arrow_rain();
+                t.was_touching_water = self.arrow_scene(&rain).in_water(t.position);
+                if t.fire_ticks > 0 {
+                    t.fire_ticks -= 1;
                 }
             }
             // playerTouch: stuck or returning tridents go back to a player.
@@ -896,6 +958,18 @@ impl Game<'_> {
                 t.position.y.floor() as i32,
                 t.position.z.floor() as i32,
             );
+            if t.fire_ticks > 0 {
+                horizon_client::fire_render::flames(
+                    at,
+                    0.5,
+                    0.5,
+                    camera,
+                    self.yaw,
+                    &self.gui.atlas.sprites,
+                    l,
+                    out,
+                );
+            }
             let packed = (u32::from(l >> 4) * 16) | ((u32::from(l & 15) * 16) << 8);
             let poses = Poses::new(model);
             horizon_client::mobs::render::draw(

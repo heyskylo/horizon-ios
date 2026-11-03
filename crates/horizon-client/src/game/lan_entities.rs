@@ -684,6 +684,10 @@ impl Game<'_> {
                 None => owner(Some(horizon_client::mobs::Who::Player)),
             };
             e.meta = arrow_meta(false, t.no_physics, 0, t.in_ground);
+            // Entity.DATA_SHARED_FLAGS_ID: FLAG_ONFIRE.
+            if t.fire_ticks > 0 {
+                e.meta.push((0, serializer::BYTE, Value::Byte(1)));
+            }
             // ThrownTrident.ID_LOYALTY and ID_FOIL.
             if t.loyalty != 0 {
                 e.meta
