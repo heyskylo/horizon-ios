@@ -246,6 +246,7 @@ mod nether_portal;
 mod no_resources;
 mod ominous_item_spawner;
 mod options;
+mod ordered_tick;
 mod packs;
 mod pad;
 mod pad_menu;
@@ -2681,6 +2682,7 @@ struct Game<'a> {
     experience: Experience,
     orbs: horizon_client::join_seq::JoinList<ExperienceOrb>,
     xp_delay: u32,
+    ordered: ordered_tick::OrderedTicks,
     last_level_up: u64,
     /// The arm swing (`LivingEntity.SwingState`) and how many swings started.
     swing: horizon_client::first_person::SwingState,
@@ -5747,38 +5749,22 @@ impl Game<'_> {
         self.right = false;
     }
     /// FallingBlockEntity.tick: fall with 0.04 gravity and 0.98 drag, then land.
-    fn tick_falling(&mut self) -> Result<()> {
-        let falling = std::mem::take(&mut self.falling);
-        let mut kept = Vec::with_capacity(falling.len());
-        let mut collision_error = None;
+    /// One falling block's `tick`: places or drops its block in its own tick,
+    /// so a block falling onto one that just landed lands on top of it. `i` is
+    /// its place in the list; the caller has checked it is ticking.
+    fn tick_one_falling(&mut self, i: usize) -> Result<()> {
         let entity_drops = self.ui.rules.bool("entity_drops");
-        // ServerLevel.tick: only entities in entity-ticking chunks tick.
-        let ticking = self.entity_ticking_area();
-        // FallingBlockEntity.tick places or drops each block in its own tick,
-        // so a block falling onto one that just landed lands on top of it.
-        for mut f in falling {
-            if !ticking(f.position.x.floor() as i32, f.position.z.floor() as i32) {
-                kept.push(f);
-                continue;
+        let mut f = self.falling.remove(i);
+        let original = f.clone();
+        match self.fall_step(&mut f, entity_drops) {
+            Ok(FallStep::Falling) => self.falling.insert(i.min(self.falling.len()), f),
+            Ok(FallStep::Gone) => {}
+            Ok(FallStep::Dropped(at)) => self.drop_falling_block(f.state, at),
+            Ok(FallStep::Landed(pos)) => self.finish_falling_block(f, pos),
+            Err(error) => {
+                self.falling.insert(i.min(self.falling.len()), original);
+                return Err(error);
             }
-            let original = f.clone();
-            match self.fall_step(&mut f, entity_drops) {
-                Ok(FallStep::Falling) => kept.push(f),
-                Ok(FallStep::Gone) => {}
-                Ok(FallStep::Dropped(at)) => self.drop_falling_block(f.state, at),
-                Ok(FallStep::Landed(pos)) => self.finish_falling_block(f, pos),
-                Err(error) => {
-                    kept.push(original);
-                    collision_error.get_or_insert(error);
-                }
-            }
-        }
-        // Blocks that started falling meanwhile tick from the next tick on.
-        let started = std::mem::replace(&mut self.falling, kept.into());
-        self.falling.extend(started);
-        self.process_level_events()?;
-        if let Some(error) = collision_error {
-            return Err(error);
         }
         Ok(())
     }
@@ -7607,9 +7593,11 @@ impl Game<'_> {
             self.native_joins_flush(false, 0);
             self.lan_mark_synced();
         }
+        self.begin_ordered_ticks();
         if running {
             horizon_client::spans::time("tick_paintings", || self.tick_paintings());
             horizon_client::spans::time("tick_item_frames", || self.tick_item_frames());
+            self.ordered_before(ordered_tick::Batch::ArmorStands)?;
             horizon_client::spans::time("tick_armor_stands", || self.tick_armor_stands())?;
             horizon_client::spans::time("tick_cushions", || self.tick_cushions());
             // ServerLevel.tick: the arrivals of this server tick are in the level
@@ -7617,7 +7605,9 @@ impl Game<'_> {
             // own tick opens.
             self.land_portal_arrivals();
             self.handle_vehicle_portals();
+            self.ordered_before(ordered_tick::Batch::Boats)?;
             horizon_client::spans::time("tick_boats", || self.tick_boats());
+            self.ordered_before(ordered_tick::Batch::Carts)?;
             horizon_client::spans::time("tick_carts", || self.tick_carts());
             self.tick_vehicle_watch();
             let from = self.lan_synced_from();
@@ -7628,7 +7618,9 @@ impl Game<'_> {
             self.tick_lodestone_compasses();
             horizon_client::spans::time("tick_bolts", || self.tick_bolts());
             horizon_client::spans::time("tick_fishing", || self.tick_fishing());
+            self.ordered_before(ordered_tick::Batch::Tridents)?;
             horizon_client::spans::time("tick_tridents", || self.tick_tridents());
+            self.ordered_before(ordered_tick::Batch::Rockets)?;
             horizon_client::spans::time("tick_rockets", || self.tick_rockets());
             horizon_client::spans::time("tick_ominous_item_spawners", || {
                 self.tick_ominous_item_spawners()
@@ -7639,6 +7631,7 @@ impl Game<'_> {
                 self.handle_entity_portals();
                 self.handle_end_gateway_portals();
             });
+            self.ordered_before(ordered_tick::Batch::Items)?;
             horizon_client::spans::time("tick_items", || self.tick_items());
             if self.remote.is_none() {
                 self.hoppers_catch_items();
@@ -7652,11 +7645,14 @@ impl Game<'_> {
         // The ride the player's file names, once the vehicle is in the world.
         self.restore_root_vehicle();
         if running {
+            self.ordered_before(ordered_tick::Batch::Mobs)?;
             horizon_client::spans::time("tick_mobs", || self.tick_mobs())?;
             // Dead, despawned or gone into a hive.
             self.native_leaves_flush();
             horizon_client::spans::time("recheck_golem_openers", || self.recheck_golem_openers());
             self.tick_mod_container_viewers();
+            // Orbs, primed TNT and falling blocks still to tick, in join order.
+            self.run_ordered_ticks(horizon_client::join_seq::JoinSeq::MAX, false)?;
             horizon_client::spans::time("tick_experience", || self.tick_experience());
             // Merged, despawned or picked up.
             self.native_leaves_flush();
@@ -7669,6 +7665,8 @@ impl Game<'_> {
         self.native_joins_flush(false, 0);
         self.native_leaves_flush();
         horizon_client::spans::time("tick_lan", || self.tick_lan(false));
+        // Everything that has joined has had its spawn packet.
+        self.ordered.announced = horizon_client::join_seq::JoinSeq::upcoming();
         self.tick_friends();
         horizon_client::spans::time("tick_hand", || self.tick_hand());
         horizon_client::spans::time("tick_sleep", || self.tick_sleep());
@@ -7683,8 +7681,8 @@ impl Game<'_> {
             self.keep_gateway_destinations();
         }
         if running {
-            horizon_client::spans::time("tick_falling", || self.tick_falling())?;
-            horizon_client::spans::time("tick_tnt", || self.tick_tnt())?;
+            // Primed TNT and falling blocks that joined since the spawn packets.
+            self.run_ordered_ticks(horizon_client::join_seq::JoinSeq::MAX, true)?;
             self.apply_late_wind_pushes();
         }
         if running {
@@ -13597,17 +13595,15 @@ impl Game<'_> {
         }
         (min + self.world.random.next_int_bound(max - min + 1).unwrap_or(0)) as u32
     }
-    fn tick_experience(&mut self) {
-        if self.xp_delay > 0 {
-            self.xp_delay -= 1;
-        }
+    /// `ExperienceOrb.followNearbyPlayer`'s candidates: each orb goes for the
+    /// nearest living player within 8 blocks, the host's own or a guest. Each
+    /// is the player's feet and the point the orb homes on.
+    pub(super) fn orb_followed(&self) -> Vec<([f64; 3], [f64; 3])> {
         let spectator = self.spectator();
         let player = self
             .player
             .as_ref()
             .filter(|p| !p.health.dead_or_dying() && !spectator);
-        // ExperienceOrb.followNearbyPlayer: each orb goes for the nearest
-        // living player within 8 blocks, the host's own or a guest.
         let mut followed: Vec<([f64; 3], [f64; 3])> = player
             .map(|p| {
                 let feet = [p.position.x, p.position.y, p.position.z];
@@ -13629,6 +13625,19 @@ impl Game<'_> {
                     }),
             );
         }
+        followed
+    }
+    /// The orbs' tick, but for the movement: that is `tick_ordered_before`'s,
+    /// in join order with the other kinds.
+    fn tick_experience(&mut self) {
+        if self.xp_delay > 0 {
+            self.xp_delay -= 1;
+        }
+        let spectator = self.spectator();
+        let player = self
+            .player
+            .as_ref()
+            .filter(|p| !p.health.dead_or_dying() && !spectator);
         // Player.aiStep: the pickup area is the box inflated by (1, 0.5, 1).
         let bounds = player.map(|p| {
             let w = f64::from(p.dimensions.width) / 2.0;
@@ -13645,38 +13654,6 @@ impl Game<'_> {
                 ],
             )
         });
-        let mut orbs = std::mem::take(&mut self.orbs);
-        // An orb has no random of its own here: lava draws from one made on
-        // first use, apart from the level stream.
-        let mut lava_random = None;
-        let mut next_float = || {
-            lava_random
-                .get_or_insert_with(dispenser::entity_random)
-                .next_float()
-        };
-        orbs.retain_mut(|o| {
-            let distance = |feet: &[f64; 3]| -> f64 {
-                (feet[0] - o.position.x).powi(2)
-                    + (feet[1] - o.position.y).powi(2)
-                    + (feet[2] - o.position.z).powi(2)
-            };
-            let target = followed
-                .iter()
-                .filter(|(feet, _)| distance(feet) < 64.0)
-                .min_by(|a, b| distance(&a.0).total_cmp(&distance(&b.0)))
-                .map(|(_, target)| *target);
-            o.tick(
-                &self.world,
-                self.res.facts(),
-                self.collision,
-                target,
-                self.remote.is_none(),
-                &mut next_float,
-                Some(self.border.geometry()),
-                &self.res.motion().fluids,
-            )
-        });
-        self.orbs = orbs;
         // ExperienceOrb.scanForMerges runs on the server only.
         if self.remote.is_none() {
             self.merge_orbs();
@@ -18913,6 +18890,7 @@ impl<'a> Game<'a> {
             experience: Experience::default(),
             orbs: Default::default(),
             xp_delay: 0,
+            ordered: Default::default(),
             last_level_up: 0,
             swing: Default::default(),
             swings_started: 0,
