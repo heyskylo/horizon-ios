@@ -87,10 +87,18 @@ pub struct Ids {
 pub struct Quirks {
     /// `SlotDisplay` type 6 holds a bare tag id (TagSlotDisplay) instead of a HolderSet (26.2).
     pub tag_slot_display_is_id: bool,
+    /// `pot_decorations` is a list of up to four item ids, a brick for an undecorated side, instead of four
+    /// optional item stack templates (26.2).
+    pub pot_decorations_are_items: bool,
+    /// `jukebox_playable` is an EitherHolder (a flag, then a song's key or holder) instead of a holder, and
+    /// `damage_resistant` a bare damage type tag instead of a HolderSet (1.21.11).
+    pub either_holder_song_and_tag_resistance: bool,
 }
 impl Quirks {
     pub const NONE: Self = Self {
         tag_slot_display_is_id: false,
+        pot_decorations_are_items: false,
+        either_holder_song_and_tag_resistance: false,
     };
 }
 
@@ -289,6 +297,43 @@ mod tests {
             Slot::write(&Some(stack), &mut w);
         }
         assert_eq!(w.data, [1, 0xd0, 0x08, 2, 1, 3, 5, 18, 0, 1, 42, 49]);
+    }
+
+    #[test]
+    fn components_whose_layout_changed_are_read_in_the_servers() {
+        use crate::buf::{Codec, Reader};
+        use crate::item::{Component, Slot};
+        let ids = crate::adapter::ServerVersion::V1_21_11.ids().unwrap();
+        let read = |sent: &[u8]| {
+            let _up = renumbering(ids, Way::Up);
+            Slot::read(&mut Reader::new(sent)).unwrap().unwrap()
+        };
+        // A decorated pot (319 in 1.21.11, 392 in 26.3) as a 1.21.11 server sends it: pot_decorations (72)
+        // lists a brick (1025) and an angler sherd (1445, 1598 in 26.3); damage_resistant (27) a tag id;
+        // jukebox_playable (62) a song by holder: the flag false, then the song's id plus one.
+        let mut sent = vec![1, 0xbf, 0x02, 3, 0];
+        sent.extend([72, 2, 0x81, 0x08, 0xa5, 0x0b]);
+        sent.extend([27, 17]);
+        sent.extend(b"minecraft:is_fire");
+        sent.extend([62, 0, 3]);
+        let stack = read(&sent);
+        assert_eq!(stack.item, 392);
+        let mut resistant = vec![0, 17];
+        resistant.extend(b"minecraft:is_fire");
+        assert_eq!(
+            stack.added,
+            [
+                // Only the left side holds an item: one sherd, no components, in the server's numbering
+                // as a value read whole keeps it.
+                (76, Component::Raw(vec![0, 1, 0xa5, 0x0b, 1, 0, 0, 0, 0, 0])),
+                (27, Component::Raw(resistant)),
+                (66, Component::Raw(vec![3])),
+            ]
+        );
+        // A song named by its key has no pinned holder: the component goes.
+        let mut sent = vec![1, 0xbf, 0x02, 1, 0, 62, 1, 13];
+        sent.extend(b"minecraft:cat");
+        assert_eq!(read(&sent).added, []);
     }
 
     #[test]

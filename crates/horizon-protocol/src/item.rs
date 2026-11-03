@@ -62,6 +62,8 @@ pub mod component {
     pub const OMINOUS_BOTTLE_AMPLIFIER: i32 = 65;
     pub const USE_REMAINDER: i32 = 25;
     pub const POT_DECORATIONS: i32 = 76;
+    pub const JUKEBOX_PLAYABLE: i32 = 66;
+    pub const DAMAGE_RESISTANT: i32 = 27;
     pub const CONTAINER: i32 = 77;
     pub const SULFUR_CUBE_CONTENT: i32 = 80;
     pub const PAINTING_VARIANT: i32 = 109;
@@ -715,6 +717,94 @@ fn read_removed(r: &mut Reader, negative: usize) -> Result<Vec<i32>> {
     Ok(removed)
 }
 
+/// An added component `raw` (the sender's id) and its value from `r`: its pinned id, the value, and the
+/// value's bytes in the pinned layout. An older server's component the pinned version lacks is read past
+/// (`None`), and one whose layout changed since that server's version is read in its layout.
+fn read_added<'a>(
+    raw: i32,
+    r: &mut Reader<'a>,
+) -> Result<Option<(i32, Component, std::borrow::Cow<'a, [u8]>)>> {
+    if let Some(name) = ids::dropped_component(raw) {
+        skip_dropped(name, r)?;
+        return Ok(None);
+    }
+    let kind = ids::component(raw);
+    match older_layout(kind, r)? {
+        Older::Dropped => Ok(None),
+        Older::Rewritten(bytes) => {
+            let component = Component::read(kind, &mut Reader::new(&bytes))?;
+            Ok(Some((kind, component, bytes.into())))
+        }
+        Older::Pinned => {
+            let start = r.position();
+            let component = Component::read(kind, r)?;
+            Ok(Some((kind, component, r.since(start).into())))
+        }
+    }
+}
+
+/// How [`older_layout`] found a component of an older server.
+enum Older {
+    /// What is left of it reads as the pinned version's.
+    Pinned,
+    /// Read past: the pinned version can't hold it.
+    Dropped,
+    /// Read, and written again in the pinned layout.
+    Rewritten(Vec<u8>),
+}
+
+/// `minecraft:brick` (26.3): an older pot's undecorated side.
+const BRICK: i32 = 1142;
+
+/// Reads the start of a component `kind` (a pinned id) whose layout changed since the version of the
+/// server whose packet is read on this thread ([`ids::quirks`]).
+fn older_layout(kind: i32, r: &mut Reader) -> Result<Older> {
+    use component::*;
+    let quirks = ids::quirks();
+    Ok(match kind {
+        // EitherHolder.STREAM_CODEC: ByteBufCodecs.either(the song's ResourceKey, its holder). A key
+        // names a song of the server's registry the pinned holder can't point to without its numbering.
+        JUKEBOX_PLAYABLE if quirks.either_holder_song_and_tag_resistance => {
+            if r.bool()? {
+                r.string(32767)?;
+                Older::Dropped
+            } else {
+                Older::Pinned
+            }
+        }
+        // TagKey.streamCodec: the tag's id. A HolderSet names a tag behind a 0.
+        DAMAGE_RESISTANT if quirks.either_holder_song_and_tag_resistance => {
+            let tag = r.string(32767)?;
+            let mut w = Writer::new();
+            w.varint(0);
+            w.string(&tag);
+            Older::Rewritten(w.data)
+        }
+        // ByteBufCodecs.registry(ITEM).apply(list(4)): back, left, right and front, a brick for none;
+        // the pinned layout has four optional stack templates of one item and no components. The items
+        // keep the server's ids, as every value read on this thread does until it is renumbered.
+        POT_DECORATIONS if quirks.pot_decorations_are_items => {
+            let n = r.count(4)?;
+            let items = (0..n).map(|_| r.varint()).collect::<Result<Vec<_>>>()?;
+            let mut w = Writer::new();
+            for side in 0..4 {
+                match items.get(side).filter(|&&item| ids::item(item) != BRICK) {
+                    Some(&item) => {
+                        w.bool(true);
+                        w.varint(item);
+                        w.varint(1);
+                        w.varint(0);
+                        w.varint(0);
+                    }
+                    None => w.bool(false),
+                }
+            }
+            Older::Rewritten(w.data)
+        }
+        _ => Older::Pinned,
+    })
+}
+
 /// Reads past the value of `name`, a data component an older server sent that the pinned version lacks
 /// ([`ids::dropped_component`]), as that server writes it.
 fn skip_dropped(name: &str, r: &mut Reader) -> Result<()> {
@@ -743,12 +833,9 @@ impl WirePatch {
         for _ in 0..positive {
             let raw = r.varint()?;
             let len = r.count(r.remaining())?;
-            let value = r.bytes(len)?;
-            if ids::dropped_component(raw).is_some() {
-                continue;
+            if let Some((kind, component, _)) = read_added(raw, &mut Reader::new(r.bytes(len)?))? {
+                added.push((kind, component));
             }
-            let kind = ids::component(raw);
-            added.push((kind, Component::read(kind, &mut Reader::new(value))?));
         }
         Ok((added, read_removed(&mut r, negative)?))
     }
@@ -830,31 +917,25 @@ fn read_stack(r: &mut Reader, delimited: bool) -> Result<Option<Stack>> {
     let mut values = Vec::with_capacity(positive.min(64));
     for _ in 0..positive {
         let raw = r.varint()?;
-        if let Some(name) = ids::dropped_component(raw) {
-            if delimited {
-                let len = r.count(r.remaining())?;
-                r.bytes(len)?;
-            } else {
-                skip_dropped(name, r)?;
-            }
-            continue;
-        }
-        let kind = ids::component(raw);
-        let (component, value) = if delimited {
+        let read = if delimited {
             let len = r.count(r.remaining())?;
-            let value = r.bytes(len)?;
-            let mut component_reader = Reader::new(value);
-            let component = Component::read(kind, &mut component_reader)?;
-            if custom::contains(kind) && component_reader.remaining() != 0 {
+            let mut component_reader = Reader::new(r.bytes(len)?);
+            let read = read_added(raw, &mut component_reader)?;
+            if read
+                .as_ref()
+                .is_some_and(|(kind, ..)| custom::contains(*kind))
+                && component_reader.remaining() != 0
+            {
                 return Err(crate::Error::new("trailing custom component data"));
             }
-            (component, value)
+            read
         } else {
-            let start = r.position();
-            (Component::read(kind, r)?, r.since(start))
+            read_added(raw, r)?
         };
-        values.push(value);
-        added.push((kind, component));
+        if let Some((kind, component, value)) = read {
+            values.push(value);
+            added.push((kind, component));
+        }
     }
     let removed = read_removed(r, negative)?;
     let mut patch = Writer::new();
@@ -923,12 +1004,9 @@ impl Codec<Stack> for Template {
         let mut added = Vec::with_capacity(positive.min(64));
         for _ in 0..positive {
             let raw = r.varint()?;
-            if let Some(name) = ids::dropped_component(raw) {
-                skip_dropped(name, r)?;
-                continue;
+            if let Some((kind, component, _)) = read_added(raw, r)? {
+                added.push((kind, component));
             }
-            let kind = ids::component(raw);
-            added.push((kind, Component::read(kind, r)?));
         }
         let removed = read_removed(r, negative)?;
         Ok(Stack {

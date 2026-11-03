@@ -96,9 +96,16 @@ impl ServerVersion {
     /// How this version numbers block states and registries, against the pinned one. `None` for the pinned
     /// version itself.
     pub fn ids(self) -> Option<&'static ids::Ids> {
-        // Before 26.3 a tag slot display was a bare tag id.
+        // Before 26.3 a tag slot display was a bare tag id, and pot decorations were item ids.
         const BEFORE_26_3: ids::Quirks = ids::Quirks {
             tag_slot_display_is_id: true,
+            pot_decorations_are_items: true,
+            either_holder_song_and_tag_resistance: false,
+        };
+        // Before 26.1 a jukebox song was an EitherHolder, and damage resistance a tag.
+        const BEFORE_26_1: ids::Quirks = ids::Quirks {
+            either_holder_song_and_tag_resistance: true,
+            ..BEFORE_26_3
         };
         static V26_2: ids::Ids = ids::Ids {
             quirks: BEFORE_26_3,
@@ -109,7 +116,7 @@ impl ServerVersion {
             ..v26_1_2_ids::IDS
         };
         static V1_21_11: ids::Ids = ids::Ids {
-            quirks: BEFORE_26_3,
+            quirks: BEFORE_26_1,
             // 26.1 registered the cat, cow, pig and chicken sound variants among the others.
             entity_data_serializer: ids::Remap::Runs {
                 up: &[
@@ -130,7 +137,7 @@ impl ServerVersion {
             ..v1_21_11_ids::IDS
         };
         static V1_21_10: ids::Ids = ids::Ids {
-            quirks: BEFORE_26_3,
+            quirks: BEFORE_26_1,
             // As 1.21.11's, without the zombie nautilus variant 1.21.11 added after the chicken's.
             entity_data_serializer: ids::Remap::Runs {
                 up: &[
