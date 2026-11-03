@@ -480,7 +480,7 @@ pub enum Op {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Modifier {
     pub attr: Attr,
-    pub id: &'static str,
+    pub id: std::borrow::Cow<'static, str>,
     pub amount: f64,
     pub op: Op,
 }
@@ -490,6 +490,14 @@ pub struct Modifier {
 pub struct Attributes {
     pub bases: Vec<(Attr, f64)>,
     pub modifiers: Vec<Modifier>,
+}
+/// The attribute `/attribute` names (`follow_range`, not
+/// `minecraft:follow_range`) when gameplay reads it from this store. Armor
+/// has its own map (`armor_attributes`).
+pub fn command_attr(short: &str) -> Option<Attr> {
+    Attr::ALL
+        .into_iter()
+        .find(|a| *a != Attr::Armor && a.name() == short)
 }
 /// The type's default value of an attribute, if the mob has it.
 pub fn default_value(m: &Mob, a: Attr) -> Option<f64> {
@@ -636,11 +644,18 @@ pub fn modifier_amount(m: &Mob, a: Attr, id: &str) -> Option<f64> {
         .map(|x| x.amount)
 }
 /// `addOrReplacePermanentModifier`.
-pub fn add_modifier(m: &mut Mob, a: Attr, id: &'static str, amount: f64, op: Op) {
+pub fn add_modifier(
+    m: &mut Mob,
+    a: Attr,
+    id: impl Into<std::borrow::Cow<'static, str>>,
+    amount: f64,
+    op: Op,
+) {
+    let id = id.into();
     let s = m.extra.attributes.get_or_insert_with(Box::default);
     let new = Modifier {
         attr: a,
-        id,
+        id: id.clone(),
         amount,
         op,
     };
@@ -2453,6 +2468,99 @@ mod tests {
             "minecraft:cow"
         ));
         assert!(!spawn_egg_is_for("minecraft:stick", "minecraft:cow"));
+    }
+    /// #7877: `/attribute <mob> <attr> modifier add` hands `add_modifier` an
+    /// id typed at run time; it lands in the value, reads back, and goes.
+    #[test]
+    fn a_command_modifier_with_a_runtime_id_changes_the_value() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        if !root.join("items.json").exists() {
+            return;
+        }
+        let data = crate::mobs::MobTypes::load(&root).unwrap();
+        let kind = std::sync::Arc::new(data.types.get("minecraft:zombie").unwrap().clone());
+        let mut m = crate::mobs::Mob::new(
+            2,
+            kind,
+            horizon_core::geometry::Vec3::new(0.0, 4.0, 0.0),
+            0.0,
+        );
+        set_base(&mut m, Attr::AttackDamage, 4.0);
+        let id = String::from("test:typed");
+        add_modifier(&mut m, Attr::AttackDamage, id.clone(), 3.0, Op::AddValue);
+        assert!(has_modifier(&m, Attr::AttackDamage, &id));
+        assert_eq!(modifier_amount(&m, Attr::AttackDamage, &id), Some(3.0));
+        assert_eq!(m.attrs.attack_damage, 7.0);
+        assert_eq!(value(&m, Attr::AttackDamage), 7.0);
+        remove_modifier(&mut m, Attr::AttackDamage, &id);
+        assert!(!has_modifier(&m, Attr::AttackDamage, &id));
+        assert_eq!(m.attrs.attack_damage, 4.0);
+    }
+    /// #7877: every attribute `/attribute` can name on a mob is edited in the
+    /// store the mob reads: base, modifier and removal reach the cached field
+    /// gameplay uses, for each attribute the mob types hold.
+    #[test]
+    fn every_command_attribute_reaches_the_store_the_mob_reads() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        if !root.join("items.json").exists() {
+            return;
+        }
+        let data = crate::mobs::MobTypes::load(&root).unwrap();
+        let mut covered = 0;
+        for a in Attr::ALL {
+            let short = a.name();
+            assert_eq!(command_attr(short), (a != Attr::Armor).then_some(a));
+            if a == Attr::Armor {
+                continue;
+            }
+            // Any type holding the attribute, in a stable order.
+            let mut names: Vec<_> = data.types.keys().collect();
+            names.sort();
+            let Some(kind) = names
+                .into_iter()
+                .map(|n| &data.types[n])
+                .find(|k| k.attributes.contains_key(a.id()))
+            else {
+                continue;
+            };
+            let mut m = crate::mobs::Mob::new(
+                2,
+                std::sync::Arc::new(kind.clone()),
+                horizon_core::geometry::Vec3::new(0.0, 4.0, 0.0),
+                0.0,
+            );
+            let cached = |m: &crate::mobs::Mob| match a {
+                Attr::MaxHealth => Some(f64::from(m.attrs.max_health)),
+                Attr::MovementSpeed => Some(m.attrs.speed),
+                Attr::FollowRange => Some(m.attrs.follow_range),
+                Attr::AttackDamage => Some(f64::from(m.attrs.attack_damage)),
+                Attr::KnockbackResistance => Some(m.attrs.knockback_resistance),
+                Attr::SpawnReinforcements => Some(m.attrs.spawn_reinforcements),
+                Attr::JumpStrength => Some(m.attrs.jump_strength),
+                _ => None,
+            };
+            // Max health clamps below 1.
+            let base = if a == Attr::MaxHealth { 2.0 } else { 0.5 };
+            set_base(&mut m, a, base);
+            assert_eq!(base_value(&m, a), base, "{short} base");
+            add_modifier(&mut m, a, format!("test:{short}"), 0.25, Op::AddValue);
+            assert_eq!(modifier_amount(&m, a, &format!("test:{short}")), Some(0.25));
+            assert_eq!(value(&m, a), base + 0.25, "{short} value");
+            if let Some(c) = cached(&m) {
+                assert_eq!(c, base + 0.25, "{short} cached field");
+            }
+            remove_modifier(&mut m, a, &format!("test:{short}"));
+            assert!(!has_modifier(&m, a, &format!("test:{short}")));
+            if let Some(c) = cached(&m) {
+                assert_eq!(c, base, "{short} cached field after removal");
+            }
+            covered += 1;
+        }
+        assert!(covered >= 7, "only {covered} attributes had a mob type");
     }
     /// #7877: `/attribute <mob> movement_speed|attack_damage base set` goes
     /// through `AttributeInstance.setBaseValue`, so the value survives the

@@ -7,7 +7,10 @@
 //! Every colortex buffer a program reads or writes has two textures, A and B. Programs read
 //! "main" and write "alt", and each buffer a program wrote flips afterwards (6.1.6). The
 //! mapping carries over to the next frame, so a buffer that is not cleared reads back what was
-//! written last (OQ-8). Buffers are cleared at the start of the frame, "main" only.
+//! written last (OQ-8). A cleared buffer has both textures cleared at the start of the frame:
+//! with an odd number of flips a frame, the texture a program writes was "main" the frame before
+//! and may still hold what was stored into it after that frame's clear (Iris 1.11.7 blends onto
+//! the clear value there, probed with a pack of our own).
 //! Pack buffers store rows as GL does (row 0 at the bottom: the translator negates clip y), so
 //! the world is copied in upside down, and its reverse-Z depth becomes GL window depth.
 
@@ -566,6 +569,10 @@ pub struct PackPost {
     composite_pre: u16,
     formats: [wgpu::TextureFormat; BUFFERS],
     clears: [Option<[f32; 4]>; BUFFERS],
+    /// Buffers of a three-channel format, and whether their textures are new: then they get
+    /// alpha 1 before the next frame.
+    rgb: u16,
+    rgb_unset: bool,
     used: u16,
     /// `size.buffer.*`.
     sizes: [Option<horizon_shaders::BufferSize>; BUFFERS],
@@ -648,6 +655,33 @@ fn texture_format(f: Format, features: wgpu::Features) -> wgpu::TextureFormat {
         // Snorm, 16-bit norm without the feature, RGB9_E5: half floats hold them.
         _ => half,
     }
+}
+
+/// The SNORM wgpu format of SNORM pack format `f`, where this adapter can render to it. Iris
+/// stores such a buffer clamped to [-1, 1] and quantised to its bits; elsewhere the half floats of
+/// [`texture_format`] stand in.
+fn snorm_format(
+    f: Format,
+    features: wgpu::Features,
+    adapter: &wgpu::Adapter,
+) -> Option<wgpu::TextureFormat> {
+    use wgpu::TextureFormat as T;
+    let format = match (f.kind, f.bits, f.channels) {
+        (Kind::Snorm, 8, 1) => T::R8Snorm,
+        (Kind::Snorm, 8, 2) => T::Rg8Snorm,
+        (Kind::Snorm, 8, _) => T::Rgba8Snorm,
+        (Kind::Snorm, 16, 1) => T::R16Snorm,
+        (Kind::Snorm, 16, 2) => T::Rg16Snorm,
+        (Kind::Snorm, 16, _) => T::Rgba16Snorm,
+        _ => return None,
+    };
+    let mut needs = wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES;
+    if f.bits == 16 {
+        needs |= wgpu::Features::TEXTURE_FORMAT_16BIT_NORM;
+    }
+    let renders = (adapter.get_texture_format_features(format).allowed_usages)
+        .contains(wgpu::TextureUsages::RENDER_ATTACHMENT);
+    (features.contains(needs) && renders).then_some(format)
 }
 
 /// The texture behind sampler `name` in a program of the shadow buffers (`shadow_space`: buffer
@@ -1039,6 +1073,8 @@ struct Resources<'a> {
     gpu: Gpu,
     /// The buffers whose format can be bound as an image.
     storable: u16,
+    /// The buffers of a three-channel format (`rgb`): they have no alpha to write, and read 1.
+    rgb: u16,
     /// The stage (`texture.<stage>`) of the programs built so far, and the buffers one of them
     /// flipped: a `texture.<stage>.colortexN` no longer stands in for buffer N in the stage's
     /// later programs, which read what was written, as in Iris. `final` continues
@@ -1441,6 +1477,12 @@ fn build_pass(
         } else if let Some(&buffer) = p.buffers.get(l) {
             let format = formats[buffer as usize];
             let mut state = target(format);
+            if !p.group.shadow()
+                && pack.rgb & 1 << buffer != 0
+                && let Some(t) = &mut state
+            {
+                t.write_mask = wgpu::ColorWrites::COLOR;
+            }
             if let (Some(t), Some(b)) = (
                 &mut state,
                 p.buffer_blends
@@ -1763,16 +1805,26 @@ impl PackPost {
         // What the pack's shaders need of its storage buffers, before its parts move out.
         let minimums = post.buffer_minimums();
         let features = device.features();
-        let formats: [wgpu::TextureFormat; BUFFERS] =
-            std::array::from_fn(|i| texture_format(post.config.buffers[i].format, features));
+        let formats: [wgpu::TextureFormat; BUFFERS] = std::array::from_fn(|i| {
+            let f = post.config.buffers[i].format;
+            snorm_format(f, features, adapter).unwrap_or_else(|| texture_format(f, features))
+        });
         let sky_clear = Some(&post.config.buffers[0])
             .filter(|b| b.clear)
             .and_then(|b| b.clear_color);
+        // A three-channel buffer reads alpha 1 whatever is written or cleared, as in Iris: its
+        // passes leave alpha alone, and its clears and first contents set it to 1.
+        let rgb = (0..BUFFERS)
+            .filter(|&i| post.config.buffers[i].format.channels == 3)
+            .fold(0u16, |m, i| m | 1 << i);
         let clears = std::array::from_fn(|i| {
             let b = &post.config.buffers[i];
             b.clear.then(|| {
-                b.clear_color
-                    .unwrap_or(if i == 1 { [1.0; 4] } else { [0.0; 4] })
+                let mut c = (b.clear_color).unwrap_or(if i == 1 { [1.0; 4] } else { [0.0; 4] });
+                if rgb & 1 << i != 0 {
+                    c[3] = 1.0;
+                }
+                c
             })
         });
         let mut notes = post.notes;
@@ -1873,6 +1925,7 @@ impl PackPost {
             indices: indices.as_ref(),
             gpu,
             storable,
+            rgb,
             released: std::cell::Cell::new(("", 0)),
             stand_ins: &stand_ins,
         };
@@ -2318,7 +2371,13 @@ impl PackPost {
             }
         });
         let float = wgpu::TextureSampleType::Float { filterable: true };
-        let blit_targets = std::iter::once(target(formats[0]));
+        let mut world_target = target(formats[0]);
+        if rgb & 1 != 0
+            && let Some(t) = &mut world_target
+        {
+            t.write_mask = wgpu::ColorWrites::COLOR;
+        }
+        let blit_targets = std::iter::once(world_target);
         // Cleared by the pass's load operation; the shader writes nothing there.
         let blit_targets: Vec<_> = blit_targets
             .chain(cleared.iter().map(|&b| {
@@ -2443,6 +2502,8 @@ impl PackPost {
             composite_pre: mask(&post.composite_pre),
             formats,
             clears,
+            rgb,
+            rgb_unset: true,
             used,
             storage,
             copied,
@@ -2810,7 +2871,10 @@ impl PackPost {
         let group = self.bind(device, queue, encoder, pass, size);
         let mut cp = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some(&pass.name),
-            timestamp_writes: None,
+            timestamp_writes: self
+                .timing
+                .as_mut()
+                .and_then(|t| t.compute_writes(&pass.name)),
         });
         cp.set_pipeline(&pipeline);
         cp.set_bind_group(0, &group, &[]);
@@ -3436,16 +3500,25 @@ impl PackPost {
     }
 
     /// Regenerates the mip chain of buffer `b`'s side that programs read.
-    fn mipmap(&self, encoder: &mut wgpu::CommandEncoder, b: usize) {
+    fn mipmap(&mut self, encoder: &mut wgpu::CommandEncoder, b: usize) {
         let (Some(targets), Some((pipeline, _))) = (&self.targets, self.down.get(&self.formats[b]))
         else {
             return;
         };
         let Some(mips) = &targets.mips[b] else { return };
         let side = &mips[usize::from(self.main & 1 << b != 0)];
+        // Timed as one pass per buffer (its first level), so the pass timer shows the chains.
+        let label = format!("mipmaps colortex{b}");
+        let mut first = true;
         for (attachment, group) in &side.levels {
+            let timestamp_writes = if std::mem::take(&mut first) {
+                self.timing.as_mut().and_then(|t| t.writes(&label))
+            } else {
+                None
+            };
             let mut rp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Shader pack mipmap"),
+                timestamp_writes,
                 color_attachments: &[attach(
                     attachment,
                     wgpu::Operations {
@@ -3559,6 +3632,7 @@ impl PackPost {
             return;
         }
         self.setup_pending = true;
+        self.rgb_unset = true;
         let sizes: [[u32; 2]; BUFFERS] =
             std::array::from_fn(|i| self.sizes[i].map_or(size, |s| s.resolve(size)));
         let full_chain = |size: [u32; 2]| 32 - size[0].max(size[1]).max(1).leading_zeros();
@@ -4015,6 +4089,26 @@ impl PackPost {
                 ..Default::default()
             });
         }
+        // Three-channel buffers start out with alpha 1 on both sides: a pass writes the side the
+        // frame's clear didn't touch.
+        if self.rgb_unset {
+            self.rgb_unset = false;
+            let start = wgpu::Operations {
+                load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                store: wgpu::StoreOp::Store,
+            };
+            for b in (0..BUFFERS).filter(|&b| self.rgb & 1 << b != 0) {
+                for alt in [false, true] {
+                    if let Some(v) = view(self.main, b, alt) {
+                        encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                            label: Some("Shader pack three-channel start"),
+                            color_attachments: &[attach(v, start)],
+                            ..Default::default()
+                        });
+                    }
+                }
+            }
+        }
         let clear_op = |b: usize| {
             let c = self.clears[b].unwrap_or_default();
             wgpu::Operations {
@@ -4035,26 +4129,35 @@ impl PackPost {
         // Attachments share a size and stay within the device's count and byte limits.
         let limits = device.limits();
         let max_attachments = (limits.max_color_attachments as usize).min(8);
-        let mut by_size: Vec<([u32; 2], Vec<usize>)> = Vec::new();
-        for &b in &self.other_clears {
+        // The buffers the blit doesn't clear, and the other texture of every cleared buffer.
+        let alt_clears = (0..BUFFERS)
+            .filter(|&b| self.clears[b].is_some() && view(self.main, b, true).is_some())
+            .map(|b| (b, true));
+        let mut by_size: Vec<([u32; 2], Vec<(usize, bool)>)> = Vec::new();
+        for (b, alt) in self
+            .other_clears
+            .iter()
+            .map(|&b| (b, false))
+            .chain(alt_clears)
+        {
             let at = targets.sizes[b];
             match by_size.iter_mut().find(|(s, buffers)| {
                 let bytes = buffers
                     .iter()
-                    .fold(0, |bytes, &b| attachment_bytes(bytes, self.formats[b]));
+                    .fold(0, |bytes, &(b, _)| attachment_bytes(bytes, self.formats[b]));
                 *s == at
                     && buffers.len() < max_attachments
                     && attachment_bytes(bytes, self.formats[b])
                         <= limits.max_color_attachment_bytes_per_sample
             }) {
-                Some((_, l)) => l.push(b),
-                None => by_size.push((at, vec![b])),
+                Some((_, l)) => l.push((b, alt)),
+                None => by_size.push((at, vec![(b, alt)])),
             }
         }
         for (_, chunk) in &by_size {
             let attachments: Vec<_> = chunk
                 .iter()
-                .map(|&b| attach(view(self.main, b, false).expect("used buffer"), clear_op(b)))
+                .map(|&(b, alt)| attach(view(self.main, b, alt).expect("used buffer"), clear_op(b)))
                 .collect();
             encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Shader pack clear"),
@@ -4087,9 +4190,18 @@ impl PackPost {
             self.blit_group = Some(([world.clone(), world_depth.clone()], group));
         }
         {
+            // The blit leaves a three-channel colortex0's alpha at the 1 it starts with.
+            let world_ops = if self.rgb & 1 != 0 {
+                wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                    store: wgpu::StoreOp::Store,
+                }
+            } else {
+                overwrite
+            };
             let mut attachments = vec![attach(
                 view(self.main, 0, false).expect("colortex0"),
-                overwrite,
+                world_ops,
             )];
             for &b in &self.blit_clears {
                 attachments.push(attach(
@@ -4292,6 +4404,9 @@ impl PackPost {
 }
 
 #[cfg(test)]
+mod snorm_tests;
+
+#[cfg(test)]
 #[path = "pack_post/depth_test.rs"]
 mod depth_test;
 
@@ -4437,6 +4552,7 @@ mod tests {
             indices: None,
             gpu: Gpu::of(&adapter, device.features()),
             storable: 0,
+            rgb: 0,
             released: std::cell::Cell::new(("", 0)),
             stand_ins: &stand_ins,
         };
@@ -4514,6 +4630,7 @@ mod tests {
             indices: None,
             gpu: Gpu::of(&adapter, device.features()),
             storable: 0,
+            rgb: 0,
             released: std::cell::Cell::new(("", 0)),
             stand_ins: &stand_ins,
         };
@@ -4654,3 +4771,6 @@ mod tests {
 
 #[cfg(test)]
 mod destination_tests;
+
+#[cfg(test)]
+mod rgb_alpha_tests;
