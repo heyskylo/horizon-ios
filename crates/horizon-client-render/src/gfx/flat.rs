@@ -140,6 +140,10 @@ pub struct Flat {
     /// Frames with fewer sections in view keep the per-section draws.
     pub min_sections: usize,
     range_align: u64,
+    /// Phase 2's calls draw their page key as their first instance, as `draw_paged` does:
+    /// the visibility buffer's ID pass (`visbuffer`) reads it. The other flat pipelines
+    /// have no instance-rate inputs.
+    pub page_instances: bool,
 }
 
 /// Sections in view (and distant tiles) from which a frame is drawn flat.
@@ -506,6 +510,7 @@ impl Flat {
             min_sections,
             range_align: (u64::from(device.limits().min_storage_buffer_offset_alignment) / 16)
                 .max(1),
+            page_instances: false,
         }
     }
     /// A section uploaded to `vertices` vertices from `start` of the page keyed `page`:
@@ -720,10 +725,11 @@ impl Flat {
         );
         // Phase 2's calls start empty, each at the start of its room.
         self.phase2_call_data.clear();
+        let page_instances = self.page_instances;
         self.phase2_call_data.extend(
             self.calls[phase1_calls..solid_calls]
                 .iter()
-                .map(|c| [0, 1, c.first, 0, 0]),
+                .map(|c| [0, 1, c.first, 0, if page_instances { c.page } else { 0 }]),
         );
         let phase2_calls = self.phase2_call_data.len() as u64;
         if phase2_calls > self.phase2_call_capacity {
@@ -889,6 +895,30 @@ impl Flat {
             page(pass, call.page);
             pass.draw_indexed(call.first..call.first + call.count, 0, 0..1);
         }
+    }
+    /// `draw`, each call as the instance its page key names: the visibility buffer's ID
+    /// pass (`visbuffer`) tells the pages apart by it.
+    pub(super) fn draw_paged<'a>(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        calls: &[Call],
+        vertices: impl Fn(u32) -> wgpu::BufferSlice<'a>,
+    ) {
+        pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
+        for call in calls {
+            self.bind_page(pass, call.page, &vertices);
+            pass.draw_indexed(
+                call.first..call.first + call.count,
+                0,
+                call.page..call.page + 1,
+            );
+        }
+    }
+    /// The block table of the page keyed `page` and the origins by section id, which the
+    /// visibility buffer's resolve (`visbuffer`) reads in its fragment shader.
+    pub(super) fn tables(&self, page: u32) -> Option<(&wgpu::Buffer, &wgpu::Buffer)> {
+        let table = self.pages.get(page as usize)?.as_ref()?;
+        Some((&table.blocks, &self.origins))
     }
     /// Draws `calls` without their index buffer, `instances` times: a shader pack's geometry
     /// stage reads the indices itself (`hz_indices`) and stands for one emitted triangle per

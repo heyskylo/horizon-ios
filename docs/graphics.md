@@ -97,6 +97,12 @@ Upscaling (`upscaling` in `horizon-graphics.txt`) renders the world smaller than
 
 Not implemented: anisotropic filtering (wgpu needs linear magnification for it, which blurs close blocks), MSAA (FXAA or TAA instead) and exclusive fullscreen (fullscreen is borderless).
 
+## Visibility buffer (experimental)
+
+`HORIZON_VISBUFFER=1` (read at startup, off by default) draws solid terrain through a visibility buffer (`gfx/visbuffer.rs`, `visbuffer.wgsl`). Pass 1 rasterises the solid draws, near sections and far terrain alike, writing only depth and, per pixel, a 32-bit ID of the quad it shows (bit 31 set, the arena page in bits 22 to 30, the quad in that page below); cutout and fading quads keep their alpha test and dither there, the other quads never discard, so a tiled GPU still hides what lies behind them. Pass 2 draws one full-screen triangle per arena page: it reads the quad's corners from the arena and its section's origin as the vertex shaders do, runs the terrain vertex code on the triangle the pixel falls in, interpolates with perspective-correct barycentrics (homogeneous 2D rasterisation, so corners behind the camera need no clipping) and works out the UV's screen gradients over that triangle as `dpdxFine`/`dpdyFine` would, so the texel, mip level and RGSS blend, light, HDR marks and fog come out as in the normal path. Each solid pixel is then shaded once, however many quads were drawn over it and however small they are.
+
+It runs only in frames drawn flat (Metal past `flat::MIN_SECTIONS` sections in view, or `HORIZON_FLAT_DRAWS=1` elsewhere), with or without occlusion culling. Frames with a shader pack's terrain, one of Horizon's own packs with a material stage or a shadow pass, a pack's surface target, and the title screen keep the normal solid passes, as do translucent terrain and the water mirror's own pass.
+
 ## Benchmark
 
 `tools/graphics_bench.py` opens a fresh creative world (seed 1234) on a virtual screen and flies the camera along four fixed 192-block paths, over a village, a forest, the ocean and a mountain, at render distances 8, 16 and 32, one game per distance. Each flight takes 12 seconds and reports average FPS, 1% lows, frame-time percentiles, CPU time per frame (frame time minus waits for the GPU, the display and the limiter), the split of that CPU time (world update, ticks, frame preparation, renderer) for all frames and for the slowest 1%, and GPU time per frame from timestamp queries.

@@ -170,6 +170,7 @@ mod timing;
 pub mod translucency;
 pub(crate) mod upload;
 mod view;
+mod visbuffer;
 mod wgsl_prefix;
 mod world_post;
 
@@ -844,6 +845,9 @@ pub struct Renderer {
     translucent_mark: wgpu::RenderPipeline,
     /// Flat section draws (`flat`), where multi-draw is emulated.
     flat: Option<flat::Flat>,
+    /// The visibility buffer for flat frames' solid terrain (`visbuffer`,
+    /// `HORIZON_VISBUFFER=1`).
+    visbuf: Option<visbuffer::Visbuffer>,
     /// `flat` draws this frame's sections (off: the per-section draws).
     flat_on: bool,
     /// Occlusion culling of solid section draws, where the GPU's instance
@@ -3893,6 +3897,16 @@ impl Renderer {
                 },
             )
         });
+        let visbuf = flat.as_ref().filter(|_| visbuffer::wanted()).map(|f| {
+            log::info!("Horizon: solid terrain through a visibility buffer (HORIZON_VISBUFFER)");
+            visbuffer::Visbuffer::new(
+                &device,
+                &bindings,
+                &f.draw_layout,
+                config.format.remove_srgb_suffix(),
+                &sprite_constants,
+            )
+        });
         let multi_draw = device
             .features()
             .contains(wgpu::Features::INDIRECT_FIRST_INSTANCE)
@@ -4036,6 +4050,7 @@ impl Renderer {
             gpu_checks: 0,
             cull,
             flat,
+            visbuf,
             sky,
             sky_base,
             sunrise_pipeline,
@@ -7713,6 +7728,11 @@ impl Renderer {
                         || pack_terrain
                         || shadow_view.is_some()) =>
             {
+                // The visibility buffer's phase 2 IDs need each call's page (`visbuffer`).
+                flat.page_instances = self.visbuf.is_some()
+                    && !pack_terrain
+                    && shadow_view.is_none()
+                    && self.native.as_ref().is_none_or(|n| n.material.is_none());
                 let sections = &self.sections;
                 let lods = &self.lods;
                 let sorted = &self.sorted_indices;
@@ -8247,6 +8267,20 @@ impl Renderer {
                     && n.material.as_ref().is_some_and(|m| m.writes_surface)
             })
             .map(|n| n.frame.surface_view.clone());
+        // Solid terrain through the visibility buffer (`visbuffer`): flat frames without a
+        // pack drawing terrain, a material stage, a surface target or a shadow pass.
+        let vis_frame = flat_frame
+            && !frame.title
+            && !pack_terrain
+            && !pack_draws_terrain
+            && material.is_none()
+            && surface.is_none()
+            && shadow_view.is_none()
+            && self.visbuf.is_some();
+        if vis_frame && let Some(vis) = &mut self.visbuf {
+            let depth = world_depth.texture();
+            vis.fit(&self.device, [depth.width(), depth.height()]);
+        }
         {
             let attachments = [Some(wgpu::RenderPassColorAttachment {
                 view: world_view,
@@ -8269,7 +8303,8 @@ impl Renderer {
                     view: world_depth,
                     depth_ops: Some(wgpu::Operations {
                         load: wgpu::LoadOp::Clear(0.0),
-                        store: if cull.is_some() || keep_depth {
+                        // The visibility buffer's passes draw on after it.
+                        store: if cull.is_some() || keep_depth || vis_frame {
                             wgpu::StoreOp::Store
                         } else {
                             wgpu::StoreOp::Discard
@@ -8365,6 +8400,51 @@ impl Renderer {
                 .filter(|_| flat_frame && !pack_draws_terrain)
             {
                 _ if pack_draws_terrain => {
+                    pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
+                }
+                // The visibility buffer: the sky stays in the world pass's colour; the solid
+                // calls draw their IDs and depth (phase 1, the occlusion test, phase 2), then
+                // the resolve shades them, and the world pass goes on over both.
+                Some(flat) if vis_frame => {
+                    let vis = self.visbuf.as_ref().expect("a visibility buffer frame");
+                    let vertices = flat_vertices(&self.arena, self.translucent_arena.as_ref());
+                    drop(pass);
+                    let mut ids =
+                        vis.id_pass(&mut encoder, world_depth, true, self.own_timing.as_mut());
+                    ids.set_bind_group(0, &self.group, &[]);
+                    vis.draw_ids(&mut ids, flat, vertices);
+                    drop(ids);
+                    if let Some(cull) = cull {
+                        // The test's pipeline draws into the world's colour.
+                        let mut test = plain_pass(&mut encoder);
+                        cull.test(&mut test);
+                        drop(test);
+                        cull.test_pass(&mut encoder, self.own_timing.as_mut());
+                        flat.flatten_phase2(&mut encoder, self.own_timing.as_mut());
+                        let mut ids =
+                            vis.id_pass(&mut encoder, world_depth, false, self.own_timing.as_mut());
+                        ids.set_bind_group(0, &self.group, &[]);
+                        vis.draw_ids_phase2(&mut ids, flat, vertices);
+                    }
+                    vis.resolve(
+                        &self.device,
+                        &mut encoder,
+                        world_view,
+                        &self.group,
+                        flat,
+                        &self.arena,
+                        self.own_timing.as_mut(),
+                    );
+                    pass = world_pass_after_culling(
+                        &mut encoder,
+                        world_view,
+                        world_depth,
+                        keep_depth,
+                        self.own_timing.as_mut(),
+                        "World after visibility buffer",
+                    );
+                    pass.set_bind_group(0, &self.group, &[]);
+                    pack_frame(&mut pass);
                     pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
                 }
                 Some(flat) => {
@@ -10681,6 +10761,9 @@ mod tests {
                 sources.push((path, base + &text));
             } else if name == "static_entity.wgsl" {
                 sources.push((path, static_entity_shader()));
+            } else if name == "visbuffer.wgsl" {
+                // Appended to terrain.wgsl (gfx/visbuffer.rs).
+                sources.push((path, include_str!("terrain.wgsl").to_owned() + &text));
             } else if name == "oit_border.wgsl" {
                 let base = include_str!("border.wgsl").to_owned() + include_str!("oit.wgsl");
                 sources.push((path, base + &text));

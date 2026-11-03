@@ -175,10 +175,13 @@ fn tile_uv(uv: vec2<f32>) -> vec2<f32> {
     return uv - max(ceil(uv) - 1.0, vec2(0.0));
 }
 fn sprite(tiled: vec2<f32>, layer: u32) -> vec4<f32> {
-    // terrain.fsh's two sampling paths: sampleRGSS for RGSS, sampleNearest otherwise.
     // The gradients come from the unwrapped UV, so the mip level holds across block seams.
-    let du = dpdx(tiled);
-    let dv = dpdy(tiled);
+    return sprite_at(tiled, layer, dpdx(tiled), dpdy(tiled));
+}
+// `sprite` with the unwrapped UV's screen gradients given: the visibility buffer's resolve
+// (visbuffer.wgsl) works them out from the quad, as its neighbours may be other quads.
+fn sprite_at(tiled: vec2<f32>, layer: u32, du: vec2<f32>, dv: vec2<f32>) -> vec4<f32> {
+    // terrain.fsh's two sampling paths: sampleRGSS for RGSS, sampleNearest otherwise.
     let uv = tile_uv(tiled);
     // The wrap shifts a face's UVs by whole blocks, so half of one tells a tile's face from a
     // block's (whose UVs stay inside its sprite).
@@ -508,6 +511,11 @@ fn solid_color(in: TerrainOut) -> vec4<f32> {
 }
 // The rest of a solid pixel's colour once it is kept: emission and fog.
 fn solid_finish(in: TerrainOut, texel: vec4<f32>, color: vec4<f32>) -> vec4<f32> {
+    return solid_finish_at(in, texel, color, dpdx(in.uv), dpdy(in.uv));
+}
+// `solid_finish` with the UV's screen gradients given (`sprite_at`).
+fn solid_finish_at(in: TerrainOut, texel: vec4<f32>, color: vec4<f32>, du: vec2<f32>,
+                   dv: vec2<f32>) -> vec4<f32> {
     // Below 0.75, alpha tells HDR output (hdr.wgsl) a light source's pixel
     // shines, at which tier (mesher::hdr_tier) and how much (hdr_mark), by the
     // texel's own brightness, so its light level and face shading don't change
@@ -539,7 +547,7 @@ fn solid_finish(in: TerrainOut, texel: vec4<f32>, color: vec4<f32>) -> vec4<f32>
     }
     if in.emissive_layer != 0xffffffffu {
         // The high bit: an OptiFine overlay, drawn cutout (opaque where alpha >= 0.1).
-        var mask = sprite(in.uv, in.emissive_layer & 0x7fffffffu);
+        var mask = sprite_at(in.uv, in.emissive_layer & 0x7fffffffu, du, dv);
         if (in.emissive_layer & 0x80000000u) != 0u {
             mask.a = select(0.0, 1.0, mask.a >= 0.1);
         }
