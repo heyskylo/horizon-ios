@@ -152,6 +152,9 @@ pub struct Hdr {
     /// HDR lighting: off while a shader pack's post or material stage runs, the pack's own, and
     /// with `HORIZON_HDR_LIGHTING=0`, to compare.
     pub lighting: bool,
+    /// The HDR Lighting setting: off, nothing in the world is lifted, light sources and the
+    /// sun included, so the picture is SDR's on the HDR canvas.
+    pub look: bool,
     /// Calibration's test picture while it runs.
     pub calibration: Option<Calibration>,
 }
@@ -297,6 +300,7 @@ impl Hdr {
             ui: 1.0,
             masks: MASKS,
             lighting: true,
+            look: true,
             calibration: None,
         }
     }
@@ -537,7 +541,7 @@ impl Hdr {
         params[..5].copy_from_slice(&[
             paper / 80.0,
             (self.peak / paper).max(1.0),
-            f32::from(u8::from(world)),
+            f32::from(u8::from(world && self.look)),
             f32::from(u8::from(self.debug)),
             f32::from(u8::from(pq)),
         ]);

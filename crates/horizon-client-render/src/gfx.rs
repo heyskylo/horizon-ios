@@ -1124,6 +1124,8 @@ pub struct Renderer {
     /// The marker file of an HDR output that has not presented a frame yet
     /// (`graphics::HDR_MARKER`).
     hdr_marker: Option<std::path::PathBuf>,
+    /// The HDR Lighting setting, kept for the HDR output made when HDR turns on.
+    hdr_lighting_setting: bool,
     /// The shader pack's post-processing, and the dimension (legacy id) it was loaded for.
     pack_post: Option<(i32, Option<pack_post::PackPost>)>,
     /// The post passes of one of Horizon's own shader packs; never beside `pack_post`'s.
@@ -4195,6 +4197,7 @@ impl Renderer {
             frame_gen: frame_gen::FrameGen::new(),
             entity_atlas: atlas_view.clone(),
             hdr: None,
+            hdr_lighting_setting: true,
             emission_stats,
             hdr_output,
             hdr_marker: None,
@@ -5544,6 +5547,13 @@ impl Renderer {
     }
     /// HDR output (Horizon setting): HDR10 or scRGB at `paper_white` nits, the world's
     /// highlights expanded up to `peak` nits. Off where the surface can't present it.
+    /// The HDR Lighting setting (`Hdr::look`).
+    pub fn set_hdr_lighting(&mut self, on: bool) {
+        self.hdr_lighting_setting = on;
+        if let Some(hdr) = &mut self.hdr {
+            hdr.look = on;
+        }
+    }
     pub fn set_hdr(
         &mut self,
         on: bool,
@@ -5577,6 +5587,9 @@ impl Renderer {
             let format = self.config.format.remove_srgb_suffix();
             self.hdr =
                 output.map(|output| hdr::Hdr::new(&self.device, &self.queue, format, output));
+            if let Some(hdr) = &mut self.hdr {
+                hdr.look = self.hdr_lighting_setting;
+            }
             self.configure_surface();
             match output {
                 Some(output) => log::info!(
@@ -7384,7 +7397,7 @@ impl Renderer {
             && self.pack_post.as_ref().is_none_or(|p| p.1.is_none())
             && std::env::var_os("HORIZON_HDR_LIGHTING").is_none_or(|v| v != "0");
         if let Some(hdr) = &mut self.hdr {
-            hdr.lighting = hdr_lighting;
+            hdr.lighting = hdr_lighting && hdr.look;
         }
         let oit_on = self.improved_transparency
             && !frame.title
