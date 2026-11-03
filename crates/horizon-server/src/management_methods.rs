@@ -80,6 +80,10 @@ pub fn call(shared: &Shared, client: u32, short: &str, argument: &Value) -> Resu
                     .ok_or_else(|| invalid_params("Not a string"))?,
             ),
         ),
+        "serversettings/entity_broadcast_range" => game.entity_broadcast_range(client, None),
+        "serversettings/entity_broadcast_range/set" => {
+            game.entity_broadcast_range(client, Some(management_int(argument)?))
+        }
         "serversettings/force_game_mode" => game.force_game_mode(client, None),
         "serversettings/force_game_mode/set" => game.force_game_mode(
             client,
@@ -620,6 +624,31 @@ impl Game<'_> {
                 "world",
                 "difficulty",
                 toml::Value::String(value.into()),
+            )
+            .map_err(|e| (INTERNAL_ERROR, Some(e)))?;
+        }
+        Ok(reply["value"].clone())
+    }
+
+    /// `MinecraftServerSettingsServiceImpl.getEntityBroadcastRangePercentage` and
+    /// `setEntityBroadcastRangePercentage`.
+    fn entity_broadcast_range(&self, client: u32, value: Option<i32>) -> Result<Value, Failure> {
+        let mut request = json!({ "method": "serversettings/entity_broadcast_range" });
+        if let Some(value) = value {
+            request["method"] = json!("serversettings/entity_broadcast_range/set");
+            request["value"] = json!(value);
+        }
+        let reply = self.ask(&format!("management {client} {request}"))?;
+        if let Some(error) = reply["error"].as_str() {
+            return Err((INTERNAL_ERROR, Some(error.to_owned())));
+        }
+        if let Some(value) = value {
+            let value = reply["value"].as_i64().unwrap_or(i64::from(value));
+            crate::config::update(
+                &self.shared.dir,
+                "properties",
+                "entity-broadcast-range-percentage",
+                toml::Value::Integer(value),
             )
             .map_err(|e| (INTERNAL_ERROR, Some(e)))?;
         }

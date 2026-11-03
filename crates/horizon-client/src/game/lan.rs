@@ -1675,6 +1675,13 @@ impl Game<'_> {
         }
     }
 
+    /// Update the live entity tracking range percentage.
+    pub(super) fn set_entity_broadcast_range_percentage(&mut self, percentage: i32) {
+        if let Some(host) = self.lan.as_mut() {
+            host.hub.entity_range_percent = percentage;
+        }
+    }
+
     /// New command access and game mode forcing settings of the open world.
     pub(super) fn lan_apply_settings(&mut self, guest_commands: bool, force: bool) {
         if let Some(server) = &self.integrated {
