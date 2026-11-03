@@ -155,8 +155,10 @@ pub(super) trait Entity: EntityRules {
         let b = self.explosion_box();
         f64::from((b.max_position().y - b.min_position().y) as f32 * 0.85f32)
     }
-    /// Whether this kind ticks after the projectiles do (orbs, falling blocks,
-    /// primed TNT), where vanilla ticks every entity in the order it joined.
+    /// Whether this kind ticks after the projectiles do whatever its join
+    /// number, where vanilla ticks every entity in the order it joined. No kind
+    /// does since orbs, falling blocks and primed TNT tick in join order
+    /// (`game/ordered_tick.rs`).
     fn ticks_after_projectiles(&self) -> bool {
         false
     }
@@ -839,9 +841,6 @@ impl Entity for ItemEntity {
 }
 
 impl Entity for ExperienceOrb {
-    fn ticks_after_projectiles(&self) -> bool {
-        true
-    }
     fn native_type(&self) -> Cow<'static, str> {
         "minecraft:experience_orb".into()
     }
@@ -1118,9 +1117,6 @@ impl Entity for ArmorStand {
 }
 
 impl Entity for PrimedTnt {
-    fn ticks_after_projectiles(&self) -> bool {
-        true
-    }
     fn native_type(&self) -> Cow<'static, str> {
         "minecraft:tnt".into()
     }
@@ -1178,9 +1174,6 @@ impl Entity for PrimedTnt {
 }
 
 impl Entity for FallingBlock {
-    fn ticks_after_projectiles(&self) -> bool {
-        true
-    }
     fn native_type(&self) -> Cow<'static, str> {
         "minecraft:falling_block".into()
     }

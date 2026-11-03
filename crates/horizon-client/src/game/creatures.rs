@@ -1188,6 +1188,7 @@ impl Game<'_> {
         }
         self.handle_mob_events(events)?;
         self.lan_guest_mob_events(guest_events);
+        self.ordered_before(super::ordered_tick::first_join(&self.creatures.projectiles))?;
         self.tick_projectiles()?;
         self.tick_fangs();
         self.tick_allays();

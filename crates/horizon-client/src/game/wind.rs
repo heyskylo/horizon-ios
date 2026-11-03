@@ -651,7 +651,7 @@ mod tests {
             power: 4.0,
             join: Default::default(),
         };
-        assert!(Entity::ticks_after_projectiles(&tnt));
+        assert!(!Entity::ticks_after_projectiles(&tnt));
         let arrow = Projectile::new(ProjectileKind::Snowball, Vec3::ZERO, None);
         assert!(!Entity::ticks_after_projectiles(&arrow));
     }
