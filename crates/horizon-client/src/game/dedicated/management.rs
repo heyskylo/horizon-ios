@@ -223,6 +223,32 @@ impl Game<'_> {
                     "value": self.lan.as_ref().is_some_and(|host| host.hub.config.allow_flight)
                 });
             }
+            "serversettings/status_replies" => {
+                return json!({
+                    "value": self
+                        .lan
+                        .as_ref()
+                        .is_some_and(|host| host.hub.lan.shared.enable_status())
+                });
+            }
+            "serversettings/status_replies/set" => {
+                let Some(enable) = body["value"].as_bool() else {
+                    return json!({ "error": "status replies must be a boolean" });
+                };
+                let current = self
+                    .lan
+                    .as_ref()
+                    .is_some_and(|host| host.hub.lan.shared.enable_status());
+                rpc(format!("Update status replies from {current} to {enable}"));
+                self.set_status_replies(enable);
+                self.store_property("enable-status", enable.to_string());
+                return json!({
+                    "value": self
+                        .lan
+                        .as_ref()
+                        .is_some_and(|host| host.hub.lan.shared.enable_status())
+                });
+            }
             "serversettings/player_idle_timeout" => {
                 return json!({ "value": state.lists.lock().unwrap().player_idle_timeout });
             }

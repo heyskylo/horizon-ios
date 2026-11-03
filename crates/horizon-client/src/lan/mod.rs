@@ -336,6 +336,7 @@ pub struct Shared {
     pub config: NetConfig,
     motd: Mutex<String>,
     max_players: AtomicUsize,
+    enable_status: AtomicBool,
     /// PlayerList.players in join order: profile id and name.
     online: Mutex<Vec<(u128, String)>>,
     next: AtomicU32,
@@ -415,6 +416,13 @@ impl Shared {
     /// `PlayerList.setMaxPlayers`: change the limit used by new logins and status responses.
     pub fn set_max_players(&self, max_players: usize) {
         self.max_players.store(max_players, Ordering::Relaxed);
+    }
+    /// `DedicatedServer.setRepliesToStatus`: change whether status pings are answered.
+    pub fn enable_status(&self) -> bool {
+        self.enable_status.load(Ordering::Relaxed)
+    }
+    pub fn set_enable_status(&self, enable: bool) {
+        self.enable_status.store(enable, Ordering::Relaxed);
     }
     pub fn release(&self, uuid: u128) {
         self.online.lock().unwrap().retain(|(u, _)| *u != uuid);
@@ -546,11 +554,13 @@ impl Lan {
     pub fn start_with(sync: Arc<data::SyncData>, config: NetConfig) -> io::Result<Self> {
         let (tx, events) = channel();
         let (listen, port, announce) = (config.listen, config.port, config.announce);
+        let enable_status = config.enable_status;
         let shared = Arc::new(Shared {
             sync: Mutex::new(sync),
             events: tx,
             motd: Mutex::new(config.motd.clone()),
             max_players: AtomicUsize::new(config.max_players),
+            enable_status: AtomicBool::new(enable_status),
             online: Mutex::new(Vec::new()),
             next: AtomicU32::new(1),
             stop: AtomicBool::new(false),

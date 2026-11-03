@@ -18,7 +18,8 @@ sent the same things over TLS, and every answer is compared exactly:
   `clear`; with no profile service, players named resolve to offline players on both), the live server
   message, difficulty, default and forced game mode read and changed (including saved properties), autosave
   read and changed (including its reset after restart), allow-flight read and changed (including invalid input,
-  saved properties and restart), allowlist use and enforcement read and changed
+  saved properties and restart), status replies read and changed (including invalid input, saved properties
+  and restart), allowlist use and enforcement read and changed
   (including saved properties and restart), max players read and changed (including saved
   properties and restart), player idle timeout read and changed (including disabling it, invalid input,
   saved properties and restart), the live pause-when-empty timer read and changed (including its saved
@@ -162,6 +163,15 @@ MESSAGES = [
     '{"jsonrpc":"2.0","id":146,"method":"minecraft:serversettings/allow_flight"}',
     '{"jsonrpc":"2.0","id":147,"method":"minecraft:serversettings/allow_flight/set","params":[true]}',
     '{"jsonrpc":"2.0","id":148,"method":"minecraft:serversettings/allow_flight"}',
+    '{"jsonrpc":"2.0","id":170,"method":"minecraft:serversettings/status_replies"}',
+    '{"jsonrpc":"2.0","id":171,"method":"minecraft:serversettings/status_replies/set","params":[false]}',
+    '{"jsonrpc":"2.0","id":172,"method":"minecraft:serversettings/status_replies"}',
+    '{"jsonrpc":"2.0","id":173,"method":"minecraft:serversettings/status_replies/set","params":["yes"]}',
+    '{"jsonrpc":"2.0","id":174,"method":"minecraft:serversettings/status_replies"}',
+    '{"jsonrpc":"2.0","id":175,"method":"minecraft:serversettings/status_replies/set","params":[true]}',
+    '{"jsonrpc":"2.0","id":176,"method":"minecraft:serversettings/status_replies"}',
+    '{"jsonrpc":"2.0","id":177,"method":"minecraft:serversettings/status_replies/set","params":[false]}',
+    '{"jsonrpc":"2.0","id":178,"method":"minecraft:serversettings/status_replies"}',
     '{"jsonrpc":"2.0","id":65,"method":"minecraft:serversettings/autosave"}',
     '{"jsonrpc":"2.0","id":66,"method":"minecraft:serversettings/autosave/set","params":[false]}',
     '{"jsonrpc":"2.0","id":67,"method":"minecraft:serversettings/autosave"}',
@@ -491,6 +501,9 @@ def main():
                 sides[side]['saved_allow_flight'] = next(
                     (line.partition('=')[2] for line in properties.splitlines()
                      if line.startswith('allow-flight=')), None)
+                sides[side]['saved_status_replies'] = next(
+                    (line.partition('=')[2] for line in properties.splitlines()
+                     if line.startswith('enable-status=')), None)
                 if side == 'horizon':
                     world = (folder / 'server.toml').read_text().partition('[world]')[2].split('\n[', 1)[0]
                     sides[side]['saved_config_difficulty'] = 'difficulty = "peaceful"' in world
@@ -508,6 +521,8 @@ def main():
                     sides[side]['saved_config_player_idle_timeout'] = 'player-idle-timeout = 30' in (
                         folder / 'server.toml').read_text()
                     sides[side]['saved_config_allow_flight'] = 'allow-flight = true' in (
+                        folder / 'server.toml').read_text()
+                    sides[side]['saved_config_status_replies'] = 'enable-status = false' in (
                         folder / 'server.toml').read_text()
             finally:
                 server.stop()
@@ -564,6 +579,12 @@ def main():
                         if not isinstance(reply, dict) or 'method' not in reply or 'id' in reply:
                             break
                     sides[side]['restarted_allow_flight'] = reply
+                    ws.send('{"jsonrpc":"2.0","id":179,"method":"minecraft:serversettings/status_replies"}')
+                    while True:
+                        reply = normal(ws.receive(timeout=60))
+                        if not isinstance(reply, dict) or 'method' not in reply or 'id' in reply:
+                            break
+                    sides[side]['restarted_status_replies'] = reply
                 finally:
                     ws.sock.close()
             finally:
@@ -642,6 +663,13 @@ def main():
         if vanilla['restarted_allow_flight'] != horizon['restarted_allow_flight'] or \
                 vanilla['restarted_allow_flight'] != {'jsonrpc': '2.0', 'id': 149, 'result': True}:
             failures.append(f"restarted allow-flight: vanilla {vanilla['restarted_allow_flight']!r}, Horizon {horizon['restarted_allow_flight']!r}")
+        if vanilla['saved_status_replies'] != horizon['saved_status_replies'] or vanilla['saved_status_replies'] != 'false':
+            failures.append(f"saved status replies: vanilla {vanilla['saved_status_replies']!r}, Horizon {horizon['saved_status_replies']!r}")
+        if not horizon['saved_config_status_replies']:
+            failures.append('Horizon did not save status replies in server.toml')
+        if vanilla['restarted_status_replies'] != horizon['restarted_status_replies'] or \
+                vanilla['restarted_status_replies'] != {'jsonrpc': '2.0', 'id': 179, 'result': False}:
+            failures.append(f"restarted status replies: vanilla {vanilla['restarted_status_replies']!r}, Horizon {horizon['restarted_status_replies']!r}")
         (build / 'report.json').write_text(json.dumps(sides, indent=1))
         if failures:
             sys.exit(f'{NAME}: {len(failures)} differences (logs in {build}):\n' + '\n'.join(failures))
