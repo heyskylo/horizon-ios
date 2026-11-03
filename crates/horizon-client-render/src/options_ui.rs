@@ -289,6 +289,7 @@ impl Opt {
                 "options.modelPart.right_pants_leg",
                 "options.modelPart.hat",
             ][i],
+            Opt::SkinLayers3d => "horizon.options.three_d_skin_layers",
             Opt::MainHand => "options.mainHand",
             Opt::AllowServerListing => "options.allowServerListing",
             Opt::RealmsNotifications => "options.realmsNotifications.button",
@@ -729,6 +730,11 @@ impl Opt {
             } else {
                 "options.key.hold"
             }),
+            Opt::SkinLayers3d => tr(if s.three_d_skin_layers {
+                "options.on"
+            } else {
+                "options.off"
+            }),
             Opt::ToggleAttack => tr(if s.toggle_attack {
                 "options.key.toggle"
             } else {
@@ -1013,6 +1019,7 @@ impl Opt {
             Opt::ChunkBuilder => s.prioritize_chunk_updates = next(s.prioritize_chunk_updates, 3),
             Opt::ToggleCrouch => s.toggle_crouch = !s.toggle_crouch,
             Opt::ToggleSprint => s.toggle_sprint = !s.toggle_sprint,
+            Opt::SkinLayers3d => s.three_d_skin_layers = !s.three_d_skin_layers,
             Opt::ToggleAttack => s.toggle_attack = !s.toggle_attack,
             Opt::ToggleUse => s.toggle_use = !s.toggle_use,
             Opt::AutoJump => s.auto_jump = !s.auto_jump,
@@ -2612,6 +2619,8 @@ impl OptionsUi {
             Page::Skin => {
                 // SkinCustomizationScreen: the seven layers, then Main Hand.
                 let mut opts: Vec<Opt> = (0..MODEL_PART_KEYS.len()).map(Opt::ModelPart).collect();
+                // Horizon's own: the outer layer as real pixels, not one box.
+                opts.push(Opt::SkinLayers3d);
                 opts.push(Opt::MainHand);
                 pairs(&opts)
             }
@@ -3595,6 +3604,12 @@ impl OptionsUi {
             let pointer_over = ui::hovered(cursor, wd.x, wd.y, wd.w, wd.h)
                 && (!wd.list || cursor.1 >= top && cursor.1 < bottom);
             let hover = pointer_over || is_focused;
+            // The tooltip is the pointer's (`setTooltip`, drawn while hovered);
+            // a keyboard-focused widget keeps it against the widget
+            // (`MenuTooltipPositioner`). Focus a mouse click leaves behind
+            // does not: the description goes when the mouse leaves, like
+            // vanilla's.
+            let tip_hover = pointer_over || (is_focused && self.focus_from_keyboard);
             // A pack's option: its label within the widget (the name shortened), and on hover
             // the whole label when it was, then what the pack says of it.
             let shader = s.shader_options.as_ref();
@@ -3609,7 +3624,7 @@ impl OptionsUi {
             let fitted = shader.zip(option).map(|(o, name)| {
                 o.option_label_within(name, wd.w - 8.0, |t| atlas.font.width_text(t))
             });
-            if hover && let Some(o) = shader {
+            if tip_hover && let Some(o) = shader {
                 let comment = match (&wd.kind, option) {
                     (_, Some(name)) => o.comment(&format!("option.{name}")),
                     (
@@ -3641,7 +3656,7 @@ impl OptionsUi {
                     tooltip_rect = (!pointer_over).then_some([wd.x, wd.y, wd.w, wd.h]);
                 }
             }
-            if hover && let Some(tip) = tooltip_text(s, wd) {
+            if tip_hover && let Some(tip) = tooltip_text(s, wd) {
                 tooltip = Some(match &wd.kind {
                     // The duplicate keybinds tooltip keeps its own lines.
                     WKind::Button {
@@ -3907,9 +3922,9 @@ impl OptionsUi {
                 };
                 return self.bind_mouse(s, button);
             }
-            let actions = self
-                .graphics
-                .click(s, (x, y), size, framebuffer, drag, right);
+            let actions =
+                self.graphics
+                    .click(s, (x, y), size, framebuffer, drag, right, self.shift);
             return self.graphics_events(s, actions);
         }
         if self.page() == Page::Packs {
@@ -4102,13 +4117,13 @@ impl OptionsUi {
                         }
                         Act::Done => events.extend(self.back(s)),
                         Act::Cycle(opt) => {
-                            events.extend(self.cycle_option(s, opt, right, framebuffer));
+                            events.extend(self.cycle_option(s, opt, self.shift, framebuffer));
                         }
                         Act::Extra(item) => {
                             if let Some(name) = item.key_name() {
                                 self.selected_key = Some(name);
                             } else {
-                                item.cycle(&mut s.extras, right);
+                                item.cycle(&mut s.extras, self.shift);
                                 events.push(Event::Changed);
                             }
                         }
@@ -6011,6 +6026,65 @@ mod tests {
     }
 
     #[test]
+    fn a_clicked_extras_tooltip_leaves_with_the_pointer() {
+        let atlas = atlas();
+        let mut s = Settings::default();
+        let mut ui = OptionsUi::default();
+        ui.show(Page::Extras);
+        let (widgets, _, _, _) = ui.layout(&s, 480.0, 480.0);
+        let extra = widgets
+            .iter()
+            .find(|w| {
+                matches!(
+                    &w.kind,
+                    WKind::Button {
+                        act: Act::Extra(item),
+                        ..
+                    } if !matches!(item, crate::extras::Item::SortKey)
+                )
+            })
+            .unwrap();
+        ui.click(
+            &mut s,
+            &atlas,
+            extra.x + 1.0,
+            extra.y + 1.0,
+            (480.0, 480.0),
+            [960, 540],
+            false,
+            false,
+        );
+        // The pointer is still on the clicked widget: it carries the
+        // description (`setTooltip`, drawn while hovered).
+        let mut on = HudBatch::new([480, 480]);
+        ui.draw(
+            &s,
+            &mut on,
+            &atlas,
+            (extra.x + extra.w / 2.0, extra.y + extra.h / 2.0),
+        );
+        // The pointer moved off: the description goes with it. A mouse
+        // focus a click left behind (the look-up keeps the click's widget,
+        // `focus_from_keyboard` false) does not keep the tooltip against
+        // the widget, like vanilla's `MenuTooltipPositioner` does for a
+        // keyboard focus.
+        let mut off = HudBatch::new([480, 480]);
+        ui.draw(
+            &s,
+            &mut off,
+            &atlas,
+            (extra.x + extra.w + 40.0, extra.y + extra.h + 40.0),
+        );
+        assert!(
+            off.vertices.len() < on.vertices.len(),
+            "a click left {} tooltip vertices behind when the pointer left ({} vs {})",
+            on.vertices.len() - off.vertices.len(),
+            on.vertices.len(),
+            off.vertices.len(),
+        );
+    }
+
+    #[test]
     fn exclusive_fullscreen_and_its_tooltips_follow_the_option() {
         let mut s = Settings::default();
         assert!(!s.file.bool("exclusiveFullscreen"));
@@ -7852,5 +7926,147 @@ mod tests {
         let events = ui.click(&mut s, &atlas, x, y, size, [854, 480], false, false);
         assert!(events.contains(&Event::Changed));
         assert!(s.extras.music_off.is_empty());
+    }
+
+    #[test]
+    fn options_cycle_button_cycles_forward_and_shift_click_cycles_backward_with_wrapping() {
+        let atlas = atlas();
+        let mut s = Settings::default();
+        let mut ui = OptionsUi::default();
+        ui.show(Page::Chat);
+        let size = (480.0, 480.0);
+        let (widgets, _, _, _) = ui.layout(&s, size.0, size.1);
+        let button = widgets
+            .iter()
+            .find(|wd| {
+                matches!(
+                    wd.kind,
+                    WKind::Button {
+                        active: true,
+                        act: Act::Cycle(Opt::ChatVisibility),
+                        ..
+                    }
+                )
+            })
+            .expect("ChatVisibility must be a cycle button");
+        let (x, y) = (button.x + 1.0, button.y + 1.0);
+
+        // Initial chat_visibility is 0
+        assert_eq!(s.chat_visibility, 0);
+
+        // 1. Feature without shift (normal click): cycles forward (+1)
+        assert_eq!(
+            ui.click(&mut s, &atlas, x, y, size, [854, 480], false, false),
+            vec![Event::ButtonClick, Event::Changed]
+        );
+        assert_eq!(s.chat_visibility, 1);
+
+        assert_eq!(
+            ui.click(&mut s, &atlas, x, y, size, [854, 480], false, false),
+            vec![Event::ButtonClick, Event::Changed]
+        );
+        assert_eq!(s.chat_visibility, 2);
+
+        // 3. Wrap-around forward (at max value, normal click wraps to min / 0)
+        assert_eq!(
+            ui.click(&mut s, &atlas, x, y, size, [854, 480], false, false),
+            vec![Event::ButtonClick, Event::Changed]
+        );
+        assert_eq!(s.chat_visibility, 0);
+
+        // 4. Wrap-around backward (at min / 0, shift-click wraps to max)
+        ui.shift = true;
+        assert_eq!(
+            ui.click(&mut s, &atlas, x, y, size, [854, 480], false, false),
+            vec![Event::ButtonClick, Event::Changed]
+        );
+        assert_eq!(s.chat_visibility, 2);
+
+        // 2. Feature with shift: cycles backward (-1)
+        assert_eq!(
+            ui.click(&mut s, &atlas, x, y, size, [854, 480], false, false),
+            vec![Event::ButtonClick, Event::Changed]
+        );
+        assert_eq!(s.chat_visibility, 1);
+
+        assert_eq!(
+            ui.click(&mut s, &atlas, x, y, size, [854, 480], false, false),
+            vec![Event::ButtonClick, Event::Changed]
+        );
+        assert_eq!(s.chat_visibility, 0);
+        ui.shift = false;
+
+        // Also test Opt::Particles on Page::Video
+        ui.show(Page::Video);
+        let (widgets, _, _, _) = ui.layout(&s, size.0, size.1);
+        let button = widgets
+            .iter()
+            .find(|wd| {
+                matches!(
+                    wd.kind,
+                    WKind::Button {
+                        active: true,
+                        act: Act::Cycle(Opt::Particles),
+                        ..
+                    }
+                )
+            })
+            .expect("Particles must be a cycle button");
+        let (px, py) = (button.x + 1.0, button.y + 1.0);
+
+        // Initial particles is 0
+        assert_eq!(s.particles, 0);
+
+        // Forward
+        ui.click(&mut s, &atlas, px, py, size, [854, 480], false, false);
+        assert_eq!(s.particles, 1);
+        ui.click(&mut s, &atlas, px, py, size, [854, 480], false, false);
+        assert_eq!(s.particles, 2);
+        // Wrap forward
+        ui.click(&mut s, &atlas, px, py, size, [854, 480], false, false);
+        assert_eq!(s.particles, 0);
+
+        // Wrap backward with shift
+        ui.shift = true;
+        ui.click(&mut s, &atlas, px, py, size, [854, 480], false, false);
+        assert_eq!(s.particles, 2);
+        // Backward with shift
+        ui.click(&mut s, &atlas, px, py, size, [854, 480], false, false);
+        assert_eq!(s.particles, 1);
+        ui.click(&mut s, &atlas, px, py, size, [854, 480], false, false);
+        assert_eq!(s.particles, 0);
+        ui.shift = false;
+
+        // Also verify Act::Extra on Page::Extras
+        ui.show(Page::Extras);
+        let (widgets, _, _, _) = ui.layout(&s, size.0, size.1);
+        if let Some(extra_btn) = widgets.iter().find(|wd| {
+            matches!(
+                wd.kind,
+                WKind::Button {
+                    active: true,
+                    act: Act::Extra(crate::extras::Item::CosmeticsOthers),
+                    ..
+                }
+            )
+        }) {
+            let (ex, ey) = (extra_btn.x + 1.0, extra_btn.y + 1.0);
+            use horizon_cosmetics::prefs::Others;
+            assert_eq!(s.extras.cosmetics_others, Others::Shown);
+
+            // Forward
+            ui.click(&mut s, &atlas, ex, ey, size, [854, 480], false, false);
+            assert_eq!(s.extras.cosmetics_others, Others::NameTags);
+
+            // Backward with shift
+            ui.shift = true;
+            ui.click(&mut s, &atlas, ex, ey, size, [854, 480], false, false);
+            assert_eq!(s.extras.cosmetics_others, Others::Shown);
+
+            // Wrap-around backward with shift
+            ui.click(&mut s, &atlas, ex, ey, size, [854, 480], false, false);
+            assert_eq!(s.extras.cosmetics_others, Others::Hidden);
+            ui.shift = false;
+        }
     }
 }

@@ -153,12 +153,14 @@ The opening, then Play ([clip](docs/opening.webm)):
   [NAME]`, `account select <name>` (an account or an offline name), `account forget-offline
   <name>`.
 - **Accent and Home background**: on top of Dark, Light or System, Settings > Launcher picks an
-  accent (Horizon's violet, blue, teal, green, amber, red or pink) and a picture of the player's
-  own behind Home (PNG, JPEG or WebP, cropped to fill; **Landscape** brings Horizon's back). An
-  accent turns the violet tokens to its hue, then darkens or lightens them just enough to keep
-  white on the Play button at 4.5:1 and the accent at 3:1 on every background (a test holds every
-  accent in both looks to it). The picture is copied into the data folder.
-  `horizon-launcher settings accent NAME`, `settings background PATH|default`.
+  accent (Horizon's violet, blue, teal, green, amber, red or pink, any hue, or any colour typed as
+  hex in the dark look) and a picture of the player's own behind Home (PNG, JPEG or WebP, cropped
+  to fill; **Landscape** brings Horizon's back). The dark look wears the colour as is, as the
+  mockup does; in the light look an accent turns the violet tokens to its hue, then darkens or
+  lightens them just enough to keep white on the Play button at 4.5:1 and the accent at 3:1 on
+  every background (a test holds every accent in both looks to it). The picture is copied into the
+  data folder. `horizon-launcher settings accent NAME|#rrggbb|DEGREES`,
+  `settings background PATH|default`.
 - **Language**: English, French, Russian, German, Simplified Chinese, Spanish, Ukrainian and Polish.
   The window follows the system's language unless the player picks one in Settings > Launcher
   (each named in itself); a string a table lacks shows in English. The tables are

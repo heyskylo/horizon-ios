@@ -69,9 +69,10 @@ Usage: horizon-server [--dir DIR] <command>
               Zip the world and the settings into backups/ (a running server saves first and stays up)
   backups [--json]
               List the backups
-  restore BACKUP [--yes]
+  restore BACKUP [--dimension ID] [--yes]
               Put a backup's world in place (the current one is kept in backups/); a running
-              server restarts with it
+              server restarts with it. --dimension (like minecraft:the_nether) brings back only
+              that dimension and leaves the rest of the world as it is
   service install|uninstall|print [--system]
               Start the server at boot or login: a systemd unit on Linux (--system: for every user,
               with sudo), a launchd agent on macOS, a task at logon on Windows
@@ -138,7 +139,20 @@ fn main() -> ExitCode {
         Some("backups") => cli::backups(&dir, args[1..].iter().any(|a| a == "--json")),
         Some("service") => service::command(&dir, &args[1..]),
         Some("restore") => match args.get(1) {
-            Some(name) => cli::restore(&dir, name, args[2..].iter().any(|a| a == "--yes")),
+            Some(name) => {
+                let rest = &args[2..];
+                match rest.iter().position(|a| a == "--dimension") {
+                    Some(i) if i + 1 >= rest.len() => {
+                        Err("--dimension needs an id (like minecraft:the_nether)".into())
+                    }
+                    found => cli::restore(
+                        &dir,
+                        name,
+                        found.map(|i| rest[i + 1].as_str()),
+                        rest.iter().any(|a| a == "--yes"),
+                    ),
+                }
+            }
             None => Err("restore needs a backup (`horizon-server backups` lists them)".into()),
         },
         Some("import") => import(&dir, &args[1..]),

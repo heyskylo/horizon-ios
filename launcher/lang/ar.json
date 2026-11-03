@@ -1033,5 +1033,14 @@
   "3 to 16 letters, numbers or underscores. Switch names from the top bar too. Online servers don't take offline names.": "من 3 إلى 16 حرفًا أو رقمًا أو شرطة سفلية. يمكنك تبديل الأسماء من الشريط العلوي أيضًا. الخوادم عبر الإنترنت لا تقبل الأسماء دون اتصال.",
   "Play online with your Microsoft account": "العب عبر الإنترنت بحساب Microsoft",
   "Sign in with the account that owns Minecraft: Java Edition. Your name and skin come along to online servers, like in other launchers.": "سجّل الدخول بالحساب الذي يملك Minecraft: Java Edition. يرافقك اسمك ومظهرك إلى الخوادم عبر الإنترنت، كما في المشغلات الأخرى.",
-  "Microsoft's own page opens in your browser. Horizon never sees your password.": "تُفتح صفحة Microsoft نفسها في متصفحك. لا يرى Horizon كلمة مرورك أبدًا."
+  "Microsoft's own page opens in your browser. Horizon never sees your password.": "تُفتح صفحة Microsoft نفسها في متصفحك. لا يرى Horizon كلمة مرورك أبدًا.",
+  "Colours the buttons, the switches and the sky. Pick one, or type any hex colour.": "يلوّن الأزرار والمفاتيح والسماء. اختر لونًا، أو اكتب أي لون بصيغة hex.",
+  "Accent colour, glass, blur, language and the options above go back to how Horizon ships.": "يعود لون التمييز والزجاج والتمويه واللغة والخيارات أعلاه إلى ما يأتي به Horizon.",
+  "Reset the launcher's look": "إعادة تعيين مظهر المشغّل",
+  "Reset to defaults": "استعادة الإعدادات الافتراضية",
+  "{value} px": "{value} بكسل",
+  "{value}%": "{value}٪",
+  "Experimental. Builds the native mods you trust into a game of their own.": "تجريبي. يبني الإضافات الأصلية التي تثق بها في لعبة خاصة بها.",
+  "Native mods": "الإضافات الأصلية",
+  "Nightly": "Nightly"
 }
