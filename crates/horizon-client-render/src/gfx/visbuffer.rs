@@ -1,11 +1,15 @@
 //! A visibility buffer for solid terrain, opt-in with `HORIZON_VISBUFFER=1` (read once, at
 //! startup): pass 1 rasterises the solid flat draws (near sections and far tiles, phase 1 and,
 //! with occlusion culling, phase 2) writing only depth and the ID of the quad each pixel shows
-//! (`visbuffer.wgsl`'s `vis_id`: arena page and quad); cutout and fading quads keep their alpha
-//! test and dither there, the rest never discard. Pass 2 is one full-screen draw per arena page
-//! that reads the quad back from the arena and its section's origin, and runs terrain.wgsl's
+//! (`visbuffer.wgsl`'s `vis_id`: arena page and quad); cutout and fading
+//! quads keep their alpha test and dither there, the rest never discard. Pass 2 is one
+//! full-screen draw with up to `PAGE_SLOTS` arena pages bound at once (more pages, more draws)
+//! that reads the quad back from its page and its section's origin (through a copy of every
+//! drawn page's block table in one buffer), and runs terrain.wgsl's
 //! vertex work and solid shading once per pixel with analytic screen gradients. Every solid
 //! pixel is shaded once, however many quads were drawn over it and however small they are.
+//! A draw per page instead made each GPU thread group run the shading once for every page
+//! among its pixels, with most lanes idle: the pages' sections lie all over the screen.
 //!
 //! It runs only in frames drawn flat (`flat`: Metal past `flat::MIN_SECTIONS`, or
 //! `HORIZON_FLAT_DRAWS=1`) and falls back to the normal solid passes in frames with a shader
@@ -15,9 +19,16 @@ use super::arena::Arena;
 use super::flat::Flat;
 use super::pack_timing::PassTiming;
 
-/// Whether the visibility buffer is asked for.
-pub fn wanted() -> bool {
+/// Arena pages one resolve draw reads (`visbuffer.wgsl`'s `vis_page_0`...).
+pub const PAGE_SLOTS: u32 = 16;
+/// The resolve binds that many pages, the block tables and the origins by section id.
+const STORAGE_BUFFERS: u32 = PAGE_SLOTS + 2;
+const IDS: wgpu::TextureFormat = wgpu::TextureFormat::R32Uint;
+
+/// Whether the visibility buffer is asked for, and the device binds storage buffers enough.
+pub fn wanted(device: &wgpu::Device) -> bool {
     std::env::var("HORIZON_VISBUFFER").as_deref() == Ok("1")
+        && device.limits().max_storage_buffers_per_shader_stage >= STORAGE_BUFFERS
 }
 
 pub struct Visbuffer {
@@ -25,9 +36,13 @@ pub struct Visbuffer {
     opaque: wgpu::RenderPipeline,
     cutout: wgpu::RenderPipeline,
     resolve: wgpu::RenderPipeline,
-    /// Pass 2's group 1: a page's block table, the origins by section id, the page's
-    /// vertices, the IDs.
+    /// Pass 2's group 1: the block tables (binding 0), the origins by section id (1),
+    /// `PAGE_SLOTS` pages' vertices (from 2), the IDs (after them).
     page_layout: wgpu::BindGroupLayout,
+    /// Every page's block table, page after page (`Flat::blocks_per_page` entries each),
+    /// copied each frame from the drawn pages' own, and its size in pages.
+    blocks: Option<(wgpu::Buffer, u32)>,
+    blocks_per_page: u64,
     /// The IDs, the size of the world's depth.
     ids: Option<(wgpu::TextureView, [u32; 2])>,
 }
@@ -39,10 +54,17 @@ impl Visbuffer {
     pub fn new(
         device: &wgpu::Device,
         terrain_layout: &wgpu::BindGroupLayout,
-        flat_layout: &wgpu::BindGroupLayout,
+        flat: &Flat,
         color: wgpu::TextureFormat,
         constants: &[(&str, f64)],
     ) -> Self {
+        let flat_layout = &flat.draw_layout;
+        let blocks_per_page = flat.blocks_per_page();
+        let resolve_constants: Vec<(&str, f64)> = constants
+            .iter()
+            .copied()
+            .chain([("VIS_BLOCKS_PER_PAGE", blocks_per_page as f64)])
+            .collect();
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Horizon visibility buffer"),
             source: wgpu::ShaderSource::Wgsl(
@@ -61,23 +83,22 @@ impl Visbuffer {
             },
             count: None,
         };
-        let page_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("Visibility buffer page"),
-            entries: &[
-                storage(0),
-                storage(1),
-                storage(2),
-                wgpu::BindGroupLayoutEntry {
-                    binding: 3,
-                    visibility: fragment,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Uint,
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                    },
-                    count: None,
+        let entries: Vec<_> = (0..2 + PAGE_SLOTS)
+            .map(storage)
+            .chain([wgpu::BindGroupLayoutEntry {
+                binding: 2 + PAGE_SLOTS,
+                visibility: fragment,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Uint,
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
                 },
-            ],
+                count: None,
+            }])
+            .collect();
+        let page_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Visibility buffer pages"),
+            entries: &entries,
         });
         let id_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Visibility buffer IDs"),
@@ -125,7 +146,7 @@ impl Visbuffer {
                         ..Default::default()
                     },
                     targets: &[Some(wgpu::ColorTargetState {
-                        format: wgpu::TextureFormat::R32Uint,
+                        format: IDS,
                         blend: None,
                         write_mask: wgpu::ColorWrites::ALL,
                     })],
@@ -152,7 +173,7 @@ impl Visbuffer {
                 module: &module,
                 entry_point: Some("fs_vis_resolve"),
                 compilation_options: wgpu::PipelineCompilationOptions {
-                    constants,
+                    constants: &resolve_constants,
                     ..Default::default()
                 },
                 targets: &[Some(wgpu::ColorTargetState {
@@ -169,12 +190,30 @@ impl Visbuffer {
             cutout,
             resolve,
             page_layout,
+            blocks: None,
+            blocks_per_page,
             ids: None,
         }
     }
 
-    /// Makes the IDs the world depth's `size`.
-    pub fn fit(&mut self, device: &wgpu::Device, size: [u32; 2]) {
+    /// Makes the IDs the world depth's `size`, and the block tables hold the pages `flat`
+    /// draws this frame.
+    pub fn fit(&mut self, device: &wgpu::Device, size: [u32; 2], flat: &Flat) {
+        let pages = flat.calls[..flat.solid_calls]
+            .iter()
+            .map(|c| c.page + 1)
+            .max()
+            .unwrap_or(1);
+        if self.blocks.as_ref().is_none_or(|(_, n)| *n < pages) {
+            let pages = pages.next_power_of_two();
+            let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("Visibility buffer block tables"),
+                size: u64::from(pages) * self.blocks_per_page * 4,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            self.blocks = Some((buffer, pages));
+        }
         if self.ids.as_ref().is_some_and(|(_, s)| *s == size) {
             return;
         }
@@ -188,7 +227,7 @@ impl Visbuffer {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::R32Uint,
+            format: IDS,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
             view_formats: &[],
         });
@@ -284,7 +323,7 @@ impl Visbuffer {
         arena: &Arena,
         timing: Option<&mut PassTiming>,
     ) {
-        let Some((ids, _)) = &self.ids else {
+        let (Some((ids, _)), Some((blocks, _))) = (&self.ids, &self.blocks) else {
             return;
         };
         let mut pages: Vec<u32> = flat.calls[..flat.solid_calls]
@@ -293,33 +332,54 @@ impl Visbuffer {
             .collect();
         pages.sort_unstable();
         pages.dedup();
-        let groups: Vec<(u32, wgpu::BindGroup)> = pages
+        let Some(&any) = pages.first() else {
+            return;
+        };
+        let table = self.blocks_per_page * 4;
+        for &page in &pages {
+            if let Some(from) = flat.block_table(page) {
+                encoder.copy_buffer_to_buffer(from, 0, blocks, u64::from(page) * table, table);
+            }
+        }
+        // Pages in groups of `PAGE_SLOTS` by number: a page's slot is its number's remainder.
+        // Slots no drawn page fills take one that is, which no pixel's ID names.
+        let mut chunks: Vec<u32> = pages.iter().map(|p| p / PAGE_SLOTS).collect();
+        chunks.dedup();
+        let groups: Vec<(u32, wgpu::BindGroup)> = chunks
             .into_iter()
-            .filter_map(|page| {
-                let (blocks, origins) = flat.tables(page)?;
-                let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("Visibility buffer page"),
-                    layout: &self.page_layout,
-                    entries: &[
-                        wgpu::BindGroupEntry {
-                            binding: 0,
-                            resource: blocks.as_entire_binding(),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 1,
-                            resource: origins.as_entire_binding(),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 2,
-                            resource: arena.buffer(page).as_entire_binding(),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 3,
-                            resource: wgpu::BindingResource::TextureView(ids),
-                        },
-                    ],
+            .map(|chunk| {
+                let mut entries = vec![
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: blocks.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: flat.origins().as_entire_binding(),
+                    },
+                ];
+                entries.extend((0..PAGE_SLOTS).map(|slot| {
+                    let page = chunk * PAGE_SLOTS + slot;
+                    let page = if pages.binary_search(&page).is_ok() {
+                        page
+                    } else {
+                        any
+                    };
+                    wgpu::BindGroupEntry {
+                        binding: 2 + slot,
+                        resource: arena.buffer(page).as_entire_binding(),
+                    }
+                }));
+                entries.push(wgpu::BindGroupEntry {
+                    binding: 2 + PAGE_SLOTS,
+                    resource: wgpu::BindingResource::TextureView(ids),
                 });
-                Some((page, group))
+                let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("Visibility buffer pages"),
+                    layout: &self.page_layout,
+                    entries: &entries,
+                });
+                (chunk, group)
             })
             .collect();
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -339,10 +399,11 @@ impl Visbuffer {
         });
         pass.set_pipeline(&self.resolve);
         pass.set_bind_group(0, terrain, &[]);
-        // The page goes as the instance: each draw shades the pixels whose quad is its page's.
-        for (page, group) in &groups {
+        // The group of pages goes as the instance: each draw shades the pixels whose quad is
+        // in one of its pages (one draw, up to `PAGE_SLOTS` pages).
+        for (chunk, group) in &groups {
             pass.set_bind_group(1, group, &[]);
-            pass.draw(0..3, *page..*page + 1);
+            pass.draw(0..3, *chunk..*chunk + 1);
         }
     }
 }

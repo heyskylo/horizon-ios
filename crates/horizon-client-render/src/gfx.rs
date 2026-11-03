@@ -3897,16 +3897,21 @@ impl Renderer {
                 },
             )
         });
-        let visbuf = flat.as_ref().filter(|_| visbuffer::wanted()).map(|f| {
-            log::info!("Horizon: solid terrain through a visibility buffer (HORIZON_VISBUFFER)");
-            visbuffer::Visbuffer::new(
-                &device,
-                &bindings,
-                &f.draw_layout,
-                config.format.remove_srgb_suffix(),
-                &sprite_constants,
-            )
-        });
+        let visbuf = flat
+            .as_ref()
+            .filter(|_| visbuffer::wanted(&device))
+            .map(|f| {
+                log::info!(
+                    "Horizon: solid terrain through a visibility buffer (HORIZON_VISBUFFER)"
+                );
+                visbuffer::Visbuffer::new(
+                    &device,
+                    &bindings,
+                    f,
+                    config.format.remove_srgb_suffix(),
+                    &sprite_constants,
+                )
+            });
         let multi_draw = device
             .features()
             .contains(wgpu::Features::INDIRECT_FIRST_INSTANCE)
@@ -8277,9 +8282,9 @@ impl Renderer {
             && surface.is_none()
             && shadow_view.is_none()
             && self.visbuf.is_some();
-        if vis_frame && let Some(vis) = &mut self.visbuf {
+        if vis_frame && let (Some(vis), Some(flat)) = (&mut self.visbuf, &self.flat) {
             let depth = world_depth.texture();
-            vis.fit(&self.device, [depth.width(), depth.height()]);
+            vis.fit(&self.device, [depth.width(), depth.height()], flat);
         }
         {
             let attachments = [Some(wgpu::RenderPassColorAttachment {

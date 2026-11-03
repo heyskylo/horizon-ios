@@ -555,11 +555,12 @@ impl Flat {
             self.pages.resize_with(page + 1, || None);
         }
         let table = self.pages[page].get_or_insert_with(|| PageTable {
+            // Copied whole into the visibility buffer's table of every page (`visbuffer`).
             blocks: buffer(
                 device,
                 "Section ids by block",
                 blocks * 4,
-                wgpu::BufferUsages::STORAGE,
+                wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
             ),
             group: None,
         });
@@ -914,11 +915,18 @@ impl Flat {
             );
         }
     }
-    /// The block table of the page keyed `page` and the origins by section id, which the
-    /// visibility buffer's resolve (`visbuffer`) reads in its fragment shader.
-    pub(super) fn tables(&self, page: u32) -> Option<(&wgpu::Buffer, &wgpu::Buffer)> {
-        let table = self.pages.get(page as usize)?.as_ref()?;
-        Some((&table.blocks, &self.origins))
+    /// The origins by section id, which the visibility buffer's resolve (`visbuffer`) reads
+    /// in its fragment shader.
+    pub(super) fn origins(&self) -> &wgpu::Buffer {
+        &self.origins
+    }
+    /// The block table of the section arena's page `page` (`blocks_per_page` entries), which
+    /// the visibility buffer copies into its table of every page.
+    pub(super) fn block_table(&self, page: u32) -> Option<&wgpu::Buffer> {
+        Some(&self.pages.get(page as usize)?.as_ref()?.blocks)
+    }
+    pub(super) fn blocks_per_page(&self) -> u64 {
+        self.blocks_per_page
     }
     /// Draws `calls` without their index buffer, `instances` times: a shader pack's geometry
     /// stage reads the indices itself (`hz_indices`) and stands for one emitted triangle per

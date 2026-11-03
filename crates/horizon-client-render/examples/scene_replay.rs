@@ -5,13 +5,14 @@
 //! [--warmup 60] [--yaw-offsets 0,90,180,270] [--texture-filtering 0|1|2] [--anisotropy-bit N]
 //! [--mipmaps N] [--lod-distance CHUNKS] [--render-distance CHUNKS] [--size WxH]
 //! [--section-draws flat|indirect] [--section-cull on|off] [--section-sides on|off]
-//! [--gpu-culling on|off] [--root RESOURCES]`
+//! [--gpu-culling on|off] [--root RESOURCES] [--screenshot PNG]`
+//! `--screenshot` saves the first view's last frame, after the timed frames.
 use horizon_client_render::{
     assets::Assets,
     chunk::ColumnLayout,
     fast_hash::FxHashSet,
     gfx::{
-        PreparedTextures, Renderer,
+        PreparedTextures, Renderer, ScreenshotRequest,
         capture::{self, AtlasCheck, Scene},
         panorama::Faces,
     },
@@ -49,6 +50,7 @@ struct Options {
     cull: Option<bool>,
     sides: Option<bool>,
     gpu_culling: Option<bool>,
+    screenshot: Option<PathBuf>,
 }
 
 fn on_off(value: &str) -> Result<bool, String> {
@@ -98,6 +100,7 @@ fn options() -> Result<Options, String> {
             "--section-cull" => o.cull = Some(on_off(&value)?),
             "--section-sides" => o.sides = Some(on_off(&value)?),
             "--gpu-culling" => o.gpu_culling = Some(on_off(&value)?),
+            "--screenshot" => o.screenshot = Some(value.into()),
             other => return Err(format!("unknown option {other}")),
         }
     }
@@ -298,6 +301,25 @@ fn replay(window: Arc<Window>) -> Result<(), Box<dyn std::error::Error>> {
             gpu.append(&mut renderer.gpu_times);
         }
         gpu.truncate(o.frames);
+        if let Some(path) = o.screenshot.as_ref().filter(|_| views.is_empty()) {
+            renderer.screenshot_result = None;
+            renderer.screenshot = Some(ScreenshotRequest {
+                path: path.clone(),
+                size: None,
+                scaled: false,
+            });
+            for _ in 0..32 {
+                draw(&mut renderer)?;
+                if renderer.screenshot_result.is_some() {
+                    break;
+                }
+            }
+            match renderer.screenshot_result.take() {
+                Some(Ok(_)) => {}
+                Some(Err(e)) => notes.push(format!("screenshot: {e}")),
+                None => notes.push("screenshot: not saved".into()),
+            }
+        }
         views.push(json!({
             "yaw_offset": offset,
             "gpu_ms": summary(&gpu),
