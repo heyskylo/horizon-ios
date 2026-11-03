@@ -2630,13 +2630,9 @@ fn flower_contact_effects(m: &mut Mob, w: &MobWorld) {
                         "minecraft:wither_rose" => {
                             // World difficulty, not the regional one, and
                             // isInvulnerableTo(wither) (the invulnerable
-                            // flag, not the hit timer); WitherBoss and
-                            // WitherSkeleton refuse the effect
-                            // (`canBeAffected`).
-                            if w.difficulty.base != 0
-                                && !m.invulnerable_flag
-                                && !matches!(m.species(), Species::Wither | Species::WitherSkeleton)
-                            {
+                            // flag, not the hit timer); a wither and a wither
+                            // skeleton refuse the effect in `addEffect`.
+                            if w.difficulty.base != 0 && !m.invulnerable_flag {
                                 m.add_effect("minecraft:wither", 40, 0);
                             }
                         }

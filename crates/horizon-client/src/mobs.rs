@@ -3499,8 +3499,38 @@ impl Mob {
             self.heal(heal);
         }
     }
+    /// `LivingEntity.canBeAffected`: whether an effect of this kind may be added at
+    /// all, asked by `addEffect` before it stores anything. Five classes narrow the
+    /// rule first — a spider (a cave spider with it) and a nautilus refuse poison, a
+    /// wither and a wither skeleton the wither effect, a parched weakness — and the
+    /// entity type tags answer for the rest: `immune_to_infested` keeps infested off
+    /// a silverfish, `immune_to_oozing` keeps oozing off a slime, and
+    /// `ignores_poison_and_regen` (which is `#minecraft:undead`) keeps poison and
+    /// regeneration off a zombie, a skeleton, a phantom, a wither and the rest.
+    pub fn can_be_affected(&self, effect: &'static str) -> bool {
+        let effect = horizon_client_core::potions::namespaced(effect);
+        let refused = match self.species() {
+            Species::Spider | Species::CaveSpider | Species::Nautilus | Species::ZombieNautilus => {
+                effect == "minecraft:poison"
+            }
+            Species::Wither | Species::WitherSkeleton => effect == "minecraft:wither",
+            Species::Parched => effect == "minecraft:weakness",
+            Species::Silverfish => effect == "minecraft:infested",
+            Species::Slime => effect == "minecraft:oozing",
+            _ => false,
+        };
+        if refused {
+            return false;
+        }
+        !(self.kind.flags.undead && matches!(effect, "minecraft:poison" | "minecraft:regeneration"))
+    }
     pub fn add_effect(&mut self, effect: &'static str, ticks: i32, amplifier: i32) {
         let effect = horizon_client_core::potions::namespaced(effect);
+        // LivingEntity.addEffect: an effect the mob refuses is never added, so it
+        // never joins the list the client draws or an effect tick reads.
+        if !self.can_be_affected(effect) {
+            return;
+        }
         // AbsorptionMobEffect.addAttributeModifiers: at least 4 hearts-halves per level.
         if effect == "minecraft:absorption"
             && self
