@@ -359,6 +359,10 @@ pub struct Hub {
     /// Each level's entities that joined it after its tracking pass, as they
     /// were then, and the server tick they were noted in (`note_joined`).
     joined: std::collections::HashMap<String, (u64, Vec<EntityState>)>,
+    /// Each level's fresh entities that joined it during the tick before its
+    /// tracking pass (arrows shot by players or dispensers): paired as they
+    /// joined (IN_GROUND false), then updated in the next pass.
+    fresh_joined: std::collections::HashMap<String, Vec<EntityState>>,
     /// The ranges of entity ids taken this tick in the phases vanilla runs
     /// before the level's ChunkMap.tick (`Entities::synced`).
     pub synced: Vec<(i32, i32)>,
@@ -643,6 +647,7 @@ impl Hub {
             entity_types: Default::default(),
             entities: Default::default(),
             joined: Default::default(),
+            fresh_joined: Default::default(),
             synced: Vec::new(),
             entity_out: Vec::new(),
             entity_gone: Vec::new(),
@@ -2585,6 +2590,30 @@ impl Hub {
         out
     }
 
+    /// Whether an entity is tracked by the current dimension's level.
+    pub fn tracks(&self, id: i32) -> bool {
+        self.entities
+            .get(&self.config.dimension)
+            .is_some_and(|l| l.tracks(id))
+    }
+
+    /// Fresh entities that joined during the current tick before the tracking pass:
+    /// paired from their state as they joined (ChunkMap.addEntity), before their first tick.
+    pub fn note_fresh_joined(&mut self, entities: &[EntityState]) {
+        let joined: Vec<_> = entities
+            .iter()
+            .filter(|e| !self.tracks(e.id))
+            .cloned()
+            .collect();
+        if joined.is_empty() {
+            return;
+        }
+        self.fresh_joined
+            .entry(self.config.dimension.clone())
+            .or_default()
+            .extend(joined);
+    }
+
     /// The entities of this level its tracking has not met yet, as they are at
     /// the end of the tick that added them (after the tick's tracking pass:
     /// falling blocks, primed TNT and block entities tick after it). The next
@@ -2655,10 +2684,11 @@ impl Hub {
             .entities
             .remove(&self.config.dimension)
             .unwrap_or_default();
-        let joined = level.joined_states(
-            &entities,
-            noted_last_tick(self.joined.remove(&self.config.dimension), self.ticks),
-        );
+        let mut joined = noted_last_tick(self.joined.remove(&self.config.dimension), self.ticks);
+        if let Some(fresh) = self.fresh_joined.remove(&self.config.dimension) {
+            joined.extend(fresh);
+        }
+        let joined = level.joined_states(&entities, joined);
         Entities::starting_from(&mut entities, &joined);
         level.synced.clone_from(&self.synced);
         let mut outs = std::mem::take(&mut self.entity_out);
