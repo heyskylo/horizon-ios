@@ -1619,6 +1619,42 @@ mod tests {
     }
 
     #[test]
+    fn mixed_type_constructor_arguments_validate() {
+        // Each kind of constructor and call, with arguments drivers convert (spec 5.4).
+        let cases = [
+            ("", "vec3 k = vec3(1u, 2, texcoord.x); return k.x;"),
+            ("", "ivec2 k = ivec2(1u, 2.0); return float(k.x);"),
+            ("", "mat2 m = mat2(1u, 2, texcoord.x, 4.0); return m[0].x;"),
+            (
+                "struct S { int a; float b; vec2 c; };\n",
+                "S s = S(1u, 2, ivec2(3)); return s.b;",
+            ),
+            (
+                "struct S { uint a; float b; };\n",
+                "S s = S(1.0, 2); return s.b;",
+            ),
+            (
+                "float h(float x, int y) { return x + float(y); }\n",
+                "return h(1, 2);",
+            ),
+        ];
+        let mut bad = Vec::new();
+        for (decl, body) in cases {
+            let fsh = format!(
+                "#version 120\nvarying vec2 texcoord;\n{decl}float n2d() {{ {body} }}\nvoid main() {{ gl_FragColor = vec4(n2d()); }}\n"
+            );
+            let p = program(
+                &[("composite.vsh", VSH_120), ("composite.fsh", &fsh)],
+                Target::Window,
+            );
+            if let Err(e) = p {
+                bad.push(format!("{body}: {:?}", e.first().map(|e| &e.message)));
+            }
+        }
+        assert!(bad.is_empty(), "{}", bad.join("\n"));
+    }
+
+    #[test]
     fn compatibility_programs_translate() {
         let fsh = "#version 120\nuniform sampler2D colortex0;\nuniform sampler2D depthtex0;\nuniform float viewWidth;\n\
                    uniform bool hideGUI;\nuniform int frameCounter;\nvarying vec2 texcoord;\n\
