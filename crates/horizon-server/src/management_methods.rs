@@ -7,8 +7,9 @@
 use crate::{
     api::{Phase, Shared},
     engine,
-    management::{Failure, INTERNAL_ERROR, invalid_params},
+    management::{self, Failure, INTERNAL_ERROR, invalid_params},
 };
+use horizon_server_files::properties::{ServerProperties, SystemEntropy};
 use serde_json::{Value, json};
 use std::{path::Path, sync::atomic::Ordering};
 
@@ -107,6 +108,12 @@ pub fn call(shared: &Shared, client: u32, short: &str, argument: &Value) -> Resu
                     .ok_or_else(|| invalid_params(format!("Not a boolean: {argument}")))?,
             ),
         ),
+        "serversettings/status_heartbeat_interval" => {
+            Ok(json!(management::heartbeat_seconds(shared)))
+        }
+        "serversettings/status_heartbeat_interval/set" => {
+            status_heartbeat_interval(shared, management_int(argument)?)
+        }
         "serversettings/player_idle_timeout" => game.player_idle_timeout(client, None),
         "serversettings/player_idle_timeout/set" => {
             game.player_idle_timeout(client, Some(management_int(argument)?))
@@ -391,6 +398,34 @@ fn component(message: &Value) -> Option<Value> {
 }
 
 /// Vanilla's `Codec.INT`: numeric input narrows through `Number.intValue`, including fractions and overflow.
+/// `MinecraftServerSettingsServiceImpl.setStatusHeartbeatInterval`: the supervisor owns the heartbeat, so
+/// the new interval takes effect here, and is kept in server.properties and server.toml's `[properties]`
+/// (which writes server.properties again at the next start). The answer is the interval now in force.
+fn status_heartbeat_interval(shared: &Shared, seconds: i32) -> Result<Value, Failure> {
+    let old = management::heartbeat_seconds(shared);
+    let path = shared.dir.join(crate::config::PROPERTIES);
+    let stored = ServerProperties::from_file(&path, &mut SystemEntropy::default())
+        .and_then(|p| p.update("status-heartbeat-interval", seconds.to_string()))
+        .map_err(|e| (INTERNAL_ERROR, Some(e)))?;
+    stored
+        .store(&path)
+        .map_err(|e| (INTERNAL_ERROR, Some(e.to_string())))?;
+    crate::config::update(
+        &shared.dir,
+        "properties",
+        "status-heartbeat-interval",
+        toml::Value::Integer(i64::from(seconds)),
+    )
+    .map_err(|e| (INTERNAL_ERROR, Some(e)))?;
+    management::set_heartbeat_seconds(shared, seconds);
+    crate::supervisor::note(
+        shared,
+        "INFO",
+        &format!("Updated status heartbeat interval from {old} to {seconds}"),
+    );
+    Ok(json!(seconds))
+}
+
 fn management_int(value: &Value) -> Result<i32, Failure> {
     let parsed = if let Some(number) = value.as_i64() {
         Some(number as i32)
@@ -963,6 +998,37 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).unwrap();
         Shared::with_install(&dir, None)
+    }
+
+    /// The interval is live at once, and server.properties and server.toml's `[properties]` keep it, so
+    /// that a restart reads it back (what the parity harness compares with vanilla's).
+    #[test]
+    fn the_status_heartbeat_interval_is_live_and_kept() {
+        let shared = shared();
+        let dir = shared.dir.clone();
+        std::fs::write(dir.join(crate::config::FILE), crate::config::TEMPLATE).unwrap();
+        std::fs::write(
+            dir.join(crate::config::PROPERTIES),
+            "#Minecraft server properties
+status-heartbeat-interval=0
+",
+        )
+        .unwrap();
+        assert_eq!(status_heartbeat_interval(&shared, 30).unwrap(), json!(30));
+        assert_eq!(management::heartbeat_seconds(&shared), 30);
+        let properties = std::fs::read_to_string(dir.join(crate::config::PROPERTIES)).unwrap();
+        assert!(
+            properties.contains("status-heartbeat-interval=30"),
+            "{properties}"
+        );
+        let toml = std::fs::read_to_string(dir.join(crate::config::FILE)).unwrap();
+        assert!(toml.contains("status-heartbeat-interval = 30"), "{toml}");
+        // Vanilla keeps any int, and schedules nothing for 0 or less.
+        assert_eq!(status_heartbeat_interval(&shared, -5).unwrap(), json!(-5));
+        assert_eq!(management::heartbeat_seconds(&shared), -5);
+        // A value that is no integer is refused before anything changes.
+        assert!(management_int(&json!("yes")).is_err());
+        assert_eq!(management::heartbeat_seconds(&shared), -5);
     }
 
     #[test]

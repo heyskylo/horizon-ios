@@ -18,7 +18,7 @@ use std::{
     path::Path,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering},
         mpsc,
     },
     time::{Duration, Instant},
@@ -36,6 +36,30 @@ pub struct Clients {
     stopping_told: AtomicBool,
     /// When `server/activity` last went out.
     activity_told: Mutex<Option<Instant>>,
+    /// `status-heartbeat-interval` as the server reports it, in seconds: no heartbeat at 0 or less.
+    heartbeat_seconds: AtomicI32,
+    /// How many times it was set. Each set restarts the countdown, as vanilla cancels the heartbeat and
+    /// schedules a new one (`ManagementServer.scheduleHeartbeat`).
+    heartbeat_set: AtomicU64,
+}
+
+/// `DedicatedServer.getStatusHeartbeatInterval`: the seconds between the status notifications, 0 or less for
+/// none.
+pub fn heartbeat_seconds(shared: &Shared) -> i32 {
+    shared.management.heartbeat_seconds.load(Ordering::Relaxed)
+}
+
+/// `DedicatedServer.setStatusHeartbeatInterval`: from now on, a status notification every `seconds`, the first
+/// after as many; none for 0 or less. The countdown starts again even when the value is the one it had.
+pub fn set_heartbeat_seconds(shared: &Shared, seconds: i32) {
+    shared
+        .management
+        .heartbeat_seconds
+        .store(seconds, Ordering::Relaxed);
+    shared
+        .management
+        .heartbeat_set
+        .fetch_add(1, Ordering::Relaxed);
 }
 
 /// `MinecraftServer.SERVER_ACTIVITY_MONITOR_SECONDS_BETWEEN_NOTIFICATIONS`.
@@ -115,18 +139,36 @@ fn activity_due(shared: &Shared, now: Instant) -> bool {
     due
 }
 
-/// `ManagementServer.scheduleHeartbeat`: `NotificationService.statusHeartbeat` every `seconds` (the first
-/// after as many), with the server's status as `server/status` answers it, up or not. Nothing is computed
-/// while no client is connected.
-fn heartbeat(shared: Arc<Shared>, seconds: u64) -> std::io::Result<()> {
+/// `ManagementServer.scheduleHeartbeat`: `NotificationService.statusHeartbeat` every `heartbeat_seconds` (the
+/// first after as many), with the server's status as `server/status` answers it, up or not. The interval can
+/// change while the server runs (`serversettings/status_heartbeat_interval/set`), so the thread is always
+/// there and counts the seconds itself, from the start again at each set. Nothing is computed while no client
+/// is connected.
+fn heartbeat(shared: Arc<Shared>) -> std::io::Result<()> {
     std::thread::Builder::new()
         .name("management-heartbeat".into())
         .spawn(move || {
+            let mut generation = shared.management.heartbeat_set.load(Ordering::Relaxed);
+            let mut waited = 0i64;
             loop {
-                std::thread::sleep(Duration::from_secs(seconds));
-                if !shared.management.sockets.lock().unwrap().is_empty() {
-                    let status = crate::management_methods::status(&shared);
-                    notify(&shared, "notification/server/status", Some(status));
+                std::thread::sleep(Duration::from_secs(1));
+                let set = shared.management.heartbeat_set.load(Ordering::Relaxed);
+                if set != generation {
+                    generation = set;
+                    waited = 0;
+                }
+                let seconds = i64::from(heartbeat_seconds(&shared));
+                if seconds <= 0 {
+                    waited = 0;
+                    continue;
+                }
+                waited += 1;
+                if waited >= seconds {
+                    waited = 0;
+                    if !shared.management.sockets.lock().unwrap().is_empty() {
+                        let status = crate::management_methods::status(&shared);
+                        notify(&shared, "notification/server/status", Some(status));
+                    }
                 }
             }
         })
@@ -148,8 +190,8 @@ struct Settings {
     allowed_origins: Vec<String>,
     /// TLS, unless `management-server-tls-enabled=false`.
     tls: Option<management_tls::Tls>,
-    /// `status-heartbeat-interval`: seconds between the status notifications, none when 0.
-    heartbeat: u64,
+    /// `status-heartbeat-interval`: seconds between the status notifications, none when 0 or less.
+    heartbeat: i32,
 }
 
 /// `SecurityConfig.isValid`: 40 letters and digits.
@@ -170,7 +212,7 @@ fn settings(dir: &Path) -> Result<Option<Settings>, String> {
     if !p.management_server_enabled {
         return Ok(None);
     }
-    let heartbeat = p.status_heartbeat_interval.max(0) as u64;
+    let heartbeat = p.status_heartbeat_interval;
     let mut secret = p.management_server_secret;
     if generated {
         secret = generate_secret_key(&mut SystemEntropy::default());
@@ -276,9 +318,11 @@ fn serve(
 ) -> std::io::Result<()> {
     let (outbox, queue) = mpsc::channel::<String>();
     *shared.management.outbox.lock().unwrap() = Some(outbox);
-    if settings.heartbeat > 0 {
-        heartbeat(shared.clone(), settings.heartbeat)?;
-    }
+    shared
+        .management
+        .heartbeat_seconds
+        .store(settings.heartbeat, Ordering::Relaxed);
+    heartbeat(shared.clone())?;
     let carrier = shared.clone();
     std::thread::Builder::new()
         .name("management-notify".into())
@@ -1004,6 +1048,40 @@ mod tests {
         assert_eq!(beat["method"], "minecraft:notification/server/status");
         assert_eq!(beat["params"][0]["started"], false);
         assert!(beat["params"][0]["version"]["name"].is_string());
+    }
+
+    /// `serversettings/status_heartbeat_interval/set`: the heartbeat of a server that started with none begins
+    /// at once, and one that was on stops, with no restart; the interval the server reports follows.
+    #[test]
+    fn the_heartbeat_interval_can_change_while_the_server_runs() {
+        let shared = shared();
+        let address = listen_on(shared.clone(), settings());
+        let mut client = upgrade(address);
+        registered(&shared, 1);
+        assert_eq!(heartbeat_seconds(&shared), 0);
+        // Started with none: nothing comes in the 1.2 s that follow (the thread counts in whole seconds).
+        client
+            .set_read_timeout(Some(Duration::from_millis(1200)))
+            .unwrap();
+        let mut byte = [0u8];
+        assert!(client.read(&mut byte).is_err(), "a heartbeat with none set");
+        client
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        set_heartbeat_seconds(&shared, 1);
+        assert_eq!(heartbeat_seconds(&shared), 1);
+        let beat: Value = serde_json::from_str(&next_text(&mut client)).unwrap();
+        assert_eq!(beat["method"], "minecraft:notification/server/status");
+        // Set to 0 (or below) it stops again.
+        set_heartbeat_seconds(&shared, 0);
+        client
+            .set_read_timeout(Some(Duration::from_millis(1200)))
+            .unwrap();
+        // One that was already due as the value changed may still be in flight: read it, then expect silence.
+        let mut late = [0u8; 1];
+        let _ = client.read(&mut late);
+        let mut quiet = [0u8; 1];
+        assert!(client.read(&mut quiet).is_err(), "a heartbeat after 0");
     }
 
     #[test]
