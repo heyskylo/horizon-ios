@@ -191,6 +191,10 @@ impl Game<'_> {
                         Some(self.border.geometry()),
                         &self.res.motion().fluids,
                     );
+                    // PowderSnowBlock.entityInside during the move, before an
+                    // orb that is done is removed.
+                    let snow = (o.previous, o.position, o.bounds(), o.velocity);
+                    self.entity_powder_snow_particles(snow.0, snow.1, snow.2, snow.3, false);
                     if !stays {
                         self.orbs.remove(i);
                     }
