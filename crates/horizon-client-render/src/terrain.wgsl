@@ -32,7 +32,8 @@ struct Globals {
     // triangle's volume with the camera; then each rim vertex's normal against the apex.
     sunrise_fan: array<vec4<f32>, 32>,
     // x: Options.textureFiltering (0 none, 1 RGSS, 2 anisotropic), y: the sprite arrays' width
-    // in texels (vanilla's TextureSize).
+    // in texels (vanilla's TextureSize), z: the mip level at which a sprite is one texel when
+    // the views reach it, else 0 (`rotated_grid`).
     filtering: vec4<f32>,
     // HDR output's tier windows (hdr.rs `Hdr::windows`): x..w low to very bright,
     // [0] where the lift starts, [1] where it is full.
@@ -144,6 +145,14 @@ fn rotated_grid(uv: vec2<f32>, layer: u32, pixel: vec2<f32>, du: vec2<f32>,
     let exact = max(0.0, log2(effective / min_pixel));
     let low = floor(exact);
     let mip_blend = fract(exact);
+    // From this level on the sprite is a single texel (0: the views stop before one is), and
+    // the sampler clamps any level past it to it: there every tap reads the same value, so
+    // one tap gives the four's mean. Distant tiles sit there.
+    let single = globals.filtering.z;
+    if single > 0.0 && low >= single {
+        return sprite_level(uv, layer, low);
+    }
+    let high_single = single > 0.0 && low + 1.0 >= single;
     var offsets = array<vec2<f32>, 4>(
         vec2(0.125, 0.375), vec2(-0.125, -0.375), vec2(0.375, -0.125), vec2(-0.375, 0.125));
     var sum_low = vec4(0.0);
@@ -151,7 +160,12 @@ fn rotated_grid(uv: vec2<f32>, layer: u32, pixel: vec2<f32>, du: vec2<f32>,
     for (var i = 0; i < 4; i++) {
         let p = uv + offsets[i] * pixel;
         sum_low += sprite_level(p, layer, low);
-        sum_high += sprite_level(p, layer, low + 1.0);
+        if !high_single {
+            sum_high += sprite_level(p, layer, low + 1.0);
+        }
+    }
+    if high_single {
+        sum_high = 4.0 * sprite_level(uv, layer, low + 1.0);
     }
     return mix(sum_low * 0.25, sum_high * 0.25, mip_blend);
 }

@@ -341,7 +341,8 @@ struct Globals {
     emissive_count: [u32; 4],
     /// The sunrise fan's triangles as the sky shader tests them (`sunrise_fan::normals`).
     sunrise_fan: [[f32; 4]; 2 * sunrise_fan::TRIANGLES],
-    /// x: `Options.textureFiltering` (0 none, 1 RGSS, 2 anisotropic); y: the sprite arrays' width.
+    /// x: `Options.textureFiltering` (0 none, 1 RGSS, 2 anisotropic); y: the sprite arrays' width;
+    /// z: the mip level at which a sprite is one texel, when the views reach it, else 0.
     filtering: [f32; 4],
     /// HDR output's tier windows, low to very bright: where the lift starts, where it is
     /// full (`hdr::Hdr::windows`); zero without HDR.
@@ -6503,7 +6504,13 @@ impl Renderer {
             filtering: [
                 self.texture_filtering as f32,
                 self.sprite_textures[0].width() as f32,
-                0.0,
+                // The views' last level (`rebuild_terrain_group`), when a sprite is one texel
+                // there: RGSS takes one tap from it on (terrain.wgsl's `rotated_grid`).
+                if self.sprite_textures[0].width() >> self.mipmaps == 1 {
+                    self.mipmaps as f32
+                } else {
+                    0.0
+                },
                 0.0,
             ],
             hdr_windows: self.hdr.as_ref().map_or([[0.0; 4]; 2], hdr::Hdr::windows),
