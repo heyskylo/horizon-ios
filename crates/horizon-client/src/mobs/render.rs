@@ -2975,7 +2975,7 @@ mod tests {
                 );
                 assert!(vertices[24..].iter().all(|v| v.uv[0] >= 0.5));
             }
-            mob.extra.head = Some("minecraft:stone".into());
+            mob.extra.body = Some("minecraft:stone".into());
             let mut vertices = Vec::new();
             render(
                 &mob,
