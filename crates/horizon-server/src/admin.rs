@@ -121,6 +121,17 @@ pub fn act(shared: &Shared, action: Action, body: &[u8]) -> Response {
         Ok(line) => line,
         Err(e) => return Response::error(400, &e),
     };
+    if shared.phase() == Phase::Stopped
+        && let Some((command, args)) = stopped_command(action, &body)
+    {
+        return match crate::lists::edit_stopped(&shared.dir, command, &args) {
+            Ok(edit) => Response::json(
+                200,
+                &json!({ "changed": edit.changed, "output": [edit.message] }),
+            ),
+            Err(e) => Response::error(409, &e),
+        };
+    }
     let mut game = match running(shared) {
         Ok(game) => game,
         Err(response) => return response,
@@ -156,6 +167,25 @@ pub fn act(shared: &Shared, action: Action, body: &[u8]) -> Response {
         200,
         &json!({ "changed": changed, "output": reply["output"] }),
     )
+}
+
+/// The actions that can edit files without a game process.
+fn stopped_command(action: Action, body: &Value) -> Option<(&'static str, Vec<&str>)> {
+    match action {
+        Action::Op => Some(("op", vec![body["name"].as_str()?])),
+        Action::Deop => Some(("deop", vec![body["name"].as_str()?])),
+        Action::WhitelistAdd => Some(("whitelist", vec!["add", body["name"].as_str()?])),
+        Action::WhitelistRemove => Some(("whitelist", vec!["remove", body["name"].as_str()?])),
+        Action::Whitelist => Some((
+            "whitelist",
+            vec![if body["enabled"].as_bool()? {
+                "on"
+            } else {
+                "off"
+            }],
+        )),
+        _ => None,
+    }
 }
 
 /// A list from its file in the server folder; missing or broken reads as empty, as the game would start.
@@ -402,6 +432,59 @@ mod tests {
         assert!(line(Action::Kick, json!({ "name": "Kim0", "reason": "a\nstop" })).is_err());
         assert!(line(Action::PardonIp, json!({ "ip": "Kim0" })).is_err());
         assert!(line(Action::Whitelist, json!({})).is_err());
+    }
+
+    #[test]
+    fn stopped_actions_edit_file_backed_lists() {
+        let dir = std::env::temp_dir().join(format!(
+            "horizon-server-admin-stopped-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(crate::config::FILE), crate::config::TEMPLATE).unwrap();
+        crate::config::update(&dir, "server", "online_mode", toml::Value::Boolean(false)).unwrap();
+        crate::config::update(&dir, "server", "whitelist", toml::Value::Boolean(false)).unwrap();
+        let shared = Shared::with_install(&dir, None);
+        shared.set_phase(Phase::Stopped);
+
+        let call = |action, body| {
+            let response = act(&shared, action, body);
+            assert_eq!(response.status, 200, "{}", response.body);
+            serde_json::from_str::<Value>(&response.body).unwrap()
+        };
+        assert_eq!(
+            call(Action::Op, br#"{"name":"Alex"}"#),
+            json!({ "changed": true, "output": ["Made Alex a server operator"] })
+        );
+        assert_eq!(
+            call(Action::WhitelistAdd, br#"{"name":"Alex"}"#),
+            json!({ "changed": true, "output": ["Added Alex to the whitelist"] })
+        );
+        assert_eq!(
+            call(Action::Whitelist, br#"{"enabled":true}"#),
+            json!({ "changed": true, "output": ["Whitelist is now turned on"] })
+        );
+        assert_eq!(
+            call(Action::Deop, br#"{"name":"Alex"}"#),
+            json!({ "changed": true, "output": ["Made Alex no longer a server operator"] })
+        );
+        assert_eq!(
+            call(Action::WhitelistRemove, br#"{"name":"Alex"}"#),
+            json!({ "changed": true, "output": ["Removed Alex from the whitelist"] })
+        );
+        assert!(
+            !std::fs::read_to_string(dir.join("ops.json"))
+                .unwrap()
+                .contains("Alex")
+        );
+        assert!(
+            !std::fs::read_to_string(dir.join("whitelist.json"))
+                .unwrap()
+                .contains("Alex")
+        );
+        assert!(crate::config::Config::load(&dir).unwrap().server.whitelist);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

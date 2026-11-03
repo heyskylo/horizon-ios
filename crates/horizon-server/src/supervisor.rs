@@ -212,15 +212,22 @@ pub fn run(dir: &Path) -> Result<(), String> {
                 Exit::Restart => "the game was restarted before it was up".into(),
             };
             roll_back(&shared, dir, &config, &w, &reason);
-            if matches!(exit, Exit::Stopped)
-                && shared.state.lock().unwrap().phase == Phase::Stopping
-            {
+            if matches!(exit, Exit::Stopped) && shared.shutdown.load(Ordering::SeqCst) {
                 return Ok(());
             }
             continue;
         }
         let status = match exit {
-            Exit::Stopped => return Ok(()),
+            Exit::Stopped => {
+                if shared.shutdown.load(Ordering::SeqCst) {
+                    return Ok(());
+                }
+                shared.set_phase(Phase::Stopped);
+                if wait_stopped(&shared) {
+                    continue;
+                }
+                return Ok(());
+            }
             Exit::NotUp => continue,
             Exit::Restart => {
                 let restore = shared.restore.lock().unwrap().take();
@@ -663,8 +670,12 @@ fn supervise(
             }
         }
         let requests = signals::requests();
-        let asked = requests > handled || shared.stop.swap(false, Ordering::SeqCst);
+        let signal = requests > handled;
+        let asked = signal || shared.stop.swap(false, Ordering::SeqCst);
         handled = requests;
+        if signal {
+            shared.shutdown.store(true, Ordering::SeqCst);
+        }
         if shared.restart.swap(false, Ordering::SeqCst) && stopping.is_none() {
             restart = true;
             note(shared, "INFO", "Restarting the server");
@@ -709,6 +720,23 @@ fn supervise(
                 return Exit::Stopped;
             }
         }
+    }
+}
+
+/// Keeps the supervisor and its API alive after the game stops, until a start/restart or shutdown arrives.
+fn wait_stopped(shared: &Arc<Shared>) -> bool {
+    loop {
+        if shared.shutdown.load(Ordering::SeqCst) {
+            return false;
+        }
+        if signals::requests() > 0 {
+            shared.shutdown.store(true, Ordering::SeqCst);
+            return false;
+        }
+        if shared.restart.swap(false, Ordering::SeqCst) {
+            return true;
+        }
+        thread::sleep(Duration::from_millis(50));
     }
 }
 

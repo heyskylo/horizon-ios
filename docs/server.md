@@ -321,7 +321,7 @@ refuse. There is no `backups.before_update` setting: an update always backs up t
 ```
 horizon-server init                      first run (section 3)
 horizon-server run                       supervisor + engine in the foreground; the console on stdin
-horizon-server start | stop | restart    in the background (detached `run`); each waits for the game
+horizon-server start | stop | restart    in the background (detached `run`); start also resumes a stopped supervisor
 horizon-server status [--json]           up?, uptime, TPS, MSPT, players, RAM, CPU, crashes
 horizon-server cmd <command…>            one console command, with its output
 horizon-server console                   attach: the live log, and send commands (Ctrl-D detaches)
@@ -402,6 +402,9 @@ runtime or new dependency. Server-sent events can replace the polling later if a
   with it). The server stops. The current world is moved to `backups/replaced-<time>/` (never deleted), the
   backup is unpacked into a temporary folder and checked (`level.dat` is there), then moved in, and the server
   starts again if it was running. One command, or one click with confirmation in the panel.
+- **Stopped game.** A console `stop` leaves the supervisor, control API and panel alive with no engine process.
+  `horizon-server start` or `POST /api/v1/start` starts the game again; `horizon-server stop` still shuts down
+  both the game and the supervisor. File-backed player-list edits are safe during this stopped state.
 - **Crash restart.** If the engine exits without being asked to stop, the supervisor keeps the last 200 log
   lines and the engine's crash report (`crash-reports/`), restarts it after 5 s, and doubles the wait up to
   5 minutes. It gives up after 5 crashes in 10 minutes, so it doesn't loop on a broken world, and shows the
@@ -444,12 +447,13 @@ runtime or new dependency. Server-sent events can replace the polling later if a
   `.horizon/api.json`. It's plain HTTP/1.1 on `std::net` (`crates/horizon-server/src/http.rs`), no runtime.
   - built (PR 2b, 2c): `GET status` (phase, uptime, crashes, RSS, CPU, and the engine's TPS, MSPT
     average/P50/P95/P99, players, chunks), `GET logs?since=`, `POST command {line}` (returns the output),
-    `POST stop`, `POST restart`, `GET backups`, `POST backups {name}`, `POST restore {name}`, `POST update
+    `POST start`, `POST stop`, `POST restart`, `GET backups`, `POST backups {name}`, `POST restore {name}`, `POST update
     {tag, timeout}` (without a tag: the newest release, downloaded first; `status` has an `update` object
     that says how it went), `GET metrics?since=`;
   - built (server-admin): `GET players` (online with address, ping and op level; ops, whitelist, bans, IP
     bans), `POST players/{kick,ban,pardon,ban-ip,pardon-ip,op,deop}`, `POST whitelist {enabled}`,
-    `POST whitelist/{add,remove}` (each runs vanilla's console command and answers `changed` and its lines),
+    `POST whitelist/{add,remove}` (list edits also work while the game is stopped; running edits use
+    vanilla's console command and answer `changed` and its lines),
     `GET metrics/prometheus` (Prometheus text);
   - built (server-admin): `GET config` (the token hidden), `PATCH config {changes}` (as `config set`;
     not `engine.*`, `panel.*`, `api.*`, nor the RCON, query and management keys, so the API can't widen who
