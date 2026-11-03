@@ -36,9 +36,10 @@ Usage: horizon-server [--dir DIR] <command>
               Zip the world and the settings into backups/ (a running server saves first and stays up)
   backups [--json]
               List the backups
-  restore BACKUP [--yes]
+  restore BACKUP [--dimension ID] [--yes]
               Put a backup's world in place (the current one is kept in backups/); a running
-              server restarts with it
+              server restarts with it. --dimension (like minecraft:the_nether) brings back only
+              that dimension and leaves the rest of the world as it is
   service install|uninstall|print [--system]
               Start the server at boot or login: a systemd unit on Linux (--system: for every user,
               with sudo), a launchd agent on macOS, a task at logon on Windows
@@ -167,10 +168,10 @@ HTTP and JSON on 127.0.0.1. A running server writes its address and a random tok
 | `POST` | `/api/v1/backups` | `{"name": "..."}` (optional) | `{"name": "<file>"}` | Back up now (a running game saves first and stays up) |
 | `DELETE` | `/api/v1/backups` | `?name=<file>` (the full name `backups` lists) | `{"name": "<file>"}` | Delete a backup |
 | `GET` | `/api/v1/backups/download` | `?name=<file>` | the zip | Download a backup |
-| `POST` | `/api/v1/restore` | `{"name": "<backup>"}` | `{"name": "<backup>"}` | Restart the game with that backup's world (the current one is kept in backups/) |
+| `POST` | `/api/v1/restore` | `{"name": "<backup>", "dimension": "minecraft:the_nether"}` (`dimension` optional) | `{"name": "<backup>", "dimension": "<id>" or null}` | Restart the game with that backup's world, or only one dimension of it (what it replaces is kept in backups/) |
 | `POST` | `/api/v1/update` | `{"tag": "...", "timeout": seconds}` (both optional) | `{"ok": true}`; `status` says how it went (`update`) | Restart on that installed release, or download the newest first; goes back if the game isn't up within the timeout |
 | `GET` | `/api/v1/metrics/prometheus` | nothing | the latest sample as Prometheus text: `horizon_up`, `horizon_tps`, `horizon_mspt{stat}`, `horizon_players_online`, `horizon_memory_rss_bytes`... | Metrics for a monitoring tool to scrape |
-| `GET` | `/api/v1/players` | nothing | `online` (name, uuid, address, ping_ms, op_level), `max_players`, `ops`, `whitelist` (`enabled`, `players`), `bans`, `ip_bans` (with reason, source, created, expires) | Who is online, and vanilla's lists |
+| `GET` | `/api/v1/players` | nothing | `online` (name, uuid, address, ping_ms, position, op_level), `max_players`, `ops`, `whitelist` (`enabled`, `players`), `bans`, `ip_bans` (with reason, source, created, expires) | Who is online, and vanilla's lists |
 | `POST` | `/api/v1/players/kick` | `{"name", "reason"}` (reason optional) | `{"changed": bool, "output": [...]}`: whether the list (or who is online) changed, and the console's lines | Kick an online player |
 | `POST` | `/api/v1/players/ban` | `{"name", "reason"}` (reason optional) | `{"changed": bool, "output": [...]}`: whether the list (or who is online) changed, and the console's lines | Ban a player (kicked if online) |
 | `POST` | `/api/v1/players/pardon` | `{"name"}` | `{"changed": bool, "output": [...]}`: whether the list (or who is online) changed, and the console's lines | Lift a player's ban |

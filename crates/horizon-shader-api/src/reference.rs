@@ -1,7 +1,7 @@
 //! docs/api/shaders-reference.md, generated from the stages and inputs this
 //! crate defines (`tests/reference.rs` fails when the file drifts).
 use crate::check::{MAX_EXPRESSIONS, MAX_TEXTURE_READS};
-use crate::inputs::{Frame, SURFACE, Struct};
+use crate::inputs::{DISPLACEMENT_INPUT, Frame, SURFACE, Struct};
 use crate::manifest::{API, MAX_GPU_MS, MAX_OPTIONS, MAX_POST_PASSES};
 use crate::package::{MAX_TOTAL, MAX_WGSL};
 use crate::stages::{GROUP, StageKind};
@@ -56,6 +56,12 @@ pub fn markdown() -> String {
         out += &table(kind.input(), None);
         if kind == StageKind::Material {
             out += &table(&SURFACE, None);
+            out += "Under `[displacement]` the stage also defines \
+                    `fn displacement(input: DisplacementInput) -> f32`, called for each corner of the grid the \
+                    faces near the camera are cut into; the corner moves along the face's normal by the depth it \
+                    gives at the point's height less the depth at the texture's mean height, pinned at the face's \
+                    edges and easing out over the last quarter of the distance.\n\n";
+            out += &table(&DISPLACEMENT_INPUT, None);
         }
         out += &format!(
             "Resources (bind group {GROUP}):\n\n| Binding | Declaration | Meaning |\n| --- | --- | --- |\n"

@@ -403,7 +403,7 @@ impl Game<'_> {
         ];
         self.level_event_at(2013, on_pos, 750);
         let heavy = if fall > HEAVY_THRESHOLD { 2.0 } else { 1.0 };
-        let player = self.level.player_uuid.or(Some([0, 0, 0, 1]));
+        let player = Some(self.acting_uuid());
         for m in self.mobs.iter_mut().filter(|m| {
             target != Spared::Mob(m.id) && m.alive() && !m.removed && !ally_of_player(m, player)
         }) {
@@ -511,7 +511,7 @@ impl Game<'_> {
         };
         let base = sweep_base_damage(ratio, attribute, scale);
         let (xd, zd) = self.extra_knockback_direction();
-        let uuid = self.level.player_uuid.or(Some([0, 0, 0, 1]));
+        let uuid = Some(self.acting_uuid());
         let allies = self.player_allies();
         // getEntitiesOfClass walks the entity sections (x, then z, then y)
         // under the box, each in the order its entities were added.
