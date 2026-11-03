@@ -39,6 +39,11 @@ import tempfile
 import threading
 import time
 
+try:
+    from . import lab
+except ImportError:
+    import lab
+
 ROOT = Path(__file__).resolve().parent.parent
 EXE = '.exe' if os.name == 'nt' else ''
 SERVERS = ('horizon', 'vanilla', 'pumpkin')
@@ -207,8 +212,7 @@ class Server:
         self.lines = []
         self.lock = threading.Lock()
         self.log = log_path.open('w', encoding='utf-8')
-        env = dict(os.environ, HORIZON_NO_AUDIO='1', HORIZON_HOME=str(directory / 'horizon-home'),
-                   HORIZON_LAUNCHER_NO_SELF_UPDATE='1')
+        env = lab.game_env(HORIZON_HOME=directory / 'horizon-home')
         self.process = subprocess.Popen([str(c) for c in command], cwd=directory, stdin=subprocess.PIPE,
                                         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
                                         encoding='utf-8', errors='replace', env=env)
