@@ -1075,5 +1075,8 @@
   "Launcher settings are back to their defaults": "Pengaturan launcher kembali ke bawaan",
   "Opened {path}": "Dibuka: {path}",
   "Saved {name}": "{name} disimpan",
-  "My Horizon": "Horizon Saya"
+  "My Horizon": "Horizon Saya",
+  "Game log": "Log game",
+  "1 line": "1 baris",
+  "{count} lines": "{count} baris"
 }

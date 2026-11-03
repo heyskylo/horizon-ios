@@ -1075,5 +1075,8 @@
   "Shader pack": "Varjostinpaketti",
   "soon": "pian",
   "{support} in Horizon": "{support} Horizonissa",
-  "My Horizon": "Oma Horizon"
+  "My Horizon": "Oma Horizon",
+  "Game log": "Pelin loki",
+  "1 line": "1 rivi",
+  "{count} lines": "{count} riviä"
 }

@@ -1075,5 +1075,8 @@
   "Launcher settings are back to their defaults": "Başlatıcı ayarları varsayılanlara döndü",
   "Opened {path}": "Açıldı: {path}",
   "Saved {name}": "{name} kaydedildi",
-  "My Horizon": "Horizon'ım"
+  "My Horizon": "Horizon'ım",
+  "Game log": "Oyun günlüğü",
+  "1 line": "1 satır",
+  "{count} lines": "{count} satır"
 }

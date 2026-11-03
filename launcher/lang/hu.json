@@ -1075,5 +1075,8 @@
   "Shader pack": "Shadercsomag",
   "soon": "hamarosan",
   "{support} in Horizon": "{support} a Horizonban",
-  "My Horizon": "Saját Horizon"
+  "My Horizon": "Saját Horizon",
+  "Game log": "Játéknapló",
+  "1 line": "1 sor",
+  "{count} lines": "{count} sor"
 }
