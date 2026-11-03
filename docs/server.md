@@ -401,7 +401,10 @@ runtime or new dependency. Server-sent events can replace the polling later if a
 - **Restore.** `restore NAME` takes a file name, a unique prefix, or the name given to `backup` (the newest
   with it). The server stops. The current world is moved to `backups/replaced-<time>/` (never deleted), the
   backup is unpacked into a temporary folder and checked (`level.dat` is there), then moved in, and the server
-  starts again if it was running. One command, or one click with confirmation in the panel.
+  starts again if it was running. One command, or one click with confirmation in the panel. `restore NAME
+  --dimension minecraft:the_nether` (API: `dimension` in the body; MCP: `dimension`) brings back only that
+  dimension's folder (`dimensions/<namespace>/<path>`), the same way, and leaves the other dimensions,
+  `level.dat` and the players as they are; the folder it replaces goes to `backups/replaced-<time>/`.
 - **Crash restart.** If the engine exits without being asked to stop, the supervisor keeps the last 200 log
   lines and the engine's crash report (`crash-reports/`), restarts it after 5 s, and doubles the wait up to
   5 minutes. It gives up after 5 crashes in 10 minutes, so it doesn't loop on a broken world, and shows the
