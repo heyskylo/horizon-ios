@@ -286,7 +286,7 @@ fn unreadable_source_keeps_old_pointer_and_source_bytes() {
             return;
         }
         let guard = PermissionsGuard(path.clone(), fs::metadata(&path).unwrap().permissions());
-        fs::set_permissions(&path, fs::Permissions::from_mode(0)).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o0)).unwrap();
         guard
     };
     assert!(
