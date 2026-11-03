@@ -43,6 +43,8 @@ fn from_u8(v: u8) -> State {
 /// Shared by a connection's reader and writer.
 pub struct Session {
     pub version: ServerVersion,
+    /// Dimension of the last play login or respawn, for older packets with only a local block position.
+    pub(super) dimension: Mutex<String>,
     reading: AtomicU8,
     writing: AtomicU8,
     /// Entity UUIDs by network id, for a server that is told which entity a spectator picked by its UUID.
@@ -60,6 +62,7 @@ impl Session {
     pub fn new(version: ServerVersion) -> Self {
         Self {
             version,
+            dimension: Mutex::new("minecraft:overworld".into()),
             reading: AtomicU8::new(0),
             writing: AtomicU8::new(0),
             uuids: Mutex::new(HashMap::new()),
@@ -193,18 +196,20 @@ mod tests {
 
     #[test]
     fn the_handshake_states_the_older_protocol_and_moves_both_directions() {
-        let s = Session::new(ServerVersion::V26_2);
-        let mut payload = Writer::new();
-        payload.varint(crate::PROTOCOL_VERSION);
-        payload.string("example.org");
-        payload.u16(25565);
-        payload.varint(handshake::LOGIN);
-        let sent = s.serverbound(&body(0, &payload.data)).unwrap().unwrap();
-        let mut r = Reader::new(&sent);
-        assert_eq!(r.varint().unwrap(), 0);
-        assert_eq!(r.varint().unwrap(), 776);
-        assert_eq!(r.string(255).unwrap(), "example.org");
-        assert_eq!((s.reading(), s.writing()), (State::Login, State::Login));
+        for (version, protocol) in [(ServerVersion::V26_2, 776), (ServerVersion::V1_21_8, 772)] {
+            let s = Session::new(version);
+            let mut payload = Writer::new();
+            payload.varint(crate::PROTOCOL_VERSION);
+            payload.string("example.org");
+            payload.u16(25565);
+            payload.varint(handshake::LOGIN);
+            let sent = s.serverbound(&body(0, &payload.data)).unwrap().unwrap();
+            let mut r = Reader::new(&sent);
+            assert_eq!(r.varint().unwrap(), 0);
+            assert_eq!(r.varint().unwrap(), protocol);
+            assert_eq!(r.string(255).unwrap(), "example.org");
+            assert_eq!((s.reading(), s.writing()), (State::Login, State::Login));
+        }
     }
 
     #[test]

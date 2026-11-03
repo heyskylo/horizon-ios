@@ -111,6 +111,31 @@ mute a test run's stream in the mixer: PipeWire remembers the mute for every
 later `horizon-client`. The launcher starts the game as "Horizon" for that
 reason.
 
+### Experimental older servers
+
+The native Rust adapter recognizes 26.2, 26.1.x, 1.21.11, 1.21.9/1.21.10 and
+1.21.8. It is off by default while compatibility is incomplete. Set
+`HORIZON_OLDER_SERVERS=1` before starting the game; the server's status ping selects
+the adapter. The client still needs its prepared **26.3** resources.
+
+```sh
+HORIZON_OLDER_SERVERS=1 cargo run --profile fast -p horizon-client -- --server 127.0.0.1:25565
+```
+
+In PowerShell, set `$env:HORIZON_OLDER_SERVERS = '1'`, then run the same Cargo
+command without the environment assignment at its start.
+
+This does not load Fabric JARs or emulate every older version's movement and
+combat. Older item components still have gaps; a recognized protocol is not a
+promise of complete compatibility. The 1.21.8 adapter has offline vanilla-server
+probe coverage; online-mode login and a complete interactive playthrough on that
+version have not been validated. Earlier Java releases, Classic/Alpha/Beta,
+April Fools and Bedrock are outside the implemented adapter set.
+
+For a protocol-only development check, append `--server-protocol 772` to
+`cargo run -p horizon-protocol --example protocol_probe -- 127.0.0.1:25565 20`.
+The probe fails if it encounters packet or chunk decode errors.
+
 ### Agent control (`horizon-ctl` and MCP)
 
 AI agents and scripts play Horizon through `horizon-ctl`, a command line that

@@ -85,10 +85,13 @@ pub struct Ids {
 pub struct Quirks {
     /// `SlotDisplay` type 6 holds a bare tag id (TagSlotDisplay) instead of a HolderSet (26.2).
     pub tag_slot_display_is_id: bool,
+    /// Before 1.21.9, player shoulder parrots were compound tags (serializer 16), not optional variants.
+    pub shoulder_parrots_as_nbt: bool,
 }
 impl Quirks {
     pub const NONE: Self = Self {
         tag_slot_display_is_id: false,
+        shoulder_parrots_as_nbt: false,
     };
 }
 

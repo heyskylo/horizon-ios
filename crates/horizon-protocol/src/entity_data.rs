@@ -434,7 +434,24 @@ impl Codec<Vec<(u8, i32, Value)>> for EntityData {
             if index == 0xFF {
                 return Ok(out);
             }
-            let kind = ids::entity_data_serializer(r.varint()?);
+            let wire_kind = r.varint()?;
+            if wire_kind == 16 && ids::quirks().shoulder_parrots_as_nbt {
+                // Player.DATA_SHOULDER_LEFT/RIGHT: only parrots occupy shoulders in vanilla. 1.21.9
+                // replaced their entity NBT with an optional Parrot.Variant (0 = absent, id + 1).
+                let tag = r.nbt()?;
+                let parrot = matches!(tag.get("id"), Some(Tag::String(id)) if id.to_string_lossy() == "minecraft:parrot");
+                let variant = match tag.get("Variant") {
+                    Some(Tag::Int(id)) if (0..5).contains(id) => *id,
+                    _ => 0,
+                };
+                out.push((
+                    index,
+                    serializer::OPTIONAL_UNSIGNED_INT,
+                    Value::Id(if parrot { variant + 1 } else { 0 }),
+                ));
+                continue;
+            }
+            let kind = ids::entity_data_serializer(wire_kind);
             match read_value(kind, r)? {
                 Some(v) => out.push((index, kind, v)),
                 None => {

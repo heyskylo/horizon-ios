@@ -3,6 +3,8 @@
 //! check of the codecs against a real vanilla server:
 //!
 //!     cargo run -p horizon-protocol --example protocol_probe -- 127.0.0.1:25565 [seconds] [registries.json]
+//!
+//! Append `--server-protocol 772` to exercise the experimental adapter against a vanilla 1.21.8 server.
 use horizon_protocol::{
     PROTOCOL_VERSION, State,
     connection::Connection,
@@ -17,7 +19,21 @@ use std::{
 };
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let args: Vec<String> = std::env::args().collect();
+    let mut args: Vec<String> = std::env::args().collect();
+    let version = if let Some(at) = args.iter().position(|s| s == "--server-protocol") {
+        args.remove(at);
+        let protocol: i32 = args
+            .get(at)
+            .ok_or("--server-protocol needs a number")?
+            .parse()?;
+        args.remove(at);
+        Some(
+            horizon_protocol::adapter::ServerVersion::from_protocol(protocol)
+                .ok_or("unsupported server protocol")?,
+        )
+    } else {
+        None
+    };
     let (host, port) =
         parse_address(args.get(1).map_or("127.0.0.1", String::as_str)).ok_or("bad address")?;
     let seconds: u64 = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(10);
@@ -26,6 +42,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map(|p| Builtin::load(std::path::Path::new(p)))
         .transpose()?;
     let mut c = Connection::connect(&host, port, Duration::from_secs(5))?;
+    c.reader.set_read_timeout(Some(Duration::from_secs(10)))?;
+    if let Some(version) = version {
+        c.adapt(version);
+    }
     c.send(
         &handshake::Serverbound::Intention(handshake::Intention {
             protocol: PROTOCOL_VERSION,
@@ -62,6 +82,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     c.send(&cfg::Serverbound::ClientInformation(cfg::ClientInformation::new(8)).encode())?;
     let mut registries = Dynamic::default();
+    let mut decode_errors = 0;
     loop {
         let (id, payload) = c.recv()?;
         match cfg::Clientbound::decode(id, &payload) {
@@ -100,7 +121,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 )
                 .unwrap_or("?")
             ),
-            Err(e) => println!("configuration decode error in {id}: {e}"),
+            Err(e) => {
+                decode_errors += 1;
+                println!("configuration decode error in {id}: {e}");
+            }
         }
     }
     let biome_bits = ceil_log2(registries.len("minecraft:worldgen/biome"));
@@ -130,6 +154,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         "login: entity {} in {} ({:?})",
                         p.player_id, p.spawn.dimension, dimension
                     );
+                    c.send(&play::Serverbound::PlayerLoaded(Empty).encode())?;
+                }
+                play::Clientbound::Respawn(p) => {
+                    dimension = registries.dimension(p.spawn.dimension_type);
                     c.send(&play::Serverbound::PlayerLoaded(Empty).encode())?;
                 }
                 play::Clientbound::KeepAlive(p) => {
@@ -166,6 +194,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     if let Err(e) = p.chunk.sections(dimension.sections(), 16, biome_bits) {
                         println!("chunk {} {} sections: {e}", p.x, p.z);
                         entry.1 += 1;
+                        decode_errors += 1;
                     }
                 }
                 play::Clientbound::AddEntity(p) => {
@@ -188,6 +217,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             },
             Err(e) => {
                 entry.1 += 1;
+                decode_errors += 1;
                 if entry.1 <= 2 {
                     println!("decode error in {name} ({} bytes): {e}", payload.len());
                 }
@@ -204,6 +234,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 String::new()
             }
         );
+    }
+    if decode_errors > 0 {
+        return Err(format!("{decode_errors} packet/chunk decode failures").into());
     }
     Ok(())
 }

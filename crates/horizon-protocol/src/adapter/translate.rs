@@ -18,6 +18,8 @@ use crate::{
     packets::{configuration, play},
 };
 
+mod v1_21_8;
+
 impl Ids {
     /// The table of a registry tags are sent for, by its name; registries the protocol syncs from the
     /// server's own data (biomes, enchantments, ...) are numbered by that data and alike on both sides.
@@ -76,7 +78,8 @@ pub fn clientbound(
     // A release at a time: an older server's packets are brought to 26.2's layout first, oldest step first.
     let mut before: Option<Vec<u8>> = None;
     type Step = fn(&Session, State, i32, &[u8]) -> Result<Option<Vec<u8>>>;
-    let steps: [(ServerVersion, Step); 2] = [
+    let steps: [(ServerVersion, Step); 3] = [
+        (ServerVersion::V1_21_8, v1_21_8::clientbound),
         (ServerVersion::V1_21_11, v1_21_11::clientbound),
         (ServerVersion::V26_1, v26_1::clientbound),
     ];
@@ -103,8 +106,25 @@ pub fn clientbound(
             }
             strip_id(p.encode())
         }
-        (State::Play, cb::LOGIN) => login(payload)?,
-        (State::Play, cb::RESPAWN) => respawn(payload)?,
+        (State::Play, cb::LOGIN) => {
+            let body = login(payload)?;
+            let login = play::Login::read(&mut Reader::new(&body))?;
+            *session.dimension.lock().unwrap() = login.spawn.dimension;
+            // The local player receives no AddEntity packet; its metadata still needs the player step.
+            session
+                .kinds
+                .lock()
+                .unwrap()
+                .insert(login.player_id, packet_ids_entity::PLAYER);
+            body
+        }
+        (State::Play, cb::RESPAWN) => {
+            let body = respawn(payload)?;
+            *session.dimension.lock().unwrap() = play::Respawn::read(&mut Reader::new(&body))?
+                .spawn
+                .dimension;
+            body
+        }
         (State::Play, cb::LEVEL_CHUNK_WITH_LIGHT) => chunk(ids, payload)?,
         (State::Play, cb::LIGHT_UPDATE) => light_update(payload)?,
         (State::Play, cb::UPDATE_ADVANCEMENTS) => advancements(ids, payload)?,
@@ -180,6 +200,9 @@ pub fn clientbound(
         (State::Play, cb::SET_ENTITY_DATA) if session.version.at_most(ServerVersion::V1_21_11) => {
             let mut p = decode_play(ids, id, payload)?;
             if let play::Clientbound::SetEntityData(d) = &mut p {
+                if session.version.at_most(ServerVersion::V1_21_8) {
+                    v1_21_8::entity_data(session, d);
+                }
                 if session.version.at_most(ServerVersion::V1_21_10) {
                     v1_21_10::entity_data(session, d);
                 }
@@ -210,6 +233,7 @@ pub fn clientbound(
 mod packet_ids_entity {
     /// `minecraft:falling_block` in 26.3.
     pub const FALLING_BLOCK: i32 = 52;
+    pub const PLAYER: i32 = 159;
 }
 
 /// A serverbound packet with Horizon's `id`, as the older server numbers and lays it out: its id there and

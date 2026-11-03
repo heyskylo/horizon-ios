@@ -61,12 +61,13 @@ def entries(report, registry):
     return found
 
 
-def states(blocks):
+def states(blocks, renames=None):
     """{(block, properties): state id} over every state of every block."""
+    renames = renames or {}
     found = {}
     for name, block in blocks.items():
         for state in block["states"]:
-            key = (name, tuple(sorted(state.get("properties", {}).items())))
+            key = (renames.get(name, name), tuple(sorted(state.get("properties", {}).items())))
             found[key] = state["id"]
     assert sorted(found.values()) == list(range(len(found)))
     return found
@@ -137,7 +138,8 @@ def main():
         "//! registries and blocks reports; do not edit by hand.",
         "",
     ]
-    old_states = states(json.loads((old_reports / "blocks.json").read_text()))
+    old_states = states(json.loads((old_reports / "blocks.json").read_text()),
+                        renames.get("minecraft:block"))
     new_states = states(json.loads((new_reports / "blocks.json").read_text()))
     lines.append(f"/// Block states: {len(old_states)} in {old_info['id']}, {len(new_states)} pinned.")
     lines.append(f"pub const OLD_STATES: u32 = {len(old_states)};")

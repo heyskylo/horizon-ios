@@ -12,6 +12,8 @@ pub mod v1_21_10;
 mod v1_21_10_ids;
 pub mod v1_21_11;
 mod v1_21_11_ids;
+pub mod v1_21_8;
+mod v1_21_8_ids;
 pub mod v26_1_2;
 mod v26_1_2_ids;
 pub mod v26_2;
@@ -36,16 +38,19 @@ pub enum ServerVersion {
     V1_21_11,
     /// 1.21.9 and 1.21.10: one protocol.
     V1_21_10,
+    /// 1.21.8, the last release on protocol 772.
+    V1_21_8,
 }
 
 impl ServerVersion {
     /// Newest first.
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::Current,
         Self::V26_2,
         Self::V26_1,
         Self::V1_21_11,
         Self::V1_21_10,
+        Self::V1_21_8,
     ];
 
     /// Whether this is `other` or an older release: the translation steps from `other` up apply.
@@ -62,6 +67,7 @@ impl ServerVersion {
             Self::V26_1 => v26_1_2::PROTOCOL,
             Self::V1_21_11 => v1_21_11::PROTOCOL,
             Self::V1_21_10 => v1_21_10::PROTOCOL,
+            Self::V1_21_8 => v1_21_8::PROTOCOL,
         }
     }
 
@@ -73,6 +79,7 @@ impl ServerVersion {
             Self::V26_1 => "26.1",
             Self::V1_21_11 => v1_21_11::NAME,
             Self::V1_21_10 => "1.21.10",
+            Self::V1_21_8 => v1_21_8::NAME,
         }
     }
 
@@ -99,6 +106,7 @@ impl ServerVersion {
         // Before 26.3 a tag slot display was a bare tag id.
         const BEFORE_26_3: ids::Quirks = ids::Quirks {
             tag_slot_display_is_id: true,
+            ..ids::Quirks::NONE
         };
         static V26_2: ids::Ids = ids::Ids {
             quirks: BEFORE_26_3,
@@ -150,12 +158,42 @@ impl ServerVersion {
             },
             ..v1_21_10_ids::IDS
         };
+        static V1_21_8: ids::Ids = ids::Ids {
+            quirks: ids::Quirks {
+                shoulder_parrots_as_nbt: true,
+                ..BEFORE_26_3
+            },
+            // EntityDataSerializers in 1.21.8's registration order: compound tags (16) went away;
+            // the later sound variants, copper golem states and profile serializers were added.
+            entity_data_serializer: ids::Remap::Runs {
+                up: &[
+                    (0, 0, 16),
+                    (17, 16, 6),
+                    (23, 23, 1),
+                    (24, 25, 4),
+                    (28, 30, 1),
+                    (29, 33, 4),
+                    (33, 39, 2),
+                ],
+                down: &[
+                    (0, 0, 16),
+                    (16, 17, 6),
+                    (23, 23, 1),
+                    (25, 24, 4),
+                    (30, 28, 1),
+                    (33, 29, 4),
+                    (39, 33, 2),
+                ],
+            },
+            ..v1_21_8_ids::IDS
+        };
         match self {
             Self::Current => None,
             Self::V26_2 => Some(&V26_2),
             Self::V26_1 => Some(&V26_1),
             Self::V1_21_11 => Some(&V1_21_11),
             Self::V1_21_10 => Some(&V1_21_10),
+            Self::V1_21_8 => Some(&V1_21_8),
         }
     }
 
@@ -170,6 +208,8 @@ impl ServerVersion {
             (Self::V1_21_11, Direction::Serverbound) => v1_21_11::serverbound(state),
             (Self::V1_21_10, Direction::Clientbound) => v1_21_10::clientbound(state),
             (Self::V1_21_10, Direction::Serverbound) => v1_21_10::serverbound(state),
+            (Self::V1_21_8, Direction::Clientbound) => v1_21_8::clientbound(state),
+            (Self::V1_21_8, Direction::Serverbound) => v1_21_8::serverbound(state),
         };
         let mapped = *table.get(usize::try_from(id).ok()?)?;
         mapped.map(i32::from)
@@ -224,7 +264,11 @@ mod tests {
             ServerVersion::from_protocol(773),
             Some(ServerVersion::V1_21_10)
         );
-        assert_eq!(ServerVersion::from_protocol(772), None);
+        assert_eq!(
+            ServerVersion::from_protocol(772),
+            Some(ServerVersion::V1_21_8)
+        );
+        assert_eq!(ServerVersion::from_protocol(771), None);
         assert!(ServerVersion::V26_1.at_most(ServerVersion::V26_2));
         assert!(!ServerVersion::V26_2.at_most(ServerVersion::V26_1));
     }
