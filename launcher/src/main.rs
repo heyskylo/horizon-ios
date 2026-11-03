@@ -1486,8 +1486,7 @@ impl Launcher {
     /// Asks for a game program (or a zip holding one) and installs it as its own version on a
     /// thread: a version is thousands of files. `Msg::Imported` ends it.
     fn import_build(&mut self, cx: &mut Context<Self>) {
-        // A removal still running could take the folder of the same program imported again.
-        if self.importing_build || !self.removing.is_empty() {
+        if !self.can_import_build() {
             return;
         }
         let paths = cx.prompt_for_paths(PathPromptOptions {
@@ -1505,19 +1504,31 @@ impl Launcher {
             };
             let _ = this.update(cx, |this, cx| {
                 // Another picker's import, or a removal, may have started meanwhile.
-                if this.importing_build || !this.removing.is_empty() {
-                    return;
-                }
-                this.importing_build = true;
-                this.import_error = None;
-                let tx = this.tx.clone();
-                std::thread::spawn(move || {
-                    let _ = tx.send(Msg::Imported(build_import::import(&path, None)));
-                });
-                cx.notify();
+                this.start_build_import(path, cx);
             });
         })
         .detach();
+    }
+    /// Whether a build may be imported now. A removal still running could take
+    /// the folder of the same program imported again.
+    fn can_import_build(&self) -> bool {
+        !self.importing_build && self.removing.is_empty()
+    }
+    /// Starts importing the build at `path` on a thread, as the picker does.
+    /// Separate from [`Self::import_build`] so a file dropped on the window can
+    /// start the same import (`import_dropped`) without a picker. Does nothing
+    /// when one is already running. `Msg::Imported` ends it.
+    fn start_build_import(&mut self, path: std::path::PathBuf, cx: &mut Context<Self>) {
+        if !self.can_import_build() {
+            return;
+        }
+        self.importing_build = true;
+        self.import_error = None;
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(Msg::Imported(build_import::import(&path, None)));
+        });
+        cx.notify();
     }
 
     /// Prepares the selected version, its Minecraft files from the player's install or, for an

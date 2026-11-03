@@ -1,6 +1,8 @@
 //! Files dropped anywhere on the window (`horizon_launcher::import`): a shared instance becomes
 //! a new instance, a Java modpack goes to the Modpacks import, a resource or shader pack into
-//! the selected instance. The Packs section and the world rows take their own drops first.
+//! the selected instance, a game build (a `horizon-client` program, or an archive or an Actions
+//! artifact holding one) installed as its own version. The Packs section and the world rows take
+//! their own drops first.
 use super::*;
 use gpui::ExternalPaths;
 use horizon_launcher::import::{self, Dropped};
@@ -24,6 +26,24 @@ impl Launcher {
             match import::what(&file) {
                 Err(e) => self.importing.note = Some(Err(e)),
                 Ok(Dropped::Instance) => self.import_instance(file, cx),
+                // The same import the Versions page's Import button starts. It
+                // reports through `Msg::Imported`, which the Versions page
+                // already shows, so the note here only says it began -- and
+                // says so only if it did, since one import runs at a time.
+                Ok(Dropped::Build) => {
+                    if !self.can_import_build() {
+                        self.importing.note = Some(Err(tr(
+                            "A build is already being imported: wait for it to finish.",
+                        )
+                        .to_owned()));
+                        continue;
+                    }
+                    self.start_build_import(file, cx);
+                    self.importing.note = Some(Ok(trf(
+                        "Importing {name} as a game build…",
+                        &[("name", &name)],
+                    )));
+                }
                 Ok(Dropped::Modpack) => {
                     self.show_modpack(None);
                     self.pack_job(move |log| horizon_launcher::modpacks::import(&file, log));

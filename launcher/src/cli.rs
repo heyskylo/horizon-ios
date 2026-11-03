@@ -3180,6 +3180,17 @@ fn instance(action: InstanceCmd, as_json: bool) -> Result<(), String> {
                         pack.slug
                     );
                 }
+                // A game build is its own command: it installs a version
+                // rather than touching an instance, and takes a `--version` to
+                // say which release's game files it plays with.
+                Dropped::Build => {
+                    let tag = horizon_launcher::build_import::import(&file, None)?;
+                    if as_json {
+                        json(serde_json::json!({ "version": tag }));
+                    } else {
+                        println!("Imported the build as {tag}, and selected it.");
+                    }
+                }
                 Dropped::Pack(_) => {
                     let i = match instance {
                         Some(name) => instances::find(&name)?,
