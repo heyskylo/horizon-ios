@@ -6576,8 +6576,9 @@ impl Game<'_> {
             if m.species() == horizon_client::mobs::Species::Bat {
                 horizon_client::mobs::bat::setup_animation_states(m);
             }
-            // The animation states a server computes in its own `ai_step`.
-            horizon_client::mobs::sync::client_tick(m, game_time);
+            // The animation states a server computes in its own `ai_step`,
+            // and the particles vanilla draws on the client.
+            horizon_client::mobs::sync::client_tick(m, game_time, &mut mob_fx);
             match m.species() {
                 // WitherBoss.aiStep: the side heads turn toward their targets.
                 horizon_client::mobs::Species::Wither => {
