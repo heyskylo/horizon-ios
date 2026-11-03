@@ -1011,6 +1011,10 @@ pub struct Renderer {
     depth: wgpu::TextureView,
     sections: resident::Resident<SectionGpu>,
     lods: HashMap<crate::lod::TileKey, lod::Tile>,
+    /// Far tiles' occlusion culling slots (`lod::Tile::cull_slot`): those
+    /// free, and the next never used.
+    lod_cull_free: Vec<u32>,
+    lod_cull_next: u32,
     /// The chunk columns the resident tiles leave out (`Lod::take_cutout`):
     /// their sections are drawn even past the render distance, so terrain
     /// leaving it never opens a hole before the tiles fill it in.
@@ -4162,6 +4166,8 @@ impl Renderer {
             depth,
             sections: resident::Resident::default(),
             lods: HashMap::new(),
+            lod_cull_free: Vec::new(),
+            lod_cull_next: 0,
             lod_cutout: Default::default(),
             lod_retiring: Default::default(),
             lod_leaving: Vec::new(),
@@ -6962,12 +6968,12 @@ impl Renderer {
                         .push_in(group, v.distance, s.page, start, len, [0; 3]);
                 }
                 if let Some(c) = &mut cull {
-                    c.drawn(i, v.slot, indices);
+                    c.drawn(i, v.slot, indices, cull::SECTION_BOX);
                 }
             } else if let Some(c) = &mut cull {
                 // One test sees the section's draws in both passes.
                 let total: usize = runs.iter().map(|r| r.2).sum();
-                if let Some(test) = c.deferred(i, v.slot, total, indices) {
+                if let Some(test) = c.deferred(i, v.slot, total, indices, cull::SECTION_BOX) {
                     for &(group, start, len) in runs {
                         if group == 0 {
                             phase2_opaque += len;
@@ -6982,6 +6988,68 @@ impl Renderer {
         if gpu_frame && let Some(gpu) = &self.gpu_culling {
             gpu.upload_choices(&mut self.uploads, &mut encoder);
         }
+        // Distant terrain tiles are occlusion tested as sections are, with their meshes'
+        // bounds, but for those fading or with a stand-in (`lod::Tile::cull_bounds`).
+        for (i, v) in visible_lods.iter().enumerate() {
+            let tile = &self.lods[&v.key];
+            let s = tile.drawn();
+            let index = visible.len() + i;
+            let tested = cull.as_ref().and(tile.cull_bounds(v.fade));
+            let slot = cull::TILE | tile.cull_slot;
+            let first_phase = tested.is_none() || cull.as_ref().is_some_and(|c| c.first(slot));
+            let (draws, pages) = if first_phase {
+                (&mut self.draws, &mut self.draw_pages)
+            } else {
+                (&mut self.phase2_draws, &mut self.phase2_pages)
+            };
+            let instances = u32::from(first_phase);
+            let mut indices = 0;
+            let parts = parts(v.fade != 0);
+            let mut runs = [(0, 0, 0); 2];
+            for (run, &(group, part)) in runs.iter_mut().zip(parts) {
+                let start = draws.len();
+                facing_runs_from(&s.sides, eye, mirror_low, v.origin, part, |first, quads| {
+                    indices += quads * 6;
+                    let base = s.start as u32 + first * 4;
+                    draws.push([quads * 6, instances, 0, base, index as u32]);
+                    pages.push((s.page, None));
+                });
+                *run = (group, start, draws.len() - start);
+            }
+            let runs = &runs[..parts.len()];
+            let (Some(bounds), Some(c)) = (tested, &mut cull) else {
+                for &(group, start, len) in runs {
+                    if group == 0 {
+                        opaque_draws += len;
+                    }
+                    self.solid_runs
+                        .push_in(group, v.distance, s.page, start, len, [0; 3]);
+                }
+                continue;
+            };
+            if first_phase {
+                for &(group, start, len) in runs {
+                    if group == 0 {
+                        opaque_draws += len;
+                    }
+                    self.solid_runs
+                        .push_in(group, v.distance, s.page, start, len, [0; 3]);
+                }
+                c.drawn(index, slot, indices, bounds);
+            } else {
+                let total: usize = runs.iter().map(|r| r.2).sum();
+                if let Some(test) = c.deferred(index, slot, total, indices, bounds) {
+                    for &(group, start, len) in runs {
+                        if group == 0 {
+                            phase2_opaque += len;
+                        }
+                        let tag = [test, u32::from(group), 0];
+                        self.phase2_runs
+                            .push_in(group, v.distance, s.page, start, len, tag);
+                    }
+                }
+            }
+        }
         // Phase 2's draws are tested where grouping left them.
         let runs = self
             .phase2_runs
@@ -6989,25 +7057,6 @@ impl Renderer {
         if let Some(c) = &mut cull {
             for r in runs {
                 c.place(r.tag[0], r.tag[1], r.start, r.len);
-            }
-        }
-        // Distant terrain tiles are never occlusion tested: phase 1.
-        for (i, v) in visible_lods.iter().enumerate() {
-            let s = self.lods[&v.key].drawn();
-            let instance = (visible.len() + i) as u32;
-            for &(group, part) in parts(v.fade != 0) {
-                let start = self.draws.len();
-                facing_runs_from(&s.sides, eye, mirror_low, v.origin, part, |first, quads| {
-                    let base = s.start as u32 + first * 4;
-                    self.draws.push([quads * 6, 1, 0, base, instance]);
-                    self.draw_pages.push((s.page, None));
-                });
-                let len = self.draws.len() - start;
-                if group == 0 {
-                    opaque_draws += len;
-                }
-                self.solid_runs
-                    .push_in(group, v.distance, s.page, start, len, [0; 3]);
             }
         }
         self.solid_runs

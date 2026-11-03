@@ -333,6 +333,9 @@ fn replay(window: Arc<Window>) -> Result<(), Box<dyn std::error::Error>> {
             "drawn_sections": renderer.drawn_sections,
             "section_draws": renderer.section_draws,
             "section_draw_calls": renderer.section_draw_calls,
+            // Occlusion culling's last result: boxes hidden, boxes tested, share of solid
+            // indices hidden.
+            "culled": renderer.culled_sections(),
         }));
     }
     let section_draws = if renderer.flat_draws() {
