@@ -836,6 +836,19 @@ pub fn smithing_template_lines(
     ]
 }
 
+/// `DiscFragmentItem.appendHoverText`: the gray "Music Disc - 5" line; none for
+/// other items.
+pub fn disc_fragment_line(
+    stack: &ItemStack,
+    translate: &dyn Fn(&str) -> Option<String>,
+) -> Option<String> {
+    if &*stack.item != "minecraft:disc_fragment_5" {
+        return None;
+    }
+    let key = "item.minecraft.disc_fragment_5.desc";
+    Some(translate(key).unwrap_or_else(|| key.to_owned()))
+}
+
 /// The lines of `stack` below its name that its components give, in
 /// `ItemStack.addDetailsToTooltip` order.
 pub fn detail_lines(
@@ -851,6 +864,7 @@ pub fn detail_lines(
             .into_iter()
             .map(|l| l.0),
     );
+    lines.extend(disc_fragment_line(stack, translate));
     let display = TooltipDisplay::for_stack(stack);
     lines.extend(bees_line(stack, &display, translate));
     lines.extend(honey_line(stack, &display, translate));
@@ -1102,6 +1116,31 @@ mod tests {
     use super::*;
     use horizon_world::loot::PackOverlay;
     use std::sync::Arc;
+
+    #[test]
+    fn disc_fragment_shows_music_disc_line_first() {
+        let translate = |k: &str| {
+            (k == "item.minecraft.disc_fragment_5.desc").then(|| "Music Disc - 5".to_owned())
+        };
+        let mut stack = ItemStack::new("minecraft:disc_fragment_5", 1);
+        assert_eq!(
+            disc_fragment_line(&stack, &translate).as_deref(),
+            Some("Music Disc - 5")
+        );
+        stack.data_mut().set_other(
+            "minecraft:lore",
+            Some(Tag::List(vec![Tag::String("Lore".into())])),
+        );
+        let lines = detail_lines(&stack, None, &translate);
+        assert_eq!(lines.first().map(String::as_str), Some("Music Disc - 5"));
+        let other = ItemStack::new("minecraft:stick", 1);
+        assert_eq!(disc_fragment_line(&other, &translate), None);
+        assert!(
+            !detail_lines(&other, None, &translate)
+                .iter()
+                .any(|l| l == "Music Disc - 5")
+        );
+    }
 
     #[test]
     fn styled_name_keeps_gradient_spans_and_explicit_italic() {
