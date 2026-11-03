@@ -1513,6 +1513,7 @@ impl Game<'_> {
     fn teleport_to_in_level(&mut self, t: Target, pos: [f64; 3], rotation: Option<[f32; 2]>) {
         let from = self.target_position(t);
         let v = Vec3::new(pos[0], pos[1], pos[2]);
+        let rotation = rotation.map(|[yaw, pitch]| [wrap_degrees(yaw), wrap_degrees(pitch)]);
         match t {
             Target::Guest(_) => {
                 self.for_player(t, |g| g.teleport_to(Target::Player, pos, rotation));
@@ -3936,6 +3937,12 @@ mod teleport_pitch_tests {
         assert_eq!(super::entity_pitch(450.0), 90.0);
         assert_eq!(super::entity_pitch(-360.0), 0.0);
         assert_eq!(super::entity_pitch(-450.0), -90.0);
+        assert_eq!(super::entity_pitch(super::wrap_degrees(270.0)), -90.0);
+        assert_eq!(super::entity_pitch(super::wrap_degrees(-270.0)), 90.0);
+        assert_eq!(super::entity_pitch(super::wrap_degrees(360.0)), 0.0);
+        assert_eq!(super::entity_pitch(super::wrap_degrees(450.0)), 90.0);
+        assert_eq!(super::wrap_degrees(190.0), -170.0);
+        assert_eq!(super::wrap_degrees(540.0), -180.0);
     }
 }
 
