@@ -12388,6 +12388,9 @@ impl Game<'_> {
         if self.title.is_some() || self.saved_for_exit {
             return Ok(());
         }
+        // Native application termination can bypass the close request, so make the same
+        // client-side worker abort explicit before the game-owned streaming state is dropped.
+        self.streaming.abort_generation();
         if let Some(server) = self.integrated.take() {
             // The server thread saves the world.
             server.stop()?;
