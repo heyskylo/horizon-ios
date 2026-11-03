@@ -529,6 +529,48 @@ impl<'r, B: TerrainBlockStates> TerrainChunk<'r, B> {
         }
         y
     }
+    /// The blocks of column `x`, `z` from `low` up to `high`, as
+    /// `visit(state, count)` runs: an all-air or one-state section's part at
+    /// once, a mixed section's blocks one by one from its storage. The same
+    /// states `block` reads.
+    pub(crate) fn column_runs(
+        &self,
+        x: i32,
+        z: i32,
+        low: i32,
+        high: i32,
+        mut visit: impl FnMut(BlockStateId, usize),
+    ) {
+        let blocks = &self.blocks;
+        let mut y = low;
+        while y <= high {
+            let Some(section) = blocks.section_index(y) else {
+                visit(blocks.void_air, 1);
+                if y == high {
+                    break;
+                }
+                y += 1;
+                continue;
+            };
+            // To this section's top, or `high`.
+            let end = y.wrapping_add(15 - ((y - blocks.min_y) & 15)).min(high);
+            let run = (end - y + 1) as usize;
+            if blocks.non_air[section] == 0 {
+                visit(blocks.air, run);
+            } else if let Some(state) = blocks.sections[section].uniform_state() {
+                visit(state, run);
+            } else {
+                let storage = &blocks.sections[section];
+                for y in y..=end {
+                    visit(storage.state(local_index(x, y, z)), 1);
+                }
+            }
+            if end == i32::MAX {
+                break;
+            }
+            y = end + 1;
+        }
+    }
     pub fn section(&self, index: usize) -> Option<&BlockSection<'r>> {
         self.blocks.sections.get(index)
     }

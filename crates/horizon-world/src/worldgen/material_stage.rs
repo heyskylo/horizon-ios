@@ -78,16 +78,44 @@ impl From<ExtensionError<SurfaceError>> for SurfaceError {
     }
 }
 
+/// What the surface walk tells blocks apart by.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BlockKind {
+    Air,
+    Fluid,
+    Solid,
+}
+impl BlockKind {
+    fn of<B: TerrainBlockStates>(chunk: &TerrainChunk<'_, B>, state: BlockStateId) -> Self {
+        Self::from_properties(chunk.block_properties(state))
+    }
+    fn from_properties(properties: impl HeightmapState) -> Self {
+        if properties.is_air() {
+            Self::Air
+        } else if properties.has_fluid() {
+            Self::Fluid
+        } else {
+            Self::Solid
+        }
+    }
+}
+/// One column's resolved blocks and their kinds, refilled per column and
+/// kept across columns.
+#[derive(Default)]
+struct ColumnCache {
+    states: Vec<BlockStateId>,
+    kinds: Vec<BlockKind>,
+}
 struct Column<'a, 'r, B: TerrainBlockStates> {
     chunk: &'a mut TerrainChunk<'r, B>,
     x: i32,
     z: i32,
     min: i32,
     max: i32,
-    /// Resolved block ids for `low..=high`, reused across columns and updated by
-    /// `set_block`. The surface walk reads a column twice (top to bottom, then the
-    /// stone-depth look-behind); the palette decode is paid once per column.
-    cache: &'a mut Vec<BlockStateId>,
+    /// Blocks `low..=high`, updated by `set_block`. The surface walk reads a
+    /// column twice (top to bottom, then the stone-depth look-behind); the
+    /// palette decode and property lookup are paid once per block.
+    cache: &'a mut ColumnCache,
     low: i32,
     high: i32,
     /// This column's `TerrainChunk::worldgen_column_bounds`: most writes are
@@ -102,18 +130,34 @@ impl<'a, 'r, B: TerrainBlockStates> Column<'a, 'r, B> {
         min: i32,
         max: i32,
         top: i32,
-        cache: &'a mut Vec<BlockStateId>,
+        cache: &'a mut ColumnCache,
     ) -> Self {
         let chunk_min = chunk.min_y();
         let chunk_max = chunk_min.wrapping_add(chunk.height()).wrapping_sub(1);
         let high = top.min(chunk_max);
         let low = min.max(chunk_min);
-        cache.clear();
+        cache.states.clear();
+        cache.kinds.clear();
         if high >= low {
-            cache.reserve((high - low + 1) as usize);
-            for y in low..=high {
-                cache.push(chunk.block(x, y, z));
-            }
+            let count = (high - low + 1) as usize;
+            cache.states.reserve(count);
+            cache.kinds.reserve(count);
+            // An all-air or one-state section part comes as one run, and runs
+            // of one state share a kind lookup.
+            let blocks: &TerrainChunk<'r, B> = chunk;
+            let mut last = None;
+            blocks.column_runs(x, z, low, high, |state, run| {
+                let kind = match last {
+                    Some((seen, kind)) if seen == state => kind,
+                    _ => {
+                        let kind = BlockKind::of(blocks, state);
+                        last = Some((state, kind));
+                        kind
+                    }
+                };
+                cache.states.extend(std::iter::repeat_n(state, run));
+                cache.kinds.extend(std::iter::repeat_n(kind, run));
+            });
         }
         let bounds = chunk.worldgen_column_bounds(x, z);
         Self {
@@ -131,26 +175,34 @@ impl<'a, 'r, B: TerrainBlockStates> Column<'a, 'r, B> {
     fn cache_index(&self, y: i32) -> Option<usize> {
         (y >= self.low && y <= self.high).then(|| (y - self.low) as usize)
     }
+    fn kind(&self, y: i32) -> BlockKind {
+        match self.cache_index(y) {
+            Some(index) => self.cache.kinds[index],
+            None => BlockKind::of(self.chunk, self.chunk.block(self.x, y, self.z)),
+        }
+    }
 }
 impl<B: TerrainBlockStates> MaterialColumn for Column<'_, '_, B> {
     type Error = SurfaceError;
     fn block(&mut self, y: i32) -> Result<BlockStateId, SurfaceError> {
         Ok(match self.cache_index(y) {
-            Some(index) => self.cache[index],
+            Some(index) => self.cache.states[index],
             None => self.chunk.block(self.x, y, self.z),
         })
     }
     fn set_block(&mut self, y: i32, state: BlockStateId) -> Result<(), SurfaceError> {
         if y >= self.min && y <= self.max {
+            let properties = self.chunk.block_properties(state);
             // Most of the Nether's rule writes netherrack over netherrack.
             if self.block(y)? != state {
                 self.chunk
                     .set_block_worldgen_column(self.x, y, self.z, state, &mut self.bounds)?;
                 if let Some(index) = self.cache_index(y) {
-                    self.cache[index] = state;
+                    self.cache.states[index] = state;
+                    self.cache.kinds[index] = BlockKind::from_properties(properties);
                 }
             }
-            if self.chunk.block_properties(state).has_fluid() {
+            if properties.has_fluid() {
                 self.chunk.mark_postprocessing(self.x, y, self.z);
             }
         }
@@ -332,8 +384,8 @@ where
     let mut variants = worker.surface_variants(rule)?;
     let cx = chunk.position().x.wrapping_shl(4);
     let cz = chunk.position().z.wrapping_shl(4);
-    // One block-id buffer, refilled per column and kept across columns.
-    let mut cache = Vec::new();
+    // One block buffer, refilled per column and kept across columns.
+    let mut cache = ColumnCache::default();
     for lx in 0..16 {
         for lz in 0..16 {
             let x = cx.wrapping_add(lx);
@@ -376,48 +428,63 @@ where
             let mut bottom = i32::MAX;
             let mut y = top;
             let mut budget = 1 << 20;
+            // The walk descends, so the band only steps down.
+            let mut band = variants.band(top);
+            let mut band_low = variants.band_bounds(band)[0];
+            // The column's minimum surface level, read once when first needed.
+            let mut minimum = None;
             let mut column = Column::new(chunk, x, z, write_min_y, write_max_y, top, &mut cache);
             while y >= min {
                 tick(&mut budget)?;
-                let state = column.block(y)?;
-                let properties = column.chunk.block_properties(state);
-                if properties.is_air() {
-                    above = 0;
-                    water = i32::MIN;
-                } else if properties.has_fluid() {
-                    if water == i32::MIN {
-                        water = y.wrapping_add(1);
+                match column.kind(y) {
+                    BlockKind::Air => {
+                        above = 0;
+                        water = i32::MIN;
                     }
-                } else {
-                    if bottom >= y {
-                        bottom = -32512; // DimensionType.MIN_Y << 4 for 26.3.
-                        let mut below = y.wrapping_sub(1);
-                        while below >= min - 1 {
-                            tick(&mut budget)?;
-                            let state = column.block(below)?;
-                            let properties = column.chunk.block_properties(state);
-                            if properties.is_air() || properties.has_fluid() {
-                                bottom = below.wrapping_add(1);
-                                break;
-                            }
-                            below = below.wrapping_sub(1);
+                    BlockKind::Fluid => {
+                        if water == i32::MIN {
+                            water = y.wrapping_add(1);
                         }
                     }
-                    above = above.wrapping_add(1);
-                    if y >= write_min_y && y <= write_max_y {
-                        let surface = variants.surface && y >= worker.minimum_surface_level()?;
-                        let band = variants.band(y);
-                        // Where the rule gives no block, the block's context
-                        // is not needed: each application sets its own first.
-                        if let Some(rule) = worker.surface_variant(&mut variants, band, surface) {
-                            worker.update_y(
-                                above,
-                                y.wrapping_sub(bottom).wrapping_add(1),
-                                water,
-                                y,
-                            );
-                            if let Some(state) = worker.try_apply(rule, BlockPos::new(x, y, z))? {
-                                column.set_block(y, state)?;
+                    BlockKind::Solid => {
+                        if bottom >= y {
+                            bottom = -32512; // DimensionType.MIN_Y << 4 for 26.3.
+                            let mut below = y.wrapping_sub(1);
+                            while below >= min - 1 {
+                                tick(&mut budget)?;
+                                if column.kind(below) != BlockKind::Solid {
+                                    bottom = below.wrapping_add(1);
+                                    break;
+                                }
+                                below = below.wrapping_sub(1);
+                            }
+                        }
+                        above = above.wrapping_add(1);
+                        if y >= write_min_y && y <= write_max_y {
+                            let surface = variants.surface
+                                && y >= match minimum {
+                                    Some(level) => level,
+                                    None => *minimum.insert(worker.minimum_surface_level()?),
+                                };
+                            while y < band_low {
+                                band -= 1;
+                                band_low = variants.band_bounds(band)[0];
+                            }
+                            // Where the rule gives no block, the block's context
+                            // is not needed: each application sets its own first.
+                            if let Some(rule) = worker.surface_variant(&mut variants, band, surface)
+                            {
+                                worker.update_y(
+                                    above,
+                                    y.wrapping_sub(bottom).wrapping_add(1),
+                                    water,
+                                    y,
+                                );
+                                if let Some(state) =
+                                    worker.try_apply(rule, BlockPos::new(x, y, z))?
+                                {
+                                    column.set_block(y, state)?;
+                                }
                             }
                         }
                     }
