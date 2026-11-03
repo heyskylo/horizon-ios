@@ -216,6 +216,11 @@ struct Launcher {
     self_update: SelfUpdate,
     /// The Horizon version being installed as an update, and whether it becomes the selected one.
     update_install: Option<(String, bool)>,
+    /// The Horizon version being installed because an instance was made or saved to play it: it
+    /// becomes the launcher's version only when the launcher has none.
+    instance_install: Option<String>,
+    /// One for an instance waiting for the install running now to end.
+    install_next: Option<Release>,
     /// The install bar's previous and current fraction, so it moves rather than jumps.
     bar: (f32, f32),
     releases: Load<Vec<Release>>,
@@ -552,6 +557,8 @@ impl Launcher {
             update_error: None,
             self_update: SelfUpdate::Idle,
             update_install: None,
+            instance_install: None,
+            install_next: None,
             bar: (0., 0.),
             releases: Load::Loading,
             installed,
@@ -1179,6 +1186,7 @@ impl Launcher {
                     self.bar = (0., 0.);
                     self.installed = backend::installed();
                     let as_update = self.update_install.take().filter(|(t, _)| *t == tag);
+                    let for_instance = self.instance_install.take_if(|t| *t == tag).is_some();
                     if let (Ok(()), Some(started)) = (&result, self.install_started.take()) {
                         let name = if as_update.is_some() {
                             "launcher.update_ms"
@@ -1192,7 +1200,10 @@ impl Launcher {
                             if self.updates.horizon.as_ref().is_some_and(|r| r.tag == tag) {
                                 self.updates.horizon = None;
                             }
-                            if as_update.is_none_or(|(_, select)| select) {
+                            // An instance's own version leaves the other instances on theirs.
+                            let select = as_update.is_none_or(|(_, select)| select)
+                                && (!for_instance || self.launcher_version().is_none());
+                            if select {
                                 self.settings.selected = Some(tag);
                             }
                             // Pruning reads settings from disk: protect the selection only once
@@ -1205,6 +1216,9 @@ impl Launcher {
                             }
                         }
                         Err(e) => self.install_error = Some((tag, e)),
+                    }
+                    if let Some(next) = self.install_next.take() {
+                        self.install_for_instance(next);
                     }
                 }
                 Msg::Removed(tag, result) => {
@@ -1465,6 +1479,19 @@ impl Launcher {
             .selected
             .as_ref()
             .filter(|s| self.installed.contains(s))
+    }
+
+    /// Installs `release` for an instance made or edited to play it, after the install running
+    /// now if there is one.
+    fn install_for_instance(&mut self, release: Release) {
+        match &self.installing {
+            Some((now, _)) if *now == release.tag => {}
+            Some(_) => self.install_next = Some(release),
+            None => {
+                self.instance_install = Some(release.tag.clone());
+                self.install(&release);
+            }
+        }
     }
 
     fn install(&mut self, release: &Release) {
@@ -3061,6 +3088,11 @@ impl Launcher {
         else {
             // No hero without a version: the page starts below the top bar like the others.
             let memory = self.memory_row(cx);
+            // The first version, downloading since an instance was made to play it.
+            let waiting = match &self.installing {
+                Some((_, p)) => format!("{} {:.0}%", tr("Installing"), p * 100.),
+                None => tr("No version installed yet.").to_string(),
+            };
             return div()
                 .flex()
                 .flex_col()
@@ -3071,7 +3103,7 @@ impl Launcher {
                     "Start the game, or run a server for others to join.",
                     &t,
                 ))
-                .child(centered(tr("No version installed yet."), &t).child(
+                .child(centered(&waiting, &t).child(
                     button("go-versions", "Choose a version", Kind::Secondary, &t).on_click(
                         cx.listener(|this, _: &ClickEvent, _, cx| {
                             this.go(Page::Versions);

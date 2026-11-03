@@ -229,8 +229,18 @@ impl Launcher {
             .as_ref()
             .and_then(|u| self.installing.as_ref().filter(|(t, _)| t == u))
             .map(|(_, p)| *p);
+        // The version this instance keeps, downloading since it was made or edited to play it.
+        let own = self
+            .selected_instance()
+            .and_then(|i| i.version.as_ref())
+            .and_then(|v| {
+                let queued = self.install_next.as_ref().is_some_and(|r| r.tag == *v);
+                let running = self.installing.as_ref().filter(|(t, _)| t == v);
+                running.map(|(_, p)| Some(*p)).or(queued.then_some(None))
+            });
         let busy = match (installing, self.preparing, &self.starting_client) {
             (Some(p), _, _) => Some((tr("Updating"), Some(p))),
+            (_, _, _) if own.is_some() => Some((tr("Installing"), own.flatten())),
             (_, true, _) => Some((
                 tr("Preparing"),
                 horizon_launcher::mojang::progress().map(|(d, n)| d as f32 / n.max(1) as f32),

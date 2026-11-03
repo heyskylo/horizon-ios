@@ -268,10 +268,39 @@ impl Launcher {
         self.instances.dialog.as_ref()?.java.minecraft(versions)
     }
 
-    /// The Horizon version an instance plays: the one it keeps, else the launcher's.
-    fn draft_horizon(&self) -> Option<String> {
+    /// The Horizon version an instance plays: the one it keeps, else the one it follows.
+    pub(super) fn draft_horizon(&self) -> Option<String> {
         let pin = self.instances.dialog.as_ref()?.pin.clone();
-        pin.or_else(|| self.launcher_version().cloned())
+        pin.or_else(|| self.followed_version())
+    }
+
+    /// The version an instance that keeps none plays: the launcher's, or with none installed
+    /// yet, the newest Nightly, which Create installs.
+    fn followed_version(&self) -> Option<String> {
+        self.launcher_version()
+            .cloned()
+            .or_else(|| self.horizon_choices().into_iter().next())
+    }
+
+    /// The Horizon versions the dialog offers (the mockup's `data.nightlies`): see
+    /// [`horizon_choices`].
+    pub(super) fn horizon_choices(&self) -> Vec<String> {
+        let releases = match &self.releases {
+            Load::Ready(r) => r.as_slice(),
+            _ => &[],
+        };
+        horizon_choices(releases, &self.installed)
+    }
+
+    /// The release to download for the Horizon version `tag`, when it isn't installed.
+    pub(super) fn release_to_install(&self, tag: &str) -> Option<Release> {
+        let Load::Ready(releases) = &self.releases else {
+            return None;
+        };
+        (!self.installed.iter().any(|t| t == tag))
+            .then(|| releases.iter().find(|r| r.tag == tag && r.asset.is_some()))
+            .flatten()
+            .cloned()
     }
 
     /// The mark an instance shows when nothing is chosen: Horizon's, the grass block, its
@@ -535,6 +564,23 @@ impl Launcher {
     }
 }
 
+/// Every Nightly published with a build for this platform, newest first, then the installed
+/// versions that list lacks (older Nightlies, imported builds). Picking one not installed installs
+/// it on Create.
+pub(super) fn horizon_choices(releases: &[Release], installed: &[String]) -> Vec<String> {
+    let published = releases
+        .iter()
+        .filter(|r| r.nightly.is_some() && r.asset.is_some())
+        .map(|r| &r.tag);
+    let mut out: Vec<String> = Vec::new();
+    for tag in published.chain(installed) {
+        if !out.contains(tag) {
+            out.push(tag.clone());
+        }
+    }
+    out
+}
+
 /// "Nightly · c9d474d", "Imported · 2026-10-30", or the tag.
 fn version_label(tag: &str) -> String {
     horizon_launcher::nightly::label(tag)
@@ -773,19 +819,20 @@ impl Launcher {
             .child(buttons.flex_none())
     }
 
-    /// Horizon's installed versions; the launcher's is the newest, and the one an instance
-    /// that keeps none follows.
+    /// Horizon's versions, the newest first: picking the one the launcher plays lets the
+    /// instance follow it; any other is kept, and installed on Create when it isn't yet.
     fn horizon_versions(&mut self, cx: &mut Context<Self>) -> Div {
         let t = self.theme;
         let soft = self.look.accent_soft;
-        let follows = self.launcher_version().cloned();
+        let follows = self.followed_version();
         let chosen = self.draft_horizon();
         let rows: Vec<_> = self
-            .installed
-            .clone()
+            .horizon_choices()
             .into_iter()
-            .map(|tag| {
+            .enumerate()
+            .map(|(i, tag)| {
                 let latest = follows.as_ref() == Some(&tag);
+                let newest = i == 0;
                 let on = chosen.as_ref() == Some(&tag);
                 let date = horizon_launcher::nightly::date_of(&tag)
                     .map(|d| glass_versions::published(d, ""));
@@ -793,7 +840,7 @@ impl Launcher {
                 list_choice(format!("horizon-version-{tag}"), on, &t)
                     .py(px(12.))
                     .child(choice_text(version_label(&tag), date.unwrap_or_default()).flex_1())
-                    .children(latest.then(|| {
+                    .children(newest.then(|| {
                         ui::text(13., FontWeight::NORMAL, ink::FULL)
                             .text_color(ui::color(soft))
                             .child(tr("Newest"))
@@ -808,11 +855,15 @@ impl Launcher {
             })
             .collect();
         let list = if rows.is_empty() {
+            let empty = match &self.releases {
+                Load::Loading => tr("Loading releases…"),
+                _ => tr("No version installed"),
+            };
             list_box("horizon-versions", 248.).child(
                 ui::text(14., FontWeight::NORMAL, ink::QUIET)
                     .px(px(16.))
                     .py(px(24.))
-                    .child(tr("No version installed")),
+                    .child(empty),
             )
         } else {
             list_box("horizon-versions", 248.).children(rows)
@@ -1009,5 +1060,51 @@ impl Launcher {
             );
         }
         section(tr("Icon").into(), None, body)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn release(tag: &str, nightly: bool, asset: bool) -> Release {
+        Release {
+            tag: tag.into(),
+            name: String::new(),
+            body: String::new(),
+            date: String::new(),
+            time: String::new(),
+            asset: asset.then(|| ("horizon.tar.gz".into(), 1)),
+            prerelease: false,
+            nightly: nightly.then(|| "nightly".into()),
+        }
+    }
+
+    #[test]
+    fn the_dialog_offers_every_published_nightly_then_what_only_this_computer_has() {
+        let releases = [
+            release("nightly-2026-11-03-aaaaaaa", true, true),
+            // No build for this platform: nothing to install.
+            release("nightly-2026-11-02-bbbbbbb", true, false),
+            release("nightly-2026-11-01-ccccccc", true, true),
+            // The old Alpha channel's releases aren't Nightlies.
+            release("v0.2.1", false, true),
+        ];
+        let installed = [
+            "nightly-2026-11-01-ccccccc".to_string(),
+            "nightly-2026-10-20-ddddddd".to_string(),
+            "imported-2026-10-30".to_string(),
+        ];
+        assert_eq!(
+            horizon_choices(&releases, &installed),
+            [
+                "nightly-2026-11-03-aaaaaaa",
+                "nightly-2026-11-01-ccccccc",
+                "nightly-2026-10-20-ddddddd",
+                "imported-2026-10-30",
+            ]
+        );
+        // Offline, or before the list arrives: what is installed.
+        assert_eq!(horizon_choices(&[], &installed), installed);
     }
 }
