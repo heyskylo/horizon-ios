@@ -2536,7 +2536,7 @@ pub fn do_hurt_target(m: &mut Mob, who: Who, cx: &mut Cx) {
             .push(MobEvent::Sound("entity.panda.bite", at, 1.0, 1.0));
     }
     // Axolotl.playAttackSound: playSound(AXOLOTL_ATTACK, 1.0, 1.0).
-    if m.species() == Species::Axolotl {
+    if m.species() == Species::Axolotl && !m.silent {
         let at = [m.position.x, m.position.y, m.position.z];
         cx.events
             .push(MobEvent::Sound("entity.axolotl.attack", at, 1.0, 1.0));
