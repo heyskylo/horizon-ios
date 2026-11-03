@@ -132,6 +132,7 @@ mod hdr_icc;
 mod hdr_stats;
 pub use hdr::Calibration as HdrCalibration;
 pub mod block_light;
+mod displace;
 pub mod lightning;
 mod lod;
 mod native_material;
@@ -6815,6 +6816,31 @@ impl Renderer {
                 bytemuck::cast_slice(&self.origins),
             );
         }
+        // `[displacement]`: the solid quads of the sections it reaches, nearest first.
+        if let Some(d) = self.native.as_mut().and_then(|n| n.displacement.as_mut()) {
+            let near: Vec<displace::Near<'_>> = if frame.title {
+                Vec::new()
+            } else {
+                visible
+                    .iter()
+                    .filter(|v| {
+                        let o = glam::Vec3::from(v.origin);
+                        let closest = glam::Vec3::ZERO.clamp(o, o + 16.0);
+                        closest.length() < d.distance
+                    })
+                    .filter_map(|v| {
+                        let s = self.sections.get(v.slot);
+                        (s.solid > 0).then(|| displace::Near {
+                            buffer: self.arena.buffer(s.page),
+                            start: s.start,
+                            quads: s.solid,
+                            origin: v.origin,
+                        })
+                    })
+                    .collect()
+            };
+            d.prepare(&self.queue, &mut encoder, &near, view_proj);
+        }
         // Solid sections front to back, then translucent ones back to front,
         // as one list of indirect draws over the section arena.
         self.draws.clear();
@@ -8473,6 +8499,18 @@ impl Renderer {
                         }
                     }
                 }
+            }
+            // `[displacement]`'s grid over the flat quads it took over, writing its depth.
+            if let Some(n) = self
+                .native
+                .as_ref()
+                .filter(|_| !frame.title && !pack_draws_terrain)
+                && let Some(d) = &n.displacement
+                && let Some(pipeline) = n.material.as_ref().and_then(|m| m.displaced.as_ref())
+            {
+                pass.set_bind_group(0, &self.group, &[]);
+                pack_frame(&mut pass);
+                d.draw(&mut pass, &d.view, pipeline);
             }
             if surface.is_some() {
                 drop(pass);

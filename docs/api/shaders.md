@@ -163,11 +163,12 @@ pack exist ([stability.md](stability.md)).
 ## Not there yet
 
 Option values other than the defaults (the three stages run, with hot reload), then the overlay and lighting
-stages. `[displacement]` is checked but not drawn yet: `MaterialInput.displaced` is 0 everywhere until the
-renderer's grid lands.
+stages. `[displacement]`'s relief doesn't reach the shadow map yet: the flat faces cast there.
 
 ## Changelog
 
+- 2026-11-03: API 0.1 (additions): `[displacement]` draws: near the camera the faces with LabPBR relief are a
+  grid moved by `displacement`, and `MaterialInput.displaced` says how much of it a point has.
 - 2026-11-03: API 0.1 (additions): the manifest's `[displacement]`, the material stage's
   `fn displacement(input: DisplacementInput) -> f32` and `MaterialInput.displaced`.
 - 2026-11-02: API 0.1 (additions): with dynamic lights on, held and dropped items light
