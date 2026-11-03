@@ -1206,6 +1206,19 @@ impl Game<'_> {
         if let Some(item @ Tag::Compound(_)) = tag.get("Item") {
             map.insert("Item".into(), item.clone());
         }
+        // Entity.saveWithoutId's optional fields Horizon models nowhere for
+        // these entities, kept as loaded (written only when set).
+        for key in [
+            "Silent",
+            "Glowing",
+            "Invulnerable",
+            "CustomName",
+            "CustomNameVisible",
+        ] {
+            if let Some(v) = tag.get(key) {
+                map.insert(key.into(), v.clone());
+            }
+        }
         if !map.is_empty() {
             self.persist.raw.insert(id, Tag::Compound(map));
         }
