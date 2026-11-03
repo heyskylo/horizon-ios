@@ -2396,6 +2396,7 @@ mod tests {
             player_idle_timeout: 0,
             stop: false,
             autosave: true,
+            whitelist_bypass: Vec::new(),
         };
         // Every translation key and string in a message, in the order they come.
         fn words(tag: &super::Tag, out: &mut Vec<String>) {
