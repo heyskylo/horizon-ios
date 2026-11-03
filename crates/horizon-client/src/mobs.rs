@@ -2832,12 +2832,15 @@ impl Mob {
     }
     /// `Entity.makeBoundingBox(position)`.
     pub fn bounds_at(&self, position: Vec3) -> Aabb {
-        let w = f64::from(self.width()) / 2.0;
+        // `width()` and `height()` in one `dims()`: every box asked for (each
+        // collision, push and cart test) read the whole size twice.
+        let (width, height, _) = self.dims();
+        let w = f64::from(width as f32) / 2.0;
         Aabb::new(
             Vec3::new(position.x - w, position.y, position.z - w),
             Vec3::new(
                 position.x + w,
-                position.y + f64::from(self.height()),
+                position.y + f64::from(height as f32),
                 position.z + w,
             ),
         )
