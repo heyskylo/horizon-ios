@@ -141,11 +141,12 @@ impl Page {
         (Page::Settings, "Settings", "sliders"),
     ];
 
-    /// The pages the top bar shows: all but Settings, and the Wardrobe only with cosmetics on.
-    fn in_top_bar() -> impl Iterator<Item = (Page, &'static str, &'static str)> {
-        Self::ALL.into_iter().filter(|(page, ..)| match page {
+    /// The pages the top bar shows: all but Settings, and the Wardrobe only when `wardrobe`
+    /// (`Launcher::wardrobe_shown`).
+    fn in_top_bar(wardrobe: bool) -> impl Iterator<Item = (Page, &'static str, &'static str)> {
+        Self::ALL.into_iter().filter(move |(page, ..)| match page {
             Page::Settings => false,
-            Page::Wardrobe => horizon_cosmetics::enabled(),
+            Page::Wardrobe => wardrobe,
             _ => true,
         })
     }
@@ -283,6 +284,12 @@ struct Launcher {
     wardrobe: Option<wardrobe_page::Wardrobe>,
     /// Ask the service again on the next draw of the Wardrobe (set by each visit).
     wardrobe_reload: bool,
+    /// The cosmetics service's last word on the founder set's claim (`GET /v1/shop`): whether
+    /// the top bar has the Wardrobe page with cosmetics off (`wardrobe_shown`).
+    shop_status: Option<horizon_launcher::wardrobe::Claim>,
+    /// The selected account's own answer on it from its last Wardrobe visit, kept on disk (a
+    /// preview the service grants it, its claim).
+    shop_kept: Option<horizon_launcher::wardrobe::Claim>,
     /// Work the look out again on the next frame (a launcher theme put on or taken off).
     restyle: bool,
     /// Why the last picture for Home's background was refused.
@@ -573,6 +580,8 @@ impl Launcher {
             skin: None,
             wardrobe: None,
             wardrobe_reload: false,
+            shop_status: None,
+            shop_kept: None,
             restyle: horizon_cosmetics::enabled(),
             background_error: None,
             args_input: line_edit::LineEdit::new(settings.game_args.clone(), 1024, 38),
@@ -701,6 +710,7 @@ impl Launcher {
         this.load_auth_statuses(true);
         this.fetch_startup_releases();
         this.fetch_links();
+        this.watch_shop(cx);
         if home::getting_ready_preview() {
             this.preparing = true;
             this.play_when_prepared = this.selected().cloned();
@@ -959,7 +969,7 @@ impl Launcher {
         match self.bench.as_mut().map(|b| b.tick(&self.perf)) {
             Some(perf::Step::Go(page)) => {
                 let pages: Vec<Page> = (Page::ALL.iter().map(|p| p.0))
-                    .filter(|p| *p != Page::Wardrobe || horizon_cosmetics::enabled())
+                    .filter(|p| *p != Page::Wardrobe || self.wardrobe_shown())
                     .collect();
                 self.go(pages[page % pages.len()]);
                 changed = true;
@@ -2539,7 +2549,7 @@ impl Launcher {
             .flex_wrap()
             .items_center()
             .gap(px(4.));
-        for (page, label, _) in Page::in_top_bar() {
+        for (page, label, _) in Page::in_top_bar(self.wardrobe_shown()) {
             nav = nav.child(
                 shell::tab(format!("nav-{label}"), tr(label), self.page == page, &t).on_click(
                     cx.listener(move |this, _: &ClickEvent, _, cx| {
