@@ -130,6 +130,14 @@ public final class KnockbackClient {
                     case "sprint" -> players.get(w[1]).sprint(w[2].equals("on"));
                     case "attack" -> players.get(w[1]).attack(w[2]);
                     case "use" -> players.get(w[1]).send(new ServerboundUseItemPacket(InteractionHand.MAIN_HAND, 0, 0, 0));
+                    case "useblock" -> {
+                        // useblock <player> x y z: right-click the top face of that block with the main hand.
+                        String[] a = w[2].split(" ");
+                        int bx = Integer.parseInt(a[0]), by = Integer.parseInt(a[1]), bz = Integer.parseInt(a[2]);
+                        players.get(w[1]).send(new net.minecraft.network.protocol.game.ServerboundUseItemOnPacket(InteractionHand.MAIN_HAND,
+                            new net.minecraft.world.phys.BlockHitResult(new Vec3(bx + 0.5, by + 1.0, bz + 0.5), net.minecraft.core.Direction.UP,
+                                new net.minecraft.core.BlockPos(bx, by, bz), false), 0));
+                    }
                     case "punch" -> players.get(w[1]).send(net.minecraft.network.protocol.game.ServerboundPunchPacket.INSTANCE);
                     case "sync" -> {
                         try {

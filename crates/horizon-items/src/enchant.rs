@@ -292,6 +292,39 @@ impl Enchantments {
     pub fn get(&self, id: &str) -> Option<&Enchantment> {
         self.index.get(id).map(|&i| &self.list[i])
     }
+    /// The longest `minecraft:ignite` the attacker's `minecraft:post_attack`
+    /// effects (Fire Aspect) set on the victim, in seconds: the effects whose
+    /// requirements hold for `ctx` (0 when none).
+    pub fn ignite_seconds(
+        &self,
+        enchants: &[(Arc<str>, u32)],
+        ctx: &EffectContext<'_>,
+        random: &mut LegacyRandom,
+    ) -> f32 {
+        let mut seconds = 0.0f32;
+        for (id, level) in enchants {
+            let Some(def) = self.get(id) else { continue };
+            for effect in def.effects["minecraft:post_attack"]
+                .as_array()
+                .into_iter()
+                .flatten()
+            {
+                let e = &effect["effect"];
+                let is_ignite = matches!(e["type"].as_str(), Some("minecraft:ignite" | "ignite"));
+                if !is_ignite
+                    || effect["enchanted"] != "attacker"
+                    || effect["affected"] != "victim"
+                    || !effect
+                        .get("requirements")
+                        .is_none_or(|r| self.condition(r, *level, ctx, random))
+                {
+                    continue;
+                }
+                seconds = seconds.max(level_value(&e["duration"], *level));
+            }
+        }
+        seconds
+    }
     pub fn tag(&self, name: &str) -> &[Arc<str>] {
         self.tags
             .get(name.trim_start_matches('#'))
@@ -1189,5 +1222,53 @@ pub mod tests {
             e.full_name_in(Some(&ru), "minecraft:mending", 1).0,
             "mending"
         );
+    }
+}
+
+#[cfg(test)]
+mod ignite_tests {
+    use super::*;
+    use serde_json::json;
+
+    /// Fire Aspect as the data pack has it: 4 seconds per level.
+    fn registry() -> Enchantments {
+        let fire_aspect = Enchantment {
+            id: Arc::from("minecraft:fire_aspect"),
+            description: "fire_aspect".into(),
+            description_key: String::new(),
+            max_level: 2,
+            weight: 2,
+            anvil_cost: 4,
+            min_cost: Cost::parse(&json!({"base":10,"per_level_above_first":20})),
+            max_cost: Cost::parse(&json!({"base":60,"per_level_above_first":20})),
+            supported: vec![],
+            primary: None,
+            exclusive: HashSet::new(),
+            slots: vec![],
+            effects: json!({"minecraft:post_attack":[{"effect":{"type":"minecraft:ignite","duration":{"type":"minecraft:linear","base":4.0,"per_level_above_first":4.0}},"enchanted":"attacker","affected":"victim"}]}),
+        };
+        let index = [(fire_aspect.id.clone(), 0)].into_iter().collect();
+        Enchantments {
+            list: vec![fire_aspect],
+            index,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn fire_aspect_ignites_for_four_seconds_a_level() {
+        let reg = registry();
+        let mut random = LegacyRandom::new(0);
+        let ctx = EffectContext {
+            this: Some("minecraft:player"),
+            ..Default::default()
+        };
+        let mut fire = |level| {
+            let held = [(Arc::from("minecraft:fire_aspect"), level)];
+            reg.ignite_seconds(&held, &ctx, &mut random)
+        };
+        assert_eq!(fire(1) * 20.0, 80.0);
+        assert_eq!(fire(2) * 20.0, 160.0);
+        assert_eq!(reg.ignite_seconds(&[], &ctx, &mut random), 0.0);
     }
 }

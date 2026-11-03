@@ -174,7 +174,7 @@ impl Game<'_> {
                         a,
                         finalize::base_value(m, x.attr),
                         AttributeModifier {
-                            id: x.id.to_owned(),
+                            id: x.id.to_string(),
                             amount: x.amount,
                             operation: match x.op {
                                 Op::AddValue => 0,
