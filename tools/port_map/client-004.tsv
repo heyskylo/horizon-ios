@@ -128,8 +128,8 @@ StriderRenderer.isShaking	port	crates/horizon-client/src/mobs/render.rs::shaking
 SulfurCubeRenderer.submit	port	crates/horizon-client/src/mobs/sulfur_cube.rs::body	normal or small model
 SulfurCubeRenderer.extractRenderState	port	crates/horizon-client/src/game/sulfur_cubes.rs::Game::sulfur_cube_body_geometry	fuse flash, contained block and worn head
 SulfurCubeRenderer.applySizeAndSquish	port	crates/horizon-client/src/mobs/sulfur_cube.rs::scale	size and squish scale
-ThrownItemRenderer.submit	port	crates/horizon-client/src/game/creatures.rs::Game::mob_geometry	thrown item sprite at its scale
-ThrownItemRenderer.extractRenderState	inline	crates/horizon-client/src/game/creatures.rs::Game::mob_geometry	item sprite read there
+ThrownItemRenderer.submit	port	crates/horizon-client/src/game/creatures.rs::Game::mob_geometry	thrown item sprite at its scale; a fireball's stack is drawn as the item model (`DisplayContext.Ground`) at 3 or 0.75, full bright
+ThrownItemRenderer.extractRenderState	inline	crates/horizon-client/src/game/creatures.rs::Game::mob_geometry	item sprite read there; a fireball's stack is `Projectile.item` (`Fireball.getItem`)
 ThrownTridentRenderer.submit	port	crates/horizon-client/src/game/trident.rs::Game::trident_geometry	gap: minor: foil glint is not drawn on a thrown trident
 ThrownTridentRenderer.extractRenderState	inline	crates/horizon-client/src/game/trident.rs::Game::trident_geometry	yaw, pitch and foil read there
 TippableArrowRenderer.extractRenderState	port	crates/horizon-client/src/projectiles.rs::Projectile::arrow_effect_color	brewing::potion_color gives a tipped arrow its potion colour
