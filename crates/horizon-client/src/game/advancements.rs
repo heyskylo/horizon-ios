@@ -695,7 +695,9 @@ impl Game<'_> {
         for r in &allowed {
             let list = tree.recipe_criteria(r);
             self.trigger_criteria(&tree, &list, |c, _| {
-                c["recipes"].as_str() == Some(r.as_str())
+                c["recipes"]
+                    .as_str()
+                    .is_some_and(|id| adv::full(id) == r.as_str())
             });
         }
     }
@@ -1778,8 +1780,8 @@ impl Game<'_> {
     pub(super) fn trigger_dimension(&mut self, from: Dim, to: Dim, at: [f64; 3]) {
         let (from_id, to_id) = (from.id().to_owned(), to.id().to_owned());
         self.trigger("minecraft:changed_dimension", move |c, _| {
-            c["from"].as_str().is_none_or(|f| f == from_id)
-                && c["to"].as_str().is_none_or(|t| t == to_id)
+            c["from"].as_str().is_none_or(|f| adv::full(f) == from_id)
+                && c["to"].as_str().is_none_or(|t| adv::full(t) == to_id)
         });
         if from == Dim::Overworld && to == Dim::Nether {
             self.adv.marks.nether = Some(at);
