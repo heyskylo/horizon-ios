@@ -192,6 +192,9 @@ impl Renderer {
     /// its old mesh stands in while they fade in. A new one waits for the rest of its job
     /// (`upload_lods`), then fades in.
     pub fn upload_lod(&mut self, key: TileKey, mesh: &SectionMesh, keep: bool) {
+        if let Some(copies) = &mut self.capture_copies {
+            copies.tile(key, mesh);
+        }
         let (shown, previous) = match self.lods.remove(&key) {
             Some(old) if old.dying.is_none() => match old.previous {
                 Some(previous) => {
@@ -240,12 +243,18 @@ impl Renderer {
     }
 
     pub fn remove_lod(&mut self, key: TileKey) {
+        if let Some(copies) = &mut self.capture_copies {
+            copies.forget_tile(key);
+        }
         if let Some(tile) = self.lods.remove(&key) {
             self.release_tile(tile);
         }
     }
 
     pub fn clear_lods(&mut self) {
+        if let Some(copies) = &mut self.capture_copies {
+            copies.clear_tiles();
+        }
         self.lod_pending = None;
         // No far terrain left to fade out over.
         for (key, since) in std::mem::take(&mut self.lod_leaving) {
@@ -435,6 +444,15 @@ impl Renderer {
                 return;
             }
         }
+    }
+
+    /// The tiles drawn for good, not fading out (`render-capture`).
+    pub(super) fn standing_lods(&self) -> FxHashSet<TileKey> {
+        self.lods
+            .iter()
+            .filter(|(_, tile)| tile.dying.is_none())
+            .map(|(&key, _)| key)
+            .collect()
     }
 
     /// The chunk columns the resident tiles now leave out (`Lod::take_cutout`).

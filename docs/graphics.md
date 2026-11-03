@@ -112,6 +112,27 @@ vscreen is a headless compositor whose frames are software-rendered (lavapipe), 
 
 Two tools find where a slow frame goes: `HORIZON_SPIKES=MS` prints the timed spans (ticks by system, streaming, uploads, saving, renderer) of every frame slower than MS milliseconds, with the render thread's CPU time in the frame and, after a span that mostly waited (for the GPU, a lock or a core), its CPU time (`submit 30.2/0.1`), and a frame-pointer build (`RUSTFLAGS="-C force-frame-pointers=yes"`) profiles with `perf record --call-graph fp`.
 
+### Render capture and replay
+
+A renderer change can be measured in seconds on a fixed scene, without starting the game, loading a world or waiting for far terrain: capture the scene once from a running game, then replay it offscreen with the real `Renderer` as often as needed.
+
+```sh
+# In the running game. "on" keeps CPU copies of every section and far tile mesh from now on and
+# meshes everything again once, so wait for near and far terrain to settle before capturing.
+# Starting the game with HORIZON_RENDER_CAPTURE=1 keeps them from the start instead.
+horizon-ctl render-capture on
+horizon-ctl render-capture /tmp/scene
+
+# Anywhere, no game (throwaway HORIZON_HOME and XDG folders, as for any run):
+cargo run --release -p horizon-client-render --example scene_replay -- /tmp/scene
+cargo run --release -p horizon-client-render --example scene_replay -- /tmp/scene \
+    --frames 300 --texture-filtering 0 --lod-distance 0 --yaw-offsets 0,90,180,270
+```
+
+The capture directory holds `scene.json` (the camera, the frame's sky, fog, cloud, star and lightmap inputs, the game's graphics settings, the renderer's own switches and frame size, and the far terrain cutout), every resident near section mesh and every far tile mesh drawn for good, as the renderer received them (`sections.*`, `tiles.*`), and the sun and moon (`celestial.bin`). Entities, block entities, particles, weather, the hand, the outline, the HUD and post effects are left out, and a running shader pack is not replayed (the reply and the report say when one was on). Only the build that wrote a capture reads it.
+
+The replay loads the block sprites from the prepared resources the game used (`--root` for another folder) and refuses to run when they differ from the capture's, as with resource packs or mods. It uploads the sections and then the far tiles through `Renderer::upload` and `queue_lods`, draws `--warmup` frames (60), then `--frames` (300) per view, and prints JSON per view: GPU milliseconds per frame from timestamp queries (`gpu_ms`: avg, p50, p95, max), the wall time of each `render` call and its CPU time without waits, the median GPU time of each of Horizon's own passes over the last 15 frames (as `gpu-passes on` reports them), and the sections and draw calls drawn. Overrides: `--texture-filtering`, `--anisotropy-bit`, `--mipmaps`, `--lod-distance` and `--render-distance` (chunks, around the camera), `--size WxH`, `--section-draws flat|indirect`, `--section-cull`, `--section-sides` and `--gpu-culling on|off`, `--yaw-offsets` (degrees added to the captured yaw, one view each). Keeping the copies costs about as much memory as the terrain meshes themselves, so it stays off unless asked for.
+
 ## Results
 
 Baseline `27a32cc3` (main) against `9006566b`, the same full run (render distances 8, 16 then 32 in one fresh world), on ludodesktop.

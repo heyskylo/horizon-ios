@@ -120,6 +120,7 @@ fn translucent_split(batching: bool, flat_draws: bool, terrain: bool, shadow: bo
 
 mod animate;
 mod arena;
+pub mod capture;
 pub mod compositor;
 mod cull;
 mod end_sky;
@@ -1172,6 +1173,13 @@ pub struct Renderer {
     /// Advance animated block textures (Horizon setting; vanilla always does).
     pub animated_textures: bool,
     present_modes: Vec<wgpu::PresentMode>,
+    /// CPU copies of the section and far tile meshes uploaded while `render-capture` is on
+    /// (`keep_capture_copies`, or `HORIZON_RENDER_CAPTURE` at creation); `None` otherwise.
+    capture_copies: Option<capture::Copies>,
+    /// A scene to write from the next frame (`horizon-ctl render-capture DIR`).
+    pub capture: Option<capture::Request>,
+    /// Outcome of the last capture: its summary, or the error.
+    pub capture_result: Option<std::result::Result<serde_json::Value, String>>,
 }
 /// Every layer's mip levels, layer major (`first` is the first layer's
 /// index into `settings`), made by `MipmapGenerator`.
@@ -4213,6 +4221,11 @@ impl Renderer {
             fullbright: false,
             animated_textures: true,
             present_modes,
+            capture_copies: std::env::var_os("HORIZON_RENDER_CAPTURE")
+                .is_some()
+                .then(capture::Copies::default),
+            capture: None,
+            capture_result: None,
         })
     }
     /// The first-person hand's quads, which follow `first` quads of the entity buffer.
@@ -4615,6 +4628,9 @@ impl Renderer {
         self.occlusion.update(camera, (distance / 16.0) as i32 + 2);
     }
     pub fn upload(&mut self, key: SectionKey, mesh: &SectionMesh) {
+        if let Some(copies) = &mut self.capture_copies {
+            copies.section(key, mesh);
+        }
         self.occlusion.set(key, mesh.visibility);
         let changed = if mesh.block_entities.is_empty() {
             self.block_entities.remove(&key).is_some()
@@ -5133,6 +5149,9 @@ impl Renderer {
     }
     /// Drops every section, for a level whose chunks hold `layout`.
     pub fn clear_sections(&mut self, layout: crate::chunk::ColumnLayout) {
+        if let Some(copies) = &mut self.capture_copies {
+            *copies = capture::Copies::default();
+        }
         self.block_entities.clear();
         self.block_entity_section_revisions.clear();
         self.block_entity_membership_revisions.clear();
@@ -5293,6 +5312,9 @@ impl Renderer {
     }
     pub fn remove_columns(&mut self, columns: impl IntoIterator<Item = (i32, i32)>) {
         let columns: Vec<(i32, i32)> = columns.into_iter().collect();
+        if let Some(copies) = &mut self.capture_copies {
+            copies.remove_columns(&columns);
+        }
         // Most of the view at once (a teleport at render distance 32 drops some 3700
         // columns): a pass over each store instead of a lookup per section key, which
         // took 10 ms of one frame. Far terrain fades the sections out instead.
@@ -6049,6 +6071,10 @@ impl Renderer {
         // owner instead of submitting atlas patches to the invalid device.
         if self.device_lost() {
             return Err("the graphics device was lost".into());
+        }
+        if let Some(request) = self.capture.take() {
+            let result = self.write_capture(&request, frame);
+            self.capture_result = Some(result.map_err(|e| e.to_string()));
         }
         let scaled = self.screenshot_size();
         let rendered = match scaled {

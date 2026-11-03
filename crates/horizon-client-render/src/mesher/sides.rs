@@ -74,7 +74,7 @@ fn slot(grouped: bool, n: usize) -> (usize, bool) {
 
 /// Where each part of each bucket of a mesh's solid quads ends, and the
 /// planes that tell whether a bucket can face the eye.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Sides {
     /// The solid quads up to the end of each part of each bucket, in mesh
     /// order (`slot`).

@@ -2895,6 +2895,8 @@ struct Game<'a> {
     perf: horizon_client::telemetry::Session,
     /// Control replies waiting for a rendered frame or a benchmark deadline.
     pending_screenshot: Option<std::sync::mpsc::Sender<String>>,
+    /// `render-capture DIR`: replied once the renderer wrote the scene.
+    pending_render_capture: Option<std::sync::mpsc::Sender<String>>,
     pending_bench: Option<(Instant, std::sync::mpsc::Sender<String>)>,
     /// Recent frame times for the performance overlay.
     frame_graph: horizon_client::perf_overlay::FrameGraph,
@@ -18366,6 +18368,13 @@ impl Game<'_> {
                         );
                         consumed = true;
                     }
+                    if let Some(result) =
+                        self.renderer.as_mut().and_then(|r| r.capture_result.take())
+                        && let Some(reply) = self.pending_render_capture.take()
+                    {
+                        let value = result.unwrap_or_else(|e| serde_json::json!({ "error": e }));
+                        let _ = reply.send(value.to_string());
+                    }
                     // A result nobody asked for was the world icon's
                     // (`tick_world_icon`): a failure tries again a second
                     // later, as `tryTakeScreenshotIfNeeded` does.
@@ -18959,6 +18968,7 @@ impl<'a> Game<'a> {
             frame_stats: Default::default(),
             perf: Default::default(),
             pending_screenshot: None,
+            pending_render_capture: None,
             pending_bench: None,
             flight: None,
             ui_wait: Default::default(),
