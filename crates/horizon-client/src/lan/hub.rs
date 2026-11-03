@@ -1038,6 +1038,8 @@ impl Hub {
         else {
             return false;
         };
+        // Neither a confirm nor an import may take it while its connection closes.
+        g.imported = false;
         if g.left_reason.is_empty() {
             g.left_reason = "dropped before its hand-over".to_owned();
         }
@@ -1402,6 +1404,152 @@ impl Hub {
         // ServerPlayer.sendPostEffects and initInventoryMenu.
         self.send_post_effects(i);
         self.send_inventory(i);
+    }
+
+    /// What an import changed, told to the held player's client the way a join tells it: game
+    /// mode, abilities, held slot, a position to confirm, effects, inventory, and the player
+    /// list as it is now (who came while it was held is in it).
+    pub fn send_arrival_state(&mut self, i: usize) {
+        let (mode, conn) = {
+            let g = &self.guests[i];
+            (g.game_mode, g.conn)
+        };
+        // The effects the login sent from this server's own file and the import took away:
+        // `send_active_effects` only adds, and the client would go on predicting with them.
+        let gone: Vec<&'static str> = {
+            let g = &self.guests[i];
+            g.sent_effects
+                .iter()
+                .filter(|s| !g.effects.list.iter().any(|e| e.id == s.id))
+                .map(|s| s.id)
+                .collect()
+        };
+        for id in gone {
+            if let Some(effect) = self
+                .sync
+                .id("minecraft:mob_effect", crate::brewing::namespaced(id))
+            {
+                let g = &self.guests[i];
+                g.send(&C::RemoveMobEffect(play::RemoveMobEffect {
+                    id: g.entity_id,
+                    effect,
+                }));
+            }
+        }
+        let g = &self.guests[i];
+        g.send(&C::GameEvent(play::GameEvent {
+            event: game_event::CHANGE_GAME_MODE,
+            param: mode as f32,
+        }));
+        g.send(&g.abilities());
+        g.send(&C::SetHeldSlot(play::SetHeldSlot {
+            slot: g.selected as i32,
+        }));
+        self.resend_teleport(i, None);
+        self.send_active_effects(i);
+        self.send_inventory(i);
+        // The login sent the book of this server's file; the import may have brought another
+        // (`ServerRecipeBook.sendInitialRecipeBook` replaces what the client has).
+        self.send_initial_recipe_book(i);
+        let permission = self.guests[i].permission;
+        let entries: Vec<_> = self
+            .guests
+            .iter()
+            .filter(|o| o.conn != conn && o.placed && self.sees(permission, o.uuid))
+            .map(|o| {
+                self.player_info(
+                    o.uuid,
+                    &o.name,
+                    o.game_mode,
+                    o.latency.load(Ordering::Relaxed),
+                )
+            })
+            .collect();
+        self.guests[i].send(&C::PlayerInfoUpdate(play::PlayerInfoUpdate {
+            actions: Self::INFO_ACTIONS,
+            entries,
+        }));
+    }
+
+    /// Places the held player at `i`: it is simulated, shown to the others and takes part from
+    /// the next tick, when its first tick does what a new player's does (health, experience,
+    /// advancements). Everyone gets its player-list entry, since everyone will be sent its entity
+    /// (a client adds a player's entity only with its list entry); `announce` is the join line.
+    pub fn place_arrival(&mut self, i: usize, announce: bool) {
+        if !self.guests[i].held || self.guests[i].placed {
+            return;
+        }
+        let (name, uuid, mode, conn) = {
+            let g = &self.guests[i];
+            (g.name.clone(), g.uuid, g.game_mode, g.conn)
+        };
+        if announce {
+            let joined = C::SystemChat(play::SystemChat {
+                content: yellow_names("multiplayer.player.joined", vec![display_name(uuid, &name)]),
+                overlay: false,
+            })
+            .encode();
+            for g in self.guests.iter().filter(|g| g.placed && g.conn != conn) {
+                if self.sees(g.permission, uuid) {
+                    g.sender.send(joined.clone());
+                }
+            }
+        }
+        let g = &mut self.guests[i];
+        g.held = false;
+        g.imported = false;
+        g.placed = true;
+        g.placed_at = self.ticks;
+        // The player list entry of the newcomer, to everyone placed or held (itself included).
+        let newcomer = C::PlayerInfoUpdate(play::PlayerInfoUpdate {
+            actions: Self::INFO_ACTIONS,
+            entries: vec![self.player_info(uuid, &name, mode, 0)],
+        })
+        .encode();
+        let level = self.hidden.get(&uuid).copied();
+        for g in self.guests.iter_mut().filter(|g| g.placed || g.held) {
+            if level.is_some_and(|l| g.permission < l) {
+                g.tab_hidden.insert(uuid);
+            } else {
+                g.sender.send(newcomer.clone());
+            }
+        }
+    }
+
+    /// The guest index of the held player `uuid` whose record of the hand-over `id` was
+    /// imported, and that has not been dropped or kicked meanwhile.
+    pub fn imported_arrival(&self, uuid: u128, id: u128) -> Result<usize, &'static str> {
+        let Some(i) = self
+            .guests
+            .iter()
+            .position(|g| g.uuid == uuid && g.held && !g.placed)
+        else {
+            return Err("no player with that unique id is held");
+        };
+        let g = &self.guests[i];
+        if !g.left_reason.is_empty() {
+            Err("that player is leaving")
+        } else if !g.imported {
+            Err("that player is held but its record has not been imported")
+        } else if g.arrival_handover != Some(id) {
+            Err("that player's record is of another hand-over")
+        } else {
+            Ok(i)
+        }
+    }
+
+    /// Places the held player `uuid` whose record was imported without placing it
+    /// (`player-confirm`). Returns whether the others were told it came, as the import asked.
+    ///
+    /// What the client did since the import was not acted on, so it is put back where the
+    /// server has it: the position to confirm again and the inventory.
+    pub fn confirm_arrival(&mut self, uuid: u128, id: u128) -> Result<bool, &'static str> {
+        let i = self.imported_arrival(uuid, id)?;
+        let announce = self.guests[i].arrival_announce;
+        self.resend_teleport(i, None);
+        self.send_inventory(i);
+        self.place_arrival(i, announce);
+        Ok(announce)
     }
 
     /// `ServerPlayer.sendPostEffects`: the player's `/posteffect` chains.

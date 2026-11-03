@@ -352,6 +352,14 @@ pub struct Guest {
     pub held: bool,
     /// The hub tick at which it was held, to drop it if its hand-over never comes.
     pub held_since: u64,
+    /// A held player whose record has been applied but that is not yet let into the world
+    /// (`player-import` with `"place": false`): `player-confirm` places it, `player-drop` removes it.
+    pub imported: bool,
+    /// Whether the others are told when it is placed, as the import asked.
+    pub arrival_announce: bool,
+    /// The hand-over its record came with (`player-import`): `player-confirm` and
+    /// `player-drop` name it, and another hand-over's record is not taken.
+    pub arrival_handover: Option<u128>,
     /// Leaving for another server (`player-release moved`) without the "left the
     /// game" line.
     pub quiet_leave: bool,
@@ -537,6 +545,9 @@ impl Guest {
             expected: j.expected,
             held: false,
             held_since: 0,
+            imported: false,
+            arrival_announce: true,
+            arrival_handover: None,
             quiet_leave: false,
             released: false,
             hidden_commands: Vec::new(),

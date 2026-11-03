@@ -1688,7 +1688,19 @@ impl Game<'_> {
         host: &LanHost,
         guest: &horizon_client::lan::guest::Guest,
     ) {
-        if !guest.placed || guest.released || self.adv.tree.list.is_empty() {
+        if !guest.placed || guest.released {
+            return;
+        }
+        self.write_guest_records(host, guest);
+    }
+    /// The advancements and statistics files of `guest`, whatever its state: a held arrival is
+    /// written before it is placed (`player-confirm`).
+    pub(super) fn write_guest_records(
+        &self,
+        host: &LanHost,
+        guest: &horizon_client::lan::guest::Guest,
+    ) {
+        if self.adv.tree.list.is_empty() {
             return;
         }
         let Some(uuid) = self.records_uuid(host, guest.uuid) else {
