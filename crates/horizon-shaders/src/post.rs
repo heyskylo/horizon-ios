@@ -182,6 +182,10 @@ const ENTITIES_TRANSLUCENT: [&str; 5] = [
     "gbuffers_basic",
 ];
 
+/// `gbuffers_beaconbeam` and its fallbacks (the shaders.properties reference): beacon and End
+/// gateway beams.
+const BEACON_BEAM: [&str; 3] = ["gbuffers_beaconbeam", "gbuffers_textured", "gbuffers_basic"];
+
 /// `gbuffers_particles` and its fallbacks (2.3).
 const PARTICLES: [&str; 4] = [
     "gbuffers_particles",
@@ -217,7 +221,7 @@ pub struct PostProgram {
     pub buffers: Vec<u32>,
     /// `flip.<name>.<buffer>`: buffers forced to flip (true) or kept (false) after this program.
     pub flips: Vec<(u32, bool)>,
-    /// How a gbuffers program's output blends into its buffers; `None` writes them.
+    /// How the program's output blends into its buffers; `None` writes them.
     pub blend: Option<Blend>,
     /// Per-buffer blend overrides, keyed by colortex index (not output location).
     pub buffer_blends: Vec<(u32, Option<Blend>)>,
@@ -408,6 +412,8 @@ pub struct Post {
     pub entities_translucent: Option<PostProgram>,
     /// What draws particles.
     pub particles: Option<PostProgram>,
+    /// What draws beacon and End gateway beams (after deferred, blended).
+    pub beacon_beam: Option<PostProgram>,
     pub damaged_block: Option<PostProgram>,
     /// What draws the game's clouds.
     pub clouds: Option<PostProgram>,
@@ -605,6 +611,7 @@ pub fn load_post(
         block: None,
         entities_translucent: None,
         particles: None,
+        beacon_beam: None,
         damaged_block: None,
         clouds: None,
         lines: None,
@@ -691,7 +698,14 @@ pub fn load_post(
             _ => Target::Buffers,
         };
         for name in names {
-            if let Some(p) = loader.load(name, group, |v, f| translate_composite(v, f, target)) {
+            if let Some(mut p) = loader.load(name, group, |v, f| translate_composite(v, f, target))
+            {
+                // `blend.<program>` blends every buffer the program writes. Iris 1.11.7, probed:
+                // it applies to begin, prepare, deferred and composite programs, and
+                // `blend.<program>.<buffer>` doesn't apply to deferred and composite ones; the
+                // other cases are assumed to match.
+                p.blend = blend(loader.properties, &p.name).flatten();
+                p.buffer_blends.clear();
                 loader.post.programs.push(p);
             }
         }
@@ -773,6 +787,7 @@ pub fn load_post(
     let mut gbuffers_dyn = |names: &[&str], i: &GbuffersInputs| gbuffers(names, Group::Gbuffers, i);
     let entities_translucent = translucent(&ENTITIES_TRANSLUCENT, 0.0, &mut gbuffers_dyn);
     let particles = translucent(&PARTICLES, 0.1, &mut gbuffers_dyn);
+    let beacon_beam = translucent(&BEACON_BEAM, 0.0, &mut gbuffers_dyn);
     // Clouds blend, as vanilla's do (OQ-23).
     let clouds = inputs
         .clouds
@@ -835,6 +850,7 @@ pub fn load_post(
     loader.post.block = block;
     loader.post.entities_translucent = entities_translucent;
     loader.post.particles = particles;
+    loader.post.beacon_beam = beacon_beam;
     loader.post.damaged_block = damaged_block;
     loader.post.clouds_off = properties.get("clouds").is_some_and(|v| v.trim() == "off");
     loader.post.clouds = clouds.filter(|_| !loader.post.clouds_off);
@@ -881,6 +897,7 @@ fn load_shadow(
         &post.block,
         &post.entities_translucent,
         &post.particles,
+        &post.beacon_beam,
         &post.damaged_block,
         &post.clouds,
         &post.weather,
@@ -1751,6 +1768,64 @@ mod tests {
         assert_eq!(
             BufferSize::parse("100000 0").unwrap().resolve([1, 1]),
             [BufferSize::MAX, 1]
+        );
+    }
+
+    /// `blend.<program>` blends every buffer a composite-style program writes, while
+    /// `blend.<program>.<buffer>` does not apply to them (Iris 1.11.7, probed: a buffer's `off`
+    /// under a program blend still blends, and a buffer's factors alone do not).
+    #[test]
+    fn composite_programs_blend_as_their_program_says() {
+        let pack = Pack::from_zip_bytes(
+            "t",
+            zip(&[
+                ("shaders/deferred.vsh", VSH),
+                ("shaders/deferred.fsh", FSH),
+                ("shaders/composite.vsh", VSH),
+                ("shaders/composite.fsh", FSH),
+                ("shaders/composite1.vsh", VSH),
+                ("shaders/composite1.fsh", FSH),
+                ("shaders/composite2.vsh", VSH),
+                ("shaders/composite2.fsh", FSH),
+            ]),
+        )
+        .unwrap();
+        let properties = Properties::parse(
+            "blend.deferred = ONE ONE ZERO ONE
+blend.composite = SRC_ALPHA ONE_MINUS_SRC_ALPHA ONE ZERO
+\
+             blend.composite.colortex3 = off
+blend.composite1.colortex3 = ONE ONE ONE ONE
+\
+             blend.composite2 = off
+",
+            &Macros::default(),
+        );
+        let post = load_post(
+            &pack,
+            "",
+            &properties,
+            &Macros::standard(),
+            &GameInputs::default(),
+        );
+        use Factor::*;
+        let blends: Vec<(&str, Option<Blend>, usize)> = post
+            .programs
+            .iter()
+            .map(|p| (p.name.as_str(), p.blend, p.buffer_blends.len()))
+            .collect();
+        assert_eq!(
+            blends,
+            [
+                ("deferred", Some([One, One, Zero, One]), 0),
+                (
+                    "composite",
+                    Some([SrcAlpha, OneMinusSrcAlpha, One, Zero]),
+                    0
+                ),
+                ("composite1", None, 0),
+                ("composite2", None, 0),
+            ]
         );
     }
 

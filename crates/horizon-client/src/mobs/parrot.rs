@@ -314,6 +314,34 @@ mod tests {
         assert!(m.ai.goals.has("ParrotWander"));
     }
 
+    /// `Parrot.getVoicePitch` is `getPitch(random)`, the plain 1.0 ± 0.2, and
+    /// `getPitch` takes no age into account: a baby parrot does not get the
+    /// 1.5 that `LivingEntity.getVoicePitch` raises every other baby's voice
+    /// by. A baby chicken is the control.
+    #[test]
+    fn a_baby_parrot_keeps_the_plain_voice_pitch() {
+        let mut parrot = parrot();
+        parrot.extra.age = -24_000;
+        assert!(parrot.is_baby());
+        let mut baby = parrot.clone();
+        let pitches: Vec<f32> = (0..64).map(|_| baby.voice_pitch()).collect();
+        assert!(
+            pitches.iter().all(|p| (0.8..=1.2).contains(p)),
+            "{pitches:?}"
+        );
+        // It is not a constant: the two draws move it around 1.0.
+        assert!(pitches.iter().any(|&p| p != pitches[0]));
+        assert!((pitches.iter().sum::<f32>() / pitches.len() as f32 - 1.0).abs() < 0.1);
+
+        let mut k = (*kind()).clone();
+        k.id = "minecraft:chicken".into();
+        k.species = Species::Chicken;
+        let mut chicken = Mob::new(1, Arc::new(k), Vec3::ZERO, 0.0);
+        chicken.extra.age = -24_000;
+        let raised: Vec<f32> = (0..64).map(|_| chicken.voice_pitch()).collect();
+        assert!(raised.iter().all(|p| (1.3..=1.7).contains(p)), "{raised:?}");
+    }
+
     /// `Parrot.calculateFlapping`: in the air the wings beat and a fall is
     /// slowed to 0.6; on the ground or a shoulder they fold.
     #[test]

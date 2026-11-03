@@ -3,14 +3,14 @@
 `horizon-server` hosts a Minecraft Java Edition 26.3 server with Horizon's own game as the engine: one native
 program, no Java, one settings file, a command line, and a web panel. Vanilla 26.3 clients and Horizon clients
 can join it. This page covers what works on `main` today and says plainly what doesn't yet. The design and the
-plan are in [docs/server.md](https://github.com/horizon-rust/horizon/blob/main/docs/server.md).
+plan are in [server.md](server.md).
 
 ## Before you start
 
 - **Online mode checks accounts** (release v2026.10.17.07 and newer). With `online_mode = true`, the
   default, every player joins with their own account, as on a vanilla server: vanilla players signed in with
   the official Minecraft launcher, Horizon players with the Microsoft account they signed in with in Horizon's
-  launcher ([docs/microsoft-account.md](https://github.com/horizon-rust/horizon/blob/main/docs/microsoft-account.md)).
+  launcher ([microsoft-account.md](microsoft-account.md)).
 - **Names you add are accounts** (release v2026.10.17.14 and newer). `init --player`, `horizon-server
   whitelist add` and `op`, and the console's `whitelist add`, `op` and `ban` look a name up the way vanilla
   does: players already seen (kept in `usercache.json`), then Mojang's profile service. In online mode a name
@@ -254,6 +254,12 @@ through the proxy is refused, and so is a login signed with another secret. With
 `online_mode = true` the file is ignored (with a warning), and an empty file stops the start, because an empty
 secret could be signed by anyone. How the exchange works: [velocity-forwarding.md](velocity-forwarding.md).
 
+Bedrock players that join through Geyser and Floodgate arrive with a Floodgate UUID (`00000000-0000-0000-0009-` and
+the Xbox id), which is never on `whitelist.json`. With `white-list=true`, list that prefix in a file
+`whitelist-bypass.txt` beside server.properties (one UUID prefix per line, `#` comments, at least 8 characters) and
+everyone whose UUID starts with it passes the whitelist. Bans and the player limit still apply. The log says
+`whitelist-bypass.txt: 1 UUID prefix(es) skip the whitelist`.
+
 ## 5. Commands
 
 ```text
@@ -337,8 +343,8 @@ two seconds behind says `Can't keep up!` as vanilla's does, at most every 15 sec
 `config set` changes `server.toml` without opening it: `horizon-server config set world.difficulty=hard
 server.max_players=10`. Each key is a section and a name from the file (`properties.spawn-protection=0` for any
 other vanilla key). The values are checked as the server checks them, and nothing is written if one is wrong.
-A running server takes the difficulty, the default game mode, the whitelist and the backup settings at once;
-the rest applies at its next start, and `config set` says which. `--json` prints that as `saved`, `applied`
+A running server takes the difficulty, the default game mode, the whitelist, the message of the day, the
+player limit and the backup settings at once; the rest applies at its next start, and `config set` says which. `--json` prints that as `saved`, `applied`
 and `restart`.
 
 The server restarts the game by itself if it crashes: after 5 s, then waiting longer each time, up to 5
