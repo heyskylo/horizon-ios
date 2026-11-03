@@ -454,7 +454,7 @@ impl Game<'_> {
             health: p.health.health(),
             yaw: p.yaw,
             pitch: p.pitch,
-            entity_id: self.lan_acting_entity.unwrap_or(0) as i32,
+            entity_id: self.native_acting_entity() as i32,
         })
     }
     /// Runs `line` (no slash) as the server's console does: permission

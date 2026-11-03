@@ -315,7 +315,8 @@ pub struct NativeServerPlayer {
     pub yaw: f32,
     pub pitch: f32,
     /// The network entity id the player has this session, the one hooks that only know entity ids
-    /// (`living_incoming_damage`, `living_knockback`) give for the player; 0 when not known. API next.
+    /// (`living_incoming_damage`, `living_knockback`) give for the player; 0 when not known.
+    /// API @API:server_player_entity_id@.
     pub entity_id: i32,
 }
 
