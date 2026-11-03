@@ -1096,6 +1096,11 @@ pub fn mob_to_nbt(
                 string(crate::mobs::copper_golem::WEATHER[m.extra.variant.min(3) as usize]),
             );
         }
+        // Ghast.addAdditionalSaveData; Horizon's ghast fires power 1 whatever
+        // is saved, so a loaded value is kept as is.
+        "minecraft:ghast" => {
+            map.entry("ExplosionPower".into()).or_insert(Tag::Byte(1));
+        }
         _ => {}
     }
     // Zombie.addAdditionalSaveData: CanBreakDoors.
@@ -2495,6 +2500,12 @@ pub fn fireball_to_nbt(
         Tag::Double(p.acceleration.to_bits()),
     );
     put_projectile(&mut tag, p, owner);
+    // AbstractHurtingProjectile.tick: shouldBurn is true for both fireballs, so
+    // once ticked they igniteForSeconds(1) every tick.
+    if p.age > 0 && !p.kind.ignores_blast() {
+        let fire = number(tag.get("Fire")).unwrap_or(0).max(20);
+        put(&mut tag, "Fire", Tag::Short(fire as i16));
+    }
     if let Some(power) = power {
         put(&mut tag, "ExplosionPower", Tag::Byte(power as i8));
     }
@@ -2838,6 +2849,11 @@ pub fn trident_to_nbt(t: &TridentSave, uuid: [i32; 4], raw: Option<&Tag>) -> Tag
         fall_distance: 0.0,
     }
     .tag(raw);
+    // Projectile.addAdditionalSaveData: LeftOwner once set. A trident keeps no
+    // owner, and an ownerless projectile has left it on its first tick.
+    if let Tag::Compound(map) = &mut tag {
+        map.entry("LeftOwner".into()).or_insert(Tag::Byte(1));
+    }
     for (key, value) in [
         ("life", Tag::Short(t.life as i16)),
         ("shake", Tag::Byte(t.shake as i8)),
@@ -4165,6 +4181,28 @@ mod tests {
             panic!("no attributes");
         };
         assert_eq!(attrs.len(), 1);
+    }
+    #[test]
+    fn ghast_and_trident_save_their_always_present_keys() {
+        let trident = ItemStack::new("minecraft:trident", 1);
+        let tag = trident_to_nbt(
+            &TridentSave {
+                position: Vec3::ZERO,
+                motion: Vec3::ZERO,
+                yaw: 0.0,
+                pitch: 0.0,
+                in_ground: false,
+                life: 0,
+                shake: 0,
+                dealt_damage: false,
+                creative_only: false,
+                no_gravity: false,
+                item: &trident,
+            },
+            [0; 4],
+            None,
+        );
+        assert_eq!(tag.get("LeftOwner"), Some(&Tag::Byte(1)));
     }
     #[test]
     fn orbs_keep_their_count() {
