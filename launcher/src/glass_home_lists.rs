@@ -439,7 +439,7 @@ pub(super) fn picture(image: Option<gpui::ImageSource>, fallback: &'static str) 
 pub(super) fn danger_line(message: String) -> Div {
     div().px(px(12.)).pb(px(8.)).child(
         ui::text(13., FontWeight::NORMAL, ink::FULL)
-            .text_color(ui::color(horizon_theme::glass::DANGER))
+            .text_color(ui::danger())
             .child(message),
     )
 }
@@ -459,7 +459,7 @@ pub(super) fn danger_button(id: SharedString, label: SharedString) -> Stateful<D
         .hover(|s| s.bg(gpui::rgba(horizon_theme::glass::DANGER_HOVER << 8 | 0x1f)))
         .child(
             ui::text(13., FontWeight::MEDIUM, ink::FULL)
-                .text_color(ui::color(horizon_theme::glass::DANGER))
+                .text_color(ui::danger())
                 .child(label),
         )
 }

@@ -762,7 +762,7 @@ impl Launcher {
             .child(match error {
                 Some(e) => ui::text(13., FontWeight::NORMAL, ink::FULL)
                     .min_w_0()
-                    .text_color(ui::color(horizon_theme::glass::DANGER))
+                    .text_color(ui::danger())
                     .child(e),
                 None => ui::text(13., FontWeight::NORMAL, ink::FAINT)
                     .min_w_0()

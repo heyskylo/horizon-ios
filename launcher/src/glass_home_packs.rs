@@ -299,7 +299,7 @@ impl Launcher {
             (Some(Err(e)), None) => Some(
                 div().mt(px(8.)).child(
                     ui::text(13., FontWeight::NORMAL, ink::FULL)
-                        .text_color(ui::color(horizon_theme::glass::DANGER))
+                        .text_color(ui::danger())
                         .child(e.clone()),
                 ),
             ),

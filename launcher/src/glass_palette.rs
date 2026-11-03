@@ -331,7 +331,7 @@ impl Launcher {
                     .left_0()
                     .size_full()
                     .rounded(px(20.))
-                    .bg(ui::color(SCRIM).opacity(0.5)),
+                    .bg(ui::color(SCRIM).opacity(if ui::light() { 0. } else { 0.5 })),
             )
             .child(
                 div()
@@ -366,7 +366,8 @@ impl Launcher {
                         .top_0()
                         .left_0()
                         .size_full()
-                        .bg(ui::color(SCRIM).opacity(0.5))
+                        // Light: the same scrim, lighter, so the dimmed launcher stays day-lit.
+                        .bg(ui::color(SCRIM).opacity(if ui::light() { 0.2 } else { 0.5 }))
                         .on_mouse_down(
                             gpui::MouseButton::Left,
                             cx.listener(|this, _: &MouseDownEvent, window, cx| {

@@ -421,7 +421,7 @@ impl Launcher {
 
     pub(super) fn instance_dialog(&mut self, cx: &mut Context<Self>) -> Option<Stateful<Div>> {
         let t = self.theme;
-        if t.dark {
+        if t.glass {
             return self.glass_instance_dialog(cx);
         }
         let d = self.instances.dialog.as_ref()?;

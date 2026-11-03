@@ -729,9 +729,7 @@ impl Launcher {
                 .child(tickbox)
                 .child(
                     ui::text(14., FontWeight::NORMAL, ink::FULL)
-                        .when(missing, |d| {
-                            d.text_color(ui::color(horizon_theme::glass::DANGER))
-                        })
+                        .when(missing, |d| d.text_color(ui::danger()))
                         .child(tr("I agree to the Minecraft EULA")),
                 ),
             &t,
@@ -760,13 +758,13 @@ impl Launcher {
         } else if let Some(p) = &self.servers.problem {
             Some(
                 ui::text(13., FontWeight::NORMAL, ink::FULL)
-                    .text_color(ui::color(horizon_theme::glass::DANGER))
+                    .text_color(ui::danger())
                     .child(p.message.clone()),
             )
         } else if missing {
             Some(
                 ui::text(13., FontWeight::NORMAL, ink::FULL)
-                    .text_color(ui::color(horizon_theme::glass::DANGER))
+                    .text_color(ui::danger())
                     .child(tr("Tick the EULA box to create the server.")),
             )
         } else {
