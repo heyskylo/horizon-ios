@@ -762,8 +762,24 @@ impl Game<'_> {
         let Some(Arg::Resource(attribute)) = ctx.get("attribute").cloned() else {
             return Ok(0);
         };
+        // An unbounded selector reaches every loaded level, so the target may
+        // be in another one than the command's (EntitySelector.findEntities,
+        // AttributeCommand acting on the entity itself).
+        self.in_target_level(target, |g| {
+            g.attribute_in_level(id, ctx, target, &attribute)
+        })
+        .unwrap_or(Ok(0))
+    }
+    /// `/attribute` on a target, with the target's own level in place.
+    fn attribute_in_level(
+        &mut self,
+        id: &str,
+        ctx: &Context,
+        target: Target,
+        attribute: &str,
+    ) -> R<i32> {
         let name = self.target_name(target);
-        let description = Self::attribute_description(&attribute);
+        let description = Self::attribute_description(attribute);
         let short = attribute.trim_start_matches("minecraft:").to_owned();
         let no_attribute = |name: &Text, d: &Text| {
             text_error(
@@ -788,7 +804,7 @@ impl Game<'_> {
                 let Some(player) = self.player.as_mut() else {
                     return Ok(0);
                 };
-                let Some(key) = player.attributes.key(&attribute) else {
+                let Some(key) = player.attributes.key(attribute) else {
                     return Err(no_attribute(&name, &description));
                 };
                 let unavailable = |_| no_attribute(&name, &description);
@@ -869,7 +885,7 @@ impl Game<'_> {
                             .cloned()
                             .unwrap_or_else(|| "add_value".into());
                         player
-                            .set_modifier(&attribute, &modifier_id, value_arg, &op, true)
+                            .set_modifier(attribute, &modifier_id, value_arg, &op, true)
                             .map_err(|_| no_attribute(&name, &description))?;
                         self.feedback(Text::translate(
                             "commands.attribute.modifier.add.success",
@@ -893,7 +909,7 @@ impl Game<'_> {
                             ));
                         }
                         let _ =
-                            player.set_modifier(&attribute, &modifier_id, 0.0, "add_value", false);
+                            player.set_modifier(attribute, &modifier_id, 0.0, "add_value", false);
                         self.feedback(Text::translate(
                             "commands.attribute.modifier.remove.success",
                             &[Text::literal(modifier_id), description, name],
@@ -951,7 +967,7 @@ impl Game<'_> {
                 self.generic_attribute(
                     target,
                     id,
-                    &attribute,
+                    attribute,
                     (&name, &description),
                     (value_arg, scale, &modifier_id, &op),
                 )
