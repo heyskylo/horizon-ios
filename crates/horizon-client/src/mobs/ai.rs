@@ -1471,15 +1471,7 @@ impl Mob {
 }
 /// LivingEntity.onClimbable for the pusher (Spider.onClimbable: climbing a wall).
 fn on_climbable(m: &Mob, w: &MobWorld) -> bool {
-    if m.kind.flags.climber {
-        return m.climbing;
-    }
-    let (x, y, z) = (
-        m.position.x.floor() as i32,
-        m.position.y.floor() as i32,
-        m.position.z.floor() as i32,
-    );
-    w.has_tag("minecraft:climbable", w.block_name(x, y, z))
+    m.on_climbable(w)
 }
 /// `Entity.getRootVehicle` of the mob `id` riding `vehicle`: the bottom of
 /// its stack of vehicles (itself when it rides nothing).

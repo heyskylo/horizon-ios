@@ -137,7 +137,7 @@ CreeperRenderer.extractRenderState	port	crates/horizon-client-render/src/overlay
 CushionRenderer.extractRenderState	port	crates/horizon-client/src/game/cushions.rs::Game::cushion_geometry	yaw and colour texture are read there
 CushionRenderer.submit	port	crates/horizon-client/src/game/cushions.rs::Game::cushion_geometry	turned to its facing and drawn
 DisplayRenderer.getSkyLightLevel	port	crates/horizon-client/src/game/text_displays.rs::Game::text_display_geometry	brightness override
-DisplayRenderer.getBlockLightLevel	port	crates/horizon-client/src/game/text_displays.rs::Game::text_display_geometry	brightness override
+DisplayRenderer.getBlockLightLevel	port	crates/horizon-client/src/game/text_displays.rs::Game::display_light	the brightness override's sky and block light packed as light coords, else the world light at the display's block position
 DisplayRenderer.getShadowRadius	port	crates/horizon-client/src/shadows.rs::display_caster	the interpolated radius, which shadows::shadow clamps to 32
 DisplayRenderer.getShadowStrength	port	crates/horizon-client/src/shadows.rs::display_caster	the interpolated strength, which shadows::shadow fades over the camera distance
 DisplayRenderer.submit	port	crates/horizon-client/src/game/text_displays.rs::Game::text_display_geometry	gap: player: only text displays are drawn; block and item displays are not

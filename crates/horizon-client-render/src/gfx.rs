@@ -132,6 +132,7 @@ mod hdr_icc;
 mod hdr_stats;
 pub use hdr::Calibration as HdrCalibration;
 pub mod block_light;
+mod displace;
 pub mod lightning;
 mod lod;
 mod native_material;
@@ -445,6 +446,19 @@ impl SectionGpu {
     /// tables span.
     fn gpu_recorded(&self, key: SectionKey, sections: usize) -> bool {
         self.solid > 0 && (0..sections as i32).contains(&key.1)
+    }
+    /// GPU culling's record of it at `key`, its quads within `bounds`
+    /// (`SectionMesh::bounds`).
+    fn record(&self, key: SectionKey, bounds: Option<[Vec3; 2]>) -> gpu_culling::Record {
+        let boxed = gpu_culling::rounded_box(bounds);
+        gpu_culling::Record::new(key, self.page, self.start, self.solid, boxed)
+    }
+    /// Whether GPU frames' walk lists it within the render distance
+    /// (`Resident::walk`): its mark, kept whether GPU culling is on or
+    /// not. Its translucent quads are the CPU's, or GPU culling can have no
+    /// record of it.
+    fn listed(&self, key: SectionKey, sections: usize) -> bool {
+        self.translucent > 0 || !self.gpu_recorded(key, sections)
     }
 }
 /// Which of a mesh's ranges `move_off_page` moves: what it holds in the section
@@ -850,7 +864,7 @@ pub struct Renderer {
     cull_on: bool,
     /// Solid quads facing away from the eye are left out (`mesher::Sides`).
     sides_on: bool,
-    /// The near solid sections' draws listed on the GPU (`gpu_culling`): its pass
+    /// The near solid sections culled and drawn on the GPU (`gpu_culling`): its pass
     /// and records while it is on, where the device can (`gpu_culling_supported`),
     /// and whether the last frame drew them so (`gpu_frame`).
     gpu_culling: Option<gpu_culling::GpuCulling>,
@@ -4480,8 +4494,8 @@ impl Renderer {
             .filter(|_| self.cull_on && !self.gpu_frame)
             .map(|c| c.hidden)
     }
-    /// Whether the near solid sections' draws are listed on the GPU where frames
-    /// allow it (`gpu_culling`).
+    /// Whether the near solid sections are culled and drawn on the GPU where
+    /// frames allow it (`gpu_culling`).
     pub fn gpu_culling(&self) -> bool {
         self.gpu_culling.is_some()
     }
@@ -4491,7 +4505,9 @@ impl Renderer {
     }
     /// Switches GPU culling, for A/B checks. Its pass and its records of the
     /// resident sections are made when it is switched on and dropped when it is
-    /// switched off: nothing is kept for it while it is off.
+    /// switched off: nothing is kept for it while it is off but the sections'
+    /// walk marks (`SectionGpu::listed`) and the cave-culling graph's bits
+    /// (`occlusion::Reach`), which are the same either way.
     pub fn set_gpu_culling(&mut self, on: bool) -> Result<()> {
         if !on {
             if self.gpu_culling.take().is_some() {
@@ -4514,9 +4530,9 @@ impl Renderer {
             return Err("GPU culling could not be set up on this device".into());
         };
         let sections = self.layout.sections();
-        for (key, s) in self.sections.iter_mut() {
+        for (key, s, bounds) in self.sections.iter_mut() {
             if s.gpu_recorded(key, sections) {
-                s.gpu_id = Some(gpu.records.insert(key, s.page, s.start, s.solid));
+                s.gpu_id = Some(gpu.records.insert(s.record(key, bounds)));
             }
         }
         self.gpu_culling = Some(gpu);
@@ -4530,20 +4546,30 @@ impl Renderer {
     /// compaction's moves included: each section it keeps a record of
     /// (`SectionGpu::gpu_recorded`) has its own, no record is left without its
     /// section, and each page they count is the arena's. A record left behind
-    /// would draw another section's quads, or from a freed page.
+    /// would draw another section's quads, or from a freed page. And each
+    /// section's walk mark is `SectionGpu::listed`: one unmarked that should be
+    /// would leave its translucent quads, or all of it, undrawn. And the bits
+    /// the pass copies of the cave-culling graph are its cells'
+    /// (`occlusion::Reach`): one off would hide a section the walk shows.
     #[cfg(debug_assertions)]
     fn check_gpu_records(&self) {
         let Some(gpu) = &self.gpu_culling else {
             return;
         };
+        assert!(
+            self.occlusion.reach_is_exact(),
+            "the reach bits are the graph's cells"
+        );
         let (records, sections) = (&gpu.records, self.layout.sections());
         let mut pages = vec![0; records.page_sections().len()];
         let mut live = 0;
-        for (key, s) in self.sections.iter() {
+        for (key, s, bounds) in self.sections.iter() {
             let recorded = s.gpu_recorded(key, sections);
             assert_eq!(s.gpu_id.is_some(), recorded, "{key:?}: a record");
+            let marked = self.sections.is_marked(key);
+            assert_eq!(marked, s.listed(key, sections), "{key:?}: its walk mark");
             if let Some(id) = s.gpu_id {
-                let record = gpu_culling::Record::new(key, s.page, s.start, s.solid);
+                let record = s.record(key, bounds);
                 assert_eq!(records.at(id), Some(&record), "{key:?}: its record {id}");
                 pages[s.page as usize] += 1;
                 live += 1;
@@ -4675,13 +4701,15 @@ impl Renderer {
             section.is_some() || (mesh.solid.is_empty() && mesh.translucent.is_empty()),
         );
         if let Some(mut section) = section {
+            let sections = self.layout.sections();
             if let Some(gpu) = &mut self.gpu_culling
-                && section.gpu_recorded(key, self.layout.sections())
+                && section.gpu_recorded(key, sections)
             {
-                let (page, start, quads) = (section.page, section.start, section.solid);
-                section.gpu_id = Some(gpu.records.insert(key, page, start, quads));
+                section.gpu_id = Some(gpu.records.insert(section.record(key, mesh.bounds)));
             }
-            self.sections.insert_with_bounds(key, section, mesh.bounds);
+            let marked = section.listed(key, sections);
+            self.sections
+                .insert_marked(key, section, mesh.bounds, marked);
         }
     }
     fn upload_mesh(&mut self, mesh: &SectionMesh) -> Option<SectionGpu> {
@@ -6600,7 +6628,7 @@ impl Renderer {
                 .as_ref()
                 .and_then(|p| p.1.as_ref())
                 .is_some_and(|p| p.has_terrain());
-        // The near solid sections' draws listed on the GPU (`gpu_culling`): never where a
+        // The near solid sections culled and drawn on the GPU (`gpu_culling`): never where a
         // shader pack's terrain, a shadow pass or the water mirror draws the CPU's lists.
         // Decided before the walk, so that a pass whose buffers no longer fit can still
         // switch GPU culling off.
@@ -6617,14 +6645,19 @@ impl Renderer {
             }
             self.gpu_checks = self.gpu_checks.wrapping_add(1);
         }
+        // The walk reads the graph GPU culling is given (checked after it).
+        #[cfg(debug_assertions)]
+        let graph_given = self.occlusion.generation();
         if gpu_frame && let Some(gpu) = &mut self.gpu_culling {
             let input = gpu_culling::FrameInputs {
                 camera,
                 min_y: self.sections.min_y(),
                 sections: self.layout.sections() as i32,
                 radius,
+                frustum: &view,
+                reach: self.occlusion.reach().filter(|_| culling),
             };
-            gpu_frame = crate::spans::time("gpu culling", || {
+            let prepared = crate::spans::time("gpu culling", || {
                 gpu.prepare(
                     &self.device,
                     &self.queue,
@@ -6633,7 +6666,10 @@ impl Renderer {
                     &input,
                 )
             });
-            if !gpu_frame {
+            // A frame whose planes leave the test's integers (the camera millions of blocks
+            // above or below the level) is the CPU's.
+            gpu_frame = prepared == gpu_culling::Prepared::Gpu;
+            if prepared == gpu_culling::Prepared::OutOfMemory {
                 log::warn!("Horizon renderer: GPU culling off: its buffers do not fit");
                 let _ = self.set_gpu_culling(false);
             }
@@ -6651,7 +6687,10 @@ impl Renderer {
         let mut visible = std::mem::take(&mut self.visible);
         visible.clear();
         crate::spans::time("visibility", || {
-            self.sections.visible(
+            // GPU culling draws the solid quads of the near sections it has records of: within
+            // the render distance the walk lists only those with translucent quads or without a
+            // record (`SectionGpu::listed`).
+            self.sections.walk(
                 camera,
                 radius,
                 &Frusta(view, mirror),
@@ -6660,9 +6699,15 @@ impl Renderer {
                     (!cutout.is_empty() && cutout.contains(&(x, z)))
                         || (!leaving.is_empty() && leaving.contains(&(x, z)))
                 },
+                gpu_frame,
                 &mut visible,
             )
         });
+        #[cfg(debug_assertions)]
+        assert!(
+            !gpu_frame || self.occlusion.generation() == graph_given,
+            "the walk reads the graph GPU culling was given"
+        );
         let now = std::time::Instant::now();
         let mut visible_lods = std::mem::take(&mut self.visible_lods);
         visible_lods.clear();
@@ -6750,8 +6795,9 @@ impl Renderer {
             }
             // Visibility is collected before terrain draw commands are recorded,
             // so upload the current mask here and keep animation updates ahead
-            // of every draw in this command buffer.
-            self.animate(&mut encoder, frame.ticks, !frame.title);
+            // of every draw in this command buffer. A GPU frame's walk leaves out
+            // the sections GPU culling draws: every layer animates.
+            self.animate(&mut encoder, frame.ticks, !frame.title && !gpu_frame);
         }
         self.drawn_sections = visible.len() + visible_lods.len();
         let instances = self.drawn_sections + shadow_visible.len();
@@ -6815,6 +6861,31 @@ impl Renderer {
                 bytemuck::cast_slice(&self.origins),
             );
         }
+        // `[displacement]`: the solid quads of the sections it reaches, nearest first.
+        if let Some(d) = self.native.as_mut().and_then(|n| n.displacement.as_mut()) {
+            let near: Vec<displace::Near<'_>> = if frame.title {
+                Vec::new()
+            } else {
+                visible
+                    .iter()
+                    .filter(|v| {
+                        let o = glam::Vec3::from(v.origin);
+                        let closest = glam::Vec3::ZERO.clamp(o, o + 16.0);
+                        closest.length() < d.distance
+                    })
+                    .filter_map(|v| {
+                        let s = self.sections.get(v.slot);
+                        (s.solid > 0).then(|| displace::Near {
+                            buffer: self.arena.buffer(s.page),
+                            start: s.start,
+                            quads: s.solid,
+                            origin: v.origin,
+                        })
+                    })
+                    .collect()
+            };
+            d.prepare(&self.queue, &mut encoder, &near, view_proj);
+        }
         // Solid sections front to back, then translucent ones back to front,
         // as one list of indirect draws over the section arena.
         self.draws.clear();
@@ -6859,21 +6930,17 @@ impl Renderer {
             !(split_solid && gpu_frame),
             "GPU culling is never offered on Metal"
         );
-        // In a GPU frame the GPU lists the draws of the whole sections within the render
-        // distance that have records (`gpu_culling`). Here stay those fading in or out, whose
-        // instances carry their fade, and those past the distance (far terrain's cutout, and
-        // columns leaving).
+        // In a GPU frame the GPU draws the solid quads of the sections within the render
+        // distance that have records (`gpu_culling`), and the walk listed those among them
+        // with translucent quads. Here stay those without a record and those past the
+        // distance (far terrain's cutout, and columns leaving).
         let from = resident::camera_column(camera);
-        let whole_bits = section_instance([0.0; 3], 0, 1.0)[3].to_bits();
         for (i, v) in visible.iter().enumerate() {
             let s = self.sections.get(v.slot);
             if gpu_frame
-                && let Some(id) = s.gpu_id
-                && self.origins[i][3].to_bits() == whole_bits
+                && s.gpu_id.is_some()
                 && crate::streaming::in_view_distance(from, radius, v.key.0, v.key.2)
-                && let Some(gpu) = &mut self.gpu_culling
             {
-                gpu.choose(id);
                 continue;
             }
             let first_phase = cull.as_ref().is_none_or(|c| c.first(v.slot));
@@ -6922,9 +6989,6 @@ impl Renderer {
             {
                 c.drawn(i, v.slot, indices);
             }
-        }
-        if gpu_frame && let Some(gpu) = &self.gpu_culling {
-            gpu.upload_choices(&mut self.uploads, &mut encoder);
         }
         // Phase 2's draws are tested where grouping left them.
         let runs = self
@@ -7180,9 +7244,9 @@ impl Renderer {
         } else {
             self.section_draws
         };
-        // GPU culling's draws: one per section, a call per page.
+        // GPU culling's draw calls, one per page. Its draws are not counted: the GPU
+        // decides them, and nothing reads them back.
         if gpu_frame && let Some(gpu) = &self.gpu_culling {
-            self.section_draws += gpu.chosen() as usize;
             self.section_draw_calls += gpu.draw_calls();
         }
         let debug_depth = frame.debug_lines.len() as u32;
@@ -7732,6 +7796,12 @@ impl Renderer {
                 0,
                 bytemuck::cast_slice(&self.draws),
             );
+        }
+        // A GPU frame's walk leaves out the sections GPU culling draws, and nothing reads back
+        // which it kept: every record counts, an upper bound (the world icon waits for more
+        // than a few drawn).
+        if gpu_frame && let Some(gpu) = &self.gpu_culling {
+            self.drawn_sections += gpu.records.live();
         }
         let view_target = target_texture.create_view(&wgpu::TextureViewDescriptor {
             format: Some(self.config.format.remove_srgb_suffix()),
@@ -8473,6 +8543,18 @@ impl Renderer {
                         }
                     }
                 }
+            }
+            // `[displacement]`'s grid over the flat quads it took over, writing its depth.
+            if let Some(n) = self
+                .native
+                .as_ref()
+                .filter(|_| !frame.title && !pack_draws_terrain)
+                && let Some(d) = &n.displacement
+                && let Some(pipeline) = n.material.as_ref().and_then(|m| m.displaced.as_ref())
+            {
+                pass.set_bind_group(0, &self.group, &[]);
+                pack_frame(&mut pass);
+                d.draw(&mut pass, &d.view, pipeline);
             }
             if surface.is_some() {
                 drop(pass);
