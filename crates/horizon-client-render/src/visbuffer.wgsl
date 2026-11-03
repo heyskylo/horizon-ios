@@ -152,25 +152,77 @@ override VIS_BLOCKS_PER_PAGE: u32 = 1u;
 @group(1) @binding(17) var<storage, read> vis_page_15: array<vec4<u32>>;
 @group(1) @binding(18) var vis_ids: texture_2d<u32>;
 
-// Sixteen bytes `i` of the page in `slot`.
-fn vis_load(slot: u32, i: u32) -> vec4<u32> {
+// A quad's 96 bytes, six 16-byte words from `i` on, of the page in `slot`: one switch for
+// all of them, so a thread group whose pixels show several pages walks its cases once.
+struct VisQuad {
+    q: array<vec4<u32>, 6>,
+}
+fn vis_quad(slot: u32, i: u32) -> VisQuad {
     switch slot {
-        case 0u: { return vis_page_0[i]; }
-        case 1u: { return vis_page_1[i]; }
-        case 2u: { return vis_page_2[i]; }
-        case 3u: { return vis_page_3[i]; }
-        case 4u: { return vis_page_4[i]; }
-        case 5u: { return vis_page_5[i]; }
-        case 6u: { return vis_page_6[i]; }
-        case 7u: { return vis_page_7[i]; }
-        case 8u: { return vis_page_8[i]; }
-        case 9u: { return vis_page_9[i]; }
-        case 10u: { return vis_page_10[i]; }
-        case 11u: { return vis_page_11[i]; }
-        case 12u: { return vis_page_12[i]; }
-        case 13u: { return vis_page_13[i]; }
-        case 14u: { return vis_page_14[i]; }
-        default: { return vis_page_15[i]; }
+        case 0u: {
+            return VisQuad(array(vis_page_0[i], vis_page_0[i + 1u], vis_page_0[i + 2u],
+                vis_page_0[i + 3u], vis_page_0[i + 4u], vis_page_0[i + 5u]));
+        }
+        case 1u: {
+            return VisQuad(array(vis_page_1[i], vis_page_1[i + 1u], vis_page_1[i + 2u],
+                vis_page_1[i + 3u], vis_page_1[i + 4u], vis_page_1[i + 5u]));
+        }
+        case 2u: {
+            return VisQuad(array(vis_page_2[i], vis_page_2[i + 1u], vis_page_2[i + 2u],
+                vis_page_2[i + 3u], vis_page_2[i + 4u], vis_page_2[i + 5u]));
+        }
+        case 3u: {
+            return VisQuad(array(vis_page_3[i], vis_page_3[i + 1u], vis_page_3[i + 2u],
+                vis_page_3[i + 3u], vis_page_3[i + 4u], vis_page_3[i + 5u]));
+        }
+        case 4u: {
+            return VisQuad(array(vis_page_4[i], vis_page_4[i + 1u], vis_page_4[i + 2u],
+                vis_page_4[i + 3u], vis_page_4[i + 4u], vis_page_4[i + 5u]));
+        }
+        case 5u: {
+            return VisQuad(array(vis_page_5[i], vis_page_5[i + 1u], vis_page_5[i + 2u],
+                vis_page_5[i + 3u], vis_page_5[i + 4u], vis_page_5[i + 5u]));
+        }
+        case 6u: {
+            return VisQuad(array(vis_page_6[i], vis_page_6[i + 1u], vis_page_6[i + 2u],
+                vis_page_6[i + 3u], vis_page_6[i + 4u], vis_page_6[i + 5u]));
+        }
+        case 7u: {
+            return VisQuad(array(vis_page_7[i], vis_page_7[i + 1u], vis_page_7[i + 2u],
+                vis_page_7[i + 3u], vis_page_7[i + 4u], vis_page_7[i + 5u]));
+        }
+        case 8u: {
+            return VisQuad(array(vis_page_8[i], vis_page_8[i + 1u], vis_page_8[i + 2u],
+                vis_page_8[i + 3u], vis_page_8[i + 4u], vis_page_8[i + 5u]));
+        }
+        case 9u: {
+            return VisQuad(array(vis_page_9[i], vis_page_9[i + 1u], vis_page_9[i + 2u],
+                vis_page_9[i + 3u], vis_page_9[i + 4u], vis_page_9[i + 5u]));
+        }
+        case 10u: {
+            return VisQuad(array(vis_page_10[i], vis_page_10[i + 1u], vis_page_10[i + 2u],
+                vis_page_10[i + 3u], vis_page_10[i + 4u], vis_page_10[i + 5u]));
+        }
+        case 11u: {
+            return VisQuad(array(vis_page_11[i], vis_page_11[i + 1u], vis_page_11[i + 2u],
+                vis_page_11[i + 3u], vis_page_11[i + 4u], vis_page_11[i + 5u]));
+        }
+        case 12u: {
+            return VisQuad(array(vis_page_12[i], vis_page_12[i + 1u], vis_page_12[i + 2u],
+                vis_page_12[i + 3u], vis_page_12[i + 4u], vis_page_12[i + 5u]));
+        }
+        case 13u: {
+            return VisQuad(array(vis_page_13[i], vis_page_13[i + 1u], vis_page_13[i + 2u],
+                vis_page_13[i + 3u], vis_page_13[i + 4u], vis_page_13[i + 5u]));
+        }
+        case 14u: {
+            return VisQuad(array(vis_page_14[i], vis_page_14[i + 1u], vis_page_14[i + 2u],
+                vis_page_14[i + 3u], vis_page_14[i + 4u], vis_page_14[i + 5u]));
+        }
+        default: {
+            return VisQuad(array(vis_page_15[i], vis_page_15[i + 1u], vis_page_15[i + 2u],
+                vis_page_15[i + 3u], vis_page_15[i + 4u], vis_page_15[i + 5u]));
+        }
     }
 }
 
@@ -234,12 +286,13 @@ fn vis_corner(position: vec3<u32>, rest: vec3<u32>, origin: vec4<f32>) -> Terrai
     // The quad's block (256 vertices, 64 quads) names its section, as for `vs_terrain_flat`.
     let origin = slot_origins[block_slots[page * VIS_BLOCKS_PER_PAGE + (quad >> 6u)]];
     // Corner k is words 6k to 6k + 5 of the quad's 24.
-    let q0 = vis_load(slot, at);
-    let q1 = vis_load(slot, at + 1u);
-    let q2 = vis_load(slot, at + 2u);
-    let q3 = vis_load(slot, at + 3u);
-    let q4 = vis_load(slot, at + 4u);
-    let q5 = vis_load(slot, at + 5u);
+    let words = vis_quad(slot, at).q;
+    let q0 = words[0];
+    let q1 = words[1];
+    let q2 = words[2];
+    let q3 = words[3];
+    let q4 = words[4];
+    let q5 = words[5];
     let p0 = q0.xyz;
     let r0 = vec3(q0.w, q1.x, q1.y);
     let p1 = vec3(q1.z, q1.w, q2.x);
