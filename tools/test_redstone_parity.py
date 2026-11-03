@@ -40,39 +40,7 @@ def build(facts, rng):
     return cells
 
 
-def state(facts, name, **props):
-    """The state of block `name` with these properties (the others as they come first)."""
-    for index in facts.by_block['minecraft:' + name]:
-        described = facts.describe(index)
-        values = dict(p.split('=') for p in described.partition('[')[2].rstrip(']').split(',') if '=' in p)
-        if all(values.get(k) == v for k, v in props.items()):
-            return index
-    raise KeyError((name, props))
-
-
-def fixed_cases(facts):
-    """Pistons moving the block under a rail (#8111). A stone chain: the rail on the second stone loses its support
-    at progress 0 and pops, though a stone arrives under it. A sticky piston and slime: the rail rides along, and
-    can finish while the slime below it is still moving at progress 1. Each is powered, then unpowered."""
-    stone = facts.defaults['minecraft:stone']
-    rail = state(facts, 'rail', shape='north_south')
-    for name, blocks in (
-            ('piston', [([1, 0, 0], stone), ([2, 0, 0], stone), ([2, 1, 0], rail)]),
-            ('sticky_piston', [([1, 0, 0], facts.defaults['minecraft:slime_block']), ([1, 1, 0], rail)])):
-        cells = [[x, -1, z, stone] for x in range(-4, 5) for z in range(-4, 5)]
-        cells.append([0, 0, 0, state(facts, name, facing='east', extended='false')])
-        cells += [[*pos, block] for pos, block in blocks]
-        at = [-1, 0, 0]
-        yield {'seed': 8111, 'time': 6000, 'light': [15, 0], 'mode': 'run', 'pos': [0, -1, 0], 'cells': cells, 'ops': [
-            {'op': 'set', 'pos': at, 'state': facts.defaults['minecraft:redstone_block'], 'flags': 3},
-            {'op': 'ticks', 'n': 12, 'snap': True},
-            {'op': 'set', 'pos': at, 'state': facts.defaults['minecraft:air'], 'flags': 3},
-            {'op': 'ticks', 'n': 12, 'snap': True},
-        ]}
-
-
 def cases(facts, count, seed, only):
-    yield from fixed_cases(facts)
     rng = random.Random(seed)
     source = facts.defaults['minecraft:redstone_block']
     air = facts.defaults['minecraft:air']

@@ -3665,7 +3665,7 @@ fn a_rail_on_a_block_a_piston_pushes_pops_off() {
     // second stone asks whether that cell supports it: vanilla reads the moving
     // block's shape offset by `progress - 1`, a whole block back at progress 0,
     // so nothing holds the rail and it pops, though another stone arrives under
-    // it. The redstone harness's fixed cases check the same against vanilla.
+    // it (dynamic_support pins the moving shape's support against vanilla).
     let mut w = world!();
     w.floor(0, 10, "stone");
     let piston = w.id("piston", &[("facing", "east")]);
