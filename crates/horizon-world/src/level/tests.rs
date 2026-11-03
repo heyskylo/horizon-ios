@@ -3657,3 +3657,39 @@ fn a_level_can_answer_what_makes_a_campfire_signal() {
     w.set(ground, hay);
     assert_eq!(w.prop(campfire, "signal_fire"), "false");
 }
+
+#[test]
+fn a_rail_on_a_block_a_piston_pushes_through_survives() {
+    // PistonBaseBlock.moveBlocks writes the arriving blocks as `moving_piston`
+    // and then updates the neighbours of every source cell. A cell that is both
+    // a source and a destination of a chain push still holds `moving_piston`
+    // when that update runs, so the rail on top of it is asked whether it can
+    // survive. Vanilla reads the cell through its block entity, whose collision
+    // shape is the arriving block; the exported support facts saw the bare
+    // `moving_piston` and dropped the rail (#8111).
+    let mut w = world!();
+    w.floor(0, 10, "stone");
+    let piston = w.id("piston", &[("facing", "east")]);
+    let stone = w.id("stone", &[]);
+    let rail = w.id("rail", &[]);
+    let power = w.id("redstone_block", &[]);
+    let piston_pos = BlockPos::new(0, 1, 0);
+    let first = BlockPos::new(1, 1, 0);
+    let second = BlockPos::new(2, 1, 0);
+    let rail_pos = BlockPos::new(2, 2, 0);
+    w.set(piston_pos, piston);
+    w.set(first, stone);
+    w.set(second, stone);
+    w.set(rail_pos, rail);
+    w.set(BlockPos::new(-1, 1, 0), power);
+    for _ in 0..4 {
+        w.full_tick();
+    }
+    assert_eq!(w.prop(piston_pos, "extended"), "true");
+    assert_eq!(w.name(second), "stone[]");
+    assert!(
+        w.name(rail_pos).starts_with("rail"),
+        "the rail on top of the pushed block must stay, got {}",
+        w.name(rail_pos)
+    );
+}

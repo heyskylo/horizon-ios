@@ -208,6 +208,18 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
                         .table
                         .set_bool(piston.moved_state, self.b.props.extended, true);
                 }
+                // Any other moving cell reads as the block arriving in it.
+                // `PistonBaseBlock.moveBlocks` writes `moving_piston` before it
+                // updates the neighbours of the source cells, so a cell that is
+                // both a source and a destination of a chain push still holds
+                // the moving block when a rail on top of it asks for support
+                // (#8111).
+                if !self
+                    .b
+                    .is_block(piston.moved_state, self.b.named.moving_piston)
+                {
+                    return piston.moved_state;
+                }
             }
         }
         state
