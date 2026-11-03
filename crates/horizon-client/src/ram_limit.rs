@@ -1,7 +1,7 @@
 //! The player's RAM limit: from the launcher's slider at the start (`HORIZON_MEMORY_LIMIT_MB`), and
 //! `/ramlimit` while the game runs. The window answers that command itself, so it works on any
-//! server. On Windows the system holds the game under the limit (`horizon_threads::memory_limit`).
-//! Under pressure, [`Governor`] turns far terrain off and lowers the render distance in use, never
+//! server. Under pressure, before the game reaches the limit (`horizon_threads::memory_limit`),
+//! on every system, [`Governor`] turns far terrain off and lowers the render distance in use, never
 //! the option the player saved, and gives them back when there is room. Only a game that can't run
 //! under the limit at all ends with a crash report.
 use horizon_threads::capped;
@@ -127,17 +127,8 @@ pub fn used() -> Option<u64> {
     memory_limit::resident_bytes()
 }
 
-/// See [`memory_limit::frame`].
-pub fn frame() {
-    memory_limit::frame();
-}
-
-/// A game this slow, faulting hard under a cap the system enforces, is short of memory.
-const SLOW_FPS: f32 = 30.;
-
-/// See [`memory_limit::pressure`]. Under a cap the system enforces the game is already under the
-/// limit, so nothing the player sees goes unless the game is slow as well.
-pub fn pressure(limit: u64, fps: f32) -> Pressure {
+/// See [`memory_limit::pressure`].
+pub fn pressure(limit: u64) -> Pressure {
     if capped::limit().is_some() {
         // A hard ceiling is a budget of its own: what the process commits
         // decides, and a smooth frame does not excuse holding more. Shedding
@@ -149,15 +140,7 @@ pub fn pressure(limit: u64, fps: f32) -> Pressure {
                 memory_limit::pressure_of_commit(commit, limit)
             });
     }
-    let pressure = memory_limit::pressure(limit);
-    needed(pressure, memory_limit::system_enforced(), fps)
-}
-
-fn needed(pressure: Pressure, enforced: bool, fps: f32) -> Pressure {
-    match pressure {
-        Pressure::Over { .. } if enforced && fps >= SLOW_FPS => Pressure::Steady,
-        pressure => pressure,
-    }
+    memory_limit::pressure(limit)
 }
 
 /// See [`memory_limit::can_shrink`].
@@ -301,19 +284,6 @@ pub fn run(command: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn under_a_cap_the_system_enforces_only_a_slow_game_gives_anything_up() {
-        const OVER: Pressure = Pressure::Over { keep: 0.8 };
-        assert_eq!(needed(OVER, true, 200.), Pressure::Steady);
-        assert_eq!(needed(OVER, true, 12.), OVER);
-        assert_eq!(
-            needed(OVER, false, 200.),
-            OVER,
-            "nothing else holds this game under"
-        );
-        assert_eq!(needed(Pressure::Room, true, 12.), Pressure::Room);
-    }
 
     const FAR_OVER: Pressure = Pressure::Over { keep: 0.125 };
     const OVER: Pressure = Pressure::Over { keep: 0.8 };
