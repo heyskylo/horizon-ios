@@ -194,6 +194,8 @@ pub(super) struct Draw {
     /// The pack's shadow program draws it into the shadow map too.
     pub shadow: bool,
     pub slot: u32,
+    /// End portal or gateway faces: drawn with `end_portal.png` bound as the atlas.
+    pub portal: bool,
 }
 
 /// Which entity runs a pack's shadow pass draws (2.4, 3.2).
@@ -375,38 +377,87 @@ impl PackEntities {
                     pack,
                     casts,
                     overlay,
+                    false,
                 );
             }
         }
         let first = spans.first().map_or(entities.len(), |s| s.start as usize);
-        rest.extend_from_slice(&entities[..first.min(entities.len())]);
+        extend_without_portals(rest, &entities[..first.min(entities.len())]);
+        let (mut other, mut portal_faces, mut beam_faces) = (Vec::new(), Vec::new(), Vec::new());
         for (span, range) in runs(entities.len(), spans) {
-            let run = &entities[range];
-            let program = program_of(&span).filter(|&p| {
-                plain(run) || (p == DESTROY && run.iter().all(|v| matches!(v.layer, 11 | 12)))
-            });
-            let pack = program.is_some_and(|p| drawn[p]) && !span.hidden;
-            let casts = program.is_some_and(|p| shadow.cast(&span, p));
-            if !pack && !span.hidden {
-                rest.extend_from_slice(run);
-            }
-            let Some(program) = program.filter(|_| (pack || casts) && !run.is_empty()) else {
-                continue;
+            let whole = &entities[range];
+            // A block entity's run can hold End portal faces and beams beside plain parts (an End
+            // gateway: its cube and its beam): each goes to its own program.
+            // Beacon beams come in a run of their own, at stage NONE (game.rs: no stage of 5.4
+            // is theirs), for gbuffers_beaconbeam.
+            let split = (program_of(&span) == Some(BLOCK) || span.stage == render_stage("NONE"))
+                && whole
+                    .chunks(4)
+                    .any(|q| matches!(q[0].layer & 0xffff, 6 | 9 | 10));
+            let parts: [(&[Vertex], Part); 3] = if split {
+                other.clear();
+                portal_faces.clear();
+                beam_faces.clear();
+                for quad in whole.chunks(4) {
+                    match quad[0].layer & 0xffff {
+                        9 | 10 => portal_faces.extend_from_slice(quad),
+                        6 => beam_faces.extend_from_slice(quad),
+                        _ => other.extend_from_slice(quad),
+                    }
+                }
+                [
+                    (&other, Part::Plain),
+                    (&portal_faces, Part::Portal),
+                    (&beam_faces, Part::Beam),
+                ]
+            } else {
+                [(whole, Part::Plain), (&[], Part::Plain), (&[], Part::Plain)]
             };
-            let start = self.scratch.len() as u32;
-            self.scratch.extend_from_slice(run);
-            if program == DESTROY {
-                project_cracks(&mut self.scratch[start as usize..], crack.0, crack.1);
+            for (run, part) in parts {
+                if run.is_empty() {
+                    continue;
+                }
+                let program = match part {
+                    Part::Portal => Some(BLOCK),
+                    Part::Beam => Some(BEAM),
+                    Part::Plain => program_of(&span).filter(|&p| {
+                        plain(run)
+                            || (p == DESTROY && run.iter().all(|v| matches!(v.layer, 11 | 12)))
+                    }),
+                };
+                let pack = program.is_some_and(|p| drawn[p]) && !span.hidden;
+                let casts = part == Part::Plain && program.is_some_and(|p| shadow.cast(&span, p));
+                if !pack && !span.hidden {
+                    extend_without_portals(rest, run);
+                }
+                let Some(program) = program.filter(|_| pack || casts) else {
+                    continue;
+                };
+                let start = self.scratch.len() as u32;
+                match part {
+                    Part::Beam => beam_segments(run, &mut self.scratch),
+                    _ => self.scratch.extend_from_slice(run),
+                }
+                if program == DESTROY {
+                    project_cracks(&mut self.scratch[start as usize..], crack.0, crack.1);
+                }
+                if part == Part::Portal {
+                    as_portal_texture(&mut self.scratch[start as usize..]);
+                }
+                let vertices = self.scratch.len() as u32 - start;
+                let overlay = self.scratch[start as usize].layer & 0xffff;
+                let portal = part == Part::Portal;
+                self.push_draw(
+                    span,
+                    posed + start,
+                    vertices,
+                    program,
+                    pack,
+                    casts,
+                    overlay,
+                    portal,
+                );
             }
-            self.push_draw(
-                span,
-                posed + start,
-                run.len() as u32,
-                program,
-                pack,
-                casts,
-                run[0].layer & 0xffff,
-            );
         }
         if self.draws.is_empty() && posed == 0 {
             return;
@@ -453,6 +504,7 @@ impl PackEntities {
         pack: bool,
         casts: bool,
         overlay: u32,
+        portal: bool,
     ) {
         let (entity_id, block_id) = match program {
             BLOCK => (0, span.id),
@@ -476,6 +528,7 @@ impl PackEntities {
             pack,
             shadow: casts,
             slot: self.draws.len() as u32,
+            portal,
         });
     }
 }
@@ -504,13 +557,104 @@ fn plain(run: &[Vertex]) -> bool {
         .all(|v| !matches!(v.layer & 0xffff, 2 | 4 | 6 | 9 | 10 | 11 | 12 | 34))
 }
 
+/// What part of a block entity's run goes to which program (`prepare`).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Part {
+    Plain,
+    Portal,
+    Beam,
+}
+
+/// Beam faces (`block_entity_render::beam`: layer 6, v counting the sprite's repeats up the
+/// beam, the sprite's v range in the light bytes) for a pack: each face cut where its texture
+/// repeats, so every piece holds one copy of the sprite in plain atlas coordinates (at most 64
+/// pieces a face; a taller beam stretches its copies), white light and its colour kept.
+fn beam_segments(run: &[Vertex], out: &mut Vec<Vertex>) {
+    for quad in run.as_chunks::<4>().0 {
+        let wrap = quad[0].light;
+        let (v0, size) = (
+            (wrap & 65535) as f32 / 65535.0,
+            (wrap >> 16) as f32 / 65535.0,
+        );
+        // Corners 0 and 3 at the beam's end (v1), 1 and 2 at its start (v2); 0 and 1 on one
+        // side, 2 and 3 on the other.
+        let (v1, v2) = (quad[0].uv[1], quad[1].uv[1]);
+        if (v1 - v2).abs() < 1e-6 {
+            continue;
+        }
+        let (lo, hi) = (v1.min(v2), v1.max(v2));
+        let first = lo.floor();
+        let repeats = (hi.ceil() - first).max(1.0);
+        let step = (repeats / 64.0).ceil().max(1.0);
+        let pieces = (repeats / step).ceil() as u32;
+        let at = |side: usize, v: f32| {
+            let (a, b) = if side == 0 {
+                (quad[1], quad[0])
+            } else {
+                (quad[2], quad[3])
+            };
+            let t = (v - v2) / (v1 - v2);
+            glam::Vec3::from(a.pos)
+                .lerp(glam::Vec3::from(b.pos), t)
+                .to_array()
+        };
+        for k in 0..pieces {
+            let base = first + k as f32 * step;
+            let (a, b) = (base.max(lo), (base + step).min(hi));
+            if b <= a {
+                continue;
+            }
+            // The end-side corners take the piece's bound nearer v1.
+            let (end_v, start_v) = if v1 > v2 { (b, a) } else { (a, b) };
+            for (i, corner) in quad.iter().enumerate() {
+                let side = usize::from(i >= 2);
+                let v = if i == 0 || i == 3 { end_v } else { start_v };
+                let mut out_v = *corner;
+                out_v.pos = at(side, v);
+                out_v.uv = [corner.uv[0], v0 + (v - base) / step * size];
+                out_v.layer = 0;
+                out_v.light = 0x0000_f0f0;
+                out.push(out_v);
+            }
+        }
+    }
+}
+
+/// `run` added to Horizon's own draw without End portal faces: under a shader pack Horizon's
+/// entity shader would put its screen-projected starfield into the pack's buffers as if they
+/// were its own frame (misplaced where the pack renders at another size), so a portal the pack
+/// does not draw (its programs not there, or not yet) is better left out.
+fn extend_without_portals(rest: &mut Vec<Vertex>, run: &[Vertex]) {
+    for quad in run.chunks(4) {
+        if !quad.iter().all(|v| matches!(v.layer & 0xffff, 6 | 9 | 10)) {
+            rest.extend_from_slice(quad);
+        }
+    }
+}
+
+/// End portal faces for a pack's `gbuffers_block` (block entities): each face textured with the
+/// whole of `end_portal.png`, which the draw binds as the atlas (a texture of its own, so a
+/// pack's own portal effect can wrap it), white, at full light; the pack tells the portal by its
+/// `blockEntityId`.
+fn as_portal_texture(run: &mut [Vertex]) {
+    const CORNERS: [[f32; 2]; 4] = [[0.0, 0.0], [0.0, 1.0], [1.0, 1.0], [1.0, 0.0]];
+    for (i, v) in run.iter_mut().enumerate() {
+        v.uv = CORNERS[i % 4];
+        v.layer = 0;
+        v.color = 0xFFFF_FFFF;
+        v.light = 0x0000_f0f0;
+    }
+}
+
 /// The programs of entity runs, in the order they draw.
 pub const ENTITY: usize = 0;
 pub const BLOCK: usize = 1;
 pub const TRANSLUCENT: usize = 2;
 pub const PARTICLE: usize = 3;
 pub const DESTROY: usize = 4;
-pub const PROGRAMS: usize = 5;
+/// Beacon and End gateway beams (`gbuffers_beaconbeam`).
+pub const BEAM: usize = 5;
+pub const PROGRAMS: usize = 6;
 
 /// Which program draws `span`'s run, given which of them (or their fallbacks) the pack has;
 /// `None`: Horizon draws it.
@@ -587,11 +731,11 @@ mod tests {
         assert_eq!(drawn_by_pack(&spans[0], all), Some(ENTITY));
         assert_eq!(drawn_by_pack(&spans[1], all), Some(PARTICLE));
         assert_eq!(
-            drawn_by_pack(&spans[1], [true, true, true, false, true]),
+            drawn_by_pack(&spans[1], [true, true, true, false, true, true]),
             None
         );
         assert_eq!(
-            drawn_by_pack(&spans[2], [true, false, true, true, true]),
+            drawn_by_pack(&spans[2], [true, false, true, true, true, true]),
             None
         );
         assert_eq!(drawn_by_pack(&spans[2], all), Some(BLOCK));
@@ -651,6 +795,103 @@ fn project_cracks(vertices: &mut [Vertex], sprite: [f32; 4], atlas: [u32; 2]) {
             v.layer = 0;
             v.light = 0x0000_f0f0;
         }
+    }
+}
+
+#[cfg(test)]
+mod portal_beam_tests {
+    use super::*;
+
+    fn quad(layer: u32, light: u32, corners: [([f32; 3], [f32; 2]); 4]) -> [Vertex; 4] {
+        corners.map(|(pos, uv)| Vertex {
+            pos,
+            uv,
+            layer,
+            color: 0xFF20_40FF,
+            light,
+            ..bytemuck::Zeroable::zeroed()
+        })
+    }
+
+    #[test]
+    fn a_beam_face_becomes_one_sprite_copy_per_repeat() {
+        // `block_entity_render::beam`'s corner order: 0 and 3 at the end (v1), 1 and 2 at the
+        // start (v2); the sprite's v range (0.25, height 0.5) in the light bytes.
+        let wrap = (0.25f32 * 65535.0).round() as u32 | ((0.5f32 * 65535.0).round() as u32) << 16;
+        let face = quad(
+            6,
+            wrap,
+            [
+                ([0.0, 3.0, 0.0], [0.9, 3.0]),
+                ([0.0, 0.0, 0.0], [0.9, 0.0]),
+                ([1.0, 0.0, 0.0], [0.1, 0.0]),
+                ([1.0, 3.0, 0.0], [0.1, 3.0]),
+            ],
+        );
+        let mut out = Vec::new();
+        beam_segments(&face, &mut out);
+        assert_eq!(out.len(), 12, "three repeats, three pieces");
+        for (k, piece) in out.chunks(4).enumerate() {
+            let (bottom, top) = (k as f32, k as f32 + 1.0);
+            assert_eq!([piece[0].pos[1], piece[1].pos[1]], [top, bottom]);
+            assert_eq!([piece[2].pos[1], piece[3].pos[1]], [bottom, top]);
+            for v in piece {
+                assert!((0.25 - 1e-4..=0.75 + 1e-4).contains(&v.uv[1]), "{:?}", v.uv);
+                assert_eq!(v.layer, 0);
+                assert_eq!(v.light, 0x0000_f0f0);
+                assert_eq!(v.color, 0xFF20_40FF);
+            }
+            assert!((piece[0].uv[1] - 0.75).abs() < 1e-4 && (piece[1].uv[1] - 0.25).abs() < 1e-4);
+            assert_eq!([piece[0].uv[0], piece[2].uv[0]], [0.9, 0.1]);
+        }
+    }
+
+    #[test]
+    fn a_very_tall_beam_is_cut_into_at_most_64_pieces() {
+        let face = quad(
+            6,
+            0xFFFF_0000,
+            [
+                ([0.0, 2000.0, 0.0], [1.0, 2000.0]),
+                ([0.0, 0.0, 0.0], [1.0, 0.0]),
+                ([1.0, 0.0, 0.0], [0.0, 0.0]),
+                ([1.0, 2000.0, 0.0], [0.0, 2000.0]),
+            ],
+        );
+        let mut out = Vec::new();
+        beam_segments(&face, &mut out);
+        assert!(out.len() / 4 <= 64, "{} pieces", out.len() / 4);
+        let top = out.iter().map(|v| v.pos[1]).fold(f32::MIN, f32::max);
+        let bottom = out.iter().map(|v| v.pos[1]).fold(f32::MAX, f32::min);
+        assert_eq!(
+            (bottom, top),
+            (0.0, 2000.0),
+            "the pieces still span the whole beam"
+        );
+    }
+
+    #[test]
+    fn portal_faces_take_the_whole_portal_texture_at_full_light() {
+        let mut face = quad(9, 0, [([0.0; 3], [0.0; 2]); 4]).to_vec();
+        as_portal_texture(&mut face);
+        let uvs: Vec<[f32; 2]> = face.iter().map(|v| v.uv).collect();
+        assert_eq!(uvs, [[0.0, 0.0], [0.0, 1.0], [1.0, 1.0], [1.0, 0.0]]);
+        assert!(
+            face.iter()
+                .all(|v| v.layer == 0 && v.color == 0xFFFF_FFFF && v.light == 0x0000_f0f0)
+        );
+    }
+
+    #[test]
+    fn horizon_keeps_no_portal_or_beam_face_under_a_pack() {
+        let mut run = Vec::new();
+        for layer in [0, 6, 9, 10, 2] {
+            run.extend(quad(layer, 0, [([0.0; 3], [0.0; 2]); 4]));
+        }
+        let mut rest = Vec::new();
+        extend_without_portals(&mut rest, &run);
+        let kept: Vec<u32> = rest.chunks(4).map(|q| q[0].layer).collect();
+        assert_eq!(kept, [0, 2]);
     }
 }
 
