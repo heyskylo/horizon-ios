@@ -68,6 +68,13 @@ jobs:
           else
             python tools/check_public_tree.py --history
           fi
+      # Some Python tests compile Rust with a bare `rustc`: GitHub's image has a default toolchain, our runners' own
+      # rustup homes may not.
+      - name: Default Rust toolchain for the Python tests
+        if: runner.environment != 'github-hosted'
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt --component clippy
+          rustup default stable
       - name: Test offline research tooling
         run: python -m unittest discover -s tests -v
       - name: Install Rust toolchain and the ALSA and udev headers the client links against
