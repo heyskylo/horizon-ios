@@ -165,39 +165,56 @@ pub fn render(source: &str, t: &Theme) -> AnyElement {
         });
         StyledText::new(SharedString::from(text)).with_highlights(highlights.collect::<Vec<_>>())
     };
+    // The glass look sets notes as the mockup's: 14 px on 1.55 at 75 %, lists with square
+    // bullets, 6 px apart.
+    let glass = t.dark;
     let mut column = div()
         .flex()
         .flex_col()
-        .gap(px(8.))
+        .gap(px(if glass { 6. } else { 8. }))
         .text_size(px(crate::theme::UI.px))
-        .line_height(px(22.))
+        .line_height(px(if glass { 21.7 } else { 22. }))
         .text_color(t.ink_soft);
     for block in blocks {
         column = column.child(match block {
             Block::Heading(level, text, spans) => div()
                 .pt(px(if level <= 2 { 12. } else { 6. }))
                 .text_size(px(if level <= 2 { 16. } else { 14. }))
-                .font_weight(FontWeight::MEDIUM)
+                .font_weight(if glass {
+                    FontWeight::SEMIBOLD
+                } else {
+                    FontWeight::MEDIUM
+                })
                 .text_color(t.ink)
                 .child(styled(text, spans))
                 .into_any_element(),
             Block::Paragraph(text, spans) => div().child(styled(text, spans)).into_any_element(),
             Block::Item(depth, number, text, spans) => div()
                 .flex()
-                .gap(px(8.))
+                .gap(px(if glass { 12. } else { 8. }))
                 .pl(px(depth as f32 * 16.))
-                .child(
-                    div().flex_none().w(px(16.)).text_color(t.muted).child(
+                .child(match number {
+                    // The mockup's bullet: a 5 px square, white at 40 %.
+                    None if glass => div()
+                        .flex_none()
+                        .mt(px(8.5))
+                        .size(px(5.))
+                        .bg(gpui::white().opacity(0.4)),
+                    _ => div().flex_none().w(px(16.)).text_color(t.muted).child(
                         number
                             .map(|n| format!("{n}."))
                             .unwrap_or_else(|| "–".into()),
                     ),
-                )
+                })
                 .child(div().flex_1().min_w_0().child(styled(text, spans)))
                 .into_any_element(),
             Block::Code(code) => div()
                 .p(px(16.))
-                .rounded(px(crate::theme::RADIUS_PLATE))
+                .rounded(px(if glass {
+                    12.
+                } else {
+                    crate::theme::RADIUS_PLATE
+                }))
                 .bg(t.plate_soft)
                 .font_family(crate::theme::MONO)
                 .text_size(px(12.))
