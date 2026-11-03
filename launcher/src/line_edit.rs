@@ -508,7 +508,22 @@ pub(super) fn content(
     placeholder: &'static str,
 ) -> Div {
     if edit.text.is_empty() && !focused {
-        return div().text_color(t.muted).child(tr(placeholder));
+        // The glass look's placeholders are white at 40 % (`.hzl input::placeholder`).
+        let color = if t.dark {
+            gpui::white().opacity(horizon_theme::glass::ink::PLACEHOLDER)
+        } else {
+            t.muted
+        };
+        return div().text_color(color).child(tr(placeholder));
+    }
+    // A focused empty glass field keeps its placeholder after the caret, as a browser's does.
+    if edit.text.is_empty() && t.dark {
+        let color = gpui::white().opacity(horizon_theme::glass::ink::PLACEHOLDER);
+        return div()
+            .flex()
+            .items_center()
+            .child(div().flex_none().w(px(1.)).h(px(14.)).bg(t.ink))
+            .child(div().text_color(color).child(tr(placeholder)));
     }
     let (before, selected, after, caret_first) = edit.view(whole);
     let text = |s: String| {

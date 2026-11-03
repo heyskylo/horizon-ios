@@ -1675,6 +1675,20 @@ impl Game<'_> {
         }
     }
 
+    /// Update the live movement check's flight policy.
+    pub(super) fn set_allow_flight(&mut self, allow: bool) {
+        if let Some(host) = self.lan.as_mut() {
+            host.hub.config.allow_flight = allow;
+        }
+    }
+
+    /// Update whether status responses include online player names.
+    pub(super) fn set_hide_online_players(&mut self, hide: bool) {
+        if let Some(host) = self.lan.as_ref() {
+            host.hub.lan.shared.set_hide_online_players(hide);
+        }
+    }
+
     /// New command access and game mode forcing settings of the open world.
     pub(super) fn lan_apply_settings(&mut self, guest_commands: bool, force: bool) {
         if let Some(server) = &self.integrated {
