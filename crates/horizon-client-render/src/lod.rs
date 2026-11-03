@@ -1005,6 +1005,18 @@ struct Shared {
     approximate: AtomicBool,
     /// On small machines, hold queued far meshing while near terrain loads.
     mesh_held: AtomicBool,
+    /// The near terrain is loading: the far threads step behind it
+    /// (`horizon_threads::far_terrain_behind`) and come back once it is in.
+    near_loading: AtomicBool,
+}
+/// Puts the calling far terrain thread behind the near terrain while it
+/// loads, and back once it is in. `behind`: where the thread is now.
+fn step_behind(shared: &Shared, behind: &mut bool) {
+    let loading = shared.near_loading.load(Ordering::Relaxed);
+    if loading != *behind {
+        horizon_threads::far_terrain_behind(loading);
+        *behind = loading;
+    }
 }
 /// A background worker, sampling and meshing threads, and a bounded queue of
 /// sample jobs (`sample_jobs`). Only the current view's quadtree and a
@@ -1133,6 +1145,7 @@ impl Lod {
             stop: AtomicBool::new(false),
             approximate: AtomicBool::new(false),
             mesh_held: AtomicBool::new(false),
+            near_loading: AtomicBool::new(false),
         });
         let worker = shared.clone();
         let (tx, results) = mpsc::channel();
@@ -1153,6 +1166,7 @@ impl Lod {
                         .name("Far meshing".into())
                         .spawn(move || {
                             horizon_threads::far_terrain_current();
+                            let mut behind = true;
                             let mut mesher = mesh::Mesher::default();
                             loop {
                                 let job = {
@@ -1183,6 +1197,7 @@ impl Lod {
                                     }
                                     continue;
                                 }
+                                step_behind(&shared, &mut behind);
                                 let keep_finer = !job.finer.is_empty();
                                 let input = job.snapshot.mesh_input(job.key, job.finer);
                                 let columns = input.columns();
@@ -1239,6 +1254,7 @@ impl Lod {
                     .spawn(move || {
                         // Ticks and frames come first (horizon_threads).
                         horizon_threads::far_terrain_current();
+                        let mut behind = true;
                         let mut sampler = source.sampler();
                         let count = sampling_threads(cores);
                         let mut sampling = Vec::new();
@@ -1253,6 +1269,7 @@ impl Lod {
                                     .name("Far sampling".into())
                                     .spawn(move || {
                                         horizon_threads::far_terrain_current();
+                                        let mut behind = true;
                                         loop {
                                             let key = {
                                                 let mut jobs = shared.jobs.lock().unwrap();
@@ -1275,6 +1292,7 @@ impl Lod {
                                                     jobs = shared.wake.wait(jobs).unwrap();
                                                 }
                                             };
+                                            step_behind(&shared, &mut behind);
                                             let [x, _, z] = key.origin();
                                             sample.set_approximate(
                                                 shared.approximate.load(Ordering::Relaxed),
@@ -1340,6 +1358,7 @@ impl Lod {
                                 }
                             };
                             let Some(job) = job else { continue };
+                            step_behind(&worker, &mut behind);
                             let done = match job {
                                 Job::Observe(key) => {
                                     let chunk = worker.observed.lock().unwrap().remove(&key);
@@ -2085,6 +2104,7 @@ impl Lod {
             self.held_sample_at = std::time::Instant::now();
         }
         self.near_loading = loading;
+        self.shared.near_loading.store(loading, Ordering::Relaxed);
         let held = self.held();
         if self.shared.mesh_held.swap(held, Ordering::Release) && !held {
             self.shared.mesh_wake.notify_all();
