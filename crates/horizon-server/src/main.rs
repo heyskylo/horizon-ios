@@ -11,6 +11,7 @@ mod discord;
 mod engine;
 mod events;
 mod http;
+mod import_resources;
 mod init;
 mod lists;
 mod management;
@@ -90,6 +91,9 @@ Usage: horizon-server [--dir DIR] <command>
               a running server takes the difficulty, default game mode and whitelist at once, the rest
               at its next start
   import FILE Write server.toml from a vanilla server.properties
+  import-resources DIR
+              Copy game files prepared elsewhere (by the launcher or horizon-prepare) into place, after
+              checking they are complete and for this Minecraft version; the old copy stays on failure
   op NAME, deop NAME
   whitelist on|off|list, whitelist add|remove NAME
               Who may join (on the running server, or in the files when it is stopped)
@@ -155,6 +159,7 @@ fn main() -> ExitCode {
             }
             None => Err("restore needs a backup (`horizon-server backups` lists them)".into()),
         },
+        Some("import-resources") => import_resources::command(&dir, &args[1..]),
         Some("import") => import(&dir, &args[1..]),
         Some("config") => settings::command(&dir, &args[1..]),
         Some("update") => update::command(&dir, &args[1..]),

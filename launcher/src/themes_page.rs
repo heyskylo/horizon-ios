@@ -378,6 +378,7 @@ impl Launcher {
                     this.accent_strip = false;
                     this.background_error = None;
                     this.theme = this.settings_theme(window);
+                    crate::glass_toast::say(tr("Launcher settings are back to their defaults"));
                     cx.notify();
                 }))
                 .into_any_element(),

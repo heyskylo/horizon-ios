@@ -81,7 +81,8 @@ Add `--minecraft-dir PATH` if your launcher keeps the game elsewhere. The prepar
 `game-files`, which updates keep.
 
 **On a headless machine** (a VPS, a home server), prepare on your own computer instead, with the launcher or
-`horizon-prepare`, and copy the prepared `26.3` folder to the server: into
+`horizon-prepare`, and copy the prepared `26.3` folder to the server with `horizon-server import-resources DIR` (it checks the
+folder and its version first), or by hand: into
 `~/.local/share/horizon/game-files/horizon-client/26.3`, or into `resources/` in the server folder, or anywhere
 `[engine] resources` in `server.toml` names. A folder copied this way needs release v2026.10.17.07 or
 newer: older ones don't keep `registries.json` and `commands.json` with the prepared files, and the
@@ -536,6 +537,20 @@ horizon-server service install
 The service runs `horizon-server run` through the installed `current` release, so an update applies at the
 next restart. `service print` shows what it would install, `service uninstall` removes it and leaves the server
 folder alone.
+
+## Hosting panels (Pterodactyl)
+
+The egg installs the server build of the current Nightly (nothing of Mojang's) and runs `horizon-server`
+through `packaging/server/panel-start.sh`: the first start writes `server.toml` from the panel's settings, and the
+port always follows the panel's allocation. Prepare the game files on your own computer (section 2) and upload the
+prepared `26.3` folder's contents to `resources/` in the server's files. Set the EULA setting to true before the
+first start: until then the server stops and says why. The settings (world, seed, whitelist, players, operator,
+online mode) are read on the first start; afterwards edit `server.toml`. The panel's Stop sends `stop`, which saves
+the world first.
+
+Import `packaging/server/pterodactyl-egg.json` under Nests. Its Docker image is
+`ghcr.io/ptero-eggs/yolks:debian`. The `HORIZON_VERSION` variable picks the release to install (`nightly`, or a tag);
+it is read at install and reinstall.
 
 ## 9. Docker (build it yourself)
 

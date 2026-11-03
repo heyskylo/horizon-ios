@@ -532,7 +532,7 @@ impl Launcher {
     pub(super) fn glass_topbar(&mut self, cx: &mut Context<Self>) -> Div {
         let t = self.theme;
         let mut tabs = div().flex().items_center().gap(px(4.)).min_w_0();
-        for (page, label, _) in Page::in_top_bar() {
+        for (page, label, _) in Page::in_top_bar(self.wardrobe_shown()) {
             tabs = tabs.child(
                 ui::tab(format!("nav-{label}"), tr(label), self.page == page, &t).on_click(
                     cx.listener(move |this, _: &ClickEvent, _, cx| {
@@ -695,6 +695,7 @@ impl Launcher {
             .px(px(32.))
             .pt(px(14.))
             .child(strip)
+            .children(self.toast_in_topbar())
             .child(
                 div()
                     .ml_auto()
@@ -874,7 +875,7 @@ impl Launcher {
                     move |this, _: &ClickEvent, _, cx| {
                         this.row_menu.open = None;
                         let _ = std::fs::create_dir_all(&home);
-                        cx.open_with_system(&home);
+                        crate::glass_toast::open(cx, &home);
                         cx.notify();
                     },
                 )),

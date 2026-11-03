@@ -163,10 +163,12 @@ pack exist ([stability.md](stability.md)).
 ## Not there yet
 
 Option values other than the defaults (the three stages run, with hot reload), then the overlay and lighting
-stages. `[displacement]`'s relief doesn't reach the shadow map yet: the flat faces cast there.
+stages.
 
 ## Changelog
 
+- 2026-11-03: API 0.1 (additions): with `[shadow]`, `[displacement]`'s grid casts into the shadow map in
+  the flat faces' place, so the relief shadows itself.
 - 2026-11-03: API 0.1 (additions): `[displacement]` draws: near the camera the faces with LabPBR relief are a
   grid moved by `displacement`, and `MaterialInput.displaced` says how much of it a point has.
 - 2026-11-03: API 0.1 (additions): the manifest's `[displacement]`, the material stage's

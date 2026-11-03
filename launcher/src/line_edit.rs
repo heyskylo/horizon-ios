@@ -507,6 +507,18 @@ pub(super) fn content(
     mask: bool,
     placeholder: &'static str,
 ) -> Div {
+    content_with(edit, t, focused, whole, mask, tr(placeholder).into())
+}
+
+/// [`content`] with a placeholder already translated (one with a value in it).
+pub(super) fn content_with(
+    edit: &LineEdit,
+    t: &theme::Theme,
+    focused: bool,
+    whole: bool,
+    mask: bool,
+    placeholder: gpui::SharedString,
+) -> Div {
     if edit.text.is_empty() && !focused {
         // The glass look's placeholders are white at 40 % (`.hzl input::placeholder`).
         let color = if t.dark {
@@ -514,7 +526,7 @@ pub(super) fn content(
         } else {
             t.muted
         };
-        return div().text_color(color).child(tr(placeholder));
+        return div().text_color(color).child(placeholder);
     }
     // A focused empty glass field keeps its placeholder after the caret, as a browser's does.
     if edit.text.is_empty() && t.dark {
@@ -523,7 +535,7 @@ pub(super) fn content(
             .flex()
             .items_center()
             .child(div().flex_none().w(px(1.)).h(px(14.)).bg(t.ink))
-            .child(div().text_color(color).child(tr(placeholder)));
+            .child(div().text_color(color).child(placeholder));
     }
     let (before, selected, after, caret_first) = edit.view(whole);
     let text = |s: String| {
