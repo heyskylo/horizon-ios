@@ -917,8 +917,11 @@ fn block_animate_tick(
             }
             let r = engine.random();
             if spawn_particles && next_int(r, 5) == 0 {
-                let count = next_int(r, 1) + 1;
-                for _ in 0..count {
+                // Vanilla's `for (int i = 0; i < random.nextInt(1) + 1; i++)`
+                // asks the bound again on every pass, so the check after the
+                // body is a second draw.
+                let mut i = 0;
+                while i < next_int(engine.random(), 1) + 1 {
                     let r = engine.random();
                     let v = [
                         f64::from(r.next_float() / 2.0),
@@ -926,6 +929,7 @@ fn block_animate_tick(
                         f64::from(r.next_float() / 2.0),
                     ];
                     add(engine, T::Lava, [fx + 0.5, fy + 0.5, fz + 0.5], v);
+                    i += 1;
                 }
             }
         }
