@@ -625,6 +625,8 @@ pub(super) struct Remote {
     /// Whether the player is the first passenger of its vehicle, the one
     /// `getControllingPassenger` names.
     pub(super) first_passenger: bool,
+    /// Server-authoritative passenger order, including riders not yet rendered.
+    pub(super) passengers: HashMap<u32, Vec<i32>>,
     /// Item entities waiting for their item data: where they are and their
     /// motion.
     pending_items: HashMap<i32, ([f64; 3], Vec3)>,
@@ -1123,6 +1125,7 @@ impl Game<'_> {
             head_lerps: HashMap::new(),
             ghast_dismount: None,
             first_passenger: false,
+            passengers: HashMap::new(),
             pending_items: HashMap::new(),
             health: (20.0, 20, 5.0),
             flash_on_set_health: false,
@@ -2676,7 +2679,8 @@ impl Game<'_> {
         // copy in the mob list draws nothing: given the move, it kept the
         // dragon where it spawned (#2083).
         let dragon = self.dragon.as_ref().is_some_and(|d| d.id as i32 == id);
-        let driven = self.driven_mount().is_some_and(|m| m.id as i32 == id);
+        let driven = self.driven_mount().is_some_and(|m| m.id as i32 == id)
+            || self.remote_controls_boat(id as u32);
         let mob = self
             .mob_index
             .get_mut(&mut self.mobs, id as u32)
@@ -2704,6 +2708,7 @@ impl Game<'_> {
                 // client moves (isLocalInstanceAuthoritative) keeps its own
                 // position, and no steps pile up for after the ride.
                 r.stepped.remove(&id);
+                r.lerps.remove(&id);
                 return;
             }
             if let Some(m) = mob {
@@ -2913,6 +2918,9 @@ impl Game<'_> {
             r.stepped.remove(&id);
             r.head_lerps.remove(&id);
             r.pending_items.remove(&id);
+            for passengers in r.passengers.values_mut() {
+                passengers.retain(|p| *p != id);
+            }
         }
     }
     /// Map a menu slot to Horizon's inventory screen slot ids.

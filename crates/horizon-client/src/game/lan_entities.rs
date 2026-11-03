@@ -21,6 +21,16 @@ pub(super) fn assign_entity_id(next: &mut u32, id: &mut u32) -> u32 {
     *id
 }
 
+/// The server connection order is not the vehicle's boarding order.
+fn ordered_vehicle_players(guests: &[(u64, u32, i32)]) -> Vec<(u32, i32)> {
+    let mut guests = guests.to_vec();
+    guests.sort_by_key(|(order, _, _)| *order);
+    guests
+        .into_iter()
+        .map(|(_, vehicle, rider)| (vehicle, rider))
+        .collect()
+}
+
 impl Game<'_> {
     /// `Entity.nextEntityId`: the id a new entity takes from the one counter.
     pub(super) fn take_entity_id(&mut self) -> u32 {
@@ -133,10 +143,10 @@ impl Game<'_> {
 
     /// Who rides what (`Entity.getPassengers`): the players in their vehicles and
     /// mobs on mobs.
-    pub(super) fn lan_riding(&self, guests: &[(u32, i32)], riding: &mut Riding) {
+    pub(super) fn lan_riding(&self, guests: &[(u64, u32, i32)], riding: &mut Riding) {
         riding.clear();
         // The server's players in their boats and minecarts.
-        for &(vehicle, guest) in guests {
+        for (vehicle, guest) in ordered_vehicle_players(guests) {
             riding.add(vehicle as i32, guest);
         }
         for m in self.mobs.iter().filter(|m| !m.removed) {
@@ -817,6 +827,23 @@ fn arrow_meta(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn vehicle_packets_follow_boarding_not_connection_order() {
+        // The host connected first but boarded after the guest.
+        assert_eq!(
+            super::ordered_vehicle_players(&[(20, 7, 10), (10, 7, 20)]),
+            vec![(7, 20), (7, 10)]
+        );
+        assert_eq!(
+            super::ordered_vehicle_players(&[(10, 7, 10), (20, 7, 20)]),
+            vec![(7, 10), (7, 20)]
+        );
+        assert_eq!(
+            super::ordered_vehicle_players(&[(20, 7, 20)]),
+            vec![(7, 20)]
+        );
+    }
+
     use super::*;
 
     #[test]

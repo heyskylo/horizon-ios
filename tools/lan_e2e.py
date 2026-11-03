@@ -12415,5 +12415,93 @@ CHECKS += ['damage-attacker']
 CHECK_FNS['damage-attacker'] = check_damage_attacker
 
 
+def check_boat_shared_driver(host, guest, out):
+    """Both windows agree on boarding order; only the first rider drives, then control transfers."""
+    x, _, z = map(math.floor, pos_of(host))
+    y = 100
+    tag = 'shared_boat_regression'
+    result = {}
+    host('command', command=f'fill {x-12} {y-1} {z-12} {x+12} {y-1} {z+30} minecraft:stone')
+    host('command', command=f'fill {x-12} {y} {z-12} {x+12} {y+5} {z+30} minecraft:air')
+
+    def current(player, boat_id):
+        return next(o for o in player('status')['objects'] if o['id'] == boat_id)
+
+    def seat(player, boat_id, expected, controlling):
+        boat = current(player, boat_id)
+        assert boat['passenger_seat'] == expected, (player.name, boat)
+        assert boat['controlling'] == controlling, (player.name, boat)
+        p = pos_of(player)
+        a = math.radians(boat['yaw'])
+        dx, dz = p[0] - boat['position'][0], p[2] - boat['position'][2]
+        forward = -dx * math.sin(a) + dz * math.cos(a)
+        wanted = 0.0 if len(boat['passengers']) == 1 else (0.2 if expected == 0 else -0.6)
+        assert abs(forward - wanted) < 0.06, (player.name, forward, wanted, p, boat)
+        return boat
+
+    try:
+        for first, second in [(host, guest), (guest, host)]:
+            for kind in ['oak_boat', 'bamboo_raft']:
+                label = first.name + '-first-' + kind
+                host('command', command=f'kill @e[tag={tag}]')
+                for player, side in [(first, -1), (second, 1)]:
+                    player.raw('release')
+                    player('command', command='gamemode survival')
+                    player('command', command='clear @s')
+                    player('command', command=f'tp @s {x+0.5+side*2} {y} {z+0.5} 0 0')
+                host('command', command=f'summon minecraft:{kind} {x+0.5} {y} {z+0.5} {{Tags:["{tag}"]}}')
+                first.wait(20)
+                found = [o for o in first('status')['objects'] if o['kind'].endswith(kind)
+                         and abs(o['position'][0] - x - 0.5) < 1]
+                assert len(found) == 1, found
+                bid = found[0]['id']
+                # Aim at the near rim, so the existing rider cannot intercept the ray.
+                for player, side in [(first, -1), (second, 1)]:
+                    b = current(player, bid)
+                    px, py, pz = b['position']
+                    player.raw('look-at', px + side * 0.55, py + 0.15, pz)
+                    player.raw('mouse', 'right', 'click')
+                    player.wait(15)
+                    assert player('status')['riding'] == bid, (label, player.name, player('status'))
+                first.wait(20)
+                a, b = seat(first, bid, 0, True), seat(second, bid, 1, False)
+                assert a['passengers'] == b['passengers'] and len(a['passengers']) == 2
+                before = a['position']
+                before_yaw = a['yaw']
+                second.script(['key w down', 'key d down', 'wait 25', 'key w up', 'key d up', 'wait 20'])
+                a, b = seat(first, bid, 0, True), seat(second, bid, 1, False)
+                assert math.dist(before, a['position']) < 0.08, (label, 'rear rider moved boat', before, a)
+                assert abs((a['yaw'] - before_yaw + 180) % 360 - 180) < 0.2, (label, 'rear rider turned boat', a)
+                assert math.dist(a['position'], b['position']) < 0.15, (label, 'rear prediction drift', a, b)
+                first.script(['key w down', 'key d down', 'wait 10', 'key d up', 'wait 15', 'key w up', 'wait 30'])
+                a, b = seat(first, bid, 0, True), seat(second, bid, 1, False)
+                moved = math.dist(before, a['position'])
+                assert moved > 0.4, (label, 'first rider cannot drive', moved)
+                assert math.dist(a['position'], b['position']) < 0.2, (label, a, b)
+                leave_vehicle(first, kind)
+                second.wait(15)
+                alone = seat(second, bid, 0, True)
+                assert len(alone['passengers']) == 1, alone
+                start = alone['position']
+                second.script(['key w down', 'wait 25', 'key w up', 'wait 30'])
+                transferred = current(second, bid)
+                after = math.dist(start, transferred['position'])
+                assert after > 0.4, (label, 'new first rider cannot drive', after)
+                assert math.dist(transferred['position'], current(first, bid)['position']) < 0.2
+                result[label] = {'initial_order': a['passengers'], 'driver_distance': moved,
+                                 'handoff_distance': after}
+                lab.write_json(out / 'shared-boat.json', result)
+                leave_vehicle(second, kind)
+    finally:
+        for player in (host, guest):
+            player.raw('release')
+        host('command', command=f'kill @e[tag={tag}]')
+    return result
+
+
+CHECKS += ['boat-shared-driver']
+CHECK_FNS['boat-shared-driver'] = check_boat_shared_driver
+
+
 if __name__ == '__main__':
     main()

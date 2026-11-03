@@ -22,7 +22,7 @@ AbstractBoat.onPassengerTurned	inline	crates/horizon-client/src/game/remote_vehi
 AbstractBoat.remove	inline	crates/horizon-client/src/game/boats.rs::Game::hurt_boat	destroyed boats eject mobs and drop the boat; gap: minor: no leash drop, since boats cannot be leashed here
 AbstractBoat.checkFallDamage	missing		minor: boats keep no fall distance; boats take no fall damage either way
 AbstractBoat.getPaddleState	port	crates/horizon-client/src/game/boats.rs::Boat::rowing_time	paddle flag, set only while a rider drives
-AbstractBoat.getControllingPassenger	inline	crates/horizon-client/src/game/boat_passengers.rs::Game::boat_contacts	a riding player is the controller; mobs never steer
+AbstractBoat.getControllingPassenger	inline	crates/horizon-client/src/game/remote_vehicles.rs::Game::remote_controls_boat	first server-ordered player passenger controls; server guest controls use boarding order
 AbstractBoat.setInput	inline	crates/horizon-client/src/game/lan_vehicles.rs::Game::guest_paddle_boat	the paddle packet's flags are the controller's input
 AbstractBoat.isUnderWater	port	crates/horizon-client/src/game/boats.rs::Boat::under_water	
 AbstractBoat.modifyPassengerFluidInteractionBox	inline	crates/horizon-client/src/motion/fluids.rs::MotionWorld::interaction_box	the ridden boat (RiddenBoat) is set on clients in remote.rs and for served players in lan_actions.rs; the passenger box keeps only the part above the boat's top

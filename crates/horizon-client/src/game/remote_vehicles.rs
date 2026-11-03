@@ -145,6 +145,29 @@ impl Game<'_> {
         })
     }
 
+    /// Seat and passenger count from the server, not from local render/spawn order.
+    pub(super) fn remote_passenger_seat(
+        &self,
+        vehicle: u32,
+        passenger: i32,
+    ) -> Option<(usize, usize)> {
+        let order = self.remote.as_ref()?.passengers.get(&vehicle)?;
+        order
+            .iter()
+            .position(|p| *p == passenger)
+            .map(|index| (index, order.len()))
+    }
+
+    /// Only the first passenger can predict and send this boat's movement.
+    pub(super) fn remote_controls_boat(&self, id: u32) -> bool {
+        self.riding == Some(id)
+            && self.boats.iter().any(|boat| boat.id == id)
+            && self.remote.as_ref().is_some_and(|r| {
+                self.remote_passenger_seat(id, r.entity_id)
+                    .is_some_and(|(seat, _)| seat == 0)
+            })
+    }
+
     /// `ClientPacketListener.handleSetEntityPassengersPacket`: who rides
     /// `vehicle` now. The local player gets in or out; mobs and other
     /// players sit where the server keeps them.
@@ -153,6 +176,20 @@ impl Game<'_> {
             return;
         };
         let vehicle_id = vehicle as u32;
+        let was_driving = self.remote_controls_boat(vehicle_id);
+        if let Some(r) = self.remote.as_mut() {
+            // startRiding also detaches a passenger from any previous vehicle.
+            for (&other, order) in &mut r.passengers {
+                if other != vehicle_id {
+                    order.retain(|id| !passengers.contains(id));
+                }
+            }
+            if passengers.is_empty() {
+                r.passengers.remove(&vehicle_id);
+            } else {
+                r.passengers.insert(vehicle_id, passengers.to_vec());
+            }
+        }
         for m in &mut self.mobs {
             // `Entity.isVehicle` (the saddle reins of a ridden horse): the
             // server sends no rider on the mob itself, only this list.
@@ -207,6 +244,9 @@ impl Game<'_> {
         } else if self.riding == Some(vehicle_id) {
             // The server takes the player out, then teleports it.
             self.riding = None;
+            if let Some(r) = self.remote.as_mut() {
+                r.first_passenger = false;
+            }
             if let Some(m) = self.mob_index.get_mut(&mut self.mobs, vehicle_id) {
                 m.rider = None;
             }
@@ -221,6 +261,13 @@ impl Game<'_> {
                     r.ghast_dismount = Some(vehicle_id);
                 }
             }
+        }
+        if was_driving != self.remote_controls_boat(vehicle_id)
+            && let Some(boat) = self.boats.iter_mut().find(|b| b.id == vehicle_id)
+        {
+            boat.input = [false; 4];
+            boat.delta_rotation = 0.0;
+            boat.velocity = Vec3::ZERO;
         }
     }
 
@@ -265,14 +312,17 @@ impl Game<'_> {
             // It steers with the input `LocalPlayer.rideTick` latched on the
             // previous tick, so the paddle packet describes the motion the
             // server is sent; this tick's keys are latched after it ticked.
-            let mut b = self.tick_boat(self.boats[i].clone(), true);
-            b.input = [keys.left, keys.right, keys.forward, keys.backward];
+            let mut b = self.boats[i].clone();
+            if self.remote_controls_boat(id) {
+                b = self.tick_boat(b, true);
+                b.input = [keys.left, keys.right, keys.forward, keys.backward];
+            }
             // positionRider: the seat turns with the boat; clampRotation.
             self.yaw += b.delta_rotation;
             let delta = (self.yaw - b.yaw + 180.0).rem_euclid(360.0) - 180.0;
             self.yaw += delta.clamp(-105.0, 105.0) - delta;
             self.boats[i] = b;
-            // In front of a mob that shares the boat.
+            // Use the server-assigned seat, including when another player drives.
             Some(self.player_boat_seat(i))
         } else {
             // Minecart.positionRider runs on the client after the cart tick.
@@ -331,6 +381,9 @@ impl Game<'_> {
         else {
             return Vec::new();
         };
+        if !self.remote_controls_boat(b.id) {
+            return Vec::new();
+        }
         vec![
             S::MoveVehicle(play::MoveVehicleRequest {
                 position: [b.position.x, b.position.y, b.position.z],
@@ -359,10 +412,8 @@ impl Game<'_> {
             m.velocity = Vec3::ZERO;
             return;
         }
-        let Some(b) = self
-            .riding
-            .and_then(|id| self.boats.iter_mut().find(|b| b.id == id))
-        else {
+        let driven = self.riding.filter(|id| self.remote_controls_boat(*id));
+        let Some(b) = driven.and_then(|id| self.boats.iter_mut().find(|b| b.id == id)) else {
             return;
         };
         b.previous = at;
@@ -391,8 +442,14 @@ impl Game<'_> {
     /// dragged by a column it is inside) and `tickBubbleColumn`'s wobble from
     /// the synched bubble time.
     pub(super) fn tick_remote_boat_bubbles(&mut self) {
+        let controller = self.riding.filter(|id| self.remote_controls_boat(*id));
+        self.tick_remote_boat_bubbles_for(controller);
+    }
+
+    /// The tick kernel also used by the vanilla ownership-transition harness.
+    pub(super) fn tick_remote_boat_bubbles_for(&mut self, controller: Option<u32>) {
         for i in 0..self.boats.len() {
-            let driven = self.riding == Some(self.boats[i].id);
+            let driven = controller == Some(self.boats[i].id);
             if !driven {
                 // `AbstractBoat.tick`: the non-authoritative copy carries no
                 // cached motion into the next time this player drives it.

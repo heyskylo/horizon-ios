@@ -16,7 +16,7 @@ use horizon_core::geometry::{Aabb, Vec3};
 pub(super) const BOARDING_COOLDOWN: i32 = 60;
 /// `Player.DEFAULT_VEHICLE_ATTACHMENT`: how far below the seat a player's
 /// feet are.
-const PLAYER_RIDING_OFFSET: f64 = 0.6;
+pub(super) const PLAYER_RIDING_OFFSET: f64 = 0.6;
 
 /// `Entity.isVehicle`: a player or a mob rides it.
 fn carries(m: &Mob) -> bool {
@@ -84,6 +84,9 @@ impl Game<'_> {
     }
     /// `getPassengers().size()` of boat `id`.
     pub(super) fn boat_passengers(&self, id: u32) -> usize {
+        if let Some(r) = &self.remote {
+            return r.passengers.get(&id).map_or(0, Vec::len);
+        }
         self.boat_players(id) + self.boat_mobs(id).len()
     }
     /// `AbstractBoat.canAddPassenger`: a seat is free and the boat is not
@@ -96,6 +99,11 @@ impl Game<'_> {
     /// mob.
     pub(super) fn player_boat_seat(&self, i: usize) -> Vec3 {
         let b = &self.boats[i];
+        if let Some(r) = &self.remote
+            && let Some((index, count)) = self.remote_passenger_seat(b.id, r.entity_id)
+        {
+            return b.seat(index, count, false, PLAYER_RIDING_OFFSET, false);
+        }
         let count = self.boat_players(b.id).max(1) + self.boat_mobs(b.id).len();
         b.seat(0, count, false, PLAYER_RIDING_OFFSET, false)
     }
@@ -355,7 +363,7 @@ impl Game<'_> {
                 continue;
             }
             let players = self.boat_players(id);
-            let count = players + mobs.len();
+            let count = self.boat_passengers(id);
             let b = &self.boats[i];
             let full = count == b.max_passengers();
             let delta = b.delta_rotation;
@@ -368,7 +376,9 @@ impl Game<'_> {
                     // Another player's too, on a server's client.
                     // AbstractBoat's box is 1.375 wide.
                     let offset = riders::vehicle_attachment(m, 1.375);
-                    let index = players + n;
+                    let (index, count) = self
+                        .remote_passenger_seat(id, m.id as i32)
+                        .unwrap_or((players + n, count));
                     // calculatePassengerBodyYRot.
                     let turn = match (animal && full, m.id.is_multiple_of(2)) {
                         (false, _) => 0.0,

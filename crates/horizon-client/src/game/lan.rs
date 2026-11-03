@@ -2253,11 +2253,12 @@ impl Game<'_> {
             let mut states = std::mem::take(&mut host.states);
             if has_guests {
                 self.lan_assign_ids();
-                let guests: Vec<(u32, i32)> = host
+                let guests: Vec<(u64, u32, i32)> = host
                     .hub
                     .guests
                     .iter()
-                    .filter_map(|g| Some((g.vehicle?, g.entity_id)))
+                    .filter(|g| host.hub.here(g))
+                    .filter_map(|g| Some((g.vehicle_order, g.vehicle?, g.entity_id)))
                     .collect();
                 self.lan_riding(&guests, &mut host.hub.riding);
                 self.lan_entities(&host.mob_players, &mut host.hub, &mut states, true, 0);

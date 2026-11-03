@@ -35,7 +35,7 @@ impl Game<'_> {
                     let boat = self.tick_boat(boat, true);
                     self.boats.push(boat);
                 }
-                self.tick_remote_boat_bubbles();
+                self.tick_remote_boat_bubbles_for(owned.then_some(1));
                 let boat = &self.boats[0];
                 steps.push(json!({
                     "owned": owned,

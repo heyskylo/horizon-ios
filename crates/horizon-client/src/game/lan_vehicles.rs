@@ -214,6 +214,38 @@ impl Game<'_> {
             .is_some_and(|h| h.hub.guests.iter().any(|g| g.vehicle == Some(vehicle)))
     }
 
+    /// Server positioning uses the same boarding order as SetPassengers and authority checks.
+    fn guest_boat_seat(&self, i: usize, host: &LanHost, conn: u32) -> Vec3 {
+        let boat = &self.boats[i];
+        let own = host
+            .hub
+            .guests
+            .iter()
+            .find(|g| g.conn == conn)
+            .map(|g| g.vehicle_order);
+        let mut index = 0;
+        let mut count = 0;
+        for g in host
+            .hub
+            .guests
+            .iter()
+            .filter(|g| g.vehicle == Some(boat.id))
+        {
+            count += 1;
+            if own.is_some_and(|order| g.vehicle_order < order) {
+                index += 1;
+            }
+        }
+        count += self.boat_mobs(boat.id).len();
+        boat.seat(
+            index,
+            count.max(1),
+            false,
+            super::boat_passengers::PLAYER_RIDING_OFFSET,
+            false,
+        )
+    }
+
     /// `Player.rideTick` for a server player, before its moves this tick:
     /// it stays in its seat, steers its minecart, or gets out.
     pub(super) fn guest_vehicle_tick(&mut self, host: &mut LanHost, conn: u32) {
@@ -262,7 +294,7 @@ impl Game<'_> {
         }
         // Getting out goes through leave_guest, which tells the client and
         // teleports it (ServerPlayer.dismountTo).
-        let seat = self.as_guest(host, conn, |game| {
+        let seat = self.as_guest_with_host(host, conn, |game, host| {
             // A cushion does not move: the rider sits on it until it sneaks
             // (`Cushion.removePassenger` plays the get-up sound).
             if game.cushions.iter().any(|c| Some(c.id) == game.riding) {
@@ -279,7 +311,7 @@ impl Game<'_> {
                     game.dismount(i);
                     return None;
                 }
-                let p = game.player_boat_seat(i);
+                let p = game.guest_boat_seat(i, host, conn);
                 return Some([p.x, p.y, p.z]);
             }
             // The minecart moves with the rider's input, and lets it out when
@@ -321,7 +353,7 @@ impl Game<'_> {
             .boats
             .iter()
             .position(|b| b.id == vehicle)
-            .map(|i| (self.boats[i].position, self.player_boat_seat(i)))
+            .map(|i| (self.boats[i].position, self.guest_boat_seat(i, host, conn)))
             .or_else(|| {
                 self.carts
                     .iter()
@@ -389,6 +421,9 @@ impl Game<'_> {
         }
         let owner = host.hub.singleplayer_owner == Some(g.uuid);
         let (vehicle, good) = (g.vehicle, g.vehicle_good);
+        if vehicle.is_some_and(|id| !self.guest_controls_vehicle(host, conn, id)) {
+            return;
+        }
         let back = |host: &mut LanHost, position: Vec3, yaw: f32| {
             let packet = play::MoveVehicle {
                 position: [position.x, position.y, position.z],
@@ -522,7 +557,7 @@ impl Game<'_> {
         b.previous_yaw = b.yaw;
         b.yaw = p.yaw;
         b.on_ground = p.on_ground;
-        let seat = self.player_boat_seat(i);
+        let seat = self.guest_boat_seat(i, host, conn);
         let g = &mut host.hub.guests[gi];
         g.previous_position = g.position;
         g.position = [seat.x, seat.y, seat.z];
