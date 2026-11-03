@@ -33,6 +33,18 @@ fn world_access(saves: &Path, folder: &str) -> crate::Result<(PathBuf, crate::sa
     Ok((world, lock))
 }
 
+/// Forbidden links for the world-open warning. Use the same Java-compatible
+/// allowlist as the access lock, so explicitly permitted links stay usable.
+pub fn symlinks(saves: &Path, folder: &str) -> crate::Result<Vec<PathBuf>> {
+    let world = world_path(saves, folder)?;
+    Ok(
+        crate::world_links::validate(&world, &saves.join("allowed_symlinks.txt"))?
+            .into_iter()
+            .map(|entry| entry.link)
+            .collect(),
+    )
+}
+
 pub fn rename(saves: &Path, folder: &str, name: &str) -> crate::Result<()> {
     let (world, _lock) = world_access(saves, folder)?;
     let path = world.join("level.dat");

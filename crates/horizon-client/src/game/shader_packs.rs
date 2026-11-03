@@ -8,7 +8,7 @@ use horizon_client::camera::CameraFluid;
 use horizon_client::gfx::pack_uniforms::{PackInputs, PlayerStatus};
 use horizon_client::shader_options::ShaderOptions;
 use horizon_client::text::Text;
-use horizon_shaders::{BlockIds, Macros, Pack, Properties, dimension_folder, load_post};
+use horizon_shaders::{BlockIds, Macros, Pack, Properties, dimension_folder_named, load_post};
 
 use super::{Dim, Game};
 use horizon_client::gfx::pack_draw::EntitySpan;
@@ -235,6 +235,7 @@ struct LoadKey {
     path: std::path::PathBuf,
     resources: std::path::PathBuf,
     dimension: i32,
+    dimension_name: String,
     context: (u64, u64),
     options_revision: u64,
 }
@@ -307,91 +308,85 @@ fn start_parser(
 ) -> Result<(), String> {
     let path = key.path.clone();
     let dimension = key.dimension;
+    let dimension_name = key.dimension_name.clone();
     let resources = key.resources.clone();
     let options = chosen_shader_options(path.file_name().and_then(|n| n.to_str()).unwrap_or(""));
     let (sender, result) = std::sync::mpsc::channel();
-    let _worker = std::thread::Builder::new()
-        .name("Shader source".into())
-        .stack_size(16 * 1024 * 1024)
-        .spawn(move || {
-            let parsed = parse_source(|| {
-                let pack = Pack::open(&path)
-                    .map_err(|error| error.to_string())?
-                    .with_chosen(options);
-                let properties =
-                    Properties::from_pack(&pack, &dimension_folder(&pack, dimension), &macros)
-                        .in_dimension(dimension);
-                let feature_notes = macros.define_features(&properties);
-                let mut post = load_post(
-                    &pack,
-                    &dimension_folder(&pack, dimension),
-                    &properties,
-                    &macros,
-                    &inputs,
-                );
-                let read = |namespace: &str, path: &str| {
-                    std::fs::read(resources.join("assets").join(namespace).join(path)).ok()
-                };
-                post.notes.extend(horizon_shaders::resolve_resources(
-                    &mut post.textures,
-                    &read,
-                ));
-                post.notes.extend(feature_notes);
-                post.notes.extend(
-                    properties
-                        .notes
-                        .iter()
-                        .map(|note| format!("shaders.properties:{}: {}", note.line, note.message)),
-                );
-                let ids = BlockIds::parse(&Properties::parse(
-                    &pack.read_text("block.properties").unwrap_or_default(),
-                    &macros,
-                ));
-                post.notes.extend(
-                    ids.notes
-                        .iter()
-                        .map(|note| format!("block.properties: {note}")),
-                );
-                let entity_text = pack.read_text("entity.properties");
-                let entity_ids = BlockIds::parse_kind(
-                    &Properties::parse(entity_text.as_deref().unwrap_or_default(), &macros),
-                    "entity",
-                );
-                let item_text = pack.read_text("item.properties");
-                let item_ids = BlockIds::parse_kind(
-                    &Properties::parse(item_text.as_deref().unwrap_or_default(), &macros),
-                    "item",
-                );
-                let entity_ids = PackIds {
-                    items: item_ids.plain(),
-                    missing_item: if item_text.is_some() { -1 } else { 0 },
-                    old_hand_light: properties
-                        .get("oldHandLight")
-                        .is_none_or(|value| value.trim() != "false"),
-                    vignette: properties
-                        .get("vignette")
-                        .is_none_or(|v| v.trim() != "false"),
-                    old_lighting: properties
-                        .get("oldLighting")
-                        .is_some_and(|v| v.trim() == "true"),
-                    separate_ao: properties
-                        .get("separateAo")
-                        .is_some_and(|v| v.trim() == "true"),
-                    entities: entity_ids.plain(),
-                    missing_entity: if entity_text.is_some() { 65535 } else { 0 },
-                    missing_block: if ids.is_empty() { 0 } else { 65535 },
-                    blocks: ids.clone(),
-                    block_states: RefCell::default(),
-                };
-                Ok(ParsedPack {
-                    post,
-                    ids,
-                    entity_ids,
-                })
-            });
-            let _ = sender.send(parsed);
-        })
-        .map_err(|error| format!("Could not start shader parser: {error}"))?;
+    let _worker =
+        std::thread::Builder::new()
+            .name("Shader source".into())
+            .stack_size(16 * 1024 * 1024)
+            .spawn(move || {
+                let parsed =
+                    parse_source(|| {
+                        let pack = Pack::open(&path)
+                            .map_err(|error| error.to_string())?
+                            .with_chosen(options);
+                        let folder = dimension_folder_named(&pack, &dimension_name, dimension);
+                        let properties =
+                            Properties::from_pack(&pack, &folder, &macros).in_dimension(dimension);
+                        let feature_notes = macros.define_features(&properties);
+                        let mut post = load_post(&pack, &folder, &properties, &macros, &inputs);
+                        let read = |namespace: &str, path: &str| {
+                            std::fs::read(resources.join("assets").join(namespace).join(path)).ok()
+                        };
+                        post.notes.extend(horizon_shaders::resolve_resources(
+                            &mut post.textures,
+                            &read,
+                        ));
+                        post.notes.extend(feature_notes);
+                        post.notes.extend(properties.notes.iter().map(|note| {
+                            format!("shaders.properties:{}: {}", note.line, note.message)
+                        }));
+                        let ids = BlockIds::parse(&Properties::parse(
+                            &pack.read_text("block.properties").unwrap_or_default(),
+                            &macros,
+                        ));
+                        post.notes.extend(
+                            ids.notes
+                                .iter()
+                                .map(|note| format!("block.properties: {note}")),
+                        );
+                        let entity_text = pack.read_text("entity.properties");
+                        let entity_ids = BlockIds::parse_kind(
+                            &Properties::parse(entity_text.as_deref().unwrap_or_default(), &macros),
+                            "entity",
+                        );
+                        let item_text = pack.read_text("item.properties");
+                        let item_ids = BlockIds::parse_kind(
+                            &Properties::parse(item_text.as_deref().unwrap_or_default(), &macros),
+                            "item",
+                        );
+                        let entity_ids = PackIds {
+                            items: item_ids.plain(),
+                            missing_item: if item_text.is_some() { -1 } else { 0 },
+                            old_hand_light: properties
+                                .get("oldHandLight")
+                                .is_none_or(|value| value.trim() != "false"),
+                            vignette: properties
+                                .get("vignette")
+                                .is_none_or(|v| v.trim() != "false"),
+                            old_lighting: properties
+                                .get("oldLighting")
+                                .is_some_and(|v| v.trim() == "true"),
+                            separate_ao: properties
+                                .get("separateAo")
+                                .is_some_and(|v| v.trim() == "true"),
+                            entities: entity_ids.plain(),
+                            missing_entity: if entity_text.is_some() { 65535 } else { 0 },
+                            missing_block: if ids.is_empty() { 0 } else { 65535 },
+                            blocks: ids.clone(),
+                            block_states: RefCell::default(),
+                        };
+                        Ok(ParsedPack {
+                            post,
+                            ids,
+                            entity_ids,
+                        })
+                    });
+                let _ = sender.send(parsed);
+            })
+            .map_err(|error| format!("Could not start shader parser: {error}"))?;
     PENDING_LOAD.with_borrow_mut(|pending| {
         *pending = Some(PendingLoad {
             key,
@@ -456,6 +451,7 @@ impl Game<'_> {
                 resources: self.options.resources.clone(),
                 options_revision: OPTIONS_REVISION.with(Cell::get),
                 dimension,
+                dimension_name: self.dim.id().to_owned(),
                 context: renderer.shader_context_key(),
             };
             PENDING_LOAD.with_borrow_mut(|pending| {
@@ -529,6 +525,7 @@ impl Game<'_> {
                 resources: self.options.resources.clone(),
                 options_revision: OPTIONS_REVISION.with(Cell::get),
                 dimension,
+                dimension_name: self.dim.id().to_owned(),
                 context: renderer.shader_context_key(),
             };
             let ready = completed.and_then(|(at, result)| (at == key).then_some(result));
@@ -637,11 +634,18 @@ impl Game<'_> {
             height: self.world.shape.height,
             logical_height: self.world.shape.logical_height,
             has_skylight: self.world.shape.sky_light,
-            has_ceiling: self.dim == Dim::Nether,
+            has_ceiling: self.world.shape.has_ceiling,
             cloud_height: horizon_client::gfx::pack_uniforms::cloud_height(
                 sky.cloud_color[3],
                 sky.cloud_height,
             ),
+            // Vanilla's drift in float, times its 0.030000001F blocks a tick.
+            cloud_time: horizon_client::clouds::drift(
+                self.world.game_time,
+                f64::from(partial),
+                self.pack.clouds.0,
+            ) as f32
+                * 0.030_000_001,
             mod_params: self.native_shader_params_now(partial),
             status,
         }
@@ -807,6 +811,9 @@ impl Game<'_> {
         self.push_span(start, "ENTITIES", id);
         if let Some(last) = self.entity_spans.borrow_mut().last_mut() {
             last.translucent = translucent;
+            if let Some(gpu) = self.skin_frame.borrow_mut().spans.last_mut() {
+                gpu.translucent = translucent;
+            }
         }
     }
 
@@ -840,6 +847,9 @@ impl Game<'_> {
             .emission;
         if let Some(last) = self.entity_spans.borrow_mut().last_mut() {
             last.emissive = emission > 0;
+            if let Some(gpu) = self.skin_frame.borrow_mut().spans.last_mut() {
+                gpu.emissive = emission > 0;
+            }
         }
     }
 
@@ -852,6 +862,10 @@ impl Game<'_> {
         {
             last.player = true;
             last.hidden = hidden;
+            if let Some(gpu) = self.skin_frame.borrow_mut().spans.last_mut() {
+                gpu.player = true;
+                gpu.hidden = hidden;
+            }
         }
     }
 
@@ -876,6 +890,17 @@ impl Game<'_> {
             id,
             ..Default::default()
         };
+        if self.pack_ids.is_some() && self.skinning() {
+            let mut skin = self.skin_frame.borrow_mut();
+            let gpu = EntitySpan {
+                start: skin.vertices,
+                ..span
+            };
+            match skin.spans.last_mut() {
+                Some(last) if last.start == gpu.start => *last = gpu,
+                _ => skin.spans.push(gpu),
+            }
+        }
         // A span that drew nothing gives way to the next.
         match spans.last_mut() {
             Some(last) if last.start == span.start => *last = span,
@@ -1048,6 +1073,7 @@ mod integration_tests {
                     path: "shutdown.zip".into(),
                     resources: "resources".into(),
                     dimension: 0,
+                    dimension_name: "minecraft:overworld".into(),
                     context: (0, 0),
                     options_revision: 0,
                 },
@@ -1150,6 +1176,7 @@ mod integration_tests {
             path: "test.zip".into(),
             resources: "resources".into(),
             dimension: 0,
+            dimension_name: "minecraft:overworld".into(),
             context: (1, 2),
             options_revision: 0,
         };

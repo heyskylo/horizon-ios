@@ -1111,6 +1111,7 @@ dependencies = [
  "horizon-client-render",
  "horizon-command",
  "horizon-core",
+ "horizon-cosmetics",
  "horizon-dualsense",
  "horizon-friends",
  "horizon-gamecontroller",
@@ -1279,6 +1280,7 @@ dependencies = [
  "horizon-client-input",
  "horizon-command",
  "horizon-core",
+ "horizon-cosmetics",
  "horizon-hdr",
  "horizon-items",
  "horizon-narrator",
@@ -1325,6 +1327,18 @@ name = "horizon-core"
 version = "0.1.0"
 dependencies = [
  "libm",
+]
+
+[[package]]
+name = "horizon-cosmetics"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "glam",
+ "png",
+ "serde",
+ "serde_json",
+ "ureq",
 ]
 
 [[package]]
@@ -1906,8 +1920,6 @@ checksum = "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981"
 [[package]]
 name = "libmimalloc-sys"
 version = "0.1.49"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6a45a52f43e1c16f667ccfe4dd8c85b7f7c204fd5e3bf46c5b0db9a5c3c0b8e9"
 dependencies = [
  "cc",
  "cty",

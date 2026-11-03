@@ -60,6 +60,7 @@ impl Game {
  fn item_on_use_tick(&mut self,_:&ItemStack,_:u32){}
  fn finish_drinking(&mut self,_:usize,_:&ItemStack)->bool{false}
  fn stop_spyglass(&mut self){}
+ fn use_vibration(&mut self,stack:&ItemStack){assert_eq!(stack.item,"original");self.events.push("vibration".into());}
  fn use_item_finished(&mut self,_:&ItemStack){self.events.push("finish".into());}
  fn held(&self) -> Option<&ItemStack> {self.held.as_ref()}
  fn held_slot(&self) -> usize {self.slot}
@@ -97,7 +98,7 @@ pub fn run() {
   assert!(timed.events.is_empty(),"not completed before duration");
   timed.finish_tick(info(2),stack,1,2);
   assert!(timed.using.is_none());
-  assert_eq!(timed.events,vec!["event","consume:original","remainder:bowl","cooldown:original-group","finish"]);
+  assert_eq!(timed.events,vec!["event","consume:original","remainder:bowl","cooldown:original-group","finish","vibration"]);
  }
  for ticks in [0,1] {
   let mut full=Game::new(0);full.player.as_mut().unwrap().health.food.food=20;

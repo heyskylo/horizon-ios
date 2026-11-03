@@ -264,7 +264,8 @@ impl GraphicsApi {
 /// What the frame limiter does in the last half millisecond before a frame.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum Pacing {
-    /// Sleep the whole wait: no CPU spent spinning, a little less precise.
+    /// Sleep the whole wait: no CPU spent spinning, a little less precise; frames
+    /// keep to a fixed grid of slots, so late wake-ups don't lower the frame rate.
     #[default]
     Efficient,
     /// Vanilla's `FramerateLimiter`: sleep, then spin until the deadline.
@@ -965,7 +966,7 @@ impl Graphics {
         // laptop while a world loaded: a teleport there took ~15% longer.
         // A phone's cores are half slow ones (big.LITTLE): workers on all of them still crowd the fast half
         // the render and server threads need.
-        let cores = std::thread::available_parallelism().map_or(2, |n| n.get());
+        let cores = horizon_threads::worker_count();
         let auto = if cfg!(target_os = "android") {
             cores / 2
         } else {
@@ -1286,10 +1287,12 @@ mod tests {
             assert_eq!(g.lod_distance_on(&discrete), distance);
         }
         assert!(
-            crate::graphics_ui::rows(crate::graphics_ui::Level::Simple)
-                .iter()
-                .any(|row| matches!(row, crate::graphics_ui::Row::Setting(s)
-                    if s.text.contains(&format!("{INTEGRATED_LOD_DISTANCE} chunks")))),
+            crate::graphics_ui::rows()
+                .into_iter()
+                .flat_map(|(_, groups)| groups.into_iter().flat_map(|(_, rows)| rows))
+                .any(|r| r
+                    .text
+                    .contains(&format!("{INTEGRATED_LOD_DISTANCE} chunks"))),
             "the LOD Distance description names the cap"
         );
     }
@@ -1347,7 +1350,7 @@ mod tests {
     fn automatic_workers_leave_a_core_as_vanilla_does() {
         let g = Graphics::default();
         assert_eq!(g.workers, 0);
-        let cores = std::thread::available_parallelism().map_or(2, |n| n.get());
+        let cores = horizon_threads::worker_count();
         assert_eq!(g.worker_threads(), cores.saturating_sub(1).max(1));
         // A manual count is the player's own choice, kept as asked.
         let manual = Graphics { workers: 3, ..g };

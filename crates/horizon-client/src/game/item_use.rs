@@ -100,6 +100,7 @@ impl Game<'_> {
         // a potion is drunk (no last tick of its own: a mod's tick ran it out).
         if self.finish_drinking(slot, stack) {
             self.use_item_finished(stack);
+            self.use_vibration(stack);
             return;
         }
         self.using = None;
@@ -113,6 +114,8 @@ impl Game<'_> {
         // original stack after consumption and its remainder, before the hook.
         self.apply_use_cooldown(stack);
         self.use_item_finished(stack);
+        // `LivingEntity.completeUsingItem` ends with `stopUsingItem`.
+        self.use_vibration(stack);
     }
     /// `LivingEntityUseItemEvent.Finish` after `finishUsingItem` of `stack`
     /// (no ticks left): the hand holds what a mod made the result.

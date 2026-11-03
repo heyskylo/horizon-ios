@@ -48,6 +48,7 @@ impl TerrainMetadata {
         {
             let Some(new) = super::arena::try_create(
                 device,
+                "Terrain metadata",
                 bytes,
                 wgpu::BufferUsages::STORAGE
                     | wgpu::BufferUsages::COPY_DST
@@ -94,6 +95,7 @@ impl TerrainMetadata {
         {
             let Some(new) = super::arena::try_create(
                 device,
+                "Terrain metadata",
                 bytes,
                 wgpu::BufferUsages::STORAGE
                     | wgpu::BufferUsages::COPY_SRC

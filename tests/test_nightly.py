@@ -226,7 +226,7 @@ class MobileForkWorkflowTests(unittest.TestCase):
 
     def test_prepared_asset_guard_is_mandatory_before_artifact_upload(self):
         ios = (WORKFLOWS / "ios.yml").read_text()
-        guard = ios.index("      - name: Check the distributable contains no prepared assets")
+        guard = ios.index("      - name: Audit the unsigned distributable")
         upload = ios.index("          name: horizon-ios-game")
         delivery = ios.index("      - name: Send the .ipa to Discord")
         self.assertLess(guard, upload)
@@ -234,24 +234,26 @@ class MobileForkWorkflowTests(unittest.TestCase):
         guard_step = ios[guard:ios.index("      - uses:", guard)]
         self.assertNotIn("continue-on-error", guard_step)
         self.assertNotIn("        if:", guard_step)
-        # Execute the actual workflow guard against tiny local zip fixtures.
+        # Run the actual CLI named by the workflow; release tests cover the
+        # signature/path cases, while this proves the upload gate invokes it.
+        import importlib.util
+        import shlex
+        import subprocess
+        import sys
         import tempfile
-        import zipfile
-        import textwrap
-        body = textwrap.dedent(guard_step.split("<<'PYASSETS'\n", 1)[1].split("          PYASSETS", 1)[0])
-        original = Path.cwd()
+        root = WORKFLOWS.parent.parent
+        spec = importlib.util.spec_from_file_location("release_fixtures", root / "tests/test_ios_release.py")
+        fixtures = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(fixtures)
+        command = shlex.split(guard_step.split("run: ", 1)[1].strip())
+        self.assertEqual(command[1], "tools/ci/ios_release.py")
+        command[0] = sys.executable
+        command[1] = str(root / command[1])
+        command = [fixtures.SHA if part == "$GITHUB_SHA" else part for part in command]
         with tempfile.TemporaryDirectory() as directory:
-            try:
-                os.chdir(directory)
-                for contains_assets in (False, True):
-                    with zipfile.ZipFile("Horizon-game-unsigned.ipa", "w") as ipa:
-                        ipa.writestr("Payload/HorizonGame.app/Info.plist", "test")
-                        if contains_assets:
-                            ipa.writestr("Payload/HorizonGame.app/horizon-resources.json", "{}")
-                    if contains_assets:
-                        with self.assertRaises(SystemExit):
-                            exec(compile(body, "ios-asset-guard", "exec"), {})
-                    else:
-                        exec(compile(body, "ios-asset-guard", "exec"), {})
-            finally:
-                os.chdir(original)
+            ipa = Path(directory) / "Horizon-game-unsigned.ipa"
+            for contains_assets in (False, True):
+                extra = {"Payload/Horizon.app/horizon-resources.json": b"{}"} if contains_assets else {}
+                fixtures.IOSReleaseTests().archive(ipa, extra)
+                result = subprocess.run(command, cwd=directory, capture_output=True, text=True)
+                self.assertEqual(result.returncode == 0, not contains_assets, result.stderr)

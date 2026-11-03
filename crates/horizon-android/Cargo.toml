@@ -24,6 +24,7 @@ horizon-client-render = { path = "../horizon-client-render" }
 horizon-command = { path = "../horizon-command" }
 horizon-items = { path = "../horizon-items" }
 horizon-core = { path = "../horizon-core" }
+horizon-cosmetics = { path = "../horizon-cosmetics" }
 # OptiFine-format pack files: custom entity models, random entity textures.
 horizon-optifine = { path = "../horizon-optifine" }
 # The server thread ahead of the workers (MinecraftServer.spin's Thread.setPriority).
@@ -103,10 +104,14 @@ default = ["audio"]
 audio = ["horizon-client-lib/audio", "horizon-client-render/audio"]
 # Named because game/ asks for them; gilrs and hidapi have no Android backend, and wasmtime's JIT is untested here.
 controllers = []
+# Match the shared native entry point's allocator selection.
+system-allocator = []
+alloc-census = ["horizon-threads/alloc-census"]
 
 [patch.crates-io]
 # This is a separate workspace: inherit the game's GLSL fixes explicitly.
 naga = { path = "../../third_party/naga" }
+libmimalloc-sys = { path = "../../third_party/libmimalloc-sys" }
 java_regex = { path = "../../third_party/java_regex" }
 wgpu-hal = { path = "../../third_party/wgpu-hal" }
 winit = { path = "../../third_party/winit" }

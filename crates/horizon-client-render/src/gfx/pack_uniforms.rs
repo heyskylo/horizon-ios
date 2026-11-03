@@ -60,6 +60,7 @@ pub struct PackInputs {
     pub logical_height: i32,
     pub has_skylight: bool,
     pub has_ceiling: bool,
+    pub cloud_time: f32,
     /// The values native mods hand their packs (`frame.mods`, `native_shader_params`).
     pub mod_params: [[f32; 4]; 8],
     /// The player's state, for Iris's status uniforms.
@@ -272,6 +273,7 @@ pub const NAMES: &[&str] = &[
     "logicalHeightLimit",
     "hasSkylight",
     "hasCeiling",
+    "cloudTime",
 ];
 
 /// Values carried from frame to frame.
@@ -634,6 +636,7 @@ impl FrameUniforms {
                 "heldItemId2" => Value::i(&[inputs.held_items[1]]),
                 "heldBlockLightValue" => Value::i(&[inputs.held_light[0]]),
                 "heldBlockLightValue2" => Value::i(&[inputs.held_light[1]]),
+                "cloudTime" => Value::f(&[inputs.cloud_time]),
                 // renderStage is NONE outside gbuffers draws.
                 _ => status_value(name, inputs).unwrap_or(Value::i(&[0])),
             }
@@ -1262,6 +1265,25 @@ mod initial_history_tests {
             float(&u, "cameraPosition")
         );
     }
+    /// Iris 1.11.7 (probe pack, a world saved at game time 5073 and loaded about ten seconds
+    /// before): `cloudTime` read 157.98, 160.56 and 163.11, four seconds apart. That is the
+    /// clouds' drift at 0.03 blocks a tick, 5266 ticks in.
+    #[test]
+    fn cloud_time_is_how_far_the_clouds_drifted() {
+        let hud = HudBatch::new([800, 450]);
+        let f = frame(&hud);
+        let mut u = FrameUniforms::default();
+        let drift = crate::clouds::drift(5266, 0.0, 256);
+        let input = PackInputs {
+            cloud_time: drift as f32 * 0.030_000_001,
+            ..Default::default()
+        };
+        u.update(&f, &input, [800, 450]);
+        assert!((float(&u, "cloudTime")[0] - 157.98).abs() < 1e-3);
+        // A trip across the 256-cell texture takes 256 * 400 ticks, then starts again.
+        assert_eq!(crate::clouds::drift(256 * 400 + 3, 0.25, 256), 3.25);
+    }
+
     #[test]
     fn environmental_smoothing_starts_at_the_first_inputs_without_resetting_each_frame() {
         let hud = HudBatch::new([800, 450]);

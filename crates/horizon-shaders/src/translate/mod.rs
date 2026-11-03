@@ -1632,6 +1632,28 @@ mod tests {
         assert!(p.is_ok(), "{:?}", p.err());
     }
 
+    /// `sqrt` of a negative is undefined in GLSL: in functions it reads zero, as packs written
+    /// against GL drivers expect at `sqrt(1.0 - y * y)` with y rounding just above 1. A global
+    /// constant keeps the built-in, so it stays a constant (an array's size here).
+    #[test]
+    fn sqrt_in_functions_never_takes_a_negative() {
+        let fsh = "#version 120\nconst int n = int(sqrt(16.0));\nfloat w[n];\n\
+                   vec2 f(vec2 v) { float y = v.x; return vec2(sqrt(1.0 - y * y), sqrt(v).y); }\n\
+                   void main() { w[3] = 1.0; gl_FragColor = vec4(f(vec2(1.0)), w[3], 1.0); }\n";
+        let p = program(
+            &[("composite.vsh", VSH_120), ("composite.fsh", fsh)],
+            Target::Window,
+        )
+        .unwrap();
+        let clamped = p.fragment.functions.iter().any(|(_, f)| {
+            f.expressions.iter().any(|(_, e)| {
+                matches!(e, naga::Expression::Math { fun: naga::MathFunction::Sqrt, arg, .. }
+                    if matches!(f.expressions[*arg], naga::Expression::Math { fun: naga::MathFunction::Max, .. }))
+            })
+        });
+        assert!(clamped, "sqrt's argument is clamped at zero");
+    }
+
     #[test]
     fn core_programs_translate() {
         let vsh = "#version 330 core\nin vec3 vaPosition;\nin vec2 vaUV0;\nuniform mat4 modelViewMatrix, projectionMatrix;\n\
@@ -2054,6 +2076,54 @@ mod tests {
         );
     }
 
+    /// `textureQueryLod` (GLSL 4.60, 8.9.1), which naga lacks, on 2D, 3D and integer samplers
+    /// and through a pack function that takes the sampler: every form reaches SPIR-V, and a
+    /// program that doesn't call it gets none of it.
+    #[test]
+    fn texture_query_lod_translates() {
+        let fsh = "#version 430\nuniform sampler2D colortex0;\nuniform sampler3D lut;\n\
+                   uniform usampler2D colortex5;\nout vec4 c;\n\
+                   float level(sampler2D s, vec2 uv) { return textureQueryLod(s, uv).x; }\n\
+                   void main() {\n    vec2 uv = gl_FragCoord.xy / 64.0;\n    \
+                   vec2 a = textureQueryLod(colortex0, uv);\n    \
+                   vec2 b = textureQueryLod(lut, vec3(uv, 0.5));\n    \
+                   vec2 d = textureQueryLod(colortex5, uv);\n    \
+                   c = vec4(a + b + d, level(colortex0, uv), 1.0);\n}\n";
+        let p = program(
+            &[("composite.vsh", VSH_120), ("composite.fsh", fsh)],
+            Target::Buffers,
+        )
+        .unwrap_or_else(|e| panic!("{e:?}"));
+        let info = Validator::new(ValidationFlags::all(), Capabilities::all())
+            .validate(&p.fragment)
+            .unwrap();
+        let entry = &p.fragment.entry_points[0];
+        let pipeline = naga::back::spv::PipelineOptions {
+            shader_stage: entry.stage,
+            entry_point: entry.name.clone(),
+        };
+        naga::back::spv::write_vec(&p.fragment, &info, &Default::default(), Some(&pipeline))
+            .unwrap();
+        let plain = program(
+            &[
+                ("composite.vsh", VSH_120),
+                (
+                    "composite.fsh",
+                    "#version 120\nvoid main() { gl_FragColor = vec4(1.0); }\n",
+                ),
+            ],
+            Target::Buffers,
+        )
+        .unwrap();
+        assert!(
+            !plain
+                .fragment
+                .functions
+                .iter()
+                .any(|(_, f)| f.name.as_deref() == Some("hz_textureQueryLod"))
+        );
+    }
+
     /// A `return` with code after it in its block (Miniature's hand: `#ifdef GBUFFERS_HAND
     /// return 0.5 * diffuse; #endif` and the rest of the function), which naga's frontend
     /// leaves half-built.
@@ -2133,6 +2203,25 @@ mod tests {
                    void main() { gl_FragColor = vec4(clip(vec3(0.0), vec3(1.0)), pick(k)); }\n";
         program(
             &[("composite.vsh", VSH_120), ("composite.fsh", fsh)],
+            Target::Buffers,
+        )
+        .unwrap_or_else(|e| panic!("{e:?}"));
+    }
+
+    /// A vertex stage that redeclares `gl_PerVertex` and whose block instance shares its name
+    /// with a function's parameter: it still writes the position, and the
+    /// block still reaches the fragment stage.
+    #[test]
+    fn a_per_vertex_redeclaration_and_a_parameter_named_like_the_instance() {
+        let vsh = "#version 460\nout gl_PerVertex { vec4 gl_Position; };\n\
+                   float luma(vec3 v) { return dot(v, vec3(0.3, 0.6, 0.1)); }\n\
+                   out VertexData {\n    layout(location = 1, component = 0) vec2 coord;\n} v;\n\
+                   void main() { v.coord = vec2(luma(vec3(1.0))); gl_Position = vec4(0.0, 0.0, 0.5, 1.0); }\n";
+        let fsh = "#version 460\nin VertexData {\n    layout(location = 1, component = 0) vec2 coord;\n} v;\n\
+                   /* RENDERTARGETS: 0 */\nlayout(location = 0) out vec4 c;\n\
+                   void main() { c = vec4(v.coord, 0.0, 1.0); }\n";
+        program(
+            &[("composite.vsh", vsh), ("composite.fsh", fsh)],
             Target::Buffers,
         )
         .unwrap_or_else(|e| panic!("{e:?}"));

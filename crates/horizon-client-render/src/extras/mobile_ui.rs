@@ -3,6 +3,9 @@ use super::*;
 /// The settings the Extras page shows, one per row.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Item {
+    MusicPage,
+    CosmeticsMine,
+    CosmeticsOthers,
     ReproKeys,
     WheelCyclesSettings,
     Fullbright,
@@ -45,7 +48,7 @@ pub enum Item {
 /// The Extras page: headers and items.
 pub fn rows() -> Vec<Result<Item, &'static str>> {
     use self::Item::*;
-    vec![
+    let mut rows = vec![
         Err("Lighting"),
         Ok(Fullbright),
         Ok(DynamicLights),
@@ -80,10 +83,19 @@ pub fn rows() -> Vec<Result<Item, &'static str>> {
         Ok(AutoReconnect),
         Ok(HideBlockParticles),
         Ok(UiSoundReserve),
+        Ok(MusicPage),
         Ok(ChatAnimation),
         Ok(ChatIndicator),
         Ok(WheelCyclesSettings),
-    ]
+    ];
+    if horizon_cosmetics::enabled() {
+        rows.extend([
+            Err("horizon.extras.header.cosmetics"),
+            Ok(CosmeticsMine),
+            Ok(CosmeticsOthers),
+        ]);
+    }
+    rows
 }
 /// "1 block", "2 blocks", "½ block".
 fn block_count(n: f32) -> String {
@@ -103,6 +115,9 @@ fn next<T: Copy + PartialEq>(all: &[T], current: T, back: bool) -> T {
 impl Item {
     fn shared(self) -> Option<super::desktop_ui::Item> {
         Some(match self {
+            Self::MusicPage => super::desktop_ui::Item::MusicPage,
+            Self::CosmeticsMine => super::desktop_ui::Item::CosmeticsMine,
+            Self::CosmeticsOthers => super::desktop_ui::Item::CosmeticsOthers,
             Self::ReproKeys => super::desktop_ui::Item::ReproKeys,
             Self::WheelCyclesSettings => super::desktop_ui::Item::WheelCyclesSettings,
             Self::Fullbright => super::desktop_ui::Item::Fullbright,
@@ -135,7 +150,10 @@ impl Item {
 
     pub fn caption(self) -> &'static str {
         match self {
-            Item::ReproKeys
+            Item::MusicPage
+            | Item::CosmeticsMine
+            | Item::CosmeticsOthers
+            | Item::ReproKeys
             | Item::WheelCyclesSettings
             | Item::HideBlockParticles
             | Item::UiSoundReserve
@@ -175,8 +193,8 @@ impl Item {
         use self::Item::*;
         Some(match self {
             ChatIndicator => ChatAnimation,
-            HideBlockParticles | UiSoundReserve | ChatAnimation | Splitscreen | ReproKeys
-            | WheelCyclesSettings => return None,
+            HideBlockParticles | UiSoundReserve | ChatAnimation | Splitscreen | MusicPage
+            | CosmeticsMine | CosmeticsOthers | ReproKeys | WheelCyclesSettings => return None,
             ZoomKey | ZoomLevel | ZoomSmooth | ZoomSensitivity => Zoom,
             MinimapCorner | MinimapSize | MinimapShape | MinimapZoom | MinimapRotate => Minimap,
             FpsCorner | FpsLows => Fps,
@@ -192,7 +210,10 @@ impl Item {
     /// What the row says under its caption.
     pub fn description(self) -> &'static str {
         match self {
-            Item::ReproKeys
+            Item::MusicPage
+            | Item::CosmeticsMine
+            | Item::CosmeticsOthers
+            | Item::ReproKeys
             | Item::WheelCyclesSettings
             | Item::HideBlockParticles
             | Item::UiSoundReserve
@@ -260,7 +281,10 @@ impl Item {
     /// On/off items and their value.
     pub fn switch(self, e: &Extras) -> Option<bool> {
         Some(match self {
-            Item::ReproKeys
+            Item::MusicPage
+            | Item::CosmeticsMine
+            | Item::CosmeticsOthers
+            | Item::ReproKeys
             | Item::WheelCyclesSettings
             | Item::HideBlockParticles
             | Item::UiSoundReserve
@@ -314,7 +338,10 @@ impl Item {
     /// A click (`back` for the right button). The zoom key binds instead.
     pub fn cycle(self, e: &mut Extras, back: bool) {
         match self {
-            Item::ReproKeys
+            Item::MusicPage
+            | Item::CosmeticsMine
+            | Item::CosmeticsOthers
+            | Item::ReproKeys
             | Item::WheelCyclesSettings
             | Item::HideBlockParticles
             | Item::UiSoundReserve

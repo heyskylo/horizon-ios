@@ -228,6 +228,9 @@ fn decode_png_checked(bytes: &[u8]) -> Result<Texture, String> {
     decoder.set_limits(png::Limits {
         bytes: MAX_DECODE_BYTES,
     });
+    // Packs ship PNGs with wrong chunk checksums (a server's obfuscated pack);
+    // the game's other pack textures decode them, as stb_image does.
+    decoder.ignore_checksums(true);
     decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
     let mut reader = decoder.read_info().map_err(|e| e.to_string())?;
     let info = reader.info();
@@ -440,6 +443,24 @@ mod tests {
 
     fn half(v: f32) -> [u8; 2] {
         half::f16::from_f32(v).to_le_bytes()
+    }
+
+    #[test]
+    fn a_png_with_a_wrong_header_checksum_decodes() {
+        let mut encoded = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut encoded, 2, 1);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Eight);
+            let mut writer = encoder.write_header().unwrap();
+            writer
+                .write_image_data(&[255, 0, 0, 255, 0, 255, 0, 255])
+                .unwrap();
+            writer.finish().unwrap();
+        }
+        let ihdr = encoded.windows(4).position(|w| w == b"IHDR").unwrap();
+        encoded[ihdr + 4 + 13] ^= 0xFF;
+        assert!(decode_png(&encoded).is_some());
     }
 
     #[test]

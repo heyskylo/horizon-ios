@@ -91,6 +91,24 @@ class IOSReleaseTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "symbolic link"):
                 release.audit(ipa, SHA)
 
+    def test_main_must_be_an_executable_not_a_library(self):
+        with tempfile.TemporaryDirectory() as directory:
+            ipa = Path(directory) / "input.ipa"
+            data = bytearray(binary())
+            struct.pack_into("<I", data, 12, 6)
+            self.archive(ipa, executable=data)
+            with self.assertRaisesRegex(ValueError, "executable"):
+                release.audit(ipa, SHA)
+
+    def test_rejects_corrupt_payload_bytes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            ipa = Path(directory) / "input.ipa"
+            self.archive(ipa, {"Payload/Horizon.app/data.txt": b"A" * (1 << 15) + b"unchanged"})
+            data = ipa.read_bytes().replace(b"unchanged", b"Xnchanged", 1)
+            ipa.write_bytes(data)
+            with self.assertRaisesRegex(ValueError, "corrupt"):
+                release.audit(ipa, SHA)
+
     def test_rejects_malformed_binary_instead_of_assuming_unsigned(self):
         for data in [binary()[:10], binary()[:16] + struct.pack("<II", 1, 0) + binary()[24:],
                      struct.pack("<IIIIIIII", 0xFEEDFACF, 0x0100000C, 0, 2, 1, 8, 0, 0)

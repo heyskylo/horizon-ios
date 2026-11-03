@@ -36,8 +36,9 @@ fn real_packs_read() {
     for f in found.iter().filter(|f| f.problem.is_none()) {
         let start = Instant::now();
         let pack = Pack::open(&f.path).unwrap();
-        let macros = test_macros();
-        let shaders = Properties::from_pack(&pack, "", &macros);
+        let mut macros = test_macros();
+        macros.define_renderer(4);
+        let (shaders, feature_notes) = horizon_shaders::read_properties(&pack, &mut macros);
         let ids: Vec<Properties> = ["block", "item", "entity", "dimension"]
             .iter()
             .filter_map(|n| pack.read_text(&format!("{n}.properties")))
@@ -197,12 +198,16 @@ fn real_packs_read() {
                     index: "uint(@)".into(),
                 }),
             };
-            let mut macros = test_macros();
+            let mut macros = macros.clone();
             if std::env::var_os("SUBGROUPS").is_some() {
                 macros.define("MC_GL_KHR_shader_subgroup_arithmetic", "");
             }
-            let shaders = Properties::from_pack(&pack, &folder, &macros);
-            for note in macros.define_features(&shaders) {
+            let shaders = Properties::from_pack(&pack, &folder, &macros).in_dimension(id);
+            for note in feature_notes
+                .iter()
+                .cloned()
+                .chain(macros.define_features(&shaders))
+            {
                 println!("    {note}");
             }
             let post = load_post(&pack, &folder, &shaders, &macros, &inputs);

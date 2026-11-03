@@ -348,7 +348,7 @@ impl ItemRenderState {
                     rect: [r.u0, r.v0, r.u1, r.v1],
                     light,
                     overlay: u32::from(tier) << 16,
-                    item: 1,
+                    mode: SkinJob::ITEM,
                     ..Default::default()
                 });
                 frame.parts.push(SkinPart::item(m, colors));
@@ -1352,11 +1352,7 @@ mod tests {
                 };
                 state.submit(&r, &sprites, &NoHost, pose, &mut sink);
                 frame.clear_draws();
-                let mut skin = Skin {
-                    models: &mut models,
-                    frame: &mut frame,
-                    bounds: None,
-                };
+                let mut skin = Skin::new(&mut models, &mut frame);
                 if !state.submit_skinned(&r, &sprites, pose, (0x50_a0, lights, 1), &mut skin) {
                     assert!(frame.jobs.is_empty(), "{id}: left to the CPU after drawing");
                     left += 1;
@@ -1398,11 +1394,7 @@ mod tests {
             "torch",
         ] {
             frame.clear_draws();
-            let mut skin = Skin {
-                models: &mut models,
-                frame: &mut frame,
-                bounds: None,
-            };
+            let mut skin = Skin::new(&mut models, &mut frame);
             let state = resolve(&format!("minecraft:{id}"));
             assert!(
                 state.submit_skinned(&r, &sprites, pose, (0, None, 0), &mut skin),

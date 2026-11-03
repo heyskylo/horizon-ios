@@ -534,6 +534,90 @@ fn failed_operations_show_error_and_leave_world_intact() {
     }
 }
 
+/// `LevelStorageSource.validateAndCreateAccess`: the world folder's links are
+/// looked for before an access is made, and one is enough to keep the world
+/// closed - `WorldOpenFlows.createWorldAccess` shows the symlink warning in
+/// place of the world (`symlink_warning.title.world`), and the session lock
+/// is never taken, so the world is not held by this instance.
+#[cfg(unix)]
+#[test]
+fn a_world_folder_holding_a_link_is_not_opened() {
+    let mut f = Fixture::new();
+    f.world("World", "World");
+    let outside = f.root.join("outside");
+    fs::create_dir_all(&outside).unwrap();
+    fs::write(outside.join("keep.txt"), "keep").unwrap();
+    std::os::unix::fs::symlink(&outside, f.title.saves.join("World/link")).unwrap();
+    assert_eq!(
+        world_management::symlinks(&f.title.saves, "World")
+            .unwrap()
+            .len(),
+        1
+    );
+    f.select();
+    assert_eq!(
+        f.click("Play Selected World"),
+        Action::None,
+        "the world opened"
+    );
+    assert!(
+        matches!(
+            &f.title.mode,
+            Mode::Error {
+                alert: Some(Alert::Symlink),
+                ..
+            }
+        ),
+        "{:?} is not the symlink warning",
+        f.title.mode
+    );
+    assert!(
+        crate::save::SessionLock::acquire(&f.title.saves.join("World")).is_ok(),
+        "the refused world was left unlocked"
+    );
+    // A world with no links in it still opens.
+    f.world("Clean", "Clean");
+    f.select();
+    assert_eq!(
+        world_management::symlinks(&f.title.saves, "Clean").unwrap(),
+        Vec::<std::path::PathBuf>::new()
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn world_link_warning_respects_the_vanilla_allowlist() {
+    let mut f = Fixture::new();
+    f.world("World", "World");
+    let outside = f.root.join("permitted");
+    fs::create_dir_all(&outside).unwrap();
+    let link = f.title.saves.join("World/link");
+    std::os::unix::fs::symlink(&outside, &link).unwrap();
+    assert_eq!(
+        world_management::symlinks(&f.title.saves, "World").unwrap(),
+        vec![link]
+    );
+    fs::write(
+        f.title.saves.join("allowed_symlinks.txt"),
+        outside.to_string_lossy().as_bytes(),
+    )
+    .unwrap();
+    assert!(
+        world_management::symlinks(&f.title.saves, "World")
+            .unwrap()
+            .is_empty()
+    );
+    f.select();
+    let _ = f.click("Play Selected World");
+    assert!(!matches!(
+        f.title.mode,
+        Mode::Error {
+            alert: Some(Alert::Symlink),
+            ..
+        }
+    ));
+}
+
 #[cfg(unix)]
 #[test]
 fn backup_rejects_symlinks_and_removes_incomplete_archive() {
@@ -730,6 +814,40 @@ fn classic_world_selection_is_silent_until_the_entry_launches() {
 }
 
 #[test]
+fn middle_clicking_a_world_selects_it_without_joining() {
+    let mut f = Fixture::new();
+    f.world("World", "World");
+    f.title.enter_singleplayer();
+    let size = (480.0, 262.0);
+    let enabled = |f: &Fixture, label: &str| {
+        f.title
+            .buttons(size.0, size.1)
+            .into_iter()
+            .find(|b| b.label == label)
+            .unwrap()
+            .enabled
+    };
+    assert!(!enabled(&f, "Edit"), "nothing is selected yet");
+    assert!(f.title.select_world_at(240.0, 60.0, size));
+    assert!(matches!(
+        f.title.mode,
+        Mode::Select {
+            selected: Some(0),
+            ..
+        }
+    ));
+    assert!(
+        enabled(&f, "Edit"),
+        "the selection callback reaches the footer"
+    );
+    // Again on the selected row: still only a selection, not a join.
+    assert!(f.title.select_world_at(240.0, 60.0, size));
+    assert!(matches!(f.title.mode, Mode::Select { .. }));
+    // Outside the rows (the footer) nothing is selected.
+    assert!(!f.title.select_world_at(240.0, 250.0, size));
+}
+
+#[test]
 fn a_world_open_elsewhere_stays_closed_behind_a_toast() {
     let mut f = Fixture::new();
     f.world("World", "World");
@@ -767,10 +885,20 @@ fn playing_a_world_rejects_lock_links_before_touching_the_target() {
     std::os::unix::fs::symlink(&target, f.title.saves.join("World/session.lock")).unwrap();
     let world = list_worlds(&f.title.saves).remove(0);
     assert_eq!(f.title.play(world), Action::None);
-    assert_eq!(fs::read(target).unwrap(), b"keep me");
+    assert_eq!(fs::read(&target).unwrap(), b"keep me");
+    assert_eq!(
+        fs::read_link(f.title.saves.join("World/session.lock")).unwrap(),
+        target
+    );
+    // Forbidden links now have their own vanilla warning screen. This
+    // validation still happens before opening (and writing) session.lock.
+    assert!(f.title.toast.is_none());
     assert!(matches!(
-        f.title.toast,
-        Some((_, WorldToast::AccessFailure(_)))
+        f.title.mode,
+        Mode::Error {
+            alert: Some(Alert::Symlink),
+            ..
+        }
     ));
 }
 

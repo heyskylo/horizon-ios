@@ -29,7 +29,7 @@ def unsigned_macho(stream):
     header = magic + stream.read(28)
     if len(header) != 32:
         raise ValueError("Truncated Mach-O header")
-    cpu, _, _, count, size = struct.unpack_from("<IIIII", header, 4)
+    cpu, _, file_type, count, size = struct.unpack_from("<IIIII", header, 4)
     if cpu != 0x0100000C or size > 16 << 20:
         raise ValueError("Invalid ARM64 Mach-O load commands")
     commands = stream.read(size)
@@ -47,7 +47,7 @@ def unsigned_macho(stream):
         offset += length
     if offset != size:
         raise ValueError("Unexpected Mach-O load-command data")
-    return True
+    return file_type
 
 
 def audit(ipa, expected_commit=None):
@@ -55,7 +55,7 @@ def audit(ipa, expected_commit=None):
         names = archive.namelist()
         if len(names) != len(set(names)):
             raise ValueError("Duplicate IPA entries")
-        binaries = set()
+        binaries = {}
         infos = []
         for entry in archive.infolist():
             path = PurePosixPath(entry.filename)
@@ -73,19 +73,22 @@ def audit(ipa, expected_commit=None):
             if entry.is_dir():
                 continue
             with archive.open(entry) as stream:
-                if unsigned_macho(stream):
-                    binaries.add(entry.filename)
+                kind = unsigned_macho(stream)
+                if kind:
+                    binaries[entry.filename] = kind
             if len(path.parts) == 3 and path.parts[1].endswith(".app") and name == "info.plist":
                 if entry.file_size > 1 << 20:
                     raise ValueError("Oversized app Info.plist")
                 infos.append((path.parent, plistlib.loads(archive.read(entry))))
+        if archive.testzip() is not None:
+            raise ValueError("The IPA contains a corrupt ZIP entry")
         if len(infos) != 1:
             raise ValueError("Expected exactly one application")
         app, info = infos[0]
         if info.get("CFBundleSupportedPlatforms") != ["iPhoneOS"]:
             raise ValueError("Expected a device IPA, not a simulator app")
         executable = info.get("CFBundleExecutable", "")
-        if not isinstance(executable, str) or "/" in executable or str(app / executable) not in binaries:
+        if not isinstance(executable, str) or "/" in executable or binaries.get(str(app / executable)) != 2:
             raise ValueError("Missing unsigned ARM64 app executable")
         version, build = info.get("CFBundleShortVersionString"), info.get("CFBundleVersion")
         if not all(isinstance(v, str) and VERSION.fullmatch(v) for v in (version, build)):

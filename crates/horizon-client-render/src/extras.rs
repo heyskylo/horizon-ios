@@ -138,6 +138,18 @@ pub struct Extras {
     /// The wheel over a cycle button in the settings changes it (`CycleButton.mouseScrolled`,
     /// on by default as vanilla); off, the wheel only scrolls the list.
     pub wheel_cycles_settings: bool,
+    /// The built-in music tracks the Music page turned off (sound ids): they
+    /// leave every pool they play in (`musicOff`, empty by default: vanilla's
+    /// random selection).
+    pub music_off: Vec<String>,
+    /// The Music page: the Music... button on Music & Sounds, playing a
+    /// built-in track and leaving the off ones out (`musicPage`, off by
+    /// default: vanilla plays exactly as before).
+    pub music_page: bool,
+    /// Cosmetics (`horizon_cosmetics`, off unless enabled): the player's own, and the other
+    /// players' (`cosmeticsMine`, `cosmeticsOthers`; both on by default).
+    pub cosmetics_mine: bool,
+    pub cosmetics_others: bool,
 }
 impl Default for Extras {
     fn default() -> Self {
@@ -181,6 +193,10 @@ impl Default for Extras {
             splitscreen_three: 0,
             splitscreen_names: true,
             wheel_cycles_settings: true,
+            music_off: Vec::new(),
+            music_page: false,
+            cosmetics_mine: true,
+            cosmetics_others: true,
         }
     }
 }
@@ -266,6 +282,17 @@ impl Extras {
                 "splitscreenThree" => e.splitscreen_three = value.parse().unwrap_or(0).min(2),
                 "splitscreenNames" => e.splitscreen_names = flag(e.splitscreen_names),
                 "wheelCyclesSettings" => e.wheel_cycles_settings = flag(e.wheel_cycles_settings),
+                "musicOff" => {
+                    e.music_off = value
+                        .split(',')
+                        .map(str::trim)
+                        .filter(|id| !id.is_empty())
+                        .map(str::to_owned)
+                        .collect()
+                }
+                "musicPage" => e.music_page = flag(e.music_page),
+                "cosmeticsMine" => e.cosmetics_mine = flag(e.cosmetics_mine),
+                "cosmeticsOthers" => e.cosmetics_others = flag(e.cosmetics_others),
                 _ => {}
             }
         }
@@ -273,7 +300,7 @@ impl Extras {
     }
     pub fn serialize(&self) -> String {
         format!(
-            "fullbright:{}\ndynamicLights:{}\nzoom:{}\nzoomKey:{}\nzoomLevel:{}\nzoomSmooth:{}\nzoomSensitivity:{}\nfps:{}\nfpsCorner:{}\nfpsLows:{}\nkeystrokes:{}\nkeystrokesCorner:{}\nkeystrokesCps:{}\nmovedToMods:{}\nminimap:{}\nminimapCorner:{}\nminimapSize:{}\nminimapShape:{}\nminimapZoom:{}\nminimapRotate:{}\nautoReconnect:{}\nuiSoundReserve:{}\nownNameTag:{}\nhideBlockParticles:{}\nmouseTweaks:{}\nmouseTweaksWheel:{}\nsort:{}\nsortKey:{}\nchatAnimation:{}\nchatIndicator:{}\n{}:{}\nagentControl:{}\nreproKeys:{}\ndiscordPresence:{}\nsplitscreen:{}\nsplitscreenTwo:{}\nsplitscreenThree:{}\nsplitscreenNames:{}\nwheelCyclesSettings:{}\n",
+            "fullbright:{}\ndynamicLights:{}\nzoom:{}\nzoomKey:{}\nzoomLevel:{}\nzoomSmooth:{}\nzoomSensitivity:{}\nfps:{}\nfpsCorner:{}\nfpsLows:{}\nkeystrokes:{}\nkeystrokesCorner:{}\nkeystrokesCps:{}\nmovedToMods:{}\nminimap:{}\nminimapCorner:{}\nminimapSize:{}\nminimapShape:{}\nminimapZoom:{}\nminimapRotate:{}\nautoReconnect:{}\nuiSoundReserve:{}\nownNameTag:{}\nhideBlockParticles:{}\nmouseTweaks:{}\nmouseTweaksWheel:{}\nsort:{}\nsortKey:{}\nchatAnimation:{}\nchatIndicator:{}\n{}:{}\nagentControl:{}\nreproKeys:{}\ndiscordPresence:{}\nsplitscreen:{}\nsplitscreenTwo:{}\nsplitscreenThree:{}\nsplitscreenNames:{}\nwheelCyclesSettings:{}\nmusicOff:{}\nmusicPage:{}\ncosmeticsMine:{}\ncosmeticsOthers:{}\n",
             bool_text(self.fullbright),
             bool_text(self.dynamic_lights),
             bool_text(self.zoom),
@@ -318,6 +345,10 @@ impl Extras {
             self.splitscreen_three,
             bool_text(self.splitscreen_names),
             bool_text(self.wheel_cycles_settings),
+            self.music_off.join(","),
+            bool_text(self.music_page),
+            bool_text(self.cosmetics_mine),
+            bool_text(self.cosmetics_others),
         )
     }
     /// Binds the extra key `name` (`SORT_KEY`); false for
@@ -448,6 +479,8 @@ mod desktop_ui {
         HideBlockParticles,
         AutoReconnect,
         UiSoundReserve,
+        /// The Music... page on Music & Sounds (`Music page`).
+        MusicPage,
         MouseTweaks,
         MouseTweaksWheel,
         Sort,
@@ -466,11 +499,14 @@ mod desktop_ui {
         /// On the Splitscreen settings page.
         Splitscreen,
         WheelCyclesSettings,
+        /// Shown only while cosmetics are enabled (`horizon_cosmetics::enabled`).
+        CosmeticsMine,
+        CosmeticsOthers,
     }
     /// The Extras page: headers (language keys) and items.
     pub fn rows() -> Vec<Result<Item, &'static str>> {
         use self::Item::*;
-        vec![
+        let mut rows = vec![
             Err("horizon.extras.header.lighting"),
             Ok(Fullbright),
             Ok(DynamicLights),
@@ -490,9 +526,18 @@ mod desktop_ui {
             Ok(AutoReconnect),
             Err("horizon.extras.header.sound"),
             Ok(UiSoundReserve),
+            Ok(MusicPage),
             Err("horizon.extras.header.menus"),
             Ok(WheelCyclesSettings),
-        ]
+        ];
+        if horizon_cosmetics::enabled() {
+            rows.extend([
+                Err("horizon.extras.header.cosmetics"),
+                Ok(CosmeticsMine),
+                Ok(CosmeticsOthers),
+            ]);
+        }
+        rows
     }
     impl Item {
         /// The language key of the caption (`horizon.*`, assets/horizon/lang).
@@ -504,6 +549,7 @@ mod desktop_ui {
                 Item::HideBlockParticles => "horizon.extras.hide_block_particles",
                 Item::AutoReconnect => "horizon.extras.auto_reconnect",
                 Item::UiSoundReserve => "horizon.extras.ui_sound_reserve",
+                Item::MusicPage => "horizon.extras.music_page",
                 Item::MouseTweaks => "horizon.extras.mouse_tweaks",
                 Item::MouseTweaksWheel => "horizon.extras.mouse_tweaks_wheel",
                 Item::Sort => "horizon.extras.sort",
@@ -516,6 +562,8 @@ mod desktop_ui {
                 Item::ChatAnimation => "horizon.extras.chat_animation",
                 Item::ChatIndicator => "horizon.extras.chat_indicator",
                 Item::WheelCyclesSettings => "horizon.extras.wheel_cycles_settings",
+                Item::CosmeticsMine => "horizon.extras.cosmetics_mine",
+                Item::CosmeticsOthers => "horizon.extras.cosmetics_others",
             }
         }
         /// The language key of the description shown as the row's tooltip.
@@ -527,6 +575,7 @@ mod desktop_ui {
                 Item::HideBlockParticles => "horizon.extras.hide_block_particles.tooltip",
                 Item::AutoReconnect => "horizon.extras.auto_reconnect.tooltip",
                 Item::UiSoundReserve => "horizon.extras.ui_sound_reserve.tooltip",
+                Item::MusicPage => "horizon.extras.music_page.tooltip",
                 Item::MouseTweaks => "horizon.extras.mouse_tweaks.tooltip",
                 Item::MouseTweaksWheel => "horizon.extras.mouse_tweaks_wheel.tooltip",
                 Item::Sort => "horizon.extras.sort.tooltip",
@@ -539,6 +588,8 @@ mod desktop_ui {
                 Item::ChatAnimation => "horizon.extras.chat_animation.tooltip",
                 Item::ChatIndicator => "horizon.extras.chat_indicator.tooltip",
                 Item::WheelCyclesSettings => "horizon.extras.wheel_cycles_settings.tooltip",
+                Item::CosmeticsMine => "horizon.extras.cosmetics_mine.tooltip",
+                Item::CosmeticsOthers => "horizon.extras.cosmetics_others.tooltip",
             }
         }
         /// The caption in the current language (English when the key is missing).
@@ -559,6 +610,7 @@ mod desktop_ui {
                 Item::HideBlockParticles => "Hide block-break particles",
                 Item::AutoReconnect => "Auto-reconnect",
                 Item::UiSoundReserve => "Keep channels for UI sounds",
+                Item::MusicPage => "Music page",
                 Item::MouseTweaks => "Mouse Tweaks controls",
                 Item::MouseTweaksWheel => "Scroll wheel moves items",
                 Item::Sort => "Sort buttons",
@@ -571,6 +623,8 @@ mod desktop_ui {
                 Item::DiscordPresence => "Discord Rich Presence",
                 Item::Splitscreen => "Splitscreen",
                 Item::WheelCyclesSettings => "Scroll wheel changes settings",
+                Item::CosmeticsMine => "My cosmetics",
+                Item::CosmeticsOthers => "Other players' cosmetics",
             }
         }
         /// The switch this setting belongs to: it does nothing while that is off.
@@ -583,7 +637,8 @@ mod desktop_ui {
                 ChatIndicator => ChatAnimation,
                 Fullbright | DynamicLights | OwnNameTag | HideBlockParticles | MouseTweaks
                 | Sort | AutoReconnect | NoAi | AgentControl | ReproKeys | DiscordPresence
-                | Splitscreen | ChatAnimation | WheelCyclesSettings => {
+                | Splitscreen | ChatAnimation | WheelCyclesSettings | MusicPage | CosmeticsMine
+                | CosmeticsOthers => {
                     return None;
                 }
             })
@@ -606,6 +661,9 @@ mod desktop_ui {
                 }
                 Item::UiSoundReserve => {
                     "Sounds in the world leave 16 of the 247 sound channels free, so a flood of them (a big explosion) can't silence menu clicks."
+                }
+                Item::MusicPage => {
+                    "Music & Sounds gets a Music... page: play any built-in track now, or turn one off so the game stops picking it. Nothing changes until you turn a track off."
                 }
                 Item::MouseTweaks => {
                     "Right-drag places one per slot, left-drag gathers the held item, Shift + left-drag moves every slot."
@@ -638,6 +696,12 @@ mod desktop_ui {
                 Item::ReproKeys => {
                     "F3+R starts or stops a repro recording and F3+E writes its bundle. Off by default: a recording copies the world."
                 }
+                Item::CosmeticsMine => {
+                    "Shows the cosmetics you wear on your own player, in third person and the inventory."
+                }
+                Item::CosmeticsOthers => {
+                    "Shows the cosmetics other Horizon players wear. Off, the game never asks what they wear."
+                }
                 Item::WheelCyclesSettings => {
                     "The scroll wheel over a button in the settings changes its value, as in vanilla. Off, the wheel only scrolls the list."
                 }
@@ -649,6 +713,7 @@ mod desktop_ui {
             match self {
                 Item::Fullbright => Some(Cost::None),
                 Item::UiSoundReserve => Some(Cost::None),
+                Item::MusicPage => Some(Cost::None),
                 Item::DynamicLights => Some(Cost::Low),
                 Item::ChatAnimation => Some(Cost::None),
                 Item::OwnNameTag
@@ -658,6 +723,7 @@ mod desktop_ui {
                 | Item::Sort
                 | Item::Splitscreen
                 | Item::WheelCyclesSettings => Some(Cost::None),
+                Item::CosmeticsMine | Item::CosmeticsOthers => Some(Cost::Low),
                 _ => None,
             }
         }
@@ -670,6 +736,7 @@ mod desktop_ui {
                 Item::HideBlockParticles => e.hide_block_particles,
                 Item::AutoReconnect => e.auto_reconnect,
                 Item::UiSoundReserve => e.ui_sound_reserve,
+                Item::MusicPage => e.music_page,
                 Item::MouseTweaks => e.mouse_tweaks,
                 Item::MouseTweaksWheel => e.mouse_tweaks_wheel,
                 Item::Sort => e.sort,
@@ -681,6 +748,8 @@ mod desktop_ui {
                 Item::DiscordPresence => e.discord_presence,
                 Item::Splitscreen => e.splitscreen,
                 Item::WheelCyclesSettings => e.wheel_cycles_settings,
+                Item::CosmeticsMine => e.cosmetics_mine,
+                Item::CosmeticsOthers => e.cosmetics_others,
                 _ => return None,
             })
         }
@@ -704,6 +773,7 @@ mod desktop_ui {
                 Item::HideBlockParticles => e.hide_block_particles = !e.hide_block_particles,
                 Item::AutoReconnect => e.auto_reconnect = !e.auto_reconnect,
                 Item::UiSoundReserve => e.ui_sound_reserve = !e.ui_sound_reserve,
+                Item::MusicPage => e.music_page = !e.music_page,
                 Item::MouseTweaks => e.mouse_tweaks = !e.mouse_tweaks,
                 Item::MouseTweaksWheel => e.mouse_tweaks_wheel = !e.mouse_tweaks_wheel,
                 Item::Sort => e.sort = !e.sort,
@@ -715,6 +785,8 @@ mod desktop_ui {
                 Item::DiscordPresence => e.discord_presence = !e.discord_presence,
                 Item::Splitscreen => e.splitscreen = !e.splitscreen,
                 Item::WheelCyclesSettings => e.wheel_cycles_settings = !e.wheel_cycles_settings,
+                Item::CosmeticsMine => e.cosmetics_mine = !e.cosmetics_mine,
+                Item::CosmeticsOthers => e.cosmetics_others = !e.cosmetics_others,
                 Item::SortKey => {}
             }
         }
@@ -750,6 +822,7 @@ mod tests {
         assert!(!d.zoom && !d.fps && !d.keystrokes && !d.minimap && !d.auto_reconnect);
         assert!(!d.mouse_tweaks && !d.sort && !d.own_name_tag && !d.ui_sound_reserve);
         assert!(!d.hide_block_particles);
+        assert!(!d.music_page && d.music_off.is_empty());
         assert!(d.discord_presence && d.wheel_cycles_settings);
         assert_eq!(Extras::parse(""), d);
         assert_eq!(Extras::parse(&d.serialize()), d);
@@ -793,6 +866,13 @@ mod tests {
         assert_eq!(Item::Splitscreen.switch(&e), Some(true));
         Item::WheelCyclesSettings.cycle(&mut e, false);
         assert_eq!(Item::WheelCyclesSettings.switch(&e), Some(false));
+        e.music_off = vec![
+            "minecraft:music/game/calm1".into(),
+            "minecraft:music.menu".into(),
+        ];
+        assert!(!e.music_page);
+        Item::MusicPage.cycle(&mut e, false);
+        assert_eq!(Item::MusicPage.switch(&e), Some(true));
         assert_eq!(Extras::parse(&e.serialize()), e);
     }
 

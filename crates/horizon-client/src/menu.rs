@@ -3540,8 +3540,13 @@ pub(crate) mod tests {
                         *max_stack = 7;
                     }
                 },
+                living_heal: |_, _, _| {},
                 living_breathe: |_, _, _, _, _| {},
+                living_drown: |_, _, _, _, _, _| {},
+                living_fall: |_, _, _, _, _| {},
+                living_jump: |_, _| {},
                 ingredient: |_, _, _| {},
+                ingredient_test: |_, _, _, _| {},
             });
         assert!(installed.is_ok());
         let kind = Kind::Mod(Box::leak(Box::new(crate::containers::ModMenuType {

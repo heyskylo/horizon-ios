@@ -1,9 +1,19 @@
 //! Horizon: native Rust client for Minecraft Java Edition 26.3 gameplay.
 #![forbid(unsafe_code)]
 
-#[cfg(all(not(target_os = "android"), not(feature = "system-allocator")))]
+#[cfg(all(
+    not(target_os = "android"),
+    not(any(feature = "system-allocator", feature = "alloc-census"))
+))]
 #[global_allocator]
-static ALLOCATOR: horizon_threads::Allocator = horizon_threads::Allocator;
+static ALLOCATOR: horizon_threads::Allocator = horizon_threads::ALLOCATOR;
+#[cfg(all(
+    not(target_os = "android"),
+    feature = "alloc-census",
+    not(feature = "system-allocator")
+))]
+#[global_allocator]
+static ALLOCATOR: horizon_threads::CensusAllocator = horizon_threads::CensusAllocator;
 
 /// The mod API level this game serves, kept in the program for the launcher
 /// to read without running it (`horizon_mods::api_level::MARK`). `main`

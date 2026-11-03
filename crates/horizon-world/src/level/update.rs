@@ -342,7 +342,9 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         let block_changed = self.block_of(old) != new_block;
         if block_changed && self.block_of(old) == self.b.named.moving_piston {
             // PistonMovingBlockEntity.preRemoveSideEffects -> finalTick; the
-            // block is already replaced, so only the entity goes away.
+            // block is already replaced, so only the entity goes away. The
+            // extended base is MovingPistonBlock.destroy's, which only the
+            // player-break path calls (player_destroy).
             self.remove_moving_piston(pos);
         } else if block_changed
             && (self.b.has_flag(old, super::data::state_flags::BLOCK_ENTITY)
