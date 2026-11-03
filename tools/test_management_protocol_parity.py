@@ -145,15 +145,15 @@ MESSAGES = [
     '{"jsonrpc":"2.0","id":52,"method":"minecraft:serversettings/game_mode"}',
     '{"jsonrpc":"2.0","id":53,"method":"minecraft:serversettings/game_mode/set","params":["spectator"]}',
     '{"jsonrpc":"2.0","id":54,"method":"minecraft:serversettings/game_mode"}',
-    '{"jsonrpc":"2.0","id":150,"method":"minecraft:serversettings/operator_user_permission_level"}',
-    '{"jsonrpc":"2.0","id":151,"method":"minecraft:serversettings/operator_user_permission_level/set","params":[2]}',
-    '{"jsonrpc":"2.0","id":152,"method":"minecraft:serversettings/operator_user_permission_level"}',
-    '{"jsonrpc":"2.0","id":153,"method":"minecraft:serversettings/operator_user_permission_level/set","params":[0]}',
-    '{"jsonrpc":"2.0","id":154,"method":"minecraft:serversettings/operator_user_permission_level"}',
-    '{"jsonrpc":"2.0","id":155,"method":"minecraft:serversettings/operator_user_permission_level/set","params":["yes"]}',
-    '{"jsonrpc":"2.0","id":156,"method":"minecraft:serversettings/operator_user_permission_level"}',
-    '{"jsonrpc":"2.0","id":157,"method":"minecraft:serversettings/operator_user_permission_level/set","params":[2]}',
-    '{"jsonrpc":"2.0","id":158,"method":"minecraft:serversettings/operator_user_permission_level"}',
+    '{"jsonrpc":"2.0","id":220,"method":"minecraft:serversettings/operator_user_permission_level"}',
+    '{"jsonrpc":"2.0","id":221,"method":"minecraft:serversettings/operator_user_permission_level/set","params":[2]}',
+    '{"jsonrpc":"2.0","id":222,"method":"minecraft:serversettings/operator_user_permission_level"}',
+    '{"jsonrpc":"2.0","id":223,"method":"minecraft:serversettings/operator_user_permission_level/set","params":[0]}',
+    '{"jsonrpc":"2.0","id":224,"method":"minecraft:serversettings/operator_user_permission_level"}',
+    '{"jsonrpc":"2.0","id":225,"method":"minecraft:serversettings/operator_user_permission_level/set","params":["yes"]}',
+    '{"jsonrpc":"2.0","id":226,"method":"minecraft:serversettings/operator_user_permission_level"}',
+    '{"jsonrpc":"2.0","id":227,"method":"minecraft:serversettings/operator_user_permission_level/set","params":[2]}',
+    '{"jsonrpc":"2.0","id":228,"method":"minecraft:serversettings/operator_user_permission_level"}',
     '{"jsonrpc":"2.0","id":55,"method":"minecraft:serversettings/force_game_mode"}',
     '{"jsonrpc":"2.0","id":56,"method":"minecraft:serversettings/force_game_mode/set","params":[true]}',
     '{"jsonrpc":"2.0","id":57,"method":"minecraft:serversettings/force_game_mode"}',
@@ -579,7 +579,7 @@ def main():
                         if not isinstance(reply, dict) or 'method' not in reply or 'id' in reply:
                             break
                     sides[side]['restarted_allow_flight'] = reply
-                    ws.send('{"jsonrpc":"2.0","id":159,"method":"minecraft:serversettings/operator_user_permission_level"}')
+                    ws.send('{"jsonrpc":"2.0","id":229,"method":"minecraft:serversettings/operator_user_permission_level"}')
                     while True:
                         reply = normal(ws.receive(timeout=60))
                         if not isinstance(reply, dict) or 'method' not in reply or 'id' in reply:
@@ -662,7 +662,7 @@ def main():
         if not horizon['saved_config_operator_user_permission_level']:
             failures.append('Horizon did not save operator permission level in server.toml')
         if vanilla['restarted_operator_user_permission_level'] != horizon['restarted_operator_user_permission_level'] or \
-                vanilla['restarted_operator_user_permission_level'] != {'jsonrpc': '2.0', 'id': 159, 'result': 2}:
+                vanilla['restarted_operator_user_permission_level'] != {'jsonrpc': '2.0', 'id': 229, 'result': 2}:
             failures.append(f"restarted operator permission level: vanilla {vanilla['restarted_operator_user_permission_level']!r}, Horizon {horizon['restarted_operator_user_permission_level']!r}")
         if vanilla['saved_allow_flight'] != horizon['saved_allow_flight'] or vanilla['saved_allow_flight'] != 'true':
             failures.append(f"saved allow-flight: vanilla {vanilla['saved_allow_flight']!r}, Horizon {horizon['saved_allow_flight']!r}")
