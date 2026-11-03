@@ -321,6 +321,8 @@
   "Reuses the pack shadow map when sun, view and world match. Off by default.": "Używa ponownie mapy cieni paczki, gdy słońce, widok i świat się zgadzają. Domyślnie wyłączone.",
   "Synchronous": "Synchroniczne",
   "Asynchronous": "Asynchroniczne",
+  "Hidden Faces": "Ukryte ściany",
+  "Drops leaf faces behind two leaf layers: faster, same crowns.": "Pomija ściany liści za dwiema warstwami liści: szybciej, korony bez zmian.",
   "Solid": "Pełne",
   "Solid Aggressive": "Pełne, agresywnie",
   "Hollow": "Puste",
