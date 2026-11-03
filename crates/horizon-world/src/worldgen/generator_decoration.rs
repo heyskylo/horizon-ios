@@ -1527,3 +1527,112 @@ fn block_of(nbt: &crate::nbt::Compound) -> Option<[i32; 3]> {
         _ => 0,
     }))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::loot_table_nbt;
+    use crate::registry::BlockRegistry;
+    use horizon_core::random::{LegacyRandom, RandomSource};
+
+    /// Air, a chest, a dispenser and a furnace: one randomizable container the
+    /// worldgen callers place, three they do not, and one plain container.
+    fn registry() -> &'static BlockRegistry {
+        let names = [
+            "minecraft:air",
+            "minecraft:chest",
+            "minecraft:dispenser",
+            "minecraft:hopper",
+            "minecraft:shulker_box",
+            "minecraft:light_gray_shulker_box",
+            "minecraft:crafter",
+            "minecraft:decorated_pot",
+            "minecraft:furnace",
+            "minecraft:ender_chest",
+        ];
+        let rows: Vec<serde_json::Value> = names
+            .iter()
+            .map(|name| {
+                serde_json::json!([name, name.ends_with("air"), false, "",
+                    {"id": name, "properties": {}}])
+            })
+            .collect();
+        let defaults: serde_json::Map<String, serde_json::Value> = (names.iter().enumerate())
+            .map(|(i, name)| ((*name).to_owned(), serde_json::json!(i)))
+            .collect();
+        let facts = serde_json::json!({"states": rows, "defaults": defaults});
+        let registry = BlockRegistry::from_facts_json(facts.to_string().as_bytes()).unwrap();
+        Box::leak(Box::new(registry))
+    }
+
+    fn state(name: &str) -> crate::registry::BlockStateId {
+        registry().default_state(name).unwrap()
+    }
+
+    /// `RandomizableContainer.setBlockEntityLootTable` hands the table to the block
+    /// entity of any `RandomizableContainer`, not only the chests the two worldgen
+    /// callers place today.
+    #[test]
+    fn a_randomizable_container_takes_a_loot_table() {
+        for name in [
+            "minecraft:chest",
+            "minecraft:dispenser",
+            "minecraft:hopper",
+            "minecraft:shulker_box",
+            "minecraft:light_gray_shulker_box",
+            "minecraft:crafter",
+            "minecraft:decorated_pot",
+        ] {
+            let mut random = LegacyRandom::new(4);
+            let nbt = loot_table_nbt(
+                registry(),
+                state(name),
+                "minecraft:chests/simple_dungeon",
+                &mut random,
+            )
+            .unwrap_or_else(|| panic!("no loot table for {name}"));
+            assert_eq!(
+                nbt.get(&"id".into()),
+                Some(&crate::nbt::Tag::String(name.into()))
+            );
+            assert_eq!(
+                nbt.get(&"LootTable".into()),
+                Some(&crate::nbt::Tag::String(
+                    "minecraft:chests/simple_dungeon".into()
+                ))
+            );
+            // The seed is the first long of the random: same seed, same draw.
+            assert_eq!(
+                nbt.get(&"LootTableSeed".into()),
+                Some(&crate::nbt::Tag::Long(LegacyRandom::new(4).next_long()))
+            );
+        }
+    }
+
+    /// A block whose block entity is not a `RandomizableContainer` keeps no table,
+    /// and the seed is not drawn for it.
+    #[test]
+    fn a_plain_container_takes_no_loot_table() {
+        for name in [
+            "minecraft:furnace",
+            "minecraft:ender_chest",
+            "minecraft:air",
+        ] {
+            let mut random = LegacyRandom::new(4);
+            assert!(
+                loot_table_nbt(
+                    registry(),
+                    state(name),
+                    "minecraft:chests/simple_dungeon",
+                    &mut random
+                )
+                .is_none(),
+                "{name}"
+            );
+            assert_eq!(
+                random.next_long(),
+                LegacyRandom::new(4).next_long(),
+                "{name}"
+            );
+        }
+    }
+}
