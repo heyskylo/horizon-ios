@@ -299,6 +299,7 @@ fn an_item_file_is_kept_by_its_hash() {
         slot: "head".into(),
         names: BTreeMap::new(),
         theme: None,
+        lines: BTreeMap::new(),
     };
     let file = format!(
         r#"{{"format": 1, "id": "hat", "slot": "head", "bone": "head", "texture": {{"png": "{}"}}, "parts": []}}"#,

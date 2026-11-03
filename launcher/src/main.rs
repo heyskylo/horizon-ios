@@ -290,6 +290,8 @@ struct Launcher {
     /// The selected account's own answer on it from its last Wardrobe visit, kept on disk (a
     /// preview the service grants it, its claim).
     shop_kept: Option<horizon_launcher::wardrobe::Claim>,
+    /// The Wardrobe page's Shop tab (`wardrobe_page/shop.rs`).
+    shop: wardrobe_page::Shop,
     /// Work the look out again on the next frame (a launcher theme put on or taken off).
     restyle: bool,
     /// Why the last picture for Home's background was refused.
@@ -582,6 +584,7 @@ impl Launcher {
             wardrobe_reload: false,
             shop_status: None,
             shop_kept: None,
+            shop: Default::default(),
             restyle: horizon_cosmetics::enabled(),
             background_error: None,
             args_input: line_edit::LineEdit::new(settings.game_args.clone(), 1024, 38),

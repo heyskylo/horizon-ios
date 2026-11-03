@@ -17,6 +17,9 @@ use horizon_launcher::wardrobe::{Catalogue, Change, ClaimState, Error, Saved, Se
 use std::collections::HashMap;
 use std::sync::Arc;
 
+mod shop;
+pub(super) use shop::Shop;
+
 /// The still picture's size, in points.
 const W: f32 = 180.;
 const H: f32 = 264.;
@@ -495,7 +498,7 @@ impl Launcher {
     /// that owns the items of `HORIZON_COSMETICS_LOCAL` and wears the first of each slot, for
     /// screenshots. Nothing is asked of Mojang or the service, and nothing is saved.
     /// `HORIZON_WARDROBE_STATE=offline|failed|closed|empty` shows that state instead, `theme` wears
-    /// First Light.
+    /// First Light. `HORIZON_SHOP_STATE` opens the Shop tab in one of its states (`shop_preview`).
     pub(super) fn wardrobe_preview(&mut self) {
         use horizon_launcher::wardrobe::{Claim, Entry, Me};
         let Some(dir) = std::env::var_os("HORIZON_COSMETICS_LOCAL") else {
@@ -535,6 +538,7 @@ impl Launcher {
                 .map(String::from),
                 accent_hue: 246.,
             }),
+            lines: Default::default(),
         };
         ids.push(dawn.id.clone());
         if state == "theme" {
@@ -563,6 +567,7 @@ impl Launcher {
                     slot: slot(i).to_owned(),
                     names: [("en_us".to_owned(), title_case(&i.id))].into(),
                     theme: None,
+                    lines: Default::default(),
                 })
                 .chain([dawn])
                 .collect(),
@@ -620,6 +625,9 @@ impl Launcher {
         });
         self.wardrobe_reload = false;
         self.restyle = true;
+        if let Ok(state) = std::env::var("HORIZON_SHOP_STATE") {
+            self.shop_preview(&state);
+        }
     }
 
     /// The account's skin wearing what it wears now, baked once per change.
@@ -669,14 +677,31 @@ impl Launcher {
 
     pub(super) fn wardrobe_page(&mut self, cx: &mut Context<Self>) -> Div {
         let t = self.theme;
+        let signed_out = self.wardrobe.is_none() && self.wardrobe_account().is_none();
+        let reload = std::mem::take(&mut self.wardrobe_reload);
+        self.shop_visit(reload, signed_out, cx);
+        if !signed_out && (reload || self.wardrobe.is_none()) {
+            self.open_wardrobe(cx);
+        }
+        // The Shop's tab, only while the service has one to show.
+        let tabs = match self.shop_tabs(cx) {
+            Some(tabs) if self.shop.open => return self.shop_page(tabs, cx),
+            tabs => tabs,
+        };
         let header = page_header(
             "Wardrobe",
             "What you wear in every Horizon world and server. Changes reach other players the next \
              time they see you.",
             &t,
-        );
-        let page = div().flex().flex_col().gap(px(24.)).child(header);
-        if self.wardrobe.is_none() && self.wardrobe_account().is_none() {
+        )
+        .when(tabs.is_some(), |d| d.pt(px(4.)));
+        let page = div()
+            .flex()
+            .flex_col()
+            .gap(px(24.))
+            .children(tabs)
+            .child(header);
+        if signed_out {
             let sign_in = button(
                 "wardrobe-sign-in",
                 "Sign in with Microsoft",
@@ -702,9 +727,6 @@ impl Launcher {
                     )
                     .child(sign_in),
             );
-        }
-        if std::mem::take(&mut self.wardrobe_reload) || self.wardrobe.is_none() {
-            self.open_wardrobe(cx);
         }
         let picture = self.wardrobe_picture();
         let Some(w) = self.wardrobe.as_ref() else {
