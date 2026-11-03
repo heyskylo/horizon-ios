@@ -12,13 +12,22 @@ pub trait SpawnLevel {
     fn has_fluid(&self, x: i32, y: i32, z: i32) -> bool;
     /// `Block.isFaceFull(state.getCollisionShape(level, pos), Direction.UP)`.
     fn top_face_full(&self, x: i32, y: i32, z: i32) -> bool;
+    /// `ChunkGenerator.getSpawnHeight`, when the level's dimension type has a
+    /// ceiling (`caveWorld`): the search starts there instead of at the
+    /// column's top. None without a ceiling.
+    fn cave_spawn_height(&self) -> Option<i32> {
+        None
+    }
 }
 
-/// PlayerSpawnFinder.getLevelRespawnPos in a dimension without a ceiling:
-/// the block above the column's top full-topped collision, unless water,
-/// lava or only non-colliding blocks are on top.
+/// PlayerSpawnFinder.getLevelRespawnPos: the block above the top full-topped
+/// collision at or under the column's top (the generator's spawn height in a
+/// level with a ceiling), unless water, lava or only non-colliding blocks
+/// are on top.
 pub fn level_respawn_pos(level: &impl SpawnLevel, x: i32, z: i32) -> Option<[i32; 3]> {
-    let top = level.height(HeightmapType::MotionBlocking, x, z);
+    let top = level
+        .cave_spawn_height()
+        .unwrap_or_else(|| level.height(HeightmapType::MotionBlocking, x, z));
     if top < level.min_y() {
         return None;
     }
@@ -228,6 +237,39 @@ mod tests {
         fn top_face_full(&self, _: i32, y: i32, _: i32) -> bool {
             y <= self.top
         }
+    }
+
+    /// A level whose dimension type has a ceiling: the finder starts from the
+    /// generator's spawn height, not the column's top (`caveWorld`).
+    struct Capped(Flat);
+    impl SpawnLevel for Capped {
+        fn min_y(&self) -> i32 {
+            self.0.min_y()
+        }
+        fn height(&self, kind: HeightmapType, x: i32, z: i32) -> i32 {
+            self.0.height(kind, x, z)
+        }
+        fn has_fluid(&self, x: i32, y: i32, z: i32) -> bool {
+            self.0.has_fluid(x, y, z)
+        }
+        fn top_face_full(&self, x: i32, y: i32, z: i32) -> bool {
+            self.0.top_face_full(x, y, z)
+        }
+        fn cave_spawn_height(&self) -> Option<i32> {
+            Some(64)
+        }
+    }
+
+    #[test]
+    fn a_level_with_a_ceiling_starts_the_search_at_the_spawn_height() {
+        let ground = || Flat {
+            top: 100,
+            water: false,
+        };
+        // Open sky: on top of the column.
+        assert_eq!(level_respawn_pos(&ground(), 3, 4), Some([3, 101, 4]));
+        // Under a ceiling: the first floor at or below y 65.
+        assert_eq!(level_respawn_pos(&Capped(ground()), 3, 4), Some([3, 66, 4]));
     }
 
     #[test]

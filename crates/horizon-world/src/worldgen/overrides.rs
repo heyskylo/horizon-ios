@@ -70,29 +70,40 @@ pub enum PackFile {
 }
 
 /// A level's build range (`LevelHeightAccessor`: `min_y`, `height`) and the
-/// rest of its dimension type the game reads: `logical_height` and
-/// `has_skylight`.
+/// rest of its dimension type the game reads: `logical_height`,
+/// `has_skylight`, `has_ceiling` and `ambient_light`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct LevelHeight {
     pub min_y: i32,
     pub height: i32,
     pub logical_height: i32,
     pub has_skylight: bool,
+    pub has_ceiling: bool,
+    /// `ambient_light` as `f32::to_bits`, so that the type stays hashable.
+    ambient_light_bits: u32,
 }
 impl LevelHeight {
+    /// `DimensionType.ambientLight`.
+    pub fn ambient_light(self) -> f32 {
+        f32::from_bits(self.ambient_light_bits)
+    }
     /// The vanilla dimension types'.
     pub fn vanilla(dimension_type: &str) -> Option<Self> {
-        let (min_y, height, logical_height, has_skylight) = match dimension_type {
-            "minecraft:overworld" | "minecraft:overworld_caves" => (-64, 384, 384, true),
-            "minecraft:the_nether" => (0, 256, 128, false),
-            "minecraft:the_end" => (0, 256, 256, true),
-            _ => return None,
-        };
+        let (min_y, height, logical_height, has_skylight, has_ceiling, ambient_light) =
+            match dimension_type {
+                "minecraft:overworld" => (-64, 384, 384, true, false, 0.0f32),
+                "minecraft:overworld_caves" => (-64, 384, 384, true, true, 0.0),
+                "minecraft:the_nether" => (0, 256, 128, false, true, 0.1),
+                "minecraft:the_end" => (0, 256, 256, true, false, 0.25),
+                _ => return None,
+            };
         Some(Self {
             min_y,
             height,
             logical_height,
             has_skylight,
+            has_ceiling,
+            ambient_light_bits: ambient_light.to_bits(),
         })
     }
     /// A dimension type's JSON, if its codec accepts the range: multiples
@@ -113,6 +124,8 @@ impl LevelHeight {
             height,
             logical_height,
             has_skylight: v["has_skylight"].as_bool().unwrap_or(true),
+            has_ceiling: v["has_ceiling"].as_bool().unwrap_or(false),
+            ambient_light_bits: (v["ambient_light"].as_f64().unwrap_or(0.0) as f32).to_bits(),
         })
     }
     /// A level stem's `type` (a dimension type id, or one inline), with the
@@ -427,7 +440,7 @@ mod tests {
             min_y: -64,
             height: 2096,
             logical_height: 384,
-            has_skylight: true,
+            ..LevelHeight::vanilla("minecraft:overworld").unwrap()
         };
         assert_eq!(o.level_height("minecraft:overworld"), Some(tall));
         let end = o.level_height("minecraft:the_end");
@@ -449,6 +462,41 @@ mod tests {
             o.set(DIMENSION_TYPES, "minecraft:overworld", bad.into());
             assert_eq!(o.level_height("minecraft:overworld"), None, "{bad}");
         }
+    }
+
+    /// `has_ceiling` and `ambient_light` belong to the dimension type, not to
+    /// the level's id: `overworld_caves` has a ceiling, a pack's type may
+    /// give either to any level.
+    #[test]
+    fn ceiling_and_ambient_light_follow_the_dimension_type() {
+        let v = |id: &str| LevelHeight::vanilla(id).unwrap();
+        assert!(!v("minecraft:overworld").has_ceiling);
+        assert!(v("minecraft:overworld_caves").has_ceiling);
+        assert!(v("minecraft:the_nether").has_ceiling);
+        assert!(!v("minecraft:the_end").has_ceiling);
+        assert_eq!(v("minecraft:the_nether").ambient_light(), 0.1);
+        assert_eq!(v("minecraft:the_end").ambient_light(), 0.25);
+        let mut o = WorldgenOverrides::default();
+        o.set(
+            DIMENSION_TYPES,
+            "p:cave",
+            r#"{"min_y":0,"height":256,"has_ceiling":true,"ambient_light":0.5}"#.into(),
+        );
+        o.set(
+            DIMENSIONS,
+            "minecraft:overworld",
+            r#"{"type":"p:cave"}"#.into(),
+        );
+        o.set(
+            DIMENSIONS,
+            "minecraft:the_nether",
+            r#"{"type":"minecraft:overworld"}"#.into(),
+        );
+        let cave = o.level_height("minecraft:overworld").unwrap();
+        assert!(cave.has_ceiling);
+        assert_eq!(cave.ambient_light(), 0.5);
+        let open = o.level_height("minecraft:the_nether").unwrap();
+        assert!(!open.has_ceiling && open.has_skylight);
     }
 
     #[test]

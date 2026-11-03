@@ -611,6 +611,8 @@ fn changed_dimension_type(name: &str, json: &Value, levels: &LevelShapes) -> Opt
     json["height"] = shape.height.into();
     json["logical_height"] = shape.logical_height.into();
     json["has_skylight"] = shape.sky_light.into();
+    json["has_ceiling"] = shape.has_ceiling.into();
+    json["ambient_light"] = shape.ambient_light.into();
     Some(json)
 }
 

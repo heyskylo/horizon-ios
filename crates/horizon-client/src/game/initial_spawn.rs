@@ -28,8 +28,13 @@ struct Columns<'a, 'r> {
     world: &'a World,
     properties: &'a Properties,
     binding: &'a BlockCollisionRegistry<'r>,
+    /// The generator's spawn height, when the level's type has a ceiling.
+    cave_spawn_height: Option<i32>,
 }
 impl SpawnLevel for Columns<'_, '_> {
+    fn cave_spawn_height(&self) -> Option<i32> {
+        self.cave_spawn_height
+    }
     fn min_y(&self) -> i32 {
         self.world.bottom_y()
     }
@@ -74,6 +79,14 @@ impl Game<'_> {
             world: &self.world,
             properties: &self.pack.assets.properties,
             binding: self.collision,
+            // The spawn searches run in the Overworld, whose type decides.
+            cave_spawn_height: if self.level_shapes.overworld.has_ceiling {
+                self.spawn_origin
+                    .map(|(_, height)| height)
+                    .or_else(|| self.spawn_origin().ok().map(|(_, height)| height))
+            } else {
+                None
+            },
         }
     }
     /// ChunkGenerator.getOrigin and getSpawnHeight of the overworld.

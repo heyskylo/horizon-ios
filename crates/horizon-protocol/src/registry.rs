@@ -184,6 +184,12 @@ impl Dynamic {
             if let Some(Tag::Byte(v)) = map.get(&JavaString::from("has_skylight")) {
                 d.has_skylight = *v != 0;
             }
+            if let Some(Tag::Byte(v)) = map.get(&JavaString::from("has_ceiling")) {
+                d.has_ceiling = *v != 0;
+            }
+            if let Some(Tag::Float(v)) = map.get(&JavaString::from("ambient_light")) {
+                d.ambient_light = f32::from_bits(*v);
+            }
             // DimensionType.defaultClock: the world clock this level's day
             // time follows (absent in the Nether).
             d.default_clock = match map.get(&JavaString::from("default_clock")) {
@@ -206,16 +212,31 @@ pub struct DimensionType {
     pub height: i32,
     pub logical_height: i32,
     pub has_skylight: bool,
+    /// `DimensionType.hasCeiling`.
+    pub has_ceiling: bool,
+    /// `DimensionType.ambientLight`.
+    pub ambient_light: f32,
     /// `DimensionType.defaultClock`: the `minecraft:world_clock` this level
     /// samples for day time (`None` in the Nether).
     pub default_clock: Option<String>,
 }
 impl DimensionType {
     pub fn vanilla(name: &str) -> Self {
-        let (min_y, height, logical_height, has_skylight, default_clock) = match name {
-            "minecraft:the_nether" => (0, 256, 128, false, None),
-            "minecraft:the_end" => (0, 256, 256, true, Some("minecraft:the_end")),
-            _ => (-64, 384, 384, true, Some("minecraft:overworld")),
+        let (
+            min_y,
+            height,
+            logical_height,
+            has_skylight,
+            has_ceiling,
+            ambient_light,
+            default_clock,
+        ) = match name {
+            "minecraft:the_nether" => (0, 256, 128, false, true, 0.1, None),
+            "minecraft:the_end" => (0, 256, 256, true, false, 0.25, Some("minecraft:the_end")),
+            "minecraft:overworld_caves" => {
+                (-64, 384, 384, true, true, 0.0, Some("minecraft:overworld"))
+            }
+            _ => (-64, 384, 384, true, false, 0.0, Some("minecraft:overworld")),
         };
         Self {
             name: name.to_owned(),
@@ -223,6 +244,8 @@ impl DimensionType {
             height,
             logical_height,
             has_skylight,
+            has_ceiling,
+            ambient_light,
             default_clock: default_clock.map(str::to_owned),
         }
     }

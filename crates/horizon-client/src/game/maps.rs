@@ -1497,7 +1497,8 @@ impl Game<'_> {
         let Some(p) = self.player.as_ref().map(|p| p.position) else {
             return;
         };
-        let nether = self.dim == super::Dim::Nether;
+        // MapItem.update: the dimension type's ceiling, not the Nether's id.
+        let ceiling = self.world.shape.has_ceiling;
         let Some(m) = self.maps.data.get_mut(&id) else {
             return;
         };
@@ -1509,7 +1510,7 @@ impl Game<'_> {
         let px = (p.x - f64::from(cx)).floor() as i32 / scale + 64;
         let pz = (p.z - f64::from(cz)).floor() as i32 / scale + 64;
         let mut radius = 128 / scale;
-        if nether {
+        if ceiling {
             radius /= 2;
         }
         let h = m.holder(self.lan_acting.unwrap_or(HOST));
@@ -1541,7 +1542,7 @@ impl Game<'_> {
                 };
                 let mut water_depth = 0i32;
                 let mut height = 0.0f64;
-                if nether {
+                if ceiling {
                     let mut noise = min_x.wrapping_add(min_z.wrapping_mul(231_871));
                     noise = noise
                         .wrapping_mul(noise)

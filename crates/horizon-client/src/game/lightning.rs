@@ -56,8 +56,8 @@ impl Game<'_> {
     /// ticking range.
     pub(super) fn tick_thunder(&mut self) {
         // isRaining (rain level > 0.2) and isThundering (> 0.9, sky light, no ceiling).
-        let (rain, thunder) = self.world.weather.levels(1.0);
-        if rain <= 0.2 || thunder <= 0.9 || self.dim != super::Dim::Overworld || self.world_debug {
+        let (rain, thunder) = self.weather_levels(1.0);
+        if rain <= 0.2 || thunder <= 0.9 || !self.can_have_weather() || self.world_debug {
             return;
         }
         let mut scratch = std::mem::take(&mut self.spawn_scratch);

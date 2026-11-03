@@ -16,10 +16,16 @@ pub const SECTIONS: usize = (HEIGHT / 16) as usize;
 
 /// A level's build range and skylight, from its dimension type (`min_y`,
 /// `height`, `logical_height`, `has_skylight`), as `LevelHeightAccessor` and
-/// `SerializableChunkData.write` read them.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// `SerializableChunkData.write` read them, and the rest of the type that
+/// rules key on (`has_ceiling`, `ambient_light`): rules read these, never
+/// the level's id.
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LevelShape {
     pub sky_light: bool,
+    /// `DimensionType.hasCeiling`.
+    pub has_ceiling: bool,
+    /// `DimensionType.ambientLight`.
+    pub ambient_light: f32,
     pub min_y: i32,
     pub height: i32,
     /// `DimensionType.logicalHeight`: how high portals and chorus fruit reach.
@@ -28,18 +34,24 @@ pub struct LevelShape {
 impl LevelShape {
     pub const OVERWORLD: Self = Self {
         sky_light: true,
+        has_ceiling: false,
+        ambient_light: 0.0,
         min_y: MIN_Y,
         height: HEIGHT,
         logical_height: HEIGHT,
     };
     pub const NETHER: Self = Self {
         sky_light: false,
+        has_ceiling: true,
+        ambient_light: 0.1,
         min_y: 0,
         height: 256,
         logical_height: 128,
     };
     pub const END: Self = Self {
         sky_light: true,
+        has_ceiling: false,
+        ambient_light: 0.25,
         min_y: 0,
         height: 256,
         logical_height: 256,
@@ -59,10 +71,26 @@ impl LevelShape {
         }
         Ok(Self {
             sky_light,
+            has_ceiling: false,
+            ambient_light: 0.0,
             min_y,
             height,
             logical_height,
         })
+    }
+    /// The type's `has_ceiling` and `ambient_light` (the codec's other
+    /// fields rules read; `new` leaves them at a ceilingless, unlit type).
+    pub fn with_ceiling(self, has_ceiling: bool, ambient_light: f32) -> Self {
+        Self {
+            has_ceiling,
+            ambient_light,
+            ..self
+        }
+    }
+    /// `Level.canHaveWeather`: sky light, no ceiling, and not the End (the
+    /// one id the rule names).
+    pub fn can_have_weather(self, is_end: bool) -> bool {
+        self.sky_light && !self.has_ceiling && !is_end
     }
     /// One above the highest block (`getMaxY() + 1`).
     pub fn max_y(self) -> i32 {
@@ -87,7 +115,7 @@ impl LevelShape {
 }
 
 /// The shapes of a world's three levels, from its dimension types.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LevelShapes {
     pub overworld: LevelShape,
     pub nether: LevelShape,
@@ -1022,9 +1050,32 @@ mod tests {
             LevelShape::new(-64, 384, 384, true),
             Ok(LevelShape::OVERWORLD)
         );
-        assert_eq!(LevelShape::new(0, 256, 128, false), Ok(LevelShape::NETHER));
+        assert_eq!(
+            LevelShape::new(0, 256, 128, false).map(|s| s.with_ceiling(true, 0.1)),
+            Ok(LevelShape::NETHER)
+        );
         assert!(LevelShape::new(0, 256, 257, true).is_err());
         assert!(LevelShape::new(-60, 384, 384, true).is_err());
+    }
+
+    /// `Level.canHaveWeather` reads the type: a ceiling or no sky light stops
+    /// weather in any level, an open sky allows it, and only the End is named.
+    #[test]
+    fn weather_follows_the_type_not_the_id() {
+        assert!(LevelShape::OVERWORLD.can_have_weather(false));
+        assert!(!LevelShape::NETHER.can_have_weather(false));
+        assert!(!LevelShape::END.can_have_weather(true));
+        // overworld_caves: sky light and a ceiling.
+        assert!(
+            !LevelShape::OVERWORLD
+                .with_ceiling(true, 0.0)
+                .can_have_weather(false)
+        );
+        // A skyless type with no ceiling.
+        let skyless = LevelShape::new(0, 256, 128, false).unwrap();
+        assert!(!skyless.can_have_weather(false));
+        // A Nether-id level of an open-sky type.
+        assert!(LevelShape::OVERWORLD.can_have_weather(false));
     }
 
     #[test]

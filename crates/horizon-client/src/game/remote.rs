@@ -2092,6 +2092,7 @@ impl Game<'_> {
             dimension.logical_height,
             dimension.has_skylight,
         )
+        .map(|shape| shape.with_ceiling(dimension.has_ceiling, dimension.ambient_light))
         .unwrap_or_else(|_| super::Dim::from_id(&dimension.name).shape());
         // handleRespawn keeps the ClientLevel only for the same level key:
         // two levels sharing a dimension type are still two levels.
