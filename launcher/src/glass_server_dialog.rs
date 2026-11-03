@@ -61,7 +61,7 @@ impl Launcher {
             }
             cx.notify();
         });
-        let card = crate::glass::plate(radius::MODAL)
+        let card = ui::dialog_plate(radius::MODAL)
             .id("create-card")
             .occlude()
             .flex()
@@ -84,13 +84,14 @@ impl Launcher {
                 .p(px(24.))
                 .occlude()
                 .on_scroll(|_, _, cx| cx.stop_propagation())
+                .child(ui::scrim_backdrop())
                 .child(
                     div()
                         .absolute()
                         .top_0()
                         .left_0()
                         .size_full()
-                        .bg(ui::color(horizon_theme::glass::SCRIM).opacity(0.5))
+                        .bg(ui::scrim())
                         .on_mouse_down(gpui::MouseButton::Left, close),
                 )
                 .child(card),

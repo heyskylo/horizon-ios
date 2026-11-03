@@ -106,7 +106,7 @@ Player.startSleepInBed	port	crates/horizon-client/src/game.rs::Game::try_sleep
 Player.isSleepingLongEnough	port	crates/horizon-client/src/game/lan_actions.rs::sleep_counts	100 ticks in bed is what counts a sleeper as deep for SleepStatus.update
 Player.updateSwimming	port	crates/horizon-client/src/motion.rs::MotionWorld::swimming	
 Player.getXpNeededForNextLevel	port	crates/horizon-client/src/entities.rs::Experience::needed	
-Player.hasEnoughFoodToDoExhaustiveManoeuvres	missing		no food-or-flying gate anywhere in `motion.rs`: the exhaustion of a jump or a move is added without asking the food level
+Player.hasEnoughFoodToDoExhaustiveManoeuvres	inline	crates/horizon-client/src/sprint.rs::Conditions::possible	the food-or-mayfly test is the sprint gate's `enough_food || may_fly`: `enough_food` is `FoodData::has_enough_food` (food level above 6) filled in `motion.rs`, and `player_food::enough_food_for_manoeuvres` is the same test as a probed free function
 Player.mayUseItemAt	port	crates/horizon-client/src/game.rs::Game::use_hand	the may-build test before use-on in adventure mode
 Player.isSwimming	port	crates/horizon-client/src/motion.rs::MotionWorld::swimming	
 Player.decorateDisplayNameComponent	port	crates/horizon-client/src/game/commands.rs::player_display_name	click suggests /tell, hover shows the player entity, plus the insertion

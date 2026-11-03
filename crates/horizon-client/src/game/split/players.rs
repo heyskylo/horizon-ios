@@ -1,5 +1,5 @@
-//! Players coming and going: joining P1's world through memory as a profile it picks
-//! (`split_profiles`), dropping out.
+//! Players coming and going: joining (P1's world through memory, or P1's server) as a profile
+//! it picks (`split_profiles`), dropping out.
 use super::*;
 use horizon_client::{gamepad::PadState, options_ui::Page};
 
@@ -8,14 +8,63 @@ fn on_profiles(game: &Game<'_>) -> bool {
     game.screen == crate::game::Screen::Options && game.ui.options.page() == Page::SplitProfiles
 }
 
+/// An offline profile on an online-mode server: the session service knows no such player.
+const ONLINE_ONLY: &str = "horizon.splitscreen.online_only";
+/// An offline profile on a server outside this computer and its local network.
+const LOCAL_ONLY: &str = "horizon.splitscreen.local_only";
+
+/// A loopback, private (RFC 1918, IPv6 unique local) or link-local address: this computer or
+/// its local network.
+fn local_ip(ip: std::net::IpAddr) -> bool {
+    use std::net::IpAddr;
+    match ip {
+        IpAddr::V4(v4) => v4.is_loopback() || v4.is_private() || v4.is_link_local(),
+        IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
+            Some(v4) => local_ip(IpAddr::V4(v4)),
+            None => {
+                let first = v6.segments()[0];
+                v6.is_loopback() || first & 0xfe00 == 0xfc00 || first & 0xffc0 == 0xfe80
+            }
+        },
+    }
+}
+
+/// Whether the server at `address` is on this computer or its local network, where an offline
+/// profile may join P1 (the project's rule: everyone who plays elsewhere owns the game). It
+/// resolves as the guest's connection will (the SRV redirect, then every address of its host)
+/// and needs all of them local; a friend's invite or an address that doesn't resolve isn't.
+fn local_server(address: &str) -> bool {
+    use std::net::ToSocketAddrs;
+    if address.starts_with(horizon_client::net::FRIEND) {
+        return false;
+    }
+    let Some((host, port)) = horizon_protocol::servers::parse_address(address) else {
+        return false;
+    };
+    let (host, port) = horizon_protocol::server_redirect(&host, port);
+    match (host.as_str(), port).to_socket_addrs() {
+        Ok(addresses) => {
+            let addresses: Vec<_> = addresses.collect();
+            !addresses.is_empty() && addresses.iter().all(|a| local_ip(a.ip()))
+        }
+        Err(_) => false,
+    }
+}
+
 /// Why a player's game left its server, when the server said (its Disconnected or error screen).
 fn turned_away(game: &Game<'_>) -> Option<String> {
     use horizon_client::{multiplayer::Screen, title::Mode};
-    match &game.title.as_ref()?.mode {
-        Mode::Multiplayer(Screen::Disconnected { reason, .. }) => Some(reason.clone()),
-        Mode::Error { message, .. } => Some(message.clone()),
-        _ => None,
-    }
+    let why = match &game.title.as_ref()?.mode {
+        Mode::Multiplayer(Screen::Disconnected { reason, .. }) => reason.clone(),
+        Mode::Error { message, .. } => message.clone(),
+        _ => return None,
+    };
+    // An online-mode server: the other players have no Minecraft account of their own here.
+    Some(if why.contains("verify username") {
+        horizon_client::lang::tr("horizon.splitscreen.own_account", &[])
+    } else {
+        why
+    })
 }
 
 /// The `Game` `start` makes (~67 KB, by value) into a box, in a frame of its own that is gone
@@ -83,7 +132,48 @@ impl Split<'_> {
     fn taken(&self) -> Vec<String> {
         std::iter::once(self.host.options.player_name())
             .chain(self.guests.iter().filter_map(|g| g.name.clone()))
+            // On a server: everyone in its player list.
+            .chain(self.host.remote_online_names().unwrap_or_default())
             .collect()
+    }
+
+    /// Whether `name` can play in P1's world, said on the profile page before it tries: P1's
+    /// own world takes anyone; a server only on this computer or its local network, and an
+    /// online-mode one no offline profile.
+    fn can_join(&self, name: &str) -> std::result::Result<(), String> {
+        if self.taken().iter().any(|n| n.eq_ignore_ascii_case(name)) {
+            return Err(format!("{name} is already playing."));
+        }
+        if let Some(address) = self.p1_server() {
+            if !local_server(&address) {
+                return Err(horizon_client::lang::tr(LOCAL_ONLY, &[]));
+            }
+            if self.host.online_server() {
+                return Err(horizon_client::lang::tr(ONLINE_ONLY, &[]));
+            }
+        }
+        Ok(())
+    }
+
+    /// A server's resource packs: the others answer as P1 did (asked once, by P1). A player
+    /// joining after P1 answered is answered at once; one asked before waits for P1's answer.
+    pub(super) fn follow_pack_answer(&mut self) {
+        let Some(yes) = self.host.pack_answer() else {
+            return;
+        };
+        for i in 0..self.guests.len() {
+            if !self.guests[i].game.pack_prompt_open() {
+                continue;
+            }
+            self.turn(i + 1);
+            if let Err(e) = self.guests[i].game.answer_pack_prompt(yes) {
+                log::warn!(
+                    "Horizon: splitscreen: P{}'s server packs: {e}",
+                    self.guests[i].seat
+                );
+            }
+        }
+        self.turn(0);
     }
 
     /// The profile pages just opened, filled: the list and who plays now.
@@ -138,9 +228,7 @@ impl Split<'_> {
 
     /// Guest `i` plays as profile `name`: its options, then into P1's world.
     pub(super) fn enter(&mut self, i: usize, name: String) -> Result<()> {
-        if self.taken().iter().any(|n| n.eq_ignore_ascii_case(&name)) {
-            return Err(format!("{name} is already playing.").into());
-        }
+        self.can_join(&name)?;
         // The page's names are player names; a test seat's (P2) isn't one, but no name leaves
         // the profiles folder.
         if !folder_name(&name) {
@@ -159,13 +247,13 @@ impl Split<'_> {
             self.host.settings.save(&options);
             self.host.settings.clone()
         };
-        let pipe = self
-            .host
-            .integrated
-            .as_ref()
-            .ok_or("P1 is not in its world")?
-            .join_split(&name)
-            .ok_or("P1's world does not let players in")?;
+        // P1's own world through memory (`Ok`), else P1's server over the network (`Err`).
+        let via = match &self.host.integrated {
+            Some(server) => Ok(server
+                .join_split(&name)
+                .ok_or("P1's world does not let players in")?),
+            None => Err(self.p1_server().ok_or("P1 is not in a world")?),
+        };
         self.guests[i].options = options;
         self.turn(i + 1);
         let guest = &mut self.guests[i];
@@ -175,7 +263,12 @@ impl Split<'_> {
         guest.game.settings = settings;
         guest.game.options.player_name = Some(name.clone());
         guest.game.apply_settings();
-        let joined = guest.game.connect_local(pipe, &name);
+        let joined = match via {
+            Ok(pipe) => guest.game.connect_local(pipe, &name),
+            // A server that refuses it (whitelist, an online-mode sign-in) disconnects it: it
+            // picks again, told why (`drop_out`).
+            Err(address) => guest.game.connect_server(&address, &name),
+        };
         self.turn(0);
         if let Err(e) = joined {
             // Let in for nothing: the world pauses again, the name is free.
@@ -224,9 +317,7 @@ impl Split<'_> {
             let joining = self.guests[i].name.is_none();
             match self.guests[i].game.ui.options.split_profiles.take_choice() {
                 Some(Some(name)) => match (|| {
-                    if self.taken().iter().any(|n| n.eq_ignore_ascii_case(&name)) {
-                        return Err(format!("{name} is already playing.").into());
-                    }
+                    self.can_join(&name)?;
                     if joining {
                         self.enter(i, name)
                     } else {
@@ -342,7 +433,9 @@ impl Split<'_> {
     /// server turned away as it came in picks again, told why; one it sent away later (a kick)
     /// leaves, and P1 hears why. Whether any left.
     pub(super) fn drop_out(&mut self) -> bool {
-        let p1_left = self.host.title.is_some() || self.host.integrated.is_none();
+        // Out of its world: on the title screen, or neither on its server thread nor a server's.
+        let p1_left = self.host.title.is_some()
+            || (self.host.integrated.is_none() && self.host.remote.is_none());
         let before = self.guests.len();
         if p1_left {
             self.host.split_hud.notice = None;
@@ -412,13 +505,40 @@ fn folder_name(name: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::folder_name;
+    use super::{folder_name, local_server};
 
     #[test]
     fn a_profile_name_never_leaves_the_profiles_folder() {
         assert!(folder_name("P2") && folder_name("Steve"));
         for bad in ["", ".", "..", "../x", "a/b", "a\\b"] {
             assert!(!folder_name(bad), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn offline_guests_join_only_local_servers() {
+        for local in [
+            "127.0.0.1:25565",
+            "localhost:25570",
+            "192.168.1.20",
+            "10.0.0.5:25566",
+            "172.20.1.2",
+            "169.254.3.4",
+            "[::1]:25565",
+            "[fd12:3456::1]:25565",
+            "[fe80::1]:25565",
+        ] {
+            assert!(local_server(local), "{local} is local");
+        }
+        for elsewhere in [
+            "8.8.8.8:25565",
+            "172.32.0.1",
+            "[2001:db8::1]:25565",
+            "[::ffff:1.1.1.1]:25565",
+            "friend:K7QM-3XPD",
+            "",
+        ] {
+            assert!(!local_server(elsewhere), "{elsewhere} is not local");
         }
     }
 }
