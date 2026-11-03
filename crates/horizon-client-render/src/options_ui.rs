@@ -3595,6 +3595,12 @@ impl OptionsUi {
             let pointer_over = ui::hovered(cursor, wd.x, wd.y, wd.w, wd.h)
                 && (!wd.list || cursor.1 >= top && cursor.1 < bottom);
             let hover = pointer_over || is_focused;
+            // The tooltip is the pointer's (`setTooltip`, drawn while hovered);
+            // a keyboard-focused widget keeps it against the widget
+            // (`MenuTooltipPositioner`). Focus a mouse click leaves behind
+            // does not: the description goes when the mouse leaves, like
+            // vanilla's.
+            let tip_hover = pointer_over || (is_focused && self.focus_from_keyboard);
             // A pack's option: its label within the widget (the name shortened), and on hover
             // the whole label when it was, then what the pack says of it.
             let shader = s.shader_options.as_ref();
@@ -3609,7 +3615,7 @@ impl OptionsUi {
             let fitted = shader.zip(option).map(|(o, name)| {
                 o.option_label_within(name, wd.w - 8.0, |t| atlas.font.width_text(t))
             });
-            if hover && let Some(o) = shader {
+            if tip_hover && let Some(o) = shader {
                 let comment = match (&wd.kind, option) {
                     (_, Some(name)) => o.comment(&format!("option.{name}")),
                     (
@@ -3641,7 +3647,7 @@ impl OptionsUi {
                     tooltip_rect = (!pointer_over).then_some([wd.x, wd.y, wd.w, wd.h]);
                 }
             }
-            if hover && let Some(tip) = tooltip_text(s, wd) {
+            if tip_hover && let Some(tip) = tooltip_text(s, wd) {
                 tooltip = Some(match &wd.kind {
                     // The duplicate keybinds tooltip keeps its own lines.
                     WKind::Button {
@@ -6008,6 +6014,57 @@ mod tests {
         assert_eq!(s.video_mode_index(), 2);
         Opt::ExclusiveMode.set_slider(&mut s, 0.0);
         assert_eq!(s.file.fullscreen_resolution, None);
+    }
+
+    #[test]
+    fn a_clicked_extras_tooltip_leaves_with_the_pointer() {
+        let atlas = atlas();
+        let mut s = Settings::default();
+        let mut ui = OptionsUi::default();
+        ui.show(Page::Extras);
+        let (widgets, _, _, _) = ui.layout(&s, 480.0, 480.0);
+        let extra = widgets
+            .iter()
+            .find(|w| {
+                matches!(
+                    &w.kind,
+                    WKind::Button {
+                        act: Act::Extra(_),
+                        ..
+                    }
+                )
+            })
+            .unwrap();
+        ui.click(
+            &mut s,
+            &atlas,
+            extra.x + 1.0,
+            extra.y + 1.0,
+            (480.0, 480.0),
+            [960, 540],
+            false,
+            false,
+        );
+        // The pointer moved off the clicked widget: its description goes with
+        // it. A mouse a click left focused (the look-up keeps the click's
+        // widget) does not hint (`focus_from_keyboard`).
+        let mut clicked = HudBatch::new([480, 480]);
+        ui.draw(
+            &s,
+            &mut clicked,
+            &atlas,
+            (extra.x + extra.w + 40.0, extra.y + extra.h + 40.0),
+        );
+        let mut fresh = OptionsUi::default();
+        fresh.show(Page::Extras);
+        let mut none = HudBatch::new([480, 480]);
+        fresh.draw(
+            &s,
+            &mut none,
+            &atlas,
+            (extra.x + extra.w + 40.0, extra.y + extra.h + 40.0),
+        );
+        assert_eq!(clicked.vertices.len(), none.vertices.len());
     }
 
     #[test]
