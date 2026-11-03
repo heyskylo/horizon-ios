@@ -4365,6 +4365,140 @@ mod tests {
         (hub, rx)
     }
 
+    /// The blocks the guest was sent as `ClientboundBlockUpdatePacket`s, in order, with the
+    /// state each one carries.
+    fn sent_block_updates(rx: &std::sync::mpsc::Receiver<crate::lan::Out>) -> Vec<([i32; 3], i32)> {
+        let mut sent = Vec::new();
+        while let Ok(out) = rx.try_recv() {
+            let crate::lan::Out::Packet(body) = out else {
+                continue;
+            };
+            let mut r = horizon_protocol::buf::Reader::new(&body);
+            let id = r.varint().unwrap();
+            if let Ok(C::BlockUpdate(p)) = C::decode(id, r.rest()) {
+                sent.push((p.pos, p.state));
+            }
+        }
+        sent
+    }
+
+    /// A world whose blocks at y = 63 are `state` under the four chunks around the origin.
+    fn floor_at(state: u32) -> World {
+        let mut world = World::new(horizon_world::registry::BlockStateId(0), 0);
+        for cz in -1..=0 {
+            for cx in -1..=0 {
+                let mut chunk = crate::chunk::Chunk::empty(cx, cz);
+                for z in 0..16 {
+                    for x in 0..16 {
+                        chunk.set(x, 63, z, state);
+                    }
+                }
+                chunk.lit = true;
+                world.chunks.insert((cx, cz), std::sync::Arc::new(chunk));
+            }
+        }
+        world
+    }
+
+    /// One tick of the hub that handles a single position move from the guest.
+    fn tick_guest_move(hub: &mut Hub, world: &mut World, to: [f64; 3], flags: u8) {
+        // One position move per client tick (receivedPositionThisTick).
+        hub.guests[0].position_this_tick = false;
+        hub.guests[0].inbox.push_back((
+            S::MovePlayerPos(play::MovePlayerPos {
+                x: to[0],
+                y: to[1],
+                z: to[2],
+                flags,
+            }),
+            0,
+        ));
+        let mut next_entity = 2;
+        let border = crate::worldborder::WorldBorder::default();
+        let mut ctx = TickCtx {
+            world,
+            entities: &[],
+            next_entity: &mut next_entity,
+            spawn: [0.5, 64.0, 0.5],
+            difficulty: 2,
+            difficulty_locked: false,
+            clock_rate: 1.0,
+            tick_rate: 20.0,
+            tick_frozen: false,
+            tick_steps: Default::default(),
+            collision: None,
+            border: &border,
+            streaming: None,
+        };
+        let _ = hub.drain_packets(&mut ctx);
+    }
+
+    /// `ServerGamePacketListenerImpl.forceSendPlayerSupportBlocks`: a client that says it stands
+    /// while the last move the server resolved came down onto nothing is sent the blocks under
+    /// its box again (its four corners, each once), so a client that missed a block change cannot
+    /// stay standing on air. At most once every 200 ticks of the connection.
+    #[test]
+    fn a_guest_standing_on_nothing_is_sent_the_blocks_below_it() {
+        // Block state 1 is stone in the vanilla registry order.
+        const STONE: u32 = 1;
+        let (mut hub, rx) = hub_with_a_guest();
+        hub.guests[0].load_timeout = 0;
+        // Across a block corner: the box's four corners are four different blocks.
+        hub.guests[0].position = [0.0, 64.0, 0.0];
+        let mut world = floor_at(STONE);
+        // The connection's 200th tick is the first that may send: vanilla starts the count at 0.
+        hub.ticks = 199;
+        tick_guest_move(&mut hub, &mut world, [0.0, 64.0, 0.0], 1);
+        assert!(
+            sent_block_updates(&rx).is_empty(),
+            "the first 200 ticks of a connection send nothing"
+        );
+        hub.ticks = 200;
+        tick_guest_move(&mut hub, &mut world, [0.0, 64.0, 0.0], 1);
+        assert_eq!(
+            sent_block_updates(&rx),
+            vec![
+                ([-1, 63, -1], STONE as i32),
+                ([0, 63, -1], STONE as i32),
+                ([-1, 63, 0], STONE as i32),
+                ([0, 63, 0], STONE as i32),
+            ],
+            "the four blocks under the box, each once, with the server's states"
+        );
+        // A tick later: the next 200 have to pass first.
+        hub.ticks = 201;
+        tick_guest_move(&mut hub, &mut world, [0.0, 64.0, 0.0], 1);
+        assert!(
+            sent_block_updates(&rx).is_empty(),
+            "no more than once every 200 ticks"
+        );
+        // The last move the server resolved came down onto something: it stands on its own.
+        hub.guests[0].rests_on_ground = true;
+        hub.ticks = 500;
+        tick_guest_move(&mut hub, &mut world, [0.0, 64.0, 0.0], 1);
+        assert!(
+            sent_block_updates(&rx).is_empty(),
+            "a player the server saw land is not resent the blocks"
+        );
+        // A client that does not claim the ground is not helped either.
+        hub.guests[0].rests_on_ground = false;
+        hub.ticks = 800;
+        tick_guest_move(&mut hub, &mut world, [0.0, 64.0, 0.0], 0);
+        assert!(
+            sent_block_updates(&rx).is_empty(),
+            "only a claim of standing on the ground asks for the blocks below"
+        );
+        // A box over one block gets that block once (the corners are the same cell).
+        hub.ticks = 1100;
+        hub.guests[0].position = [0.5, 64.0, 0.5];
+        tick_guest_move(&mut hub, &mut world, [0.5, 64.0, 0.5], 1);
+        assert_eq!(
+            sent_block_updates(&rx),
+            vec![([0, 63, 0], STONE as i32)],
+            "one block under a box that sits across a block"
+        );
+    }
+
     /// `handlePlayerCommand` START_RIDING_JUMP (3) and STOP_RIDING_JUMP (4): the
     /// hub used to drop both, so a guest's released jump bar never reached the
     /// mount they ride, and neither did the horse's rear or its jump sound.
