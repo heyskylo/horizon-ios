@@ -305,16 +305,19 @@ fn vis_corner(position: vec3<u32>, rest: vec3<u32>, origin: vec4<f32>) -> Terrai
     let c1 = (globals.view_proj * vec4(bitcast<vec3<f32>>(p1) + origin.xyz, 1.0)).xyw;
     let c2 = (globals.view_proj * vec4(bitcast<vec3<f32>>(p2) + origin.xyz, 1.0)).xyw;
     let c3 = (globals.view_proj * vec4(bitcast<vec3<f32>>(p3) + origin.xyz, 1.0)).xyw;
-    // The quad's triangles are 0 1 2 and 0 2 3 (`Renderer::quad_indices`, flatten.wgsl): the
-    // pixel lies in the one whose smallest weight is larger (edges round either way).
+    // The quad's triangles are 0 1 2 and 0 2 3 (`Renderer::quad_indices`, flatten.wgsl),
+    // either side of the diagonal 0 2. Corner 1's weight in 0 1 2 is `vis_bary`'s row
+    // cross(c2, c0) over the sum of the rows, whose sign is that of the triangle's determinant
+    // (the sum is one over the point's w), dot(c1, cross(c2, c0)): the pixel lies in 0 1 2 when
+    // the two agree. A degenerate 0 1 2 (no area, no pixels) leaves it to 0 2 3.
     let size = vec2<f32>(textureDimensions(vis_ids));
     let centre = in.clip.xy;
     let p = vis_ndc(centre, size);
-    let ba = vis_bary(vis_rows(c0, c1, c2), p);
-    let bb = vis_bary(vis_rows(c0, c2, c3), p);
-    let second = min(bb.x, min(bb.y, bb.z)) > min(ba.x, min(ba.y, ba.z));
-    let b = select(ba, bb, second);
+    let diagonal = cross(c2, c0);
+    let det = dot(c1, diagonal);
+    let second = dot(vec3(p, 1.0), diagonal) * det < 0.0 || det == 0.0;
     let rows = vis_rows(c0, select(c1, c2, second), select(c2, c3, second));
+    let b = vis_bary(rows, p);
     // dpdxFine and dpdyFine: the difference to the other pixel of this one's 2x2 quad in its
     // row and column, odd minus even, over the same triangle's plane.
     let odd = vec2<f32>(pixel & vec2(1));
