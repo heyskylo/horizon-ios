@@ -803,6 +803,16 @@ impl Game<'_> {
                     t.pitch = t.velocity.y.atan2(h).to_degrees() as f32;
                 }
             }
+            if !t.no_physics {
+                let half = 0.25;
+                let bounds = Aabb::new(
+                    t.position.add_vector(Vec3::new(-half, 0.0, -half)),
+                    t.position.add_vector(Vec3::new(half, 0.5, half)),
+                );
+                self.entity_powder_snow_particles(
+                    t.previous, t.position, bounds, t.velocity, false,
+                );
+            }
             // playerTouch: stuck or returning tridents go back to a player.
             // ThrownTrident.playerTouch: only its owner takes it, or anyone
             // once the owner is not in this level (`getOwner() == null`), and

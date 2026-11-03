@@ -1254,12 +1254,7 @@ impl Game<'_> {
         // Entity.checkInsideBlocks runs once after the cart tick, sweeping every
         // movement through powder snow. PowderSnowBlock uses getKnownMovement,
         // which is getDeltaMovement for a minecart.
-        let snow = self.powder_snow_positions(c.previous, c.position, c.bounds());
-        let position = c.position;
-        let known_movement = c.velocity;
-        for block in snow {
-            self.powder_snow_particle(block, position, known_movement);
-        }
+        self.entity_powder_snow_particles(c.previous, c.position, c.bounds(), c.velocity, false);
         if self.minecart_improvements() {
             // MinecartTNT.tick reads the final delta after AbstractMinecart.tick,
             // including the pushes and fluid interaction after the track steps.

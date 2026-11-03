@@ -35,7 +35,7 @@ pub(super) fn powder_snow_velocity(
     known: Vec3,
     random: &mut impl RandomSource,
 ) -> Option<[f64; 3]> {
-    horizon_client::mobs::ai::powder_snow_particle_velocity(known, random)
+    horizon_client::powder_snow::particle_velocity(known, random)
 }
 
 fn send_native_nearby(
@@ -314,25 +314,24 @@ impl Game<'_> {
         }
     }
 
-    /// Powder-snow cells in a vehicle's `Entity.checkInsideBlocks` sweep.
-    /// Vanilla deflates the final box before following the movement path.
-    pub(super) fn powder_snow_positions(
-        &self,
+    /// Shared block callback for any entity family that applies block effects.
+    pub(super) fn entity_powder_snow_particles(
+        &mut self,
         previous: Vec3,
         position: Vec3,
         bounds: Aabb,
-    ) -> Vec<BlockPos> {
-        self.entity_inside_block_positions(previous, position, bounds)
-            .into_iter()
-            .filter(|p| {
-                let state = self.world.block(p.x, p.y, p.z);
-                self.pack
-                    .assets
-                    .registry
-                    .state(state)
-                    .is_some_and(|state| state.name == "minecraft:powder_snow")
-            })
-            .collect()
+        known_movement: Vec3,
+        living: bool,
+    ) {
+        if self.remote.is_some() {
+            return;
+        }
+        let snow = horizon_client::powder_snow::contacts(previous, position, bounds, living, |p| {
+            &*self.res.facts().get(self.world.block(p.x, p.y, p.z)).name == "minecraft:powder_snow"
+        });
+        for block in snow {
+            self.powder_snow_particle(block, position, known_movement);
+        }
     }
 
     /// `PowderSnowBlock.entityInside` for an entity with known movement.
@@ -349,35 +348,6 @@ impl Game<'_> {
             return;
         };
         self.snowflake_particle([position.x, f64::from(block.y + 1), position.z], velocity);
-    }
-
-    /// `Entity.checkInsideBlocks`'s ordered movement sweep for block callbacks.
-    pub(super) fn entity_inside_block_positions(
-        &self,
-        from: Vec3,
-        to: Vec3,
-        bounds: Aabb,
-    ) -> Vec<BlockPos> {
-        let bounds = bounds.deflate(Vec3::new(
-            f64::from(1.0e-5_f32),
-            f64::from(1.0e-5_f32),
-            f64::from(1.0e-5_f32),
-        ));
-        let mut positions = Vec::new();
-        let _ = horizon_core::geometry::sweep_intersected_blocks(
-            from,
-            to,
-            bounds,
-            1_000_000,
-            |p, step| {
-                if step >= 16 {
-                    return false;
-                }
-                positions.push(p);
-                true
-            },
-        );
-        positions
     }
 
     /// Locally draw the level's own particle, then send it to LAN players.

@@ -18,18 +18,7 @@ use horizon_core::{
     random::{LegacyRandom, RandomSource},
 };
 
-/// PowderSnowBlock.entityInside's server-side snowflake roll.
-pub fn powder_snow_particle_velocity(
-    known_movement: Vec3,
-    random: &mut impl RandomSource,
-) -> Option<[f64; 3]> {
-    if (known_movement.x == 0.0 && known_movement.z == 0.0) || !random.next_boolean() {
-        return None;
-    }
-    let x = (random.next_float() * 2.0 - 1.0) * 0.083_333_336_f32;
-    let z = (random.next_float() * 2.0 - 1.0) * 0.083_333_336_f32;
-    Some([f64::from(x), f64::from(0.05_f32), f64::from(z)])
-}
+use crate::powder_snow::particle_velocity as powder_snow_particle_velocity;
 
 /// The inside-block effects of fire and lava (`InsideBlockEffectType`
 /// FIRE_IGNITE and LAVA_IGNITE): ignite, then hurt.

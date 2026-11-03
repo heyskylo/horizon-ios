@@ -4181,6 +4181,15 @@ impl Game<'_> {
                 &nearby,
                 Some(self.border.geometry()),
             );
+            if merging && !no_physics {
+                self.entity_powder_snow_particles(
+                    item.previous,
+                    item.position,
+                    item.bounds(),
+                    item.velocity,
+                    false,
+                );
+            }
             cells.moved(i, item.previous, item.position);
             // Entity.handleOnAboveBubbleColumn: the server sends the particles of
             // the surface of a bubble column the item is at the top of.
@@ -5812,6 +5821,13 @@ impl Game<'_> {
         for pos in tops {
             self.bubble_column_particles(pos);
         }
+        self.entity_powder_snow_particles(
+            from,
+            f.position,
+            horizon_client::falling_block::bounds(f.position),
+            f.velocity,
+            false,
+        );
         // FallingBlockEntity.tick handles its portal after the move's block
         // effects, before placing/dropping on the floor under an End portal.
         let teleported = self.falling_through_portal(f);
@@ -13580,7 +13596,7 @@ impl Game<'_> {
                 .filter(|(feet, _)| distance(feet) < 64.0)
                 .min_by(|a, b| distance(&a.0).total_cmp(&distance(&b.0)))
                 .map(|(_, target)| *target);
-            o.tick(
+            let alive = o.tick(
                 &self.world,
                 self.res.facts(),
                 self.collision,
@@ -13589,7 +13605,15 @@ impl Game<'_> {
                 &mut next_float,
                 Some(self.border.geometry()),
                 &self.res.motion().fluids,
-            )
+            );
+            self.entity_powder_snow_particles(
+                o.previous,
+                o.position,
+                o.bounds(),
+                o.velocity,
+                false,
+            );
+            alive
         });
         self.orbs = orbs;
         // ExperienceOrb.scanForMerges runs on the server only.
