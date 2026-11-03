@@ -1072,5 +1072,8 @@
   "Deleted {name}": "تم حذف {name}",
   "Launcher settings are back to their defaults": "عادت إعدادات المشغّل إلى قيمها الافتراضية",
   "Opened {path}": "تم فتح {path}",
-  "Saved {name}": "تم حفظ {name}"
+  "Saved {name}": "تم حفظ {name}",
+  "Game log": "سجل اللعبة",
+  "1 line": "سطر واحد",
+  "{count} lines": "{count} سطر"
 }

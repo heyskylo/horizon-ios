@@ -1072,5 +1072,8 @@
   "Deleted {name}": "{name} видалено",
   "Launcher settings are back to their defaults": "Налаштування лаунчера скинуто до типових",
   "Opened {path}": "Відкрито: {path}",
-  "Saved {name}": "{name} збережено"
+  "Saved {name}": "{name} збережено",
+  "Game log": "Журнал гри",
+  "1 line": "1 рядок",
+  "{count} lines": "{count} рядків"
 }

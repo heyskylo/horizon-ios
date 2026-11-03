@@ -1072,5 +1072,8 @@
   "Deleted {name}": "{name} を削除しました",
   "Launcher settings are back to their defaults": "ランチャーの設定を初期設定に戻しました",
   "Opened {path}": "開きました: {path}",
-  "Saved {name}": "{name} を保存しました"
+  "Saved {name}": "{name} を保存しました",
+  "Game log": "ゲームログ",
+  "1 line": "1 行",
+  "{count} lines": "{count} 行"
 }

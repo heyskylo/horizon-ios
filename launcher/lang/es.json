@@ -1072,5 +1072,8 @@
   "Deleted {name}": "{name} eliminado",
   "Launcher settings are back to their defaults": "Los ajustes del launcher vuelven a sus valores predeterminados",
   "Opened {path}": "Abierto: {path}",
-  "Saved {name}": "{name} guardado"
+  "Saved {name}": "{name} guardado",
+  "Game log": "Registro del juego",
+  "1 line": "1 línea",
+  "{count} lines": "{count} líneas"
 }

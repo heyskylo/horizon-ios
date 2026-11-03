@@ -208,8 +208,9 @@ impl Launcher {
             n => trf("{count} screenshots", &[("count", &n.to_string())]),
         };
         let folder = horizon_launcher::screenshots::folder(&home);
-        // In place of the mockup's blur toggle (the launcher has none yet): the folder, the same
-        // 32 px `ICON_BUTTON`.
+        // The mockup's blur toggle, then the folder (not in the mockup, kept), the same 32 px
+        // `ICON_BUTTON`.
+        let privacy = self.shots_privacy(cx);
         let head = div()
             .flex()
             .items_center()
@@ -217,19 +218,26 @@ impl Launcher {
             .h(px(32.))
             .child(ui::text(13., FontWeight::NORMAL, ink::NOTE).child(count))
             .child(
-                ui::icon_button(
-                    "screenshots-folder",
-                    "folder-01",
-                    32.,
-                    17.,
-                    radius::CONTROL,
-                    false,
-                    &t,
-                )
-                .on_click(move |_, _, cx| {
-                    let _ = std::fs::create_dir_all(&folder);
-                    crate::glass_toast::open(cx, &folder);
-                }),
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(4.))
+                    .child(privacy)
+                    .child(
+                        ui::icon_button(
+                            "screenshots-folder",
+                            "folder-01",
+                            32.,
+                            17.,
+                            radius::CONTROL,
+                            false,
+                            &t,
+                        )
+                        .on_click(move |_, _, cx| {
+                            let _ = std::fs::create_dir_all(&folder);
+                            crate::glass_toast::open(cx, &folder);
+                        }),
+                    ),
             );
         let shown = if self.screenshots.all {
             list.len()
@@ -237,6 +245,12 @@ impl Launcher {
             screenshots_page::FIRST
         };
         let more = list.len() > screenshots_page::FIRST;
+        let pictures: Vec<AnyElement> = list
+            .iter()
+            .take(shown)
+            .map(|s| self.shot_picture(&s.path, cx))
+            .collect();
+        let mut pictures = pictures.into_iter();
         let grid = div()
             .grid()
             .grid_cols(if self.window_width >= 1280. { 4 } else { 2 })
@@ -244,6 +258,7 @@ impl Launcher {
             .gap_y(px(16.))
             .mt(px(12.))
             .children(list.into_iter().take(shown).enumerate().map(|(i, shot)| {
+                let picture = pictures.next();
                 div()
                     .id(SharedString::from(format!("screenshot-{i}")))
                     .min_w_0()
@@ -255,12 +270,7 @@ impl Launcher {
                             .rounded(px(radius::ROW))
                             .overflow_hidden()
                             .bg(white(fill::HOVER))
-                            .child(
-                                gpui::img(shot.path.clone())
-                                    .size_full()
-                                    .rounded(px(radius::ROW))
-                                    .object_fit(gpui::ObjectFit::Cover),
-                            ),
+                            .children(picture),
                     )
                     .child(
                         ui::text(12., FontWeight::NORMAL, ink::NOTE)
