@@ -2378,6 +2378,8 @@ impl Game<'_> {
                 host.hub
                     .set_immediate_respawn(self.ui.rules.bool("immediate_respawn"));
                 host.hub
+                    .set_reduced_debug_info(self.ui.rules.bool("reduced_debug_info"));
+                host.hub
                     .set_limited_crafting(self.ui.rules.bool("limited_crafting"));
                 // A server with several levels runs a pass for each
                 // (`tick_server`): the network is read once, before the first.

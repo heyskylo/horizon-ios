@@ -7,8 +7,7 @@ should beat vanilla, Paper and Fabric + Lithium on TPS/MSPT, RAM, CPU, chunk gen
 Gameplay stays vanilla: there are no Paper-style rule changes unless the owner turns one on.
 
 This page covers what the server does today (measured), the design of `horizon-server`, and what ships for the
-first working version (2026-10-23). The owner's guide is docs/hosting.md, also at
-https://playhorizon.dev/server.
+first working version (2026-10-23). The owner's guide is [docs/hosting.md](hosting.md).
 
 ## 1. Today
 
@@ -317,9 +316,11 @@ refuse. There is no `backups.before_update` setting: an update always backs up t
 - **Changes without opening the file.** `horizon-server config set KEY=VALUE...` (the launcher's Servers
   page uses it) writes through `toml_edit`, checks the result as `server.toml` is checked, and writes nothing
   if a value is wrong. On a running server it sends what vanilla changes live through its console:
-  `difficulty`, `defaultgamemode` and `whitelist on|off`; the backup settings apply at once because the
+  `difficulty`, `defaultgamemode` and `whitelist on|off`; `server.motd` and `server.max_players` go to the
+  game as the management protocol's `serversettings/motd/set` and `serversettings/max_players/set` do, so
+  the server list and the next logins use them at once; the backup settings apply at once because the
   supervisor reads them each time. Everything else waits for the next start, and the command says which. A
-  real hot reload (view distance, MOTD) needs engine support and comes later.
+  hot reload of the view distance needs engine support and comes later.
 - `server.properties`, `ops.json`, `whitelist.json`, `banned-*.json` and `world/` keep vanilla's names and
   formats. A vanilla server folder works as is, and so does going back to vanilla.
 
