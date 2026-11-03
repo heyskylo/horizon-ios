@@ -273,7 +273,7 @@ impl Launcher {
                     .left(px(f * (TRACK - 16.)))
                     .size(px(16.))
                     .rounded_full()
-                    .bg(gpui::white()),
+                    .bg(ui::paper()),
             )
             .on_mouse_down(
                 MouseButton::Left,

@@ -371,6 +371,8 @@ struct Pass {
     /// Bind groups by the sides read (bits 0–15), the buffers whose mip chain is current (bits
     /// 16–31) and the shadowcolor sides read (bits 32–33).
     groups: HashMap<u64, wgpu::BindGroup>,
+    /// The same for End portal draws, with `end_portal.png` bound as the atlas.
+    portal_groups: HashMap<u64, wgpu::BindGroup>,
     /// (binding, target) of each image: for a buffer, the side its sampler reads.
     images: Vec<(u32, Image)>,
     /// Binds the pack's storage buffers in set 4.
@@ -545,6 +547,10 @@ pub struct PackPost {
     shadow_targets: Option<super::pack_shadow::ShadowTargets>,
     /// What draws terrain from the light (`shadow`), and translucent terrain (`shadow_water`).
     shadow_terrain: Option<Pass>,
+    /// `end_portal.png`'s atlas rect this frame, and a texture of its own copied from it that
+    /// End portal draws bind as their atlas.
+    portal_rect: [f32; 4],
+    portal_texture: Option<([f32; 4], wgpu::TextureView)>,
     shadow_water: Option<Pass>,
     shadow_comp: Vec<Pass>,
     /// Buffers with mipmaps (filterable ones a program asks them for).
@@ -1429,7 +1435,7 @@ fn build_pass(
     let features = device.features();
     // The frame's uniforms, then the pack's custom ones.
     let index = |name: &str| {
-        pack_uniforms::index(name).or_else(|| {
+        pack_uniforms::index_in(name, geometry.is_some()).or_else(|| {
             let k = custom.iter().position(|c| c == name)?;
             Some(pack_uniforms::NAMES.len() + k)
         })
@@ -1648,6 +1654,7 @@ fn build_pass(
         atlas: geometry.and_then(|g| g.atlas.clone()),
         ids: geometry.is_some_and(|g| g.ids.is_some()),
         groups: HashMap::new(),
+        portal_groups: HashMap::new(),
         copies: image_buffers(&images) & reads,
         reads: reads | image_buffers(&images),
         buffers: !interface.buffers.is_empty(),
@@ -1782,6 +1789,7 @@ fn build_compute(
         atlas: None,
         ids: false,
         groups: HashMap::new(),
+        portal_groups: HashMap::new(),
         buffers: !interface.buffers.is_empty(),
         images,
         compute: Vec::new(),
@@ -2077,6 +2085,7 @@ impl PackPost {
             post.entities_translucent,
             post.particles,
             post.damaged_block,
+            post.beacon_beam,
         ];
         let late = [
             false,
@@ -2084,6 +2093,7 @@ impl PackPost {
             post.translucent_late,
             post.particles_late,
             false,
+            true,
         ];
         let shadow_only = (post.shadow_only_player, post.shadow_only_lit_blocks);
         let shadow_programs = [post.shadow_entities, post.shadow_block];
@@ -2488,6 +2498,8 @@ impl PackPost {
             depth2,
             shadow_targets,
             shadow_terrain,
+            portal_rect: [0.0; 4],
+            portal_texture: None,
             shadow_water,
             shadow_comp,
             mipped,
@@ -3092,6 +3104,42 @@ impl PackPost {
                 continue;
             }
             let group = self.bind(device, queue, encoder, pass, size);
+            // End portal faces bind `end_portal.png` as the atlas, a texture of its own, so packs
+            // that wrap it with their own coordinates sample the portal sprite only.
+            let portal_group = if geometry
+                .draws
+                .iter()
+                .any(|d| d.pack && d.program == program && d.portal)
+                && let Some(atlas) = pass.atlas.clone().or_else(|| self.atlas.clone())
+                && self.portal_rect[2] > 0.0
+            {
+                if self
+                    .portal_texture
+                    .as_ref()
+                    .is_none_or(|(rect, _)| *rect != self.portal_rect)
+                {
+                    pass.portal_groups.clear();
+                    let view = super::pack_weather::copy_sprite(
+                        device,
+                        encoder,
+                        atlas.texture(),
+                        self.portal_rect,
+                    );
+                    self.portal_texture = Some((self.portal_rect, view));
+                }
+                let view = self.portal_texture.as_ref().map(|p| p.1.clone());
+                // `bind` caches groups by a key without the atlas: the portal groups are kept
+                // in a cache of their own, swapped in with the texture.
+                let saved = std::mem::replace(&mut pass.atlas, view);
+                let groups =
+                    std::mem::replace(&mut pass.groups, std::mem::take(&mut pass.portal_groups));
+                let g = self.bind(device, queue, encoder, pass, size);
+                pass.portal_groups = std::mem::replace(&mut pass.groups, groups);
+                pass.atlas = saved;
+                Some(g)
+            } else {
+                None
+            };
             {
                 let mut rp = self.begin(encoder, pass);
                 rp.set_pipeline(pass.render());
@@ -3104,7 +3152,14 @@ impl PackPost {
                 rp.set_bind_group(1, &geometry.table_group, &[]);
                 rp.set_vertex_buffer(0, geometry.vertices());
                 rp.set_index_buffer(geometry.indices.slice(..), wgpu::IndexFormat::Uint32);
+                let mut on_portal = false;
                 for d in draws {
+                    if let Some(portal) = &portal_group
+                        && d.portal != on_portal
+                    {
+                        rp.set_bind_group(0, if d.portal { portal } else { &group }, &[]);
+                        on_portal = d.portal;
+                    }
                     if pass.draw {
                         rp.set_bind_group(2, &geometry.group, &[geometry.offset(d.slot)]);
                     }
@@ -3178,9 +3233,11 @@ impl PackPost {
         entities: &[super::Vertex],
         spans: &[super::pack_draw::EntitySpan],
         crumbling: [f32; 4],
+        portal: [f32; 4],
         rest: &mut Vec<super::Vertex>,
         skin: Option<&super::entity_skin::SkinFrame>,
     ) {
+        self.portal_rect = portal;
         let shadow = self.shadow_casters();
         let Some(e) = &mut self.entities else {
             rest.clear();
@@ -4713,6 +4770,169 @@ mod tests {
             viewport([100, 100], [1.0, 0.5, 0.75]),
             [50.0, 75.0, 50.0, 25.0]
         );
+    }
+
+    /// `blend.<program>` of a composite program blends its output onto what the buffer's side
+    /// holds (Iris 1.11.7, probed: 0.25 over 0.75 with SRC_ALPHA ONE_MINUS_SRC_ALPHA ONE ZERO and
+    /// a source alpha of 0.25 reads 0.625).
+    #[test]
+    fn a_composite_program_blends_onto_its_buffer() {
+        let instance = crate::gfx::test_gpu::instance();
+        let Ok(adapter) = pollster::block_on(instance.request_adapter(&Default::default())) else {
+            return;
+        };
+        // A pass's pipeline layout has six bind group slots.
+        let desc = wgpu::DeviceDescriptor {
+            required_limits: adapter.limits(),
+            ..Default::default()
+        };
+        let Ok((device, queue)) = pollster::block_on(adapter.request_device(&desc)) else {
+            return;
+        };
+        let dir = std::env::temp_dir().join(format!("hz-composite-blend-{}", std::process::id()));
+        let shaders = dir.join("shaders");
+        std::fs::create_dir_all(&shaders).unwrap();
+        let file = |name: &str, text: &str| std::fs::write(shaders.join(name), text).unwrap();
+        file(
+            "composite.vsh",
+            "#version 120\nvoid main() { gl_Position = ftransform(); }\n",
+        );
+        file(
+            "composite.fsh",
+            "#version 120\n/* DRAWBUFFERS:3 */\n\
+             void main() { gl_FragData[0] = vec4(0.25, 0.25, 1.0, 0.25); }\n",
+        );
+        let pack = horizon_shaders::Pack::open(&dir).unwrap();
+        let properties = horizon_shaders::Properties::parse(
+            "blend.composite = SRC_ALPHA ONE_MINUS_SRC_ALPHA ONE ZERO\n",
+            &horizon_shaders::Macros::default(),
+        );
+        let mut post = horizon_shaders::load_post(
+            &pack,
+            "",
+            &properties,
+            &horizon_shaders::Macros::standard(),
+            &Default::default(),
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+        let program = post.programs.remove(0);
+        let buffers = pack_images::Buffers::new(
+            &device,
+            Default::default(),
+            Default::default(),
+            wgpu::ShaderStages::FRAGMENT,
+        );
+        let stand_ins = std::cell::RefCell::new(Vec::new());
+        let pack = Resources {
+            textures: &[],
+            images: &[],
+            left_out: &[],
+            buffers: &buffers,
+            indices: None,
+            gpu: Gpu::of(&adapter, device.features()),
+            storable: 0,
+            rgb: 0,
+            released: std::cell::Cell::new(("", 0)),
+            stand_ins: &stand_ins,
+        };
+        let draws = DrawUniforms::new(&device);
+        let mut notes = Vec::new();
+        let pass = build_pass(
+            &device,
+            program,
+            &[T::Rgba8Unorm; BUFFERS],
+            None,
+            T::Rgba8Unorm,
+            &mut notes,
+            None,
+            &[],
+            &draws.layout,
+            &pack,
+        )
+        .unwrap_or_else(|| panic!("the pass builds: {notes:?}"));
+        // colortex3 holds (0.75, 0.5, 0.25, 0.5) before the pass.
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: None,
+            size: wgpu::Extent3d {
+                width: 64,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: T::Rgba8Unorm,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&Default::default());
+        let head = [64.0f32, 1.0, 1.0 / 64.0, 1.0];
+        queue.write_buffer(&pass.ubo, 0, bytemuck::cast_slice(&head));
+        let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &pass.layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: pass.ubo.as_entire_binding(),
+            }],
+        });
+        let mut encoder = device.create_command_encoder(&Default::default());
+        let before = wgpu::Color {
+            r: 0.75,
+            g: 0.5,
+            b: 0.25,
+            a: 0.5,
+        };
+        encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            color_attachments: &[attach(
+                &view,
+                wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(before),
+                    store: wgpu::StoreOp::Store,
+                },
+            )],
+            ..Default::default()
+        });
+        {
+            // Loaded, as `PackPost::render` attaches a buffer a composite pass writes.
+            let load = wgpu::Operations {
+                load: wgpu::LoadOp::Load,
+                store: wgpu::StoreOp::Store,
+            };
+            let mut rp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                color_attachments: &[attach(&view, load)],
+                ..Default::default()
+            });
+            rp.set_pipeline(pass.render());
+            rp.set_bind_group(0, &group, &[]);
+            rp.draw(0..6, 0..1);
+        }
+        let read = device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: 256,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        encoder.copy_texture_to_buffer(
+            texture.as_image_copy(),
+            wgpu::TexelCopyBufferInfo {
+                buffer: &read,
+                layout: wgpu::TexelCopyBufferLayout::default(),
+            },
+            texture.size(),
+        );
+        queue.submit([encoder.finish()]);
+        read.slice(..).map_async(wgpu::MapMode::Read, |_| {});
+        device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        let texel: Vec<u8> = read.slice(..).get_mapped_range().unwrap()[..4].to_vec();
+        // rgb = 0.25 × src + 0.75 × dst, alpha = the source's.
+        let expected = [0.625, 0.4375, 0.4375, 0.25].map(|v: f32| v * 255.0);
+        for (got, want) in texel.iter().zip(expected) {
+            assert!(
+                (f32::from(*got) - want).abs() <= 1.0,
+                "{texel:?} vs {expected:?}"
+            );
+        }
     }
 
     #[test]
