@@ -882,10 +882,14 @@ packet!(
 );
 packet!(SetPlayerInventory { slot: i32 => VarInt, item: Option<Stack> => Slot });
 packet!(
-    /// ClockNetworkState for one world clock. The key is a
-    /// `Holder<WorldClock>` (`WorldClock.STREAM_CODEC`), so on the wire it is
-    /// the registry id + 1; 0 is reserved for an inline definition.
-    ClockState { clock: i32 => HolderId, total_ticks: i64 => VarLong, partial_tick: f32 => Float, rate: f32 => Float }
+    /// ClockNetworkState for one world clock (registry id).
+    ///
+    /// `ClientboundSetTimePacket` keys its map by `Holder<WorldClock>`, but
+    /// `WorldClock.STREAM_CODEC` is `ByteBufCodecs.holderRegistry`, not
+    /// `holder`: the key is the plain registry id, with no inline form and no
+    /// off-by-one. The test below is a join packet captured from a vanilla
+    /// 26.3 server.
+    ClockState { clock: i32 => VarInt, total_ticks: i64 => VarLong, partial_tick: f32 => Float, rate: f32 => Float }
 );
 packet!(SetTime { game_time: i64 => Long, clocks: Vec<ClockState> => List<ClockState> });
 packet!(TitlesAnimation { fade_in: i32 => Int, stay: i32 => Int, fade_out: i32 => Int });
@@ -3941,46 +3945,28 @@ mod tests {
         );
     }
 
-    /// `ClientboundSetTimePacket` keys its clocks by `Holder<WorldClock>`
-    /// (`WorldClock.STREAM_CODEC` = `ByteBufCodecs.holderRegistry`), i.e. the
-    /// registry id + 1. Read as a bare id, a vanilla server's overworld clock
-    /// (1 on the wire) landed on the End's entry, so `/time set day` never
-    /// reached the overworld clock and the client's day time stood still.
+    /// A `SetTime` packet captured from a vanilla 26.3 server at join, two
+    /// clocks: `Long 13071`, then `VarInt 2`, `(0, 66678, 0.0, 1.0)` and
+    /// `(1, 13071, 0.0, 1.0)`. Reading the clock as a holder id + 1 turns the
+    /// first key into an inline definition and the packet stops decoding.
     #[test]
-    fn a_time_clock_is_a_holder_id_plus_one() {
-        let mut w = Writer::new();
-        w.i64(100);
-        w.varint(1);
-        w.varint(1); // Holder<WorldClock>: registry id 0 = minecraft:overworld
-        w.varlong(6000);
-        w.f32(0.0);
-        w.f32(1.0);
+    fn a_time_clock_is_a_plain_registry_id() {
+        let payload = [
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x33, 0x0f, // game_time 13071
+            0x02, // two clocks
+            0x00, 0xf6, 0x88, 0x04, 0x00, 0x00, 0x00, 0x00, 0x3f, 0x80, 0x00, 0x00, // clock 0
+            0x01, 0x8f, 0x66, 0x00, 0x00, 0x00, 0x00, 0x3f, 0x80, 0x00, 0x00, // clock 1
+        ];
         let decoded =
-            Clientbound::decode(crate::ids::play::clientbound::SET_TIME, &w.data).unwrap();
+            Clientbound::decode(crate::ids::play::clientbound::SET_TIME, &payload).unwrap();
         let Clientbound::SetTime(t) = decoded else {
             panic!("expected SetTime")
         };
-        assert_eq!(t.clocks[0].clock, 0);
-        assert_eq!(t.clocks[0].total_ticks, 6000);
+        assert_eq!(t.game_time, 13071);
+        assert_eq!(t.clocks.len(), 2);
+        assert_eq!((t.clocks[0].clock, t.clocks[0].total_ticks), (0, 66678));
+        assert_eq!((t.clocks[1].clock, t.clocks[1].total_ticks), (1, 13071));
         assert_eq!(t.clocks[0].rate, 1.0);
-
-        // The writer puts the same holder form back on the wire: Long, count,
-        // holder id + 1.
-        let mut out = Writer::new();
-        SetTime::write(
-            &SetTime {
-                game_time: 100,
-                clocks: vec![ClockState {
-                    clock: 0,
-                    total_ticks: 6000,
-                    partial_tick: 0.0,
-                    rate: 1.0,
-                }],
-            },
-            &mut out,
-        );
-        assert_eq!(out.data[8], 1, "one clock");
-        assert_eq!(out.data[9], 1, "registry id 0 + 1");
     }
 
     #[test]
