@@ -163,15 +163,15 @@ MESSAGES = [
     '{"jsonrpc":"2.0","id":146,"method":"minecraft:serversettings/allow_flight"}',
     '{"jsonrpc":"2.0","id":147,"method":"minecraft:serversettings/allow_flight/set","params":[true]}',
     '{"jsonrpc":"2.0","id":148,"method":"minecraft:serversettings/allow_flight"}',
-    '{"jsonrpc":"2.0","id":170,"method":"minecraft:serversettings/status_replies"}',
-    '{"jsonrpc":"2.0","id":171,"method":"minecraft:serversettings/status_replies/set","params":[false]}',
-    '{"jsonrpc":"2.0","id":172,"method":"minecraft:serversettings/status_replies"}',
-    '{"jsonrpc":"2.0","id":173,"method":"minecraft:serversettings/status_replies/set","params":["yes"]}',
-    '{"jsonrpc":"2.0","id":174,"method":"minecraft:serversettings/status_replies"}',
-    '{"jsonrpc":"2.0","id":175,"method":"minecraft:serversettings/status_replies/set","params":[true]}',
-    '{"jsonrpc":"2.0","id":176,"method":"minecraft:serversettings/status_replies"}',
-    '{"jsonrpc":"2.0","id":177,"method":"minecraft:serversettings/status_replies/set","params":[false]}',
-    '{"jsonrpc":"2.0","id":178,"method":"minecraft:serversettings/status_replies"}',
+    '{"jsonrpc":"2.0","id":200,"method":"minecraft:serversettings/status_replies"}',
+    '{"jsonrpc":"2.0","id":201,"method":"minecraft:serversettings/status_replies/set","params":[false]}',
+    '{"jsonrpc":"2.0","id":202,"method":"minecraft:serversettings/status_replies"}',
+    '{"jsonrpc":"2.0","id":203,"method":"minecraft:serversettings/status_replies/set","params":["yes"]}',
+    '{"jsonrpc":"2.0","id":204,"method":"minecraft:serversettings/status_replies"}',
+    '{"jsonrpc":"2.0","id":205,"method":"minecraft:serversettings/status_replies/set","params":[true]}',
+    '{"jsonrpc":"2.0","id":206,"method":"minecraft:serversettings/status_replies"}',
+    '{"jsonrpc":"2.0","id":207,"method":"minecraft:serversettings/status_replies/set","params":[false]}',
+    '{"jsonrpc":"2.0","id":208,"method":"minecraft:serversettings/status_replies"}',
     '{"jsonrpc":"2.0","id":65,"method":"minecraft:serversettings/autosave"}',
     '{"jsonrpc":"2.0","id":66,"method":"minecraft:serversettings/autosave/set","params":[false]}',
     '{"jsonrpc":"2.0","id":67,"method":"minecraft:serversettings/autosave"}',
@@ -579,7 +579,7 @@ def main():
                         if not isinstance(reply, dict) or 'method' not in reply or 'id' in reply:
                             break
                     sides[side]['restarted_allow_flight'] = reply
-                    ws.send('{"jsonrpc":"2.0","id":179,"method":"minecraft:serversettings/status_replies"}')
+                    ws.send('{"jsonrpc":"2.0","id":209,"method":"minecraft:serversettings/status_replies"}')
                     while True:
                         reply = normal(ws.receive(timeout=60))
                         if not isinstance(reply, dict) or 'method' not in reply or 'id' in reply:
@@ -668,7 +668,7 @@ def main():
         if not horizon['saved_config_status_replies']:
             failures.append('Horizon did not save status replies in server.toml')
         if vanilla['restarted_status_replies'] != horizon['restarted_status_replies'] or \
-                vanilla['restarted_status_replies'] != {'jsonrpc': '2.0', 'id': 179, 'result': False}:
+                vanilla['restarted_status_replies'] != {'jsonrpc': '2.0', 'id': 209, 'result': False}:
             failures.append(f"restarted status replies: vanilla {vanilla['restarted_status_replies']!r}, Horizon {horizon['restarted_status_replies']!r}")
         (build / 'report.json').write_text(json.dumps(sides, indent=1))
         if failures:
