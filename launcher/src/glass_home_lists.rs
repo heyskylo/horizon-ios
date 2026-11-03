@@ -48,7 +48,7 @@ impl Launcher {
                 let open = zip.map(|zip| {
                     let dir = zip.parent().map(Path::to_path_buf).unwrap_or(zip);
                     ui::quiet("world-backups", tr("Open backups"), 36., &t)
-                        .on_click(move |_, _, cx| cx.open_with_system(&dir))
+                        .on_click(move |_, _, cx| crate::glass_toast::open(cx, &dir))
                 });
                 body = body.child(ui::list_head(message).children(open));
             }
@@ -68,7 +68,7 @@ impl Launcher {
                         .child(ui::link("worlds-folder", tr("Open folder")).on_click(
                             move |_, _, cx| {
                                 let _ = std::fs::create_dir_all(&saves);
-                                cx.open_with_system(&saves);
+                                crate::glass_toast::open(cx, &saves);
                             },
                         )),
                 ),
@@ -249,7 +249,7 @@ impl Launcher {
                 )
                 .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                     this.list_menu = None;
-                    cx.open_with_system(&folder);
+                    crate::glass_toast::open(cx, &folder);
                     cx.notify();
                 })),
             )
