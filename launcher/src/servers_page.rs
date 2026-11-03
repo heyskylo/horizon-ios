@@ -1022,6 +1022,20 @@ impl Launcher {
                         .font_family(theme::MONO)
                         .text_size(px(13.))
                 })
+                // The mockup's focus ring (`:focus-visible`, 2 px of the accent's soft shade) on a
+                // field of its own, drawn inside its edge: GPUI has no outline.
+                .when(
+                    focused
+                        && !invalid
+                        && !matches!(f, Field::Players | Field::OfflineName | Field::Command),
+                    |d| {
+                        let small = matches!(
+                            f,
+                            Field::InstanceModsFilter | Field::ConsoleSearch | Field::AccentHex
+                        );
+                        d.child(crate::glass_ui::focus_ring(if small { 10. } else { 12. }))
+                    },
+                )
         } else {
             div()
                 .flex()

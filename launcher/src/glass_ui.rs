@@ -176,6 +176,22 @@ pub fn wide_field(field: Stateful<Div>, focused: bool) -> Stateful<Div> {
         .bg(white(if focused { 0.11 } else { 0.07 }))
         .font_family(horizon_theme::glass::FONT)
         .text_size(px(14.))
+        .relative()
+        .when(focused, |d| d.child(focus_ring(radius::ROW)))
+}
+
+/// The mockup's focus ring (`.hzl :focus-visible`: 2 px of the accent's soft shade) over a
+/// focused field, inside its edge with the field's corners: GPUI has no outline, and a field
+/// clips what lies outside it. Put it in a `relative` field round at `radius`.
+pub fn focus_ring(radius: f32) -> Div {
+    div()
+        .absolute()
+        .top_0()
+        .left_0()
+        .size_full()
+        .rounded(px(radius))
+        .border_2()
+        .border_color(color(look().accent_soft))
 }
 
 /// Whether the pages being built draw the glass look: helpers with no theme at hand ask.
@@ -809,6 +825,7 @@ pub fn field(focused: bool, invalid: bool) -> Div {
         })
     };
     div()
+        .relative()
         .flex()
         .items_center()
         .h(px(44.))
