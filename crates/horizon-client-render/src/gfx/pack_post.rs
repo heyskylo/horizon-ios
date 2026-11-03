@@ -4439,6 +4439,7 @@ mod tests {
         }];
         let interface = horizon_shaders::Interface {
             uniform_size: 48,
+            initial_values: vec![0; 48],
             uniforms: Vec::new(),
             samplers: vec![horizon_shaders::Sampler {
                 name: "colortex0".into(),

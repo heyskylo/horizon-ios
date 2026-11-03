@@ -358,7 +358,8 @@
   "public_main_integration": {
     "revision": "8dffb823a45d307988dcc0e9d0e1767d665510fb",
     "license": "MIT",
-    "scope": "Only public main was fetched after the independent candidate was frozen; no old PR refs/history fetched. Frozen patch applied without API corrections."
+    "scope": "Only public main was fetched after the independent candidate was frozen; no old PR refs/history fetched. Frozen patch applied without API corrections.",
+    "qualification_api_adjustment": "The first final-main self-check exposed one newly added existing-main Interface test literal without the new field (E0063); initialized neutral48-byte initial contents. Independent production algorithm unchanged. First failed gate preserved."
   },
   "independent_baseline_validation": {
     "rust": "1.99.0; default debug tests; no custom RUSTFLAGS; serialized builds, jobs=2",
