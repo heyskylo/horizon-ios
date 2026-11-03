@@ -425,6 +425,7 @@
   "No version matches.": "Nicio versiune nu se potrivește.",
   "Invite a friend": "Invită un prieten",
   "Offline": "Offline",
+  "{online} of {max}": "{online} din {max}",
   "Shortcut": "Comandă rapidă",
   "Update to {version}": "Actualizare la {version}",
   "{name} is off.": "{name} este oprit.",
@@ -1072,5 +1073,6 @@
   "Search {count} Horizon mods": "Caută printre {count} moduri Horizon",
   "Shader pack": "Pachet de shadere",
   "soon": "în curând",
-  "{support} in Horizon": "{support} în Horizon"
+  "{support} in Horizon": "{support} în Horizon",
+  "My Horizon": "Horizon-ul meu"
 }

@@ -425,6 +425,7 @@
   "No version matches.": "Няма съответстваща версия.",
   "Invite a friend": "Поканете приятел",
   "Offline": "Офлайн",
+  "{online} of {max}": "{online} от {max}",
   "Shortcut": "Пряк път",
   "Update to {version}": "Актуализиране до {version}",
   "{name} is off.": "{name} е изключен.",
@@ -1072,5 +1073,6 @@
   "Search {count} Horizon mods": "Търси сред {count} мода за Horizon",
   "Shader pack": "Пакет с шейдъри",
   "soon": "скоро",
-  "{support} in Horizon": "{support} в Horizon"
+  "{support} in Horizon": "{support} в Horizon",
+  "My Horizon": "Моят Horizon"
 }

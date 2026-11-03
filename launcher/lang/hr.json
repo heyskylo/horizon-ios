@@ -425,6 +425,7 @@
   "No version matches.": "Nema odgovarajuće verzije.",
   "Invite a friend": "Pozovi prijatelja",
   "Offline": "Izvan mreže",
+  "{online} of {max}": "{online} od {max}",
   "Shortcut": "Prečac",
   "Update to {version}": "Ažuriraj na {version}",
   "{name} is off.": "{name} je isključen.",

@@ -425,6 +425,7 @@
   "No version matches.": "אין גרסה תואמת.",
   "Invite a friend": "הזמן חבר",
   "Offline": "לא מקוון",
+  "{online} of {max}": "{online} מתוך {max}",
   "Shortcut": "קיצור דרך",
   "Update to {version}": "עדכן ל-{version}",
   "{name} is off.": "{name} כבוי.",
@@ -1072,5 +1073,6 @@
   "Search {count} Horizon mods": "חפש בין {count} מודים של Horizon",
   "Shader pack": "חבילת שיידרים",
   "soon": "בקרוב",
-  "{support} in Horizon": "{support} ב-Horizon"
+  "{support} in Horizon": "{support} ב-Horizon",
+  "My Horizon": "ה-Horizon שלי"
 }

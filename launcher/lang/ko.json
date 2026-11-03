@@ -425,6 +425,7 @@
   "No version matches.": "일치하는 버전이 없습니다.",
   "Invite a friend": "친구 초대",
   "Offline": "오프라인",
+  "{online} of {max}": "{online}/{max}",
   "Shortcut": "바로 가기",
   "Update to {version}": "{version}(으)로 업데이트",
   "{name} is off.": "{name} 꺼짐.",

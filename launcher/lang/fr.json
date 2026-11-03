@@ -425,6 +425,7 @@
   "No version matches.": "Aucune version ne correspond.",
   "Invite a friend": "Inviter un ami",
   "Offline": "Hors ligne",
+  "{online} of {max}": "{online} sur {max}",
   "Shortcut": "Raccourci",
   "Update to {version}": "Mettre à jour vers {version}",
   "{name} is off.": "{name} est désactivé.",

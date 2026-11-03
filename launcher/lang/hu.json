@@ -425,6 +425,7 @@
   "No version matches.": "Egyetlen verzió sem egyezik.",
   "Invite a friend": "Hívj meg egy barátot",
   "Offline": "Offline",
+  "{online} of {max}": "{online}/{max}",
   "Shortcut": "Parancsikon",
   "Update to {version}": "Frissítés erre: {version}",
   "{name} is off.": "{name} ki van kapcsolva.",
@@ -1072,5 +1073,6 @@
   "Search {count} Horizon mods": "Keresés {count} Horizon-mod között",
   "Shader pack": "Shadercsomag",
   "soon": "hamarosan",
-  "{support} in Horizon": "{support} a Horizonban"
+  "{support} in Horizon": "{support} a Horizonban",
+  "My Horizon": "Saját Horizon"
 }

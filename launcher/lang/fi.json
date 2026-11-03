@@ -425,6 +425,7 @@
   "No version matches.": "Yksikään versio ei vastaa.",
   "Invite a friend": "Kutsu ystävä",
   "Offline": "Offline-tilassa",
+  "{online} of {max}": "{online}/{max}",
   "Shortcut": "Pikakuvake",
   "Update to {version}": "Päivitä {version}",
   "{name} is off.": "{name} on pois päältä.",
@@ -1072,5 +1073,6 @@
   "Search {count} Horizon mods": "Hae {count} Horizon-modista",
   "Shader pack": "Varjostinpaketti",
   "soon": "pian",
-  "{support} in Horizon": "{support} Horizonissa"
+  "{support} in Horizon": "{support} Horizonissa",
+  "My Horizon": "Oma Horizon"
 }

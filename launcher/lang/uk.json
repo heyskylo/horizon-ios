@@ -425,6 +425,7 @@
   "No version matches.": "Немає відповідних версій.",
   "Invite a friend": "Запросити друга",
   "Offline": "Офлайн",
+  "{online} of {max}": "{online} з {max}",
   "Shortcut": "Ярлик",
   "Update to {version}": "Оновити до {version}",
   "{name} is off.": "{name} вимкнено.",

@@ -425,6 +425,7 @@
   "No version matches.": "لا يوجد إصدار مطابق.",
   "Invite a friend": "دعوة صديق",
   "Offline": "غير متصل",
+  "{online} of {max}": "{online} من {max}",
   "Shortcut": "اختصار",
   "Update to {version}": "التحديث إلى {version}",
   "{name} is off.": "{name} مُعطّل.",

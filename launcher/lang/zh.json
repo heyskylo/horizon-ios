@@ -425,6 +425,7 @@
   "No version matches.": "没有匹配的版本。",
   "Invite a friend": "邀请好友",
   "Offline": "离线",
+  "{online} of {max}": "{online}/{max}",
   "Shortcut": "快捷方式",
   "Update to {version}": "更新至 {version}",
   "{name} is off.": "已关闭 {name}。",

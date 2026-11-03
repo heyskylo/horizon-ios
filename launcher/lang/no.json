@@ -425,6 +425,7 @@
   "No version matches.": "Ingen versjon samsvarer.",
   "Invite a friend": "Inviter en venn",
   "Offline": "Frakoblet",
+  "{online} of {max}": "{online} av {max}",
   "Shortcut": "Snarvei",
   "Update to {version}": "Oppdater til {version}",
   "{name} is off.": "{name} er av.",
@@ -1072,5 +1073,6 @@
   "Search {count} Horizon mods": "Søk i {count} Horizon-mods",
   "Shader pack": "Shaderpakke",
   "soon": "snart",
-  "{support} in Horizon": "{support} i Horizon"
+  "{support} in Horizon": "{support} i Horizon",
+  "My Horizon": "Mitt Horizon"
 }

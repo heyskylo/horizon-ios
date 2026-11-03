@@ -425,6 +425,7 @@
   "No version matches.": "Žiadna verzia sa nezhoduje.",
   "Invite a friend": "Pozvi priateľa",
   "Offline": "Offline",
+  "{online} of {max}": "{online} z {max}",
   "Shortcut": "Skratka",
   "Update to {version}": "Aktualizovať na {version}",
   "{name} is off.": "{name} je vypnutý.",
@@ -1072,5 +1073,6 @@
   "Search {count} Horizon mods": "Hľadať medzi {count} modmi pre Horizon",
   "Shader pack": "Balík shaderov",
   "soon": "čoskoro",
-  "{support} in Horizon": "{support} v Horizone"
+  "{support} in Horizon": "{support} v Horizone",
+  "My Horizon": "Môj Horizon"
 }

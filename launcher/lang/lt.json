@@ -425,6 +425,7 @@
   "No version matches.": "Neatitinka nė viena versija.",
   "Invite a friend": "Pakviesk draugą",
   "Offline": "Neprisijungus",
+  "{online} of {max}": "{online} iš {max}",
   "Shortcut": "Spartusis klavišas",
   "Update to {version}": "Atnaujinti į {version}",
   "{name} is off.": "{name} išjungtas.",
@@ -1072,5 +1073,6 @@
   "Search {count} Horizon mods": "Ieškoti tarp {count} Horizon modų",
   "Shader pack": "Šešėliavimo paketas",
   "soon": "netrukus",
-  "{support} in Horizon": "{support} Horizon"
+  "{support} in Horizon": "{support} Horizon",
+  "My Horizon": "Mano Horizon"
 }

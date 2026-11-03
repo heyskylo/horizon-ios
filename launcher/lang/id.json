@@ -425,6 +425,7 @@
   "No version matches.": "Tidak ada versi yang cocok.",
   "Invite a friend": "Undang teman",
   "Offline": "Offline",
+  "{online} of {max}": "{online} dari {max}",
   "Shortcut": "Pintasan",
   "Update to {version}": "Perbarui ke {version}",
   "{name} is off.": "{name} nonaktif.",
