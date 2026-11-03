@@ -557,6 +557,7 @@ struct AsyncCullingStats {
 
 struct CullJob {
     stamp: SnapshotKey,
+    snapshot_epoch: u64,
     generation: u64,
     snapshot: Arc<OcclusionSnapshot>,
     queries: Vec<CullKey>,
@@ -576,14 +577,14 @@ struct RayWorkerScratch {
     clear_visible: Vec<CullKey>,
     last_chunk: LastChunk,
     opacity_grid: OpacityGrid,
-    snapshot_stamp: Option<SnapshotKey>,
+    snapshot_epoch: Option<u64>,
 }
 
 impl RayWorkerScratch {
-    fn prepare(&mut self, stamp: SnapshotKey) {
-        if self.snapshot_stamp != Some(stamp) {
+    fn prepare(&mut self, snapshot_epoch: u64) {
+        if self.snapshot_epoch != Some(snapshot_epoch) {
             self.opacity_grid.clear();
-            self.snapshot_stamp = Some(stamp);
+            self.snapshot_epoch = Some(snapshot_epoch);
         }
         self.last_chunk.clear();
         self.blocked.clear();
@@ -599,14 +600,14 @@ struct PlaneWorkerScratch {
     covered: Vec<[i32; 3]>,
     last_chunk: LastChunk,
     opacity_grid: OpacityGrid,
-    snapshot_stamp: Option<SnapshotKey>,
+    snapshot_epoch: Option<u64>,
 }
 
 impl PlaneWorkerScratch {
-    fn prepare(&mut self, stamp: SnapshotKey) {
-        if self.snapshot_stamp != Some(stamp) {
+    fn prepare(&mut self, snapshot_epoch: u64) {
+        if self.snapshot_epoch != Some(snapshot_epoch) {
             self.opacity_grid.clear();
-            self.snapshot_stamp = Some(stamp);
+            self.snapshot_epoch = Some(snapshot_epoch);
         }
         self.last_chunk.clear();
         self.covered.clear();
@@ -624,6 +625,7 @@ pub(super) struct AsyncOcclusionCuller {
     _thread: JoinHandle<()>,
     job_generation: Arc<AtomicU64>,
     snapshot: Option<(SnapshotKey, ChunkBounds, Arc<OcclusionSnapshot>)>,
+    snapshot_epoch: u64,
     opaque_states: Option<Arc<[bool]>>,
     queries: RefCell<Vec<CullKey>>,
     query_results: Vec<CachedQueryResult>,
@@ -729,6 +731,7 @@ impl AsyncOcclusionCuller {
             _thread: thread,
             job_generation,
             snapshot: None,
+            snapshot_epoch: 0,
             opaque_states: None,
             queries: RefCell::new(Vec::new()),
             query_results: Vec::new(),
@@ -1276,6 +1279,7 @@ impl AsyncOcclusionCuller {
                     || *cached_bounds != bounds
                     || !snapshot.chunks_match(world)
                 {
+                    self.snapshot_epoch = self.snapshot_epoch.wrapping_add(1);
                     let snapshot = Arc::make_mut(snapshot);
                     snapshot.opaque_states = Arc::clone(&opaque_states);
                     snapshot.refresh_chunks(world, bounds);
@@ -1285,6 +1289,7 @@ impl AsyncOcclusionCuller {
                 Arc::clone(snapshot)
             }
             None => {
+                self.snapshot_epoch = self.snapshot_epoch.wrapping_add(1);
                 let mut snapshot = OcclusionSnapshot {
                     chunks: Vec::new(),
                     opaque_states,
@@ -1298,6 +1303,7 @@ impl AsyncOcclusionCuller {
         let queries = std::mem::take(queries);
         let job = CullJob {
             stamp: self.stamp,
+            snapshot_epoch: self.snapshot_epoch,
             generation: self.job_generation.load(Ordering::Relaxed),
             snapshot,
             queries,
@@ -1529,7 +1535,7 @@ fn filter_rays(job: &mut CullJob, generation: &AtomicU64, scratch: &mut RayWorke
         return;
     };
     let camera = first.camera.map(f64::from_bits);
-    scratch.prepare(job.stamp);
+    scratch.prepare(job.snapshot_epoch);
     std::mem::swap(&mut job.queries, &mut scratch.input);
     job.clear_visible.clear();
     let mut input = std::mem::take(&mut scratch.input);
@@ -1572,7 +1578,7 @@ fn cull_job(
         .map(|key| key.camera.map(f64::from_bits))
         .unwrap_or([0.0; 3]);
     let culler = OcclusionCuller::new(camera, OCCLUSION_LOOKUP_BUDGET);
-    scratch.prepare(job.stamp);
+    scratch.prepare(job.snapshot_epoch);
     let mut hidden = job.hidden;
     hidden.clear();
     if hidden.capacity() < job.queries.len() {
@@ -1891,6 +1897,7 @@ mod tests {
                 chunks_revision: 1,
                 bottom_y: ColumnLayout::VANILLA.min_y(),
             },
+            snapshot_epoch: 0,
             generation: 0,
             snapshot,
             queries: vec![CullKey {
@@ -1973,6 +1980,28 @@ mod tests {
             &mut opacity_grid,
         ));
         drop(live);
+    }
+
+    #[test]
+    fn ray_scratch_invalidates_cached_voxels_when_the_snapshot_refreshes() {
+        let (opaque_snapshot, opaque_live) = wall(None);
+        let (hole_snapshot, hole_live) = wall(Some([4, 0, 0]));
+        let mut scratch = RayWorkerScratch::default();
+        let generation = AtomicU64::new(0);
+
+        let mut blocked = job(opaque_snapshot);
+        blocked.snapshot_epoch = 1;
+        filter_rays(&mut blocked, &generation, &mut scratch);
+        assert!(blocked.clear_visible.is_empty());
+        assert_eq!(blocked.queries.len(), 1);
+
+        let mut clear = job(hole_snapshot);
+        clear.snapshot_epoch = 2;
+        filter_rays(&mut clear, &generation, &mut scratch);
+        assert!(clear.queries.is_empty());
+        assert_eq!(clear.clear_visible.len(), 1);
+
+        drop((opaque_live, hole_live));
     }
 }
 
