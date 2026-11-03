@@ -61,10 +61,12 @@ pub(super) enum Field {
     /// Settings' new offline name (`switch_page.rs`).
     OfflineName,
     DeleteServer,
+    /// Settings' accent as hex (`themes_page.rs`).
+    AccentHex,
 }
 
 impl Field {
-    const ALL: [Field; 23] = [
+    const ALL: [Field; 24] = [
         Field::Name,
         Field::Seed,
         Field::Players,
@@ -88,6 +90,7 @@ impl Field {
         Field::MemoryLimit,
         Field::OfflineName,
         Field::DeleteServer,
+        Field::AccentHex,
     ];
 }
 
@@ -966,6 +969,14 @@ impl Launcher {
                             .bg(crate::glass_ui::white(if focused { 0.1 } else { 0.06 }))
                     },
                 )
+                // The accent's hex: `h-9 w-[96px] rounded-[10px] px-3 text-[13px] font-medium`.
+                .when(f == Field::AccentHex, |d| {
+                    d.h(px(36.))
+                        .px(px(12.))
+                        .rounded(px(10.))
+                        .text_size(px(13.))
+                        .font_weight(FontWeight::MEDIUM)
+                })
                 // The friend field sits in its chip, on the chip's fill.
                 .when(matches!(f, Field::Players | Field::OfflineName), |d| {
                     d.h_full().px(px(14.)).bg(gpui::transparent_black())
@@ -1098,7 +1109,8 @@ impl Launcher {
             | Field::InstanceVersion
             | Field::InstanceModsFilter
             | Field::ConsoleSearch
-            | Field::DeleteServer => {}
+            | Field::DeleteServer
+            | Field::AccentHex => {}
             Field::PreLaunch | Field::Wrapper | Field::LaunchEnv | Field::PostExit => {
                 self.save_launch()
             }

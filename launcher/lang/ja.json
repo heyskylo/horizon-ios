@@ -1033,5 +1033,6 @@
   "3 to 16 letters, numbers or underscores. Switch names from the top bar too. Online servers don't take offline names.": "3〜16 文字の英数字またはアンダースコア。名前は上部のバーからも切り替えられます。オンラインサーバーではオフラインの名前は使えません。",
   "Play online with your Microsoft account": "Microsoft アカウントでオンラインプレイ",
   "Sign in with the account that owns Minecraft: Java Edition. Your name and skin come along to online servers, like in other launchers.": "Minecraft: Java Edition を所有するアカウントでサインインしてください。名前とスキンは、ほかのランチャーと同じようにオンラインサーバーでも使われます。",
-  "Microsoft's own page opens in your browser. Horizon never sees your password.": "Microsoft 自身のページがブラウザで開きます。Horizon がパスワードを見ることはありません。"
+  "Microsoft's own page opens in your browser. Horizon never sees your password.": "Microsoft 自身のページがブラウザで開きます。Horizon がパスワードを見ることはありません。",
+  "Colours the buttons, the switches and the sky. Pick one, or type any hex colour.": "ボタン、スイッチ、空に色を付けます。選ぶか、任意の16進カラーを入力してください。"
 }

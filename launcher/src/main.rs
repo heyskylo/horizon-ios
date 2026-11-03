@@ -257,6 +257,8 @@ struct Launcher {
     native_log: native_log_page::NativeLog,
     confirm_remove: Option<String>,
     picker_open: bool,
+    /// Settings' any-colour swatch shows the hue strip (the glass look).
+    accent_strip: bool,
     /// Where the accent picker's hue strip is on screen (`themes_page.rs`), to map a click to a
     /// hue.
     hue_area: std::rc::Rc<std::cell::Cell<Option<Bounds<gpui::Pixels>>>>,
@@ -556,6 +558,7 @@ impl Launcher {
             native_log: Default::default(),
             confirm_remove: None,
             picker_open: false,
+            accent_strip: false,
             hue_area: std::rc::Rc::new(std::cell::Cell::new(None)),
             hue_dragging: false,
             language_menu: false,
@@ -4877,6 +4880,9 @@ impl Render for Launcher {
             self.theme = self.settings_theme(window);
         }
         glass_ui::set_on(self.theme.dark);
+        self.look = self.theme.look;
+        glass_ui::set_look(self.look);
+        glass::set_look(self.look);
         self.scale = window.scale_factor();
         self.perf.frame();
         if self.bench.as_ref().is_some_and(perf::Bench::scrolling) {
