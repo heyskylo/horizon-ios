@@ -45,6 +45,8 @@ pub struct Session {
     pub version: ServerVersion,
     /// Dimension of the last play login or respawn, for older packets with only a local block position.
     pub(super) dimension: Mutex<String>,
+    /// Local entity id and last shift input, for pre-1.21.6 crouch commands.
+    pub(super) local_player: Mutex<Option<(i32, bool)>>,
     reading: AtomicU8,
     writing: AtomicU8,
     /// Entity UUIDs by network id, for a server that is told which entity a spectator picked by its UUID.
@@ -63,6 +65,7 @@ impl Session {
         Self {
             version,
             dimension: Mutex::new("minecraft:overworld".into()),
+            local_player: Mutex::new(None),
             reading: AtomicU8::new(0),
             writing: AtomicU8::new(0),
             uuids: Mutex::new(HashMap::new()),
@@ -200,6 +203,7 @@ mod tests {
             (ServerVersion::V26_2, 776),
             (ServerVersion::V1_21_8, 772),
             (ServerVersion::V1_21_6, 771),
+            (ServerVersion::V1_21_5, 770),
         ] {
             let s = Session::new(version);
             let mut payload = Writer::new();

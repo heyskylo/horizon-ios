@@ -18,6 +18,7 @@ use crate::{
     packets::{configuration, play},
 };
 
+mod v1_21_5;
 mod v1_21_8;
 
 impl Ids {
@@ -78,7 +79,8 @@ pub fn clientbound(
     // A release at a time: an older server's packets are brought to 26.2's layout first, oldest step first.
     let mut before: Option<Vec<u8>> = None;
     type Step = fn(&Session, State, i32, &[u8]) -> Result<Option<Vec<u8>>>;
-    let steps: [(ServerVersion, Step); 3] = [
+    let steps: [(ServerVersion, Step); 4] = [
+        (ServerVersion::V1_21_5, v1_21_5::clientbound),
         (ServerVersion::V1_21_8, v1_21_8::clientbound),
         (ServerVersion::V1_21_11, v1_21_11::clientbound),
         (ServerVersion::V26_1, v26_1::clientbound),
@@ -109,6 +111,7 @@ pub fn clientbound(
         (State::Play, cb::LOGIN) => {
             let body = login(payload)?;
             let login = play::Login::read(&mut Reader::new(&body))?;
+            *session.local_player.lock().unwrap() = Some((login.player_id, false));
             *session.dimension.lock().unwrap() = login.spawn.dimension;
             // The local player receives no AddEntity packet; its metadata still needs the player step.
             session
@@ -119,6 +122,9 @@ pub fn clientbound(
             body
         }
         (State::Play, cb::RESPAWN) => {
+            if let Some((_, shift)) = session.local_player.lock().unwrap().as_mut() {
+                *shift = false;
+            }
             let body = respawn(payload)?;
             *session.dimension.lock().unwrap() = play::Respawn::read(&mut Reader::new(&body))?
                 .spawn
@@ -200,6 +206,9 @@ pub fn clientbound(
         (State::Play, cb::SET_ENTITY_DATA) if session.version.at_most(ServerVersion::V1_21_11) => {
             let mut p = decode_play(ids, id, payload)?;
             if let play::Clientbound::SetEntityData(d) = &mut p {
+                if session.version.at_most(ServerVersion::V1_21_5) {
+                    v1_21_5::entity_data(session, d);
+                }
                 if session.version.at_most(ServerVersion::V1_21_8) {
                     v1_21_8::entity_data(session, d);
                 }
@@ -222,7 +231,8 @@ pub fn clientbound(
             | cb::SOUND
             | cb::SOUND_ENTITY
             | cb::RECIPE_BOOK_ADD
-            | cb::PLACE_GHOST_RECIPE,
+            | cb::PLACE_GHOST_RECIPE
+            | cb::COMMANDS,
         ) => redecode(ids, id, payload)?,
         _ => return Ok(Some((id, before))),
     };
@@ -255,6 +265,13 @@ pub fn serverbound(
     };
     use packet_ids::play::serverbound as sb;
     match (state, id) {
+        (State::Play, sb::PLAYER_COMMAND) if session.version.at_most(ServerVersion::V1_21_5) => {
+            renumbered(id, v1_21_5::player_command(payload)?)
+        }
+        (State::Play, sb::PLAYER_INPUT) if session.version.at_most(ServerVersion::V1_21_5) => {
+            v1_21_5::input(session, payload)?;
+            renumbered(id, payload.to_vec())
+        }
         // 26.3 also states where the client was teleported to; 26.2 only the teleport's id.
         (State::Play, sb::ACCEPT_TELEPORTATION) => {
             let mut r = Reader::new(payload);
@@ -280,7 +297,7 @@ pub fn serverbound(
             v1_21_11::interact(session, payload)
         }
         (State::Play, sb::ATTACK) if session.version.at_most(ServerVersion::V1_21_11) => {
-            v1_21_11::attack(payload)
+            v1_21_11::attack(session, payload)
         }
         // 26.1 is told the entity a spectator picked by its UUID (spectate_entity, at the same id).
         (State::Play, sb::SPECTATOR_ACTION) if session.version == ServerVersion::V26_1 => {
@@ -290,7 +307,9 @@ pub fn serverbound(
         (State::Play, sb::PUNCH) => {
             let mut w = Writer::new();
             w.varint(0);
-            let swing = if session.version.at_most(ServerVersion::V1_21_11) {
+            let swing = if session.version.at_most(ServerVersion::V1_21_5) {
+                59 // Vanilla 1.21.5's swing, before change_game_mode shifted the later ids.
+            } else if session.version.at_most(ServerVersion::V1_21_11) {
                 v1_21_11::SWING
             } else {
                 V26_2_SWING
@@ -720,6 +739,7 @@ mod v1_21_11 {
 
     /// 1.21.11's serverbound `swing` and `interact` (play).
     pub const SWING: i32 = 60;
+    #[cfg(test)]
     const INTERACT: i32 = 25;
 
     /// Entity types (26.3 ids) whose class extends AgeableMob: 26.1 added a second boolean to it, after the
@@ -847,6 +867,12 @@ mod v1_21_11 {
     /// Horizon's interact (entity, hand, where on it, sneaking) is 1.21.11's INTERACT_AT (action 2: the
     /// point as floats, then the hand), followed as vanilla 1.21.11 did by INTERACT (action 0: the hand).
     pub fn interact(session: &Session, payload: &[u8]) -> Result<Option<(i32, Vec<u8>)>> {
+        let Some(interact) = session
+            .version
+            .serverbound_id(State::Play, packet_ids::play::serverbound::INTERACT)
+        else {
+            return Ok(None);
+        };
         let mut r = Reader::new(payload);
         let entity = r.varint()?;
         let hand = r.varint()?;
@@ -859,23 +885,29 @@ mod v1_21_11 {
         first.varint(hand);
         first.bool(sneaking);
         let mut then = Writer::new();
-        then.varint(INTERACT);
+        then.varint(interact);
         then.varint(entity);
         then.varint(0);
         then.varint(hand);
         then.bool(sneaking);
         session.outgoing.lock().unwrap().push(then.data);
-        Ok(Some((INTERACT, first.data)))
+        Ok(Some((interact, first.data)))
     }
 
     /// 26.1's attack is 1.21.11's interact with action 1 (ATTACK).
-    pub fn attack(payload: &[u8]) -> Result<Option<(i32, Vec<u8>)>> {
+    pub fn attack(session: &Session, payload: &[u8]) -> Result<Option<(i32, Vec<u8>)>> {
+        let Some(interact) = session
+            .version
+            .serverbound_id(State::Play, packet_ids::play::serverbound::INTERACT)
+        else {
+            return Ok(None);
+        };
         let mut r = Reader::new(payload);
         let mut w = Writer::new();
         w.varint(r.varint()?);
         w.varint(1);
         w.bool(false);
-        Ok(Some((INTERACT, w.data)))
+        Ok(Some((interact, w.data)))
     }
 
     #[cfg(test)]

@@ -13,6 +13,7 @@ use std::sync::Arc;
 pub mod custom;
 mod hash;
 mod skip;
+mod v1_21_5;
 
 pub use hash::{Names, NoNames};
 
@@ -266,6 +267,9 @@ impl SkinPatch {
 }
 impl Component {
     pub(crate) fn read(kind: i32, r: &mut Reader) -> Result<Self> {
+        if let Some(bytes) = v1_21_5::read(kind, r)? {
+            return Ok(Self::Raw(bytes));
+        }
         use component::*;
         Ok(match kind {
             MAX_STACK_SIZE
@@ -518,7 +522,10 @@ impl Component {
     }
     pub(crate) fn write(&self, kind: i32, w: &mut Writer) {
         match self {
-            Self::Raw(bytes) => w.bytes(bytes),
+            Self::Raw(bytes) => {
+                let legacy = v1_21_5::write(kind, bytes);
+                w.bytes(legacy.as_deref().unwrap_or(bytes));
+            }
             Self::BannerPatterns(layers) => {
                 w.varint(layers.len() as i32);
                 for (pattern, color) in layers {
@@ -824,7 +831,11 @@ fn read_stack(r: &mut Reader, delimited: bool) -> Result<Option<Stack>> {
         count,
         added,
         removed,
-        wire: WirePatch((positive + negative > 0).then(|| patch.data.into())),
+        // An adapter may have changed component layouts as well as ids. Its original bytes are not
+        // a pinned patch; reconstruct that patch from the normalized values when needed.
+        wire: WirePatch(
+            (positive + negative > 0 && ids::active().is_none()).then(|| patch.data.into()),
+        ),
     }))
 }
 

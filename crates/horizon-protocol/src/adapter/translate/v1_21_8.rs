@@ -176,7 +176,11 @@ mod tests {
 
     #[test]
     fn player_fields_survive_all_metadata_steps_and_nbt_shoulders_do_not_end_the_list() {
-        for version in [ServerVersion::V1_21_8, ServerVersion::V1_21_6] {
+        for version in [
+            ServerVersion::V1_21_8,
+            ServerVersion::V1_21_6,
+            ServerVersion::V1_21_5,
+        ] {
             player_metadata(version);
         }
     }

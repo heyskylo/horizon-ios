@@ -87,11 +87,14 @@ pub struct Quirks {
     pub tag_slot_display_is_id: bool,
     /// Before 1.21.9, player shoulder parrots were compound tags (serializer 16), not optional variants.
     pub shoulder_parrots_as_nbt: bool,
+    /// Before 1.21.6, attribute modifiers had no display and equippables no shearing fields.
+    pub components_before_1_21_6: bool,
 }
 impl Quirks {
     pub const NONE: Self = Self {
         tag_slot_display_is_id: false,
         shoulder_parrots_as_nbt: false,
+        components_before_1_21_6: false,
     };
 }
 
@@ -155,6 +158,10 @@ pub fn item(id: i32) -> i32 {
 /// A data component type id as read or about to be written on this thread.
 pub fn component(id: i32) -> i32 {
     apply(id, |ids| ids.data_component_type)
+}
+/// An argument parser id; its properties must be read using the pinned parser's layout.
+pub fn command_argument_type(id: i32) -> i32 {
+    apply(id, |ids| ids.command_argument_type)
 }
 /// A particle type id as read or about to be written on this thread.
 pub fn particle(id: i32) -> i32 {
