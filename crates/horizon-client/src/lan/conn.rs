@@ -1623,6 +1623,69 @@ mod tests {
         }
     }
 
+    /// A login by transfer: `Ok` once the profile is told, the reason's JSON when it is turned away.
+    fn transfer_login(mut c: Connection, name: &str) -> Result<(), String> {
+        c.send(
+            &handshake::Serverbound::Intention(handshake::Intention {
+                protocol: horizon_protocol::PROTOCOL_VERSION,
+                host: "127.0.0.1".into(),
+                port: 0,
+                intent: handshake::TRANSFER,
+            })
+            .encode(),
+        )
+        .unwrap();
+        c.send(
+            &login::Serverbound::Hello(login::ServerHello {
+                name: name.into(),
+                uuid: offline_uuid(name),
+            })
+            .encode(),
+        )
+        .unwrap();
+        loop {
+            let (id, payload) = c.recv().unwrap();
+            match login::Clientbound::decode(id, &payload).unwrap() {
+                login::Clientbound::Compression(p) => c.set_compression(p.threshold),
+                login::Clientbound::LoginFinished(_) => return Ok(()),
+                login::Clientbound::Disconnect(d) => return Err(d.reason_json),
+                other => panic!("unexpected login packet {other:?}"),
+            }
+        }
+    }
+
+    /// `serversettings/accept_transfers/set` changes what the next transfer finds, with no restart:
+    /// a server that does not accept transfers turns one away, and takes it once it does.
+    #[test]
+    fn accepting_transfers_can_be_turned_on_and_off_live() {
+        let config = crate::lan::NetConfig {
+            announce: false,
+            listen: false,
+            accepts_transfers: false,
+            ..crate::lan::NetConfig::lan(0, "Transfers".into(), 8)
+        };
+        let lan =
+            crate::lan::Lan::start_with(Arc::new(crate::lan::data::SyncData::empty()), config)
+                .unwrap();
+        let refused = transfer_login(Connection::local(lan.connect_local().unwrap()), "Alex")
+            .expect_err("a transfer is turned away while transfers are off");
+        assert!(
+            refused.contains("multiplayer.disconnect.transfers_disabled"),
+            "{refused}"
+        );
+        lan.shared.set_accepts_transfers(true);
+        transfer_login(Connection::local(lan.connect_local().unwrap()), "Alex")
+            .expect("a transfer is taken once transfers are on");
+        lan.shared.set_accepts_transfers(false);
+        // The player of the last login is still here: a second profile tries.
+        let again = transfer_login(Connection::local(lan.connect_local().unwrap()), "Steve")
+            .expect_err("and turned away again once they are off");
+        assert!(
+            again.contains("multiplayer.disconnect.transfers_disabled"),
+            "{again}"
+        );
+    }
+
     #[test]
     fn payloads_and_suggestions_past_vanillas_limits_are_malformed() {
         let payload = |len: usize| {
