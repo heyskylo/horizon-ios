@@ -82,7 +82,7 @@
   "horizon.mods.in_world": " (άσε τον κόσμο να αλλάξει)",
   "horizon.mods.open_folder": "Ανοίξτε το φάκελο Mod",
   "horizon.shader_packs.empty": "Χωρίς πακέτα shader: τοποθετήστε τα στο φάκελο shaderpacks",
-  "horizon.shader_packs.kind_horizon": " (Ορίζοντας)",
+  "horizon.shader_packs.kind_horizon": " (Horizon)",
   "horizon.shader_options.open": "Επιλογές Shader...",
   "horizon.shader_options.profile": "Προφίλ",
   "horizon.shader_options.loading": "Διαβάζοντας τις επιλογές του πακέτου shader...",
