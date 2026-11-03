@@ -76,6 +76,8 @@ pub struct Ids {
     pub position_source_type: Remap,
     pub consume_effect_type: Remap,
     pub enchantment_effect_component_type: Remap,
+    /// The data components the older version has and the pinned one lacks: their older ids and names.
+    pub dropped_components: &'static [(u16, &'static str)],
     /// EntityDataSerializers' registration order (not a registry).
     pub entity_data_serializer: Remap,
 }
@@ -153,6 +155,19 @@ pub fn item(id: i32) -> i32 {
 pub fn component(id: i32) -> i32 {
     apply(id, |ids| ids.data_component_type)
 }
+/// The name of the data component an older server sent as `id` (its own number) that the pinned version
+/// no longer has, while such a server's packet is read on this thread. The readers read its value past and
+/// drop it.
+pub fn dropped_component(id: i32) -> Option<&'static str> {
+    match ACTIVE.get() {
+        Some((ids, Way::Up)) => ids
+            .dropped_components
+            .iter()
+            .find(|(old, _)| i32::from(*old) == id)
+            .map(|(_, name)| *name),
+        _ => None,
+    }
+}
 /// A particle type id as read or about to be written on this thread.
 pub fn particle(id: i32) -> i32 {
     apply(id, |ids| ids.particle_type)
@@ -228,6 +243,52 @@ mod tests {
         assert_eq!(ids.block_state.up(3987), Some(5543)); // chest, first state
         assert_eq!(ids.block_state.up(8), Some(8)); // grass_block
         assert_eq!(ids.state_bits(), (15, 16));
+    }
+
+    #[test]
+    fn components_the_pinned_version_dropped_are_read_past() {
+        use crate::buf::{Codec, Reader, Writer};
+        use crate::item::{Component, Slot};
+        let ids = crate::adapter::ServerVersion::V1_21_11.ids().unwrap();
+        // A filled map (1104 in 1.21.11, 1238 in 26.3) as a 1.21.11 server sends it. Its patch adds
+        // map_color (43, gone in 26.3), swing_animation (40, gone too), damage 5 (3 in both) and a
+        // tooltip_display (18 in both) hiding dyed_color (42, 47 in 26.3) and swing_animation; it removes
+        // map_color and potion_contents (49, 53 in 26.3). Ids read off both versions' registries reports.
+        let sent = [
+            1, 0xd0, 0x08, // count, item
+            4, 2, // added, removed
+            43, 0x00, 0xff, 0x00, 0x00, // map_color: a big-endian int
+            40, 1, 6, // swing_animation: its type and duration
+            3, 5, // damage
+            18, 0, 2, 42, 40, // tooltip_display: shown, two hidden components
+            43, 49, // removed
+        ];
+        let stack = {
+            let _up = renumbering(ids, Way::Up);
+            Slot::read(&mut Reader::new(&sent)).unwrap().unwrap()
+        };
+        assert_eq!((stack.item, stack.count), (1238, 1));
+        assert_eq!(
+            stack.added,
+            [
+                (3, Component::Int(5)),
+                (
+                    18,
+                    Component::TooltipDisplay {
+                        hide: false,
+                        hidden: vec![47],
+                    },
+                ),
+            ]
+        );
+        assert_eq!(stack.removed, [53]);
+        // Written back to that server, the kept components take its numbers again.
+        let mut w = Writer::new();
+        {
+            let _down = renumbering(ids, Way::Down);
+            Slot::write(&Some(stack), &mut w);
+        }
+        assert_eq!(w.data, [1, 0xd0, 0x08, 2, 1, 3, 5, 18, 0, 1, 42, 49]);
     }
 
     #[test]

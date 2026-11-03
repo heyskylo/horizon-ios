@@ -413,10 +413,15 @@ impl Component {
             TOOLTIP_DISPLAY => {
                 let hide = r.bool()?;
                 let n = r.count(r.remaining())?;
-                Self::TooltipDisplay {
-                    hide,
-                    hidden: (0..n).map(|_| r.varint()).collect::<Result<_>>()?,
+                let mut hidden = Vec::with_capacity(n.min(64));
+                for _ in 0..n {
+                    let raw = r.varint()?;
+                    // An older server's numbering, and components the pinned version lacks hide nothing.
+                    if ids::dropped_component(raw).is_none() {
+                        hidden.push(ids::component(raw));
+                    }
                 }
+                Self::TooltipDisplay { hide, hidden }
             }
             FIREWORKS => {
                 let flight = r.varint()?;
@@ -610,7 +615,7 @@ impl Component {
             Self::TooltipDisplay { hide, hidden } => {
                 w.bool(*hide);
                 w.varint(hidden.len() as i32);
-                hidden.iter().for_each(|h| w.varint(*h));
+                hidden.iter().for_each(|h| w.varint(ids::component(*h)));
             }
             Self::Stacks(stacks) => {
                 w.varint(stacks.len() as i32);
@@ -697,6 +702,36 @@ impl WirePatch {
         })
     }
 }
+/// The `negative` removed component types of a patch: an older server's component the pinned version
+/// lacks ([`ids::dropped_component`]) is left out.
+fn read_removed(r: &mut Reader, negative: usize) -> Result<Vec<i32>> {
+    let mut removed = Vec::with_capacity(negative.min(64));
+    for _ in 0..negative {
+        let raw = r.varint()?;
+        if ids::dropped_component(raw).is_none() {
+            removed.push(ids::component(raw));
+        }
+    }
+    Ok(removed)
+}
+
+/// Reads past the value of `name`, a data component an older server sent that the pinned version lacks
+/// ([`ids::dropped_component`]), as that server writes it.
+fn skip_dropped(name: &str, r: &mut Reader) -> Result<()> {
+    match name {
+        // MapItemColor.STREAM_CODEC: ByteBufCodecs.INT.
+        "minecraft:map_color" => r.i32().map(drop),
+        // SwingAnimation.STREAM_CODEC: SwingAnimationType's id, then the duration, both VAR_INT.
+        "minecraft:swing_animation" => {
+            r.varint()?;
+            r.varint().map(drop)
+        }
+        _ => Err(crate::Error::new(format!(
+            "{name}: a component the pinned version no longer has"
+        ))),
+    }
+}
+
 impl WirePatch {
     /// The components and removals a patch in this form holds, read as
     /// [`DelimitedSlot`] does.
@@ -706,17 +741,16 @@ impl WirePatch {
         let negative = r.count(65536)?;
         let mut added = Vec::with_capacity(positive.min(64));
         for _ in 0..positive {
-            let kind = ids::component(r.varint()?);
+            let raw = r.varint()?;
             let len = r.count(r.remaining())?;
-            added.push((
-                kind,
-                Component::read(kind, &mut Reader::new(r.bytes(len)?))?,
-            ));
+            let value = r.bytes(len)?;
+            if ids::dropped_component(raw).is_some() {
+                continue;
+            }
+            let kind = ids::component(raw);
+            added.push((kind, Component::read(kind, &mut Reader::new(value))?));
         }
-        let removed = (0..negative)
-            .map(|_| r.varint().map(ids::component))
-            .collect::<Result<_>>()?;
-        Ok((added, removed))
+        Ok((added, read_removed(&mut r, negative)?))
     }
 }
 impl PartialEq for WirePatch {
@@ -793,11 +827,19 @@ fn read_stack(r: &mut Reader, delimited: bool) -> Result<Option<Stack>> {
     let positive = r.count(65536)?;
     let negative = r.count(65536)?;
     let mut added = Vec::with_capacity(positive.min(64));
-    let mut patch = Writer::new();
-    patch.varint(positive as i32);
-    patch.varint(negative as i32);
+    let mut values = Vec::with_capacity(positive.min(64));
     for _ in 0..positive {
-        let kind = ids::component(r.varint()?);
+        let raw = r.varint()?;
+        if let Some(name) = ids::dropped_component(raw) {
+            if delimited {
+                let len = r.count(r.remaining())?;
+                r.bytes(len)?;
+            } else {
+                skip_dropped(name, r)?;
+            }
+            continue;
+        }
+        let kind = ids::component(raw);
         let (component, value) = if delimited {
             let len = r.count(r.remaining())?;
             let value = r.bytes(len)?;
@@ -811,20 +853,25 @@ fn read_stack(r: &mut Reader, delimited: bool) -> Result<Option<Stack>> {
             let start = r.position();
             (Component::read(kind, r)?, r.since(start))
         };
-        patch.varint(kind);
-        patch.byte_array(value);
+        values.push(value);
         added.push((kind, component));
     }
-    let removed: Vec<i32> = (0..negative)
-        .map(|_| r.varint().map(ids::component))
-        .collect::<Result<_>>()?;
+    let removed = read_removed(r, negative)?;
+    let mut patch = Writer::new();
+    patch.varint(added.len() as i32);
+    patch.varint(removed.len() as i32);
+    for ((kind, _), value) in added.iter().zip(&values) {
+        patch.varint(*kind);
+        patch.byte_array(value);
+    }
     removed.iter().for_each(|kind| patch.varint(*kind));
+    let wire = (!added.is_empty() || !removed.is_empty()).then(|| patch.data.into());
     Ok(Some(Stack {
         item,
         count,
         added,
         removed,
-        wire: WirePatch((positive + negative > 0).then(|| patch.data.into())),
+        wire: WirePatch(wire),
     }))
 }
 
@@ -875,12 +922,15 @@ impl Codec<Stack> for Template {
         let negative = r.count(65536)?;
         let mut added = Vec::with_capacity(positive.min(64));
         for _ in 0..positive {
-            let kind = ids::component(r.varint()?);
+            let raw = r.varint()?;
+            if let Some(name) = ids::dropped_component(raw) {
+                skip_dropped(name, r)?;
+                continue;
+            }
+            let kind = ids::component(raw);
             added.push((kind, Component::read(kind, r)?));
         }
-        let removed = (0..negative)
-            .map(|_| r.varint().map(ids::component))
-            .collect::<Result<_>>()?;
+        let removed = read_removed(r, negative)?;
         Ok(Stack {
             item,
             count,
