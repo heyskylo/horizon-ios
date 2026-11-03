@@ -9,7 +9,7 @@ use gpui::{deferred, ExternalPaths};
 use horizon_launcher::worlds::World;
 use horizon_theme::glass::{fill, ink, radius};
 use std::path::Path;
-use worlds_page::{ago, Action};
+use worlds_page::Action;
 
 /// A listener of the launcher's, boxed so a helper can return it.
 pub(super) type Listener<E> = Box<dyn Fn(&E, &mut Window, &mut App)>;
@@ -48,7 +48,7 @@ impl Launcher {
                 let open = zip.map(|zip| {
                     let dir = zip.parent().map(Path::to_path_buf).unwrap_or(zip);
                     ui::quiet("world-backups", tr("Open backups"), 36., &t)
-                        .on_click(move |_, _, cx| cx.open_with_system(&dir))
+                        .on_click(move |_, _, cx| crate::glass_toast::open(cx, &dir))
                 });
                 body = body.child(ui::list_head(message).children(open));
             }
@@ -68,7 +68,7 @@ impl Launcher {
                         .child(ui::link("worlds-folder", tr("Open folder")).on_click(
                             move |_, _, cx| {
                                 let _ = std::fs::create_dir_all(&saves);
-                                cx.open_with_system(&saves);
+                                crate::glass_toast::open(cx, &saves);
                             },
                         )),
                 ),
@@ -93,7 +93,7 @@ impl Launcher {
         let can_play = self.can_start_selected() && !busy;
         let mut facts = vec![tr(w.mode).to_string()];
         facts.extend(w.version.clone());
-        facts.push(ago(w.last_played));
+        facts.push(glass_home::last_played(w.last_played));
         let hover = self.list_hover_listener(key.clone(), cx);
         let mut row = ui::list_row(key.clone(), hovered || menu_open, hover, &t);
         if can_play {
@@ -249,7 +249,7 @@ impl Launcher {
                 )
                 .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                     this.list_menu = None;
-                    cx.open_with_system(&folder);
+                    crate::glass_toast::open(cx, &folder);
                     cx.notify();
                 })),
             )
@@ -263,6 +263,7 @@ impl Launcher {
         let instance = self.selected_instance()?;
         let (home, name) = (instance.home.clone(), instance.name.clone());
         self.load_servers(home);
+        self.ping_servers(cx);
         let list = self.multiplayer.list.clone();
         let adding = self.multiplayer.adding;
         let mut body = div().flex().flex_col();
@@ -343,13 +344,38 @@ impl Launcher {
         let confirming = self.multiplayer.confirm_remove == Some(i);
         let hover = self.list_hover_listener(key.clone(), cx);
         let ip = server.ip.clone();
+        // The mockup's dot and "address · 3 of 10", or "Offline" with Join off.
+        let reach = self
+            .multiplayer
+            .reach
+            .get(&server.ip)
+            .copied()
+            .unwrap_or(multiplayer_page::Reach::Asking);
+        let (tone, line) = match reach {
+            multiplayer_page::Reach::Online { players, max } => (
+                ui::Tone::Live,
+                format!(
+                    "{} · {}",
+                    server.ip,
+                    trf(
+                        "{online} of {max}",
+                        &[("online", &players.to_string()), ("max", &max.to_string())]
+                    )
+                ),
+            ),
+            multiplayer_page::Reach::Offline => {
+                (ui::Tone::Off, format!("{} · {}", server.ip, tr("Offline")))
+            }
+            multiplayer_page::Reach::Asking => (ui::Tone::Off, server.ip.clone()),
+        };
+        let offline = reach == multiplayer_page::Reach::Offline;
         let join = ui::quiet(
             SharedString::from(format!("{key}-join")),
             tr("Join"),
             36.,
             &t,
         );
-        let join = if self.can_join_selected() {
+        let join = if self.can_join_selected() && !offline {
             join.on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                 this.quick_play("--server", ip.clone());
                 cx.notify();
@@ -391,10 +417,11 @@ impl Launcher {
             }
         });
         ui::list_row(key, hovered || confirming, hover, &t)
+            .child(div().relative().flex_none().child(ui::dot(tone)))
             .when(pictures, |r| {
                 r.child(picture(icon.map(gpui::ImageSource::from), "globe-02"))
             })
-            .child(ui::list_text(server.name, server.ip))
+            .child(ui::list_text(server.name, line))
             .child(join.relative())
             .children(remove.map(|r| div().relative().child(r)))
     }
@@ -439,7 +466,7 @@ pub(super) fn picture(image: Option<gpui::ImageSource>, fallback: &'static str) 
 pub(super) fn danger_line(message: String) -> Div {
     div().px(px(12.)).pb(px(8.)).child(
         ui::text(13., FontWeight::NORMAL, ink::FULL)
-            .text_color(ui::color(horizon_theme::glass::DANGER))
+            .text_color(ui::danger())
             .child(message),
     )
 }
@@ -459,7 +486,7 @@ pub(super) fn danger_button(id: SharedString, label: SharedString) -> Stateful<D
         .hover(|s| s.bg(gpui::rgba(horizon_theme::glass::DANGER_HOVER << 8 | 0x1f)))
         .child(
             ui::text(13., FontWeight::MEDIUM, ink::FULL)
-                .text_color(ui::color(horizon_theme::glass::DANGER))
+                .text_color(ui::danger())
                 .child(label),
         )
 }

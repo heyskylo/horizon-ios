@@ -2107,3 +2107,9 @@ and absorption writes, exhaustion, numeric edges, armor mutation during a hit
 and callback failures. Equipment, attribution, death services and other world
 consumers retain the controlled boundaries documented in the report. Connecting
 this binding to the resident client landing consumer remains the next step.
+
+## Related docs
+
+- [World generation](world-generation.md)
+- [Terrain filling](terrain-filling.md)
+- [Heightmaps](heightmaps.md)

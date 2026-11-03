@@ -28,7 +28,10 @@ mod glass_home_tabs;
 mod glass_instance;
 mod glass_instance_java;
 mod glass_notes;
+mod glass_palette;
 mod glass_settings;
+mod glass_shot_blur;
+mod glass_toast;
 mod glass_ui;
 mod glass_versions;
 mod home;
@@ -141,11 +144,12 @@ impl Page {
         (Page::Settings, "Settings", "sliders"),
     ];
 
-    /// The pages the top bar shows: all but Settings, and the Wardrobe only with cosmetics on.
-    fn in_top_bar() -> impl Iterator<Item = (Page, &'static str, &'static str)> {
-        Self::ALL.into_iter().filter(|(page, ..)| match page {
+    /// The pages the top bar shows: all but Settings, and the Wardrobe only when `wardrobe`
+    /// (`Launcher::wardrobe_shown`).
+    fn in_top_bar(wardrobe: bool) -> impl Iterator<Item = (Page, &'static str, &'static str)> {
+        Self::ALL.into_iter().filter(move |(page, ..)| match page {
             Page::Settings => false,
-            Page::Wardrobe => horizon_cosmetics::enabled(),
+            Page::Wardrobe => wardrobe,
             _ => true,
         })
     }
@@ -283,6 +287,12 @@ struct Launcher {
     wardrobe: Option<wardrobe_page::Wardrobe>,
     /// Ask the service again on the next draw of the Wardrobe (set by each visit).
     wardrobe_reload: bool,
+    /// The cosmetics service's last word on the founder set's claim (`GET /v1/shop`): whether
+    /// the top bar has the Wardrobe page with cosmetics off (`wardrobe_shown`).
+    shop_status: Option<horizon_launcher::wardrobe::Claim>,
+    /// The selected account's own answer on it from its last Wardrobe visit, kept on disk (a
+    /// preview the service grants it, its claim).
+    shop_kept: Option<horizon_launcher::wardrobe::Claim>,
     /// Work the look out again on the next frame (a launcher theme put on or taken off).
     restyle: bool,
     /// Why the last picture for Home's background was refused.
@@ -307,6 +317,10 @@ struct Launcher {
     /// Its Friends over the internet panel (`internet.rs`).
     internet: internet::Internet,
     /// The window's own focus, so Tab reaches the controls when nothing else has the keyboard.
+    /// The palette (⌘K), while open (`glass_palette`).
+    palette: Option<glass_palette::Palette>,
+    /// The toast last drawn (`glass_toast`), by its number.
+    toast_seen: Option<u64>,
     root_focus: FocusHandle,
     /// Microsoft accounts (accounts.json), the sign-in under way and what it last showed.
     accounts: Accounts,
@@ -422,6 +436,7 @@ struct Launcher {
     worlds: worlds_page::Worlds,
     multiplayer: multiplayer_page::Multiplayer,
     screenshots: screenshots_page::Screenshots,
+    shot_blur: glass_shot_blur::ShotBlur,
     game_packs: packs_page::Packs,
     world_packs: datapacks_page::WorldPacks,
     export: Option<export_page::ExportPanel>,
@@ -573,6 +588,8 @@ impl Launcher {
             skin: None,
             wardrobe: None,
             wardrobe_reload: false,
+            shop_status: None,
+            shop_kept: None,
             restyle: horizon_cosmetics::enabled(),
             background_error: None,
             args_input: line_edit::LineEdit::new(settings.game_args.clone(), 1024, 38),
@@ -599,6 +616,8 @@ impl Launcher {
             servers: servers_page::Servers::new(),
             internet: internet::Internet::new(),
             root_focus: cx.focus_handle(),
+            palette: None,
+            toast_seen: None,
             accounts: Accounts::load(),
             auth_status: HashMap::new(),
             auth_progress: HashMap::new(),
@@ -662,6 +681,7 @@ impl Launcher {
             worlds: worlds_page::Worlds::default(),
             multiplayer: multiplayer_page::Multiplayer::default(),
             screenshots: screenshots_page::Screenshots::default(),
+            shot_blur: Default::default(),
             game_packs: packs_page::Packs::default(),
             world_packs: datapacks_page::WorldPacks::default(),
             export: None,
@@ -701,6 +721,7 @@ impl Launcher {
         this.load_auth_statuses(true);
         this.fetch_startup_releases();
         this.fetch_links();
+        this.watch_shop(cx);
         if home::getting_ready_preview() {
             this.preparing = true;
             this.play_when_prepared = this.selected().cloned();
@@ -959,7 +980,7 @@ impl Launcher {
         match self.bench.as_mut().map(|b| b.tick(&self.perf)) {
             Some(perf::Step::Go(page)) => {
                 let pages: Vec<Page> = (Page::ALL.iter().map(|p| p.0))
-                    .filter(|p| *p != Page::Wardrobe || horizon_cosmetics::enabled())
+                    .filter(|p| *p != Page::Wardrobe || self.wardrobe_shown())
                     .collect();
                 self.go(pages[page % pages.len()]);
                 changed = true;
@@ -1381,6 +1402,7 @@ impl Launcher {
         changed |= self.mods_tick();
         changed |= self.github_tick();
         changed |= self.native_log_read(cx);
+        changed |= self.toast_tick();
         if let Some(sign_in) = &self.sign_in {
             if let Some(state) = sign_in_change(&mut self.sign_in_state, sign_in.state()) {
                 if let SignInState::Done(Ok(ref account)) = state {
@@ -1683,8 +1705,15 @@ impl Launcher {
             .or_else(|| self.installed.first())
             .map(|tag| backend::resources(tag))
             .unwrap_or_default();
+        // Offline names wear their own skin's face, or the default skin of their offline UUID.
+        let offline: Vec<String> = self
+            .players()
+            .into_iter()
+            .filter(|(who, _, _)| !matches!(who, account::Player::Microsoft(_)))
+            .map(|(_, name, _)| name)
+            .collect();
         self.profile_heads
-            .request(&self.accounts.accounts, resources, &self.tx);
+            .request(&self.accounts.accounts, &offline, resources, &self.tx);
     }
 
     fn begin_auth_job(&mut self, uuid: &str) -> Option<u64> {
@@ -2004,13 +2033,13 @@ fn button(
     let id: SharedString = id.into();
     let label: SharedString = label.into();
     let label = SharedString::from(tr(&label).to_string());
-    if t.dark {
+    if t.glass {
         return glass_ui::button(id, label, kind, t);
     }
     let t = *t;
     let hover = match kind {
         Kind::Primary => t.on_face.opacity(0.10),
-        Kind::Secondary => t.bevel.opacity(if t.dark { 0.10 } else { 0.35 }),
+        Kind::Secondary => t.bevel.opacity(if t.glass { 0.10 } else { 0.35 }),
         Kind::Ghost => t.raised,
     };
     let base = div()
@@ -2058,6 +2087,10 @@ fn button(
 /// Copies to the clipboard, or into `HORIZON_LAUNCHER_CLIPBOARD` when a test run sets it
 /// (`horizon_launcher::desktop_seams`).
 fn copy_to_clipboard(cx: &mut App, item: gpui::ClipboardItem) {
+    match item.text() {
+        Some(text) => glass_toast::say(trf("Copied {text}", &[("text", &text)])),
+        None => glass_toast::say(tr("Copied the picture")),
+    }
     if let Some(file) = horizon_launcher::desktop_seams::clipboard_file() {
         let bytes = match item.entries().first() {
             Some(gpui::ClipboardEntry::Image(image)) => image.bytes.clone(),
@@ -2117,7 +2150,7 @@ fn sync_system_clipboard(text: String) {
 
 /// An on/off switch: a square knob sliding in a sunk track that turns violet when on.
 fn switch(id: impl Into<SharedString>, on: bool, t: &Theme) -> Stateful<Div> {
-    if t.dark {
+    if t.glass {
         let look = glass_ui::look();
         return glass_ui::toggle(id, on, look.accent, look.on_accent, t);
     }
@@ -2181,7 +2214,7 @@ fn segments<T: Copy + PartialEq + 'static>(
     t: &Theme,
     on_pick: impl Fn(T, &mut Window, &mut App) + Clone + 'static,
 ) -> Stateful<Div> {
-    if t.dark {
+    if t.glass {
         return glass_ui::segments(id, options, current, t, on_pick);
     }
     let t = *t;
@@ -2321,7 +2354,7 @@ fn disabled(b: Stateful<Div>) -> Stateful<Div> {
 
 /// A page's title in the pixel face and one line on what it is for.
 fn page_header(title: &str, description: &str, t: &Theme) -> Div {
-    if t.dark {
+    if t.glass {
         return glass_ui::page_head(tr(title), tr(description));
     }
     div()
@@ -2539,7 +2572,7 @@ impl Launcher {
             .flex_wrap()
             .items_center()
             .gap(px(4.));
-        for (page, label, _) in Page::in_top_bar() {
+        for (page, label, _) in Page::in_top_bar(self.wardrobe_shown()) {
             nav = nav.child(
                 shell::tab(format!("nav-{label}"), tr(label), self.page == page, &t).on_click(
                     cx.listener(move |this, _: &ClickEvent, _, cx| {
@@ -3174,10 +3207,11 @@ impl Launcher {
             .flex()
             .flex_col()
             // The glass look's sidebar ⋮ menu holds what the Instance row offers.
-            .children((!t.dark).then(|| self.instance_row(1, cx)).flatten())
+            .children((!t.glass).then(|| self.instance_row(1, cx)).flatten())
             .children(self.export_panel(cx))
             .children(self.launch_panel(cx))
-            .children(self.memory_row(cx));
+            // The glass look keeps Maximum memory in the instance's Edit dialog.
+            .children((!t.glass).then(|| self.memory_row(cx)).flatten());
         rows = match &java {
             Some(java) => rows.child(index_row(
                 2,
@@ -3213,9 +3247,10 @@ impl Launcher {
                 &t,
             )),
         };
-        {
-            // The top bar shows who plays; a row only when there is something to do about it:
-            // no account that owns the game (Play needs one), or offline.
+        // The top bar shows who plays; a row only when there is something to do about it: no
+        // account that owns the game (Play needs one), or offline. The glass look's top bar has
+        // Sign in with Microsoft and says Offline itself.
+        if !t.glass {
             if self.owner_shown() == Some(false) {
                 rows = rows.child(index_row(
                     5,
@@ -3259,7 +3294,7 @@ impl Launcher {
 
         // The glass look's head (the mockup's `HomeView`) replaces the banner; the preparation's
         // steps stay right under it, where the player looks after pressing Play.
-        let banner = if t.dark {
+        let banner = if t.glass {
             div()
                 .flex()
                 .flex_col()
@@ -3346,7 +3381,7 @@ impl Launcher {
         if let Some(e) = self.prepare_error.clone() {
             page = page.child(notice(e, &t));
         }
-        page = page.child(if t.dark {
+        page = page.child(if t.glass {
             self.glass_home_tabs(rows, cx)
         } else {
             self.home_tabs(rows, cx)
@@ -3370,7 +3405,7 @@ impl Launcher {
                 .child(
                     button("crash-open", "Open report", Kind::Secondary, &t)
                         .bg(t.plate)
-                        .on_click(move |_, _, cx| cx.open_with_system(&open)),
+                        .on_click(move |_, _, cx| crate::glass_toast::open(cx, &open)),
                 )
                 .child(
                     button(
@@ -3403,7 +3438,7 @@ impl Launcher {
                 .on_click(|_, _, cx| {
                     let dir = backend::logs_dir();
                     let _ = std::fs::create_dir_all(&dir);
-                    cx.open_with_system(&dir);
+                    crate::glass_toast::open(cx, &dir);
                 }),
         );
         let discord = self.links.discord.clone();
@@ -3583,7 +3618,11 @@ impl Launcher {
                 button(
                     "check",
                     "Check now",
-                    if t.dark { Kind::Secondary } else { Kind::Ghost },
+                    if t.glass {
+                        Kind::Secondary
+                    } else {
+                        Kind::Ghost
+                    },
                     &t,
                 )
                 .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
@@ -3617,7 +3656,7 @@ impl Launcher {
                 }
             },
         );
-        if t.dark {
+        if t.glass {
             return self.glass_settings(
                 glass_settings::Built {
                     install: toggle,
@@ -3732,7 +3771,7 @@ impl Launcher {
                                 .on_click(|_, _, cx| {
                                     let dir = backend::logs_dir();
                                     let _ = std::fs::create_dir_all(&dir);
-                                    cx.open_with_system(&dir);
+                                    crate::glass_toast::open(cx, &dir);
                                 })
                                 .into_any_element(),
                         ),
@@ -4492,7 +4531,7 @@ impl Launcher {
                 .map(|(_, n)| *n)
         };
         let used: u64 = self.installed.iter().filter_map(on_disk).sum();
-        if t.dark {
+        if t.glass {
             return self.glass_versions(&on_disk, used, cx);
         }
         // The list's own action at the end of the line above it: a build the player has.
@@ -4722,7 +4761,7 @@ impl Launcher {
 
     fn notes_page(&mut self, cx: &mut Context<Self>) -> Div {
         let t = self.theme;
-        if t.dark {
+        if t.glass {
             return self.glass_notes(cx);
         }
         let sponsor = (!self.links.sponsor.is_empty()).then(|| {
@@ -4856,7 +4895,7 @@ fn progress_bar(fraction: Option<(f32, f32)>, t: &Theme) -> Div {
         .top_0()
         .bottom_0()
         .bg(plate::alpha(n.accent, 1.))
-        .when(t.dark, |d| {
+        .when(t.glass, |d| {
             d.rounded_full()
                 .bg(glass_ui::color(glass_ui::look().accent_soft))
         });
@@ -4866,7 +4905,7 @@ fn progress_bar(fraction: Option<(f32, f32)>, t: &Theme) -> Div {
         .h(px(6.))
         .bg(plate::alpha(n.card_hi, n.card_hi_alpha))
         .overflow_hidden()
-        .when(t.dark, |d| {
+        .when(t.glass, |d| {
             d.h(px(4.))
                 .rounded_full()
                 .bg(glass_ui::white(horizon_theme::glass::fill::ACTIVE))
@@ -4907,7 +4946,9 @@ impl Render for Launcher {
         if std::mem::take(&mut self.restyle) {
             self.theme = self.settings_theme(window);
         }
-        glass_ui::set_on(self.theme.dark);
+        glass_ui::set_on(self.theme.glass);
+        glass_ui::set_light(!self.theme.dark);
+        glass::set_light(!self.theme.dark);
         self.look = self.theme.look;
         glass_ui::set_look(self.look);
         glass::set_look(self.look);
@@ -4976,7 +5017,7 @@ impl Render for Launcher {
             sky.into_any_element()
         };
         // Dark: the glass frame over the scene; Light keeps the night one over the dawn.
-        let (topbar, sidebar) = if t.dark {
+        let (topbar, sidebar) = if t.glass {
             (
                 self.glass_topbar(cx),
                 self.glass_sidebar(window, cx).into_any_element(),
@@ -4984,7 +5025,7 @@ impl Render for Launcher {
         } else {
             (self.topbar(cx), self.sidebar(window, cx).into_any_element())
         };
-        let row_menu = if t.dark {
+        let row_menu = if t.glass {
             self.row_menu(window, cx)
         } else {
             None
@@ -5013,6 +5054,20 @@ impl Render for Launcher {
                 }
                 cx.stop_propagation();
                 cx.notify();
+            }))
+            // ⌘K (Ctrl+K elsewhere) wherever the focus is, even in a field: the palette.
+            .capture_key_down(cx.listener(|this, ev: &KeyDownEvent, window, cx| {
+                let k = &ev.keystroke;
+                let command = if cfg!(target_os = "macos") {
+                    k.modifiers.platform
+                } else {
+                    k.modifiers.control
+                };
+                if this.theme.glass && command && !k.modifiers.shift && k.key == "k" {
+                    this.palette_toggle(window, cx);
+                    cx.stop_propagation();
+                    cx.notify();
+                }
             }))
             .capture_any_mouse_down(|_, _, _| KEYBOARD.store(false, Ordering::Relaxed))
             .on_mouse_move(cx.listener(|this, ev: &gpui::MouseMoveEvent, window, cx| {
@@ -5059,7 +5114,7 @@ impl Render for Launcher {
                                                     .px(px(theme::PAGE_GUTTER))
                                                     // The glass look's page heads hold their
                                                     // own 40 px above the title.
-                                                    .pt(px(if self.page == Page::Play || t.dark {
+                                                    .pt(px(if self.page == Page::Play || t.glass {
                                                         0.
                                                     } else {
                                                         28.
@@ -5068,7 +5123,7 @@ impl Render for Launcher {
                                                     // The glass Settings page scrolls its own
                                                     // pane under a still title.
                                                     .when(
-                                                        t.dark && self.page == Page::Settings,
+                                                        t.glass && self.page == Page::Settings,
                                                         |d| d.h_full().pb(px(14.)),
                                                     )
                                                     .child(content),
@@ -5098,6 +5153,12 @@ impl Render for Launcher {
             if let Some(viewer) = self.screenshot_viewer(cx) {
                 root = root.child(viewer);
             }
+        }
+        if t.glass {
+            root = root.children(self.toast_float());
+        }
+        if let Some(palette) = self.palette_overlay(window, cx) {
+            root = root.child(palette);
         }
         if self.asking_consent() {
             root = root.child(self.consent_screen(cx));

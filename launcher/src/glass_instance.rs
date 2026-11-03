@@ -203,7 +203,7 @@ impl Launcher {
             }
             cx.notify();
         });
-        let card = crate::glass::plate(radius::MODAL)
+        let card = ui::dialog_plate(radius::MODAL)
             .id("instance-card")
             .occlude()
             .flex()
@@ -226,13 +226,14 @@ impl Launcher {
                 .p(px(24.))
                 .occlude()
                 .on_scroll(|_, _, cx| cx.stop_propagation())
+                .child(ui::scrim_backdrop())
                 .child(
                     div()
                         .absolute()
                         .top_0()
                         .left_0()
                         .size_full()
-                        .bg(ui::color(horizon_theme::glass::SCRIM).opacity(0.5))
+                        .bg(ui::scrim())
                         .on_mouse_down(gpui::MouseButton::Left, close),
                 )
                 .child(card),
@@ -453,33 +454,33 @@ impl Launcher {
                 }))
             });
         }
-        // A modpack becomes an instance by being imported, on the Mods page.
-        let import = (editing.is_none() && !self.instances.dialog.as_ref().is_some_and(|d| d.busy))
-            .then(|| {
-                keyboard(
-                    div()
-                        .id("instance-import")
-                        .flex()
-                        .items_center()
-                        .gap(px(10.))
-                        .h(px(40.))
-                        .px(px(8.))
-                        .rounded(px(radius::CONTROL))
-                        .cursor_pointer()
-                        .font_family(horizon_theme::glass::FONT)
-                        .text_size(px(14.))
-                        .text_color(white(ink::BODY))
-                        .hover(|s| s.bg(white(fill::ROW_HOVER)).text_color(white(ink::FULL)))
-                        .child(ui::icon("package-01", 18., white(ink::BODY)))
-                        .child(tr("Import a modpack…")),
-                    &t,
-                )
-                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                    this.instances.dialog = None;
-                    this.show_modpack(None);
-                    cx.notify();
-                }))
-            });
+        // A modpack becomes an instance by being imported, on the Mods page. Edit offers it too,
+        // as the mockup's does.
+        let import = (!self.instances.dialog.as_ref().is_some_and(|d| d.busy)).then(|| {
+            keyboard(
+                div()
+                    .id("instance-import")
+                    .flex()
+                    .items_center()
+                    .gap(px(10.))
+                    .h(px(40.))
+                    .px(px(8.))
+                    .rounded(px(radius::CONTROL))
+                    .cursor_pointer()
+                    .font_family(horizon_theme::glass::FONT)
+                    .text_size(px(14.))
+                    .text_color(white(ink::BODY))
+                    .hover(|s| s.bg(white(fill::ROW_HOVER)).text_color(white(ink::FULL)))
+                    .child(ui::icon("package-01", 18., white(ink::BODY)))
+                    .child(tr("Import a modpack…")),
+                &t,
+            )
+            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                this.instances.dialog = None;
+                this.show_modpack(None);
+                cx.notify();
+            }))
+        });
         div()
             .id("instance-aside")
             .flex()
@@ -654,6 +655,10 @@ impl Launcher {
             div().flex().gap(px(10.)).child(name).child(group),
         ));
         body = body.child(self.icon_choice(editing, kind, cx));
+        // The memory it may use, kept with the instance (not in the mockup, kept here).
+        if editing.is_some() {
+            body = body.children(self.glass_memory_row(cx));
+        }
         div()
             .flex()
             .flex_col()
@@ -758,7 +763,7 @@ impl Launcher {
             .child(match error {
                 Some(e) => ui::text(13., FontWeight::NORMAL, ink::FULL)
                     .min_w_0()
-                    .text_color(ui::color(horizon_theme::glass::DANGER))
+                    .text_color(ui::danger())
                     .child(e),
                 None => ui::text(13., FontWeight::NORMAL, ink::FAINT)
                     .min_w_0()
@@ -782,7 +787,8 @@ impl Launcher {
             .map(|tag| {
                 let latest = follows.as_ref() == Some(&tag);
                 let on = chosen.as_ref() == Some(&tag);
-                let date = horizon_launcher::nightly::date_of(&tag).map(str::to_string);
+                let date = horizon_launcher::nightly::date_of(&tag)
+                    .map(|d| glass_versions::published(d, ""));
                 let pick = tag.clone();
                 list_choice(format!("horizon-version-{tag}"), on, &t)
                     .py(px(12.))

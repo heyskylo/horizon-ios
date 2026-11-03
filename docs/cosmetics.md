@@ -153,8 +153,13 @@ players see it.
 
 ## The Wardrobe page (`launcher/src/wardrobe_page.rs`)
 
-A top-bar page between Servers and Versions, shown only with the flag on, for the selected Microsoft
-account (signed out, it asks you to sign in):
+A top-bar page between Servers and Versions, for the selected Microsoft account (signed out, it asks
+you to sign in). It shows with the flag on, and also, whatever the flag says, when the service has a
+founder set to show (`horizon_launcher::shop`): the launcher asks `GET /v1/shop` at start and every
+half hour, with no session and nothing about the player. The page shows when the set can be claimed
+now (`open`), when the public window has dates (to say when it opens, or that it is over), or when the
+selected account's own answer, kept from its last visit, does (a claim, or a preview the service grants
+that account). With no window set, the page stays hidden.
 
 - **A row per slot** (head, back, shoulder pet, name tag, launcher theme) with what it wears,
   "Nothing equipped" or "None owned yet"; **your player** in the middle, on your own skin, wearing

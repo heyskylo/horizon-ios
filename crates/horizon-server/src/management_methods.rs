@@ -80,6 +80,12 @@ pub fn call(shared: &Shared, client: u32, short: &str, argument: &Value) -> Resu
                     .ok_or_else(|| invalid_params("Not a string"))?,
             ),
         ),
+        "serversettings/operator_user_permission_level" => {
+            game.operator_user_permission_level(client, None)
+        }
+        "serversettings/operator_user_permission_level/set" => {
+            game.operator_user_permission_level(client, Some(management_int(argument)?))
+        }
         "serversettings/force_game_mode" => game.force_game_mode(client, None),
         "serversettings/force_game_mode/set" => game.force_game_mode(
             client,
@@ -669,6 +675,37 @@ impl Game<'_> {
                 "world",
                 "game_mode",
                 toml::Value::String(value.into()),
+            )
+            .map_err(|e| (INTERNAL_ERROR, Some(e)))?;
+        }
+        Ok(reply["value"].clone())
+    }
+
+    /// `MinecraftServerSettingsServiceImpl.getOperatorUserPermissions` and
+    /// `setOperatorUserPermissionLevel`.
+    fn operator_user_permission_level(
+        &self,
+        client: u32,
+        value: Option<i32>,
+    ) -> Result<Value, Failure> {
+        let mut request = json!({
+            "method": "serversettings/operator_user_permission_level"
+        });
+        if let Some(value) = value {
+            request["method"] = json!("serversettings/operator_user_permission_level/set");
+            request["value"] = json!(value);
+        }
+        let reply = self.ask(&format!("management {client} {request}"))?;
+        if let Some(error) = reply["error"].as_str() {
+            return Err((INTERNAL_ERROR, Some(error.to_owned())));
+        }
+        if let Some(value) = value {
+            let value = reply["value"].as_i64().unwrap_or(i64::from(value));
+            crate::config::update(
+                &self.shared.dir,
+                "properties",
+                "op-permission-level",
+                toml::Value::Integer(value),
             )
             .map_err(|e| (INTERNAL_ERROR, Some(e)))?;
         }
