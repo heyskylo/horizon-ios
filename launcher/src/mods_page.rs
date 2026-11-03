@@ -37,6 +37,9 @@ const SOURCES: [(SourceId, &str); 2] = [
 ];
 const PAGE: usize = 20;
 
+#[path = "glass_mods.rs"]
+mod glass_mods;
+
 pub(super) enum Event {
     /// A search's answer, for the search it was (stale answers are dropped) at that offset.
     Found(u64, usize, Result<Vec<Project>, String>),
@@ -94,6 +97,10 @@ pub(super) struct Mods {
     pub(super) message: Option<Result<String, String>>,
     pub(super) updates: HashMap<(SourceId, String), String>,
     confirm_remove: Option<String>,
+    /// The project the glass look's detail card shows; the first result when none is.
+    pub(super) picked: Option<String>,
+    /// The project the glass detail card showed last.
+    pub(super) shown: Option<Project>,
     /// A native mod's Install waiting for the one-time trust notice (`native_status::NOTICE`).
     native_notice: Option<(SourceId, String, Option<Project>)>,
     /// The selected instance's native build state, and the `native_status::fingerprint` it was
@@ -182,6 +189,8 @@ impl Mods {
             native_files: Default::default(),
             updates: HashMap::new(),
             confirm_remove: None,
+            picked: None,
+            shown: None,
             checks: HashMap::new(),
             about: HashMap::new(),
             browse: Default::default(),
@@ -820,10 +829,15 @@ impl Launcher {
         });
     }
 
-    fn mods_field(&mut self, cx: &mut Context<Self>) -> Stateful<Div> {
+    pub(super) fn mods_field(&mut self, cx: &mut Context<Self>) -> Stateful<Div> {
         let t = self.theme;
         let m = &self.mods;
         let focused = m.focused;
+        let placeholder = if t.dark {
+            self.mods_placeholder()
+        } else {
+            tr("Search, then Enter").into()
+        };
         let field = div()
             .id("mods-search")
             .track_focus(&m.focus)
@@ -839,14 +853,19 @@ impl Launcher {
             .bg(t.well)
             .text_size(px(theme::UI.px))
             .cursor_text()
-            .child(blocks::icon("search", 18., t.muted))
-            .child(line_edit::content(
+            .child(if t.dark {
+                crate::glass_ui::icon("search-01", 17., crate::glass_ui::white(0.55))
+                    .into_any_element()
+            } else {
+                blocks::icon("search", 18., t.muted).into_any_element()
+            })
+            .child(line_edit::content_with(
                 &m.text,
                 &t,
                 focused,
                 false,
                 false,
-                tr("Search, then Enter"),
+                placeholder,
             ))
             .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                 window.focus(&this.mods.focus, cx);
@@ -862,6 +881,20 @@ impl Launcher {
                 cx.stop_propagation();
                 cx.notify();
             }));
+        // The glass look's: `rounded-[12px] h-11 bg-white/[0.07] px-3.5`, a 17 px search icon.
+        let field = if t.dark {
+            field
+                .w_full()
+                .h(px(44.))
+                .px(px(14.))
+                .border_0()
+                .rounded(px(12.))
+                .bg(crate::glass_ui::white(if focused { 0.11 } else { 0.07 }))
+                .font_family(horizon_theme::glass::FONT)
+                .text_size(px(14.))
+        } else {
+            field
+        };
         line_edit::mouse(field, cx, |this| &mut this.mods.text)
     }
 
@@ -892,12 +925,47 @@ impl Launcher {
         }
     }
 
+    /// Opens a kind's tab: its first source, its own filters, a new search.
+    pub(super) fn mods_set_kind(&mut self, kind: PackKind) {
+        if self.mods.kind != kind {
+            self.mods.kind = kind;
+            self.mods.source = source_for(kind);
+            // Categories and loaders differ by kind.
+            self.mods.browse.filters = Default::default();
+            self.mods.browse.open = None;
+            self.mods.picked = None;
+            self.mods_search(0);
+        }
+    }
+
+    /// Remove, then Remove for good: an installed project leaves the instance on the second
+    /// click.
+    pub(super) fn mods_remove_click(&mut self, id: String) {
+        if self.mods.confirm_remove.as_ref() == Some(&id) {
+            let home = self.mods.home();
+            let removed = match self.mods.java {
+                Some(_) => java_instance::remove(&home, &id),
+                None => installed::remove(&home, &id),
+            };
+            self.mods.message =
+                Some(removed.map(|e| trf("Removed {name}.", &[("name", &e.title)])));
+            self.mods.installed = installed::Installed::load(&home).entries;
+            self.mods.installed_list.reset();
+            self.mods.confirm_remove = None;
+        } else {
+            self.mods.confirm_remove = Some(id);
+        }
+    }
+
     pub(super) fn mods_page(&mut self, cx: &mut Context<Self>) -> Div {
         let t = self.theme;
         self.mods_load();
         if !self.mods.asked {
             self.mods.asked = true;
             self.mods_search(0);
+        }
+        if t.dark {
+            return self.glass_mods_page(cx);
         }
         let header = page_header(
             "Mods",
@@ -916,14 +984,7 @@ impl Launcher {
             let this = this.clone();
             move |kind, _, cx| {
                 let _ = this.update(cx, |this, cx| {
-                    if this.mods.kind != kind {
-                        this.mods.kind = kind;
-                        this.mods.source = source_for(kind);
-                        // Categories and loaders differ by kind.
-                        this.mods.browse.filters = Default::default();
-                        this.mods.browse.open = None;
-                        this.mods_search(0);
-                    }
+                    this.mods_set_kind(kind);
                     cx.notify();
                 });
             }
@@ -1250,20 +1311,7 @@ impl Launcher {
             )
             .when(confirming, |b| b.text_color(t.danger))
             .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                if this.mods.confirm_remove.as_ref() == Some(&id) {
-                    let home = this.mods.home();
-                    let removed = match this.mods.java {
-                        Some(_) => java_instance::remove(&home, &id),
-                        None => installed::remove(&home, &id),
-                    };
-                    this.mods.message =
-                        Some(removed.map(|e| trf("Removed {name}.", &[("name", &e.title)])));
-                    this.mods.installed = installed::Installed::load(&home).entries;
-                    this.mods.installed_list.reset();
-                    this.mods.confirm_remove = None;
-                } else {
-                    this.mods.confirm_remove = Some(id.clone());
-                }
+                this.mods_remove_click(id.clone());
                 cx.notify();
             }));
             let on = match &self.mods.java {
