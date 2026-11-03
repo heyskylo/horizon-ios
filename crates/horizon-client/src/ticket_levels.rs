@@ -508,6 +508,44 @@ mod tests {
         assert!(everywhere.random_ticking(1000, -1000));
     }
 
+    /// `EnderDragonFight.tick` holds the arena's `TicketType.DRAGON` ticket
+    /// (radius 9, level 24) for as long as a player watches the fight, so the
+    /// island ticks with its watcher far outside their simulation distance,
+    /// and drops it when the last watcher goes.
+    #[test]
+    fn a_watched_dragon_arena_ticks_beyond_the_watchers_simulation_distance() {
+        let mut t = ChunkTickets::default();
+        // A watcher 12 chunks out whose simulation distance is 2: nothing
+        // around (0, 0) ticks for it.
+        let sources = |dragon| {
+            Some(Sources {
+                players: vec![(12, 0)],
+                forced: Vec::new(),
+                portal: Vec::new(),
+                dragon,
+                view_distance: 12,
+                simulation_distance: 2,
+            })
+        };
+        t.update(sources(None));
+        let lonely = t.levels();
+        assert!(!lonely.entity_ticking(0, 0) && !lonely.block_ticking(0, 0));
+        assert!(!lonely.random_ticking(3, 3));
+        t.update(sources(Some((0, 0))));
+        let watched = t.levels();
+        // Level 24 on the arena rising one a chunk away: entities out to 7
+        // chunks, block ticks and scheduled ticks out to 8.
+        assert!(watched.entity_ticking(0, 0) && watched.entity_ticking(-7, 7));
+        assert!(!watched.entity_ticking(8, 0) && watched.block_ticking(8, -8));
+        assert!(watched.random_ticking(-7, 7) && !watched.random_ticking(8, 0));
+        assert!(watched.loaded_ticking(8, 0) && !watched.block_ticking(9, 9));
+        // The watcher's own tickets are what they were.
+        assert!(watched.entity_ticking(12, 0) && !watched.entity_ticking(15, 0));
+        // No watcher: the arena goes back to nobody's ticket.
+        t.update(sources(None));
+        assert!(!t.levels().block_ticking(0, 0));
+    }
+
     #[test]
     fn rebuilt_only_when_sources_change() {
         let mut t = ChunkTickets::default();
@@ -556,7 +594,8 @@ mod tests {
                 players,
                 forced,
                 portal: Vec::new(),
-                dragon: None,
+                // Tiled maps hold the arena too.
+                dragon: (case % 3 == 0).then(|| (next(spread), next(spread))),
                 view_distance: 2 + next(12).abs(),
                 simulation_distance: 2 + next(12).abs(),
             };
@@ -593,13 +632,14 @@ mod tests {
     fn random_tick_bounds_cover_every_random_ticking_chunk() {
         let mut t = ChunkTickets::default();
         // A view distance shorter than the simulation one, two players far
-        // apart, a forced chunk, and `PORTAL` tickets that outlive them.
+        // apart, a forced chunk, `PORTAL` tickets that outlive them, and the
+        // dragon fight's arena, which random ticks with nobody near it.
         let sources = || {
             Some(Sources {
-                players: vec![(0, 0), (60, 40)],
+                players: vec![(60, 40), (80, 80)],
                 forced: vec![(-30, 17)],
                 portal: Vec::new(),
-                dragon: None,
+                dragon: Some((0, 0)),
                 view_distance: 4,
                 simulation_distance: 12,
             })
@@ -734,7 +774,7 @@ mod tiled_tests {
                     .map(|_| (next(100), next(100)))
                     .chain([(16, -16)])
                     .collect(),
-                dragon: None,
+                dragon: (case % 4 == 0).then(|| (next(100), next(100))),
                 view_distance: [0, 2, 10, 32][case % 4],
                 simulation_distance: [32, 10, 2, 0][(case / 4) % 4],
             };
