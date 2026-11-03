@@ -121,6 +121,7 @@ impl Game<'_> {
                         "parts": done.parts,
                         "placed": placed,
                         "announced": done.announce,
+                        "recentered": done.recentered,
                     }),
                     Err(e) => json!({ "error": e }),
                 }
