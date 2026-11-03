@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# The checks runners on playhorizon (the partner's Linux server, docs/ci-runners.md): GitHub's 20 hosted jobs at a
-# time are shared by every pull request, so the same-repository ones and main's pushes run here instead.
+# The bots' runners and two checks runners on playhorizon (the partner's Linux server, docs/ci-runners.md): GitHub's
+# 20 hosted jobs at a time are shared by every pull request and every bot, so the bots run here instead.
 #
 #   bash tools/ci/checks-runners.sh install < token   # register (token on stdin), install, start; again to update
 #   bash tools/ci/checks-runners.sh status
@@ -11,15 +11,19 @@
 #     ssh ludovic@playhorizon 'bash ~/horizon-install/checks-runners.sh install'
 #
 # Two kinds of runner, each a systemd user service in ~/.actions-runners/<name>:
-# - horizon-ci-<n> (label playhorizon-ci, CI_RUNNERS of them, default 2): ci.yml's verify and launcher jobs. Each has
+# - horizon-ci-<n> (label playhorizon-ci, CI_RUNNERS of them, default 2): this repository's own verify and launcher
+#   jobs (no workflow routes them here since 2026-11-03: the desktop's horizon-checks runners take them). Each has
 #   its own work folder, rustup home and cargo target folder (outside the checkout, so the checkout's clean leaves it),
 #   and they share one cargo home (registry and git sources).
-# - horizon-light-<n> (label playhorizon-light, LIGHT_RUNNERS, default 2): the bots that run main's own scripts on
-#   pull_request_target and comment events (pr labels, overlap note, cancel-on-close, claim command). No Rust.
+# - horizon-light-<n> (labels playhorizon-light and horizon-light, LIGHT_RUNNERS, default 12): the bots that run main's
+#   own scripts on pull_request_target, comment, schedule and main's push events (pr labels, overlap note,
+#   cancel-on-close, claim command...). No Rust. Their jobs last seconds, so they are many; horizon-light is the label
+#   the workflows ask for.
 # All of them run nice, pinned to CPUs 4-7 inside horizon-ci.slice (linux-runner.sh: CPU quota and memory cap for
 # all CI on the machine), so CPUs 0-3 stay for tools/remote.sh runs, benchmarks and the servers.
-# Before every job, ci-shared/job-started.sh fails a job from a fork's pull request (whatever its workflow file says)
-# and empties a cargo target folder grown past MAX_TARGET_GB.
+# Before every job, ci-shared/job-started.sh fails a job from a fork's pull request (whatever its workflow file says),
+# empties a cargo target folder grown past MAX_TARGET_GB and drops a checkout's .git grown past MAX_GIT_GB (every
+# fetch adds a pack and nothing repacks them: 6822 packs, 50 GB, in each light runner's checkout on 2026-11-03).
 set -euo pipefail
 repo=horizon-rust/horizon
 base=$HOME/.actions-runners
@@ -27,13 +31,13 @@ shared=$base/ci-shared
 units=${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user
 version=2.338.0
 sha=af4b794c1bc41d73d40535e3fe092a39f9679cd8d965954c2aca25a05ca41d32
-ci=${CI_RUNNERS:-2} light=${LIGHT_RUNNERS:-2} cpus=${RUNNER_CPU_LIST:-4-7} jobs=${CI_JOBS:-4}
+ci=${CI_RUNNERS:-2} light=${LIGHT_RUNNERS:-12} cpus=${RUNNER_CPU_LIST:-4-7} jobs=${CI_JOBS:-4}
 packages="build-essential pkg-config git curl jq gh libasound2-dev libudev-dev libxkbcommon-x11-dev libwayland-dev
   libx11-xcb-dev libfontconfig-dev libvulkan-dev"
 
 runners() {
   for i in $(seq 1 "$ci"); do echo "horizon-ci-$i playhorizon-ci"; done
-  for i in $(seq 1 "$light"); do echo "horizon-light-$i playhorizon-light"; done
+  for i in $(seq 1 "$light"); do echo "horizon-light-$i playhorizon-light,horizon-light"; done
 }
 
 shared_files() {
@@ -63,6 +67,19 @@ if [ -n "${CARGO_TARGET_DIR:-}" ] && [ -d "$CARGO_TARGET_DIR" ]; then
     echo "Cargo target folder at ${size} GB (over ${MAX_TARGET_GB:-40}): emptied, this job builds from scratch"
     rm -rf "${CARGO_TARGET_DIR:?}"
   fi
+fi
+# The checkout's history: actions/checkout fetches into the same .git every job and never repacks. Without .git it
+# clones again (and replaces the rest of the folder).
+if [ -n "${GITHUB_WORKSPACE:-}" ] && [ -d "$GITHUB_WORKSPACE/.git" ]; then
+  size=$(du -s --block-size=1G "$GITHUB_WORKSPACE/.git" | cut -f1)
+  if [ "$size" -gt "${MAX_GIT_GB:-2}" ]; then
+    echo "Checkout's .git at ${size} GB (over ${MAX_GIT_GB:-2}): removed, this job clones again"
+    rm -rf "${GITHUB_WORKSPACE:?}/.git"
+  fi
+fi
+# The runner's own diagnostic logs (a file per job, 1.3 GB a light runner in an hour on 2026-11-03): a day's worth.
+if [ -n "${RUNNER_WORKSPACE:-}" ] && [ -d "$RUNNER_WORKSPACE/../../_diag" ]; then
+  find "$RUNNER_WORKSPACE/../../_diag" -maxdepth 1 -type f -name '*.log' -mmin +1440 -delete 2>/dev/null || true
 fi
 EOF
   chmod +x "$shared/job-started.sh"

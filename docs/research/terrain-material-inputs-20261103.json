@@ -600,5 +600,15 @@
     "fixture_sha256": "cb0ed419d87449fca478b422a68cc4c5d7145ac7d285ae4bad3a3755c1352d3d",
     "checks": "Pending; exact new-head results recorded in PR followup and own handoff. Prior-head results are historical.",
     "integration_correction": "First current-main gate revealed E0308 in newly added gpu_census: sum bytes across all split normal/specular texture pairs instead of passing Vec<[Texture;2]> to former slice helper. No rendering/fixture behavior change. First failed gate retained at6833688."
+  },
+  "official_ci_followup_20261103": {
+    "failed_run": 41713095703,
+    "official_checkout_merge": "59d94b37a6e0e1bd1a29f1105230a01c2e1deb3a",
+    "public_ci_base": "1564656e026de2af66bb1b45f35abfa8734b4c9e",
+    "own_prior_head": "e4b9dfa9a4f79d7bdb38aecd6df8814176d23caa",
+    "new_public_mit_main": "29c8931f45b79983814d3838af5ae4cbd86ab844",
+    "integration": "Normal current-main merge includes upstream omitted terrain+visbuffer inter-stage audit composition and mutex isolating process-global span recording in notes/laps tests. Original material algorithms/fixture preserved; no own test weakening.",
+    "exposure": "New replacement lineage/public MIT Horizon only. No old closed source/history, original source-derived audits, external loader implementation/docs or new external shader research.",
+    "validation": "Original official failure and unmodified public-main156 controls preserved; actual final head validation recorded separately in PR/handoff."
   }
 }
