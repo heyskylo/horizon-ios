@@ -113,8 +113,8 @@ reason.
 
 ### Experimental older servers
 
-The native Rust adapter recognizes 26.2, 26.1.x, 1.21.11, 1.21.9/1.21.10 and
-1.21.8. It is off by default while compatibility is incomplete. Set
+The native Rust adapter recognizes 26.2, 26.1.x, 1.21.11, 1.21.9/1.21.10,
+1.21.7/1.21.8 and 1.21.6. It is off by default while compatibility is incomplete. Set
 `HORIZON_OLDER_SERVERS=1` before starting the game; the server's status ping selects
 the adapter. The client still needs its prepared **26.3** resources.
 
@@ -127,14 +127,16 @@ command without the environment assignment at its start.
 
 This does not load Fabric JARs or emulate every older version's movement and
 combat. Older item components still have gaps; a recognized protocol is not a
-promise of complete compatibility. The 1.21.8 adapter has offline vanilla-server
-probe coverage; online-mode login and a complete interactive playthrough on that
-version have not been validated. Earlier Java releases, Classic/Alpha/Beta,
+promise of complete compatibility. The 1.21.6 and 1.21.7/1.21.8 adapters use vanilla
+packet layouts shared by these releases, with separate item/sound mappings for
+1.21.6. Online-mode login and complete interactive playthroughs on these versions
+have not been validated. Earlier Java releases, Classic/Alpha/Beta,
 April Fools and Bedrock are outside the implemented adapter set.
 
 For a protocol-only development check, append `--server-protocol 772` to
 `cargo run -p horizon-protocol --example protocol_probe -- 127.0.0.1:25565 20`.
 The probe fails if it encounters packet or chunk decode errors.
+Use `--server-protocol 771` for a 1.21.6 server; 1.21.7 and 1.21.8 both use 772.
 
 ### Agent control (`horizon-ctl` and MCP)
 

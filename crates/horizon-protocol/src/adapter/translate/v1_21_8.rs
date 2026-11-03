@@ -91,7 +91,16 @@ mod tests {
     use crate::entity_data::{Value, serializer};
 
     fn translated(id: i32, payload: &[u8]) -> play::Clientbound {
-        let session = Session::new(ServerVersion::V1_21_8);
+        let current = translated_from(ServerVersion::V1_21_8, id, payload);
+        assert_eq!(
+            current,
+            translated_from(ServerVersion::V1_21_6, id, payload)
+        );
+        current
+    }
+
+    fn translated_from(version: ServerVersion, id: i32, payload: &[u8]) -> play::Clientbound {
+        let session = Session::new(version);
         let (id, body) = super::super::clientbound(&session, State::Play, id, payload)
             .unwrap()
             .unwrap();
@@ -167,7 +176,13 @@ mod tests {
 
     #[test]
     fn player_fields_survive_all_metadata_steps_and_nbt_shoulders_do_not_end_the_list() {
-        let session = Session::new(ServerVersion::V1_21_8);
+        for version in [ServerVersion::V1_21_8, ServerVersion::V1_21_6] {
+            player_metadata(version);
+        }
+    }
+
+    fn player_metadata(version: ServerVersion) {
+        let session = Session::new(version);
         // The local player has only a play login, never AddEntity. A vanilla 1.21.8 login prefix,
         // followed by its CommonPlayerSpawnInfo and secure-chat flag.
         let mut join = Writer::new();
@@ -300,5 +315,61 @@ mod tests {
             Slot::write(&Some(Stack::new(473, 3)), &mut w);
         }
         assert_eq!(w.data, sent);
+    }
+
+    #[test]
+    fn discs_before_and_after_lava_chicken_keep_their_identity_on_1_21_6() {
+        use crate::item::{Slot, Stack};
+        let ids = ServerVersion::V1_21_6.ids().unwrap();
+        // Vanilla reports: cat is 1250 -> 1461; pigstep is 1266 -> 1479. The newer lava chicken
+        // disc occupies pinned id 1468, with no 1.21.6 counterpart (1.21.8 has it at 1256).
+        for (sent, pinned) in [([3, 0xe2, 0x09, 0, 0], 1461), ([3, 0xf2, 0x09, 0, 0], 1479)] {
+            let stack = {
+                let _up = ids::renumbering(ids, Way::Up);
+                Slot::read(&mut Reader::new(&sent)).unwrap().unwrap()
+            };
+            assert_eq!((stack.item, stack.count), (pinned, 3));
+            let mut w = Writer::new();
+            {
+                let _down = ids::renumbering(ids, Way::Down);
+                Slot::write(&Some(Stack::new(pinned, 3)), &mut w);
+            }
+            assert_eq!(w.data, sent);
+        }
+        assert_eq!(ids.item.down(1468), None);
+        assert_eq!(
+            ServerVersion::V1_21_8.ids().unwrap().item.down(1468),
+            Some(1256)
+        );
+        assert_eq!(ids.block_state.up(7016), Some(9980)); // inherited chain axis=x, waterlogged=true
+    }
+
+    #[test]
+    fn a_1_21_6_sound_after_the_inserted_disc_is_not_off_by_one() {
+        let mut w = Writer::new();
+        w.varint(1180); // Level-up holder: old registry id 1179 + 1, pinned id 1321.
+        w.varint(0);
+        for coordinate in [8, 512, -16] {
+            w.i32(coordinate);
+        }
+        w.f32(1.0);
+        w.f32(0.5);
+        w.i64(42);
+        let play::Clientbound::Sound(p) = translated_from(
+            ServerVersion::V1_21_6,
+            packet_ids::play::clientbound::SOUND,
+            &w.data,
+        ) else {
+            panic!("sound");
+        };
+        assert_eq!(p.sound, (1321, None));
+        assert_eq!(
+            (p.x, p.y, p.z, p.volume, p.pitch, p.seed),
+            (8, 512, -16, 1.0, 0.5, 42)
+        );
+        assert_eq!(
+            ServerVersion::V1_21_8.ids().unwrap().sound_event.down(1321),
+            Some(1180)
+        );
     }
 }

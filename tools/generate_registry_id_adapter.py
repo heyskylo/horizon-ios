@@ -9,6 +9,10 @@ data generator reports (registries.json, blocks.json).
 VERSION --download` made. Entries are matched by name; block states by block name and properties. Each
 registry gets two tables of runs `(from, to, length)`: `<NAME>_UP` from the old server's ids to the pinned ones,
 `<NAME>_DOWN` back. An id in no run has no entry in the other version. Only registries whose ids differ are written; the rest map to themselves.
+
+`--inherit PREPARED_VERSION` reuses that version's generated module where its reports have identical
+registry or block-state ids. Both modules must target the same pinned version. Changed registries
+are generated normally, so a patch release need not duplicate unchanged tables.
 """
 
 import argparse
@@ -114,6 +118,8 @@ def main():
     parser.add_argument("--old", type=Path, required=True, help="the older version's prepared directory")
     parser.add_argument("--new", type=Path, help="the pinned version's prepared directory (default: .local)")
     parser.add_argument("--out", type=Path)
+    parser.add_argument("--inherit", type=Path,
+                        help="another prepared version: reuse its generated tables when registry ids match")
     parser.add_argument("--rename", action="append", default=[], metavar="REGISTRY:OLD=NEW",
                         help="an entry the pinned version knows by another name, e.g. "
                              "minecraft:command_argument_type:minecraft:color=minecraft:team_color")
@@ -130,6 +136,16 @@ def main():
     info = lab.version_info(args.new / "jars/client.jar") if args.new else lab.version_info()
     old_reg = json.loads((old_reports / "registries.json").read_text())
     new_reg = json.loads((new_reports / "registries.json").read_text())
+    inherited_reg = None
+    inherited_states = None
+    inherited_module = None
+    if args.inherit:
+        inherited_info = lab.version_info(args.inherit / "jars/client.jar")
+        inherited_module = "v" + inherited_info["id"].replace(".", "_") + "_ids"
+        inherited_reports = args.inherit / "datagen/reports"
+        inherited_reg = json.loads((inherited_reports / "registries.json").read_text())
+        inherited_states = states(json.loads((inherited_reports / "blocks.json").read_text()),
+                                  renames.get("minecraft:block"))
     module = "v" + old_info["id"].replace(".", "_") + "_ids"
     out = args.out or ROOT / f"crates/horizon-protocol/src/adapter/{module}.rs"
     lines = [
@@ -141,14 +157,20 @@ def main():
     old_states = states(json.loads((old_reports / "blocks.json").read_text()),
                         renames.get("minecraft:block"))
     new_states = states(json.loads((new_reports / "blocks.json").read_text()))
-    lines.append(f"/// Block states: {len(old_states)} in {old_info['id']}, {len(new_states)} pinned.")
-    lines.append(f"pub const OLD_STATES: u32 = {len(old_states)};")
-    lines.append(f"pub const PINNED_STATES: u32 = {len(new_states)};")
-    lines.extend(rust_table("BLOCK_STATE_UP", table(old_states, new_states)))
-    lines.extend(rust_table("BLOCK_STATE_DOWN", table(new_states, old_states)))
+    inherit_states = old_states == inherited_states
+    if not inherit_states:
+        lines.append(f"/// Block states: {len(old_states)} in {old_info['id']}, {len(new_states)} pinned.")
+        lines.append(f"pub const OLD_STATES: u32 = {len(old_states)};")
+        lines.append(f"pub const PINNED_STATES: u32 = {len(new_states)};")
+        lines.extend(rust_table("BLOCK_STATE_UP", table(old_states, new_states)))
+        lines.extend(rust_table("BLOCK_STATE_DOWN", table(new_states, old_states)))
     same = []
+    inherited = []
     for registry in REGISTRIES:
         o, n = entries(old_reg, registry), entries(new_reg, registry)
+        if inherited_reg is not None and o == entries(inherited_reg, registry):
+            inherited.append(registry)
+            continue
         if o == n:
             same.append(registry)
             continue
@@ -160,18 +182,26 @@ def main():
         lines.extend(rust_table(f"{name}_DOWN", table(n, o, backward)))
     lines.append(f"/// Every table above, as the adapter reads them.")
     lines.append("pub const IDS: super::ids::Ids = super::ids::Ids {")
-    lines.append("    quirks: super::ids::Quirks::NONE,")
-    lines.append("    states: (OLD_STATES, PINNED_STATES),")
-    lines.append("    block_state: super::ids::Remap::Runs { up: BLOCK_STATE_UP, down: BLOCK_STATE_DOWN },")
+    if not inherited_module:
+        lines.append("    quirks: super::ids::Quirks::NONE,")
+    if not inherit_states:
+        lines.append("    states: (OLD_STATES, PINNED_STATES),")
+        lines.append("    block_state: super::ids::Remap::Runs { up: BLOCK_STATE_UP, down: BLOCK_STATE_DOWN },")
     for registry in REGISTRIES:
+        if registry in inherited:
+            continue
         field = registry.split(":", 1)[1]
         if registry in same:
             lines.append(f"    {field}: super::ids::Remap::Same,")
         else:
             name = const_name(registry)
             lines.append(f"    {field}: super::ids::Remap::Runs {{ up: {name}_UP, down: {name}_DOWN }},")
-    lines.append("    // Not a registry: set by hand where a version numbers EntityDataSerializers differently.")
-    lines.append("    entity_data_serializer: super::ids::Remap::Same,")
+    if inherited_module:
+        lines.append(f"    // Unchanged registries and block states were checked against {inherited_module}'s reports.")
+        lines.append(f"    ..super::{inherited_module}::IDS")
+    else:
+        lines.append("    // Not a registry: set by hand where a version numbers EntityDataSerializers differently.")
+        lines.append("    entity_data_serializer: super::ids::Remap::Same,")
     lines.append("};")
     out.write_text("\n".join(lines) + "\n")
     print(out, "same:", ", ".join(same))

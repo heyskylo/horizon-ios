@@ -196,7 +196,11 @@ mod tests {
 
     #[test]
     fn the_handshake_states_the_older_protocol_and_moves_both_directions() {
-        for (version, protocol) in [(ServerVersion::V26_2, 776), (ServerVersion::V1_21_8, 772)] {
+        for (version, protocol) in [
+            (ServerVersion::V26_2, 776),
+            (ServerVersion::V1_21_8, 772),
+            (ServerVersion::V1_21_6, 771),
+        ] {
             let s = Session::new(version);
             let mut payload = Writer::new();
             payload.varint(crate::PROTOCOL_VERSION);
