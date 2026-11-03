@@ -31,6 +31,16 @@ const RESULT_CACHE_IDLE_FRAMES: u64 = 2;
 const OCCLUSION_LOOKUP_BUDGET: usize = 8_192;
 const OPACITY_GRID_SIZE: usize = 1_024;
 const MAX_OCCLUSION_RAY_STEPS: usize = 512;
+pub(super) const ASYNC_MOB_CULLING_ENABLE_MIN: usize = 64;
+pub(super) const ASYNC_MOB_CULLING_DISABLE_BELOW: usize = 48;
+
+fn async_mob_culling_ready(mobs: usize, worker_active: bool) -> bool {
+    mobs >= if worker_active {
+        ASYNC_MOB_CULLING_DISABLE_BELOW
+    } else {
+        ASYNC_MOB_CULLING_ENABLE_MIN
+    }
+}
 const TIMING_SAMPLE_CAPACITY: usize = 256;
 const PROOF_VALIDATION_TIMING_SAMPLE_STRIDE: u64 = 16;
 
@@ -695,12 +705,13 @@ impl AsyncOcclusionCuller {
             stats.previous_chunks_revision = Some(self.stamp.chunks_revision);
         }
         let camera_key = self.camera.map(f64::to_bits);
-        let camera_cell = camera_cell(self.camera);
+        let current_camera_cell = camera_cell(self.camera);
         let cache_initialized = self.query_cache_stamp.is_some();
         let layout_changed = self
             .query_cache_stamp
             .is_some_and(|stamp| !stamp.same_layout(self.stamp));
-        let camera_cell_changed = cache_initialized && self.query_cache_camera_cell != camera_cell;
+        let camera_cell_changed =
+            cache_initialized && self.query_cache_camera_cell != current_camera_cell;
         if layout_changed || camera_cell_changed {
             // Invalidate in-flight work in O(1). Cached entries carry their
             // own stamp and are rejected lazily by query_result(). Individual
@@ -708,7 +719,7 @@ impl AsyncOcclusionCuller {
             self.job_generation.fetch_add(1, Ordering::Relaxed);
         }
         self.query_cache_stamp = Some(self.stamp);
-        self.query_cache_camera_cell = camera_cell;
+        self.query_cache_camera_cell = current_camera_cell;
         while let Ok(mut results) = self.results_rx.try_recv() {
             self.pending = false;
             {
@@ -742,7 +753,9 @@ impl AsyncOcclusionCuller {
                     let mut stats = self.stats.borrow_mut();
                     stats.stale_camera_jobs = stats.stale_camera_jobs.saturating_add(1);
                 }
-                if results.camera == camera_key {
+                let same_camera_cell =
+                    camera_cell(results.camera.map(f64::from_bits)) == current_camera_cell;
+                if results.camera == camera_key || same_camera_cell {
                     self.cache_query_results(&mut results);
                 } else {
                     // A stale-camera visible answer is fail-open. Never carry a
@@ -825,7 +838,12 @@ impl AsyncOcclusionCuller {
             .ok()
             .map(|index| &self.query_results[index]);
         let result = entry.and_then(|entry| {
-            let exact = entry.key == *key
+            let camera_matches = entry.key.camera == key.camera
+                || (entry.proof.is_some()
+                    && camera_cell(entry.key.camera.map(f64::from_bits))
+                        == self.query_cache_camera_cell);
+            let exact = camera_matches
+                && query_bounds_key(&entry.key) == query_bounds_key(key)
                 && entry.stamp.same_layout(self.stamp)
                 && (entry.proof.is_some()
                     || entry.stamp.world_revision == self.stamp.world_revision);
@@ -1629,6 +1647,12 @@ impl Game<'_> {
         let wants_async = entity_mode == EntityCullingMode::Asynchronous;
         let wants_sync = entity_mode == EntityCullingMode::Synchronous;
         if wants_async {
+            if !async_mob_culling_ready(self.mobs.len(), self.async_occlusion_culler.is_some()) {
+                self.async_occlusion_culler = None;
+                self.async_occlusion_culling_failed = false;
+                self.sync_occlusion_culler = None;
+                return;
+            }
             if self.async_occlusion_culler.is_none() && !self.async_occlusion_culling_failed {
                 match AsyncOcclusionCuller::new() {
                     Ok(culler) => self.async_occlusion_culler = Some(Box::new(culler)),
