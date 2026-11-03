@@ -1990,6 +1990,9 @@ fn button(
     let id: SharedString = id.into();
     let label: SharedString = label.into();
     let label = SharedString::from(tr(&label).to_string());
+    if t.dark {
+        return glass_ui::button(id, label, kind, t);
+    }
     let t = *t;
     let hover = match kind {
         Kind::Primary => t.on_face.opacity(0.10),
@@ -2100,6 +2103,10 @@ fn sync_system_clipboard(text: String) {
 
 /// An on/off switch: a square knob sliding in a sunk track that turns violet when on.
 fn switch(id: impl Into<SharedString>, on: bool, t: &Theme) -> Stateful<Div> {
+    if t.dark {
+        let look = glass_ui::look();
+        return glass_ui::toggle(id, on, look.accent, look.on_accent, t);
+    }
     let t = *t;
     let id: SharedString = id.into();
     let knob = if on { t.on_face } else { t.muted };
@@ -2157,6 +2164,9 @@ fn segments<T: Copy + PartialEq + 'static>(
     t: &Theme,
     on_pick: impl Fn(T, &mut Window, &mut App) + Clone + 'static,
 ) -> Stateful<Div> {
+    if t.dark {
+        return glass_ui::segments(id, options, current, t, on_pick);
+    }
     let t = *t;
     div()
         .id(id)
@@ -2294,6 +2304,9 @@ fn disabled(b: Stateful<Div>) -> Stateful<Div> {
 
 /// A page's title in the pixel face and one line on what it is for.
 fn page_header(title: &str, description: &str, t: &Theme) -> Div {
+    if t.dark {
+        return glass_ui::page_head(tr(title), tr(description));
+    }
     div()
         .flex()
         .flex_col()
@@ -2458,6 +2471,12 @@ fn thousands(n: u64) -> String {
 
 /// A mono line in upper case: the status above a title, the footer's links.
 fn caps(s: impl AsRef<str>) -> Div {
+    // The glass look writes these as the mockup's small headings (`h3`): 13 px, medium.
+    if glass_ui::on() {
+        return glass_ui::text(13., FontWeight::MEDIUM, horizon_theme::glass::ink::BODY)
+            .line_height(px(19.5))
+            .child(s.as_ref().to_string());
+    }
     text(theme::MICRO).child(s.as_ref().to_uppercase())
 }
 
@@ -4737,19 +4756,29 @@ impl Launcher {
 /// A thin bar. A known fraction eases from its previous value; an unknown one shuttles slowly.
 /// Progress: a plate-coloured track filling with the accent; work of unknown length shuttles.
 fn progress_bar(fraction: Option<(f32, f32)>, t: &Theme) -> Div {
-    // Night: a thin accent line on a plate's colour, square like the art.
+    // Night: a thin accent line on a plate's colour, square like the art. Glass: the mockup's
+    // `Bar`, 4 px and round, in the accent's soft shade on white at 12 %.
     let n = t.night;
     let bar = div()
         .absolute()
         .top_0()
         .bottom_0()
-        .bg(plate::alpha(n.accent, 1.));
+        .bg(plate::alpha(n.accent, 1.))
+        .when(t.dark, |d| {
+            d.rounded_full()
+                .bg(glass_ui::color(glass_ui::look().accent_soft))
+        });
     let track = div()
         .relative()
         .flex_1()
         .h(px(6.))
         .bg(plate::alpha(n.card_hi, n.card_hi_alpha))
-        .overflow_hidden();
+        .overflow_hidden()
+        .when(t.dark, |d| {
+            d.h(px(4.))
+                .rounded_full()
+                .bg(glass_ui::white(horizon_theme::glass::fill::ACTIVE))
+        });
     match fraction {
         Some((from, to)) => {
             let (from, to) = (from.clamp(0.02, 1.), to.clamp(0.02, 1.));
@@ -4786,6 +4815,7 @@ impl Render for Launcher {
         if std::mem::take(&mut self.restyle) {
             self.theme = self.settings_theme(window);
         }
+        glass_ui::set_on(self.theme.dark);
         self.scale = window.scale_factor();
         self.perf.frame();
         if self.bench.as_ref().is_some_and(perf::Bench::scrolling) {
@@ -4926,7 +4956,9 @@ impl Render for Launcher {
                                                     .w_full()
                                                     .min_w_0()
                                                     .px(px(theme::PAGE_GUTTER))
-                                                    .pt(px(if self.page == Page::Play {
+                                                    // The glass look's page heads hold their
+                                                    // own 40 px above the title.
+                                                    .pt(px(if self.page == Page::Play || t.dark {
                                                         0.
                                                     } else {
                                                         28.

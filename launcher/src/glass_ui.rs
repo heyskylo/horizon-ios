@@ -1,12 +1,35 @@
 //! The glass look's controls ("Glass" in `docs/design-system.md`): the parts of the mockup's
 //! `components/launcher/launcher-ui.tsx` and its shell (`launcher-app.tsx`), at its sizes. White
 //! text and fills at a few opacities over [`glass`](crate::glass) plates; Geist throughout.
-use crate::{hover_fade, hover_is, keyboard, note_hover, theme::Theme, track_hover};
+use crate::{hover_fade, hover_is, keyboard, note_hover, theme::Theme, track_hover, Kind};
 use gpui::{
-    div, prelude::*, px, rgb, rgba, svg, App, Div, FontWeight, Hsla, SharedString, Stateful, Svg,
-    Window,
+    div, prelude::*, px, rgb, rgba, svg, App, ClickEvent, Div, FontWeight, Hsla, SharedString,
+    Stateful, Svg, Window,
 };
-use horizon_theme::glass::{fill, ink, radius};
+use horizon_theme::glass::{fill, ink, radius, Glass};
+use std::cell::Cell;
+
+thread_local! {
+    /// Whether this frame's pages draw the glass look (the dark appearance).
+    static ON: Cell<bool> = const { Cell::new(false) };
+    /// The look's colours for the player's accent.
+    static LOOK: Cell<Glass> = Cell::new(Glass::default_look());
+}
+
+/// Whether the pages being built draw the glass look: helpers with no theme at hand ask.
+pub fn on() -> bool {
+    ON.get()
+}
+
+/// Set as each frame's pages start being built.
+pub fn set_on(on: bool) {
+    ON.set(on);
+}
+
+/// The look's colours.
+pub fn look() -> Glass {
+    LOOK.get()
+}
 
 /// White at `a`.
 pub fn white(a: f32) -> Hsla {
@@ -625,4 +648,119 @@ pub fn toggle(
             .child(knob),
         t,
     )
+}
+
+/// The generic [`button`](crate::button) in the glass look, 36 px: `Primary` is the mockup's
+/// `PLAY` (the accent, semibold), `Secondary` its `QUIET` (white at 8 %, 14 % under the pointer),
+/// `Ghost` its text button (white at 70 %, white on 6 % under the pointer).
+pub fn button(id: SharedString, label: SharedString, kind: Kind, t: &Theme) -> Stateful<Div> {
+    let look = look();
+    let d = div()
+        .id(id.clone())
+        .relative()
+        .flex()
+        .flex_none()
+        .items_center()
+        .justify_center()
+        .gap(px(8.))
+        .h(px(36.))
+        .px(px(14.))
+        .rounded(px(radius::CONTROL))
+        .cursor_pointer()
+        .font_family(horizon_theme::glass::FONT)
+        .text_size(px(14.))
+        .line_height(px(20.))
+        .font_weight(FontWeight::MEDIUM);
+    let d = match kind {
+        Kind::Primary => d
+            .bg(color(look.accent))
+            .text_color(color(look.on_accent))
+            .font_weight(FontWeight::SEMIBOLD)
+            .hover(|s| s.opacity(0.92)),
+        Kind::Secondary => d
+            .bg(white(fill::BUTTON))
+            .text_color(white(ink::FULL))
+            .hover(|s| s.bg(white(fill::BUTTON_HOVER))),
+        Kind::Ghost => d
+            .text_color(white(ink::BODY))
+            .hover(|s| s.bg(white(0.06)).text_color(white(ink::FULL))),
+    };
+    keyboard(track_hover(d.child(label), id), t)
+}
+
+/// A segmented control in the glass look (the server dialog's difficulty): white at 4 % round
+/// at 14, 4 px around 32 px options round at 10; the chosen one white at 14 %, medium, the others
+/// white at 65 %, white under the pointer.
+pub fn segments<T: Copy + PartialEq + 'static>(
+    id: &'static str,
+    options: &[(T, &'static str)],
+    current: T,
+    t: &Theme,
+    on_pick: impl Fn(T, &mut Window, &mut App) + Clone + 'static,
+) -> Stateful<Div> {
+    div()
+        .id(id)
+        .flex()
+        .flex_none()
+        .gap(px(4.))
+        .p(px(4.))
+        .rounded(px(radius::LARGE))
+        .bg(white(0.04))
+        .children(options.iter().map(|&(value, label)| {
+            let active = current == value;
+            let pick = on_pick.clone();
+            let d = div()
+                .id(SharedString::from(format!("{id}-{label}")))
+                .flex()
+                .items_center()
+                .h(px(32.))
+                .px(px(14.))
+                .rounded(px(radius::CONTROL))
+                .cursor_pointer()
+                .font_family(horizon_theme::glass::FONT)
+                .text_size(px(14.))
+                .line_height(px(20.))
+                .when(active, |d| {
+                    d.bg(white(fill::BUTTON_HOVER))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(white(ink::FULL))
+                })
+                .when(!active, |d| {
+                    d.text_color(white(ink::MUTED))
+                        .hover(|s| s.text_color(white(ink::FULL)))
+                })
+                .child(crate::tr(label))
+                .on_click(move |_: &ClickEvent, window, cx| pick(value, window, cx));
+            keyboard(d, t)
+        }))
+}
+
+/// A page's head (`PageHead`): its title in Bricolage, 46 px at this width
+/// (`clamp(2.25rem, 3.6vw, 3rem)`), its note under it at 15 px on 1.55, white at 70 %, at most
+/// 62 characters wide; 40 px above, 28 below.
+pub fn page_head(title: impl Into<SharedString>, note: impl Into<SharedString>) -> Div {
+    let note: SharedString = note.into();
+    div()
+        .flex()
+        .flex_col()
+        .pt(px(40.))
+        .mb(px(28.))
+        .child(
+            div()
+                .font_family(horizon_theme::glass::DISPLAY_FONT)
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_size(px(46.))
+                .line_height(px(46.))
+                .text_color(white(ink::FULL))
+                .child(title.into()),
+        )
+        .when(!note.is_empty(), |d| {
+            d.child(
+                text(15., FontWeight::NORMAL, ink::BODY)
+                    .mt(px(12.))
+                    .max_w(px(615.))
+                    .line_height(px(23.25))
+                    .child(note),
+            )
+        })
 }
