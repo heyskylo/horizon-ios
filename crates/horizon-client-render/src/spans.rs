@@ -441,11 +441,21 @@ pub mod startup {
 #[cfg(test)]
 mod tests {
     use super::Span;
+    use std::sync::{Mutex, MutexGuard};
+
+    /// Spans on for every thread ([`super::enable`]) is process-wide: a test that turns them on
+    /// would make another, run beside it, record what it expects left out. Those tests take
+    /// this lock.
+    fn spans_switch() -> MutexGuard<'static, ()> {
+        static SWITCH: Mutex<()> = Mutex::new(());
+        SWITCH.lock().unwrap_or_else(|e| e.into_inner())
+    }
 
     /// A slow tick's notes are its slowest steps, slowest first; short steps and steps on a
     /// thread that records no spans leave none.
     #[test]
     fn notes_keep_the_slowest_steps() {
+        let _switch = spans_switch();
         super::record_here(false);
         super::note(500.0, || "unrecorded".into());
         assert!(super::take_notes().is_empty());
@@ -577,6 +587,7 @@ mod tests {
     /// Laps record the steps between them while spans are on, and nothing while off.
     #[test]
     fn laps_time_consecutive_steps() {
+        let _switch = spans_switch();
         let _ = super::take();
         let mut off = super::laps();
         off.lap("unseen");
