@@ -864,7 +864,12 @@ fn piglin_hurt(
     }
     m.extra.scratch[0] = 0;
     m.extra.scratch[1] = 0;
-    m.extra.home = None;
+    // `PiglinAi.wasHurtBy` erases CELEBRATE_LOCATION, which `extra.home` is
+    // for a piglin; `PiglinBruteAi.wasHurtBy` erases nothing, and the brute's
+    // home there is the memory it walks back to.
+    if m.species() == Species::Piglin {
+        m.extra.home = None;
+    }
     if let Some(avoided) = avoid_target(m)
         && !same_type(w, avoided, by)
     {
@@ -1293,6 +1298,10 @@ pub fn register_brute(m: &mut Mob) {
     let g = &mut m.ai.goals;
     g.add(0, Float);
     g.add(2, MeleeAttack::new(1.0, true));
+    // `PiglinBruteAi.createIdleMovementBehaviors`: `StrollToPoi(HOME, 0.6, 2,
+    // 100)` ahead of the plain stroll, so a brute that drifts off walks back to
+    // the spot `PiglinBruteAi.initMemories` remembered for it.
+    g.add(5, BruteStrollHome);
     g.add(5, Stroll::avoiding_water(0.6));
     g.add(6, LookAtPlayer::new(8.0));
     let mut hurt = HurtByTarget::new().alert();
@@ -1301,6 +1310,57 @@ pub fn register_brute(m: &mut Mob) {
     m.ai.targets.add(2, NearestTarget::player(true));
     m.ai.targets
         .add(3, NearestTarget::species(&[Species::WitherSkeleton], true));
+}
+/// `PiglinBruteAi.HOME_CLOSE_ENOUGH_DISTANCE`: how near home the walk target
+/// counts as arrived.
+const HOME_CLOSE_ENOUGH: i32 = 2;
+/// `PiglinBruteAi.HOME_TOO_FAR_DISTANCE`: past this the memory is no help.
+const HOME_TOO_FAR: f64 = 100.0;
+/// `StrollToPoi(HOME, 0.6F, 2, 100)` of `PiglinBruteAi.createIdleMovementBehaviors`:
+/// a brute more than a hundred blocks from the spot it was spawned at gives up
+/// on it, and one that has wandered off walks back to within two blocks of it.
+///
+/// The vanilla behaviour sets the walk target home every 80 ticks; this goal
+/// instead keeps it only while the brute is outside the reach of the plain
+/// stroll that shares its priority (`RandomStroll`, ten blocks), which is the
+/// wandering `StrollAroundPoi(HOME, 0.6F, 5)` of the same activity does around
+/// the memory. A goal selector here starts the first goal that may run, where
+/// vanilla draws a weighted one each time, so a home target that outranked the
+/// stroll inside its own reach would leave the brute standing at home.
+#[derive(Clone, Debug)]
+struct BruteStrollHome;
+impl Goal for BruteStrollHome {
+    goal_clone!();
+    fn flags(&self) -> u8 {
+        MOVE
+    }
+    fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
+        let Some(home) = m.extra.home else {
+            return false;
+        };
+        // Vec3.atBottomCenterOf, the point `closerToCenterThan` measures from.
+        let center = Vec3::new(
+            f64::from(home[0]) + 0.5,
+            f64::from(home[1]),
+            f64::from(home[2]) + 0.5,
+        );
+        let distance = m.distance_sqr(center);
+        if distance >= HOME_TOO_FAR * HOME_TOO_FAR || distance <= 10.0 * 10.0 {
+            return false;
+        }
+        m.ai.pending_path = m.create_path_to(cx.w, home, HOME_CLOSE_ENOUGH);
+        m.ai.pending_path.is_some()
+    }
+    fn can_continue(&mut self, m: &mut Mob, _: &mut Cx) -> bool {
+        !m.ai.nav.is_done()
+    }
+    fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
+        let path = m.ai.pending_path.take();
+        m.nav_move_to_path(cx.w, path, 0.6);
+    }
+    fn stop(&mut self, m: &mut Mob, _: &mut Cx) {
+        m.nav_stop();
+    }
 }
 pub fn register_hoglin(m: &mut Mob) {
     let g = &mut m.ai.goals;
@@ -2286,3 +2346,4 @@ mod conversion_tests {
         let _ = ran;
     }
 }
+
