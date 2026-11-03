@@ -2912,6 +2912,42 @@ fn fly_into_wall_damage(before: f64, after: f64) -> f32 {
     ((before - after) * 10.0 - 3.0) as f32
 }
 
+/// `Entity.getBlockSpeedFactor` for a kind that keeps no motion world of its
+/// own (mobs, boats): the factor of the block at `position`, else of the one
+/// below it, through the same port the player's move uses.
+pub fn block_speed_factor_at(
+    world: &World,
+    properties: &BoundMovementProperties,
+    position: Vec3,
+    supporting_block: Option<BlockPos>,
+) -> f32 {
+    struct Blocks<'a>(&'a World);
+    impl MovementBlockProvider for Blocks<'_> {
+        type Error = ();
+        fn movement_block_state(&mut self, p: BlockPos) -> std::result::Result<BlockStateId, ()> {
+            Ok(self.0.block(p.x, p.y, p.z))
+        }
+    }
+    let location = movement_support::MovementLocation {
+        position,
+        block_position: BlockPos::new(
+            position.x.floor() as i32,
+            position.y.floor() as i32,
+            position.z.floor() as i32,
+        ),
+        supporting_block,
+    };
+    let mut view = Blocks(world);
+    movement_support::block_speed_factor(
+        &mut RegistryMovementWorld {
+            properties,
+            world: &mut view,
+        },
+        location,
+    )
+    .unwrap_or(1.0)
+}
+
 #[cfg(test)]
 mod tests {
     /// The glide's collision damage: a third of a block a tick lost is 0.0 and

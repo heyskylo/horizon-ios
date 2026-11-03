@@ -701,6 +701,14 @@ impl Game<'_> {
                 b.velocity.y = 0.0;
             }
         }
+        // Entity.move's last step: soul sand and honey slow the boat too.
+        let factor = crate::motion::block_speed_factor_at(
+            &self.world,
+            &self.motion.blocks,
+            b.position,
+            None,
+        );
+        b.velocity = horizon_world::entity_move::scale_by_block_speed(b.velocity, factor);
         // Paddle sounds at the top of each stroke.
         for i in 0..2 {
             if b.paddling[i] {
