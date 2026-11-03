@@ -3179,6 +3179,9 @@ struct Game<'a> {
     entity_attachments: HashMap<[i32; 4], horizon_world::attachments::Attachments>,
     /// Connected to a server: the world comes from the network (game/remote.rs).
     remote: Option<remote::Remote>,
+    /// Active packet replay session (game/studio.rs).
+    pub(super) studio_replay: Option<horizon_client::studio::ReplayDriver>,
+    last_replay_tick: Option<Instant>,
     /// This world is open to the network (game/lan.rs).
     lan: Option<lan::LanHost>,
     /// Single player's server thread, which `remote` is connected to.
@@ -17921,6 +17924,9 @@ impl Game<'_> {
         if let Err(e) = horizon_client::spans::time("poll_remote", || self.poll_remote()) {
             log::warn!("Horizon: {e}");
         }
+        if let Err(e) = self.advance_studio_replay() {
+            log::warn!("Horizon Studio replay: {e}");
+        }
         // The renderer laid translucent quads out again (a shader pack's flat terrain came
         // or went) and dropped every section and far tile: meshed again, as for a new one.
         if self
@@ -20398,6 +20404,8 @@ impl<'a> Game<'a> {
             persist: Default::default(),
             entity_attachments: Default::default(),
             remote: None,
+            studio_replay: None,
+            last_replay_tick: None,
             lan: None,
             integrated: None,
             level_shapes: Default::default(),
