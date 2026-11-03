@@ -65,6 +65,9 @@ pub mod component {
     pub const CONTAINER: i32 = 77;
     pub const SULFUR_CUBE_CONTENT: i32 = 80;
     pub const PAINTING_VARIANT: i32 = 109;
+    /// `SignText.STREAM_CODEC`: a sign item's text, front and back.
+    pub const SIGN_TEXT_FRONT: i32 = 118;
+    pub const SIGN_TEXT_BACK: i32 = 119;
 }
 
 /// A written book's content (`WrittenBookContent.STREAM_CODEC`). The raw title
