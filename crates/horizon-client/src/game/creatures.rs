@@ -6372,7 +6372,8 @@ impl Game<'_> {
         // keep the existing exact mesh-culling path.
         if self.settings.horizon.entity_culling != EntityCullingMode::Off
             && (self.sync_occlusion_culler.is_some() || self.async_occlusion_culler.is_some())
-            && self.settings.horizon.entity_culling == EntityCullingMode::Synchronous
+            && self.settings.horizon.entity_culling_precheck != 0
+            && self.mobs.len() >= self.settings.horizon.entity_culling_precheck as usize
             && !self.pack_shadow_casters.0
             && horizon_client::mod_api::mods().is_empty()
         {
