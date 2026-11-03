@@ -6,7 +6,7 @@
 use super::Game;
 use horizon_client::{
     first_person::Hand,
-    mobs::{Mob, Species, equine, llama},
+    mobs::{Mob, Species, equine, llama, nautilus},
 };
 
 impl Game<'_> {
@@ -35,8 +35,13 @@ impl Game<'_> {
         if self.age_lock_takes(m, item) {
             return true;
         }
-        // Animal.mobInteract: its food is CONSUME on a client.
-        if m.kind.flags.animal && m.kind.food.iter().any(|f| f.as_str() == item) {
+        // Animal.mobInteract: its food is CONSUME on a client. A nautilus
+        // overrides mobInteract, and an untamed one only takes its taming
+        // items, so it answers in its own arm below.
+        if m.kind.flags.animal
+            && !matches!(m.species(), Species::Nautilus | Species::ZombieNautilus)
+            && m.kind.food.iter().any(|f| f.as_str() == item)
+        {
             return true;
         }
         let sneaking = self.keys.contains(&winit::keyboard::KeyCode::ShiftLeft);
@@ -70,6 +75,18 @@ impl Game<'_> {
             Species::Sheep => item == "minecraft:shears" || item.ends_with("_dye"),
             // SnowGolem.mobInteract: shears take the pumpkin off.
             Species::SnowGolem => item == "minecraft:shears" && !m.extra.sheared,
+            // AbstractNautilus.mobInteract: an untamed adult only answers its
+            // taming items, a tame one is fed, mounted or opens its screen.
+            Species::Nautilus | Species::ZombieNautilus => {
+                let taming: Vec<String> = self
+                    .res
+                    .items()
+                    .item_tags
+                    .get("minecraft:nautilus_taming_items")
+                    .map(|t| t.iter().cloned().collect())
+                    .unwrap_or_default();
+                nautilus_takes(nautilus::is_food(m, item, &taming), m.extra.tame, baby)
+            }
             // IronGolem.mobInteract.
             Species::IronGolem => iron_golem_takes(item, m.health, m.attrs.max_health),
             // CopperGolem.mobInteract.
@@ -130,6 +147,13 @@ impl Game<'_> {
             horizon_client::particles::Burst::HORSE_EATING,
         );
     }
+}
+
+/// `AbstractNautilus.mobInteract` on a client: its food is answered while the
+/// nautilus takes it (taming items for an untamed adult, its food once tamed),
+/// and a tame adult answers every click because that is the mount.
+fn nautilus_takes(food: bool, tame: bool, baby: bool) -> bool {
+    food || (tame && !baby)
 }
 
 /// `IronGolem.mobInteract`: an iron ingot heals 25 and only answers SUCCESS when
@@ -211,6 +235,40 @@ mod tests {
             horizon_core::geometry::Vec3::new(0.0, 4.0, 0.0),
             0.0,
         ))
+    }
+
+    /// `AbstractNautilus.mobInteract` (#8595): an untamed adult takes its taming
+    /// items only, and a tame adult is mounted by any click.
+    #[test]
+    fn a_nautilus_answers_its_food_and_a_tame_one_is_ridden() {
+        assert!(
+            !nautilus_takes(false, false, false),
+            "untamed, taming item missing"
+        );
+        assert!(nautilus_takes(true, false, false), "a taming item");
+        assert!(
+            nautilus_takes(false, true, false),
+            "a tame adult is mounted"
+        );
+        assert!(!nautilus_takes(false, true, true), "a baby is not mounted");
+
+        // `AbstractNautilus.isFood`: taming items while untamed, its food after.
+        let Some(mut m) = mob("minecraft:nautilus") else {
+            return;
+        };
+        let taming = vec!["minecraft:pufferfish".to_string()];
+        m.extra.age = 0;
+        m.extra.tame = false;
+        assert!(nautilus::is_food(&m, "minecraft:pufferfish", &taming));
+        assert!(
+            !nautilus::is_food(&m, "minecraft:cod", &taming),
+            "cod tames nothing"
+        );
+        m.extra.tame = true;
+        assert!(
+            nautilus::is_food(&m, "minecraft:cod", &taming),
+            "a tame one eats cod"
+        );
     }
 
     /// `IronGolem.mobInteract` and `CopperGolem.mobInteract` (#8630): the click
