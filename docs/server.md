@@ -182,7 +182,13 @@ prepared on their own computer to the server (`scp -r`). Planned wrappers:
 - **On this machine:** `horizon-server prepare --server-jar PATH` runs `horizon-prepare` on the owner's own
   server jar plus their launcher install.
 - **Prepared elsewhere:** `horizon-server import-resources DIR` copies a folder prepared on the owner's own
-  computer, for example by the launcher, to a headless machine.
+  computer, for example by the launcher, to a headless machine. It first checks the folder: `horizon-resources.json`
+  is there and names Minecraft 26.3, the derived files match their checksums, and the font and texture folders
+  aren't empty; otherwise it lists what is wrong and changes nothing. It copies next to the destination and
+  renames the copy in, so a failure partway keeps the old copy. The destination is the installer's
+  `game-files/horizon-client/26.3` (where the release's `.local/horizon-client` points), or `resources/` in
+  the server folder when the server wasn't installed by `install.sh`. It ends by saying to start or restart
+  the server.
 
 A server-only `prepare` (from `server.jar` alone, without the client jar or a JDK) is the follow-up that
 removes the last Java step. It needs a list of which prepared files the server really reads, and that list
@@ -338,9 +344,10 @@ horizon-server panel                     the panel's address and a one-time logi
 horizon-server update [--check] [--version vX.Y.Z] [--timeout S]     rollback [--timeout S]
 horizon-server update --archive FILE --version NAME     an archive you have (your own build)
 horizon-server mcp                       MCP server on stdio (section 8)
+horizon-server import-resources <dir>    copy game files prepared elsewhere into place (checked first)
 
 Planned:
-horizon-server import-resources <dir>      prepare --server-jar PATH
+horizon-server prepare --server-jar PATH
 ```
 
 - Every command takes `--dir` (the server folder; default: the current folder).
