@@ -3337,6 +3337,59 @@ mod tests {
         assert_eq!(queue.pop().and_then(|q| q.at), Some((20, 0)));
     }
 
+    /// `ChunkTaskPriorityQueue.release`: a column that unloaded keeps no queued job, so
+    /// a teleport or a smaller render distance does not spend its workers on the world
+    /// it left; the other columns' jobs and the jobs without a column (saves, meshes to
+    /// free) stay, in the same order.
+    #[test]
+    fn a_released_column_keeps_no_queued_job() {
+        let generate = |x, z, priority, order| Queued {
+            priority,
+            at: Some((x, z)),
+            bias: 0,
+            order,
+            job: Job::Generate(x, z),
+        };
+        let save = |order| Queued {
+            priority: i64::MIN,
+            at: None,
+            bias: 0,
+            order,
+            job: Job::Save(Vec::new()),
+        };
+        let queued = || {
+            BinaryHeap::from(vec![
+                generate(0, 0, 0, 1),
+                generate(0, 0, 4, 2),
+                generate(1, 0, 8, 3),
+                generate(9, 9, 12, 4),
+                save(5),
+            ])
+        };
+        let pops = |mut queue: BinaryHeap<Queued>| {
+            std::iter::from_fn(move || queue.pop())
+                .map(|q| q.at)
+                .collect::<Vec<_>>()
+        };
+        // Nothing goes for a column that is still loaded, or for nothing at all.
+        let mut queue = queued();
+        assert_eq!(release_columns(&mut queue, &FxHashSet::default()), 0);
+        assert_eq!(
+            release_columns(&mut queue, &[(20, 20)].into_iter().collect()),
+            0
+        );
+        assert_eq!(queue.len(), 5);
+        // Both of (0, 0)'s jobs go, its neighbour's and the save stay.
+        let gone: FxHashSet<(i32, i32)> = [(0, 0)].into_iter().collect();
+        assert_eq!(release_columns(&mut queue, &gone), 2);
+        assert_eq!(pops(queue), [None, Some((1, 0)), Some((9, 9))]);
+        // Every column leaving at once: only the jobs without one are left.
+        let mut queue = queued();
+        let all: FxHashSet<(i32, i32)> = [(0, 0), (1, 0), (9, 9)].into_iter().collect();
+        assert_eq!(release_columns(&mut queue, &all), 4);
+        assert_eq!(pops(queue), [None]);
+    }
+
     /// The light and mesh stages submit bounded work, the nearest first:
     /// what exceeds the room stays dirty, to be chosen again — from the
     /// current centre — as capacity frees. Submitted whole, the queue once
