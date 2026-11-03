@@ -260,8 +260,8 @@ impl Launcher {
             ui::Tone::Busy
         };
         let ink = match tone {
-            ui::Tone::Live => ui::color(horizon_theme::glass::LIVE),
-            ui::Tone::Warn => ui::color(horizon_theme::glass::WARN),
+            ui::Tone::Live => ui::live(),
+            ui::Tone::Warn => ui::warn(),
             _ => white(0.7),
         };
         let status = div()

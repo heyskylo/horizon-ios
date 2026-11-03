@@ -65,10 +65,22 @@ pub enum Language {
     Slovak,
     #[serde(rename = "lt")]
     Lithuanian,
+    #[serde(rename = "it")]
+    Italian,
+    #[serde(rename = "nl")]
+    Dutch,
+    #[serde(rename = "vi")]
+    Vietnamese,
+    #[serde(rename = "th")]
+    Thai,
+    #[serde(rename = "ur")]
+    Urdu,
+    #[serde(rename = "cs")]
+    Czech,
 }
 
 impl Language {
-    pub const ALL: [Language; 26] = [
+    pub const ALL: [Language; 32] = [
         Self::English,
         Self::French,
         Self::Russian,
@@ -95,6 +107,12 @@ impl Language {
         Self::Bulgarian,
         Self::Slovak,
         Self::Lithuanian,
+        Self::Italian,
+        Self::Dutch,
+        Self::Vietnamese,
+        Self::Thai,
+        Self::Urdu,
+        Self::Czech,
     ];
 
     /// Its code in `settings.json` and on the command line.
@@ -126,6 +144,12 @@ impl Language {
             Self::Bulgarian => "bg",
             Self::Slovak => "sk",
             Self::Lithuanian => "lt",
+            Self::Italian => "it",
+            Self::Dutch => "nl",
+            Self::Vietnamese => "vi",
+            Self::Thai => "th",
+            Self::Urdu => "ur",
+            Self::Czech => "cs",
         }
     }
 
@@ -158,6 +182,12 @@ impl Language {
             Self::Bulgarian => "Български",
             Self::Slovak => "Slovenčina",
             Self::Lithuanian => "Lietuvių",
+            Self::Italian => "Italiano",
+            Self::Dutch => "Nederlands",
+            Self::Vietnamese => "Tiếng Việt",
+            Self::Thai => "ไทย",
+            Self::Urdu => "اردو",
+            Self::Czech => "Čeština",
         }
     }
 
@@ -232,6 +262,12 @@ impl Language {
             Self::Bulgarian => include_str!("../lang/bg.json"),
             Self::Slovak => include_str!("../lang/sk.json"),
             Self::Lithuanian => include_str!("../lang/lt.json"),
+            Self::Italian => include_str!("../lang/it.json"),
+            Self::Dutch => include_str!("../lang/nl.json"),
+            Self::Vietnamese => include_str!("../lang/vi.json"),
+            Self::Thai => include_str!("../lang/th.json"),
+            Self::Urdu => include_str!("../lang/ur.json"),
+            Self::Czech => include_str!("../lang/cs.json"),
         }
     }
 }

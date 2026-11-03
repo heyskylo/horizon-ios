@@ -2825,6 +2825,7 @@ pub struct TridentSave<'a> {
     pub dealt_damage: bool,
     pub creative_only: bool,
     pub no_gravity: bool,
+    pub fire_ticks: i32,
     pub item: &'a crate::items::ItemStack,
 }
 pub fn trident_to_nbt(t: &TridentSave, uuid: [i32; 4], raw: Option<&Tag>) -> Tag {
@@ -2851,6 +2852,7 @@ pub fn trident_to_nbt(t: &TridentSave, uuid: [i32; 4], raw: Option<&Tag>) -> Tag
         ("SoundEvent", string("minecraft:item.trident.hit_ground")),
         ("item", item_to_nbt(t.item)),
         ("DealtDamage", Tag::Byte(i8::from(t.dealt_damage))),
+        ("Fire", Tag::Short(t.fire_ticks as i16)),
     ] {
         put(&mut tag, key, value);
     }
@@ -2875,6 +2877,7 @@ pub struct TridentNbt {
     pub dealt_damage: bool,
     pub creative_only: bool,
     pub no_gravity: bool,
+    pub fire_ticks: i32,
     pub item: crate::items::ItemStack,
 }
 pub fn trident_from_nbt(tag: &Tag) -> Option<TridentNbt> {
@@ -2890,6 +2893,7 @@ pub fn trident_from_nbt(tag: &Tag) -> Option<TridentNbt> {
         dealt_damage: flag(tag, "DealtDamage"),
         creative_only: number(tag.get("pickup")) == Some(2),
         no_gravity: flag(tag, "NoGravity"),
+        fire_ticks: number(tag.get("Fire")).unwrap_or(0) as i32,
         item: tag
             .get("item")
             .and_then(item_from_nbt)
@@ -3799,6 +3803,7 @@ mod tests {
                 dealt_damage: true,
                 creative_only: true,
                 no_gravity: true,
+                fire_ticks: 0,
                 item: &trident,
             },
             [1, 2, 3, 4],

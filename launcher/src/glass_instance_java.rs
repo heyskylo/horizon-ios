@@ -101,9 +101,8 @@ impl Launcher {
             VersionList::NotAsked | VersionList::Loading => list_box("mc-versions", 264.).child(
                 line(tr("Asking Mojang for its versions…").into(), ink::QUIET),
             ),
-            VersionList::Failed(e) => list_box("mc-versions", 264.).child(
-                line(e.clone(), ink::FULL).text_color(ui::color(horizon_theme::glass::DANGER)),
-            ),
+            VersionList::Failed(e) => list_box("mc-versions", 264.)
+                .child(line(e.clone(), ink::FULL).text_color(ui::danger())),
             VersionList::Ready(versions) => {
                 let rows: Vec<_> = versions
                     .of(choice.snapshots, choice.old)

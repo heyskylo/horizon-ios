@@ -430,10 +430,7 @@ pub(super) fn serve(
     let e = |e: horizon_protocol::Error| e.to_string();
     // LegacyQueryHandler, ahead of the frame decoder while status is on.
     let mut first = [0u8; 1];
-    if shared.config.enable_status
-        && stream.peek(&mut first).is_ok_and(|n| n == 1)
-        && first[0] == 0xFE
-    {
+    if shared.enable_status() && stream.peek(&mut first).is_ok_and(|n| n == 1) && first[0] == 0xFE {
         return serve_legacy(stream, &shared);
     }
     // A peer that stops reading (a frozen game, a dropped network) would otherwise hold
@@ -477,7 +474,7 @@ fn serve_connection(
     match intention.intent {
         // ServerHandshakePacketListenerImpl: a server that does not reply
         // to status requests closes the connection.
-        handshake::STATUS if !shared.config.enable_status => Ok(()),
+        handshake::STATUS if !shared.enable_status() => Ok(()),
         handshake::STATUS => serve_status(&mut c, &shared),
         handshake::TRANSFER if !shared.config.accepts_transfers => {
             login_disconnect(
