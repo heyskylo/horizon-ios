@@ -1317,7 +1317,7 @@ fn put_attributes(map: &mut Compound, m: &Mob, a: &crate::mobs::finalize::Attrib
                     Op::AddMultipliedTotal => "add_multiplied_total",
                 };
                 Tag::compound([
-                    ("id", string(x.id)),
+                    ("id", string(&x.id)),
                     ("amount", Tag::Double(x.amount.to_bits())),
                     ("operation", string(op)),
                 ])

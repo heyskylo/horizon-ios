@@ -439,7 +439,10 @@ one, what it pins and why it is not sandboxed: [native-mods.md](native-mods.md).
 A native mod's config files go in the game's shared `config/` folder, beside `options.txt` (on a dedicated server,
 beside `server.properties`), as Fabric and NeoForge mods' do: the mod picks its own file names, such as
 `config/<mod id>.json`. It asks for the folder with `Game::native_config_dir()` (hook points API 26), which needs no
-game, so it works from any hook, and makes the folder when missing. Settings kept with `native_set_setting` stay where they were, in `horizon-mods/.horizon-mod-data/<id>/`.
+game, so it works from any hook, and makes the folder when missing. A mod that lists its files with
+`native_register_configs` gets them read for it, written from their defaults when missing, and handed over again
+when edited (`native_config_loading`, `native_config_reloading`, as NeoForge's `ModConfigEvent`), and a world can
+keep its own server config in `serverconfig/` ([native-mods.md](native-mods.md)). Settings kept with `native_set_setting` stay where they were, in `horizon-mods/.horizon-mod-data/<id>/`.
 
 ## Publish your mod
 

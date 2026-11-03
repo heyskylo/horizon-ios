@@ -11,8 +11,11 @@ use serde_json::Value;
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
+#[path = "glass_server_dialog.rs"]
+mod glass_server_dialog;
 #[path = "glass_servers.rs"]
 mod glass_servers;
+use glass_servers::glass_setting_row;
 
 /// The servers this launcher started in this session, stopped when it closes unless they run as a
 /// service (`stop_on_quit`).
@@ -148,6 +151,9 @@ pub(super) struct Create {
     new_world: bool,
     copy: Option<PathBuf>,
     worlds: Vec<(String, PathBuf)>,
+    /// The glass dialog's line under each world: its name and "Horizon · mode · size", read
+    /// once when the dialog opens.
+    details: HashMap<PathBuf, (String, String)>,
     mode: &'static str,
     difficulty: &'static str,
     max_players: u32,
@@ -156,6 +162,9 @@ pub(super) struct Create {
     eula: bool,
     /// Create was pressed without the EULA ticked.
     eula_missing: bool,
+    /// The glass dialog's friends let in, the first an operator (the light one types them in
+    /// `Field::Players`).
+    friends: Vec<String>,
 }
 
 /// What the sidebar shows of the Servers page: its list once the page has read it, and whether
@@ -799,12 +808,34 @@ impl Launcher {
         } else {
             format!("Server {}", self.servers.list.len() + 1)
         };
-        self.servers.text(Field::Name).set(name);
-        self.servers.selected = Some(Field::Name);
+        // The glass dialog starts with an empty name (its placeholder says the default) and the
+        // player as the first friend.
+        let glass = self.theme.dark;
+        let own = own_name(&self.accounts).unwrap_or_default();
+        self.servers
+            .text(Field::Name)
+            .set(if glass { String::new() } else { name });
+        self.servers.selected = (!glass).then_some(Field::Name);
         self.servers.text(Field::Seed).set(String::new());
         self.servers
             .text(Field::Players)
-            .set(own_name(&self.accounts).unwrap_or_default());
+            .set(if glass { String::new() } else { own.clone() });
+        let friends = if glass && !own.is_empty() {
+            vec![own]
+        } else {
+            Vec::new()
+        };
+        let details = if glass {
+            horizon_launcher::worlds::list(&backend::game_home())
+                .into_iter()
+                .map(|w| {
+                    let line = format!("Horizon · {} · {}", tr(w.mode), bytes(w.size));
+                    (w.path, (w.name, line))
+                })
+                .collect()
+        } else {
+            Default::default()
+        };
         self.servers.problem = None;
         self.servers.create_scroll = Scrollbar::default();
         self.servers.create = Some(Create {
@@ -818,6 +849,8 @@ impl Launcher {
             check_accounts: true,
             eula: false,
             eula_missing: false,
+            friends,
+            details,
         });
     }
 
@@ -841,19 +874,20 @@ impl Launcher {
                 seed: self.servers.value(Field::Seed).to_string(),
             },
         };
-        let players: Vec<String> = self
-            .servers
-            .value(Field::Players)
-            .split([',', ' '])
-            .filter(|p| !p.is_empty())
-            .map(str::to_string)
-            .collect();
+        let mut players = c.friends.clone();
+        for p in self.servers.value(Field::Players).split([',', ' ']) {
+            if !p.is_empty() && !players.iter().any(|q| q == p) {
+                players.push(p.to_string());
+            }
+        }
         let name = self.servers.value(Field::Name).trim().to_string();
         let spec = NewServer {
-            name: if name.is_empty() {
+            name: if !name.is_empty() {
+                name
+            } else if self.servers.list.is_empty() {
                 "My server".into()
             } else {
-                name
+                format!("Server {}", self.servers.list.len() + 1)
             },
             world,
             game_mode: c.mode.into(),
@@ -920,7 +954,11 @@ impl Launcher {
                     !invalid
                         && matches!(
                             f,
-                            Field::InstanceName | Field::InstanceGroup | Field::InstanceVersion
+                            Field::InstanceName
+                                | Field::InstanceGroup
+                                | Field::InstanceVersion
+                                | Field::Name
+                                | Field::Seed
                         ),
                     |d| {
                         d.h(px(48.))
@@ -928,6 +966,10 @@ impl Launcher {
                             .bg(crate::glass_ui::white(if focused { 0.1 } else { 0.06 }))
                     },
                 )
+                // The friend field sits in its chip, on the chip's fill.
+                .when(matches!(f, Field::Players | Field::OfflineName), |d| {
+                    d.h_full().px(px(14.)).bg(gpui::transparent_black())
+                })
                 // The server's command line: the field is the line's middle, on its fill, in mono.
                 .when(f == Field::Command, |d| {
                     d.h_full()
@@ -1028,6 +1070,8 @@ impl Launcher {
 
     fn field_enter(&mut self, f: Field) {
         match f {
+            // The glass dialog's friend field adds the name typed.
+            Field::Players if self.theme.dark => self.add_create_friend(),
             Field::Name | Field::Seed | Field::Players => self.create_server(),
             Field::Command => {
                 let line = self.servers.text(Field::Command).take();
@@ -1109,7 +1153,7 @@ impl Launcher {
             .flex()
             .flex_col()
             .size(px(size))
-            .rounded(px(3.))
+            .rounded(px(if self.theme.dark { size / 4. } else { 3. }))
             .overflow_hidden()
             .bg(self.theme.plate);
         if let Some(pixels) = face {
@@ -1828,6 +1872,12 @@ impl Launcher {
 
     fn players_tab(&mut self, dir: &Path, status: &Status, cx: &mut Context<Self>) -> Div {
         let t = self.theme;
+        // The glass look draws no rules between rows, as the mockup.
+        let rule = if t.dark {
+            gpui::transparent_black()
+        } else {
+            t.rule
+        };
         let running = status.running();
         let idle = self.servers.busy.is_none();
         let ops = servers::names(dir, "ops.json");
@@ -1835,9 +1885,25 @@ impl Launcher {
         let banned = servers::names(dir, "banned-players.json");
         let is_op = |n: &str| ops.iter().any(|o| o.eq_ignore_ascii_case(n));
         let mut tab = div().flex().flex_col().gap(px(28.));
+        // The glass look's rows are the mockup's: 28 px heads, the name in 14 px medium, its
+        // note in 13 px.
+        let glass = t.dark;
+        let head = if glass { 28. } else { 24. };
+        let person = move |name: String| {
+            text(theme::UI)
+                .text_color(t.ink)
+                .when(glass, |d| d.font_weight(FontWeight::MEDIUM))
+                .child(name)
+        };
+        let person_note = move |note: String| {
+            text(theme::CAPTION)
+                .text_color(t.muted)
+                .when(glass, |d| d.text_size(px(13.)))
+                .child(note)
+        };
 
         // Online now.
-        let mut online = div().flex().flex_col().border_t_1().border_color(t.rule);
+        let mut online = div().flex().flex_col().border_t_1().border_color(rule);
         for (i, p) in status.players.clone().into_iter().enumerate() {
             let op = is_op(&p.name);
             let (n1, n2, n3) = (p.name.clone(), p.name.clone(), p.name.clone());
@@ -1887,18 +1953,17 @@ impl Launcher {
                     .gap(px(14.))
                     .min_h(px(theme::ROW))
                     .py(px(8.))
+                    .when(glass, |d| d.min_h(px(0.)).py(px(5.)))
                     .border_b_1()
-                    .border_color(t.rule)
-                    .child(self.head(&p.uuid, 24.))
+                    .border_color(rule)
+                    .child(self.head(&p.uuid, head))
                     .child(
                         div()
                             .flex()
                             .flex_col()
                             .flex_1()
-                            .child(text(theme::UI).text_color(t.ink).child(p.name.clone()))
-                            .children(
-                                about.map(|a| text(theme::CAPTION).text_color(t.muted).child(a)),
-                            ),
+                            .child(person(p.name.clone()))
+                            .children(about.map(person_note)),
                     )
                     .child(actions),
             );
@@ -1908,7 +1973,7 @@ impl Launcher {
                 .flex()
                 .flex_col()
                 .gap(px(10.))
-                .child(text(theme::HEADING).text_color(t.ink).child(trf(
+                .child(self.tab_heading(trf(
                     "Online now ({count})",
                     &[("count", &status.players.len().to_string())],
                 )))
@@ -1960,7 +2025,7 @@ impl Launcher {
                 people.push((op.clone(), String::new()));
             }
         }
-        let mut allowed = div().flex().flex_col().border_t_1().border_color(t.rule);
+        let mut allowed = div().flex().flex_col().border_t_1().border_color(rule);
         for (i, (name, uuid)) in people.into_iter().enumerate() {
             let op = is_op(&name);
             let listed = whitelist.iter().any(|(n, _)| n == &name);
@@ -1993,10 +2058,10 @@ impl Launcher {
                     },
                 ));
             }
-            let head = if uuid.is_empty() {
-                div().size(px(24.)).flex_none()
+            let face = if uuid.is_empty() {
+                div().size(px(head)).flex_none()
             } else {
-                self.head(&uuid, 24.)
+                self.head(&uuid, head)
             };
             let about = match (op, listed) {
                 (true, true) => Some(tr("Operator: can run every command")),
@@ -2010,18 +2075,17 @@ impl Launcher {
                     .gap(px(14.))
                     .min_h(px(theme::ROW))
                     .py(px(8.))
+                    .when(glass, |d| d.min_h(px(0.)).py(px(5.)))
                     .border_b_1()
-                    .border_color(t.rule)
-                    .child(head)
+                    .border_color(rule)
+                    .child(face)
                     .child(
                         div()
                             .flex()
                             .flex_col()
                             .flex_1()
-                            .child(text(theme::UI).text_color(t.ink).child(name.clone()))
-                            .when_some(about, |d, a| {
-                                d.child(text(theme::CAPTION).text_color(t.muted).child(a))
-                            }),
+                            .child(person(name.clone()))
+                            .children(about.map(|a| person_note(a.to_string()))),
                     )
                     .child(actions),
             );
@@ -2031,30 +2095,18 @@ impl Launcher {
                 .flex()
                 .flex_col()
                 .gap(px(14.))
+                .child(self.tab_heading(tr("Who may join")))
                 .child(
-                    text(theme::HEADING)
-                        .text_color(t.ink)
-                        .child(tr("Who may join")),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(14.))
-                        .child(toggle)
-                        .child(
-                            div()
-                                .flex()
-                                .flex_col()
-                                .child(text(theme::UI).text_color(t.ink).child(tr("Friends only")))
-                                .child(text(theme::CAPTION).text_color(t.muted).child(
-                                    if friends_only {
-                                        tr("On: only the players below can join.")
-                                    } else {
-                                        tr("Off: anyone who has the address can join.")
-                                    },
-                                )),
-                        ),
+                    self.toggle_row(
+                        "Friends only",
+                        if friends_only {
+                            tr("On: only the players below can join.")
+                        } else {
+                            tr("Off: anyone who has the address can join.")
+                        }
+                        .into(),
+                        toggle,
+                    ),
                 )
                 .child(add)
                 .children(self.servers.invalid.and_then(|(f, e)| {
@@ -2066,32 +2118,33 @@ impl Launcher {
 
         // Banned.
         if !banned.is_empty() {
-            let mut list = div().flex().flex_col().border_t_1().border_color(t.rule);
+            let mut list = div().flex().flex_col().border_t_1().border_color(rule);
             for (i, name) in banned.into_iter().enumerate() {
                 let n = name.clone();
-                list = list.child(index_row(
-                    i + 1,
-                    name,
-                    None,
-                    Some(
-                        self.small(
-                            SharedString::from(format!("unban-{i}")),
-                            "Unban",
-                            running,
-                            cx,
-                            move |this| this.api_command(format!("pardon {n}")),
-                        )
-                        .into_any_element(),
+                list = list.child(
+                    self.list_row(
+                        None,
+                        name,
+                        None,
+                        Some(
+                            self.small(
+                                SharedString::from(format!("unban-{i}")),
+                                "Unban",
+                                running,
+                                cx,
+                                move |this| this.api_command(format!("pardon {n}")),
+                            )
+                            .into_any_element(),
+                        ),
                     ),
-                    &t,
-                ));
+                );
             }
             tab = tab.child(
                 div()
                     .flex()
                     .flex_col()
                     .gap(px(10.))
-                    .child(text(theme::HEADING).text_color(t.ink).child(tr("Banned")))
+                    .child(self.tab_heading(tr("Banned")))
                     .when(!running, |d| {
                         d.child(
                             text(theme::CAPTION)
@@ -2119,6 +2172,9 @@ impl Launcher {
         control: AnyElement,
     ) -> Div {
         let t = self.theme;
+        if t.dark {
+            return glass_setting_row(name, about, error, control);
+        }
         div()
             .flex()
             .items_center()
@@ -2153,6 +2209,9 @@ impl Launcher {
         let t = self.theme;
         let (section, field) = key.split_once('.').unwrap_or_default();
         let value: i64 = self.servers.shown(section, field).parse().unwrap_or(0);
+        if t.dark {
+            return self.glass_stepper(key, value, range, cx);
+        }
         let make = |id: &'static str, label: &'static str, to: i64, cx: &mut Context<Self>| {
             let b = button(
                 SharedString::from(format!("{key}-{id}")),
@@ -2213,6 +2272,12 @@ impl Launcher {
 
     fn settings_tab(&mut self, status: &Status, cx: &mut Context<Self>) -> Div {
         let t = self.theme;
+        // The glass look draws no rules between rows, as the mockup.
+        let rule = if t.dark {
+            gpui::transparent_black()
+        } else {
+            t.rule
+        };
         let running = status.running();
         if self.servers.config.is_none() {
             return div().child(centered(
@@ -2294,7 +2359,7 @@ impl Launcher {
             .flex()
             .flex_col()
             .border_t_1()
-            .border_color(t.rule)
+            .border_color(rule)
             .child(self.setting_row(
                 "Message in the server list",
                 format!(
@@ -2541,6 +2606,12 @@ impl Launcher {
 
     fn updates_section(&mut self, status: &Status, cx: &mut Context<Self>) -> Div {
         let t = self.theme;
+        // The glass look draws no rules between rows, as the mockup.
+        let rule = if t.dark {
+            gpui::transparent_black()
+        } else {
+            t.rule
+        };
         let idle = self.servers.busy.is_none();
         let check = self.servers.update.clone();
         let release = status
@@ -2620,7 +2691,7 @@ impl Launcher {
             .flex()
             .flex_col()
             .border_t_1()
-            .border_color(t.rule)
+            .border_color(rule)
             .child(self.setting_row("This server's Horizon", about, control.into_any_element()));
         if self.servers.setting("updates", "keep").is_some() {
             rows = rows.child(self.setting_row(
@@ -2635,7 +2706,7 @@ impl Launcher {
             .flex()
             .flex_col()
             .gap(px(10.))
-            .child(text(theme::HEADING).text_color(t.ink).child(tr("Updates")))
+            .child(self.tab_heading(tr("Updates")))
             .child(rows)
     }
 
@@ -2647,6 +2718,12 @@ impl Launcher {
 
     fn backups_tab(&mut self, status: &Status, cx: &mut Context<Self>) -> Div {
         let t = self.theme;
+        // The glass look draws no rules between rows, as the mockup.
+        let rule = if t.dark {
+            gpui::transparent_black()
+        } else {
+            t.rule
+        };
         let idle = self.servers.busy.is_none();
         let every = self.servers.shown("backups", "every");
         let auto = !every.is_empty() && every != "0";
@@ -2668,7 +2745,7 @@ impl Launcher {
                 cx.notify();
             },
         ));
-        let mut list = div().flex().flex_col().border_t_1().border_color(t.rule);
+        let mut list = div().flex().flex_col().border_t_1().border_color(rule);
         for (i, b) in self.servers.backups.clone().into_iter().enumerate() {
             let (when, kind) = backup_label(&b);
             let confirming = self.servers.confirm_restore.as_deref() == Some(b.name.as_str());
@@ -2727,12 +2804,11 @@ impl Launcher {
             } else {
                 format!("{kind} · {}", bytes(b.bytes))
             };
-            list = list.child(index_row(
-                i + 1,
+            list = list.child(self.list_row(
+                None,
                 when,
                 Some(detail.into_any_element()),
                 Some(right.into_any_element()),
-                &t,
             ));
         }
         let mut tab = div().flex().flex_col().gap(px(20.)).child(
@@ -2754,32 +2830,19 @@ impl Launcher {
                 )))
                 .child(self.updates_section(status, cx));
         }
-        tab = tab.child(
-            div()
-                .flex()
-                .items_center()
-                .gap(px(14.))
-                .child(toggle)
-                .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .child(
-                            text(theme::UI)
-                                .text_color(t.ink)
-                                .child(tr("Back up automatically")),
-                        )
-                        .child(text(theme::CAPTION).text_color(t.muted).child(if auto {
-                            trf(
-                                "On: every {every} while the server runs, keeping the last \
-                                     {keep}. Backups you make yourself are never deleted.",
-                                &[("every", &every), ("keep", &keep)],
-                            )
-                        } else {
-                            tr("Off: only the backups you make.").to_string()
-                        })),
-                ),
-        );
+        tab = tab.child(self.toggle_row(
+            "Back up automatically",
+            if auto {
+                trf(
+                    "On: every {every} while the server runs, keeping the last \
+                         {keep}. Backups you make yourself are never deleted.",
+                    &[("every", &every), ("keep", &keep)],
+                )
+            } else {
+                tr("Off: only the backups you make.").to_string()
+            },
+            toggle,
+        ));
         if self.servers.confirm_restore.is_some() {
             tab = tab.child(notice(
                 tr(
@@ -2807,6 +2870,9 @@ impl Launcher {
 
     pub(super) fn create_dialog(&mut self, cx: &mut Context<Self>) -> Option<Stateful<Div>> {
         let t = self.theme;
+        if t.dark {
+            return self.glass_create_dialog(cx);
+        }
         let c = self.servers.create.as_ref()?;
         let (new_world, copy, worlds) = (c.new_world, c.copy.clone(), c.worlds.clone());
         let (mode, difficulty, max_players) = (c.mode, c.difficulty, c.max_players);

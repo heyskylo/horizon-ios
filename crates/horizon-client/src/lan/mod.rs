@@ -336,6 +336,7 @@ pub struct Shared {
     pub config: NetConfig,
     motd: Mutex<String>,
     max_players: AtomicUsize,
+    hide_online_players: AtomicBool,
     /// PlayerList.players in join order: profile id and name.
     online: Mutex<Vec<(u128, String)>>,
     next: AtomicU32,
@@ -416,6 +417,13 @@ impl Shared {
     pub fn set_max_players(&self, max_players: usize) {
         self.max_players.store(max_players, Ordering::Relaxed);
     }
+    /// `DedicatedServer.setHidesOnlinePlayers`: change whether status responses include player names.
+    pub fn hide_online_players(&self) -> bool {
+        self.hide_online_players.load(Ordering::Relaxed)
+    }
+    pub fn set_hide_online_players(&self, hide: bool) {
+        self.hide_online_players.store(hide, Ordering::Relaxed);
+    }
     pub fn release(&self, uuid: u128) {
         self.online.lock().unwrap().retain(|(u, _)| *u != uuid);
     }
@@ -444,7 +452,7 @@ impl Shared {
             ),
             ("online".to_owned(), Json::Number(count.to_string())),
         ];
-        if !self.config.hide_online_players && !online.is_empty() {
+        if !self.hide_online_players() && !online.is_empty() {
             let size = online.len().min(12);
             let offset = self.next_random(online.len() - size + 1);
             let mut sample: Vec<(u128, String)> = online[offset..offset + size].to_vec();
@@ -546,11 +554,13 @@ impl Lan {
     pub fn start_with(sync: Arc<data::SyncData>, config: NetConfig) -> io::Result<Self> {
         let (tx, events) = channel();
         let (listen, port, announce) = (config.listen, config.port, config.announce);
+        let hide_online_players = config.hide_online_players;
         let shared = Arc::new(Shared {
             sync: Mutex::new(sync),
             events: tx,
             motd: Mutex::new(config.motd.clone()),
             max_players: AtomicUsize::new(config.max_players),
+            hide_online_players: AtomicBool::new(hide_online_players),
             online: Mutex::new(Vec::new()),
             next: AtomicU32::new(1),
             stop: AtomicBool::new(false),
@@ -894,6 +904,7 @@ pub fn available_port() -> u16 {
 
 #[cfg(test)]
 mod tests {
+    use super::conn::MEMORY_ADDRESS;
     use super::*;
     use std::{io::Read, time::Instant};
 
@@ -942,6 +953,22 @@ mod tests {
             );
             std::thread::sleep(Duration::from_millis(10));
         }
+    }
+
+    #[test]
+    fn hide_online_players_updates_status_response() {
+        let config = NetConfig {
+            announce: false,
+            listen: false,
+            ..NetConfig::lan(0, "Status".into(), 8)
+        };
+        let lan = Lan::start_with(Arc::new(data::SyncData::empty()), config).unwrap();
+        assert!(lan.shared.try_admit(MEMORY_ADDRESS, 1, "Player").is_none());
+        assert!(lan.shared.status_json().contains("\"sample\""));
+        lan.shared.set_hide_online_players(true);
+        let hidden = lan.shared.status_json();
+        assert!(!hidden.contains("\"sample\""));
+        assert!(!hidden.contains("Player"));
     }
 
     /// One public address takes at most [`PER_ADDRESS`] places, its own coming back as they end;
