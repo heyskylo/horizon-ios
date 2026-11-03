@@ -7234,6 +7234,19 @@ impl Game<'_> {
                 let size = a.kind.size() as f32;
                 flame_geometry(atlas, c, size, size, self.yaw, light, out);
             }
+            // `ThrownItemRenderer` for a fireball: the item `Fireball.getItem`
+            // returns (a fire charge until `setItem` gave it another), its model
+            // at the renderer's scale for the kind. `packed` is already 15, the
+            // renderer's full bright.
+            if let Some(stack) = a.item.as_ref() {
+                let owner = super::item_draw::owner_at(at, 0.0, a.kind.id());
+                let state = self.resolve_item(stack, DisplayContext::Ground, Some(&owner), 0);
+                let pose = glam::Mat4::from_translation(c)
+                    * glam::Mat4::from_quat(self.camera_orientation())
+                    * glam::Mat4::from_scale(glam::Vec3::splat(a.sprite_scale()));
+                self.submit_item_world(&state, pose, packed, out);
+                continue;
+            }
             let Some(name) = a.item_sprite() else {
                 continue;
             };
@@ -7294,15 +7307,12 @@ fn thrown_item_quad(
 }
 /// Whether vanilla draws the kind as `ThrownItemRenderer`'s item billboard, the
 /// only ones that take that lift. Llama spit shares this quad but
-/// `LlamaSpitRenderer` is a model, with its own offset.
+/// `LlamaSpitRenderer` is a model, with its own offset, and a fireball's item
+/// is drawn as the item model that carries the lift itself.
 fn is_item_billboard(kind: &ProjectileKind) -> bool {
     matches!(
         kind,
-        ProjectileKind::Snowball
-            | ProjectileKind::Egg
-            | ProjectileKind::EnderPearl
-            | ProjectileKind::SmallFireball
-            | ProjectileKind::LargeFireball { .. }
+        ProjectileKind::Snowball | ProjectileKind::Egg | ProjectileKind::EnderPearl
     )
 }
 /// `Bucketable.getBucketItemStack` and `getPickupSound` of a mob that a water
@@ -7548,13 +7558,15 @@ mod tests {
 
     #[test]
     fn thrown_item_billboard_lifts_by_the_generated_ground_transform() {
-        // The kinds vanilla draws with `ThrownItemRenderer`: the only lifted ones.
+        // The kinds vanilla draws with `ThrownItemRenderer` as a billboard: the
+        // only lifted ones. A fireball hands `getItem` to the item renderer
+        // instead, which carries the ground transform itself.
         assert!(is_item_billboard(&ProjectileKind::Snowball));
         assert!(is_item_billboard(&ProjectileKind::Egg));
         assert!(is_item_billboard(&ProjectileKind::EnderPearl));
-        assert!(is_item_billboard(&ProjectileKind::SmallFireball));
+        assert!(!is_item_billboard(&ProjectileKind::SmallFireball));
         let large = ProjectileKind::LargeFireball { power: 1 };
-        assert!(is_item_billboard(&large));
+        assert!(!is_item_billboard(&large));
         // A projectile at y = 100 with right = +X, up = +Y: the sprite sits
         // 0.125 blocks above the entity (2 of `item/generated`'s 16 units) and
         // stays 0.5 blocks wide, so the quad's y runs 99.875 .. 100.375.
@@ -7564,13 +7576,6 @@ mod tests {
         let (lo, hi) = bounds(&thrown_item_quad(at, right, up, 1.0, lifted));
         assert_eq!((lo.y, hi.y), (99.875, 100.375));
         assert_eq!((lo.x, hi.x), (-0.25, 0.25));
-        // A small fireball's 0.75 scale: the same quad scaled down, lifted by
-        // 0.09375, half extent 0.1875.
-        let (lo, hi) = bounds(&thrown_item_quad(at, right, up, 0.75, lifted));
-        assert_eq!((lo.y, hi.y), (99.90625, 100.28125));
-        // A large fireball's 3.0: lift 0.375, half extent 0.75.
-        let (lo, hi) = bounds(&thrown_item_quad(at, right, up, 3.0, lifted));
-        assert_eq!((lo.y, hi.y), (99.625, 101.125));
         // Llama spit shares the quad here but is a model in vanilla
         // (`LlamaSpitRenderer`): no lift at all.
         let lifted = is_item_billboard(&ProjectileKind::LlamaSpit);
