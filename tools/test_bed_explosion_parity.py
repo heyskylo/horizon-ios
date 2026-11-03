@@ -61,7 +61,7 @@ def scene(index, facing, place):
 CASES = {f'{f}-{p}': scene(i, f, p) for i, f in enumerate(FACINGS) for p in ('behind-foot', 'beside-head', 'beside-foot-hidden')}
 SETUP = ['cmd Alice gamerule spawn_mobs false', 'cmd Alice gamerule advance_time false', 'cmd Alice gamerule natural_health_regeneration false', 'cmd Alice time set midnight',
          'cmd Alice execute in minecraft:the_nether run tp Alice 100.5 200 0.5', 'ticks 100',
-         'cmd Alice attribute @s minecraft:max_health base set 200', *NETHERITE, 'cmd Alice gamemode survival',
+         'cmd Alice attribute @s minecraft:max_health base set 200', *NETHERITE, 'cmd Alice effect give @s minecraft:fire_resistance infinite 0 true', 'cmd Alice gamemode survival',
          'ticks 20']
 
 
