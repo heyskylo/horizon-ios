@@ -654,6 +654,10 @@ impl Launcher {
             div().flex().gap(px(10.)).child(name).child(group),
         ));
         body = body.child(self.icon_choice(editing, kind, cx));
+        // The memory it may use, kept with the instance (not in the mockup, kept here).
+        if editing.is_some() {
+            body = body.children(self.glass_memory_row(cx));
+        }
         div()
             .flex()
             .flex_col()
