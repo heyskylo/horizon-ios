@@ -86,17 +86,26 @@ pub fn with_options(pack: &Pack, macros: &crate::Macros) -> crate::Macros {
     out
 }
 
-/// A pack's `shaders.properties` as the game reads it before the programs: parsed with the
-/// pack's options over `macros` (the standard set and the renderer's), after which `macros` gets
-/// the features the pack turns on (`iris.features.*`, `Macros::define_features`). Returns the
-/// properties and a note for each required feature Horizon lacks. Whatever reads a pack's
+/// The macros `shaders.properties` is read with: the pack's options over `macros`, and every
+/// feature Horizon has (`Macros::define_every_feature`), so a custom uniform or a screen behind
+/// `#ifdef IRIS_FEATURE_<name>` is there as in Iris 1.11.7.
+pub fn properties_macros(pack: &Pack, macros: &crate::Macros) -> crate::Macros {
+    let mut out = with_options(pack, macros);
+    out.define_every_feature();
+    out
+}
+
+/// A pack's `shaders.properties` as the game reads it before the programs: parsed with
+/// `properties_macros` over `macros` (the standard set and the renderer's), after which `macros`
+/// gets the features the pack turns on (`iris.features.*`, `Macros::define_features`). Returns
+/// the properties and a note for each required feature Horizon lacks. Whatever reads a pack's
 /// programs (the game, the `real_packs` test) reads them with these macros.
 pub fn read_properties(
     pack: &Pack,
     macros: &mut crate::Macros,
 ) -> (crate::Properties, Vec<String>) {
     let text = pack.read_text("shaders.properties").unwrap_or_default();
-    let properties = crate::Properties::parse(&text, &with_options(pack, macros));
+    let properties = crate::Properties::parse(&text, &properties_macros(pack, macros));
     let notes = macros.define_features(&properties);
     (properties, notes)
 }
@@ -422,6 +431,33 @@ iris.features.required = NOT_A_FEATURE
             notes,
             ["the pack requires `NOT_A_FEATURE`, which is not supported yet"]
         );
+    }
+
+    /// `shaders.properties` sees every feature Horizon has, listed or not, as Iris 1.11.7 reads
+    /// it (probe pack, measured there: a custom uniform behind each `#ifdef IRIS_FEATURE_<name>`
+    /// was set for an optional, a required and an unlisted feature, the optional list written on
+    /// the last line). The programs still get only the optional ones, as there.
+    #[test]
+    fn properties_see_every_feature_and_programs_only_the_optional_ones() {
+        let bytes = crate::pack::tests::zip(&[(
+            "shaders/shaders.properties",
+            "iris.features.required = COMPUTE_SHADERS\n\
+             #ifdef IRIS_FEATURE_CUSTOM_IMAGES\nuniform.float.optional = 1.0\n#endif\n\
+             #ifdef IRIS_FEATURE_COMPUTE_SHADERS\nuniform.float.required = 1.0\n#endif\n\
+             #ifdef IRIS_FEATURE_SSBO\nuniform.float.unlisted = 1.0\n#endif\n\
+             #ifdef IRIS_FEATURE_NOT_A_FEATURE\nuniform.float.unknown = 1.0\n#endif\n\
+             iris.features.optional = CUSTOM_IMAGES\n",
+        )]);
+        let pack = Pack::from_zip_bytes("p.zip", bytes).unwrap();
+        let mut macros = crate::Macros::standard();
+        let (properties, notes) = read_properties(&pack, &mut macros);
+        let read = |name: &str| properties.get(&format!("uniform.float.{name}")).is_some();
+        assert!(read("optional") && read("required") && read("unlisted"));
+        assert!(!read("unknown"));
+        assert!(notes.is_empty());
+        assert!(macros.is_defined("IRIS_FEATURE_CUSTOM_IMAGES"));
+        assert!(!macros.is_defined("IRIS_FEATURE_COMPUTE_SHADERS"));
+        assert!(!macros.is_defined("IRIS_FEATURE_SSBO"));
     }
 
     #[test]

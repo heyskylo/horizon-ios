@@ -136,6 +136,16 @@ impl Macros {
         self.define("MC_MIPMAP_LEVEL", mipmap_levels.to_string());
     }
 
+    /// Every feature Horizon has, as `IRIS_FEATURE_<name>`: what `shaders.properties` itself is
+    /// read with. Iris 1.11.7 defines a feature it has there whether the pack lists it as
+    /// optional, as required or not at all (probe pack), while its programs see only the optional
+    /// ones (`define_features`).
+    pub fn define_every_feature(&mut self) {
+        for feature in FEATURES {
+            self.define(format!("IRIS_FEATURE_{feature}"), "");
+        }
+    }
+
     /// `iris.features.optional`'s features Horizon has, as `IRIS_FEATURE_<name>`; a note for
     /// each feature `iris.features.required` names that it lacks.
     pub fn define_features(&mut self, properties: &crate::Properties) -> Vec<String> {
