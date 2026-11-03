@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Server load bench: the same horizon-bots load on Horizon, vanilla 26.3 or Pumpkin.
 
-    python3 bench/bench.py --server horizon --exe target/release/horizon-server --bots 50
-    python3 bench/bench.py --server vanilla --jar ~/mc/server.jar --bots 50 --pre-generated ~/worlds/seed12345
-    python3 bench/bench.py --server pumpkin --exe ./pumpkin --bots 50
+    python3 tools/bench.py --server horizon --exe target/release/horizon-server --bots 50
+    python3 tools/bench.py --server vanilla --jar ~/mc/server.jar --bots 50 --pre-generated ~/worlds/seed12345
+    python3 tools/bench.py --server pumpkin --exe ./pumpkin --bots 50
 
 Every run uses a fresh scratch folder (bound to 127.0.0.1, offline, creative so the bots can fly), starts the
 server, lets `horizon-bots` join one every --join-every seconds, warms up, then measures for --seconds:
