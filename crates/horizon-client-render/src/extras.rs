@@ -76,6 +76,12 @@ pub struct Extras {
     pub zoom_smooth: bool,
     /// Divide mouse turning by the zoom.
     pub zoom_sensitivity: bool,
+    /// Far terrain a zoom magnifies is planned finer, so a spyglass does not
+    /// show the coarse cells it was given for an unzoomed screen
+    /// (`lod::Aim`). Costs far tiles while the zoom is held and gives them
+    /// back after, and does nothing at all unless far terrain is on
+    /// (`lodDistance`) and the view is actually zoomed.
+    pub lod_zoom_detail: bool,
     /// The FPS counter and keystrokes extras are official mods now: their
     /// old settings stay here, kept as they were.
     pub fps: bool,
@@ -169,6 +175,7 @@ impl Default for Extras {
             zoom_level: 4,
             zoom_smooth: true,
             zoom_sensitivity: true,
+            lod_zoom_detail: true,
             fps: false,
             fps_corner: Corner::TopLeft,
             fps_lows: false,
@@ -243,6 +250,7 @@ impl Extras {
                 }
                 "zoomSmooth" => e.zoom_smooth = flag(e.zoom_smooth),
                 "zoomSensitivity" => e.zoom_sensitivity = flag(e.zoom_sensitivity),
+                "lodZoomDetail" => e.lod_zoom_detail = flag(e.lod_zoom_detail),
                 "fps" => e.fps = flag(e.fps),
                 "fpsCorner" => e.fps_corner = Corner::parse(value, e.fps_corner),
                 "fpsLows" => e.fps_lows = flag(e.fps_lows),
@@ -314,7 +322,7 @@ impl Extras {
     }
     pub fn serialize(&self) -> String {
         format!(
-            "packBrowser:{}\nfullbright:{}\ndynamicLights:{}\nzoom:{}\nzoomKey:{}\nzoomLevel:{}\nzoomSmooth:{}\nzoomSensitivity:{}\nfps:{}\nfpsCorner:{}\nfpsLows:{}\nkeystrokes:{}\nkeystrokesCorner:{}\nkeystrokesCps:{}\nmovedToMods:{}\nminimap:{}\nminimapCorner:{}\nminimapSize:{}\nminimapShape:{}\nminimapZoom:{}\nminimapRotate:{}\nautoReconnect:{}\nuiSoundReserve:{}\nownNameTag:{}\nhideBlockParticles:{}\nmouseTweaks:{}\nmouseTweaksWheel:{}\nsort:{}\nsortKey:{}\nchatAnimation:{}\nchatIndicator:{}\n{}:{}\nagentControl:{}\nreproKeys:{}\ndiscordPresence:{}\nsplitscreen:{}\nsplitscreenTwo:{}\nsplitscreenThree:{}\nsplitscreenNames:{}\nwheelCyclesSettings:{}\nmusicOff:{}\nmusicPage:{}\ncosmeticsMine:{}\ncosmeticsOthers:{}\ncosmeticsAuras:{}\n",
+            "packBrowser:{}\nfullbright:{}\ndynamicLights:{}\nzoom:{}\nzoomKey:{}\nzoomLevel:{}\nzoomSmooth:{}\nzoomSensitivity:{}\nlodZoomDetail:{}\nfps:{}\nfpsCorner:{}\nfpsLows:{}\nkeystrokes:{}\nkeystrokesCorner:{}\nkeystrokesCps:{}\nmovedToMods:{}\nminimap:{}\nminimapCorner:{}\nminimapSize:{}\nminimapShape:{}\nminimapZoom:{}\nminimapRotate:{}\nautoReconnect:{}\nuiSoundReserve:{}\nownNameTag:{}\nhideBlockParticles:{}\nmouseTweaks:{}\nmouseTweaksWheel:{}\nsort:{}\nsortKey:{}\nchatAnimation:{}\nchatIndicator:{}\n{}:{}\nagentControl:{}\nreproKeys:{}\ndiscordPresence:{}\nsplitscreen:{}\nsplitscreenTwo:{}\nsplitscreenThree:{}\nsplitscreenNames:{}\nwheelCyclesSettings:{}\nmusicOff:{}\nmusicPage:{}\ncosmeticsMine:{}\ncosmeticsOthers:{}\ncosmeticsAuras:{}\n",
             bool_text(self.pack_browser),
             bool_text(self.fullbright),
             bool_text(self.dynamic_lights),
@@ -323,6 +331,7 @@ impl Extras {
             self.zoom_level,
             bool_text(self.zoom_smooth),
             bool_text(self.zoom_sensitivity),
+            bool_text(self.lod_zoom_detail),
             bool_text(self.fps),
             self.fps_corner.name(),
             bool_text(self.fps_lows),
