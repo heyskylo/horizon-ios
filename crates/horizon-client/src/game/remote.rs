@@ -6685,6 +6685,7 @@ impl Game<'_> {
                 // The server decides what an item rests on; this copy only moves between updates.
                 &[],
                 border,
+                Some(&self.res.motion().blocks),
             );
         }
         head_lerps.retain(|_, (_, steps)| *steps > 0);

@@ -53,6 +53,7 @@ impl PrimedTnt {
         facts: &horizon_client::blocks::BlockFacts,
         fluids: &horizon_client::motion::FluidResources,
         border: Option<&horizon_core::geometry::border::BorderGeometry>,
+        blocks: Option<&horizon_world::movement_properties::BoundMovementProperties>,
     ) -> Result<Vec<BlockPos>> {
         self.previous = self.position;
         self.velocity.y -= self.get_gravity();
@@ -95,6 +96,13 @@ impl PrimedTnt {
                 wanted.y < 0.0,
                 &*facts.get(below).name == "minecraft:slime_block",
             );
+        }
+        // Entity.move's last step: soul sand and honey slow the TNT's
+        // horizontal speed. `blocks` is None only for the isolated unit tests.
+        if let Some(blocks) = blocks {
+            let factor =
+                horizon_client::motion::block_speed_factor_at(world, blocks, self.position, None);
+            self.velocity = horizon_world::entity_move::scale_by_block_speed(self.velocity, factor);
         }
         // Entity.applyEffectsFromBlocks: a bubble column lifts or drags it, and the
         // columns it is at the top of send their surface particles.
@@ -247,6 +255,7 @@ impl Game<'_> {
                 self.res.facts(),
                 &self.res.motion().fluids,
                 Some(self.border.geometry()),
+                Some(&self.res.motion().blocks),
             )?;
             for pos in tops {
                 self.bubble_column_particles(pos);
@@ -580,7 +589,7 @@ mod tests {
                 power: 4.0,
             };
             let border = bordered.then_some(&border);
-            tnt.tick(&world, &collision, &assets, &facts, &fluids, border)
+            tnt.tick(&world, &collision, &assets, &facts, &fluids, border, None)
                 .unwrap();
             let east = tnt.bounds().max_position().x;
             if bordered {
@@ -592,6 +601,75 @@ mod tests {
                 assert!(east > 25.0, "no border: goes on, got {east}");
             }
         }
+    }
+
+    /// `Entity.move`'s last step, `getBlockSpeedFactor`: primed TNT sliding
+    /// over soul sand or honey keeps 40% of the horizontal speed it keeps over
+    /// stone. Skips quietly without the vanilla data (CI has none).
+    #[test]
+    fn primed_tnt_on_soul_sand_or_honey_is_slowed_by_the_move() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        if !root.join("movement-properties.nbt").exists() {
+            return;
+        }
+        let assets = horizon_client::assets::Assets::load(&root).unwrap();
+        let render = assets.reload(&root).unwrap();
+        let facts = horizon_client::blocks::BlockFacts::load(&root, assets.registry).unwrap();
+        let fluids = horizon_client::motion::FluidResources::new(&assets, &facts).unwrap();
+        let collision = horizon_client::collisions::load(&root, assets.registry).unwrap();
+        let motion = horizon_client::motion::MotionResources::load(&root, &assets).unwrap();
+        let mut after = Vec::new();
+        // The tops of the blocks: stone 1, soul sand 7/8, honey 15/16.
+        for (block, top) in [
+            ("minecraft:stone", 4.0),
+            ("minecraft:soul_sand", 3.875),
+            ("minecraft:honey_block", 3.9375),
+        ] {
+            let mut world = horizon_client::world::World::test_scene(&assets, &render, 3).unwrap();
+            let id = assets.registry.default_state(block).unwrap();
+            for x in 18..=23 {
+                for z in 19..=21 {
+                    world.set(x, 3, z, id).unwrap();
+                }
+            }
+            let at = Vec3::new(19.5, top, 20.5);
+            let mut tnt = PrimedTnt {
+                join: Default::default(),
+                no_gravity: false,
+                id: 0,
+                position: at,
+                previous: at,
+                velocity: Vec3::new(0.2, 0.0, 0.0),
+                fuse: 80,
+                on_ground: true,
+                owner: None,
+                guest: None,
+                power: 4.0,
+            };
+            tnt.tick(
+                &world,
+                &collision,
+                &assets,
+                &facts,
+                &fluids,
+                None,
+                Some(&motion.blocks),
+            )
+            .unwrap();
+            after.push(tnt.velocity.x);
+        }
+        let (stone, soul, honey) = (after[0], after[1], after[2]);
+        assert!(stone > 0.0);
+        assert!(
+            (soul - stone * f64::from(0.4_f32)).abs() < 1.0e-9,
+            "soul sand {soul} vs stone {stone}"
+        );
+        assert!(
+            (honey - stone * f64::from(0.4_f32)).abs() < 1.0e-9,
+            "honey {honey} vs stone {stone}"
+        );
     }
 
     #[test]
@@ -634,7 +712,7 @@ mod tests {
             guest: None,
             power: 4.0,
         };
-        tnt.tick(&world, &collision, &assets, &facts, &fluids, None)
+        tnt.tick(&world, &collision, &assets, &facts, &fluids, None, None)
             .unwrap();
         assert_eq!(
             tnt.position.x, at.x,
@@ -646,14 +724,14 @@ mod tests {
             tnt.velocity
         );
         assert_eq!(tnt.fuse, 79);
-        tnt.tick(&world, &collision, &assets, &facts, &fluids, None)
+        tnt.tick(&world, &collision, &assets, &facts, &fluids, None, None)
             .unwrap();
         assert!((tnt.position.x - at.x - 0.014).abs() < 1e-12);
         assert!(tnt.on_ground);
         tnt.position = at;
         tnt.velocity = Vec3::ZERO;
         tnt.fuse = 1;
-        tnt.tick(&world, &collision, &assets, &facts, &fluids, None)
+        tnt.tick(&world, &collision, &assets, &facts, &fluids, None, None)
             .unwrap();
         assert_eq!(tnt.fuse, 0);
         assert_eq!(
@@ -664,7 +742,7 @@ mod tests {
         tnt.position = at;
         tnt.velocity = Vec3::ZERO;
         tnt.fuse = 80;
-        tnt.tick(&world, &collision, &assets, &facts, &fluids, None)
+        tnt.tick(&world, &collision, &assets, &facts, &fluids, None, None)
             .unwrap();
         assert_eq!(
             tnt.velocity.x, 0.0,
@@ -680,7 +758,7 @@ mod tests {
             .unwrap();
         tnt.on_ground = false;
         tnt.velocity = Vec3::ZERO;
-        tnt.tick(&world, &collision, &assets, &facts, &fluids, None)
+        tnt.tick(&world, &collision, &assets, &facts, &fluids, None, None)
             .unwrap();
         assert!(
             tnt.position.y < at.y && tnt.velocity.y < 0.0,
@@ -738,7 +816,7 @@ mod tests {
             power: 4.0,
         };
         for _ in 0..10 {
-            tnt.tick(&world, &collision, &assets, &facts, &fluids, None)
+            tnt.tick(&world, &collision, &assets, &facts, &fluids, None, None)
                 .unwrap();
         }
         assert!(
@@ -759,7 +837,7 @@ mod tests {
         tnt.velocity = Vec3::ZERO;
         tnt.on_ground = false;
         for _ in 0..4 {
-            tnt.tick(&world, &collision, &assets, &facts, &fluids, None)
+            tnt.tick(&world, &collision, &assets, &facts, &fluids, None, None)
                 .unwrap();
         }
         assert!(
@@ -820,7 +898,7 @@ mod tests {
         let mut tnt = primed();
         for _ in 0..30 {
             tops.extend(
-                tnt.tick(&world, &collision, &assets, &facts, &fluids, None)
+                tnt.tick(&world, &collision, &assets, &facts, &fluids, None, None)
                     .unwrap(),
             );
         }
@@ -834,7 +912,7 @@ mod tests {
         let mut tnt = primed();
         for _ in 0..10 {
             assert!(
-                tnt.tick(&world, &collision, &assets, &facts, &fluids, None)
+                tnt.tick(&world, &collision, &assets, &facts, &fluids, None, None)
                     .unwrap()
                     .is_empty()
             );

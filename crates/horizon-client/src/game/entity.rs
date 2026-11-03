@@ -305,6 +305,7 @@ pub(super) fn tick_item(
     no_physics: bool,
     entity_boxes: &[Aabb],
     border: Option<&horizon_core::geometry::border::BorderGeometry>,
+    blocks: Option<&horizon_world::movement_properties::BoundMovementProperties>,
 ) -> bool {
     let heights = item.push_by_fluid(world, fluids);
     let step = item.tick_move(
@@ -315,6 +316,7 @@ pub(super) fn tick_item(
         heights,
         entity_boxes,
         border,
+        blocks,
     );
     item.push_by_bubble_column(world, registry, facts, collision);
     let alive = item.tick_settle(world, facts, no_physics, step);
