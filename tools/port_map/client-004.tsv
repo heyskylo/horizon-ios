@@ -113,6 +113,7 @@ RavagerRenderer.extractRenderState	port	crates/horizon-client/src/mobs/ravager.r
 SalmonRenderer.setupRotations	port	crates/horizon-client/src/mobs/aquatic.rs::rotations	the 4.3-amplitude swim wiggle and the flop
 SheepRenderer.extractRenderState	port	crates/horizon-client/src/mobs/render.rs::sheep_wool_rgb	gap: player: sheep named jeb_ do not cycle their wool colour; head eat and sheared state read elsewhere
 ShulkerBulletRenderer.submit	port	crates/horizon-client/src/game/creatures.rs::Game::mob_geometry	gap: minor: drawn as a spark sprite, not the spinning two-layer model
+ShulkerBulletRenderer.getBlockLightLevel	port	crates/horizon-client/src/game/creatures.rs::Game::mob_geometry	15 block light wherever the bullet flies; the same pass carries `EntityRenderer.getBlockLightLevel`'s isOnFire rule and `getPackedLightCoords`' eye probe
 ShulkerBulletRenderer.extractRenderState	inline	crates/horizon-client/src/game/creatures.rs::Game::mob_geometry	rotation read there
 ShulkerRenderer.shouldRender	skip:other		frustum culling only
 ShulkerRenderer.getTextureLocation	port	crates/horizon-client/src/mobs/shulker.rs::texture	colour texture
