@@ -27,7 +27,7 @@ impl Game<'_> {
             return;
         };
         let has_far = self.settings.horizon.lod_distance > 0;
-        let pressure = ram_limit::pressure(limit, self.fps);
+        let pressure = ram_limit::pressure(limit);
         // Every ten seconds, what the limit sees: a report can show the trace.
         if self.ticks.is_multiple_of(200) {
             let (commit, _) = horizon_threads::allocator_commit();

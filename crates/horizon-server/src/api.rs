@@ -806,12 +806,8 @@ fn patch_config(shared: &Shared, body: &[u8]) -> Response {
         lines.push(format!("{key}={text}"));
     }
     let lines: Vec<&str> = lines.iter().map(String::as_str).collect();
-    let live = |line: &str| {
-        shared.phase() == Phase::Running
-            && engine::Control::connect(&shared.dir)
-                .and_then(|mut c| c.ask(&format!("console {line}")))
-                .is_ok()
-    };
+    let live =
+        |line: &str| shared.phase() == Phase::Running && settings::ask_game(&shared.dir, line);
     let running = matches!(shared.phase(), Phase::Running | Phase::Restarting);
     match settings::apply(
         &shared.dir,

@@ -265,6 +265,7 @@ impl Launcher {
 
     /// Opens the dialog for a new instance, or for changing `editing`.
     pub(super) fn open_instance_dialog(&mut self, editing: Option<Instance>) {
+        let editing_one = editing.is_some();
         let (name, group) = editing
             .as_ref()
             .map(|i| (i.name.clone(), i.group.clone().unwrap_or_default()))
@@ -284,6 +285,10 @@ impl Launcher {
             java: Default::default(),
         });
         self.servers.text(Field::InstanceVersion).set(String::new());
+        // A new one starts with the name it would get ("My Horizon"), until the player types one.
+        if !editing_one {
+            self.change(|_| {});
+        }
     }
 
     /// Opens the dialog for a copy of the selected instance, named after it.
@@ -421,7 +426,7 @@ impl Launcher {
 
     pub(super) fn instance_dialog(&mut self, cx: &mut Context<Self>) -> Option<Stateful<Div>> {
         let t = self.theme;
-        if t.dark {
+        if t.glass {
             return self.glass_instance_dialog(cx);
         }
         let d = self.instances.dialog.as_ref()?;
