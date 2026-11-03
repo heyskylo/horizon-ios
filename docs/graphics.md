@@ -48,6 +48,16 @@ HDR's light sources shine by the kind of light rather than its level (`mesher::h
 
 Which settings each page shows, their descriptions and costs are in `crates/horizon-client-render/src/graphics_ui.rs` (`rows`); `graphics_style.rs` holds its colours, sizes and controls.
 
+## Player skins
+
+**3D Skin Layers** (Options → Skin Customization, `threeDSkinLayers` in `options.txt`, off by
+default) draws the outer skin layer as its own geometry instead of one box inflated by 0.25 px:
+every texel the skin paints becomes a slab one texel deep, with its sides filled in where the next
+texel is transparent. Hats, hoods, hair, jackets, sleeves and cuffs then have a silhouette of their
+own, and the gaps between painted texels stay open instead of showing a coloured film over the
+body. The model is built once per skin (and slim/wide) from the 64×64 image the game already
+decodes and is cached with it, so the option costs nothing while it is off.
+
 ## Leaf culling
 
 **Leaf Culling** (Performance, beside Cave and Entity Culling, off by default) changes only terrain section meshes: entities, particles and block entities are untouched, and the work happens on the mesh workers with the section's padded block snapshot, never on the render thread or per frame. Changing the mode remeshes loaded sections, like `cutoutLeaves`. It is stored as `leafCulling` in `horizon-graphics.txt` with the stable values `off`, `solid`, `solid_aggressive` and `hollow`; presets keep the player's choice.
