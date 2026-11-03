@@ -340,6 +340,17 @@ impl BrewingStand {
         }
         out
     }
+    pub fn idle(&self) -> bool {
+        let bottles = [
+            self.items[0].is_some(),
+            self.items[1].is_some(),
+            self.items[2].is_some(),
+        ];
+        self.brew_time <= 0
+            && self.items[3].is_none()
+            && (self.fuel > 0 || self.items[4].is_none())
+            && self.last_bottles == Some(bottles)
+    }
     fn brew(&mut self, brewing: &Brewing, items: &Items, out: &mut BrewTick) {
         let Some(ingredient) = self.items[3].clone() else {
             return;
@@ -453,6 +464,27 @@ mod tests {
         // No fuel left: nothing more brews.
         stand.tick(&brewing, &items, &providers);
         assert_eq!(stand.brew_time, 0);
+    }
+
+    #[test]
+    fn a_brewing_stand_is_idle_only_while_its_tick_changes_nothing() {
+        let mut stand = BrewingStand::new();
+        assert!(!stand.idle());
+        stand.last_bottles = Some([false; 3]);
+        assert!(stand.idle());
+        stand.items[0] = Some(ItemStack::new("minecraft:potion", 1));
+        assert!(!stand.idle());
+        stand.last_bottles = Some([true, false, false]);
+        assert!(stand.idle());
+        stand.items[4] = Some(ItemStack::new("minecraft:blaze_powder", 1));
+        assert!(!stand.idle());
+        stand.fuel = 3;
+        assert!(stand.idle());
+        stand.items[3] = Some(ItemStack::new("minecraft:nether_wart", 1));
+        assert!(!stand.idle());
+        stand.items[3] = None;
+        stand.brew_time = 5;
+        assert!(!stand.idle());
     }
 
     /// #3312: `PotionContents.getPotionDescription` names the effects with
