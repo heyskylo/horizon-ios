@@ -7982,6 +7982,14 @@ impl Renderer {
                 pass.set_vertex_buffer(1, self.instances.slice(..));
                 self.draw_sections(&mut pass, &self.indirect, 0, shadow_first, shadow_solid);
             }
+            // `[displacement]`'s grid casts in place of the flat quads it took over.
+            if let Some((d, picks, pipeline)) = native
+                .displacement
+                .as_ref()
+                .and_then(|d| Some((d, d.shadow.as_ref()?, shadow.displaced.as_ref()?)))
+            {
+                d.draw(&mut pass, picks, pipeline);
+            }
             drop(pass);
             let mut pass = native.frame.shadow_map.begin_translucent(
                 &mut encoder,
