@@ -4883,6 +4883,10 @@ impl Render for Launcher {
         self.look = self.theme.look;
         glass_ui::set_look(self.look);
         glass::set_look(self.look);
+        // The mockup tints the scene with any accent but its violet.
+        let tint = (self.theme.dark && self.look.accent != horizon_theme::glass::ACCENT)
+            .then(|| horizon_theme::glass::mix_oklab(self.look.accent, 0x767676, 0.58));
+        self.scene.update(cx, |scene, cx| scene.set_tint(tint, cx));
         self.scale = window.scale_factor();
         self.perf.frame();
         if self.bench.as_ref().is_some_and(perf::Bench::scrolling) {
