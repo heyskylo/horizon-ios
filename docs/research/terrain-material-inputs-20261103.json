@@ -511,7 +511,7 @@
       {
         "path": "crates/horizon-client-render/src/gfx/pack_post.rs",
         "sha256_at_public_main": "079dd496cd203fd42656d67c4eb9d71de54870bf2d1fecddd43da8db53ab52ea",
-        "scope": "build/contribution instructions or targeted API/type construction/diff only; existing fixture algorithms preserved"
+        "scope": "Targeted main API/type construction, sampler/binding and error-scope fixture instrumentation only; existing algorithms preserved."
       },
       {
         "path": "crates/horizon-client-render/src/gfx/pack_post/world_target_tests.rs",
@@ -557,5 +557,38 @@
       "Ambiguous grids and unverified generated/tiled origins retain missing-map defaults.",
       "Final-main qualification is reported separately in the PR."
     ]
+  },
+  "post_integration_fixture_strengthening": {
+    "reason": "Texel-centre/adjacent-byte input could miss an unintended filtering regression. Independently strengthen original synthetic fixture before publication; no production/API byte changes.",
+    "prior_full_self_check_head": "ec6054c5c0c4438a692ddd93f159cd188ac13ff9",
+    "only_changed_paths": [
+      "crates/horizon-client-render/src/gfx/pack_material_tests.rs",
+      "docs/research/terrain-material-inputs-20261103.json"
+    ],
+    "fixture_sha256": "cb0ed419d87449fca478b422a68cc4c5d7145ac7d285ae4bad3a3755c1352d3d",
+    "fractional_source_coordinate": [
+      1.25,
+      1.25
+    ],
+    "encoded_green_contrast": [
+      0,
+      240
+    ],
+    "encoded_alpha_contrast": [
+      0,
+      255
+    ],
+    "unused_specular_source_mips": {
+      "levels": 3,
+      "higher_level_bytes": [
+        211,
+        212,
+        213,
+        214
+      ]
+    },
+    "positive_controls": "Three15-pixel exact RGBA controls; nearest expected240/255, no source mip averaging at requestedLOD12.",
+    "negative_control": "Substituting a filtering sampler must be rejected by the same production non-filtering binding; if both sampler and binding regressed, positive fractional samples would mix to180/191 rather than240/255.",
+    "qualification": "Final all-target renderer Clippy, compiled-fixture GPU results and exact final hashes reported separately in PR; prior full product gate remains nonzero on2 independently reproduced main framegen assertions."
   }
 }

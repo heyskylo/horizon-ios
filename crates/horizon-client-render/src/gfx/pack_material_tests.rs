@@ -30,8 +30,8 @@ uniform sampler2D specular;
 void main() {
     int x = int(floor(gl_FragCoord.x));
     int layer = x - (x / 5) * 5;
-    // Interior of source texel (1,1), away from a nearest-sampling boundary.
-    vec2 uv = (vec2(float(layer - (layer / 3) * 3), float(layer / 3)) + 0.375) / vec2(3.0, 2.0);
+    // Source coordinate (1.25,1.25): inside a texel, away from both its centre and boundary.
+    vec2 uv = (vec2(float(layer - (layer / 3) * 3), float(layer / 3)) + 0.3125) / vec2(3.0, 2.0);
     if (x < 5) gl_FragData[0] = texture2DLod(specular, uv, 12.0);
     else if (x < 10) gl_FragData[0] = texture2DLod(normals, uv, 12.0);
     else gl_FragData[0] = texture2DLod(gtexture, uv, 0.0);
@@ -44,23 +44,34 @@ void main() {
     let atlases: Vec<_> = (0..3)
         .map(|kind| {
             let side = if kind == 0 { 4 } else { 2 };
+            let levels = if kind == 0 { 3 } else { 1 };
             let arrays: Vec<_> = (0..layers.div_ceil(split))
                 .map(|array| {
                     let count = (layers - array * split).min(split);
                     let pixels: Vec<u8> = (0..count)
                         .flat_map(|l| {
                             let layer = (array * split + l) as u8;
-                            (0..side * side).flat_map(move |pixel| match kind {
-                                0 if layer == 3 => crate::sprites::NO_SPECULAR,
-                                0 => [
-                                    17 + layer,
-                                    if pixel % 2 == 0 { 229 } else { 230 },
-                                    65,
-                                    if pixel % 2 == 0 { 254 } else { 255 },
-                                ],
-                                1 if layer == 2 => crate::sprites::FLAT_NORMAL,
-                                1 => [128 + layer, 126, 255, 19 + layer],
-                                _ => [40 + layer, 50, 60, 255],
+                            (0..levels).flat_map(move |level| {
+                                let edge = side >> level;
+                                (0..edge * edge).flat_map(move |pixel| {
+                                    if level != 0 {
+                                        // Sampling unused source mip levels must fail the oracle.
+                                        [211, 212, 213, 214]
+                                    } else {
+                                        match kind {
+                                            0 if layer == 3 => crate::sprites::NO_SPECULAR,
+                                            0 => [
+                                                17 + layer,
+                                                if pixel % 2 == 0 { 0 } else { 240 },
+                                                65,
+                                                if pixel % 2 == 0 { 0 } else { 255 },
+                                            ],
+                                            1 if layer == 2 => crate::sprites::FLAT_NORMAL,
+                                            1 => [128 + layer, 126, 255, 19 + layer],
+                                            _ => [40 + layer, 50, 60, 255],
+                                        }
+                                    }
+                                })
                             })
                         })
                         .collect();
@@ -73,7 +84,7 @@ void main() {
                                 height: side,
                                 depth_or_array_layers: count,
                             },
-                            mip_level_count: 1,
+                            mip_level_count: levels,
                             sample_count: 1,
                             dimension: wgpu::TextureDimension::D2,
                             format: wgpu::TextureFormat::Rgba8Unorm,
@@ -219,11 +230,28 @@ void main() {
             } else if !maps_expected || layer == 3 {
                 crate::sprites::NO_SPECULAR
             } else {
-                [17 + layer, 230, 65, 255]
+                [17 + layer, 240, 65, 255]
             };
             assert_eq!(&data[i * 4..i * 4 + 4], &expected, "case={case}, pixel={i}");
         }
         eprintln!("Material oracle case={case}: 15 exact RGBA pixels pass");
     }
+    // Fault injection: the same production binding must refuse a filtering sampler.
+    // If a regression changed both the binding and sampler, the fractional positive
+    // probes above would instead mix 0.75*240=180 and 0.75*255=191.25, not 240/255.
+    pass.material_maps = true;
+    post.material_maps = Some([atlases[1].view.clone(), atlases[0].view.clone()]);
+    post.nearest_repeat = sampler(&device, wgpu::FilterMode::Linear, wgpu::AddressMode::Repeat);
+    pass.groups.clear();
+    let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
+    let mut encoder = device.create_command_encoder(&Default::default());
+    let _invalid_group = post.bind(&device, &queue, &mut encoder, &mut pass, [15, 1]);
+    let error = pollster::block_on(validation.pop())
+        .expect("production material binding must reject a filtering sampler");
+    assert!(
+        error.to_string().to_ascii_lowercase().contains("filtering"),
+        "{error}"
+    );
+    eprintln!("Material oracle negative filtering control: rejected by production binding");
     std::fs::remove_dir_all(root).unwrap();
 }
