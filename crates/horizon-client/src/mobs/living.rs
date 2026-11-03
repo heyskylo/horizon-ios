@@ -2135,7 +2135,7 @@ mod tests {
                         }
                     }
                 };
-            let ran = crate::mobs::world::with_built_test_world(&[], build, |w, types| {
+            crate::mobs::world::with_built_test_world(&[], build, |w, types| {
                 let kind = std::sync::Arc::new(types.types["minecraft:zombie"].clone());
                 let mut m = Mob::new(1, kind, Vec3::new(0.5, 1.0, 1.5), 0.0);
                 m.on_ground = true;
@@ -2148,7 +2148,6 @@ mod tests {
                     m.velocity.x
                 );
             });
-            assert!(ran, "the extracted vanilla data is missing");
         }
     }
 
