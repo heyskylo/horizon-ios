@@ -1033,5 +1033,14 @@
   "3 to 16 letters, numbers or underscores. Switch names from the top bar too. Online servers don't take offline names.": "3 تا 16 حرف، عدد یا زیرخط. از نوار بالا هم می‌توانید نام را عوض کنید. سرورهای آنلاین نام‌های آفلاین را نمی‌پذیرند.",
   "Play online with your Microsoft account": "با حساب Microsoft خود آنلاین بازی کنید",
   "Sign in with the account that owns Minecraft: Java Edition. Your name and skin come along to online servers, like in other launchers.": "با حسابی وارد شوید که مالک Minecraft: Java Edition است. نام و اسکین شما مثل لانچرهای دیگر به سرورهای آنلاین هم می‌آید.",
-  "Microsoft's own page opens in your browser. Horizon never sees your password.": "صفحهٔ خود Microsoft در مرورگرتان باز می‌شود. Horizon هرگز رمز عبور شما را نمی‌بیند."
+  "Microsoft's own page opens in your browser. Horizon never sees your password.": "صفحهٔ خود Microsoft در مرورگرتان باز می‌شود. Horizon هرگز رمز عبور شما را نمی‌بیند.",
+  "Colours the buttons, the switches and the sky. Pick one, or type any hex colour.": "دکمه‌ها، کلیدها و آسمان را رنگ می‌کند. یکی را انتخاب کنید یا هر رنگ hex دلخواهی را تایپ کنید.",
+  "Accent colour, glass, blur, language and the options above go back to how Horizon ships.": "رنگ تأکیدی، شیشه، محوشدگی، زبان و گزینه‌های بالا به حالت پیش‌فرض Horizon برمی‌گردند.",
+  "Reset the launcher's look": "بازنشانی ظاهر لانچر",
+  "Reset to defaults": "بازنشانی به پیش‌فرض",
+  "{value} px": "{value} px",
+  "{value}%": "{value}%",
+  "Experimental. Builds the native mods you trust into a game of their own.": "آزمایشی. مدهای بومی مورد اعتمادتان را در یک بازی جداگانه می‌سازد.",
+  "Native mods": "مدهای بومی",
+  "Nightly": "Nightly"
 }
