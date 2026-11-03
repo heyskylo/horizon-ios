@@ -186,6 +186,23 @@ fn display_offset(c: &Minecart) -> f64 {
     c.custom_offset
         .map_or_else(|| default_display_offset(c.kind), f64::from)
 }
+/// A display state that is air shows nothing.
+fn shown_unless_air(
+    state: Option<BlockStateId>,
+    is_air: impl Fn(BlockStateId) -> bool,
+) -> Option<BlockStateId> {
+    state.filter(|&s| !is_air(s))
+}
+/// `readAdditionalSaveData`'s `input.read("DisplayState", CODEC)` is empty
+/// when the state does not decode: the cart forgets it (and no longer saves it).
+pub(super) fn forget_unreadable_display(
+    c: &mut Minecart,
+    resolves: impl Fn(&horizon_world::nbt::Tag) -> bool,
+) {
+    if c.custom_display.as_ref().is_some_and(|t| !resolves(t)) {
+        c.custom_display = None;
+    }
+}
 /// Where the cart `id` is in `carts`: at `hint` (where it was a moment ago,
 /// the usual case while carts tick in order) or found by a scan. A world
 /// with hundreds of mineshaft chest carts asked this of every cart several
@@ -2356,7 +2373,14 @@ impl Game<'_> {
             }
         }
     }
+    /// The block the cart shows: `None` for air (`AbstractMinecartRenderer`
+    /// draws and stretches its culling box only for a non-air state).
     fn display_state(&self, c: &Minecart) -> Option<BlockStateId> {
+        shown_unless_air(self.display_state_unfiltered(c), |s| {
+            self.res.facts().is_air(s)
+        })
+    }
+    fn display_state_unfiltered(&self, c: &Minecart) -> Option<BlockStateId> {
         let registry = &self.pack.assets.registry;
         let with = |name: &str, props: &[(&str, &str)]| {
             let mut s = registry.state(registry.default_state(name)?)?.clone();
@@ -2804,6 +2828,32 @@ mod tests {
         let out = cart.to_nbt([0; 4], None);
         assert_eq!(out.get("DisplayState"), Some(&state));
         assert_eq!(out.get("DisplayOffset"), Some(&Tag::Int(10)));
+    }
+
+    #[test]
+    fn air_display_state_shows_nothing() {
+        let (air, stone) = (BlockStateId(0), BlockStateId(1));
+        assert_eq!(shown_unless_air(Some(air), |s| s == air), None);
+        assert_eq!(shown_unless_air(Some(stone), |s| s == air), Some(stone));
+        assert_eq!(shown_unless_air(None, |s| s == air), None);
+    }
+
+    #[test]
+    fn an_unreadable_display_state_is_dropped_and_not_saved() {
+        let bad = Tag::String("mod:gone".into());
+        let saved = saved_cart(CartKind::Rideable, &[("DisplayState", bad)]);
+        let mut cart = Minecart::from_nbt(&saved, 1, CartKind::Rideable).unwrap();
+        forget_unreadable_display(&mut cart, |_| false);
+        assert!(cart.custom_display.is_none());
+        assert!(
+            cart.to_nbt([0; 4], Some(&saved))
+                .get("DisplayState")
+                .is_none()
+        );
+        // A readable one is kept.
+        let mut cart = Minecart::from_nbt(&saved, 1, CartKind::Rideable).unwrap();
+        forget_unreadable_display(&mut cart, |_| true);
+        assert!(cart.custom_display.is_some());
     }
 
     #[test]
