@@ -498,6 +498,9 @@ pub fn click(
                     && view.guest.carried.is_none()
                     && let Ok(i) = usize::try_from(slot)
                     && view.enabled(i)
+                    // `Slot.safeTake`: a slot that withholds its stack throws
+                    // nothing, whatever the client asked for.
+                    && view.may_pickup(i, rules)
                     && let Some(mut stack) = view.get(i)
                 {
                     // doClick's THROW takes one item for button 0 and the
@@ -695,9 +698,12 @@ fn swap(view: &mut View, slot: i32, button: i32, rules: &dyn Rules) {
     // off-hand slot, so F swaps with `Guest.offhand` (Inventory slot 40).
     if button == 40 && view.container.is_some() {
         let (clicked, off) = (view.get(i), view.guest.offhand.clone());
-        if off
-            .as_ref()
-            .is_some_and(|off| !view.may_place(i, off, rules))
+        // The stack coming out of the slot is a take like any other, and the
+        // one going in must fit.
+        if (clicked.is_some() && !view.may_pickup(i, rules))
+            || off
+                .as_ref()
+                .is_some_and(|off| !view.may_place(i, off, rules))
         {
             return;
         }
@@ -717,7 +723,11 @@ fn swap(view: &mut View, slot: i32, button: i32, rules: &dyn Rules) {
         return;
     }
     let (a, b) = (view.get(i), view.get(other));
-    if a.as_ref().is_some_and(|a| !view.may_place(other, a, rules))
+    // `doClick`'s SWAP arm asks the clicked slot before anything moves: the
+    // stack it holds only comes out while `Slot.mayPickup` allows it, and the
+    // hotbar's stack only goes in where the slot takes it.
+    if (a.is_some() && !view.may_pickup(i, rules))
+        || a.as_ref().is_some_and(|a| !view.may_place(other, a, rules))
         || b.as_ref().is_some_and(|b| !view.may_place(i, b, rules))
     {
         return;
