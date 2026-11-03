@@ -88,6 +88,8 @@ pub(super) struct Parked {
     raiding: Raiding,
     sculk: SculkState,
     creaking: CreakingState,
+    /// Natural spawning's candidate cache: each level keeps its own players' squares.
+    spawn_scratch: super::natural_spawning::SpawnScratch,
     /// Server ticks since a player was last in the level.
     idle: u32,
 }
@@ -231,6 +233,7 @@ impl Game<'_> {
             raiding: Default::default(),
             sculk: Default::default(),
             creaking: Default::default(),
+            spawn_scratch: Default::default(),
             idle: 0,
         })
     }
@@ -297,6 +300,7 @@ impl Game<'_> {
         self.raiding.swap_level(&mut p.raiding);
         self.sculk.swap_level(&mut p.sculk);
         self.creaking.swap_level(&mut p.creaking);
+        swap(&mut self.spawn_scratch, &mut p.spawn_scratch);
         // What only the client draws starts over.
         self.particles.clear();
         self.pickups.clear();
@@ -419,8 +423,13 @@ impl Game<'_> {
         // `ServerTickStart` before that level work, where NeoForge fires
         // `ServerTickEvent.Pre`. A paused pass and a held server tick nothing.
         let running = (!paused && !self.agent.hold_server).then(|| self.clock.world_runs());
+        let server = self.serving.is_some() || self.options.dedicated.is_some();
+        // A config edited while the server is paused (empty) still reloads.
+        if server {
+            self.native_configs_poll();
+        }
         if let Some(running) = running
-            && (self.serving.is_some() || self.options.dedicated.is_some())
+            && server
         {
             self.native_lifecycle_server_tick_start(running);
         }

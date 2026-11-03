@@ -201,6 +201,12 @@ pub struct ArrowState {
     pub events: Vec<ArrowEvent>,
     /// The speed (`deltaMovement.length()`) it hit a block at, before it stuck.
     pub hit_speed: f64,
+    /// Spawn position when this fresh arrow joined the level before its first tick.
+    pub spawn_pos: Option<Vec3>,
+    /// Spawn velocity when this fresh arrow joined the level before its first tick.
+    pub spawn_velocity: Option<Vec3>,
+    /// Spawn rotation (pitch, yaw) when this fresh arrow joined the level before its first tick.
+    pub spawn_rot: Option<(f32, f32)>,
 }
 impl fmt::Debug for ArrowState {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -248,6 +254,9 @@ impl ArrowState {
             random,
             events: Vec::new(),
             hit_speed: 0.0,
+            spawn_pos: None,
+            spawn_velocity: None,
+            spawn_rot: None,
         }
     }
     /// `Arrow.getColor` of the server's own arrow: the colour of the potion on
