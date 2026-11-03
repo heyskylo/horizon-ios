@@ -1513,7 +1513,8 @@ impl Game<'_> {
     fn teleport_to_in_level(&mut self, t: Target, pos: [f64; 3], rotation: Option<[f32; 2]>) {
         let from = self.target_position(t);
         let v = Vec3::new(pos[0], pos[1], pos[2]);
-        let rotation = rotation.map(|[yaw, pitch]| [wrap_degrees(yaw), wrap_degrees(pitch)]);
+        // PositionMoveRotation.calculateAbsolute clamps pitch before setXRot.
+        let rotation = rotation.map(|[yaw, pitch]| [yaw, pitch.clamp(-90.0, 90.0)]);
         match t {
             Target::Guest(_) => {
                 self.for_player(t, |g| g.teleport_to(Target::Player, pos, rotation));
@@ -1542,7 +1543,7 @@ impl Game<'_> {
                     if yaw.is_finite() {
                         self.yaw = yaw;
                     }
-                    if pitch.is_finite() {
+                    if !pitch.is_nan() {
                         self.pitch = entity_pitch(pitch);
                     }
                 }
@@ -1577,7 +1578,7 @@ impl Game<'_> {
                             m.body_yaw = yaw;
                             m.head_yaw = yaw;
                         }
-                        if pitch.is_finite() {
+                        if !pitch.is_nan() {
                             m.head_pitch = entity_pitch(pitch);
                         }
                         m.previous_yaw = m.yaw;
@@ -1607,7 +1608,7 @@ impl Game<'_> {
                 if let Some(a) = self.armor_stands.iter_mut().find(|a| a.id == id) {
                     a.position = v;
                     a.previous = v;
-                    if let Some([yaw, _]) = rotation {
+                    if let Some([yaw, _]) = rotation.filter(|r| r[0].is_finite()) {
                         a.yaw = yaw;
                     }
                 }
@@ -1616,7 +1617,7 @@ impl Game<'_> {
                 if let Some(b) = self.boats.iter_mut().find(|b| b.id == id) {
                     b.position = v;
                     b.previous = v;
-                    if let Some([yaw, _]) = rotation {
+                    if let Some([yaw, _]) = rotation.filter(|r| r[0].is_finite()) {
                         b.yaw = yaw;
                     }
                 }
@@ -1625,7 +1626,7 @@ impl Game<'_> {
                 if let Some(c) = self.carts.iter_mut().find(|c| c.id == id) {
                     c.position = v;
                     c.previous = v;
-                    if let Some([yaw, _]) = rotation {
+                    if let Some([yaw, _]) = rotation.filter(|r| r[0].is_finite()) {
                         c.yaw = yaw;
                     }
                 }
@@ -1633,7 +1634,7 @@ impl Game<'_> {
             Target::Fangs(id) => {
                 if let Some(f) = self.fangs.list.iter_mut().find(|f| f.id == id) {
                     f.pos = [v.x, v.y, v.z];
-                    if let Some([yaw, _]) = rotation {
+                    if let Some([yaw, _]) = rotation.filter(|r| r[0].is_finite()) {
                         f.yaw = yaw;
                     }
                 }
@@ -1642,8 +1643,12 @@ impl Game<'_> {
                 if let Some(o) = self.others.iter_mut().find(|o| o.id == id) {
                     o.position = v;
                     if let Some([yaw, pitch]) = rotation {
-                        o.yaw = yaw;
-                        o.pitch = entity_pitch(pitch);
+                        if yaw.is_finite() {
+                            o.yaw = yaw;
+                        }
+                        if !pitch.is_nan() {
+                            o.pitch = entity_pitch(pitch);
+                        }
                     }
                 }
             }
@@ -1791,7 +1796,7 @@ impl Game<'_> {
             // Into the destination's level.
             let level = self.target_level(dest);
             // TeleportCommand.teleportToEntity: the destination's rotation too.
-            let rotation = Some(self.target_rotation(dest));
+            let rotation = Some(self.target_rotation(dest).map(wrap_degrees));
             for &t in &targets {
                 if !self.teleport_across(t, level, pos, rotation) {
                     self.teleport_to(t, pos, rotation);
@@ -1869,7 +1874,8 @@ impl Game<'_> {
             None => self.dim,
         };
         for &t in &targets {
-            let rotation = look_at(self, t).or(rotation);
+            // TeleportCommand.performTeleport wraps angles at the command boundary.
+            let rotation = look_at(self, t).or(rotation).map(|r| r.map(wrap_degrees));
             if self.teleport_across(t, source_level, pos, rotation) {
                 continue;
             }
@@ -3941,7 +3947,7 @@ fn difficulty_names(from: u8, to: u8) -> (&'static str, &'static str) {
 mod teleport_pitch_tests {
     #[test]
     #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
-    fn teleport_keeps_each_non_finite_axis_for_players_and_mobs() {
+    fn teleport_and_rotate_resolve_pitch_at_their_own_boundary() {
         use super::Target;
         use crate::game::{Audio, Game, Options, Progress, Settings, load_resources};
         let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
@@ -3984,8 +3990,10 @@ mod teleport_pitch_tests {
             0.0,
         ));
         for (rotation, expected) in [
-            ([40.0, f32::INFINITY], [40.0, 20.0]),
+            ([40.0, f32::NAN], [40.0, 20.0]),
             ([f32::INFINITY, 30.0], [10.0, 30.0]),
+            ([40.0, f32::INFINITY], [40.0, 90.0]),
+            ([40.0, f32::NEG_INFINITY], [40.0, -90.0]),
         ] {
             game.yaw = 10.0;
             game.pitch = 20.0;
@@ -3994,6 +4002,43 @@ mod teleport_pitch_tests {
             game.mobs[0].yaw = 10.0;
             game.mobs[0].head_pitch = 20.0;
             game.teleport_to_in_level(Target::Mob(42), [0.0; 3], Some(rotation));
+            assert_eq!([game.mobs[0].yaw, game.mobs[0].head_pitch], expected);
+        }
+        for (command, expected) in [
+            ("rotate @e[type=minecraft:zombie,limit=1] 0 360", 90.0),
+            ("tp @e[type=minecraft:zombie,limit=1] 0 0 0 0 360", 0.0),
+            ("tp @e[type=minecraft:zombie,limit=1] 0 0 0 0 270", -90.0),
+        ] {
+            assert!(game.run_command(command), "{command}");
+            assert_eq!(game.mobs[0].head_pitch, expected, "{command}");
+        }
+        game.mobs[0].head_pitch = 360.0;
+        assert!(
+            game.run_command(
+                "tp @e[type=minecraft:zombie,limit=1] @e[type=minecraft:zombie,limit=1]"
+            )
+        );
+        assert_eq!(
+            game.mobs[0].head_pitch, 0.0,
+            "destination rotation wraps too"
+        );
+
+        let overflow = "9".repeat(400);
+        for (pitch, expected) in [(overflow.clone(), 90.0), (format!("-{overflow}"), -90.0)] {
+            assert!(game.run_command(&format!(
+                "rotate @e[type=minecraft:zombie,limit=1] 0 {pitch}"
+            )));
+            assert_eq!(game.mobs[0].head_pitch, expected);
+        }
+        for (yaw, pitch, expected) in [
+            ("40", overflow.as_str(), [40.0, 20.0]),
+            (overflow.as_str(), "30", [10.0, 30.0]),
+        ] {
+            game.mobs[0].yaw = 10.0;
+            game.mobs[0].head_pitch = 20.0;
+            assert!(game.run_command(&format!(
+                "tp @e[type=minecraft:zombie,limit=1] 0 0 0 {yaw} {pitch}"
+            )));
             assert_eq!([game.mobs[0].yaw, game.mobs[0].head_pitch], expected);
         }
     }
