@@ -15,7 +15,7 @@
 #   jobs (no workflow routes them here since 2026-11-03: the desktop's horizon-checks runners take them). Each has
 #   its own work folder, rustup home and cargo target folder (outside the checkout, so the checkout's clean leaves it),
 #   and they share one cargo home (registry and git sources).
-# - horizon-light-<n> (labels playhorizon-light and horizon-light, LIGHT_RUNNERS, default 8): the bots that run main's
+# - horizon-light-<n> (labels playhorizon-light and horizon-light, LIGHT_RUNNERS, default 12): the bots that run main's
 #   own scripts on pull_request_target, comment, schedule and main's push events (pr labels, overlap note,
 #   cancel-on-close, claim command...). No Rust. Their jobs last seconds, so they are many; horizon-light is the label
 #   the workflows ask for.
@@ -31,7 +31,7 @@ shared=$base/ci-shared
 units=${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user
 version=2.338.0
 sha=af4b794c1bc41d73d40535e3fe092a39f9679cd8d965954c2aca25a05ca41d32
-ci=${CI_RUNNERS:-2} light=${LIGHT_RUNNERS:-8} cpus=${RUNNER_CPU_LIST:-4-7} jobs=${CI_JOBS:-4}
+ci=${CI_RUNNERS:-2} light=${LIGHT_RUNNERS:-12} cpus=${RUNNER_CPU_LIST:-4-7} jobs=${CI_JOBS:-4}
 packages="build-essential pkg-config git curl jq gh libasound2-dev libudev-dev libxkbcommon-x11-dev libwayland-dev
   libx11-xcb-dev libfontconfig-dev libvulkan-dev"
 
