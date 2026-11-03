@@ -2258,4 +2258,61 @@ mod tests {
         cow.extra.model_scale = 4.0;
         assert_eq!(cow.model_scale(), 4.0);
     }
+    /// `Sniffer.jumpFromGround`: a hop the move control asked for, taken from
+    /// nearly standing still, carries the sniffer a tenth of a block along its
+    /// yaw (`moveRelative(0.1F, (0, 0, 1))`). A sniffer that already moves, one
+    /// the move control did not ask to move, and every other species keep the
+    /// hop they had.
+    #[test]
+    fn a_sniffers_hop_from_a_standstill_carries_it_forward() {
+        use crate::mobs::Species;
+        let sniffer = |speed: f64, sideways: f64| {
+            let mut kind = (*crate::mobs::sensor_scan_tests::kind()).clone();
+            kind.id = "minecraft:sniffer".into();
+            kind.species = Species::Sniffer;
+            kind.jump_strength = 0.42;
+            let mut m = Mob::new(1, std::sync::Arc::new(kind), Vec3::new(0.5, 64.0, 0.5), 0.0);
+            // `MoveControl.getSpeedModifier` and the speed it moves at.
+            m.ai.mov.speed_modifier = speed;
+            m.velocity = Vec3::new(0.0, 0.0, sideways);
+            m
+        };
+        // Yaw 0 faces south (+z), so the nudge lands on z.
+        let hop = |m: &mut Mob| {
+            let mut jumped = false;
+            if crate::mobs::world::with_test_world(&[], |w, _| m.jump_from_ground(w)) {
+                jumped = true;
+            }
+            jumped
+        };
+        let mut m = sniffer(1.0, 0.0);
+        if !hop(&mut m) {
+            return;
+        }
+        assert!(
+            (m.velocity.z - 0.1).abs() < 1.0e-6 && m.velocity.x.abs() < 1.0e-6,
+            "the hop goes forward: {:?}",
+            m.velocity
+        );
+        assert!(m.velocity.y > 0.0, "and it is still a hop");
+        // Already moving sideways: `horizontalDistanceSqr` is over the 0.01.
+        let mut moving = sniffer(1.0, 0.2);
+        assert!(hop(&mut moving));
+        assert!(
+            (moving.velocity.z - 0.2).abs() < 1.0e-6,
+            "{:?}",
+            moving.velocity
+        );
+        // The move control wanted nothing this tick.
+        let mut still = sniffer(0.0, 0.0);
+        assert!(hop(&mut still));
+        assert_eq!(still.velocity.z, 0.0);
+        // No other species gets the nudge.
+        let mut kind = (*crate::mobs::sensor_scan_tests::kind()).clone();
+        kind.jump_strength = 0.42;
+        let mut cow = Mob::new(1, std::sync::Arc::new(kind), Vec3::new(0.5, 64.0, 0.5), 0.0);
+        cow.ai.mov.speed_modifier = 1.0;
+        assert!(hop(&mut cow));
+        assert_eq!(cow.velocity.z, 0.0);
+    }
 }
