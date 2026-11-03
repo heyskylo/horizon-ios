@@ -438,8 +438,6 @@ impl PlayerMotion {
             .damage
             .source::<()>(source, None, None, None)
             .ok_or("unknown resident damage source")?;
-        let armor = self.attribute("minecraft:armor").unwrap_or(0.0) as f32;
-        let toughness = self.attribute("minecraft:armor_toughness").unwrap_or(0.0) as f32;
         let before = self.health.health() + self.health.absorption();
         let fire_ticks = self.fire_ticks;
         let source_name = source.definition().name.clone();
@@ -499,6 +497,22 @@ impl PlayerMotion {
             h.indicate_damage(0.0, 0.0, self.yaw);
         }
         let after = h.health() + h.absorption();
+        // `LivingEntity.getDamageAfterArmorAbsorb` is the hit's only reader of
+        // these two instances, and a source in `#minecraft:bypasses_armor`
+        // makes it return before `getArmorValue` and
+        // `getAttributeValue(ARMOR_TOUGHNESS)`. Native `getValue` is what
+        // clears an instance's dirty flag, so the record takes the caches the
+        // hit left instead of recomputing them: one that does meet the armour
+        // has already recomputed both in `after_armor`, and one that bypassed
+        // it leaves creation's zero cache untouched.
+        let armor = self
+            .attributes
+            .cached_value_of("minecraft:armor")
+            .unwrap_or(0.0) as f32;
+        let toughness = self
+            .attributes
+            .cached_value_of("minecraft:armor_toughness")
+            .unwrap_or(0.0) as f32;
         if self.hurt_log.len() >= HURT_LOG {
             self.hurt_log.remove(0);
         }
@@ -595,7 +609,10 @@ pub struct HurtRecord {
     /// Health and absorption lost.
     pub taken: f32,
     pub hurt: bool,
-    /// `minecraft:armor` and `minecraft:armor_toughness` when it came.
+    /// `minecraft:armor` and `minecraft:armor_toughness` as the hit left their
+    /// instances' caches. `getDamageAfterArmorAbsorb` reads them only for a
+    /// source outside `#minecraft:bypasses_armor`, so a hit that bypassed the
+    /// armour reports the cache that source never recomputed.
     pub armor: f32,
     pub toughness: f32,
     pub health: f32,
