@@ -363,6 +363,9 @@ impl Launcher {
                 Event::Done(result, modpack) => {
                     done = true;
                     m.busy = None;
+                    if let Ok(said) = &result {
+                        crate::glass_toast::say(said.clone());
+                    }
                     m.message = Some(result);
                     m.installed = installed::Installed::load(&m.home()).entries;
                     m.installed_list.reset();
@@ -963,6 +966,9 @@ impl Launcher {
             None => installed::remove(&home, id),
         }
         .map(|e| trf("Removed {name}.", &[("name", &e.title)]));
+        if let Ok(said) = &removed {
+            crate::glass_toast::say(said.clone());
+        }
         self.mods.message = Some(removed.clone());
         self.mods.installed = installed::Installed::load(&home).entries;
         self.mods.installed_list.reset();
@@ -1394,7 +1400,7 @@ impl Launcher {
                     )
                     .on_click(move |_, _, cx| {
                         let _ = std::fs::create_dir_all(&folder);
-                        cx.open_with_system(&folder);
+                        crate::glass_toast::open(cx, &folder);
                     }),
                 );
             }

@@ -1065,5 +1065,12 @@
   "Play {name}": "العب {name}",
   "Install {name}": "تثبيت {name}",
   "Remove {name}": "إزالة {name}",
-  "Play, install a mod, open a page": "العب، ثبّت إضافة، افتح صفحة"
+  "Play, install a mod, open a page": "العب، ثبّت إضافة، افتح صفحة",
+  "Copied the picture": "تم نسخ الصورة",
+  "Copied {text}": "تم نسخ {text}",
+  "Created {name}": "تم إنشاء {name}",
+  "Deleted {name}": "تم حذف {name}",
+  "Launcher settings are back to their defaults": "عادت إعدادات المشغّل إلى قيمها الافتراضية",
+  "Opened {path}": "تم فتح {path}",
+  "Saved {name}": "تم حفظ {name}"
 }

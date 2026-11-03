@@ -1065,5 +1065,12 @@
   "Play {name}": "Jogar {name}",
   "Install {name}": "Instalar {name}",
   "Remove {name}": "Remover {name}",
-  "Play, install a mod, open a page": "Jogar, instalar um mod, abrir uma página"
+  "Play, install a mod, open a page": "Jogar, instalar um mod, abrir uma página",
+  "Copied the picture": "Imagem copiada",
+  "Copied {text}": "Copiado: {text}",
+  "Created {name}": "{name} criada",
+  "Deleted {name}": "{name} excluída",
+  "Launcher settings are back to their defaults": "As configurações do launcher voltaram ao padrão",
+  "Opened {path}": "Aberto: {path}",
+  "Saved {name}": "{name} salva"
 }

@@ -1065,5 +1065,12 @@
   "Play {name}": "Играть в {name}",
   "Install {name}": "Установить {name}",
   "Remove {name}": "Удалить {name}",
-  "Play, install a mod, open a page": "Играть, установить мод, открыть страницу"
+  "Play, install a mod, open a page": "Играть, установить мод, открыть страницу",
+  "Copied the picture": "Изображение скопировано",
+  "Copied {text}": "Скопировано: {text}",
+  "Created {name}": "{name} создана",
+  "Deleted {name}": "{name} удалена",
+  "Launcher settings are back to their defaults": "Настройки лаунчера сброшены по умолчанию",
+  "Opened {path}": "Открыто: {path}",
+  "Saved {name}": "{name} сохранена"
 }

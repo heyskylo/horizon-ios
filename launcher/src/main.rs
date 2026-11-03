@@ -30,6 +30,7 @@ mod glass_instance_java;
 mod glass_notes;
 mod glass_palette;
 mod glass_settings;
+mod glass_toast;
 mod glass_ui;
 mod glass_versions;
 mod home;
@@ -310,6 +311,8 @@ struct Launcher {
     /// The window's own focus, so Tab reaches the controls when nothing else has the keyboard.
     /// The palette (⌘K), while open (`glass_palette`).
     palette: Option<glass_palette::Palette>,
+    /// The toast last drawn (`glass_toast`), by its number.
+    toast_seen: Option<u64>,
     root_focus: FocusHandle,
     /// Microsoft accounts (accounts.json), the sign-in under way and what it last showed.
     accounts: Accounts,
@@ -603,6 +606,7 @@ impl Launcher {
             internet: internet::Internet::new(),
             root_focus: cx.focus_handle(),
             palette: None,
+            toast_seen: None,
             accounts: Accounts::load(),
             auth_status: HashMap::new(),
             auth_progress: HashMap::new(),
@@ -1385,6 +1389,7 @@ impl Launcher {
         changed |= self.mods_tick();
         changed |= self.github_tick();
         changed |= self.native_log_read(cx);
+        changed |= self.toast_tick();
         if let Some(sign_in) = &self.sign_in {
             if let Some(state) = sign_in_change(&mut self.sign_in_state, sign_in.state()) {
                 if let SignInState::Done(Ok(ref account)) = state {
@@ -2062,6 +2067,10 @@ fn button(
 /// Copies to the clipboard, or into `HORIZON_LAUNCHER_CLIPBOARD` when a test run sets it
 /// (`horizon_launcher::desktop_seams`).
 fn copy_to_clipboard(cx: &mut App, item: gpui::ClipboardItem) {
+    match item.text() {
+        Some(text) => glass_toast::say(trf("Copied {text}", &[("text", &text)])),
+        None => glass_toast::say(tr("Copied the picture")),
+    }
     if let Some(file) = horizon_launcher::desktop_seams::clipboard_file() {
         let bytes = match item.entries().first() {
             Some(gpui::ClipboardEntry::Image(image)) => image.bytes.clone(),
@@ -3374,7 +3383,7 @@ impl Launcher {
                 .child(
                     button("crash-open", "Open report", Kind::Secondary, &t)
                         .bg(t.plate)
-                        .on_click(move |_, _, cx| cx.open_with_system(&open)),
+                        .on_click(move |_, _, cx| crate::glass_toast::open(cx, &open)),
                 )
                 .child(
                     button(
@@ -3407,7 +3416,7 @@ impl Launcher {
                 .on_click(|_, _, cx| {
                     let dir = backend::logs_dir();
                     let _ = std::fs::create_dir_all(&dir);
-                    cx.open_with_system(&dir);
+                    crate::glass_toast::open(cx, &dir);
                 }),
         );
         let discord = self.links.discord.clone();
@@ -3736,7 +3745,7 @@ impl Launcher {
                                 .on_click(|_, _, cx| {
                                     let dir = backend::logs_dir();
                                     let _ = std::fs::create_dir_all(&dir);
-                                    cx.open_with_system(&dir);
+                                    crate::glass_toast::open(cx, &dir);
                                 })
                                 .into_any_element(),
                         ),
@@ -5116,6 +5125,9 @@ impl Render for Launcher {
             if let Some(viewer) = self.screenshot_viewer(cx) {
                 root = root.child(viewer);
             }
+        }
+        if t.dark {
+            root = root.children(self.toast_float());
         }
         if let Some(palette) = self.palette_overlay(window, cx) {
             root = root.child(palette);

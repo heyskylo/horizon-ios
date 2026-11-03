@@ -794,7 +794,7 @@ impl Launcher {
             Fix::ShowLog => {
                 self.servers.tab = Tab::Overview;
                 if let Some(dir) = &self.servers.open {
-                    cx.open_with_system(&dir.join("logs"));
+                    crate::glass_toast::open(cx, &dir.join("logs"));
                 }
             }
         }
@@ -1553,7 +1553,7 @@ impl Launcher {
             .child(panel)
             .child(
                 button("server-folder", "Open the folder", Kind::Ghost, &t)
-                    .on_click(move |_, _, cx| cx.open_with_system(&folder)),
+                    .on_click(move |_, _, cx| crate::glass_toast::open(cx, &folder)),
             );
 
         let mut page = div()

@@ -1065,5 +1065,12 @@
   "Play {name}": "{name} oyna",
   "Install {name}": "{name} yükle",
   "Remove {name}": "{name} kaldır",
-  "Play, install a mod, open a page": "Oyna, mod yükle, sayfa aç"
+  "Play, install a mod, open a page": "Oyna, mod yükle, sayfa aç",
+  "Copied the picture": "Resim kopyalandı",
+  "Copied {text}": "Kopyalandı: {text}",
+  "Created {name}": "{name} oluşturuldu",
+  "Deleted {name}": "{name} silindi",
+  "Launcher settings are back to their defaults": "Başlatıcı ayarları varsayılanlara döndü",
+  "Opened {path}": "Açıldı: {path}",
+  "Saved {name}": "{name} kaydedildi"
 }
