@@ -189,6 +189,7 @@
   "New instance": "Naujas pavyzdys",
   "Loading filters": "Įkeliami filtrai",
   "Stopped": "Sustojo",
+  "{mode} · stopped": "{mode} · sustojo",
   "Extra arguments for the game, passed through as-is (quotes group a word with spaces). Applies the next time the game starts.": "Papildomi žaidimo argumentai, perduodami tokie, kokie yra (kabatos sugrupuoja žodį su tarpais). Taikoma kitą kartą prasidėjus žaidimui.",
   "Horizon never turns on Funnel: the server isn't put on the public internet, only shared with the people you invite.": "Horizontas niekada neįjungia kanalo: serveris nėra įtrauktas į viešąjį internetą, tik bendrinamas su žmonėmis, kuriuos pakviečiate.",
   "Minecraft folder": "Minecraft aplankas",

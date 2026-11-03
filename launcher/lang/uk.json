@@ -189,6 +189,7 @@
   "New instance": "Нова збірка",
   "Loading filters": "Завантаження фільтрів",
   "Stopped": "Зупинено",
+  "{mode} · stopped": "{mode} · зупинено",
   "Extra arguments for the game, passed through as-is (quotes group a word with spaces). Applies the next time the game starts.": "Додаткові параметри запуску гри, передаються як є (лапки об'єднують слова з пробілами). Застосовується під час наступного запуску гри.",
   "Horizon never turns on Funnel: the server isn't put on the public internet, only shared with the people you invite.": "Horizon ніколи не вмикає Funnel: сервер не виставляється в публічний інтернет, а доступний лише запрошеним вами людям.",
   "Minecraft folder": "Тека Minecraft",

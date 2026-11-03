@@ -189,6 +189,7 @@
   "New instance": "Nová inštancia",
   "Loading filters": "Načítavajú sa filtre",
   "Stopped": "Zastavené",
+  "{mode} · stopped": "{mode} · zastavené",
   "Extra arguments for the game, passed through as-is (quotes group a word with spaces). Applies the next time the game starts.": "Dodatočné argumenty pre hru, prechádzajúce tak, ako sú (úvodzovky zoskupujú slovo s medzerami). Platí pri ďalšom spustení hry.",
   "Horizon never turns on Funnel: the server isn't put on the public internet, only shared with the people you invite.": "Horizon nikdy nezapne zúženie: server nie je umiestnený na verejnom internete, iba zdieľaný s ľuďmi, ktorých pozvete.",
   "Minecraft folder": "Priečinok Minecraft",

@@ -189,6 +189,7 @@
   "New instance": "新建实例",
   "Loading filters": "正在加载筛选条件",
   "Stopped": "已停止",
+  "{mode} · stopped": "{mode} · 已停止",
   "Extra arguments for the game, passed through as-is (quotes group a word with spaces). Applies the next time the game starts.": "游戏的额外启动参数，按原样透传（引号用于包含空格的词组）。将在游戏下次启动时生效。",
   "Horizon never turns on Funnel: the server isn't put on the public internet, only shared with the people you invite.": "Horizon 绝不会开启 Funnel：服务器不会暴露在公共互联网上，仅与受邀好友共享。",
   "Minecraft folder": "Minecraft 文件夹",

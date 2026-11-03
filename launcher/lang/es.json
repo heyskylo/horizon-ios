@@ -189,6 +189,7 @@
   "New instance": "Nueva instancia",
   "Loading filters": "Cargando filtros",
   "Stopped": "Detenido",
+  "{mode} · stopped": "{mode} · detenido",
   "Extra arguments for the game, passed through as-is (quotes group a word with spaces). Applies the next time the game starts.": "Argumentos adicionales para el juego, transmitidos tal cual (las comillas agrupan palabras con espacios). Se aplica la próxima vez que inicie el juego.",
   "Horizon never turns on Funnel: the server isn't put on the public internet, only shared with the people you invite.": "Horizon nunca activa Funnel: el servidor no se expone al internet público, solo se comparte con las personas que invites.",
   "Minecraft folder": "Carpeta de Minecraft",
