@@ -277,7 +277,7 @@ impl Launcher {
                     .child(label(tr("Folder").to_string()))
                     .on_click(move |_, _, cx| {
                         let _ = std::fs::create_dir_all(&home);
-                        cx.open_with_system(&home);
+                        crate::glass_toast::open(cx, &home);
                     })
             }))
     }

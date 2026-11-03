@@ -162,7 +162,7 @@ impl Launcher {
         let folder = dir.to_path_buf();
         corner = corner.child(
             ui::icon_button("server-folder", "folder-01", 32., 17., 10., false, &t)
-                .on_click(move |_, _, cx| cx.open_with_system(&folder)),
+                .on_click(move |_, _, cx| crate::glass_toast::open(cx, &folder)),
         );
         // Start, or Restart and Stop.
         let mut buttons = div().flex().flex_none().items_center().gap(px(8.));

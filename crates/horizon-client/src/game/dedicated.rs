@@ -1564,7 +1564,7 @@ impl Game<'_> {
                     let replies = self.mute_command(&mut host, &words, "Server");
                     self.lan = Some(host);
                     for reply in replies {
-                        self.console_reply(lit(&reply));
+                        self.console_reply(reply.text());
                     }
                 }
             }
@@ -1575,7 +1575,7 @@ impl Game<'_> {
                     let replies = self.tempban_command(&mut host, &words, "Server");
                     self.lan = Some(host);
                     for reply in replies {
-                        self.console_reply(lit(&reply));
+                        self.console_reply(reply.text());
                     }
                 }
             }
