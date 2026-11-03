@@ -67,6 +67,7 @@ mod block_entity_anims;
 mod block_entity_ticks;
 mod block_items;
 mod blockctl;
+mod boarding;
 mod boat_authority_fixture;
 mod boat_leads;
 mod boat_passengers;
@@ -342,6 +343,7 @@ mod tutorial;
 mod tweaks;
 mod ui_control;
 mod vault;
+mod vehicle_teleport;
 mod villagers;
 mod wandering_trader;
 mod win;
@@ -2851,6 +2853,10 @@ struct Game<'a> {
     cart_models: minecarts::CartModels,
     /// The boat the player rides.
     riding: Option<u32>,
+    /// `Entity.boardingCooldown` of the acting player, and its vehicle at the
+    /// last tick (`game/boarding.rs`).
+    boarding_cooldown: i32,
+    riding_at_tick: Option<u32>,
     /// The mount the last `position_rider` put the player on, to tell the tick
     /// a seat is taken (`Entity.moveTo`, no camera sweep) from the ones that
     /// follow it (`positionRider`, interpolated as usual).
@@ -14602,6 +14608,8 @@ impl Game<'_> {
         let Some(at) = self.sleeping_position(head) else {
             return;
         };
+        // LivingEntity.startSleeping: stopRiding once the bed is valid.
+        self.stop_riding();
         self.stop_mining();
         self.left = false;
         self.right = false;
@@ -19043,6 +19051,8 @@ impl<'a> Game<'a> {
             trim_slots: Vec::new(),
             cart_models: prepared.cart_models,
             riding: None,
+            boarding_cooldown: 0,
+            riding_at_tick: None,
             posed_rider: None,
             pending_vehicle: None,
             ender_items: vec![None; 27],

@@ -191,6 +191,7 @@ pub(super) struct GuestSwap {
     left: bool,
     right: bool,
     riding: Option<u32>,
+    host_boarding: (i32, Option<u32>),
     host_station: Option<super::stations::Station>,
     sleeping: Option<[i32; 3]>,
     sleep_timer: u32,
@@ -522,6 +523,10 @@ impl Game<'_> {
         self.right = play.using.is_some() || self.using.is_some();
         // The guest's vehicle (Entity.vehicle) for its turn.
         let riding = std::mem::replace(&mut self.riding, g.vehicle);
+        // Entity.baseTick: the guest's boarding cooldown, for its turn.
+        let host_boarding = (self.boarding_cooldown, self.riding_at_tick);
+        self.boarding_cooldown = super::boarding::tick_down(g.boarding_cooldown);
+        self.riding_at_tick = g.vehicle;
         // `Entity.isPassenger()` for that turn, from the same vehicle: the
         // guest's body keeps no swim (`Entity.updateSwimming` needs it false).
         // Taken from `g.vehicle` each turn, so boarding and getting out land.
@@ -635,6 +640,7 @@ impl Game<'_> {
             left,
             right,
             riding,
+            host_boarding,
             host_station,
             sleeping,
             sleep_timer,
@@ -734,6 +740,7 @@ impl Game<'_> {
             left,
             right,
             riding,
+            host_boarding,
             host_station,
             sleeping,
             sleep_timer,
@@ -912,6 +919,11 @@ impl Game<'_> {
             self.guest_attachments.entry(g.uuid).or_default(),
         );
         let left_vehicle = g.vehicle.filter(|_| guest_vehicle.is_none());
+        // Entity.removePassenger: 60 ticks before it may board again.
+        let guest_boarding =
+            super::boarding::after_leaving(self.boarding_cooldown, g.vehicle, guest_vehicle);
+        (self.boarding_cooldown, self.riding_at_tick) = host_boarding;
+        g.boarding_cooldown = guest_boarding;
         if guest_vehicle.is_none() {
             g.vehicle_good = None;
         }
@@ -997,14 +1009,8 @@ impl Game<'_> {
             let teleported = std::mem::take(&mut m.teleported);
             let moved: f64 = (0..3).map(|k| (at[k] - g.position[k]).powi(2)).sum();
             g.motion = Some(Box::new(m));
-            // Entity.teleportTo takes a rider out of its vehicle.
-            let left_vehicle = match g.vehicle.filter(|_| teleported) {
-                Some(v) => {
-                    (g.vehicle, g.vehicle_good) = (None, None);
-                    Some(v)
-                }
-                None => left_vehicle,
-            };
+            // The pearl and the bed took the rider out of its vehicle at their
+            // source (`stop_riding`), so `left_vehicle` already says so.
             // ServerPlayer.dismountTo: the client hears it is out of the
             // vehicle before the teleport beside it. A rider sits where its
             // vehicle puts it (lan_vehicles.rs), with no teleport.

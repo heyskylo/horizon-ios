@@ -1282,6 +1282,7 @@ impl Game<'_> {
         if sneaking
             || self.boats[i].out_of_control >= 60.0
             || self.riding.is_some()
+            || !self.may_board()
             || self.ridden_by_guest(self.boats[i].id)
             || !self.boat_has_room(i)
         {

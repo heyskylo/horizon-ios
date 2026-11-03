@@ -2046,7 +2046,12 @@ impl Game<'_> {
                 let id = self.carts[i].id;
                 // isVehicle: a mob already sits in it.
                 let has_mob = self.mobs.iter().any(|m| m.extra.mount == Some(id));
-                if sneaking || self.riding.is_some() || self.ridden_by_guest(id) || has_mob {
+                if sneaking
+                    || self.riding.is_some()
+                    || !self.may_board()
+                    || self.ridden_by_guest(id)
+                    || has_mob
+                {
                     return false;
                 }
                 if !self.native_may_board(id) {
