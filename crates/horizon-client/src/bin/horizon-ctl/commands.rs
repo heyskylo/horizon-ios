@@ -484,7 +484,7 @@ pub fn find(name: &str) -> Option<&'static Cmd> {
 pub fn overview() -> String {
     let mut out = String::from(
         "horizon-ctl: play and script a running Horizon from the command line.\n\n\
-         usage: horizon-ctl [--socket PATH] [--timeout SECONDS] [--pretty] COMMAND [ARGS...]\n\
+         usage: horizon-ctl [--socket PATH] [--timeout SECONDS] [--api LINE] [--pretty] COMMAND [ARGS...]\n\
          \x20      horizon-ctl COMMAND --help      (or: horizon-ctl help COMMAND)\n",
     );
     for group in Group::ALL {
@@ -496,7 +496,8 @@ pub fn overview() -> String {
     out.push_str(
         "\nEvery reply is one JSON line. Errors are {\"error\": \"...\"}; the exit status is 0 on\n\
          success, 1 when the game replied with an error, 2 for a usage error, 3 when the\n\
-         game cannot be reached or started and 4 while No AI is on (the launcher's settings).\n\
+         game cannot be reached or started, 4 while No AI is on (the launcher's settings) and 5 when\n\
+         --api LINE (such as --api 0.1) names a protocol line the game's hello does not report.\n\
          Actions (goto, break, place...) block until done.\n\
          horizon-ctl help --game lists the running game's own commands, test hooks included.\n\
          The socket is $HORIZON_CONTROL, else $XDG_RUNTIME_DIR/horizon-control.sock (on Windows\n\
