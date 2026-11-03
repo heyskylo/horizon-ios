@@ -794,6 +794,57 @@ mod tests {
         assert_eq!(default_range(item, entity_view_scale(32, 1.0)), 40.0);
     }
 
+    /// `getBoundingBoxForCulling`: only four living renderers grow the box.
+    /// An illusioner asks for three blocks either side (room for its mirror
+    /// images, which are drawn outside its own box), a sniffer for 0.6 all
+    /// round, a happy ghast for half its height below (its riders hang under
+    /// it) and anyone wearing a dragon head for 0.5 all round.
+    #[test]
+    fn only_the_four_living_renderers_grow_the_culling_box() {
+        assert_eq!(
+            CullGrow::of(Species::Villager, 1.95, false),
+            CullGrow::default()
+        );
+        let illusioner = CullGrow::of(Species::Illusioner, 1.95, false);
+        assert_eq!(
+            (illusioner.side, illusioner.all, illusioner.down),
+            (3.0, 0.0, 0.0)
+        );
+        let sniffer = CullGrow::of(Species::Sniffer, 1.75, false);
+        assert!((sniffer.all - 0.6).abs() < 1e-7 && sniffer.side == 0.0);
+        let ghast = CullGrow::of(Species::HappyGhast, 4.0, false);
+        assert_eq!((ghast.down, ghast.all), (2.0, 0.0));
+        // A dragon head grows every axis, on any living entity.
+        let headed = CullGrow::of(Species::Villager, 1.95, true);
+        assert_eq!((headed.all, headed.side, headed.down), (0.5, 0.0, 0.0));
+        // The growths add up: an illusioner in a dragon head gets both.
+        let both = CullGrow::of(Species::Illusioner, 1.95, true);
+        assert_eq!((both.all, both.side), (0.5, 3.0));
+    }
+
+    /// The box the frustum test sees: an illusioner's own box is 0.6 wide, so
+    /// its culling box reaches 3.3 blocks either side of its position and
+    /// 0.5 below its feet, where a villager's reaches 0.8.
+    #[test]
+    fn an_illusioner_is_culled_three_blocks_wider_than_its_box() {
+        let pos = glam::DVec3::new(10.0, 64.0, -4.0);
+        let (lo, hi) = grown_box(
+            pos,
+            0.6,
+            1.95,
+            CullGrow::of(Species::Illusioner, 1.95, false),
+        );
+        assert_eq!(lo, glam::DVec3::new(10.0 - 3.3, 64.0, -4.0 - 3.3));
+        assert_eq!(hi, glam::DVec3::new(10.0 + 3.3, 64.0 + 1.95, -4.0 + 3.3));
+        let (lo, hi) = grown_box(pos, 0.6, 1.95, CullGrow::of(Species::Villager, 1.95, false));
+        assert!((lo.x - (10.0 - 0.3)).abs() < 1e-9);
+        assert!((hi.y - (64.0 + 1.95)).abs() < 1e-9);
+        // A happy ghast's box drops by half its height below its feet.
+        let (lo, hi) = grown_box(pos, 4.0, 4.0, CullGrow::of(Species::HappyGhast, 4.0, false));
+        assert_eq!(lo.y, 62.0);
+        assert_eq!(hi.y, 68.0);
+    }
+
     /// `Entity.shouldRenderAtSqrDistance` on a broken box: the size falls
     /// back to one block.
     #[test]
