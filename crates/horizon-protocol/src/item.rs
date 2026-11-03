@@ -732,6 +732,8 @@ fn read_added<'a>(
     match older_layout(kind, r)? {
         Older::Dropped => Ok(None),
         Older::Rewritten(bytes) => {
+            // Already in the pinned numbering.
+            let _pinned = ids::pinned();
             let component = Component::read(kind, &mut Reader::new(&bytes))?;
             Ok(Some((kind, component, bytes.into())))
         }
@@ -762,14 +764,15 @@ fn older_layout(kind: i32, r: &mut Reader) -> Result<Older> {
     use component::*;
     let quirks = ids::quirks();
     Ok(match kind {
-        // EitherHolder.STREAM_CODEC: ByteBufCodecs.either(the song's ResourceKey, its holder). A key
-        // names a song of the server's registry the pinned holder can't point to without its numbering.
+        // EitherHolder.streamCodec: ByteBufCodecs.either(the song's holder, its ResourceKey), a flag set
+        // for the holder. A key names a song of the server's registry that the pinned holder can't point
+        // to without its numbering.
         JUKEBOX_PLAYABLE if quirks.either_holder_song_and_tag_resistance => {
             if r.bool()? {
+                Older::Pinned
+            } else {
                 r.string(32767)?;
                 Older::Dropped
-            } else {
-                Older::Pinned
             }
         }
         // TagKey.streamCodec: the tag's id. A HolderSet names a tag behind a 0.
@@ -781,14 +784,16 @@ fn older_layout(kind: i32, r: &mut Reader) -> Result<Older> {
             Older::Rewritten(w.data)
         }
         // ByteBufCodecs.registry(ITEM).apply(list(4)): back, left, right and front, a brick for none;
-        // the pinned layout has four optional stack templates of one item and no components. The items
-        // keep the server's ids, as every value read on this thread does until it is renumbered.
+        // the pinned layout has four optional stack templates of one item and no components. The value
+        // is kept as these bytes and sent on as they are, so its items take their pinned ids here.
         POT_DECORATIONS if quirks.pot_decorations_are_items => {
             let n = r.count(4)?;
-            let items = (0..n).map(|_| r.varint()).collect::<Result<Vec<_>>>()?;
+            let items = (0..n)
+                .map(|_| r.varint().map(ids::item))
+                .collect::<Result<Vec<_>>>()?;
             let mut w = Writer::new();
             for side in 0..4 {
-                match items.get(side).filter(|&&item| ids::item(item) != BRICK) {
+                match items.get(side).filter(|&&item| item != BRICK) {
                     Some(&item) => {
                         w.bool(true);
                         w.varint(item);
@@ -797,6 +802,45 @@ fn older_layout(kind: i32, r: &mut Reader) -> Result<Older> {
                         w.varint(0);
                     }
                     None => w.bool(false),
+                }
+            }
+            Older::Rewritten(w.data)
+        }
+        // A value holding item stacks is kept as its bytes and sent on as they are: written again, its
+        // items take their pinned ids and layout.
+        USE_REMAINDER | SULFUR_CUBE_CONTENT if ids::reading_older() => {
+            let stack = if quirks.stacks_in_components {
+                Slot::read(r)?.ok_or_else(|| crate::Error::new("an empty use_remainder"))?
+            } else {
+                Template::read(r)?
+            };
+            let mut w = Writer::new();
+            let _pinned = ids::pinned();
+            Template::write(&stack, &mut w);
+            Older::Rewritten(w.data)
+        }
+        // ItemContainerContents: up to 256 slots, each an optional template (ItemStack.OPTIONAL_STREAM_CODEC
+        // before 26.1).
+        CONTAINER if ids::reading_older() => {
+            let n = r.count(256)?;
+            let slots = (0..n)
+                .map(|_| {
+                    if quirks.stacks_in_components {
+                        Slot::read(r)
+                    } else if r.bool()? {
+                        Template::read(r).map(Some)
+                    } else {
+                        Ok(None)
+                    }
+                })
+                .collect::<Result<Vec<_>>>()?;
+            let mut w = Writer::new();
+            let _pinned = ids::pinned();
+            w.varint(n as i32);
+            for slot in &slots {
+                w.bool(slot.is_some());
+                if let Some(stack) = slot {
+                    Template::write(stack, &mut w);
                 }
             }
             Older::Rewritten(w.data)

@@ -101,10 +101,13 @@ impl ServerVersion {
             tag_slot_display_is_id: true,
             pot_decorations_are_items: true,
             either_holder_song_and_tag_resistance: false,
+            stacks_in_components: false,
         };
-        // Before 26.1 a jukebox song was an EitherHolder, and damage resistance a tag.
+        // Before 26.1 a jukebox song was an EitherHolder, damage resistance a tag, and the items components
+        // hold ItemStacks.
         const BEFORE_26_1: ids::Quirks = ids::Quirks {
             either_holder_song_and_tag_resistance: true,
+            stacks_in_components: true,
             ..BEFORE_26_3
         };
         static V26_2: ids::Ids = ids::Ids {
