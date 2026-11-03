@@ -5917,6 +5917,17 @@ impl Game<'_> {
         } else if !dead && !riding {
             player.client_side = true;
             player.velocity = player.velocity.add_vector(pushed);
+            // LivingEntity.checkAutoSpinAttack: a Riptide spin that touches a
+            // mob ends and bounces back; the server deals the hit.
+            player.spin_targets.clear();
+            if player.auto_spin_attack_ticks > 0 {
+                player.spin_targets.extend(
+                    self.mobs
+                        .iter()
+                        .filter(|m| !m.removed)
+                        .map(|m| (m.id, m.bounds())),
+                );
+            }
             MotionWorld {
                 entities: &entity_collisions,
                 player,
