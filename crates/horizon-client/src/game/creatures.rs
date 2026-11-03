@@ -7001,14 +7001,19 @@ impl Game<'_> {
             }
             let p = glam::DVec3::from_array(at) - camera;
             let c = p.as_vec3();
+            // EntityRenderer.getPackedLightCoords: the block its light probe
+            // (the eye) is in, not the one under its feet.
             let light = self.world.light(
                 a.position.x.floor() as i32,
-                a.position.y.floor() as i32,
+                a.light_probe_y().floor() as i32,
                 a.position.z.floor() as i32,
             );
             let mut packed = (u32::from(light >> 4) * 16) | ((u32::from(light & 15) * 16) << 8);
-            if a.is_fireball() {
-                packed = (15 * 16) | ((15 * 16) << 8);
+            // EntityRenderer.getBlockLightLevel: a shulker bullet and anything
+            // on fire are drawn at 15 block light (the fireball renderers'
+            // own override); the sky light stays the level's.
+            if let Some(block) = a.block_light_override() {
+                packed = (packed & 0xFF) | (u32::from(block) * 16) << 8;
             }
             if a.is_arrow() {
                 let Some(model) = self.arrow_model.as_ref() else {

@@ -593,6 +593,23 @@ impl Projectile {
                 | ProjectileKind::WitherSkull { .. }
         )
     }
+    /// `EntityRenderer.getBlockLightLevel` for a projectile: the renderer's
+    /// own override wins (`ShulkerBulletRenderer` returns 15, as the fireball
+    /// renderers do), and the base class draws anything `isOnFire` at 15
+    /// whatever the level says. `None` keeps the level's block light; the sky
+    /// light is never overridden.
+    pub fn block_light_override(&self) -> Option<u8> {
+        (self.is_fireball()
+            || self.on_fire()
+            || matches!(self.kind, ProjectileKind::ShulkerBullet { .. }))
+        .then_some(15)
+    }
+    /// `EntityRenderer.getPackedLightCoords` lights an entity from the block
+    /// its `getLightProbePosition` is in, which is `getEyePosition`: the eye
+    /// height of its box, not the cell its feet rest in.
+    pub fn light_probe_y(&self) -> f64 {
+        self.position.y + self.kind.eye_height()
+    }
     pub fn water_bubbles(&self) -> Option<([f64; 3], [f64; 3])> {
         let throwable = matches!(
             self.kind,
@@ -1800,4 +1817,5 @@ mod pearl_owner_tests {
         assert!(!owner_can_take_pearl(false, true), "dead in bed");
     }
 }
+
 crate::impl_joined!(Projectile);
