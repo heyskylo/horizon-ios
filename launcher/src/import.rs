@@ -116,11 +116,15 @@ pub fn what(file: &Path) -> Result<Dropped, String> {
 }
 
 /// Where an archive entry goes in the instance's folder, when it is one an instance holds and
-/// stays inside it.
-fn target(home: &Path, relative: &str) -> Option<PathBuf> {
+/// stays inside it. A Java instance (`java`) holds whatever its pack carries (`mods/`,
+/// `kubejs/`...), as long as it stays inside.
+fn target(home: &Path, relative: &str, java: bool) -> Option<PathBuf> {
     let path = Path::new(relative);
     if relative.ends_with('/') || !path.components().all(|c| matches!(c, Component::Normal(_))) {
         return None;
+    }
+    if java {
+        return Some(home.join(path));
     }
     let top = relative.split('/').next()?;
     let kept = FILES.contains(&relative)
@@ -143,6 +147,32 @@ pub fn import_into(
     if what(file)? != Dropped::Instance {
         return Err(format!("{} is not a shared instance.", name_of(file)));
     }
+    import_any(file, progress, create, false)
+}
+
+/// A `.mrpack`'s index.
+pub fn mrpack_index(file: &Path) -> Result<serde_json::Value, String> {
+    read_index(&mut open(file)?)
+}
+
+/// A `.mrpack`, with or without mod loaders, into the Java instance `create` makes
+/// (`crate::instances_mrpack`): every override and file it carries.
+pub fn import_mrpack_into(
+    file: &Path,
+    progress: &dyn Fn(&str, f32),
+    create: &dyn Fn(&str) -> Result<Instance, String>,
+) -> Result<Instance, String> {
+    mrpack_index(file)?;
+    import_any(file, progress, create, true)
+}
+
+/// [`import_into`] without asking what the file is, into a Java instance when `java`.
+fn import_any(
+    file: &Path,
+    progress: &dyn Fn(&str, f32),
+    create: &dyn Fn(&str) -> Result<Instance, String>,
+    java: bool,
+) -> Result<Instance, String> {
     let mut zip = open(file)?;
     let mrpack = zip.index_for_name(INDEX).is_some();
     let index = match mrpack {
@@ -168,7 +198,7 @@ pub fn import_into(
         .find_map(|name| create(&name).ok())
         .ok_or_else(|| format!("Could not make an instance called {base}."))?;
     let home = instance.home.clone();
-    let filled = fill(&mut zip, index.as_ref(), &home, progress);
+    let filled = fill(&mut zip, index.as_ref(), &home, java, progress);
     if let Err(e) = filled {
         let _ = fs::remove_dir_all(&home);
         return Err(e);
@@ -180,6 +210,7 @@ fn fill(
     zip: &mut zip::ZipArchive<fs::File>,
     index: Option<&serde_json::Value>,
     home: &Path,
+    java: bool,
     progress: &dyn Fn(&str, f32),
 ) -> Result<(), String> {
     let count = zip.len();
@@ -193,7 +224,7 @@ fn fill(
             },
             None => name.clone(),
         };
-        let Some(to) = target(home, &relative) else {
+        let Some(to) = target(home, &relative, java) else {
             continue;
         };
         fs::create_dir_all(to.parent().expect("inside home")).map_err(|e| e.to_string())?;
@@ -213,7 +244,7 @@ fn fill(
             continue;
         }
         let relative = f["path"].as_str().unwrap_or_default();
-        let to = target(home, relative)
+        let to = target(home, relative, java)
             .ok_or_else(|| format!("{relative} isn't a place an instance keeps files."))?;
         let file = FileRef {
             url: f["downloads"][0].as_str().unwrap_or_default().to_string(),

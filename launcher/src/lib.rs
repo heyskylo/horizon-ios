@@ -19,6 +19,7 @@ pub mod import;
 #[cfg(windows)]
 pub mod installer;
 pub mod instances;
+pub mod instances_mrpack;
 pub mod java;
 pub mod java_launch;
 pub mod launch;
