@@ -551,6 +551,8 @@ struct CullJob {
     generation: u64,
     snapshot: Arc<OcclusionSnapshot>,
     queries: Vec<CullKey>,
+    clear_visible: Vec<CullKey>,
+    rays_filtered: bool,
 }
 
 /// Non-blocking world occlusion for entity rendering.
@@ -559,6 +561,7 @@ struct CullJob {
 /// movement within one block because they can only reduce culling.
 pub(super) struct AsyncOcclusionCuller {
     jobs: SyncSender<CullJob>,
+    _ray_thread: JoinHandle<()>,
     results_rx: Receiver<CullResults>,
     _thread: JoinHandle<()>,
     job_generation: Arc<AtomicU64>,
@@ -629,20 +632,34 @@ impl AsyncOcclusionCuller {
 
     pub(super) fn new() -> std::io::Result<Self> {
         let (job_tx, job_rx) = mpsc::sync_channel::<CullJob>(1);
+        let (plane_tx, plane_rx) = mpsc::sync_channel::<CullJob>(1);
         let (result_tx, result_rx) = mpsc::channel::<CullResults>();
         let job_generation = Arc::new(AtomicU64::new(0));
         let worker_generation = Arc::clone(&job_generation);
+        let plane_generation = Arc::clone(&job_generation);
         let thread = std::thread::Builder::new()
             .name("world-occlusion-culling".into())
             .spawn(move || {
-                while let Ok(job) = job_rx.recv() {
-                    if result_tx.send(cull_job(job, &worker_generation)).is_err() {
+                while let Ok(job) = plane_rx.recv() {
+                    if result_tx.send(cull_job(job, &plane_generation)).is_err() {
+                        break;
+                    }
+                }
+            })?;
+        let ray_plane_tx = plane_tx.clone();
+        let ray_thread = std::thread::Builder::new()
+            .name("entity-ray-cull".into())
+            .spawn(move || {
+                while let Ok(mut job) = job_rx.recv() {
+                    filter_rays(&mut job, &worker_generation);
+                    if ray_plane_tx.send(job).is_err() {
                         break;
                     }
                 }
             })?;
         Ok(Self {
             jobs: job_tx,
+            _ray_thread: ray_thread,
             results_rx: result_rx,
             _thread: thread,
             job_generation,
@@ -1209,6 +1226,8 @@ impl AsyncOcclusionCuller {
             generation: self.job_generation.load(Ordering::Relaxed),
             snapshot,
             queries,
+            clear_visible: Vec::new(),
+            rays_filtered: false,
         };
         let mut stats = self.stats.borrow_mut();
         stats.worker_jobs = stats.worker_jobs.saturating_add(1);
@@ -1424,14 +1443,51 @@ fn camera_cell(camera: [f64; 3]) -> Option<[i32; 3]> {
     Some([x, y, z])
 }
 
+fn filter_rays(job: &mut CullJob, generation: &AtomicU64) {
+    let Some(first) = job.queries.first() else {
+        job.rays_filtered = true;
+        return;
+    };
+    let camera = first.camera.map(f64::from_bits);
+    let mut last_chunk = LastChunk::default();
+    let mut opacity_grid = OpacityGrid::default();
+    let mut blocked = Vec::with_capacity(job.queries.len());
+    for key in job.queries.drain(..) {
+        if generation.load(Ordering::Relaxed) != job.generation {
+            break;
+        }
+        let min = key.min.map(f64::from_bits);
+        let max = key.max.map(f64::from_bits);
+        if bounds_have_clear_ray(
+            camera,
+            min,
+            max,
+            &job.snapshot,
+            &mut last_chunk,
+            &mut opacity_grid,
+        ) {
+            job.clear_visible.push(key);
+        } else {
+            blocked.push(key);
+        }
+    }
+    job.queries = blocked;
+    job.rays_filtered = true;
+}
+
 fn cull_job(mut job: CullJob, generation: &AtomicU64) -> CullResults {
     let started = Instant::now();
-    let camera = job.queries[0].camera.map(f64::from_bits);
+    let camera = job
+        .queries
+        .first()
+        .or_else(|| job.clear_visible.first())
+        .map(|key| key.camera.map(f64::from_bits))
+        .unwrap_or([0.0; 3]);
     let culler = OcclusionCuller::new(camera, OCCLUSION_LOOKUP_BUDGET);
     let mut last_chunk = LastChunk::default();
     let mut opacity_grid = OpacityGrid::default();
     let mut hidden = Vec::with_capacity(job.queries.len());
-    let mut visible = Vec::new();
+    let mut visible = job.clear_visible;
     let mut covered = Vec::new();
     let mut deferred_entities = 0;
     let mut cancelled = false;
@@ -1443,14 +1499,16 @@ fn cull_job(mut job: CullJob, generation: &AtomicU64) -> CullResults {
         covered.clear();
         let min = key.min.map(f64::from_bits);
         let max = key.max.map(f64::from_bits);
-        if bounds_have_clear_ray(
-            camera,
-            min,
-            max,
-            &job.snapshot,
-            &mut last_chunk,
-            &mut opacity_grid,
-        ) {
+        if !job.rays_filtered
+            && bounds_have_clear_ray(
+                camera,
+                min,
+                max,
+                &job.snapshot,
+                &mut last_chunk,
+                &mut opacity_grid,
+            )
+        {
             visible.push(key);
             continue;
         }
@@ -1746,6 +1804,8 @@ mod tests {
                 min: min.map(f64::to_bits),
                 max: max.map(f64::to_bits),
             }],
+            clear_visible: Vec::new(),
+            rays_filtered: false,
         }
     }
 

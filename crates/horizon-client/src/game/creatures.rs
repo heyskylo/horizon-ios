@@ -4,8 +4,7 @@
 //! (feeding, shearing, milking, spawn eggs, throwing) and rendering.
 use super::{
     Dim, Game, Hand, InteractTarget, dispenser, entity_culling::EntityCullDecision,
-    native_mob_draw::NativePlayerRender, native_projectiles::Impact,
-    occlusion_culling::ASYNC_MOB_CULLING_ENABLE_MIN, view_vector,
+    native_mob_draw::NativePlayerRender, native_projectiles::Impact, view_vector,
 };
 use horizon_assets::item_model::DisplayContext;
 use horizon_client::{
@@ -161,7 +160,6 @@ impl ProjectileWorld for ProjWorld<'_, '_> {
 /// `ProjectileUtil.getEntityHitResult` can strike it (`ThrownEnderpearl.onHit`).
 /// `WIND_CHARGE_IDS + j` is `projectiles[j]` during `tick_projectiles`, below
 /// the dragon's reserved ids.
-const ASYNC_MOB_AABB_PRECHECK_MIN: usize = ASYNC_MOB_CULLING_ENABLE_MIN;
 const WIND_CHARGE_IDS: u32 = super::dragon::SPECIAL - 0x10000;
 
 /// The index of the wind charge a `wind_charge_hitboxes` id stands for.
@@ -6374,7 +6372,7 @@ impl Game<'_> {
         // keep the existing exact mesh-culling path.
         if self.settings.horizon.entity_culling != EntityCullingMode::Off
             && (self.sync_occlusion_culler.is_some() || self.async_occlusion_culler.is_some())
-            && self.mobs.len() >= ASYNC_MOB_AABB_PRECHECK_MIN
+            && self.settings.horizon.entity_culling == EntityCullingMode::Synchronous
             && !self.pack_shadow_casters.0
             && horizon_client::mod_api::mods().is_empty()
         {
