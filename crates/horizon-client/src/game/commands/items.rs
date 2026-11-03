@@ -244,7 +244,10 @@ impl Game<'_> {
             Slot::Mob(_, key) if matches!(*key, "chest" | "legs" | "feet") => key,
             _ => return true,
         };
-        let Some(stack) = stack else { return true };
+        // ItemStack.isEmpty: air or a count of 0.
+        let Some(stack) = stack.filter(|s| &*s.item != "minecraft:air" && s.count > 0) else {
+            return true;
+        };
         self.items()
             .get(&stack.item)
             .is_some_and(|info| info.equip_slot.as_deref() == Some(name))
