@@ -634,7 +634,7 @@ impl Launcher {
                     .child(ui::icon("folder-01", 21., white(ink::STRONG)))
                     .on_click(move |_, _, cx| {
                         let _ = std::fs::create_dir_all(&opener);
-                        cx.open_with_system(&opener);
+                        crate::glass_toast::open(cx, &opener);
                     }),
             )
             .when(open || self.folder_hovered, |d| d.child(more))
@@ -690,7 +690,7 @@ impl Launcher {
                         match &path {
                             Some(p) => {
                                 let _ = std::fs::create_dir_all(p);
-                                cx.open_with_system(p);
+                                crate::glass_toast::open(cx, p);
                             }
                             None => this.choose_folder(cx),
                         }

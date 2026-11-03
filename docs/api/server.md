@@ -76,8 +76,9 @@ addition; a change to one starts `/api/v2`, served beside `/api/v1`.
 - **Players**: editing the lists while the game is stopped through the API (the CLI's `op`, `deop` and
   `whitelist` already do).
 - **Metrics**: entities and per-dimension counts in the Prometheus text.
-- **Mods on a dedicated server**: list, turn on and off, and their settings, once native mods can be built for the
-  server ([mods.md](../mods.md), [native-mods.md](../native-mods.md#multiplayer)).
+- **Mods on a dedicated server**: turn on and off, and their settings, once native mods can be built for the
+  server ([mods.md](../mods.md), [native-mods.md](../native-mods.md#multiplayer)). `GET /api/v1/mods` lists the native
+  mods the game program was built with.
 - **Vanilla's management protocol**: `serversettings/*` (the live settings not yet done) and the world
   upgrade's notifications (the others are sent). The methods answer
   an internal error saying so; a kick's translatable message is sent as its key.

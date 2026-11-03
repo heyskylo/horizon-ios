@@ -416,6 +416,30 @@ pub fn popover(width: f32) -> Div {
         .flex_col()
 }
 
+/// What a dialog or the palette lays over the launcher (`bg-[#07050f]/50 backdrop-blur-xl`):
+/// GPUI can't blur what it drew, so the scene's blurred copy (a menu's, `hzl-float`) covers the
+/// page. The scrim goes over it.
+pub fn scrim_backdrop() -> impl IntoElement {
+    crate::glass::backdrop(crate::glass::Kind::Float, 0.)
+}
+
+/// A dialog's plate, round at `radius` (`hzl-glass` over the scrim): its piece of the scene
+/// under the scrim's dimming, then the plates' white. The content goes after it.
+pub fn dialog_plate(radius: f32) -> Div {
+    let layer = |c: Hsla| {
+        div()
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full()
+            .rounded(px(radius))
+            .bg(c)
+    };
+    crate::glass::plate(radius)
+        .child(layer(color(horizon_theme::glass::SCRIM).opacity(0.5)))
+        .child(layer(white(horizon_theme::glass::TINT)))
+}
+
 /// Text on a white button (`SOLID`): `#100a1f`, medium.
 pub fn solid(
     id: impl Into<SharedString>,

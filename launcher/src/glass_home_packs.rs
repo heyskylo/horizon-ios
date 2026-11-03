@@ -70,7 +70,7 @@ impl Launcher {
                         ui::quiet("packs-folder", tr("Open folder"), 36., &t).on_click(
                             move |_, _, cx| {
                                 let _ = std::fs::create_dir_all(&folder);
-                                cx.open_with_system(&folder);
+                                crate::glass_toast::open(cx, &folder);
                             },
                         ),
                     )
@@ -228,7 +228,7 @@ impl Launcher {
                 )
                 .on_click(move |_, _, cx| {
                     let _ = std::fs::create_dir_all(&folder);
-                    cx.open_with_system(&folder);
+                    crate::glass_toast::open(cx, &folder);
                 }),
             );
         let shown = if self.screenshots.all {
