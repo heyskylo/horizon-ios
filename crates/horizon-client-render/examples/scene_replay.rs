@@ -58,6 +58,11 @@ use winit::{
     window::{Window, WindowId},
 };
 
+// The game's allocator, so that `--memory`'s footprint is the game's: the system heap kept
+// gigabytes of the meshes `--world` frees dirty.
+#[global_allocator]
+static ALLOCATOR: horizon_threads::Allocator = horizon_threads::ALLOCATOR;
+
 #[derive(Default)]
 struct Options {
     dir: PathBuf,

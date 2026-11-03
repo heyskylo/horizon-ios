@@ -461,7 +461,7 @@ impl SectionGpu {
         }
         let (page, start) = self.translucent_at;
         (
-            (self.solid > 0).then(|| (self.page, self.start, self.solid_slots)),
+            (self.solid > 0).then_some((self.page, self.start, self.solid_slots)),
             (self.translucent > 0).then(|| (page, start, u64::from(self.translucent) * 4)),
         )
     }
