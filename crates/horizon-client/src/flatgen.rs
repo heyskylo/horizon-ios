@@ -190,10 +190,13 @@ impl FlatTerrain {
         if structure_overrides.as_ref().is_some_and(Vec::is_empty) {
             return None;
         }
+        let flag = |key| crate::save::number(s.get(key)).is_some_and(|v| v != 0);
         Some(horizon_world::worldgen::generator::FlatSettings {
             layers,
             biome,
             structure_overrides,
+            features: flag("features"),
+            lakes: flag("lakes"),
         })
     }
     /// FlatLevelSource.getSpawnHeight: the top of the layers.
