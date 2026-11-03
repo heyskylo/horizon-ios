@@ -40,9 +40,29 @@ pub struct Snapshot {
     pub triggers: [f32; 2],
 }
 
+/// One connected controller's inputs, keyed for this process. IDs remain stable
+/// while connected, and are never reassigned to a different controller.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ConnectedController {
+    pub id: u64,
+    pub controller: Controller,
+    pub state: Snapshot,
+}
+
 #[cfg(target_os = "ios")]
 mod ios {
-    use super::{Controller, Snapshot};
+    use super::{ConnectedController, Controller, Snapshot};
+    use objc2::rc::Retained;
+    use std::cell::RefCell;
+
+    #[derive(Default)]
+    struct Ids {
+        next: u64,
+        // Retain each object until the next poll, preventing pointer reuse
+        // from silently assigning a newly connected controller an old seat.
+        live: Vec<(u64, Retained<GCController>)>,
+    }
+    thread_local! { static IDS: RefCell<Ids> = RefCell::new(Ids::default()); }
     use objc2_game_controller::{
         GCController, GCControllerButtonInput, GCDevice, GCExtendedGamepad,
     };
@@ -73,6 +93,13 @@ mod ios {
             let controller = GCController::current()
                 .filter(|c| gamepad(c))
                 .or_else(|| GCController::controllers().iter().find(|c| gamepad(c)))?;
+            snapshot(&controller)
+        }
+    }
+
+    fn snapshot(controller: &GCController) -> Option<Snapshot> {
+        // SAFETY: the caller retains this controller throughout all property reads.
+        unsafe {
             let pad: objc2::rc::Retained<GCExtendedGamepad> = controller.extendedGamepad()?;
             let dpad = pad.dpad();
             let (left, right) = (pad.leftThumbstick(), pad.rightThumbstick());
@@ -98,12 +125,59 @@ mod ios {
             })
         }
     }
+
+    pub fn snapshots() -> Vec<ConnectedController> {
+        // SAFETY: GameController lists live retained controllers; each property
+        // read and identity comparison stays on the game's main thread.
+        unsafe {
+            let controllers = GCController::controllers();
+            IDS.with_borrow_mut(|ids| {
+                let mut live = Vec::new();
+                let mut result = Vec::new();
+                for controller in controllers.iter() {
+                    let Some(state) = snapshot(&controller) else {
+                        continue;
+                    };
+                    let id = ids
+                        .live
+                        .iter()
+                        .find(|(_, previous)| std::ptr::eq(&**previous, &*controller))
+                        .map(|(id, _)| *id)
+                        .unwrap_or_else(|| {
+                            ids.next = ids.next.checked_add(1).expect("controller ID exhausted");
+                            ids.next
+                        });
+                    live.push((id, controller.clone()));
+                    result.push(ConnectedController {
+                        id,
+                        controller: Controller {
+                            name: controller.vendorName().map(|n| n.to_string()),
+                            category: controller.productCategory().to_string(),
+                            gamepad: true,
+                        },
+                        state,
+                    });
+                }
+                ids.live = live;
+                result
+            })
+        }
+    }
 }
 
 /// Every controller iOS has paired.
 pub fn controllers() -> Vec<Controller> {
     #[cfg(target_os = "ios")]
     return ios::controllers();
+    #[cfg(not(target_os = "ios"))]
+    Vec::new()
+}
+
+/// Every connected extended gamepad and its inputs, read on the main thread.
+/// Unlike `active`, this does not change seats when another pad was used last.
+pub fn snapshots() -> Vec<ConnectedController> {
+    #[cfg(target_os = "ios")]
+    return ios::snapshots();
     #[cfg(not(target_os = "ios"))]
     Vec::new()
 }

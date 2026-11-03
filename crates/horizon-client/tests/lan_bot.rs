@@ -2,6 +2,7 @@
 //! handshake, status, offline login, configuration (registries and tags),
 //! then the play state (login, chunks with light, player list, entities,
 //! block changes). Needs the prepared resources; skipped without them.
+extern crate horizon_client_lib as horizon_client;
 use horizon_client::{
     chunk::{Chunk, MIN_Y},
     lan::{
@@ -9,7 +10,7 @@ use horizon_client::{
         chunks::ChunkEncoder,
         data::SyncData,
         entity::EntityState,
-        hub::{HostEvent, HostState, Hub, HubConfig, TickCtx},
+        hub::{HostEvent, Hub, HubConfig, TickCtx},
     },
     world::World,
 };
@@ -138,6 +139,8 @@ fn connect(port: u16, name: &str, known_pack: bool) -> Result<Bot, String> {
             }
             cfg::Clientbound::RegistryData(r) => {
                 registries += 1;
+                // A client that knows the core pack rebuilds the entries itself
+                // (RegistrySynchronization.packRegistry), dialogs included.
                 let has_data = r.entries.iter().any(|e| e.data.is_some());
                 assert_eq!(has_data, !known_pack, "{}", r.registry);
             }
@@ -169,30 +172,8 @@ struct Server {
 }
 impl Server {
     fn tick(&mut self, entities: &[EntityState]) {
-        let host = HostState {
-            uuid: 42,
-            name: "Host".into(),
-            entity_id: 1,
-            position: [0.5, -59.0, 0.5],
-            yaw: 0.0,
-            pitch: 0.0,
-            head_yaw: 0.0,
-            on_ground: true,
-            game_mode: 1,
-            sneaking: false,
-            sprinting: false,
-            equipment: Default::default(),
-            health: 20.0,
-            shoulders: [None; 2],
-            attributes: Vec::new(),
-            bed: None,
-            living_flags: 0,
-            stuck: (0, 0),
-            body: Default::default(),
-        };
         let mut ctx = TickCtx {
             world: &mut self.world,
-            host: Some(&host),
             entities,
             next_entity: &mut self.next_entity,
             spawn: [8.5, f64::from(MIN_Y + 5), 8.5],
@@ -201,7 +182,7 @@ impl Server {
             clock_rate: 1.0,
             tick_rate: 20.0,
             tick_frozen: false,
-            tick_steps: (0, 0),
+            tick_steps: Default::default(),
             collision: None,
             border: &horizon_client::worldborder::WorldBorder::default(),
             streaming: None,
@@ -231,9 +212,16 @@ fn server(resources: &Path) -> Server {
 }
 
 fn server_with(resources: &Path, net: NetConfig) -> Server {
-    let sync = Arc::new(
-        SyncData::load(resources, &horizon_world::loot::PackOverlay::NONE).expect("sync data"),
-    );
+    server_sync(
+        Arc::new(
+            SyncData::load(resources, &horizon_world::loot::PackOverlay::NONE).expect("sync data"),
+        ),
+        net,
+    )
+}
+
+/// A server over already-built sync data (a test's packs layered in).
+fn server_sync(sync: Arc<SyncData>, net: NetConfig) -> Server {
     let lan = Lan::start_with(sync.clone(), net).unwrap();
     let biomes: Vec<String> = sync
         .dynamic
@@ -259,8 +247,7 @@ fn server_with(resources: &Path, net: NetConfig) -> Server {
             hardcore: false,
             view_distance: 3,
             simulation_distance: 3,
-            dedicated: false,
-            integrated: false,
+            integrated: true,
             dimension: "minecraft:overworld".into(),
             seed: 1234,
             max_players: 8,
@@ -431,6 +418,174 @@ fn recipe_settings_packets_update_only_the_players_book_and_survive_save() {
             .is_err()
         );
     }
+}
+
+/// A server whose pack carries recipes with NeoForge's ingredient shapes:
+/// every guest that joins gets the shapes' items, not empty slots — the
+/// book lists the shaped recipe's compound, the furnace's and the
+/// stonecutter's input sets carry it — and no guest is disconnected over
+/// them (#6368).
+#[test]
+fn neoforge_shapes_items_reach_two_guests() {
+    let Some(resources) = resources() else {
+        return;
+    };
+    let compound = r#"{"type":"neoforge:compound",
+        "children":["minecraft:raw_copper","minecraft:redstone"]}"#;
+    let packs = vec![
+        (
+            "advancement/minecraft:recipes/compound_book".to_owned(),
+            vec![
+                br#"{"criteria":{"tick":{"trigger":"minecraft:tick"}},
+                "rewards":{"recipes":["minecraft:compound_book"]}}"#
+                    .to_vec(),
+            ],
+        ),
+        (
+            "recipe/minecraft:compound_book".to_owned(),
+            vec![
+                format!(
+                    r#"{{"type":"minecraft:crafting_shaped","pattern":["X"],
+                "key":{{"X":{compound}}},
+                "result":{{"id":"minecraft:copper_ingot"}}}}"#
+                )
+                .into_bytes(),
+            ],
+        ),
+        (
+            "recipe/minecraft:compound_smelting".to_owned(),
+            vec![
+                format!(
+                    r#"{{"type":"minecraft:smelting","ingredient":{compound},
+                "result":{{"id":"minecraft:copper_ingot"}}}}"#
+                )
+                .into_bytes(),
+            ],
+        ),
+        (
+            "recipe/minecraft:compound_stonecutting".to_owned(),
+            vec![
+                format!(
+                    r#"{{"type":"minecraft:stonecutting","ingredient":{compound},
+                "result":{{"id":"minecraft:copper_ingot"}}}}"#
+                )
+                .into_bytes(),
+            ],
+        ),
+    ];
+    let sync = Arc::new(
+        SyncData::load(
+            &resources,
+            &horizon_world::loot::PackOverlay { files: &packs },
+        )
+        .expect("sync data"),
+    );
+    let (raw_copper, redstone) = (
+        sync.id("minecraft:item", "minecraft:raw_copper").unwrap(),
+        sync.id("minecraft:item", "minecraft:redstone").unwrap(),
+    );
+    let mut s = server_sync(sync, NetConfig::lan(0, "Test - World".into(), 8));
+    let port = s.hub.lan.port;
+    // Guest one joins first and stays while guest two joins and reads its
+    // own join packets, then guest one reads its own.
+    let mut one = run(&mut s, move || connect(port, "CompoundOne", true));
+    let expected = (raw_copper, redstone);
+    let _two_stays = run(&mut s, move || {
+        let mut two = connect(port, "CompoundTwo", true)?;
+        read_join_recipes(&mut two, expected, "guest two")?;
+        Ok(two)
+    });
+    assert_eq!(s.hub.guests.len(), 2, "both guests stay connected");
+    run(&mut s, move || {
+        read_join_recipes(&mut one, expected, "guest one")
+    });
+}
+
+/// Reads a fresh guest's packets until the recipe update and the book add
+/// arrived, checking the compound's items in each: the furnace's input
+/// set, a stonecutting entry's input, and the book entry's requirements.
+fn read_join_recipes(bot: &mut Bot, expected: (i32, i32), who: &str) -> Result<(), String> {
+    let (raw_copper, redstone) = expected;
+    let mut sets_ok = false;
+    let mut book_ok = false;
+    for _ in 0..400 {
+        let packet = bot.recv_play().map_err(|e| format!("{who}: {e}"))?;
+        match packet {
+            C::Unknown(id, payload)
+                if id == horizon_protocol::ids::play::clientbound::UPDATE_RECIPES =>
+            {
+                let mut r = horizon_protocol::buf::Reader::new(&payload);
+                let mut furnace_input = None;
+                let mut stonecutting = Vec::new();
+                for _ in 0..r.varint().map_err(|e| e.to_string())? {
+                    let key = r.string(64).map_err(|e| e.to_string())?;
+                    let ids: Vec<i32> = (0..r.varint().map_err(|e| e.to_string())?)
+                        .map(|_| r.varint().unwrap_or(-1))
+                        .collect();
+                    if key == "minecraft:furnace_input" {
+                        furnace_input = Some(ids);
+                    }
+                }
+                let furnace_input = furnace_input.expect("furnace_input set");
+                assert!(
+                    furnace_input.contains(&raw_copper) && furnace_input.contains(&redstone),
+                    "{who}: furnace_input holds the compound: first ids {:?}",
+                    &furnace_input[..furnace_input.len().min(8)]
+                );
+                for _ in 0..r.varint().map_err(|e| e.to_string())? {
+                    if let horizon_protocol::packets::recipes::HolderSet::Items(ids) =
+                        horizon_protocol::packets::recipes::HolderSet::read(&mut r)
+                            .map_err(|e| e.to_string())?
+                    {
+                        stonecutting.push(ids);
+                    }
+                    // The result's ItemStackSlotDisplay: its type, the item,
+                    // the count and the two empty component lists.
+                    for _ in 0..5 {
+                        r.varint().map_err(|e| e.to_string())?;
+                    }
+                }
+                assert!(
+                    stonecutting
+                        .iter()
+                        .any(|ids| ids.contains(&raw_copper) && ids.contains(&redstone)),
+                    "{who}: a stonecutting input holds the compound"
+                );
+                sets_ok = true;
+            }
+            C::RecipeBookAdd(add) => {
+                // sendInitialRecipeBook's own add arrives first, empty
+                // until the first tick rewards its recipes.
+                if add.entries.is_empty() {
+                    continue;
+                }
+                let compound = add.entries.iter().any(|e| {
+                    e.requirements.as_deref().unwrap_or(&[]).iter().any(|set| {
+                        matches!(set,
+                            horizon_protocol::packets::recipes::HolderSet::Items(ids)
+                            if ids.contains(&raw_copper) && ids.contains(&redstone))
+                    })
+                });
+                assert!(
+                    compound,
+                    "{who}: the book lists the compound recipe ({} entries: {:?})",
+                    add.entries.len(),
+                    add.entries
+                        .iter()
+                        .map(|e| e.requirements.clone())
+                        .collect::<Vec<_>>()
+                );
+                book_ok = true;
+            }
+            _ => {}
+        }
+        if sets_ok && book_ok {
+            return Ok(());
+        }
+    }
+    Err(format!(
+        "{who}: recipes {sets_ok} book {book_ok} never both arrived"
+    ))
 }
 
 #[test]
@@ -663,6 +818,45 @@ fn a_move_behind_a_use_on_a_block_and_its_swing_waits_for_the_next_tick() {
 }
 
 #[test]
+fn a_move_behind_an_attack_and_its_swing_waits_for_the_next_tick() {
+    let Some(resources) = resources() else {
+        return;
+    };
+    let mut s = server(&resources);
+    let port = s.hub.lan.port;
+    let _bot = run(&mut s, move || connect(port, "Striker", true));
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while s.hub.guests.is_empty() {
+        s.tick(&[]);
+        assert!(Instant::now() < deadline, "guest did not join");
+        thread::yield_now();
+    }
+    s.hub.guests[0].loaded = true;
+    s.hub.guests[0].load_timeout = 0;
+    s.hub.guests[0].awaiting_teleport = None;
+    s.hub.guests[0].on_ground = false;
+    // A falling attack sharing a server tick with the landing move behind it:
+    // the attack, the arm swing, then the landing move.
+    let inbox = &mut s.hub.guests[0].inbox;
+    inbox.push_back((S::Attack(play::Attack { id: 1 }), 0));
+    inbox.push_back((S::Punch(Empty), 0));
+    inbox.push_back((S::MovePlayerStatus(play::MovePlayerStatus { flags: 1 }), 0));
+    s.tick(&[]);
+    // The game runs the attack after the hub's pass: the landing move waits so
+    // critical_attack still sees the player off the ground.
+    let g = &s.hub.guests[0];
+    assert!(!g.on_ground, "the landing move ran before the attack");
+    assert!(
+        matches!(g.inbox.back(), Some((S::MovePlayerStatus(_), _))),
+        "the move left the queue"
+    );
+    s.tick(&[]);
+    let g = &s.hub.guests[0];
+    assert!(g.on_ground, "the landing move did not run on the next tick");
+    assert!(g.inbox.is_empty());
+}
+
+#[test]
 fn status_and_join() {
     let Some(resources) = resources() else {
         return;
@@ -734,7 +928,7 @@ fn status_and_join() {
                 // forceGameTimeSynchronization sends no clocks and may come first.
                 C::SetTime(t) if !t.clocks.is_empty() => time = true,
                 C::PlayerInfoUpdate(u) => {
-                    info |= u.entries.iter().any(|e| e.name.as_deref() == Some("Host"));
+                    info |= u.entries.iter().any(|e| e.name.as_deref() == Some("Steve"));
                 }
                 C::Commands(_) => commands = true,
                 C::LevelChunkWithLight(l) => {
@@ -813,16 +1007,20 @@ fn guests_see_each_other_and_the_world_entities() {
         head_yaw: 0.0,
         on_ground: true,
         velocity: [0.0; 3],
+        minecart_steps: None,
         data: 0,
         meta: Vec::new(),
         defaults: Vec::new(),
         equipment: Vec::new(),
         attributes: Vec::new(),
         precise: false,
+        vertical_collision: false,
+        horizontal_collision: false,
         needs_sync: false,
         leash: None,
         spectator: false,
         watching: false,
+        hidden: None,
     };
     let first = thread::spawn(move || {
         let mut bot = connect(port, "Alex", false)?;
@@ -844,6 +1042,7 @@ fn guests_see_each_other_and_the_world_entities() {
                 && reminder.elapsed() >= Duration::from_secs(1)
             {
                 bot.send(S::MovePlayerPos(play::MovePlayerPos { x, y, z, flags: 1 }));
+                bot.send(S::ClientTickEnd(Empty));
                 reminder = Instant::now();
             }
             let Ok((id, payload)) = bot.c.recv() else {
@@ -906,6 +1105,8 @@ fn guests_see_each_other_and_the_world_entities() {
                 z: 8.5,
                 flags: 1,
             }));
+            // A client ends each tick: a second move before it is kicked.
+            bot.send(S::ClientTickEnd(Empty));
         }
         Ok::<(), String>(())
     });
@@ -950,7 +1151,7 @@ fn a_spectators_container_click_is_taken_back() {
         thread::yield_now();
     }
     let conn = s.hub.guests[0].conn;
-    s.hub.set_game_mode(conn, 3);
+    s.hub.set_game_mode(conn, 3, &s.world, None);
     let at = s.hub.guests[0].position;
     let key = (
         at[0].floor() as i32,
@@ -1226,4 +1427,219 @@ fn the_prediction_records_each_client_tick_and_the_server_ticks_it_had_seen() {
     s.tick(&[]);
     let record = s.hub.guests[0].anticheat.record.as_deref().unwrap();
     assert_eq!(record.seen(), Some(pinged));
+}
+
+/// A mod block entity reaches the players that see its chunk as vanilla's do
+/// (`BlockEntityInfo.create`, then `sendBlockUpdated` and
+/// `ChunkHolder.broadcastChanges`): in the chunk with its block's own type
+/// and its mod's update tag, then once per tick however often it is synced,
+/// with no `BlockEntityData` for one whose mod gives no tag.
+#[test]
+fn a_synced_mod_block_entity_reaches_the_chunks_players_once_a_tick() {
+    use horizon_client::containers::{BlockEntity, ModBlockEntity, ModBlockEntityFields};
+    use horizon_world::nbt::{Compound, JavaString, Tag};
+    let Some(resources) = resources() else {
+        return;
+    };
+    const MACHINE: u32 = 3;
+    let mut s = server(&resources);
+    let states = [
+        "minecraft:air",
+        "minecraft:stone",
+        "minecraft:chest",
+        "test:machine",
+    ]
+    .map(|n| (Arc::<str>::from(n), false));
+    let builtin = horizon_protocol::registry::Builtin::parse(
+        r#"{"minecraft:block_entity_type": {"entries": {"test:machine": {"protocol_id": 60}}}}"#,
+    )
+    .unwrap();
+    s.hub.encoder = ChunkEncoder::new(states, &builtin, &[], &[]);
+    // A machine shows whether it runs; one without `on` shows nothing.
+    s.hub.encoder.mod_update_tag = Some(|_, entity| {
+        let on = entity.nbt.get(&JavaString::from("on"))?.clone();
+        Some(Compound::from([(JavaString::from("on"), on)]))
+    });
+    let (shown, silent) = ((1, MIN_Y + 5, 1), (3, MIN_Y + 5, 3));
+    for (pos, on) in [(shown, Some(0)), (silent, None)] {
+        s.world
+            .set(pos.0, pos.1, pos.2, BlockStateId(MACHINE))
+            .unwrap();
+        let mut machine = ModBlockEntity::new(ModBlockEntityFields {
+            id: "test:machine".into(),
+            ..Default::default()
+        });
+        if let Some(on) = on {
+            machine.nbt.insert("on".into(), Tag::Byte(on));
+        }
+        s.world
+            .block_entities
+            .insert(pos, BlockEntity::Mod(Box::new(machine)));
+    }
+    let on = |v: i8| Tag::Compound(Compound::from([(JavaString::from("on"), Tag::Byte(v))]));
+    let port = s.hub.lan.port;
+    let bot = run(&mut s, move || connect(port, "Engineer", true));
+    let (mut bot, infos) = run(&mut s, move || {
+        let mut bot = bot;
+        let mut infos = None;
+        loop {
+            match bot.recv_play()? {
+                C::PlayerPosition(p) => {
+                    bot.send(S::AcceptTeleportation(play::AcceptTeleportation {
+                        id: p.teleport,
+                        x: p.position[0],
+                        y: p.position[1],
+                        z: p.position[2],
+                        yaw: 0.0,
+                        pitch: 0.0,
+                    }))
+                }
+                C::LevelChunkWithLight(l) if (l.x, l.z) == (0, 0) => {
+                    infos = Some(l.chunk.block_entities)
+                }
+                C::ChunkBatchFinished(_) => {
+                    bot.send(S::ChunkBatchReceived(play::ChunkBatchReceived {
+                        chunks_per_tick: 20.0,
+                    }));
+                    if let Some(infos) = infos.take() {
+                        return Ok((bot, infos));
+                    }
+                }
+                _ => {}
+            }
+        }
+    });
+    let mut sent: Vec<_> = infos
+        .iter()
+        .map(|e| (e.packed_xz, e.kind, e.tag.clone()))
+        .collect();
+    sent.sort_by_key(|e| e.0);
+    assert_eq!(sent, [(0x11, 60, on(0)), (0x33, 60, Tag::End)]);
+    // The machine starts and is synced twice; the silent one once. A stone
+    // in the section above comes after them, in the same tick.
+    if let Some(BlockEntity::Mod(m)) = s.world.block_entities.get_mut(&shown) {
+        m.nbt.insert("on".into(), Tag::Byte(1));
+    }
+    let log = s
+        .world
+        .block_log
+        .as_mut()
+        .expect("the hub logs block changes");
+    log.extend([shown, silent, shown]);
+    let marker = [2, MIN_Y + 21, 2];
+    s.world
+        .set(marker[0], marker[1], marker[2], BlockStateId(STONE))
+        .unwrap();
+    let data = run(&mut s, move || {
+        let mut data = Vec::new();
+        loop {
+            match bot.recv_play()? {
+                C::BlockEntityData(p) => data.push((p.pos, p.tag)),
+                C::BlockUpdate(p) if p.pos == marker => return Ok(data),
+                _ => {}
+            }
+        }
+    });
+    assert_eq!(data, [([shown.0, shown.1, shown.2], on(1))]);
+}
+
+/// #4301: the damage-immunity term `ServerPlayer.isInvulnerableTo` takes from
+/// its connection (`!hasClientLoaded`) is cleared by a respawn, kept through a
+/// level change, and comes back with ServerboundPlayerLoadedPacket: a respawned
+/// guest cannot be hurt at the spot it died in before its client is back.
+#[test]
+fn a_respawned_guest_is_immune_until_its_client_loads_the_world() {
+    let Some(resources) = resources() else {
+        return;
+    };
+    let mut s = server(&resources);
+    let port = s.hub.lan.port;
+    let _bot = run(&mut s, move || connect(port, "Respawned", true));
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while s.hub.guests.is_empty() {
+        s.tick(&[]);
+        assert!(Instant::now() < deadline, "guest did not join");
+        thread::yield_now();
+    }
+    s.hub.guests[0].load_timeout = 0;
+    assert!(s.hub.guests[0].client_loaded());
+    let border = horizon_client::worldborder::WorldBorder::default();
+    let at = [8.5, f64::from(MIN_Y + 5), 8.5];
+    let ctx = TickCtx {
+        world: &mut s.world,
+        entities: &[],
+        next_entity: &mut s.next_entity,
+        spawn: at,
+        difficulty: 2,
+        difficulty_locked: false,
+        clock_rate: 1.0,
+        tick_rate: 20.0,
+        tick_frozen: false,
+        tick_steps: Default::default(),
+        collision: None,
+        border: &border,
+        streaming: None,
+    };
+    s.hub.respawn(0, at, &ctx);
+    assert!(
+        !s.hub.guests[0].client_loaded(),
+        "a respawn unloads the client"
+    );
+    // A level change does not clear it: vanilla resets the loaded state on death and respawn
+    // only, and covers a portal with its separate `isChangingDimension` term.
+    s.hub.change_level(0, at, 0.0, None, false, 0, &ctx);
+    assert!(
+        !s.hub.guests[0].client_loaded(),
+        "a level change keeps the cleared state from the respawn"
+    );
+    // The client's ServerboundPlayerLoadedPacket once the new level is in.
+    s.hub.guests[0].inbox.push_back((S::PlayerLoaded(Empty), 0));
+    s.tick(&[]);
+    assert!(
+        s.hub.guests[0].client_loaded(),
+        "the packet marks it loaded"
+    );
+}
+
+/// `tickPlayer`'s vehicle check (BoatFly): the driver of a boat its last accepted move left hovering
+/// over air is kicked once the boat has floated longer than `getMaximumFlyingTicks` (160 ticks at a
+/// boat's gravity), and a move that doesn't float starts the count again.
+#[test]
+fn a_boat_floating_too_long_kicks_its_driver() {
+    let Some(resources) = resources() else {
+        return;
+    };
+    let mut s = server(&resources);
+    let port = s.hub.lan.port;
+    let _bot = run(&mut s, move || connect(port, "Boater", true));
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while s.hub.guests.is_empty() {
+        s.tick(&[]);
+        assert!(Instant::now() < deadline, "guest did not join");
+        thread::yield_now();
+    }
+    let g = &mut s.hub.guests[0];
+    (g.vehicle, g.vehicle_floating, g.vehicle_gravity) = (Some(7), true, 0.04);
+    for _ in 0..100 {
+        s.tick(&[]);
+    }
+    assert_eq!(s.hub.guests[0].above_ground_vehicle_ticks, 100);
+    // The boat touched water: the next floating move counts from zero.
+    s.hub.guests[0].vehicle_floating = false;
+    s.tick(&[]);
+    assert_eq!(s.hub.guests[0].above_ground_vehicle_ticks, 0);
+    s.hub.guests[0].vehicle_floating = true;
+    for _ in 0..160 {
+        s.tick(&[]);
+    }
+    assert!(
+        s.hub.guests[0].left_reason.is_empty(),
+        "160 ticks are a boat's allowance: {}",
+        s.hub.guests[0].left_reason
+    );
+    s.tick(&[]);
+    assert!(
+        !s.hub.guests[0].left_reason.is_empty(),
+        "the 161st floating tick kicks the driver"
+    );
 }

@@ -96,8 +96,13 @@ pub struct Extras {
     pub minimap_rotate: bool,
     /// Retry lost multiplayer connections (`reconnect`).
     pub auto_reconnect: bool,
+    /// Positional sounds leave a few static sound channels free for UI sounds
+    /// and others played to the listener (`sound_engine::HEARD_RESERVE`).
+    pub ui_sound_reserve: bool,
     /// The player's own name tag over its model in third person.
     pub own_name_tag: bool,
+    /// No particles from breaking or mining a block (other particles stay).
+    pub hide_block_particles: bool,
     /// Mouse Tweaks-style drags in the inventory and storage containers.
     pub mouse_tweaks: bool,
     /// With them, the wheel over a slot moves its items one at a time.
@@ -106,13 +111,45 @@ pub struct Extras {
     pub sort: bool,
     /// A vanilla key name: sorts the part under the cursor.
     pub sort_key: String,
+    /// A new chat line slides in from the left while it fades in (`Chat::layout`).
+    pub chat_animation: bool,
+    /// The indicator bar at the left of a chat line (on by default, as vanilla).
+    pub chat_indicator: bool,
     /// No AI: every AI feature hidden and off (`horizon_core::no_ai`; the launcher writes it too).
     pub no_ai: bool,
     /// Agents may control the game the player starts: it opens its control socket for
     /// horizon-ctl and MCP clients (off by default; an agent's own launch always opens it).
     pub agent_control: bool,
+    /// F3+R and F3+E start/stop a repro recording and write its bundle (off by
+    /// default: a recording copies the world).
+    pub repro_keys: bool,
     /// "Playing Horizon" on the player's Discord profile (`discord_presence`; on by default).
     pub discord_presence: bool,
+    /// Another controller can join P1's world (`splitscreen`, off by default).
+    pub splitscreen: bool,
+    /// Two players in one window: 0 auto (side by side when wider than tall), 1 side by side,
+    /// 2 top and bottom (`splitscreenTwo`).
+    pub splitscreen_two: u8,
+    /// Three players on a screen: 0 one wide on top, 1 one tall on the left, 2 side by side
+    /// (`splitscreenThree`).
+    pub splitscreen_three: u8,
+    /// Splitscreen: each player's name in the corner of their view (`splitscreenNames`).
+    pub splitscreen_names: bool,
+    /// The wheel over a cycle button in the settings changes it (`CycleButton.mouseScrolled`,
+    /// on by default as vanilla); off, the wheel only scrolls the list.
+    pub wheel_cycles_settings: bool,
+    /// The built-in music tracks the Music page turned off (sound ids): they
+    /// leave every pool they play in (`musicOff`, empty by default: vanilla's
+    /// random selection).
+    pub music_off: Vec<String>,
+    /// The Music page: the Music... button on Music & Sounds, playing a
+    /// built-in track and leaving the off ones out (`musicPage`, off by
+    /// default: vanilla plays exactly as before).
+    pub music_page: bool,
+    /// Cosmetics (`horizon_cosmetics`, off unless enabled): the player's own, and the other
+    /// players' (`cosmeticsMine`, `cosmeticsOthers`; both on by default).
+    pub cosmetics_mine: bool,
+    pub cosmetics_others: bool,
 }
 impl Default for Extras {
     fn default() -> Self {
@@ -138,14 +175,28 @@ impl Default for Extras {
             minimap_zoom: 1.0,
             minimap_rotate: false,
             auto_reconnect: false,
+            ui_sound_reserve: false,
             own_name_tag: false,
+            hide_block_particles: false,
             mouse_tweaks: false,
             mouse_tweaks_wheel: true,
             sort: false,
             sort_key: "key.keyboard.unknown".into(),
+            chat_animation: false,
+            chat_indicator: true,
             no_ai: false,
             agent_control: false,
+            repro_keys: false,
             discord_presence: true,
+            splitscreen: false,
+            splitscreen_two: 0,
+            splitscreen_three: 0,
+            splitscreen_names: true,
+            wheel_cycles_settings: true,
+            music_off: Vec::new(),
+            music_page: false,
+            cosmetics_mine: true,
+            cosmetics_others: true,
         }
     }
 }
@@ -213,14 +264,35 @@ impl Extras {
                 }
                 "minimapRotate" => e.minimap_rotate = flag(e.minimap_rotate),
                 "autoReconnect" => e.auto_reconnect = flag(e.auto_reconnect),
+                "uiSoundReserve" => e.ui_sound_reserve = flag(e.ui_sound_reserve),
                 "ownNameTag" => e.own_name_tag = flag(e.own_name_tag),
+                "hideBlockParticles" => e.hide_block_particles = flag(e.hide_block_particles),
                 "mouseTweaks" => e.mouse_tweaks = flag(e.mouse_tweaks),
                 "mouseTweaksWheel" => e.mouse_tweaks_wheel = flag(e.mouse_tweaks_wheel),
                 "sort" => e.sort = flag(e.sort),
                 "sortKey" if value.starts_with("key.") => e.sort_key = value.to_owned(),
+                "chatAnimation" => e.chat_animation = flag(e.chat_animation),
+                "chatIndicator" => e.chat_indicator = flag(e.chat_indicator),
                 horizon_core::no_ai::KEY => e.no_ai = flag(e.no_ai),
                 "agentControl" => e.agent_control = flag(e.agent_control),
+                "reproKeys" => e.repro_keys = flag(e.repro_keys),
                 "discordPresence" => e.discord_presence = flag(e.discord_presence),
+                "splitscreen" => e.splitscreen = flag(e.splitscreen),
+                "splitscreenTwo" => e.splitscreen_two = value.parse().unwrap_or(0).min(2),
+                "splitscreenThree" => e.splitscreen_three = value.parse().unwrap_or(0).min(2),
+                "splitscreenNames" => e.splitscreen_names = flag(e.splitscreen_names),
+                "wheelCyclesSettings" => e.wheel_cycles_settings = flag(e.wheel_cycles_settings),
+                "musicOff" => {
+                    e.music_off = value
+                        .split(',')
+                        .map(str::trim)
+                        .filter(|id| !id.is_empty())
+                        .map(str::to_owned)
+                        .collect()
+                }
+                "musicPage" => e.music_page = flag(e.music_page),
+                "cosmeticsMine" => e.cosmetics_mine = flag(e.cosmetics_mine),
+                "cosmeticsOthers" => e.cosmetics_others = flag(e.cosmetics_others),
                 _ => {}
             }
         }
@@ -228,7 +300,7 @@ impl Extras {
     }
     pub fn serialize(&self) -> String {
         format!(
-            "fullbright:{}\ndynamicLights:{}\nzoom:{}\nzoomKey:{}\nzoomLevel:{}\nzoomSmooth:{}\nzoomSensitivity:{}\nfps:{}\nfpsCorner:{}\nfpsLows:{}\nkeystrokes:{}\nkeystrokesCorner:{}\nkeystrokesCps:{}\nmovedToMods:{}\nminimap:{}\nminimapCorner:{}\nminimapSize:{}\nminimapShape:{}\nminimapZoom:{}\nminimapRotate:{}\nautoReconnect:{}\nownNameTag:{}\nmouseTweaks:{}\nmouseTweaksWheel:{}\nsort:{}\nsortKey:{}\n{}:{}\nagentControl:{}\ndiscordPresence:{}\n",
+            "fullbright:{}\ndynamicLights:{}\nzoom:{}\nzoomKey:{}\nzoomLevel:{}\nzoomSmooth:{}\nzoomSensitivity:{}\nfps:{}\nfpsCorner:{}\nfpsLows:{}\nkeystrokes:{}\nkeystrokesCorner:{}\nkeystrokesCps:{}\nmovedToMods:{}\nminimap:{}\nminimapCorner:{}\nminimapSize:{}\nminimapShape:{}\nminimapZoom:{}\nminimapRotate:{}\nautoReconnect:{}\nuiSoundReserve:{}\nownNameTag:{}\nhideBlockParticles:{}\nmouseTweaks:{}\nmouseTweaksWheel:{}\nsort:{}\nsortKey:{}\nchatAnimation:{}\nchatIndicator:{}\n{}:{}\nagentControl:{}\nreproKeys:{}\ndiscordPresence:{}\nsplitscreen:{}\nsplitscreenTwo:{}\nsplitscreenThree:{}\nsplitscreenNames:{}\nwheelCyclesSettings:{}\nmusicOff:{}\nmusicPage:{}\ncosmeticsMine:{}\ncosmeticsOthers:{}\n",
             bool_text(self.fullbright),
             bool_text(self.dynamic_lights),
             bool_text(self.zoom),
@@ -254,15 +326,29 @@ impl Extras {
             self.minimap_zoom,
             bool_text(self.minimap_rotate),
             bool_text(self.auto_reconnect),
+            bool_text(self.ui_sound_reserve),
             bool_text(self.own_name_tag),
+            bool_text(self.hide_block_particles),
             bool_text(self.mouse_tweaks),
             bool_text(self.mouse_tweaks_wheel),
             bool_text(self.sort),
             self.sort_key,
+            bool_text(self.chat_animation),
+            bool_text(self.chat_indicator),
             horizon_core::no_ai::KEY,
             bool_text(self.no_ai),
             bool_text(self.agent_control),
+            bool_text(self.repro_keys),
             bool_text(self.discord_presence),
+            bool_text(self.splitscreen),
+            self.splitscreen_two,
+            self.splitscreen_three,
+            bool_text(self.splitscreen_names),
+            bool_text(self.wheel_cycles_settings),
+            self.music_off.join(","),
+            bool_text(self.music_page),
+            bool_text(self.cosmetics_mine),
+            bool_text(self.cosmetics_others),
         )
     }
     /// Binds the extra key `name` (`SORT_KEY`); false for
@@ -376,74 +462,188 @@ impl Cps {
         self.clicks.len()
     }
 }
+/// Two players sharing a window (`splitscreen_two`): halves this way.
+pub const SPLIT_TWO: [&str; 3] = ["Auto", "Side by side", "Top and bottom"];
+/// Three players sharing a window (`splitscreen_three`).
+pub const SPLIT_THREE: [&str; 3] = ["One wide on top", "One tall on the left", "Side by side"];
 
-#[cfg(not(target_os = "ios"))]
+#[cfg_attr(target_os = "ios", allow(dead_code))]
 mod desktop_ui {
-    use super::*;
+    use super::{Extras, SORT_KEY};
     /// The settings the Extras page shows, one per row.
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     pub enum Item {
         Fullbright,
         DynamicLights,
         OwnNameTag,
+        HideBlockParticles,
         AutoReconnect,
+        UiSoundReserve,
+        /// The Music... page on Music & Sounds (`Music page`).
+        MusicPage,
         MouseTweaks,
         MouseTweaksWheel,
         Sort,
         SortKey,
+        /// A new chat line slides in and fades in (`Chat::layout`).
+        ChatAnimation,
+        /// The coloured bar at the left of a chat line.
+        ChatIndicator,
         /// Not on the Extras page: Horizon Settings shows No AI, its AI Agent page Agent Control.
         NoAi,
         AgentControl,
         /// On the Horizon Settings page.
         DiscordPresence,
+        /// On the AI Agent page, next to Agent Control: the F3 recording shortcuts.
+        ReproKeys,
+        /// On the Splitscreen settings page.
+        Splitscreen,
+        WheelCyclesSettings,
+        /// Shown only while cosmetics are enabled (`horizon_cosmetics::enabled`).
+        CosmeticsMine,
+        CosmeticsOthers,
     }
-    /// The Extras page: headers and items.
+    /// The Extras page: headers (language keys) and items.
     pub fn rows() -> Vec<Result<Item, &'static str>> {
-        use Item::*;
-        vec![
-            Err("Lighting"),
+        use self::Item::*;
+        let mut rows = vec![
+            Err("horizon.extras.header.lighting"),
             Ok(Fullbright),
             Ok(DynamicLights),
-            Err("Third person"),
+            Err("horizon.extras.header.third_person"),
             Ok(OwnNameTag),
-            Err("Inventory"),
+            Err("horizon.extras.header.particles"),
+            Ok(HideBlockParticles),
+            Err("horizon.extras.header.inventory"),
             Ok(MouseTweaks),
             Ok(MouseTweaksWheel),
             Ok(Sort),
             Ok(SortKey),
-            Err("Multiplayer"),
+            Err("horizon.extras.header.chat"),
+            Ok(ChatAnimation),
+            Ok(ChatIndicator),
+            Err("horizon.extras.header.multiplayer"),
             Ok(AutoReconnect),
-        ]
+            Err("horizon.extras.header.sound"),
+            Ok(UiSoundReserve),
+            Ok(MusicPage),
+            Err("horizon.extras.header.menus"),
+            Ok(WheelCyclesSettings),
+        ];
+        if horizon_cosmetics::enabled() {
+            rows.extend([
+                Err("horizon.extras.header.cosmetics"),
+                Ok(CosmeticsMine),
+                Ok(CosmeticsOthers),
+            ]);
+        }
+        rows
     }
     impl Item {
+        /// The language key of the caption (`horizon.*`, assets/horizon/lang).
+        pub fn caption_key(self) -> &'static str {
+            match self {
+                Item::Fullbright => "horizon.extras.fullbright",
+                Item::DynamicLights => "horizon.extras.dynamic_lights",
+                Item::OwnNameTag => "horizon.extras.own_name_tag",
+                Item::HideBlockParticles => "horizon.extras.hide_block_particles",
+                Item::AutoReconnect => "horizon.extras.auto_reconnect",
+                Item::UiSoundReserve => "horizon.extras.ui_sound_reserve",
+                Item::MusicPage => "horizon.extras.music_page",
+                Item::MouseTweaks => "horizon.extras.mouse_tweaks",
+                Item::MouseTweaksWheel => "horizon.extras.mouse_tweaks_wheel",
+                Item::Sort => "horizon.extras.sort",
+                Item::SortKey => "horizon.extras.sort_key",
+                Item::NoAi => "horizon.extras.no_ai",
+                Item::AgentControl => "horizon.extras.agent_control",
+                Item::ReproKeys => "horizon.extras.repro_keys",
+                Item::DiscordPresence => "horizon.extras.discord_presence",
+                Item::Splitscreen => "horizon.extras.splitscreen",
+                Item::ChatAnimation => "horizon.extras.chat_animation",
+                Item::ChatIndicator => "horizon.extras.chat_indicator",
+                Item::WheelCyclesSettings => "horizon.extras.wheel_cycles_settings",
+                Item::CosmeticsMine => "horizon.extras.cosmetics_mine",
+                Item::CosmeticsOthers => "horizon.extras.cosmetics_others",
+            }
+        }
+        /// The language key of the description shown as the row's tooltip.
+        pub fn description_key(self) -> &'static str {
+            match self {
+                Item::Fullbright => "horizon.extras.fullbright.tooltip",
+                Item::DynamicLights => "horizon.extras.dynamic_lights.tooltip",
+                Item::OwnNameTag => "horizon.extras.own_name_tag.tooltip",
+                Item::HideBlockParticles => "horizon.extras.hide_block_particles.tooltip",
+                Item::AutoReconnect => "horizon.extras.auto_reconnect.tooltip",
+                Item::UiSoundReserve => "horizon.extras.ui_sound_reserve.tooltip",
+                Item::MusicPage => "horizon.extras.music_page.tooltip",
+                Item::MouseTweaks => "horizon.extras.mouse_tweaks.tooltip",
+                Item::MouseTweaksWheel => "horizon.extras.mouse_tweaks_wheel.tooltip",
+                Item::Sort => "horizon.extras.sort.tooltip",
+                Item::SortKey => "horizon.extras.sort_key.tooltip",
+                Item::NoAi => "horizon.extras.no_ai.tooltip",
+                Item::AgentControl => "horizon.extras.agent_control.tooltip",
+                Item::ReproKeys => "horizon.extras.repro_keys.tooltip",
+                Item::DiscordPresence => "horizon.extras.discord_presence.tooltip",
+                Item::Splitscreen => "horizon.extras.splitscreen.tooltip",
+                Item::ChatAnimation => "horizon.extras.chat_animation.tooltip",
+                Item::ChatIndicator => "horizon.extras.chat_indicator.tooltip",
+                Item::WheelCyclesSettings => "horizon.extras.wheel_cycles_settings.tooltip",
+                Item::CosmeticsMine => "horizon.extras.cosmetics_mine.tooltip",
+                Item::CosmeticsOthers => "horizon.extras.cosmetics_others.tooltip",
+            }
+        }
+        /// The caption in the current language (English when the key is missing).
+        pub fn caption_text(self) -> String {
+            crate::lang::get_or(self.caption_key(), self.caption())
+        }
+        /// The description in the current language (English when the key is missing).
+        pub fn description_text(self) -> String {
+            crate::lang::get_or(self.description_key(), self.description())
+        }
+        /// The English caption: the fallback of [`Item::caption_text`], and the text of
+        /// `horizon.extras.*` in en_us.json.
         pub fn caption(self) -> &'static str {
             match self {
                 Item::Fullbright => "Fullbright",
                 Item::DynamicLights => "Dynamic lights",
                 Item::OwnNameTag => "Own name tag",
+                Item::HideBlockParticles => "Hide block-break particles",
                 Item::AutoReconnect => "Auto-reconnect",
+                Item::UiSoundReserve => "Keep channels for UI sounds",
+                Item::MusicPage => "Music page",
                 Item::MouseTweaks => "Mouse Tweaks controls",
                 Item::MouseTweaksWheel => "Scroll wheel moves items",
                 Item::Sort => "Sort buttons",
                 Item::SortKey => "Sort key",
+                Item::ChatAnimation => "Smooth chat",
+                Item::ChatIndicator => "Message indicator",
                 Item::NoAi => "No AI",
                 Item::AgentControl => "Agent Control",
+                Item::ReproKeys => "Recording shortcuts",
                 Item::DiscordPresence => "Discord Rich Presence",
+                Item::Splitscreen => "Splitscreen",
+                Item::WheelCyclesSettings => "Scroll wheel changes settings",
+                Item::CosmeticsMine => "My cosmetics",
+                Item::CosmeticsOthers => "Other players' cosmetics",
             }
         }
         /// The switch this setting belongs to: it does nothing while that is off.
         pub fn parent(self) -> Option<Item> {
-            use Item::*;
+            use self::Item::*;
             Some(match self {
+                UiSoundReserve => return None,
                 MouseTweaksWheel => MouseTweaks,
                 SortKey => Sort,
-                Fullbright | DynamicLights | OwnNameTag | MouseTweaks | Sort | AutoReconnect
-                | NoAi | AgentControl | DiscordPresence => {
+                ChatIndicator => ChatAnimation,
+                Fullbright | DynamicLights | OwnNameTag | HideBlockParticles | MouseTweaks
+                | Sort | AutoReconnect | NoAi | AgentControl | ReproKeys | DiscordPresence
+                | Splitscreen | ChatAnimation | WheelCyclesSettings | MusicPage | CosmeticsMine
+                | CosmeticsOthers => {
                     return None;
                 }
             })
         }
-        /// What the row says under its caption.
+        /// The English description: the fallback of [`Item::description_text`].
         pub fn description(self) -> &'static str {
             match self {
                 Item::Fullbright => "Show blocks and entities at full light, even in dark areas.",
@@ -453,8 +653,17 @@ mod desktop_ui {
                 Item::OwnNameTag => {
                     "Shows your name above your head in third person, as other players see it. Hidden when the server hides your team's names or you're invisible."
                 }
+                Item::HideBlockParticles => {
+                    "Hides the debris particles that burst from a broken block and crumble off the one you mine. Other particles stay."
+                }
                 Item::AutoReconnect => {
                     "Rejoins a server after a lost connection or a restart, never after a kick or ban."
+                }
+                Item::UiSoundReserve => {
+                    "Sounds in the world leave 16 of the 247 sound channels free, so a flood of them (a big explosion) can't silence menu clicks."
+                }
+                Item::MusicPage => {
+                    "Music & Sounds gets a Music... page: play any built-in track now, or turn one off so the game stops picking it. Nothing changes until you turn a track off."
                 }
                 Item::MouseTweaks => {
                     "Right-drag places one per slot, left-drag gathers the held item, Shift + left-drag moves every slot."
@@ -468,14 +677,33 @@ mod desktop_ui {
                 Item::SortKey => {
                     "Sorts the part under the cursor. Click, then press a key; Escape unbinds it."
                 }
+                Item::ChatAnimation => {
+                    "A new chat line slides in from the left while it fades in, instead of appearing whole."
+                }
+                Item::ChatIndicator => "The coloured bar at the left of a chat line.",
                 Item::NoAi => {
                     "Hides and turns off every AI feature: agent control, horizon-ctl and the MCP servers. The launcher's switch too."
                 }
                 Item::DiscordPresence => {
                     "Shows Playing Horizon on your Discord profile while Discord runs: menus, single player or multiplayer, the dimension and the time played. Never a world's name or a server's address."
                 }
+                Item::Splitscreen => {
+                    "In a world, another controller can join as a new player: press A when it asks, then pick a profile and where to play."
+                }
                 Item::AgentControl => {
                     "Your own AI agent can play this game through horizon-ctl or an MCP client, on this computer only."
+                }
+                Item::ReproKeys => {
+                    "F3+R starts or stops a repro recording and F3+E writes its bundle. Off by default: a recording copies the world."
+                }
+                Item::CosmeticsMine => {
+                    "Shows the cosmetics you wear on your own player, in third person and the inventory."
+                }
+                Item::CosmeticsOthers => {
+                    "Shows the cosmetics other Horizon players wear. Off, the game never asks what they wear."
+                }
+                Item::WheelCyclesSettings => {
+                    "The scroll wheel over a button in the settings changes its value, as in vanilla. Off, the wheel only scrolls the list."
                 }
             }
         }
@@ -484,10 +712,18 @@ mod desktop_ui {
             use crate::graphics_style::Cost;
             match self {
                 Item::Fullbright => Some(Cost::None),
+                Item::UiSoundReserve => Some(Cost::None),
+                Item::MusicPage => Some(Cost::None),
                 Item::DynamicLights => Some(Cost::Low),
-                Item::OwnNameTag | Item::AutoReconnect | Item::MouseTweaks | Item::Sort => {
-                    Some(Cost::None)
-                }
+                Item::ChatAnimation => Some(Cost::None),
+                Item::OwnNameTag
+                | Item::HideBlockParticles
+                | Item::AutoReconnect
+                | Item::MouseTweaks
+                | Item::Sort
+                | Item::Splitscreen
+                | Item::WheelCyclesSettings => Some(Cost::None),
+                Item::CosmeticsMine | Item::CosmeticsOthers => Some(Cost::Low),
                 _ => None,
             }
         }
@@ -497,13 +733,23 @@ mod desktop_ui {
                 Item::Fullbright => e.fullbright,
                 Item::DynamicLights => e.dynamic_lights,
                 Item::OwnNameTag => e.own_name_tag,
+                Item::HideBlockParticles => e.hide_block_particles,
                 Item::AutoReconnect => e.auto_reconnect,
+                Item::UiSoundReserve => e.ui_sound_reserve,
+                Item::MusicPage => e.music_page,
                 Item::MouseTweaks => e.mouse_tweaks,
                 Item::MouseTweaksWheel => e.mouse_tweaks_wheel,
                 Item::Sort => e.sort,
+                Item::ChatAnimation => e.chat_animation,
+                Item::ChatIndicator => e.chat_indicator,
                 Item::NoAi => e.no_ai,
                 Item::AgentControl => e.agent_control,
+                Item::ReproKeys => e.repro_keys,
                 Item::DiscordPresence => e.discord_presence,
+                Item::Splitscreen => e.splitscreen,
+                Item::WheelCyclesSettings => e.wheel_cycles_settings,
+                Item::CosmeticsMine => e.cosmetics_mine,
+                Item::CosmeticsOthers => e.cosmetics_others,
                 _ => return None,
             })
         }
@@ -512,8 +758,8 @@ mod desktop_ui {
             match self {
                 Item::SortKey => crate::keybinds::display_name(&e.sort_key).plain(),
                 other => match other.switch(e) {
-                    Some(true) => "On".into(),
-                    _ => "Off".into(),
+                    Some(true) => crate::lang::get_or("On", "On"),
+                    _ => crate::lang::get_or("Off", "Off"),
                 },
             }
         }
@@ -524,13 +770,23 @@ mod desktop_ui {
                 Item::Fullbright => e.fullbright = !e.fullbright,
                 Item::DynamicLights => e.dynamic_lights = !e.dynamic_lights,
                 Item::OwnNameTag => e.own_name_tag = !e.own_name_tag,
+                Item::HideBlockParticles => e.hide_block_particles = !e.hide_block_particles,
                 Item::AutoReconnect => e.auto_reconnect = !e.auto_reconnect,
+                Item::UiSoundReserve => e.ui_sound_reserve = !e.ui_sound_reserve,
+                Item::MusicPage => e.music_page = !e.music_page,
                 Item::MouseTweaks => e.mouse_tweaks = !e.mouse_tweaks,
                 Item::MouseTweaksWheel => e.mouse_tweaks_wheel = !e.mouse_tweaks_wheel,
                 Item::Sort => e.sort = !e.sort,
+                Item::ChatAnimation => e.chat_animation = !e.chat_animation,
+                Item::ChatIndicator => e.chat_indicator = !e.chat_indicator,
                 Item::NoAi => e.no_ai = !e.no_ai,
                 Item::AgentControl => e.agent_control = !e.agent_control,
+                Item::ReproKeys => e.repro_keys = !e.repro_keys,
                 Item::DiscordPresence => e.discord_presence = !e.discord_presence,
+                Item::Splitscreen => e.splitscreen = !e.splitscreen,
+                Item::WheelCyclesSettings => e.wheel_cycles_settings = !e.wheel_cycles_settings,
+                Item::CosmeticsMine => e.cosmetics_mine = !e.cosmetics_mine,
+                Item::CosmeticsOthers => e.cosmetics_others = !e.cosmetics_others,
                 Item::SortKey => {}
             }
         }
@@ -555,7 +811,6 @@ mod native_ios;
 pub use native_ios::{
     ZOOM_KEY, ZOOM_LEVELS, ZOOM_MAX, ZOOM_MIN, Zoom, turn_scale, zoom_key_conflicts,
 };
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -565,8 +820,10 @@ mod tests {
         let d = Extras::default();
         assert!(!d.fullbright && !d.dynamic_lights);
         assert!(!d.zoom && !d.fps && !d.keystrokes && !d.minimap && !d.auto_reconnect);
-        assert!(!d.mouse_tweaks && !d.sort && !d.own_name_tag);
-        assert!(d.discord_presence);
+        assert!(!d.mouse_tweaks && !d.sort && !d.own_name_tag && !d.ui_sound_reserve);
+        assert!(!d.hide_block_particles);
+        assert!(!d.music_page && d.music_off.is_empty());
+        assert!(d.discord_presence && d.wheel_cycles_settings);
         assert_eq!(Extras::parse(""), d);
         assert_eq!(Extras::parse(&d.serialize()), d);
         let mut e = d.clone();
@@ -591,11 +848,31 @@ mod tests {
         e.auto_reconnect = true;
         Item::OwnNameTag.cycle(&mut e, false);
         assert_eq!(Item::OwnNameTag.switch(&e), Some(true));
+        assert_eq!(Item::HideBlockParticles.switch(&e), Some(false));
+        Item::HideBlockParticles.cycle(&mut e, false);
+        assert!(e.hide_block_particles);
+        assert_eq!(Item::HideBlockParticles.switch(&e), Some(true));
+        let only = Extras::parse("hideBlockParticles:true\n");
+        assert!(only.hide_block_particles && !only.own_name_tag);
         e.mouse_tweaks = true;
         e.mouse_tweaks_wheel = false;
         e.sort = true;
         e.sort_key = "key.keyboard.r".into();
+        e.chat_animation = true;
+        e.chat_indicator = false;
         e.discord_presence = false;
+        assert!(!e.splitscreen);
+        Item::Splitscreen.cycle(&mut e, false);
+        assert_eq!(Item::Splitscreen.switch(&e), Some(true));
+        Item::WheelCyclesSettings.cycle(&mut e, false);
+        assert_eq!(Item::WheelCyclesSettings.switch(&e), Some(false));
+        e.music_off = vec![
+            "minecraft:music/game/calm1".into(),
+            "minecraft:music.menu".into(),
+        ];
+        assert!(!e.music_page);
+        Item::MusicPage.cycle(&mut e, false);
+        assert_eq!(Item::MusicPage.switch(&e), Some(true));
         assert_eq!(Extras::parse(&e.serialize()), e);
     }
 

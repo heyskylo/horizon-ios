@@ -25,32 +25,47 @@ static PENDING: Mutex<Pending> = Mutex::new(Pending {
     save_failure: None,
 });
 
+impl Pending {
+    /// `reportChunkLoadFailure` after `warnOnLowDiskSpace` found `low_disk_space`.
+    fn load_failed(&mut self, x: i32, z: i32, low_disk_space: bool) {
+        self.low_disk_space |= low_disk_space;
+        self.load_failure = Some((x, z));
+    }
+
+    /// `reportChunkSaveFailure` after `warnOnLowDiskSpace` found `low_disk_space`.
+    fn save_failed(&mut self, x: i32, z: i32, low_disk_space: bool) {
+        self.low_disk_space |= low_disk_space;
+        self.save_failure = Some((x, z));
+    }
+}
+
 fn with(update: impl FnOnce(&mut Pending)) {
     let mut pending = PENDING.lock().unwrap_or_else(|e| e.into_inner());
     update(&mut pending);
 }
 
 /// `MinecraftServer.warnOnLowDiskSpace` for the world folder `dir`.
-fn warn_on_low_disk_space(dir: &Path) {
-    if save::low_disk_space(dir) {
+fn warn_on_low_disk_space(dir: &Path) -> bool {
+    let low = save::low_disk_space(dir);
+    if low {
         // `MinecraftServer.sendLowDiskSpaceWarning`.
         log::warn!("Low disk space! Might not be able to save the world.");
-        with(|p| p.low_disk_space = true);
     }
+    low
 }
 
 /// `reportChunkLoadFailure` for the chunk at (`x`, `z`) of the dimension in `dir`.
 pub fn report_load_failure(dir: &Path, x: i32, z: i32, error: &dyn std::fmt::Display) {
     log::error!("Failed to load chunk {x},{z}: {error}");
-    warn_on_low_disk_space(dir);
-    with(|p| p.load_failure = Some((x, z)));
+    let low = warn_on_low_disk_space(dir);
+    with(|p| p.load_failed(x, z, low));
 }
 
 /// `reportChunkSaveFailure`.
 pub fn report_save_failure(dir: &Path, x: i32, z: i32, error: &dyn std::fmt::Display) {
     log::error!("Failed to save chunk {x},{z}: {error}");
-    warn_on_low_disk_space(dir);
-    with(|p| p.save_failure = Some((x, z)));
+    let low = warn_on_low_disk_space(dir);
+    with(|p| p.save_failed(x, z, low));
 }
 
 /// `Minecraft.sendLowDiskSpaceWarning`: a server's `ClientboundLowDiskSpaceWarningPacket`
@@ -103,28 +118,40 @@ pub fn save_failure_toast(x: i32, z: i32) -> SystemToast {
 mod tests {
     use super::*;
 
+    // These tests keep off `PENDING` where they can: the save tests run in
+    // the same process and report their own chunk failures into it (#4854).
     #[test]
     fn failures_keep_the_newest_chunk_of_each_kind() {
-        let _ = take();
-        let missing = Path::new("/nonexistent-horizon-world");
-        report_load_failure(missing, 1, 2, &"a");
-        report_load_failure(missing, 3, 4, &"b");
-        report_save_failure(missing, 5, 6, &"c");
-        // A folder that cannot be asked has no low-space warning.
+        let mut pending = Pending::default();
+        pending.load_failed(1, 2, false);
+        pending.load_failed(3, 4, false);
+        pending.save_failed(5, 6, false);
         assert_eq!(
-            take(),
+            pending,
             Pending {
                 low_disk_space: false,
                 load_failure: Some((3, 4)),
                 save_failure: Some((5, 6)),
             }
         );
-        assert_eq!(take(), Pending::default());
+        // A later failure on a full disk raises the warning, and one with
+        // space left does not lower it.
+        pending.save_failed(7, 8, true);
+        pending.load_failed(9, 10, false);
+        assert_eq!(
+            pending,
+            Pending {
+                low_disk_space: true,
+                load_failure: Some((9, 10)),
+                save_failure: Some((7, 8)),
+            }
+        );
     }
 
+    /// The only test that drains `PENDING`; other tests only add to it, so
+    /// the flag it raises is still there when it takes it.
     #[test]
     fn a_servers_warning_packet_toasts_low_disk_space() {
-        let _ = take();
         report_low_disk_space();
         assert!(take().low_disk_space);
     }

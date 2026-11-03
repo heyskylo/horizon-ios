@@ -214,6 +214,10 @@ impl Game<'_> {
             at = [at[0] + dx, at[1] + dy, at[2] + dz];
         }
         let pitch = self.world.random.next_float() * 0.1 + 0.9;
+        // A server's `playSound(null, …)`: every player around, the opener too.
+        // `Audio::play` captures the sound while the world is open to the
+        // network and `lan_broadcast_effects` sends that tick to every guest,
+        // so nothing is queued separately (a second queue played it twice).
         self.audio.play(sound, Some(at), 0.5, pitch);
     }
     /// The open or close sound of the container block at `key`, if it has one.
@@ -423,6 +427,7 @@ impl Game<'_> {
                 )
                 .resolve_legacy()
             });
+            super::screen_info::name_container(|| title.plain());
             batch.text_styled(atlas, &title, ox + 8.0, oy + 6.0, grey, false);
             let inventory = self.translate("container.inventory", "Inventory");
             batch.text(atlas, &inventory, ox + 8.0, oy + 73.0, grey, false);
@@ -445,14 +450,9 @@ impl Game<'_> {
             r.u1 = r.u0 + 176.0 * du;
             batch.rect_uv(ox, oy + top, 176.0, 96.0, r, u32::MAX);
         }
-        batch.text_styled(
-            atlas,
-            &self.chest_title(rows),
-            ox + 8.0,
-            oy + 6.0,
-            grey,
-            false,
-        );
+        let title = self.chest_title(rows);
+        super::screen_info::name_container(|| title.plain());
+        batch.text_styled(atlas, &title, ox + 8.0, oy + 6.0, grey, false);
         let inventory = self.translate("container.inventory", "Inventory");
         batch.text(
             atlas,

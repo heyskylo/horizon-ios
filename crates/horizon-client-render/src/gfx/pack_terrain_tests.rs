@@ -369,6 +369,7 @@ impl Gpu {
             vec![Some(vertex), Some(instance)]
         };
         let world = World {
+            gui_size: [1, 1],
             adapter: &self.adapter,
             atlas: Some((self.atlas.view.clone(), self.atlas.size())),
             lightmap: texture(
@@ -471,7 +472,7 @@ impl Gpu {
                 [SIDE; 2],
                 [SIDE; 2],
                 &handles,
-                &mut |rp, list, page| terrain.draw(pages, rp, list, page),
+                &mut |rp, list, page, _geometry| terrain.draw(pages, rp, list, page),
             );
             encoder.copy_texture_to_buffer(
                 self.screen.as_image_copy(),
@@ -897,6 +898,33 @@ fn terrain_lighting_policy_and_corner_ao_reach_gl_color_on_metal() {
                     pixel[3]
                 );
             }
+        }
+    }
+}
+
+#[test]
+#[ignore = "requires a Metal adapter; run explicitly on macOS"]
+fn colorless_geometry_program_preserves_its_depth_writes() {
+    let gpu = Gpu::open();
+    let pack = lighting_pack(false, false, 1.0);
+    std::fs::write(
+        pack.0.join("shaders/gbuffers_terrain.fsh"),
+        "#version 330 compatibility\nvoid main() {}\n",
+    )
+    .unwrap();
+    std::fs::write(pack.0.join("shaders/final.fsh"),
+        "#version 330 compatibility\nuniform sampler2D depthtex0;\nin vec2 texcoord;\nvoid main(){float d=texture(depthtex0,texcoord).r;gl_FragColor=vec4(d,d,d,1.0);}\n").unwrap();
+    let mut post = gpu.post(&pack, None);
+    let terrain = gpu.terrain(None);
+    let page = lighting_page(&gpu, [128; 4]);
+    let pixels = gpu.frame(&mut post, &terrain, &[page], "colorless geometry");
+    for row in pixels {
+        for pixel in row {
+            assert_eq!(
+                pixel,
+                [128, 128, 128, 255],
+                "the geometry must write GL depth 0.5"
+            );
         }
     }
 }

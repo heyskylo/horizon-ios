@@ -35,6 +35,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "aes"
+version = "0.8.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b169f7a6d4742236a0a00c541b845991d0ac43e546831af1249753ab4c3aa3a0"
+dependencies = [
+ "cfg-if",
+ "cipher",
+ "cpufeatures",
+]
+
+[[package]]
 name = "ahash"
 version = "0.8.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -45,6 +56,15 @@ dependencies = [
  "once_cell",
  "version_check",
  "zerocopy",
+]
+
+[[package]]
+name = "aho-corasick"
+version = "1.1.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c982642fa9e8606056828ee9a8505737230110bb1099153c79efe865c59d12ba"
+dependencies = [
+ "memchr",
 ]
 
 [[package]]
@@ -116,15 +136,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "73cd58deff2140a0a8eae87e417bd01db68a33e148aa93d1e8cd837e55e312b6"
 dependencies = [
  "object",
-]
-
-[[package]]
-name = "arbitrary"
-version = "1.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3bc62ac97cc33321f50863d514c3bc38a453947a8f9e781137e47c7401020aed"
-dependencies = [
- "derive_arbitrary",
 ]
 
 [[package]]
@@ -598,17 +609,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0c87e182de0887fd5361989c677c4e8f5000cd9491d6d563161a8f3a5519fc7f"
 
 [[package]]
-name = "derive_arbitrary"
-version = "1.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1b034bd7d5f032402a2479444dcc6f74e36a03f31854d41680fb240ef682a1ac"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 3.0.6",
-]
-
-[[package]]
 name = "digest"
 version = "0.10.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -769,6 +769,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "fnv"
+version = "1.0.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3f9eec918d3f24069decb9af1554cad7c880e2da24a9afd88aca000531ab82c1"
+
+[[package]]
 name = "foldhash"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -900,8 +906,44 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "300e883d756b2e4ec94e02791f39b04b522276138852cfc41d9fb7e904106099"
 dependencies = [
  "cfg-if",
+ "js-sys",
  "libc",
  "r-efi 6.0.0",
+ "wasm-bindgen",
+]
+
+[[package]]
+name = "gilrs"
+version = "0.11.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "902fb00d3f6398e635be22e5c837b303c501835cca7ac11a47bba138f7aafdd8"
+dependencies = [
+ "fnv",
+ "gilrs-core",
+ "log",
+ "uuid",
+ "vec_map",
+]
+
+[[package]]
+name = "gilrs-core"
+version = "0.6.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dc7f0ce6237abcc0523f2a5502b1e3fe5802daaae47ac14e166fe49551301ea9"
+dependencies = [
+ "inotify",
+ "js-sys",
+ "libc",
+ "libudev-sys",
+ "log",
+ "nix",
+ "objc2-core-foundation",
+ "objc2-io-kit",
+ "uuid",
+ "vec_map",
+ "wasm-bindgen",
+ "web-sys",
+ "windows 0.62.2",
 ]
 
 [[package]]
@@ -1006,6 +1048,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e17592d60ebacc7d5e169f4663c5f84f9161cc90328abcfe8456f41e4dfcb284"
 
 [[package]]
+name = "hidapi"
+version = "2.6.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "818c0e1d27887aaf76fe737042e27a66b796a7b099e6d2e1a72d106c2dff3fa6"
+dependencies = [
+ "cc",
+ "cfg-if",
+ "libc",
+ "pkg-config",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "hkdf"
 version = "0.12.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1038,33 +1093,60 @@ dependencies = [
 name = "horizon-android"
 version = "0.1.0"
 dependencies = [
+ "ab_glyph",
+ "bytemuck",
  "chrono",
+ "flate2",
+ "fs4",
+ "gilrs",
  "glam",
  "horizon-airplay",
  "horizon-anticheat",
  "horizon-assets",
  "horizon-bench",
- "horizon-client",
+ "horizon-chat-filter",
+ "horizon-client-core",
+ "horizon-client-input",
+ "horizon-client-lib",
+ "horizon-client-render",
+ "horizon-command",
  "horizon-core",
+ "horizon-cosmetics",
+ "horizon-dualsense",
  "horizon-friends",
  "horizon-gamecontroller",
+ "horizon-hdr",
  "horizon-ios-launcher",
  "horizon-items",
  "horizon-mods",
+ "horizon-narrator",
+ "horizon-optifine",
  "horizon-protocol",
+ "horizon-server-files",
  "horizon-shader-api",
  "horizon-shaders",
  "horizon-telemetry",
+ "horizon-theme",
  "horizon-threads",
  "horizon-world",
+ "java_regex",
  "log",
+ "miniz_oxide 0.8.9",
+ "naga",
+ "png",
  "pollster",
  "rustix 1.1.5",
  "serde",
  "serde_json",
+ "sha1",
+ "sha2",
  "stacker",
+ "unicode-bidi",
+ "unicode_names2",
+ "ureq",
  "wgpu",
  "winit",
+ "zip",
 ]
 
 [[package]]
@@ -1094,59 +1176,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "horizon-client"
+name = "horizon-chat-filter"
 version = "0.1.0"
 dependencies = [
- "ab_glyph",
- "arboard",
- "bytemuck",
- "chrono",
- "flate2",
- "fs4",
- "glam",
- "horizon-airplay",
- "horizon-anticheat",
- "horizon-assets",
- "horizon-bench",
- "horizon-client-core",
- "horizon-client-input",
- "horizon-client-render",
- "horizon-command",
- "horizon-core",
- "horizon-friends",
- "horizon-gamecontroller",
- "horizon-hdr",
- "horizon-ios-launcher",
- "horizon-items",
- "horizon-mods",
- "horizon-protocol",
- "horizon-server-files",
- "horizon-shader-api",
- "horizon-shaders",
- "horizon-telemetry",
- "horizon-theme",
- "horizon-threads",
- "horizon-world",
- "java_regex",
- "log",
- "miniz_oxide 0.8.9",
- "naga",
- "open",
- "png",
- "pollster",
- "rustix 1.1.5",
  "serde",
  "serde_json",
- "sha1",
- "sha2",
- "stacker",
- "unicode-bidi",
- "unicode_names2",
- "ureq",
- "wgpu",
- "winit",
- "winresource",
- "zip",
+ "toml",
 ]
 
 [[package]]
@@ -1170,6 +1205,64 @@ dependencies = [
 ]
 
 [[package]]
+name = "horizon-client-lib"
+version = "0.1.0"
+dependencies = [
+ "ab_glyph",
+ "bytemuck",
+ "chrono",
+ "flate2",
+ "fs4",
+ "glam",
+ "horizon-anticheat",
+ "horizon-assets",
+ "horizon-bench",
+ "horizon-chat-filter",
+ "horizon-client-core",
+ "horizon-client-input",
+ "horizon-client-render",
+ "horizon-command",
+ "horizon-core",
+ "horizon-friends",
+ "horizon-hdr",
+ "horizon-ios-launcher",
+ "horizon-items",
+ "horizon-mcp",
+ "horizon-mods",
+ "horizon-narrator",
+ "horizon-optifine",
+ "horizon-protocol",
+ "horizon-server-files",
+ "horizon-shader-api",
+ "horizon-shaders",
+ "horizon-telemetry",
+ "horizon-theme",
+ "horizon-threads",
+ "horizon-world",
+ "java_regex",
+ "log",
+ "miniz_oxide 0.8.9",
+ "naga",
+ "objc2 0.6.5",
+ "objc2-app-kit 0.3.2",
+ "objc2-foundation 0.3.2",
+ "open",
+ "png",
+ "pollster",
+ "rustix 1.1.5",
+ "serde",
+ "serde_json",
+ "sha1",
+ "sha2",
+ "unicode-bidi",
+ "unicode_names2",
+ "ureq",
+ "wgpu",
+ "winit",
+ "zip",
+]
+
+[[package]]
 name = "horizon-client-render"
 version = "0.1.0"
 dependencies = [
@@ -1180,14 +1273,18 @@ dependencies = [
  "cpal",
  "flate2",
  "glam",
+ "half",
  "horizon-assets",
  "horizon-bench",
  "horizon-client-core",
  "horizon-client-input",
  "horizon-command",
  "horizon-core",
+ "horizon-cosmetics",
  "horizon-hdr",
  "horizon-items",
+ "horizon-narrator",
+ "horizon-optifine",
  "horizon-protocol",
  "horizon-shader-api",
  "horizon-shaders",
@@ -1196,6 +1293,7 @@ dependencies = [
  "horizon-threads",
  "horizon-world",
  "log",
+ "lz4_flex",
  "miniz_oxide 0.8.9",
  "naga",
  "png",
@@ -1205,6 +1303,7 @@ dependencies = [
  "serde_json",
  "sha1",
  "sha2",
+ "smallvec",
  "stacker",
  "symphonia",
  "unicode-bidi",
@@ -1231,10 +1330,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "horizon-cosmetics"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "glam",
+ "png",
+ "serde",
+ "serde_json",
+ "ureq",
+]
+
+[[package]]
 name = "horizon-dnssd"
 version = "0.1.0"
 dependencies = [
  "libc",
+]
+
+[[package]]
+name = "horizon-dualsense"
+version = "0.1.0"
+dependencies = [
+ "cpal",
+ "hidapi",
+ "log",
 ]
 
 [[package]]
@@ -1288,7 +1408,15 @@ dependencies = [
  "horizon-client-core",
  "horizon-core",
  "horizon-world",
+ "log",
  "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "horizon-mcp"
+version = "0.1.0"
+dependencies = [
  "serde_json",
 ]
 
@@ -1308,9 +1436,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "horizon-narrator"
+version = "0.1.0"
+dependencies = [
+ "libloading",
+ "log",
+ "objc2 0.6.5",
+ "objc2-app-kit 0.3.2",
+ "objc2-foundation 0.3.2",
+ "windows 0.62.2",
+]
+
+[[package]]
+name = "horizon-optifine"
+version = "0.1.0"
+dependencies = [
+ "horizon-core",
+ "log",
+ "regex",
+]
+
+[[package]]
 name = "horizon-protocol"
 version = "0.1.0"
 dependencies = [
+ "aes",
  "flate2",
  "getrandom 0.3.4",
  "horizon-core",
@@ -1340,6 +1490,7 @@ version = "0.1.0"
 dependencies = [
  "bytemuck",
  "naga",
+ "png",
  "serde",
  "serde_json",
  "sha2",
@@ -1351,8 +1502,10 @@ dependencies = [
 name = "horizon-shaders"
 version = "0.1.0"
 dependencies = [
+ "half",
  "horizon-core",
  "naga",
+ "png",
  "zip",
 ]
 
@@ -1388,6 +1541,7 @@ dependencies = [
  "flate2",
  "horizon-core",
  "libm",
+ "log",
  "lz4_flex",
  "postcard",
  "serde",
@@ -1544,6 +1698,26 @@ dependencies = [
  "hashbrown 0.17.1",
  "serde",
  "serde_core",
+]
+
+[[package]]
+name = "inotify"
+version = "0.11.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4cc00ea907cab49550b7da656f80ebb97be1b997d931fbcd28d39734e17ce592"
+dependencies = [
+ "bitflags 2.13.2",
+ "inotify-sys",
+ "libc",
+]
+
+[[package]]
+name = "inotify-sys"
+version = "0.1.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c033f80b2c113cdf91ab7a33faa9cbc014726dcad99880c8609af2a370edf37d"
+dependencies = [
+ "libc",
 ]
 
 [[package]]
@@ -1746,8 +1920,6 @@ checksum = "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981"
 [[package]]
 name = "libmimalloc-sys"
 version = "0.1.49"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6a45a52f43e1c16f667ccfe4dd8c85b7f7c204fd5e3bf46c5b0db9a5c3c0b8e9"
 dependencies = [
  "cc",
  "cty",
@@ -1763,6 +1935,16 @@ dependencies = [
  "libc",
  "plain",
  "redox_syscall 0.9.4",
+]
+
+[[package]]
+name = "libudev-sys"
+version = "0.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3c8469b4a23b962c1396b9b451dda50ef5b283e8dd309d69033475fa9b334324"
+dependencies = [
+ "libc",
+ "pkg-config",
 ]
 
 [[package]]
@@ -1878,8 +2060,6 @@ checksum = "743fb55ba31b18fb1ecef6bdc9aa2743314978ac084044301a7eee33fb99a20d"
 [[package]]
 name = "naga"
 version = "30.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a616d2fb8c89516ac2723a581f69d6c18576046bed761bd6b305e5618e6ae130"
 dependencies = [
  "arrayvec",
  "bit-set",
@@ -1942,6 +2122,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ee6cda3051665f1fb8d9e08fc35c96d5a244fb1be711a03b71118828afc9a873"
 dependencies = [
  "jni-sys 0.3.1",
+]
+
+[[package]]
+name = "nix"
+version = "0.31.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cf20d2fde8ff38632c426f1165ed7436270b44f199fc55284c38276f9db47c3d"
+dependencies = [
+ "bitflags 2.13.2",
+ "cfg-if",
+ "cfg_aliases",
+ "libc",
 ]
 
 [[package]]
@@ -2208,6 +2400,17 @@ checksum = "1962c1882c5abcedb18e5f01acffeaad7b3cbd0a9d4cd8f5ca259ba8a64cb9a3"
 dependencies = [
  "objc2 0.6.5",
  "objc2-foundation 0.3.2",
+]
+
+[[package]]
+name = "objc2-io-kit"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "33fafba39597d6dc1fb709123dfa8289d39406734be322956a69f0931c73bb15"
+dependencies = [
+ "bitflags 2.13.2",
+ "libc",
+ "objc2-core-foundation",
 ]
 
 [[package]]
@@ -2785,6 +2988,35 @@ checksum = "737970939a87c6fa31e7acad13307bccbb017a073b695b6089a2c484f929e20e"
 dependencies = [
  "bitflags 2.13.2",
 ]
+
+[[package]]
+name = "regex"
+version = "1.13.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f020237b6c8eed93db2e2cb53c00c60a8e1bc73da7d073199a1180401450218d"
+dependencies = [
+ "aho-corasick",
+ "memchr",
+ "regex-automata",
+ "regex-syntax",
+]
+
+[[package]]
+name = "regex-automata"
+version = "0.4.18"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ad8553b9b26413251cbf30e620595c7a41b3887f03da04579c0e6b0d6a06b4b2"
+dependencies = [
+ "aho-corasick",
+ "memchr",
+ "regex-syntax",
+]
+
+[[package]]
+name = "regex-syntax"
+version = "0.8.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
 name = "renderdoc-sys"
@@ -3466,6 +3698,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "86a801b3cea342a06d468c8710662aa29e5e05e4f5c0d62f00bbb7f2ad7941c2"
 
 [[package]]
+name = "typed-path"
+version = "0.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9ce898823d8cd0f028662d2f349694b1af0a5cc9be83f1d213a00d3147445e1e"
+
+[[package]]
 name = "typenum"
 version = "1.20.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3581,6 +3819,22 @@ name = "utf8_iter"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b6c140620e7ffbb22c2dee59cafe6084a59b5ffc27a8859a5f0d494b5d52b6be"
+
+[[package]]
+name = "uuid"
+version = "1.28.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7cc1186384beb7dd8eedea376413fd654937285ea6c9cfbb928dc3043ea4b606"
+dependencies = [
+ "js-sys",
+ "wasm-bindgen",
+]
+
+[[package]]
+name = "vec_map"
+version = "0.8.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f1bddf1187be692e79c5ffeab891132dfb0f236ed36a43c7ed39f1165ee20191"
 
 [[package]]
 name = "version_check"
@@ -4456,16 +4710,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "winresource"
-version = "0.1.34"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a2bc6d36480b829272a5bdabf08e6dca8004761c1da7e35efef800540c66221b"
-dependencies = [
- "toml",
- "version_check",
-]
-
-[[package]]
 name = "wit-bindgen"
 version = "0.57.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4669,18 +4913,18 @@ dependencies = [
 
 [[package]]
 name = "zip"
-version = "2.4.2"
+version = "9.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fabe6324e908f85a1c52063ce7aa26b68dcb7eb6dbc83a2d148403c9bc3eba50"
+checksum = "1156b39d142a34b999c2310a50455e0cb3760bf7efad0122f796d813bee26ccb"
 dependencies = [
- "arbitrary",
  "crc32fast",
- "crossbeam-utils",
- "displaydoc",
  "flate2",
+ "getrandom 0.4.3",
  "indexmap",
  "memchr",
- "thiserror 2.0.21",
+ "nix",
+ "typed-path",
+ "windows-sys 0.61.2",
  "zopfli",
 ]
 

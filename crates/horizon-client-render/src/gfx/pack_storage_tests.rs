@@ -76,6 +76,7 @@ fn storage_volume_compute_is_sampled_and_retains_history_on_metal() {
     let parsed = load_post(&pack, "", &properties, &macros, &GameInputs::default());
     assert!(parsed.complete, "parse notes: {:?}", parsed.notes);
     let world = World {
+        gui_size: [1, 1],
         adapter: &adapter,
         atlas: None,
         lightmap: texture(&device, &queue, "storage regression lightmap", 1, &[255; 4]),
@@ -95,14 +96,19 @@ fn storage_volume_compute_is_sampled_and_retains_history_on_metal() {
     );
     assert!(post.complete, "pipeline notes: {:?}", post.notes);
     assert_eq!(
-        post.compute.len(),
+        post.shadow_comp.len(),
         1,
         "the actual compute pipeline must exist"
     );
-    assert_eq!(post.images.0.len(), 1);
-    assert_eq!(post.compute[0].bindings.feedback, vec![0]);
-    assert!(post.images.0[0].snapshot.is_some());
-    assert_eq!(post.images.0[0].dimension, wgpu::TextureViewDimension::D3);
+    assert_eq!(post.images.len(), 1);
+    assert!(matches!(
+        post.shadow_comp[0].pipeline,
+        Pipeline::Compute { .. }
+    ));
+    post.resize(&device, [2, 2]);
+    assert_eq!(post.shadow_comp[0].image_copies, 1);
+    assert!(post.images[0].copy.is_some());
+    assert_eq!(post.images[0].dimension, wgpu::TextureViewDimension::D3);
     post.resize(&device, [2, 2]);
     assert!(post.complete, "resize notes: {:?}", post.notes);
     let target = device.create_texture(&wgpu::TextureDescriptor {
@@ -136,22 +142,20 @@ fn storage_volume_compute_is_sampled_and_retains_history_on_metal() {
         let mut encoder = device.create_command_encoder(&Default::default());
         if frame == 2 {
             // The same allocation must clear only when its definition requests it.
-            post.images.0[0].definition.clear = true;
+            post.images[0].def.clear = true;
         }
-        post.images.clear(&mut encoder);
+        pack_images::clear(
+            &device,
+            &mut encoder,
+            &post.images,
+            post.gpu.clear,
+            &mut post.zeros,
+        );
         if frame == 0 {
-            post.run_compute(
-                &device,
-                &queue,
-                &mut encoder,
-                horizon_shaders::ComputeGroup::ShadowComp,
-                None,
-                [2, 2],
-            );
-            assert!(
-                post.compute[0].ran,
-                "compute dispatch must actually be recorded"
-            );
+            let mut pass = post.shadow_comp.remove(0);
+            post.dispatch(&device, &queue, &mut encoder, &mut pass, [2, 2]);
+            post.shadow_comp.push(pass);
+            // The readback below proves the dispatch wrote the sampled volume.
         }
         // Frame two deliberately performs no write: sampling must retain frame one's result.
         let group = post.bind(&device, &queue, &mut encoder, &mut final_pass, [2, 2]);
@@ -169,7 +173,10 @@ fn storage_volume_compute_is_sampled_and_retains_history_on_metal() {
                 })],
                 ..Default::default()
             });
-            render.set_pipeline(&final_pass.pipeline);
+            let Pipeline::Render(pipeline) = &final_pass.pipeline else {
+                panic!("final must be a render pass");
+            };
+            render.set_pipeline(pipeline);
             render.set_bind_group(0, &group, &[]);
             render.draw(0..6, 0..1);
         }
@@ -212,4 +219,65 @@ fn storage_volume_compute_is_sampled_and_retains_history_on_metal() {
         }
         read.unmap();
     }
+}
+
+#[test]
+#[ignore = "requires a Metal adapter; run explicitly on macOS"]
+fn mismatched_storage_image_dimension_is_rejected_before_first_frame() {
+    use horizon_shaders::{GameInputs, Macros, Pack, Properties, load_post};
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+        backends: wgpu::Backends::METAL,
+        ..wgpu::InstanceDescriptor::new_without_display_handle()
+    });
+    let adapter = pollster::block_on(instance.request_adapter(&Default::default())).unwrap();
+    let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+        required_limits: adapter.limits(),
+        ..Default::default()
+    }))
+    .unwrap();
+    let fixture = ScratchPack::new();
+    std::fs::write(
+        fixture.0.join("shaders/shaders.properties"),
+        "image.volume=volumeSampler rgba rgba8 unsigned_byte false false 2 2\n",
+    )
+    .unwrap();
+    std::fs::write(fixture.0.join("shaders/shadowcomp.csh"),
+        "#version 430\nlayout(local_size_x=1) in;\nlayout(rgba8) uniform writeonly image3D volume;\nvoid main(){imageStore(volume,ivec3(0),vec4(1.0));}\n").unwrap();
+    std::fs::write(fixture.0.join("shaders/final.fsh"),
+        "#version 330 compatibility\nuniform sampler2D volumeSampler;\nvoid main(){gl_FragColor=texture(volumeSampler,vec2(0.5));}\n").unwrap();
+    let pack = Pack::open(&fixture.0).unwrap();
+    let macros = Macros::standard();
+    let properties = Properties::from_pack(&pack, "", &macros);
+    let parsed = load_post(&pack, "", &properties, &macros, &GameInputs::default());
+    assert!(parsed.complete, "{:?}", parsed.notes);
+    let world = World {
+        gui_size: [1, 1],
+        adapter: &adapter,
+        atlas: None,
+        lightmap: texture(&device, &queue, "mismatch test lightmap", 1, &[255; 4]),
+        terrain: None,
+        block_ids: &[],
+        celestial: None,
+        clouds: None,
+        weather: false,
+        hand: false,
+    };
+    let post = PackPost::new(
+        &device,
+        &queue,
+        parsed,
+        wgpu::TextureFormat::Rgba8Unorm,
+        world,
+    );
+    assert!(
+        !post.complete,
+        "a 2D image must not reach a 3D storage binding at render time"
+    );
+    assert!(
+        post.notes
+            .iter()
+            .any(|note| note.contains("image volume") && note.contains("D3")),
+        "{:?}",
+        post.notes
+    );
 }

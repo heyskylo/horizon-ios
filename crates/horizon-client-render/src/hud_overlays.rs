@@ -179,7 +179,7 @@ pub fn effects(w: i32, demo: bool, effects: &[EffectIcon]) -> Vec<GuiDraw> {
             blend: crate::hud_layout::Blend::Textured,
         });
         out.push(GuiDraw::Sprite {
-            sprite: Cow::Owned(format!("mob_effect/{}", e.id)),
+            sprite: Cow::Owned(horizon_client_core::potions::sprite(&e.id)),
             x: x + 3,
             y: y + 3,
             w: 18,

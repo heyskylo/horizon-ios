@@ -2,6 +2,7 @@
 //! as the mouse over every screen. The layout and the fingers' state are the lib's `touch`; this file acts on
 //! what they say the way the keyboard and mouse would: the D-pad and buttons are their default keys, a tap is
 //! a click, holding still is a held left button, and a drag turns the view as the mouse does.
+use super::event_loop::EventLoopCtl;
 use super::{Game, Screen};
 use horizon_client::{
     Result,
@@ -14,8 +15,8 @@ use winit::{
     event::{
         DeviceId, ElementState, MouseButton, MouseScrollDelta, Touch, TouchPhase, WindowEvent,
     },
-    event_loop::ActiveEventLoop,
     keyboard::KeyCode,
+    window::WindowId,
 };
 
 /// GUI pixels a finger drags over a menu for one line of scrolling.
@@ -24,6 +25,9 @@ const SCROLL_LINE: f32 = 12.0;
 #[derive(Default)]
 pub(super) struct TouchInput {
     fingers: Touches,
+    /// A pointer event derived from a finger; the trace records the original
+    /// touch once, not this translation a second time.
+    synthetic: bool,
     /// A touch has been seen: the controls are drawn (from the start on iPhone and iPad).
     seen: bool,
     /// The last input device controls only the visibility of touch overlays.
@@ -140,14 +144,14 @@ impl Game<'_> {
         )
     }
 
-    pub(super) fn touch_keyboard_used(&mut self, event_loop: &ActiveEventLoop) {
+    pub(super) fn touch_keyboard_used(&mut self, event_loop: &dyn EventLoopCtl) {
         self.touch_release_menu(event_loop);
         if horizon_gamecontroller::keyboard_connected() {
             self.touch.hardware.keyboard();
         }
     }
 
-    pub(super) fn touch_mouse_used(&mut self, event_loop: &ActiveEventLoop) {
+    pub(super) fn touch_mouse_used(&mut self, event_loop: &dyn EventLoopCtl) {
         self.touch_release_menu(event_loop);
         self.touch.hardware.mouse();
     }
@@ -162,7 +166,11 @@ impl Game<'_> {
     }
 
     /// winit's `WindowEvent::Touch`.
-    pub(super) fn touch_event(&mut self, event_loop: &ActiveEventLoop, touch: Touch) -> Result<()> {
+    pub(super) fn touch_event(
+        &mut self,
+        event_loop: &dyn EventLoopCtl,
+        touch: Touch,
+    ) -> Result<()> {
         self.touch.seen = true;
         self.touch.hardware.touch();
         self.last_input = Instant::now();
@@ -203,7 +211,7 @@ impl Game<'_> {
 
     /// Once a frame: a held finger starts mining, held-back clicks release, and a screen that opened over the
     /// game lets go of every finger on it.
-    pub(super) fn touch_frame(&mut self, event_loop: &ActiveEventLoop) {
+    pub(super) fn touch_frame(&mut self, event_loop: &dyn EventLoopCtl) {
         self.touch.hardware.refresh(
             horizon_gamecontroller::keyboard_connected(),
             horizon_gamecontroller::mouse_connected(),
@@ -350,7 +358,7 @@ impl Game<'_> {
 
     fn touch_menu(
         &mut self,
-        event_loop: &ActiveEventLoop,
+        event_loop: &dyn EventLoopCtl,
         id: u64,
         phase: TouchPhase,
         at: (f32, f32),
@@ -433,7 +441,7 @@ impl Game<'_> {
 
     /// Abandon a menu gesture when another input device or the world takes over.
     /// A missing UIKit end event must neither latch all later fingers nor create a click.
-    fn touch_release_menu(&mut self, event_loop: &ActiveEventLoop) {
+    fn touch_release_menu(&mut self, event_loop: &dyn EventLoopCtl) {
         if let Some(finger) = self.touch.menu.take()
             && finger.pressed
             && !finger.closed
@@ -443,7 +451,7 @@ impl Game<'_> {
     }
 
     /// Advance the delayed menu press/release after drawing the pointer.
-    fn touch_menu_frame(&mut self, event_loop: &ActiveEventLoop) {
+    fn touch_menu_frame(&mut self, event_loop: &dyn EventLoopCtl) {
         let Some(finger) = self.touch.menu.as_mut() else {
             return;
         };
@@ -463,7 +471,22 @@ impl Game<'_> {
         }
     }
 
-    fn touch_pointer(&mut self, event_loop: &ActiveEventLoop, at: (f32, f32)) {
+    pub(super) fn touch_synthetic_input(&self) -> bool {
+        self.touch.synthetic
+    }
+
+    fn touch_window_event(
+        &mut self,
+        event_loop: &dyn EventLoopCtl,
+        id: WindowId,
+        event: WindowEvent,
+    ) {
+        let previous = std::mem::replace(&mut self.touch.synthetic, true);
+        self.handle_window_event(event_loop, id, event, super::input_trace::InputOrigin::Game);
+        self.touch.synthetic = previous;
+    }
+
+    fn touch_pointer(&mut self, event_loop: &dyn EventLoopCtl, at: (f32, f32)) {
         let (Some(id), Some(batch)) = (self.window.as_ref().map(|w| w.id()), self.screen_batch())
         else {
             return;
@@ -471,7 +494,7 @@ impl Game<'_> {
         let at = self.screen_point(at);
         let position =
             PhysicalPosition::new(f64::from(at.0 * batch.scale), f64::from(at.1 * batch.scale));
-        self.window_event(
+        self.touch_window_event(
             event_loop,
             id,
             WindowEvent::CursorMoved {
@@ -481,7 +504,7 @@ impl Game<'_> {
         );
     }
 
-    fn touch_button(&mut self, event_loop: &ActiveEventLoop, pressed: bool) {
+    fn touch_button(&mut self, event_loop: &dyn EventLoopCtl, pressed: bool) {
         let Some(id) = self.window.as_ref().map(|w| w.id()) else {
             return;
         };
@@ -490,7 +513,7 @@ impl Game<'_> {
         } else {
             ElementState::Released
         };
-        self.window_event(
+        self.touch_window_event(
             event_loop,
             id,
             WindowEvent::MouseInput {
@@ -501,11 +524,11 @@ impl Game<'_> {
         );
     }
 
-    fn touch_wheel(&mut self, event_loop: &ActiveEventLoop, lines: f32) {
+    fn touch_wheel(&mut self, event_loop: &dyn EventLoopCtl, lines: f32) {
         let Some(id) = self.window.as_ref().map(|w| w.id()) else {
             return;
         };
-        self.window_event(
+        self.touch_window_event(
             event_loop,
             id,
             WindowEvent::MouseWheel {

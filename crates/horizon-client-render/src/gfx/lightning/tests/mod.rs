@@ -57,7 +57,8 @@ fn reference(seed: i64, at: [f64; 3], camera: DVec3, uv: [f32; 2]) -> Vec<Vertex
                                 normal: [0; 4],
                                 pos: (o + glam::Vec3::from_array(c)).to_array(),
                                 uv,
-                                layer: 2,
+                                // The HDR tier lightning.rs adds; the geometry is vanilla's.
+                                layer: 2 | u32::from(crate::mesher::VERY_BRIGHT) << 16,
                                 color,
                                 light: 240 | 240 << 8,
 
@@ -216,7 +217,7 @@ fn long_flash_sequence_keeps_only_active_seeds() {
 #[ignore = "requires GPU; run separately with --ignored --exact"]
 fn retained_gpu_draw_matches_transient_additive_draw() {
     use bytemuck::Zeroable;
-    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+    let instance = crate::gfx::test_gpu::instance();
     let Ok(adapter) = pollster::block_on(instance.request_adapter(&Default::default())) else {
         eprintln!("no GPU adapter: skipped");
         return;
@@ -529,7 +530,7 @@ fn white_uv_is_inside_the_white_sprite() {
 #[test]
 #[ignore = "requires GPU; run separately with --ignored --exact"]
 fn bolt_through_the_atlas_white_sprite_is_fully_drawn() {
-    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+    let instance = crate::gfx::test_gpu::instance();
     let Ok(adapter) = pollster::block_on(instance.request_adapter(&Default::default())) else {
         eprintln!("no GPU adapter: skipped");
         return;

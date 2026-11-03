@@ -54,14 +54,16 @@ pub struct Sources {
 
 /// Each chunk's (loading, simulation) level, for the chunks where either is
 /// block ticking or lower; `None` ticks everywhere (a game with no server and
-/// no player: the headless fixtures).
+/// no player: the headless fixtures). With them sits the box
+/// `(min_x, min_z, max_x, max_z)` that holds every chunk that can random tick,
+/// so a scan of the residents need not ask each one of them.
 #[derive(Clone, Default)]
-pub struct Levels(Option<Arc<Map>>);
+pub struct Levels(Option<Arc<Map>>, Option<(i32, i32, i32, i32)>);
 
 /// The levels by chunk: a grid over the tickets' bounding box while it is
-/// small (players near each other, the usual case), a map otherwise. Every
-/// block entity, mob and ticking chunk asks each tick, so an index beats a
-/// hash; and a player crossing into another chunk rebuilds it all.
+/// small (players near each other, the usual case), sparse 16×16 tiles otherwise.
+/// Every block entity, mob and ticking chunk asks each tick. Tiling also avoids
+/// hashing every chunk when a player crossing a chunk boundary rebuilds the map.
 enum Map {
     Grid {
         x0: i32,
@@ -70,7 +72,9 @@ enum Map {
         depth: u32,
         cells: Box<[(u8, u8)]>,
     },
+    #[cfg(test)]
     Sparse(FxHashMap<(i32, i32), (u8, u8)>),
+    Tiled(Tiled),
 }
 
 /// The largest grid, in chunks: 1 MiB of levels, a box 724 chunks wide.
@@ -93,7 +97,67 @@ impl Map {
                     NONE
                 }
             }
+            #[cfg(test)]
             Self::Sparse(map) => map.get(&(x, z)).copied().unwrap_or(NONE),
+            Self::Tiled(map) => map.get(x, z),
+        }
+    }
+}
+
+type Tile = Box<[(u8, u8); 256]>;
+
+/// Sparse tiles keep each nearby run of levels contiguous. Construction hashes
+/// once per intersecting tile rather than once per chunk of every ticket.
+struct Tiled(FxHashMap<(i32, i32), Tile>);
+impl Tiled {
+    /// The same levels as the grid, for tickets too far apart for one.
+    fn new(s: &Sources) -> Self {
+        let mut map = Self(FxHashMap::default());
+        let (view, sim, reach) = reach(s);
+        for &p in &s.players {
+            map.add(p, reach, i32::from(ENTITY_TICKING), view, sim);
+        }
+        for &p in &s.forced {
+            map.add(
+                p,
+                1,
+                i32::from(ENTITY_TICKING),
+                0,
+                i32::from(ENTITY_TICKING),
+            );
+        }
+        for &p in &s.portal {
+            // The radius-3 ring is level NONE and cannot lower a cell.
+            map.add(p, PORTAL_RADIUS - 1, PORTAL_LEVEL, 0, PORTAL_LEVEL);
+        }
+        map
+    }
+    fn get(&self, x: i32, z: i32) -> (u8, u8) {
+        self.0
+            .get(&(x >> 4, z >> 4))
+            .map_or(NONE, |tile| tile[((z & 15) * 16 + (x & 15)) as usize])
+    }
+    /// Lower each cell to the minimum of its level and the source plus distance;
+    /// loading stays flat within the view distance.
+    fn add(&mut self, (px, pz): (i32, i32), r: i32, loading: i32, flat: i32, sim: i32) {
+        let (x0, z0, x1, z1) = (px - r, pz - r, px + r, pz + r);
+        for tz in z0 >> 4..=z1 >> 4 {
+            for tx in x0 >> 4..=x1 >> 4 {
+                let tile = self
+                    .0
+                    .entry((tx, tz))
+                    .or_insert_with(|| Box::new([NONE; 256]));
+                let (bx, bz) = (tx * 16, tz * 16);
+                for z in z0.max(bz)..=z1.min(bz + 15) {
+                    for x in x0.max(bx)..=x1.min(bx + 15) {
+                        let d = (x - px).abs().max((z - pz).abs());
+                        let e = &mut tile[((z - bz) * 16 + (x - bx)) as usize];
+                        e.0 =
+                            e.0.min((loading + (d - flat).max(0)).min(i32::from(NONE.0)) as u8);
+                        e.1 = e.1.min((sim + d).min(i32::from(NONE.1)) as u8);
+                    }
+                }
+            }
         }
     }
 }
@@ -119,6 +183,13 @@ impl Levels {
     pub fn random_ticking(&self, x: i32, z: i32) -> bool {
         self.get(x, z)
             .is_none_or(|(l, s)| l <= BLOCK_TICKING && s <= ENTITY_TICKING)
+    }
+    /// The box that holds every chunk `random_ticking` can answer for, or
+    /// `None` with no tickets at all, where it ticks everywhere. A box whose
+    /// minimum is past its maximum holds nothing: the tickets hold no player,
+    /// no forced chunk and no `PORTAL` one, so nothing random ticks.
+    pub fn random_tick_bounds(&self) -> Option<(i32, i32, i32, i32)> {
+        self.1
     }
     /// `ChunkHolder.getFullStatus` is block ticking or more: the chunk's
     /// ticking future can complete (its saved ticks unpack then).
@@ -158,7 +229,15 @@ impl ChunkTickets {
         if sources == self.sources {
             return;
         }
-        self.levels = Levels(sources.as_ref().map(|s| Arc::new(compute(s))));
+        self.levels = match sources.as_ref() {
+            Some(s) => {
+                let map = Some(Arc::new(compute(s)));
+                // Tickets with no random tick of their own still get a box, an
+                // empty one: `None` is for a game with no tickets at all.
+                Levels(map, Some(random_bounds(s).unwrap_or((1, 1, 0, 0))))
+            }
+            None => Levels(None, None),
+        };
         self.sources = sources;
     }
     pub fn levels(&self) -> Levels {
@@ -185,6 +264,28 @@ impl ChunkTickets {
     pub fn portal_chunks(&self) -> impl Iterator<Item = (i32, i32)> + '_ {
         self.portal.iter().map(|&(c, _)| c)
     }
+}
+
+/// The box that holds every chunk `random_ticking` can answer for: a player's
+/// simulation ticket reaches its simulation distance, a forced chunk only ever
+/// random ticks in the chunk itself, and a `PORTAL` ticket inside its whole
+/// area. Each is a superset of that ticket's random-ticking chunks, so the box
+/// never rejects a chunk that random ticks.
+fn random_bounds(s: &Sources) -> Option<(i32, i32, i32, i32)> {
+    let sim = s.simulation_distance.clamp(0, 32);
+    let boxes = s
+        .players
+        .iter()
+        .map(|&p| (p, sim))
+        .chain(s.forced.iter().map(|&f| (f, 0)))
+        .chain(s.portal.iter().map(|&p| (p, PORTAL_RADIUS)));
+    boxes.fold(None, |b, ((x, z), r)| {
+        let (lo_x, lo_z, hi_x, hi_z) = (x - r, z - r, x + r, z + r);
+        Some(match b {
+            None => (lo_x, lo_z, hi_x, hi_z),
+            Some((a, b, c, d)) => (lo_x.min(a), lo_z.min(b), hi_x.max(c), hi_z.max(d)),
+        })
+    })
 }
 
 /// How far a player's tickets reach, and the simulation ticket's level.
@@ -218,11 +319,11 @@ fn compute(s: &Sources) -> Map {
             Some((a, b, c, d)) => (lo_x.min(a), lo_z.min(b), hi_x.max(c), hi_z.max(d)),
         })
     }) else {
-        return Map::Sparse(FxHashMap::default());
+        return Map::Tiled(Tiled(FxHashMap::default()));
     };
     let (width, depth) = ((x1 - x0 + 1) as u64, (z1 - z0 + 1) as u64);
     if width * depth > GRID_CELLS {
-        return Map::Sparse(compute_sparse(s));
+        return Map::Tiled(Tiled::new(s));
     }
     let (x0, z0, width, depth) = (x0 as i32, z0 as i32, width as u32, depth as u32);
     let mut cells = vec![NONE; (width * depth) as usize].into_boxed_slice();
@@ -270,7 +371,8 @@ fn compute(s: &Sources) -> Map {
     }
 }
 
-/// The levels as a map, for tickets spread too far apart for a grid.
+/// The old per-chunk map: the reference the grid and tiles are tested against.
+#[cfg(test)]
 fn compute_sparse(s: &Sources) -> FxHashMap<(i32, i32), (u8, u8)> {
     let (view, player_sim, reach) = reach(s);
     let mut levels: FxHashMap<(i32, i32), (u8, u8)> = FxHashMap::default();
@@ -433,26 +535,72 @@ mod tests {
     }
 
     #[test]
-    fn far_apart_tickets_use_the_map() {
+    fn far_apart_tickets_tick_only_their_neighbourhoods() {
         let l = levels(
             &[(0, 0), (100_000, -100_000)],
             &[(i32::MAX - 2, i32::MIN + 2)],
             10,
             10,
         );
-        assert!(matches!(**l.0.as_ref().unwrap(), Map::Sparse(_)));
+        assert!(matches!(**l.0.as_ref().unwrap(), Map::Tiled(_)));
         assert!(l.entity_ticking(100_010, -100_010) && !l.block_ticking(50_000, 0));
         assert!(l.entity_ticking(i32::MAX - 2, i32::MIN + 2));
     }
 
-    /// cargo test --release -p horizon-client --lib ticket_levels::tests::levels_cost -- --ignored --nocapture
+    /// `tick_blocks` filters its candidates with the bounds box before it asks
+    /// `random_ticking`: whatever random ticks is inside it, every ticket's
+    /// own area, a `PORTAL` ticket's with no player near it included.
+    #[test]
+    fn random_tick_bounds_cover_every_random_ticking_chunk() {
+        let mut t = ChunkTickets::default();
+        // A view distance shorter than the simulation one, two players far
+        // apart, a forced chunk, and `PORTAL` tickets that outlive them.
+        let sources = || {
+            Some(Sources {
+                players: vec![(0, 0), (60, 40)],
+                forced: vec![(-30, 17)],
+                portal: Vec::new(),
+                view_distance: 4,
+                simulation_distance: 12,
+            })
+        };
+        t.update(sources());
+        for portal in [(0, 0), (25, -25), (300, 300), (-80, 95)] {
+            t.add_portal(portal);
+            t.update(sources());
+            let levels = t.levels();
+            let (min_x, min_z, max_x, max_z) = levels.random_tick_bounds().unwrap();
+            for z in -100..=310 {
+                for x in -100..=310 {
+                    if levels.random_ticking(x, z) {
+                        assert!(
+                            x >= min_x && x <= max_x && z >= min_z && z <= max_z,
+                            "({x}, {z}) random ticks outside the box"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// cargo test --release -p horizon-client-lib --lib ticket_levels::tests::levels_cost -- --ignored --nocapture
     #[test]
     #[ignore]
     fn levels_cost() {
-        for players in [1usize, 10, 25, 50] {
+        for (players, spacing, distance) in [
+            (1usize, 0, 10),
+            (10, 0, 10),
+            (25, 0, 10),
+            (50, 0, 10),
+            (100, 150, 10),
+            (100, 150, 32),
+        ] {
             // The benchmark's bots: most near spawn, a fifth flying outwards.
             let at: Vec<_> = (0..players)
                 .map(|i| {
+                    if spacing != 0 {
+                        return ((i % 10) as i32 * spacing, (i / 10) as i32 * spacing);
+                    }
                     let a = i as f64 * 2.399;
                     let d = if i % 5 == 0 { 30.0 } else { 3.0 };
                     ((a.cos() * d) as i32, (a.sin() * d) as i32)
@@ -462,10 +610,10 @@ mod tests {
                 players: at.clone(),
                 forced: Vec::new(),
                 portal: Vec::new(),
-                view_distance: 10,
-                simulation_distance: 10,
+                view_distance: distance,
+                simulation_distance: distance,
             };
-            let rounds = 200;
+            let rounds = 20;
             let t = std::time::Instant::now();
             for _ in 0..rounds {
                 std::hint::black_box(compute_sparse(std::hint::black_box(&s)));
@@ -475,9 +623,26 @@ mod tests {
             for _ in 0..rounds {
                 std::hint::black_box(compute(std::hint::black_box(&s)));
             }
-            let grid_build = t.elapsed().as_secs_f64() * 1e3 / rounds as f64;
+            let selected_build = t.elapsed().as_secs_f64() * 1e3 / rounds as f64;
+            let mut tickets = ChunkTickets::default();
+            tickets.update(Some(s.clone()));
+            let mut moved = s.clone();
+            let t = std::time::Instant::now();
+            for _ in 0..rounds {
+                moved.players[0].0 += 1;
+                tickets.update(Some(moved.clone()));
+                std::hint::black_box(tickets.levels());
+            }
+            let moving = t.elapsed().as_secs_f64() * 1e3 / rounds as f64;
+            println!("one player moving: {moving:.3} ms/update");
             // A tick's questions: every chunk within 12 of every player.
-            let (map, grid) = (Map::Sparse(compute_sparse(&s)), compute(&s));
+            let (map, selected) = (Map::Sparse(compute_sparse(&s)), compute(&s));
+            let tiled = Map::Tiled(Tiled::new(&s));
+            let t = std::time::Instant::now();
+            for _ in 0..rounds {
+                std::hint::black_box(Tiled::new(std::hint::black_box(&s)));
+            }
+            let tiled_build = t.elapsed().as_secs_f64() * 1e3 / rounds as f64;
             let ask = |m: &Map| {
                 let t = std::time::Instant::now();
                 let mut n = 0u32;
@@ -495,11 +660,62 @@ mod tests {
                 t.elapsed().as_secs_f64() * 1e3 / rounds as f64
             };
             println!(
-                "{players} players: build {map_build:.3} -> {grid_build:.3} ms, {} lookups {:.3} -> {:.3} ms",
+                "{players} players: spacing={spacing} distance={distance}: scalar/selected/tiled build {map_build:.3}/{selected_build:.3}/{tiled_build:.3} ms, {} lookups {:.3}/{:.3}/{:.3} ms",
                 players * 625,
                 ask(&map),
-                ask(&grid)
+                ask(&selected),
+                ask(&tiled)
             );
+        }
+    }
+}
+
+#[cfg(test)]
+mod tiled_tests {
+    use super::*;
+    #[test]
+    fn tiles_match_scalar_levels_with_overlaps_and_portals() {
+        let mut seed = 0x2545_f491_4f6c_dd1du64;
+        let mut next = |n: i32| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % (2 * n as u64 + 1)) as i32 - n
+        };
+        for case in 0..60 {
+            let s = Sources {
+                players: (0..case % 13)
+                    .map(|_| (next(4000), next(4000)))
+                    .chain([(15, -16), (16, -15)])
+                    .collect(),
+                forced: (0..case % 4).map(|_| (next(100), next(100))).collect(),
+                portal: (0..case % 5)
+                    .map(|_| (next(100), next(100)))
+                    .chain([(16, -16)])
+                    .collect(),
+                view_distance: [0, 2, 10, 32][case % 4],
+                simulation_distance: [32, 10, 2, 0][(case / 4) % 4],
+            };
+            let expected = compute_sparse(&s);
+            let tiled = Tiled::new(&s);
+            for (&(x, z), &want) in &expected {
+                assert_eq!(tiled.get(x, z), want, "case {case}, {x}, {z}");
+            }
+            // Query a fixed neighbourhood of every source, including holes
+            // and negative coordinates, without depending on the tile layout.
+            for &(cx, cz) in s.players.iter().chain(&s.forced).chain(&s.portal) {
+                for dz in -48..=48 {
+                    for dx in -48..=48 {
+                        let key = (cx + dx, cz + dz);
+                        assert_eq!(
+                            tiled.get(key.0, key.1),
+                            expected.get(&key).copied().unwrap_or(NONE),
+                            "case {case}, {key:?}"
+                        );
+                    }
+                }
+            }
+            assert_eq!(tiled.get(50_000, -50_000), NONE);
         }
     }
 }

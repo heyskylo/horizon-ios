@@ -35,6 +35,37 @@ Preparation is `horizon-prepare` (`crates/horizon-prepare`, Rust): it needs no P
 the JDK, for the small exporters that call Mojang's own code. Release folders ship it beside
 `horizon-client`, and the launcher prepares with it and copies the sounds as part of preparing.
 
+`--output DIR` puts the resources elsewhere (the exporters' scratch files stay in the version
+folder's `.local/`), for preparing and for the asset commands alike. `horizon-prepare --check`
+exits 0 when the resources are complete and current for this preparer, and otherwise prints
+each gap with the command that fills it on stdout and exits 1. It also exits 1 when it can't
+check, with `error:` on stderr (no `research-lock.json`, say). It runs no Java and reads no game
+files: it tests which files are there and the versions they were made for, not their contents, so
+a launcher that suspects damage prepares again. A preparation stamps its resources with the
+preparer's `OUTPUT_VERSION` (`horizon-prepare.json`) when it finishes, and removes the stamp
+before it writes anything, so `--check` reports a folder being prepared, or whose preparation
+stopped, as not current. Resources prepared before the stamp existed report an unknown version
+until they are prepared again. One preparation at a time writes to a folder: each holds
+`.horizon-prepare.lock` in the resources and in the version folder's `.local/`, and a second one
+waits for the first. `--complete` prepares, copies the sounds, and fails unless `--check` would
+then pass: one command for resources with nothing missing. `--progress json` prints one JSON
+object a line instead of plain text (its format is part of the Launch API:
+[docs/api/launch.md](api/launch.md#--progress-json)). Exit codes: 0 done, 1 failed or gaps found,
+2 a refused command line.
+
+A launcher whose files are laid out its own way names them one by one instead of
+`--minecraft-dir`: `--version-json` (the pinned version's JSON), `--client-jar`,
+`--libraries-dir` (the client's libraries, Maven layout) and `--assets-dir` (the asset store,
+with `indexes/` and `objects/`); each replaces only what it names, and every file is still
+checked against `research-lock.json`'s pins. When an earlier import beside `--root` is still
+verified, it is reused and the named files aren't read. Two things no such launcher keeps:
+- **The server jar.** The first `--prepare` needs `--server-jar`. Horizon never downloads it; a
+  launcher downloads it (the version JSON's `downloads.server`) only for a signed-in account that
+  owns Minecraft: Java Edition, as `horizon-launcher` does.
+- **Java 25.** `--java-home PATH` names a runtime the launcher manages. The preparer takes the first
+  Java of the pinned version from `JAVA_HOME`, the `PATH`, `--java-home`, then the official
+  launcher's runtimes.
+
 ```sh
 cargo run --release -p horizon-prepare -- --prepare --server-jar ~/Downloads/server.jar
 cargo run --release -p horizon-prepare -- sounds
@@ -66,6 +97,7 @@ Optional Windows allocator build features are documented in
 | E | Inventory and 2x2 crafting (shift-click to quick-move or craft all) |
 | Q / Ctrl+Q | Drop one / drop stack |
 | F3 | Debug overlay (position, chunk, light, biome, FPS) |
+| F3 + S | Dump the texture atlas to `screenshots/debug/`: `minecraft_textures_atlas_gui.png` with `minecraft_textures_atlas_gui.txt` beside it, every sprite's rect in texels (vanilla's `TextureManager.dumpAllSheets`) |
 | Esc | Pause menu (Save and Quit) |
 
 Worlds autosave every 6000 ticks (5 minutes), when chunks unload and on quit.
@@ -90,7 +122,7 @@ local socket; under control, losing window focus does not pause the game or
 release held keys, so a script can play while you use other windows.
 
 ```sh
-cargo build --release -p horizon-client --bins
+cargo build --release -p horizon-client -p horizon-client-lib --bins
 C=target/release/horizon-ctl
 $C launch --world Survival --seed 5 --wait   # start the game, open or create the world, wait for it
 $C state                                     # player, world, screen, crosshair target
@@ -212,6 +244,39 @@ constant speed and replies with the same summary as `bench` (avg/1%-low FPS and
 p50/p95/p99/max frame times), plus CPU and GPU time per frame; [the graphics
 benchmark](graphics.md#benchmark) is built on it. Frame times include waits for
 presentation, so `bench` reports what is on screen.
+
+### RAM limit
+
+`HORIZON_MEMORY_LIMIT_MB` (the launcher sets it) and `/ramlimit`, `/ramlimit <MB>`, `/ramlimit off` limit
+the RAM the game holds; the command lasts until the game closes and works on any server, as the window
+answers it. On Windows the system enforces the limit with a hard working set limit, so memory the game
+uses least moves out of RAM and a low limit costs speed. If the game is also slow and faulting hard, far
+terrain goes off and the render distance in use drops, never the saved option, and both come back when
+there is room. Linux and macOS have no such limit: there the game steps down before it reaches the limit.
+The game ends with a crash report only when it can't run under the limit: on Windows no frame for a minute
+while faulting hard, elsewhere 20 seconds over the limit with nothing left to give up.
+
+**`HORIZON_MEMORY_HARD_MB` / `/ramlimit hard <MB>`** is the other contract, the one `-Xmx` gives
+Java: a budget for the memory the process commits, not only for the part that stays in RAM. Nothing is
+paged out to meet it. Once a second the game compares what the process committed with the budget and,
+over nine tenths of it, gives up far terrain and then render distance the way it does under a low RAM
+limit, until it fits; when there is room again, both come back. Below a budget the game can reach even
+at its lowest distance, it ends after twenty seconds with a crash report naming what it held and the
+budget, instead of sitting in the page file.
+
+The allocator holds the same line: it counts the bytes the game asks for, a free returns them at once,
+and a request past the ceiling fails rather than being served, so a sudden burst cannot pass the budget
+in the second before the next look. That failure ends the game with a message naming the ceiling.
+
+Set it at or below the RAM limit; alone it also becomes the RAM limit. What it counts is the whole
+process: on a clean launch this build commits 1.1 to 1.2 GB before a world is open (the renderer and
+the game's resources), so a budget under about 1.4 GB leaves too little to run, exactly as `-Xmx` too
+low throws `OutOfMemoryError`.
+
+What "committed" means depends on the system. On Windows it is the process's commit charge, the
+figure Task Manager shows, the graphics driver's pages included. On Linux and macOS there is no such
+figure: it is what the game's allocator (mimalloc) committed, so the driver's and the GPU's own memory
+are outside the budget there.
 
 ### Discord Rich Presence
 

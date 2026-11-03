@@ -202,6 +202,8 @@ pub struct BlockData {
     pub link: Option<BlockId>,
     /// Second block link: attached stem (stems) or stem (attached stems).
     pub link2: Option<BlockId>,
+    /// Support blocks (stems, plants); a content mod's connecting block's
+    /// `connects_to` (a `PipeBlock` alone in its chain).
     pub support_tag: Option<Arc<BlockSet>>,
     pub support_tag2: Option<Arc<BlockSet>>,
     pub feature: Option<Arc<str>>,
@@ -623,9 +625,20 @@ fn set_type(value: &Value, cache: &mut HashMap<String, Arc<str>>) -> Option<SetT
 }
 
 /// Build the block-state registry from the resources' `facts.json` (the
-/// same source the native client uses), streamed.
+/// same source the native client uses): the cache folder's snapshot when it
+/// matches the file and this build, the streamed JSON otherwise.
 pub fn load_registry(root: &Path) -> io::Result<BlockRegistry> {
-    BlockRegistry::from_facts_json(File::open(root.join("facts.json"))?)
+    Ok(load_registry_with_flags(root)?.0)
+}
+
+/// [`load_registry`] with each state's `(air, fluid)` columns.
+pub fn load_registry_with_flags(root: &Path) -> io::Result<(BlockRegistry, Vec<(bool, bool)>)> {
+    if let Some(cached) = cache::load_registry(root) {
+        return Ok(cached);
+    }
+    let loaded = BlockRegistry::from_facts_json_with_flags(File::open(root.join("facts.json"))?)?;
+    cache::store_registry(root, &loaded.0, &loaded.1);
+    Ok(loaded)
 }
 
 pub(super) fn load(registry: &BlockRegistry, root: &Path) -> io::Result<Behaviours> {
@@ -956,7 +969,7 @@ fn build_with_gameplay<G: GameplayStateSource>(
             (state < table.state_count() as u64).then(|| table.block(BlockStateId(state as u32)))
         });
         let link2 = ["attachedStem", "stem"].into_iter().find_map(block_field);
-        let support_tag = ["stemSupportBlocks", "supportBlocks"]
+        let support_tag = ["stemSupportBlocks", "supportBlocks", "connectsTo"]
             .into_iter()
             .find_map(|k| field(k).and_then(Value::as_str))
             .and_then(tag);
@@ -1089,6 +1102,7 @@ fn build_with_gameplay<G: GameplayStateSource>(
         );
     }
 
+    let potted_by_content = potted_by_content(&blocks, &table);
     let liquid_blocks = FluidBlockBindings::new(registry)?;
     let mut dynamic = HashMap::new();
     for (id, fact) in facts.iter().enumerate() {
@@ -1113,11 +1127,29 @@ fn build_with_gameplay<G: GameplayStateSource>(
         fluid_tags,
         blocks,
         items,
+        potted_by_content,
         liquid_blocks,
         dynamic,
         occlusion_cache: Default::default(),
         growth: Default::default(),
     })
+}
+
+pub(super) fn potted_by_content(
+    blocks: &[BlockData],
+    table: &StateTable,
+) -> HashMap<BlockId, BlockId> {
+    let air = table.block_by_name("minecraft:air");
+    let mut map = HashMap::new();
+    for (index, block) in blocks.iter().enumerate() {
+        if block.is(Class::FlowerPot)
+            && let Some(potted) = block.link
+            && Some(potted) != air
+        {
+            map.insert(potted, BlockId(index as u16));
+        }
+    }
+    map
 }
 
 /// `NoteBlockInstrument` serialized names in declaration order.

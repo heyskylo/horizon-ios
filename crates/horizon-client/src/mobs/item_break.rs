@@ -23,6 +23,21 @@ pub fn equipment_break_slot(event: i8) -> Option<EquipmentSlot> {
     })
 }
 
+/// `LivingEntity.entityEventForEquipmentBreak`: the event whose client side
+/// breaks the item in `slot` (the inverse of `equipment_break_slot`).
+pub fn equipment_break_event(slot: EquipmentSlot) -> i8 {
+    match slot {
+        EquipmentSlot::MainHand => 47,
+        EquipmentSlot::OffHand => 48,
+        EquipmentSlot::Head => 49,
+        EquipmentSlot::Chest => 50,
+        EquipmentSlot::Legs => 51,
+        EquipmentSlot::Feet => 52,
+        EquipmentSlot::Body => 65,
+        EquipmentSlot::Saddle => 68,
+    }
+}
+
 impl Mob {
     /// `LivingEntity.getItemBySlot` for a mob or another player a server
     /// sends: the stack it wears or holds in `slot`, with the components
@@ -69,6 +84,18 @@ mod tests {
         k.id = id.into();
         k.species = species;
         Mob::new(1, kind, Vec3::ZERO, 0.0)
+    }
+
+    /// `LivingEntity.entityEventForEquipmentBreak` and its inverse agree for
+    /// every slot a mob or another player can wear something in.
+    #[test]
+    fn the_break_event_and_its_slot_are_inverses() {
+        for slot in EquipmentSlot::ALL {
+            let event = equipment_break_event(slot);
+            assert_eq!(equipment_break_slot(event), Some(slot), "event {event}");
+        }
+        assert_eq!(equipment_break_event(EquipmentSlot::Body), 65);
+        assert_eq!(equipment_break_event(EquipmentSlot::Saddle), 68);
     }
 
     /// `LivingEntity.entityEventForEquipmentBreak`: 47 main hand, 48 off hand,
@@ -143,5 +170,55 @@ mod tests {
             horse.item_by_slot(EquipmentSlot::Saddle).map(|s| s.item),
             Some("minecraft:saddle".into())
         );
+    }
+
+    /// `Wolf.actuallyHurt`: each time the armor's crackiness level changes it
+    /// plays the crack sound and sends twenty armadillo scute particles.
+    #[test]
+    fn a_wolfs_armor_throws_scutes_as_it_cracks() {
+        use crate::mobs::MobEvent;
+        let mut wolf = mob("minecraft:wolf", Species::Wolf);
+        wolf.extra.head = Some("minecraft:wolf_armor".into());
+        // Levels change below 95%, 69% and 32% of the 64 points left, that is
+        // after 4, 20 and 44 points of wear.
+        let hurt = |wolf: &mut Mob, damage: f32| {
+            wolf.hurt_wolf_armor(damage);
+            std::mem::take(&mut wolf.outbox)
+        };
+        let scutes = |events: &[MobEvent]| {
+            events
+                .iter()
+                .filter(|e| {
+                    matches!(
+                        e,
+                        MobEvent::ItemParticles {
+                            item: "minecraft:armadillo_scute",
+                            at,
+                            spread,
+                            speed,
+                            count: 20,
+                        } if *at == [0.0, 1.0, 0.0] && *spread == [0.2, 0.1, 0.2] && *speed == 0.1
+                    )
+                })
+                .count()
+        };
+        let cracks = |events: &[MobEvent]| {
+            events
+                .iter()
+                .filter(|e| matches!(e, MobEvent::Sound("item.wolf_armor.crack", ..)))
+                .count()
+        };
+        // Three points: still the first level.
+        let events = hurt(&mut wolf, 3.0);
+        assert_eq!((cracks(&events), scutes(&events)), (0, 0));
+        // The fourth point cracks it, with the sound and the scutes together.
+        let events = hurt(&mut wolf, 1.0);
+        assert_eq!((cracks(&events), scutes(&events)), (1, 1));
+        // Within the level: nothing.
+        let events = hurt(&mut wolf, 10.0);
+        assert_eq!((cracks(&events), scutes(&events)), (0, 0));
+        // Over 69%: the next level.
+        let events = hurt(&mut wolf, 6.0);
+        assert_eq!((cracks(&events), scutes(&events)), (1, 1));
     }
 }

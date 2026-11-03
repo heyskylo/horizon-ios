@@ -9,7 +9,7 @@ use horizon_client::{
     containers::BlockEntity,
     hud::{HudBatch, rgba},
     screen_draw::Measure,
-    text::{self, Text},
+    text::Text,
     ui::{self, EditBox},
     world::World,
 };
@@ -94,6 +94,18 @@ impl CommandBlockScreen {
         ]);
         out
     }
+    /// What button `b` narrates: the switches are `CycleButton`s that show
+    /// only their value (`displayOnlyValue`), "<name>: <value> button" and
+    /// the value a click moves to.
+    fn narration(
+        &self,
+        b: Button,
+        rect: [f32; 4],
+        tr: super::screen_info::Tr<'_>,
+    ) -> horizon_client::widgets::Narratable {
+        let state = (self.track_output, self.mode, self.conditional, self.auto);
+        button_narration(b, state, rect, tr)
+    }
     fn label(&self, b: Button) -> Text {
         let tr = |key: &str| Text::translate(key, &[]);
         match b {
@@ -125,6 +137,48 @@ impl CommandBlockScreen {
         };
         self.previous.set_value(&shown);
     }
+}
+
+/// [`CommandBlockScreen::narration`] of the switches' state (track output,
+/// mode, conditional, automatic).
+fn button_narration(
+    b: Button,
+    (track_output, mode, conditional_on, auto_on): (bool, Mode, bool, bool),
+    rect: [f32; 4],
+    tr: super::screen_info::Tr<'_>,
+) -> horizon_client::widgets::Narratable {
+    use horizon_client::widgets::Narratable;
+    let full_tr = tr;
+    let tr = |key: &str| full_tr(key, &[]);
+    let o_x = |on: bool| if on { "O" } else { "X" }.to_owned();
+    let conditional = |on: bool| {
+        tr(if on {
+            "advMode.mode.conditional"
+        } else {
+            "advMode.mode.unconditional"
+        })
+    };
+    let auto = |on: bool| {
+        tr(if on {
+            "advMode.mode.autoexec.bat"
+        } else {
+            "advMode.mode.redstoneTriggered"
+        })
+    };
+    let (name, value, next) = match b {
+        Button::Output => ("advMode.trackOutput", o_x(track_output), o_x(!track_output)),
+        Button::Mode => ("advMode.mode", tr(mode.label()), tr(mode.next().label())),
+        Button::Conditional => (
+            "advMode.type",
+            conditional(conditional_on),
+            conditional(!conditional_on),
+        ),
+        Button::Auto => ("advMode.triggering", auto(auto_on), auto(!auto_on)),
+        Button::Done => return Narratable::button(tr("gui.done"), rect, true),
+        Button::Cancel => return Narratable::button(tr("gui.cancel"), rect, true),
+    };
+    let full = full_tr("options.generic_value", &[&tr(name), &value]);
+    Narratable::cycle(full, next, rect, true)
 }
 
 fn state_of(registry: &BlockRegistry, state: BlockStateId) -> Option<&BlockState> {
@@ -492,9 +546,9 @@ impl Game<'_> {
         }
     }
     /// `CommandSourceStack.sendSuccess` from a command block: its output when
-    /// `send_command_feedback`, and `broadcastToAdmins` when
+    /// `send_command_feedback`, and `broadcastToAdmins` when `broadcast` and
     /// `command_block_output`.
-    pub(super) fn command_block_success(&mut self, pos: Pos, message: Text) {
+    pub(super) fn command_block_success(&mut self, pos: Pos, message: Text, broadcast: bool) {
         let Some(name) = self
             .command_block(pos)
             .filter(|c| c.track_output)
@@ -506,11 +560,8 @@ impl Game<'_> {
         if feedback {
             self.command_block_output(pos, message.clone());
         }
-        if feedback && self.ui.rules.bool("command_block_output") {
-            let broadcast = Text::translate("chat.type.admin", &[name, message])
-                .with_color(text::GRAY)
-                .italic();
-            self.system_message(broadcast);
+        if broadcast && feedback && self.ui.rules.bool("command_block_output") {
+            self.broadcast_source_to_admins(name, message);
         }
     }
 
@@ -542,7 +593,9 @@ impl Game<'_> {
         };
         let mut command = ChatScreen::command_block(&m, &c, &block.command, w as i32, h as i32);
         command.auto_suggestions = self.settings.auto_suggestions;
+        command.input.message = super::screen_info::tr("advMode.command", &[]);
         let mut previous = EditBox::new(0.0, previous_y(cart.is_some()), 276.0, 20.0);
+        previous.message = super::screen_info::tr("advMode.previousOutput", &[]);
         previous.max_length = 32500;
         previous.text_color = UNEDITABLE;
         previous.focused = false;
@@ -576,6 +629,16 @@ impl Game<'_> {
             self.close_command_block();
             return;
         }
+        // AbstractCommandBlockEditScreen: `GameNarrator.NO_TITLE`; its usage
+        // is the suggestions' while they show (`getUsageNarration`).
+        let usage = s.command.suggestions_usage();
+        horizon_client::widgets::begin_screen(|| {
+            let info = horizon_client::widgets::ScreenInfo::new("command_block", "");
+            match usage {
+                Some(key) => info.usage(super::screen_info::tr(key, &[])),
+                None => info,
+            }
+        });
         let atlas = &self.gui.atlas;
         let (w, h) = (batch.width, batch.height);
         let mid = (w / 2.0).floor();
@@ -610,7 +673,18 @@ impl Game<'_> {
         }
         for (b, x, y, bw) in CommandBlockScreen::buttons(w, h, s.cart.is_some()) {
             let hover = ui::hovered(self.cursor, x, y, bw, 20.0);
-            ui::button(batch, atlas, x, y, bw, 20.0, &s.label(b), true, hover);
+            ui::button_as(
+                batch,
+                atlas,
+                x,
+                y,
+                bw,
+                20.0,
+                &s.label(b),
+                true,
+                hover,
+                |rect| s.narration(b, rect, &super::screen_info::tr),
+            );
         }
         // The command box, then its suggestions over the widgets.
         let m = Measure(&atlas.font);
@@ -621,7 +695,10 @@ impl Game<'_> {
         s.command.resize(&m, &c, w as i32, h as i32);
         let mouse = (self.cursor.0.floor() as i32, self.cursor.1.floor() as i32);
         let blink = s.opened.elapsed().as_millis() as u64;
+        // The command box is added first.
+        let mark = horizon_client::widgets::narratables_mark();
         let draws = s.command.draw(&m, mouse, blink, 0);
+        horizon_client::widgets::move_narratables(mark, 0);
         horizon_client::screen_draw::paint(batch, atlas, &draws);
         self.command_block_screen = Some(s);
     }
@@ -737,8 +814,8 @@ impl Game<'_> {
         shortcut: Option<horizon_client::clipboard::EditShortcut>,
         text: Option<&str>,
     ) {
-        let ctrl = self.keys.contains(&KeyCode::ControlLeft);
-        let shift = self.keys.contains(&KeyCode::ShiftLeft);
+        let ctrl = self.has_control_down_with_quirk();
+        let shift = self.has_shift_down();
         // Windows' AltGr is Ctrl+Alt, and its characters still type.
         let types_text = self.types_text();
         let Some(mut s) = self.command_block_screen.take() else {
@@ -851,7 +928,8 @@ impl Game<'_> {
             conditional: p.flags & 2 != 0,
             auto: p.flags & 4 != 0,
         };
-        self.as_guest(host, conn, |game| {
+        // The confirmation (`advMode.setCommand.success`) is the editing player's alone.
+        self.as_guest_messaged(host, conn, |game| {
             if allowed {
                 game.apply_command_block(&edit);
                 // BaseCommandBlock.onUpdated: the clients get the new command.
@@ -967,5 +1045,62 @@ mod tests {
         assert_eq!(block[0].2, 135.0);
         // Done and Cancel sit at the same height on both.
         assert_eq!(cart[1].2, block[4].2);
+    }
+}
+
+#[cfg(test)]
+mod narration_tests {
+    use super::*;
+    use horizon_client::widgets::What;
+
+    fn keys(key: &str, args: &[&str]) -> String {
+        if args.is_empty() {
+            key.to_owned()
+        } else {
+            format!("{key}({})", args.join(", "))
+        }
+    }
+
+    #[test]
+    fn the_switches_narrate_as_cycle_buttons_showing_their_value() {
+        let state = (true, Mode::Redstone, false, true);
+        let cycle = |b| button_narration(b, state, [0.0; 4], &keys).what;
+        let expect = |message: &str, next: &str| What::Cycle {
+            message: message.into(),
+            next: next.into(),
+            active: true,
+        };
+        assert_eq!(
+            cycle(Button::Output),
+            expect("options.generic_value(advMode.trackOutput, O)", "X")
+        );
+        assert_eq!(
+            cycle(Button::Mode),
+            expect(
+                "options.generic_value(advMode.mode, advMode.mode.redstone)",
+                "advMode.mode.sequence"
+            )
+        );
+        assert_eq!(
+            cycle(Button::Conditional),
+            expect(
+                "options.generic_value(advMode.type, advMode.mode.unconditional)",
+                "advMode.mode.conditional"
+            )
+        );
+        assert_eq!(
+            cycle(Button::Auto),
+            expect(
+                "options.generic_value(advMode.triggering, advMode.mode.autoexec.bat)",
+                "advMode.mode.redstoneTriggered"
+            )
+        );
+        assert_eq!(
+            cycle(Button::Done),
+            What::Button {
+                message: "gui.done".into(),
+                active: true
+            }
+        );
     }
 }

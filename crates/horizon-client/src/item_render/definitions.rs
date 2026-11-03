@@ -9,42 +9,28 @@ pub(super) fn load(root: &Path) -> BTreeMap<String, ClientItem> {
     };
     for ns in namespaces.flatten() {
         let namespace = ns.file_name().to_string_lossy().into_owned();
-        let base = ns.path().join("items");
-        let mut pending = vec![base.clone()];
-        while let Some(dir) = pending.pop() {
-            let Ok(files) = fs::read_dir(dir) else {
-                continue;
-            };
-            for file in files.flatten() {
-                let path = file.path();
-                // Overlay directories may be links into the base resources.
-                if path.is_dir() {
-                    pending.push(path);
-                    continue;
-                }
-                if path.extension().is_none_or(|e| e != "json") {
-                    continue;
-                }
-                let Ok(relative) = path.strip_prefix(&base) else {
-                    continue;
-                };
-                let name = relative
-                    .with_extension("")
-                    .to_string_lossy()
-                    .replace('\\', "/");
-                match fs::read_to_string(&path) {
-                    Ok(text) => match ClientItem::from_json(&text) {
+        let Ok(folder) = horizon_world::json_folder::read(&ns.path().join("items")) else {
+            continue;
+        };
+        for file in &folder.files {
+            let name = &file.name;
+            match file.bytes() {
+                Ok(bytes) => {
+                    let item = std::str::from_utf8(bytes)
+                        .map_err(|e| e.to_string())
+                        .and_then(|text| ClientItem::from_json(text).map_err(|e| e.to_string()));
+                    match item {
                         Ok(item) => {
                             out.insert(format!("{namespace}:{name}"), item);
                         }
                         Err(error) => log::warn!(
                             "Horizon: invalid item definition {namespace}:{name}: {error}"
                         ),
-                    },
-                    Err(error) => log::warn!(
-                        "Horizon: could not read item definition {namespace}:{name}: {error}"
-                    ),
+                    }
                 }
+                Err(error) => log::warn!(
+                    "Horizon: could not read item definition {namespace}:{name}: {error}"
+                ),
             }
         }
     }
@@ -77,6 +63,26 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn prepared_item_definitions_keep_nested_ids_and_use_packed_bytes() {
+        let fixture = Fixture::new();
+        let packed = r#"{"model":{"type":"minecraft:model","model":"server:item/packed"}}"#;
+        fixture.write("horizon-resources.json", "{}");
+        fixture.write("assets/server/items/weapons/orb.json", packed);
+        horizon_core::prepared_files::write(&fixture.0).unwrap();
+        // A packed prepared root must read the prepared bytes, like the other
+        // tables, rather than silently reverting to the loose-file loader.
+        fixture.write("assets/server/items/weapons/orb.json", "{");
+        let definitions = load(&fixture.0);
+        let horizon_assets::item_model::ItemModelNode::Model(model) =
+            &definitions["server:weapons/orb"].model
+        else {
+            panic!("expected packed model");
+        };
+        assert_eq!(model.model, "server:item/packed");
+        assert!(!definitions.contains_key("server:orb"));
     }
 
     #[test]

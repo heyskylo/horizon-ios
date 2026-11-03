@@ -86,6 +86,30 @@ fn info(p: &Pack) -> PackInfo {
         fixed: false,
     }
 }
+/// A pack from `DownloadedPackSource.loadRequestedPacks`: fixed at the top of
+/// the selected list (`DOWNLOADED_PACK_SELECTION`), labelled as a server pack
+/// (or a world's own pack when its id is the local-world uuid).
+fn downloaded_info(p: &Pack) -> PackInfo {
+    // `WorldOpenFlows.WORLD_PACK_ID` as hex in `server/{uuid}/…`.
+    const WORLD: &str = "server/640a6a92b6cb48a0b391831586500359/";
+    let world = p.id.starts_with(WORLD);
+    PackInfo {
+        id: p.id.clone(),
+        title: p.title.clone(),
+        description: p.raw_description.clone(),
+        description_style: p.description_style.clone(),
+        source: if world {
+            PackSource::World
+        } else {
+            PackSource::Server
+        },
+        compat: p.compatibility,
+        icon: p.icon_png().as_deref().and_then(pack_screen::load_icon),
+        required: true,
+        position: Position::Top,
+        fixed: true,
+    }
+}
 /// The vanilla pack: required, at the bottom (`BuiltInPackSource`), with the
 /// client JAR's `pack.png` that the prepared resources hold.
 fn vanilla_info(vanilla: &Path) -> PackInfo {
@@ -105,12 +129,14 @@ fn vanilla_info(vanilla: &Path) -> PackInfo {
         fixed: false,
     }
 }
-/// Shared by the startup menu, which has no world resources yet.
-pub(super) fn pack_infos(vanilla: &Path) -> Vec<PackInfo> {
+/// Packs the Resource Packs screen lists: folder and built-in packs, then any
+/// active downloaded server (or world) packs, then vanilla.
+pub(super) fn pack_infos(vanilla: &Path, server: &[Pack]) -> Vec<PackInfo> {
     let mut infos: Vec<PackInfo> = packs::discover(vanilla, &packs_dir())
         .iter()
         .map(info)
         .collect();
+    infos.extend(server.iter().map(downloaded_info));
     infos.push(vanilla_info(vanilla));
     infos
 }
@@ -122,10 +148,27 @@ impl Game<'_> {
             self.ui.vanilla_root.clone()
         }
     }
+    /// Whether all active packs preserve vanilla's block models. The server
+    /// overlay sits above the local selection and must be included too.
+    pub(super) fn model_packs_are_vanilla(&self) -> bool {
+        self.settings.horizon.vanilla_models_with_server_packs(
+            self.settings.resource_packs.iter().map(String::as_str),
+            self.server_packs.active.iter().map(|pack| pack.id.as_str()),
+        )
+    }
+    /// The leaf mode that is safe for the current local and server packs.
+    pub(super) fn effective_leaf_culling(&self) -> horizon_client::graphics::LeafCullingMode {
+        self.settings
+            .horizon
+            .leaf_culling_effective_with_server_packs(
+                self.settings.resource_packs.iter().map(String::as_str),
+                self.server_packs.active.iter().map(|pack| pack.id.as_str()),
+            )
+    }
     /// The packs the pack screen offers and the current selection
     /// (`PackSelectionScreen` makes its `PackSelectionModel` from them).
     pub(super) fn refresh_pack_lists(&mut self) {
-        let infos = pack_infos(&self.vanilla_root());
+        let infos = pack_infos(&self.vanilla_root(), &self.server_packs.active);
         let o = &mut self.ui.options;
         o.pack_infos = infos;
         o.pack_selection = self.settings.resource_packs.clone();
@@ -145,10 +188,7 @@ impl Game<'_> {
         // until those resources exist, then apply the latest selection once.
         // A reload already under its overlay finishes first (vanilla's
         // `pendingReload`, which `runTick` starts once the overlay is gone).
-        if reload_waits(
-            self.rest_loader.is_some() || self.world_loader.is_some(),
-            self.pack_reload.is_some(),
-        ) {
+        if reload_waits(self.pack_context_loading(), self.pack_reload.is_some()) {
             self.pending_pack_reload = true;
             return;
         }
@@ -223,13 +263,22 @@ impl Game<'_> {
         })?);
         Ok(())
     }
+    /// World entry now runs on the integrated server, whose preparation captures
+    /// the current pack context. A deferred entry still waiting for rest tables
+    /// has the same restriction; only swap once that handoff has completed.
+    fn pack_context_loading(&self) -> bool {
+        self.rest_loader.is_some()
+            || self.pending_entry.is_some()
+            || self.integrated_starting.is_some()
+    }
+
     /// `LoadingOverlay.tick` once the reload is done: the staged pack is
     /// applied on the render thread, and its outcome goes to whoever asked
     /// (`reloadResourcePacks`' callback, or `PackReloadConfig.Callbacks`).
     pub(super) fn drive_pack_reload(&mut self) {
         // World preparation captures the current pack context. Do not swap
         // its atlas until that world has installed its streaming state.
-        if self.rest_loader.is_some() || self.world_loader.is_some() {
+        if self.pack_context_loading() {
             return;
         }
         let Some((kind, staged)) = self.pack_reload.as_mut().and_then(PackReload::finished) else {
@@ -265,6 +314,11 @@ impl Game<'_> {
             gui,
             pack,
             textures,
+            cem,
+            block_entity_shapes,
+            sounds,
+            ui_metadata,
+            language,
         } = staged;
         // Keep the working GPU resources, and hand its window surface over.
         if let Some(renderer) = &mut self.renderer {
@@ -282,6 +336,8 @@ impl Game<'_> {
                     self.renderer.as_ref(),
                     Some(textures),
                     self.settings.horizon.api,
+                    self.settings.horizon.translucent_batching,
+                    super::shader_packs::picked_pack_draws_flat(&self.settings),
                 )
             })
             .transpose()
@@ -304,13 +360,18 @@ impl Game<'_> {
         self.random_tick_sections.clear();
         self.portals.sections.clear();
         self.options.resources = root.clone();
-        let context = pack.context.clone();
         self.pack = pack;
         self.gui = gui;
         // The new atlas's skin and map slots are blank: players and maps
         // upload into it again instead of naming sprites it does not have.
         self.skin_slots.forget();
+        self.skin_downloads
+            .borrow_mut()
+            .set_resource_root(self.options.resources.clone());
         self.maps.slots.forget();
+        self.map_patches.clear();
+        // Kept mod block entities name the old atlas's sprites.
+        self.kept_block_entities.get_mut().clear();
         // The atlas's sprites moved: the particle engine re-reads every rect
         // and the packs' sprite sets, or every particle draws a stale region.
         self.particles
@@ -324,22 +385,75 @@ impl Game<'_> {
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner) =
             horizon_client::mobs::villager_hats::VillagerHats::load(&root);
-        horizon_client::ui::load_metadata(&root);
-        lang::set(lang::Language::load(&[&root], &lang::code()));
+        *self
+            .res
+            .mob_data()
+            .cem
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = cem;
+        self.res
+            .block_entity_render()
+            .set_shapes(block_entity_shapes);
+        // The random entity textures and emissive overlays the new atlas packs. A new scan is
+        // a new generation:
+        // every mob (every splitscreen player's too) chooses again on its next tick.
+        *self
+            .res
+            .mob_data()
+            .random_textures
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            std::mem::take(&mut self.gui.atlas.random_textures);
+        *self
+            .res
+            .mob_data()
+            .emissive
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = self.gui.atlas.emissive.clone();
+        *self
+            .res
+            .mob_data()
+            .blinks
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            std::mem::take(&mut self.gui.atlas.blinks);
+        horizon_client::ui::set_metadata(ui_metadata);
+        // Read with the language in use when the reload started: one picked since then wins.
+        let code = lang::code();
+        lang::set(if language.code == code {
+            language
+        } else {
+            lang::Language::load(&[&root], &code)
+        });
         self.refresh_remote_language();
-        self.audio.reload(&root);
+        self.audio.reload_with(&root, sounds);
         self.clear_lod();
+        // A pack that may replace leaf models falls back to `Off` before the
+        // reload marks every section dirty.
+        self.streaming.leaf_culling = self.effective_leaf_culling();
+        let context = self.worker_context();
         self.streaming.reload_resources(&mut self.world, context);
         self.pending_uploads.clear();
         // New GPU textures: a renderer built from the reloaded resources; the
         // sections are uploaded again as they are meshed.
-        if let Some(renderer) = renderer {
+        if let Some(mut renderer) = renderer {
+            // The old one's size: a splitscreen player's view is smaller than the window the new
+            // one was sized from (it drew a window-sized frame into the view, cut off).
+            if let Some(old) = &self.renderer {
+                renderer.resize(old.config.width, old.config.height);
+            }
             self.renderer = Some(renderer);
             self.apply_ui_settings();
         }
+        // Horizon's own shader pack is built again: its sprite tags name the old atlas's
+        // layers, and a new renderer runs no pack.
+        self.native_shaders = super::native_shaders::NativeShaders::picking(&std::mem::take(
+            &mut self.native_shaders.picked,
+        ));
         self.ui.chat.rescale(&self.gui.atlas);
         // The creative screen survives the reload; item names may not.
         self.creative_screen.forget_items();
+        self.native_client_resources_reloaded();
         Ok(())
     }
 }
@@ -366,11 +480,30 @@ pub(super) fn stage_pack(
     progress.set(1);
     // The world's models and sprites and the GUI atlas read the same root and nothing of
     // each other: about a second each, side by side.
-    let (render, atlas, panorama) = std::thread::scope(|s| {
-        let atlas =
-            s.spawn(|| HudAtlas::build_over(&root, vanilla_root).map_err(|e| e.to_string()));
-        let panorama = s.spawn(|| horizon_client::gfx::panorama::Faces::load(&root));
-        (assets.reload(&root), atlas.join(), panorama.join())
+    let mod_image = crate::game::mods::built_with_native_mods();
+    // The sound events, the GUI sprites' metadata and the language are read here too, not in
+    // the frame that applies the reload (about 20 ms of it).
+    let (render, atlas, panorama, (sounds, ui_metadata, language)) = std::thread::scope(|s| {
+        let atlas = s.spawn(|| {
+            HudAtlas::build_over_with_image(&root, vanilla_root, mod_image)
+                .map_err(|e| e.to_string())
+        });
+        let panorama = s.spawn(|| horizon_client::gfx::panorama::Faces::load(&root, vanilla_root));
+        let small = s.spawn(|| {
+            (
+                horizon_client::sound_events::SoundRegistry::load(&root),
+                horizon_client::ui::read_metadata(&root),
+                lang::Language::load(&[&root], &lang::code()),
+            )
+        });
+        (
+            assets.reload(&root),
+            atlas.join(),
+            panorama.join(),
+            small
+                .join()
+                .unwrap_or_else(|p| std::panic::resume_unwind(p)),
+        )
     });
     let render = Arc::new(render?);
     let mut atlas = atlas.unwrap_or_else(|p| std::panic::resume_unwind(p))?;
@@ -390,12 +523,22 @@ pub(super) fn stage_pack(
         context.light.clone(),
     )?;
     let textures = prepare_renderer_textures(&pack);
+    let cem = Arc::new(horizon_client::mobs::cem::CemModels::load(
+        &root,
+        res.mob_types(),
+    ));
+    let block_entity_shapes = res.block_entity_render().shapes_for(&root);
     progress.set(3);
     Ok(StagedPack {
         root,
         gui,
         pack,
         textures,
+        cem,
+        block_entity_shapes,
+        sounds,
+        ui_metadata,
+        language,
     })
 }
 
@@ -406,6 +549,14 @@ pub(super) struct StagedPack {
     pub gui: UiResources,
     pub pack: PackResources,
     pub textures: PreparedTextures,
+    /// The packs' custom entity models (OptiFine CEM).
+    pub cem: Arc<horizon_client::mobs::cem::CemModels>,
+    /// The block entities' models, the packs' custom entity models over vanilla's.
+    pub block_entity_shapes: Arc<horizon_client::block_entity_render::BlockEntityShapes>,
+    /// The root's sound events, GUI sprite metadata and current language.
+    pub sounds: horizon_client::sound_events::SoundRegistry,
+    pub ui_metadata: horizon_client::ui::UiMetadata,
+    pub language: lang::Language,
 }
 
 /// `LoadingOverlay`'s stage lines for a pack reload, indexed by `progress`.

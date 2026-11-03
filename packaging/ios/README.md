@@ -215,3 +215,23 @@ library: `Game` and `game::run()` live in the **bin** target (`crates/horizon-cl
 need for that detour anyway: `EventLoop::run_app` calls `UIApplicationMain` itself, so a Rust executable built
 by `cargo build --target aarch64-apple-ios` is a legitimate `Payload/Horizon.app/Horizon`, which is what
 `.github/workflows/ios.yml` now produces beside this shell.
+
+### Unsigned builds in GitHub Releases
+
+After this workflow is merged, each successful `main` push in `heyskylo/horizon-ios`
+creates a versioned prerelease containing an unsigned IPA and its `.sha256` checksum.
+The app's build number is the workflow run number and attempt (for example `42.1`),
+and its source commit is recorded in `Info.plist`. Release tags use `ios-build-42.1`;
+assets are named `Horizon-iOS-<version>-build42.1-unsigned.ipa`.
+
+PRs and fork builds only upload temporary Actions artifacts. A manual run on `main`
+can publish by selecting **publish_release**; other manual runs remain artifact-only.
+The publishing job alone receives `contents: write`, uses the same successful run's
+artifact, verifies its source commit, and audits every Mach-O binary for signatures.
+It also rejects provisioning profiles, certificates, private files and prepared game
+data. No extra publishing token or signing certificate is required.
+
+Files upload to a draft release before it becomes public. A release-only retry can
+resume a partial draft, but cannot overwrite a published build or reuse a tag pointing
+at another commit. Downloaded IPAs still need the user's own signing method before
+installation. Prereleases are not marked as the stable `latest` release.

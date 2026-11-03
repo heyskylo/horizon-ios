@@ -4,6 +4,7 @@
 //!
 //! This file only lists the probes, so that adding one reruns no harness: tools/parity.py leaves it out of
 //! their dependencies. How a probe runs is in dispatch.rs.
+extern crate horizon_client_lib as horizon_client;
 #[macro_use]
 mod dispatch;
 
@@ -48,8 +49,10 @@ mod frame_limiter_probe;
 mod game_loop_probe;
 mod ghost_recipe_fixture;
 mod held_drop_fixture;
+mod held_item_stack_probe;
 mod hotbar_fixture;
 mod hud_fixture;
+mod inline_object_fixture;
 mod input_probe;
 mod interaction_input_fixture;
 mod lan_probe;
@@ -101,6 +104,7 @@ mod tooltip_display_fixture;
 mod trading_fixture;
 mod translucency_fixture;
 mod trident_probe;
+mod vehicle_container_fixture;
 mod weather_fixture;
 mod world_border_render_fixture;
 mod world_options_fixture;
@@ -144,9 +148,11 @@ probes! {
     game_loop_probe,
     ghost_recipe_fixture,
     held_drop_fixture,
+    held_item_stack_probe,
     hotbar_fixture,
     hud_fixture,
     input_probe,
+    inline_object_fixture,
     interaction_input_fixture,
     lan_probe,
     light_parity,
@@ -196,6 +202,7 @@ probes! {
     trading_fixture,
     trident_probe,
     translucency_fixture,
+    vehicle_container_fixture,
     weather_fixture,
     world_border_render_fixture,
     world_options_fixture,

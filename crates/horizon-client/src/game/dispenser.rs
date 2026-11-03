@@ -13,6 +13,8 @@ use horizon_client::{
     particles::{ParticleOptions, ParticleType},
     projectiles::{Projectile, ProjectileKind},
 };
+// Its old home, for mixin code that names it here.
+pub(super) use horizon_client::mod_api::NativeDispensed;
 use horizon_core::{
     geometry::{Aabb, Direction, Vec3},
     position::BlockPos,
@@ -67,6 +69,15 @@ fn y_rot(d: Direction) -> f32 {
         _ => 270.0,
     }
 }
+/// `DirectionalPlaceContext.getRotation`: `get2DDataValue() * 90`, so a
+/// vertical direction (`data2d = -1`) gives -90 where `toYRot` gives 270: the
+/// same horizontal facing, but the raw value a mod's placement hook reads.
+fn place_rotation(d: Direction) -> f32 {
+    match d {
+        Direction::Up | Direction::Down => -90.0,
+        _ => y_rot(d),
+    }
+}
 fn block_box(p: Pos) -> Aabb {
     Aabb::new(
         Vec3::new(f64::from(p.0), f64::from(p.1), f64::from(p.2)),
@@ -89,6 +100,11 @@ fn shrink(mut stack: ItemStack) -> Option<ItemStack> {
 }
 /// A dispenser's answer: the slot's new content and the level event played.
 type Dispensed = (Option<ItemStack>, i32);
+
+/// None keeps vanilla's behaviour; an explicit empty remainder consumes the stack.
+fn mod_dispensed(answer: Option<NativeDispensed>) -> Option<Dispensed> {
+    answer.map(|(left, event)| (left.filter(|stack| stack.count > 0), event))
+}
 
 thread_local! {
     /// `OptionalDispenseItemBehavior.success` of the registered behaviours
@@ -495,6 +511,29 @@ impl Game<'_> {
         self.spawn_dispensed(pos, facing, one, 6);
         (stack.count > 0).then_some(stack)
     }
+    /// Drop one item as DefaultDispenseItemBehavior does. For a dispenser hook:
+    /// return this remainder in its answer with `CLICK`; the caller plays the
+    /// answer's event and smoke once. A client, another dimension or an unloaded
+    /// chunk keeps the input stack unchanged. API 67.
+    #[allow(dead_code)]
+    pub(super) fn native_dispense_default(
+        &mut self,
+        dimension: &str,
+        pos: [i32; 3],
+        facing: Direction,
+        stack: ItemStack,
+    ) -> Option<ItemStack> {
+        if !(self.serving.is_some() || self.options.dedicated.is_some())
+            || dimension != self.dim.id()
+            || !self.world.chunks.contains_key(&(pos[0] >> 4, pos[2] >> 4))
+        {
+            return Some(stack);
+        }
+        if stack.count == 0 {
+            return None;
+        }
+        self.default_execute((pos[0], pos[1], pos[2]), facing, stack)
+    }
     /// `new DefaultDispenseItemBehavior().dispense(..)` including its events.
     pub(super) fn dispense_default(
         &mut self,
@@ -584,6 +623,32 @@ impl Game<'_> {
         facing: Direction,
         stack: ItemStack,
     ) -> Result<Option<ItemStack>> {
+        let mut answer = None;
+        if self.serving.is_some() || self.options.dedicated.is_some() {
+            self.native_dispense_item(
+                self.dim.id(),
+                [pos.0, pos.1, pos.2],
+                facing,
+                &stack,
+                &mut answer,
+            );
+        }
+        if let Some((left, event)) = mod_dispensed(answer) {
+            if event == FAIL {
+                self.native_block_failed_dispense(
+                    self.dim.id(),
+                    [pos.0, pos.1, pos.2],
+                    &stack.item,
+                );
+            }
+            // DefaultDispenseItemBehavior.dispense: playSound, then playAnimation;
+            // a NOOP behaviour (event 0) plays neither.
+            if event != 0 {
+                self.dispenser_event(event, pos, 0);
+                self.dispenser_event(2000, pos, data_value(facing));
+            }
+            return Ok(left);
+        }
         let item = stack.item.to_string();
         let (left, event) = match item.as_str() {
             "minecraft:arrow"
@@ -632,6 +697,9 @@ impl Game<'_> {
             }
             _ => self.dispense_default_method(pos, facing, stack)?,
         };
+        if event == FAIL {
+            self.native_block_failed_dispense(self.dim.id(), [pos.0, pos.1, pos.2], &item);
+        }
         self.dispenser_event(event, pos, 0);
         self.dispenser_event(2000, pos, data_value(facing));
         Ok(left)
@@ -841,6 +909,12 @@ impl Game<'_> {
                 };
                 self.player_equipped(name, Some(&one));
                 self.apply_equipment();
+                self.native_block_dispense_armor(
+                    self.dim.id(),
+                    [pos.0, pos.1, pos.2],
+                    &stack.item,
+                    "player",
+                );
                 return true;
             }
             Target::Stand(i) => {
@@ -874,6 +948,16 @@ impl Game<'_> {
             let ctx = self.who_context(who, None);
             self.post_game_event("minecraft:equip", [at.x, at.y, at.z], ctx);
         }
+        self.native_block_dispense_armor(
+            self.dim.id(),
+            [pos.0, pos.1, pos.2],
+            &stack.item,
+            match target {
+                Target::Stand(_) => "armor_stand",
+                Target::Mob(_) => "mob",
+                Target::Player => "player",
+            },
+        );
         true
     }
     /// After `EntityType.spawn` / `MobBucketItem.spawn`: `mob.playAmbientSound()`.
@@ -912,6 +996,10 @@ impl Game<'_> {
         if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
             horizon_client::entity_nbt::apply_item_components(m, &stack);
         }
+        // EntityType.updateCustomEntityTag: a configured egg
+        // (`/give @s pig_spawn_egg[minecraft:entity_data={…}]`) spawns the mob
+        // it describes from a dispenser too, not only from a player's hand.
+        self.apply_spawn_egg_entity_data(id, &stack);
         self.mob_ambient(id)?;
         // SpawnEggItemBehavior: the entity was placed by the dispenser.
         self.post_block_game_event("minecraft:entity_place", [pos.0, pos.1, pos.2], None, None);
@@ -1128,6 +1216,13 @@ impl Game<'_> {
         }
         self.world.modified.insert((front.0 >> 4, front.2 >> 4));
         self.boats.push(boat);
+        if self.serving.is_some() || self.options.dedicated.is_some() {
+            let boat = self.boats.last().unwrap();
+            self.native_vehicle_create(
+                boat.entity_type().as_str(),
+                [boat.position.x, boat.position.y, boat.position.z],
+            );
+        }
         (shrink(stack), CLICK)
     }
     /// `MinecartDispenseItemBehavior`.
@@ -1167,6 +1262,13 @@ impl Game<'_> {
         );
         self.world.modified.insert((front.0 >> 4, front.2 >> 4));
         self.carts.push(cart);
+        if self.serving.is_some() || self.options.dedicated.is_some() {
+            let cart = self.carts.last().unwrap();
+            self.native_vehicle_create(
+                cart.kind.id(),
+                [cart.position.x, cart.position.y, cart.position.z],
+            );
+        }
         (shrink(stack), CLICK)
     }
 
@@ -1185,10 +1287,10 @@ impl Game<'_> {
             horizon_client::items::bucket_contents(&item).expect("filled bucket dispatcher");
         let target_pos = Self::pos_of(target);
         let emptied = self.with_level(|b, level, ticks| {
-            b.bucket_empty(level, ticks, target_pos, content, sound, false, false)
+            b.bucket_empty(level, ticks, target_pos, None, content, sound, false, false)
         });
         self.process_level_events()?;
-        if !emptied {
+        if emptied.is_none() {
             return Ok((self.dispense_default(pos, facing, stack), CLICK));
         }
         if self.dim == super::Dim::Nether
@@ -1197,22 +1299,7 @@ impl Game<'_> {
                 BucketContent::Fluid(FluidKind::Water) | BucketContent::MobWater
             )
         {
-            // The water evaporates in a cloud of smoke.
-            let c = Self::center(target);
-            for _ in 0..8 {
-                let r = self.particles.random();
-                let p = [
-                    f64::from(target.0) + (r.next_double() * 2.0 - 1.0),
-                    f64::from(target.1) + (r.next_double() * 2.0 - 1.0),
-                    f64::from(target.2) + (r.next_double() * 2.0 - 1.0),
-                ];
-                let _ = c;
-                self.particles.add(
-                    &ParticleOptions::simple(ParticleType::LargeSmoke),
-                    p,
-                    [0.0; 3],
-                );
-            }
+            self.evaporation_smoke([target.0, target.1, target.2]);
         }
         if let Some(kind) = mob {
             // MobBucketItem.checkExtraContent: the mob (from the bucket, so
@@ -1307,6 +1394,9 @@ impl Game<'_> {
         if self
             .with_level(|b, level, ticks| b.fire_can_be_placed_at(level, ticks, target_pos, facing))
         {
+            if !self.native_block_ignite_allowed(target_pos, "flint_and_steel") {
+                return Ok((Some(stack), CLICK));
+            }
             let fire =
                 self.with_level(|b, level, ticks| b.fire_state_for(level, ticks, target_pos));
             self.level_set([target.0, target.1, target.2], fire)?;
@@ -1327,8 +1417,8 @@ impl Game<'_> {
                 None,
             );
         } else if &*name == "minecraft:tnt" {
-            if self.ui.rules.bool("tnt_explodes") {
-                self.spawn_primed_tnt(target_pos, false);
+            if self.ui.rules.bool("tnt_explodes") && self.tnt_prime_allowed(target_pos) {
+                self.spawn_primed_tnt(target_pos, false, None, None);
                 self.with_level(|b, level, ticks| b.remove_block(level, ticks, target_pos, false));
                 self.process_level_events()?;
             } else {
@@ -1388,11 +1478,15 @@ impl Game<'_> {
         if self.sulfur_cube_swallow(front, &stack) {
             return (shrink(stack), optional_event("tnt"));
         }
+        let target = Self::pos_of(front);
+        if !self.tnt_prime_allowed(target) {
+            set_success("tnt", false);
+            return (Some(stack), FAIL);
+        }
         set_success("tnt", true);
         // new PrimedTnt(level, x + 0.5, y, z + 0.5, null), its sound and ENTITY_PLACE.
-        let target = Self::pos_of(front);
         let rot = self.world.random.next_double() * f64::from(std::f32::consts::TAU);
-        self.add_primed_tnt(target, rot, 80);
+        self.add_primed_tnt(target, rot, 80, None, None);
         self.audio.play(
             "minecraft:entity.tnt.primed",
             Some([
@@ -1526,7 +1620,7 @@ impl Game<'_> {
                 f64::from(front.2) + 0.5,
             ),
             inside: false,
-            yaw: y_rot(facing),
+            yaw: place_rotation(facing),
             pitch: 0.0,
             sneaking: false,
             item: stack.item.to_string(),
@@ -1699,10 +1793,7 @@ impl Game<'_> {
                 let random = self.rand_sequences.get(&sequence, self.level.seed);
                 world_items!(self).loot_table_from(table, false, held, random)
             }
-            None => self
-                .res
-                .items()
-                .loot_table(table, false, held, &mut self.world.random),
+            None => world_items!(self).loot_table(table, false, held, &mut self.world.random),
         }
     }
     /// `Entity.spawnAtLocation(level, stack, offset)`: an item at the entity's
@@ -1753,6 +1844,7 @@ impl Game<'_> {
         let id = mob.id;
         self.mobs[index].removed = true;
         self.mobs.push(mob);
+        self.native_mobs_joined(self.mobs.len() - 1, false);
         Some(id)
     }
     /// `ShearsDispenseItemBehavior.tryShearEntity`: the first live, ready
@@ -1770,6 +1862,8 @@ impl Game<'_> {
                 continue;
             }
             let at = m.position;
+            let entity_id = m.id;
+            let kind = m.kind.id.clone();
             let sound_at = Some([at.x, at.y, at.z]);
             match m.species() {
                 Species::SulfurCube if sulfur_cube::has_body(m) => {
@@ -1811,7 +1905,7 @@ impl Game<'_> {
                                 f64::from(r.next_float() * 0.05),
                                 f64::from((r.next_float() - r.next_float()) * 0.1),
                             ];
-                            if let Some(item) = self.dropped.last_mut() {
+                            if let Some(item) = self.just_spawned_item() {
                                 item.velocity = Vec3::new(
                                     item.velocity.x + push[0],
                                     item.velocity.y + push[1],
@@ -1871,6 +1965,7 @@ impl Game<'_> {
                         .play("minecraft:entity.mooshroom.shear", sound_at, 1.0, 1.0);
                     // convertTo(COW): the cow takes its place, then the mushrooms drop.
                     self.convert_mob(i, "minecraft:cow");
+                    self.mooshroom_shear_puff([at.x, at.y, at.z], height);
                     let drops = self.sequence_loot(
                         "minecraft:shearing/mooshroom",
                         &format!("minecraft:shearing/mooshroom/{variant}"),
@@ -1888,6 +1983,12 @@ impl Game<'_> {
                 }
                 _ => continue,
             }
+            self.native_block_shear_entity(
+                self.dim.id(),
+                [target.0, target.1, target.2],
+                entity_id,
+                &kind,
+            );
             self.post_block_game_event(
                 "minecraft:shear",
                 [target.0, target.1, target.2],
@@ -2142,4 +2243,28 @@ pub(super) fn tipped_effect(stack: &ItemStack) -> Option<(&'static str, i32)> {
                     )
                 })
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mod_dispenser_answers_preserve_fallback_and_own_consumption() {
+        assert!(
+            mod_dispensed(None).is_none(),
+            "no registered behaviour keeps vanilla"
+        );
+        assert_eq!(mod_dispensed(Some((None, CLICK))), Some((None, CLICK)));
+        let stack = ItemStack::new("minecraft:stone", 7);
+        let Some((Some(left), event)) = mod_dispensed(Some((Some(stack.clone()), FAIL))) else {
+            panic!("handled stack")
+        };
+        assert_eq!(left, stack, "the returned remainder is not consumed again");
+        assert_eq!(event, FAIL, "the answer chooses its sound");
+        assert_eq!(
+            mod_dispensed(Some((Some(ItemStack { count: 0, ..stack }), 0))),
+            Some((None, 0))
+        );
+    }
 }

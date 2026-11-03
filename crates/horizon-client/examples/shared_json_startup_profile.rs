@@ -2,6 +2,7 @@
 //! Run each mode in a separate process to capture CPU usage and peak RSS.
 //! The deferred mode evaluates both phases contiguously for fair loader comparison;
 //! actual client startup performs other initialization between these phases.
+extern crate horizon_client_lib as horizon_client;
 use horizon_client::{assets::Assets, blocks::BlockFacts};
 use horizon_world::level::Behaviours;
 use std::{path::Path, time::Instant};
@@ -47,7 +48,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ))?;
         let parse_ms = parse_started.elapsed().as_secs_f64() * 1000.0;
         let facts_started = Instant::now();
-        let (facts, gameplay) = BlockFacts::load_with_projection(root, assets.registry, &json)?;
+        let (facts, gameplay) =
+            BlockFacts::load_with_projection(root, assets.registry, &json, true)?;
         let facts_ms = facts_started.elapsed().as_secs_f64() * 1000.0;
         let behaviours_started = Instant::now();
         let behaviours = Behaviours::load_with_gameplay(assets.registry, root, &json, &gameplay)?;

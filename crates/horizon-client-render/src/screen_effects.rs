@@ -5,6 +5,7 @@
 //! outline, nether portal swirl). Positions are clip-space quads; textures
 //! come from the shared 2D atlas and may repeat.
 use crate::{
+    effects::EffectInstance,
     hud::{Rect, TextureFlags},
     hud_layout::GuiDraw,
 };
@@ -43,6 +44,9 @@ pub struct ScreenQuad {
     pub blend: Blend,
     /// How the sprite is sampled: [`SAMPLE_BLUR`] and [`SAMPLE_CLAMP`].
     pub sampling: u32,
+    /// A tint of the whole view (the underwater overlay), not something in front of it: in HDR
+    /// output the world shines through it (`Renderer::draw_overlay`).
+    pub world_tint: bool,
 }
 
 /// What the camera sees this frame.
@@ -159,6 +163,7 @@ impl ScreenEffects {
             }),
             blend: Blend::Alpha,
             sampling,
+            world_tint: false,
         };
         let full = [[-1.0, -1.0], [1.0, -1.0], [1.0, 1.0], [-1.0, 1.0]];
         // ScreenEffectRenderer.submitBlockSprite: u1/v1 at (-1, -1), colour 0xFF191919.
@@ -179,13 +184,16 @@ impl ScreenEffects {
         {
             let (u, v) = (-yaw / 64.0, pitch / 64.0);
             let uv = [[u + 4.0, v + 4.0], [u, v + 4.0], [u, v], [u + 4.0, v]];
-            out.push(hand_quad(
-                full,
-                uv,
-                rect,
-                [brightness, brightness, brightness, 0.1],
-                texture_sampling("misc/underwater"),
-            ));
+            out.push(ScreenQuad {
+                world_tint: true,
+                ..hand_quad(
+                    full,
+                    uv,
+                    rect,
+                    [brightness, brightness, brightness, 0.1],
+                    texture_sampling("misc/underwater"),
+                )
+            });
         }
         if input.on_fire
             && let Some(rect) = sprite("block/fire_1")
@@ -223,6 +231,7 @@ impl ScreenEffects {
             }),
             blend,
             sampling,
+            world_tint: false,
         };
         let rgba = |c: u32| {
             let [a, r, g, b] = c.to_be_bytes();
@@ -269,6 +278,28 @@ impl ScreenEffects {
         }
         out
     }
+}
+
+/// The nausea effect's blend-out advance: over its last `NAUSEA_BLEND_OUT`
+/// ticks it has no effect (`MobEffects.NAUSEA`, `endsWithin(60)`).
+const NAUSEA_BLEND_OUT: i32 = 60;
+
+/// `MobEffectInstance.BlendState.hasEffect`: still past the blend-out point,
+/// so the effect counts as on (`!endsWithin(60)` for `MobEffects.NAUSEA`).
+pub fn nausea_has_effect(e: &EffectInstance) -> bool {
+    !e.ends_within(NAUSEA_BLEND_OUT)
+}
+
+/// A new nausea instance's `BlendState`: from nothing, or, when the server
+/// asked for no blending, at once (`MobEffectInstance.skipBlending`'s
+/// `BlendState.setImmediate`).
+pub fn nausea_blend_added(e: &EffectInstance, blend: bool) -> (f32, f32) {
+    let factor = if blend || !nausea_has_effect(e) {
+        0.0
+    } else {
+        1.0
+    };
+    (factor, factor)
 }
 
 #[cfg(test)]
@@ -374,6 +405,9 @@ mod tests {
         });
         let sampling: Vec<_> = quads.iter().map(|q| q.sampling).collect();
         assert_eq!(sampling, [0, SAMPLE_CLAMP, SAMPLE_BLUR]);
+        // Only the underwater overlay tints the world; the block in the way covers it.
+        let tints: Vec<_> = quads.iter().map(|q| q.world_tint).collect();
+        assert_eq!(tints, [false, true, false]);
     }
     #[test]
     fn mcmeta_texture_section() {

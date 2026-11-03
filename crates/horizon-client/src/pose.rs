@@ -94,7 +94,8 @@ impl PlayerMotion {
         Ok(pose.dimensions(self.attribute("minecraft:scale")? as f32))
     }
     pub fn refresh_dimensions(&mut self) -> Result<()> {
-        self.dimensions = self.dimensions_for_pose(self.pose)?;
+        self.scale = self.attribute("minecraft:scale")? as f32;
+        self.dimensions = self.pose.dimensions(self.scale);
         Ok(())
     }
     pub fn set_pose(&mut self, pose: Pose) -> Result<()> {
@@ -186,7 +187,12 @@ impl MotionWorld<'_, '_, '_> {
     /// (`canGlide` needs `!isPassenger()`) and `LivingEntity.tick` resets
     /// `fallFlyTicks`: a player who boards while gliding sits up instead of
     /// keeping the glide pose (#3093).
+    /// `Entity.baseTick` still samples the fluids first, in the box the vehicle
+    /// allows (the boat the game stores in the player's fluid state), so a boat
+    /// afloat keeps the eyes dry.
     pub fn passenger_pose_tick(&mut self) -> Result<()> {
+        self.player.fluids.was_eye_in_water = self.player.is_eye_in_fluid(crate::motion::WATER);
+        self.update_fluids()?;
         // Player.tick: a passenger is never on the ground (setOnGround(false)
         // clears the supporting block too), so its look packets say so.
         self.player.ground.on_ground = false;

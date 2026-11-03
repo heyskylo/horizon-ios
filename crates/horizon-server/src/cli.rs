@@ -158,6 +158,119 @@ pub fn command(dir: &Path, words: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+/// `players [--json]`: who is online, the operators, the whitelist and the bans; a stopped server's lists
+/// are read from its files.
+pub fn players(dir: &Path, as_json: bool) -> Result<(), String> {
+    let v = match Client::open(dir)? {
+        Some(client) => client.call("GET", "/api/v1/players", None)?,
+        None => serde_json::from_str(
+            &crate::admin::players(&crate::api::Shared::with_install(dir, None)).body,
+        )
+        .map_err(|e| e.to_string())?,
+    };
+    if as_json {
+        println!("{v}");
+        return Ok(());
+    }
+    let list = |key: &str, describe: &dyn Fn(&Value) -> String| -> String {
+        let items: Vec<String> = v[key]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(describe)
+            .collect();
+        if items.is_empty() {
+            "none".into()
+        } else {
+            items.join(", ")
+        }
+    };
+    let name = |p: &Value| p["name"].as_str().unwrap_or_default().to_owned();
+    let because = |b: &Value| match b["reason"].as_str() {
+        Some(reason) => format!(" ({reason})"),
+        None => String::new(),
+    };
+    let online = list("online", &|p| match p["op_level"].as_i64() {
+        Some(level) if level > 0 => format!("{} (op {level}, {} ms)", name(p), p["ping_ms"]),
+        _ => format!("{} ({} ms)", name(p), p["ping_ms"]),
+    });
+    match v["max_players"].as_u64() {
+        Some(max) => println!(
+            "Online ({}/{max}): {online}",
+            v["online"].as_array().map_or(0, Vec::len)
+        ),
+        None => println!("Online: the game isn't running"),
+    }
+    println!(
+        "Operators: {}",
+        list("ops", &|o| format!("{} ({})", name(o), o["level"]))
+    );
+    let white: Vec<String> = v["whitelist"]["players"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(name)
+        .collect();
+    println!(
+        "Whitelist ({}): {}",
+        if v["whitelist"]["enabled"] == true {
+            "on"
+        } else {
+            "off"
+        },
+        if white.is_empty() {
+            "none".into()
+        } else {
+            white.join(", ")
+        }
+    );
+    println!(
+        "Banned: {}",
+        list("bans", &|b| format!("{}{}", name(b), because(b)))
+    );
+    println!(
+        "Banned addresses: {}",
+        list("ip_bans", &|b| format!(
+            "{}{}",
+            b["ip"].as_str().unwrap_or_default(),
+            because(b)
+        ))
+    );
+    Ok(())
+}
+
+/// `kick NAME [REASON]`, `ban NAME [REASON]`, `pardon NAME`, `ban-ip ADDRESS|NAME [REASON]`, `pardon-ip
+/// ADDRESS`: the vanilla command on the running server, through the control API.
+pub fn moderate(dir: &Path, command: &str, words: &[String]) -> Result<(), String> {
+    let Some(target) = words.first() else {
+        return Err(format!(
+            "{command} needs a player's name{}",
+            if command.ends_with("-ip") {
+                " or an address"
+            } else {
+                ""
+            }
+        ));
+    };
+    let mut body = json!({});
+    let key = if target.parse::<std::net::IpAddr>().is_ok() {
+        "ip"
+    } else {
+        "name"
+    };
+    body[key] = json!(target);
+    if words.len() > 1 {
+        body["reason"] = json!(words[1..].join(" "));
+    }
+    let client = running(dir)?;
+    wait_running(&client, None)?;
+    let reply = client.call("POST", &format!("/api/v1/players/{command}"), Some(&body))?;
+    for line in reply["output"].as_array().into_iter().flatten() {
+        println!("{}", line.as_str().unwrap_or_default());
+    }
+    Ok(())
+}
+
 /// `report [SECONDS]`: the running game records a performance report for that long (60 s by default,
 /// at most 600), writes it to `reports/` (a JSON file and a short text summary, nothing about who
 /// plays) and this prints the summary.

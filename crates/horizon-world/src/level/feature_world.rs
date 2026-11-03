@@ -104,6 +104,24 @@ impl<L: LevelAccess + ?Sized> PlacementContext for LevelFeatureWorld<'_, '_, L> 
         }
         Ok(())
     }
+    /// `StructureTemplate.placeInWorld`'s pass over a placed block:
+    /// `Block.updateFromNeighbourShapes`, written with `flags` when it
+    /// changes, then `ServerLevel.updateNeighborsAt` for the new block.
+    fn update_from_neighbour_shapes(
+        &mut self,
+        position: [i32; 3],
+        flags: i32,
+    ) -> Result<(), PlacementQueryError> {
+        let place = pos(position);
+        let state = self.sim.state(place);
+        let new_state = self.sim.update_from_neighbour_shapes(state, place);
+        if new_state != state {
+            self.sim.set_block(place, new_state, flags);
+        }
+        let block = self.sim.b.block(new_state);
+        self.sim.update_neighbors_at(place, block);
+        Ok(())
+    }
     fn set_section_block(
         &mut self,
         position: [i32; 3],

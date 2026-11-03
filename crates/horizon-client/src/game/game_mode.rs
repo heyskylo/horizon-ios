@@ -1,7 +1,8 @@
 //! Game modes beyond survival and creative (`GameType`): adventure players
 //! cannot build, spectators fly through blocks and only watch.
 use super::{Game, Screen};
-use horizon_client::command::args::GameMode;
+use horizon_client::{collisions::SceneCollisions, command::args::GameMode};
+use horizon_world::world_movement::in_range_of_ground;
 
 pub(super) fn mode_id_of(mode: GameMode) -> i32 {
     match mode {
@@ -18,6 +19,14 @@ pub(super) fn mode_from_id(id: i32) -> GameMode {
         3 => GameMode::Spectator,
         _ => GameMode::Survival,
     }
+}
+/// `ChunkMap.skipPlayer`: a player is skipped when `player.isSpectator() &&
+/// !level.getGameRules().getBoolean(SPECTATORS_GENERATE_CHUNKS)`. A skipped
+/// player holds no distance-manager ticket and streams no chunks around
+/// itself, but still receives the chunks other players load (chunk sending
+/// is untouched).
+pub(super) fn loads_chunks(spectators_generate_chunks: bool, spectator: bool) -> bool {
+    !spectator || spectators_generate_chunks
 }
 impl Game<'_> {
     pub(super) fn spectator(&self) -> bool {
@@ -36,8 +45,9 @@ impl Game<'_> {
     /// `ServerPlayer.setGameMode` and `GameType.updatePlayerAbilities`.
     pub(super) fn set_mode(&mut self, mode: GameMode) {
         let was_spectator = self.spectator();
+        let changed = mode != self.mode;
         // MultiPlayerGameMode.setLocalMode: the mode it leaves.
-        if mode != self.mode {
+        if changed {
             self.previous_mode = Some(self.mode);
         }
         self.mode = mode;
@@ -65,6 +75,28 @@ impl Game<'_> {
                 p.flying = false;
             } else if was_spectator {
                 p.flying = true;
+            }
+        }
+        // ServerPlayerGameMode.changeGameModeForPlayer: a player left flying
+        // by the change lands when the ground is within a block.
+        let flying = self
+            .player
+            .as_ref()
+            .filter(|p| p.flying)
+            .map(|p| p.bounds());
+        if changed
+            && mode != GameMode::Spectator
+            && let Some(bounds) = flying
+        {
+            let mut scene = SceneCollisions {
+                world: &self.world,
+                binding: &self.collision,
+                subject: None,
+            };
+            if in_range_of_ground(&mut scene, bounds)
+                && let Some(p) = self.player.as_mut()
+            {
+                p.flying = false;
             }
         }
         if mode == GameMode::Spectator && self.screen == Screen::Inventory {
@@ -184,5 +216,26 @@ impl Game<'_> {
         } else {
             self.riding = None;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::loads_chunks;
+
+    /// `ChunkMap.skipPlayer`: only a spectator with `spectators_generate_chunks`
+    /// off stops loading chunks around itself.
+    #[test]
+    fn a_skipped_spectator_loads_no_chunks() {
+        assert!(!loads_chunks(false, true), "spectator, rule off");
+        assert!(loads_chunks(true, true), "spectator, rule on");
+        assert!(
+            loads_chunks(false, false),
+            "survival, creative or adventure"
+        );
+        assert!(
+            loads_chunks(true, false),
+            "survival, creative or adventure, rule on"
+        );
     }
 }

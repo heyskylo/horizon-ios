@@ -2,7 +2,7 @@
 //! `ServerGamePacketListenerImpl.handlePickItemFromEntity`): the client aims,
 //! the server answers with `Entity.getPickResult`.
 use super::Game;
-use horizon_client::{items::ItemStack, lan::playerdata::uuid_ints, save::uuid_text};
+use horizon_client::{items::ItemStack, save::uuid_text};
 
 impl Game<'_> {
     /// The entity the crosshair hits before any block, as `Entity.getId`; an
@@ -22,9 +22,6 @@ impl Game<'_> {
         }
         if let Some((i, d)) = self.mob_hit() {
             offer(d, Some(self.mobs[i].id as i32));
-        }
-        if let Some((_, d)) = self.guest_hit() {
-            offer(d, None);
         }
         if let Some((_, d)) = self.redirectable_hit() {
             offer(d, None);
@@ -54,10 +51,6 @@ impl Game<'_> {
         if let Some((i, d)) = self.mob_hit() {
             offer(d, uuid_of(self.mobs[i].id));
         }
-        if let Some((conn, d)) = self.guest_hit() {
-            let guest = self.lan.as_ref().and_then(|h| h.hub.guest(conn));
-            offer(d, guest.map(|g| uuid_ints(g.uuid)));
-        }
         if let Some((i, d)) = self.redirectable_hit() {
             offer(d, uuid_of(self.creatures.projectiles[i].id));
         }
@@ -79,7 +72,7 @@ impl Game<'_> {
         } else if let Some(b) = self.boats.iter().find(|b| b.id == id) {
             b.entity_type()
         } else if let Some(c) = self.carts.iter().find(|c| c.id == id) {
-            c.kind.id().to_owned()
+            c.kind.item().to_owned()
         } else if self.armor_stands.iter().any(|a| a.id == id) {
             "minecraft:armor_stand".to_owned()
         } else if let Some(c) = self.cushions.iter().find(|c| c.id == id) {
@@ -126,7 +119,7 @@ impl Game<'_> {
         let d2: f64 = (0..3)
             .map(|a| (eye[a] - eye[a].clamp(b.0[a], b.1[a])).powi(2))
             .sum();
-        let range = if self.creative { 5.0 } else { 3.0 } + 3.0;
+        let range = self.entity_reach + 3.0;
         d2 < range * range
     }
 }

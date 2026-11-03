@@ -7,7 +7,7 @@ use std::fmt::Write;
 use naga::ShaderStage;
 
 use super::Error;
-use super::rewrite::attribute_value;
+use super::rewrite::{attribute_value, is_zero_literal};
 use crate::Preprocessed;
 use crate::macros::lex;
 
@@ -15,6 +15,21 @@ use crate::macros::lex;
 pub(super) struct Var {
     pub(super) name: String,
     pub(super) decl: String,
+    /// Of a struct type: the pack's declaration stays as a private global, and the members
+    /// travel in varyings of ours (`struct_parts`).
+    pub(super) structure: bool,
+}
+
+/// `layout(rgba16f) uniform writeonly image2D colorimg4;`
+#[derive(Clone)]
+pub(super) struct ImageDecl {
+    pub(super) name: String,
+    pub(super) ty: String,
+    pub(super) format: String,
+    /// `readonly`, `writeonly` or empty (both).
+    pub(super) access: String,
+    /// Declared `coherent` or `volatile`: invocations of a dispatch share it as it changes.
+    pub(super) coherent: bool,
 }
 
 pub(super) struct Stage<'p> {
@@ -26,8 +41,9 @@ pub(super) struct Stage<'p> {
     /// Name, type with its array suffix, token of the type.
     pub(super) uniforms: Vec<(String, String, usize)>,
     pub(super) samplers: Vec<(String, String)>,
-    /// Storage image name, type, optional layout format, and memory qualifiers.
-    pub(super) images: Vec<(String, String, Option<String>, String)>,
+    pub(super) images: Vec<ImageDecl>,
+    /// The bindings of the SSBOs (`buffer` blocks), in set 4.
+    pub(super) buffers: BTreeSet<u32>,
     pub(super) ins: Vec<Var>,
     pub(super) outs: Vec<Var>,
     /// Vertex inputs, now private globals, and the value our `main` gives each.
@@ -37,19 +53,78 @@ pub(super) struct Stage<'p> {
     pub(super) gbuffers: bool,
     /// The pack's fragment outputs, declared again with their locations.
     pub(super) frag_outs: Vec<(u32, String)>,
+    /// Narrow outputs copied into their vec4 after the pack's `main`.
+    pub(super) out_copies: Vec<String>,
+    /// The stage calls `inverse`, which ours replaces, and doesn't define its own.
+    pub(super) inverse: bool,
+    /// The stage calls `textureGatherOffsets`, which naga lacks: ours is in the prelude.
+    pub(super) gather_offsets: bool,
+    /// The stage calls `textureQueryLod`, which naga lacks: ours is in the prelude.
+    pub(super) query_lod: bool,
+    /// The stage calls `dot` / `normalize` and defines neither: the scalar overloads GLSL has
+    /// (`dot(float, float)`, `normalize(float)`) and naga lacks go in the prelude.
+    pub(super) scalar_dot: bool,
+    pub(super) scalar_normalize: bool,
     /// The pack's functions that take samplers: which parameters are samplers.
     pub(super) sampler_functions: HashMap<String, Vec<bool>>,
+    /// The pack's structs: each member's type and name with its array suffix.
+    pub(super) structs: HashMap<String, Vec<(String, String)>>,
     pub(super) outputs: BTreeSet<u32>,
     pub(super) frag_coord: bool,
     /// Tokens written differently, by index.
     pub(super) replaced: HashMap<usize, String>,
     /// Globals whose initializer runs in our `main` (`g = hz_init_g();`), in order.
     pub(super) inits: Vec<String>,
+    /// Their captured array size constants and declarator ends: `.length()` stays type-only.
+    pub(super) runtime_array_lengths: HashMap<String, (String, usize)>,
     pub(super) errors: Vec<Error>,
 }
 
+/// The format qualifiers of images (GLSL 4.60, 4.4.6.2).
+const IMAGE_FORMATS: [&str; 39] = [
+    "rgba32f",
+    "rgba16f",
+    "rg32f",
+    "rg16f",
+    "r11f_g11f_b10f",
+    "r32f",
+    "r16f",
+    "rgba16",
+    "rgb10_a2",
+    "rgba8",
+    "rg16",
+    "rg8",
+    "r16",
+    "r8",
+    "rgba16_snorm",
+    "rgba8_snorm",
+    "rg16_snorm",
+    "rg8_snorm",
+    "r16_snorm",
+    "r8_snorm",
+    "rgba32i",
+    "rgba16i",
+    "rgba8i",
+    "rg32i",
+    "rg16i",
+    "rg8i",
+    "r32i",
+    "r16i",
+    "r8i",
+    "rgba32ui",
+    "rgba16ui",
+    "rgb10_a2ui",
+    "rgba8ui",
+    "rg32ui",
+    "rg16ui",
+    "rg8ui",
+    "r32ui",
+    "r16ui",
+    "r8ui",
+];
+
 pub(super) const STORAGE: [&str; 5] = ["uniform", "in", "out", "attribute", "varying"];
-pub(super) const QUALIFIERS: [&str; 16] = [
+pub(super) const QUALIFIERS: [&str; 11] = [
     "flat",
     "smooth",
     "noperspective",
@@ -61,11 +136,6 @@ pub(super) const QUALIFIERS: [&str; 16] = [
     "precise",
     "sample",
     "const",
-    "coherent",
-    "volatile",
-    "restrict",
-    "readonly",
-    "writeonly",
 ];
 /// The compatibility profile's uniform state (with its `Inverse`/`Transpose` forms).
 pub(super) const UNIFORM_STATE: [&str; 5] = [
@@ -83,6 +153,35 @@ pub(super) const VERTEX_INPUTS: [&str; 6] = [
     "gl_Normal",
     "gl_FogCoord",
     "gl_MultiTexCoord",
+];
+/// Built-in functions naga's constant evaluator lacks: a `const` that calls one is evaluated
+/// where the program runs instead (GL drivers fold them; naga fails the program).
+pub(super) const NOT_CONSTANT: [&str; 25] = [
+    "mix",
+    "smoothstep",
+    "reflect",
+    "refract",
+    "faceforward",
+    "transpose",
+    "determinant",
+    "inverse",
+    "outerProduct",
+    "matrixCompMult",
+    "modf",
+    "frexp",
+    "ldexp",
+    "packUnorm2x16",
+    "packSnorm2x16",
+    "packUnorm4x8",
+    "packSnorm4x8",
+    "packHalf2x16",
+    "unpackUnorm2x16",
+    "unpackSnorm2x16",
+    "unpackUnorm4x8",
+    "unpackSnorm4x8",
+    "unpackHalf2x16",
+    "bitfieldExtract",
+    "bitfieldInsert",
 ];
 /// Words that became keywords after GLSL 1.x and that old packs use as names.
 pub(super) const LATER_KEYWORDS: [&str; 17] = [
@@ -105,12 +204,87 @@ pub(super) const LATER_KEYWORDS: [&str; 17] = [
     "writeonly",
 ];
 
+/// Vulkan GLSL's texture and sampler types, which naga's frontend reads as types, renamed.
+const VULKAN_TYPES: [(&str, &str); 9] = [
+    ("sampler", "hz_kw_sampler"),
+    ("samplerShadow", "hz_kw_samplerShadow"),
+    ("texture1D", "hz_kw_texture1D"),
+    ("texture2D", "hz_kw_texture2D"),
+    ("texture3D", "hz_kw_texture3D"),
+    ("textureCube", "hz_kw_textureCube"),
+    ("texture2DArray", "hz_kw_texture2DArray"),
+    ("texture2DMS", "hz_kw_texture2DMS"),
+    ("textureCubeArray", "hz_kw_textureCubeArray"),
+];
+
 pub(super) fn significant(t: &str) -> bool {
     !t.trim().is_empty()
 }
 
+/// A fragment output narrower than four components: the vec4 of its kind, and the components
+/// that fill it (alpha 1).
+fn widened(ty: &str) -> Option<(&'static str, &'static str)> {
+    Some(match ty {
+        "float" => ("vec4", ", 0.0, 0.0, 1.0"),
+        "vec2" => ("vec4", ", 0.0, 1.0"),
+        "vec3" => ("vec4", ", 1.0"),
+        "int" => ("ivec4", ", 0, 0, 1"),
+        "ivec2" => ("ivec4", ", 0, 1"),
+        "ivec3" => ("ivec4", ", 1"),
+        "uint" => ("uvec4", ", 0u, 0u, 1u"),
+        "uvec2" => ("uvec4", ", 0u, 1u"),
+        "uvec3" => ("uvec4", ", 1u"),
+        _ => return None,
+    })
+}
+
+/// `sampler2D`, `isampler3D`, `usampler2D`, `sampler2DShadow`...
+pub(super) fn is_sampler_type(t: &str) -> bool {
+    t.trim_start_matches(['i', 'u']).starts_with("sampler")
+}
+
 pub(super) fn is_ident(t: &str) -> bool {
     t.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
+}
+
+fn outer_array_length(ty: &str) -> Option<&str> {
+    let open = ty.find('[')?;
+    let mut depth = 0;
+    for (offset, c) in ty[open..].char_indices() {
+        match c {
+            '[' => depth += 1,
+            ']' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(&ty[open + 1..open + offset]);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Synthesized return types need the same dimension reversal as source type tokens.
+fn reversed_array_dimensions(ty: &str) -> String {
+    let Some(open) = ty.find('[') else {
+        return ty.to_owned();
+    };
+    let mut tail = &ty[open..];
+    let mut dimensions = Vec::new();
+    while !tail.is_empty() {
+        let Some(length) = outer_array_length(tail).filter(|_| tail.starts_with('[')) else {
+            return ty.to_owned();
+        };
+        let end = length.len() + 2;
+        dimensions.push(&tail[..end]);
+        tail = &tail[end..];
+    }
+    let mut result = ty[..open].to_owned();
+    for dimension in dimensions.into_iter().rev() {
+        result.push_str(dimension);
+    }
+    result
 }
 
 impl<'p> Stage<'p> {
@@ -160,25 +334,38 @@ impl<'p> Stage<'p> {
             uniforms: Vec::new(),
             samplers: Vec::new(),
             images: Vec::new(),
+            buffers: BTreeSet::new(),
             ins: Vec::new(),
             outs: Vec::new(),
             attributes: Vec::new(),
             frag_outs: Vec::new(),
+            out_copies: Vec::new(),
+            inverse: false,
+            gather_offsets: false,
+            query_lod: false,
+            scalar_dot: false,
+            scalar_normalize: false,
             sampler_functions: HashMap::new(),
+            structs: HashMap::new(),
             outputs: BTreeSet::new(),
             frag_coord: false,
             gbuffers: false,
             replaced: HashMap::new(),
             inits: Vec::new(),
+            runtime_array_lengths: HashMap::new(),
             errors: Vec::new(),
         };
+        s.rename_vulkan_types();
         let (mut start, mut depth, mut parens) = (0, 0usize, 0usize);
+        let mut own_inverse = false;
+        let (mut own_dot, mut own_normalize) = (false, false);
         for i in 0..s.tokens.len() {
             match s.tokens[i] {
                 "(" => parens += 1,
                 ")" => parens = parens.saturating_sub(1),
                 "{" if depth == 0 && parens == 0 => {
                     s.global(start, i, true);
+                    s.structure(start, i);
                     depth = 1;
                 }
                 "{" => depth += 1,
@@ -206,22 +393,83 @@ impl<'p> Stage<'p> {
                     }
                 }
                 "gl_FragCoord" => s.frag_coord = true,
-                "gl_TexCoord" => {
-                    if let Some((n, _)) = s.index_after(i) {
-                        s.builtin_varying(format!("hz_TexCoord{n}"));
+                "textureGatherOffsets" => s.gather_offsets = true,
+                "textureQueryLod" => s.query_lod = true,
+                "dot" | "normalize" => {
+                    // A definition at the top level: `float dot(float a, ...)`.
+                    let defines = depth == 0
+                        && s.tokens[..i]
+                            .iter()
+                            .rfind(|t| significant(t))
+                            .is_some_and(|t| is_ident(t));
+                    if s.tokens[i] == "dot" {
+                        s.scalar_dot = true;
+                        own_dot |= defines;
+                    } else {
+                        s.scalar_normalize = true;
+                        own_normalize |= defines;
                     }
                 }
-                "gl_FrontColor" => s.builtin_varying("hz_FrontColor".into()),
-                "gl_Color" if kind == ShaderStage::Fragment => {
-                    s.builtin_varying("hz_FrontColor".into())
+                "inverse" => {
+                    s.inverse = true;
+                    // `mat4 inverse(mat4 m)`: a pack for GLSL 1.20, which has none, wrote its own.
+                    own_inverse |= depth == 0
+                        && s.tokens[..i]
+                            .iter()
+                            .rfind(|t| significant(t))
+                            .is_some_and(|t| is_ident(t));
                 }
+                "gl_TexCoord" => {
+                    if let Some((n, _)) = s.index_after(i) {
+                        s.builtin_varying(format!("hz_TexCoord{n}"), "vec4");
+                    }
+                }
+                "gl_FrontColor" => s.builtin_varying("hz_FrontColor".into(), "vec4"),
+                "gl_Color" if kind == ShaderStage::Fragment => {
+                    s.builtin_varying("hz_FrontColor".into(), "vec4")
+                }
+                "gl_FogFragCoord" => s.builtin_varying("hz_FogFragCoord".into(), "float"),
                 _ => {}
             }
+        }
+        s.inverse &= !own_inverse;
+        s.scalar_dot &= !own_dot;
+        s.scalar_normalize &= !own_normalize;
+        if s.gather_offsets {
+            // Its sampler is passed as a texture and a sampler, as to the pack's own functions.
+            s.sampler_functions
+                .entry("textureGatherOffsets".into())
+                .or_insert_with(|| vec![true, false, false, false, false]);
+        }
+        if s.query_lod {
+            s.sampler_functions
+                .entry("textureQueryLod".into())
+                .or_insert_with(|| vec![true, false]);
         }
         s
     }
 
-    pub(super) fn builtin_varying(&mut self, name: String) {
+    /// Names that desktop GLSL leaves free but Vulkan GLSL takes for its separate texture and
+    /// sampler types (`sampler2D sampler`): renamed, unless called (`texture2D(...)`).
+    fn rename_vulkan_types(&mut self) {
+        for i in 0..self.tokens.len() {
+            let Some(&(_, renamed)) = VULKAN_TYPES.iter().find(|(t, _)| *t == self.tokens[i])
+            else {
+                continue;
+            };
+            let called = self.tokens[i + 1..]
+                .iter()
+                .find(|t| significant(t))
+                .is_some_and(|&t| t == "(");
+            if !called {
+                self.tokens[i] = renamed;
+            }
+        }
+    }
+
+    /// A built-in varying (`gl_TexCoord[n]`, `gl_FrontColor`, `gl_FogFragCoord`) of type `ty`: an
+    /// output of a vertex stage, an input of a fragment stage.
+    pub(super) fn builtin_varying(&mut self, name: String, ty: &str) {
         let list = if self.kind == ShaderStage::Vertex {
             &mut self.outs
         } else {
@@ -230,7 +478,8 @@ impl<'p> Stage<'p> {
         if !list.iter().any(|v| v.name == name) {
             list.push(Var {
                 name,
-                decl: "vec4 @;".into(),
+                decl: format!("{ty} @;"),
+                structure: false,
             });
         }
     }
@@ -275,32 +524,35 @@ impl<'p> Stage<'p> {
             .position(|&i| matches!(self.tokens[i], "(" | "="));
         let prototype = paren.is_some_and(|p| self.tokens[words[p]] == "(")
             && !words.iter().any(|&i| STORAGE.contains(&self.tokens[i]));
+        if body && words.iter().any(|&i| self.tokens[i] == "buffer") {
+            return self.buffer_block(&words);
+        }
         if body || prototype {
             return self.function(&words);
         }
         let mut k = 0;
         let mut storage = None;
         let mut location = None;
-        let mut image_format = None;
-        let mut memory = String::new();
+        let mut format = None;
+        let mut access = "";
+        let mut coherent = false;
         let mut interpolation = String::new();
         while let Some(&i) = words.get(k) {
             let w = self.tokens[i];
             if w == "layout" {
-                // layout(location = n, ...)
+                // layout(location = n, ...), an image's layout(rgba16f)
                 let mut j = k + 1;
                 while let Some(&t) = words.get(j) {
                     j += 1;
-                    if self.tokens[t].starts_with("r") && !matches!(self.tokens[t], "row_major") {
-                        image_format = Some(self.tokens[t].to_owned());
-                    }
-                    if self.tokens[t] == "location" {
-                        location = words
-                            .get(j + 1)
-                            .and_then(|&n| self.tokens[n].parse::<u32>().ok());
-                    }
-                    if self.tokens[t] == ")" {
-                        break;
+                    match self.tokens[t] {
+                        "location" => {
+                            location = words
+                                .get(j + 1)
+                                .and_then(|&n| self.tokens[n].parse::<u32>().ok());
+                        }
+                        f if IMAGE_FORMATS.contains(&f) => format = Some(f),
+                        ")" => break,
+                        _ => {}
                     }
                 }
                 k = j;
@@ -308,13 +560,10 @@ impl<'p> Stage<'p> {
             }
             if STORAGE.contains(&w) {
                 storage = Some(w);
-            } else if QUALIFIERS.contains(&w) {
-                if matches!(
-                    w,
-                    "coherent" | "volatile" | "restrict" | "readonly" | "writeonly"
-                ) {
-                    write!(memory, "{w} ").unwrap();
-                }
+            } else if matches!(w, "readonly" | "writeonly") {
+                access = w;
+            } else if QUALIFIERS.contains(&w) || matches!(w, "coherent" | "volatile" | "restrict") {
+                coherent |= matches!(w, "coherent" | "volatile");
                 if matches!(
                     w,
                     "flat" | "smooth" | "noperspective" | "centroid" | "sample"
@@ -368,11 +617,19 @@ impl<'p> Stage<'p> {
         for (name, array) in declarators {
             let decl = format!("{interpolation}{ty} @{array};");
             match storage {
-                "uniform" if ty.contains("sampler") => self.samplers.push((name, ty.clone())),
-                "uniform" if ty.contains("image") => {
-                    self.images
-                        .push((name, ty.clone(), image_format.clone(), memory.clone()))
-                }
+                "uniform" if is_sampler_type(&ty) => self.samplers.push((name, ty.clone())),
+                "uniform" if ty.contains("image") => match format {
+                    Some(format) => self.images.push(ImageDecl {
+                        name,
+                        ty: ty.clone(),
+                        format: format.to_owned(),
+                        access: access.to_owned(),
+                        coherent,
+                    }),
+                    None => self
+                        .errors
+                        .push(self.error(ty_at, &format!("`{name}`: an image needs a format"))),
+                },
                 "uniform" => self.uniforms.push((name, format!("{ty}{array}"), ty_at)),
                 _ if input && !fragment => {
                     let value = attribute_value(&name, &ty);
@@ -383,14 +640,53 @@ impl<'p> Stage<'p> {
                         self.removed.push(w..w + 1);
                     }
                 }
-                _ if input => self.ins.push(Var { name, decl }),
+                _ if self.structs.contains_key(&ty) => {
+                    self.removed.pop();
+                    for &w in &words[..k] {
+                        self.removed.push(w..w + 1);
+                    }
+                    let var = Var {
+                        name,
+                        decl,
+                        structure: true,
+                    };
+                    if input {
+                        self.ins.push(var);
+                    } else {
+                        self.outs.push(var);
+                    }
+                }
+                _ if input => self.ins.push(Var {
+                    name,
+                    decl,
+                    structure: false,
+                }),
                 _ if fragment => {
                     let n = location.unwrap_or(self.outputs.len() as u32);
                     self.outputs.insert(n);
-                    self.frag_outs
-                        .push((n, format!("layout(location = {n}) out {ty} {name}{array};")));
+                    // wgpu wants every component of the target's format written; GL fills
+                    // what a narrower output leaves out. Ours is a vec4, theirs a private global.
+                    match widened(&ty).filter(|_| array.is_empty()) {
+                        Some((wide, fill)) => {
+                            self.frag_outs.push((
+                                n,
+                                format!(
+                                    "layout(location = {n}) out {wide} hz_out{n}; {ty} {name};"
+                                ),
+                            ));
+                            self.out_copies
+                                .push(format!("hz_out{n} = {wide}({name}{fill});"));
+                        }
+                        None => self
+                            .frag_outs
+                            .push((n, format!("layout(location = {n}) out {ty} {name}{array};"))),
+                    }
                 }
-                _ => self.outs.push(Var { name, decl }),
+                _ => self.outs.push(Var {
+                    name,
+                    decl,
+                    structure: false,
+                }),
             }
         }
     }
@@ -423,16 +719,59 @@ impl<'p> Stage<'p> {
         }
         declarators.push((begin, assign, words.len()));
         let constant = words[..eq].iter().any(|&i| text(i) == "const");
-        let conditional =
-            |d: &(usize, Option<usize>, usize)| words[d.0..d.2].iter().any(|&i| text(i) == "?");
-        if constant && !declarators.iter().any(conditional) {
-            return;
-        }
         // The first declarator's name ends the type.
         let first_end = declarators[0].1.unwrap_or(declarators[0].2);
-        let Some(name_at) = words[..first_end].iter().rposition(|&i| is_ident(text(i))) else {
+        let mut brackets = 0usize;
+        let Some(name_at) = words[..first_end].iter().rposition(|&i| match text(i) {
+            "]" => {
+                brackets += 1;
+                false
+            }
+            "[" => {
+                brackets = brackets.saturating_sub(1);
+                false
+            }
+            t => brackets == 0 && is_ident(t),
+        }) else {
             return;
         };
+        // The zero-division rewrite reads hz_zero, so even a literal-only expression must run
+        // at invocation time. Its value is unspecified in GLSL; keep the existing arithmetic
+        // policy rather than inventing a finite replacement. Later dependent constants must
+        // run after it, while unrelated constants (including comma declarators) stay constant.
+        let mut runtime_names: BTreeSet<&str> = self.inits.iter().map(String::as_str).collect();
+        let runtime: Vec<bool> = declarators
+            .iter()
+            .enumerate()
+            .map(|(n, &(begin, assign, end))| {
+                let run = assign.is_some_and(|a| {
+                    !constant
+                        || (a + 1..end).any(|n| {
+                            let t = text(words[n]);
+                            let next = words.get(n + 1).map(|&i| text(i));
+                            t == "?"
+                                || (NOT_CONSTANT.contains(&t) && next == Some("("))
+                                || (t == "/" && next.is_some_and(is_zero_literal))
+                                || (runtime_names.contains(t)
+                                    && text(words[n - 1]) != "."
+                                    && next != Some("(")
+                                    // A sized array's length depends on its type, not its values.
+                                    && ![".", "length", "(", ")"].iter().enumerate().all(
+                                        |(offset, &t)| {
+                                            words.get(n + offset + 1).is_some_and(|&i| text(i) == t)
+                                        },
+                                    ))
+                        })
+                });
+                if run {
+                    runtime_names.insert(text(words[if n == 0 { name_at } else { begin }]));
+                }
+                run
+            })
+            .collect();
+        if !runtime.iter().any(|&run| run) {
+            return;
+        }
         // The type, with a `vec3[]`'s count written in.
         let mut ty = String::new();
         for &i in &words[..name_at] {
@@ -442,7 +781,10 @@ impl<'p> Stage<'p> {
                     Some(n) => write!(ty, "{n}]").unwrap(),
                     None => return,
                 },
-                t if ty.is_empty() || t == "[" => ty.push_str(t),
+                // `T[6]`: the size and its `]` belong to the type.
+                t if ty.is_empty() || t == "[" || ty.contains('[') && !ty.ends_with(']') => {
+                    ty.push_str(t)
+                }
                 // Qualifiers before the type (`highp`...): the type is the last word.
                 t => ty = t.to_owned(),
             }
@@ -468,13 +810,37 @@ impl<'p> Stage<'p> {
                 }
             }
             let next = if n + 1 < declarators.len() {
-                format!(" {ty}")
+                let qualifier = if constant && !runtime[n + 1] {
+                    "const "
+                } else {
+                    ""
+                };
+                format!(" {qualifier}{ty}")
             } else {
                 String::new()
             };
             let end_token = words.get(end).copied().unwrap_or(to);
             match assign {
-                Some(a) => {
+                Some(a) if runtime[n] => {
+                    let dimensions = if array.is_empty() { &ty } else { &array };
+                    let capture = if let Some(length) = outer_array_length(dimensions) {
+                        // Bind the size in declaration scope: a use site's local `count` must
+                        // not change the length of a global declared with `[count]`.
+                        let mut bound = format!("hz_array_length_{name}");
+                        while self.tokens.contains(&bound.as_str())
+                            || self
+                                .runtime_array_lengths
+                                .values()
+                                .any(|(n, _)| n == &bound)
+                        {
+                            bound.push('_');
+                        }
+                        self.runtime_array_lengths
+                            .insert(name.clone(), (bound.clone(), end_token));
+                        format!(" const int {bound} = int({length});")
+                    } else {
+                        String::new()
+                    };
                     // Scalars, vectors and matrices convert; arrays and structs must match.
                     let scalar = array.is_empty()
                         && !ty.contains('[')
@@ -486,24 +852,97 @@ impl<'p> Stage<'p> {
                     } else {
                         (String::new(), "")
                     };
+                    let return_ty = format!(
+                        "{}{}",
+                        reversed_array_dimensions(&ty),
+                        reversed_array_dimensions(&array),
+                    );
                     replaced.push((
                         words[a],
-                        format!("; {ty}{array} hz_init_{name}() {{ return {open}"),
+                        format!(";{capture} {return_ty} hz_init_{name}() {{ return {open}"),
                     ));
                     replaced.push((end_token, format!("{close}; }}{next}")));
                     names.push(name);
                 }
-                None if n + 1 < declarators.len() => replaced.push((end_token, format!(";{next}"))),
-                None => {}
+                _ if n + 1 < declarators.len() => replaced.push((end_token, format!(";{next}"))),
+                _ => {}
             }
         }
         for &i in &words[..name_at] {
-            if text(i) == "const" {
+            if runtime[0] && text(i) == "const" {
                 self.removed.push(i..i + 1);
             }
         }
         self.replaced.extend(replaced);
         self.inits.extend(names);
+    }
+
+    /// `layout(std430, binding = n) buffer Name {`: an SSBO, in set 4 at its binding. Its
+    /// access qualifiers go, so that every stage binds it alike (read and write).
+    fn buffer_block(&mut self, words: &[usize]) {
+        let mut binding = None;
+        for (k, &i) in words.iter().enumerate() {
+            match self.tokens[i] {
+                // An extension adds real buffer syntax even in a GLSL 1.x stage.
+                // It must not take the legacy identifier rename for `buffer`.
+                "buffer" => {
+                    self.replaced.insert(i, "buffer".into());
+                }
+                "binding" => {
+                    binding = words
+                        .get(k + 2)
+                        .and_then(|&n| self.tokens[n].parse::<u32>().ok());
+                    self.replaced.insert(i, "set = 4, binding".into());
+                }
+                "readonly" | "writeonly" | "restrict" | "coherent" | "volatile" => {
+                    self.removed.push(i..i + 1)
+                }
+                _ => {}
+            }
+        }
+        match binding {
+            Some(b) => _ = self.buffers.insert(b),
+            None => {
+                let at = words.first().copied().unwrap_or(0);
+                self.errors
+                    .push(self.error(at, "a buffer block needs a binding"));
+            }
+        }
+    }
+
+    /// `struct Name {` at token `open`, whose words start at `from`: its members, to `}`.
+    fn structure(&mut self, from: usize, open: usize) {
+        let words: Vec<&str> = self.tokens[from..open]
+            .iter()
+            .copied()
+            .filter(|t| significant(t))
+            .collect();
+        let [.., "struct", name] = words[..] else {
+            return;
+        };
+        let mut members = Vec::new();
+        let mut decl: Vec<&str> = Vec::new();
+        for &t in &self.tokens[open + 1..] {
+            match t {
+                "}" => break,
+                ";" => {
+                    // `T a, b[2]`, after any precision or other qualifier.
+                    let words: Vec<&str> =
+                        decl.drain(..).filter(|w| !QUALIFIERS.contains(w)).collect();
+                    let Some((ty, rest)) = words.split_first() else {
+                        continue;
+                    };
+                    for d in rest.split(|w| *w == ",") {
+                        if let Some((n, array)) = d.split_first() {
+                            members.push((ty.to_string(), format!("{n}{}", array.concat())));
+                        }
+                    }
+                }
+                t if significant(t) => decl.push(t),
+                _ => {}
+            }
+        }
+        self.structs.insert(name.to_owned(), members);
     }
 
     /// A function definition or prototype: remember which parameters are samplers.
@@ -522,7 +961,7 @@ impl<'p> Stage<'p> {
                     params.push(is_sampler);
                     is_sampler = false;
                 }
-                t if t.contains("sampler") => is_sampler = true,
+                t if is_sampler_type(t) => is_sampler = true,
                 _ => {}
             }
         }

@@ -2,10 +2,10 @@
 
 The game itself, as a NativeActivity: no Java, no Gradle.
 
-- [`crates/horizon-android`](../../crates/horizon-android) builds `horizon-client`'s bin code (`main.rs`,
-  `game.rs`, `game/`) as `libhorizon_android.so`. Its `[lib] path` is the bin's own `main.rs`, because rustc
-  emits no library from a bin target. It is its own workspace (the root one excludes it), so host builds never
-  compile the game twice; its `Cargo.lock` started as a copy of the root one, keep the two in step.
+- [`crates/horizon-android`](../../crates/horizon-android) builds the shared gameplay library
+  (`horizon-client/src/lib.rs`, `entry.rs`, `game.rs`, `game/`) as `libhorizon_android.so`.
+  It depends on `horizon-client-lib` for reusable client systems, just as the desktop/iOS
+  gameplay package does. Its own workspace avoids building Android in host-only checks.
 - `crates/horizon-client/src/android.rs` is `android_main`: the working directory and `HOME` both become the app's
   external files folder (`Android/data/dev.horizon.game/files`: saves, `resources/`, imported archives, and
   `.local/share/horizon` for logs and settings), then `main` runs as anywhere else.

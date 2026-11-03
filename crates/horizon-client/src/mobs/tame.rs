@@ -151,9 +151,13 @@ fn wolf_prey(s: &super::Seen) -> bool {
 fn baby_turtle_on_land(s: &super::Seen) -> bool {
     s.species == Species::Turtle && s.baby
 }
-/// `NeutralMob.isAngryAt(player)`: the player is the anger's target.
-fn angry_at_player(m: &Mob, _: &MobWorld) -> bool {
+/// `NeutralMob.isAngryAt(player)`: the player the anger names, or, with the
+/// `universal_anger` rule on and no anger target left, any player. Creative and
+/// spectator players are dropped first (`isValidPlayerTarget`), by the goal's
+/// `can_target_player`.
+fn angry_at_player(m: &Mob, w: &MobWorld) -> bool {
     m.extra.angry_at == Some(Who::Player)
+        || (w.universal_anger && m.extra.anger > 0 && m.extra.angry_at.is_none())
 }
 /// `Wolf.isAngry`.
 pub fn angry(m: &Mob) -> bool {
@@ -704,6 +708,12 @@ fn start_shaking(m: &mut Mob) {
     m.anim.v[SHAKE] = 0.0;
     m.anim.vo[SHAKE] = 0.0;
 }
+/// `Wolf.die`: the wet and shake state is cleared before the rest of the
+/// death, so a wolf killed mid-shake does not shake on the ground.
+pub fn die(m: &mut Mob) {
+    m.extra.flag2 = false;
+    cancel_shake(m);
+}
 /// `Wolf.cancelShake`: it stays wet.
 fn cancel_shake(m: &mut Mob) {
     m.extra.counter2 = 0;
@@ -936,9 +946,8 @@ pub fn register_cat(m: &mut Mob) {
     );
 }
 /// `Ocelot.registerGoals`, then `reassessTrustingGoals` adds the player
-/// avoidance last. Trust (`Ocelot.mobInteract`, the `Trusting` tag) is not
-/// ported yet, so every ocelot is wild: it flees players and can be scared
-/// off while tempted.
+/// avoidance last. A trusting ocelot (`Ocelot.mobInteract`, the `Trusting`
+/// tag) neither runs from players nor is scared off while tempted.
 pub fn register_ocelot(m: &mut Mob) {
     let food = m.kind.food.clone();
     let mut stroll = Stroll::avoiding_water(0.8);
@@ -970,11 +979,12 @@ impl Goal for OcelotTempt {
     fn flags(&self) -> u8 {
         self.0.flags()
     }
+    // `OcelotTemptGoal.canScare`: `super.canScare() && !isTrusting()`.
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
-        self.0.can_use(m, cx)
+        self.scared_unless_trusting(m, |t, m| t.can_use(m, cx))
     }
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
-        self.0.can_continue(m, cx)
+        self.scared_unless_trusting(m, |t, m| t.can_continue(m, cx))
     }
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.0.start(m, cx)
@@ -986,7 +996,21 @@ impl Goal for OcelotTempt {
         self.0.every_tick()
     }
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
-        self.0.tick(m, cx)
+        self.scared_unless_trusting(m, |t, m| t.tick(m, cx))
+    }
+}
+impl OcelotTempt {
+    /// Runs `f` with the tempt goal's `can_scare` off for a trusting ocelot.
+    fn scared_unless_trusting<R>(
+        &mut self,
+        m: &mut Mob,
+        f: impl FnOnce(&mut super::goals::Tempt, &mut Mob) -> R,
+    ) -> R {
+        let scare = self.0.can_scare;
+        self.0.can_scare = scare && !m.extra.trusting;
+        let result = f(&mut self.0, m);
+        self.0.can_scare = scare;
+        result
     }
 }
 /// `Ocelot.OcelotAvoidEntityGoal(ocelot, Player.class, 16.0F, 0.8, 1.33)`.
@@ -1010,11 +1034,12 @@ impl Goal for OcelotAvoid {
     fn flags(&self) -> u8 {
         self.0.flags()
     }
+    // `OcelotAvoidEntityGoal.canUse` and `canContinueToUse`: `!isTrusting() && super`.
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
-        self.0.can_use(m, cx)
+        !m.extra.trusting && self.0.can_use(m, cx)
     }
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
-        self.0.can_continue(m, cx)
+        !m.extra.trusting && self.0.can_continue(m, cx)
     }
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.0.start(m, cx)
@@ -1712,6 +1737,25 @@ mod tests {
         m.on_ground = true;
         m
     }
+    /// `Wolf.die`: the wet flag, the shake counter and both shake animations
+    /// are cleared before any loot is rolled. The death runs
+    /// `drops::death_state` first, so the reset has to be asked there, not
+    /// only exist.
+    #[test]
+    fn a_wolf_that_dies_mid_shake_is_dry_and_still() {
+        let mut m = wolf();
+        // Soaked, and shaking it off: the tick sets the wet flag and entity
+        // event 8 starts the shake, which counts up 0.05 a tick.
+        m.extra.flag2 = true;
+        entity_event(&mut m, 8);
+        m.anim.v[SHAKE] = 0.9;
+        m.anim.vo[SHAKE] = 0.85;
+        crate::mobs::drops::death_state(&mut m);
+        assert!(!m.extra.flag2, "a dead wolf is not wet");
+        assert_eq!(m.extra.counter2, 0, "a dead wolf is not shaking");
+        assert_eq!(m.anim.v[SHAKE], 0.0, "shakeAnim");
+        assert_eq!(m.anim.vo[SHAKE], 0.0, "shakeAnimO");
+    }
     fn entity_events(events: &[MobEvent]) -> Vec<i8> {
         events
             .iter()
@@ -1854,5 +1898,103 @@ mod tests {
         let mut m = sitting(Species::Cat, "minecraft:cat");
         assert!(m.damage(1.0, Damage::player([0.0, 64.0, 1.0])));
         assert!(m.extra.sitting);
+    }
+
+    /// `Cat.canMate` and `Wolf.canMate`: the seeker only has to be tamed, so a
+    /// mob ordered to sit still goes looking for a mate. Only a wolf's
+    /// *partner* is refused while it sits (`wolf.isInSittingPose()`), which is
+    /// the one sitting check vanilla makes.
+    #[test]
+    fn a_sitting_tame_mob_still_looks_for_a_mate() {
+        use crate::mobs::goals::{Breed, Cx, Goal};
+        use crate::mobs::world::with_test_world;
+        let named = |species, name: &str, id: u32, sat: bool| {
+            let mut m = sitting(species, name);
+            m.id = id;
+            m.extra.in_love = 600;
+            m.extra.sitting = sat;
+            m
+        };
+        for (species, name, seeker_sat, partner_sat, breeds) in [
+            // A tamed cat pairs with a tamed cat, sitting or not.
+            (Species::Cat, "minecraft:cat", true, true, true),
+            (Species::Cat, "minecraft:cat", true, false, true),
+            // A wolf pairs unless the wolf it would take is sitting.
+            (Species::Wolf, "minecraft:wolf", true, false, true),
+            (Species::Wolf, "minecraft:wolf", true, true, false),
+            (Species::Wolf, "minecraft:wolf", false, true, false),
+        ] {
+            let mut seeker = named(species, name, 1, seeker_sat);
+            let partner = named(species, name, 2, partner_sat);
+            let seen = [partner.seen(None)];
+            with_test_world(&seen, |w, _| {
+                let mut events = Vec::new();
+                let mut lr = horizon_core::random::LegacyRandom::new(0);
+                let mut cx = Cx {
+                    w,
+                    lr: &mut lr,
+                    events: &mut events,
+                };
+                let mut goal = Breed::new(1.0);
+                assert_eq!(
+                    goal.can_use(&mut seeker, &mut cx),
+                    breeds,
+                    "{name}: seeker sits {seeker_sat}, partner sits {partner_sat}"
+                );
+            });
+        }
+    }
+}
+
+/// `NeutralMob.isAngryAtAllPlayers`: with the `universal_anger` game rule on, a
+/// wolf still angry with no target left goes for any player; with the rule off
+/// it holds none, and a creative player is never one (`isValidPlayerTarget`).
+#[cfg(test)]
+mod universal_anger_tests {
+    use super::*;
+    use crate::mobs::world::{test_player, with_test_world};
+    use std::sync::Arc;
+
+    #[test]
+    fn universal_anger_targets_a_player_the_wolf_was_never_angered_by() {
+        // (the `universal_anger` rule, the player is creative, whether the wolf
+        // ends up with the player as its target).
+        let cases = [
+            (true, false, true),
+            (false, false, false),
+            (true, true, false),
+        ];
+        with_test_world(&[], |w, types| {
+            for (universal_anger, creative, targets) in cases {
+                let mut w = w.clone();
+                let mut p = test_player(Vec3::new(2.5, 64.0, 0.5));
+                p.creative = creative;
+                w.player = Some(p);
+                w.universal_anger = universal_anger;
+                let kind = Arc::new(types.types["minecraft:wolf"].clone());
+                let mut m = Mob::new(1, kind, Vec3::new(0.5, 64.0, 0.5), 0.0);
+                // `anger_end_time` still running, `angry_at` gone: angry, with
+                // nobody left that it was angered by.
+                m.extra.anger = 600;
+                m.extra.angry_at = None;
+                let mut goals = std::mem::take(&mut m.ai.targets);
+                let mut events = Vec::new();
+                let mut lr = horizon_core::random::LegacyRandom::new(0);
+                let mut cx = Cx {
+                    w: &w,
+                    lr: &mut lr,
+                    events: &mut events,
+                };
+                for _ in 0..200 {
+                    goals.tick(&mut m, &mut cx);
+                }
+                m.ai.targets = goals;
+                assert_eq!(
+                    m.ai.target == Some(Who::Player),
+                    targets,
+                    "universal_anger {universal_anger}, creative {creative}"
+                );
+            }
+        });
     }
 }

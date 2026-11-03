@@ -29,7 +29,7 @@ Every item has `day` (days since 1970, UTC: no finer time), `source` (`launcher`
 
 | Kind | Switch | `data` | Largest | A day |
 |---|---|---|---|---|
-| `perf` | performance | `system`, `settings` (render and simulation distance, max FPS, vsync, fullscreen, graphics mode), `seconds` played, `frames` and `ticks` summaries, `peak_ram_mb`, `to_title_ms`, `to_world_ms` | 4 KiB | 12 |
+| `perf` | performance | `system`, `settings` (render and simulation distance, max FPS, vsync, fullscreen, graphics mode), `seconds` played, `frames` and `ticks` summaries, `peak_ram_mb`, `to_title_ms`, `to_world_ms`, `slow_frames` | 4 KiB | 12 |
 | `crash` | crash reports | `system`, `error`, `stack` (one frame a line), `thread`, the graphics and settings details, all scrubbed. No log, no world, no server | 32 KiB | 5 |
 | `bug` | bug reports | `system`, the player's `text` (up to 4000 characters), and the `log` only if they add it after reading it | 80 KiB | 5 |
 | `benchmark` | benchmark uploads | the benchmark report as `docs/benchmark-report.md` defines it, as it is, with its own schema field | 128 KiB | 10 |
@@ -39,7 +39,7 @@ Every item has `day` (days since 1970, UTC: no finer time), `source` (`launcher`
 | Field | What | Example |
 |---|---|---|
 | `os`, `os_version`, `arch` | the OS, its version, the CPU architecture | `linux`, `Fedora Linux 43`, `x86_64` |
-| `cpu`, `threads`, `cores` | the CPU model, its threads and physical cores | `13th Gen Intel(R) Core(TM) i7-13700KF`, 24, 16 |
+| `cpu`, `threads`, `cores` | the CPU's brand name (on Windows the registry's; its family and model, `PROCESSOR_IDENTIFIER`, only where the registry has none), its threads and physical cores | `13th Gen Intel(R) Core(TM) i7-13700KF`, 24, 16 |
 | `cpu_base_mhz`, `cpu_boost_mhz` | base and boost clock, where the OS gives them (not on Apple silicon) | 3400, 5400 |
 | `ram_gb` | installed memory, rounded to the GiB | 32 |
 | `gpu`, `gpu_vendor`, `gpu_kind` | the GPU the game draws with, its maker, `integrated` or `discrete` | `NVIDIA GeForce RTX 4080`, `nvidia`, `discrete` |
@@ -54,6 +54,8 @@ The launcher's own items (bug reports sent from it) have no GPU or screen: only 
 No serial number, host name, user name, MAC address or path is read. Settings → Data collection → "View what would be sent" and `horizon-launcher data show` print every field as it would leave this machine.
 
 A summary (`frames`, `ticks`) is the count, the 50th, 95th and 99th percentile and the maximum in milliseconds (to the tenth), and 14 bucket counts: under 4 ms, 4–6, 6–8, 8–10, 10–12, 12–14, 14–16.7, 16.7–20, 20–25, 25–33.3, 33.3–50, 50–100, 100–250, and 250 ms and more. Raw frame times never leave: `Timings` records them in tenths of a millisecond (20 KB however long the session) and only its summary is kept. A perf item is under 1 KiB.
+
+`slow_frames` says what froze: the frames of 250 ms or more while playing, counted by the step of the frame they spent most of their time in. A step is a span of the render thread (`spans.rs`), named in the code and the same in every game of a release: the slowest outer span, then the span inside it that took at least half of it, as a path (`renderer/r_uploads`, `tick/tick_mobs`; empty when no step was timed). Each entry has the step, its frame count, the longest of those frames and the longest the step took. At most 16 entries; later steps count under `other`. With performance statistics on, the render thread times its steps (wall time only, two clock reads a span); with them off it times nothing. Most sessions have no slow frame and send no `slow_frames`.
 
 Never sent: account names or UUIDs, world names, server or LAN addresses, chat, file paths with the user's name, IP addresses. `scrub::Scrubber` replaces the user folder in paths (`/Users/<user>/…`, `C:\Users\<user>\…`), the user name, e-mail and IP addresses and UUIDs. It also replaces the terms the caller passes (the world's name, the server's address, account names). The server does not store the sender's IP address.
 
@@ -80,21 +82,37 @@ While the game runs (not a dedicated server, a benchmark or a run that quits by 
 - `version` is the release, `platform` is `linux`, `macos`, `windows` or `other`, and `lan` says whether a LAN or play-with-friends world is open.
 - Nothing else: no account, install ID, world, server, settings or hardware. The server checks each field (`live::Ping::check`) and refuses anything more.
 
-The server keeps sessions in memory only, never on disk, and never with the sender's address. A session counts while its last ping is under 2 minutes old. `GET /v1/live` gives the count, rounded (`live::round`: exact under 10, then to 5, 10 and 100):
+The server keeps sessions in memory only, never on disk, and never with the sender's address. A session counts while its last ping is under 2 minutes old. `GET /v1/live` gives the exact count; versions past the 12 most played are summed under `other`:
 
 ```json
-{ "playing": 1240, "lan": 85, "versions": { "v2026.10.22": 1100, "other": 140 }, "platforms": { "linux": 300, "macos": 240, "windows": 700 } }
+{ "playing": 1243, "lan": 87, "versions": { "v2026.10.22": 1102, "other": 141 }, "platforms": { "linux": 301, "macos": 238, "windows": 704 } }
 ```
 
-The launcher reads it when it opens and every minute after, and shows "N playing now" on the Play page. It shows nothing when the server can't be reached. `HORIZON_TELEMETRY_URL=off` turns both off; `HORIZON_NO_HEARTBEAT=1` keeps a single automated run out of the count.
+Once a minute the server writes down only those totals (playing, LAN, per platform; no session, version or address) for the history at [playhorizon.dev/stats](https://playhorizon.dev/stats): every minute for 7 days, then per hour (average and peak) for 90 days, then per day (average and peak) for good. `GET /v1/live/history?range=24h|7d|30d|all` serves it (`&series=official`: the official server's count instead, below):
+
+```json
+{ "source": "players", "range": "24h", "step": 300, "from": 1793404800, "to": 1793491260,
+  "series": [[1793404800, 41.2, 44], [1793405100, 43.0, 47]],
+  "peak": { "playing": 1243, "at": 1793480400 }, "all_time": { "playing": 1243, "at": 1793480400 },
+  "latest": { "playing": 1190, "at": 1793491200 },
+  "platforms": { "linux": 290.5, "macos": 230.1, "windows": 690.4 } }
+```
+
+`series` holds `[start, average, peak]` per point (5 minutes for 24h, an hour for 7d, 3 hours for 30d, a day for all; UTC Unix seconds), `peak` the range's highest minute, `all_time` the highest ever, `latest` the newest minute, `platforms` the range's average per platform.
+
+The server also asks the official server (`horizon_telemetry::server_status::OFFICIAL_STATUS_ADDRESS`, its address with the port its SRV record gives, or `HORIZON_TELEMETRY_OFFICIAL_SERVER`) for its player count every minute, with the server-list status ping every client sends to show a server in its Multiplayer list, and keeps it the same way (`series=official`, playing only; a minute it didn't answer stays empty). Its TPS and MSPT come later, once its admin API is reachable from outside the machine.
+
+The launcher reads the count when it opens and every minute after, and shows "N playing now" on the Play page, exact, with thousands separators; clicking it opens playhorizon.dev/stats. Beside it, "M on the official SMP" is the official server's own count, from the same status ping the launcher sends once a minute (3-second timeout, nothing shown when it doesn't answer); clicking it opens the Servers page. It shows nothing when the server can't be reached. `HORIZON_TELEMETRY_URL=off` turns both off; `HORIZON_NO_HEARTBEAT=1` keeps a single automated run out of the count.
 
 ## Server
 
 - `POST /v1/batch`
 - `DELETE /v1/installs/<install_id>`: deletes everything sent under that ID.
-- `GET /v1/aggregate`: the anonymous totals the website's results page reads. Its `breakdowns` split the play sessions of the period by hardware class (below), each class with its installs, sessions, hours and mean p50 and p99 frame times.
+- `GET /v1/aggregate`: the anonymous totals the website's results page reads. Its `breakdowns` split the play sessions of the period by hardware class (below), each class with its installs, sessions, hours and mean p50 and p99 frame times. Its `slow_frames` list what froze, per release and step: the slow frames, the sessions and installs that had one, and the longest frame and step, for steps at least as many installs had as the groups need.
 - `GET /v1/benchmarks/summary`: players' benchmark uploads grouped by GPU, CPU, render distance and game for playhorizon.dev/benchmarks. A group shows only with at least 3 different installs, and only its medians and counts: no install ID, day, OS version, driver, exact memory or screen. Uploads are never published one by one. Each group's `breakdowns` count its installs per hardware class.
+- `GET /v1/export/benchmarks` and `GET /v1/export/hardware`: for the maintainers' performance work only, behind a bearer token the public cannot use (404 while the server has none). The raw benchmark reports and the play sessions per machine description, including CPU threads and physical cores, with no minimum group size. Nothing identifying: no install ID, and only what a player already agreed to send (this page's lists).
 - `POST /v1/live` and `GET /v1/live`: the "I'm playing" ping and the live count.
+- `GET /v1/live/history?range=24h|7d|30d|all&series=players|official`: the live count, or the official server's, over time (above).
 
 Public output never holds a raw hardware value, only these classes (`src/classes.rs`, the same in the website's `scripts/benchmarks.mjs`, horizon-rust/horizon-site), and a class is published only with at least 3 different installs:
 

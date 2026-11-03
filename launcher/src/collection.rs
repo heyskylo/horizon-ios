@@ -128,7 +128,7 @@ impl Launcher {
         // The question and Settings say what the "I'm playing" ping holds, beside the switches.
         if !self.settings.ping_notice_seen {
             self.settings.ping_notice_seen = true;
-            self.settings.save();
+            self.save_settings();
         }
         self.collection.view = None;
     }
@@ -263,7 +263,7 @@ impl Launcher {
             .px(px(32.))
             .py(px(24.))
             .bg(t.page.opacity(0.92))
-            .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+            .on_scroll(|_, _, cx| cx.stop_propagation())
             .occlude()
             .child(card)
     }

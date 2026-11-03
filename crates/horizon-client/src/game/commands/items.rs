@@ -14,6 +14,9 @@ use horizon_world::nbt::Tag;
 pub(in crate::game) enum Slot {
     /// `inventory[0..36]`: hotbar then the main rows.
     Inv(usize),
+    /// The selected hotbar slot as `weapon.mainhand` names it: the equipment's
+    /// `setItemSlot`, where `hotbar.N` is the inventory's `setItem`.
+    MainHand,
     /// `armor[0..4]` (head, chest, legs, feet).
     Armor(usize),
     Offhand,
@@ -23,6 +26,8 @@ pub(in crate::game) enum Slot {
     /// An armor stand's equipment (`ArmorStand::SLOTS` index).
     Stand(u32, usize),
     Frame(u32),
+    /// A chest or hopper minecart's slot (`ContainerEntity.getChestVehicleSlot`).
+    Cart(u32, usize),
     Block([i32; 3], usize),
     /// A slot of another player (`for_player`): reached with their state in place.
     Guest(u32, Box<Slot>),
@@ -114,7 +119,7 @@ impl Game<'_> {
                     }
                 }
                 if matches_name(name, "weapon") || matches_name(name, "weapon.mainhand") {
-                    add(Slot::Inv(self.selected));
+                    add(Slot::MainHand);
                 }
                 if matches_name(name, "weapon.offhand") {
                     add(Slot::Offhand);
@@ -165,6 +170,19 @@ impl Game<'_> {
                     add(Slot::Frame(*id));
                 }
             }
+            // `getChestVehicleSlot` takes any index below `getContainerSize`.
+            Owner::Entity(Target::Cart(id)) => {
+                let size = self
+                    .carts
+                    .iter()
+                    .find(|c| c.id == *id)
+                    .map_or(0, |c| c.kind.slots());
+                for i in 0..size {
+                    if matches_name(name, &format!("container.{i}")) {
+                        add(Slot::Cart(*id, i));
+                    }
+                }
+            }
             Owner::Entity(_) => {}
         }
         out
@@ -175,6 +193,7 @@ impl Game<'_> {
                 .for_player(Target::Guest(*conn), |g| g.slot_get(slot))
                 .flatten(),
             Slot::Inv(i) => self.inventory.get(*i).cloned().flatten(),
+            Slot::MainHand => self.inventory.get(self.selected).cloned().flatten(),
             Slot::Armor(i) => self.armor.get(*i).cloned().flatten(),
             Slot::Offhand => self.offhand.clone(),
             Slot::Ender(i) => self.ender_items.get(*i).cloned().flatten(),
@@ -205,6 +224,7 @@ impl Game<'_> {
                 .cloned()
                 .flatten(),
             Slot::Frame(id) => self.item_frames.iter().find(|f| f.id == *id)?.item.clone(),
+            Slot::Cart(id, i) => self.cart_slots(*id)?.get(*i).cloned().flatten(),
             Slot::Block(p, i) => match self.world.block_entities.get(&(p[0], p[1], p[2])) {
                 Some(horizon_client::containers::BlockEntity::Chest(items)) => {
                     items.get(*i).cloned().flatten()
@@ -227,6 +247,14 @@ impl Game<'_> {
                 None => false,
             },
             // LivingEntity's equipment SlotAccess: setItemSlot, so onEquipItem.
+            Slot::MainHand => match self.inventory.get_mut(self.selected) {
+                Some(slot) => {
+                    let old = std::mem::replace(slot, stack.clone());
+                    self.player_on_equip("mainhand", old.as_ref(), stack.as_ref());
+                    true
+                }
+                None => false,
+            },
             Slot::Armor(i) => match self.armor.get_mut(*i) {
                 Some(slot) => {
                     let old = std::mem::replace(slot, stack.clone());
@@ -280,6 +308,13 @@ impl Game<'_> {
             Slot::Frame(id) => match self.item_frames.iter_mut().find(|f| f.id == *id) {
                 Some(f) => {
                     f.item = stack;
+                    true
+                }
+                None => false,
+            },
+            Slot::Cart(id, i) => match self.cart_slots(*id).and_then(|c| c.get_mut(*i)) {
+                Some(slot) => {
+                    *slot = stack;
                     true
                 }
                 None => false,

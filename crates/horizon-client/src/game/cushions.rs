@@ -6,7 +6,7 @@
 //! A cushion is a `BlockAttachedEntity`, not a block: it has no block state,
 //! only an entity whose `Pos` is the click point's height. Placement uses
 //! outline bounds, collision shapes and suffocation predicates.
-use super::{Game, Hit};
+use super::{Game, Hit, InteractTarget};
 use horizon_client::entities::{Cushion, dye_index};
 use horizon_client::items::ItemStack;
 use horizon_client::mobs::anim::Poses;
@@ -146,7 +146,7 @@ impl Game<'_> {
     /// The cushion under the crosshair, its distance and the hit point.
     pub(super) fn cushion_hit(&self) -> Option<(usize, f64, [f64; 3])> {
         let (eye, dir) = self.aim()?;
-        let reach: f64 = if self.creative { 5.0 } else { 3.0 };
+        let reach: f64 = self.entity_reach;
         let mut best: Option<(usize, f64, [f64; 3])> = None;
         for (i, c) in self.cushions.iter().enumerate() {
             let Some(d) = super::ray_box(eye, dir, reach, aabb(c.bounds())) else {
@@ -307,12 +307,19 @@ impl Game<'_> {
         true
     }
 
-    /// `Cushion.interact`: sit down unless sneaking or already occupied.
-    pub(super) fn interact_cushion(&mut self) -> bool {
-        let Some((i, d, _)) = self.cushion_hit() else {
+    /// `Cushion.interact`: sit down unless sneaking or already occupied. The
+    /// cushion under the crosshair, or the one a guest's interact packet named.
+    pub(super) fn interact_cushion(&mut self, target: Option<InteractTarget>) -> bool {
+        let Some((i, d, _)) = (match target {
+            Some(t) => {
+                Self::named_entity(&self.cushions, t.id, |c| c.id).map(|i| (i, 0.0, [0.0; 3]))
+            }
+            None => self.cushion_hit(),
+        }) else {
             return false;
         };
-        if !self.before_block(d) {
+        // Only a client's own pick is stopped by a block: the range check passed.
+        if target.is_none() && !self.before_block(d) {
             return false;
         }
         // isSecondaryUseActive.
@@ -331,7 +338,15 @@ impl Game<'_> {
         }
         // `Entity.startRiding`: a passenger first gets off what it rides
         // (`stopRiding`), so a seated player moves to this cushion.
+        if !self.native_may_board(id) {
+            return true;
+        }
         self.stop_riding();
+        // startRiding stops when stopRiding left the passenger seated (a mod
+        // canceled the dismount).
+        if self.riding.is_some() {
+            return true;
+        }
         self.riding = Some(id);
         let p = self.cushions[i].position;
         self.audio.play(
@@ -352,8 +367,10 @@ impl Game<'_> {
         if !self.before_block(d) || self.mob_hit().is_some_and(|m| m.1 < d) {
             return false;
         }
-        // `skipAttackInteraction` when `mayInteract` is false.
+        // `Cushion.hurtServer` refuses a player who may not build, so
+        // skipAttackInteraction is false and Player.attack goes on to onAttack.
         if !self.may_build() {
+            self.attack_ticks = 0;
             return true;
         }
         self.break_cushion(i, true);
@@ -367,7 +384,7 @@ impl Game<'_> {
         let p = c.position;
         self.world.modified.insert((c.pos[0] >> 4, c.pos[2] >> 4));
         if self.riding == Some(c.id) {
-            self.riding = None;
+            self.dismount_removed_vehicle(p.y);
         }
         self.audio.play(
             "minecraft:entity.cushion.break",
@@ -445,6 +462,9 @@ impl Game<'_> {
     /// and `Cushion.removePassenger`'s get-up sound for a rider that left
     /// rather than one whose cushion was killed.
     pub(super) fn get_up_from_cushion(&mut self, c: &Cushion) {
+        if self.riding == Some(c.id) && !self.native_may_leave(c.id) {
+            return;
+        }
         let at = c.dismount();
         self.riding = None;
         if let Some(p) = self.player.as_mut() {
@@ -459,6 +479,49 @@ impl Game<'_> {
             1.0,
             1.0,
         );
+    }
+
+    /// `LivingEntity.dismountVehicle` from a removed vehicle (a broken
+    /// cushion) whose position was at `vehicle_y`: up to the higher of the
+    /// rider's and the vehicle's heights, then the free spot nearest there
+    /// (`findFreePosition` within the rider's own box). No get-up sound:
+    /// `Cushion.removePassenger` plays none once the cushion is removed.
+    pub(super) fn dismount_removed_vehicle(&mut self, vehicle_y: f64) {
+        self.riding = None;
+        let border = self.border_bounds();
+        let b = self.res.behaviours();
+        let Some(p) = self.player.as_ref() else {
+            return;
+        };
+        let (w, h) = (
+            f64::from(p.dimensions.width),
+            f64::from(p.dimensions.height),
+        );
+        let mut at = Vec3::new(p.position.x, p.position.y.max(vehicle_y), p.position.z);
+        // `getBbWidth() <= 4 && getBbHeight() <= 4`.
+        if w <= 4.0 && h <= 4.0 {
+            let center = at.add_vector(Vec3::new(0.0, h / 2.0, 0.0));
+            let size = Vec3::new(w, h, w);
+            let free = horizon_world::level::portal_travel::find_free_position(
+                Aabb::of_size(center, size),
+                center,
+                size,
+                &border,
+                |q| {
+                    b.collision_shape(self.world.block(q.x, q.y, q.z))
+                        .map(|s| s.moved(Vec3::new(f64::from(q.x), f64::from(q.y), f64::from(q.z))))
+                },
+            );
+            if let Some(free) = free {
+                at = free.add_vector(Vec3::new(0.0, -h / 2.0, 0.0));
+            }
+        }
+        if let Some(p) = self.player.as_mut() {
+            self.previous_position = p.position;
+            p.position = at;
+            p.velocity = Vec3::ZERO;
+            p.fall_distance = 0.0;
+        }
     }
 
     /// `Player.rideTick` on a cushion: hold the seat, and get up on sneak.

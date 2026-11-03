@@ -70,6 +70,10 @@ pub struct PackedStorage {
 }
 
 impl PackedStorage {
+    /// The heap bytes of the packed words (`horizon-ctl memory`).
+    pub fn heap_bytes(&self) -> usize {
+        self.words.capacity() * std::mem::size_of::<u64>()
+    }
     pub fn new(bits: u8, len: usize) -> Result<Self, StorageError> {
         let per_word = Self::per_word(bits)?;
         Self::from_words(bits, len, vec![0; len.div_ceil(per_word)])
@@ -190,6 +194,16 @@ impl PackedStorage {
         Ok(())
     }
 
+    /// [`unpack`](Self::unpack) into `out` (the first `len` slots), without allocating.
+    pub fn unpack_into(&self, out: &mut [u32]) {
+        let mut i = 0;
+        for &word in &self.words {
+            for slot in 0..self.per_word.min(self.len - i) {
+                out[i] = ((word >> (slot * usize::from(self.bits))) & self.mask) as u32;
+                i += 1;
+            }
+        }
+    }
     pub fn unpack(&self) -> Vec<u32> {
         let mut values = Vec::with_capacity(self.len);
         for &word in &self.words {

@@ -7,8 +7,8 @@ use horizon_client::{
     mobs::{
         Mob, Species, Who,
         finalize::{
-            SLOT_NAMES, set_drop_chance, set_item, set_slot_enchantments, slot_enchantments,
-            stored_drop_chance,
+            SLOT_NAMES, item_stack, set_drop_chance, set_item, set_item_stack,
+            set_slot_enchantments, slot_enchantments, stored_drop_chance,
         },
         piglin::{ADMIRE, ATE_RECENTLY},
     },
@@ -27,8 +27,9 @@ impl Game<'_> {
         self.item_in_tag("minecraft:piglin_loved", item)
     }
     /// `PiglinAi.isLovedItem` or a preferred weapon (`Piglin.canReplaceCurrentItem`).
-    fn piglin_wanted(&self, item: &str) -> bool {
-        self.piglin_loved(item) || self.item_in_tag("minecraft:piglin_preferred_weapons", item)
+    fn piglin_wanted(&self, m: &Mob, item: &str) -> bool {
+        self.piglin_loved(item)
+            || !m.is_baby() && self.item_in_tag("minecraft:piglin_preferred_weapons", item)
     }
     /// The `SLOT_NAMES` index `getEquipmentSlotForItem` picks: armour goes
     /// to its slot, anything else to the main hand.
@@ -50,7 +51,7 @@ impl Game<'_> {
         let Some(current) = horizon_client::mobs::finalize::item(m, slot) else {
             return true;
         };
-        self.piglin_wanted(item) && !self.piglin_wanted(&current)
+        self.piglin_wanted(m, item) && !self.piglin_wanted(m, &current)
     }
     /// `SimpleContainer.canAddItem` on the piglin's eight slots.
     fn piglin_can_add(&self, m: &Mob, stack: &ItemStack) -> bool {
@@ -62,11 +63,13 @@ impl Game<'_> {
     fn piglin_max_stack(&self, item: &str) -> u32 {
         self.items().get(item).map_or(64, |i| i.max_stack)
     }
-    /// `PiglinAi.wantsToPickup` (an adult that is not hurt-shy), without
-    /// the baby rule, which babies skip entirely here.
+    /// `PiglinAi.wantsToPickup`: babies ignore their own item tag, but can
+    /// pick up currency and other loved items just like adults.
     fn piglin_wants(&self, m: &Mob, stack: &ItemStack) -> bool {
         let item = &*stack.item;
-        if self.item_in_tag("minecraft:piglin_repellents", item) {
+        if m.is_baby() && self.item_in_tag("minecraft:ignored_by_piglin_babies", item)
+            || self.item_in_tag("minecraft:piglin_repellents", item)
+        {
             return false;
         }
         let holds_loved = m
@@ -191,12 +194,7 @@ impl Game<'_> {
         }
         for i in 0..self.mobs.len() {
             let m = &self.mobs[i];
-            if m.species() != Species::Piglin
-                || !m.alive()
-                || m.is_baby()
-                || m.extra.using_item > 0
-                || m.extra.egg_time > 0
-            {
+            if m.species() != Species::Piglin || !m.alive() || m.extra.using_item > 0 {
                 continue;
             }
             let pos = m.position;
@@ -204,7 +202,7 @@ impl Game<'_> {
             // sees (eye to eye); GoToWantedItem then walks to it within 9 blocks.
             let w = self.mob_world_base(&[]);
             let eye = Vec3::new(pos.x, m.eye_y(), pos.z);
-            let best = self
+            let nearest = self
                 .dropped
                 .iter()
                 .enumerate()
@@ -217,8 +215,11 @@ impl Game<'_> {
                     let at = Vec3::new(e.position.x, e.position.y + 0.2125, e.position.z);
                     w.line_of_sight(eye, at)
                 })
-                .min_by(|a, b| a.1.total_cmp(&b.1))
-                .filter(|(_, d)| *d <= 81.0);
+                .min_by(|a, b| a.1.total_cmp(&b.1));
+            let loved =
+                nearest.is_some_and(|(j, _)| self.piglin_loved(&self.dropped[j].stack.item));
+            self.admire_seen_item(i, nearest.map(|(_, d)| d), loved);
+            let best = nearest.filter(|(_, d)| *d <= 81.0);
             let Some((j, _)) = best else {
                 self.mobs[i].extra.point = None;
                 continue;
@@ -234,28 +235,14 @@ impl Game<'_> {
             // Nuggets come whole, anything else one at a time.
             let (taken_item, id) = (e.clone(), self.mobs[i].id);
             let item = e.stack.item.clone();
-            let carried = e.stack.clone();
-            let owner = e.thrower;
             self.add_pickup(
-                super::pickups::Taken::Item(Box::new(taken_item)),
+                super::pickups::Taken::Item(Box::new(taken_item.clone())),
                 super::pickups::Collector::Mob(id),
             );
             // LivingEntity.onItemPickup, before PiglinAi.pickUpItem splits the stack.
-            // The owner is the host or a guest: whoever it is gets the trigger.
-            if let Some(owner) = owner {
-                let target = self.mob_entity(&self.mobs[i]);
-                self.for_each_player(|g| {
-                    if g.acting_uuid() == owner {
-                        g.trigger_item_entity(
-                            "minecraft:thrown_item_picked_up_by_entity",
-                            &carried,
-                            &target,
-                        );
-                    }
-                });
-            }
+            self.mob_item_pickup_trigger(i, &taken_item);
             let stack = if &*item == "minecraft:gold_nugget" {
-                self.dropped.remove(j).stack
+                self.remove_dropped(j).stack
             } else {
                 let e = &mut self.dropped[j];
                 e.stack.count -= 1;
@@ -264,7 +251,7 @@ impl Game<'_> {
                     ..e.stack.clone()
                 };
                 if e.stack.count == 0 {
-                    self.dropped.remove(j);
+                    self.remove_dropped(j);
                 }
                 one
             };
@@ -282,8 +269,17 @@ impl Game<'_> {
             }
         }
     }
+    /// `StartAdmiringItemIfSeen` and the admire activity's stop behaviours, from the
+    /// distance squared to `NEAREST_VISIBLE_WANTED_ITEM` and whether that item is loved.
+    fn admire_seen_item(&mut self, index: usize, nearest: Option<f64>, loved: bool) {
+        let m = &mut self.mobs[index];
+        let holding = m.extra.off_hand.is_some();
+        m.extra.piglin.admire_seen(holding, nearest, loved);
+    }
     fn start_admiring(&mut self, index: usize, item: std::sync::Arc<str>) {
         let m = &mut self.mobs[index];
+        // The memory is set again, for the item it holds now.
+        m.extra.piglin.seen_admire = 0;
         m.extra.off_hand = Some(item);
         m.extra.using_item = ADMIRE;
         m.extra.point = None;
@@ -298,7 +294,8 @@ impl Game<'_> {
         if m.species() != Species::Piglin
             || m.is_baby()
             || m.extra.using_item > 0
-            || m.extra.egg_time > 0
+            || m.extra.piglin.seen_admire > 0
+            || m.extra.piglin.admire_disabled > 0
             || item != "minecraft:gold_ingot"
         {
             return false;
@@ -307,8 +304,8 @@ impl Game<'_> {
         true
     }
     /// `PiglinAi.stopHoldingOffHandItem` after admiring: gold ingots buy a
-    /// roll of the bartering table, thrown toward the player; any other loved
-    /// item it picked up is kept (worn if it can be, else stored).
+    /// roll of the bartering table for adults. Babies equip the admired item,
+    /// or hold it in the main hand after stashing or throwing the old item.
     pub(super) fn finish_admiring(&mut self, mob: u32) {
         let Some(i) = self.mobs.iter().position(|m| m.id == mob) else {
             return;
@@ -316,22 +313,40 @@ impl Game<'_> {
         let Some(item) = self.mobs[i].extra.off_hand.take() else {
             return;
         };
+        if self.mobs[i].is_baby() {
+            let stack = ItemStack::new(&item, 1);
+            if !self.piglin_equip(i, &stack) {
+                if let Some(old) = item_stack(&self.mobs[i], 0) {
+                    if self.piglin_loved(&old.item) {
+                        self.piglin_stash(i, old);
+                    } else {
+                        self.piglin_throw_items(i, vec![old]);
+                    }
+                }
+                let m = &mut self.mobs[i];
+                set_item_stack(m, 0, stack);
+                set_drop_chance(m, 0, 2.0);
+                m.persistent = true;
+            }
+            return;
+        }
         if &*item != "minecraft:gold_ingot" {
             self.piglin_keep(i, ItemStack::new(&item, 1));
             return;
         }
+        let items = world_items!(self).loot_table(
+            "minecraft:gameplay/piglin_bartering",
+            false,
+            None,
+            &mut self.world.random,
+        );
+        self.piglin_throw_items(i, items);
+    }
+    /// `PiglinAi.throwItems`: barters and a baby's unwanted main-hand item
+    /// use the same player-directed throw.
+    fn piglin_throw_items(&mut self, i: usize, items: Vec<ItemStack>) {
         let m = &self.mobs[i];
         let from = [m.position.x, m.position.y + 1.3, m.position.z];
-        let items = if !m.is_baby() {
-            world_items!(self).loot_table(
-                "minecraft:gameplay/piglin_bartering",
-                false,
-                None,
-                &mut self.world.random,
-            )
-        } else {
-            vec![ItemStack::new(&item, 1)]
-        };
         // BehaviorUtils.throwItem toward the nearest visible player
         // (NEAREST_VISIBLE_PLAYER: within 16, alive, no spectators; the
         // guests count as much as the host), else nearby.

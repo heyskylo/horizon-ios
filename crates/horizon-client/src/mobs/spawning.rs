@@ -450,4 +450,46 @@ mod tests {
             "minecraft:random_spawn_bonus"
         ));
     }
+    /// `Zombie` / `AbstractSkeleton` halloween garb: 25% of empty heads, never
+    /// on other mobs, and not when it is not Halloween.
+    #[test]
+    fn halloween_pumpkins_only_undead_on_halloween() {
+        let Some(types) = types() else { return };
+        let mut pumpkins = 0;
+        let mut lanterns = 0;
+        for id in 1..=400 {
+            let mut m = spawn(&types, "minecraft:skeleton", id);
+            m.extra.head = None;
+            let mut random = m.random.clone();
+            crate::mobs::finalize::halloween_head(&mut m, &mut random, true);
+            match m.extra.head.as_deref() {
+                Some("minecraft:jack_o_lantern") => {
+                    pumpkins += 1;
+                    lanterns += 1;
+                    assert_eq!(crate::mobs::finalize::stored_drop_chance(&m, 5), 0.0);
+                }
+                Some("minecraft:carved_pumpkin") => {
+                    pumpkins += 1;
+                    assert_eq!(crate::mobs::finalize::stored_drop_chance(&m, 5), 0.0);
+                }
+                Some(other) => panic!("unexpected head {other}"),
+                None => {}
+            }
+        }
+        assert!(
+            (70..=130).contains(&pumpkins),
+            "{pumpkins} of 400 skeletons"
+        );
+        assert!(lanterns < pumpkins / 2, "{lanterns} lanterns of {pumpkins}");
+        let mut m = spawn(&types, "minecraft:skeleton", 1);
+        m.extra.head = None;
+        let mut random = m.random.clone();
+        crate::mobs::finalize::halloween_head(&mut m, &mut random, false);
+        assert!(m.extra.head.is_none());
+        let mut cow = spawn(&types, "minecraft:cow", 1);
+        cow.extra.head = None;
+        let mut random = cow.random.clone();
+        crate::mobs::finalize::halloween_head(&mut cow, &mut random, true);
+        assert!(cow.extra.head.is_none());
+    }
 }

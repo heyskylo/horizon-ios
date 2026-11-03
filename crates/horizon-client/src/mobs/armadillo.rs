@@ -220,10 +220,10 @@ fn roll_out(m: &mut Mob, events: &mut Vec<MobEvent>) {
 }
 
 /// `Armadillo.hurtServer`: a ball takes half of the damage past the first
-/// point.
+/// point (below it a negative amount, which `LivingEntity.hurtServer` makes 0).
 pub fn reduce_damage(m: &Mob, amount: f32) -> f32 {
     if scared(m) {
-        ((amount - 1.0) / 2.0).max(0.0)
+        (amount - 1.0) / 2.0
     } else {
         amount
     }

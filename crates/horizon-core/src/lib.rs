@@ -7,12 +7,14 @@
 pub mod biome;
 pub mod carving;
 pub mod density;
+pub mod fast_hash;
 pub mod geometry;
 pub mod jmath;
 pub mod no_ai;
 pub mod noise;
 pub mod paletted;
 pub mod position;
+pub mod prepared_files;
 pub mod random;
 pub mod storage;
 pub mod text;

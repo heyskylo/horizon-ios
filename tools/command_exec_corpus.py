@@ -3,22 +3,33 @@
 Each group is a list of operations: `cmd` runs a command as the player and
 records its messages and results (`record: false` runs setup silently),
 `tick` advances the game, `settle` loads the terrain and entities around the
-player and `portal` sends the player through the nether portal it stands in.
+player, `portal` sends the player through the nether portal it stands in,
+and `falling` counts physical falling blocks by dimension, state and gravity.
 Everything happens high above the terrain (y 200 and up, where both worlds
 are air) after the world's entities are removed, so the results do not
 depend on world generation.
 """
 
 
-def cmd(command, record=True):
+def cmd(command, record=True, expect_result=None):
     op = {'op': 'cmd', 'cmd': command}
     if not record:
         op['record'] = False
+    if expect_result is not None:
+        op['expect_result'] = expect_result
     return op
 
 
 def setup(*commands):
     return [cmd(c, False) for c in commands]
+
+
+def predicate_selector_fixtures(group_names):
+    if 'selector missing predicates' not in group_names:
+        return {}
+    sheep = {'type': 'minecraft:entity_properties', 'entity': 'this',
+             'predicate': {'minecraft:entity_type': 'minecraft:sheep'}}
+    return {'h124_selector:sheep': sheep, 'minecraft:h124_selector_sheep': sheep}
 
 
 BASE = (0, 200, 0)
@@ -291,6 +302,14 @@ def entities():
         cmd('/data get entity @e[tag=h,type=minecraft:cow,limit=1] CustomName'),
         cmd('/data merge entity @e[tag=h,type=minecraft:pig,limit=1] {Tags:["a","c"]}'),
         cmd('/attribute @e[tag=h,type=minecraft:pig,limit=1] minecraft:movement_speed base get'),
+        cmd('/attribute @e[tag=h,type=minecraft:pig,limit=1] minecraft:movement_speed base set 0.5'),
+        cmd('/attribute @e[tag=h,type=minecraft:pig,limit=1] minecraft:movement_speed get'),
+        cmd('/effect give @e[tag=h,type=minecraft:pig,limit=1] minecraft:speed 10 1'),
+        cmd('/attribute @e[tag=h,type=minecraft:pig,limit=1] minecraft:movement_speed base get'),
+        cmd('/attribute @e[tag=h,type=minecraft:pig,limit=1] minecraft:movement_speed get'),
+        cmd('/effect clear @e[tag=h,type=minecraft:pig,limit=1] minecraft:speed'),
+        cmd('/attribute @e[tag=h,type=minecraft:pig,limit=1] minecraft:movement_speed base reset'),
+        cmd('/attribute @e[tag=h,type=minecraft:pig,limit=1] minecraft:movement_speed base get'),
         cmd('/effect give @e[tag=h] minecraft:glowing 10'),
         cmd('/damage @e[tag=h,type=minecraft:cow,limit=1] 1'),
         cmd('/ride @s mount @e[tag=h,type=minecraft:pig,limit=1]'),
@@ -344,6 +363,57 @@ def entities():
         cmd('/execute if entity @e[type=minecraft:ender_dragon]'),
         cmd('/data get entity @e[type=minecraft:ender_dragon,limit=1] Pos'),
         cmd('/kill @e[type=minecraft:ender_dragon]'),
+        # A primed TNT is an entity too: a type selector finds, tags, reads,
+        # moves and kills it.
+        cmd('/summon minecraft:tnt 4.5 210 8.5 {fuse:2000s,Tags:["t"]}'),
+        cmd('/execute if entity @e[type=minecraft:tnt]'),
+        cmd('/tag @e[type=minecraft:tnt,limit=1] list'),
+        cmd('/execute if entity @e[type=minecraft:tnt,tag=t]'),
+        cmd('/data get entity @e[type=minecraft:tnt,limit=1] Tags'),
+        cmd('/tp @e[type=minecraft:tnt] 4.5 215 8.5'),
+        cmd('/kill @e[type=minecraft:tnt]'),
+        cmd('/execute if entity @e[type=minecraft:tnt]'),
+        # So is a falling block, named after its block (`getTypeName`).
+        cmd('/summon minecraft:falling_block 4.5 210 8.5 {BlockState:{Name:"minecraft:sand"},NoGravity:1b,Tags:["f"]}'),
+        cmd('/execute if entity @e[type=minecraft:falling_block,tag=f]'),
+        cmd('/tag @e[type=minecraft:falling_block,limit=1] list'),
+        cmd('/data get entity @e[type=minecraft:falling_block,limit=1] BlockState.Name'),
+        cmd('/tp @e[type=minecraft:falling_block] 4.5 215 8.5'),
+        cmd('/kill @e[type=minecraft:falling_block]'),
+        cmd('/execute if entity @e[type=minecraft:falling_block]'),
+        # A firework rocket, with what `addAdditionalSaveData` writes.
+        cmd('/summon minecraft:firework_rocket 4.5 210 8.5 {LifeTime:2000,NoGravity:1b,Tags:["r"]}'),
+        cmd('/execute if entity @e[type=minecraft:firework_rocket,tag=r]'),
+        cmd('/tag @e[type=minecraft:firework_rocket,limit=1] list'),
+        cmd('/data get entity @e[type=minecraft:firework_rocket,limit=1] LifeTime'),
+        cmd('/data get entity @e[type=minecraft:firework_rocket,limit=1] FireworksItem.id'),
+        cmd('/data get entity @e[type=minecraft:firework_rocket,limit=1] ShotAtAngle'),
+        cmd('/tp @e[type=minecraft:firework_rocket] 4.5 215 8.5'),
+        cmd('/kill @e[type=minecraft:firework_rocket]'),
+        cmd('/execute if entity @e[type=minecraft:firework_rocket]'),
+        # An ominous item spawner, with an item or empty (`ItemStack.EMPTY`,
+        # which saves no `item` and spawns nothing when its time comes).
+        cmd('/summon minecraft:ominous_item_spawner 4.5 210 8.5 {spawn_item_after_ticks:2000L,item:{id:"minecraft:diamond",count:2},Tags:["o"]}'),
+        cmd('/execute if entity @e[type=minecraft:ominous_item_spawner,tag=o]'),
+        cmd('/tag @e[type=minecraft:ominous_item_spawner,limit=1] list'),
+        cmd('/data get entity @e[type=minecraft:ominous_item_spawner,limit=1] item'),
+        cmd('/data get entity @e[type=minecraft:ominous_item_spawner,limit=1] spawn_item_after_ticks'),
+        cmd('/tp @e[type=minecraft:ominous_item_spawner] 4.5 215 8.5'),
+        cmd('/kill @e[type=minecraft:ominous_item_spawner]'),
+        cmd('/summon minecraft:ominous_item_spawner 4.5 210 8.5'),
+        cmd('/data get entity @e[type=minecraft:ominous_item_spawner,limit=1] item'),
+        cmd('/kill @e[type=minecraft:ominous_item_spawner]'),
+        cmd('/summon minecraft:ominous_item_spawner 4.5 210 8.5 {spawn_item_after_ticks:5L}'),
+        {'op': 'tick', 'n': 10},
+        cmd('/execute if entity @e[type=minecraft:ominous_item_spawner]'),
+        cmd('/execute if entity @e[type=minecraft:item,distance=..3]'),
+        # And the thrown items.
+        *[c for kind in ('snowball', 'egg', 'ender_pearl') for c in (
+            cmd(f'/summon minecraft:{kind} 4.5 210 8.5 {{NoGravity:1b}}'),
+            cmd(f'/execute if entity @e[type=minecraft:{kind}]'),
+            cmd(f'/data get entity @e[type=minecraft:{kind},limit=1] Item.id'),
+            cmd(f'/kill @e[type=minecraft:{kind}]'),
+        )],
         *setup('/kill @e[type=minecraft:armor_stand]'),
         {'op': 'tick', 'n': 25},
         cmd('/execute if entity @e[tag=h]'),
@@ -502,6 +572,36 @@ def scores():
     ]
 
 
+def selector_missing_predicates():
+    """Missing named predicates reject both signs before negation (#7794)."""
+    missing = 'h124_missing_873b04b1:absent'
+    missing_default = 'h124_missing_default_873b04b1'
+    defined = ('h124_selector:sheep', 'minecraft:h124_selector_sheep', 'h124_selector_sheep')
+    ops = setup('/tick freeze')
+    for i, kind in enumerate(('sheep', 'cow', 'pig', 'chicken')):
+        custom = ',CustomName:{text:"Named pig"}' if kind == 'pig' else ''
+        ops += setup(f'/summon minecraft:{kind} {6 + i * 2}.5 220 4.5 '
+                     f'{{Tags:["h124","h124_{kind}"],NoAI:1b,NoGravity:1b,'
+                     f'PersistenceRequired:1b{custom}}}')
+    for kind in ('sheep', 'cow', 'pig', 'chicken'):
+        base = f'@e[tag=h124_{kind}'
+        ops.append(cmd(f'/execute if entity {base}]', expect_result=1))
+        for predicate in (missing, missing_default):
+            for sign in ('', '!'):
+                ops.append(cmd(f'/execute if entity {base},predicate={sign}{predicate}]'))
+        for predicate in defined:
+            ops += [cmd(f'/execute if entity {base},predicate={predicate}]',
+                        expect_result=1 if kind == 'sheep' else None),
+                    cmd(f'/execute if entity {base},predicate=!{predicate}]',
+                        expect_result=1 if kind != 'sheep' else None)]
+        ops += [cmd(f'/execute if entity {base},predicate={defined[0]},predicate=!{missing}]'),
+                cmd(f'/execute if entity {base},predicate=!{missing},predicate={defined[0]}]')]
+    ops += [cmd(f'/execute if entity @e[tag=h124,predicate={defined[0]}]', expect_result=1),
+            cmd(f'/execute if entity @e[tag=h124,predicate=!{defined[0]}]', expect_result=3),
+            cmd(f'/execute if entity @e[tag=h124_unrelated,predicate=!{missing}]')]
+    return ops + setup('/kill @e[tag=h124]', '/tick unfreeze')
+
+
 def execute():
     return [
         *setup('/scoreboard objectives add exec dummy', '/scoreboard players set @s exec 4', '/scoreboard players set fake exec 9'),
@@ -516,6 +616,35 @@ def execute():
         cmd('/data get entity @e[tag=implicit_tp,limit=1] Pos'),
         cmd('/kill @e[tag=implicit_tp]'),
         cmd('/execute if entity @e[tag=ex]'),
+        # A UUID names any entity (ServerLevel.getEntity), not only mobs (#4966).
+        cmd('/execute if entity 00000001-0000-0002-0000-000300000004'),
+        cmd('/data get entity 00000001-0000-0002-0000-000300000004 Tags'),
+        cmd('/summon minecraft:item_display 2.5 210 2.5 {UUID:[I;5,6,7,8],Tags:["uuid_display"]}'),
+        cmd('/data get entity 00000005-0000-0006-0000-000700000008 Tags'),
+        cmd('/tp 00000005-0000-0006-0000-000700000008 2.5 215 2.5'),
+        cmd('/data get entity 00000005-0000-0006-0000-000700000008 Pos'),
+        cmd('/kill 00000005-0000-0006-0000-000700000008'),
+        # The killed id stays in the UUID map. A re-summon of that UUID must
+        # still resolve to the entity the level holds.
+        cmd('/summon minecraft:item_display 2.5 210 2.5 {UUID:[I;5,6,7,8],Tags:["uuid_display_2"]}'),
+        cmd('/data get entity 00000005-0000-0006-0000-000700000008 Tags'),
+        cmd('/kill 00000005-0000-0006-0000-000700000008'),
+        cmd('/summon minecraft:marker 2.5 210 8.5 {UUID:[I;13,14,15,16],Tags:["uuid_marker"]}'),
+        cmd('/execute as 0000000d-0000-000e-0000-000f00000010 run data get entity @s Tags'),
+        cmd('/kill 0000000d-0000-000e-0000-000f00000010'),
+        cmd('/data get entity 00000015-0000-0016-0000-001700000018'),
+        cmd('/summon minecraft:pig 2.5 210 6.5 {NoAI:1b,NoGravity:1b,UUID:[I;9,10,11,12]}'),
+        cmd('/kill 00000009-0000-000a-0000-000b0000000c'),
+        # OwnableEntity.getOwner → EntityReference.getLivingEntity: an armor
+        # stand is an owner, a marker is not.
+        cmd('/summon minecraft:wolf 2.5 210 14.5 {NoAI:1b,NoGravity:1b,Sitting:1b,Tags:["uuid_pet"],Owner:[I;1,2,3,4]}'),
+        cmd('/execute as @e[tag=uuid_pet,limit=1] on owner run data get entity @s Tags'),
+        cmd('/summon minecraft:marker 4.5 210 14.5 {UUID:[I;17,18,19,20]}'),
+        cmd('/summon minecraft:wolf 6.5 210 14.5 {NoAI:1b,NoGravity:1b,Sitting:1b,Tags:["uuid_pet_marker"],Owner:[I;17,18,19,20]}'),
+        cmd('/execute as @e[tag=uuid_pet_marker,limit=1] on owner run say reached'),
+        cmd('/kill @e[tag=uuid_pet]'),
+        cmd('/kill @e[tag=uuid_pet_marker]'),
+        cmd('/kill 00000011-0000-0012-0000-001300000014'),
         cmd('/execute as @e[tag=ex] run data get entity @s Pos'),
         cmd('/data get entity @e[tag=ex,limit=1]'),
         cmd('/data get entity @e[tag=ex,limit=1] Pose'),
@@ -628,6 +757,46 @@ def levels():
     ]
 
 
+def end_portal_entities():
+    """Non-player exit travel with two ticking levels, and a falling block
+    crossing the portal's inside shape on the tick it reaches the floor."""
+    end = '/execute in minecraft:the_end run'
+    local = 'distance=..1000000'
+    return [
+        *setup('/forceload add 0 0', '/setblock 8 229 8 minecraft:stone', '/setworldspawn 8 230 8',
+               f'{end} tp @s 8.5 230 8.5'),
+        {'op': 'settle'},
+        *setup(f'{end} forceload add 0 0',
+               f'{end} fill 2 209 2 6 209 6 minecraft:stone',
+               f'{end} fill 2 210 2 6 215 6 minecraft:air',
+               f'{end} setblock 4 210 4 minecraft:end_portal',
+               f'{end} summon minecraft:pig 4.5 210.5 4.5 {{NoAI:1b,NoGravity:1b,Tags:["end_portal_mob"]}}'),
+        {'op': 'tick', 'n': 10},
+        cmd(f'{end} execute if entity @e[tag=end_portal_mob,{local}]'),
+        cmd(f'/execute in minecraft:overworld if entity @e[tag=end_portal_mob,{local}]'),
+        *setup(f'{end} summon minecraft:falling_block 4.5 213 4.5 {{BlockState:{{id:"minecraft:sand"}},Time:1,Motion:[0.0d,-2.0d,0.0d],Tags:["end_portal_falling"]}}'),
+        {'op': 'tick', 'n': 10},
+        cmd('/execute in minecraft:overworld if block 8 230 8 minecraft:sand'),
+        cmd(f'{end} execute if block 4 210 4 minecraft:end_portal'),
+        *setup('/execute in minecraft:overworld run setblock 8 230 8 minecraft:air',
+               f'{end} summon minecraft:falling_block 4.5 210.5 4.5 {{BlockState:{{id:"minecraft:gravel"}},Time:1,NoGravity:1b,Tags:["end_portal_float"]}}'),
+        {'op': 'tick', 'n': 5},
+        {'op': 'falling', 'dimension': 'minecraft:the_end', 'block': 'minecraft:gravel', 'no_gravity': True},
+        {'op': 'falling', 'dimension': 'minecraft:overworld', 'block': 'minecraft:gravel', 'no_gravity': True, 'discard': True},
+        # FallingBlock.isFree(end_portal) is false: a placed egg above it
+        # stays a block in vanilla, despite the portal's empty collision shape.
+        *setup(f'{end} setblock 4 211 4 minecraft:dragon_egg'),
+        {'op': 'tick', 'n': 5},
+        cmd(f'{end} execute if block 4 211 4 minecraft:dragon_egg'),
+        *setup('/kill @e[tag=end_portal_mob]',
+               f'{end} fill 2 209 2 6 215 6 minecraft:air',
+               f'{end} forceload remove 0 0',
+               '/execute in minecraft:overworld run fill 8 229 8 8 231 8 minecraft:air',
+               '/execute in minecraft:overworld run tp @s 8.5 230 8.5'),
+        {'op': 'settle'},
+    ]
+
+
 def items_and_loot():
     return [
         *setup('/clear @s', '/gamemode survival'),
@@ -680,6 +849,9 @@ def items_and_loot():
         cmd('/loot replace block 3 206 3 container.8 loot minecraft:blocks/cobblestone'),
         cmd('/loot replace entity @s hotbar.5 loot minecraft:blocks/glass'),
         cmd('/loot spawn 3 210 3 loot minecraft:blocks/stone'),
+        # NestedLootTable: the reward tables pick another table and roll it.
+        cmd('/loot spawn 3 210 3 loot minecraft:chests/trial_chambers/reward'),
+        cmd('/loot give @s loot minecraft:chests/trial_chambers/reward_ominous'),
         cmd('/loot give @s loot {pools:[{rolls:1,entries:[{type:"minecraft:item",name:"minecraft:apple",functions:[{type:"minecraft:set_count",count:4}]}]}]}'),
         cmd('/setblock 2 205 2 minecraft:stone'),
         cmd('/loot give @s mine 2 205 2'),
@@ -695,12 +867,82 @@ def items_and_loot():
         cmd('/clear @s #minecraft:logs'),
         cmd('/clear @s *[minecraft:custom_data]'),
         cmd('/clear @s'),
+        # A chest or hopper minecart's slots (ContainerEntity.getChestVehicleSlot): container.N below its size.
+        *setup('/summon minecraft:chest_minecart 4.5 210 4.5 {NoGravity:1b,Tags:["c"]}',
+               '/summon minecraft:hopper_minecart 6.5 210 4.5 {NoGravity:1b,Tags:["h"]}'),
+        cmd('/item replace entity @e[tag=c,limit=1] container.0 with minecraft:diamond 3'),
+        cmd('/item replace entity @e[tag=c,limit=1] container.26 with minecraft:emerald 2'),
+        cmd('/item replace entity @e[tag=c,limit=1] container.27 with minecraft:emerald 2'),
+        cmd('/item replace entity @e[tag=h,limit=1] container.4 with minecraft:gold_ingot 5'),
+        cmd('/item replace entity @e[tag=h,limit=1] container.5 with minecraft:gold_ingot 5'),
+        cmd('/item modify entity @e[tag=c,limit=1] container.0 {type:"minecraft:set_count",count:2}'),
+        cmd('/item replace entity @s hotbar.0 from entity @e[tag=c,limit=1] container.26'),
+        cmd('/data get entity @e[tag=c,limit=1] Items'),
+        cmd('/execute if items entity @e[tag=h,limit=1] container.* minecraft:gold_ingot'),
+        cmd('/clear @s'),
+        *setup('/kill @e[tag=c]', '/kill @e[tag=h]'),
         *setup('/setblock 3 206 3 minecraft:air', '/setblock 2 205 2 minecraft:air', '/kill @e[type=minecraft:item]', '/gamemode creative'),
     ]
 
 
+def item_nbt_count_bounds():
+    """ItemStack's NBT count codec defaults invalid counts to one (#7724)."""
+    stand = '@e[type=minecraft:armor_stand,tag=h085,limit=1]'
+    chest = '12 220 4'
+    ops = setup('/tick freeze', '/kill @e[tag=h085]',
+                f'/setblock {chest} minecraft:air strict',
+                f'/setblock {chest} minecraft:chest strict',
+                '/summon minecraft:armor_stand 8 220 4 {Tags:["h085"],NoGravity:1b}')
+    ops += [cmd(f'/execute if entity {stand}'),
+            cmd(f'/execute if block {chest} minecraft:chest')]
+    for item in ('minecraft:stone', 'minecraft:diamond_sword'):
+        for count in (None, '-1', '0', '1', '2', '64', '99', '100', '255', '256',
+                      '2147483647', '1b', '1.5f', '"1"'):
+            nbt = '{id:"' + item + '"' + ('' if count is None else ',count:' + count) + '}'
+            ops += setup(f'/item replace entity {stand} weapon.mainhand with minecraft:air')
+            ops += [
+                cmd(f'/data modify entity {stand} equipment.mainhand set value {nbt}'),
+                cmd(f'/data get entity {stand} equipment.mainhand.id'),
+                cmd(f'/data get entity {stand} equipment.mainhand.count'),
+            ]
+            entry = '{Slot:0b,' + nbt[1:]
+            ops += setup(f'/data modify block {chest} Items set value []')
+            ops += [
+                cmd(f'/data modify block {chest} Items set value [{entry}]'),
+                cmd(f'/data get block {chest} Items[0].id'),
+                cmd(f'/data get block {chest} Items[0].count'),
+            ]
+    return ops + setup('/kill @e[tag=h085]', f'/setblock {chest} minecraft:air strict',
+                       '/tick unfreeze')
+
+
 def world_misc():
     return [
+        # BlockInput.place calculates neighbour shapes before setting the block,
+        # then reapplies only properties explicitly supplied by the command.
+        cmd('/setblock 4 219 4 minecraft:stone'),
+        cmd('/setblock 4 220 4 minecraft:note_block'),
+        cmd('/execute if block 4 220 4 minecraft:note_block[instrument=basedrum]'),
+        cmd('/execute if block 4 220 4 minecraft:note_block[instrument=harp]'),
+        cmd('/setblock 4 219 4 minecraft:gold_block'),
+        cmd('/execute if block 4 220 4 minecraft:note_block[instrument=bell]'),
+        cmd('/setblock 4 219 4 minecraft:stone'),
+        cmd('/execute if block 4 220 4 minecraft:note_block[instrument=basedrum]'),
+        cmd('/setblock 4 220 4 minecraft:air'),
+        cmd('/setblock 4 220 4 minecraft:note_block[instrument=flute,note=7]'),
+        cmd('/execute if block 4 220 4 minecraft:note_block[instrument=flute,note=7]'),
+        cmd('/setblock 4 220 4 minecraft:air'),
+        cmd('/setblock 4 220 4 minecraft:note_block[note=7]'),
+        cmd('/execute if block 4 220 4 minecraft:note_block[instrument=basedrum,note=7]'),
+        cmd('/setblock 4 220 4 minecraft:air'),
+        cmd('/setblock 4 220 4 minecraft:note_block strict'),
+        cmd('/execute if block 4 220 4 minecraft:note_block[instrument=harp]'),
+        # Even an unchanged input state must be normalized before comparison.
+        cmd('/setblock 4 220 4 minecraft:note_block'),
+        cmd('/execute if block 4 220 4 minecraft:note_block[instrument=basedrum]'),
+        # An unsupported shape falling back to air retains the requested block.
+        cmd('/setblock 6 220 4 minecraft:poppy'),
+        cmd('/execute if block 6 220 4 minecraft:poppy'),
         cmd('/setblock 1 210 1 minecraft:stone keep'),
         cmd('/setblock 1 210 1 minecraft:dirt keep'),
         cmd('/setblock 1 210 1 minecraft:dirt destroy'),
@@ -867,6 +1109,19 @@ def progression():
         cmd('/advancement revoke @s everything'),
         cmd('/advancement revoke @s everything'),
         cmd('/advancement grant @s only minecraft:nonexistent'),
+        # The advancement subtree a `from` grants, one criterion of an
+        # advancement that needs hundreds (`adventuring_time` wants every
+        # biome), and a `through` that keeps what is below the named one.
+        cmd('/advancement revoke @s everything'),
+        cmd('/advancement grant @s from minecraft:story/mine_stone'),
+        cmd('/advancement grant @s only minecraft:adventure/adventuring_time minecraft:plains'),
+        cmd('/advancement grant @s only minecraft:adventure/adventuring_time'),
+        cmd('/advancement revoke @s only minecraft:adventure/adventuring_time minecraft:plains'),
+        cmd('/advancement grant @s through minecraft:story/upgrade_tools'),
+        cmd('/advancement grant @s until minecraft:story/mine_stone'),
+        cmd('/advancement revoke @s everything'),
+        cmd('/advancement grant @e[type=!minecraft:player] everything'),
+        cmd('/experience query @s levels'),
         cmd('/recipe give @s minecraft:oak_planks'),
         cmd('/recipe give @s minecraft:oak_planks'),
         cmd('/recipe take @s minecraft:oak_planks'),
@@ -1043,8 +1298,21 @@ def compute():
     ]
 
 
+def scoreboard_remainder_boundaries():
+    operations = setup('/scoreboard objectives add boundary dummy')
+    for dividend, divisor in [(2147483646, 2147483647), (7, -3), (-2147483648, -1)]:
+        operations += setup(f'/scoreboard players set left boundary {dividend}',
+                            f'/scoreboard players set right boundary {divisor}')
+        operations += [cmd('/scoreboard players operation left boundary %= right boundary'),
+                       cmd('/scoreboard players get left boundary'),
+                       cmd('/scoreboard players get right boundary')]
+    operations += setup('/scoreboard objectives remove boundary')
+    return operations
+
+
 def social():
     return [
+        *scoreboard_remainder_boundaries(),
         *setup('/scoreboard objectives add trig trigger', '/scoreboard objectives add plain dummy'),
         cmd('/trigger trig'),
         cmd('/scoreboard players enable @s trig'),
@@ -1195,6 +1463,52 @@ def wither_breaks():
     ]
 
 
+def tnt_minecart_rails():
+    """A primed TNT minecart (MinecartTNT.isPrimed) on a powered activator rail inside an obsidian box: its
+    blast neither resists on nor breaks a rail or the block under one (getBlockExplosionResistance and
+    shouldBlockExplode, #4992), but breaks the stone beside them; the obsidian holds."""
+    return [
+        *setup('/fill 3 203 3 7 207 7 minecraft:obsidian', '/fill 4 204 4 6 206 6 minecraft:air',
+               '/setblock 5 204 5 minecraft:redstone_block', '/setblock 5 205 5 minecraft:activator_rail',
+               '/setblock 4 204 5 minecraft:stone', '/setblock 2 205 5 minecraft:stone'),
+        cmd('/summon minecraft:tnt_minecart 5.5 205.0625 5.5'),
+        {'op': 'tick', 'n': 5},
+        cmd('/execute if entity @e[type=minecraft:tnt_minecart]'),
+        {'op': 'tick', 'n': 100},
+        cmd('/execute if entity @e[type=minecraft:tnt_minecart]'),
+        cmd('/execute if block 5 205 5 minecraft:activator_rail'),
+        cmd('/execute if block 5 204 5 minecraft:redstone_block'),
+        cmd('/execute if block 4 204 5 minecraft:stone'),
+        cmd('/execute if block 3 205 5 minecraft:obsidian'),
+        cmd('/execute if block 2 205 5 minecraft:stone'),
+        *setup('/kill @e[type=!player]', '/fill 2 203 3 7 207 7 minecraft:air'),
+        {'op': 'tick', 'n': 5},
+    ]
+
+
+def minecart_drag():
+    """AbstractMinecart's drags are floats widened to double: getAirDrag (0.95F) off the rails, and
+    applyNaturalSlowdown's 0.95F in water. Positions and motions are compared to the last bit."""
+    return [
+        # A cart sent back by the stone at the track's end leaves the rails at x 0 and flies on.
+        *setup('/fill 0 209 0 12 209 0 minecraft:redstone_block', '/fill 0 210 0 9 210 0 minecraft:powered_rail',
+               '/setblock 10 210 0 minecraft:stone'),
+        cmd('/summon minecraft:minecart 1.5 210.0625 0.5 {Motion:[0.1d,0.0d,0.0d],Tags:["drag"]}'),
+        {'op': 'tick', 'n': 60},
+        cmd('/data get entity @e[tag=drag,limit=1] Pos'),
+        cmd('/data get entity @e[tag=drag,limit=1] Motion'),
+        *setup('/kill @e[type=!player]', '/fill 0 205 0 15 215 1 minecraft:air'),
+        # Waterlogged rails: the cart slows by 0.95F a tick more.
+        *setup('/fill 0 209 4 12 209 4 minecraft:stone', '/fill 0 210 4 12 210 4 minecraft:rail[waterlogged=true]'),
+        cmd('/summon minecraft:minecart 1.5 210.0625 4.5 {Motion:[0.3d,0.0d,0.0d],Tags:["wet"]}'),
+        {'op': 'tick', 'n': 20},
+        cmd('/data get entity @e[tag=wet,limit=1] Pos'),
+        cmd('/data get entity @e[tag=wet,limit=1] Motion'),
+        *setup('/kill @e[type=!player]', '/fill 0 205 3 15 215 5 minecraft:air'),
+        {'op': 'tick', 'n': 5},
+    ]
+
+
 def ender_dragon():
     """`/kill` on the fight's dragon ends the fight (#3319): `EnderDragon.kill` removes it and calls
     `EnderDragonFight.setDragonKilled`, so no new dragon takes its place, the exit portal opens and the
@@ -1270,6 +1584,520 @@ def tame_wolf_kills():
     ]
 
 
+def experience_orb_fall():
+    """`ExperienceOrb.tick`'s fall and landing (the dragon-death XP rain, #4781):
+    gravity 0.03 (skipped while the orb is inside blocks), one drag of
+    `getAirDrag()` times the ground's friction scaled over every axis, and a
+    landing bounce of `-fallSpeed * 0.4` gated on `fallSpeed < -getGravity()` —
+    not a fixed restitution. The orb spawns 16 blocks from the player, out of
+    the 8 block follow radius, 45 blocks above a stone platform; the track
+    draws no random, so both games compare to the digit."""
+    return [
+        *setup('/fill 20 214 20 28 214 28 minecraft:stone'),
+        cmd('/summon minecraft:experience_orb 24.5 260 24.5 {Value:1s}'),
+        cmd('/data get entity @e[type=minecraft:experience_orb,limit=1] Pos'),
+        {'op': 'tick', 'n': 1},
+        cmd('/data get entity @e[type=minecraft:experience_orb,limit=1] Pos'),
+        cmd('/data get entity @e[type=minecraft:experience_orb,limit=1] Motion'),
+        {'op': 'tick', 'n': 64},
+        cmd('/data get entity @e[type=minecraft:experience_orb,limit=1] Pos'),
+        cmd('/data get entity @e[type=minecraft:experience_orb,limit=1] Motion'),
+        {'op': 'tick', 'n': 20},
+        cmd('/data get entity @e[type=minecraft:experience_orb,limit=1] Pos'),
+        cmd('/data get entity @e[type=minecraft:experience_orb,limit=1] Motion'),
+        {'op': 'tick', 'n': 35},
+        cmd('/data get entity @e[type=minecraft:experience_orb,limit=1] Pos'),
+        cmd('/data get entity @e[type=minecraft:experience_orb,limit=1] Motion'),
+        *setup('/kill @e[type=minecraft:experience_orb]', '/fill 20 214 20 28 214 28 minecraft:air'),
+        {'op': 'tick', 'n': 5},
+    ]
+
+
+def creative_shulker_drops():
+    """ShulkerBoxBlock.playerWillDestroy: Creative keeps a filled box as one item,
+    even with block_drops off. Empty boxes and survival use the ordinary drop rules."""
+    colors = ('white orange magenta light_blue yellow lime pink gray light_gray cyan '
+              'purple blue brown green red black').split()
+    blocks = ['shulker_box', *(f'{color}_shulker_box' for color in colors)]
+    item = '@e[type=minecraft:item,limit=1]'
+    contents = ('Items:[{Slot:0b,id:"minecraft:diamond_sword",count:1,components:{'
+                '"minecraft:custom_name":"Blade","minecraft:enchantments":{"minecraft:sharpness":5}}},'
+                '{Slot:26b,id:"minecraft:apple",count:16}],')
+    out = []
+    for block in blocks:
+        for mode, filled, drops in [('creative', True, True), ('creative', False, True),
+                                    ('creative', True, False), ('survival', True, True),
+                                    ('survival', False, True), ('survival', True, False)]:
+            out += setup('/kill @e[type=minecraft:item]', f'/gamemode {mode}',
+                         f'/gamerule block_drops {str(drops).lower()}',
+                         f'/setblock 4 210 4 minecraft:{block}'
+                         '{' + (contents if filled else '') + 'TestOnly:7}')
+            out += [{'op': 'break', 'pos': [4, 210, 4]},
+                    cmd('/execute if block 4 210 4 minecraft:air'),
+                    cmd('/execute if entity @e[type=minecraft:item]')]
+            if (mode == 'creative' and filled) or (mode == 'survival' and drops):
+                out += [cmd(f'/data get entity {item} Item'),
+                        cmd(f'/execute if data entity {item} Item.components."minecraft:block_entity_data"')]
+                if mode == 'creative':
+                    out += [cmd(f'/data get entity {item} Pos'), cmd(f'/data get entity {item} PickupDelay')]
+    out += setup('/kill @e[type=minecraft:item]', '/gamemode creative', '/gamerule block_drops true')
+    return out
+
+
+def piglin_pickups():
+    """PiglinAi.pickUpItem/stopHoldingOffHandItem: babies keep admired gold, adults barter it."""
+    ops = [*setup('/fill 2 209 2 6 212 6 minecraft:glass hollow',
+                  '/fill 3 209 3 5 209 5 minecraft:stone')]
+    for baby, held in ((False, "crossbow"), (True, None), (True, "golden_sword"),
+                       (True, "crossbow")):
+        # NoAI would skip admiration expiry. A small pen keeps both the piglin
+        # and its item together without suppressing the server's normal ticks.
+        # Finish the previous corpse's death ticks before clearing its drops.
+        ops += [
+            *setup('/kill @e[type=!player]'),
+            {'op': 'tick', 'n': 25},
+            *setup('/kill @e[type=minecraft:item]',
+                   '/summon minecraft:piglin 4.5 210 4.5 '
+                   '{Tags:["barter"],IsImmuneToZombification:1b,PersistenceRequired:1b,drop_chances:{mainhand:0.0f},IsBaby:'
+                   + ('1b' if baby else '0b')
+                   + (',equipment:{mainhand:{id:"minecraft:' + held + '",count:1}}' if held else '') + '}'),
+            cmd('/execute if items entity @e[tag=barter,limit=1] weapon.mainhand *'),
+            *setup('/summon minecraft:item 4.5 210 4.5 '
+                   '{PickupDelay:0s,Item:{id:"minecraft:gold_ingot",count:1}}'),
+            {'op': 'tick', 'n': 40},
+            cmd('/execute if items entity @e[tag=barter,limit=1] weapon.offhand minecraft:gold_ingot'),
+            cmd('/execute if entity @e[type=minecraft:item]'),
+            {'op': 'tick', 'n': 140},
+            cmd('/execute if items entity @e[tag=barter,limit=1] weapon.offhand *'),
+            cmd('/execute if items entity @e[tag=barter,limit=1] weapon.mainhand minecraft:gold_ingot'),
+            cmd('/execute if entity @e[type=minecraft:item]'),
+        ]
+        if baby:
+            ops.append(cmd('/execute if data entity @e[tag=barter,limit=1] Inventory[{id:"minecraft:golden_sword"}]'))
+    # IGNORED_BY_PIGLIN_BABIES contains leather: adults take it, babies leave it.
+    for baby in (False, True):
+        ops += [
+            *setup('/kill @e[type=!player]'),
+            {'op': 'tick', 'n': 25},
+            *setup('/kill @e[type=minecraft:item]',
+                   '/summon minecraft:piglin 4.5 210 4.5 '
+                   '{Tags:["barter"],IsImmuneToZombification:1b,IsBaby:' + ('1b' if baby else '0b') + '}',
+                   '/summon minecraft:item 4.5 210 4.5 '
+                   '{PickupDelay:0s,Item:{id:"minecraft:leather",count:1}}'),
+            {'op': 'tick', 'n': 40},
+            cmd('/execute if entity @e[type=minecraft:item]'),
+            cmd('/execute if items entity @e[tag=barter,limit=1] weapon.mainhand minecraft:leather'),
+        ]
+    ops += [*setup('/kill @e[type=!player]'), {'op': 'tick', 'n': 25},
+            *setup('/kill @e[type=minecraft:item]', '/fill 2 209 2 6 212 6 minecraft:air')]
+    return ops
+
+
+def experience_orb_stuck():
+    """`ExperienceOrb.tick`'s push out of a block, the one path of the tick that
+    draws a random: a 3x3 block placed over a settled orb leaves it colliding,
+    and with no player within the 8 block follow radius the server nudges it
+    towards the nearest free side (`Entity.moveTowardsClosestSpace`),
+    `nextFloat() * 0.2 + 0.1` at a time, gravity skipped while its box is inside
+    blocks. The orb's random is unseeded in vanilla (`RandomSource.create()`),
+    so the outcome must not depend on the draws: a ring of stone one block
+    higher keeps the top the only free side all the way out. Without it, once
+    the orb's middle rose past y 216 with its box still in the block, north
+    tied with south, west and east, won as the first, and some draws slid the
+    orb off the block (at z 23.25, 22.x or down to y 215 on the floor).
+    An orb that is never pushed stays boxed in at y 215 instead of resting in
+    the ring at 216. 25 blocks from the player, out of the follow radius."""
+    return [
+        *setup('/fill 30 214 20 36 214 26 minecraft:stone'),
+        cmd('/summon minecraft:experience_orb 33.5 215 23.5 {Value:1s}'),
+        {'op': 'tick', 'n': 2},
+        cmd('/data get entity @e[type=minecraft:experience_orb,limit=1] Pos'),
+        *setup('/fill 32 215 22 34 216 24 minecraft:stone', '/setblock 33 216 23 minecraft:air'),
+        {'op': 'tick', 'n': 60},
+        cmd('/data get entity @e[type=minecraft:experience_orb,limit=1] Pos'),
+        cmd('/data get entity @e[type=minecraft:experience_orb,limit=1] Motion'),
+        *setup('/kill @e[type=minecraft:experience_orb]', '/fill 30 214 20 36 216 26 minecraft:air'),
+        {'op': 'tick', 'n': 5},
+    ]
+
+
+def summoned_potions():
+    """`ThrowableItemProjectile.getItem`/`readAdditionalSaveData` and
+    `AbstractThrownPotion.getDefaultGravity`: a summoned splash or lingering
+    potion is the projectile its type is, not an entity nothing ticks. It
+    flies with the gravity 0.05 of its type (a bare one as a splash potion
+    with no effects), `Motion` is in its compound, and what it splashes on
+    landing are the effects of its `Item`'s `potion_contents` (#6642)."""
+    ops = [*setup('/kill @e[type=minecraft:splash_potion]',
+                  '/kill @e[type=minecraft:lingering_potion]',
+                  '/fill 0 196 0 20 200 20 minecraft:stone')]
+    # A bare summon flies as the default splash potion: no effects, and the
+    # tick's gravity and drag move it off where it was placed.
+    ops += [
+        cmd('/summon minecraft:splash_potion 4.5 206 4.5'),
+        cmd('/data get entity @e[type=minecraft:splash_potion,limit=1] Item'),
+        cmd('/data get entity @e[type=minecraft:splash_potion,limit=1] Motion'),
+        cmd('/data get entity @e[type=minecraft:splash_potion,limit=1] Pos'),
+        {'op': 'tick', 'n': 3},
+        cmd('/data get entity @e[type=minecraft:splash_potion,limit=1] Pos'),
+        cmd('/data get entity @e[type=minecraft:splash_potion,limit=1] Motion'),
+        {'op': 'tick', 'n': 30},
+        cmd('/execute if entity @e[type=minecraft:splash_potion]'),
+    ]
+    # A harming potion landing on a pig hurts it for the potion's 6, and the
+    # potion is gone: ThrownSplashPotion.onHitAsPotion over the stack. The pig
+    # stands on the stone at y 201 (a summon at y 200 is inside it).
+    ops += [
+        *setup('/kill @e[type=!player]'),
+        {'op': 'tick', 'n': 25},
+        *setup('/summon minecraft:pig 4.5 201 4.5 {NoAI:1b,Silent:1b,PersistenceRequired:1b}'),
+        {'op': 'tick', 'n': 5},
+        cmd('/data get entity @e[type=minecraft:pig,limit=1] Health'),
+        *setup('/summon minecraft:splash_potion 4.5 206 4.5 '
+               '{Item:{id:"minecraft:splash_potion",count:1,components:'
+               '{"minecraft:potion_contents":{potion:"minecraft:harming"}}}}'),
+        {'op': 'tick', 'n': 40},
+        cmd('/data get entity @e[type=minecraft:pig,limit=1] Health'),
+        cmd('/execute if entity @e[type=minecraft:splash_potion]'),
+    ]
+    # A lingering potion leaves its cloud where it lands, and the cloud puts
+    # the potion's poison on the pig standing in it
+    # (ThrownLingeringPotion.onHitAsPotion). The duration is left out of the
+    # check: how the cloud's age and the mob's effect tick interleave is not
+    # what this covers.
+    ops += [
+        *setup('/kill @e[type=!player]'),
+        {'op': 'tick', 'n': 25},
+        *setup('/summon minecraft:pig 8.5 201 8.5 '
+               '{Tags:["poisoned"],NoAI:1b,Silent:1b,PersistenceRequired:1b}',
+               '/summon minecraft:lingering_potion 8.5 206 8.5 '
+               '{Item:{id:"minecraft:lingering_potion",count:1,components:'
+               '{"minecraft:potion_contents":{potion:"minecraft:poison"}}}}'),
+        cmd('/data get entity @e[type=minecraft:lingering_potion,limit=1] Motion'),
+        {'op': 'tick', 'n': 40},
+        cmd('/execute if entity @e[type=minecraft:lingering_potion]'),
+        cmd('/execute if entity @e[tag=poisoned,limit=1,nbt='
+            '{active_effects:[{id:"minecraft:poison"}]}]'),
+        # A bare lingering potion has empty contents, so its cloud, ten blocks
+        # from the poison one, puts nothing on its own pig.
+        *setup('/summon minecraft:pig 18.5 201 18.5 '
+               '{Tags:["bare"],NoAI:1b,Silent:1b,PersistenceRequired:1b}',
+               '/summon minecraft:lingering_potion 18.5 206 18.5'),
+        {'op': 'tick', 'n': 40},
+        cmd('/execute if entity @e[tag=poisoned,limit=1,nbt='
+            '{active_effects:[{id:"minecraft:poison"}]}]'),
+        cmd('/execute if entity @e[tag=bare,limit=1,nbt='
+            '{active_effects:[{id:"minecraft:poison"}]}]'),
+    ]
+    ops += [*setup('/kill @e[type=!player]'), {'op': 'tick', 'n': 25}]
+    return ops
+
+
+def trial_spawner_passengers():
+    """Configured passengers must exist as entities with a vehicle (#7254)."""
+    ops = [*setup('/fill 1 219 1 13 219 8 stone',
+                  '/fill 1 220 1 13 224 8 air', '/gamerule spawn_mobs true')]
+    # Exercise namespace and position independently, plus the explicit control.
+    for i, (kind, pos) in enumerate([
+        ('chicken', ''), ('minecraft:chicken', ''),
+        ('chicken', ',Pos:[4.5d,220.0d,6.5d]'),
+        ('minecraft:chicken', ',Pos:[4.5d,220.0d,6.5d]'),
+    ]):
+        parent, rider = f'trial_parent_{i}', f'trial_rider_{i}'
+        ops += setup(
+            '/setblock 4 220 4 trial_spawner[trial_spawner_state=active]'
+            '{normal_config:{spawn_range:3,total_mobs:1.0f,simultaneous_mobs:1.0f,'
+            'total_mobs_added_per_player:0.0f,simultaneous_mobs_added_per_player:0.0f,'
+            'ticks_between_spawn:1000},spawn_data:{entity:{id:"zombie",'
+            f'Tags:["{parent}"],Pos:[4.5d,220.0d,6.5d],NoAI:1b,'
+            f'Passengers:[{{id:"{kind}",NoAI:1b,Tags:["{rider}"]{pos}}}]'
+            '}},next_mob_spawns_at:0L}',
+            '/data modify block 4 220 4 registered_players append from entity @s UUID')
+        ops += [
+            {'op': 'tick', 'n': 5},
+            cmd(f'/execute if entity @e[tag={parent}]'),
+            cmd(f'/execute if entity @e[tag={rider}]'),
+            cmd(f'/execute as @e[tag={rider}] on vehicle if entity @s[tag={parent}]'),
+            cmd(f'/data get entity @e[tag={parent},limit=1] Passengers[0].Tags'),
+            *setup(f'/kill @e[tag={parent}]', f'/kill @e[tag={rider}]',
+                   '/setblock 4 220 4 air'),
+            # The killed pair lies dying for 20 ticks, and a dying mob still
+            # obstructs the next spawn (`Mob.checkSpawnObstruction`).
+            {'op': 'tick', 'n': 25},
+        ]
+    return ops + setup('/fill 1 219 1 13 224 8 air', '/gamerule spawn_mobs false')
+
+
+def armor_stand_climbing():
+    ops = setup('/gamerule random_tick_speed 0', '/forceload add 0 0 31 31',
+                '/fill 0 198 0 31 199 31 stone',
+                '/fill 0 200 0 31 214 31 air', '/fill 10 200 9 10 212 11 stone')
+    for block, below in [
+            ('air', False), ('ladder[facing=west]', False),
+            ('vine[east=true]', False), ('twisting_vines_plant', False),
+            ('weeping_vines_plant', False),
+            ('oak_trapdoor[open=true,facing=west]', True),
+            ('oak_trapdoor[open=true,facing=east]', True)]:
+        ops += setup('/fill 9 200 10 9 213 10 air',
+                     f'/fill 9 200 10 9 210 10 {block}')
+        if block == 'weeping_vines_plant':
+            ops += setup('/fill 9 200 10 9 212 10 weeping_vines_plant',
+                         '/setblock 9 213 10 stone')
+        if below:
+            ops += setup('/setblock 9 209 10 ladder[facing=west]')
+        for x, motion in [(9.5, '[0.0d,0.0d,0.0d]'), (8.5, '[1.0d,0.0d,0.0d]'),
+                          (8.5, '[2.0d,0.0d,0.0d]')]:
+            y = 210 if x == 9.5 else 200
+            ops += setup(f'/summon armor_stand {x} {y} 10.5 {{Silent:1b,Tags:["climb"],Motion:{motion}}}')
+            previous = 0
+            for tick in (1, 2, 3, 5, 10, 20, 30, 40):
+                ops.append({'op': 'tick', 'n': tick - previous})
+                previous = tick
+                for path in ('Pos', 'Motion', 'OnGround', 'Health'):
+                    ops.append(cmd(f'/data get entity @e[tag=climb,limit=1] {path}'))
+            ops += setup('/kill @e[tag=climb]')
+    ops += setup('/fill 0 198 0 31 214 31 air', '/forceload remove 0 0 31 31',
+                 '/gamerule random_tick_speed 3')
+    return ops
+
+
+
+def creeper_cloud_selectors():
+    """Creeper clouds are command targets for their actual lifetime (#7438)."""
+    generated = '@e[type=minecraft:area_effect_cloud,tag=!direct]'
+    direct = '@e[type=minecraft:area_effect_cloud,tag=direct]'
+    creeper = ('/summon minecraft:creeper 4.5 220 4.5 '
+               '{NoAI:1b,NoGravity:1b,ignited:1b,Tags:["source"],'
+               'active_effects:[{id:"minecraft:speed",duration:1000,amplifier:1b}]}')
+    ops = [*setup('/gamerule mob_griefing false', creeper,
+                  '/summon minecraft:area_effect_cloud 14.5 220 4.5 '
+                  '{Tags:["direct"],Duration:300,Radius:2.5f}'),
+           cmd('/execute if entity @e[type=minecraft:creeper,tag=source]')]
+    # The default fuse is intentional: custom Fuse is a separate regression.
+    for ticks in (30, 10):
+        ops += [{'op': 'tick', 'n': ticks},
+                cmd(f'/execute if entity {generated}'),
+                cmd(f'/execute if entity {direct}')]
+    cloud = '@e[type=minecraft:area_effect_cloud,tag=!direct,limit=1]'
+    ops += [
+        cmd(f'/data get entity {cloud} Pos'),
+        cmd(f'/data get entity {cloud} Duration'),
+        cmd(f'/data get entity {cloud} WaitTime'),
+        cmd(f'/tag {generated} add generated'),
+        cmd('/execute if entity @e[type=minecraft:area_effect_cloud,tag=generated]'),
+        cmd('/execute if entity @e[type=minecraft:area_effect_cloud,nbt={Tags:["generated"],Duration:300}]'),
+        cmd('/scoreboard objectives add cloud_seen dummy'),
+        cmd(f'/execute as {generated} run scoreboard players set @s cloud_seen 7'),
+        cmd('/execute if entity @e[type=minecraft:area_effect_cloud,scores={cloud_seen=7}]'),
+        # Past its maximum lifetime, the generated cloud must be gone.
+        {'op': 'tick', 'n': 330},
+        cmd(f'/execute if entity {generated}'),
+        # A second generated cloud exercises explicit removal independently.
+        *setup(creeper),
+        {'op': 'tick', 'n': 30},
+        cmd(f'/execute if entity {generated}'),
+        cmd(f'/kill {generated}'),
+        cmd(f'/execute if entity {generated}'),
+        *setup('/scoreboard objectives remove cloud_seen', '/kill @e[tag=direct]',
+               '/gamerule mob_griefing true'),
+    ]
+    return ops
+
+
+def mob_armor_damage():
+    """Attribute commands must change runtime mob damage, not only getters (#7494)."""
+    cases = [(armor, toughness, amount, 'cactus')
+             for armor in (0, 0.5, 1, 20) for toughness in (0, 8) for amount in (0.25, 4, 100)]
+    cases += [(20, 8, 4, kind) for kind in ('arrow', 'generic', 'falling_anvil', 'sonic_boom')]
+    ops = []
+    for index, (armor, toughness, amount, kind) in enumerate(cases):
+        tag = f'audit_armor_{index}'
+        target = f'@e[tag={tag},limit=1]'
+        ops += setup('/summon minecraft:pig 4.5 220 4.5 '
+                     f'{{NoAI:1b,NoGravity:1b,Tags:["{tag}"]}}',
+                     f'/attribute {target} minecraft:max_health base set 1000',
+                     f'/data merge entity {target} {{Health:1000f}}',
+                     f'/attribute {target} minecraft:armor base set {armor}',
+                     f'/attribute {target} minecraft:armor_toughness base set {toughness}')
+        ops += [cmd(f'/attribute {target} minecraft:armor get 1000'),
+                cmd(f'/attribute {target} minecraft:armor_toughness get 1000'),
+                cmd(f'/data get entity {target} Health 1000'),
+                cmd(f'/damage {target} {amount} minecraft:{kind}'),
+                cmd(f'/data get entity {target} Health 1000'),
+                *setup(f'/kill {target}')]
+    return ops + [{'op': 'tick', 'n': 25}]
+
+
+
+def bossbar_list_order():
+    """CustomBossEvents lists Java HashMap values, with no sorting (#7469)."""
+    ops = [
+        cmd('/bossbar add audit:test "Title"'),
+        cmd('/bossbar set audit:test name "Other"'),
+        cmd('/bossbar add audit:second "Second"'),
+        cmd('/bossbar list'),
+    ]
+    for i in range(11):
+        ops.append(cmd(f'/bossbar add audit:grow{i} "Extra {i}"'))
+    for i in range(11):
+        ops.append(cmd(f'/bossbar remove audit:grow{i}'))
+    ops += [
+        cmd('/bossbar list'),
+        cmd('/bossbar remove audit:test'),
+        cmd('/bossbar list'),
+        cmd('/bossbar add audit:test "Again"'),
+        cmd('/bossbar list'),
+        cmd('/bossbar remove audit:test'),
+        cmd('/bossbar remove audit:second'),
+        cmd('/bossbar list'),
+    ]
+    return ops
+
+
+def experience_level_boundaries():
+    """Exact zero retains progress/total; a negative result resets all three (#7515)."""
+    def observe():
+        return [cmd('/experience query @s levels'),
+                cmd('/experience query @s points'),
+                cmd('/data get entity @s XpLevel'),
+                cmd('/data get entity @s XpP 1000000'),
+                cmd('/data get entity @s XpTotal')]
+    ops = []
+    for start, delta in [(1, -1), (1, -2), (2, -1), (0, -1)]:
+        ops += setup('/experience set @s 0 levels', '/experience set @s 0 points',
+                     '/experience add @s -2147483647 points', '/experience add @s 10 points',
+                     '/experience set @s 1 levels', '/experience set @s 3 points',
+                     f'/experience set @s {start} levels')
+        ops += observe()
+        ops.append(cmd(f'/experience add @s {delta} levels'))
+        ops += observe()
+    return ops + setup('/experience set @s 0 levels', '/experience set @s 0 points',
+                       '/experience add @s -2147483647 points')
+
+
+def mob_max_health_bounds():
+    """Raw bases survive effective clamping without changing Health (#7413)."""
+    pig = '00000000-0000-0000-0000-000000000001'
+    attribute = f'/attribute {pig} minecraft:max_health'
+    ops = [*setup('/summon minecraft:pig 4 200 4 '
+                  '{UUID:[I;0,0,0,1],NoAI:1b,NoGravity:1b,PersistenceRequired:1b}')]
+    for base in (-1.75, 0, 20, 1025):
+        ops += [
+            cmd(f'{attribute} base set {base}'),
+            cmd(f'/data get entity {pig} Health'),
+            cmd(f'{attribute} get'),
+            cmd(f'{attribute} base get'),
+            cmd(f'{attribute} get 100'),
+            cmd(f'{attribute} base get 100'),
+        ]
+    ops += [
+        {'op': 'tick', 'n': 25},
+        cmd(f'/execute if entity {pig}'),
+        cmd(f'/data get entity {pig} Health'),
+        cmd(f'{attribute} base reset'),
+        cmd(f'{attribute} get'),
+        cmd(f'{attribute} base get'),
+        cmd(f'/data get entity {pig} Health'),
+        *setup(f'/kill {pig}'),
+    ]
+    return ops
+
+def setblock_destroy_air():
+    """Destroy-to-air skips placement, including already-air targets (#7691)."""
+    pos = '24 220 10'
+    # Keep this section nonempty so strict placement can retain air variants.
+    out = setup('/tick freeze', '/gamerule block_drops true',
+                '/scoreboard objectives add destroy_air dummy',
+                '/setblock 24 219 11 minecraft:stone strict')
+    for before, after, mode in [
+        ('stone', 'air', 'destroy'),
+        ('air', 'air', 'destroy'),
+        ('stone', 'cave_air', 'destroy'),
+        ('cave_air', 'air', 'destroy'),
+        ('cave_air', 'cave_air', 'destroy'),
+        ('stone', 'void_air', 'destroy'),
+        ('void_air', 'air', 'destroy'),
+        ('water', 'air', 'destroy'),
+        ('stone', 'dirt', 'destroy'),
+        ('stone', 'stone', 'destroy'),
+        ('air', 'dirt', 'destroy'),
+        ('air', 'air', 'replace'),
+        ('stone', 'air', 'replace'),
+    ]:
+        out += setup('/kill @e[type=minecraft:item]',
+                     f'/setblock {pos} minecraft:{before} strict',
+                     '/scoreboard players set result destroy_air -99',
+                     '/scoreboard players set success destroy_air -99')
+        out += [
+            cmd(f'/execute if block {pos} minecraft:{before}'),
+            cmd('/execute store success score success destroy_air '
+                'store result score result destroy_air run '
+                f'setblock {pos} minecraft:{after} {mode}'),
+            cmd('/scoreboard players get success destroy_air'),
+            cmd('/scoreboard players get result destroy_air'),
+            *[cmd(f'/execute if block {pos} minecraft:{air}')
+              for air in ('air', 'cave_air', 'void_air')],
+            cmd('/execute if entity @e[type=minecraft:item]'),
+            cmd('/execute as @e[type=minecraft:item] run data get entity @s Item'),
+        ]
+    # Skipping BlockInput.place must still notify neighbours. A strict write
+    # leaves this unsupported power value intact until a neighbour updates it.
+    out += setup(f'/setblock {pos} minecraft:air strict',
+                 '/setblock 23 219 10 minecraft:stone strict',
+                 '/setblock 23 220 10 minecraft:redstone_wire[power=15] strict')
+    out += [cmd('/execute if block 23 220 10 minecraft:redstone_wire[power=15]'),
+            cmd(f'/setblock {pos} minecraft:air destroy'),
+            cmd('/execute if block 23 220 10 minecraft:redstone_wire[power=0]'),
+            cmd(f'/execute if block {pos} minecraft:air')]
+    out += setup('/setblock 23 220 10 minecraft:redstone_wire[power=15] strict')
+    out += [cmd(f'/setblock {pos} minecraft:air replace'),
+            cmd('/execute if block 23 220 10 minecraft:redstone_wire[power=15]')]
+    out += setup('/kill @e[type=minecraft:item]', f'/setblock {pos} minecraft:air strict',
+                 '/setblock 23 220 10 minecraft:air strict',
+                 '/setblock 23 219 10 minecraft:air strict',
+                 '/setblock 24 219 11 minecraft:air strict',
+                 '/scoreboard objectives remove destroy_air', '/tick unfreeze')
+    return out
+
+
+def forceload_query_order():
+    """ForceLoadCommand sorts signed packed chunk IDs, not coordinate tuples (#7451)."""
+    return [
+        *setup('/forceload remove all'),
+        cmd('/forceload query'),
+        cmd('/forceload query 32 0'),
+        cmd('/forceload add 32 0'),
+        cmd('/forceload query'),
+        cmd('/forceload query 32 0'),
+        cmd('/forceload add -16 0'),
+        cmd('/forceload add 0 -16'),
+        # Java 26.3: [0,-1], [2,0], [-1,0]. These replies say nothing
+        # about whether the force-loaded chunks have finished loading.
+        cmd('/forceload query'),
+        cmd('/forceload remove 32 0'),
+        cmd('/forceload query 32 0'),
+        cmd('/forceload remove all'),
+        cmd('/forceload query'),
+    ]
+
+
+def creeper_custom_fuse():
+    """Observe timed entity removal, rather than just echoed raw Fuse NBT (#7435)."""
+    ops = setup('/gamerule mob_griefing false')
+    for x, tag, fuse in [(4.5, 'fuse_short', ',Fuse:1s'),
+                         (14.5, 'fuse_default', ''), (24.5, 'fuse_long', ',Fuse:40s')]:
+        ops += setup(f'/summon minecraft:creeper {x} 220 4.5 '
+                     f'{{Tags:["{tag}"],NoAI:1b,NoGravity:1b,ignited:1b{fuse}}}')
+        ops.append(cmd(f'/data get entity @e[tag={tag},limit=1] Fuse'))
+    elapsed = 0
+    for tick in (1, 29, 30, 39, 40):
+        ops.append({'op': 'tick', 'n': tick - elapsed})
+        for tag in ('fuse_short', 'fuse_default', 'fuse_long'):
+            ops.append(cmd(f'/execute if entity @e[tag={tag}]'))
+        elapsed = tick
+    return ops + setup('/gamerule mob_griefing true')
+
+
 def groups():
     return [
         ('setup', group_setup()),
@@ -1277,16 +2105,33 @@ def groups():
         ('client commands', client_commands()),
         ('game state', game_state()),
         ('player state', player_state()),
+        ('experience level boundaries', experience_level_boundaries()),
         ('blocks and border', world_blocks()),
+        ('setblock destroy air', setblock_destroy_air()),
+        ('forceload query order', forceload_query_order()),
         ('entities', entities()),
+
+        ('armor stand climbing', armor_stand_climbing()),
+
+
+
+        ('mob armor damage', mob_armor_damage()),
+
+        ('mob max health bounds', mob_max_health_bounds()),
+        ('creeper custom fuse', creeper_custom_fuse()),
         ('wither spawn', wither_spawn()),
         ('riding teleport', riding_teleport()),
         ('mob riding', mob_riding()),
+        ('trial spawner passengers', trial_spawner_passengers()),
         ('camel riders', camel_riders()),
         ('scores, teams and bossbars', scores()),
+        ('bossbar list order', bossbar_list_order()),
         ('execute', execute()),
+        ('selector missing predicates', selector_missing_predicates()),
         ('levels', levels()),
+        ('end portal entities', end_portal_entities()),
         ('items and loot', items_and_loot()),
+        ('item NBT count bounds', item_nbt_count_bounds()),
         ('world', world_misc()),
         ('progression', progression()),
         ('functions and packs', functions_and_packs()),
@@ -1295,7 +2140,15 @@ def groups():
         ('social and scoreboard', social()),
         ('test', test_command()),
         ('wither breaks', wither_breaks()),
+        ('tnt minecart rails', tnt_minecart_rails()),
+        ('creative shulker drops', creative_shulker_drops()),
+        ('minecart drag', minecart_drag()),
         ('ender dragon', ender_dragon()),
         ('place structure', place_structure()),
         ('tame wolf kills', tame_wolf_kills()),
+        ('experience orb fall', experience_orb_fall()),
+        ('piglin pickups', piglin_pickups()),
+        ('experience orb stuck', experience_orb_stuck()),
+        ('summoned potions', summoned_potions()),
+        ('creeper cloud selectors', creeper_cloud_selectors()),
     ]

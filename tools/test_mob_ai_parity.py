@@ -68,6 +68,14 @@ def scenarios():
     add('skeleton_day_burn', 120, ['mob minecraft:skeleton 0.5 -60 0.5 0 32 persistent'])
     # NoAI only skips serverAiStep: Mob.aiStep's burnUndead still sets a NoAI zombie alight (#3430).
     add('zombie_noai_day_burn', 120, ['mob minecraft:zombie 0.5 -60 0.5 0 33 persistent noai'])
+    # AgeableMob.aiStep runs with NoAI, including both signs and age-lock controls.
+    for species in ('pig', 'cow', 'horse', 'turtle'):
+        for age in (-2, 2):
+            for noai in (False, True):
+                for locked in (False, True):
+                    flags = (' noai' if noai else '') + (' agelocked' if locked else '')
+                    add(f'{species}_age_{age}_noai_{noai}_locked_{locked}', 4,
+                        [f'mob minecraft:{species} 0.5 -60 0.5 0 34 persistent age={age}{flags}'])
     # The wither (summoned, not built: no invulnerable spawn phase).
     add('wither_player', 200, ['player 10.5 -60 0.5', 'mob minecraft:wither 0.5 -58 0.5 0 41 persistent'])
     # A villager with a job site, a bed and a bell.
@@ -406,6 +414,12 @@ def scenarios():
                                 'mob minecraft:cod 2.5 -62 0.5 0 13 persistent noai'])
     add('axolotl_play_dead', 300, [POOL, 'player 12.5 -60 0.5', 'mob minecraft:axolotl 0.5 -62 0.5 0 28 persistent']
         + [f'hurt {t} 0' for t in range(4, 160, 12)])
+    # Tadpoles (TadpoleAi): swimming about and looking at a player, following frog food, panicking when hit.
+    add('tadpole_idle', 200, [POOL, 'player 3.5 -60 0.5', 'mob minecraft:tadpole 0.5 -62 0.5 0 301 persistent'])
+    add('tadpole_tempted', 200, [POOL, 'player 4.5 -60 0.5 hand=minecraft:slime_ball',
+                                 'mob minecraft:tadpole 0.5 -62 0.5 0 302 persistent'])
+    add('tadpole_panic', 100, [POOL, 'player 12.5 -60 0.5', 'mob minecraft:tadpole 0.5 -62 0.5 0 303 persistent',
+                               'hurt 5 0'])
     # Fish swimming at random (#3631): RandomSwimmingGoal's position search in a sealed pool.
     for species, seed in [('cod', 181), ('salmon', 182), ('tropical_fish', 183)]:
         add(f'{species}_random_swim', 120, [POOL, 'player 12.5 -60 0.5',
@@ -657,7 +671,7 @@ def main():
                                    'dev.horizonlab.parity.VanillaMobAiOracle', inputs, build / 'vanilla.txt', world],
                                   build, 'vanilla', timeout=3600)
     if not args.java_only:
-        command = ['cargo', 'build', '--locked', '--profile', 'fast', '-p', 'horizon-client', '--example', 'client_probe']
+        command = ['cargo', 'build', '--locked', '--profile', 'fast', '-p', 'horizon-client-lib', '--example', 'client_probe']
         target, env = lab.cargo_target(), None
         if args.trace:
             target = lab.LOCAL / 'mob-ai-trace-target'

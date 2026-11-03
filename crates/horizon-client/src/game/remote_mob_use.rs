@@ -60,10 +60,12 @@ impl Game<'_> {
             Species::Allay => !item.is_empty() || m.extra.main_hand.is_some(),
             Species::Cow | Species::Goat => item == "minecraft:bucket" && !baby,
             Species::Mooshroom => {
-                matches!(
-                    item,
-                    "minecraft:bucket" | "minecraft:bowl" | "minecraft:shears"
-                ) && !baby
+                !baby
+                    && (matches!(
+                        item,
+                        "minecraft:bucket" | "minecraft:bowl" | "minecraft:shears"
+                    ) || m.extra.variant == 1
+                        && horizon_client::flowers::stew_effect(item).is_some())
             }
             Species::Sheep => item == "minecraft:shears" || item.ends_with("_dye"),
             // SnowGolem.mobInteract: shears take the pumpkin off.

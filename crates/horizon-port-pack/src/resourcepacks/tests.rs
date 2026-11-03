@@ -227,6 +227,52 @@ fn symlinks_at_source_and_destination_are_rejected() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn a_home_behind_a_link_takes_its_packs() {
+    use std::os::unix::fs::symlink;
+    let t = Temp::new();
+    let src = t.0.join("instance");
+    put(&src.join("resourcepacks/good.zip"), b"good");
+    // Silverblue's /home -> /var/home: the link is above the work folder and the home.
+    fs::create_dir(t.0.join("var-home")).unwrap();
+    symlink(t.0.join("var-home"), t.0.join("home")).unwrap();
+    let work = t.0.join("home/work");
+    imported(&src, &work).unwrap();
+    let home = t.0.join("home/profile");
+    let report = install(&work, &home).unwrap();
+    assert_eq!(
+        report.files["resourcepacks/good.zip"].state,
+        State::Available
+    );
+    assert_eq!(
+        fs::read(t.0.join("var-home/profile/resourcepacks/good.zip")).unwrap(),
+        b"good"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_link_below_the_base_is_refused() {
+    use std::os::unix::fs::symlink;
+    let t = Temp::new();
+    let base = t.0.join("home");
+    fs::create_dir(&base).unwrap();
+    fs::create_dir(t.0.join("outside")).unwrap();
+    symlink(t.0.join("outside"), base.join("resourcepacks")).unwrap();
+    assert!(directory(&base, &base.join("resourcepacks/Look")).is_err());
+    assert!(!t.0.join("outside/Look").exists());
+    // The same layout one level up is the player's own: accepted.
+    assert!(
+        directory(
+            &base.join("resourcepacks"),
+            &base.join("resourcepacks/Look")
+        )
+        .is_ok()
+    );
+    assert!(t.0.join("outside/Look").is_dir());
+}
+
 #[test]
 fn indexed_downloads_are_hash_checked_and_failures_do_not_discard_other_packs() {
     use import::PackFile;

@@ -12,10 +12,58 @@ use std::sync::Arc;
 use zip::ZipArchive;
 
 const ROOT: &str = "shaders";
+// Resource packs are untrusted. A small ZIP may advertise enormous uncompressed entries.
+// Bound both the archive held in RAM and each expanded file before reserving memory.
+// These limits also apply to folder packs and to files changed after a pack was opened.
+const MAX_ARCHIVE_BYTES: u64 = 512 * 1024 * 1024;
+const MAX_ENTRY_BYTES: u64 = 256 * 1024 * 1024;
+
+fn bounded_read(
+    mut reader: impl Read,
+    declared: u64,
+    limit: u64,
+    name: &str,
+) -> io::Result<Vec<u8>> {
+    let too_large = || {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "{name}: exceeds the {} MiB shader-pack read limit",
+                limit / (1024 * 1024)
+            ),
+        )
+    };
+    if declared > limit {
+        return Err(too_large());
+    }
+    let mut out = Vec::new();
+    let mut chunk = [0u8; 8192];
+    loop {
+        let n = reader.read(&mut chunk)?;
+        if n == 0 {
+            return Ok(out);
+        }
+        if out.len() as u64 + n as u64 > limit {
+            return Err(too_large());
+        }
+        out.try_reserve(n)
+            .map_err(|_| io::Error::other(format!("{name}: cannot allocate shader-pack data")))?;
+        out.extend_from_slice(&chunk[..n]);
+    }
+}
+
+fn bounded_file(path: &Path, limit: u64) -> io::Result<Vec<u8>> {
+    let file = fs::File::open(path)?;
+    let size = file.metadata()?.len();
+    bounded_read(file, size, limit, &path.to_string_lossy())
+}
 
 pub struct Pack {
     name: String,
     files: Files,
+    /// The values the player chose for the pack's options, applied to its sources as they are
+    /// read (`options::apply`).
+    chosen: BTreeMap<String, String>,
 }
 
 enum Files {
@@ -67,9 +115,25 @@ impl Pack {
             }
             Files::Folder(root)
         } else {
-            Self::zip_files(fs::read(path)?)?
+            Self::zip_files(bounded_file(path, MAX_ARCHIVE_BYTES)?)?
         };
-        Ok(Self { name, files })
+        let pack = Self {
+            name,
+            files,
+            chosen: BTreeMap::new(),
+        };
+        if let Files::Folder(root) = &pack.files {
+            for name in pack.all_files() {
+                if fs::metadata(root.join(&name))?.len() > MAX_ENTRY_BYTES {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("{name}: exceeds the 256 MiB shader-pack read limit"),
+                    )
+                    .into());
+                }
+            }
+        }
+        Ok(pack)
     }
 
     /// An archive held in memory; `name` is what [`Pack::name`] returns.
@@ -78,23 +142,58 @@ impl Pack {
         Ok(Self {
             name: name.to_owned(),
             files,
+            chosen: BTreeMap::new(),
         })
     }
 
     fn zip_files(bytes: Vec<u8>) -> Result<Files, PackError> {
-        let archive = ZipArchive::new(Cursor::new(Arc::from(bytes)))
+        if bytes.len() as u64 > MAX_ARCHIVE_BYTES {
+            return Err(PackError::Zip(
+                "archive exceeds the 512 MiB shader-pack read limit".into(),
+            ));
+        }
+        let mut archive = ZipArchive::new(Cursor::new(Arc::from(bytes)))
             .map_err(|e| PackError::Zip(e.to_string()))?;
-        let entries: BTreeMap<String, usize> = (0..archive.len())
-            .filter_map(|i| {
-                let name = archive.name_for_index(i)?.replace('\\', "/");
-                let inner = name.strip_prefix(ROOT)?.strip_prefix('/')?;
-                (!inner.is_empty() && !inner.ends_with('/')).then(|| (inner.to_owned(), i))
-            })
-            .collect();
+        let mut entries = BTreeMap::new();
+        for i in 0..archive.len() {
+            let Some(name) = archive.name_for_index(i) else {
+                continue;
+            };
+            let name = name
+                .map_err(|e| PackError::Zip(e.to_string()))?
+                .replace('\\', "/");
+            if let Some(inner) = name.strip_prefix(ROOT).and_then(|n| n.strip_prefix('/'))
+                && !inner.is_empty()
+                && !inner.ends_with('/')
+            {
+                let size = archive
+                    .by_index_raw(i)
+                    .map_err(|e| PackError::Zip(e.to_string()))?
+                    .size();
+                if size > MAX_ENTRY_BYTES {
+                    return Err(PackError::Zip(format!(
+                        "{inner}: exceeds the 256 MiB shader-pack read limit"
+                    )));
+                }
+                entries.insert(inner.to_owned(), i);
+            }
+        }
         if entries.is_empty() {
             return Err(PackError::NoShadersFolder);
         }
         Ok(Files::Zip { archive, entries })
+    }
+
+    /// The pack with options at the values in `chosen` (name to value, `true` or `false` for a
+    /// switch) instead of their defaults. A value the option doesn't list (a file edited by
+    /// hand) is left out.
+    pub fn with_chosen(mut self, chosen: BTreeMap<String, String>) -> Self {
+        let options = crate::options(&self);
+        self.chosen = chosen
+            .into_iter()
+            .filter(|(name, value)| options.get(name).is_some_and(|o| o.values.contains(value)))
+            .collect();
+        self
     }
 
     /// The folder or file name the pack was opened from (`BSL.zip`).
@@ -105,25 +204,51 @@ impl Pack {
     /// The bytes of a file, by its path inside `shaders` (`lang/en_us.lang`). `None` when it
     /// doesn't exist or the path leaves the folder.
     pub fn read(&self, path: &str) -> Option<Vec<u8>> {
-        let path = normalize(path)?;
+        self.read_checked(path).ok().flatten()
+    }
+
+    /// Like `read`, but preserves resource-limit and I/O errors for loader diagnostics.
+    pub fn read_checked(&self, path: &str) -> io::Result<Option<Vec<u8>>> {
+        let Some(path) = normalize(path) else {
+            return Ok(None);
+        };
         match &self.files {
-            Files::Folder(root) => fs::read(root.join(&path)).ok(),
+            Files::Folder(root) => match bounded_file(&root.join(&path), MAX_ENTRY_BYTES) {
+                Ok(bytes) => Ok(Some(bytes)),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+                Err(error) => Err(error),
+            },
             Files::Zip { archive, entries } => {
-                // A clone shares the bytes and the central directory; reading needs `&mut`.
+                let Some(&index) = entries.get(&path) else {
+                    return Ok(None);
+                };
+                // A clone shares archive bytes and the central directory; reading needs &mut.
                 let mut archive = archive.clone();
-                let mut entry = archive.by_index(*entries.get(&path)?).ok()?;
-                let mut out = Vec::with_capacity(entry.size() as usize);
-                entry.read_to_end(&mut out).ok()?;
-                Some(out)
+                let entry = archive.by_index(index).map_err(io::Error::other)?;
+                let size = entry.size();
+                bounded_read(entry, size, MAX_ENTRY_BYTES, &path).map(Some)
             }
         }
     }
 
-    /// A text file, decoded as UTF-8 (invalid bytes replaced) without its byte-order mark.
+    /// A text file, decoded as UTF-8 (invalid bytes replaced) without its byte-order mark, with
+    /// the chosen option values in its sources.
     pub fn read_text(&self, path: &str) -> Option<String> {
-        let bytes = self.read(path)?;
+        self.read_text_checked(path).ok().flatten()
+    }
+
+    pub fn read_text_checked(&self, path: &str) -> io::Result<Option<String>> {
+        let Some(bytes) = self.read_checked(path)? else {
+            return Ok(None);
+        };
         let text = String::from_utf8_lossy(&bytes);
-        Some(text.strip_prefix('\u{feff}').unwrap_or(&text).to_owned())
+        let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
+        let source = !path.ends_with(".properties") && !path.ends_with(".lang");
+        Ok(Some(if source && !self.chosen.is_empty() {
+            crate::options::apply(text, &self.chosen)
+        } else {
+            text.to_owned()
+        }))
     }
 
     pub fn exists(&self, path: &str) -> bool {
@@ -223,13 +348,13 @@ pub(crate) mod tests {
     use std::io::Write;
 
     /// A zip of `(path, contents)` pairs, paths from the archive root.
-    pub(crate) fn zip(files: &[(&str, &str)]) -> Vec<u8> {
+    pub(crate) fn zip<C: AsRef<[u8]>>(files: &[(&str, C)]) -> Vec<u8> {
         let mut w = zip::ZipWriter::new(Cursor::new(Vec::new()));
         let options = zip::write::SimpleFileOptions::default()
             .compression_method(zip::CompressionMethod::Deflated);
         for (path, contents) in files {
             w.start_file(*path, options).unwrap();
-            w.write_all(contents.as_bytes()).unwrap();
+            w.write_all(contents.as_ref()).unwrap();
         }
         w.finish().unwrap().into_inner()
     }
@@ -291,5 +416,70 @@ pub(crate) mod tests {
         assert_eq!(pack.list("lang"), ["en_us.lang"]);
         assert!(pack.read("../secret.txt").is_none());
         fs::remove_dir_all(&dir).unwrap();
+    }
+    #[test]
+    fn oversized_zip_metadata_is_rejected_before_entry_allocation() {
+        let mut bytes = zip(&[("shaders/final.fsh", "void main(){}")]);
+        let at = bytes.windows(4).position(|b| b == b"PK\x01\x02").unwrap();
+        bytes[at + 24..at + 28].copy_from_slice(&u32::MAX.to_le_bytes());
+        let error = match Pack::from_zip_bytes("oversized.zip", bytes) {
+            Ok(_) => panic!("oversized advertised entry accepted"),
+            Err(error) => error.to_string(),
+        };
+        assert!(
+            error.contains("final.fsh") && error.contains("256 MiB"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn bounded_reads_limit_actual_decompression_not_only_declared_size() {
+        struct NeverRead;
+        impl Read for NeverRead {
+            fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+                panic!("oversized metadata must be rejected before read");
+            }
+        }
+        assert!(bounded_read(NeverRead, u64::MAX, 64, "test").is_err());
+        let bytes = zip(&[("shaders/texture.bin", vec![0u8; 4096])]);
+        let mut archive = ZipArchive::new(Cursor::new(bytes)).unwrap();
+        let entry = archive.by_index(0).unwrap();
+        // Even a lying size cannot cause unbounded expansion.
+        assert!(bounded_read(entry, 1, 64, "texture.bin").is_err());
+        assert_eq!(
+            bounded_read(Cursor::new(b"ok"), 2, 64, "small").unwrap(),
+            b"ok"
+        );
+    }
+
+    #[test]
+    fn folder_and_archive_limits_report_clear_errors_without_large_allocations() {
+        let dir = temp_dir("size-limits");
+        fs::create_dir_all(dir.join("shaders")).unwrap();
+        let path = dir.join("shaders/final.fsh");
+        fs::write(&path, "void main(){}").unwrap();
+        let pack = Pack::open(&dir).unwrap();
+        let file = fs::OpenOptions::new().write(true).open(&path).unwrap();
+        file.set_len(MAX_ENTRY_BYTES + 1).unwrap();
+        let pp = crate::preprocess(&pack, "final.fsh", &crate::Macros::standard());
+        assert!(pp.diagnostics.iter().any(|d| d.message.contains("256 MiB")));
+        let error = Pack::open(&dir).err().unwrap().to_string();
+        assert!(
+            error.contains("final.fsh") && error.contains("256 MiB"),
+            "{error}"
+        );
+        let archive = dir.join("large.zip");
+        fs::File::create(&archive)
+            .unwrap()
+            .set_len(MAX_ARCHIVE_BYTES + 1)
+            .unwrap();
+        assert!(
+            Pack::open(&archive)
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("512 MiB")
+        );
+        fs::remove_dir_all(dir).unwrap();
     }
 }

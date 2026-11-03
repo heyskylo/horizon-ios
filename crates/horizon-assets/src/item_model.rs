@@ -16,6 +16,8 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+mod component_predicate;
+mod foreign;
 mod special;
 pub use special::{SpecialKind, SpecialModel};
 
@@ -450,12 +452,21 @@ impl ItemModelNode {
                     .collect::<Result<_>>()?,
                 transformation: optional_transformation(m)?,
             },
+            "minecraft:condition" if foreign::property_is_foreign(m)? => foreign::wrap(
+                Self::decode(required(m, "on_false")?)?,
+                optional_transformation(m)?,
+            ),
             "minecraft:condition" => Self::Condition {
                 transformation: optional_transformation(m)?,
                 property: ConditionProperty::decode(m)?,
                 on_true: Box::new(Self::decode(required(m, "on_true")?)?),
                 on_false: Box::new(Self::decode(required(m, "on_false")?)?),
             },
+            "minecraft:select" if foreign::property_is_foreign(m)? => {
+                // No case can match a property Horizon cannot read.
+                let fallback = get(m, "fallback").map(Self::decode).transpose()?;
+                foreign::wrap(fallback.unwrap_or(Self::Empty), optional_transformation(m)?)
+            }
             "minecraft:select" => {
                 let transformation = optional_transformation(m)?;
                 let property = SelectProperty::decode(m)?;
@@ -483,6 +494,7 @@ impl ItemModelNode {
                 }
             }
             "minecraft:range_dispatch" => {
+                let foreign_property = foreign::property_is_foreign(m)?;
                 let mut entries = list(required(m, "entries")?)?
                     .iter()
                     .map(|e| {
@@ -495,6 +507,17 @@ impl ItemModelNode {
                     .collect::<Result<Vec<_>>>()?;
                 // `Comparator.comparingDouble`: Double.compare, a total order.
                 entries.sort_by(|a, b| f64::from(a.0).total_cmp(&f64::from(b.0)));
+                if foreign_property {
+                    // A property Horizon cannot read is 0.
+                    let fallback = get(m, "fallback").map(Self::decode).transpose()?;
+                    let chosen = last_index_less_or_equal(&entries, 0.0)
+                        .map(|i| entries.swap_remove(i).1)
+                        .or(fallback);
+                    return Ok(foreign::wrap(
+                        chosen.unwrap_or(Self::Empty),
+                        optional_transformation(m)?,
+                    ));
+                }
                 Self::RangeDispatch {
                     transformation: optional_transformation(m)?,
                     property: NumericProperty::decode(m)?,
@@ -505,12 +528,21 @@ impl ItemModelNode {
                         .transpose()?,
                 }
             }
+            "minecraft:special" if SpecialModel::is_foreign(required(m, "model")?) => {
+                // The mod's own renderer is not run: the base model stands in.
+                Self::Model(ModelLeaf {
+                    model: ident(required(m, "base")?)?,
+                    transformation: optional_transformation(m)?,
+                    tints: Vec::new(),
+                })
+            }
             "minecraft:special" => Self::Special {
                 base: ident(required(m, "base")?)?,
                 transformation: optional_transformation(m)?,
                 model: SpecialModel::decode(required(m, "model")?)?,
             },
             "minecraft:bundle/selected_item" => Self::BundleSelectedItem,
+            other if foreign::is_foreign(other) => foreign::decode_node(other, m),
             _ => return Err(err("unknown item model type")),
         })
     }
@@ -602,6 +634,8 @@ impl TintSource {
             "minecraft:firework" => Self::Firework(default()?),
             "minecraft:potion" => Self::Potion(default()?),
             "minecraft:team" => Self::Team(default()?),
+            // A mod's own tint source, which its Java code computes: untinted here.
+            other if foreign::is_foreign(other) => Self::Constant(-1),
             _ => return Err(err("unknown item tint source")),
         })
     }
@@ -628,7 +662,7 @@ pub enum ConditionProperty {
     ExtendedView,
     KeybindDown(String),
     ViewEntity,
-    /// A `component` predicate, evaluated by the host.
+    /// A single `component` predicate; external predicate types use the host.
     Component(Value),
 }
 impl ConditionProperty {
@@ -651,20 +685,7 @@ impl ConditionProperty {
             "minecraft:extended_view" => Self::ExtendedView,
             "minecraft:keybind_down" => Self::KeybindDown(string(required(m, "keybind")?)?),
             "minecraft:view_entity" => Self::ViewEntity,
-            "minecraft:component" => {
-                let predicate = required(m, "predicate")?;
-                if predicate.is_string() {
-                    let name = ident(predicate)?;
-                    let value = required(m, "value")?.clone();
-                    return Ok(Self::Component(Value::Object(Map::from_iter([(
-                        name, value,
-                    )]))));
-                }
-                if object(predicate)?.len() != 1 {
-                    return Err(err("a single component predicate is expected"));
-                }
-                Self::Component(predicate.clone())
-            }
+            "minecraft:component" => Self::Component(component_predicate::decode(m)?),
             _ => return Err(err("unknown condition property")),
         })
     }
@@ -971,8 +992,12 @@ pub trait ItemEnv {
     fn bundle_fullness(&self, _stack: &StackView, _components: &Components) -> f32 {
         0.0
     }
-    /// `ItemStack.getMaxStackSize` when the prototype has no component.
+    /// Additional component predicate types supplied by the host.
     fn component_matches(&self, _stack: &StackView, _predicate: &Value) -> bool {
+        false
+    }
+    /// Membership in the level's enchantment registry tags.
+    fn enchantment_in_tag(&self, _enchantment: &str, _tag: &str) -> bool {
         false
     }
     fn is_keybind_down(&self, _keybind: &str) -> bool {
@@ -1342,7 +1367,8 @@ impl Resolve<'_> {
             ConditionProperty::KeybindDown(key) => self.env.is_keybind_down(key),
             ConditionProperty::ViewEntity => owner.is_some_and(|o| o.is_view_entity),
             ConditionProperty::Component(predicate) => {
-                self.env.component_matches(self.stack, predicate)
+                component_predicate::matches(predicate, self.components, self.env)
+                    .unwrap_or_else(|| self.env.component_matches(self.stack, predicate))
             }
         }
     }
@@ -1724,5 +1750,7 @@ fn binary_search(a: &[f32], key: f32) -> std::result::Result<usize, usize> {
     Err(low as usize)
 }
 
+#[cfg(test)]
+mod foreign_tests;
 #[cfg(test)]
 mod tests;

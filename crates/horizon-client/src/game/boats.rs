@@ -2,7 +2,8 @@
 //! paddling controls, collisions, riding (`positionRider`, `clampRotation`,
 //! dismounting), `BoatItem` placement, `VehicleEntity.hurtServer` breaking,
 //! saving and `AbstractBoatRenderer` with animated paddles.
-use super::{Game, Keys, entity_culling::at, view_vector};
+use super::{Game, InteractTarget, entity::Entity, entity_culling::at, view_vector};
+use horizon_client::entity_rules::EntityRules;
 use horizon_client::{
     blocks::Fluid,
     collisions::{EntityCollisions, SceneCollisions},
@@ -14,6 +15,7 @@ use horizon_client::{
         leash::{Holder, Pending},
         riders,
     },
+    motion::{BubbleColumn, RiddenBoat, bubble_column_at},
 };
 use horizon_core::{
     geometry::{Aabb, ShapeOp, Vec3, VoxelShape},
@@ -44,12 +46,35 @@ pub(super) struct Boat {
     pub delta_rotation: f32,
     status: Status,
     old_status: Status,
+    /// `AbstractBoat.oldStatus` is null until the first tick has set a status.
+    status_known: bool,
     water_level: f64,
     land_friction: f32,
     out_of_control: f32,
+    /// `AbstractBoat.DATA_ID_BUBBLE_TIME` (synched): the ticks of `BUBBLE_TIME`
+    /// left before a bubble column lifts or drags the boat; 0 when it is not
+    /// over one.
+    pub bubble_time: i32,
+    /// `AbstractBoat.isAboveBubbleColumn`, set by `onAboveBubbleColumn` and
+    /// cleared by `tickBubbleColumn` (the server's).
+    above_bubble_column: bool,
+    /// `AbstractBoat.bubbleColumnDirectionIsDown`.
+    bubble_down: bool,
+    /// The server asked a rider whose client moves it (a player) to get out:
+    /// `guest_vehicle_tick` honors it (`Entity.ejectPassengers`).
+    pub eject_riders: bool,
+    /// `Entity.tickCount`, counted where the wobble is (a client's tick).
+    tick_count: i32,
+    /// `AbstractBoat.bubbleMultiplier`, `bubbleAngle` and `bubbleAngleO`
+    /// (a client's).
+    bubble_multiplier: f32,
+    bubble_angle: f32,
+    bubble_angle_old: f32,
     pub hurt_time: i32,
     pub hurt_dir: i32,
     pub damage: f32,
+    /// `Entity.noGravity` (`NoGravity` in its save).
+    pub no_gravity: bool,
     pub paddles: [f32; 2],
     pub paddling: [bool; 2],
     /// left, right, up, down
@@ -71,9 +96,27 @@ pub(super) struct Boat {
 }
 /// `ChestBoat.CONTAINER_SIZE`.
 pub(super) const CHEST_SLOTS: usize = 27;
+/// `AbstractBoat.BUBBLE_TIME`: the ticks over a bubble column before it
+/// lifts or drags the boat.
+const BUBBLE_TIME: i32 = 60;
+/// `EntityEvent` 71 and 72, which `AbstractBoat.tickBubbleColumn` broadcasts
+/// for a down and an up column.
+pub(super) const BUBBLE_DOWN_EVENT: i8 = 71;
+pub(super) const BUBBLE_UP_EVENT: i8 = 72;
 pub(super) const WIDTH: f64 = 1.375;
 pub(super) const HEIGHT: f64 = 0.5625;
 impl Boat {
+    /// `AbstractBoat.tick`: passengers lose control after 60 consecutive
+    /// underwater ticks; any other status resets the counter.
+    fn tick_submersion(&mut self) {
+        self.out_of_control =
+            if matches!(self.status, Status::UnderWater | Status::UnderFlowingWater) {
+                self.out_of_control + 1.0
+            } else {
+                0.0
+            };
+    }
+
     pub fn new(id: u32, wood: Arc<str>, position: Vec3, yaw: f32) -> Self {
         Self {
             id,
@@ -86,12 +129,22 @@ impl Boat {
             delta_rotation: 0.0,
             status: Status::InAir,
             old_status: Status::InAir,
+            status_known: false,
             water_level: 0.0,
             land_friction: 0.0,
             out_of_control: 0.0,
+            bubble_time: 0,
+            above_bubble_column: false,
+            bubble_down: false,
+            eject_riders: false,
+            tick_count: 0,
+            bubble_multiplier: 0.0,
+            bubble_angle: 0.0,
+            bubble_angle_old: 0.0,
             hurt_time: 0,
             hurt_dir: 1,
             damage: 0.0,
+            no_gravity: false,
             paddles: [0.0; 2],
             paddling: [false; 2],
             input: [false; 4],
@@ -172,6 +225,42 @@ impl Boat {
             at,
             yaw,
         )
+    }
+    /// `AbstractBoat.getBubbleAngle`: the wobble, in degrees, `a` of the way
+    /// from the last tick's to this one's.
+    pub fn bubble_angle(&self, a: f32) -> f32 {
+        self.bubble_angle_old + a * (self.bubble_angle - self.bubble_angle_old)
+    }
+    /// `AbstractBoat.tickBubbleColumn`: on a client, the wobble grows by 0.05 a
+    /// tick while the synched bubble time runs and fades by 0.1 otherwise.
+    pub(super) fn tick_bubble_wobble(&mut self) {
+        self.tick_count += 1;
+        if self.bubble_time > 0 {
+            self.bubble_multiplier += 0.05;
+        } else {
+            self.bubble_multiplier -= 0.1;
+        }
+        self.bubble_multiplier = self.bubble_multiplier.clamp(0.0, 1.0);
+        self.bubble_angle_old = self.bubble_angle;
+        self.bubble_angle =
+            10.0 * (0.5 * f64::from(self.tick_count)).sin() as f32 * self.bubble_multiplier;
+    }
+    /// `AbstractBoat.tickBubbleColumn`'s countdown on the server: the bubble
+    /// time drops while the boat stays over a column and resets when it leaves.
+    /// `Some(down)` on the tick it runs out: the boat is thrown up (`false`) or
+    /// pulled down (`true`).
+    pub(super) fn tick_bubble_countdown(&mut self) -> Option<bool> {
+        if !self.above_bubble_column {
+            self.bubble_time = 0;
+        }
+        if self.bubble_time <= 0 {
+            return None;
+        }
+        self.bubble_time -= 1;
+        let diff = BUBBLE_TIME - self.bubble_time - 1;
+        let fired = (diff > 0 && self.bubble_time == 0).then_some(self.bubble_down);
+        self.above_bubble_column = false;
+        fired
     }
     /// `getRowingTime`.
     pub fn rowing_time(&self, side: usize, a: f32) -> f32 {
@@ -260,9 +349,72 @@ impl Game<'_> {
     fn fluid_height(&self, x: i32, y: i32, z: i32) -> Option<(f32, bool)> {
         self.fluid_height_of(x, y, z, Some(Fluid::Water))
     }
+    /// The horizontal water plane around the camera for the water mirror: the median
+    /// standing-water surface of a grid of columns 48 blocks around, each scanned down from
+    /// the camera to its ground. A lake or the sea has one plane; the mirror shows only the
+    /// water on it. With no water in reach the last plane found stays, so the mirror never
+    /// switches off as the camera moves.
+    pub(super) fn water_plane(&self, camera: glam::DVec3) -> Option<f32> {
+        const RADIUS: i32 = 48;
+        const STEP: usize = 4;
+        const DEPTH: i32 = 96;
+        let (cx, cz) = (camera.x.floor() as i32, camera.z.floor() as i32);
+        let top = camera.y.floor() as i32 + 2;
+        // Scanned again once the camera moves 8 blocks, or every 5 seconds: a scan reads up
+        // to 60 000 blocks on the game thread, and the plane rarely changes.
+        let scan = (
+            [cx >> 3, top >> 3, cz >> 3],
+            self.world.game_time.div_euclid(100),
+        );
+        if self.water_plane_scan.replace(Some(scan)) == Some(scan) {
+            return self.water_plane_memo.get();
+        }
+        let mut heights = Vec::with_capacity(625);
+        for x in (cx - RADIUS..=cx + RADIUS).step_by(STEP) {
+            for z in (cz - RADIUS..=cz + RADIUS).step_by(STEP) {
+                // The top of the column's water: the highest standing water under the
+                // camera (a full block's water continues above it).
+                for y in (top - DEPTH..=top).rev() {
+                    if let Some((h, source)) = self.fluid_height(x, y, z) {
+                        if source && h < 1.0 {
+                            heights.push(y as f32 + h);
+                        }
+                        break;
+                    }
+                    if self.res.facts().get(self.world.block(x, y, z)).solid_render {
+                        break;
+                    }
+                }
+            }
+        }
+        if heights.is_empty() {
+            return self.water_plane_memo.get();
+        }
+        heights.sort_by(f32::total_cmp);
+        let found = heights[heights.len() / 2];
+        // The plane in use stays while a quarter of the columns are still on it, so two
+        // lakes at different heights do not make the mirror flicker between them.
+        let plane = match self.water_plane_memo.get() {
+            Some(last)
+                if 4 * heights.iter().filter(|h| (*h - last).abs() < 0.05).count()
+                    >= heights.len() =>
+            {
+                last
+            }
+            _ => found,
+        };
+        self.water_plane_memo.set(Some(plane));
+        Some(plane)
+    }
     /// `FluidState.getHeight` and whether it is a source, for `fluid` or,
     /// with `None`, any fluid (`ClipContext.Fluid.ANY`).
-    fn fluid_height_of(&self, x: i32, y: i32, z: i32, fluid: Option<Fluid>) -> Option<(f32, bool)> {
+    pub(super) fn fluid_height_of(
+        &self,
+        x: i32,
+        y: i32,
+        z: i32,
+        fluid: Option<Fluid>,
+    ) -> Option<(f32, bool)> {
         let f = self.res.facts().get(self.world.block(x, y, z));
         if f.fluid == Fluid::None || fluid.is_some_and(|want| f.fluid != want) {
             return None;
@@ -423,21 +575,22 @@ impl Game<'_> {
         if !controlled && self.remote.is_none() {
             self.tick_boat_leash(&mut b);
         }
+        let had_status = std::mem::replace(&mut b.status_known, true);
         b.old_status = b.status;
         b.status = self.boat_status(&mut b);
-        b.out_of_control = if matches!(b.status, Status::UnderWater | Status::UnderFlowingWater) {
-            b.out_of_control + 1.0
-        } else {
-            0.0
-        };
+        b.tick_submersion();
         b.hurt_time = (b.hurt_time - 1).max(0);
         b.damage = (b.damage - 1.0).max(0.0);
         if !controlled {
             b.paddling = [false; 2];
             b.input = [false; 4];
         }
+        // `Entity.baseTick`: the boat is immersed and pushed by the current it
+        // sits in (`isPushedByFluid`), before `floatBoat` scales the velocity.
+        let _ = b.push_by_fluid(&self.world, &self.res.motion().fluids);
         // floatBoat
-        let mut vspeed = -0.04;
+        // `-getGravity()`: none with NoGravity.
+        let mut vspeed = 0.0 - b.get_gravity();
         let mut buoyancy = 0.0;
         let inv_friction: f32;
         let obstacles = self.boat_move_obstacles(&b);
@@ -446,7 +599,10 @@ impl Game<'_> {
             binding: &self.collision,
             subject: None,
         };
-        if b.old_status == Status::InAir && b.status != Status::InAir && b.status != Status::OnLand
+        if had_status
+            && b.old_status == Status::InAir
+            && b.status != Status::InAir
+            && b.status != Status::OnLand
         {
             b.water_level = b.position.y;
             let target = self.water_level_above(&b) - HEIGHT + 0.101;
@@ -521,11 +677,12 @@ impl Game<'_> {
             b.velocity.z += f64::from(r.cos() * acceleration);
             b.paddling = [right && !left || up, left && !right || up];
         }
-        // Entity.move: collisions zero the blocked components.
+        // Entity.move: collisions zero the blocked components, the world border's
+        // among them (`CollisionGetter.borderCollision`).
         let mut scene = EntityCollisions {
             blocks: scene,
             entities: &obstacles,
-            border: None,
+            border: Some((self.border.geometry(), [b.position.x, b.position.z])),
         };
         if let Ok(moved) = scene.resolve(b.bounds(), b.velocity, 0.0, b.on_ground) {
             b.position = Vec3::new(
@@ -579,48 +736,276 @@ impl Game<'_> {
     pub(super) fn tick_boats(&mut self) {
         // ServerLevel.tick: only entities in entity-ticking chunks tick.
         let ticking = self.entity_ticking_area();
+        let mut round = self.native_tick_round();
         // A server player's boat is driven by its client (lan_vehicles.rs).
         let driven = self.guest_vehicles();
-        for i in 0..self.boats.len() {
-            let p = self.boats[i].position;
-            if Some(self.boats[i].id) == self.riding
-                || driven.contains(&self.boats[i].id)
-                || !ticking(p.x.floor() as i32, p.z.floor() as i32)
-            {
-                // Its rider's client moves it, but the lead still ticks.
-                if ticking(p.x.floor() as i32, p.z.floor() as i32) && self.remote.is_none() {
-                    let mut b = self.boats[i].clone();
-                    self.tick_boat_leash(&mut b);
-                    self.boats[i] = b;
-                }
-                continue;
-            }
-            let b = self.boats[i].clone();
-            self.boats[i] = self.tick_boat(b, false);
-        }
-        // AbstractBoat.tick's applyEffectsFromBlocks, on the server for every
-        // boat, the client-driven ones too.
+        // EntityTickEvent.Post comes once AbstractBoat.tick is over, after the
+        // passes of `boat_server_passes` (lava, ejection, bubbles, contacts),
+        // and before the next boat ticks, as `ServerLevel.tickNonPassenger`.
+        // A pass (lava breaks a boat) or a mod's hook may remove boats: the next one is found
+        // after this one by its id, so none is skipped or ticked twice.
         let mut i = 0;
         while i < self.boats.len() {
-            let p = self.boats[i].position;
-            let skip = Some(self.boats[i].id) == self.riding
-                || !ticking(p.x.floor() as i32, p.z.floor() as i32);
-            if skip || !self.boat_lava_tick(i) {
-                i += 1;
+            let id = self.boats[i].id;
+            'boat: {
+                let p = self.boats[i].position;
+                if Some(id) == self.riding
+                    || driven.contains(&id)
+                    || !ticking(p.x.floor() as i32, p.z.floor() as i32)
+                {
+                    // Its rider's client moves it, but the lead still ticks.
+                    if ticking(p.x.floor() as i32, p.z.floor() as i32) && self.remote.is_none() {
+                        let mut b = self.boats[i].clone();
+                        self.tick_boat_leash(&mut b);
+                        self.boats[i] = b;
+                    }
+                    self.boat_server_passes(id, &driven, &ticking, &round);
+                    break 'boat;
+                }
+                let kind = if round.listening() {
+                    self.boats[i].entity_type()
+                } else {
+                    String::new()
+                };
+                if !self.native_tick_pre_one(&mut round, id, &kind) {
+                    self.boat_server_passes(id, &driven, &ticking, &round);
+                    break 'boat;
+                }
+                // The hook may have removed boats.
+                let Some(i) = Some(i)
+                    .filter(|&i| self.boats.get(i).is_some_and(|b| b.id == id))
+                    .or_else(|| self.boats.iter().position(|b| b.id == id))
+                else {
+                    break 'boat;
+                };
+                let b = self.boats[i].clone();
+                self.boats[i] = self.tick_boat(b, false);
+                self.boat_server_passes(id, &driven, &ticking, &round);
+                self.native_tick_post_one(&round, id, &kind);
+            }
+            i = match self.boats.get(i) {
+                Some(b) if b.id == id => i + 1,
+                _ => self
+                    .boats
+                    .iter()
+                    .position(|b| b.id == id)
+                    .map_or(i, |k| k + 1),
+            };
+        }
+    }
+    /// The rest of `AbstractBoat.tick` on the server, for every boat, the
+    /// client-driven ones too: `applyEffectsFromBlocks` (lava breaks a boat
+    /// at once), the passengers of one under water too long get out, and it
+    /// picks up or pushes what it touches.
+    fn boat_server_passes(
+        &mut self,
+        id: u32,
+        driven: &[u32],
+        ticking: &impl Fn(i32, i32) -> bool,
+        round: &super::native_ticks::TickRound,
+    ) {
+        let Some(i) = self.boats.iter().position(|b| b.id == id) else {
+            return;
+        };
+        let p = self.boats[i].position;
+        if !ticking(p.x.floor() as i32, p.z.floor() as i32) || round.canceled(id) {
+            return;
+        }
+        if Some(id) != self.riding && self.boat_lava_tick(i) {
+            return;
+        }
+        // `AbstractBoat.tick` counts submersion on the server even when
+        // its controlling client owns the boat's movement.
+        if driven.contains(&id) {
+            self.refresh_boat_status(i);
+        }
+        if self.boats[i].out_of_control >= 60.0 {
+            self.eject_boat_riders(i);
+        }
+        self.boat_bubble_tick(i);
+        self.boat_contacts(i);
+    }
+    /// `Entity.canSimulateMovement`: for a boat (`AUTHORITATIVE_SIDE`) a
+    /// server leaves the boat its player drives to that player's client, and a
+    /// client moves only the boat its player drives.
+    fn boat_can_simulate_movement(&self, id: u32) -> bool {
+        if self.remote.is_some() {
+            self.riding == Some(id)
+        } else {
+            !self.guest_vehicles().contains(&id)
+        }
+    }
+    /// `AbstractBoat.tick`: `status = getStatus()` for a boat this window
+    /// does not tick (`tick_boat` sets it for the others): a client's boats
+    /// other than the one it drives, and a server's boats its players drive.
+    pub(super) fn refresh_boat_status(&mut self, i: usize) {
+        let b = &self.boats[i];
+        let mut probe = Boat::new(b.id, b.wood.clone(), b.position, b.yaw);
+        let status = self.boat_status(&mut probe);
+        self.boats[i].status = status;
+        // `oldStatus = status` runs on every boat, so the next tick has one.
+        self.boats[i].status_known = true;
+        self.boats[i].tick_submersion();
+    }
+    /// `BubbleColumnBlock.entityInside`: the bubble columns boat `i` touches
+    /// (its box deflated by 1e-5 as `Entity.checkInsideBlocks` does), in x, y,
+    /// z order.
+    pub(super) fn boat_bubble_columns(&self, i: usize) -> Vec<BubbleColumn> {
+        let b = self.boats[i].bounds().deflate(Vec3::new(
+            f64::from(1.0e-5f32),
+            f64::from(1.0e-5f32),
+            f64::from(1.0e-5f32),
+        ));
+        let (lo, hi) = (b.min_position(), b.max_position());
+        let mut columns = Vec::new();
+        for x in lo.x.floor() as i32..=(hi.x.ceil() as i32 - 1) {
+            for y in lo.y.floor() as i32..=(hi.y.ceil() as i32 - 1) {
+                for z in lo.z.floor() as i32..=(hi.z.ceil() as i32 - 1) {
+                    if let Some(column) = bubble_column_at(
+                        &self.world,
+                        self.pack.assets.registry,
+                        self.res.facts(),
+                        &self.collision,
+                        BlockPos::new(x, y, z),
+                    ) {
+                        columns.push(column);
+                    }
+                }
             }
         }
-        // The rest of AbstractBoat.tick on the server, for every boat: the
-        // passengers of one under water too long get out, and it picks up or
-        // pushes what it touches.
-        for i in 0..self.boats.len() {
-            let p = self.boats[i].position;
-            if !ticking(p.x.floor() as i32, p.z.floor() as i32) {
-                continue;
+        columns
+    }
+    /// `Entity.handleOnInsideBubbleColumn`: a column under more water lifts
+    /// boat `i` up to 0.7 or drags it down to -0.3 (`AbstractBoat` does not
+    /// override `onInsideBubbleColumn`), applied by the column's own push below
+    /// the surface.
+    pub(super) fn boat_inside_bubble_column(&mut self, i: usize, column: BubbleColumn) {
+        if !self.boat_can_simulate_movement(self.boats[i].id) {
+            return;
+        }
+        column.push(&mut self.boats[i].velocity);
+    }
+    /// `AbstractBoat.onAboveBubbleColumn`: whether the splash comes up, one
+    /// time in a hundred for a boat that is not under water.
+    pub(super) fn boat_splash_roll(&mut self, i: usize) -> bool {
+        !self.boats[i].under_water() && self.world.random.next_int_bound(100).unwrap_or(1) == 0
+    }
+    /// `AbstractBoat.onAboveBubbleColumn`: the client's half after the roll,
+    /// the splash sound and particle at the boat.
+    pub(super) fn boat_bubble_splash(&mut self, i: usize) {
+        use horizon_client::particles::{ParticleOptions, ParticleType};
+        let p = self.boats[i].position;
+        let pitch = 0.8 + 0.4 * self.world.random.next_float();
+        self.audio.play(
+            "minecraft:entity.generic.splash",
+            Some([p.x, p.y, p.z]),
+            1.0,
+            pitch,
+        );
+        let x = p.x + f64::from(self.world.random.next_float());
+        let z = p.z + f64::from(self.world.random.next_float());
+        self.particles.add(
+            &ParticleOptions::simple(ParticleType::Splash),
+            [x, p.y + 0.7, z],
+            [0.0; 3],
+        );
+    }
+    /// `AbstractBoat.onAboveBubbleColumn`: on the server (this window
+    /// simulates the boat) the column is remembered, the countdown starts and
+    /// the splash's game event goes to the listeners (its sound and particle
+    /// are the client's).
+    fn boat_above_bubble_column(&mut self, i: usize, drag_down: bool) {
+        let b = &mut self.boats[i];
+        b.above_bubble_column = true;
+        b.bubble_down = drag_down;
+        if b.bubble_time == 0 {
+            b.bubble_time = BUBBLE_TIME;
+        }
+        if !self.boat_splash_roll(i) {
+            return;
+        }
+        // A window that is its own client hears and sees the splash too.
+        if self.options.execution_role.is_client() {
+            self.boat_bubble_splash(i);
+        }
+        let (id, p) = (self.boats[i].id, self.boats[i].position);
+        // Entity.gameEvent(SPLASH, getControllingPassenger()): the window's
+        // own player when it drives the boat.
+        let ctx = if self.riding == Some(id) && self.player.is_some() {
+            self.player_context(None)
+        } else {
+            self.who_context(None, None)
+        };
+        self.post_game_event("minecraft:splash", [p.x, p.y, p.z], ctx);
+    }
+    /// `AbstractBoat.handleBubbleColumnEffect`: an up column throws the boat
+    /// up at 0.6, a down column pulls it down by 0.7.
+    pub(super) fn handle_bubble_column_effect(&mut self, i: usize, drag_down: bool) {
+        if !self.boat_can_simulate_movement(self.boats[i].id) {
+            return;
+        }
+        let v = &mut self.boats[i].velocity;
+        if drag_down {
+            // movement.add(0.0, -0.7, 0.0)
+            v.y += -0.7;
+        } else {
+            v.y = 0.6;
+        }
+    }
+    /// `Entity.ejectPassengers`: the mobs get out here, this window's player
+    /// gets out, and a server's player is asked to
+    /// (`guest_vehicle_tick` lets it out through its client).
+    fn eject_boat_riders(&mut self, i: usize) {
+        self.eject_boat_mobs(i, false);
+        let id = self.boats[i].id;
+        if self.riding == Some(id) && self.player.is_some() {
+            self.dismount(i);
+        } else if self.guest_rides(id) {
+            self.boats[i].eject_riders = true;
+        }
+    }
+    /// `AbstractBoat.tickBubbleColumn`: on the server, a boat that stays over
+    /// a column for `BUBBLE_TIME` ticks is thrown up or pulled down (a down
+    /// column lets the riders out first), and every client is told.
+    fn tick_boat_bubble_column(&mut self, i: usize) {
+        if let Some(down) = self.boats[i].tick_bubble_countdown() {
+            let (id, p) = (self.boats[i].id, self.boats[i].position);
+            let event = if down {
+                BUBBLE_DOWN_EVENT
+            } else {
+                BUBBLE_UP_EVENT
+            };
+            if down {
+                self.eject_boat_riders(i);
             }
-            if self.boats[i].out_of_control >= 60.0 {
-                self.eject_boat_mobs(i, false);
+            self.lan_entity_event(id as i32, event, [p.x, p.y, p.z]);
+            self.handle_bubble_column_effect(i, down);
+        }
+    }
+    /// `AbstractBoat.tick`: the end of it on the server for boat `i`, the two
+    /// `applyEffectsFromBlocks` that reach bubble columns (the lava is
+    /// `boat_lava_tick`'s), then `tickBubbleColumn`; and the wobble when this
+    /// window is its own client.
+    fn boat_bubble_tick(&mut self, i: usize) {
+        let id = self.boats[i].id;
+        // An ejection nobody took (its player left the boat first) is void.
+        if !self.guest_rides(id) {
+            self.boats[i].eject_riders = false;
+        }
+        let touches = self.boat_bubble_columns(i);
+        // AbstractBoat.tick calls applyEffectsFromBlocks twice.
+        for _ in 0..2 {
+            for &column in &touches {
+                if column.surface {
+                    self.boat_above_bubble_column(i, column.drag);
+                } else {
+                    self.boat_inside_bubble_column(i, column);
+                }
             }
-            self.boat_contacts(i);
+        }
+        self.tick_boat_bubble_column(i);
+        if self.options.execution_role.is_client() {
+            self.boats[i].tick_bubble_wobble();
         }
     }
     /// `LavaFluid.entityInside` (`lavaHurt`) from the two
@@ -665,47 +1050,34 @@ impl Game<'_> {
         }
         false
     }
-    /// The player's tick while riding: steer, tick the boat, sit in it.
-    pub(super) fn tick_riding(&mut self, keys: Keys) -> horizon_client::Result<()> {
-        if self.tick_cushion_riding(keys) {
-            return Ok(());
-        }
-        let Some(i) = self.boats.iter().position(|b| Some(b.id) == self.riding) else {
-            if self.tick_cart_riding(keys) || self.tick_mount_riding(keys) {
-                return Ok(());
-            }
-            self.riding = None;
-            return Ok(());
-        };
-        if keys.shift || self.boats[i].out_of_control >= 60.0 {
-            self.dismount(i);
-            return Ok(());
-        }
-        // The boat steers with the input `LocalPlayer.rideTick` latched on the
-        // previous tick; this tick's keys are latched after it ticked.
-        let mut b = self.tick_boat(self.boats[i].clone(), true);
-        b.input = [keys.left, keys.right, keys.forward, keys.backward];
-        // positionRider: the seat, turned with the boat; clampRotation to 105 degrees.
-        self.yaw += b.delta_rotation;
-        let delta = (self.yaw - b.yaw + 180.0).rem_euclid(360.0) - 180.0;
-        self.yaw += delta.clamp(-105.0, 105.0) - delta;
-        self.boats[i] = b;
-        let seat = self.player_boat_seat(i);
-        if let Some(p) = self.player.as_mut() {
-            self.previous_position = p.position;
-            p.position = seat;
-            p.velocity = Vec3::ZERO;
-            p.fall_distance = 0.0;
-        }
-        if self.boat_lava_tick(i) {
-            self.riding = None;
-        }
-        Ok(())
+    /// `AbstractBoat.modifyPassengerFluidInteractionBox`: the ridden boat's box
+    /// and whether it is underwater, for `Entity.getFluidInteractionBox`. A boat
+    /// keeps only the part of the passenger's box above its own top, so a boat
+    /// bobbing on water never sinks the passenger's eyes or body.
+    pub(super) fn riding_boat_fluid_box(&self) -> Option<RiddenBoat> {
+        self.boats
+            .iter()
+            .find(|b| Some(b.id) == self.riding)
+            .map(|b| RiddenBoat {
+                under_water: b.under_water(),
+                max_y: b.bounds().max_position().y,
+            })
     }
     /// `getDismountLocationForPassenger`: in front of the player if there is
     /// floor there, else on top of the boat.
     pub(super) fn dismount(&mut self, i: usize) {
+        let id = self.boats[i].id;
+        if self.riding == Some(id) && !self.native_may_leave(id) {
+            return;
+        }
         self.riding = None;
+        // `AbstractBoat.tick`'s non-authoritative branch: the copy of a boat
+        // that no player of this side drives drops its cached motion
+        // (`setDeltaMovement(Vec3.ZERO)`, `deltaRotation = 0`) and is not
+        // moved, so a boat is at a standstill when its rider gets out instead
+        // of coasting on the velocity of the ride that just ended.
+        self.boats[i].velocity = Vec3::ZERO;
+        self.boats[i].delta_rotation = 0.0;
         let target = self.boat_dismount_target(i, 0.6, self.yaw);
         if let Some(p) = self.player.as_mut() {
             p.position = target;
@@ -749,6 +1121,16 @@ impl Game<'_> {
         );
         self.world.modified.insert(key);
         self.boats.push(boat);
+        if self.serving.is_some() || self.options.dedicated.is_some() {
+            self.native_vehicle_create(
+                self.boats.last().unwrap().entity_type().as_str(),
+                [
+                    self.boats.last().unwrap().position.x,
+                    self.boats.last().unwrap().position.y,
+                    self.boats.last().unwrap().position.z,
+                ],
+            );
+        }
         if !self.creative {
             self.consume_held();
         }
@@ -787,7 +1169,7 @@ impl Game<'_> {
             if let Some((h, _)) = self.fluid_height_of(x, y, z, None)
                 && p[1] <= f64::from(y) + f64::from(h)
             {
-                fluid = Some(([p[0], f64::from(y) + f64::from(h), p[2]], t));
+                fluid = Some((fluid_hit_point(p, y, h), t));
                 break;
             }
             t += 0.05;
@@ -832,7 +1214,7 @@ impl Game<'_> {
     }
     pub(super) fn boat_hit(&self) -> Option<(usize, f64)> {
         let (eye, dir) = self.aim()?;
-        let reach: f64 = if self.creative { 5.0 } else { 3.0 };
+        let reach: f64 = self.entity_reach;
         let mut best: Option<(usize, f64)> = None;
         for (i, b) in self.boats.iter().enumerate() {
             if Some(b.id) == self.riding {
@@ -861,13 +1243,18 @@ impl Game<'_> {
         }
         best
     }
-    /// `AbstractBoat.interact`: board the boat under the crosshair.
-    pub(super) fn interact_boat(&mut self) -> bool {
-        let Some((i, d)) = self.boat_hit() else {
+    /// `AbstractBoat.interact`: board the boat under the crosshair, or the one
+    /// a guest's interact packet named.
+    pub(super) fn interact_boat(&mut self, target: Option<InteractTarget>) -> bool {
+        let Some((i, d)) = (match target {
+            Some(t) => Self::named_entity(&self.boats, t.id, |b| b.id).map(|i| (i, 0.0)),
+            None => self.boat_hit(),
+        }) else {
             return false;
         };
         let sneaking = self.keys.contains(&winit::keyboard::KeyCode::ShiftLeft);
-        if !self.before_block(d) {
+        // Only a client's own pick is stopped by a block: the range check passed.
+        if target.is_none() && !self.before_block(d) {
             return false;
         }
         // AbstractBoat.interact starts with Entity.interact: the lead.
@@ -877,16 +1264,7 @@ impl Game<'_> {
         }
         // ChestBoat.interact: sneaking (or a full seat) opens the chest.
         if self.boats[i].chest && (sneaking || self.riding.is_some() || !self.boat_has_room(i)) {
-            let b = &self.boats[i];
-            let key = (i32::MAX - 15, super::minecarts::CART_KEY_Y, b.id as i32);
-            self.world.block_entities.insert(
-                key,
-                horizon_client::containers::BlockEntity::Chest(b.items.clone()),
-            );
-            self.container = Some(key);
-            self.screen = super::Screen::Inventory;
-            self.capture(false);
-            self.right = false;
+            self.open_chest_boat_container(i);
             self.swing_arm();
             return true;
         }
@@ -898,11 +1276,59 @@ impl Game<'_> {
         {
             return false;
         }
+        if !self.native_may_board(self.boats[i].id) {
+            return true;
+        }
         self.riding = Some(self.boats[i].id);
         self.yaw = self.boats[i].yaw;
         // ServerPlayer.startRiding.
         self.trigger_player("minecraft:started_riding");
         true
+    }
+    /// `ContainerEntity.interactWithContainerVehicle` (`AbstractChestBoat`):
+    /// the chest's 27 slots go under a placeholder key that the menu edits; a
+    /// server hands them to the player as a `ChestMenu` (`as_guest` ->
+    /// `lan_open_container`). `AbstractChestBoat.interact` fires
+    /// `CONTAINER_OPEN` and angers the piglins that see it.
+    pub(super) fn open_chest_boat_container(&mut self, i: usize) {
+        let b = &self.boats[i];
+        let key = (i32::MAX - 15, super::minecarts::CART_KEY_Y, b.id as i32);
+        let at = [b.position.x, b.position.y, b.position.z];
+        let items = b.items.clone();
+        self.world
+            .block_entities
+            .insert(key, horizon_client::containers::BlockEntity::Chest(items));
+        self.container = Some(key);
+        self.screen = super::Screen::Inventory;
+        self.capture(false);
+        self.right = false;
+        let ctx = self.player_context(None);
+        self.post_game_event("minecraft:container_open", at, ctx);
+        self.anger_piglins(true);
+    }
+    /// `AbstractChestBoat.openCustomInventoryScreen` (`HasCustomInventoryScreen`),
+    /// the inventory key while riding a chest boat: its chest opens, not the
+    /// player's inventory.
+    pub(super) fn open_ridden_chest_boat(&mut self) -> bool {
+        let Some(id) = self.riding else {
+            return false;
+        };
+        let Some(i) = self.boats.iter().position(|b| b.id == id) else {
+            return false;
+        };
+        if !self.boats[i].chest {
+            return false;
+        }
+        self.open_chest_boat_container(i);
+        true
+    }
+    /// Whether the player rides a chest boat: `HasCustomInventoryScreen`, so
+    /// the inventory key sends `ServerboundPlayerCommandPacket.Action.OPEN_INVENTORY`
+    /// (`ServerGamePacketListenerImpl.handlePlayerCommand` opens its screen).
+    pub(super) fn riding_chest_boat(&self) -> bool {
+        self.riding
+            .and_then(|id| self.boats.iter().find(|b| b.id == id))
+            .is_some_and(|b| b.chest)
     }
     /// `VehicleEntity.hurtServer` from the player's attack.
     pub(super) fn attack_boat(&mut self) -> bool {
@@ -918,29 +1344,46 @@ impl Game<'_> {
         let (damage, _, _, magic) = self.melee_damage(&kind, false);
         self.hurt_boat(i, damage, self.creative);
         self.vehicle_attack_sounds(area, magic.then_some(id));
+        // Player.onAttack: the hit starts the attack strength again.
+        self.attack_ticks = 0;
         self.swing_arm();
         true
     }
     /// `VehicleEntity.hurtServer`: wobble, add the damage and break past 40
-    /// (`creative`: a creative player's hit removes it without drops).
-    /// True when the boat was removed.
-    pub(super) fn hurt_boat(&mut self, i: usize, damage: f32, creative: bool) -> bool {
+    /// (`creative`: a creative player's hit discards it straight away).
+    /// `AbstractChestBoat.remove` drops the chest contents for every removal
+    /// reason that destroys the boat (DISCARDED included), while the boat item
+    /// itself only drops on the death path (`VehicleEntity.destroy`), not when
+    /// a creative hit discards it. True when the boat was removed.
+    pub(super) fn hurt_boat(&mut self, i: usize, mut damage: f32, creative: bool) -> bool {
+        let mut cancel = false;
+        self.native_vehicle_damage("boat", &mut damage, &mut cancel);
+        if cancel {
+            return false;
+        }
         let b = &mut self.boats[i];
         b.hurt_dir = -b.hurt_dir;
         b.hurt_time = 10;
         b.damage += damage * 10.0;
         let destroyed = creative || b.damage > 40.0;
         if destroyed {
-            self.eject_boat_mobs(i, true);
-            let b = self.boats.remove(i);
             let at = [b.position.x, b.position.y, b.position.z];
+            self.native_vehicle_destroy("boat", at);
+            self.eject_boat_mobs(i, true);
+            let id = self.boats[i].id;
+            self.release_vehicle_container(id);
+            let b = self.boats.remove(i);
             // AbstractBoat.remove: a destroyed boat drops its lead.
             self.boat_removed(&b);
+            // `AbstractChestBoat.remove` spills the chest through
+            // `Containers.dropContents` for every destroying removal reason;
+            // that has no `entity_drops` gate of its own.
+            for stack in b.items.iter().flatten() {
+                self.spawn_item(stack.clone(), at, super::dispenser::new_item_motion(), 10);
+            }
+            // `VehicleEntity.destroy(level, dropItem)` drops the boat item on
+            // the death path only, and only with `entity_drops` on.
             if !creative && self.ui.rules.bool("entity_drops") {
-                // ChestBoat.destroy: chestVehicleDestroyed spills the contents.
-                for stack in b.items.iter().flatten() {
-                    self.spawn_item(stack.clone(), at, super::dispenser::new_item_motion(), 10);
-                }
                 let item = b.entity_type();
                 self.spawn_item(
                     ItemStack {
@@ -1007,6 +1450,16 @@ impl Game<'_> {
                     (hurt.sin() * hurt * damage / 10.0 * b.hurt_dir as f32).to_radians(),
                 );
             }
+            // AbstractBoatRenderer.extractRenderState: bubbleAngle.
+            let wobble = b.bubble_angle(a);
+            // AbstractBoatRenderer.submit: a boat above water wobbles in a
+            // bubble column, about the axis (1, 0, 1).
+            if !b.under_water() && wobble.abs() >= 1.0e-5 {
+                base *= glam::Mat4::from_axis_angle(
+                    glam::Vec3::new(1.0, 0.0, 1.0).normalize(),
+                    wobble * (std::f64::consts::PI / 180.0) as f32,
+                );
+            }
             base *= glam::Mat4::from_scale(glam::Vec3::new(-1.0, -1.0, 1.0))
                 * glam::Mat4::from_rotation_y(90f32.to_radians());
             let mut poses = Poses::new(model);
@@ -1059,5 +1512,123 @@ impl Game<'_> {
             }
             self.cull_entity_vertices(out, entity_start);
         }
+    }
+}
+
+/// Where a fluid pick lands in the cell the ray sample `p` is in. Vanilla's
+/// `ClipContext.Fluid.ANY` clips against the fluid shape: a full-height cell
+/// (the same fluid above it) is a full cube, so the hit is the ray's own
+/// point and a boat placed under water stays at the eye; a partial cell is
+/// clipped to its surface.
+fn fluid_hit_point(p: [f64; 3], y: i32, h: f32) -> [f64; 3] {
+    if h >= 1.0 {
+        p
+    } else {
+        [p[0], f64::from(y) + f64::from(h), p[2]]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `VoxelShape.clip` on a full-cube fluid cell keeps the true hit point
+    /// (a ray starting inside hits at `from + delta * 0.001`); only a partial
+    /// cell is clipped to its surface.
+    #[test]
+    fn a_full_height_fluid_cell_keeps_the_ray_point_and_a_partial_one_snaps_to_its_surface() {
+        let eye = [0.5, 3.62, 0.5];
+        assert_eq!(fluid_hit_point(eye, 3, 1.0), eye);
+        assert_eq!(
+            fluid_hit_point(eye, 3, 8.0 / 9.0),
+            [0.5, 3.0 + f64::from(8.0f32 / 9.0), 0.5]
+        );
+    }
+
+    fn boat() -> Boat {
+        Boat::new(1, Arc::from("oak"), Vec3::ZERO, 0.0)
+    }
+
+    /// `AbstractBoat.tickBubbleColumn` on a client: the wobble grows while the
+    /// bubble time runs and fades after.
+    #[test]
+    fn the_wobble_grows_while_the_bubble_time_runs_and_fades_after() {
+        let mut b = boat();
+        b.bubble_time = BUBBLE_TIME;
+        for _ in 0..30 {
+            b.tick_bubble_wobble();
+        }
+        // 0.05 a tick, capped at 1.
+        assert_eq!(b.bubble_multiplier, 1.0);
+        // 10 * sin(0.5 * tickCount) * multiplier.
+        let expected = 10.0 * (0.5 * 30.0f64).sin() as f32;
+        assert!((b.bubble_angle - expected).abs() < 1.0e-4);
+        // The render angle lerps between the last two ticks.
+        let mid = b.bubble_angle(0.5);
+        assert!((mid - (b.bubble_angle_old + b.bubble_angle) / 2.0).abs() < 1.0e-5);
+        // Once the bubble time is 0 the multiplier fades by 0.1 a tick.
+        b.bubble_time = 0;
+        for _ in 0..4 {
+            b.tick_bubble_wobble();
+        }
+        assert!((b.bubble_multiplier - 0.6).abs() < 1.0e-5);
+        for _ in 0..10 {
+            b.tick_bubble_wobble();
+        }
+        assert_eq!(b.bubble_multiplier, 0.0);
+        assert_eq!(b.bubble_angle, 0.0);
+    }
+
+    /// `AbstractBoat.tickBubbleColumn` on the server: a boat held over a
+    /// column fires on the 60th tick, with the column's direction, then the
+    /// time restarts.
+    #[test]
+    fn the_bubble_countdown_fires_every_sixty_ticks_over_a_column() {
+        for down in [false, true] {
+            let mut b = boat();
+            let mut fired = Vec::new();
+            for tick in 1..=130 {
+                // What boat_above_bubble_column does each tick.
+                b.above_bubble_column = true;
+                b.bubble_down = down;
+                if b.bubble_time == 0 {
+                    b.bubble_time = BUBBLE_TIME;
+                }
+                if let Some(d) = b.tick_bubble_countdown() {
+                    fired.push((tick, d));
+                }
+                assert!(!b.above_bubble_column);
+            }
+            assert_eq!(fired, vec![(60, down), (120, down)]);
+        }
+    }
+
+    /// Leaving the column resets the time: nothing fires, and a boat with no
+    /// time left does nothing over a column until the column sets it.
+    #[test]
+    fn leaving_the_column_resets_the_bubble_countdown() {
+        let mut b = boat();
+        b.bubble_time = BUBBLE_TIME;
+        for _ in 0..30 {
+            b.above_bubble_column = true;
+            assert_eq!(b.tick_bubble_countdown(), None);
+        }
+        assert_eq!(b.bubble_time, 30);
+        // A tick away from the column.
+        assert_eq!(b.tick_bubble_countdown(), None);
+        assert_eq!(b.bubble_time, 0);
+        b.above_bubble_column = true;
+        assert_eq!(b.tick_bubble_countdown(), None);
+        assert!(b.above_bubble_column);
+    }
+
+    #[test]
+    fn a_boat_that_never_saw_a_column_does_not_wobble() {
+        let mut b = boat();
+        for _ in 0..10 {
+            b.tick_bubble_wobble();
+        }
+        assert_eq!(b.bubble_angle, 0.0);
+        assert_eq!(b.bubble_angle(0.5), 0.0);
     }
 }

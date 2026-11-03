@@ -18,7 +18,7 @@ const DOOR_BREAK_TIME: i32 = 240;
 pub fn can_navigate_ground(m: &Mob) -> bool {
     matches!(
         m.ai.nav.kind,
-        NavKind::Ground | NavKind::WallClimber | NavKind::Amphibious
+        NavKind::Ground | NavKind::WallClimber | NavKind::Amphibious { .. }
     )
 }
 /// `Zombie.setCanBreakDoors`: only a mob that walks can break doors, and
@@ -217,7 +217,10 @@ impl Goal for BreakDoor {
             self.last_break_progress = progress;
         }
         if self.break_time == DOOR_BREAK_TIME && self.valid_difficulty(cx.w) {
-            cx.events.push(MobEvent::BreakDoor { pos: door });
+            cx.events.push(MobEvent::BreakDoor {
+                mob: m.id,
+                pos: door,
+            });
         }
     }
 }
