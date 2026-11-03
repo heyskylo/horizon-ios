@@ -11,7 +11,7 @@ use crate::glass_ui::{self as ui, Tone};
 use horizon_theme::glass::{ink, radius};
 
 /// A release's day as the mockup writes it ("Nov 1"), with its time in UTC when known.
-fn published(date: &str, time: &str) -> String {
+pub(super) fn published(date: &str, time: &str) -> String {
     let day = date
         .get(8..10)
         .map(|d| d.trim_start_matches('0').to_string())

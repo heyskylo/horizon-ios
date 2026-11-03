@@ -142,6 +142,7 @@ Every command `horizon-ctl` takes, its MCP tool in `horizon-ctl mcp` (the launch
 | `bench SECONDS` | `bench` | Reset frame stats, wait, reply with the summary | `seconds` (number, required): how long to measure |
 | `stats [reset] [raw]` | `stats` | Frame-time summary since the last reset | `reset` (boolean): start counting again<br>`raw` (boolean): every frame time too (frame_ms, cpu_ms, gpu_ms) |
 | `gpu-passes [on\|off]` | CLI only | Time Horizon's own render passes on the GPU, shown in F3 and in stats and bench | `mode` (on, off): on or off; without it, only reports |
+| `render-capture on\|off\|DIR` | CLI only | Keep CPU copies of the meshes the renderer draws (on), or write the next frame's scene to DIR for the scene_replay example | none |
 | `fly X1 Y1 Z1 X2 Y2 Z2 SECONDS [PITCH [raw]]` | CLI only | Fly the camera along a line, then reply with the frame summary | none |
 | `record-start [NAME] [--no-world]` | `record_start` | Record input, state and the world for a bug repro | `name` (string): folder name after the timestamp (default session)<br>`--no-world` (boolean): do not copy the world (a server session) |
 | `record-stop [--export]` | `record_stop` | Stop the recording (and write the repro zip) | `--export` (boolean): write the repro bundle too |
