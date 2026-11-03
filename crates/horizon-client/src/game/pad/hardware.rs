@@ -9,6 +9,8 @@ use horizon_client::gamepad::{self, Button, GlyphStyle, PadState, Rumble, Trigge
 use serde_json::{Value, json};
 use std::time::{Duration, Instant};
 
+mod triggers;
+
 /// The controllers gilrs sees and the DualSense's output.
 #[derive(Default)]
 pub(super) struct Devices {
@@ -177,20 +179,7 @@ fn state_of(pad: &gilrs::Gamepad) -> PadState {
     );
     state.left = left;
     state.right = right;
-    // Triggers arrive as analog buttons on most mappings, as plain
-    // buttons on some.
-    let trigger = |b: gilrs::Button| {
-        let value = pad.button_data(b).map_or(0.0, |d| d.value());
-        if pad.is_pressed(b) {
-            value.max(1.0)
-        } else {
-            value
-        }
-    };
-    state.triggers = [
-        trigger(gilrs::Button::LeftTrigger2),
-        trigger(gilrs::Button::RightTrigger2),
-    ];
+    state.triggers = triggers::triggers(pad);
     state
 }
 
