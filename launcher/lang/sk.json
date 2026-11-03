@@ -1033,5 +1033,14 @@
   "3 to 16 letters, numbers or underscores. Switch names from the top bar too. Online servers don't take offline names.": "3 až 16 písmen, číslic alebo podčiarkovníkov. Meno môžete zmeniť aj v hornej lište. Online servery offline mená neprijímajú.",
   "Play online with your Microsoft account": "Hrajte online so svojím účtom Microsoft",
   "Sign in with the account that owns Minecraft: Java Edition. Your name and skin come along to online servers, like in other launchers.": "Prihláste sa účtom, ktorý vlastní Minecraft: Java Edition. Vaše meno a skin vás budú sprevádzať aj na online serveroch, ako v iných spúšťačoch.",
-  "Microsoft's own page opens in your browser. Horizon never sees your password.": "Vo vašom prehliadači sa otvorí vlastná stránka spoločnosti Microsoft. Horizon nikdy nevidí vaše heslo."
+  "Microsoft's own page opens in your browser. Horizon never sees your password.": "Vo vašom prehliadači sa otvorí vlastná stránka spoločnosti Microsoft. Horizon nikdy nevidí vaše heslo.",
+  "Accent colour, glass, blur, language and the options above go back to how Horizon ships.": "Farba zvýraznenia, sklo, rozmazanie, jazyk a možnosti vyššie sa vrátia k predvoľbám Horizonu.",
+  "Colours the buttons, the switches and the sky. Pick one, or type any hex colour.": "Zafarbí tlačidlá, prepínače a oblohu. Vyber jednu alebo zadaj ľubovoľnú hex farbu.",
+  "Experimental. Builds the native mods you trust into a game of their own.": "Experimentálne. Zostaví natívne mody, ktorým dôveruješ, do samostatnej hry.",
+  "Native mods": "Natívne mody",
+  "Nightly": "Nightly",
+  "Reset the launcher's look": "Obnoviť vzhľad spúšťača",
+  "Reset to defaults": "Obnoviť predvolené",
+  "{value} px": "{value} px",
+  "{value}%": "{value} %"
 }

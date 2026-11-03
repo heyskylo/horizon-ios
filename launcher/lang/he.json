@@ -1033,5 +1033,14 @@
   "3 to 16 letters, numbers or underscores. Switch names from the top bar too. Online servers don't take offline names.": "3 עד 16 אותיות, ספרות או קווים תחתונים. אפשר להחליף שם גם מהסרגל העליון. שרתים מקוונים לא מקבלים שמות לא מקוונים.",
   "Play online with your Microsoft account": "שחק מקוון עם חשבון Microsoft שלך",
   "Sign in with the account that owns Minecraft: Java Edition. Your name and skin come along to online servers, like in other launchers.": "היכנס עם החשבון שבבעלותו Minecraft: Java Edition. השם והסקין שלך עוברים איתך לשרתים מקוונים, כמו במשגרים אחרים.",
-  "Microsoft's own page opens in your browser. Horizon never sees your password.": "הדף של Microsoft עצמה נפתח בדפדפן שלך. Horizon אף פעם לא רואה את הסיסמה שלך."
+  "Microsoft's own page opens in your browser. Horizon never sees your password.": "הדף של Microsoft עצמה נפתח בדפדפן שלך. Horizon אף פעם לא רואה את הסיסמה שלך.",
+  "Accent colour, glass, blur, language and the options above go back to how Horizon ships.": "צבע ההדגשה, הזכוכית, הטשטוש, השפה והאפשרויות שלמעלה חוזרים לברירת המחדל של Horizon.",
+  "Colours the buttons, the switches and the sky. Pick one, or type any hex colour.": "צובע את הכפתורים, המתגים והשמיים. בחר צבע, או הקלד כל צבע hex.",
+  "Experimental. Builds the native mods you trust into a game of their own.": "ניסיוני. בונה את המודים הנייטיב שאתה סומך עליהם למשחק נפרד משלהם.",
+  "Native mods": "מודים נייטיב",
+  "Nightly": "Nightly",
+  "Reset the launcher's look": "איפוס המראה של המשגר",
+  "Reset to defaults": "איפוס לברירות המחדל",
+  "{value} px": "{value} פיקסלים",
+  "{value}%": "{value}%"
 }
