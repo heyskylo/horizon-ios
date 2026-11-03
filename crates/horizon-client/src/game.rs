@@ -2065,7 +2065,7 @@ impl UiResources {
         // The title screen waits for both: the panorama's six faces decode
         // beside the atlas.
         std::thread::scope(|scope| {
-            let panorama = scope.spawn(|| {
+            let panorama = named_scope(scope, "panorama", || {
                 startup::time("ui.panorama", || {
                     horizon_client::gfx::panorama::Faces::load(root, defaults)
                 })
@@ -19711,6 +19711,27 @@ fn launch_world(options: &Options) -> Option<&str> {
         .flatten()
 }
 
+/// A scoped thread with a name, for one step of the resource load.
+///
+/// Named because the heap census and the startup trace both fall back to the
+/// OS thread name: unnamed, every loader's retained memory and every span it
+/// ran landed in one `unnamed thread` bucket. That bucket was 330 MiB of a
+/// playing game's resident set -- the largest of all of them -- with nothing
+/// to say which loader held it, and 13 of the trace's 17 lanes were
+/// indistinguishable.
+fn named_scope<'scope, T: Send + 'scope>(
+    scope: &'scope std::thread::Scope<'scope, '_>,
+    name: &str,
+    f: impl FnOnce() -> T + Send + 'scope,
+) -> std::thread::ScopedJoinHandle<'scope, T> {
+    std::thread::Builder::new()
+        .name(format!("horizon-load-{name}"))
+        .spawn_scoped(scope, f)
+        // `Scope::spawn`, which this replaces, panics when the OS refuses a
+        // thread. Keeping that: a resource load cannot go on without it.
+        .expect("resource loader thread")
+}
+
 /// A step of the resource load: on its own scoped thread, or, when the
 /// settings allow a single worker, run where it is joined.
 enum Step<'scope, T> {
@@ -19718,13 +19739,15 @@ enum Step<'scope, T> {
     Later(Box<dyn FnOnce() -> T + Send + 'scope>),
 }
 impl<'scope, T: Send + 'scope> Step<'scope, T> {
+    /// `name` names the thread when one is spawned ([`named_scope`]).
     fn spawn(
         scope: &'scope std::thread::Scope<'scope, '_>,
         parallel: bool,
+        name: &str,
         f: impl FnOnce() -> T + Send + 'scope,
     ) -> Self {
         if parallel {
-            Self::Thread(scope.spawn(f))
+            Self::Thread(named_scope(scope, name, f))
         } else {
             Self::Later(Box::new(f))
         }
@@ -19780,7 +19803,7 @@ fn load_core(
     let (render, gameplay, visibility, biomes, environment, collision) =
         std::thread::scope(|scope| {
             let assets = &assets;
-            let render = Step::spawn(scope, parallel, move || {
+            let render = Step::spawn(scope, parallel, "render", move || {
                 // A server reads no block sprites' pixels, which only the
                 // renderer draws (32 MB).
                 let render = startup::time("core.block_models_sprites", || {
@@ -19804,7 +19827,7 @@ fn load_core(
             });
             // Nor the face visibility the mesher and the block entity
             // renderer cull with (19 MB).
-            let visibility = Step::spawn(scope, parallel, || {
+            let visibility = Step::spawn(scope, parallel, "visibility", || {
                 if headless {
                     return Ok(horizon_world::block_render::FaceVisibility::empty());
                 }
@@ -19813,7 +19836,7 @@ fn load_core(
                 })
                 .map_err(|e| e.to_string())
             });
-            let biomes = Step::spawn(scope, parallel, || {
+            let biomes = Step::spawn(scope, parallel, "biomes", || {
                 let biomes = Arc::new(
                     startup::time("core.biomes", || Biomes::load(root))
                         .map_err(|e| e.to_string())?,
@@ -19826,11 +19849,11 @@ fn load_core(
                 }
                 Ok::<_, String>(biomes)
             });
-            let environment = Step::spawn(scope, parallel, || {
+            let environment = Step::spawn(scope, parallel, "environment", || {
                 startup::time("core.environment", || Environment::load(root))
                     .map_err(|e| e.to_string())
             });
-            let collision = Step::spawn(scope, parallel, || {
+            let collision = Step::spawn(scope, parallel, "collision", || {
                 startup::time("core.collision", || collisions::load(root, registry))
                     .map_err(|e| e.to_string())
             });
@@ -19892,7 +19915,7 @@ fn gameplay_tables(
     drop(facts_step);
     progress.set(2);
     let (light, motion) = std::thread::scope(|scope| {
-        let light = Step::spawn(scope, parallel, || {
+        let light = Step::spawn(scope, parallel, "light", || {
             startup::time("core.light", || {
                 LightTables::load(root, assets.registry, &facts)
             })
@@ -19967,7 +19990,7 @@ fn load_resources(
     };
     let (core, loaded_gui) = loop {
         let (ui, core) = std::thread::scope(|scope| {
-            let core = Step::spawn(scope, parallel, || {
+            let core = Step::spawn(scope, parallel, "core", || {
                 // A failed pack starts core again from the game's own
                 // resources, which the world's preload must read: with packs
                 // it waits for the core that loaded.
@@ -20131,7 +20154,7 @@ fn load_resources(
     let prepared_at = Instant::now();
     let (game_cpu, renderer_cpu) = if menu {
         let (game_cpu, renderer_cpu) = std::thread::scope(|scope| {
-            let textures = Step::spawn(scope, parallel, || {
+            let textures = Step::spawn(scope, parallel, "textures", || {
                 startup::time("handoff.renderer_textures", || {
                     prepare_renderer_textures(&pack)
                 })
@@ -20295,11 +20318,13 @@ fn load_world_rest(
     }
     let (items, behaviours, block_entity_render, animate, mobs, transformers) = if threads > 1 {
         std::thread::scope(|scope| {
-            let items = scope.spawn(|| text(load_items()));
-            let behaviours = scope.spawn(|| text(load_behaviours()));
-            let block_entity_render = scope.spawn(|| text(load_block_entity_render()));
-            let animate = scope.spawn(|| text(load_animate()));
-            let mobs = scope.spawn(|| text(load_mobs()));
+            let items = named_scope(scope, "items", || text(load_items()));
+            let behaviours = named_scope(scope, "behaviours", || text(load_behaviours()));
+            let block_entity_render = named_scope(scope, "block_entity_render", || {
+                text(load_block_entity_render())
+            });
+            let animate = named_scope(scope, "animate", || text(load_animate()));
+            let mobs = named_scope(scope, "mobs", || text(load_mobs()));
             let transformers = text(load_transformers());
             (
                 items.join().unwrap(),
