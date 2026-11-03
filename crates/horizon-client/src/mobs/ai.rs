@@ -866,6 +866,7 @@ mod powder_snow_particle_tests {
     /// A ridden mount uses the controlling player's known movement for the
     /// powder-snow roll, even when the mount's own delta is zero.
     #[test]
+    #[ignore = "requires prepared vanilla resources in .local/horizon-client"]
     fn a_controlled_mount_uses_its_riders_known_movement() {
         let seed = (0..1000)
             .find(|seed| {
