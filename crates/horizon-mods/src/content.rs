@@ -90,6 +90,9 @@ pub struct BlockProperties {
     pub random_ticks: Option<RandomTicks>,
     /// How the block is drawn, whatever the template does (`BlockBehaviour.getRenderShape`).
     pub render_shape: Option<RenderShape>,
+    /// `false`: the block occludes nothing, so its neighbours' faces are drawn and light passes
+    /// it (`BlockBehaviour.Properties.noOcclusion`); unset or `true`: as its template.
+    pub occludes: Option<bool>,
 }
 
 /// Vanilla's `RenderShape`, by its constant's name: `MODEL` puts the block model in the chunk
@@ -1578,6 +1581,22 @@ capabilities = ["registries"]
         ];
         let e = hmod("type-shared", MANIFEST_TEXT, files).unwrap_err();
         assert!(e.contains("already throws another entity type"), "{e}");
+    }
+
+    #[test]
+    fn a_block_may_occlude_nothing() {
+        let block = |occludes: &str| {
+            let text = format!(
+                r#"{{"template": "minecraft:barrel", "properties": {{"occludes": {occludes}}}}}"#
+            );
+            let files: &[(&str, &[u8])] =
+                &[("data/ruby/horizon/block/panel.json", text.as_bytes())];
+            hmod("occludes", MANIFEST_TEXT, files)
+        };
+        let occludes = |c: Result<Content, String>| c.unwrap().blocks[0].properties.occludes;
+        assert_eq!(occludes(block("false")), Some(false));
+        assert_eq!(occludes(block("true")), Some(true));
+        assert!(block(r#""no""#).is_err());
     }
 
     #[test]
