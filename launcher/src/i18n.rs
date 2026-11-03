@@ -73,10 +73,18 @@ pub enum Language {
     Vietnamese,
     #[serde(rename = "th")]
     Thai,
+    #[serde(rename = "ur")]
+    Urdu,
+    #[serde(rename = "cs")]
+    Czech,
+    #[serde(rename = "sv")]
+    Swedish,
+    #[serde(rename = "el")]
+    Greek,
 }
 
 impl Language {
-    pub const ALL: [Language; 30] = [
+    pub const ALL: [Language; 34] = [
         Self::English,
         Self::French,
         Self::Russian,
@@ -107,6 +115,10 @@ impl Language {
         Self::Dutch,
         Self::Vietnamese,
         Self::Thai,
+        Self::Urdu,
+        Self::Czech,
+        Self::Swedish,
+        Self::Greek,
     ];
 
     /// Its code in `settings.json` and on the command line.
@@ -142,6 +154,10 @@ impl Language {
             Self::Dutch => "nl",
             Self::Vietnamese => "vi",
             Self::Thai => "th",
+            Self::Urdu => "ur",
+            Self::Czech => "cs",
+            Self::Swedish => "sv",
+            Self::Greek => "el",
         }
     }
 
@@ -178,6 +194,10 @@ impl Language {
             Self::Dutch => "Nederlands",
             Self::Vietnamese => "Tiếng Việt",
             Self::Thai => "ไทย",
+            Self::Urdu => "اردو",
+            Self::Czech => "Čeština",
+            Self::Swedish => "Svenska",
+            Self::Greek => "Ελληνικά",
         }
     }
 
@@ -256,6 +276,10 @@ impl Language {
             Self::Dutch => include_str!("../lang/nl.json"),
             Self::Vietnamese => include_str!("../lang/vi.json"),
             Self::Thai => include_str!("../lang/th.json"),
+            Self::Urdu => include_str!("../lang/ur.json"),
+            Self::Czech => include_str!("../lang/cs.json"),
+            Self::Swedish => include_str!("../lang/sv.json"),
+            Self::Greek => include_str!("../lang/el.json"),
         }
     }
 }
