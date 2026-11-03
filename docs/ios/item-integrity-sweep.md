@@ -126,6 +126,31 @@ already supplies the named attribute mapping; the cause has not been isolated.
 No speculative shader compatibility change was made and no third-party pack
 implementation source was inspected.
 
+## Disconnect cleanup and dimension ownership (verified and repaired)
+
+An abrupt disconnect in the Nether with a full inventory and one item in the
+inventory crafting grid dropped that item in the Overworld. Cleanup switched
+back to the host level before processing the leftover grid. Cleanup now finishes
+in the departing player's level before that switch and before player saving.
+
+The pinned Java InventoryMenu.removed / AbstractContainerMenu.clearContainer /
+dropOrPlaceInInventory also drops held menu inputs when the player has disconnected,
+even if inventory space is available. Horizon previously put them back into saved
+inventory. Guest removal now marks actual disconnection, and cursor/station/grid
+cleanup uses the drop path for that state while normal menu closes retain their
+existing inventory-return path. New connections start with the flag cleared.
+
+Four live abrupt-disconnect/reconnect cases pass: a full inventory with grid input,
+a grid input with free inventory space, a carried cursor stack, and a crafting-table
+input. Each leaves exactly one log in the Nether before reconnect and none in the
+Overworld. The full case preserves all 2,304 saved stone. Normal crafting after
+reconnect passes. Host compilation and iOS Clippy pass. The tests terminate only
+the owned disposable client after verifying its PID and control socket.
+
+The renderer source is unchanged since the merged snapshot; its current-source
+cached test binary was rerun: 1,327 passed, 51 ignored. This is renderer component
+coverage, not a claim of physical-device or complete shader-pack visual parity.
+
 ## Java fidelity requirement
 
 Keep Java 26.3 as the behavioural reference for every gameplay repair. Verify the

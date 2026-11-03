@@ -1848,6 +1848,7 @@ impl Hub {
 
     fn remove_guest(&mut self, i: usize, reason: &str) -> Guest {
         let mut g = self.guests.remove(i);
+        g.disconnected = true;
         if let Some(m) = g
             .menu
             .as_ref()

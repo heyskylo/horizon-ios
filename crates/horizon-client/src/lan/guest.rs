@@ -86,6 +86,9 @@ pub struct Guest {
     pub center_sent: Option<(i32, i32)>,
     /// Why the connection closed (the console's "lost connection").
     pub left_reason: String,
+    /// Removed from the hub: menu cleanup drops items rather than returning
+    /// them to inventory (ServerPlayer.hasDisconnected).
+    pub disconnected: bool,
     pub uuid: u128,
     pub name: String,
     /// The profile's properties, for the player list (skins).
@@ -368,6 +371,7 @@ impl Guest {
             placed_at: 0,
             center_sent: None,
             left_reason: String::new(),
+            disconnected: false,
             uuid: j.uuid,
             name: j.name,
             properties: j.properties,

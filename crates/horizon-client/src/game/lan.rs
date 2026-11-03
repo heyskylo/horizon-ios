@@ -1933,6 +1933,7 @@ impl Game<'_> {
                     }
                 }
                 HostEvent::Left(mut guest) => {
+                    let mut crafting_closed = false;
                     // The menu they had open closes, in the level they were in
                     // (`ServerPlayer.disconnect` -> `doCloseContainer`).
                     if guest.placed {
@@ -1944,12 +1945,19 @@ impl Game<'_> {
                             host.hub.guests.push(*guest);
                             self.guest_close_all(&mut host, conn);
                             *guest = host.hub.guests.remove(at);
+                            // Overflow from the inventory crafting grid is
+                            // dropped through this Game's current level. Finish
+                            // it before returning to the host's level, too.
+                            self.lan_crafting_left(&mut host, &mut guest);
+                            crafting_closed = true;
                         }
                         if let Err(e) = self.enter_level(Some(&mut host), back) {
                             log::error!("could not reopen {}: {e}", back.id());
                         }
                     }
-                    self.lan_crafting_left(&mut host, &mut guest);
+                    if !crafting_closed {
+                        self.lan_crafting_left(&mut host, &mut guest);
+                    }
                     if guest.placed {
                         self.award_leave_game(&mut host, guest.conn, guest.uuid, &guest.name);
                     }

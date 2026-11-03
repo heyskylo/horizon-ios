@@ -691,14 +691,20 @@ impl Game<'_> {
     /// `Inventory.placeItemBackInInventory` of `stacks` for guest `gi`, what
     /// doesn't fit dropped (`clearContainer`).
     pub(super) fn lan_place_back(&mut self, host: &mut LanHost, gi: usize, stacks: Vec<ItemStack>) {
+        // AbstractContainerMenu.dropOrPlaceInInventory: a disconnected
+        // player's held inputs drop in their level, even when there is room.
+        if host.hub.guests[gi].disconnected {
+            self.drop_guest_items(host, gi, stacks);
+            return;
+        }
         let mut menu = Menu::new(Kind::Inventory);
         self.guest_menu_op(host, gi, &mut menu, |menu, env| {
             place_back(menu, env, stacks)
         });
     }
 
-    /// A guest left: what their crafting grids and workstation held goes back into their
-    /// inventory before it is saved (dropped where they stood if full).
+    /// A guest left: clear crafting grids and workstation inputs into their
+    /// level before saving the player (AbstractContainerMenu.clearContainer).
     pub(super) fn lan_crafting_left(&mut self, host: &mut LanHost, g: &mut Guest) {
         // The guest's play state stays: their statistics are awarded and saved
         // after this (`HostEvent::Left`), which removes it.
@@ -717,13 +723,8 @@ impl Game<'_> {
         if grid.is_empty() {
             return;
         }
-        let mut menu = Menu::new(Kind::Inventory);
-        load_player(&mut menu, g);
-        place_back(&mut menu, &self.menu_env(), grid);
-        let dropped = std::mem::take(&mut menu.dropped);
-        store_player(&mut menu, g);
-        for stack in dropped {
-            self.spawn_item(stack, g.position, [0.0, 0.1, 0.0], 40);
-        }
+        // This path is only for HostEvent::Left. Its owner has disconnected,
+        // so clearContainer drops rather than inserting into the saved inventory.
+        self.drop_items_for_guest(g, grid);
     }
 }

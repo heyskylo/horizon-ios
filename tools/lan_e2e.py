@@ -13149,5 +13149,87 @@ CHECKS += ['vehicle-kill-vibration']
 CHECK_FNS['vehicle-kill-vibration'] = check_vehicle_kill_vibration
 
 
+def check_disconnect_grid_dimension(host, guest, out, full=True, held="grid"):
+    """Disconnected players drop held menu items once in their own dimension."""
+    import signal
+    port = host.raw('lan', 'status')['port']
+    x, y, z = 8, 100, 8
+    for game in (host, guest):
+        game('command', command='gamemode creative')
+        game('command', command='clear @s')
+    into_level(host, OVERWORLD, x, y, z)
+    into_level(guest, NETHER, x, y, z)
+    for game in (host, guest):
+        game('command', command='kill @e[type=minecraft:item,distance=..12]')
+        game('command', command='gamemode survival')
+    guest('command', command='give @s minecraft:oak_log 1')
+    guest.wait(10)
+    if held == 'table':
+        guest('command', command=f'setblock {x + 2} {y} {z} minecraft:crafting_table')
+        guest.until(lambda: guest.raw('block', x + 2, y, z),
+                    lambda block: block.get('block') == 'minecraft:crafting_table')
+        guest.raw('interact', x + 2, y, z)
+    else:
+        guest.raw('key', 'e', 'tap')
+    guest.raw('wait-for', 'screen', 'inventory', '--timeout', 10)
+    guest.raw('click-slot', hotbar_slot(guest, 'minecraft:oak_log'))
+    if held != 'cursor':
+        guest.raw('click-slot', 100)
+    if full:
+        guest('command', command='give @s minecraft:stone 2304')
+    guest.wait(10)
+    expected_stone = 2304 if full else 0
+    assert guest('inventory')['counts'].get('minecraft:stone', 0) == expected_stone
+    if held == 'cursor':
+        assert guest('inventory')['carried']['item'] == 'minecraft:oak_log'
+    else:
+        assert any('oak_log' in str(item) for item in grid_items(guest).values())
+    before = leave_game_total(host)
+    # Abrupt transport loss: no graceful close packet can return the grid first.
+    command = subprocess.check_output(['ps', '-p', str(guest.pid), '-o', 'command='], text=True)
+    assert str(guest.socket) in command and 'horizon-client' in command, command
+    os.kill(guest.pid, signal.SIGKILL)
+    for _ in range(40):
+        if leave_game_total(host) > before:
+            break
+        time.sleep(0.25)
+    assert leave_game_total(host) > before, 'server did not finish guest cleanup'
+    host.wait(20)
+
+    def logs_in(game):
+        drops = sum(e['item']['count'] for e in game.raw('entities', 12, 'minecraft:item')['entities']
+                    if e.get('item', {}).get('item') == 'minecraft:oak_log')
+        return drops + game('inventory')['counts'].get('minecraft:oak_log', 0)
+
+    wrong_world = logs_in(host)
+    host('command', command='scoreboard objectives add grid_drops dummy')
+    host('command', command=f'execute in {NETHER} store result score count grid_drops if entity @e[type=minecraft:item,x={x},y={y},z={z},distance=..12]')
+    reply = server_reply(host, 'scoreboard players get count grid_drops', ' has ', 'grid_drops')
+    ground_before_rejoin = int(re.search(r' has (-?\d+) ', reply)[1])
+    guest.pid = guest.raw('launch', '--offscreen')['pid']
+    guest.raw('connect', f'127.0.0.1:{port}', GUEST_NAME)
+    guest.raw('wait-for', 'loaded', '--timeout', 300)
+    wait_dimension(guest, NETHER, 400)
+    guest.wait(20)
+    # Spawn/inventory synchronization follows the loaded notification. Observe
+    # the item before counting it rather than relying on a few render frames.
+    returned_logs = guest.until(lambda: logs_in(guest), lambda count: count == 1, ticks=100)
+    result = {'overworld_logs': wrong_world, 'nether_logs': returned_logs,
+              'nether_drops_before_rejoin': ground_before_rejoin,
+              'saved_stone': guest('inventory')['counts'].get('minecraft:stone', 0)}
+    lab.write_json(out / 'disconnect-grid-dimension.json', result)
+    assert result == {'overworld_logs': 0, 'nether_logs': 1, 'nether_drops_before_rejoin': 1, 'saved_stone': expected_stone}, result
+    return result
+
+
+CHECKS += ['disconnect-grid-dimension']
+CHECK_FNS['disconnect-grid-dimension'] = check_disconnect_grid_dimension
+CHECKS += ['disconnect-grid-space']
+CHECK_FNS['disconnect-grid-space'] = lambda host, guest, out: check_disconnect_grid_dimension(host, guest, out, full=False)
+CHECKS += ['disconnect-cursor-space', 'disconnect-table-space']
+CHECK_FNS['disconnect-cursor-space'] = lambda host, guest, out: check_disconnect_grid_dimension(host, guest, out, full=False, held='cursor')
+CHECK_FNS['disconnect-table-space'] = lambda host, guest, out: check_disconnect_grid_dimension(host, guest, out, full=False, held='table')
+
+
 if __name__ == '__main__':
     main()

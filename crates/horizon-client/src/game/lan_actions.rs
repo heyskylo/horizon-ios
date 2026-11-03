@@ -2848,7 +2848,7 @@ impl Game<'_> {
 
     /// `AbstractContainerMenu.removed`: what a closing player held on the
     /// cursor goes back into their inventory (`placeItemBackInInventory`,
-    /// dropped only if it doesn't fit), and their client's cursor empties
+    /// dropped if it does not fit or the player disconnected), and the cursor empties
     /// with the inventory it is sent.
     pub(super) fn guest_carried_back(&mut self, host: &mut LanHost, gi: usize) {
         if let Some(c) = host.hub.guests[gi].carried.take() {
@@ -2858,7 +2858,14 @@ impl Game<'_> {
     }
 
     pub(super) fn drop_guest_items(&mut self, host: &LanHost, gi: usize, stacks: Vec<ItemStack>) {
-        let g = &host.hub.guests[gi];
+        self.drop_items_for_guest(&host.hub.guests[gi], stacks);
+    }
+
+    pub(super) fn drop_items_for_guest(
+        &mut self,
+        g: &horizon_client::lan::guest::Guest,
+        stacks: Vec<ItemStack>,
+    ) {
         let eye = [
             g.position[0],
             g.position[1] + g.eye_height() - 0.3,
