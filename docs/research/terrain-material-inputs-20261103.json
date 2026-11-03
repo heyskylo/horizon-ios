@@ -472,7 +472,8 @@
   "public_main_integration": {
     "revision": "8dffb823a45d307988dcc0e9d0e1767d665510fb",
     "license": "MIT",
-    "scope": "Public main was fetched after the uniform candidate freeze for its separate API integration. PBR production source remained unchanged while only the original fixture was corrected from approved baseline inputs. PBR integration began after its own freeze. No old PR refs/history fetched. All production hunks applied unchanged; only the original test-module append moved after a new main test-module declaration."
+    "scope": "Public main was fetched after the uniform candidate freeze for its separate API integration. PBR production source remained unchanged while only the original fixture was corrected from approved baseline inputs. PBR integration began after its own freeze. No old PR refs/history fetched. All production hunks applied unchanged; only the original test-module append moved after a new main test-module declaration.",
+    "comment_adjustments": "Clarified companion-map consumers/budget and retained the prior texture-metadata function description; no behavioral change."
   },
   "independent_baseline_validation": {
     "rust": "1.99.0; default debug tests; no custom RUSTFLAGS; serialized builds, jobs=2",
