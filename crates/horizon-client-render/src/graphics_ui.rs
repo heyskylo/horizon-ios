@@ -498,14 +498,14 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
                             "Lava, fire and sunlight shine brighter than white. Needs an HDR display.",
                         ),
                         h(
+                            H::HdrSmoothGradients,
+                            Low,
+                            "16-bit frame: dark skies and shadows don't band. A bit more VRAM. Next start.",
+                        ),
+                        h(
                             H::HdrCalibrate,
                             None,
                             "Sets the three below full screen, one test picture at a time.",
-                        ),
-                        h(
-                            H::HdrSmoothGradients,
-                            Low,
-                            "Draws in 16 bits, so dark skies don't band. A bit more VRAM. Next start.",
                         ),
                     ],
                 ),
