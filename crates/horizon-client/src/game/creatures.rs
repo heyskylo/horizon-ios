@@ -801,10 +801,8 @@ impl Game<'_> {
         self.world.bottom_y()
     }
     pub(super) fn mob_world_base<'s>(&'s self, others: &'s [Seen]) -> MobWorld<'s> {
-        let (rain, thunder) = self.world.weather.levels(1.0);
-        // Level.canHaveWeather: only the overworld's rain and thunder levels
-        // ever rise, so nothing rains or thunders in the Nether or the End.
-        let weather = self.dim == Dim::Overworld;
+        let (rain, thunder) = self.weather_levels(1.0);
+        let weather = self.can_have_weather();
         let player = self.player_view();
         MobWorld {
             world: &self.world,
@@ -1332,7 +1330,7 @@ impl Game<'_> {
         // the causing entity, not the credited player: a tame wolf's kill is
         // neither its owner's heroism nor a murder by them.
         let slain_by_player = by_player && !killed_by_mob(m);
-        self.raider_died(m, slain_by_player);
+        self.raider_died(m, slain_by_player, killer.flatten());
         self.villager_murdered(m, slain_by_player, killer.flatten());
         let pos = [m.position.x, m.position.y + 0.5, m.position.z];
         let killer_entity = self.killer_loot_entity(killer.flatten());
@@ -1815,6 +1813,13 @@ impl Game<'_> {
             String::new()
         };
         let (id, kind) = (p.id, p.kind.id());
+        if let Some(a) = p.arrow.as_mut()
+            && !p.stuck
+        {
+            a.spawn_pos = Some(p.position);
+            a.spawn_velocity = Some(p.velocity);
+            a.spawn_rot = Some((p.pitch, p.yaw));
+        }
         self.creatures.projectiles.push(p);
         self.native_projectile_launch(player, &name, id, kind);
     }
