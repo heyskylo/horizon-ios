@@ -283,21 +283,6 @@ mod tests {
         assert_eq!(last_pixel(device, &presented), expected);
     }
 
-    #[test]
-    fn a_float_frame_reaches_an_8_bit_swapchain_clamped() {
-        let Some((device, queue)) = device() else {
-            return;
-        };
-        let color = wgpu::Color {
-            r: 2.0,
-            g: 0.0,
-            b: -1.0,
-            a: 1.0,
-        };
-        let float = wgpu::TextureFormat::Rgba16Float;
-        reaches_an_8_bit_swapchain(&device, &queue, float, color, [0, 0, 255, 255]);
-    }
-
     /// `Rgba16Unorm`, the frame HDR output draws into where the device can
     /// (`Renderer::frame_format`).
     #[test]

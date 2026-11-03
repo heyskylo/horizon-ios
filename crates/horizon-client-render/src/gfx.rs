@@ -4092,13 +4092,7 @@ impl Renderer {
                 log::info!(
                     "Horizon: solid terrain through a visibility buffer (HORIZON_VISBUFFER)"
                 );
-                visbuffer::Visbuffer::new(
-                    &device,
-                    &bindings,
-                    f,
-                    config.format.remove_srgb_suffix(),
-                    &sprite_constants,
-                )
+                visbuffer::Visbuffer::new(&device, &bindings, f, frame_format, &sprite_constants)
             });
         let multi_draw = device
             .features()

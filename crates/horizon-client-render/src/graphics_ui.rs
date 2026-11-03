@@ -1051,7 +1051,9 @@ impl Item {
             Item::Horizon(H::BatteryMode) => g.battery,
             Item::Horizon(H::ShadowCache) => g.shadow_cache,
             Item::Horizon(H::TranslucentBatching) => g.translucent_batching,
-            Item::Horizon(H::HdrSmoothGradients) => g.hdr_smooth_gradients,
+            Item::Horizon(H::HdrSmoothGradients) => {
+                g.hdr_smooth_gradients && crate::graphics::smooth_gradients_offered()
+            }
             Item::Vanilla(Opt::ViewBobbing) => s.view_bobbing,
             Item::Vanilla(Opt::Vsync) => s.vsync,
             Item::Vanilla(Opt::Fullscreen) => s.fullscreen,
@@ -2648,11 +2650,13 @@ mod tests {
             Some("Your GPU or graphics API doesn't support it.")
         );
         assert_eq!(item.label(&s).plain(), "Smooth Gradients: Off");
+        assert_eq!(item.switch(&s), Some(false));
         assert!(s.horizon.hdr_smooth_gradients);
         // Where it can, it waits only for HDR, like the rest of the page.
         crate::graphics::offer_smooth_gradients(true);
         assert_eq!(item.blocked(&s), None);
         assert_eq!(item.label(&s).plain(), "Smooth Gradients: On");
+        assert_eq!(item.switch(&s), Some(true));
         s.horizon.hdr = false;
         assert_eq!(item.blocked(&s), Some("Turn HDR on to use it."));
     }
