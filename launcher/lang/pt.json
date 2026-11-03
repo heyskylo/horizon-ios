@@ -1075,5 +1075,12 @@
   "Saved {name}": "{name} guardada",
   "Game log": "Registo do jogo",
   "1 line": "1 linha",
-  "{count} lines": "{count} linhas"
+  "{count} lines": "{count} linhas",
+  "{count} min": "{count} min",
+  "1 hour": "1 hora",
+  "{count} hours": "{count} horas",
+  "just now": "agora mesmo",
+  "{count} min ago": "há {count} min",
+  "1 hour ago": "há 1 hora",
+  "{count} hours ago": "há {count} horas"
 }

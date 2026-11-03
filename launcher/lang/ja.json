@@ -1075,5 +1075,12 @@
   "Saved {name}": "{name} を保存しました",
   "Game log": "ゲームログ",
   "1 line": "1 行",
-  "{count} lines": "{count} 行"
+  "{count} lines": "{count} 行",
+  "{count} min": "{count} 分",
+  "1 hour": "1 時間",
+  "{count} hours": "{count} 時間",
+  "just now": "たった今",
+  "{count} min ago": "{count} 分前",
+  "1 hour ago": "1 時間前",
+  "{count} hours ago": "{count} 時間前"
 }

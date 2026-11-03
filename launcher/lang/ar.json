@@ -1075,5 +1075,12 @@
   "Saved {name}": "تم حفظ {name}",
   "Game log": "سجل اللعبة",
   "1 line": "سطر واحد",
-  "{count} lines": "{count} سطر"
+  "{count} lines": "{count} سطر",
+  "{count} min": "{count} دقيقة",
+  "1 hour": "ساعة واحدة",
+  "{count} hours": "{count} ساعة",
+  "just now": "الآن",
+  "{count} min ago": "قبل {count} دقيقة",
+  "1 hour ago": "قبل ساعة",
+  "{count} hours ago": "قبل {count} ساعة"
 }

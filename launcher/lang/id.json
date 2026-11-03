@@ -1075,5 +1075,12 @@
   "Saved {name}": "{name} disimpan",
   "Game log": "Log game",
   "1 line": "1 baris",
-  "{count} lines": "{count} baris"
+  "{count} lines": "{count} baris",
+  "{count} min": "{count} mnt",
+  "1 hour": "1 jam",
+  "{count} hours": "{count} jam",
+  "just now": "baru saja",
+  "{count} min ago": "{count} mnt lalu",
+  "1 hour ago": "1 jam lalu",
+  "{count} hours ago": "{count} jam lalu"
 }

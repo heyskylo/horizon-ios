@@ -1075,5 +1075,12 @@
   "Saved {name}": "{name} gespeichert",
   "Game log": "Spielprotokoll",
   "1 line": "1 Zeile",
-  "{count} lines": "{count} Zeilen"
+  "{count} lines": "{count} Zeilen",
+  "{count} min": "{count} Min.",
+  "1 hour": "1 Stunde",
+  "{count} hours": "{count} Stunden",
+  "just now": "gerade eben",
+  "{count} min ago": "vor {count} Min.",
+  "1 hour ago": "vor 1 Stunde",
+  "{count} hours ago": "vor {count} Stunden"
 }

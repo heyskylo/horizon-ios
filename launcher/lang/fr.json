@@ -1075,5 +1075,12 @@
   "Saved {name}": "{name} enregistrée",
   "Game log": "Journal du jeu",
   "1 line": "1 ligne",
-  "{count} lines": "{count} lignes"
+  "{count} lines": "{count} lignes",
+  "{count} min": "{count} min",
+  "1 hour": "1 heure",
+  "{count} hours": "{count} heures",
+  "just now": "à l'instant",
+  "{count} min ago": "il y a {count} min",
+  "1 hour ago": "il y a 1 heure",
+  "{count} hours ago": "il y a {count} heures"
 }
