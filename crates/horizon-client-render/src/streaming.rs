@@ -1224,6 +1224,14 @@ impl Streaming {
                 world.layout().sections() as i32,
             );
         }
+        // `ChunkTaskPriorityQueue.release` for each of them (`ChunkTaskDispatcher`'s
+        // `release(col, true)` from the chunk's unload): the jobs still queued for a
+        // column go with it instead of running for a level they no longer belong to.
+        if !gone.is_empty()
+            && let Ok(mut queue) = self.shared.queue.lock()
+        {
+            release_columns(&mut queue, gone);
+        }
         let mut chunks = Vec::with_capacity(gone.len());
         for &(x, z) in gone {
             self.lit.remove(&(x, z));
@@ -2878,6 +2886,25 @@ fn rank_again(queue: &mut BinaryHeap<Queued>, distance: impl Fn(i32, i32) -> i64
         }
     }
     *queue = BinaryHeap::from(jobs);
+}
+/// `ChunkTaskPriorityQueue.release(pos, clearQueue=true)`: the jobs queued for the
+/// `gone` columns are dropped, so a view that moved or shrank does not wait behind the
+/// generation of the chunks it left. A job without a column (a save, meshes to free)
+/// stays, as vanilla keeps the tasks of a chunk that is still loaded. Returns how many
+/// jobs went.
+fn release_columns(queue: &mut BinaryHeap<Queued>, gone: &FxHashSet<(i32, i32)>) -> usize {
+    if queue.is_empty() || gone.is_empty() {
+        return 0;
+    }
+    let queued = std::mem::take(queue).into_vec();
+    let before = queued.len();
+    let kept: Vec<Queued> = queued
+        .into_iter()
+        .filter(|job| !job.at.is_some_and(|at| gone.contains(&at)))
+        .collect();
+    let released = before - kept.len();
+    *queue = BinaryHeap::from(kept);
+    released
 }
 /// Whether the 3x3 a light job for (x, z) reads is all there: every
 /// neighbour a finished column, or a decorated proto chunk past the area
