@@ -5639,7 +5639,7 @@ mod spin_target_tests {
     #[test]
     fn the_spin_picks_the_first_live_mob_in_the_sweep() {
         let swept = Aabb::new(Vec3::new(0.0, 0.0, 0.0), Vec3::new(3.0, 1.0, 1.0));
-        let targets = vec![
+        let targets = [
             (1, false, cube(10.0)),
             (2, true, cube(1.0)),
             (3, false, cube(1.5)),
