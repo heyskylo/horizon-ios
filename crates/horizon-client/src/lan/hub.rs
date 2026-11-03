@@ -3314,10 +3314,14 @@ impl Hub {
                 // ServerGamePacketListenerImpl.handleSeenAdvancements: the tab the
                 // player opened, kept when it names a root with a display
                 // (`PlayerAdvancements.setSelectedTab` leaves the tab empty otherwise),
-                // and answered with the tab it now keeps when that changed.
+                // and answered with the tab it now keeps when that changed. An id the
+                // server has no advancement for changes nothing.
                 S::SeenAdvancements(p) => {
-                    if p.action == 0 {
-                        let tab = p.tab.filter(|id| self.sync.advancements.selectable(id));
+                    if p.action == 0
+                        && let Some(id) = p.tab
+                        && let Some(keep) = self.sync.advancements.selectable(&id)
+                    {
+                        let tab = keep.then_some(id);
                         let g = &mut self.guests[i];
                         if g.selected_tab != tab {
                             g.selected_tab = tab.clone();
@@ -4641,8 +4645,9 @@ mod tests {
             Default::default(),
             Default::default(),
         );
-        assert!(
+        assert_eq!(
             sync.advancements.selectable("minecraft:root"),
+            Some(true),
             "the fixture's root is selectable"
         );
         let (mut hub, rx) = hub_with_sync(sync);
@@ -4671,12 +4676,18 @@ mod tests {
         tick_packet(&mut hub, &mut world, open("minecraft:task"));
         assert_eq!(sent_tabs(&rx), vec![None]);
         assert_eq!(hub.guests[0].selected_tab, None);
-        // An id the server has no advancement for leaves it empty too, and says nothing more.
-        tick_packet(&mut hub, &mut world, open("minecraft:nowhere"));
-        assert!(sent_tabs(&rx).is_empty(), "the selection was already empty");
-        // The closed screen keeps the tab the server has.
+        // The root again, then an id the server has no advancement for: vanilla's
+        // `ServerAdvancementManager.get` is null, `setSelectedTab` is not called, and the
+        // tab stays.
         tick_packet(&mut hub, &mut world, open("minecraft:root"));
         assert_eq!(sent_tabs(&rx), vec![Some("minecraft:root".to_owned())]);
+        tick_packet(&mut hub, &mut world, open("minecraft:nowhere"));
+        assert!(sent_tabs(&rx).is_empty(), "an unknown id changes nothing");
+        assert_eq!(
+            hub.guests[0].selected_tab.as_deref(),
+            Some("minecraft:root")
+        );
+        // The closed screen keeps the tab the server has.
         tick_packet(
             &mut hub,
             &mut world,

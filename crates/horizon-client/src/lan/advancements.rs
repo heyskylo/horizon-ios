@@ -267,15 +267,17 @@ impl ServerAdvancements {
         Some(w.data)
     }
 
-    /// Which advancements a player with `progress` may see.
-    /// Whether `id` names an advancement a player may keep as its tab
-    /// (`PlayerAdvancements.setSelectedTab`: a root that has a display).
-    pub fn selectable(&self, id: &str) -> bool {
+    /// `ServerAdvancementManager.get` then `PlayerAdvancements.setSelectedTab`:
+    /// `None` when the server has no advancement `id` (the tab is left as it
+    /// is), else whether a player may keep it as its tab (a root that has a
+    /// display).
+    pub fn selectable(&self, id: &str) -> Option<bool> {
         self.tree
             .get(id)
-            .is_some_and(|a| a.parent.is_none() && a.display.is_some())
+            .map(|a| a.parent.is_none() && a.display.is_some())
     }
 
+    /// Which advancements a player with `progress` may see.
     pub fn visibility(&self, progress: &Progress) -> Vec<bool> {
         self.tree
             .visible(&self.kids, |i| progress.done(&self.tree.list[i]))
