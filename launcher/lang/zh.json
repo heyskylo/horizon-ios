@@ -1072,5 +1072,6 @@
   "Deleted {name}": "已删除 {name}",
   "Launcher settings are back to their defaults": "启动器设置已恢复默认",
   "Opened {path}": "已打开 {path}",
-  "Saved {name}": "已保存 {name}"
+  "Saved {name}": "已保存 {name}",
+  "My Horizon": "我的 Horizon"
 }
