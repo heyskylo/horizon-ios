@@ -1429,7 +1429,7 @@ fn build_pass(
     let features = device.features();
     // The frame's uniforms, then the pack's custom ones.
     let index = |name: &str| {
-        pack_uniforms::index(name).or_else(|| {
+        pack_uniforms::index_in(name, geometry.is_some()).or_else(|| {
             let k = custom.iter().position(|c| c == name)?;
             Some(pack_uniforms::NAMES.len() + k)
         })
