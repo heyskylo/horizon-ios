@@ -124,6 +124,7 @@ pub fn link(mobs: &mut [Mob], rider: u32, vehicle: u32) {
         return;
     }
     if let Some(m) = mobs.iter_mut().find(|m| m.id == rider) {
+        super::shulker::on_start_riding(m);
         m.extra.mount = Some(vehicle);
         m.extra.passenger = true;
     }
@@ -149,6 +150,11 @@ fn top_passenger(mobs: &[Mob], vehicle: u32, counter: i32) -> u32 {
 /// after its boarding cooldown, onto a vehicle with no passenger
 /// (`canRide`, `canAddPassenger`). Returns whether it boarded.
 pub fn start_riding(mobs: &mut [Mob], rider: u32, vehicle: u32) -> bool {
+    // `Shulker.startRiding` puts its attach face back before the ride is
+    // decided, so a shulker that is refused still ends up lid up.
+    if let Some(m) = mobs.iter_mut().find(|m| m.id == rider) {
+        super::shulker::on_start_riding(m);
+    }
     let Some(r) = mobs.iter().find(|m| m.id == rider) else {
         return false;
     };
@@ -436,5 +442,49 @@ mod tests {
             big.extra.model_scale = 2.0;
             assert!(close(vehicle_attachment(&big, chicken), 0.4375));
         });
+    }
+
+    /// `Shulker.startRiding`: `setAttachFace(Direction.DOWN)` runs before
+    /// `Entity.startRiding` decides, so a shulker that boards a vehicle sits
+    /// lid up whatever face it was stuck to - and one whose board is refused
+    /// still ends up lid up. No other rider's face data moves.
+    #[test]
+    fn a_shulker_that_boards_sits_lid_up() {
+        let mob = |id: u32, name: &str, species: Species, face: u8| {
+            let mut kind = (*crate::mobs::sensor_scan_tests::kind()).clone();
+            kind.id = name.into();
+            kind.species = species;
+            let mut m = Mob::new(id, std::sync::Arc::new(kind), Vec3::ZERO, 0.0);
+            m.extra.variant3 = face;
+            m
+        };
+        // Attached to the block to its east (face 5) and saddled by nobody.
+        let mut mobs = [
+            mob(1, "minecraft:shulker", Species::Shulker, 5),
+            mob(2, "minecraft:pig", Species::Pig, 0),
+        ];
+        assert!(start_riding(&mut mobs, 1, 2), "the shulker boards");
+        assert_eq!(mobs[0].extra.variant3, 0, "riding lid up");
+        assert_eq!(mobs[1].extra.rider, Some(1));
+
+        // A vehicle that already carries someone refuses the board, but the
+        // face has already gone back to `DOWN`.
+        let mut refused = [
+            mob(1, "minecraft:shulker", Species::Shulker, 3),
+            mob(2, "minecraft:pig", Species::Pig, 0),
+            mob(9, "minecraft:zombie", Species::Zombie, 0),
+        ];
+        refused[1].extra.rider = Some(9);
+        assert!(!start_riding(&mut refused, 1, 2));
+        assert_eq!(refused[0].extra.variant3, 0);
+        assert_eq!(refused[0].extra.mount, None);
+
+        // `Entity.startRiding` for anything else leaves the data alone.
+        let mut others = [
+            mob(1, "minecraft:cow", Species::Cow, 4),
+            mob(2, "minecraft:pig", Species::Pig, 0),
+        ];
+        assert!(start_riding(&mut others, 1, 2));
+        assert_eq!(others[0].extra.variant3, 4);
     }
 }
