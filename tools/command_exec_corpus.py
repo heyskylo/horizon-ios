@@ -2369,6 +2369,27 @@ def creeper_custom_fuse():
     return ops + setup('/gamerule mob_griefing true')
 
 
+def command_minecart_loaded_success():
+    """Loaded nonempty commands trigger the synced-data count reset (#8772)."""
+    ops = setup('/fill 9 219 9 11 219 11 stone')
+    for name, command in [('absent', ''), ('empty', ',Command:""'),
+                          ('nonempty', ',Command:"say hi"')]:
+        for count in (2, -3, 0):
+            tag = f'cart_load_{name}_{str(count).replace("-", "n")}'
+            target = f'@e[tag={tag},limit=1]'
+            ops += setup('/summon command_block_minecart 10.5 220 10.5 '
+                         f'{{Tags:["{tag}"],NoGravity:1b,TrackOutput:0b,'
+                         f'SuccessCount:{count}{command}}}')
+            for tick in (0, 1):
+                if tick:
+                    ops.append({'op': 'tick', 'n': 1})
+                ops.append(cmd(f'/execute if entity {target}'))
+                for field in ('Command', 'SuccessCount', 'TrackOutput', 'UpdateLastExecution'):
+                    ops.append(cmd(f'/data get entity {target} {field}'))
+            ops += setup(f'/kill {target}')
+    return ops
+
+
 def groups():
     return [
         ('setup', group_setup()),
@@ -2381,6 +2402,7 @@ def groups():
         ('setblock destroy air', setblock_destroy_air()),
         ('forceload query order', forceload_query_order()),
         ('entities', entities()),
+        ('command minecart loaded success', command_minecart_loaded_success()),
         ('aquatic FromBucket', aquatic_from_bucket()),
         ('villager command names', villager_command_names()),
         ('item lifetime counters', item_lifetime_counters()),
