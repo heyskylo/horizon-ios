@@ -186,7 +186,7 @@ impl Launcher {
                 Some(b.appearance),
                 &t,
             ))
-            .child(self.accent_row(cx))
+            .child(self.glass_accent_row(cx))
             .child(self.home_background_row(cx))
             .child(self.language_row(cx))
             .child(self.while_playing_row(n, cx))

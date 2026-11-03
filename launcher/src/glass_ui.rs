@@ -78,6 +78,11 @@ pub fn set_on(on: bool) {
     ON.set(on);
 }
 
+/// Set as each frame's pages start being built: the colours for the player's accent.
+pub fn set_look(look: Glass) {
+    LOOK.set(look);
+}
+
 /// The look's colours.
 pub fn look() -> Glass {
     LOOK.get()

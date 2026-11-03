@@ -60,6 +60,16 @@ pub fn set_backdrop(model: &Model) {
     });
 }
 
+/// The player's accent (and so the plates' tint) changed: pieces are painted again.
+pub fn set_look(look: Glass) {
+    PIECES.with_borrow_mut(|p| {
+        if p.look != look {
+            p.look = look;
+            p.generation += 1;
+        }
+    });
+}
+
 /// The launcher's pages are being built: pieces nothing drew in the last build are freed (call
 /// at the start of the launcher's render).
 pub fn begin_build(window: &mut Window) {
