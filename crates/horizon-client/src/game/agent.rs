@@ -1471,7 +1471,7 @@ impl Game<'_> {
             }
             "open-inventory" => {
                 self.playing()?;
-                self.key_pressed(KeyCode::KeyE)?;
+                self.key_pressed(KeyCode::KeyE, KeyCode::KeyE)?;
                 ok(json!({ "ok": true, "screen": self.screen_label() }))
             }
             "click-button" => {
@@ -1700,7 +1700,7 @@ impl Game<'_> {
             }
             "pause" => {
                 self.playing()?;
-                self.key_pressed(KeyCode::Escape)?;
+                self.key_pressed(KeyCode::Escape, KeyCode::Escape)?;
                 ok(json!({ "ok": true, "screen": self.screen_label() }))
             }
             "wait" => {

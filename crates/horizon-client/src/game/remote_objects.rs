@@ -11,6 +11,28 @@ use horizon_core::random::RandomSource;
 use horizon_protocol::entity_data::Value;
 use std::sync::Arc;
 
+/// `Mth.rotLerp(alpha, from, to)`: `from` turned `alpha` of the way to `to` by
+/// the shorter arc (`wrapDegrees` of the difference).
+pub(super) fn rot_lerp(alpha: f32, from: f32, to: f32) -> f32 {
+    let mut d = (to - from) % 360.0;
+    if d >= 180.0 {
+        d -= 360.0;
+    } else if d < -180.0 {
+        d += 360.0;
+    }
+    from + alpha * d
+}
+
+/// One `LinearInterpolationHandler` step of a yaw with `steps` ticks left:
+/// a `1 / steps` share of the way to `target`, so the last step lands on it.
+pub(super) fn lerp_yaw_step(yaw: f32, target: f32, steps: u32) -> f32 {
+    if steps == 0 {
+        yaw
+    } else {
+        rot_lerp(1.0 / steps as f32, yaw, target)
+    }
+}
+
 impl Game<'_> {
     /// `handleAddEntity` for an object type; false when `kind` isn't one.
     /// Hanging entities come at their block, with their direction as the
@@ -297,9 +319,10 @@ impl Game<'_> {
             if Some(id) == driven {
                 return;
             }
-            if let Some(yaw) = yaw {
-                b.yaw = yaw;
-            }
+            // AbstractBoat keeps a LinearInterpolationHandler: the new yaw is
+            // the target of the three-tick lerp (`tick_remote_objects`), not
+            // the boat's yaw at once.
+            let _ = yaw;
             b.on_ground = on_ground;
         } else if let Some(c) = self.carts.iter_mut().find(|c| c.id == id)
             && let Some(yaw) = yaw
@@ -315,6 +338,7 @@ impl Game<'_> {
     pub(super) fn tick_remote_objects(
         &mut self,
         mut step: impl FnMut(u32, Vec3) -> Vec3,
+        mut turn: impl FnMut(u32, f32) -> f32,
         mut lerp_cart: impl FnMut(&mut super::minecarts::Minecart) -> bool,
     ) {
         for c in &mut self.carts {
@@ -344,6 +368,9 @@ impl Game<'_> {
             }
             b.previous = b.position;
             b.previous_yaw = b.yaw;
+            // `LinearInterpolationHandler.interpolate`: the rotation moves a
+            // step toward the server's with the position.
+            b.yaw = turn(b.id, b.yaw);
             b.position = step(b.id, b.position);
         }
         for a in &mut self.armor_stands {
@@ -494,5 +521,36 @@ mod tests {
             apply_frame_metadata(&mut frame, 0, &Value::Byte(0));
             assert!(!frame.invisible);
         }
+    }
+
+    #[test]
+    fn rot_lerp_takes_the_short_way_round() {
+        // 350 to 10 is 20 degrees by the short arc, not -340.
+        assert!((rot_lerp(0.5, 350.0, 10.0) - 360.0).abs() < 1e-4);
+        assert!((rot_lerp(0.5, 10.0, 350.0) - 0.0).abs() < 1e-4);
+        assert!((rot_lerp(0.25, -90.0, 80.0) - -47.5).abs() < 1e-4);
+        assert_eq!(rot_lerp(0.0, 33.0, 200.0), 33.0);
+    }
+
+    #[test]
+    fn a_boat_turns_a_third_of_the_way_each_of_three_ticks() {
+        // The server says 120 degrees while the boat is at 0: 40, 80, 120.
+        let mut yaw = 0.0;
+        let mut seen = Vec::new();
+        for steps in (1..=3).rev() {
+            yaw = lerp_yaw_step(yaw, 120.0, steps);
+            seen.push(yaw);
+        }
+        for (got, want) in seen.iter().zip([40.0, 80.0, 120.0]) {
+            assert!((got - want).abs() < 1e-3, "{seen:?}");
+        }
+        // Across the wrap it still ends on the target, the short way.
+        let mut yaw = 350.0;
+        for steps in (1..=3).rev() {
+            yaw = lerp_yaw_step(yaw, 10.0, steps);
+        }
+        assert!((yaw - 370.0).abs() < 1e-3, "{yaw}");
+        // No steps left: the yaw is left alone.
+        assert_eq!(lerp_yaw_step(5.0, 90.0, 0), 5.0);
     }
 }

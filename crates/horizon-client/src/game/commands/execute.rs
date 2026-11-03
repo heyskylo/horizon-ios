@@ -140,6 +140,12 @@ impl Game<'_> {
                 .iter()
                 .find(|c| c.id == id)
                 .map_or([0.0; 2], |c| [c.yaw, 0.0]),
+            Target::Fangs(id) => self
+                .fangs
+                .list
+                .iter()
+                .find(|f| f.id == id)
+                .map_or([0.0; 2], |f| [f.yaw, 0.0]),
             Target::Other(id) => self
                 .others
                 .iter()
@@ -661,7 +667,10 @@ impl Game<'_> {
                     .iter()
                     .find(|m| m.id == id)
                     .and_then(|m| m.extra.owner)
-                    .and_then(|u| self.target_with_uuid(u))
+                    // A guest owner too, not only the player in place.
+                    .and_then(|u| {
+                        self.target_by_uuid(horizon_client::lan::playerdata::ints_uuid(u))
+                    })
                     .filter(|owner| {
                         matches!(
                             owner,

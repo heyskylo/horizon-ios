@@ -580,8 +580,15 @@ impl Game<'_> {
         let status = self.pack_player_status();
         let info = biome.map(|b| world_biomes!(self).get(b));
         let (end_flash_position, end_flash_intensity) = self.end_flash_for_pack(partial);
+        let dimension = self.remote.as_ref().map(|r| &r.dimension);
         PackInputs {
-            day_time: self.world.day_time,
+            // `Level.getDefaultClockTime`: 0 in a dimension type with no default clock (the
+            // Nether's has none), as Iris 1.11.7 reads `worldTime` there (probe pack).
+            day_time: if dimension.is_some_and(|d| d.default_clock.is_none()) {
+                0
+            } else {
+                self.world.day_time
+            },
             rain: lerp(self.world.weather.rain_level),
             thunder: lerp(self.world.weather.thunder_level),
             eye_in: match self.camera_fluid(camera.to_array()) {
@@ -594,7 +601,10 @@ impl Game<'_> {
             eye_light: [i32::from(light & 15), i32::from(light >> 4)],
             hide_gui: self.ui.hide_gui,
             brightness: self.settings.gamma,
-            biome: biome.map_or(-1, i32::from),
+            biome: info.map_or(-1, |b| {
+                let names = world_biomes!(self).list.iter().map(|b| b.name.as_str());
+                horizon_shaders::biome_pack_id(&b.name, names)
+            }),
             biome_known: biome.is_some(),
             biome_category: info.map_or(0, |b| horizon_shaders::biome_category(&b.name)),
             biome_precipitation: info.map_or(0, |b| {
@@ -648,6 +658,7 @@ impl Game<'_> {
                 * 0.030_000_001,
             mod_params: self.native_shader_params_now(partial),
             status,
+            ambient_light: dimension.map_or(0.0, |d| d.ambient_light),
         }
     }
 

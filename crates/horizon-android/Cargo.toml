@@ -7,6 +7,8 @@ version = "0.1.0"
 edition = "2024"
 license = "MIT"
 publish = false
+# Shared gameplay includes the generated native mod API.
+build = "../horizon-client/build.rs"
 
 [workspace]
 
@@ -97,6 +99,9 @@ fs4 = { version = "1.1.0", default-features = false, features = ["sync"] }
 
 [target.'cfg(unix)'.dependencies]
 rustix = { version = "1", default-features = false, features = ["std", "time", "process", "fs"] }
+
+[build-dependencies]
+horizon-mod-api-gen = { path = "../horizon-mod-api-gen" }
 
 [features]
 default = ["audio"]

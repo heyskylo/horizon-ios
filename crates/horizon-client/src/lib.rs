@@ -1,4 +1,5 @@
 //! Gameplay and startup, above the reusable client library.
+// Android's exported native entry needs unsafe; other targets forbid it.
 #![cfg_attr(not(target_os = "android"), forbid(unsafe_code))]
 #![cfg_attr(target_os = "android", deny(unsafe_code))]
 #[cfg(target_os = "android")]

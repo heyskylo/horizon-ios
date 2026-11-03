@@ -660,6 +660,48 @@ impl Game<'_> {
                 }
                 _ => {}
             }
+            // ChunkMap.addEntity (#7461): a fresh arrow joined before its first tick
+            // is paired as it joined with IN_GROUND=false, and its first update is deferred
+            // to the next tick's send_changes so impact updates (e.g. point-blank wall
+            // collision) arrive after the client's first tick has completed.
+            if !hub.tracks(p.id as i32)
+                && let Some(a) = p.arrow.as_deref()
+                && let (Some(spawn_pos), Some(spawn_vel), Some((pitch, yaw))) =
+                    (a.spawn_pos, a.spawn_velocity, a.spawn_rot)
+            {
+                let mut joined = state(p.id, kind, at(spawn_pos), yaw, false);
+                joined.pitch = pitch;
+                joined.velocity = at(spawn_vel);
+                joined.needs_sync = p.needs_sync;
+                joined.data = e.data;
+                joined.uuid = e.uuid;
+                if a.on_fire() {
+                    joined.meta.push((0, serializer::BYTE, Value::Byte(1)));
+                }
+                match &p.kind {
+                    K::Arrow { critical, .. } => {
+                        joined
+                            .meta
+                            .extend(arrow_meta(*critical, a.no_physics, a.pierce, false));
+                        let color = p.arrow_effect_color();
+                        if color != -1 {
+                            joined.meta.push((11, serializer::INT, Value::Int(color)));
+                        }
+                    }
+                    K::Trident => {
+                        joined
+                            .meta
+                            .extend(arrow_meta(false, a.no_physics, 0, false));
+                        if a.pickup_item.has_any_enchantments() {
+                            joined
+                                .meta
+                                .push((12, serializer::BOOLEAN, Value::Bool(true)));
+                        }
+                    }
+                    _ => {}
+                }
+                hub.note_fresh_joined(&[joined]);
+            }
             out.push(e);
         }
         // Thrown potions and bottles: ThrowableItemProjectile.DATA_ITEM_STACK

@@ -45,7 +45,7 @@ mod keybinds { pub fn key_name(key: i32) -> Option<&'static str> { (key == 1).th
 struct Bindings;
 impl Bindings { fn translate_all(&self, _: i32) -> Vec<std::result::Result<i32, i32>> { vec![Ok(10), Ok(11), Err(2)] } }
 struct Settings { keys: Bindings }
-struct Game { ios: bool, extra_releases: usize, native_releases: usize, keys: HashSet<i32>, settings: Settings, screen: bool, title: Option<()>, modifiers: u32,
+struct Game { expected_raw: i32, ios: bool, extra_releases: usize, native_releases: usize, keys: HashSet<i32>, settings: Settings, screen: bool, title: Option<()>, modifiers: u32,
     open: bool, cancel: bool, calls: Cell<usize>, handled: usize, released: Vec<(bool, i32)> }
 impl Game {
     fn extras_key(&mut self,_:i32,pressed:bool,repeat:bool){assert!(!pressed&&!repeat);self.extra_releases+=1;}
@@ -56,8 +56,8 @@ impl Game {
         assert_eq!((*screen, name, modifiers), ("options", "key.keyboard.a", 5));
         self.calls.set(self.calls.get() + 1); *canceled = self.cancel;
     }
-    fn mapped_key(&mut self, key: i32, pressed: bool, repeat: bool) -> Result<()> {
-        assert!(!pressed && !repeat); self.released.push((false, key)); Ok(())
+    fn mapped_key(&mut self, key: i32, pressed: bool, repeat: bool, raw: i32) -> Result<()> {
+        assert!(!pressed && !repeat && raw == self.expected_raw); self.released.push((false, key)); Ok(())
     }
     fn play_mouse(&mut self, button: i32, pressed: bool) -> Result<()> {
         assert!(!pressed); self.released.push((true, button)); Ok(())
@@ -80,7 +80,7 @@ fn release_and_screen_gates() {
         (true, true, ElementState::Pressed, PhysicalKey::Code(1), 0, 1),
         (true, true, ElementState::Released, PhysicalKey::Code(2), 0, 1),
         (true, true, ElementState::Released, PhysicalKey::Unidentified, 0, 1)] {
-        let mut game = Game { ios,extra_releases:0,native_releases:0, keys: HashSet::from([1]), settings: Settings { keys: Bindings }, screen: false,
+        let mut game = Game { expected_raw: match key { PhysicalKey::Code(raw) => raw, _ => 0 }, ios,extra_releases:0,native_releases:0, keys: HashSet::from([1]), settings: Settings { keys: Bindings }, screen: false,
             title: None, modifiers: 5, open, cancel, calls: Cell::new(0), handled: 0, released: vec![] };
         let handled=if ios && state==ElementState::Released && matches!(key,PhysicalKey::Code(_)){0}else{handled};
         game.dispatch(WindowEvent::KeyboardInput { event: KeyEvent { state, physical_key: key } }).unwrap();
@@ -91,6 +91,7 @@ fn release_and_screen_gates() {
         game.dispatch(WindowEvent::Other).unwrap();
         game.released.clear();
         game.screen = true;
+        game.expected_raw = 1;
         game.mapped_key_event(1, false, false).unwrap();
         assert_eq!(game.released, [(false,10), (false,11), (true,2)]);
         game.released.clear();

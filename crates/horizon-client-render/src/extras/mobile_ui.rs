@@ -3,6 +3,8 @@ use super::*;
 /// The settings the Extras page shows, one per row.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Item {
+    PackBrowser,
+    CosmeticsAuras,
     MusicPage,
     CosmeticsMine,
     CosmeticsOthers,
@@ -84,6 +86,7 @@ pub fn rows() -> Vec<Result<Item, &'static str>> {
         Ok(HideBlockParticles),
         Ok(UiSoundReserve),
         Ok(MusicPage),
+        Ok(PackBrowser),
         Ok(ChatAnimation),
         Ok(ChatIndicator),
         Ok(WheelCyclesSettings),
@@ -93,6 +96,7 @@ pub fn rows() -> Vec<Result<Item, &'static str>> {
             Err("horizon.extras.header.cosmetics"),
             Ok(CosmeticsMine),
             Ok(CosmeticsOthers),
+            Ok(CosmeticsAuras),
         ]);
     }
     rows
@@ -115,6 +119,8 @@ fn next<T: Copy + PartialEq>(all: &[T], current: T, back: bool) -> T {
 impl Item {
     fn shared(self) -> Option<super::desktop_ui::Item> {
         Some(match self {
+            Self::PackBrowser => super::desktop_ui::Item::PackBrowser,
+            Self::CosmeticsAuras => super::desktop_ui::Item::CosmeticsAuras,
             Self::MusicPage => super::desktop_ui::Item::MusicPage,
             Self::CosmeticsMine => super::desktop_ui::Item::CosmeticsMine,
             Self::CosmeticsOthers => super::desktop_ui::Item::CosmeticsOthers,
@@ -150,7 +156,9 @@ impl Item {
 
     pub fn caption(self) -> &'static str {
         match self {
-            Item::MusicPage
+            Item::PackBrowser
+            | Item::CosmeticsAuras
+            | Item::MusicPage
             | Item::CosmeticsMine
             | Item::CosmeticsOthers
             | Item::ReproKeys
@@ -193,8 +201,9 @@ impl Item {
         use self::Item::*;
         Some(match self {
             ChatIndicator => ChatAnimation,
-            HideBlockParticles | UiSoundReserve | ChatAnimation | Splitscreen | MusicPage
-            | CosmeticsMine | CosmeticsOthers | ReproKeys | WheelCyclesSettings => return None,
+            HideBlockParticles | UiSoundReserve | ChatAnimation | Splitscreen | PackBrowser
+            | CosmeticsAuras | MusicPage | CosmeticsMine | CosmeticsOthers | ReproKeys
+            | WheelCyclesSettings => return None,
             ZoomKey | ZoomLevel | ZoomSmooth | ZoomSensitivity => Zoom,
             MinimapCorner | MinimapSize | MinimapShape | MinimapZoom | MinimapRotate => Minimap,
             FpsCorner | FpsLows => Fps,
@@ -210,7 +219,9 @@ impl Item {
     /// What the row says under its caption.
     pub fn description(self) -> &'static str {
         match self {
-            Item::MusicPage
+            Item::PackBrowser
+            | Item::CosmeticsAuras
+            | Item::MusicPage
             | Item::CosmeticsMine
             | Item::CosmeticsOthers
             | Item::ReproKeys
@@ -281,7 +292,9 @@ impl Item {
     /// On/off items and their value.
     pub fn switch(self, e: &Extras) -> Option<bool> {
         Some(match self {
-            Item::MusicPage
+            Item::PackBrowser
+            | Item::CosmeticsAuras
+            | Item::MusicPage
             | Item::CosmeticsMine
             | Item::CosmeticsOthers
             | Item::ReproKeys
@@ -316,6 +329,7 @@ impl Item {
     /// The value of the other items, as their button shows it.
     pub fn value(self, e: &Extras) -> String {
         match self {
+            Item::CosmeticsMine | Item::CosmeticsOthers => self.shared().unwrap().value(e),
             Item::ZoomKey => crate::keybinds::display_name(&e.zoom_key).plain(),
             Item::SortKey => crate::keybinds::display_name(&e.sort_key).plain(),
             Item::ZoomLevel => format!("{}x", e.zoom_level),
@@ -338,7 +352,9 @@ impl Item {
     /// A click (`back` for the right button). The zoom key binds instead.
     pub fn cycle(self, e: &mut Extras, back: bool) {
         match self {
-            Item::MusicPage
+            Item::PackBrowser
+            | Item::CosmeticsAuras
+            | Item::MusicPage
             | Item::CosmeticsMine
             | Item::CosmeticsOthers
             | Item::ReproKeys

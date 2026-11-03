@@ -242,6 +242,7 @@ pub const MATERIAL_INPUT: Struct = Struct {
         normal: "vec3<f32>" = "The surface's geometric normal, a unit vector in world axes, facing the camera. A normal within about 3.6 degrees of an axis is that axis exactly, so distant block faces do not shimmer; flowing water's slopes are steeper and keep theirs.",
         tangent: "vec4<f32>" = "The surface's tangent: xyz the unit direction in world axes along which `uv.x` grows, w the sign (1 or -1) that makes `cross(normal, tangent.xyz) * tangent.w` the direction `uv.y` grows along (down the texture). With `normal` it turns a normal map's normals into world axes.",
         colored_light: "vec3<f32>" = "The frame's coloured lights at this point (`[[particle_lights]]`, held and dropped items in their `[[lights]]` colour while dynamic lights are on, and mods' visual lights), 0..1, to light the surface with as the pack likes; 0 where none reaches.",
+        displaced: "f32" = "How much of the relief `[displacement]` gave this point as geometry, 0..1: 1 near the camera, where the surface already lies where `displacement` put it (`position` is that point; a parallax effect would count its depth twice), easing to 0 at `[displacement] distance`; always 0 without `[displacement]`.",
     },
 };
 
@@ -263,6 +264,19 @@ pub const SKY_INPUT: Struct = Struct {
     fields: fields! {
         direction: "vec3<f32>" = "Unit view ray, camera-relative world axes.",
         color: "vec4<f32>" = "Vanilla's sky colour along the ray (sky, fog and sunrise).",
+    },
+};
+
+/// The input of the material stage's `displacement`, under `[displacement]`.
+pub const DISPLACEMENT_INPUT: Struct = Struct {
+    name: "DisplacementInput",
+    doc: "One corner of the grid a block face near the camera is cut into, for `fn displacement(input: DisplacementInput) -> f32` (`[displacement]`), which returns how deep below the face, in blocks, the surface lies at `height`.",
+    fields: fields! {
+        position: "vec3<f32>" = "The corner on the flat face, camera-relative, in blocks.",
+        normal: "vec3<f32>" = "The face's normal, a unit vector in world axes.",
+        uv: "vec2<f32>" = "The texture coordinate inside the block's sprite (as `MaterialInput.uv`).",
+        material: "u32" = "The `[[materials]]` id of the block texture (0 when none matches).",
+        height: "f32" = "A LabPBR height, 0..1 (1 the top of the relief): the normal map's alpha here, or the texture's average height (what the face's edges are pinned to).",
     },
 };
 

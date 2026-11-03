@@ -65,6 +65,7 @@ pub struct PackInputs {
     pub mod_params: [[f32; 4]; 8],
     /// The player's state, for Iris's status uniforms.
     pub status: PlayerStatus,
+    pub ambient_light: f32,
 }
 
 /// The `cloudHeight` uniform. Vanilla reads `visual/cloud_height` only while the cloud color
@@ -265,6 +266,8 @@ pub const NAMES: &[&str] = &[
     "is_invisible",
     "is_sneaking",
     "is_sprinting",
+    "ambientLight",
+    "constantMood",
     "centerDepthSmooth",
     "isRightHanded",
     "is_on_ground",
@@ -437,6 +440,9 @@ fn lightning_bolt_position(bolts: &[super::lightning::Bolt], camera: DVec3) -> V
 fn end_flash_view_position(view: &Mat4, sky_position: Vec3) -> Vec3 {
     view.transform_vector3(sky_position)
 }
+/// The seconds a tick of a smoothing half-life (`wetnessHalflife`, `eyeBrightnessHalflife`,
+/// `centerDepthHalflife`) lasts in Iris 1.11.7: measured, twice a game tick.
+const SECONDS_A_TICK: f32 = 0.1;
 
 /// `value` moved toward `target` with a half-life of `half_life` seconds over `dt` (5.6).
 fn smooth(value: f32, target: f32, half_life: f32, dt: f32) -> f32 {
@@ -501,26 +507,29 @@ impl FrameUniforms {
         let tilt = self.shadow.sun_path_rotation;
         let sun = to_view(body(frame.sky.sun_angle, tilt));
         let moon = to_view(body(frame.sky.moon_angle, tilt));
-        // Half-lives are given in ticks (7.2); smoothing runs per frame in seconds (OQ-26).
+        // Half-lives are given in ticks (7.2); smoothing runs per frame in seconds (OQ-26), at
+        // a tenth of a second a tick: Iris 1.11.7 smooths that slowly (measured frame by frame
+        // with a probe pack: wetness 60 s rising, 20 s falling; eyeBrightnessSmooth 1 s;
+        // centerDepthSmooth 0.1 s).
         let half_life = if inputs.rain > self.wetness {
             600.0
         } else {
             200.0
         };
-        self.wetness = smooth(self.wetness, inputs.rain, half_life / 20.0, dt);
+        self.wetness = smooth(self.wetness, inputs.rain, half_life * SECONDS_A_TICK, dt);
         let eye = inputs.eye_light.map(|l| (l * 16) as f32);
         if first_frame {
             self.wetness = inputs.rain;
             self.eye_smooth = eye;
         }
         for (smoothed, target) in self.eye_smooth.iter_mut().zip(eye) {
-            *smoothed = smooth(*smoothed, target, 10.0 / 20.0, dt);
+            *smoothed = smooth(*smoothed, target, 10.0 * SECONDS_A_TICK, dt);
         }
         // `centerDepthHalflife`'s default, 1 tick (OptiFine's shaders.txt); the first value
         // read back is taken as it is.
         if let Some(raw) = self.center_depth_raw {
             self.center_depth = Some(match self.center_depth {
-                Some(v) => smooth(v, raw, 1.0 / 20.0, dt),
+                Some(v) => smooth(v, raw, SECONDS_A_TICK, dt),
                 None => raw,
             });
         }
@@ -562,7 +571,6 @@ impl FrameUniforms {
                 "relativeEyePosition" => v3((frame.camera - inputs.eye_position).as_vec3()),
                 "playerLookVector" | "playerBodyVector" => v3(inputs.player_look),
                 "isElytraFlying" => Value::i(&[inputs.elytra_flying as i32]),
-                "playerMood" => Value::f(&[inputs.player_mood]),
                 "cloudHeight" => Value::f(&[inputs.cloud_height]),
                 "lightningBoltPosition" => Value::f(&lightning.to_array()),
                 "heavyFog" => Value::i(&[inputs.heavy_fog as i32]),
@@ -625,7 +633,8 @@ impl FrameUniforms {
                 "biome_precipitation" => Value::i(&[inputs.biome_precipitation]),
                 "temperature" => Value::f(&[inputs.temperature]),
                 "rainfall" => Value::f(&[inputs.rainfall]),
-                "eyeBrightnessSmooth" => Value::i(&self.eye_smooth.map(|v| v.round() as i32)),
+                // Rounded down, as Iris 1.11.7 gives it (probe pack).
+                "eyeBrightnessSmooth" => Value::i(&self.eye_smooth.map(|v| v.floor() as i32)),
                 "gbufferModelView" => m4(view),
                 "gbufferModelViewInverse" => m4(view.inverse()),
                 "gbufferProjection" => m4(projection),
@@ -637,6 +646,9 @@ impl FrameUniforms {
                 "heldBlockLightValue" => Value::i(&[inputs.held_light[0]]),
                 "heldBlockLightValue2" => Value::i(&[inputs.held_light[1]]),
                 "cloudTime" => Value::f(&[inputs.cloud_time]),
+                "ambientLight" => Value::f(&[inputs.ambient_light]),
+                // Iris 1.11.7 gave both the same value in every scene measured.
+                "playerMood" | "constantMood" => Value::f(&[inputs.player_mood]),
                 // renderStage is NONE outside gbuffers draws.
                 _ => status_value(name, inputs).unwrap_or(Value::i(&[0])),
             }
@@ -1306,6 +1318,275 @@ mod initial_history_tests {
         assert!(float(&u, "wetness")[0] > 0.0);
         assert!(u.eye_smooth.iter().all(|v| *v > 0.0));
     }
+    /// Actual provider bytes through translated GLSL and a GPU pixel, with a nonidentity
+    /// model-view/projection and a distant camera. Geometry is already camera-relative.
+    #[test]
+    #[ignore = "requires a host GPU; run with --ignored --nocapture"]
+    fn core_matrix_inputs_render_provider_values() {
+        use horizon_shaders::{
+            GbuffersInputs, Macros, Pack, Target, preprocess, translate_gbuffers,
+        };
+        use std::io::Write;
+        use wgpu::util::DeviceExt;
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let adapter = pollster::block_on(instance.request_adapter(&Default::default())).unwrap();
+        eprintln!("Core matrix GPU: {:?}", adapter.get_info());
+        let (device, queue) =
+            pollster::block_on(adapter.request_device(&Default::default())).unwrap();
+        let hud = HudBatch::new([800, 400]);
+        let mut f = frame(&hud);
+        f.camera = DVec3::new(1024.25, 100.5, -2048.75);
+        f.yaw = 180.0;
+        f.pitch = 0.0;
+        f.fov_degrees = 90.0;
+        f.bob = Mat4::from_translation(Vec3::new(0.5, -0.25, 0.0));
+        let mut values = FrameUniforms::default();
+        values.update(&f, &PackInputs::default(), [800, 400]);
+        for (declaration, setup, projection, view, expected) in [
+            (
+                "",
+                "",
+                "projectionMatrix",
+                "modelViewMatrix",
+                [64u8, 64, 128, 255],
+            ),
+            (
+                "uniform mat4 projectionMatrix, modelViewMatrix;",
+                "",
+                "projectionMatrix",
+                "modelViewMatrix",
+                [64, 64, 128, 255],
+            ),
+            (
+                "",
+                "",
+                "gl_ProjectionMatrix",
+                "gl_ModelViewMatrix",
+                [64, 64, 128, 255],
+            ),
+            (
+                "",
+                "mat4 projectionMatrix = mat4(2.0); mat4 modelViewMatrix = mat4(3.0);",
+                "projectionMatrix",
+                "modelViewMatrix",
+                [128, 191, 255, 255],
+            ),
+            (
+                "mat4 projectionMatrix = mat4(2.0), modelViewMatrix = mat4(3.0);",
+                "",
+                "projectionMatrix",
+                "modelViewMatrix",
+                [128, 191, 255, 255],
+            ),
+        ] {
+            let vertex = format!(
+                "#version 330 compatibility\n{declaration}\nout vec3 result;\n\
+                 void main() {{\n{setup}\n\
+                 vec4 q = {projection} * {view} * vec4(0.5, 0.75, -2.0, 1.0);\n\
+                 result = vec3(q.xy / q.w, q.w / 4.0);\n\
+                 vec2 p = vec2((gl_VertexID << 1) & 2, gl_VertexID & 2);\n\
+                 gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);\n}}"
+            );
+            let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+            for (path, source) in [
+                ("shaders/gbuffers_line.vsh", vertex.as_str()),
+                (
+                    "shaders/gbuffers_line.fsh",
+                    "#version 330\nin vec3 result; out vec4 color; void main() { color = vec4(result, 1.0); }",
+                ),
+            ] {
+                zip.start_file(path, zip::write::SimpleFileOptions::default())
+                    .unwrap();
+                zip.write_all(source.as_bytes()).unwrap();
+            }
+            let pack = Pack::from_zip_bytes("matrix-probe.zip", zip.finish().unwrap().into_inner())
+                .unwrap();
+            let macros = Macros::standard();
+            let program = translate_gbuffers(
+                &preprocess(&pack, "gbuffers_line.vsh", &macros),
+                &preprocess(&pack, "gbuffers_line.fsh", &macros),
+                Target::Buffers,
+                &GbuffersInputs::default(),
+            )
+            .unwrap();
+            let mut bytes = vec![0; program.interface.uniform_size as usize];
+            for uniform in &program.interface.uniforms {
+                if let Some(i) = index(&uniform.name) {
+                    values.values[i].write(&uniform.ty, &mut bytes, uniform.offset as usize);
+                }
+            }
+            let uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: None,
+                contents: &bytes,
+                usage: wgpu::BufferUsages::UNIFORM,
+            });
+            let module = |module| {
+                device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                    label: None,
+                    source: wgpu::ShaderSource::Naga(std::borrow::Cow::Owned(module)),
+                })
+            };
+            let vs = module(program.vertex);
+            let fs = module(program.fragment);
+            let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: None,
+                layout: None,
+                vertex: wgpu::VertexState {
+                    module: &vs,
+                    entry_point: Some("main"),
+                    compilation_options: Default::default(),
+                    buffers: &[],
+                },
+                primitive: Default::default(),
+                depth_stencil: None,
+                multisample: Default::default(),
+                fragment: Some(wgpu::FragmentState {
+                    module: &fs,
+                    entry_point: Some("main"),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: wgpu::TextureFormat::Rgba8Unorm,
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                multiview_mask: None,
+                cache: None,
+            });
+            let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: None,
+                layout: &pipeline.get_bind_group_layout(0),
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: uniform.as_entire_binding(),
+                }],
+            });
+            let texture = device.create_texture(&wgpu::TextureDescriptor {
+                label: None,
+                size: wgpu::Extent3d {
+                    width: 1,
+                    height: 1,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+                view_formats: &[],
+            });
+            let view = texture.create_view(&Default::default());
+            let read = device.create_buffer(&wgpu::BufferDescriptor {
+                label: None,
+                size: 256,
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            });
+            let mut encoder = device.create_command_encoder(&Default::default());
+            {
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: None,
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &view,
+                        resolve_target: None,
+                        depth_slice: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    ..Default::default()
+                });
+                pass.set_pipeline(&pipeline);
+                pass.set_bind_group(0, &group, &[]);
+                pass.draw(0..3, 0..1);
+            }
+            encoder.copy_texture_to_buffer(
+                texture.as_image_copy(),
+                wgpu::TexelCopyBufferInfo {
+                    buffer: &read,
+                    layout: wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(256),
+                        rows_per_image: None,
+                    },
+                },
+                texture.size(),
+            );
+            queue.submit([encoder.finish()]);
+            read.slice(..)
+                .map_async(wgpu::MapMode::Read, |result| result.unwrap());
+            device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+            let mapped = read.slice(..).get_mapped_range().unwrap();
+            // Independent result: translated point (1, .5, -2), perspective (aspect 2,
+            // vertical FOV 90): clip (.5, .5, z, 2), hence (.25, .25, .5, 1).
+            for (actual, expected) in mapped[..4].iter().zip(expected) {
+                assert!(
+                    actual.abs_diff(expected) <= 1,
+                    "{projection}: {:?}",
+                    &mapped[..4]
+                );
+            }
+        }
+    }
+
+    /// Iris 1.11.7, read frame by frame with a probe pack: eyeBrightnessSmooth falls by half
+    /// in 1 s and is rounded down; wetness takes 60 s to rise halfway and 20 s to fall; the
+    /// centre depth 0.1 s.
+    #[test]
+    fn smoothed_uniforms_take_iris_half_lives() {
+        let hud = HudBatch::new([800, 450]);
+        let f = frame(&hud);
+        let mut u = FrameUniforms::default();
+        // The next frame comes `seconds` after the last (and a few microseconds of the test).
+        let after = |u: &mut FrameUniforms, seconds: f32| {
+            u.last = Some(std::time::Instant::now() - std::time::Duration::from_secs_f32(seconds));
+        };
+        let mut input = PackInputs {
+            eye_light: [0, 15],
+            ..Default::default()
+        };
+        u.center_depth_raw = Some(1.0);
+        u.update(&f, &input, [800, 450]);
+        input.eye_light = [0, 0];
+        u.center_depth_raw = Some(0.0);
+        after(&mut u, 0.1);
+        u.update(&f, &input, [800, 450]);
+        assert!((float(&u, "centerDepthSmooth")[0] - 0.5).abs() < 1e-3);
+        after(&mut u, 0.6);
+        u.update(&f, &input, [800, 450]);
+        // 240 falling toward 0 for 0.7 s: 147.8, read as 147.
+        match u.values[index("eyeBrightnessSmooth").unwrap()] {
+            Value::I(v) => assert_eq!(v[1], 147),
+            _ => panic!("integer uniform expected"),
+        }
+        input.rain = 1.0;
+        after(&mut u, 60.0);
+        u.update(&f, &input, [800, 450]);
+        assert!((float(&u, "wetness")[0] - 0.5).abs() < 1e-3);
+        input.rain = 0.0;
+        after(&mut u, 20.0);
+        u.update(&f, &input, [800, 450]);
+        assert!((float(&u, "wetness")[0] - 0.25).abs() < 1e-3);
+    }
+
+    /// Iris 1.11.7 (probe pack): `ambientLight` is the dimension type's (0.1 in the Nether,
+    /// 0.25 in the End), and `playerMood` and `constantMood` both the cave mood.
+    #[test]
+    fn ambient_light_and_mood_come_from_the_inputs() {
+        let hud = HudBatch::new([800, 450]);
+        let mut u = FrameUniforms::default();
+        let input = PackInputs {
+            ambient_light: 0.25,
+            player_mood: 0.0235,
+            ..Default::default()
+        };
+        u.update(&frame(&hud), &input, [800, 450]);
+        assert_eq!(float(&u, "ambientLight")[0], 0.25);
+        assert_eq!(float(&u, "playerMood")[0], 0.0235);
+        assert_eq!(float(&u, "constantMood")[0], 0.0235);
+    }
+
     fn frame(hud: &HudBatch) -> Frame<'_> {
         Frame {
             eye: glam::DVec3::ZERO,

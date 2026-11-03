@@ -290,16 +290,17 @@ impl Game<'_> {
                     // A toggle either way: the crouch option toggles a press, otherwise flip the held key
                     // (as a controller's stick click does).
                     if self.settings.toggle_crouch {
-                        self.mapped_key(KeyCode::ShiftLeft, true, false)?;
-                        self.mapped_key(KeyCode::ShiftLeft, false, false)?;
+                        self.mapped_key(KeyCode::ShiftLeft, true, false, KeyCode::ShiftLeft)?;
+                        self.mapped_key(KeyCode::ShiftLeft, false, false, KeyCode::ShiftLeft)?;
                     } else {
                         let sneaking = self.keys.contains(&KeyCode::ShiftLeft);
-                        self.mapped_key(KeyCode::ShiftLeft, !sneaking, false)?;
+                        self.mapped_key(KeyCode::ShiftLeft, !sneaking, false, KeyCode::ShiftLeft)?;
                     }
                 }
                 Out::Press(control) | Out::Release(control) => {
                     if let Some(key) = key_of(control) {
-                        self.mapped_key(key, matches!(o, Out::Press(_)), false)?;
+                        // Touch supplies a default action directly, with no physical-key rebinding.
+                        self.mapped_key(key, matches!(o, Out::Press(_)), false, key)?;
                     }
                 }
                 Out::Look(dx, dy) => {

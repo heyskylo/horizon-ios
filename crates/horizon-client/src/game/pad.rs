@@ -321,7 +321,7 @@ impl Game<'_> {
                 let screen_open = self.screen != Screen::Playing || self.title.is_some();
                 self.toggles.pad_toggle(SNEAK, screen_open);
                 self.sync_toggle(SNEAK);
-                self.key_pressed(KeyCode::ShiftLeft)
+                self.key_pressed(KeyCode::ShiftLeft, KeyCode::ShiftLeft)
             }
             _ => {
                 let default = KeyBinds::default_of(action);
@@ -331,7 +331,7 @@ impl Game<'_> {
                     }
                     Ok(())
                 } else if let Some(key) = key_code(default) {
-                    self.mapped_key(key, down, false)
+                    self.mapped_key(key, down, false, key)
                 } else {
                     Ok(())
                 }
@@ -362,7 +362,7 @@ impl Game<'_> {
             self.close_book();
             return Ok(());
         }
-        self.key_pressed(KeyCode::Escape)
+        self.key_pressed(KeyCode::Escape, KeyCode::Escape)
     }
 
     /// The left stick as the move vector, while playing.
