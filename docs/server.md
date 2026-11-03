@@ -7,8 +7,7 @@ should beat vanilla, Paper and Fabric + Lithium on TPS/MSPT, RAM, CPU, chunk gen
 Gameplay stays vanilla: there are no Paper-style rule changes unless the owner turns one on.
 
 This page covers what the server does today (measured), the design of `horizon-server`, and what ships for the
-first working version (2026-10-23). The owner's guide is docs/hosting.md, also at
-https://playhorizon.dev/server.
+first working version (2026-10-23). The owner's guide is [docs/hosting.md](hosting.md).
 
 ## 1. Today
 
