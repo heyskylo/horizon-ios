@@ -72,10 +72,14 @@ fi
 # clones again (and replaces the rest of the folder).
 if [ -n "${GITHUB_WORKSPACE:-}" ] && [ -d "$GITHUB_WORKSPACE/.git" ]; then
   size=$(du -s --block-size=1G "$GITHUB_WORKSPACE/.git" | cut -f1)
-  if [ "$size" -gt "${MAX_GIT_GB:-4}" ]; then
-    echo "Checkout's .git at ${size} GB (over ${MAX_GIT_GB:-4}): removed, this job clones again"
+  if [ "$size" -gt "${MAX_GIT_GB:-2}" ]; then
+    echo "Checkout's .git at ${size} GB (over ${MAX_GIT_GB:-2}): removed, this job clones again"
     rm -rf "${GITHUB_WORKSPACE:?}/.git"
   fi
+fi
+# The runner's own diagnostic logs (a file per job, 1.3 GB a light runner in an hour on 2026-11-03): a day's worth.
+if [ -n "${RUNNER_WORKSPACE:-}" ] && [ -d "$RUNNER_WORKSPACE/../../_diag" ]; then
+  find "$RUNNER_WORKSPACE/../../_diag" -maxdepth 1 -type f -name '*.log' -mmin +1440 -delete 2>/dev/null || true
 fi
 EOF
   chmod +x "$shared/job-started.sh"

@@ -88,7 +88,8 @@ ssh ludovic@playhorizon 'bash ~/horizon-install/checks-runners.sh status'
   the machine, `linux-runner.sh`). The checks runners have their own `horizon-ci-checks.slice` (memory ≤ 16 GB).
   CPUs 0–3 stay for `tools/remote.sh` runs, benchmarks and the servers.
 - `job-started.sh`, before every job: refuses a fork's pull request; empties a cargo build folder over 40 GB
-  (`MAX_TARGET_GB`); drops a checkout's `.git` over 4 GB (`MAX_GIT_GB`), which the checkout then clones again. Every
+  (`MAX_TARGET_GB`); drops a checkout's `.git` over 2 GB (`MAX_GIT_GB`), which the checkout then clones again; removes the
+  runner's diagnostic logs older than a day. Every
   job's fetch adds a pack and nothing repacks them: on 2026-11-03 each light runner's checkout held 6822 packs, 50 GB.
 - The checks runners share one cargo home (`~/.actions-runners/ci-shared/cargo`: registry and git sources). Each has
   its own rustup home and its own build folder (`CARGO_TARGET_DIR`, outside the checkout). `CARGO_BUILD_JOBS=4`.
