@@ -206,6 +206,21 @@ pub fn ridden(m: &mut Mob) {
         }
     }
 }
+/// `AbstractNautilus.onPlayerJump` and the momentum `handleStartJump` starts:
+/// a saddled nautilus that is not in its dash cooldown keeps the released
+/// jump bar's scale on the rider, and its next `tickRidden` dashes with it
+/// (`executeRidersJump`). Returns whether the jump was taken.
+pub fn on_player_jump(m: &mut Mob, data: i32) -> bool {
+    // `if (isSaddled() && dashCooldown <= 0) playerJumpPendingScale = ...`
+    if !m.extra.saddled || m.extra.anim_ticks > 0 {
+        return false;
+    }
+    let Some(rider) = m.rider.as_mut() else {
+        return false;
+    };
+    rider.jump = super::equine::jump_pending_scale(data);
+    true
+}
 /// `executeRidersJump` (with `handleStartJump`'s sound): along the rider's
 /// look, 1.2 in water and 0.5 on land.
 fn dash(m: &mut Mob, amount: f32) {

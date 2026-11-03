@@ -374,12 +374,9 @@ impl Game<'_> {
             if st.was_jumping && !keys.jump {
                 st.jump_ticks = -10;
                 let amount = (st.jump_scale * 100.0).floor() as i32;
-                // PlayerRideableJumping.getPlayerJumpPendingScale
-                jump = if amount >= 90 {
-                    1.0
-                } else {
-                    0.4 + 0.4 * amount as f32 / 90.0
-                };
+                // PlayerRideableJumping.getPlayerJumpPendingScale, the scale a
+                // guest's START_RIDING_JUMP carries as `data`.
+                jump = equine::jump_pending_scale(amount);
             } else if !st.was_jumping && keys.jump {
                 st.jump_ticks = 0;
                 st.jump_scale = 0.0;
@@ -923,14 +920,15 @@ fn strider_dismount_location(
 }
 
 /// `ServerGamePacketListenerImpl.handlePlayerCommand` START_RIDING_JUMP on the
-/// vehicle `m` (`PlayerRideableJumping`): `canJump()` and a scale above zero,
-/// then the vehicle's own `handleStartJump`. Returns the sound the server
-/// plays, with its volume — `AbstractHorse.playJumpSound` at 0.4, `Camel`'s
-/// dash at 1.0 — or None when the mount takes no such jump.
+/// vehicle `m` (`PlayerRideableJumping`): `canJump()`, a scale above zero and
+/// then the vehicle's own `handleStartJump`. Returns the sound the server has
+/// to play, with its volume — `AbstractHorse.playJumpSound` at 0.4, `Camel`'s
+/// dash at 1.0 — or None when the mount takes no such jump or plays its own
+/// dash sound (the nautilus does).
 ///
-/// Nothing here moves the mount: the rider's client charges the bar and drives
-/// a saddled horse itself (`isLocalInstanceAuthoritative`), so the server's
-/// share is the rear, the dash flag and the sound the others hear.
+/// Nothing here moves the mount on its own: what a horse, camel or nautilus
+/// does with the jump is its `handleStartJump`, and the travel that follows
+/// (a dash, a rear) is the mount's own tick.
 pub(super) fn start_riding_jump(
     m: &mut horizon_client::mobs::Mob,
     data: i32,
@@ -947,14 +945,20 @@ pub(super) fn start_riding_jump(
         // Camel.handleStartJump: the dash sound, the entity action and DASH.
         crate::mobs::camel::set_dashing(m, true);
         Some((crate::mobs::camel::voice(m, 3), 1.0))
+    } else if crate::mobs::nautilus::is_nautilus(m.species()) {
+        // AbstractNautilus.handleStartJump: DASH, and the dash sound it makes
+        // itself when the dash runs. The momentum is `onPlayerJump`'s pending
+        // scale, which the nautilus spends on its next travel; a guest's ride
+        // tick fills `Rider::jump` from the keys the host hears, so the scale
+        // its own bar charged comes from this packet.
+        crate::mobs::nautilus::on_player_jump(m, data);
+        None
     } else if equine::is_equine(m.species()) {
         // AbstractHorse.handleStartJump, which is onPlayerJump for the slide
         // and the rear, then playJumpSound.
         equine::on_player_jump(m);
         Some((equine::jump_sound(m), 0.4))
     } else {
-        // A nautilus dashes off `Rider::jump` on its next travel, which a
-        // guest's own tick has not filled: nothing to start here.
         None
     }
 }
