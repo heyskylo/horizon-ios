@@ -221,6 +221,9 @@ fn local_index(x: i32, y: i32, z: i32) -> usize {
     (((y & 15) << 8) | ((z & 15) << 4) | (x & 15)) as usize
 }
 
+/// `TerrainChunk::worldgen_column_bounds`, indexed by `HeightmapType`.
+pub(crate) type ColumnBounds = [i32; HeightmapType::ALL.len()];
+
 impl<'r, B: TerrainBlockStates> TerrainChunk<'r, B> {
     /// Its heap bytes by part (`horizon-ctl memory`; scheduled ticks not
     /// counted): packed block storage, the sections' palettes and lists,
@@ -399,6 +402,60 @@ impl<'r, B: TerrainBlockStates> TerrainChunk<'r, B> {
         }
         if !missing.is_empty() {
             self.prime_heightmaps(&missing)?;
+        }
+        Ok(previous)
+    }
+    /// Per stage heightmap (indexed by `HeightmapType`), the highest y at
+    /// which a write cannot change it in column `x`, `z`: its first available
+    /// y - 2 (`Heightmap::update`). `None` when a stage map is missing.
+    pub(crate) fn worldgen_column_bounds(&self, x: i32, z: i32) -> Option<ColumnBounds> {
+        let mut bounds = [i32::MAX; HeightmapType::ALL.len()];
+        for &kind in self.stage.heightmaps() {
+            bounds[kind as usize] = self
+                .heightmap(kind)?
+                .first_available(x & 15, z & 15)
+                .ok()?
+                .wrapping_sub(2);
+        }
+        Some(bounds)
+    }
+    /// `set_block_worldgen` for writes in one column, with that column's
+    /// `worldgen_column_bounds`: updates at or below a map's bound, which
+    /// change nothing, are not made. Refreshes `bounds` when a map changes.
+    pub(crate) fn set_block_worldgen_column(
+        &mut self,
+        x: i32,
+        y: i32,
+        z: i32,
+        state: BlockStateId,
+        bounds: &mut Option<ColumnBounds>,
+    ) -> Result<BlockStateId, TerrainError> {
+        let Some(limits) = bounds else {
+            // A missing map is primed by the general path.
+            let previous = self.set_block_worldgen(x, y, z, state)?;
+            *bounds = self.worldgen_column_bounds(x, z);
+            return Ok(previous);
+        };
+        let Some(section) = self.blocks.section_index(y) else {
+            return Ok(self.blocks.void_air);
+        };
+        if self.blocks.non_air[section] == 0 && state == self.blocks.air {
+            return Ok(state);
+        }
+        // `BlockSection::set` rejects a state outside the registry first.
+        let previous = self.set_block_raw(x, y, z, state)?;
+        let (x, z) = (x & 15, z & 15);
+        let properties = self.blocks.properties.heightmap_state(state);
+        for &kind in self.stage.heightmaps() {
+            if y <= limits[kind as usize] {
+                continue;
+            }
+            let map = self.heightmaps[kind as usize]
+                .as_mut()
+                .expect("bounds are taken from present maps");
+            if map.update(&self.blocks, x, y, z, properties)? {
+                limits[kind as usize] = map.first_available(x, z)?.wrapping_sub(2);
+            }
         }
         Ok(previous)
     }

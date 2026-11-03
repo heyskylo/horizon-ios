@@ -7,7 +7,7 @@ use super::{
         MaterialSurfaceQueries,
     },
     material_extensions::{ExtensionError, MaterialColumn, MaterialExtensions},
-    terrain::{TerrainBlockStates, TerrainChunk, TerrainError},
+    terrain::{ColumnBounds, TerrainBlockStates, TerrainChunk, TerrainError},
 };
 use crate::{
     heightmap::{HeightmapState, HeightmapType},
@@ -90,6 +90,9 @@ struct Column<'a, 'r, B: TerrainBlockStates> {
     cache: &'a mut Vec<BlockStateId>,
     low: i32,
     high: i32,
+    /// This column's `TerrainChunk::worldgen_column_bounds`: most writes are
+    /// far below the heightmaps and need no update.
+    bounds: Option<ColumnBounds>,
 }
 impl<'a, 'r, B: TerrainBlockStates> Column<'a, 'r, B> {
     fn new(
@@ -112,6 +115,7 @@ impl<'a, 'r, B: TerrainBlockStates> Column<'a, 'r, B> {
                 cache.push(chunk.block(x, y, z));
             }
         }
+        let bounds = chunk.worldgen_column_bounds(x, z);
         Self {
             chunk,
             x,
@@ -121,6 +125,7 @@ impl<'a, 'r, B: TerrainBlockStates> Column<'a, 'r, B> {
             cache,
             low,
             high,
+            bounds,
         }
     }
     fn cache_index(&self, y: i32) -> Option<usize> {
@@ -139,7 +144,8 @@ impl<B: TerrainBlockStates> MaterialColumn for Column<'_, '_, B> {
         if y >= self.min && y <= self.max {
             // Most of the Nether's rule writes netherrack over netherrack.
             if self.block(y)? != state {
-                self.chunk.set_block_worldgen(self.x, y, self.z, state)?;
+                self.chunk
+                    .set_block_worldgen_column(self.x, y, self.z, state, &mut self.bounds)?;
                 if let Some(index) = self.cache_index(y) {
                     self.cache[index] = state;
                 }
