@@ -5202,6 +5202,41 @@ mod tests {
         }
         assert_eq!(engine.pending.len(), 1010);
     }
+    /// `VibrationSignalParticle.Provider.createParticle`: the provider path
+    /// the client's packet handler reaches (`add_with`) makes the signal from
+    /// the option's destination and arrival time, where it used to refuse it.
+    #[test]
+    fn a_vibration_option_makes_the_signal_its_provider_draws() {
+        let mut engine = ParticleEngine::new(Path::new(""), &HashMap::new(), &HashSet::new());
+        let options = ParticleOptions::vibration([10.5, 70.5, -3.5], 20);
+        // Within the camera's 32 blocks, so only the provider decides.
+        engine.add_with(&options, [0.5, 1.5, 0.5], [0.0; 3], false, false);
+        assert_eq!(engine.made().get("vibration"), Some(&1));
+        let q = engine.pending.first().expect("the signal is made");
+        assert_eq!(q.ty, ParticleType::Vibration);
+        assert_eq!(q.lifetime, 20);
+        assert!((q.size - 0.3).abs() < 1e-6);
+        assert!(!q.has_physics);
+        match &q.behaviour {
+            Behaviour::Vibration {
+                dest, rot, pitch, ..
+            } => {
+                assert_eq!(*dest, [10.5, 70.5, -3.5]);
+                // The constructor aims it from where it starts at the listener.
+                let d: [f64; 3] = [0.5 - 10.5, 1.5 - 70.5, 0.5 + 3.5];
+                assert!((*rot - d[0].atan2(d[2]) as f32).abs() < 1e-6);
+                let flat = (d[0] * d[0] + d[2] * d[2]).sqrt();
+                assert!((*pitch - d[1].atan2(flat) as f32).abs() < 1e-6);
+            }
+            _ => panic!("a vibration signal"),
+        }
+        // Only `VibrationParticleOption` carries a listener; a bare type has none.
+        let bare = ParticleOptions::simple(ParticleType::Vibration);
+        assert!(
+            engine.make(&bare, [0.0; 3], [0.0; 3], 1).is_none(),
+            "no destination, no signal"
+        );
+    }
     #[test]
     fn particle_names_round_trip() {
         for &ty in ParticleType::ALL {
