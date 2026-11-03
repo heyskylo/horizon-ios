@@ -53,10 +53,20 @@ thread_local! {
 }
 
 /// The scene was built again (a new window size): plates take their pieces from this one.
-pub fn set_backdrop(model: &Model) {
+pub fn set_backdrop(model: &Model, tint: Option<u32>) {
     PIECES.with_borrow_mut(|p| {
-        p.backdrop = Some(Backdrop::new(model, p.look.blur as f64));
+        p.backdrop = Some(Backdrop::new(model, p.look.blur as f64, tint));
         p.generation += 1;
+    });
+}
+
+/// The player's accent (and so the plates' tint) changed: pieces are painted again.
+pub fn set_look(look: Glass) {
+    PIECES.with_borrow_mut(|p| {
+        if p.look != look {
+            p.look = look;
+            p.generation += 1;
+        }
     });
 }
 

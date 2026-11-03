@@ -203,6 +203,54 @@ impl Game<'_> {
                 self.set_force_game_mode(force);
                 return json!({ "value": state.force_game_mode });
             }
+            "serversettings/allow_flight" => {
+                return json!({
+                    "value": self.lan.as_ref().is_some_and(|host| host.hub.config.allow_flight)
+                });
+            }
+            "serversettings/allow_flight/set" => {
+                let Some(allow) = body["value"].as_bool() else {
+                    return json!({ "error": "allow flight must be a boolean" });
+                };
+                let current = self
+                    .lan
+                    .as_ref()
+                    .is_some_and(|host| host.hub.config.allow_flight);
+                rpc(format!("Update allow flight from {current} to {allow}"));
+                self.set_allow_flight(allow);
+                self.store_property("allow-flight", allow.to_string());
+                return json!({
+                    "value": self.lan.as_ref().is_some_and(|host| host.hub.config.allow_flight)
+                });
+            }
+            "serversettings/hide_online_players" => {
+                return json!({
+                    "value": self
+                        .lan
+                        .as_ref()
+                        .is_some_and(|host| host.hub.lan.shared.hide_online_players())
+                });
+            }
+            "serversettings/hide_online_players/set" => {
+                let Some(hide) = body["value"].as_bool() else {
+                    return json!({ "error": "hide online players must be a boolean" });
+                };
+                let current = self
+                    .lan
+                    .as_ref()
+                    .is_some_and(|host| host.hub.lan.shared.hide_online_players());
+                rpc(format!(
+                    "Update hide online players from {current} to {hide}"
+                ));
+                self.set_hide_online_players(hide);
+                self.store_property("hide-online-players", hide.to_string());
+                return json!({
+                    "value": self
+                        .lan
+                        .as_ref()
+                        .is_some_and(|host| host.hub.lan.shared.hide_online_players())
+                });
+            }
             "serversettings/player_idle_timeout" => {
                 return json!({ "value": state.lists.lock().unwrap().player_idle_timeout });
             }
