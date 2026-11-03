@@ -92,6 +92,7 @@ One point of a block's surface, for `fn material(input: MaterialInput) -> Surfac
 | `normal` | `vec3<f32>` | The surface's geometric normal, a unit vector in world axes, facing the camera. A normal within about 3.6 degrees of an axis is that axis exactly, so distant block faces do not shimmer; flowing water's slopes are steeper and keep theirs. |
 | `tangent` | `vec4<f32>` | The surface's tangent: xyz the unit direction in world axes along which `uv.x` grows, w the sign (1 or -1) that makes `cross(normal, tangent.xyz) * tangent.w` the direction `uv.y` grows along (down the texture). With `normal` it turns a normal map's normals into world axes. |
 | `colored_light` | `vec3<f32>` | The frame's coloured lights at this point (`[[particle_lights]]`, held and dropped items in their `[[lights]]` colour while dynamic lights are on, and mods' visual lights), 0..1, to light the surface with as the pack likes; 0 where none reaches. |
+| `displaced` | `f32` | How much of the relief `[displacement]` gave this point as geometry, 0..1: 1 near the camera, where the surface already lies where `displacement` put it (`position` is that point; a parallax effect would count its depth twice), easing to 0 at `[displacement] distance`; always 0 without `[displacement]`. |
 
 ### `Surface`
 
@@ -100,6 +101,20 @@ What `material` returns. Vanilla's own is `albedo * tint * vec4(lightmap, 1.0)`;
 | Field | Type | Meaning |
 | --- | --- | --- |
 | `color` | `vec4<f32>` | The lit colour, 0..1, with its alpha. |
+
+Under `[displacement]` the stage also defines `fn displacement(input: DisplacementInput) -> f32`, called for each corner of the grid the faces near the camera are cut into; the corner moves along the face's normal by the depth it gives at the point's height less the depth at the texture's mean height, pinned at the face's edges and easing out over the last quarter of the distance.
+
+### `DisplacementInput`
+
+One corner of the grid a block face near the camera is cut into, for `fn displacement(input: DisplacementInput) -> f32` (`[displacement]`), which returns how deep below the face, in blocks, the surface lies at `height`.
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `position` | `vec3<f32>` | The corner on the flat face, camera-relative, in blocks. |
+| `normal` | `vec3<f32>` | The face's normal, a unit vector in world axes. |
+| `uv` | `vec2<f32>` | The texture coordinate inside the block's sprite (as `MaterialInput.uv`). |
+| `material` | `u32` | The `[[materials]]` id of the block texture (0 when none matches). |
+| `height` | `f32` | A LabPBR height, 0..1 (1 the top of the relief): the normal map's alpha here, or the texture's average height (what the face's edges are pinned to). |
 
 Resources (bind group 3):
 
@@ -278,7 +293,7 @@ Each `[[options]]` entry sets the WGSL `override` of the same name when the pipe
 
 ## Limits
 
-- 8 post passes, 64 options, `budget.gpu_ms` up to 16.
+- 12 post passes, 64 options, `budget.gpu_ms` up to 16.
 - 256 KiB per WGSL file, 8 MiB per pack.
 - Per stage: 20000 naga expressions over all its functions, 64 texture reads (samples,
   gathers and loads, the prelude's included).

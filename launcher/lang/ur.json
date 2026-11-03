@@ -1033,5 +1033,14 @@
   "3 to 16 letters, numbers or underscores. Switch names from the top bar too. Online servers don't take offline names.": "3 سے 16 حروف، ہندسے یا انڈر سکور۔ اوپر والی بار سے بھی نام بدل سکتے ہیں۔ آن لائن سرورز آف لائن نام قبول نہیں کرتے۔",
   "Play online with your Microsoft account": "اپنے Microsoft اکاؤنٹ کے ساتھ آن لائن کھیلیں",
   "Sign in with the account that owns Minecraft: Java Edition. Your name and skin come along to online servers, like in other launchers.": "اس اکاؤنٹ سے سائن ان کریں جو Minecraft: Java Edition کا مالک ہے۔ آپ کا نام اور اسکن دوسرے لانچرز کی طرح آن لائن سرورز پر بھی ساتھ جاتے ہیں۔",
-  "Microsoft's own page opens in your browser. Horizon never sees your password.": "Microsoft کا اپنا صفحہ آپ کے براؤزر میں کھلتا ہے۔ Horizon کبھی آپ کا پاس ورڈ نہیں دیکھتا۔"
+  "Microsoft's own page opens in your browser. Horizon never sees your password.": "Microsoft کا اپنا صفحہ آپ کے براؤزر میں کھلتا ہے۔ Horizon کبھی آپ کا پاس ورڈ نہیں دیکھتا۔",
+  "Colours the buttons, the switches and the sky. Pick one, or type any hex colour.": "بٹنوں، سوئچز اور آسمان کو رنگ دیتا ہے۔ ایک چنیں، یا کوئی بھی hex رنگ ٹائپ کریں۔",
+  "Accent colour, glass, blur, language and the options above go back to how Horizon ships.": "ایکسنٹ رنگ، شیشہ، دھندلاہٹ، زبان اور اوپر والے اختیارات Horizon کی ڈیفالٹ حالت پر واپس چلے جاتے ہیں۔",
+  "Reset the launcher's look": "لانچر کی شکل ری سیٹ کریں",
+  "Reset to defaults": "ڈیفالٹ پر ری سیٹ کریں",
+  "{value} px": "{value} px",
+  "{value}%": "{value}%",
+  "Experimental. Builds the native mods you trust into a game of their own.": "تجرباتی۔ جن نیٹو موڈز پر آپ بھروسہ کرتے ہیں انہیں ایک الگ گیم میں بناتا ہے۔",
+  "Native mods": "نیٹو موڈز",
+  "Nightly": "Nightly"
 }
