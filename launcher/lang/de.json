@@ -425,6 +425,7 @@
   "No version matches.": "Keine Version passt.",
   "Invite a friend": "Einen Freund einladen",
   "Offline": "Offline",
+  "{online} of {max}": "{online} von {max}",
   "Shortcut": "Verknüpfung",
   "Update to {version}": "Auf {version} aktualisieren",
   "{name} is off.": "{name} ist ausgeschaltet.",
@@ -1073,5 +1074,5 @@
   "Launcher settings are back to their defaults": "Die Launcher-Einstellungen sind wieder auf Standard",
   "Opened {path}": "{path} geöffnet",
   "Saved {name}": "{name} gespeichert",
-  "{online} of {max}": "{online} von {max}"
+  "My Horizon": "Mein Horizon"
 }

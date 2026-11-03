@@ -62,6 +62,7 @@
   "Play offline": "Çevrimdışı oyna",
   "Sign out": "Oturumu kapat",
   "Offline": "Çevrimdışı",
+  "{online} of {max}": "{online}/{max}",
   "Microsoft": "Microsoft",
   "Offline, the game's name": "Çevrimdışı oyun",
   "Manage accounts": "Hesapları yönet",
@@ -1073,5 +1074,5 @@
   "Launcher settings are back to their defaults": "Başlatıcı ayarları varsayılanlara döndü",
   "Opened {path}": "Açıldı: {path}",
   "Saved {name}": "{name} kaydedildi",
-  "{online} of {max}": "{online}/{max}"
+  "My Horizon": "Horizon'ım"
 }

@@ -425,6 +425,7 @@
   "No version matches.": "لا يوجد إصدار مطابق.",
   "Invite a friend": "دعوة صديق",
   "Offline": "غير متصل",
+  "{online} of {max}": "{online} من {max}",
   "Shortcut": "اختصار",
   "Update to {version}": "التحديث إلى {version}",
   "{name} is off.": "{name} مُعطّل.",
@@ -1073,5 +1074,5 @@
   "Launcher settings are back to their defaults": "عادت إعدادات المشغّل إلى قيمها الافتراضية",
   "Opened {path}": "تم فتح {path}",
   "Saved {name}": "تم حفظ {name}",
-  "{online} of {max}": "{online} من {max}"
+  "My Horizon": "Horizon الخاص بي"
 }

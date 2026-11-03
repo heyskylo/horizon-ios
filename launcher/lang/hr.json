@@ -425,6 +425,7 @@
   "No version matches.": "Nema odgovarajuće verzije.",
   "Invite a friend": "Pozovi prijatelja",
   "Offline": "Izvan mreže",
+  "{online} of {max}": "{online} od {max}",
   "Shortcut": "Prečac",
   "Update to {version}": "Ažuriraj na {version}",
   "{name} is off.": "{name} je isključen.",
@@ -1073,5 +1074,5 @@
   "Launcher settings are back to their defaults": "Postavke pokretača vraćene su na zadane",
   "Opened {path}": "Otvoreno: {path}",
   "Saved {name}": "{name} je spremljen",
-  "{online} of {max}": "{online} od {max}"
+  "My Horizon": "Moj Horizon"
 }

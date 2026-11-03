@@ -425,6 +425,7 @@
   "No version matches.": "Tidak ada versi yang cocok.",
   "Invite a friend": "Undang teman",
   "Offline": "Offline",
+  "{online} of {max}": "{online} dari {max}",
   "Shortcut": "Pintasan",
   "Update to {version}": "Perbarui ke {version}",
   "{name} is off.": "{name} nonaktif.",
@@ -1073,5 +1074,5 @@
   "Launcher settings are back to their defaults": "Pengaturan launcher kembali ke bawaan",
   "Opened {path}": "Dibuka: {path}",
   "Saved {name}": "{name} disimpan",
-  "{online} of {max}": "{online} dari {max}"
+  "My Horizon": "Horizon Saya"
 }

@@ -425,6 +425,7 @@
   "No version matches.": "일치하는 버전이 없습니다.",
   "Invite a friend": "친구 초대",
   "Offline": "오프라인",
+  "{online} of {max}": "{online}/{max}",
   "Shortcut": "바로 가기",
   "Update to {version}": "{version}(으)로 업데이트",
   "{name} is off.": "{name} 꺼짐.",
@@ -1073,5 +1074,5 @@
   "Launcher settings are back to their defaults": "런처 설정이 기본값으로 돌아갔습니다",
   "Opened {path}": "열었음: {path}",
   "Saved {name}": "{name}을(를) 저장했습니다",
-  "{online} of {max}": "{online}/{max}"
+  "My Horizon": "내 Horizon"
 }

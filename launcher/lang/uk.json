@@ -425,6 +425,7 @@
   "No version matches.": "Немає відповідних версій.",
   "Invite a friend": "Запросити друга",
   "Offline": "Офлайн",
+  "{online} of {max}": "{online} з {max}",
   "Shortcut": "Ярлик",
   "Update to {version}": "Оновити до {version}",
   "{name} is off.": "{name} вимкнено.",
@@ -1073,5 +1074,5 @@
   "Launcher settings are back to their defaults": "Налаштування лаунчера скинуто до типових",
   "Opened {path}": "Відкрито: {path}",
   "Saved {name}": "{name} збережено",
-  "{online} of {max}": "{online} з {max}"
+  "My Horizon": "Мій Horizon"
 }

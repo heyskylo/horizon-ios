@@ -62,6 +62,7 @@
   "Play offline": "オフラインでプレイ",
   "Sign out": "サインアウト",
   "Offline": "オフライン",
+  "{online} of {max}": "{online} / {max}",
   "Microsoft": "Microsoft",
   "Offline, the game's name": "オフライン、ゲーム名",
   "Manage accounts": "アカウント管理",
@@ -1073,5 +1074,5 @@
   "Launcher settings are back to their defaults": "ランチャーの設定を初期設定に戻しました",
   "Opened {path}": "開きました: {path}",
   "Saved {name}": "{name} を保存しました",
-  "{online} of {max}": "{online} / {max}"
+  "My Horizon": "マイ Horizon"
 }

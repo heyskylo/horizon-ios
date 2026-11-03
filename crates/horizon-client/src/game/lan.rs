@@ -25,6 +25,7 @@ use horizon_world::block_collision::BlockCollisionRegistry;
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
+    time::Instant,
 };
 
 /// What `sync_data` loaded: whether it was with data packs over the game's
@@ -1074,10 +1075,21 @@ fn mob_freeze_meta(
     meta: &mut Vec<(u8, i32, Value)>,
     defaults: &mut Vec<(u8, i32, Value)>,
 ) {
-    if m.ticks_frozen > 0 {
+    // `setTicksFrozen` can go negative (a mob warming up), and a client reads
+    // the count as is, so anything but the default 0 goes out.
+    if m.ticks_frozen != 0 {
         meta.push((7, serializer::INT, Value::Int(m.ticks_frozen)));
     }
     defaults.push((7, serializer::INT, Value::Int(0)));
+    // Entity.DATA_AIR_SUPPLY_ID (1): only an axolotl ticks `Mob.air` (its
+    // default is its 6000 max air supply).
+    if m.species() == horizon_client::mobs::Species::Axolotl {
+        let max = horizon_client::mobs::axolotl::MAX_AIR;
+        if m.air != max {
+            meta.push((1, serializer::INT, Value::Int(m.air)));
+        }
+        defaults.push((1, serializer::INT, Value::Int(max)));
+    }
     if m.kind.id == "minecraft:strider" {
         if m.extra.flag {
             meta.push((19, serializer::BOOLEAN, Value::Bool(true)));
@@ -1369,7 +1381,7 @@ impl Game<'_> {
         self.award_leave_game_to_all(&mut host);
         self.save_leaving_guests(&mut host);
         host.hub.disconnect_all();
-        // Give the writer threads a moment to flush the disconnect packets.
+        // Give the network threads a moment to flush the disconnect packets.
         std::thread::sleep(std::time::Duration::from_millis(100));
         self.world.block_log = None;
         self.world.light_log = None;
@@ -1682,6 +1694,13 @@ impl Game<'_> {
         }
     }
 
+    /// Update whether status responses include online player names.
+    pub(super) fn set_hide_online_players(&mut self, hide: bool) {
+        if let Some(host) = self.lan.as_ref() {
+            host.hub.lan.shared.set_hide_online_players(hide);
+        }
+    }
+
     /// New command access and game mode forcing settings of the open world.
     pub(super) fn lan_apply_settings(&mut self, guest_commands: bool, force: bool) {
         if let Some(server) = &self.integrated {
@@ -1806,7 +1825,16 @@ impl Game<'_> {
         entities: &[EntityState],
         spawn: [f64; 3],
     ) -> Option<LanHost> {
+        // A slow tick's line says which event took it, and whose (`spans::note`): each event's
+        // time is noted when the next one starts (an event's arm may `continue`), the last's
+        // after the loop.
+        let timed = horizon_client::spans::recording_here();
+        let mut previous = None;
         for event in events {
+            if timed {
+                note_event(&host, previous.take());
+                previous = Some((Instant::now(), event_kind(&event)));
+            }
             match event {
                 event @ (HostEvent::Chat { .. } | HostEvent::Warn(_) | HostEvent::Error(_)) => {
                     self.lan_log_event(event);
@@ -2051,6 +2079,7 @@ impl Game<'_> {
                 }
             }
         }
+        note_event(&host, previous);
         Some(host)
     }
 
@@ -2095,20 +2124,24 @@ impl Game<'_> {
             host.hub.mods_loaded = !horizon_client::mod_api::mods().is_empty();
             let pass = self.level_pass;
             let mut events = if pass.first {
-                host.hub.poll(&mut ctx)
+                horizon_client::spans::time("lan_poll", || host.hub.poll(&mut ctx))
             } else {
                 Vec::new()
             };
-            events.extend(host.hub.drain_packets(&mut ctx));
+            events.extend(horizon_client::spans::time("lan_drain", || {
+                host.hub.drain_packets(&mut ctx)
+            }));
             events
         };
-        let Some(back) = self.lan_process_events(host, events, entities.as_slice(), spawn) else {
+        let Some(back) = horizon_client::spans::time("lan_events", || {
+            self.lan_process_events(host, events, entities.as_slice(), spawn)
+        }) else {
             return;
         };
         host = back;
         if !host.quiet.is_empty() {
             self.lan = Some(host);
-            self.run_quiet_commands();
+            horizon_client::spans::time("lan_quiet_commands", || self.run_quiet_commands());
             host = self
                 .lan
                 .take()
@@ -2116,7 +2149,9 @@ impl Game<'_> {
         }
         if !host.hub.native_advancement_grants.is_empty() {
             self.lan = Some(host);
-            self.run_native_advancement_grants();
+            horizon_client::spans::time("lan_advancement_grants", || {
+                self.run_native_advancement_grants()
+            });
             host = self
                 .lan
                 .take()
@@ -2124,7 +2159,7 @@ impl Game<'_> {
         }
         if !host.hub.native_menu_events.is_empty() {
             self.lan = Some(host);
-            self.run_native_menu_events();
+            horizon_client::spans::time("lan_menu_events", || self.run_native_menu_events());
             host = self
                 .lan
                 .take()
@@ -2342,6 +2377,10 @@ impl Game<'_> {
                 }
                 host.hub
                     .set_immediate_respawn(self.ui.rules.bool("immediate_respawn"));
+                host.hub
+                    .set_reduced_debug_info(self.ui.rules.bool("reduced_debug_info"));
+                host.hub
+                    .set_limited_crafting(self.ui.rules.bool("limited_crafting"));
                 // A server with several levels runs a pass for each
                 // (`tick_server`): the network is read once, before the first.
                 // Player packets may already have been drained before
@@ -2988,9 +3027,97 @@ fn equipment_slot_name(slot: horizon_world::player_inventory::EquipmentSlot) -> 
     }
 }
 
+/// What a hub event is, whose connection, and the name of a player who left (no longer in the
+/// hub once it is handled): for a slow tick's notes.
+type EventKind = (&'static str, Option<u32>, Option<String>);
+
+fn event_kind(event: &HostEvent) -> EventKind {
+    match event {
+        HostEvent::Joined(c) => ("join", Some(*c), None),
+        HostEvent::Left(g) => ("leave", None, Some(g.name.clone())),
+        HostEvent::Packet(c, p) => (p.name(), Some(*c), None),
+        HostEvent::MainHandChanged(c, _) => ("main hand", Some(*c), None),
+        HostEvent::LocaleChanged(c, _) => ("locale", Some(*c), None),
+        HostEvent::PlayerLoaded(c) => ("loaded", Some(*c), None),
+        HostEvent::RecipeBookSettings { conn, .. } => ("recipe book", Some(*conn), None),
+        HostEvent::Sneak { conn, .. } => ("sneak", Some(*conn), None),
+        HostEvent::Input { conn, .. } => ("input", Some(*conn), None),
+        HostEvent::Kicked { name, .. } => ("kick", None, Some(name.clone())),
+        HostEvent::Flight { conn, .. } => ("flight", Some(*conn), None),
+        HostEvent::Chat { .. } => ("chat line", None, None),
+        HostEvent::PlayerChat { .. } => ("chat", None, None),
+        HostEvent::ChatFiltered { name, .. } => ("filtered chat", None, Some(name.clone())),
+        HostEvent::Warn(_) => ("warning", None, None),
+        HostEvent::Error(_) => ("error", None, None),
+        HostEvent::Ban { name, .. } => ("ban", None, Some(name.clone())),
+    }
+}
+
+/// Notes how long the event that started at `started` took (`spans::note`).
+fn note_event(host: &LanHost, started: Option<(Instant, EventKind)>) {
+    let Some((started, (kind, conn, name))) = started else {
+        return;
+    };
+    horizon_client::spans::note(started.elapsed().as_secs_f32() * 1000.0, || {
+        let who = name
+            .or_else(|| conn.and_then(|c| host.hub.guest(c)).map(|g| g.name.clone()))
+            .or_else(|| conn.map(|c| format!("connection {c}")));
+        match who {
+            Some(who) => format!("{kind} of {who}"),
+            None => kind.to_owned(),
+        }
+    });
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{OFFHAND_SLOT, equipment_slot_name, living_flags};
+    use super::{OFFHAND_SLOT, equipment_slot_name, living_flags, mob_freeze_meta};
+    use horizon_client::mobs::Mob;
+    use horizon_protocol::entity_data::{Value, serializer};
+
+    fn mob_of(kind: &str) -> Option<Mob> {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        let types = horizon_client::mobs::MobTypes::load(&root).ok()?;
+        let t = std::sync::Arc::new(types.types.get(kind)?.clone());
+        Some(Mob::new(
+            1,
+            t,
+            horizon_core::geometry::Vec3::new(0.0, 64.0, 0.0),
+            0.0,
+        ))
+    }
+
+    fn freeze_meta(m: &Mob) -> (Vec<(u8, i32, Value)>, Vec<(u8, i32, Value)>) {
+        let (mut meta, mut defaults) = (Vec::new(), Vec::new());
+        mob_freeze_meta(m, &mut meta, &mut defaults);
+        (meta, defaults)
+    }
+
+    /// Entity.setTicksFrozen can go negative; index 7 must carry it. Index 1
+    /// (air supply) goes out for an axolotl only, against its 6000 default.
+    #[test]
+    fn negative_frozen_ticks_and_axolotl_air_are_synced() {
+        let Some(mut cow) = mob_of("minecraft:cow") else {
+            return;
+        };
+        cow.ticks_frozen = -3;
+        let (meta, _) = freeze_meta(&cow);
+        assert!(meta.contains(&(7, serializer::INT, Value::Int(-3))));
+        cow.air = 100;
+        assert!(freeze_meta(&cow).0.iter().all(|e| e.0 != 1));
+
+        let Some(mut axolotl) = mob_of("minecraft:axolotl") else {
+            return;
+        };
+        axolotl.air = 5000;
+        let (meta, defaults) = freeze_meta(&axolotl);
+        assert!(meta.contains(&(1, serializer::INT, Value::Int(5000))));
+        assert!(defaults.contains(&(1, serializer::INT, Value::Int(6000))));
+        axolotl.air = 6000;
+        assert!(freeze_meta(&axolotl).0.iter().all(|e| e.0 != 1));
+    }
 
     /// `LivingEntity.startUsingItem` sets flag 1 for the use and flag 2 for
     /// the off hand, so an off-hand use is 3, not 2. A reader takes bit 0 as

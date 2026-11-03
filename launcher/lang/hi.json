@@ -425,6 +425,7 @@
   "No version matches.": "कोई संस्करण मेल नहीं खाता।",
   "Invite a friend": "मित्र को आमंत्रित करें",
   "Offline": "ऑफ़लाइन",
+  "{online} of {max}": "{max} में से {online}",
   "Shortcut": "शॉर्टकट",
   "Update to {version}": "{version} पर अपडेट करें",
   "{name} is off.": "{name} बंद है।",
@@ -1073,5 +1074,5 @@
   "Launcher settings are back to their defaults": "लॉन्चर की सेटिंग्स डिफ़ॉल्ट पर लौट आईं",
   "Opened {path}": "खोला गया: {path}",
   "Saved {name}": "{name} सहेजा गया",
-  "{online} of {max}": "{max} में से {online}"
+  "My Horizon": "मेरा Horizon"
 }
