@@ -513,6 +513,9 @@ impl Game<'_> {
             // `/summon ender_dragon` outside the End: no fight, but the dragon flies.
             self.tick_fight();
         }
+        // The spikes' crystals (placed above) join before they light a fire:
+        // a mod that cancels one keeps its fire out too.
+        self.native_joins_flush(false, 0);
         self.tick_crystals();
         self.tick_eyes();
         if self.dim == Dim::End {
@@ -613,6 +616,15 @@ impl Game<'_> {
                             "minecraft:air"
                         };
                         if &*self.block_name(p) != name {
+                            // Portal arrivals rebuild the platform with drops enabled.
+                            self.with_level(|b, level, ticks| {
+                                b.destroy_block(
+                                    level,
+                                    ticks,
+                                    BlockPos::new(p[0], p[1], p[2]),
+                                    true,
+                                );
+                            });
                             self.set_state_named(p, name, &[])?;
                         }
                     }

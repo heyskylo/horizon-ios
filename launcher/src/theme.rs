@@ -97,6 +97,12 @@ pub fn pinned_dark(choice: Appearance) -> Option<bool> {
 impl Theme {
     /// The pinned look (`pinned_dark`: dark unless the player picked another), the system's when
     /// they asked to follow it, in the player's accent.
+    /// This look under another sky (a launcher theme from the Wardrobe), top to bottom.
+    pub fn with_sky(mut self, sky: [u32; 6]) -> Self {
+        self.night.sky = sky;
+        self
+    }
+
     pub fn for_appearance(choice: Appearance, accent: Accent, system: WindowAppearance) -> Self {
         let system_dark = !matches!(
             system,
@@ -104,7 +110,48 @@ impl Theme {
         );
         let dark = pinned_dark(choice).unwrap_or(system_dark);
         let night = if dark { night::NIGHT } else { night::DAWN };
-        Self::from(accent.apply(night.blocks()), night)
+        let theme = Self::from(accent.apply(night.blocks()), night);
+        if dark {
+            theme.glass()
+        } else {
+            theme
+        }
+    }
+
+    /// The dark appearance draws the glass look ("Glass" in `docs/design-system.md`): what the
+    /// pages not rebuilt for it yet draw with these tokens comes out as the mockup's parts do,
+    /// white text and fills at a few opacities, no borders, no bevels.
+    fn glass(self) -> Self {
+        use horizon_theme::glass::{fill, ink, Glass, DANGER, LIVE, WARN};
+        let white = |a: f32| gpui::white().opacity(a);
+        let none = gpui::transparent_black();
+        let look = Glass::default_look();
+        Self {
+            plate_soft: white(fill::ROW_HOVER),
+            plate: white(fill::BUTTON),
+            rule: white(fill::BUTTON),
+            ink: white(ink::FULL),
+            ink_soft: white(ink::SOFT),
+            muted: white(ink::QUIET),
+            accent: c(look.accent_soft),
+            on_accent: c(look.on_accent),
+            danger: c(DANGER),
+            success: c(LIVE),
+            warn: c(WARN),
+            panel: white(0.04),
+            raised: white(fill::ROW_HOVER),
+            button: white(fill::BUTTON),
+            button_bevel: none,
+            well: white(fill::FIELD),
+            bevel: none,
+            lip: none,
+            outline: none,
+            face: c(look.accent),
+            face_bevel: none,
+            face_lip: none,
+            on_face: c(look.on_accent),
+            ..self
+        }
     }
 
     fn from(p: tokens::Blocks, night: Night) -> Self {

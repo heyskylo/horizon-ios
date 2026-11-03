@@ -31,8 +31,9 @@ The dedicated server is the game itself, run headless:
   online. It supports `pause-when-empty-seconds`, `player-idle-timeout` and the autosave.
 - **Console (stdin).** `stop`, `save-all`, `save-on`/`save-off`, `list [uuids]`, `op`/`deop`,
   `whitelist on|off|list|reload|add|remove`, `ban`, `ban-ip`, `pardon`, `pardon-ip`, `banlist`, `kick` and
-  `say` behave as in `DedicatedServer`. Every other command goes to the game's own dispatcher as the server
-  (permission level 4). The log follows vanilla's Log4j pattern, in `logs/latest.log` and on stdout.
+  `say` behave as in `DedicatedServer`. `tempban <player> <duration> [reason]` is Horizon's own: a ban that
+  ends by itself ([hosting](hosting.md#temporary-bans)). Every other command goes to the game's own dispatcher as the
+  server (permission level 4). The log follows vanilla's Log4j pattern, in `logs/latest.log` and on stdout.
 - **Player names.** `usercache.json` in the universe folder works as vanilla's `CachedUserNameToIdResolver`.
   Players are added when they join and kept for a month, and the file keeps the 1000 most recently used,
   newest first. The console finds a player by name in it, in any case. A name it doesn't hold is asked of the
