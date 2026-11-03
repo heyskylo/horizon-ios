@@ -144,7 +144,7 @@ pub const ROUTES: [Route; 28] = [
         method: "GET",
         path: "/api/v1/metrics/prometheus",
         takes: "",
-        answers: "the latest sample as Prometheus text: `horizon_up`, `horizon_tps`, `horizon_mspt{stat}`, `horizon_players_online`, `horizon_memory_rss_bytes`...",
+        answers: "the latest sample as Prometheus text: `horizon_up`, `horizon_tps`, `horizon_mspt{stat}`, `horizon_players_online`, `horizon_memory_rss_bytes`, `horizon_loaded_chunks{dimension}` and `horizon_entities{dimension}` (players and block entities apart)...",
         what: "Metrics for a monitoring tool to scrape",
     },
     Route {
