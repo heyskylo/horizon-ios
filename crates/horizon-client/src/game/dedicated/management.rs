@@ -223,6 +223,34 @@ impl Game<'_> {
                     "value": self.lan.as_ref().is_some_and(|host| host.hub.config.allow_flight)
                 });
             }
+            "serversettings/hide_online_players" => {
+                return json!({
+                    "value": self
+                        .lan
+                        .as_ref()
+                        .is_some_and(|host| host.hub.lan.shared.hide_online_players())
+                });
+            }
+            "serversettings/hide_online_players/set" => {
+                let Some(hide) = body["value"].as_bool() else {
+                    return json!({ "error": "hide online players must be a boolean" });
+                };
+                let current = self
+                    .lan
+                    .as_ref()
+                    .is_some_and(|host| host.hub.lan.shared.hide_online_players());
+                rpc(format!(
+                    "Update hide online players from {current} to {hide}"
+                ));
+                self.set_hide_online_players(hide);
+                self.store_property("hide-online-players", hide.to_string());
+                return json!({
+                    "value": self
+                        .lan
+                        .as_ref()
+                        .is_some_and(|host| host.hub.lan.shared.hide_online_players())
+                });
+            }
             "serversettings/player_idle_timeout" => {
                 return json!({ "value": state.lists.lock().unwrap().player_idle_timeout });
             }

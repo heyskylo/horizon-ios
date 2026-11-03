@@ -1091,11 +1091,23 @@ impl Projectile {
             self.left_owner = owner_box
                 .is_none_or(|b| !b.inflate(Vec3::new(1.0, 1.0, 1.0)).contains(self.position));
         }
-        if impact && let Some((who, at, _)) = best {
+        // LlamaSpit never discards on an entity: `onHitEntity` only hurts, so
+        // the spit flies on through what it hit (its block hit discards).
+        let spit = self.kind == ProjectileKind::LlamaSpit;
+        let spit_hit = best
+            .filter(|_| impact && spit)
+            .map_or(Hit::None, |(who, at, _)| Hit::Entity { who, at });
+        if impact
+            && !spit
+            && let Some((who, at, _)) = best
+        {
             self.position = at;
             return (false, Hit::Entity { who, at });
         }
-        if impact && let Some((at, pos, face)) = block {
+        if impact
+            && !(spit && best.is_some())
+            && let Some((at, pos, face)) = block
+        {
             self.position = at;
             return (false, Hit::Block { pos, at, face });
         }
@@ -1123,7 +1135,7 @@ impl Projectile {
                 self.velocity.z * 0.99,
             );
             self.update_rotation();
-            return (self.position.y > -128.0 && self.age < 6000, Hit::None);
+            return (self.position.y > -128.0 && self.age < 6000, spit_hit);
         }
         self.position = to;
         if !self.is_fireball() {
