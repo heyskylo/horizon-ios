@@ -83,10 +83,12 @@ pub enum Language {
     Greek,
     #[serde(rename = "fa")]
     Persian,
+    #[serde(rename = "se")]
+    NorthernSami,
 }
 
 impl Language {
-    pub const ALL: [Language; 35] = [
+    pub const ALL: [Language; 36] = [
         Self::English,
         Self::French,
         Self::Russian,
@@ -122,6 +124,7 @@ impl Language {
         Self::Swedish,
         Self::Greek,
         Self::Persian,
+        Self::NorthernSami,
     ];
 
     /// Its code in `settings.json` and on the command line.
@@ -162,6 +165,7 @@ impl Language {
             Self::Swedish => "sv",
             Self::Greek => "el",
             Self::Persian => "fa",
+            Self::NorthernSami => "se",
         }
     }
 
@@ -203,6 +207,7 @@ impl Language {
             Self::Swedish => "Svenska",
             Self::Greek => "Ελληνικά",
             Self::Persian => "فارسی",
+            Self::NorthernSami => "Davvisámegiella",
         }
     }
 
@@ -286,6 +291,7 @@ impl Language {
             Self::Swedish => include_str!("../lang/sv.json"),
             Self::Greek => include_str!("../lang/el.json"),
             Self::Persian => include_str!("../lang/fa.json"),
+            Self::NorthernSami => include_str!("../lang/se.json"),
         }
     }
 }
