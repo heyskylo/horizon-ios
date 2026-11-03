@@ -66,6 +66,7 @@ pub enum H {
     BlueMapRadius,
     CaveCulling,
     EntityCulling,
+    EntityCullingPrecheck,
     LeafCulling,
     CacheShulkerBoxes,
     CacheSigns,
@@ -380,6 +381,11 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
                             "Hides entities behind opaque blocks.",
                         ),
                         h(
+                            H::EntityCullingPrecheck,
+                            Saves,
+                            "Runs coarse entity culling after this many entities are visible. Zero disables it.",
+                        ),
+                        h(
                             H::LeafCulling,
                             Saves,
                             "Draws or drops leaf faces inside canopies. Off keeps vanilla's fancy leaves.",
@@ -646,6 +652,7 @@ impl H {
         let g = &s.horizon;
         match self {
             H::ChunkUpdates => Some(g.chunk_updates as f32 / 64.0),
+            H::EntityCullingPrecheck => Some(g.entity_culling_precheck as f32 / 512.0),
             H::UploadBudget => {
                 let i = UPLOAD_STEPS
                     .iter()
@@ -676,7 +683,8 @@ impl H {
     }
     pub fn slider_steps(self) -> Option<u32> {
         match self {
-            H::ChunkUpdates => Some(64),
+            H::ChunkUpdates => Some(32),
+            H::EntityCullingPrecheck => Some(32),
             H::UploadBudget => Some((UPLOAD_STEPS.len() - 1) as u32),
             H::Workers => Some(max_workers()),
             H::ResolutionScale => Some(30),
@@ -703,6 +711,14 @@ impl H {
             ),
             H::CaveCulling => labelled("Cave Culling", on_off(g.cave_culling)),
             H::EntityCulling => labelled("Entity Culling", g.entity_culling.label()),
+            H::EntityCullingPrecheck => labelled(
+                "Entity Culling Precheck",
+                if g.entity_culling_precheck == 0 {
+                    "Off".to_string()
+                } else {
+                    format!("{} entities", g.entity_culling_precheck)
+                },
+            ),
             H::LeafCulling => labelled("Leaf Culling", g.leaf_culling.label()),
             H::CacheShulkerBoxes => labelled("Shulker Boxes", on_off(g.cache_shulker_boxes)),
             H::CacheSigns => labelled("Signs", on_off(g.cache_signs)),
@@ -809,6 +825,7 @@ impl H {
         let g = &mut s.horizon;
         match self {
             H::ChunkUpdates => g.chunk_updates = (v * 64.0).round() as u32,
+            H::EntityCullingPrecheck => g.entity_culling_precheck = (v * 512.0).round() as u32,
             H::UploadBudget => {
                 g.upload_budget_kib =
                     UPLOAD_STEPS[(v * (UPLOAD_STEPS.len() - 1) as f32).round() as usize]
