@@ -124,6 +124,20 @@ fn sample_rgss(uv: vec2<f32>, layer: u32, pixel: vec2<f32>, du: vec2<f32>, dv: v
     let max_texel = max(texel_screen.x, texel_screen.y);
     let min_pixel = min(pixel.x, pixel.y);
     let blend = smoothstep(min_pixel, min_pixel * 2.0, max_texel);
+    // Only the side of the mix that has weight is sampled: near texels (blend 0) take
+    // sample_nearest's one tap alone, far ones (blend 1) the rotated grid alone.
+    if blend <= 0.0 {
+        return sample_nearest(uv, layer, pixel, du, dv, texel_screen, tiled);
+    }
+    let rgss = rotated_grid(uv, layer, pixel, du, dv);
+    if blend >= 1.0 {
+        return rgss;
+    }
+    return mix(sample_nearest(uv, layer, pixel, du, dv, texel_screen, tiled), rgss, blend);
+}
+fn rotated_grid(uv: vec2<f32>, layer: u32, pixel: vec2<f32>, du: vec2<f32>,
+                dv: vec2<f32>) -> vec4<f32> {
+    let min_pixel = min(pixel.x, pixel.y);
     let du_len = length(du);
     let dv_len = length(dv);
     let effective = sqrt(min(du_len, dv_len) * max(du_len, dv_len));
@@ -139,8 +153,7 @@ fn sample_rgss(uv: vec2<f32>, layer: u32, pixel: vec2<f32>, du: vec2<f32>, dv: v
         sum_low += sprite_level(p, layer, low);
         sum_high += sprite_level(p, layer, low + 1.0);
     }
-    let rgss = mix(sum_low * 0.25, sum_high * 0.25, mip_blend);
-    return mix(sample_nearest(uv, layer, pixel, du, dv, texel_screen, tiled), rgss, blend);
+    return mix(sum_low * 0.25, sum_high * 0.25, mip_blend);
 }
 // Distant terrain tiles (lod/mesh.rs) count their UVs in blocks past 1: each block takes the
 // sprite again, as separate faces would under the clamped sampler. Sprite UVs in [0, 1] stay.
