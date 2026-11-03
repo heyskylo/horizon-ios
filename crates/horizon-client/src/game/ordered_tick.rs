@@ -20,6 +20,9 @@ pub(super) struct OrderedTicks {
     born: JoinSeq,
     /// The last join number ticked, if any: later ones are still to come.
     pub(super) done: Option<JoinSeq>,
+    /// Joins below this have had their spawn packet; the ones above joined
+    /// since (a summoned falling block, a lit TNT) and tick after it goes out.
+    pub(super) announced: JoinSeq,
     /// For each batch of another kind, in tick order (see [`Batch`]): the
     /// lowest join number among it and every batch after it.
     suffix_min: [JoinSeq; Batch::COUNT],
@@ -78,6 +81,7 @@ impl Game<'_> {
             *slot = lowest;
         }
         self.ordered = OrderedTicks {
+            announced: self.ordered.announced,
             born: JoinSeq::upcoming(),
             done: None,
             suffix_min,
@@ -87,17 +91,23 @@ impl Game<'_> {
 
     /// Ticks, one at a time in join order, every orb, primed TNT and falling
     /// block that joined before `cut` and has not ticked this tick.
-    pub(super) fn run_ordered_ticks(&mut self, cut: JoinSeq) -> Result<()> {
+    pub(super) fn run_ordered_ticks(&mut self, cut: JoinSeq, late: bool) -> Result<()> {
         let mut first_error = None;
         let mut followed = None;
         let mut events = false;
         let entity_ticking = self.entity_ticking_area();
         loop {
-            let (done, born) = (self.ordered.done, self.ordered.born);
+            let (done, born, announced) = (self.ordered.done, self.ordered.born, self.ordered.announced);
             let wanted = |j: JoinSeq| done.is_none_or(|d| j > d) && j < cut && j < born;
             let mut next: Option<(JoinSeq, Pending)> = None;
             let mut offer = |j: JoinSeq, kind: Pending| {
-                if wanted(j) && next.is_none_or(|(n, _)| j < n) {
+                // Orbs are announced after their tick, always; TNT and falling
+                // blocks that joined since the last packets wait for them.
+                let right_pass = match kind {
+                    Pending::Orb => !late,
+                    _ => late == (j >= announced),
+                };
+                if right_pass && wanted(j) && next.is_none_or(|(n, _)| j < n) {
                     next = Some((j, kind));
                 }
             };
@@ -186,6 +196,6 @@ impl Game<'_> {
         if cut == JoinSeq::MAX {
             return Ok(());
         }
-        self.run_ordered_ticks(cut)
+        self.run_ordered_ticks(cut, false)
     }
 }

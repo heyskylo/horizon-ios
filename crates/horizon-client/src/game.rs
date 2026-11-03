@@ -7572,8 +7572,7 @@ impl Game<'_> {
             horizon_client::spans::time("recheck_golem_openers", || self.recheck_golem_openers());
             self.tick_mod_container_viewers();
             // Orbs, primed TNT and falling blocks still to tick, in join order.
-            self.run_ordered_ticks(horizon_client::join_seq::JoinSeq::MAX)?;
-            self.apply_late_wind_pushes();
+            self.run_ordered_ticks(horizon_client::join_seq::JoinSeq::MAX, false)?;
             horizon_client::spans::time("tick_experience", || self.tick_experience());
             // Merged, despawned or picked up.
             self.native_leaves_flush();
@@ -7586,6 +7585,8 @@ impl Game<'_> {
         self.native_joins_flush(false, 0);
         self.native_leaves_flush();
         horizon_client::spans::time("tick_lan", || self.tick_lan(false));
+        // Everything that has joined has had its spawn packet.
+        self.ordered.announced = horizon_client::join_seq::JoinSeq::upcoming();
         self.tick_friends();
         horizon_client::spans::time("tick_hand", || self.tick_hand());
         horizon_client::spans::time("tick_sleep", || self.tick_sleep());
@@ -7598,6 +7599,11 @@ impl Game<'_> {
                 self.resolve_end_gateway_arrivals()
             })?;
             self.keep_gateway_destinations();
+        }
+        if running {
+            // Primed TNT and falling blocks that joined since the spawn packets.
+            self.run_ordered_ticks(horizon_client::join_seq::JoinSeq::MAX, true)?;
+            self.apply_late_wind_pushes();
         }
         if running {
         }
