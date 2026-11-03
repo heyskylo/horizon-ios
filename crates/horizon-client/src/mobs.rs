@@ -4902,4 +4902,92 @@ mod totem_tests {
         );
     }
 }
+#[cfg(test)]
+mod effect_refusal_tests {
+    use super::*;
+
+    /// A mob of a real type, from the extracted data (`entity-types.json`), so the
+    /// `undead`, `MobCategory` and species facts are the ones the game has.
+    fn mob(types: &MobTypes, id: &str) -> Mob {
+        let kind = Arc::new(types.types.get(id).expect(id).clone());
+        Mob::new(1, kind, Vec3::new(0.0, 64.0, 0.0), 0.0)
+    }
+    /// `LivingEntity.addEffect` asks `canBeAffected` before it stores anything: an
+    /// effect the mob's type refuses never joins the list, so the cloud on its head,
+    /// the `/effect` reply and an effect tick never see it. The refused ones are the
+    /// `ignores_poison_and_regen` tag (which is `#minecraft:undead`), a silverfish's
+    /// infested and a slime's oozing, plus the five classes that override the rule.
+    #[test]
+    fn an_effect_the_mobs_type_refuses_is_never_added() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        if !root.join("entity-types.json").exists() {
+            return;
+        }
+        let types = MobTypes::load_for_server(&root).unwrap();
+        let refused = |id: &str, effect: &'static str| {
+            let mut m = mob(&types, id);
+            m.add_effect(effect, 200, 0);
+            let listed = m.has_effect(effect);
+            (listed, m.extra.effects.len())
+        };
+        // `#minecraft:undead` is the `ignores_poison_and_regen` tag: a zombie, a
+        // skeleton and a phantom turn both poison and regeneration away.
+        for undead in [
+            "minecraft:zombie",
+            "minecraft:skeleton",
+            "minecraft:phantom",
+            "minecraft:zombie_horse",
+            "minecraft:wither",
+        ] {
+            for effect in ["minecraft:poison", "minecraft:regeneration"] {
+                assert_eq!(refused(undead, effect), (false, 0), "{undead} {effect}");
+            }
+            // Every other effect still lands on it.
+            assert_eq!(refused(undead, "minecraft:strength"), (true, 1), "{undead}");
+        }
+        // The tag's other two effects, each refused by the one type in it.
+        assert_eq!(
+            refused("minecraft:silverfish", "minecraft:infested"),
+            (false, 0)
+        );
+        assert_eq!(
+            refused("minecraft:silverfish", "minecraft:poison"),
+            (true, 1)
+        );
+        assert_eq!(refused("minecraft:slime", "minecraft:oozing"), (false, 0));
+        // A magma cube is not in `immune_to_oozing`, so oozing takes.
+        assert_eq!(
+            refused("minecraft:magma_cube", "minecraft:oozing"),
+            (true, 1)
+        );
+        // Spider.canBeAffected and CaveSpider's inheritance: poison is refused, and a
+        // nautilus refuses it too (AbstractNautilus.canBeAffected), the zombie one
+        // through the same override, an ordinary mob not at all.
+        for spider in [
+            "minecraft:spider",
+            "minecraft:cave_spider",
+            "minecraft:nautilus",
+        ] {
+            assert_eq!(refused(spider, "minecraft:poison"), (false, 0), "{spider}");
+        }
+        assert_eq!(refused("minecraft:cow", "minecraft:poison"), (true, 1));
+        // WitherBoss.canBeAffected and WitherSkeleton.canBeAffected: the wither
+        // effect only, which a zombie takes.
+        for wither in ["minecraft:wither", "minecraft:wither_skeleton"] {
+            assert_eq!(refused(wither, "minecraft:wither"), (false, 0), "{wither}");
+        }
+        assert_eq!(refused("minecraft:zombie", "minecraft:wither"), (true, 1));
+        // Parched.canBeAffected: weakness only, slowness takes.
+        assert_eq!(
+            refused("minecraft:parched", "minecraft:weakness"),
+            (false, 0)
+        );
+        assert_eq!(
+            refused("minecraft:parched", "minecraft:slowness"),
+            (true, 1)
+        );
+    }
+}
 crate::impl_joined!(Mob);
