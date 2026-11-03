@@ -1065,5 +1065,12 @@
   "Play {name}": "{name} खेलें",
   "Install {name}": "{name} इंस्टॉल करें",
   "Remove {name}": "{name} हटाएँ",
-  "Play, install a mod, open a page": "खेलें, मॉड इंस्टॉल करें, पेज खोलें"
+  "Play, install a mod, open a page": "खेलें, मॉड इंस्टॉल करें, पेज खोलें",
+  "Copied the picture": "चित्र कॉपी किया गया",
+  "Copied {text}": "कॉपी किया गया: {text}",
+  "Created {name}": "{name} बनाया गया",
+  "Deleted {name}": "{name} हटाया गया",
+  "Launcher settings are back to their defaults": "लॉन्चर की सेटिंग्स डिफ़ॉल्ट पर लौट आईं",
+  "Opened {path}": "खोला गया: {path}",
+  "Saved {name}": "{name} सहेजा गया"
 }

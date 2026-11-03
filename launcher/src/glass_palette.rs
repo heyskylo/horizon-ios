@@ -45,17 +45,6 @@ struct Command {
     run: Run,
 }
 
-/// `/Users/me/x` as `~/x`, as the mockup writes the game folder.
-fn tilde(path: &std::path::Path) -> String {
-    let shown = path.display().to_string();
-    match std::env::var("HOME") {
-        Ok(home) if !home.is_empty() && shown.starts_with(&home) => {
-            format!("~{}", &shown[home.len()..])
-        }
-        _ => shown,
-    }
-}
-
 impl Launcher {
     /// ⌘K: the palette opens, or closes when it is open.
     pub(super) fn palette_toggle(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -111,7 +100,7 @@ impl Launcher {
         if let Some(home) = self.selected_instance().map(|i| i.home.clone()) {
             all.push(Command {
                 label: tr("Open the game folder").to_string(),
-                hint: tilde(&home),
+                hint: crate::glass_toast::tilde(&home),
                 run: Run::Folder(home),
             });
         }
@@ -162,7 +151,7 @@ impl Launcher {
             Run::NewInstance => self.open_instance_dialog(None),
             Run::Folder(home) => {
                 let _ = std::fs::create_dir_all(&home);
-                cx.open_with_system(&home);
+                crate::glass_toast::open(cx, &home);
             }
             Run::Install(p) => {
                 let p = *p;

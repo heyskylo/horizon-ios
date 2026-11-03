@@ -1065,5 +1065,12 @@
   "Play {name}": "玩 {name}",
   "Install {name}": "安装 {name}",
   "Remove {name}": "移除 {name}",
-  "Play, install a mod, open a page": "游玩、安装模组、打开页面"
+  "Play, install a mod, open a page": "游玩、安装模组、打开页面",
+  "Copied the picture": "已复制图片",
+  "Copied {text}": "已复制：{text}",
+  "Created {name}": "已创建 {name}",
+  "Deleted {name}": "已删除 {name}",
+  "Launcher settings are back to their defaults": "启动器设置已恢复默认",
+  "Opened {path}": "已打开 {path}",
+  "Saved {name}": "已保存 {name}"
 }

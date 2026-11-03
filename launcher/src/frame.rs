@@ -695,6 +695,7 @@ impl Launcher {
             .px(px(32.))
             .pt(px(14.))
             .child(strip)
+            .children(self.toast_in_topbar())
             .child(
                 div()
                     .ml_auto()
@@ -874,7 +875,7 @@ impl Launcher {
                     move |this, _: &ClickEvent, _, cx| {
                         this.row_menu.open = None;
                         let _ = std::fs::create_dir_all(&home);
-                        cx.open_with_system(&home);
+                        crate::glass_toast::open(cx, &home);
                         cx.notify();
                     },
                 )),

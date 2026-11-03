@@ -1065,5 +1065,12 @@
   "Play {name}": "{name} をプレイ",
   "Install {name}": "{name} をインストール",
   "Remove {name}": "{name} を削除",
-  "Play, install a mod, open a page": "プレイ、Mod のインストール、ページを開く"
+  "Play, install a mod, open a page": "プレイ、Mod のインストール、ページを開く",
+  "Copied the picture": "画像をコピーしました",
+  "Copied {text}": "コピーしました: {text}",
+  "Created {name}": "{name} を作成しました",
+  "Deleted {name}": "{name} を削除しました",
+  "Launcher settings are back to their defaults": "ランチャーの設定を初期設定に戻しました",
+  "Opened {path}": "開きました: {path}",
+  "Saved {name}": "{name} を保存しました"
 }
