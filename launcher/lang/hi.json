@@ -1057,5 +1057,13 @@
   "Mod": "मॉड",
   "Resource pack": "रिसोर्स पैक",
   "Shader pack": "शेडर पैक",
-  "Data pack": "डेटा पैक"
+  "Data pack": "डेटा पैक",
+  "Esc": "Esc",
+  "Mod · {instance}": "मॉड · {instance}",
+  "Open the game folder": "गेम फ़ोल्डर खोलें",
+  "Open {page}": "{page} खोलें",
+  "Play {name}": "{name} खेलें",
+  "Install {name}": "{name} इंस्टॉल करें",
+  "Remove {name}": "{name} हटाएँ",
+  "Play, install a mod, open a page": "खेलें, मॉड इंस्टॉल करें, पेज खोलें"
 }

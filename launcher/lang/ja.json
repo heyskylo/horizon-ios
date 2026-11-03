@@ -1057,5 +1057,13 @@
   "Mod": "Mod",
   "Resource pack": "リソースパック",
   "Shader pack": "シェーダーパック",
-  "Data pack": "データパック"
+  "Data pack": "データパック",
+  "Esc": "Esc",
+  "Mod · {instance}": "Mod · {instance}",
+  "Open the game folder": "ゲームフォルダーを開く",
+  "Open {page}": "{page} を開く",
+  "Play {name}": "{name} をプレイ",
+  "Install {name}": "{name} をインストール",
+  "Remove {name}": "{name} を削除",
+  "Play, install a mod, open a page": "プレイ、Mod のインストール、ページを開く"
 }

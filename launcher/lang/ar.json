@@ -1057,5 +1057,13 @@
   "Mod": "إضافة",
   "Resource pack": "حزمة موارد",
   "Shader pack": "حزمة تظليل",
-  "Data pack": "حزمة بيانات"
+  "Data pack": "حزمة بيانات",
+  "Esc": "Esc",
+  "Mod · {instance}": "إضافة · {instance}",
+  "Open the game folder": "فتح مجلد اللعبة",
+  "Open {page}": "فتح {page}",
+  "Play {name}": "العب {name}",
+  "Install {name}": "تثبيت {name}",
+  "Remove {name}": "إزالة {name}",
+  "Play, install a mod, open a page": "العب، ثبّت إضافة، افتح صفحة"
 }

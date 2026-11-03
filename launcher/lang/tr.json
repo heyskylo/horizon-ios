@@ -1057,5 +1057,13 @@
   "Mod": "Mod",
   "Resource pack": "Kaynak paketi",
   "Shader pack": "Gölgelendirici paketi",
-  "Data pack": "Veri paketi"
+  "Data pack": "Veri paketi",
+  "Esc": "Esc",
+  "Mod · {instance}": "Mod · {instance}",
+  "Open the game folder": "Oyun klasörünü aç",
+  "Open {page}": "{page} aç",
+  "Play {name}": "{name} oyna",
+  "Install {name}": "{name} yükle",
+  "Remove {name}": "{name} kaldır",
+  "Play, install a mod, open a page": "Oyna, mod yükle, sayfa aç"
 }
