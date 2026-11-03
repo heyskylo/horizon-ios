@@ -27,6 +27,7 @@ mod glass_home_tabs;
 mod glass_instance;
 mod glass_instance_java;
 mod glass_ui;
+mod glass_versions;
 mod home;
 mod home_tabs;
 mod import_page;
@@ -4406,6 +4407,9 @@ impl Launcher {
                 .map(|(_, n)| *n)
         };
         let used: u64 = self.installed.iter().filter_map(on_disk).sum();
+        if t.dark {
+            return self.glass_versions(&on_disk, used, cx);
+        }
         // The list's own action at the end of the line above it: a build the player has.
         let import: AnyElement = if self.importing_build {
             div()
