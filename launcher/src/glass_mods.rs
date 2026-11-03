@@ -16,7 +16,7 @@
 
 use super::*;
 use crate::glass_ui::{self as ui, white};
-use horizon_theme::glass::{ink, radius, LIVE, WARN};
+use horizon_theme::glass::{ink, radius};
 
 /// The project card's width (`lg:grid-cols-[minmax(0,1fr)_360px]`).
 const DETAIL: f32 = 360.;
@@ -237,8 +237,8 @@ impl Launcher {
             } else {
                 let support = m.support(&p);
                 let tone = match support {
-                    Support::Works => ui::color(LIVE),
-                    Support::Partial(_) => ui::color(WARN),
+                    Support::Works => ui::live(),
+                    Support::Partial(_) => ui::warn(),
                     Support::No(_) => white(0.4),
                 };
                 ui::text(13., FontWeight::MEDIUM, ink::FULL)
@@ -300,9 +300,7 @@ impl Launcher {
                         .flex_none()
                         .justify_center()
                         .w(px(20.))
-                        .when(installed, |d| {
-                            d.child(ui::icon("tick-02", 17., ui::color(LIVE)))
-                        })
+                        .when(installed, |d| d.child(ui::icon("tick-02", 17., ui::live())))
                         .when(busy && !installed, |d| d.child(ui::dot(ui::Tone::Busy))),
                 )
                 .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
@@ -373,8 +371,8 @@ impl Launcher {
             by.push(p.license.clone());
         }
         let (tone, reason) = match &support {
-            Support::Works => (ui::color(LIVE), None),
-            Support::Partial(_) => (ui::color(WARN), support.reason()),
+            Support::Works => (ui::live(), None),
+            Support::Partial(_) => (ui::warn(), support.reason()),
             Support::No(_) => (white(0.55), support.reason()),
         };
         let about = m
@@ -398,9 +396,7 @@ impl Launcher {
                 &t,
             )
             .w_full()
-            .when(confirming, |d| {
-                d.text_color(ui::color(horizon_theme::glass::DANGER))
-            })
+            .when(confirming, |d| d.text_color(ui::danger()))
             .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                 this.mods_remove_click(id.clone());
                 cx.notify();

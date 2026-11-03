@@ -60,6 +60,19 @@ impl JavaChoice {
     }
 }
 
+/// `base`, or "base 2", "base 3"… when an instance already has it (names ignore case, as
+/// `instances::create` does).
+fn free_name(base: String, taken: &[&str]) -> String {
+    let free = |n: &String| !taken.iter().any(|t| t.eq_ignore_ascii_case(n));
+    if free(&base) {
+        return base;
+    }
+    (2..)
+        .map(|n| format!("{base} {n}"))
+        .find(free)
+        .unwrap_or(base)
+}
+
 /// Mojang's list as the dialog has it.
 #[derive(Default)]
 pub(super) enum VersionList {
@@ -75,17 +88,25 @@ impl Launcher {
         self.instances.dialog.as_mut().map(|d| &mut d.java)
     }
 
-    /// The name a new Java instance gets for what it plays now.
+    /// The name a new instance gets for what it plays now (the mockup's `defaultName`): "My
+    /// Horizon", "Vanilla 1.21.4", "Fabric 1.21.4", numbered past the ones already taken.
     fn default_name(&self) -> Option<String> {
         let j = &self.instances.dialog.as_ref()?.java;
         let versions = match &self.instances.versions {
             VersionList::Ready(v) => Some(v),
             _ => None,
         };
-        (j.kind != NewKind::Horizon)
-            .then(|| j.minecraft(versions))
-            .flatten()
-            .map(|mc| j.default_name(&mc))
+        let base = match j.kind {
+            NewKind::Horizon => tr("My Horizon").to_string(),
+            _ => j.default_name(&j.minecraft(versions)?),
+        };
+        let taken: Vec<&str> = self
+            .instances
+            .list
+            .iter()
+            .map(|i| i.name.as_str())
+            .collect();
+        Some(free_name(base, &taken))
     }
 
     /// Changes what the new instance plays. Its name follows while it is the one the dialog gave
@@ -357,5 +378,14 @@ mod tests {
         assert_eq!(choice.minecraft(None), None);
         choice.version = Some("1.20.1".into());
         assert_eq!(choice.minecraft(None).as_deref(), Some("1.20.1"));
+    }
+
+    #[test]
+    fn a_default_name_skips_the_ones_taken() {
+        assert_eq!(free_name("My Horizon".into(), &["Horizon"]), "My Horizon");
+        assert_eq!(
+            free_name("My Horizon".into(), &["my horizon", "My Horizon 2"]),
+            "My Horizon 3"
+        );
     }
 }

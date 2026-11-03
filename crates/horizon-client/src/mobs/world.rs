@@ -465,6 +465,7 @@ pub(crate) fn with_resource_test_world(
         collision: &collision,
         data: &data,
         player: None,
+        controlling_player_movement: None,
         nearest_player: None,
         others,
         dragon: None,
@@ -533,6 +534,7 @@ pub(crate) fn test_player(position: Vec3) -> super::PlayerView {
         sleeping: false,
         sleep_timer: 0,
         passenger: false,
+        riding_vehicle: None,
         vehicle: None,
     }
 }
