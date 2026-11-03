@@ -3540,6 +3540,7 @@ pub(crate) mod tests {
                         *max_stack = 7;
                     }
                 },
+                player_chat: |_, _, _, _, _| {},
                 living_heal: |_, _, _| {},
                 living_breathe: |_, _, _, _, _| {},
                 living_drown: |_, _, _, _, _, _| {},
