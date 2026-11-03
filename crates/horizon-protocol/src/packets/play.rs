@@ -882,8 +882,10 @@ packet!(
 );
 packet!(SetPlayerInventory { slot: i32 => VarInt, item: Option<Stack> => Slot });
 packet!(
-    /// ClockNetworkState for one world clock (registry id).
-    ClockState { clock: i32 => VarInt, total_ticks: i64 => VarLong, partial_tick: f32 => Float, rate: f32 => Float }
+    /// ClockNetworkState for one world clock. The key is a
+    /// `Holder<WorldClock>` (`WorldClock.STREAM_CODEC`), so on the wire it is
+    /// the registry id + 1; 0 is reserved for an inline definition.
+    ClockState { clock: i32 => HolderId, total_ticks: i64 => VarLong, partial_tick: f32 => Float, rate: f32 => Float }
 );
 packet!(SetTime { game_time: i64 => Long, clocks: Vec<ClockState> => List<ClockState> });
 packet!(TitlesAnimation { fade_in: i32 => Int, stay: i32 => Int, fade_out: i32 => Int });
@@ -3937,6 +3939,48 @@ mod tests {
             Serverbound::encode,
             Serverbound::decode,
         );
+    }
+
+    /// `ClientboundSetTimePacket` keys its clocks by `Holder<WorldClock>`
+    /// (`WorldClock.STREAM_CODEC` = `ByteBufCodecs.holderRegistry`), i.e. the
+    /// registry id + 1. Read as a bare id, a vanilla server's overworld clock
+    /// (1 on the wire) landed on the End's entry, so `/time set day` never
+    /// reached the overworld clock and the client's day time stood still.
+    #[test]
+    fn a_time_clock_is_a_holder_id_plus_one() {
+        let mut w = Writer::new();
+        w.i64(100);
+        w.varint(1);
+        w.varint(1); // Holder<WorldClock>: registry id 0 = minecraft:overworld
+        w.varlong(6000);
+        w.f32(0.0);
+        w.f32(1.0);
+        let decoded =
+            Clientbound::decode(crate::ids::play::clientbound::SET_TIME, &w.data).unwrap();
+        let Clientbound::SetTime(t) = decoded else {
+            panic!("expected SetTime")
+        };
+        assert_eq!(t.clocks[0].clock, 0);
+        assert_eq!(t.clocks[0].total_ticks, 6000);
+        assert_eq!(t.clocks[0].rate, 1.0);
+
+        // The writer puts the same holder form back on the wire: Long, count,
+        // holder id + 1.
+        let mut out = Writer::new();
+        SetTime::write(
+            &SetTime {
+                game_time: 100,
+                clocks: vec![ClockState {
+                    clock: 0,
+                    total_ticks: 6000,
+                    partial_tick: 0.0,
+                    rate: 1.0,
+                }],
+            },
+            &mut out,
+        );
+        assert_eq!(out.data[8], 1, "one clock");
+        assert_eq!(out.data[9], 1, "registry id 0 + 1");
     }
 
     #[test]
