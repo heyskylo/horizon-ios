@@ -1047,8 +1047,6 @@ impl Game<'_> {
                 let _ = p.set_modifier(attr, id, *amount, op, true);
             }
             self.potions.applied = modifiers;
-            // onAttributeUpdated: a lost health_boost clamps health to max_health.
-            let _ = p.clamp_health_to_max();
         }
         if let Some(p) = self.player.as_mut()
             && self.potions.effects.amplifier("absorption").is_none()

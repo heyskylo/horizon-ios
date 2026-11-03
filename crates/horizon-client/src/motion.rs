@@ -742,6 +742,9 @@ impl PlayerMotion {
                 Ok(())
             })
             .map_err(attribute_error)?;
+        if attribute == "minecraft:max_health" {
+            self.clamp_health_to_max()?;
+        }
         Ok(())
     }
     /// `LivingEntity.onAttributeUpdated` for `max_health`: a health above the
@@ -3044,8 +3047,9 @@ mod tests {
     }
 
     #[test]
-    fn health_drops_to_max_health_when_health_boost_ends() {
-        // #8573: LivingEntity.onAttributeUpdated clamps health to max_health.
+    fn max_health_modifier_changes_clamp_health() {
+        // #8573: LivingEntity.onAttributeUpdated clamps health to max_health
+        // for every modifier change, with no explicit clamp call.
         let root = std::env::var_os("HORIZON_TEST_RESOURCES")
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|| {
@@ -3065,17 +3069,52 @@ mod tests {
         p.set_modifier("minecraft:max_health", boost, 4.0, "add_value", true)
             .unwrap();
         p.set_health(24.0, false).unwrap();
-        p.clamp_health_to_max().unwrap();
-        assert_eq!(p.health.health(), 24.0, "nothing to clamp while boosted");
+        // An unrelated attribute change leaves the boosted hearts alone.
+        p.set_modifier("minecraft:armor", "minecraft:x", 2.0, "add_value", true)
+            .unwrap();
+        assert_eq!(p.health.health(), 24.0);
         p.set_modifier("minecraft:max_health", boost, 0.0, "add_value", false)
             .unwrap();
-        p.clamp_health_to_max().unwrap();
         assert_eq!(p.attribute("minecraft:max_health").unwrap(), 20.0);
         assert_eq!(p.health.health(), 20.0);
-        // Below the maximum: untouched.
+        // Below the maximum a lost modifier never raises or lowers health.
+        p.set_modifier(
+            "minecraft:max_health",
+            "minecraft:gear",
+            6.0,
+            "add_value",
+            true,
+        )
+        .unwrap();
         p.set_health(7.0, false).unwrap();
-        p.clamp_health_to_max().unwrap();
+        p.set_modifier(
+            "minecraft:max_health",
+            "minecraft:gear",
+            0.0,
+            "add_value",
+            false,
+        )
+        .unwrap();
         assert_eq!(p.health.health(), 7.0);
+        // An equipment-style multiplier is covered the same way.
+        p.set_modifier(
+            "minecraft:max_health",
+            "minecraft:gear",
+            0.5,
+            "add_multiplied_base",
+            true,
+        )
+        .unwrap();
+        p.set_health(30.0, false).unwrap();
+        p.set_modifier(
+            "minecraft:max_health",
+            "minecraft:gear",
+            0.0,
+            "add_multiplied_base",
+            false,
+        )
+        .unwrap();
+        assert_eq!(p.health.health(), 20.0);
     }
 
     #[test]
