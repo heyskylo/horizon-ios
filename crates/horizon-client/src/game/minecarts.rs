@@ -2072,9 +2072,10 @@ impl Game<'_> {
         self.unpack_cart_loot(i);
         let c = self.carts[i].clone();
         let key = (i32::MAX - 15, CART_KEY_Y, c.id as i32);
+        // Other players may already be editing this vehicle's live slots.
         self.world
             .block_entities
-            .insert(key, BlockEntity::Chest(c.items.clone()));
+            .get_or_insert_with(key, || BlockEntity::Chest(c.items.clone()));
         self.container = Some(key);
         self.screen = super::Screen::Inventory;
         self.capture(false);

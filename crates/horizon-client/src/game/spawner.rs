@@ -482,11 +482,7 @@ impl Game<'_> {
         let mut trial_keys = Vec::new();
         let mut vault_keys = Vec::new();
         for (&pos, be) in &self.world.block_entities {
-            let d = (pos.0 - center[0])
-                .abs()
-                .max((pos.1 - center[1]).abs())
-                .max((pos.2 - center[2]).abs());
-            if d <= 64 {
+            if within_client_tick_range(pos, center) {
                 match be {
                     BlockEntity::Spawner(_) => keys.push(pos),
                     BlockEntity::TrialSpawner(_) => trial_keys.push(pos),
@@ -561,6 +557,60 @@ impl Game<'_> {
             for item in items {
                 self.mark_rendered_item(item.start, item.end, &item.item);
             }
+        }
+    }
+}
+
+/// Menu inventories also live in block_entities under synthetic keys. They
+/// can span the full i32 range relative to the player; subtracting first can
+/// overflow before the scan even discovers that the entry is not a spawner.
+fn within_client_tick_range(pos: Pos, center: [i32; 3]) -> bool {
+    pos.0.abs_diff(center[0]) <= 64
+        && pos.1.abs_diff(center[1]) <= 64
+        && pos.2.abs_diff(center[2]) <= 64
+}
+
+#[cfg(test)]
+mod client_tick_range_tests {
+    use super::within_client_tick_range;
+
+    #[test]
+    fn menu_storage_keys_are_outside_the_client_tick_range() {
+        for center in [
+            [3, 68, 8],
+            [-3, 68, -8],
+            [0, 0, 0],
+            [30_000_000, 64, 30_000_000],
+            [-30_000_000, 64, -30_000_000],
+        ] {
+            assert!(!within_client_tick_range((i32::MIN, 0, 0), center));
+            assert!(!within_client_tick_range(
+                (i32::MAX - 15, -100_000, 42),
+                center
+            ));
+        }
+    }
+
+    #[test]
+    fn range_includes_64_blocks_in_each_direction_without_wrapping() {
+        let center = [4, 70, -8];
+        for axis in 0..3 {
+            for delta in [-65, -64, 64, 65] {
+                let mut pos = center;
+                pos[axis] += delta;
+                assert_eq!(
+                    within_client_tick_range((pos[0], pos[1], pos[2]), center),
+                    delta.abs() <= 64
+                );
+            }
+            let mut pos = [0; 3];
+            let mut extreme_center = [0; 3];
+            pos[axis] = i32::MIN;
+            extreme_center[axis] = i32::MAX;
+            assert!(!within_client_tick_range(
+                (pos[0], pos[1], pos[2]),
+                extreme_center
+            ));
         }
     }
 }

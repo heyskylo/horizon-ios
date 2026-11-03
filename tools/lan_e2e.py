@@ -12869,5 +12869,137 @@ CHECKS += ['boat-shared-driver']
 CHECK_FNS['boat-shared-driver'] = check_boat_shared_driver
 
 
+def check_vehicle_containers(host, guest, out):
+    """Open, edit and reopen container vehicles through real entity interactions."""
+    result = {}
+    # Positive coordinates exposed i32::MIN menu-key distance overflow in
+    # the remote spawner scan, even with no actual spawner near the menu.
+    host('command', command='gamemode creative')
+    host('command', command='tp @s 8.5 100 8.5')
+    host.wait(20)
+    spots = apart(host, guest)
+    host.wait(10)
+    host('command', command='gamemode survival')
+    kinds = [('chest_minecart', 27), ('hopper_minecart', 5),
+             ('oak_chest_boat', 27), ('bamboo_chest_raft', 27)]
+
+    def click(player, at, kind):
+        boat = 'boat' in kind or 'raft' in kind
+        if boat:
+            player.raw('key', 'shift', 'down')
+            player.wait(3)
+        player.raw('look-at', at[0], at[1] + 0.3, at[2])
+        lab.write_json(out / (kind + '-target.json'), player('state'))
+        player.raw('mouse', 'right', 'click')
+        if boat:
+            player.raw('key', 'shift', 'up')
+        try:
+            player.raw('wait-for', 'screen', 'container', '--timeout', 10)
+        except Failed:
+            lab.write_json(out / (kind + '-failure.json'), player('status'))
+            raise
+        player.wait(15)
+
+    def deposit(player):
+        slot = next(s['slot'] for s in player('screen')['slots']
+                    if s['slot'] < 300 and s.get('item') == 'minecraft:diamond')
+        player.raw('click-slot', slot, 'shift')
+        player.wait(5)
+
+    for label, player in [('host', host), ('guest', guest)]:
+        x, y, z = spots[label]
+        at = (x + 2.5, y, z + 0.5)
+        for kind, size in kinds:
+            tag = 'container_probe_' + label
+            try:
+                player('command', command='clear @s')
+                player('command', command=f'tp @s {x + 0.5} {y} {z + 0.5}')
+                player('command', command=f'summon minecraft:{kind} {at[0]} {at[1]} {at[2]} {{Tags:["{tag}"]}}')
+                player('command', command='give @s minecraft:diamond 3')
+                player.wait(10)
+                click(player, at, kind)
+                deposit(player)
+                items, count = container_items(player)
+                assert count == size and items.get(0) == 'minecraft:diamond', (label, kind, count, items)
+                player.raw('click-slot', 300, 'shift')
+                player.wait(5)
+                assert 0 not in container_items(player)[0], (label, kind, 'transfer failed')
+                player.raw('key', 'esc', 'tap')
+                player.wait(5)
+                click(player, at, kind)
+                items, count = container_items(player)
+                assert count == size and not items, (label, kind, 'reopen', count, items)
+                player.raw('key', 'esc', 'tap')
+                player.wait(5)
+                assert server_count(player, 'diamond') == 3, (label, kind, 'lost or duplicated items')
+                if 'boat' in kind or 'raft' in kind:
+                    # Begin the boarding path with no synthetic modifier held
+                    # from the previous menu's shift-click operations.
+                    player.raw('release')
+                    player.wait(5)
+                    board(player, kind, at)
+                    player.raw('key', 'e', 'tap')
+                    player.raw('wait-for', 'screen', 'container', '--timeout', 10)
+                    player.wait(5)
+                    assert container_items(player) == ({}, size), (label, kind, 'riding inventory')
+                    back_to_game(player)
+                    leave_vehicle(player, kind)
+                result[label + ':' + kind] = {'slots': count, 'transfer_and_reopen': True}
+                lab.write_json(out / 'vehicle-container-progress.json', result)
+            finally:
+                player.raw('release')
+                back_to_game(player)
+                player('command', command=f'kill @e[tag={tag}]')
+    # A vehicle owns one inventory even when two players view it. Closing
+    # either screen must not close the other player's screen or lose its slots.
+    x, y, z = spots['host']
+    at = (x + 2.5, y, z + 0.5)
+    for kind, size in kinds:
+        tag = 'shared_container_probe'
+        try:
+            for player, px in [(host, x + 0.5), (guest, x + 4.5)]:
+                player('command', command='clear @s')
+                player('command', command=f'tp @s {px} {y} {z + 0.5}')
+            host('command', command=f'summon minecraft:{kind} {at[0]} {at[1]} {at[2]} {{Tags:["{tag}"]}}')
+            host('command', command='give @s minecraft:diamond 3')
+            host.wait(10)
+            click(host, at, kind)
+            deposit(host)
+            if 'minecart' in kind:
+                # Commands edit the live slots; opening another view must not
+                # replace them with the vehicle's older backing copy.
+                host('command', command=f'item replace entity @e[tag={tag},limit=1] container.1 with minecraft:emerald 2')
+            click(guest, at, kind)
+            assert container_items(host)[1] == size, (kind, 'second viewer closed first')
+            if 'minecart' in kind:
+                assert container_items(guest)[0].get(1) == 'minecraft:emerald', (kind, 'second viewer overwrote live slots')
+            back_to_game(host)
+            guest.wait(15)
+            items, count = container_items(guest)
+            assert count == size and items.get(0) == 'minecraft:diamond', (kind, 'first close invalidated second', count, items)
+            guest.raw('click-slot', 300, 'shift')
+            if 'minecart' in kind:
+                guest.raw('click-slot', 301, 'shift')
+            guest.wait(5)
+            assert not container_items(guest)[0], (kind, 'remaining viewer cannot transfer')
+            back_to_game(guest)
+            assert server_count(guest, 'diamond') == 3, (kind, 'shared item loss or duplication')
+            if 'minecart' in kind:
+                assert server_count(guest, 'emerald') == 2, (kind, 'live command edit lost')
+            click(host, at, kind)
+            assert container_items(host) == ({}, size), (kind, 'shared edits did not persist')
+            result['shared:' + kind] = {'slots': size, 'independent_close': True}
+        finally:
+            for player in (host, guest):
+                player.raw('release')
+                back_to_game(player)
+            host('command', command=f'kill @e[tag={tag}]')
+    return result
+
+
+CHECKS += ['vehicle-containers']
+CHECK_FNS['vehicle-containers'] = check_vehicle_containers
+
+
 if __name__ == '__main__':
     main()

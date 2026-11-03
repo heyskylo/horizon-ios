@@ -1413,6 +1413,11 @@ impl Game<'_> {
         }
         // ServerPlayer.openMenu closes the menu that was open.
         self.guest_close_all(host, conn);
+        // Reopening the same vehicle can close its last viewer above. Keep
+        // the live snapshot available for the new menu in that case too.
+        self.world
+            .block_entities
+            .get_or_insert_with(pos, || BlockEntity::Chest(items.clone()));
         host.hub
             .open_container(conn, menu, title, pos, slots, items);
         true
@@ -1469,14 +1474,25 @@ impl Game<'_> {
 
     /// `ContainerEntity`'s `Container.stopOpen` when a vehicle menu closes
     /// (`AbstractChestBoat.stopOpen` / `MinecartChest.stopOpen`): the menu's
-    /// slots go back to the vehicle, the shared placeholder leaves
-    /// `world.block_entities`, and CONTAINER_CLOSE fires at the vehicle with
+    /// slots go back to the vehicle, the last viewer releases the shared
+    /// placeholder, and CONTAINER_CLOSE fires at the vehicle with
     /// the closing player as the source. A hopper minecart keeps
     /// `Container.stopOpen`'s no-op. Called by the close packet and by the
     /// `ServerPlayer.tick` reach/destroyed close.
     fn close_guest_vehicle_menu(&mut self, host: &LanHost, conn: u32, key: (i32, i32, i32)) {
         self.store_cart_items(key);
-        self.world.block_entities.remove(&key);
+        // ContainerEntity owns the inventory, not any one open screen.
+        // Drop the stand-in only after the last viewer in this level closes.
+        let another_viewer = host.hub.guests.iter().any(|g| {
+            g.conn != conn
+                && host.hub.here(g)
+                && g.menu
+                    .as_ref()
+                    .is_some_and(|m| m.slots == Slots::Block(key))
+        });
+        if !another_viewer {
+            self.world.block_entities.remove(&key);
+        }
         let at = if let Some(b) = self.boats.iter().find(|b| b.id as i32 == key.2) {
             Some([b.position.x, b.position.y, b.position.z])
         } else if let Some(c) = self.carts.iter().find(|c| c.id as i32 == key.2) {
@@ -2211,6 +2227,15 @@ impl Game<'_> {
                         location: p.location,
                     };
                     let swung = self.as_guest(host, conn, |g| {
+                        // handleInteract uses the packet's secondary action.
+                        // Newer movement input may already have released sneak
+                        // while this click waited in the server action queue.
+                        // as_guest restores keys without changing that input.
+                        if p.secondary {
+                            g.keys.insert(KeyCode::ShiftLeft);
+                        } else {
+                            g.keys.remove(&KeyCode::ShiftLeft);
+                        }
                         g.guest_use = Some(GuestUse::Entity(hand, target));
                         let swings = g.swings_started;
                         let _ = g.use_item();
