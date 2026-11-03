@@ -962,6 +962,7 @@ impl Game<'_> {
                 t.on_ground,
                 t.fuse,
                 t.power,
+                t.rotation,
                 uuid,
                 self.persist_raw(id),
             );
@@ -1035,7 +1036,7 @@ impl Game<'_> {
                 &b.entity_type(),
                 b.position,
                 b.velocity,
-                b.yaw,
+                [b.yaw, b.pitch],
                 uuid,
                 self.persist_raw(id),
                 b.chest.then_some(&b.items[..]),
@@ -1268,6 +1269,7 @@ impl Game<'_> {
             f.drop_item,
             f.damage,
             f.fall_distance,
+            f.rotation,
             uuid,
         );
         let mut tag = super::persist::with_raw(modelled, f.saved.as_ref().map(|s| &s.1));

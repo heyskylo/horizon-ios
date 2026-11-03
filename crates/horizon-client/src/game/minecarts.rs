@@ -2628,7 +2628,7 @@ impl Minecart {
             self.kind.id(),
             self.position,
             self.velocity,
-            self.yaw,
+            [self.yaw, self.pitch],
             uuid,
             raw,
         );

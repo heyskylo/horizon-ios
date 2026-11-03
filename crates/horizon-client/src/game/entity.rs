@@ -62,6 +62,12 @@ pub(super) trait Entity: EntityRules {
     /// `Entity.getDeltaMovement`.
     fn velocity(&self) -> Vec3;
     fn velocity_mut(&mut self) -> &mut Vec3;
+    /// `Entity.getYRot` and `getXRot`: yaw, pitch.
+    #[allow(dead_code)] // read by the entity-interface slices that follow
+    fn rotation(&self) -> [f32; 2];
+    /// The rotation part of `Entity.teleportSetPosition`: `setYRot`, `setXRot`
+    /// (clamped to -90..90), then `setOldRot`.
+    fn set_rotation(&mut self, rotation: [f32; 2]);
     fn bounds(&self) -> Aabb;
     /// What a selector finds this entity as (`@e`), or `None` for one it cannot
     /// name yet. Required, so a new kind states which.
@@ -680,6 +686,17 @@ impl Game<'_> {
 }
 
 impl Entity for Mob {
+    fn rotation(&self) -> [f32; 2] {
+        [self.yaw, self.head_pitch]
+    }
+    fn set_rotation(&mut self, [yaw, pitch]: [f32; 2]) {
+        self.yaw = yaw;
+        self.body_yaw = yaw;
+        self.head_yaw = yaw;
+        self.head_pitch = pitch.clamp(-90.0, 90.0);
+        self.previous_yaw = self.yaw;
+        self.previous_head_pitch = self.head_pitch;
+    }
     fn native_type(&self) -> Cow<'static, str> {
         super::native_hooks::mob_kind(self).into()
     }
@@ -778,6 +795,12 @@ impl Entity for Mob {
 }
 
 impl Entity for ItemEntity {
+    fn rotation(&self) -> [f32; 2] {
+        self.rotation
+    }
+    fn set_rotation(&mut self, [yaw, pitch]: [f32; 2]) {
+        self.rotation = [yaw, pitch.clamp(-90.0, 90.0)];
+    }
     fn fluid_eye_y(&self) -> f64 {
         ItemEntity::fluid_eye_y(self)
     }
@@ -839,6 +862,12 @@ impl Entity for ItemEntity {
 }
 
 impl Entity for ExperienceOrb {
+    fn rotation(&self) -> [f32; 2] {
+        self.rotation
+    }
+    fn set_rotation(&mut self, [yaw, pitch]: [f32; 2]) {
+        self.rotation = [yaw, pitch.clamp(-90.0, 90.0)];
+    }
     fn ticks_after_projectiles(&self) -> bool {
         true
     }
@@ -897,6 +926,13 @@ impl Entity for ExperienceOrb {
 }
 
 impl Entity for Boat {
+    fn rotation(&self) -> [f32; 2] {
+        [self.yaw, self.pitch]
+    }
+    fn set_rotation(&mut self, [yaw, pitch]: [f32; 2]) {
+        self.yaw = yaw;
+        self.pitch = pitch.clamp(-90.0, 90.0);
+    }
     fn native_type(&self) -> Cow<'static, str> {
         self.entity_type().into()
     }
@@ -958,6 +994,13 @@ impl Entity for Boat {
 }
 
 impl Entity for Minecart {
+    fn rotation(&self) -> [f32; 2] {
+        [self.yaw, self.pitch]
+    }
+    fn set_rotation(&mut self, [yaw, pitch]: [f32; 2]) {
+        self.yaw = yaw;
+        self.pitch = pitch.clamp(-90.0, 90.0);
+    }
     fn native_type(&self) -> Cow<'static, str> {
         self.kind.id().into()
     }
@@ -1027,6 +1070,14 @@ fn armor_stand_size(stand: &ArmorStand) -> (f64, f64) {
 }
 
 impl Entity for ArmorStand {
+    fn rotation(&self) -> [f32; 2] {
+        [self.yaw, self.pitch]
+    }
+    fn set_rotation(&mut self, [yaw, pitch]: [f32; 2]) {
+        self.yaw = yaw;
+        self.previous_yaw = yaw;
+        self.pitch = pitch.clamp(-90.0, 90.0);
+    }
     fn fluid_eye_y(&self) -> f64 {
         ArmorStand::fluid_eye_y(self)
     }
@@ -1118,6 +1169,12 @@ impl Entity for ArmorStand {
 }
 
 impl Entity for PrimedTnt {
+    fn rotation(&self) -> [f32; 2] {
+        self.rotation
+    }
+    fn set_rotation(&mut self, [yaw, pitch]: [f32; 2]) {
+        self.rotation = [yaw, pitch.clamp(-90.0, 90.0)];
+    }
     fn ticks_after_projectiles(&self) -> bool {
         true
     }
@@ -1178,6 +1235,12 @@ impl Entity for PrimedTnt {
 }
 
 impl Entity for FallingBlock {
+    fn rotation(&self) -> [f32; 2] {
+        self.rotation
+    }
+    fn set_rotation(&mut self, [yaw, pitch]: [f32; 2]) {
+        self.rotation = [yaw, pitch.clamp(-90.0, 90.0)];
+    }
     fn ticks_after_projectiles(&self) -> bool {
         true
     }
@@ -1214,6 +1277,15 @@ impl Entity for FallingBlock {
 }
 
 impl Entity for Projectile {
+    fn rotation(&self) -> [f32; 2] {
+        [self.yaw, self.pitch]
+    }
+    fn set_rotation(&mut self, [yaw, pitch]: [f32; 2]) {
+        self.yaw = yaw;
+        self.pitch = pitch.clamp(-90.0, 90.0);
+        self.previous_yaw = self.yaw;
+        self.previous_pitch = self.pitch;
+    }
     fn native_type(&self) -> Cow<'static, str> {
         self.kind.id().into()
     }
@@ -1302,6 +1374,12 @@ impl Entity for Projectile {
 }
 
 impl Entity for Rocket {
+    fn rotation(&self) -> [f32; 2] {
+        self.rotation
+    }
+    fn set_rotation(&mut self, [yaw, pitch]: [f32; 2]) {
+        self.rotation = [yaw, pitch.clamp(-90.0, 90.0)];
+    }
     fn native_type(&self) -> Cow<'static, str> {
         "minecraft:firework_rocket".into()
     }
@@ -1350,6 +1428,13 @@ impl Entity for Rocket {
 }
 
 impl Entity for ThrownTrident {
+    fn rotation(&self) -> [f32; 2] {
+        [self.yaw, self.pitch]
+    }
+    fn set_rotation(&mut self, [yaw, pitch]: [f32; 2]) {
+        self.yaw = yaw;
+        self.pitch = pitch.clamp(-90.0, 90.0);
+    }
     fn native_type(&self) -> Cow<'static, str> {
         "minecraft:trident".into()
     }
@@ -1658,5 +1743,36 @@ mod join_order_tests {
             lists.walk(),
             Err(JoinOrderError::Unjoined(EntityHandle::ArmorStand(2)))
         );
+    }
+}
+
+#[cfg(test)]
+mod set_rotation_tests {
+    use super::Entity as _;
+    use horizon_client::entities::ExperienceOrb;
+
+    /// `Entity.teleportSetPosition`: yaw as given, pitch clamped to -90..90, on
+    /// every kind (the ones with no field of their own used to drop it).
+    #[test]
+    fn set_rotation_keeps_yaw_and_clamps_pitch_on_kinds_that_had_none() {
+        let mut orb = ExperienceOrb {
+            join: Default::default(),
+            no_gravity: false,
+            id: 0,
+            position: horizon_core::geometry::Vec3::ZERO,
+            previous: horizon_core::geometry::Vec3::ZERO,
+            velocity: horizon_core::geometry::Vec3::ZERO,
+            value: 1,
+            age: 0,
+            on_ground: false,
+            count: 1,
+            ticks: 0,
+            health: 5,
+            rotation: [0.0, 0.0],
+        };
+        orb.set_rotation([90.0, 10.0]);
+        assert_eq!(orb.rotation(), [90.0, 10.0]);
+        orb.set_rotation([0.0, 200.0]);
+        assert_eq!(orb.rotation(), [0.0, 90.0]);
     }
 }

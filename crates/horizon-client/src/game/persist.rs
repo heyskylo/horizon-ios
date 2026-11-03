@@ -556,6 +556,7 @@ impl Game<'_> {
             self.remember_uuid(self.next_entity, uuid, &tag);
             let uuid = self.uuid_for(self.next_entity);
             self.falling.push(FallingBlock {
+                rotation: [0.0, 0.0],
                 join: Default::default(),
                 id: self.next_entity,
                 state,
@@ -627,6 +628,7 @@ impl Game<'_> {
                 _ => 80,
             };
             self.tnts.push(super::tnt::PrimedTnt {
+                rotation: [0.0, 0.0],
                 join: Default::default(),
                 no_gravity: entity_nbt::flag(&tag, "NoGravity"),
                 id,
@@ -969,7 +971,7 @@ impl Game<'_> {
                 &b.entity_type(),
                 b.position,
                 b.velocity,
-                b.yaw,
+                [b.yaw, b.pitch],
                 uuid,
                 self.persist.raw.get(&root),
                 b.chest.then_some(&b.items[..]),
@@ -1662,6 +1664,7 @@ impl Game<'_> {
             f.drop_item,
             f.damage,
             f.fall_distance,
+            f.rotation,
             uuid,
         );
         let mut tag = with_raw(tag, raw.as_ref());
@@ -1710,6 +1713,7 @@ impl Game<'_> {
                 t.on_ground,
                 t.fuse,
                 t.power,
+                t.rotation,
                 uuid,
                 self.persist.raw.get(&id),
             );
@@ -1731,7 +1735,7 @@ impl Game<'_> {
             &b.entity_type(),
             b.position,
             b.velocity,
-            b.yaw,
+            [b.yaw, b.pitch],
             uuid,
             self.persist.raw.get(&id),
             b.chest.then_some(&b.items[..]),

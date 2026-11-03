@@ -137,7 +137,7 @@ impl Game<'_> {
                     &b.entity_type(),
                     b.position,
                     b.velocity,
-                    b.yaw,
+                    [b.yaw, b.pitch],
                     uuid,
                     self.persist.raw.get(&id),
                     b.chest.then_some(&b.items[..]),
@@ -204,6 +204,7 @@ impl Game<'_> {
                     t.on_ground,
                     t.fuse,
                     t.power,
+                    t.rotation,
                     uuid,
                     self.persist.raw.get(&id),
                 )
@@ -222,6 +223,7 @@ impl Game<'_> {
                     f.drop_item,
                     f.damage,
                     f.fall_distance,
+                    f.rotation,
                     uuid,
                 );
                 crate::game::persist::with_raw(tag, raw)
