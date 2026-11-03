@@ -128,7 +128,20 @@ gpu_ms = 1.5               # optional: the GPU time the pack aims to add (0 to 1
 
 [reflection]               # optional, needs [material]: when the water mirror (`reflection`) is drawn
 option = "reflections"     # optional: drawn while this option is not 0 (else whenever the material reads it)
+
+[displacement]             # optional, needs [material]: relief as geometry near the camera
+distance = 12.0            # optional: how far, in blocks (4 to 32); eases out over the last quarter
+cells = 16                 # optional: grid cells along a face's side (4 to 64)
+option = "displacement_on" # optional: a bool option that turns it on (else always on)
+cells_option = "cells"     # optional: a choice option of cell counts that replaces `cells`
+steps_option = "steps"     # optional: a bool option: each cell a flat step with walls while it's on
 ```
+
+Under `[displacement]` the faces of solid terrain whose textures have LabPBR heights (the normal map's alpha) are
+cut into a grid near the camera, and each corner moves along the face's normal by the material stage's
+`fn displacement(input: DisplacementInput) -> f32`: relief that is geometry, which hides itself, writes its
+depth and is lit where it is. `MaterialInput.displaced` says how much of the relief a point already got that way,
+so a parallax effect fades out where the geometry took over.
 
 An option's `override` has the type of its kind: `bool`, `f32`, `i32`, or `u32` for a choice (the index of the
 value). The pack holds only the manifest, the `.wgsl` files it names (each used, UTF-8, 256 KiB at most),
@@ -150,10 +163,13 @@ pack exist ([stability.md](stability.md)).
 ## Not there yet
 
 Option values other than the defaults (the three stages run, with hot reload), then the overlay and lighting
-stages.
+stages. `[displacement]` is checked but not drawn yet: `MaterialInput.displaced` is 0 everywhere until the
+renderer's grid lands.
 
 ## Changelog
 
+- 2026-11-03: API 0.1 (additions): the manifest's `[displacement]`, the material stage's
+  `fn displacement(input: DisplacementInput) -> f32` and `MaterialInput.displaced`.
 - 2026-11-02: API 0.1 (additions): with dynamic lights on, held and dropped items light
   `MaterialInput.colored_light` in their block's `[[lights]]` colour.
 - 2026-11-02: API 0.1 (additions): `[[particle_lights]]` and `MaterialInput.colored_light`.
