@@ -329,6 +329,11 @@ struct LastChunk {
 }
 
 impl LastChunk {
+    fn clear(&mut self) {
+        self.key = None;
+        self.value = None;
+    }
+
     fn get(&mut self, snapshot: &OcclusionSnapshot, key: ChunkKey) -> Option<&Arc<Chunk>> {
         if self.key != Some(key) {
             self.key = Some(key);
@@ -358,6 +363,10 @@ impl Default for OpacityGrid {
 }
 
 impl OpacityGrid {
+    fn clear(&mut self) {
+        self.cells.fill(None);
+    }
+
     fn opaque(
         &mut self,
         snapshot: &OcclusionSnapshot,
@@ -552,7 +561,56 @@ struct CullJob {
     snapshot: Arc<OcclusionSnapshot>,
     queries: Vec<CullKey>,
     clear_visible: Vec<CullKey>,
+    hidden: Vec<(CullKey, OcclusionProof)>,
     rays_filtered: bool,
+}
+
+/// Scratch owned by the ray stage. The query vectors cross the channel with a
+/// job, while these buffers retain their capacity for the next job. Keeping
+/// the direct-mapped grid between unchanged snapshots also preserves spatial
+/// coherence across frames without retaining a chunk allocation.
+#[derive(Default)]
+struct RayWorkerScratch {
+    input: Vec<CullKey>,
+    blocked: Vec<CullKey>,
+    clear_visible: Vec<CullKey>,
+    last_chunk: LastChunk,
+    opacity_grid: OpacityGrid,
+    snapshot_stamp: Option<SnapshotKey>,
+}
+
+impl RayWorkerScratch {
+    fn prepare(&mut self, stamp: SnapshotKey) {
+        if self.snapshot_stamp != Some(stamp) {
+            self.opacity_grid.clear();
+            self.snapshot_stamp = Some(stamp);
+        }
+        self.last_chunk.clear();
+        self.blocked.clear();
+        self.clear_visible.clear();
+    }
+}
+
+/// Scratch owned by the plane stage. The covered-cell buffer is the only
+/// temporary collection needed while constructing an occlusion proof and is
+/// reused for every entity and every job.
+#[derive(Default)]
+struct PlaneWorkerScratch {
+    covered: Vec<[i32; 3]>,
+    last_chunk: LastChunk,
+    opacity_grid: OpacityGrid,
+    snapshot_stamp: Option<SnapshotKey>,
+}
+
+impl PlaneWorkerScratch {
+    fn prepare(&mut self, stamp: SnapshotKey) {
+        if self.snapshot_stamp != Some(stamp) {
+            self.opacity_grid.clear();
+            self.snapshot_stamp = Some(stamp);
+        }
+        self.last_chunk.clear();
+        self.covered.clear();
+    }
 }
 
 /// Non-blocking world occlusion for entity rendering.
@@ -571,6 +629,8 @@ pub(super) struct AsyncOcclusionCuller {
     query_results: Vec<CachedQueryResult>,
     cache_updates: Vec<CachedQueryResult>,
     cache_merge: Vec<CachedQueryResult>,
+    recycled_visible: Vec<CullKey>,
+    recycled_hidden: Vec<(CullKey, OcclusionProof)>,
     stats: RefCell<AsyncCullingStats>,
     proof_validation_cache: RefCell<FrameProofValidationCache>,
     measure_bounds_timing: Cell<bool>,
@@ -640,8 +700,12 @@ impl AsyncOcclusionCuller {
         let thread = std::thread::Builder::new()
             .name("world-occlusion-culling".into())
             .spawn(move || {
+                let mut scratch = PlaneWorkerScratch::default();
                 while let Ok(job) = plane_rx.recv() {
-                    if result_tx.send(cull_job(job, &plane_generation)).is_err() {
+                    if result_tx
+                        .send(cull_job(job, &plane_generation, &mut scratch))
+                        .is_err()
+                    {
                         break;
                     }
                 }
@@ -650,8 +714,9 @@ impl AsyncOcclusionCuller {
         let ray_thread = std::thread::Builder::new()
             .name("entity-ray-cull".into())
             .spawn(move || {
+                let mut scratch = RayWorkerScratch::default();
                 while let Ok(mut job) = job_rx.recv() {
-                    filter_rays(&mut job, &worker_generation);
+                    filter_rays(&mut job, &worker_generation, &mut scratch);
                     if ray_plane_tx.send(job).is_err() {
                         break;
                     }
@@ -669,6 +734,8 @@ impl AsyncOcclusionCuller {
             query_results: Vec::new(),
             cache_updates: Vec::new(),
             cache_merge: Vec::new(),
+            recycled_visible: Vec::new(),
+            recycled_hidden: Vec::new(),
             stats: RefCell::new(AsyncCullingStats::default()),
             proof_validation_cache: RefCell::new(FrameProofValidationCache::default()),
             measure_bounds_timing: Cell::new(
@@ -794,6 +861,14 @@ impl AsyncOcclusionCuller {
                 stats.stale_world_jobs = stats
                     .stale_world_jobs
                     .saturating_add(u64::from(!results.stamp.same_layout(self.stamp)));
+            }
+            let visible = std::mem::take(&mut results.visible);
+            if visible.capacity() > self.recycled_visible.capacity() {
+                self.recycled_visible = visible;
+            }
+            let hidden = std::mem::take(&mut results.hidden);
+            if hidden.capacity() > self.recycled_hidden.capacity() {
+                self.recycled_hidden = hidden;
             }
         }
         self.queries.get_mut().clear();
@@ -1226,7 +1301,8 @@ impl AsyncOcclusionCuller {
             generation: self.job_generation.load(Ordering::Relaxed),
             snapshot,
             queries,
-            clear_visible: Vec::new(),
+            clear_visible: std::mem::take(&mut self.recycled_visible),
+            hidden: std::mem::take(&mut self.recycled_hidden),
             rays_filtered: false,
         };
         let mut stats = self.stats.borrow_mut();
@@ -1250,6 +1326,8 @@ impl AsyncOcclusionCuller {
                 stats.job_send_full = stats.job_send_full.saturating_add(1);
                 drop(stats);
                 *self.queries.get_mut() = job.queries;
+                self.recycled_visible = job.clear_visible;
+                self.recycled_hidden = job.hidden;
             }
             Err(TrySendError::Disconnected(job)) => {
                 let mut stats = self.stats.borrow_mut();
@@ -1257,6 +1335,8 @@ impl AsyncOcclusionCuller {
                 stats.job_send_disconnected = stats.job_send_disconnected.saturating_add(1);
                 drop(stats);
                 *self.queries.get_mut() = job.queries;
+                self.recycled_visible = job.clear_visible;
+                self.recycled_hidden = job.hidden;
             }
         }
         self.record_timing(TimingPhase::JobSend, send_started);
@@ -1443,16 +1523,17 @@ fn camera_cell(camera: [f64; 3]) -> Option<[i32; 3]> {
     Some([x, y, z])
 }
 
-fn filter_rays(job: &mut CullJob, generation: &AtomicU64) {
+fn filter_rays(job: &mut CullJob, generation: &AtomicU64, scratch: &mut RayWorkerScratch) {
     let Some(first) = job.queries.first() else {
         job.rays_filtered = true;
         return;
     };
     let camera = first.camera.map(f64::from_bits);
-    let mut last_chunk = LastChunk::default();
-    let mut opacity_grid = OpacityGrid::default();
-    let mut blocked = Vec::with_capacity(job.queries.len());
-    for key in job.queries.drain(..) {
+    scratch.prepare(job.stamp);
+    std::mem::swap(&mut job.queries, &mut scratch.input);
+    job.clear_visible.clear();
+    let mut input = std::mem::take(&mut scratch.input);
+    for key in input.drain(..) {
         if generation.load(Ordering::Relaxed) != job.generation {
             break;
         }
@@ -1463,19 +1544,26 @@ fn filter_rays(job: &mut CullJob, generation: &AtomicU64) {
             min,
             max,
             &job.snapshot,
-            &mut last_chunk,
-            &mut opacity_grid,
+            &mut scratch.last_chunk,
+            &mut scratch.opacity_grid,
         ) {
-            job.clear_visible.push(key);
+            scratch.clear_visible.push(key);
         } else {
-            blocked.push(key);
+            scratch.blocked.push(key);
         }
     }
-    job.queries = blocked;
+    scratch.input = input;
+    std::mem::swap(&mut job.queries, &mut scratch.blocked);
+    std::mem::swap(&mut job.clear_visible, &mut scratch.clear_visible);
+    scratch.last_chunk.clear();
     job.rays_filtered = true;
 }
 
-fn cull_job(mut job: CullJob, generation: &AtomicU64) -> CullResults {
+fn cull_job(
+    mut job: CullJob,
+    generation: &AtomicU64,
+    scratch: &mut PlaneWorkerScratch,
+) -> CullResults {
     let started = Instant::now();
     let camera = job
         .queries
@@ -1484,11 +1572,14 @@ fn cull_job(mut job: CullJob, generation: &AtomicU64) -> CullResults {
         .map(|key| key.camera.map(f64::from_bits))
         .unwrap_or([0.0; 3]);
     let culler = OcclusionCuller::new(camera, OCCLUSION_LOOKUP_BUDGET);
-    let mut last_chunk = LastChunk::default();
-    let mut opacity_grid = OpacityGrid::default();
-    let mut hidden = Vec::with_capacity(job.queries.len());
+    scratch.prepare(job.stamp);
+    let mut hidden = job.hidden;
+    hidden.clear();
+    if hidden.capacity() < job.queries.len() {
+        hidden.reserve(job.queries.len() - hidden.capacity());
+    }
     let mut visible = job.clear_visible;
-    let mut covered = Vec::new();
+    visible.clear();
     let mut deferred_entities = 0;
     let mut cancelled = false;
     for &key in &job.queries {
@@ -1496,7 +1587,7 @@ fn cull_job(mut job: CullJob, generation: &AtomicU64) -> CullResults {
             cancelled = true;
             break;
         }
-        covered.clear();
+        scratch.covered.clear();
         let min = key.min.map(f64::from_bits);
         let max = key.max.map(f64::from_bits);
         if !job.rays_filtered
@@ -1505,8 +1596,8 @@ fn cull_job(mut job: CullJob, generation: &AtomicU64) -> CullResults {
                 min,
                 max,
                 &job.snapshot,
-                &mut last_chunk,
-                &mut opacity_grid,
+                &mut scratch.last_chunk,
+                &mut scratch.opacity_grid,
             )
         {
             visible.push(key);
@@ -1518,9 +1609,11 @@ fn cull_job(mut job: CullJob, generation: &AtomicU64) -> CullResults {
         }
         let remaining_before = culler.remaining();
         let is_hidden = culler.occluded(min, max, |pos| {
-            let opaque = opacity_grid.opaque(&job.snapshot, pos, &mut last_chunk);
+            let opaque = scratch
+                .opacity_grid
+                .opaque(&job.snapshot, pos, &mut scratch.last_chunk);
             if opaque {
-                covered.push(pos);
+                scratch.covered.push(pos);
             }
             opaque
         });
@@ -1532,10 +1625,10 @@ fn cull_job(mut job: CullJob, generation: &AtomicU64) -> CullResults {
             visible.push(key);
             continue;
         }
-        let mut sections = Vec::with_capacity(covered.len());
+        let mut sections = Vec::with_capacity(scratch.covered.len());
         let mut proof_chunks: Vec<(ChunkKey, Weak<Chunk>)> = Vec::new();
         let mut valid = true;
-        for &pos in &covered {
+        for &pos in &scratch.covered {
             let chunk_key = (pos[0] >> 4, pos[2] >> 4);
             let Some(y) = pos[1].checked_sub(job.stamp.bottom_y) else {
                 valid = false;
@@ -1570,6 +1663,7 @@ fn cull_job(mut job: CullJob, generation: &AtomicU64) -> CullResults {
     }
     hidden.sort_unstable_by_key(|(key, _)| *key);
     visible.sort_unstable();
+    scratch.last_chunk.clear();
     let hidden_entities = hidden.len();
     let visible_entities = visible.len();
     job.queries.clear();
@@ -1784,7 +1878,7 @@ mod tests {
     }
 
     fn run_job(job: CullJob) -> CullResults {
-        cull_job(job, &AtomicU64::new(0))
+        cull_job(job, &AtomicU64::new(0), &mut PlaneWorkerScratch::default())
     }
 
     fn job(snapshot: Arc<OcclusionSnapshot>) -> CullJob {
@@ -1805,6 +1899,7 @@ mod tests {
                 max: max.map(f64::to_bits),
             }],
             clear_visible: Vec::new(),
+            hidden: Vec::new(),
             rays_filtered: false,
         }
     }
@@ -1882,5 +1977,5 @@ mod tests {
 }
 
 #[cfg(test)]
-#[path = "occlusion_culling_precheck_tests.rs"]
-mod precheck_tests;
+#[path = "occlusion_culling_tests.rs"]
+mod external_tests;
