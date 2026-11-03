@@ -1221,6 +1221,213 @@ impl Game<'_> {
         Ok(())
     }
 
+    /// Prepare a client session and remote state to receive packets from a studio replay.
+    pub(super) fn init_remote_for_replay(&mut self) -> Result<()> {
+        self.reset_tutorial();
+        self.perf.world_opening();
+        self.world_biomes = None;
+        self.world_biomes_base = None;
+        let root = self.options.resources.clone();
+        let builtin = builtin_registries(&root).ok_or("Resources are incomplete")?;
+        let lang = Arc::new(horizon_client::net::load_language(&root));
+        let info = self
+            .settings
+            .client_information(client_view_distance(self.render_distance_in_use()));
+        let auth = self.auth();
+        let name = auth.as_ref().map_or("ReplayPlayer", |a| a.name.as_str());
+        let user = auth.as_ref().map_or_else(
+            || {
+                (
+                    name.to_owned(),
+                    horizon_protocol::crypto::offline_uuid(name),
+                )
+            },
+            |a| (a.name.clone(), a.uuid),
+        );
+        self.server_packs_connect(None, user);
+        let session = Session::replay(name);
+        let player_type = super::perspective::player_type(&root);
+        let mut streaming = Streaming::new(
+            Arc::new(NoTerrain),
+            self.worker_context(),
+            self.res.threads(),
+        );
+        streaming.remote = true;
+        streaming.radius = self.render_distance_in_use();
+        self.streaming = streaming;
+        self.world = World::new(self.res.facts().air, 0);
+        self.save = Arc::new(SaveDir::new(
+            std::env::temp_dir().join("horizon-replay-unused"),
+            horizon_client::save::LevelShape::OVERWORLD,
+        ));
+        self.inventory = vec![None; 36];
+        self.armor = [None, None, None, None];
+        self.craft_grid = vec![None; 9];
+        self.craft_size = 2;
+        self.player = None;
+        self.spawn = None;
+        self.mobs.clear();
+        self.clear_remote_objects();
+        self.clear_remote_projectiles();
+        self.creatures.projectiles.clear();
+        self.dropped.clear();
+        self.particles.clear();
+        self.pickups.clear();
+        self.orbs.clear();
+        self.falling.clear();
+        self.mining = None;
+        self.container = None;
+        self.carried = None;
+        self.using = None;
+        self.end_mod_use();
+
+        self.set_mode_id(0);
+        self.experience = Experience {
+            level: 0,
+            progress: 0.0,
+            total: 0,
+        };
+        self.ui.registries = Default::default();
+        self.build_registries();
+        self.ui.registries.permission = 0;
+        self.ui.chat.clear();
+        self.screen = Screen::Playing;
+        self.title = None;
+        self.dim = Dim::Overworld;
+        self.clear_lod();
+        self.pending_uploads.clear();
+        if let Some(r) = self.renderer.as_mut() {
+            r.clear_sections(self.world.layout());
+        }
+        self.apply_settings();
+        self.clear_waypoints();
+        self.boss_overlay.reset();
+
+        let chat_tree = self.chat_tree_for(None);
+        let services_keys = Arc::new(std::sync::Mutex::new(ServicesKeys::Ready(Vec::new())));
+
+        self.remote = Some(Remote {
+            session,
+            brand: "horizon-studio".into(),
+            features: vec!["minecraft:vanilla".into()],
+            quiet_commands: false,
+            mod_net: false,
+            attachments: HashMap::new(),
+            far_terrain: None,
+            builtin,
+            status: "Playing Studio Replay".into(),
+            lang,
+            registries: Arc::new(Dynamic::default()),
+            joined: true,
+            reconfiguring: None,
+            logged_in: true,
+            entity_id: 0,
+            camera: None,
+            use_item: None,
+            dimension: DimensionType::vanilla("minecraft:overworld"),
+            level: "minecraft:overworld".into(),
+            hashed_seed: 0,
+            chunk_format: Arc::new(ChunkFormat::new(
+                &DimensionType::vanilla("minecraft:overworld"),
+                Vec::new(),
+                7,
+            )),
+            decoder: ChunkDecoder::new(),
+            view_distance: self.settings.render_distance,
+            simulation_distance: self.settings.simulation_distance,
+            sequence: 0,
+            position_sender: Default::default(),
+            last_input: 0,
+            was_sprinting: false,
+            carried: None,
+            abilities: None,
+            loaded_sent: false,
+            heard_level: None,
+            level_load: horizon_client::level_loading::LevelLoadTracker::new(0),
+            sent_info: info,
+            predictions: HashMap::new(),
+            menu: None,
+            craft_result: None,
+            menu_title: None,
+            state_id: 0,
+            use_target: None,
+            entities: HashMap::new(),
+            lerps: HashMap::new(),
+            cart_lerps: HashMap::new(),
+            stepped: HashMap::new(),
+            head_lerps: HashMap::new(),
+            ghast_dismount: None,
+            first_passenger: false,
+            pending_items: HashMap::new(),
+            health: (20.0, 20, 5.0),
+            flash_on_set_health: false,
+            game_mode: 0,
+            chat: Vec::new(),
+            chat_received: 0,
+            chat_queue: VecDeque::new(),
+            signatures: Default::default(),
+            chat_previous: None,
+            next_chat_index: 0,
+            enforces_secure_chat: false,
+            services_keys,
+            chat_sessions: HashMap::new(),
+            chat_validators: HashMap::new(),
+            joining_narrated: None,
+            chat_tree,
+            chat_tree_received: false,
+            secure_chat: Default::default(),
+            custom_completions: Default::default(),
+            players: HashMap::new(),
+            tab_players: HashMap::new(),
+            skin_textures: HashMap::new(),
+            own_profile: OwnProfile::Idle,
+            skins: HashMap::new(),
+            listed: Default::default(),
+            online_mode: false,
+            level_players: HashMap::new(),
+            level_player_names: HashMap::new(),
+            level_player_textures: HashMap::new(),
+            glowing: Default::default(),
+            own_invisible: false,
+            own_on_fire: false,
+            own_arrows: 0,
+            own_stingers: 0,
+            own_shoulders: [None; 2],
+            profile: 0,
+            profile_name: String::new(),
+            destroying: None,
+            destroying_item: String::new(),
+            is_destroying: false,
+            destroy_delay: 0,
+            input: Default::default(),
+            pending_keys: Vec::new(),
+            swap_answer: [false; 2],
+            stop_mining: false,
+            placing: None,
+            flat: false,
+            death_message: None,
+            show_death_screen: true,
+            do_limited_crafting: false,
+            player_type,
+            synced: vec![None; CREATIVE_SYNCED],
+            decode_errors: 0,
+            clock: None,
+            clock_rate: 1.0,
+            clock_partial: 0.0,
+            clock_game_time: 0,
+            chunk_center: (0, 0),
+            backlog: VecDeque::new(),
+            backlog_since: None,
+            server_links: Vec::new(),
+            debug_query: Default::default(),
+            transfer: None,
+        });
+        self.clock = horizon_client::clock::FixedStep::client();
+        self.adv = Default::default();
+        self.stats = Default::default();
+        Ok(())
+    }
+
     /// Disconnect and return to the multiplayer screen (DisconnectedScreen).
     pub(super) fn leave_server(&mut self, reason: Option<String>) -> Result<()> {
         if reason.is_none() && self.integrated.as_ref().is_some_and(|s| !s.stopped()) {

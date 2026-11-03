@@ -17330,6 +17330,11 @@ impl Game<'_> {
             KeyCode::Escape => match self.screen {
                 Screen::Options => self.options_key(KeyCode::Escape, None)?,
                 Screen::Playing => {
+                    if (self.studio_freecam.active || self.studio_replay.is_some()) && self.captured
+                    {
+                        self.capture(false);
+                        return Ok(());
+                    }
                     self.pause_focus = None;
                     self.screen = Screen::Paused;
                     self.pause_menu = true;
@@ -20656,6 +20661,7 @@ enum PendingWorldEntry {
         /// A transfer's carried-over server cookies (`TransferState`).
         cookies: Option<horizon_client::net::Cookies>,
     },
+    StudioReplay(std::path::PathBuf),
 }
 
 struct WorldRestLoader {
@@ -20738,6 +20744,10 @@ impl Game<'_> {
                 lan,
             }) => {
                 self.connect_server_with_options(&address, &name, cookies, lan)?;
+            }
+            Some(PendingWorldEntry::StudioReplay(path)) => {
+                let path_str = path.to_string_lossy().to_string();
+                let _ = self.open_studio_replay(&path_str);
             }
             None => {}
         }

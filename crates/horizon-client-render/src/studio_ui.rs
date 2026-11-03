@@ -88,6 +88,7 @@ impl SavedRecordingItem {
 #[derive(Clone, Debug, PartialEq)]
 pub enum StudioAction {
     None,
+    LoadAndEdit(PathBuf),
     OpenFolder,
     Refresh,
     Back,
@@ -376,6 +377,17 @@ impl StudioUi {
             (r_hover, true, false),
         );
 
+        // Button 3: Open the selected recording in the Studio editor.
+        let e_btn = [panel_x + panel_w - 180.0, btn_y, 110.0, btn_h];
+        let e_hover = ui::hovered(cursor, e_btn[0], e_btn[1], e_btn[2], e_btn[3]);
+        style::button(
+            batch,
+            atlas,
+            e_btn,
+            &Text::tr("horizon.studio.open_editor", &[]),
+            (e_hover, true, false),
+        );
+
         // Button 3: Done / Back (Right)
         let d_btn = [panel_x + panel_w - 64.0, btn_y, 64.0, btn_h];
         let d_hover = ui::hovered(cursor, d_btn[0], d_btn[1], d_btn[2], d_btn[3]);
@@ -411,7 +423,20 @@ impl StudioUi {
             return StudioAction::Refresh;
         }
 
-        // Button 3: Done
+        // Button 3: Edit Replay
+        let e_btn = [panel_x + panel_w - 180.0, btn_y, 110.0, btn_h];
+        if ui::hovered(cursor, e_btn[0], e_btn[1], e_btn[2], e_btn[3]) {
+            if let Some(idx) = self.selected
+                && let Some(item) = self.recordings.get(idx)
+            {
+                return StudioAction::LoadAndEdit(item.path.clone());
+            } else if let Some(item) = self.recordings.first() {
+                self.selected = Some(0);
+                return StudioAction::LoadAndEdit(item.path.clone());
+            }
+        }
+
+        // Button 4: Done
         let d_btn = [panel_x + panel_w - 64.0, btn_y, 64.0, btn_h];
         if ui::hovered(cursor, d_btn[0], d_btn[1], d_btn[2], d_btn[3]) {
             return StudioAction::Back;
@@ -515,6 +540,13 @@ mod tests {
         let action = ui.click((200.0, 60.0), (427.0, 720.0));
         assert_eq!(action, StudioAction::None);
         assert_eq!(ui.selected, Some(0));
+
+        // Click ▶ Edit button directly on the card:
+        // Panel width = (427-40).clamp(280, 440) = 387. panel_x = (427-387)/2 = 20.
+        // Card x = 26, card w = 375. Card edit button x >= 26 + 375 - 48 - 6 = 347.
+        // y is panel_y + 6 = 48.
+        let card_edit_action = ui.click((360.0, 55.0), (427.0, 720.0));
+        assert!(matches!(card_edit_action, StudioAction::LoadAndEdit(_)));
 
         // Clean up
         let _ = fs::remove_dir_all(&temp_dir);

@@ -290,8 +290,7 @@ impl StartupMenu {
                 return title.confirm_key_size(viewport).0;
             }
             PhysicalKey::Code(KeyCode::Space)
-                if !title.has_caret_field()
-                    && (title.list_focused() || title.focused_button.is_some()) =>
+                if title.list_focused() || title.focused_button.is_some() =>
             {
                 return title.confirm_key_size(viewport).0;
             }
@@ -657,6 +656,11 @@ impl Loading {
                 | Event::ListMusicTracks
                 | Event::PlayMusicTrack(..)
                 | Event::Volume(..) => {}
+                Event::OpenStudioReplay(path) => {
+                    self.menu.options_open = false;
+                    self.menu.dragging = false;
+                    self.menu.pending = Some(PendingWorldEntry::StudioReplay(path));
+                }
                 Event::OpenStudioFolder => {
                     let dir = std::path::PathBuf::from("recordings");
                     let _ = std::fs::create_dir_all(&dir);
@@ -722,18 +726,6 @@ impl Loading {
             right,
         );
         self.menu_option_events(events);
-    }
-
-    /// The Realms screen's join, once its address came back: queued like a click on a server.
-    pub(super) fn poll_menu_realms(&mut self, event_loop: &dyn EventLoopCtl) {
-        if let Some(action) = self
-            .menu
-            .title
-            .as_mut()
-            .and_then(Title::take_connect_request)
-        {
-            self.menu_action(event_loop, action);
-        }
     }
 
     fn menu_action(&mut self, event_loop: &dyn EventLoopCtl, action: Action) {
@@ -1263,7 +1255,6 @@ impl Loading {
                 batch,
                 self.menu.cursor,
                 self.settings.file.bool("hideSplashTexts"),
-                self.settings.file.bool("hideServerAddress"),
             );
         }
         if let Some(focus) = self.menu.key_focus

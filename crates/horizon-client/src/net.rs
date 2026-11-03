@@ -189,6 +189,23 @@ impl Session {
             false,
         )
     }
+    /// A lightweight session for studio replay playback without background network IO.
+    pub fn replay(name: &str) -> Self {
+        let (_send, events) = channel();
+        Self {
+            events,
+            writer: Arc::new(Mutex::new(None)),
+            configuring: Arc::new(AtomicBool::new(false)),
+            thread: None,
+            address: "studio-replay".to_owned(),
+            name: name.to_owned(),
+            counters: Arc::new(Mutex::new(None)),
+            cookies: Default::default(),
+            debug: false,
+            far: Arc::new(crate::lod_net::Inbox::default()),
+            recorder: Arc::new(Mutex::new(None)),
+        }
+    }
     fn start(
         address: &str,
         name: &str,

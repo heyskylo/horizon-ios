@@ -481,6 +481,14 @@ impl Game<'_> {
                     self.confirm_trusted_link(ACCESSIBILITY_HELP_LINK, Screen::Options)
                 }
                 Event::Narrator => self.narrator_status_changed(),
+                Event::OpenStudioReplay(path) => {
+                    let path_str = path.to_string_lossy().to_string();
+                    let _ = self.open_studio_replay(&path_str);
+                    self.title = None;
+                    self.screen = Screen::Playing;
+                    self.capture(false);
+                    self.dragging = false;
+                }
                 Event::OpenStudioFolder => {
                     let dir = std::path::PathBuf::from("recordings");
                     let _ = std::fs::create_dir_all(&dir);
@@ -561,9 +569,6 @@ impl Game<'_> {
             r.set_frame_generation(
                 s.horizon.frame_generation != horizon_client::graphics::FrameGeneration::Off,
             );
-            r.set_hdr_lighting(s.horizon.hdr_lighting);
-            // Where it is offered (`Renderer::gpu_culling_offer`); unchanged, it does nothing.
-            let _ = r.set_gpu_culling(s.horizon.gpu_culling);
             r.set_hdr(
                 s.horizon.hdr,
                 s.horizon.paper_white_nits() as f32,
@@ -595,13 +600,6 @@ impl Game<'_> {
             font.japanese = s.japanese_glyphs;
             font.reset_cache();
             self.ui.chat.rescale(&self.gui.atlas);
-        }
-        // 3D skin layers: a skin's slabs are built when it is resolved, so a
-        // change here rebuilds the players already on screen (the Options
-        // screen keeps resolving them every frame; this covers the console
-        // and a setting restored from options.txt at start).
-        if self.title.is_none() {
-            self.update_remote_skins();
         }
     }
     /// `Window.updateFullscreenState`: a fullscreen change made by the window
