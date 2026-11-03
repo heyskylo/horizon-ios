@@ -8,7 +8,7 @@ use crate::{
     fast_hash::FxHashMap,
     graphics::GraphicsApi,
     hud::{HudBatch, HudRenderer},
-    mesher::{Part as Quads, SectionMesh, Sides, TerrainVertex, Vertex},
+    mesher::{Part as Quads, SectionMesh, Sides, TerrainVertex, Vertex, packed},
     section_mask::SectionMask,
     sprites::SpriteAnimation,
 };
@@ -129,6 +129,11 @@ pub(crate) fn texture_bytes(texture: &wgpu::Texture) -> u64 {
 /// pass (`shadow`: a `shaders/` pack's, or the `[shadow]` of one of Horizon's own).
 fn translucent_split(batching: bool, flat_draws: bool, terrain: bool, shadow: bool) -> bool {
     batching && !(flat_draws && (terrain || shadow))
+}
+
+/// The compact layout of solid quads, unless `HORIZON_PACKED_QUADS=0` (A/B checks).
+fn packed_wanted() -> bool {
+    std::env::var("HORIZON_PACKED_QUADS").as_deref() != Ok("0")
 }
 
 mod animate;
@@ -396,6 +401,10 @@ struct SectionGpu {
     /// Unused without translucent quads.
     translucent_at: (u32, u64),
     solid: u32,
+    /// Slots its solid quads take in `arena`: four vertices each, or in the compact layout
+    /// (`packed`, `mesher::packed`) a record each and the vertices of those without one.
+    solid_slots: u64,
+    packed: bool,
     /// Where the solid quads' buckets by facing side end (`mesher::Sides`).
     sides: Sides,
     translucent: u32,
@@ -447,12 +456,12 @@ impl SectionGpu {
     /// is one): (page, first vertex, vertices) of each.
     fn vertex_ranges(&self, split: bool) -> (Option<(u32, u64, u64)>, Option<(u32, u64, u64)>) {
         if !split {
-            let vertices = u64::from(self.solid + self.translucent) * 4;
+            let vertices = self.solid_slots + u64::from(self.translucent) * 4;
             return (Some((self.page, self.start, vertices)), None);
         }
         let (page, start) = self.translucent_at;
         (
-            (self.solid > 0).then(|| (self.page, self.start, u64::from(self.solid) * 4)),
+            (self.solid > 0).then(|| (self.page, self.start, self.solid_slots)),
             (self.translucent > 0).then(|| (page, start, u64::from(self.translucent) * 4)),
         )
     }
@@ -461,6 +470,16 @@ impl SectionGpu {
     /// tables span.
     fn gpu_recorded(&self, key: SectionKey, sections: usize) -> bool {
         self.solid > 0 && (0..sections as i32).contains(&key.1)
+    }
+    /// The base vertex of its solid draws: quad `q`'s corners are `base + 4 * q` on (the
+    /// quad indices). In the compact layout they name its record's slot past
+    /// `PACKED_BASE` (terrain.wgsl's `section_corner`).
+    fn solid_base(&self) -> u32 {
+        if self.packed {
+            packed::PACKED_BASE + 4 * self.start as u32
+        } else {
+            self.start as u32
+        }
     }
 }
 /// Which of a mesh's ranges `move_off_page` moves: what it holds in the section
@@ -490,7 +509,7 @@ impl Part {
                 (s.page, s.start) = to;
                 if !split {
                     // Its translucent quads came along, after the solid ones.
-                    s.translucent_at = (to.0, to.1 + u64::from(s.solid) * 4);
+                    s.translucent_at = (to.0, to.1 + s.solid_slots);
                 }
             }
             Self::Translucent => s.translucent_at = to,
@@ -547,7 +566,7 @@ fn move_off_page<'a>(
         if let (Part::Section { .. }, Some(records), Some(id)) =
             (part, records.as_deref_mut(), s.gpu_id)
         {
-            records.relocate(id, to.0, to.1);
+            records.relocate(id, to.0, u64::from(s.solid_base()));
         }
         *budget = budget.saturating_sub(bytes);
         moved = true;
@@ -858,6 +877,9 @@ pub struct Renderer {
     translucent_mark: wgpu::RenderPipeline,
     /// Flat section draws (`flat`), where multi-draw is emulated.
     flat: Option<flat::Flat>,
+    /// Sections upload their solid quads in the compact layout (`mesher::packed`): the solid
+    /// passes read the arena themselves (`flat`) and no shader pack reads it as vertices.
+    packed_quads: bool,
     /// The visibility buffer for flat frames' solid terrain (`visbuffer`,
     /// `HORIZON_VISBUFFER=1`).
     visbuf: Option<visbuffer::Visbuffer>,
@@ -2003,7 +2025,7 @@ impl Renderer {
             .sections
             .values()
             .chain(self.lods.values().map(|tile| &tile.mesh))
-            .map(|s| u64::from(s.solid + s.translucent) * 4)
+            .map(|s| s.solid_slots + u64::from(s.translucent) * 4)
             .sum();
         let translucent = self.translucent_arena.as_ref();
         let arenas = self.arena.bytes() + translucent.map_or(0, arena::Arena::bytes);
@@ -2015,14 +2037,20 @@ impl Renderer {
     /// draws' buffers and the visibility buffer's.
     pub fn gpu_census(&self) -> Vec<(&'static str, u64)> {
         let stride = std::mem::size_of::<TerrainVertex>() as u64;
-        let used = |s: &SectionGpu| u64::from(s.solid + s.translucent) * 4 * stride;
+        let used = |s: &SectionGpu| (s.solid_slots + u64::from(s.translucent) * 4) * stride;
         let textures = |t: &[wgpu::Texture]| t.iter().map(texture_bytes).sum::<u64>();
         let translucent = self.translucent_arena.as_ref();
         vec![
             ("section_arena_pages", self.arena.bytes()),
-            ("translucent_arena_pages", translucent.map_or(0, arena::Arena::bytes)),
+            (
+                "translucent_arena_pages",
+                translucent.map_or(0, arena::Arena::bytes),
+            ),
             ("sorted_index_pages", self.sorted_indices.bytes()),
-            ("near_section_vertices", self.sections.values().map(used).sum()),
+            (
+                "near_section_vertices",
+                self.sections.values().map(used).sum(),
+            ),
             (
                 "far_tile_vertices",
                 self.lods.values().map(|tile| used(&tile.mesh)).sum(),
@@ -2033,7 +2061,10 @@ impl Renderer {
                 "pbr_maps",
                 self.pbr_maps.as_ref().map_or(0, |maps| textures(maps)),
             ),
-            ("flat_draws", self.flat.as_ref().map_or(0, flat::Flat::bytes)),
+            (
+                "flat_draws",
+                self.flat.as_ref().map_or(0, flat::Flat::bytes),
+            ),
             (
                 "visibility_buffer",
                 self.visbuf.as_ref().map_or(0, visbuffer::Visbuffer::bytes),
@@ -3938,13 +3969,69 @@ impl Renderer {
                 &bindings,
                 arena.page_vertices(),
                 min_sections,
-                |layout, label, vertex, fragment, blend, cull| {
+                |layout, label, vertex, fragment, blend, cull, pulled| {
+                    let buffers: &[Option<wgpu::VertexBufferLayout<'_>>] =
+                        if pulled { &[] } else { &buffers };
                     pipeline_in(
-                        layout, label, vertex, fragment, &buffers, tri, cull, true, true, blend,
+                        layout, label, vertex, fragment, buffers, tri, cull, true, true, blend,
                     )
                 },
             )
         });
+        // With flat draws' page groups the per-section solid draws read their vertices from
+        // the page too (`Flat::page_group`), in either layout of the solid quads
+        // (`mesher::packed`): only the origins stay a vertex buffer, at slot 1.
+        let (solid, solid_opaque, solid_cutout, solid_mirror) = match &flat {
+            Some(f) => {
+                let pulled_layout = kept.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                    label: Some("Horizon terrain layout (pulled)"),
+                    bind_group_layouts: &[Some(&bindings), Some(&f.draw_layout)],
+                    ..Default::default()
+                });
+                let origins = [None, terrain_buffers[1].clone()];
+                let pulled = |label: &str, vertex: &str, fragment: &str, cull| {
+                    pipeline_in(
+                        &pulled_layout,
+                        label,
+                        vertex,
+                        fragment,
+                        &origins,
+                        tri,
+                        Some(cull),
+                        true,
+                        true,
+                        None,
+                    )
+                };
+                let back = wgpu::Face::Back;
+                (
+                    pulled("Terrain solid", "vs_section", "fs_solid", back),
+                    pulled(
+                        "Terrain solid opaque",
+                        "vs_section_opaque",
+                        "fs_opaque",
+                        back,
+                    ),
+                    pulled(
+                        "Terrain solid cutout",
+                        "vs_section_cutout",
+                        "fs_solid",
+                        back,
+                    ),
+                    pulled(
+                        "Terrain solid (mirrored)",
+                        "vs_section",
+                        "fs_solid_mirror",
+                        wgpu::Face::Front,
+                    ),
+                )
+            }
+            None => (solid, solid_opaque, solid_cutout, solid_mirror),
+        };
+        // The solid quads in the compact layout, while no shader pack reads the arena
+        // (`follow_packed_layout`).
+        let packed_quads = flat.is_some() && !shader_pack && packed_wanted();
+        packed::pack_quads(packed_quads);
         let visbuf = flat
             .as_ref()
             .filter(|_| visbuffer::wanted(&device))
@@ -4094,6 +4181,7 @@ impl Renderer {
             translucent,
             translucent_mark,
             flat_on: flat.is_some(),
+            packed_quads,
             cull_on: cull.is_some(),
             sides_on: true,
             gpu_culling: None,
@@ -4600,7 +4688,8 @@ impl Renderer {
         let sections = self.layout.sections();
         for (key, s) in self.sections.iter_mut() {
             if s.gpu_recorded(key, sections) {
-                s.gpu_id = Some(gpu.records.insert(key, s.page, s.start, s.solid));
+                let base = u64::from(s.solid_base());
+                s.gpu_id = Some(gpu.records.insert(key, s.page, base, s.solid));
             }
         }
         self.gpu_culling = Some(gpu);
@@ -4627,7 +4716,8 @@ impl Renderer {
             let recorded = s.gpu_recorded(key, sections);
             assert_eq!(s.gpu_id.is_some(), recorded, "{key:?}: a record");
             if let Some(id) = s.gpu_id {
-                let record = gpu_culling::Record::new(key, s.page, s.start, s.solid);
+                let base = u64::from(s.solid_base());
+                let record = gpu_culling::Record::new(key, s.page, base, s.solid);
                 assert_eq!(records.at(id), Some(&record), "{key:?}: its record {id}");
                 pages[s.page as usize] += 1;
                 live += 1;
@@ -4765,8 +4855,8 @@ impl Renderer {
             if let Some(gpu) = &mut self.gpu_culling
                 && section.gpu_recorded(key, self.layout.sections())
             {
-                let (page, start, quads) = (section.page, section.start, section.solid);
-                section.gpu_id = Some(gpu.records.insert(key, page, start, quads));
+                let (page, base, quads) = (section.page, section.solid_base(), section.solid);
+                section.gpu_id = Some(gpu.records.insert(key, page, u64::from(base), quads));
             }
             self.sections.insert_with_bounds(key, section, mesh.bounds);
         }
@@ -4790,13 +4880,20 @@ impl Renderer {
         });
         // The solid quads, and the translucent ones after them unless they have
         // an arena of their own. With video and system memory both full, the
-        // section is not drawn.
+        // section is not drawn. The solid ones in the compact layout where the
+        // mesher made it and the passes read it (`packed_quads`).
+        let packed = self.packed_quads && !mesh.packed.is_empty() && solid > 0;
+        let solid_slots = if packed {
+            mesh.packed.len() as u64
+        } else {
+            mesh.solid.len() as u64
+        };
         let split = self.translucent_arena.is_some();
         let main = if split {
-            mesh.solid.len()
+            solid_slots
         } else {
-            mesh.solid.len() + mesh.translucent.len()
-        } as u64;
+            solid_slots + mesh.translucent.len() as u64
+        };
         let (page, start) = if main > 0 {
             self.arena.alloc(&self.device, encoder, main)?
         } else {
@@ -4818,7 +4915,7 @@ impl Renderer {
                     }
                 }
             }
-            _ => (page, start + u64::from(solid) * 4),
+            _ => (page, start + solid_slots),
         };
         let sorted_indices = if translucent > 0 {
             let indices =
@@ -4855,12 +4952,20 @@ impl Renderer {
         });
         let stride = std::mem::size_of::<TerrainVertex>() as u64;
         let translucent_arena = self.translucent_arena.as_ref().unwrap_or(&self.arena);
-        for (part, arena, (part_page, first)) in [
-            (&mesh.solid, &self.arena, (page, start)),
-            (&mesh.translucent, translucent_arena, translucent_at),
+        let solid_bytes: &[u8] = if packed {
+            bytemuck::cast_slice(&mesh.packed)
+        } else {
+            bytemuck::cast_slice(&mesh.solid)
+        };
+        for (bytes, arena, (part_page, first)) in [
+            (solid_bytes, &self.arena, (page, start)),
+            (
+                bytemuck::cast_slice(&mesh.translucent),
+                translucent_arena,
+                translucent_at,
+            ),
         ] {
-            if !part.is_empty() {
-                let bytes: &[u8] = bytemuck::cast_slice(part);
+            if !bytes.is_empty() {
                 self.uploaded_bytes += bytes.len() as u64;
                 self.section_copy_bytes += bytes.len() as u64;
                 self.section_uploads.buffer(
@@ -4883,6 +4988,8 @@ impl Renderer {
             start,
             translucent_at,
             solid,
+            solid_slots,
+            packed,
             sides: if mesh.sides.quads() == solid {
                 mesh.sides
             } else {
@@ -4926,6 +5033,29 @@ impl Renderer {
         first: u32,
         count: u32,
     ) {
+        self.draw_sections_from(pass, indirect, base, first, count, false);
+    }
+    /// `draw_sections` through the solid pipelines that read the arena page themselves
+    /// (`vs_section`): each page's group is bound as their group 1.
+    fn draw_solid_sections(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        indirect: &wgpu::Buffer,
+        base: u32,
+        first: u32,
+        count: u32,
+    ) {
+        self.draw_sections_from(pass, indirect, base, first, count, self.flat.is_some());
+    }
+    fn draw_sections_from(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        indirect: &wgpu::Buffer,
+        base: u32,
+        first: u32,
+        count: u32,
+        pulled: bool,
+    ) {
         let (draws, pages) = (&self.draws[..], &self.draw_pages[..]);
         let (mut i, end) = (first as usize, (first + count) as usize);
         while i < end {
@@ -4945,6 +5075,12 @@ impl Renderer {
                 ),
             };
             pass.set_vertex_buffer(0, vertices);
+            if pulled
+                && index_page.is_none()
+                && let Some(group) = self.flat.as_ref().and_then(|f| f.page_group(page))
+            {
+                pass.set_bind_group(1, group, &[]);
+            }
             pass.set_index_buffer(indices, wgpu::IndexFormat::Uint32);
             if self.multi_draw {
                 let offset = (i - base as usize) as u64 * 20;
@@ -5287,6 +5423,23 @@ impl Renderer {
         );
         if let (Some(flat), Some(arena)) = (&mut self.flat, &self.translucent_arena) {
             flat.set_translucent_page_vertices(arena.page_vertices());
+        }
+    }
+    /// Uploads solid quads in the compact layout (`packed_quads`) while no shader pack runs:
+    /// a pack's terrain and shadow programs, and Horizon's own packs' stages, read the
+    /// arena's vertices as `TerrainVertex`es. Leaving it drops every section and far tile
+    /// for the game to mesh again, as `follow_translucent_layout` does.
+    fn follow_packed_layout(&mut self) {
+        let pack = self.pack_post.as_ref().and_then(|p| p.1.as_ref()).is_some();
+        let want = self.flat.is_some() && !pack && self.native.is_none() && packed_wanted();
+        if want == self.packed_quads {
+            return;
+        }
+        self.packed_quads = want;
+        packed::pack_quads(want);
+        if !want && self.sections.values().any(|s| s.packed) {
+            self.sections_dropped = true;
+            self.clear_sections(self.layout);
         }
     }
     /// Whether every section and far tile was dropped since the last call, to be
@@ -6263,6 +6416,7 @@ impl Renderer {
         // so the next world's sections, which the level loading screen uploads, stay.
         if !frame.title {
             self.follow_translucent_layout();
+            self.follow_packed_layout();
         }
         let released = self.arena.trim();
         self.graveyard.add(released);
@@ -6996,7 +7150,7 @@ impl Renderer {
                 let start = draws.len();
                 facing_runs_from(&s.sides, eye, mirror_low, v.origin, part, |first, quads| {
                     indices += quads * 6;
-                    let base = s.start as u32 + first * 4;
+                    let base = s.solid_base() + first * 4;
                     draws.push([quads * 6, instances, 0, base, i as u32]);
                     pages.push((s.page, None));
                 });
@@ -7054,7 +7208,7 @@ impl Renderer {
                 let start = draws.len();
                 facing_runs_from(&s.sides, eye, mirror_low, v.origin, part, |first, quads| {
                     indices += quads * 6;
-                    let base = s.start as u32 + first * 4;
+                    let base = s.solid_base() + first * 4;
                     draws.push([quads * 6, instances, 0, base, index as u32]);
                     pages.push((s.page, None));
                 });
@@ -7279,7 +7433,7 @@ impl Renderer {
                 });
                 let toward = (!unculled).then_some(toward);
                 facing_runs(&s.sides, toward, v.origin, |first, quads| {
-                    let start = s.start as u32 + first * 4;
+                    let start = s.solid_base() + first * 4;
                     self.draws.push([quads * 6, 1, 0, start, instance]);
                     self.draw_pages.push((s.page, None));
                 });
@@ -7870,6 +8024,13 @@ impl Renderer {
             }
             _ => false,
         };
+        // Each page's group binds the page for the solid draws, flat or not.
+        if let Some(flat) = &mut self.flat {
+            let arena = &self.arena;
+            flat.bind_pages(&self.device, |page| {
+                arena.has_page(page).then(|| arena.buffer(page))
+            });
+        }
         if flat_frame {
             self.section_draw_calls = self.flat.as_ref().map_or(0, |f| f.shadow_calls[0]);
         } else if self.multi_draw && !self.draws.is_empty() {
@@ -8299,7 +8460,7 @@ impl Renderer {
                     pass.set_pipeline(&self.solid_mirror);
                     pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
                     pass.set_vertex_buffer(1, self.instances.slice(..));
-                    self.draw_sections(&mut pass, &self.indirect, 0, 0, solid_draws);
+                    self.draw_solid_sections(&mut pass, &self.indirect, 0, 0, solid_draws);
                 }
                 drop(pass);
                 reflection = Some(mirror.color.clone());
@@ -8374,6 +8535,10 @@ impl Renderer {
             && material.is_none()
             && surface.is_none()
             && shadow_view.is_none()
+            && self
+                .arena
+                .page_buffers()
+                .all(|(page, _)| page < visbuffer::MAX_PAGES)
             && self.visbuf.is_some();
         if vis_frame && let (Some(vis), Some(flat)) = (&mut self.visbuf, &self.flat) {
             let depth = world_depth.texture();
@@ -8626,6 +8791,9 @@ impl Renderer {
                         ],
                         _ => &[(solid_pipeline, 0..phase1_draws, phase1_draws..solid_draws)],
                     };
+                    // The vanilla solid pipelines read the page themselves; a native
+                    // material's take it as vertices.
+                    let pulled = material.is_none() && self.flat.is_some();
                     pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
                     pass.set_vertex_buffer(1, self.instances.slice(..));
                     match cull {
@@ -8636,12 +8804,13 @@ impl Renderer {
                             // both targets (it reads the test's results).
                             for (pipeline, draws, _) in passes {
                                 pass.set_pipeline(pipeline);
-                                self.draw_sections(
+                                self.draw_sections_from(
                                     &mut pass,
                                     &self.indirect,
                                     0,
                                     draws.start,
                                     draws.len() as u32,
+                                    pulled,
                                 );
                             }
                             if surface.is_some() {
@@ -8671,12 +8840,13 @@ impl Renderer {
                             pass.set_vertex_buffer(1, self.instances.slice(..));
                             for (pipeline, _, draws) in passes {
                                 pass.set_pipeline(pipeline);
-                                self.draw_sections(
+                                self.draw_sections_from(
                                     &mut pass,
                                     &cull.phase2,
                                     phase1_draws,
                                     draws.start,
                                     draws.len() as u32,
+                                    pulled,
                                 );
                             }
                         }
@@ -8686,15 +8856,20 @@ impl Renderer {
                                 pass.set_pipeline(pipeline);
                                 // GPU culling's draws first, all within the render distance.
                                 if gpu_frame && let Some(gpu) = &self.gpu_culling {
-                                    gpu.draw(&mut pass, &self.arena);
+                                    gpu.draw(&mut pass, &self.arena, |page| {
+                                        pulled
+                                            .then(|| self.flat.as_ref()?.page_group(page))
+                                            .flatten()
+                                    });
                                     pass.set_vertex_buffer(1, self.instances.slice(..));
                                 }
-                                self.draw_sections(
+                                self.draw_sections_from(
                                     &mut pass,
                                     &self.indirect,
                                     0,
                                     draws.start,
                                     draws.len() as u32,
+                                    pulled,
                                 );
                             }
                         }

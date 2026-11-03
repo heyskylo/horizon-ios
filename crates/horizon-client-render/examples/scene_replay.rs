@@ -29,7 +29,7 @@ use horizon_client_render::{
     graphics::LeafCullingMode,
     hud::HudBatch,
     lod::TileKey,
-    mesher::{MeshScratch, MeshTables, Mesher, SectionMesh},
+    mesher::{MeshScratch, MeshTables, Mesher, SectionMesh, packed},
     models,
 };
 use horizon_core::{
@@ -286,10 +286,12 @@ fn replay(window: Arc<Window>) -> Result<(), Box<dyn std::error::Error>> {
     }
     let leaf_layers = leaf_layers(&render);
     let (mut sections, mut quads, mut leaf_quads) = (0, 0usize, 0usize);
+    let mut packed_quads = 0usize;
     capture::read_meshes(&o.dir, "sections", |[x, y, z], captured| {
         if near(x, z) {
             let mesh = remeshed.remove(&[x, y, z]).unwrap_or(captured);
             quads += mesh.solid.len() / 4;
+            packed_quads += packed::packed_quads(&mesh.packed, mesh.solid.len() / 4);
             leaf_quads += mesh
                 .solid
                 .iter()
@@ -416,6 +418,8 @@ fn replay(window: Arc<Window>) -> Result<(), Box<dyn std::error::Error>> {
         "sections": sections,
         "solid_quads": quads,
         "leaf_quads": leaf_quads,
+        // Solid quads uploaded as one record each (`mesher::packed`).
+        "packed_quads": packed_quads,
         "world": world_report,
         "tiles": tile_count,
         "load_ms": loaded_ms,

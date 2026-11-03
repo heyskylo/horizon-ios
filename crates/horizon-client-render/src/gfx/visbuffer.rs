@@ -21,6 +21,8 @@ use super::pack_timing::PassTiming;
 
 /// Arena pages one resolve draw reads (`visbuffer.wgsl`'s `vis_page_0`...).
 pub const PAGE_SLOTS: u32 = 16;
+/// Arena pages an ID names (`visbuffer.wgsl`'s `vis_id`): frames with more draw without it.
+pub const MAX_PAGES: u32 = 64;
 /// The resolve binds that many pages, the block tables and the origins by section id.
 const STORAGE_BUFFERS: u32 = PAGE_SLOTS + 2;
 const IDS: wgpu::TextureFormat = wgpu::TextureFormat::R32Uint;
@@ -110,11 +112,6 @@ impl Visbuffer {
             bind_group_layouts: &[Some(terrain_layout), Some(&page_layout)],
             ..Default::default()
         });
-        let vertices = [Some(wgpu::VertexBufferLayout {
-            array_stride: std::mem::size_of::<super::TerrainVertex>() as u64,
-            step_mode: wgpu::VertexStepMode::Vertex,
-            attributes: &super::TERRAIN_ATTRIBUTES,
-        })];
         let ids = |label: &'static str, vertex: &'static str, fragment: &'static str| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(label),
@@ -123,7 +120,8 @@ impl Visbuffer {
                     module: &module,
                     entry_point: Some(vertex),
                     compilation_options: Default::default(),
-                    buffers: &vertices,
+                    // `section_corner` reads the arena page (`flat::ARENA_BINDING`).
+                    buffers: &[],
                 },
                 primitive: wgpu::PrimitiveState {
                     topology: wgpu::PrimitiveTopology::TriangleList,
@@ -313,7 +311,10 @@ impl Visbuffer {
     /// Bytes of its block tables and IDs.
     pub fn bytes(&self) -> u64 {
         let blocks = self.blocks.as_ref().map_or(0, |(b, _)| b.size());
-        let ids = self.ids.as_ref().map_or(0, |(_, [w, h])| u64::from(*w) * u64::from(*h) * 4);
+        let ids = self
+            .ids
+            .as_ref()
+            .map_or(0, |(_, [w, h])| u64::from(*w) * u64::from(*h) * 4);
         blocks + ids
     }
 

@@ -54,10 +54,15 @@ const GROUP_LIMIT: u32 = 65535;
 /// below it. A call names its key: its vertices come from that arena's page.
 pub const TRANSLUCENT_KEYS: u32 = 1 << 10;
 
+/// terrain.wgsl's `arena_page`: the page the solid draws read their vertices from.
+pub const ARENA_BINDING: u32 = 19;
+
 struct PageTable {
     /// Section id of every block of the page.
     blocks: wgpu::Buffer,
     group: Option<wgpu::BindGroup>,
+    /// The section arena's page `group` binds at `ARENA_BINDING` (`bind_pages`).
+    arena: Option<wgpu::Buffer>,
 }
 
 /// Writes the fragment's alpha over the frame's and leaves its colour.
@@ -350,8 +355,9 @@ fn plan(
 }
 
 impl Flat {
-    /// `pipeline(layout, label, vertex entry, fragment entry, blend, cull)` builds a
-    /// terrain pipeline as the per-section ones, without the origin buffer.
+    /// `pipeline(layout, label, vertex entry, fragment entry, blend, cull, pulled)` builds a
+    /// terrain pipeline as the per-section ones, without the origin buffer, and without
+    /// vertex buffers when `pulled` (its vertex shader reads the page, `ARENA_BINDING`).
     pub fn new(
         device: &wgpu::Device,
         terrain_layout: &wgpu::BindGroupLayout,
@@ -364,13 +370,18 @@ impl Flat {
             &str,
             Option<wgpu::BlendState>,
             Option<wgpu::Face>,
+            bool,
         ) -> wgpu::RenderPipeline,
     ) -> Self {
         let vertex = wgpu::ShaderStages::VERTEX;
         let compute = wgpu::ShaderStages::COMPUTE;
         let draw_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Flat section draws"),
-            entries: &[storage(0, vertex, true), storage(1, vertex, true)],
+            entries: &[
+                storage(0, vertex, true),
+                storage(1, vertex, true),
+                storage(ARENA_BINDING, vertex, true),
+            ],
         });
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Flat terrain layout"),
@@ -419,38 +430,44 @@ impl Flat {
         let storage_usage = wgpu::BufferUsages::STORAGE;
         let back = Some(wgpu::Face::Back);
         Self {
+            // The solid draws read either layout of the solid quads (`mesher::packed`) from
+            // the page; translucent ones keep their vertex buffer.
             solid: pipeline(
                 &layout,
                 "Terrain solid (flat)",
-                "vs_terrain_flat",
+                "vs_section_flat",
                 "fs_solid",
                 None,
                 back,
+                true,
             ),
             solid_opaque: pipeline(
                 &layout,
                 "Terrain solid opaque (flat)",
-                "vs_terrain_flat_opaque",
+                "vs_section_flat_opaque",
                 "fs_opaque",
                 None,
                 back,
+                true,
             ),
             solid_cutout: pipeline(
                 &layout,
                 "Terrain solid cutout (flat)",
-                "vs_terrain_flat_cutout",
+                "vs_section_flat_cutout",
                 "fs_solid",
                 None,
                 back,
+                true,
             ),
             // The mirror flips the winding: its solid terrain culls the front.
             solid_mirror: pipeline(
                 &layout,
                 "Terrain solid mirrored (flat)",
-                "vs_terrain_flat",
+                "vs_section_flat",
                 "fs_solid_mirror",
                 None,
                 Some(wgpu::Face::Front),
+                true,
             ),
             translucent: pipeline(
                 &layout,
@@ -459,6 +476,7 @@ impl Flat {
                 "fs_translucent",
                 Some(wgpu::BlendState::ALPHA_BLENDING),
                 back,
+                false,
             ),
             translucent_mark: pipeline(
                 &layout,
@@ -467,6 +485,7 @@ impl Flat {
                 "fs_translucent_mark",
                 Some(ALPHA_ONLY),
                 back,
+                false,
             ),
             flatten,
             compute_layout,
@@ -563,6 +582,7 @@ impl Flat {
                 wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
             ),
             group: None,
+            arena: None,
         });
         let first = start / GRAIN;
         let ids = vec![id; vertices.div_ceil(GRAIN) as usize];
@@ -825,28 +845,52 @@ impl Flat {
             pass.dispatch_workgroups((*count).min(GROUP_LIMIT), count.div_ceil(GROUP_LIMIT), 1);
         }
         drop(pass);
-        for page in self.calls.iter().map(|c| c.page) {
-            let table = self.pages[page as usize]
-                .as_mut()
-                .expect("a drawn page has its block table");
-            if table.group.is_none() {
-                table.group = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("Flat section draws"),
-                    layout: &self.draw_layout,
-                    entries: &[
-                        wgpu::BindGroupEntry {
-                            binding: 0,
-                            resource: table.blocks.as_entire_binding(),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 1,
-                            resource: self.origins.as_entire_binding(),
-                        },
-                    ],
-                }));
-            }
-        }
         true
+    }
+    /// Gives every page table its bind group (`bind_page`): its blocks, the origins and, for
+    /// a page of the section arena, that page (`arena`, by page) for the solid draws to read.
+    /// Before each frame's draws, flat or not: the per-section solid draws bind the groups too
+    /// (`page_group`), and a page that grew is another buffer.
+    pub fn bind_pages<'a>(
+        &mut self,
+        device: &wgpu::Device,
+        arena: impl Fn(u32) -> Option<&'a wgpu::Buffer>,
+    ) {
+        for (key, slot) in self.pages.iter_mut().enumerate() {
+            let Some(table) = slot else {
+                continue;
+            };
+            let page = (key < TRANSLUCENT_KEYS as usize)
+                .then(|| arena(key as u32))
+                .flatten();
+            if table.group.is_some() && table.arena.as_ref() == page {
+                continue;
+            }
+            table.arena = page.cloned();
+            table.group = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("Flat section draws"),
+                layout: &self.draw_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: table.blocks.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: self.origins.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: ARENA_BINDING,
+                        resource: page.unwrap_or(&self.empty).as_entire_binding(),
+                    },
+                ],
+            }));
+        }
+    }
+    /// The bind group of the section arena's page `page` (`bind_pages`), which the solid
+    /// draws read their vertices through.
+    pub fn page_group(&self, page: u32) -> Option<&wgpu::BindGroup> {
+        self.pages.get(page as usize)?.as_ref()?.group.as_ref()
     }
     /// After occlusion culling's test: copies the phase 2 draws it saw.
     pub fn flatten_phase2(

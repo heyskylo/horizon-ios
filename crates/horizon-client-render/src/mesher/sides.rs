@@ -205,13 +205,21 @@ fn bucket(quad: &[TerrainVertex; 4]) -> usize {
 /// cutout quads are also ordered front to back within each axis-facing
 /// bucket; quads that tie keep the mesher's order (the quad's index ends its
 /// sort key), so coplanar overlays still draw over their base.
-pub fn sort(solid: &mut Vec<TerrainVertex>) -> Sides {
-    sort_parts(solid, GROUPED.load(Ordering::Relaxed))
+#[cfg(test)]
+fn sort(solid: &mut Vec<TerrainVertex>) -> Sides {
+    sort_tinted(solid, &mut Vec::new())
+}
+
+/// `sort`, moving each quad's tint in `tints` (one per quad, or none) with it.
+pub fn sort_tinted(solid: &mut Vec<TerrainVertex>, tints: &mut Vec<u32>) -> Sides {
+    let grouped = GROUPED.load(Ordering::Relaxed);
+    SORT_SCRATCH.with_borrow_mut(|scratch| sort_with(solid, tints, grouped, scratch))
 }
 
 /// `sort`, with all the opaque parts first when `grouped`.
+#[cfg(test)]
 fn sort_parts(solid: &mut Vec<TerrainVertex>, grouped: bool) -> Sides {
-    SORT_SCRATCH.with_borrow_mut(|scratch| sort_with(solid, grouped, scratch))
+    SORT_SCRATCH.with_borrow_mut(|scratch| sort_with(solid, &mut Vec::new(), grouped, scratch))
 }
 
 /// `sort`'s buffers, kept by each meshing thread so sorting a mesh allocates
@@ -222,6 +230,7 @@ struct SortScratch {
     slots: Vec<u8>,
     keys: Vec<u64>,
     sorted: Vec<[TerrainVertex; 4]>,
+    tints: Vec<u32>,
 }
 thread_local! {
     static SORT_SCRATCH: std::cell::RefCell<SortScratch> = Default::default();
@@ -233,9 +242,15 @@ fn total_order_key(v: f32) -> u32 {
     (bits ^ (((bits >> 31) as u32) >> 1) as i32) as u32 ^ 0x8000_0000
 }
 
-fn sort_with(solid: &mut Vec<TerrainVertex>, grouped: bool, scratch: &mut SortScratch) -> Sides {
+fn sort_with(
+    solid: &mut Vec<TerrainVertex>,
+    tints: &mut Vec<u32>,
+    grouped: bool,
+    scratch: &mut SortScratch,
+) -> Sides {
     let (quads, rest) = solid.as_chunks::<4>();
     debug_assert!(rest.is_empty(), "solid vertices come in quads");
+    let quads_len = quads.len();
     let cutout = |q: &[TerrainVertex; 4]| q[0].layer & OPAQUE_LAYER == 0;
     // Each quad's part, by its place in mesh order (`slot`).
     let position = |b: usize, cutout: bool| match grouped {
@@ -297,6 +312,12 @@ fn sort_with(solid: &mut Vec<TerrainVertex>, grouped: bool, scratch: &mut SortSc
         sorted.extend(keys.iter().map(|&k| quads[(k & 0xFF_FFFF) as usize]));
         solid.clear();
         solid.extend_from_slice(sorted.as_flattened());
+        if tints.len() == quads_len {
+            let sorted_tints = &mut scratch.tints;
+            sorted_tints.clear();
+            sorted_tints.extend(keys.iter().map(|&k| tints[(k & 0xFF_FFFF) as usize]));
+            std::mem::swap(tints, sorted_tints);
+        }
     }
     Sides {
         ends: slot_ends,

@@ -398,6 +398,134 @@ fn left_out() -> TerrainOut {
     return terrain_vertex(position, terrain_uv(uv, origin.w), layer, color, light, origin.xyz,
         origin.w);
 }
+// Solid section draws that read their vertices from the arena page (gfx.rs's `pulled`
+// pipelines; `mesher/packed.rs`): a draw's vertex indices below PACKED_BASE name vertices
+// (`TerrainVertex`, six words, as `TERRAIN_ATTRIBUTES` reads them), from PACKED_BASE on a
+// corner of the quad whose record is at that slot (`PACKED_BASE + 4 * slot + corner`).
+// Either way they come out as the six words of the vertex, so the work after is the same.
+// Binding 19: visbuffer.wgsl, in the same module, takes 2 to 18 of its own group 1.
+@group(1) @binding(19) var<storage, read> arena_page: array<vec2<u32>>;
+const PACKED_BASE: u32 = 0x10000000u;
+// A vertex's words: position bits, then UV, layer with light, colour.
+struct ArenaCorner {
+    p: vec3<u32>,
+    r: vec3<u32>,
+}
+fn arena_vertex(v: u32) -> ArenaCorner {
+    let a = arena_page[v * 3u];
+    let b = arena_page[v * 3u + 1u];
+    let c = arena_page[v * 3u + 2u];
+    return ArenaCorner(vec3(a.x, a.y, b.x), vec3(b.y, c.x, c.y));
+}
+// `packed::packed_vertex`: corner `corner` of the record whose words are lo (0 to 2) and
+// hi (3 to 5).
+fn packed_corner(lo: vec3<u32>, hi: vec3<u32>, corner: u32) -> ArenaCorner {
+    let orient = (hi.z >> 12u) & 0x3ffffu;
+    let block = vec3(orient & 15u, (orient >> 4u) & 15u, (orient >> 8u) & 15u);
+    let axis = (orient >> 12u) & 3u;
+    let side = (orient >> 14u) & 1u;
+    let start = (orient >> 15u) & 3u;
+    let dir = (orient >> 17u) & 1u;
+    let step = (start + select(corner, 4u - corner, dir == 1u)) & 3u;
+    let du = select(0u, 1u, step == 1u || step == 2u);
+    let dw = select(0u, 1u, step >= 2u);
+    var pos = block;
+    pos[axis] = block[axis] + side;
+    pos[(axis + 1u) % 3u] = block[(axis + 1u) % 3u] + du;
+    pos[(axis + 2u) % 3u] = block[(axis + 2u) % 3u] + dw;
+    let sel = lo.z >> 24u;
+    let us = (sel >> (2u * corner)) & 1u;
+    let vs = (sel >> (2u * corner + 1u)) & 1u;
+    let u = (lo.z >> (6u * us)) & 63u;
+    let v = (lo.z >> (12u + 6u * vs)) & 63u;
+    var light = hi.z;
+    if corner == 0u {
+        light = hi.x >> 16u;
+    } else if corner == 1u {
+        light = hi.y;
+    } else if corner == 2u {
+        light = hi.y >> 12u;
+    }
+    light &= 0xfffu;
+    let packed_light = ((light & 63u) << 2u) | (((light >> 6u) & 63u) << 10u);
+    let g = (lo.y >> (8u * corner)) & 255u;
+    let t = lo.x;
+    let color = (g * ((t >> 16u) & 255u) / 255u) | ((g * ((t >> 8u) & 255u) / 255u) << 8u)
+        | ((g * (t & 255u) / 255u) << 16u) | (t & 0xff000000u);
+    return ArenaCorner(bitcast<vec3<u32>>(vec3<f32>(pos)),
+        vec3((u << 10u) | (v << 26u), (hi.x & 0xffffu) | (packed_light << 16u), color));
+}
+// A solid draw's vertex `vertex`, and the slot its block is found by (`block_slots`, 256
+// slots a block): the vertex's own, or its quad's record's. `packed`: it has a record.
+struct SectionCorner {
+    c: ArenaCorner,
+    slot: u32,
+    packed: bool,
+}
+fn section_corner(vertex: u32) -> SectionCorner {
+    if vertex < PACKED_BASE {
+        return SectionCorner(arena_vertex(vertex), vertex, false);
+    }
+    let slot = (vertex - PACKED_BASE) >> 2u;
+    let corner = vertex & 3u;
+    let a = arena_page[slot * 3u];
+    let b = arena_page[slot * 3u + 1u];
+    let c = arena_page[slot * 3u + 2u];
+    // `packed::FULL`: the quad's four vertices, word 0 slots on.
+    if (c.y & 0x80000000u) != 0u {
+        return SectionCorner(arena_vertex(slot + a.x + corner), slot, true);
+    }
+    return SectionCorner(packed_corner(vec3(a.x, a.y, b.x), vec3(b.y, c.x, c.y), corner), slot,
+        true);
+}
+// The colour as the vertex fetch converts a Unorm8x4 attribute, bit for bit (Apple's M1:
+// times 1/255; `unpack4x8unorm` and the correctly rounded c / 255 each differ from it for
+// some bytes, and moved a few pixels' colour or alpha cutout).
+fn unorm8x4(c: u32) -> vec4<f32> {
+    return vec4<f32>(vec4(c & 255u, (c >> 8u) & 255u, (c >> 16u) & 255u, c >> 24u))
+        * (1.0 / 255.0);
+}
+fn corner_layer(c: ArenaCorner) -> u32 {
+    return c.r.y & 0xffffu;
+}
+fn corner_vertex(c: ArenaCorner, origin: vec4<f32>) -> TerrainOut {
+    let uv = vec2(c.r.x & 0xffffu, c.r.x >> 16u);
+    let light = vec2((c.r.y >> 16u) & 0xffu, c.r.y >> 24u);
+    return terrain_vertex(bitcast<vec3<f32>>(c.p), terrain_uv(uv, origin.w), corner_layer(c),
+        unorm8x4(c.r.z), light, origin.xyz, origin.w);
+}
+@vertex fn vs_section(@builtin(vertex_index) vertex: u32,
+    @location(5) origin: vec4<f32>) -> TerrainOut {
+    return corner_vertex(section_corner(vertex).c, origin);
+}
+@vertex fn vs_section_opaque(@builtin(vertex_index) vertex: u32,
+    @location(5) origin: vec4<f32>) -> TerrainOut {
+    let s = section_corner(vertex);
+    if !opaque_quad(corner_layer(s.c), origin.w) { return left_out(); }
+    return corner_vertex(s.c, origin);
+}
+@vertex fn vs_section_cutout(@builtin(vertex_index) vertex: u32,
+    @location(5) origin: vec4<f32>) -> TerrainOut {
+    let s = section_corner(vertex);
+    if opaque_quad(corner_layer(s.c), origin.w) { return left_out(); }
+    return corner_vertex(s.c, origin);
+}
+@vertex fn vs_section_flat(@builtin(vertex_index) vertex: u32) -> TerrainOut {
+    let s = section_corner(vertex);
+    return corner_vertex(s.c, slot_origins[block_slots[s.slot >> 8u]]);
+}
+@vertex fn vs_section_flat_opaque(@builtin(vertex_index) vertex: u32) -> TerrainOut {
+    let s = section_corner(vertex);
+    let origin = slot_origins[block_slots[s.slot >> 8u]];
+    if !opaque_quad(corner_layer(s.c), origin.w) { return left_out(); }
+    return corner_vertex(s.c, origin);
+}
+@vertex fn vs_section_flat_cutout(@builtin(vertex_index) vertex: u32) -> TerrainOut {
+    let s = section_corner(vertex);
+    let origin = slot_origins[block_slots[s.slot >> 8u]];
+    if opaque_quad(corner_layer(s.c), origin.w) { return left_out(); }
+    return corner_vertex(s.c, origin);
+}
 // HDR lighting: how far a surface's light carries it above paper white, 0 to 1. Only the
 // strongest light does, so dark stays as dark as in SDR; sky light by how the face meets the sun.
 fn hdr_scene(block: f32, sky: f32, facing: f32) -> f32 {

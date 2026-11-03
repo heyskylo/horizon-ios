@@ -725,14 +725,23 @@ impl GpuCulling {
     }
 
     /// The chosen sections' solid draws, a count draw per page, with the quad
-    /// indices bound. Leaves the origins at vertex slot 1.
-    pub fn draw(&self, pass: &mut wgpu::RenderPass<'_>, arena: &Arena) {
+    /// indices bound. Leaves the origins at vertex slot 1. `group`: the page's group 1 for
+    /// pipelines that read the page themselves (`Flat::page_group`), else none.
+    pub fn draw<'a>(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        arena: &Arena,
+        group: impl Fn(u32) -> Option<&'a wgpu::BindGroup>,
+    ) {
         if self.pages.is_empty() {
             return;
         }
         pass.set_vertex_buffer(1, self.origins.buffer.slice(..));
         for &(page, first, size) in &self.pages {
             pass.set_vertex_buffer(0, arena.buffer(page).slice(..));
+            if let Some(group) = group(page) {
+                pass.set_bind_group(1, group, &[]);
+            }
             pass.multi_draw_indexed_indirect_count(
                 &self.draws.buffer,
                 u64::from(first) * 20,
@@ -1390,7 +1399,7 @@ struct Quad {
             });
             pass.set_pipeline(&pipeline);
             pass.set_index_buffer(indices.slice(..), wgpu::IndexFormat::Uint32);
-            gpu.draw(&mut pass, &arena);
+            gpu.draw(&mut pass, &arena, |_| None);
             drop(pass);
             encoder.copy_texture_to_buffer(
                 target.as_image_copy(),

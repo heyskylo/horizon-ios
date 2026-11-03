@@ -66,6 +66,8 @@ fn copy(mesh: &SectionMesh) -> SectionMesh {
         solid: mesh.solid.clone(),
         sides: mesh.sides,
         translucent: mesh.translucent.clone(),
+        packed: mesh.packed.clone(),
+        solid_tints: Vec::new(),
         visibility: mesh.visibility,
         block_entities: mesh.block_entities.clone(),
         lights: mesh.lights.clone(),
@@ -320,6 +322,7 @@ pub fn read_meshes(
                     .bounds
                     .map(|[min, max]| [Vec3::from_array(min), Vec3::from_array(max)]),
                 keep: record.keep,
+                ..Default::default()
             },
         );
     }

@@ -8,10 +8,16 @@
 // and works out the screen gradients `dpdx`/`dpdy` would give, so the texel, mip level, light
 // and fog come out as in the normal path.
 
-// Bit 31: terrain is here; bits 22 to 30: the arena page; bits 0 to 21: the quad in the page
-// (a page holds at most `arena::PAGE_BYTES` / 24 bytes = 2 796 202 quads, under 2^22).
-fn vis_id(page: u32, vertex: u32) -> u32 {
-    return 0x80000000u | ((page & 0x1ffu) << 22u) | (vertex >> 2u);
+// Bit 31: terrain is here; bit 30: the quad has a record (`mesher/packed.rs`); bits 24 to 29:
+// the arena page (`visbuffer::MAX_PAGES`); bits 0 to 23: the quad's record's slot in the page,
+// else its first vertex over 4 (a page holds at most `arena::PAGE_BYTES` / 24 bytes =
+// 11 184 810 slots, under 2^24).
+fn vis_id(page: u32, s: SectionCorner) -> u32 {
+    let at = 0x80000000u | ((page & 0x3fu) << 24u);
+    if s.packed {
+        return at | 0x40000000u | s.slot;
+    }
+    return at | (s.slot >> 2u);
 }
 
 // `sprite_at` (terrain.wgsl's `sample_rgss` over `sample_nearest`), sampling only what its
@@ -68,18 +74,18 @@ struct VisIdOut {
 // keeps hiding what lies behind them. `page`: the draw's instance, its arena page
 // (`Flat::draw_paged`).
 @vertex fn vs_vis_opaque(
-    @builtin(vertex_index) vertex: u32, @builtin(instance_index) page: u32,
-    @location(0) position: vec3<f32>, @location(1) uv: vec2<u32>,
-    @location(2) layer: u32, @location(3) color: vec4<f32>, @location(4) light: vec2<u32>
+    @builtin(vertex_index) vertex: u32, @builtin(instance_index) page: u32
 ) -> VisIdOut {
     var out: VisIdOut;
-    let origin = slot_origins[block_slots[vertex >> 8u]];
-    if !opaque_quad(layer, origin.w) {
+    let s = section_corner(vertex);
+    let origin = slot_origins[block_slots[s.slot >> 8u]];
+    if !opaque_quad(corner_layer(s.c), origin.w) {
         out.clip = vec4(2.0, 2.0, 2.0, 1.0);
         return out;
     }
+    let position = bitcast<vec3<f32>>(s.c.p);
     out.clip = fade_depth(globals.view_proj * vec4(position + origin.xyz, 1.0), origin.w);
-    out.id = vis_id(page, vertex);
+    out.id = vis_id(page, s);
     return out;
 }
 @fragment fn fs_vis_id(in: VisIdOut) -> @location(0) u32 {
@@ -98,19 +104,22 @@ struct VisCutoutOut {
 }
 // The other quads: `solid_color`'s fade dither and alpha cutout, with no shading.
 @vertex fn vs_vis_cutout(
-    @builtin(vertex_index) vertex: u32, @builtin(instance_index) page: u32,
-    @location(0) position: vec3<f32>, @location(1) uv: vec2<u32>,
-    @location(2) layer: u32, @location(3) color: vec4<f32>, @location(4) light: vec2<u32>
+    @builtin(vertex_index) vertex: u32, @builtin(instance_index) page: u32
 ) -> VisCutoutOut {
     var out: VisCutoutOut;
-    let origin = slot_origins[block_slots[vertex >> 8u]];
+    let s = section_corner(vertex);
+    let origin = slot_origins[block_slots[s.slot >> 8u]];
+    let layer = corner_layer(s.c);
     if opaque_quad(layer, origin.w) {
         out.clip = vec4(2.0, 2.0, 2.0, 1.0);
         return out;
     }
+    let position = bitcast<vec3<f32>>(s.c.p);
+    let uv = vec2(s.c.r.x & 0xffffu, s.c.r.x >> 16u);
+    let light = vec2((s.c.r.y >> 16u) & 0xffu, s.c.r.y >> 24u);
     let pos = position + origin.xyz;
     out.clip = fade_depth(globals.view_proj * vec4(pos, 1.0), origin.w);
-    out.id = vis_id(page, vertex);
+    out.id = vis_id(page, s);
     out.uv = terrain_uv(uv, origin.w);
     out.layer = layer;
     let block = max(f32(light.y), dynamic_block_light(pos));
@@ -276,31 +285,74 @@ fn vis_corner(position: vec3<u32>, rest: vec3<u32>, origin: vec4<f32>) -> Terrai
 @fragment fn fs_vis_resolve(in: VisResolveOut) -> @location(0) vec4<f32> {
     let pixel = vec2<i32>(floor(in.clip.xy));
     let id = textureLoad(vis_ids, pixel, 0).x;
-    let page = (id >> 22u) & 0x1ffu;
+    let page = (id >> 24u) & 0x3fu;
     if (id & 0x80000000u) == 0u || page / 16u != in.chunk {
         discard;
     }
     let slot = page % 16u;
-    let quad = id & 0x3fffffu;
-    let at = 6u * quad;
-    // The quad's block (256 vertices, 64 quads) names its section, as for `vs_terrain_flat`.
-    let origin = slot_origins[block_slots[page * VIS_BLOCKS_PER_PAGE + (quad >> 6u)]];
-    // Corner k is words 6k to 6k + 5 of the quad's 24.
-    let words = vis_quad(slot, at).q;
-    let q0 = words[0];
-    let q1 = words[1];
-    let q2 = words[2];
-    let q3 = words[3];
-    let q4 = words[4];
-    let q5 = words[5];
-    let p0 = q0.xyz;
-    let r0 = vec3(q0.w, q1.x, q1.y);
-    let p1 = vec3(q1.z, q1.w, q2.x);
-    let r1 = q2.yzw;
-    let p2 = q3.xyz;
-    let r2 = vec3(q3.w, q4.x, q4.y);
-    let p3 = vec3(q4.z, q4.w, q5.x);
-    let r3 = q5.yzw;
+    let index = id & 0xffffffu;
+    // The quad's first vertex (four of them from a multiple of 4) or its record.
+    var first = 4u * index;
+    var record = false;
+    var lo = vec3(0u);
+    var hi = vec3(0u);
+    if (id & 0x40000000u) != 0u {
+        first = index;
+        // The record's six words from word 6 * index: two 16-byte words from the one it
+        // starts in, at its start or its middle.
+        let w = vis_quad(slot, (6u * index) >> 2u).q;
+        let middle = ((6u * index) & 3u) != 0u;
+        lo = select(w[0].xyz, vec3(w[0].zw, w[1].x), middle);
+        hi = select(vec3(w[0].w, w[1].xy), w[1].yzw, middle);
+        record = (hi.z & 0x80000000u) == 0u;
+        if !record {
+            // `packed::FULL`: its four vertices, word 0 slots on.
+            first = index + lo.x;
+        }
+    }
+    // The quad's block (256 slots: 64 quads of vertices, 256 records) names its section, as
+    // for `vs_section_flat`.
+    let block = select(index >> 6u, index >> 8u, (id & 0x40000000u) != 0u);
+    let origin = slot_origins[block_slots[page * VIS_BLOCKS_PER_PAGE + block]];
+    var p0: vec3<u32>;
+    var r0: vec3<u32>;
+    var p1: vec3<u32>;
+    var r1: vec3<u32>;
+    var p2: vec3<u32>;
+    var r2: vec3<u32>;
+    var p3: vec3<u32>;
+    var r3: vec3<u32>;
+    if record {
+        let c0 = packed_corner(lo, hi, 0u);
+        let c1 = packed_corner(lo, hi, 1u);
+        let c2 = packed_corner(lo, hi, 2u);
+        let c3 = packed_corner(lo, hi, 3u);
+        p0 = c0.p;
+        r0 = c0.r;
+        p1 = c1.p;
+        r1 = c1.r;
+        p2 = c2.p;
+        r2 = c2.r;
+        p3 = c3.p;
+        r3 = c3.r;
+    } else {
+        // Corner k is words 6k to 6k + 5 of the quad's 24.
+        let words = vis_quad(slot, 6u * (first >> 2u)).q;
+        let q0 = words[0];
+        let q1 = words[1];
+        let q2 = words[2];
+        let q3 = words[3];
+        let q4 = words[4];
+        let q5 = words[5];
+        p0 = q0.xyz;
+        r0 = vec3(q0.w, q1.x, q1.y);
+        p1 = vec3(q1.z, q1.w, q2.x);
+        r1 = q2.yzw;
+        p2 = q3.xyz;
+        r2 = vec3(q3.w, q4.x, q4.y);
+        p3 = vec3(q4.z, q4.w, q5.x);
+        r3 = q5.yzw;
+    }
     let c0 = (globals.view_proj * vec4(bitcast<vec3<f32>>(p0) + origin.xyz, 1.0)).xyw;
     let c1 = (globals.view_proj * vec4(bitcast<vec3<f32>>(p1) + origin.xyz, 1.0)).xyw;
     let c2 = (globals.view_proj * vec4(bitcast<vec3<f32>>(p2) + origin.xyz, 1.0)).xyw;
