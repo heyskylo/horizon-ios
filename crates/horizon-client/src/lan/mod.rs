@@ -1,9 +1,10 @@
 //! Hosting a world on the local network. The network side lives here: the
-//! listener, the per-connection handshake/login/configuration threads and the
-//! writer threads (`conn`), plus the data the configuration phase sends
-//! (`data`). The play state is driven by the game thread (`hub`), which only
-//! ever exchanges decoded packets with these threads through channels, so a
-//! world that is not open to the network pays nothing.
+//! listener, the per-connection handshake/login/configuration threads
+//! (`conn`), the network threads every player in the play state is served on
+//! (`io_pool`), plus the data the configuration phase sends (`data`). The play
+//! state is driven by the game thread (`hub`), which only ever exchanges
+//! decoded packets with these threads, so a world that is not open to the
+//! network pays nothing.
 mod advancements;
 pub mod anticheat;
 pub mod attributes;
