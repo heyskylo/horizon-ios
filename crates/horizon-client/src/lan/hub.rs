@@ -3567,8 +3567,16 @@ impl Hub {
                     .is_some_and(|m| m.auto_spin_attack_ticks > 0)
                 && self.no_blocks_around(i, to, ctx.world)
         };
+        // handlePlayerPositionChange: a client that says it is on the ground while the last move
+        // the server resolved came down onto nothing is sent the blocks under it again, so a
+        // client that missed a block change cannot stand on air for good.
+        if flags & 1 != 0 && !self.guests[i].rests_on_ground {
+            self.force_send_player_support_blocks(i, ctx);
+        }
         let g = &mut self.guests[i];
         g.client_is_floating = floating;
+        // Entity.move's verticalCollisionBelow, which the check above reads of the last move.
+        g.rests_on_ground = stands;
         g.previous_position = g.position;
         g.position = to;
         // ServerChunkCache.move: its pairs are checked again.
@@ -3601,6 +3609,64 @@ impl Hub {
             at[2] + half,
         ];
         no_blocks_in(world, lo, hi)
+    }
+
+    /// `ServerGamePacketListenerImpl.forceSendPlayerSupportBlocks`: the blocks just under the
+    /// player's box, at the box's four corners a hundred-thousandth below its floor, each once.
+    /// A client whose block below went missing without it noticing keeps standing on that block
+    /// on the server, so the server tells it what is there (`ClientboundBlockUpdatePacket`, and
+    /// the block entity's update tag where it has one, `BlockEntity.getUpdatePacket`). No more
+    /// than once every 200 ticks of the connection, so a client that stands on air for good is
+    /// not sent four packets four times a second.
+    fn force_send_player_support_blocks(&mut self, i: usize, ctx: &TickCtx) {
+        let tick = self.ticks.saturating_sub(self.guests[i].joined_tick);
+        if tick < self.guests[i].support_blocks_sent.saturating_add(200) {
+            return;
+        }
+        self.guests[i].support_blocks_sent = tick;
+        let conn = self.guests[i].conn;
+        let g = &self.guests[i];
+        let d = g.dimensions();
+        let half = f64::from(d.width) / 2.0;
+        let at = g.position;
+        // `box.minY - 9.999999747378752E-6`, which is (double) 1.0E-5f.
+        let y = at[1] - f64::from(1.0E-5_f32);
+        let cell = |v: f64| v.floor() as i32;
+        let mut positions: Vec<[i32; 3]> = Vec::with_capacity(4);
+        for (x, z) in [
+            (at[0] - half, at[2] - half),
+            (at[0] + half, at[2] - half),
+            (at[0] - half, at[2] + half),
+            (at[0] + half, at[2] + half),
+        ] {
+            let pos = [cell(x), cell(y), cell(z)];
+            if !positions.contains(&pos) {
+                positions.push(pos);
+            }
+        }
+        for pos in positions {
+            let state = ctx.world.block(pos[0], pos[1], pos[2]);
+            self.send_to(
+                conn,
+                &C::BlockUpdate(play::BlockUpdate {
+                    pos,
+                    state: state.0 as i32,
+                }),
+            );
+            let Some(entity) = ctx.world.block_entities.get(&(pos[0], pos[1], pos[2])) else {
+                continue;
+            };
+            let Some(tag) = self.encoder.update_tag((pos[0], pos[1], pos[2]), entity) else {
+                continue;
+            };
+            let Some(kind) = self.encoder.entity_type(state.0) else {
+                continue;
+            };
+            self.send_to(
+                conn,
+                &C::BlockEntityData(play::BlockEntityData { pos, kind, tag }),
+            );
+        }
     }
 
     /// `ServerGamePacketListenerImpl.tickPlayer`'s flying check: a player the

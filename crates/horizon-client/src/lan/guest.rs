@@ -176,6 +176,12 @@ pub struct Guest {
     pub above_ground_vehicle_ticks: i32,
     pub vehicle_gravity: f64,
     pub vehicle_rests: bool,
+    /// `Entity.verticalCollisionBelow` of the player's own body: its last
+    /// accepted move came down onto something.
+    pub rests_on_ground: bool,
+    /// `ServerGamePacketListenerImpl.lastSupportedBlocksSend`: the connection
+    /// tick the blocks under the player were last force-sent.
+    pub support_blocks_sent: u64,
     /// A position move arrived since the client's last ClientTickEnd
     /// (receivedPositionThisTick): a second one is a protocol error.
     pub position_this_tick: bool,
@@ -411,6 +417,8 @@ impl Guest {
             above_ground_vehicle_ticks: 0,
             vehicle_gravity: 0.0,
             vehicle_rests: false,
+            rests_on_ground: false,
+            support_blocks_sent: 0,
             position_this_tick: false,
             anticheat: Default::default(),
             replay: None,
