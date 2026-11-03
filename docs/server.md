@@ -142,7 +142,7 @@ The supervisor/engine split stays even after the engine becomes headless, for th
 **The engine today** is `horizon-client --dedicated`. It needs one small, additive change: a status endpoint.
 With `--control-socket <dir>/.horizon/engine.json` (the existing control protocol: TCP on 127.0.0.1 plus a token, on
 every OS), the dedicated loop answers `server-status` with TPS, MSPT (average, P50/P95/P99 from the tick
-clock `/tick query` uses), players (name, UUID, address, ping), loaded chunks and uptime. It answers
+clock `/tick query` uses), players (name, UUID, address, ping, position), loaded chunks and uptime. It answers
 `console <line>` with the command's output.
 
 **The headless engine** comes after perf-ticks-2's work lands: Resources split into shared and per-game, the
@@ -402,7 +402,10 @@ runtime or new dependency. Server-sent events can replace the polling later if a
 - **Restore.** `restore NAME` takes a file name, a unique prefix, or the name given to `backup` (the newest
   with it). The server stops. The current world is moved to `backups/replaced-<time>/` (never deleted), the
   backup is unpacked into a temporary folder and checked (`level.dat` is there), then moved in, and the server
-  starts again if it was running. One command, or one click with confirmation in the panel.
+  starts again if it was running. One command, or one click with confirmation in the panel. `restore NAME
+  --dimension minecraft:the_nether` (API: `dimension` in the body; MCP: `dimension`) brings back only that
+  dimension's folder (`dimensions/<namespace>/<path>`), the same way, and leaves the other dimensions,
+  `level.dat` and the players as they are; the folder it replaces goes to `backups/replaced-<time>/`.
 - **Crash restart.** If the engine exits without being asked to stop, the supervisor keeps the last 200 log
   lines and the engine's crash report (`crash-reports/`), restarts it after 5 s, and doubles the wait up to
   5 minutes. It gives up after 5 crashes in 10 minutes, so it doesn't loop on a broken world, and shows the
@@ -448,7 +451,7 @@ runtime or new dependency. Server-sent events can replace the polling later if a
     `POST stop`, `POST restart`, `GET backups`, `POST backups {name}`, `POST restore {name}`, `POST update
     {tag, timeout}` (without a tag: the newest release, downloaded first; `status` has an `update` object
     that says how it went), `GET metrics?since=`;
-  - built (server-admin): `GET players` (online with address, ping and op level; ops, whitelist, bans, IP
+  - built (server-admin): `GET players` (online with address, ping, position and op level; ops, whitelist, bans, IP
     bans), `POST players/{kick,ban,pardon,ban-ip,pardon-ip,op,deop}`, `POST whitelist {enabled}`,
     `POST whitelist/{add,remove}` (each runs vanilla's console command and answers `changed` and its lines),
     `GET metrics/prometheus` (Prometheus text);

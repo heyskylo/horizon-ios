@@ -175,6 +175,19 @@ fn components_tag(s: &Stack, builtin: &Builtin, synced: &Dynamic) -> Option<Tag>
                 };
                 data
             }
+            // `SignText`: a copied sign's text, which this client's own placement
+            // puts on the sign it predicts (#8102).
+            Component::Raw(bytes)
+                if matches!(
+                    *kind,
+                    component::SIGN_TEXT_FRONT | component::SIGN_TEXT_BACK
+                ) =>
+            {
+                let Some(text) = sign_text_tag(bytes) else {
+                    continue;
+                };
+                text
+            }
             // Read past, not decoded: the item keeps its prototype's value.
             Component::Raw(_) => continue,
             // Trim materials and patterns are synced registries, as enchantments are.
@@ -401,6 +414,20 @@ fn block_entity_data_tag(bytes: &[u8], builtin: &Builtin) -> Option<Tag> {
     };
     data.insert("id".into(), Tag::String(kind.into()));
     Some(Tag::Compound(data))
+}
+
+/// `SignText.STREAM_CODEC` as `SignText.CODEC` saves it: the four messages,
+/// the filtered four when the server sent them, the dye colour and the glow.
+fn sign_text_tag(bytes: &[u8]) -> Option<Tag> {
+    let mut r = Reader::new(bytes);
+    let lines = |r: &mut Reader| (0..4).map(|_| r.nbt().ok()).collect::<Option<Vec<_>>>();
+    let mut text = vec![("messages", Tag::List(lines(&mut r)?))];
+    if r.bool().ok()? {
+        text.push(("filtered_messages", Tag::List(lines(&mut r)?)));
+    }
+    text.push(("color", Tag::String(dye_name(r.varint().ok()?).into())));
+    text.push(("has_glowing_text", Tag::Byte(i8::from(r.bool().ok()?))));
+    Some(Tag::compound(text))
 }
 
 /// `ItemContainerContents.STREAM_CODEC`, one optional template per slot, as
@@ -1039,6 +1066,61 @@ mod tests {
             variant(&from_network(&wire, &builtin, &dynamic)),
             variant(&alban)
         );
+    }
+
+    /// A sign picked with its data (`SignBlockEntity.collectImplicitComponents`)
+    /// keeps its text across the wire both ways: `sign_text_front` and
+    /// `sign_text_back` (ids 118 and 119, `SignText.STREAM_CODEC`) reach the
+    /// client's stack, whose own placement puts the text on the sign (#8102).
+    #[test]
+    fn a_signs_text_crosses_the_wire() {
+        use horizon_protocol::buf::{Reader, Writer};
+        use horizon_protocol::item::Slot;
+        let mut components = vec![String::new(); 120];
+        components[118] = "minecraft:sign_text_front".into();
+        components[119] = "minecraft:sign_text_back".into();
+        let items = ["minecraft:air", "minecraft:oak_sign"];
+        let builtin = Builtin {
+            registries: [
+                (
+                    "minecraft:item".to_owned(),
+                    Ids::from_names(items.iter().map(|s| s.to_string()).collect()),
+                ),
+                (
+                    "minecraft:data_component_type".to_owned(),
+                    Ids::from_names(components),
+                ),
+            ]
+            .into(),
+        };
+        let dynamic = Dynamic::default();
+        let line = |s: &str| Tag::String(s.into());
+        let text = |lines: [&str; 4], color: &str, glowing: i8| {
+            Tag::compound([
+                ("messages", Tag::List(lines.map(line).to_vec())),
+                ("color", Tag::String(color.into())),
+                ("has_glowing_text", Tag::Byte(glowing)),
+            ])
+        };
+        let front = text(["Line one", "Line two", "", "Line four"], "black", 0);
+        let back = text(["", "back", "", ""], "red", 1);
+        let mut sign = ItemStack::new("minecraft:oak_sign", 1);
+        sign.data_mut()
+            .set_other("minecraft:sign_text_front", Some(front.clone()));
+        sign.data_mut()
+            .set_other("minecraft:sign_text_back", Some(back.clone()));
+        let wire = crate::lan::guest::stack_to_network(
+            |name| items.iter().position(|i| *i == name).unwrap_or(0) as i32,
+            |_, _| None,
+            &Some(sign),
+        );
+        let mut w = Writer::new();
+        Slot::write(&wire, &mut w);
+        let wire = Slot::read(&mut Reader::new(&w.data)).unwrap().unwrap();
+        let client = from_network(&wire, &builtin, &dynamic);
+        let data = client.data().expect("the sign's components");
+        assert_eq!(data.other("minecraft:sign_text_front"), Some(&front));
+        assert_eq!(data.other("minecraft:sign_text_back"), Some(&back));
     }
 
     /// `minecraft:custom_data` and `minecraft:custom_model_data` are part of
