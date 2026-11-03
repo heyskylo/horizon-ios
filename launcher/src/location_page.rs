@@ -120,6 +120,10 @@ impl Launcher {
             cx.notify();
             return;
         }
+        if self.settings_save_error.is_some() && !self.save_settings() {
+            cx.notify();
+            return;
+        }
         let Some(target) = self.location_target.as_ref() else {
             return;
         };

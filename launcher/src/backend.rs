@@ -848,6 +848,11 @@ pub(crate) fn install_as(
 
 pub fn remove(tag: &str) -> Result<(), String> {
     let dir = version_dir(tag);
+    remove_in(&dir)
+}
+
+fn remove_in(dir: &Path) -> Result<(), String> {
+    let installed = dir.join(COMPLETE).is_file();
     // The marker goes first: a version counted as installed until its folder is gone comes back
     // into `installed` when an overlapping removal re-reads the list mid-delete.
     let _ = fs::remove_file(dir.join(COMPLETE));
@@ -855,10 +860,18 @@ pub fn remove(tag: &str) -> Result<(), String> {
     // go of it, and remove_dir_all stops at the first one. Retry for a second; a folder that is
     // already gone is removed.
     for attempt in 1.. {
-        match fs::remove_dir_all(&dir) {
+        match fs::remove_dir_all(dir) {
             Ok(()) => break,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => break,
-            Err(e) if attempt == 5 => return Err(e.to_string()),
+            Err(e) if attempt == 5 => {
+                // A failed removal must remain discoverable and retryable. Files may
+                // already have gone, so this is recovery metadata, not a rollback.
+                if installed && dir.is_dir() {
+                    fs::write(dir.join(COMPLETE), "")
+                        .map_err(|restore| format!("{e}; {restore}"))?;
+                }
+                return Err(e.to_string());
+            }
             Err(_) => std::thread::sleep(std::time::Duration::from_millis(250)),
         }
     }
@@ -2337,7 +2350,7 @@ pub fn remove_version(tag: &str) -> Result<(), String> {
     let mut settings = Settings::load();
     if settings.selected.as_deref() == Some(tag) {
         settings.selected = installed().first().cloned();
-        settings.save();
+        settings.save()?;
     }
     Ok(())
 }
@@ -2686,7 +2699,7 @@ pub fn install_tag(tag: &str, as_update: bool, progress: impl Fn(f32)) -> Result
     let mut settings = Settings::load();
     if !as_update || select_after_update(settings.selected.as_deref(), &before) {
         settings.selected = Some(release.tag.clone());
-        settings.save();
+        settings.save()?;
     }
     if as_update && release.nightly.is_some() {
         crate::nightly::after_update(&release.tag);
@@ -3420,19 +3433,25 @@ impl Settings {
     pub fn keep_newest(&self) -> usize {
         self.keep_versions.unwrap_or(KEEP_NEWEST).max(1)
     }
-    pub fn save(&self) {
+    pub fn save(&self) -> Result<(), String> {
+        // The window and background jobs share the process's temporary file.
+        static SAVE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _guard = SAVE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         // A write that stops halfway leaves settings.json unreadable, and `load` answers
         // defaults for it: the file is replaced only once it is whole.
         let dir = data_dir();
         let path = dir.join("settings.json");
         let tmp = dir.join(format!("settings.{}.tmp", std::process::id()));
+        let json =
+            serde_json::to_vec_pretty(self).map_err(|e| format!("{}: {e}", path.display()))?;
         let written = fs::create_dir_all(&dir)
-            .and_then(|()| fs::write(&tmp, serde_json::to_string_pretty(self).unwrap()))
+            .and_then(|()| fs::write(&tmp, json))
             .and_then(|()| fs::rename(&tmp, &path));
         if let Err(e) = written {
             let _ = fs::remove_file(&tmp);
-            eprintln!("Horizon: settings.json is not saved: {e}");
+            return Err(format!("{}: {e}", path.display()));
         }
+        Ok(())
     }
 }
 
@@ -3448,6 +3467,31 @@ mod java_tests;
 mod tests {
     use super::*;
     use std::cmp::Ordering::*;
+
+    #[test]
+    #[cfg(windows)]
+    fn failed_removal_stays_listed_and_can_be_retried() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let versions =
+            std::env::temp_dir().join(format!("horizon-remove-locked-{}", std::process::id()));
+        let dir = versions.join("v0.2.0");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join(COMPLETE), "").unwrap();
+        fs::write(dir.join(CLIENT), "locked executable").unwrap();
+        // Refuse delete sharing, as a running Windows executable does.
+        let running = fs::File::options()
+            .read(true)
+            .share_mode(1)
+            .open(dir.join(CLIENT))
+            .unwrap();
+        assert!(remove_in(&dir).is_err());
+        assert_eq!(installed_in(&versions), ["v0.2.0"]);
+        drop(running);
+        remove_in(&dir).unwrap();
+        assert!(installed_in(&versions).is_empty());
+        assert!(!dir.exists());
+        fs::remove_dir_all(versions).unwrap();
+    }
 
     /// A canonical path loses Windows' verbatim prefix on a drive (horizon-mixins' output
     /// check stats `\\?\C:`, the volume itself, which Windows refuses, os error 1), and keeps
