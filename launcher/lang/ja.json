@@ -959,5 +959,10 @@
   "Hide other players' cosmetics": "他のプレイヤーのコスメを隠す",
   "Others look like plain players to you. Also in the game's Horizon settings.": "他のプレイヤーは通常の姿で表示されます。ゲームの Horizon 設定にもあります。",
   "Show other players' auras and trails": "他のプレイヤーのオーラと軌跡を表示",
-  "Off by default. Also in the game's Horizon settings.": "既定ではオフ。ゲームの Horizon 設定にもあります。"
+  "Off by default. Also in the game's Horizon settings.": "既定ではオフ。ゲームの Horizon 設定にもあります。",
+  "Cleared {bytes} bytes of native build cache. The next changed build will compile from scratch.": "ネイティブビルドキャッシュから {bytes} バイトを解放しました。次回変更を含むビルドは最初からコンパイルされます。",
+  "A native build or cache cleanup is running. Try again when it finishes.": "ネイティブビルドまたはキャッシュの削除が進行中です。完了後に再試行してください。",
+  "Refusing native cache cleanup at an unexpected file or link: {path}": "予期しないファイルまたはリンクがあるため、ネイティブキャッシュの削除を拒否しました: {path}",
+  "Could not access the native build cache: {error}": "ネイティブビルドキャッシュにアクセスできませんでした: {error}",
+  "Enter a cache limit in GiB; 0 disables automatic cleanup.": "キャッシュの上限を GiB 単位で入力してください。0 は自動削除を無効にします。"
 }

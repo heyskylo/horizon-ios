@@ -959,5 +959,10 @@
   "Hide other players' cosmetics": "Скрывать косметику других игроков",
   "Others look like plain players to you. Also in the game's Horizon settings.": "Другие будут выглядеть для вас как обычные игроки. Также в настройках Horizon в игре.",
   "Show other players' auras and trails": "Показывать ауры и следы других игроков",
-  "Off by default. Also in the game's Horizon settings.": "По умолчанию выкл. Также в настройках Horizon в игре."
+  "Off by default. Also in the game's Horizon settings.": "По умолчанию выкл. Также в настройках Horizon в игре.",
+  "Cleared {bytes} bytes of native build cache. The next changed build will compile from scratch.": "Освобождено {bytes} байт кэша нативной сборки. Следующая сборка с изменениями будет выполнена с нуля.",
+  "A native build or cache cleanup is running. Try again when it finishes.": "Выполняется нативная сборка или очистка кэша. Повторите попытку после завершения.",
+  "Refusing native cache cleanup at an unexpected file or link: {path}": "Очистка нативного кэша отклонена из-за неожиданного файла или ссылки: {path}",
+  "Could not access the native build cache: {error}": "Не удалось получить доступ к кэшу нативной сборки: {error}",
+  "Enter a cache limit in GiB; 0 disables automatic cleanup.": "Введите ограничение кэша в ГиБ; 0 отключает автоматическую очистку."
 }

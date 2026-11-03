@@ -959,5 +959,10 @@
   "Hide other players' cosmetics": "Ukryj kosmetyki innych graczy",
   "Others look like plain players to you. Also in the game's Horizon settings.": "Inni wyglądają dla ciebie jak zwykli gracze. Także w ustawieniach Horizon w grze.",
   "Show other players' auras and trails": "Pokazuj aury i smugi innych graczy",
-  "Off by default. Also in the game's Horizon settings.": "Domyślnie wyłączone. Także w ustawieniach Horizon w grze."
+  "Off by default. Also in the game's Horizon settings.": "Domyślnie wyłączone. Także w ustawieniach Horizon w grze.",
+  "Cleared {bytes} bytes of native build cache. The next changed build will compile from scratch.": "Zwolniono {bytes} bajtów pamięci podręcznej kompilacji natywnej. Następna kompilacja ze zmianami zostanie wykonana od zera.",
+  "A native build or cache cleanup is running. Try again when it finishes.": "Trwa kompilacja natywna lub czyszczenie pamięci podręcznej. Spróbuj ponownie po zakończeniu.",
+  "Refusing native cache cleanup at an unexpected file or link: {path}": "Odmowa czyszczenia natywnej pamięci podręcznej z powodu nieoczekiwanego pliku lub dowiązania: {path}",
+  "Could not access the native build cache: {error}": "Nie można uzyskać dostępu do pamięci podręcznej kompilacji natywnej: {error}",
+  "Enter a cache limit in GiB; 0 disables automatic cleanup.": "Podaj limit pamięci podręcznej w GiB; 0 wyłącza automatyczne czyszczenie."
 }

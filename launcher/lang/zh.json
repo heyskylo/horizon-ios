@@ -959,5 +959,10 @@
   "Hide other players' cosmetics": "隐藏其他玩家的装饰",
   "Others look like plain players to you. Also in the game's Horizon settings.": "其他玩家在你看来就是普通玩家。游戏的 Horizon 设置里也有此选项。",
   "Show other players' auras and trails": "显示其他玩家的光环和拖尾",
-  "Off by default. Also in the game's Horizon settings.": "默认关闭。游戏的 Horizon 设置里也有此选项。"
+  "Off by default. Also in the game's Horizon settings.": "默认关闭。游戏的 Horizon 设置里也有此选项。",
+  "Cleared {bytes} bytes of native build cache. The next changed build will compile from scratch.": "已清理 {bytes} 字节的原生构建缓存。下次有更改的构建将从头编译。",
+  "A native build or cache cleanup is running. Try again when it finishes.": "原生构建或缓存清理正在进行中。请在完成后重试。",
+  "Refusing native cache cleanup at an unexpected file or link: {path}": "由于存在意外的文件或链接，已拒绝清理原生缓存：{path}",
+  "Could not access the native build cache: {error}": "无法访问原生构建缓存：{error}",
+  "Enter a cache limit in GiB; 0 disables automatic cleanup.": "请输入以 GiB 为单位的缓存上限；0 表示禁用自动清理。"
 }

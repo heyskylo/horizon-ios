@@ -959,5 +959,10 @@
   "Hide other players' cosmetics": "Diğer oyuncuların kozmetiklerini gizle",
   "Others look like plain players to you. Also in the game's Horizon settings.": "Diğerleri sana sıradan oyuncular gibi görünür. Oyunun Horizon ayarlarında da var.",
   "Show other players' auras and trails": "Diğer oyuncuların aura ve izlerini göster",
-  "Off by default. Also in the game's Horizon settings.": "Varsayılan olarak kapalı. Oyunun Horizon ayarlarında da var."
+  "Off by default. Also in the game's Horizon settings.": "Varsayılan olarak kapalı. Oyunun Horizon ayarlarında da var.",
+  "Cleared {bytes} bytes of native build cache. The next changed build will compile from scratch.": "Yerel derleme önbelleğinden {bytes} bayt temizlendi. Değişiklik içeren sonraki derleme sıfırdan derlenecek.",
+  "A native build or cache cleanup is running. Try again when it finishes.": "Yerel derleme veya önbellek temizliği sürüyor. Bittikten sonra tekrar deneyin.",
+  "Refusing native cache cleanup at an unexpected file or link: {path}": "Beklenmeyen dosya veya bağlantı nedeniyle yerel önbellek temizliği reddedildi: {path}",
+  "Could not access the native build cache: {error}": "Yerel derleme önbelleğine erişilemedi: {error}",
+  "Enter a cache limit in GiB; 0 disables automatic cleanup.": "Önbellek sınırını GiB olarak girin; 0 otomatik temizliği kapatır."
 }

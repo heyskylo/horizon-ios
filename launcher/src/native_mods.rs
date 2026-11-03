@@ -403,6 +403,7 @@ pub fn append_log(message: &str) -> Result<(), String> {
 
 /// Records the whole attempt, including selection or export after compilation.
 fn logged<T>(build: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    let cache = crate::native_cache::Cache::acquire(&backend::build_dir()).map_err(cache_error)?;
     clear_log()?;
     let result = build();
     match &result {
@@ -413,7 +414,68 @@ fn logged<T>(build: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
             let _ = append_log(&format!("The build failed: {error}"));
         }
     }
+    // The installed binary and post-build programs have left target/ before trimming. Keep
+    // this lease through installation/export, including failed builds, and never wait on Cargo.
+    let limit = backend::Settings::load()
+        .native_cache_gib
+        .unwrap_or(DEFAULT_CACHE_GIB);
+    match cache.trim(limit.saturating_mul(1 << 30)) {
+        Ok(bytes) if bytes > 0 => {
+            let _ = append_log(&trf(
+                "Cleared {bytes} bytes of native build cache. The next changed build will compile from scratch.",
+                &[("bytes", &bytes.to_string())],
+            ));
+        }
+        Err(error) => log_warning(&cache_error(error)),
+        _ => {}
+    }
     result
+}
+
+pub const DEFAULT_CACHE_GIB: u64 = 30;
+
+fn cache_error(error: crate::native_cache::Error) -> String {
+    match error {
+        crate::native_cache::Error::Busy => {
+            tr("A native build or cache cleanup is running. Try again when it finishes.").into()
+        }
+        crate::native_cache::Error::Unsafe(path) => trf(
+            "Refusing native cache cleanup at an unexpected file or link: {path}",
+            &[("path", &path.display().to_string())],
+        ),
+        crate::native_cache::Error::Io(error) => trf(
+            "Could not access the native build cache: {error}",
+            &[("error", &error.to_string())],
+        ),
+    }
+}
+
+#[derive(serde::Serialize)]
+pub struct CacheInfo {
+    pub path: PathBuf,
+    pub bytes: u64,
+    pub cleared_bytes: u64,
+    pub limit_gib: u64,
+}
+
+/// Inspect or clear only Cargo's native fast/release outputs, while no build is using them.
+/// This does not remove installed versions, instances, mods, saves, toolchains or downloads.
+pub fn cache_info(clear: bool) -> Result<CacheInfo, String> {
+    let cache = crate::native_cache::Cache::acquire(&backend::build_dir()).map_err(cache_error)?;
+    let bytes = cache.bytes().map_err(cache_error)?;
+    let cleared_bytes = if clear {
+        cache.clear().map_err(cache_error)?
+    } else {
+        0
+    };
+    Ok(CacheInfo {
+        path: root().join("target"),
+        bytes,
+        cleared_bytes,
+        limit_gib: backend::Settings::load()
+            .native_cache_gib
+            .unwrap_or(DEFAULT_CACHE_GIB),
+    })
 }
 
 const MANIFEST: &str = "horizon-mixin.toml";

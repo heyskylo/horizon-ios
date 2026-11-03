@@ -959,5 +959,10 @@
   "Hide other players' cosmetics": "다른 플레이어의 코스메틱 숨기기",
   "Others look like plain players to you. Also in the game's Horizon settings.": "다른 플레이어가 일반 플레이어처럼 보입니다. 게임의 Horizon 설정에도 있습니다.",
   "Show other players' auras and trails": "다른 플레이어의 오라와 자취 보이기",
-  "Off by default. Also in the game's Horizon settings.": "기본값은 끔입니다. 게임의 Horizon 설정에도 있습니다."
+  "Off by default. Also in the game's Horizon settings.": "기본값은 끔입니다. 게임의 Horizon 설정에도 있습니다.",
+  "Cleared {bytes} bytes of native build cache. The next changed build will compile from scratch.": "네이티브 빌드 캐시에서 {bytes}바이트를 정리했습니다. 다음 변경된 빌드는 처음부터 컴파일됩니다.",
+  "A native build or cache cleanup is running. Try again when it finishes.": "네이티브 빌드 또는 캐시 정리가 진행 중입니다. 완료된 후 다시 시도하세요.",
+  "Refusing native cache cleanup at an unexpected file or link: {path}": "예상하지 못한 파일 또는 링크로 인해 네이티브 캐시 정리를 거부했습니다: {path}",
+  "Could not access the native build cache: {error}": "네이티브 빌드 캐시에 접근할 수 없습니다: {error}",
+  "Enter a cache limit in GiB; 0 disables automatic cleanup.": "캐시 한도를 GiB 단위로 입력하세요. 0은 자동 정리를 비활성화합니다."
 }

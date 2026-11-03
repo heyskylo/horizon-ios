@@ -959,5 +959,10 @@
   "Hide other players' cosmetics": "Ocultar cosméticos de outros jogadores",
   "Others look like plain players to you. Also in the game's Horizon settings.": "Os outros aparecem como jogadores comuns para você. Também nas configurações do Horizon no jogo.",
   "Show other players' auras and trails": "Mostrar auras e rastros de outros jogadores",
-  "Off by default. Also in the game's Horizon settings.": "Desligado por padrão. Também nas configurações do Horizon no jogo."
+  "Off by default. Also in the game's Horizon settings.": "Desligado por padrão. Também nas configurações do Horizon no jogo.",
+  "Cleared {bytes} bytes of native build cache. The next changed build will compile from scratch.": "Liberados {bytes} bytes do cache de compilação nativa. A próxima compilação com alterações será feita do zero.",
+  "A native build or cache cleanup is running. Try again when it finishes.": "Uma compilação nativa ou limpeza do cache está em andamento. Tente novamente quando terminar.",
+  "Refusing native cache cleanup at an unexpected file or link: {path}": "Limpeza do cache nativo recusada devido a um arquivo ou link inesperado: {path}",
+  "Could not access the native build cache: {error}": "Não foi possível acessar o cache de compilação nativa: {error}",
+  "Enter a cache limit in GiB; 0 disables automatic cleanup.": "Informe um limite de cache em GiB; 0 desativa a limpeza automática."
 }

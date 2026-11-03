@@ -959,5 +959,10 @@
   "Hide other players' cosmetics": "Sakrij kozmetiku drugih igrača",
   "Others look like plain players to you. Also in the game's Horizon settings.": "Drugi ti izgledaju kao obični igrači. Također u Horizon postavkama igre.",
   "Show other players' auras and trails": "Prikaži aure i tragove drugih igrača",
-  "Off by default. Also in the game's Horizon settings.": "Zadano isključeno. Također u Horizon postavkama igre."
+  "Off by default. Also in the game's Horizon settings.": "Zadano isključeno. Također u Horizon postavkama igre.",
+  "Cleared {bytes} bytes of native build cache. The next changed build will compile from scratch.": "Oslobođeno je {bytes} bajtova predmemorije izvorne kompilacije. Sljedeća kompilacija s promjenama počinje ispočetka.",
+  "A native build or cache cleanup is running. Try again when it finishes.": "U tijeku je izvorna kompilacija ili čišćenje predmemorije. Pokušajte ponovno nakon završetka.",
+  "Refusing native cache cleanup at an unexpected file or link: {path}": "Čišćenje izvorne predmemorije odbijeno zbog neočekivane datoteke ili poveznice: {path}",
+  "Could not access the native build cache: {error}": "Nije moguće pristupiti predmemoriji izvorne kompilacije: {error}",
+  "Enter a cache limit in GiB; 0 disables automatic cleanup.": "Unesite ograničenje predmemorije u GiB; 0 isključuje automatsko čišćenje."
 }

@@ -959,5 +959,10 @@
   "Hide other players' cosmetics": "إخفاء مظاهر اللاعبين الآخرين",
   "Others look like plain players to you. Also in the game's Horizon settings.": "يبدو لك الآخرون كلاعبين عاديين. موجود أيضًا في إعدادات Horizon داخل اللعبة.",
   "Show other players' auras and trails": "إظهار هالات اللاعبين الآخرين وآثارهم",
-  "Off by default. Also in the game's Horizon settings.": "متوقف افتراضيًا. موجود أيضًا في إعدادات Horizon داخل اللعبة."
+  "Off by default. Also in the game's Horizon settings.": "متوقف افتراضيًا. موجود أيضًا في إعدادات Horizon داخل اللعبة.",
+  "Cleared {bytes} bytes of native build cache. The next changed build will compile from scratch.": "تم تحرير {bytes} بايت من ذاكرة التخزين المؤقت للبناء الأصلي. سيُجمّع البناء التالي الذي يتضمن تغييرات من البداية.",
+  "A native build or cache cleanup is running. Try again when it finishes.": "يجري بناء أصلي أو تنظيف لذاكرة التخزين المؤقت. أعد المحاولة بعد الانتهاء.",
+  "Refusing native cache cleanup at an unexpected file or link: {path}": "رُفض تنظيف ذاكرة التخزين المؤقت الأصلية بسبب ملف أو رابط غير متوقع: {path}",
+  "Could not access the native build cache: {error}": "تعذّر الوصول إلى ذاكرة التخزين المؤقت للبناء الأصلي: {error}",
+  "Enter a cache limit in GiB; 0 disables automatic cleanup.": "أدخل حد ذاكرة التخزين المؤقت بوحدة GiB؛ يعطّل 0 التنظيف التلقائي."
 }

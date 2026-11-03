@@ -959,5 +959,10 @@
   "Hide other players' cosmetics": "Sembunyikan kosmetik pemain lain",
   "Others look like plain players to you. Also in the game's Horizon settings.": "Pemain lain terlihat seperti pemain biasa bagimu. Juga ada di pengaturan Horizon dalam game.",
   "Show other players' auras and trails": "Tampilkan aura dan jejak pemain lain",
-  "Off by default. Also in the game's Horizon settings.": "Nonaktif secara bawaan. Juga ada di pengaturan Horizon dalam game."
+  "Off by default. Also in the game's Horizon settings.": "Nonaktif secara bawaan. Juga ada di pengaturan Horizon dalam game.",
+  "Cleared {bytes} bytes of native build cache. The next changed build will compile from scratch.": "Membersihkan {bytes} bita cache build native. Build berikutnya yang memiliki perubahan akan dikompilasi dari awal.",
+  "A native build or cache cleanup is running. Try again when it finishes.": "Build native atau pembersihan cache sedang berjalan. Coba lagi setelah selesai.",
+  "Refusing native cache cleanup at an unexpected file or link: {path}": "Menolak pembersihan cache native karena ada berkas atau tautan yang tidak terduga: {path}",
+  "Could not access the native build cache: {error}": "Tidak dapat mengakses cache build native: {error}",
+  "Enter a cache limit in GiB; 0 disables automatic cleanup.": "Masukkan batas cache dalam GiB; 0 menonaktifkan pembersihan otomatis."
 }

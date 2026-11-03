@@ -3346,6 +3346,10 @@ pub struct Settings {
     /// default, or the release's own while `native_release` is on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub native_profile: Option<crate::native_mods::Profile>,
+    /// Combined fast/release compilation cache limit in GiB. Unset is 30; zero disables
+    /// automatic cleanup. Installed native versions and player data are not this cache.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_cache_gib: Option<u64>,
     /// An older file's switch for the release profile, read when `native_profile` is unset.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub native_release: bool,
