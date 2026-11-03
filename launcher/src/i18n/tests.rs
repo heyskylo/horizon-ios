@@ -187,6 +187,8 @@ fn the_system_language_is_the_first_one_the_launcher_has() {
     assert_eq!(Language::parse("pt-BR"), Some(Language::PortugueseBrazil));
     assert_eq!(Language::parse("pt-PT"), Some(Language::Portuguese)); // European Portuguese now has its own table
     assert_eq!(Language::parse("it_IT.UTF-8"), Some(Language::Italian));
+    assert_eq!(Language::pick(["nb-NO", "en-US"]), Language::Norwegian);
+    assert_eq!(Language::parse("nn_NO.UTF-8"), Some(Language::Norwegian));
     assert_eq!(Language::pick([]), Language::English);
     assert_eq!(Language::parse("FR"), Some(Language::French));
     assert_eq!(Language::parse("french"), None);
