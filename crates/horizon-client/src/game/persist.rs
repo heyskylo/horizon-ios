@@ -352,6 +352,8 @@ impl Game<'_> {
                 // Whatever was added since the last tick joins before this one.
                 self.native_joins_flush(false, 0);
                 let kind = entity_nbt::kind(&tag).unwrap_or_default();
+                let is_mob = self.res.mob_types().contains_key(kind.as_str());
+                drop_unleashable_leash(&mut tag, &kind, is_mob);
                 let uuid = entity_nbt::uuid(&tag);
                 if uuid.is_some_and(|u| self.restored_vehicle(u).is_some()) {
                     continue;
@@ -556,6 +558,7 @@ impl Game<'_> {
             self.remember_uuid(self.next_entity, uuid, &tag);
             let uuid = self.uuid_for(self.next_entity);
             self.falling.push(FallingBlock {
+                join: Default::default(),
                 id: self.next_entity,
                 state,
                 // DATA_START_POS is not persisted by vanilla.
@@ -626,6 +629,7 @@ impl Game<'_> {
                 _ => 80,
             };
             self.tnts.push(super::tnt::PrimedTnt {
+                join: Default::default(),
                 no_gravity: entity_nbt::flag(&tag, "NoGravity"),
                 id,
                 position,
@@ -680,6 +684,9 @@ impl Game<'_> {
         let riders = self.take_mob_passengers(&mut tag);
         let id = self.next_entity + 1;
         if let Some(mut c) = super::minecarts::Minecart::from_nbt(&tag, id, kind) {
+            super::minecarts::forget_unreadable_display(&mut c, |t| {
+                self.state_from_nbt(t).is_some()
+            });
             self.roll_cart_loot(&mut c, &tag);
             self.next_entity = id;
             self.remember(id, uuid, tag);
@@ -1198,6 +1205,19 @@ impl Game<'_> {
         }
         if let Some(item @ Tag::Compound(_)) = tag.get("Item") {
             map.insert("Item".into(), item.clone());
+        }
+        // Entity.saveWithoutId's optional fields Horizon models nowhere for
+        // these entities, kept as loaded (written only when set).
+        for key in [
+            "Silent",
+            "Glowing",
+            "Invulnerable",
+            "CustomName",
+            "CustomNameVisible",
+        ] {
+            if let Some(v) = tag.get(key) {
+                map.insert(key.into(), v.clone());
+            }
         }
         if !map.is_empty() {
             self.persist.raw.insert(id, Tag::Compound(map));
@@ -1858,11 +1878,49 @@ fn vehicle_tree(root: u32, mounts: &[(u32, Option<u32>)]) -> Vec<u32> {
     tree
 }
 
+/// Only a Mob or an AbstractBoat is Leashable: any other kind never reads
+/// `leash`, so a summoned or loaded tag must not be kept and saved.
+fn drop_unleashable_leash(tag: &mut Tag, kind: &str, is_mob: bool) {
+    if !is_mob
+        && super::boats::any_boat_wood(kind).is_none()
+        && let Tag::Compound(c) = tag
+    {
+        c.remove(&"leash".into());
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
 
     const MOUNT: [i32; 4] = [1, 2, 3, 4];
+
+    #[test]
+    fn only_mobs_and_boats_keep_a_leash_tag() {
+        let with_leash = |kind: &str| {
+            let mut t = entity(kind);
+            if let Tag::Compound(c) = &mut t {
+                c.insert("leash".into(), Tag::IntArray(vec![6, 100, 0]));
+            }
+            t
+        };
+        let has = |t: &Tag| t.get("leash").is_some();
+        for kind in [
+            "minecraft:armor_stand",
+            "minecraft:minecart",
+            "minecraft:tnt",
+            "minecraft:item",
+        ] {
+            let mut t = with_leash(kind);
+            drop_unleashable_leash(&mut t, kind, false);
+            assert!(!has(&t), "{kind}");
+        }
+        let mut cow = with_leash("minecraft:cow");
+        drop_unleashable_leash(&mut cow, "minecraft:cow", true);
+        assert!(has(&cow));
+        let mut boat = with_leash("minecraft:oak_boat");
+        drop_unleashable_leash(&mut boat, "minecraft:oak_boat", false);
+        assert!(has(&boat));
+    }
 
     fn entity(kind: &str) -> Tag {
         Tag::compound([("id", Tag::String(kind.into()))])

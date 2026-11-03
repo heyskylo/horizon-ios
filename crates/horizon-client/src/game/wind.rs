@@ -4,6 +4,7 @@
 use super::Game;
 use super::entity::{Blast, Entity as _, for_each_entity_mut};
 use horizon_client::advancements::EntityView;
+use horizon_client::join_seq::Joined as _;
 use horizon_client::{
     Result,
     mobs::{Damage, DamageKind, Species, Who},
@@ -35,8 +36,12 @@ pub(super) struct Burst {
 /// Whether a wind push must wait for the entity's own tick: it joined before
 /// the charge (`id` below the charge's), so vanilla has ticked it already this
 /// game tick, and its kind ticks after the projectiles here.
-fn push_waits_for_tick(ticks_after_projectiles: bool, id: u32, charge: Option<u32>) -> bool {
-    ticks_after_projectiles && charge.is_some_and(|c| id < c)
+fn push_waits_for_tick<T: PartialOrd>(
+    ticks_after_projectiles: bool,
+    joined: T,
+    charge: Option<T>,
+) -> bool {
+    ticks_after_projectiles && charge.is_some_and(|c| joined < c)
 }
 /// `Projectile.deflect` with `ProjectileDeflection.REVERSE`.
 pub(super) fn reverse(p: &mut Projectile, jitter: f32) {
@@ -114,7 +119,7 @@ impl Game<'_> {
             ],
             Hit::None => return Ok(()),
         };
-        self.creatures.wind_source = Some(p.id());
+        self.creatures.wind_source = Some(p.join_seq());
         let burst = self.wind_burst(center, radius, knockback, breeze, !breeze);
         self.creatures.wind_source = None;
         burst
@@ -291,6 +296,7 @@ impl Game<'_> {
             spared: None,
         };
         let source = self.creatures.wind_source;
+        let done = self.ordered.done;
         let mut late = Vec::new();
         let mut entities = self.take_entities();
         for_each_entity_mut!(entities, entity => {
@@ -316,7 +322,10 @@ impl Game<'_> {
             // joined before the charge has ticked by now in vanilla, so the
             // push is for its next tick; here its kind ticks after the
             // projectiles, so the push waits for that tick to run.
-            if push_waits_for_tick(entity.ticks_after_projectiles(), entity.id(), source) {
+            // Joined before the charge and not ticked yet: the push is for its next tick.
+            let waiting = entity.ticks_after_projectiles()
+                && done.is_none_or(|d| entity.join_seq() > d);
+            if push_waits_for_tick(waiting, entity.join_seq(), source) {
                 late.push((entity.id(), push));
             } else {
                 entity.push_from_explosion(push);
@@ -649,6 +658,7 @@ mod tests {
             guest: None,
             no_gravity: false,
             power: 4.0,
+            join: Default::default(),
         };
         assert!(Entity::ticks_after_projectiles(&tnt));
         let arrow = Projectile::new(ProjectileKind::Snowball, Vec3::ZERO, None);

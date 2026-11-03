@@ -438,8 +438,6 @@ impl PlayerMotion {
             .damage
             .source::<()>(source, None, None, None)
             .ok_or("unknown resident damage source")?;
-        let armor = self.attribute("minecraft:armor").unwrap_or(0.0) as f32;
-        let toughness = self.attribute("minecraft:armor_toughness").unwrap_or(0.0) as f32;
         let before = self.health.health() + self.health.absorption();
         let fire_ticks = self.fire_ticks;
         let source_name = source.definition().name.clone();
@@ -499,6 +497,22 @@ impl PlayerMotion {
             h.indicate_damage(0.0, 0.0, self.yaw);
         }
         let after = h.health() + h.absorption();
+        // `LivingEntity.getDamageAfterArmorAbsorb` is the hit's only reader of
+        // these two instances, and a source in `#minecraft:bypasses_armor`
+        // makes it return before `getArmorValue` and
+        // `getAttributeValue(ARMOR_TOUGHNESS)`. Native `getValue` is what
+        // clears an instance's dirty flag, so the record takes the caches the
+        // hit left instead of recomputing them: one that does meet the armour
+        // has already recomputed both in `after_armor`, and one that bypassed
+        // it leaves creation's zero cache untouched.
+        let armor = self
+            .attributes
+            .cached_value_of("minecraft:armor")
+            .unwrap_or(0.0) as f32;
+        let toughness = self
+            .attributes
+            .cached_value_of("minecraft:armor_toughness")
+            .unwrap_or(0.0) as f32;
         if self.hurt_log.len() >= HURT_LOG {
             self.hurt_log.remove(0);
         }
@@ -595,7 +609,10 @@ pub struct HurtRecord {
     /// Health and absorption lost.
     pub taken: f32,
     pub hurt: bool,
-    /// `minecraft:armor` and `minecraft:armor_toughness` when it came.
+    /// `minecraft:armor` and `minecraft:armor_toughness` as the hit left their
+    /// instances' caches. `getDamageAfterArmorAbsorb` reads them only for a
+    /// source outside `#minecraft:bypasses_armor`, so a hit that bypassed the
+    /// armour reports the cache that source never recomputed.
     pub armor: f32,
     pub toughness: f32,
     pub health: f32,
@@ -1090,6 +1107,41 @@ mod tests {
         assert!(o.fully_blocked && !o.knockback);
     }
 
+    /// #7309: on Hard a mob's 4 is scaled to 6 (`Player.hurtServer`), on
+    /// Normal it stays 4, and a non-mob source is never scaled.
+    #[test]
+    fn hard_scales_a_mob_hit_by_one_and_a_half() {
+        use horizon_world::food::Difficulty;
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        if !root.join("movement-properties.nbt").exists() {
+            return;
+        }
+        let assets = crate::assets::Assets::load(&root).unwrap();
+        let resources = crate::motion::MotionResources::load(&root, &assets).unwrap();
+        let health = &resources.health;
+        let id = health.damage.id("minecraft:mob_attack").unwrap();
+        let lost = |difficulty, living| {
+            let mut player =
+                crate::motion::PlayerMotion::new(&resources, horizon_core::geometry::Vec3::ZERO)
+                    .unwrap();
+            let rules = super::HealthRules {
+                difficulty,
+                ..Default::default()
+            };
+            let before = player.health.health();
+            player
+                .hurt_caused_by(health, rules, id, 4.0, None, living, 0)
+                .unwrap();
+            before - player.health.health()
+        };
+        assert_eq!(lost(Difficulty::Hard, true), 6.0);
+        assert_eq!(lost(Difficulty::Normal, true), 4.0);
+        assert_eq!(lost(Difficulty::Easy, true), 3.0);
+        assert_eq!(lost(Difficulty::Hard, false), 4.0);
+    }
+
     /// #2141: an arrow that takes the last of the player's health must kill
     /// them: `LivingEntity.hurt` leaves the health at zero and `Player.die`
     /// follows.
@@ -1411,5 +1463,84 @@ mod tests {
         ] {
             assert_eq!(super::hurt_sound(effects), sound, "{effects}");
         }
+    }
+
+    /// `LivingEntity.getDamageAfterArmorAbsorb` returns before
+    /// `getArmorValue` and `getAttributeValue(ARMOR_TOUGHNESS)` for a source in
+    /// `#minecraft:bypasses_armor`, and native `AttributeInstance.getValue` is
+    /// what clears an instance's dirty flag. A hit must therefore leave both
+    /// instances dirty with creation's zero cache when it bypasses the armour,
+    /// and recompute them when it does not.
+    #[test]
+    fn a_bypassing_hit_leaves_the_armor_instances_dirty() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        if !root.join("movement-properties.nbt").exists() {
+            return;
+        }
+        let assets = crate::assets::Assets::load(&root).unwrap();
+        let resources = crate::motion::MotionResources::load(&root, &assets).unwrap();
+        let (health, rules) = (&resources.health, super::HealthRules::default());
+        // `setBaseValue` is what a command or a spawn uses; a base other than
+        // the attribute's default is what makes the fresh instance's cache
+        // stale, and it is the value a recompute would produce.
+        let armoured = |resources: &crate::motion::MotionResources| {
+            let mut player =
+                crate::motion::PlayerMotion::new(resources, horizon_core::geometry::Vec3::ZERO)
+                    .unwrap();
+            let mut handles = Vec::new();
+            for name in ["minecraft:armor", "minecraft:armor_toughness"] {
+                let key = player.attributes.key(name).unwrap();
+                let handle = player
+                    .attributes
+                    .get_instance(Some(key))
+                    .unwrap()
+                    .expect("the player supplier has this attribute");
+                player
+                    .attributes
+                    .edit(&handle, |a, o| a.set_base_value(7.0, o))
+                    .unwrap();
+                handles.push(handle);
+            }
+            (player, handles)
+        };
+        let states = |player: &crate::motion::PlayerMotion,
+                      handles: &[horizon_world::attributes::live::Handle]| {
+            handles
+                .iter()
+                .map(|handle| {
+                    let a = player.attributes.instance(handle).unwrap();
+                    (a.base_value(), a.is_dirty(), a.cached_value())
+                })
+                .collect::<Vec<_>>()
+        };
+        // `minecraft:fall` is in the tag: neither instance is read.
+        let (mut bypassing, bypassing_handles) = armoured(&resources);
+        let fall = health.damage.id("minecraft:fall").unwrap();
+        assert!(bypassing.hurt(health, rules, fall, 5.0).unwrap());
+        assert_eq!(
+            states(&bypassing, &bypassing_handles),
+            [(7.0, true, 0.0), (7.0, true, 0.0)],
+            "a bypassing hit must leave both instances dirty and uncached"
+        );
+        let record = bypassing.hurt_log.last().unwrap();
+        assert_eq!(
+            (record.armor, record.toughness),
+            (0.0, 0.0),
+            "the hit reports the cache it left"
+        );
+        // `minecraft:mob_attack` is not: `getDamageAfterAbsorb` asks for both
+        // values, so the hit recomputes them and the record reads them back.
+        let (mut meeting, meeting_handles) = armoured(&resources);
+        let attack = health.damage.id("minecraft:mob_attack").unwrap();
+        assert!(meeting.hurt(health, rules, attack, 5.0).unwrap());
+        assert_eq!(
+            states(&meeting, &meeting_handles),
+            [(7.0, false, 7.0), (7.0, false, 7.0)],
+            "a hit the armour meets must recompute both instances"
+        );
+        let record = meeting.hurt_log.last().unwrap();
+        assert_eq!((record.armor, record.toughness), (7.0, 7.0));
     }
 }

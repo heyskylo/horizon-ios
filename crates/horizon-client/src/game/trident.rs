@@ -20,6 +20,8 @@ use horizon_core::{
 };
 
 pub(super) struct ThrownTrident {
+    /// When it joined its list (`horizon_client::join_seq`); set by the list.
+    pub(super) join: horizon_client::join_seq::JoinSeq,
     /// The entity id a server tracks it by (0 until it is tracked).
     pub id: u32,
     pub(super) stack: ItemStack,
@@ -100,6 +102,7 @@ impl ThrownTrident {
     /// A trident a server sent (`handleAddEntity`): placed and moved by it.
     pub(super) fn remote(id: u32, position: Vec3, yaw: f32, pitch: f32) -> Self {
         Self {
+            join: Default::default(),
             id,
             stack: ItemStack::new("minecraft:trident", 1),
             position,
@@ -250,7 +253,7 @@ impl Game<'_> {
     /// gets a lightning bolt and the thunder sound.
     fn channel_lightning(&mut self, at: [f64; 3], guest: Option<u32>) {
         // Level.isThundering: the thunder level, in dimensions with weather.
-        if self.dim != super::Dim::Overworld || self.world.weather.levels(1.0).1 <= 0.9 {
+        if !self.can_have_weather() || self.weather_levels(1.0).1 <= 0.9 {
             return;
         }
         // BlockAndLightGetter.canSeeSky: full sky light.
@@ -419,6 +422,7 @@ impl Game<'_> {
         );
         let id = self.take_entity_id();
         self.tridents.push(ThrownTrident {
+            join: Default::default(),
             id,
             loyalty: thrown.enchantment_level("minecraft:loyalty"),
             stack: thrown,
@@ -799,6 +803,16 @@ impl Game<'_> {
                     t.pitch = t.velocity.y.atan2(h).to_degrees() as f32;
                 }
             }
+            if !t.no_physics {
+                let half = 0.25;
+                let bounds = Aabb::new(
+                    t.position.add_vector(Vec3::new(-half, 0.0, -half)),
+                    t.position.add_vector(Vec3::new(half, 0.5, half)),
+                );
+                self.entity_powder_snow_particles(
+                    t.previous, t.position, bounds, t.velocity, false,
+                );
+            }
             // playerTouch: stuck or returning tridents go back to a player.
             // ThrownTrident.playerTouch: only its owner takes it, or anyone
             // once the owner is not in this level (`getOwner() == null`), and
@@ -920,3 +934,4 @@ impl Game<'_> {
         }
     }
 }
+horizon_client::impl_joined!(ThrownTrident);

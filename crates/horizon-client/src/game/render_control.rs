@@ -15,6 +15,7 @@ pub const HELP: &[&str] = &[
     "section-cull [on|off]          occlusion culling of solid sections (A/B checks); replies the mode",
     "section-sides [on|off]         leave out solid quads facing away from the eye (A/B checks); replies the mode",
     "gpu-culling [on|off]           cull and draw the near solid sections on the GPU where the device can (A/B checks); replies the mode",
+    "render-capture on|off|DIR      keep copies of the meshes drawn (on), or write the next frame's scene to DIR for scene_replay",
 ];
 
 impl Game<'_> {

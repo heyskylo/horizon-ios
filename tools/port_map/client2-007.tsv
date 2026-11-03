@@ -22,7 +22,7 @@ Particle.toString	skip:debug
 Particle.setLocationFromBoundingbox	port	crates/horizon-client-render/src/particles.rs::Particle::set_location_from_bb	
 Particle.LifetimeAlpha.isOpaque	inline	crates/horizon-client-core/src/particle_type.rs::ParticleType::translucent_layer	the layer is a fixed per-type table; VaultConnection is the non-opaque case
 ParticleDescription.fromJson	port	crates/horizon-client-render/src/particles.rs::ParticleEngine::load_sprites	reads the textures list from particles/*.json
-ParticleEngine.makeParticle	port	crates/horizon-client-render/src/particles.rs::ParticleEngine::make	gap: minor: VibrationSignal options return None here; ParticleEngine::vibration creates them
+ParticleEngine.makeParticle	port	crates/horizon-client-render/src/particles.rs::ParticleEngine::make	every provider arm; a VibrationSignal option has to carry its destination, and ParticleEngine::vibration is the client's own spawner
 ParticleEngine.createParticleGroup	skip:other		no render-type groups: ParticleEngine::render draws every particle in one pass, and the ITEM_PICKUP group is tick_pickups
 ParticleEngine.countParticles	skip:debug		
 ParticleEngine.hasSpaceInParticleLimit	port	crates/horizon-client-render/src/particles.rs::ParticleEngine::create	the only capped type is `ParticleLimit.SPORE_BLOSSOM`: a spore blossom air particle past `SPORE_BLOSSOM_LIMIT` (1000) is dropped in `create`, counted by scanning the live and queued particles instead of vanilla's counted map
@@ -100,7 +100,7 @@ TrailParticle.Provider.createParticle	inline	crates/horizon-client-render/src/pa
 TrialSpawnerDetectionParticle.<init>	inline	crates/horizon-client-render/src/particles.rs::ParticleEngine::make	TrialSpawnerDetection arm: gravity -0.1, Block15 light, GrowIn
 TrialSpawnerDetectionParticle.getQuadSize	port	crates/horizon-client-render/src/particles.rs::Particle::quad_size	Size::GrowIn
 TrialSpawnerDetectionParticle.Provider.createParticle	inline	crates/horizon-client-render/src/particles.rs::ParticleEngine::make	TrialSpawnerDetection arm with scale 1.5
-VibrationSignalParticle.Provider.createParticle	port	crates/horizon-client-render/src/particles.rs::ParticleEngine::vibration	flies to the listener in the arrival ticks
+VibrationSignalParticle.Provider.createParticle	port	crates/horizon-client-render/src/particles.rs::ParticleEngine::make	aimed at the option's destination with the sprite set's random draw; ParticleEngine::vibration spawns the same particle from the client's own vibration system
 WakeParticle.Provider.createParticle	inline	crates/horizon-client-render/src/particles.rs::ParticleEngine::make	Fishing arm (WakeParticle)
 WaterCurrentDownParticle.tick	port	crates/horizon-client-render/src/particles.rs::ParticleEngine::tick_particle	Behaviour::CurrentDown: steers by angle, ends off water or on ground
 WaterCurrentDownParticle.Provider.createParticle	inline	crates/horizon-client-render/src/particles.rs::ParticleEngine::make	CurrentDown arm

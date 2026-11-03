@@ -532,6 +532,13 @@ impl Game<'_> {
             font.reset_cache();
             self.ui.chat.rescale(&self.gui.atlas);
         }
+        // 3D skin layers: a skin's slabs are built when it is resolved, so a
+        // change here rebuilds the players already on screen (the Options
+        // screen keeps resolving them every frame; this covers the console
+        // and a setting restored from options.txt at start).
+        if self.title.is_none() {
+            self.update_remote_skins();
+        }
     }
     /// `Window.updateFullscreenState`: a fullscreen change made by the window
     /// system is adopted by the option (`Minecraft.fullscreenStateChanged`).

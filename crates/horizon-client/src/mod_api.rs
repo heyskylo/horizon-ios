@@ -2,7 +2,7 @@
 //! The executable passes the ordered `Mods` to `entry::main_with`.
 //! Trait mods are process-wide, like mixin module statics.
 //! Hooks use `&self + Send + Sync` for shared and reentrant calls; see `docs/native-mods.md`.
-//! Generate the trait and dispatch with `cargo run -p xtask -- mod-api`.
+//! Cargo generates the trait and dispatch from the catalog and source signatures into OUT_DIR.
 use std::sync::{Arc, OnceLock};
 
 pub use crate::biome::{BiomeColors, SpawnEntry};
@@ -18,9 +18,9 @@ pub use crate::fog::{FogData, FogType};
 pub use crate::game::native_block_entity_draw::{BlockEntityDraw, CubeFace};
 pub use crate::game::{
     ItemEnergyBuffer, NativeBlockEdit, NativeBlockRun, NativeClock, NativeColumnBlocks,
-    NativeDataMapType, NativeExperienceOrb, NativeFalling, NativeHeightmap, NativeHeldItem,
-    NativeHit, NativeMapDecoration, NativeMapInfo, NativeMobRender, NativeModEvent,
-    NativePlayerRender, NativeShake,
+    NativeConfig, NativeConfigFile, NativeConfigKind, NativeDataMapType, NativeExperienceOrb,
+    NativeFalling, NativeHeightmap, NativeHeldItem, NativeHit, NativeMapDecoration, NativeMapInfo,
+    NativeMobRender, NativeModEvent, NativePlayerRender, NativeShake,
 };
 pub use crate::gfx::native_render::{
     BlockSpriteArrays, RenderHooks, RenderNeeds, RenderNeedsEvent, WorldDrawn, WorldDrawnEvent,
@@ -314,6 +314,10 @@ pub struct NativeServerPlayer {
     /// the server. API 49.
     pub yaw: f32,
     pub pitch: f32,
+    /// The network entity id the player has this session, the one hooks that only know entity ids
+    /// (`living_incoming_damage`, `living_knockback`) give for the player; 0 when not known.
+    /// API @API:server_player_entity_id@.
+    pub entity_id: i32,
 }
 
 /// A command a native mod adds, as one usage: words, then arguments
@@ -572,7 +576,9 @@ pub enum Flow {
     Cancel,
 }
 
-mod generated_host;
+mod generated_host {
+    include!(concat!(env!("OUT_DIR"), "/mod_api_generated_host.rs"));
+}
 pub use generated_host::Host;
 
 /// Result of accessing or decoding an attachment.
@@ -651,7 +657,9 @@ macro_rules! level_attachment_host {
 }
 level_attachment_host!(LevelRandomHost, LevelWriteHost);
 
-mod generated;
+mod generated {
+    include!(concat!(env!("OUT_DIR"), "/mod_api_generated.rs"));
+}
 pub use generated::Hooks;
 #[doc(hidden)]
 pub use generated::*;
@@ -692,6 +700,7 @@ mod tests {
                 health: 20.0,
                 yaw: 0.0,
                 pitch: 0.0,
+                entity_id: 0,
             })
         }
         fn action_bar(&mut self, _uuid: u128, line: Text) -> bool {

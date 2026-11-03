@@ -379,7 +379,7 @@ from integration_env import game_environment, require_server_reports  # noqa: E4
 ROOT = Path(__file__).resolve().parents[1]
 GUEST_NAME = 'Guest'
 CHECKS = ['tab', 'self', 'armour', 'nametags', 'walls', 'chest', 'menu-transfer', 'crafting', 'spawned', 'sign', 'damage', 'mobs', 'hazards', 'pvp', 'deaths',
-          'flow-push', 'bubble-column', 'arrows', 'projectile-vehicles', 'flame-arrows', 'kills', 'looting', 'leave', 'hurt', 'looks', 'leads', 'respawn', 'containers', 'names', 'feedback', 'titles', 'chat', 'styles',
+          'flow-push', 'bubble-column', 'arrows', 'projectile-vehicles', 'flame-arrows', 'kills', 'looting', 'leave', 'hurt', 'looks', 'leads', 'entity-tags', 'respawn', 'containers', 'names', 'feedback', 'titles', 'chat', 'styles',
           'commands', 'recipes', 'machines', 'brewing', 'loom', 'stonecutter', 'grindstone', 'anvil', 'smithing',
           'enchanting', 'beacon', 'crafter', 'lectern', 'cartography', 'trials', 'clicks', 'shift-double-click', 'recipe-shift', 'shift-drag', 'modifier-release', 'wheel', 'sleep', 'sleep-villager', 'bed-occupied', 'sleep-reload', 'predict', 'push',
           'piston-push', 'piston-entities', 'piston-slime', 'eat', 'eat-on-block', 'cauldron', 'eating', 'xp', 'objects', 'projectiles', 'thrown', 'sparks', 'hud', 'sidebar', 'border', 'particles',
@@ -1568,10 +1568,10 @@ def command_says(player, command):
 
 
 def check_projectile_vehicles(host, guest, out):
-    """An arrow, a trident and a snowball strike a boat or a minecart (`VehicleEntity.isPickable`), and
+    """Every projectile kind strikes a boat or a minecart (`VehicleEntity.isPickable`), and
     `VehicleEntity.hurtServer` takes their damage (+10 per point, destroyed past 40): an arrow of speed 3
-    (damage 6) and a trident (8) destroy the boat or cart; a snowball (0) stops at it and leaves it whole.
-    Before, boats were no target at all and carts only for arrows: the trident and the snowball flew on through."""
+    (damage 6) and a trident (8) destroy the boat or cart; a snowball, an egg and an ender pearl (0) stop at it
+    and leave it whole. Before, boats were no target at all and carts only for arrows: the rest flew on through."""
     x, y, z = apart(host, guest)['host']
     host('command', command='gamemode creative')
     host('command', command=f'fill {x - 2} {y} {z - 4} {x + 3} {y + 3} {z + 7} minecraft:air')
@@ -1584,6 +1584,8 @@ def check_projectile_vehicles(host, guest, out):
                 ('arrow', 3.0, 'oak_boat', True), ('arrow', 3.0, 'minecart', True),
                 ('trident', 1.5, 'oak_boat', True), ('trident', 1.5, 'minecart', True),
                 ('snowball', 1.5, 'oak_boat', False), ('snowball', 1.5, 'minecart', False),
+                ('egg', 1.5, 'oak_boat', False), ('egg', 1.5, 'minecart', False),
+                ('ender_pearl', 1.5, 'oak_boat', False), ('ender_pearl', 1.5, 'minecart', False),
                 ('arrow', 0.5, 'oak_boat', False)):
             name = f'{shot}-{speed}-{target}'
             host('command', command=f'kill @e[type=!minecraft:player,x={x},y={y},z={z},distance=..30]')
@@ -1940,6 +1942,43 @@ def check_looks(host, guest, out):
             wrong.append(f"{name}: the wither's health {withers} then {hurt}, wants [300] then [150]")
     assert not wrong, '\n'.join(wrong)
     return seen['later']['guest']
+
+
+def tag_check_says(player, command):
+    """What the server printed back to `command` (the lines that are its own reply)."""
+    since = player.raw('events')['last']
+    player('command', command=command)
+    for _ in range(40):
+        lines = [e.get('text', '') for e in player.raw('events', '--since', since)['events'] if own_reply(e)]
+        if lines:
+            return ' '.join(lines)
+        player.wait(2)
+    raise Failed(f'no answer to {command}')
+
+
+def check_entity_tags(host, guest, out):
+    """`/tag add` reaches a thrown trident, a firework rocket and a falling block, and `@e[tag=]` finds them:
+    before, `/tag` wrote nothing for these three and still reported success."""
+    x, y, z = apart(host, guest)['host']
+    host('command', command=f'fill {x - 2} {y} {z - 4} {x + 3} {y + 3} {z + 7} minecraft:air')
+    host('command', command=f'fill {x - 2} {y - 1} {z - 4} {x + 3} {y - 1} {z + 7} minecraft:stone')
+    host('command', command=f'forceload add {x - 2} {z - 4} {x + 3} {z + 7}')
+    kinds = (('trident', ''), ('firework_rocket', 'LifeTime:200,'),
+             ('falling_block', 'BlockState:{Name:"minecraft:sand"},Time:1,'))
+    result = {}
+    try:
+        for n, (kind, extra) in enumerate(kinds):
+            at = f'{x + 0.5} {y + 2} {z + 0.5 + n}'
+            host('command', command=f'summon minecraft:{kind} {at} {{{extra}NoGravity:1b,Silent:1b}}')
+            host('command', command=f'tag @e[type=minecraft:{kind},x={x + 0.5},y={y + 2},z={z + 0.5 + n},distance=..1,limit=1] add hv_tag{n}')
+            host.wait(4)
+            says = tag_check_says(host, f'execute if entity @e[tag=hv_tag{n}]')
+            result[kind] = says
+            assert 'passed' in says, f'/tag add on a {kind} did not reach @e[tag=]: {says}'
+    finally:
+        host('command', command=f'kill @e[type=!minecraft:player,x={x},y={y},z={z},distance=..30]')
+        host('command', command=f'forceload remove {x - 2} {z - 4} {x + 3} {z + 7}')
+    return result
 
 
 def check_leads(host, guest, out):
@@ -6921,7 +6960,7 @@ CHECK_FNS = {'tab': check_tab, 'self': check_self, 'armour': check_armour,
              'lava': check_lava, 'levels': check_levels, 'drops': check_drops,
              'underwater': check_underwater,
              'looks': check_looks,
-             'leads': check_leads,
+             'leads': check_leads, 'entity-tags': check_entity_tags,
              'thrown': check_thrown,
              'sparks': check_sparks,
              'hud': check_hud,
@@ -7322,6 +7361,62 @@ def check_signs(host, guest, out):
         assert s['opened'] == {name: 'sign', other: 'playing'}, f'{name}: {seen}'
         assert s['shown'] == {name: want, other: want}, f'{name}: {seen}'
     return seen
+
+
+def check_sign_copy(host, guest, out):
+    """A sign copied with Ctrl + Pick Block keeps its text when placed, for the host and the guest:
+    the client's own BlockItem.place gives the predicted sign the item's sign_text_front
+    (updateBlockEntityComponents), so the editor that opens shows the copied lines and Done sends
+    them back unchanged (#8102)."""
+    hx, hy, hz = (int(v // 1) for v in pos_of(host))
+    lines = ['Line one', 'Line two', 'Line three', 'Line four']
+    seen = {}
+    for game, other, dz in ((host, guest, -3), (guest, host, 3)):
+        for viewer in (game, other):
+            back_to_game(viewer)
+        source, copy = (hx + 2, hy, hz + dz), (hx + 4, hy, hz + dz)
+        host('command', command=f'fill {hx - 1} {hy - 1} {hz + dz - 2} {hx + 6} {hy - 1} {hz + dz + 2} minecraft:stone')
+        host('command', command=f'fill {hx - 1} {hy} {hz + dz - 2} {hx + 6} {hy + 3} {hz + dz + 2} minecraft:air')
+        messages = ','.join(f'"{line}"' for line in lines)
+        host('command', command=f'setblock {source[0]} {source[1]} {source[2]} minecraft:oak_sign[rotation=8]'
+             f'{{front_text:{{messages:[{messages}]}}}}')
+        # Two blocks in front of the signs, towards the middle.
+        at = (hx + 3.5, hy, hz + dz + 0.5 - (2 if dz > 0 else -2))
+        game('command', command=f'tp @s {at[0]} {at[1]} {at[2]}')
+        game.until(lambda: pos_of(game), lambda p: math.dist(p, at) < 0.1)
+        game('command', command='gamemode creative')
+        game('command', command='clear @s')
+        game.wait(10)
+        # Ctrl + middle click: ServerboundPickItemFromBlockPacket with includeData.
+        game.raw('look-at', 'block', *source)
+        game.raw('select', 1)
+        game.raw('key', 'ctrl', 'down')
+        game.wait(3)
+        game.raw('mouse', 'middle', 'click')
+        game.wait(3)
+        game.raw('key', 'ctrl', 'up')
+        picked = game.until(lambda: game('inventory').get('held') or {},
+                            lambda h: h.get('item') == 'minecraft:oak_sign', ticks=20)
+        game.raw('place', *copy)
+        game.until(lambda: game('state').get('screen'), lambda s: s == 'sign', ticks=10)
+        game.shot(out, 'sign-copy-editor')
+        game.raw('key', 'esc', 'tap')
+        game.until(lambda: game('state').get('screen'), lambda s: s == 'playing', ticks=20)
+        reply = server_reply(game, f'data get block {copy[0]} {copy[1]} {copy[2]} front_text.messages',
+                             'following block data')
+        shown = {g.name: g.until(lambda: (g.raw('block', *copy).get('sign') or {}).get('front'),
+                                lambda front: front == lines, ticks=20)
+                 for g in (game, other)}
+        seen[game.name] = {'picked': picked, 'server': reply, 'shown': shown}
+        other.shot(out, 'sign-copy-shown')
+    for name, s in seen.items():
+        assert all(line in s['server'] for line in lines), f'{name}: {seen}'
+        assert all(front == lines for front in s['shown'].values()), f'{name}: {seen}'
+    return seen
+
+
+CHECKS += ['sign_copy']
+CHECK_FNS.update(sign_copy=check_sign_copy)
 
 
 def book_screen(game):
@@ -9615,6 +9710,24 @@ CHECKS += ['recipe-reselect']
 CHECK_FNS['recipe-reselect'] = check_recipe_reselect
 
 
+def save_and_reopen(host, guest=None, world='Lan', guest_name=GUEST_NAME):
+    """Save and Quit on `host`, reopen `world`, and reconnect `guest` when present."""
+    if guest is not None:
+        back_to_game(guest)
+        guest.raw('disconnect')
+    back_to_game(host)
+    host.raw('pause')
+    host.raw('click-button', 'Save and Quit to Title')
+    host.raw('wait-for', 'screen', 'title', '--timeout', 120)
+    host.raw('open', world)
+    host('wait_ready', seconds=400)
+    if guest is not None:
+        port = host.raw('lan', 'open', 0, 'commands')['port']
+        guest.raw('connect', f'127.0.0.1:{port}', guest_name)
+        guest.raw('wait-for', 'loaded', '--timeout', 300)
+        guest.wait(20)
+
+
 def check_recipe_settings(host, guest, out):
     """RecipeBookComponent sends both settings to the server; each player's
     own book keeps them when the authoritative world saves and reopens (#2290)."""
@@ -9651,16 +9764,7 @@ def check_recipe_settings(host, guest, out):
     before = {host.name: set_flags(host, True, True),
               guest.name: set_flags(guest, False, True)}
     host.wait(20)
-    guest.raw('disconnect')
-    host.raw('pause')
-    host.raw('click-button', 'Save and Quit to Title')
-    host.raw('wait-for', 'screen', 'title', '--timeout', 120)
-    host.raw('open', 'Lan')
-    host('wait_ready', seconds=400)
-    port = host.raw('lan', 'open', 0, 'commands')['port']
-    guest.raw('connect', f'127.0.0.1:{port}', GUEST_NAME)
-    guest.raw('wait-for', 'loaded', '--timeout', 300)
-    guest.wait(20)
+    save_and_reopen(host, guest)
     after = {}
     for game in (host, guest):
         after[game.name] = flags(inventory(game))
@@ -9699,16 +9803,7 @@ def check_reopen_player(host, guest, out):
     for game in (host, guest):
         want = {'position': list(places[game.name]), 'held': items[game.name][1]}
         assert before[game.name] == want, f'{game.name} not set up: {before[game.name]}'
-    guest.raw('disconnect')
-    host.raw('pause')
-    host.raw('click-button', 'Save and Quit to Title')
-    host.raw('wait-for', 'screen', 'title', '--timeout', 120)
-    host.raw('open', 'Lan')
-    host('wait_ready', seconds=400)
-    port = host.raw('lan', 'open', 0, 'commands')['port']
-    guest.raw('connect', f'127.0.0.1:{port}', GUEST_NAME)
-    guest.raw('wait-for', 'loaded', '--timeout', 300)
-    guest.wait(20)
+    save_and_reopen(host, guest)
     after = {}
     for game in (host, guest):
         after[game.name] = {'position': [round(v, 1) for v in pos_of(game)], 'held': held(game)}
@@ -9719,6 +9814,138 @@ def check_reopen_player(host, guest, out):
 
 CHECKS += ['reopen_player']
 CHECK_FNS.update(reopen_player=check_reopen_player)
+
+
+def check_leash_reload(host, guest, out):
+    """A mob tied to a player stays tied across Save and Quit / reopen and can be untied by
+    right-clicking it afterward (#6876)."""
+    tag = 'leash_reload_cow'
+    spots = apart(host, guest)
+    x, y, z = spots['host']
+    at = (x + 0.5, y, z + 2.5)
+
+    def cow(game):
+        found = [m for m in game.raw('mobs', 32).get('near', []) if m['kind'] == 'minecraft:cow'
+                 and abs(m['pos'][0] - at[0]) < 1.5 and abs(m['pos'][2] - at[2]) < 1.5]
+        assert len(found) == 1, f'{game.name} sees {len(found)} cows at {at}: {found}'
+        return found[0]
+
+    def nbt_ints(reply):
+        values = re.findall(r'-?\d+', reply.partition('[I;')[2].partition(']')[0])
+        assert len(values) == 4, f'not a UUID int array: {reply}'
+        return ','.join(values)
+
+    def player_uuid():
+        return nbt_ints(server_reply(host, 'data get entity @s UUID', '[I;'))
+
+    def cow_uuid():
+        return nbt_ints(server_reply(host, f'data get entity @e[type=minecraft:cow,tag={tag},limit=1] UUID', '[I;'))
+
+    def cow_leash_uuid():
+        return nbt_ints(server_reply(host, f'data get entity @e[type=minecraft:cow,tag={tag},limit=1] leash', '[I;'))
+
+    back_to_game(host)
+    back_to_game(guest)
+    host('command', command=f'fill {x - 1} {y - 1} {z - 1} {x + 1} {y - 1} {z + 4} minecraft:glass')
+    host('command', command=f'fill {x - 1} {y} {z - 1} {x + 1} {y + 3} {z + 4} minecraft:air')
+    host('command', command=f'tp @s {x + 0.5} {y} {z + 0.5}')
+    host('command', command='gamemode survival')
+    host('command', command='clear @s')
+    host('command', command=f'summon minecraft:cow {at[0]} {y} {at[2]} '
+         f'{{NoAI:1b,Tags:["{tag}"],UUID:[I;{offline_uuid_ints(tag)}]}}')
+    host('command', command='item replace entity @s weapon.mainhand with minecraft:lead')
+    host.wait(30)
+    try:
+        owner_uuid = offline_uuid_ints(host.player)
+        before_player_uuid = player_uuid()
+        before_cow_uuid = cow_uuid()
+        assert before_player_uuid == owner_uuid, f'unexpected host UUID: {before_player_uuid} != {owner_uuid}'
+
+        host.raw('look-at', f'{at[0]:.2f}', f'{y + 0.7:.2f}', f'{at[2]:.2f}')
+        host.raw('mouse', 'right', 'click')
+        host.wait(20)
+        tied_before = {
+            'own': cow(host)['leash'],
+            'other': cow(guest)['leash'],
+            'nbt_holder': cow_leash_uuid(),
+        }
+        assert tied_before['own'] == 'Player' and tied_before['other'], f'cow not tied before save: {tied_before}'
+        host.shot(out, 'leash-reload-before')
+
+        save_and_reopen(host, guest)
+        back_to_game(host)
+        back_to_game(guest)
+        host.wait(20)
+
+        after_player_uuid = player_uuid()
+        after_cow_uuid = cow_uuid()
+        assert after_player_uuid == before_player_uuid, (
+            f'player UUID changed across reopen: {before_player_uuid} -> {after_player_uuid}'
+        )
+        assert after_cow_uuid == before_cow_uuid, (
+            f'cow persistent UUID changed across reopen: {before_cow_uuid} -> {after_cow_uuid}'
+        )
+        reopened_cow = cow(host)
+        assert reopened_cow['health'] > 0, f'cow not alive after reopen: {reopened_cow}'
+        tied_reopened = {
+            'own': reopened_cow['leash'],
+            'other': cow(guest)['leash'],
+            'nbt_holder': cow_leash_uuid(),
+        }
+        assert tied_reopened['own'] == 'Player' and tied_reopened['other'], (
+            f'cow lost player leash after reopen: {tied_reopened}'
+        )
+        host.shot(out, 'leash-reload-reopened')
+
+        # A closer player with an empty hand must not become the holder or untie it.
+        guest('command', command='clear @s')
+        guest('command', command=f'tp @s {at[0] + 1.0} {y} {at[2]}')
+        guest.raw('look-at', f'{at[0]:.2f}', f'{y + 0.7:.2f}', f'{at[2]:.2f}')
+        guest.raw('mouse', 'right', 'click')
+        host.wait(20)
+        bystander = {'own': cow(host)['leash'], 'other': cow(guest)['leash']}
+
+        # Right-clicking with an empty hand after reopening must untie the cow (#6876).
+        hand = host('state').get('held') or {}
+        assert hand.get('item') in (None, 'minecraft:air'), f'hand not empty after reopen: {hand}'
+        host.raw('look-at', f'{at[0]:.2f}', f'{y + 0.7:.2f}', f'{at[2]:.2f}')
+        host.raw('mouse', 'right', 'click')
+        host.wait(20)
+        untied_cow = cow(host)
+        assert untied_cow['health'] > 0, f'cow died when untied: {untied_cow}'
+        assert cow_uuid() == before_cow_uuid, 'cow persistent UUID changed after untying'
+        untied = {'own': untied_cow['leash'], 'other': cow(guest)['leash']}
+        # Keep every stage even when the regression fails, and attempt the actual
+        # post-reopen interaction before checking the serialized holder UUID.
+        evidence = {'player_uuid': before_player_uuid, 'cow_uuid': before_cow_uuid,
+                    'before': tied_before, 'reopened': tied_reopened,
+                    'bystander': bystander, 'untied': untied}
+        (out / 'leash-reload.json').write_text(json.dumps(evidence, indent=2) + '\n')
+        assert untied == {'own': None, 'other': None}, f'cow still leashed after right-click on reopen: {untied}'
+        assert bystander['own'] == 'Player' and bystander['other'].startswith('Mob('), (
+            f'closer bystander took or removed the leash: {bystander}'
+        )
+        assert tied_before['nbt_holder'] == owner_uuid, f'wrong leash holder UUID before save: {tied_before}'
+        assert tied_reopened['nbt_holder'] == owner_uuid, (
+            f'cow leash holder UUID changed after reopen: {tied_reopened}'
+        )
+        host.shot(out, 'leash-reload-untied')
+    finally:
+        host('command', command=f'kill @e[tag={tag}]')
+        host('command', command=f'kill @e[type=minecraft:item,x={at[0]},y={y},z={at[2]},distance=..6]')
+        host('command', command='clear @s')
+    return {
+        'player_uuid': before_player_uuid,
+        'cow_uuid': before_cow_uuid,
+        'before': tied_before,
+        'reopened': tied_reopened,
+        'bystander': bystander,
+        'untied': untied,
+    }
+
+
+CHECKS += ['leash_reload']
+CHECK_FNS.update(leash_reload=check_leash_reload)
 
 
 def check_recipe_targets(host, guest, out):
@@ -12526,6 +12753,47 @@ def check_damage_attacker(host, guest, out):
 
 CHECKS += ['damage-attacker']
 CHECK_FNS['damage-attacker'] = check_damage_attacker
+
+
+def check_spectator_container(host, guest, out):
+    """A spectator inspects a container without its lid, its sound or a lid left open (#8517).
+
+    `ChestBlockEntity.startOpen` returns at once for a spectator, and
+    `stopOpen` skips it the same way, so `ContainerOpenersCounter` never counts
+    one: the menu opens (a spectator does look inside), while the lid, its
+    block event and the open and close sounds stay away and nothing is left
+    open when the menu closes.
+    """
+    opened_sound, closed_sound = 'minecraft:block.chest.open', 'minecraft:block.chest.close'
+    x, y, z = (int(v // 1) for v in pos_of(guest))
+    chest = (x, y, z + 2)
+    guest('command', command=f'setblock {chest[0]} {chest[1]} {chest[2]} minecraft:chest')
+    guest('command', command='gamemode spectator')
+    guest.wait(10)
+    before = {g.name: (heard(g, opened_sound), heard(g, closed_sound)) for g in (host, guest)}
+    try:
+        guest.raw('interact', *chest)
+        screen = guest.raw('wait-for', 'screen', 'container', '--timeout', 10)
+        guest.wait(20)
+        opened = {'guest': lid(guest, chest), 'host': lid(host, chest)}
+        guest.shot(out, 'spectator-container-open')
+        guest.raw('key', 'esc', 'tap')
+        guest.wait(20)
+        closed = {'guest': lid(guest, chest), 'host': lid(host, chest)}
+    finally:
+        guest('command', command='gamemode survival')
+        guest('command', command=f'setblock {chest[0]} {chest[1]} {chest[2]} minecraft:air')
+    after = {g.name: (heard(g, opened_sound), heard(g, closed_sound)) for g in (host, guest)}
+    sounds = {name: (after[name][0] - before[name][0], after[name][1] - before[name][1]) for name in after}
+    assert screen, 'the spectator did not get the container screen'
+    assert all(v < 0.1 for v in opened.values()), f'the lid while a spectator looked inside: {opened}'
+    assert all(v < 0.1 for v in closed.values()), f'the lid after the spectator closed it: {closed}'
+    assert not any(any(heard_at) for heard_at in sounds.values()), f'the sounds a spectator caused: {sounds}'
+    return {'opened': opened, 'closed': closed, 'sounds': sounds}
+
+
+CHECKS += ['spectator-container']
+CHECK_FNS['spectator-container'] = check_spectator_container
 
 
 if __name__ == '__main__':
