@@ -8,7 +8,7 @@ use horizon_client::camera::CameraFluid;
 use horizon_client::gfx::pack_uniforms::{PackInputs, PlayerStatus};
 use horizon_client::shader_options::ShaderOptions;
 use horizon_client::text::Text;
-use horizon_shaders::{BlockIds, Macros, Pack, Properties, dimension_folder, load_post};
+use horizon_shaders::{BlockIds, Macros, Pack, Properties, dimension_folder_named, load_post};
 
 use super::{Dim, Game};
 use horizon_client::gfx::pack_draw::EntitySpan;
@@ -217,7 +217,7 @@ impl Game<'_> {
                             .get("separateAo")
                             .is_some_and(|v| v.trim() == "true");
                         renderer.set_separate_ao(separate_ao);
-                        let folder = dimension_folder(&pack, dimension);
+                        let folder = dimension_folder_named(&pack, self.dim.id(), dimension);
                         let inputs = renderer.pack_inputs();
                         let mut post = load_post(&pack, &folder, &properties, &macros, &inputs);
                         // Textures that name one of the game's: from the resource packs over
@@ -318,8 +318,15 @@ impl Game<'_> {
         let status = self.pack_player_status();
         let (end_flash, end_flash_direction) = self.end_flash_for_pack(partial);
         let info = biome.map(|b| world_biomes!(self).get(b));
+        let dimension = self.remote.as_ref().map(|r| &r.dimension);
         PackInputs {
-            day_time: self.world.day_time,
+            // `Level.getDefaultClockTime`: 0 in a dimension type with no default clock (the
+            // Nether's has none), as Iris 1.11.7 reads `worldTime` there (probe pack).
+            day_time: if dimension.is_some_and(|d| d.default_clock.is_none()) {
+                0
+            } else {
+                self.world.day_time
+            },
             rain: lerp(self.world.weather.rain_level),
             thunder: lerp(self.world.weather.thunder_level),
             eye_in: match self.camera_fluid(camera.to_array()) {
@@ -332,7 +339,10 @@ impl Game<'_> {
             eye_light: [i32::from(light & 15), i32::from(light >> 4)],
             hide_gui: self.ui.hide_gui,
             brightness: self.settings.gamma,
-            biome: biome.map_or(-1, i32::from),
+            biome: info.map_or(-1, |b| {
+                let names = world_biomes!(self).list.iter().map(|b| b.name.as_str());
+                horizon_shaders::biome_pack_id(&b.name, names)
+            }),
             biome_known: biome.is_some(),
             biome_category: info.map_or(0, |b| horizon_shaders::biome_category(&b.name)),
             biome_precipitation: info.map_or(0, |b| {
@@ -365,6 +375,8 @@ impl Game<'_> {
             status,
             end_flash,
             end_flash_direction,
+            ambient_light: dimension.map_or(0.0, |d| d.ambient_light),
+            mood: self.ambience.moodiness,
         }
     }
 
@@ -496,6 +508,9 @@ impl Game<'_> {
         self.push_span(start, "ENTITIES", id);
         if let Some(last) = self.entity_spans.borrow_mut().last_mut() {
             last.translucent = translucent;
+            if let Some(gpu) = self.skin_frame.borrow_mut().spans.last_mut() {
+                gpu.translucent = translucent;
+            }
         }
     }
 
@@ -529,6 +544,9 @@ impl Game<'_> {
             .emission;
         if let Some(last) = self.entity_spans.borrow_mut().last_mut() {
             last.emissive = emission > 0;
+            if let Some(gpu) = self.skin_frame.borrow_mut().spans.last_mut() {
+                gpu.emissive = emission > 0;
+            }
         }
     }
 
@@ -541,6 +559,10 @@ impl Game<'_> {
         {
             last.player = true;
             last.hidden = hidden;
+            if let Some(gpu) = self.skin_frame.borrow_mut().spans.last_mut() {
+                gpu.player = true;
+                gpu.hidden = hidden;
+            }
         }
     }
 
@@ -565,6 +587,17 @@ impl Game<'_> {
             id,
             ..Default::default()
         };
+        if self.pack_ids.is_some() && self.skinning() {
+            let mut skin = self.skin_frame.borrow_mut();
+            let gpu = EntitySpan {
+                start: skin.vertices,
+                ..span
+            };
+            match skin.spans.last_mut() {
+                Some(last) if last.start == gpu.start => *last = gpu,
+                _ => skin.spans.push(gpu),
+            }
+        }
         // A span that drew nothing gives way to the next.
         match spans.last_mut() {
             Some(last) if last.start == span.start => *last = span,

@@ -258,6 +258,9 @@ pub enum Alert {
     Incompatible,
     /// `selectWorld.recreate.error.title`.
     Recreate,
+    /// `symlink_warning.title.world`
+    /// (`NoticeWithLinkScreen.createWorldSymlinkWarningScreen`).
+    Symlink,
 }
 #[derive(Clone, Debug)]
 pub enum Mode {
@@ -1306,6 +1309,23 @@ impl Title {
         if world.locked {
             return Action::None;
         }
+        // `LevelStorageSource.validateAndCreateAccess`: a world folder holding
+        // a symbolic link is refused before an access is made over it, and
+        // `WorldOpenFlows.createWorldAccess` puts the symlink warning where
+        // the world would have gone.
+        if world_management::symlinks(&self.saves, &world.folder)
+            .is_ok_and(|links| !links.is_empty())
+        {
+            self.mode = Mode::Error {
+                message: lang::get_or(
+                    "symlink_warning.message.world",
+                    "You are trying to open a world whose folder holds links to other files. That can be a risk to the rest of your files, so the world stays closed.",
+                ),
+                return_to: Box::new(self.mode.clone()),
+                alert: Some(Alert::Symlink),
+            };
+            return Action::None;
+        }
         if crate::save::SessionLock::acquire(&self.saves.join(&world.folder)).is_err() {
             self.toast = Some((
                 crate::toasts::Slide::default(),
@@ -2311,6 +2331,10 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
                     Some(Alert::Recreate) => {
                         get("selectWorld.recreate.error.title", "An error occurred!")
                     }
+                    Some(Alert::Symlink) => get(
+                        "symlink_warning.title.world",
+                        "The world folder contains links",
+                    ),
                     None => get("selectWorld.access_failure", "Failed to access world"),
                 };
                 ScreenInfo::new("world_error", join(&[&title, message]))
@@ -2382,7 +2406,7 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
         cursor: (f32, f32),
         hide_splash: bool,
     ) {
-        self.draw_with_items(atlas, None, batch, cursor, hide_splash);
+        self.draw_with_items(atlas, None, batch, cursor, hide_splash, false);
     }
     /// [`Title::draw`] with the item models, which draw the item icons of the
     /// Superflat screens the way `GuiGraphics.renderItem` does.
@@ -2393,6 +2417,7 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
         batch: &mut HudBatch,
         cursor: (f32, f32),
         hide_splash: bool,
+        hide_server_address: bool,
     ) {
         let (w, h) = (batch.width.ceil(), batch.height.ceil());
         if let Some(rules) = self.rules.borrow_mut().as_mut() {
@@ -2964,6 +2989,11 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
                             "An error occurred!",
                             u32::MAX,
                         ),
+                        Alert::Symlink => (
+                            "symlink_warning.title.world",
+                            "The world folder contains links",
+                            u32::MAX,
+                        ),
                     };
                     (70.0, 90.0, key, fallback, color)
                 } else {
@@ -3087,6 +3117,7 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
                 &mut self.caret.borrow_mut(),
                 self.started,
                 cursor,
+                hide_server_address,
             ),
         }
         for b in self.buttons(w, h) {

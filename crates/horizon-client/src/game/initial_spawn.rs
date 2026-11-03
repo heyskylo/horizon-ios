@@ -28,8 +28,9 @@ struct Columns<'a, 'r> {
     world: &'a World,
     properties: &'a Properties,
     binding: &'a BlockCollisionRegistry<'r>,
-    /// The generator's spawn height, when the level's type has a ceiling.
-    cave_spawn_height: Option<i32>,
+    has_ceiling: bool,
+    /// `ChunkGenerator.getSpawnHeight` (64 for the vanilla generators).
+    spawn_height: i32,
 }
 impl SpawnLevel for Columns<'_, '_> {
     fn cave_spawn_height(&self) -> Option<i32> {
@@ -71,6 +72,12 @@ impl SpawnLevel for Columns<'_, '_> {
                 .is_ok_and(|differs| !differs)
         })
     }
+    fn has_ceiling(&self) -> bool {
+        self.has_ceiling
+    }
+    fn spawn_height(&self) -> i32 {
+        self.spawn_height
+    }
 }
 
 impl Game<'_> {
@@ -79,14 +86,10 @@ impl Game<'_> {
             world: &self.world,
             properties: &self.pack.assets.properties,
             binding: self.collision,
-            // The spawn searches run in the Overworld, whose type decides.
-            cave_spawn_height: if self.level_shapes.overworld.has_ceiling {
-                self.spawn_origin
-                    .map(|(_, height)| height)
-                    .or_else(|| self.spawn_origin().ok().map(|(_, height)| height))
-            } else {
-                None
-            },
+            // The spawn searches are the overworld's (PlayerSpawnFinder); a
+            // ceiling starts them at the generator's spawn height.
+            has_ceiling: self.level_shapes.overworld.has_ceiling,
+            spawn_height: self.spawn_origin.map_or(64, |(_, height)| height),
         }
     }
     /// ChunkGenerator.getOrigin and getSpawnHeight of the overworld.
