@@ -598,6 +598,7 @@
     "integration": "Normal merge preserving both original material test module and new public-main rgb_alpha_tests module. No product conflict; current public main API compiled and checked separately.",
     "research": "No new external shader research; no memory/history or closed original implementation access.",
     "fixture_sha256": "cb0ed419d87449fca478b422a68cc4c5d7145ac7d285ae4bad3a3755c1352d3d",
-    "checks": "Pending; exact new-head results recorded in PR followup and own handoff. Prior-head results are historical."
+    "checks": "Pending; exact new-head results recorded in PR followup and own handoff. Prior-head results are historical.",
+    "integration_correction": "First current-main gate revealed E0308 in newly added gpu_census: sum bytes across all split normal/specular texture pairs instead of passing Vec<[Texture;2]> to former slice helper. No rendering/fixture behavior change. First failed gate retained at6833688."
   }
 }

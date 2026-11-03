@@ -2084,7 +2084,9 @@ impl Renderer {
             ("block_sprites", textures(&self.sprite_textures)),
             (
                 "pbr_maps",
-                self.pbr_maps.as_ref().map_or(0, |maps| textures(maps)),
+                self.pbr_maps.as_ref().map_or(0, |maps| {
+                    maps.iter().flatten().map(texture_bytes).sum()
+                }),
             ),
             (
                 "flat_draws",
