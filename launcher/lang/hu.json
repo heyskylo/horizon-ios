@@ -895,7 +895,7 @@
   "Changes apply the next time it starts. Worlds stay where they are.": "A módosítások a következő indításkor érvényesek. A világok ott maradnak, ahol vannak.",
   "Create instance": "Példány létrehozása",
   "Edit {name}": "Szerkesztés {name}",
-  "Fabric mods run here too": "A szövetmodellek itt is futnak",
+  "Fabric mods run here too": "Fabric mods run here too",
   "For older packs": "Régebbi csomagokhoz",
   "Horizon": "Horizont",
   "Installs the newest stable {loader} for Minecraft {version}.": "Telepíti a legújabb stabil {loader} Minecrafthoz {version}.",
@@ -1025,5 +1025,13 @@
   "Use": "Használja",
   "installed": "telepítve",
   "played by {names}": "játszotta {names}",
-  "{day}, {time} UTC": "{day}, {time} UTC"
+  "{day}, {time} UTC": "{day}, {time} UTC",
+  "Microsoft account · online servers too": "Microsoft-fiók · online szerverek is",
+  "Offline · single player and LAN worlds": "Offline · egyjátékos és LAN-világok",
+  "Offline names": "Offline nevek",
+  "Add a name": "Név hozzáadása",
+  "3 to 16 letters, numbers or underscores. Switch names from the top bar too. Online servers don't take offline names.": "3–16 betű, szám vagy aláhúzásjel. A nevet a felső sávban is válthatja. Az online szerverek nem fogadják el az offline neveket.",
+  "Play online with your Microsoft account": "Játsszon online a Microsoft-fiókjával",
+  "Sign in with the account that owns Minecraft: Java Edition. Your name and skin come along to online servers, like in other launchers.": "Jelentkezzen be azzal a fiókkal, amelyhez a Minecraft: Java Edition tartozik. A neve és a skinje Önnel tart az online szerverekre, mint más indítókban.",
+  "Microsoft's own page opens in your browser. Horizon never sees your password.": "A Microsoft saját oldala nyílik meg a böngészőjében. A Horizon soha nem látja a jelszavát."
 }

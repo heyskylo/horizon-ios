@@ -177,7 +177,12 @@ impl Language {
             return Some(Self::PortugueseBrazil);
         }
 
-        let base = normalized.split('-').next().unwrap_or("");
+        let base = match normalized.split('-').next().unwrap_or("") {
+            // Systems name Norwegian by its written form: Bokmål (`nb-NO`, what macOS and Windows
+            // report) or Nynorsk (`nn`). The launcher's one table is Bokmål.
+            "nb" | "nn" => "no",
+            base => base,
+        };
 
         Self::ALL
             .into_iter()
