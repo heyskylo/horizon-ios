@@ -682,6 +682,9 @@ impl Game<'_> {
         let riders = self.take_mob_passengers(&mut tag);
         let id = self.next_entity + 1;
         if let Some(mut c) = super::minecarts::Minecart::from_nbt(&tag, id, kind) {
+            super::minecarts::forget_unreadable_display(&mut c, |t| {
+                self.state_from_nbt(t).is_some()
+            });
             self.roll_cart_loot(&mut c, &tag);
             self.next_entity = id;
             self.remember(id, uuid, tag);

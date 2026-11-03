@@ -231,8 +231,16 @@ pub fn run(dir: &Path) -> Result<(), String> {
             Exit::NotUp => continue,
             Exit::Restart => {
                 let restore = shared.restore.lock().unwrap().take();
-                if let Some(name) = restore {
-                    match backup::restore(dir, &config, &name) {
+                if let Some((name, dimension)) = restore {
+                    let done = match &dimension {
+                        Some(d) => backup::restore_dimension(dir, &config, &name, d),
+                        None => backup::restore(dir, &config, &name),
+                    };
+                    let name = match &dimension {
+                        Some(d) => format!("{name} ({d})"),
+                        None => name,
+                    };
+                    match done {
                         Ok(Some(old)) => note(
                             &shared,
                             "INFO",
