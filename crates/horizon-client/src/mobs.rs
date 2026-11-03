@@ -12,6 +12,7 @@ pub mod anim;
 pub mod animal_brain;
 pub mod aquatic;
 pub mod armadillo;
+pub mod armor;
 pub mod axolotl;
 pub mod bat;
 pub mod bee;
@@ -117,7 +118,8 @@ use std::{collections::HashMap, fs, path::Path, sync::Arc};
 pub struct Polygon {
     pub normal: [f32; 3],
     pub vertices: [[f32; 5]; 4],
-    /// The model's render type culls back faces (`entityCutoutCull`: the bat).
+    /// The model's render type culls back faces (`entityCutoutCull`: the bat,
+    /// the baby turtle).
     pub cull_back: bool,
 }
 impl Polygon {
@@ -252,7 +254,7 @@ impl Part {
         for (i, x) in pose.iter().enumerate().take(9) {
             p[i] = *x;
         }
-        let polygons = v["polygons"]
+        let polygons: Vec<Polygon> = v["polygons"]
             .as_array()
             .into_iter()
             .flatten()
@@ -429,15 +431,39 @@ pub(crate) fn exact_attributes(bytes: &[u8]) -> HashMap<String, HashMap<String, 
         })
         .collect()
 }
+
+/// The models that draw with `RenderTypes::entityCutoutCull`.
+fn culls_back_faces(key: &str) -> bool {
+    matches!(key, "minecraft:bat#main" | "minecraft:turtle_baby#main")
+}
+
 pub struct MobTypes {
     pub types: HashMap<String, MobType>,
 }
 impl MobTypes {
     pub fn load(root: &Path) -> crate::Result<Self> {
+        Self::load_with_models(root, true)
+    }
+
+    /// The dedicated server needs entity facts and AI, but never their render
+    /// geometry. Keep one empty part for the fields shared with the client
+    /// rather than parsing and retaining every entity-model layer.
+    pub fn load_for_server(root: &Path) -> crate::Result<Self> {
+        Self::load_with_models(root, false)
+    }
+
+    fn load_with_models(root: &Path, models_needed: bool) -> crate::Result<Self> {
         let bytes = fs::read(root.join("entity-types.json"))?;
         let types: Value = serde_json::from_slice(&bytes)?;
         let exact = exact_attributes(&bytes);
-        let models: Value = serde_json::from_slice(&fs::read(root.join("entity-models.json"))?)?;
+        let models = models_needed
+            .then(|| -> crate::Result<Value> {
+                Ok(serde_json::from_slice(&fs::read(
+                    root.join("entity-models.json"),
+                )?)?)
+            })
+            .transpose()?;
+        let empty_model = Arc::new(Part::parse("root", &Value::Null));
         let item_tags =
             crate::items::load_tags(root, "item", &horizon_world::loot::PackOverlay::NONE)
                 .unwrap_or_default();
@@ -460,19 +486,24 @@ impl MobTypes {
                 continue;
             }
             let model_key = format!("minecraft:{}", def.model);
-            let Some(model) = models.get(&model_key) else {
+            let model = models.as_ref().and_then(|models| models.get(&model_key));
+            if models_needed && model.is_none() {
                 continue;
-            };
+            }
             let defaults = exact.get(&id).cloned().unwrap_or_default();
             let attr = |k: &str| defaults.get(&format!("minecraft:{k}")).copied();
             let mut layers = crate::fast_hash::FxHashMap::default();
-            if let Some(all) = models.as_object() {
+            if let Some(all) = models.as_ref().and_then(Value::as_object) {
                 for prefix in def.layer_prefixes() {
                     let start = format!("minecraft:{prefix}#");
                     for (k, v) in all.iter().filter(|(k, _)| k.starts_with(&start)) {
+                        let mut part = Part::parse("root", v);
+                        if culls_back_faces(k) {
+                            part.set_cull_back();
+                        }
                         layers.insert(
                             k.trim_start_matches("minecraft:").to_owned(),
-                            Arc::new(Part::parse("root", v)),
+                            Arc::new(part),
                         );
                     }
                 }
@@ -511,14 +542,18 @@ impl MobTypes {
                     max_head_y_rot: def.max_head_y_rot(),
                     ambient_interval: def.ambient_interval(),
                     flags,
-                    model: Arc::new({
-                        let mut part = Part::parse("root", model);
-                        // BatModel: `RenderTypes::entityCutoutCull`.
-                        if def.name == "bat" {
-                            part.set_cull_back();
-                        }
-                        part
-                    }),
+                    model: model.map_or_else(
+                        || empty_model.clone(),
+                        |model| {
+                            Arc::new({
+                                let mut part = Part::parse("root", model);
+                                if culls_back_faces(&model_key) {
+                                    part.set_cull_back();
+                                }
+                                part
+                            })
+                        },
+                    ),
                     layers,
                     texture: def.texture.to_owned(),
                     brain: def.brain(),
@@ -830,6 +865,15 @@ pub fn anger_left(anger_end: i64, game_time: i64) -> i32 {
 /// Species-specific persistent state (variants, colours, taming, ageing...).
 #[derive(Clone, Debug, Default)]
 pub struct Extra {
+    /// Saved fish/axolotl bucket flag; tadpoles save a constant true value.
+    pub from_bucket: bool,
+    /// Command-created armor instances, shared by commands and runtime damage.
+    pub armor_attributes: Option<Box<horizon_world::attributes::entity::EntityAttributes>>,
+    /// `Mob.lootTable`: the table its death rolls instead of its type's
+    /// (saved as `DeathLootTable`).
+    pub death_loot_table: Option<String>,
+    /// `Mob.lootTableSeed` (`DeathLootTableSeed`): 0 for none.
+    pub death_loot_seed: i64,
     /// `Rabbit.moreCarrotTicks`: how long it is full of carrots (saved as `MoreCarrotTicks`).
     pub more_carrot_ticks: i32,
     /// `Ocelot.DATA_TRUSTING`: it no longer runs from players.
@@ -838,9 +882,10 @@ pub struct Extra {
     pub immovable: bool,
     /// `Mannequin.DATA_DESCRIPTION`: the text under its name.
     pub description: MannequinDescription,
-    /// A player's or mannequin's `minecraft:scale`, which scales the whole model
-    /// (`LivingEntityRenderState.scale`): the local player's own, and on a
-    /// server the others' from their attribute updates; 0 is the default, 1.
+    /// `LivingEntity`'s `minecraft:scale` (`getScale`), which scales its box
+    /// (`getDimensions`), eye height and model (`LivingEntityRenderState.scale`):
+    /// the local player's own, and on a server every living entity's from its
+    /// attribute updates; 0 is the default, 1 (`Mob::model_scale`).
     pub model_scale: f32,
     /// Players: crouching and riding (HumanoidModel's poses).
     pub crouching: bool,
@@ -887,7 +932,7 @@ pub struct Extra {
     /// `Mob.canPickUpLoot` (also lets dispensers equip it).
     pub pick_up_loot: bool,
     pub saddled: bool,
-    /// The durability a wolf's body armor (`extra.head`) has lost.
+    /// The durability a wolf's body armor (`extra.body`) has lost.
     pub body_damage: i32,
     /// The components (dye, name...) of that armor stack.
     pub body_extra: Option<Box<crate::item_data::StackData>>,
@@ -931,7 +976,11 @@ pub struct Extra {
     /// Components of the current held stack; setters clear these on replacement.
     main_hand_stack: Option<crate::items::ItemStack>,
     pub off_hand: Option<Arc<str>>,
+    /// The head item (`getItemBySlot(HEAD)`), on every mob.
     pub head: Option<Arc<str>>,
+    /// The body item (`getItemBySlot(BODY)`): a horse's armour, a llama's
+    /// carpet, a wolf's armour, a harness, a sulfur cube's swallowed block.
+    pub body: Option<Arc<str>>,
     /// Worn armour below the head (humanoid mobs).
     pub chest: Option<Arc<str>>,
     pub legs: Option<Arc<str>>,
@@ -1130,6 +1179,8 @@ impl Extra {
 
 #[derive(Clone, Debug)]
 pub struct Mob {
+    /// When it joined its list ([`crate::join_seq`]); set by the list, not by the spawn site.
+    pub join: crate::join_seq::JoinSeq,
     pub id: u32,
     pub kind: Arc<MobType>,
     pub position: Vec3,
@@ -1151,6 +1202,10 @@ pub struct Mob {
     /// `Entity.needsSync`: knocked back, pushed or jumped since its server
     /// last sent it, so the next update goes out at once.
     pub needs_sync: bool,
+    /// `getAttributeValue(KNOCKBACK_RESISTANCE)` with the modifiers of the
+    /// items it wears or holds, which the game works out each tick for a mob
+    /// that has any (the mob itself knows no item): `None` for the rest.
+    pub gear_knockback_resistance: Option<f64>,
     pub health: f32,
     pub hurt_time: i32,
     pub invulnerable: i32,
@@ -1191,6 +1246,9 @@ pub struct Mob {
     /// `Entity.mainSupportingBlockPos`: the block it stood on after its last
     /// move.
     pub supporting: Option<[i32; 3]>,
+    /// The block under the mob's feet by name (`minecraft:grass_block`), kept for the
+    /// packs' random-model rules (`rule_index`); `None` without rules or off the ground.
+    pub standing_on: Option<String>,
     /// `NoAI`: no goals and no movement.
     pub no_ai: bool,
     /// `Silent`.
@@ -1334,12 +1392,15 @@ pub enum MobEvent {
     BubbleColumnParticles {
         pos: [i32; 3],
     },
-    /// `LivingEntity.checkFallDamage`: `count` crumbs of the block `state` a mob
-    /// landed on, thrown up at `at`.
+    /// A `BlockParticleOption` of `state` drawn `count` times at `at`, each crumb
+    /// leaving at `speed`: the dust `LivingEntity.checkFallDamage` throws up from
+    /// the block a mob landed on, and the puffs `Breeze.emitGroundParticles`
+    /// leaves at a breeze's feet (which it draws at rest).
     LandingDust {
         state: horizon_world::registry::BlockStateId,
         at: [f64; 3],
         count: i32,
+        speed: f64,
     },
     /// `UseBonemeal`: the villager's bone meal grows the crop at `pos`
     /// (`BoneMealItem.growCrop`, then level event 1505).
@@ -2085,6 +2146,7 @@ pub struct Seen {
     pub lying: bool,
     /// `Entity.isVehicle` or `isPassenger`.
     pub ridden: bool,
+    pub is_vehicle: bool,
     /// `Attributes.KNOCKBACK_RESISTANCE`.
     pub knockback_resistance: f64,
     /// The active effects, without namespace (`slowness`, `poison`...).
@@ -2101,15 +2163,30 @@ impl Seen {
     }
 }
 impl Mob {
+    /// The name used by command replies: CustomName takes precedence over the type.
+    pub fn command_name(&self) -> crate::text::Text {
+        if let Some(name) = &self.custom_name {
+            return crate::text::Text::literal(name);
+        }
+        // Villager.getTypeName returns its registered profession's name.
+        if self.species() == Species::Villager {
+            let professions = &render::PROFESSIONS;
+            let profession = professions[self.extra.variant2 as usize % professions.len()];
+            return crate::text::Text::translate(
+                &format!("entity.minecraft.villager.{profession}"),
+                &[],
+            );
+        }
+        let id = crate::command::args::normalize(&self.kind.id);
+        crate::text::Text::translate(&format!("entity.{}", id.replace(':', ".")), &[])
+    }
+
     /// What the mob holds and wears, by `EquipmentSlot` ordinal: main hand,
     /// off hand, feet, legs, chest, head, body and saddle
     /// (`ClientboundSetEquipmentPacket`'s slots).
     pub fn equipment_stacks(&self) -> [Option<crate::items::ItemStack>; 8] {
         use crate::items::ItemStack;
         let e = &self.extra;
-        // A horse's armour, a llama's carpet, a harness: Horizon keeps the body
-        // slot's item (6) in `head`.
-        let body = drops::head_is_body(self.species());
         let wolf = self.species() == Species::Wolf;
         let slots = [
             (0usize, &e.main_hand, e.main_hand_stack()),
@@ -2117,12 +2194,10 @@ impl Mob {
             (2, &e.feet, e.armor[3].as_ref()),
             (3, &e.legs, e.armor[2].as_ref()),
             (4, &e.chest, e.armor[1].as_ref()),
-            // The body slot's item is no worn armour.
-            (
-                if body { 6 } else { 5 },
-                &e.head,
-                e.armor[0].as_ref().filter(|_| !body),
-            ),
+            // The body slot's item is no worn armour: a horse's armour, a
+            // llama's carpet, a harness go out on their own (6).
+            (5usize, &e.head, e.armor[0].as_ref()),
+            (6, &e.body, None),
         ];
         let mut out: [Option<ItemStack>; 8] = Default::default();
         for (slot, item, worn) in slots {
@@ -2265,6 +2340,7 @@ impl Mob {
             silent: m.silent,
             lying: m.species() == Species::Cat && (m.extra.flag || m.extra.relax_one),
             ridden: m.rider.is_some() || m.extra.rider.is_some() || m.extra.mount.is_some(),
+            is_vehicle: equine::is_vehicle(m),
             knockback_resistance: m.attrs.knockback_resistance,
             effects: m
                 .extra
@@ -2295,6 +2371,13 @@ impl Mob {
 /// `events[from..]` into `pending`, which the caller adds to each mob's
 /// velocity before its tick (and to every mob once all have ticked). The
 /// other events keep their order.
+/// The part of `Entity.canUsePortal` a mob's own state decides: it is alive,
+/// it is not a boss that never travels, and — over `Monster.canUsePortal` —
+/// it is not a creaking bound to a heart (`Creaking.canUsePortal`). The
+/// rides and the players a side carries are the caller's half.
+pub fn mob_can_use_portal(m: &Mob) -> bool {
+    m.alive() && m.species() != Species::Wither && creaking::can_use_portal(m)
+}
 pub fn take_mob_pushes(events: &mut Vec<MobEvent>, from: usize, pending: &mut PendingPushes) {
     // One pass: a crowd's tick holds a push per neighbour, and removing each
     // in place would shift the rest every time.
@@ -2612,6 +2695,7 @@ impl Mob {
         );
         let _ = random.next_int();
         let mut mob = Self {
+            join: Default::default(),
             id,
             health: kind.max_health,
             position,
@@ -2629,6 +2713,7 @@ impl Mob {
             horizontal_collision: false,
             vertical_collision_below: false,
             needs_sync: false,
+            gear_knockback_resistance: None,
             hurt_time: 0,
             invulnerable: 0,
             death_time: 0,
@@ -2653,6 +2738,7 @@ impl Mob {
             first_tick: true,
             no_gravity: false,
             supporting: None,
+            standing_on: None,
             no_ai: false,
             silent: false,
             invulnerable_flag: false,
@@ -2708,6 +2794,11 @@ impl Mob {
                 | Species::Fox
                 | Species::Panda
         );
+        // Salmon.defineSynchedData: DATA_TYPE starts at Variant.DEFAULT (MEDIUM,
+        // id 1), so a salmon finalizeSpawn never sized keeps the type's box.
+        if mob.species() == Species::Salmon {
+            mob.extra.variant = 1;
+        }
         // The PathNavigation constructor: the base follow range.
         mob.ai.nav.max_visited_nodes = (mob.kind.follow_range * 16.0).floor() as i32;
         ai::register(&mut mob);
@@ -2779,12 +2870,12 @@ impl Mob {
     /// the last-hurt-by bookkeeping goals read.
     /// The `armor` and `armor_toughness` modifiers of worn humanoid armour.
     pub fn worn_armor(&self) -> (f32, f32) {
-        // An equine keeps its horse armor in `extra.head`: the item's `armor`
+        // An equine keeps its horse armor in `extra.body`: the item's `armor`
         // and `armor_toughness` modifiers of the body slot.
         if equine::is_equine(self.species()) {
             return self
                 .extra
-                .head
+                .body
                 .as_deref()
                 .map_or((0.0, 0.0), spawning::horse_armor_stats);
         }
@@ -2823,6 +2914,13 @@ impl Mob {
     pub fn damage(&mut self, amount: f32, source: Damage) -> bool {
         self.damage_with(amount, source, None)
     }
+    /// `LivingEntity.isInvulnerableTo` and dead or removed: only #bypasses_invulnerability gets
+    /// past the flag. The guard every damage hook runs after (`LivingIncomingDamageEvent`).
+    pub fn refuses_damage(&self, source: &Damage) -> bool {
+        !self.alive()
+            || self.removed
+            || (self.invulnerable_flag && !source.kind.bypasses_invulnerability())
+    }
     /// `damage` by a source with a weapon: `armor_effectiveness` runs the
     /// weapon's armor-effectiveness enchantments (breach) over the armor fraction.
     pub fn damage_with(
@@ -2843,11 +2941,7 @@ impl Mob {
             // about, so `Player.attack` goes on with its extra knockback and its aftermath.
             return sulfur_cube::immune_to(&source);
         }
-        // LivingEntity.isInvulnerableTo: only #bypasses_invulnerability gets past it.
-        if !self.alive()
-            || self.removed
-            || (self.invulnerable_flag && !source.kind.bypasses_invulnerability())
-        {
+        if self.refuses_damage(&source) {
             return false;
         }
         // Ghast.isReflectedFireball: a fireball a player turned back is
@@ -2860,6 +2954,12 @@ impl Mob {
         }
         if !ai::accepts_damage(self, &source, amount) {
             return false;
+        }
+        // LivingEntity.hurtServer refuses fire before hooks and damage processing.
+        if source.is_fire() && self.has_effect("minecraft:fire_resistance") {
+            // Ghast.hurtServer reports success for a reflected fireball even
+            // when LivingEntity refuses its health damage.
+            return reflected;
         }
         // IronGolem.hurtServer: the crack level before the damage, compared after.
         let crackiness = (self.species() == Species::IronGolem).then(|| golem::crackiness(self));
@@ -2900,28 +3000,23 @@ impl Mob {
         if !amount.is_finite() {
             amount = f32::MAX;
         }
-        let (worn, worn_toughness) = self.worn_armor();
-        // Shulker.setRawPeekAmount: a closed shell adds the covered armor modifier.
-        let covered = if self.species() == Species::Shulker && self.extra.counter == 0 {
-            20.0
-        } else {
-            0.0
-        };
         // LivingEntity.getDamageAfterArmorAbsorb asks `hurtArmor` *before*
         // `CombatRules.getDamageAfterAbsorb`, so a worn piece wears by the
         // damage the armour, toughness and enchantment reductions have not
         // touched yet, and only a hit outside `#bypasses_armor` asks at all.
         let armor_hit = (!source.bypasses_armor() && amount > 0.0).then_some(amount);
-        if !source.bypasses_armor() && self.kind.armor + worn + covered > 0.0 {
-            // CombatRules.getDamageAfterAbsorb
-            let armor = self.kind.armor + worn + covered;
-            let toughness = 2.0 + (self.kind.armor_toughness + worn_toughness) / 4.0;
-            let effective = (armor - amount / toughness).clamp(armor * 0.2, 20.0);
-            let mut fraction = effective / 25.0;
-            if let Some(modify) = armor_effectiveness {
-                fraction = modify(fraction).clamp(0.0, 1.0);
+        if !source.bypasses_armor() {
+            let (armor, armor_toughness) = armor::values(self);
+            if armor > 0.0 {
+                // CombatRules.getDamageAfterAbsorb
+                let toughness = 2.0 + armor_toughness / 4.0;
+                let effective = (armor - amount / toughness).clamp(armor * 0.2, 20.0);
+                let mut fraction = effective / 25.0;
+                if let Some(modify) = armor_effectiveness {
+                    fraction = modify(fraction).clamp(0.0, 1.0);
+                }
+                amount *= 1.0 - fraction;
             }
-            amount *= 1.0 - fraction;
         }
         // CombatRules.getDamageAfterMagicAbsorb: enchantment protection.
         let epf = gear::protection(self, source.kind);
@@ -2998,11 +3093,10 @@ impl Mob {
         // it hands `doHurtEquipment` the body slot alone. A wolf's armour has
         // its own rule (`Wolf.actuallyHurt`, `hurt_wolf_armor`) and a player's
         // four pieces theirs, so the other "body slot" species — donkey, mule,
-        // llama, camel, the skeleton and zombie horses — wear nothing, whatever
-        // `drops::head_is_body` says about where the item lives.
+        // llama, camel, the skeleton and zombie horses — wear nothing.
         if let Some(damage) = armor_hit
             && self.species() == Species::Horse
-            && self.extra.head.is_some()
+            && self.extra.body.is_some()
         {
             self.outbox.push(MobEvent::ArmorHurt {
                 mob: self.id,
@@ -3105,7 +3199,7 @@ impl Mob {
     /// the world and the untyped kills).
     fn wolf_armor_absorbs(&self, source: &Damage) -> bool {
         self.species() == Species::Wolf
-            && self.extra.head.as_deref() == Some("minecraft:wolf_armor")
+            && self.extra.body.as_deref() == Some("minecraft:wolf_armor")
             && !matches!(
                 source.kind,
                 DamageKind::Drown
@@ -3133,7 +3227,7 @@ impl Mob {
         let after = before + damage.ceil() as i32;
         let at = [self.position.x, self.position.y, self.position.z];
         if after >= WOLF_ARMOR_DURABILITY {
-            self.extra.head = None;
+            self.extra.body = None;
             self.extra.body_damage = 0;
             self.extra.body_extra = None;
             self.outbox
@@ -3168,6 +3262,11 @@ impl Mob {
     pub fn knockback_effect(&mut self, power: f64, xd: f64, zd: f64, source: &Damage, damage: f32) {
         self.knockback_by(power, xd, zd, source, Some(damage));
     }
+    /// `getAttributeValue(KNOCKBACK_RESISTANCE)`: the mob's own, and what its gear adds.
+    pub fn knockback_resistance(&self) -> f64 {
+        self.gear_knockback_resistance
+            .unwrap_or(self.attrs.knockback_resistance)
+    }
     fn knockback_by(&mut self, power: f64, xd: f64, zd: f64, source: &Damage, effect: Option<f32>) {
         if let Some(damage) = effect
             && self.species() == Species::SulfurCube
@@ -3196,7 +3295,7 @@ impl Mob {
             x: mut xd,
             z: mut zd,
         } = knock;
-        let power = power * (1.0 - self.attrs.knockback_resistance);
+        let power = power * (1.0 - self.knockback_resistance());
         if power <= 0.0 {
             return;
         }
@@ -4366,6 +4465,101 @@ mod held_stack_tests {
 }
 
 #[cfg(test)]
+mod fire_resistance_damage_tests {
+    use super::*;
+
+    fn pig() -> Mob {
+        let mut kind = super::sensor_scan_tests::kind();
+        let def = Arc::make_mut(&mut kind);
+        def.id = "minecraft:pig".into();
+        def.species = Species::Pig;
+        Mob::new(1, kind, Vec3::ZERO, 0.0)
+    }
+
+    #[test]
+    fn fire_resistance_rejects_fire_before_health_and_hurt_cooldown() {
+        for kind in [
+            DamageKind::Campfire,
+            DamageKind::Fireball,
+            DamageKind::HotFloor,
+            DamageKind::InFire,
+            DamageKind::Lava,
+            DamageKind::OnFire,
+            DamageKind::SulfurCubeHot,
+        ] {
+            let mut mob = pig();
+            mob.add_effect("minecraft:fire_resistance", -1, 0);
+            assert!(!mob.damage(1.0, Damage::of(kind)), "{kind:?}");
+            assert_eq!(mob.health, 10.0, "{kind:?}");
+            assert_eq!(
+                (mob.hurt_time, mob.invulnerable, mob.last_hurt),
+                (0, 0, 0.0)
+            );
+            assert!(mob.last_damage.is_none());
+            assert!(mob.outbox.is_empty());
+            // A refused fire hit must not prevent the next ordinary hit.
+            assert!(mob.damage(1.0, Damage::of(DamageKind::Cactus)));
+            assert_eq!(mob.health, 9.0);
+
+            let mut bare = pig();
+            assert!(bare.damage(1.0, Damage::of(kind)));
+            assert_eq!(bare.health, 9.0);
+            assert!(
+                !bare.damage(1.0, Damage::of(kind)),
+                "equal hit during cooldown"
+            );
+            assert!(
+                bare.damage(2.0, Damage::of(kind)),
+                "stronger hit during cooldown"
+            );
+            assert_eq!(bare.health, 8.0);
+
+            let mut resistant = pig();
+            resistant.add_effect("minecraft:resistance", -1, 0);
+            assert!(resistant.damage(1.0, Damage::of(kind)));
+            assert_eq!(resistant.health, 9.2);
+
+            let mut invulnerable = pig();
+            invulnerable.invulnerable_flag = true;
+            assert!(!invulnerable.damage(1.0, Damage::of(kind)));
+            assert_eq!(invulnerable.health, 10.0);
+        }
+    }
+
+    #[test]
+    fn species_hurt_callbacks_still_run_before_the_living_fire_guard() {
+        let mut mob = pig();
+        let kind = Arc::make_mut(&mut mob.kind);
+        kind.id = "minecraft:bat".into();
+        kind.species = Species::Bat;
+        bat::set_resting(&mut mob, true);
+        mob.add_effect("minecraft:fire_resistance", -1, 0);
+        assert!(!mob.damage(1.0, Damage::of(DamageKind::InFire)));
+        assert!(!bat::resting(&mob));
+        assert_eq!(mob.health, 10.0);
+        assert_eq!(mob.invulnerable, 0);
+    }
+
+    #[test]
+    fn reflected_ghast_fireball_still_reports_success_when_fire_resistance_refuses_health_damage() {
+        let mut mob = pig();
+        let kind = Arc::make_mut(&mut mob.kind);
+        kind.id = "minecraft:ghast".into();
+        kind.species = Species::Ghast;
+        kind.flags.fire_immune = true;
+        mob.add_effect("minecraft:fire_resistance", -1, 0);
+        let source = Damage {
+            kind: DamageKind::Fireball,
+            attacker: Some(Who::Player),
+            from: None,
+        };
+        assert!(mob.damage(1.0, source));
+        assert_eq!(mob.health, 10.0);
+        assert_eq!(mob.invulnerable, 0);
+    }
+}
+
+#[cfg(test)]
 mod magic_absorb_tests {
     use super::sensor_scan_tests::kind;
     use super::*;
@@ -4478,7 +4672,7 @@ mod armor_hurt_tests {
             from: None,
         };
         let mut m = horse();
-        m.extra.head = Some("minecraft:diamond_horse_armor".into());
+        m.extra.body = Some("minecraft:diamond_horse_armor".into());
         assert!(m.damage(6.0, hit), "the hit landed");
         let owed = m.outbox.iter().find_map(|e| match e {
             MobEvent::ArmorHurt { amount, .. } => Some(*amount),
@@ -4503,12 +4697,11 @@ mod armor_hurt_tests {
     /// base one is empty, `LivingEntity.java:1887`), so a donkey wearing a body
     /// item — `/item replace entity @e[type=minecraft:donkey,limit=1]
     /// armor.body with minecraft:wolf_armor` — wears nothing, even though
-    /// `drops::head_is_body` stores a donkey's body item in the slot a horse's
-    /// goes in.
+    /// vanilla only gives a horse's body piece the wear.
     #[test]
     fn a_donkey_wearing_a_body_item_wears_nothing() {
         let mut donkey = mob("minecraft:donkey", Species::Donkey);
-        donkey.extra.head = Some("minecraft:wolf_armor".into());
+        donkey.extra.body = Some("minecraft:wolf_armor".into());
         assert!(
             donkey.damage(6.0, Damage::of(DamageKind::MobAttack)),
             "the hit landed"
@@ -4522,13 +4715,50 @@ mod armor_hurt_tests {
         );
     }
 
+    /// Vanilla holds a head item and a body item at once on the mobs with a
+    /// body slot (`LivingEntity.setItemSlot` over `EntityEquipment`): the
+    /// packet keeps the helmet on 5 and the armour on 6, `/item` reads each
+    /// back, and the armour value is the body piece's.
+    #[test]
+    fn a_horse_holds_a_helmet_and_its_body_armour_at_once() {
+        use horizon_world::player_inventory::EquipmentSlot;
+        let mut m = horse();
+        m.extra.head = Some("minecraft:iron_helmet".into());
+        m.extra.body = Some("minecraft:diamond_horse_armor".into());
+        let gear = m.equipment_stacks();
+        assert_eq!(
+            gear[5].as_ref().map(|s| s.item.as_ref().to_owned()),
+            Some("minecraft:iron_helmet".to_owned())
+        );
+        assert_eq!(
+            gear[6].as_ref().map(|s| s.item.as_ref().to_owned()),
+            Some("minecraft:diamond_horse_armor".to_owned())
+        );
+        let slot = |s| m.item_by_slot(s).map(|i| i.item.as_ref().to_owned());
+        assert_eq!(
+            slot(EquipmentSlot::Head),
+            Some("minecraft:iron_helmet".to_owned())
+        );
+        assert_eq!(
+            slot(EquipmentSlot::Body),
+            Some("minecraft:diamond_horse_armor".to_owned())
+        );
+        let (armor, _) = m.worn_armor();
+        assert!(armor > 0.0, "the body piece armors the horse");
+        // Death keeps both (`Mob.dropCustomDeathLoot` by slot).
+        let body = crate::mobs::drops::slot_item(&m, "body").unwrap();
+        let head = crate::mobs::drops::slot_item(&m, "head").unwrap();
+        assert_eq!(body.item, "minecraft:diamond_horse_armor");
+        assert_eq!(head.item, "minecraft:iron_helmet");
+    }
+
     /// `getDamageAfterArmorAbsorb` asks `hurtArmor` only when the damage type
     /// is not in `#bypasses_armor` (`LivingEntity.java:1907-1909`), so a horse
     /// that falls keeps its body piece whole.
     #[test]
     fn a_fall_does_not_wear_the_body_piece() {
         let mut m = horse();
-        m.extra.head = Some("minecraft:diamond_horse_armor".into());
+        m.extra.body = Some("minecraft:diamond_horse_armor".into());
         assert!(
             m.damage(6.0, Damage::of(DamageKind::Fall)),
             "the fall landed"
@@ -4550,7 +4780,7 @@ mod armor_hurt_tests {
         let mut m = horse();
         let k = Arc::make_mut(&mut m.kind);
         k.armor = 20.0;
-        m.extra.head = Some("minecraft:diamond_horse_armor".into());
+        m.extra.body = Some("minecraft:diamond_horse_armor".into());
         let before = m.health;
         assert!(m.damage(8.0, Damage::of(DamageKind::MobAttack)));
         assert!(m.health < before, "the hit reached the health");
@@ -4642,3 +4872,4 @@ mod totem_tests {
         );
     }
 }
+crate::impl_joined!(Mob);
