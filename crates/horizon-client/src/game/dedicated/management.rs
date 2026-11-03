@@ -187,6 +187,30 @@ impl Game<'_> {
                 self.set_default_game_mode(state.game_mode);
                 return json!({ "value": GAME_MODES[state.game_mode as usize] });
             }
+            "serversettings/view_distance" => {
+                return json!({
+                    "value": self.lan.as_ref().map_or(0, |host| host.hub.config.view_distance)
+                });
+            }
+            "serversettings/view_distance/set" => {
+                let Some(distance) = body["value"]
+                    .as_i64()
+                    .and_then(|value| i32::try_from(value).ok())
+                else {
+                    return json!({ "error": "view distance must be an integer" });
+                };
+                let current = self
+                    .lan
+                    .as_ref()
+                    .map_or(0, |host| host.hub.config.view_distance);
+                rpc(format!("Update view distance from {current} to {distance}"));
+                self.set_view_distance(distance);
+                state.view.0 = distance.max(0) as u32;
+                self.store_property("view-distance", distance.to_string());
+                return json!({
+                    "value": self.lan.as_ref().map_or(0, |host| host.hub.config.view_distance)
+                });
+            }
             "serversettings/force_game_mode" => {
                 return json!({ "value": state.force_game_mode });
             }

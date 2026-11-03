@@ -1675,6 +1675,13 @@ impl Game<'_> {
         }
     }
 
+    /// Update the live view distance used for player chunk tracking.
+    pub(super) fn set_view_distance(&mut self, distance: i32) {
+        if let Some(host) = self.lan.as_mut() {
+            host.hub.set_view_distance(distance);
+        }
+    }
+
     /// New command access and game mode forcing settings of the open world.
     pub(super) fn lan_apply_settings(&mut self, guest_commands: bool, force: bool) {
         if let Some(server) = &self.integrated {
