@@ -204,7 +204,6 @@ pub mod native_block_entity_draw;
 mod native_block_sprites;
 mod native_claimed_items;
 mod native_components;
-mod native_configs;
 mod native_criteria;
 mod native_data_maps;
 mod native_entities;
@@ -300,7 +299,6 @@ mod shelf;
 mod shield;
 mod shoulders;
 mod sign_edit;
-mod skin_models;
 mod sniffers;
 mod social;
 mod spawner;
@@ -320,7 +318,6 @@ mod structure_edit;
 mod structures;
 mod subtitle_hud;
 mod sulfur_cubes;
-mod tempban;
 mod test_block_edit;
 mod test_blocks;
 mod test_entities;
@@ -412,7 +409,6 @@ use horizon_world::{
 pub use maps::{NativeMapDecoration, NativeMapInfo};
 pub use native_block_entity_draw::BlockEntityDraw;
 pub use native_claimed_items::{NativeHeldItem, NativeHit, NativeModEvent};
-pub use native_configs::{NativeConfig, NativeConfigFile, NativeConfigKind};
 pub use native_data_maps::NativeDataMapType;
 pub use native_falling::NativeFalling;
 pub use native_hooks::{NativeClock, NativeShake};
@@ -2840,9 +2836,6 @@ struct Game<'a> {
     skin_slots: horizon_client::skins::SkinSlots,
     /// Cosmetics on players (game/cosmetics.rs), off by default.
     cosmetics: cosmetics::Cosmetics,
-    /// 3D skin layers: each player's outer layer as one slab per painted
-    /// texel, built once per (skin, slim) (`mobs::skin_layers`).
-    skin_3d: RefCell<skin_models::SkinModels>,
     /// Atlas trim slots in use: (sprite name, slot), least recently drawn first.
     trim_slots: Vec<(String, usize)>,
     cart_models: minecarts::CartModels,
@@ -2919,8 +2912,6 @@ struct Game<'a> {
     native_input: native_claimed_items::ModInput,
     /// The native lifecycle bookkeeping.
     native_lifecycle: native_lifecycle::NativeLifecycle,
-    /// Native mods' config files this game loaded (game/native_configs.rs).
-    native_configs: native_configs::NativeConfigs,
     /// Native mods' messages waiting (`game/native_net.rs`).
     native_net: native_net::NativeNet,
     /// The mod whose own screen is open (`Screen::Mod`).
@@ -4773,11 +4764,6 @@ impl Game<'_> {
                 forced: self.streaming.forced.iter().copied().collect(),
                 // Filled from the `PORTAL` tickets by `update`.
                 portal: Vec::new(),
-                // EnderDragonFight.tick: while a player watches the fight, the
-                // arena holds a `DRAGON` ticket of radius 9 at (0, 0), so its
-                // island ticks out to 7 chunks whatever the watcher's
-                // simulation distance. The fight lives in the End only.
-                dragon: (self.dim == Dim::End && self.fight.arena_watched()).then_some((0, 0)),
                 view_distance: self.settings.render_distance.clamp(2, 32),
                 simulation_distance: self.settings.simulation_distance.max(2),
             }
@@ -4952,47 +4938,10 @@ impl Game<'_> {
             for &bounds in &level.trigger_extras {
                 touch(bounds);
             }
-            for pos in inside {
+            touched.sort_unstable_by_key(|p| (p.x, p.y, p.z));
+            touched.dedup();
+            for pos in inside.into_iter().chain(touched) {
                 b.entity_inside(level, ticks, pos);
-            }
-            // The touched blocks go once each, in (x, y, z) order. Only an
-            // entity-sensing block does anything there, so the others are
-            // passed over while no block has changed since they were looked
-            // at (they are still not sensing), and only the few sensing ones
-            // are sorted. Once a block changes, every later one goes, as the
-            // whole sorted list would.
-            let key = |p: &BlockPos| (p.x, p.y, p.z);
-            let (mut sensing, rest): (Vec<_>, Vec<_>) = touched
-                .into_iter()
-                .partition(|p| b.senses_entities(level.world.block(p.x, p.y, p.z)));
-            sensing.sort_unstable_by_key(key);
-            sensing.dedup();
-            let looked = (
-                level.world.revision,
-                level.world.chunks.membership_revision(),
-            );
-            let mut i = 0;
-            while i < sensing.len() {
-                let pos = sensing[i];
-                b.entity_inside(level, ticks, pos);
-                i += 1;
-                let now = (
-                    level.world.revision,
-                    level.world.chunks.membership_revision(),
-                );
-                if now != looked {
-                    let mut later: Vec<_> = rest
-                        .into_iter()
-                        .chain(sensing.drain(i..))
-                        .filter(|p| key(p) > key(&pos))
-                        .collect();
-                    later.sort_unstable_by_key(key);
-                    later.dedup();
-                    for pos in later {
-                        b.entity_inside(level, ticks, pos);
-                    }
-                    break;
-                }
             }
             for (pos, on_ground, feet_y) in standing {
                 b.entity_on_big_dripleaf(level, ticks, pos, on_ground, feet_y);
@@ -5006,34 +4955,30 @@ impl Game<'_> {
             self.tick_scheduled()?;
         }
         self.with_level(|b, level, ticks| {
+            // Each chunk's ticking sections and their masks, read again only
+            // after a block changed.
+            let mut sections = Vec::new();
             horizon_client::spans::time("random_ticks", || {
                 for (x, z) in ticking.into_iter().filter(|_| !debug) {
-                    // The last answer, asked from Y `from` at a world revision:
-                    // the next ticking section and its mask. It stands for a
-                    // later Y up to that section's until a block changes.
-                    let mut last: Option<(u64, i32, Option<(i32, Arc<_>)>)> = None;
+                    let mut read = None;
                     let pos = horizon_core::position::ChunkPos::new(x, z);
                     b.tick_chunk_random_masked(level, ticks, pos, |level, from| {
-                        let revision = level.world.revision;
-                        let stands = last.as_ref().is_some_and(|(r, f, next)| {
-                            *r == revision
-                                && *f <= from
-                                && next.as_ref().is_none_or(|(y, _)| from <= *y)
-                        });
-                        if !stands {
-                            let next = level.world.chunks.get(&(x, z)).and_then(|chunk| {
-                                level.random_tick_sections.next_masked(
+                        if read != Some(level.world.revision) {
+                            read = Some(level.world.revision);
+                            sections.clear();
+                            if let Some(chunk) = level.world.chunks.get(&(x, z)) {
+                                level.random_tick_sections.masked(
                                     (x, z),
                                     chunk,
                                     level.facts,
                                     |id| b.random_tick_candidate(BlockStateId(id)),
-                                    from,
-                                )
-                            });
-                            last = Some((revision, from, next));
+                                    &mut sections,
+                                );
+                            }
                         }
-                        last.as_ref()
-                            .and_then(|(_, _, next)| next.as_ref())
+                        sections
+                            .iter()
+                            .find(|(y, _)| *y >= from)
                             .map(|(y, mask)| (*y, Some(mask.clone())))
                     });
                 }
@@ -6933,14 +6878,13 @@ impl Game<'_> {
                                     self.apply_effect_action(a);
                                 }
                             } else {
-                                let mut instance = horizon_client::effects::EffectInstance::new(
-                                    def.id,
-                                    eff.duration,
-                                    eff.amplifier,
+                                self.add_player_effect(
+                                    horizon_client::effects::EffectInstance::new(
+                                        def.id,
+                                        eff.duration,
+                                        eff.amplifier,
+                                    ),
                                 );
-                                instance.ambient = eff.ambient;
-                                instance.visible = eff.show_particles;
-                                self.add_player_effect(instance);
                             }
                         }
                     }
@@ -9868,8 +9812,6 @@ impl Game<'_> {
             maps: level_maps
                 .as_ref()
                 .map(|m| m as &dyn horizon_client::menu::Maps),
-            limited_crafting: self.limited_crafting(),
-            known_recipes: Some(&self.level.recipe_book),
         };
         menu.creative = creative;
         menu.selected = self.selected;
@@ -11218,20 +11160,26 @@ impl Game<'_> {
                 let red = ((t.sin() + 1.0) * 0.5 * 255.0) as u32;
                 let blue = (((t + 4.188_79).sin() + 1.0) * 0.1 * 255.0) as u32;
                 let color = 0x8000_0000 | blue << 16 | 255 << 8 | red;
+                // `ExperienceOrbRenderer.getBlockLightLevel` (the block light
+                // plus 7, clamped) at the block the orb's eye is in.
                 let light = self.world.light(
                     o.position.x.floor() as i32,
-                    o.position.y.floor() as i32,
+                    o.light_probe_y().floor() as i32,
                     o.position.z.floor() as i32,
                 );
-                let packed = (u32::from(light >> 4).max(10) * 16)
-                    | ((u32::from(light & 15).max(10) * 16) << 8);
+                let packed = o.render_light(light);
                 let c = p.as_vec3();
-                let s = 0.15;
-                for (k, uv) in [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)]
-                    .iter()
-                    .zip([[u0, v0 + dv], [u0 + du, v0 + dv], [u0 + du, v0], [u0, v0]])
-                {
-                    let v = c + right * (k.0 * s) + up * (k.1 * s);
+                // `ExperienceOrbRenderer.submit`: the quad runs from
+                // (-0.5, -0.25) to (0.5, 0.75) and is scaled by 0.3, so the
+                // sprite hangs a quarter of its height below the orb's centre.
+                let s = horizon_client::entities::ORB_QUAD_SCALE;
+                for (k, uv) in horizon_client::entities::ORB_QUAD.iter().zip([
+                    [u0, v0 + dv],
+                    [u0 + du, v0 + dv],
+                    [u0 + du, v0],
+                    [u0, v0],
+                ]) {
+                    let v = c + right * (k[0] * s) + up * (k[1] * s);
                     out.push(Vertex {
                         normal: [0; 4],
                         pos: v.to_array(),
@@ -15820,12 +15768,6 @@ impl Game<'_> {
             static_block_entities = static_sections;
             visible_static_block_entity_sections = visible_static_sections;
             static_block_entity_stats = static_stats;
-        } else {
-            // No level behind the panorama, so no entity either: the GPU path's
-            // draws are started by `begin_skinning`, which only `entity_geometry`
-            // runs, and would otherwise stay those of the last world frame and
-            // be drawn over the title (#8192). Its models stay stored.
-            self.skin_frame.get_mut().clear_draws();
         }
         let bolts = if title {
             Vec::new()
@@ -18328,7 +18270,6 @@ impl Game<'_> {
                             self.tick_fov();
                         }
                         self.tick_win_screen()?;
-                        self.native_configs_tick_client();
                         // Gui.tick runs ChatListener.tick paused or not.
                         self.tick_chat_queue();
                         self.tick_music();
@@ -19010,7 +18951,6 @@ impl<'a> Game<'a> {
             skin_profiles: RefCell::new(horizon_client::skins::Resolver::new()),
             skin_slots: horizon_client::skins::SkinSlots::new(horizon_client::hud::SKIN_SLOTS),
             cosmetics: Default::default(),
-            skin_3d: Default::default(),
             trim_slots: Vec::new(),
             cart_models: prepared.cart_models,
             riding: None,
@@ -19066,7 +19006,6 @@ impl<'a> Game<'a> {
             native_shaders: Default::default(),
             native_input: Default::default(),
             native_lifecycle: Default::default(),
-            native_configs: Default::default(),
             native_net: Default::default(),
             native_mod_screen: None,
             sky_darken_memo: Default::default(),
@@ -20441,7 +20380,6 @@ fn build_renderer(
     renderer
         .hud
         .set_text_shader(&renderer.device, atlas.text_shader.as_deref());
-    renderer.set_lines_shader(atlas.lines_shader.as_deref());
     let cit_glints = pack.item_renderer.cit.as_ref().map(|c| &c.glint_textures);
     renderer
         .hud

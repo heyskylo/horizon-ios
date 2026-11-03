@@ -835,6 +835,13 @@ pub fn merge_with_neighbours(
         }
     }
 }
+/// `ExperienceOrbRenderer.submit`'s billboard before its 0.3 scale, in the
+/// order of its four `vertex` calls (bottom left, bottom right, top right, top
+/// left). The quad is a whole block tall about the orb's centre and hangs a
+/// quarter of it below.
+pub const ORB_QUAD: [[f32; 2]; 4] = [[-0.5, -0.25], [0.5, -0.25], [0.5, 0.75], [-0.5, 0.75]];
+/// `poseStack.scale(0.3F, 0.3F, 0.3F)`.
+pub const ORB_QUAD_SCALE: f32 = 0.3;
 /// ExperienceOrb: gravity 0.03, homing towards the player within 8 blocks.
 #[derive(Clone, Debug)]
 pub struct ExperienceOrb {
@@ -941,6 +948,20 @@ impl ExperienceOrb {
             3.. => 1,
             _ => 0,
         }
+    }
+    /// `Entity.getLightProbePosition`: the block an entity is lit from is the
+    /// one its eye is in. An orb's box is half a block, so its eye is
+    /// `0.5 * 0.85` above its feet (`EntityDimensions.defaultEyeHeight`).
+    pub fn light_probe_y(&self) -> f64 {
+        self.position.y + 0.5 * 0.85
+    }
+    /// `ExperienceOrbRenderer.getBlockLightLevel` over `EntityRenderer`'s
+    /// packing: the level's block light raised by 7 and clamped, the sky
+    /// light unchanged. `light` is the level's packed light.
+    pub fn render_light(&self, light: i32) -> u32 {
+        let block = ((light & 15) + 7).clamp(0, 15);
+        let sky = light >> 4;
+        (u32::try_from(sky).unwrap_or(0) * 16) | ((u32::try_from(block).unwrap_or(15) * 16) << 8)
     }
     pub fn tick(
         &mut self,
@@ -3499,4 +3520,5 @@ mod item_destroyed_tests {
         );
     }
 }
+
 crate::impl_joined!(ItemEntity, ExperienceOrb, ArmorStand);
