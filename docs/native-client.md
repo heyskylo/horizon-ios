@@ -245,14 +245,14 @@ presentation, so `bench` reports what is on screen.
 
 ### RAM limit
 
-`HORIZON_MEMORY_LIMIT_MB` (the launcher sets it) and `/ramlimit`, `/ramlimit <MB>`, `/ramlimit off` limit
-the RAM the game holds; the command lasts until the game closes and works on any server, as the window
-answers it. On Windows the system enforces the limit with a hard working set limit, so memory the game
-uses least moves out of RAM and a low limit costs speed. If the game is also slow and faulting hard, far
-terrain goes off and the render distance in use drops, never the saved option, and both come back when
-there is room. Linux and macOS have no such limit: there the game steps down before it reaches the limit.
-The game ends with a crash report only when it can't run under the limit: on Windows no frame for a minute
-while faulting hard, elsewhere 20 seconds over the limit with nothing left to give up.
+`HORIZON_MEMORY_LIMIT_MB` (the launcher sets it when the player picks a value; there is none by default)
+and `/ramlimit`, `/ramlimit <MB>`, `/ramlimit off` limit the RAM the game holds; the command lasts until
+the game closes and works on any server, as the window answers it. Once a second the game compares what
+it holds in RAM with the limit and, past nine tenths of it, turns far terrain off and then lowers the
+render distance in use, never the saved option, until it fits; both come back when there is room. This
+is the same on Windows, Linux and macOS: nothing asks the system to page the game out to meet the limit.
+The game ends with a crash report only when it can't run under the limit: 20 seconds over it with nothing
+left to give up.
 
 **`HORIZON_MEMORY_HARD_MB` / `/ramlimit hard <MB>`** is the other contract, the one `-Xmx` gives
 Java: a budget for the memory the process commits, not only for the part that stays in RAM. Nothing is
