@@ -1484,10 +1484,10 @@ def command_says(player, command):
 
 
 def check_projectile_vehicles(host, guest, out):
-    """An arrow, a trident and a snowball strike a boat or a minecart (`VehicleEntity.isPickable`), and
+    """Every projectile kind strikes a boat or a minecart (`VehicleEntity.isPickable`), and
     `VehicleEntity.hurtServer` takes their damage (+10 per point, destroyed past 40): an arrow of speed 3
-    (damage 6) and a trident (8) destroy the boat or cart; a snowball (0) stops at it and leaves it whole.
-    Before, boats were no target at all and carts only for arrows: the trident and the snowball flew on through."""
+    (damage 6) and a trident (8) destroy the boat or cart; a snowball, an egg and an ender pearl (0) stop at it
+    and leave it whole. Before, boats were no target at all and carts only for arrows: the rest flew on through."""
     x, y, z = apart(host, guest)['host']
     host('command', command='gamemode creative')
     host('command', command=f'fill {x - 2} {y} {z - 4} {x + 3} {y + 3} {z + 7} minecraft:air')
@@ -1500,6 +1500,8 @@ def check_projectile_vehicles(host, guest, out):
                 ('arrow', 3.0, 'oak_boat', True), ('arrow', 3.0, 'minecart', True),
                 ('trident', 1.5, 'oak_boat', True), ('trident', 1.5, 'minecart', True),
                 ('snowball', 1.5, 'oak_boat', False), ('snowball', 1.5, 'minecart', False),
+                ('egg', 1.5, 'oak_boat', False), ('egg', 1.5, 'minecart', False),
+                ('ender_pearl', 1.5, 'oak_boat', False), ('ender_pearl', 1.5, 'minecart', False),
                 ('arrow', 0.5, 'oak_boat', False)):
             name = f'{shot}-{speed}-{target}'
             host('command', command=f'kill @e[type=!minecraft:player,x={x},y={y},z={z},distance=..30]')
