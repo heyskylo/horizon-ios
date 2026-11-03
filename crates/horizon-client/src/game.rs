@@ -3208,6 +3208,18 @@ impl Dim {
         }
     }
 }
+fn death_drops(
+    inventory: &mut [Option<ItemStack>],
+    offhand: &mut Option<ItemStack>,
+    armor: &mut [Option<ItemStack>],
+) -> Vec<ItemStack> {
+    let mut stacks: Vec<ItemStack> = inventory.iter_mut().filter_map(Option::take).collect();
+    stacks.extend(offhand.take());
+    stacks.extend(armor.iter_mut().rev().filter_map(Option::take));
+    stacks.retain(|s| s.enchantment_level("minecraft:vanishing_curse") == 0);
+    stacks
+}
+
 /// `Inventory.add` on a player's 36 slots (hotbar first) and off hand,
 /// `max` the stack's own maximum: onto equal stacks first
 /// (`getSlotWithRemainingSpace`: the selected slot, the off hand, then the
@@ -3914,11 +3926,7 @@ impl Game<'_> {
         if self.ui.rules.bool("keep_inventory") {
             return;
         }
-        let mut stacks: Vec<ItemStack> =
-            self.inventory.iter_mut().filter_map(Option::take).collect();
-        stacks.extend(self.armor.iter_mut().rev().filter_map(Option::take));
-        stacks.extend(self.offhand.take());
-        stacks.retain(|s| s.enchantment_level("minecraft:vanishing_curse") == 0);
+        let stacks = death_drops(&mut self.inventory, &mut self.offhand, &mut self.armor);
         self.apply_equipment();
         for stack in stacks {
             let r = &mut self.world.random;
@@ -21765,6 +21773,37 @@ mod tests {
 
     use super::*;
     use horizon_client::container_screen::{Button, Clicks, Release, Target};
+
+    #[test]
+    fn a_death_drops_the_off_hand_before_the_armour() {
+        let stack = |item: &str| Some(ItemStack::new(item, 1));
+        let mut inventory = vec![stack("minecraft:diamond"), None, stack("minecraft:stick")];
+        let mut offhand = stack("minecraft:shield");
+        let mut armor = [
+            stack("minecraft:iron_helmet"),
+            stack("minecraft:iron_chestplate"),
+            stack("minecraft:iron_leggings"),
+            stack("minecraft:iron_boots"),
+        ];
+        let dropped: Vec<String> = death_drops(&mut inventory, &mut offhand, &mut armor)
+            .into_iter()
+            .map(|s| s.item.to_string())
+            .collect();
+        assert_eq!(
+            dropped,
+            [
+                "minecraft:diamond",
+                "minecraft:stick",
+                "minecraft:shield",
+                "minecraft:iron_boots",
+                "minecraft:iron_leggings",
+                "minecraft:iron_chestplate",
+                "minecraft:iron_helmet",
+            ]
+        );
+        assert!(inventory.iter().all(Option::is_none));
+        assert!(offhand.is_none() && armor.iter().all(Option::is_none));
+    }
 
     /// `MinecraftServer.computeNextAutosaveInterval`: three hundred seconds of
     /// ticks at the rate the server runs at, never fewer than a hundred.

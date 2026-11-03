@@ -1288,7 +1288,9 @@ fn bindings(
             notes.push(format!("{name}: `{}` has format {}", i.name, i.format));
             return None;
         };
-        let dimension = if i.ty.ends_with("3D") {
+        let dimension = if i.ty.ends_with("1D") {
+            wgpu::TextureViewDimension::D1
+        } else if i.ty.ends_with("3D") {
             wgpu::TextureViewDimension::D3
         } else {
             wgpu::TextureViewDimension::D2

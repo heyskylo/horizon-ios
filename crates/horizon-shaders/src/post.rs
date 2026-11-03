@@ -325,6 +325,8 @@ pub enum ImageSize {
     Absolute([u32; 2]),
     /// Three sizes: a 3D image, whatever its depth.
     Volume([u32; 3]),
+    /// One size in pixels: a 1D image (a lookup table by index).
+    Line(u32),
 }
 
 impl CustomImage {
@@ -335,6 +337,7 @@ impl CustomImage {
         };
         let size = match (*relative, rest) {
             ("true", [x, y, ..]) => ImageSize::Relative([x.parse().ok()?, y.parse().ok()?]),
+            ("false", [x]) => ImageSize::Line(x.parse().ok()?),
             ("false", [x, y]) => ImageSize::Absolute([x.parse().ok()?, y.parse().ok()?]),
             ("false", [x, y, z]) => {
                 ImageSize::Volume([x.parse().ok()?, y.parse().ok()?, z.parse().ok()?])
@@ -360,7 +363,13 @@ impl CustomImage {
             }
             ImageSize::Absolute([w, h]) => [w.max(1), h.max(1), 1],
             ImageSize::Volume(s) => s.map(|n| n.max(1)),
+            ImageSize::Line(w) => [w.max(1), 1, 1],
         }
+    }
+
+    /// A 1D image (`image1D`), not a 2D one.
+    pub fn is_1d(&self) -> bool {
+        matches!(self.size, ImageSize::Line(_))
     }
 
     /// A 3D image (`image3D`), not a 2D one.
@@ -1154,9 +1163,11 @@ impl Loader<'_> {
                     Some(i)
                         if words.contains(&"uniform")
                             && !qualified
-                            && words
-                                .iter()
-                                .any(|w| w.ends_with("image2D") || w.ends_with("image3D")) =>
+                            && words.iter().any(|w| {
+                                ["image1D", "image2D", "image3D"]
+                                    .iter()
+                                    .any(|d| w.ends_with(d))
+                            }) =>
                     {
                         format!("layout({}) {line}", i.qualifier)
                     }
@@ -1633,6 +1644,63 @@ mod tests {
                 .unwrap()
                 .is_3d()
         );
+        // One size: a 1D image, a table read by index through its sampler.
+        let table = CustomImage::parse(
+            "imgTable",
+            "texTable RED_INTEGER R32UI UNSIGNED_INT false false 4096",
+        )
+        .unwrap();
+        assert_eq!(table.sampler.as_deref(), Some("texTable"));
+        assert_eq!(table.size, ImageSize::Line(4096));
+        assert!(table.is_1d() && !table.is_3d());
+        assert_eq!(table.extent([1920, 1080]), [4096, 1, 1]);
+        assert!(!flat.is_1d());
+        // A relative size needs both.
+        assert!(CustomImage::parse("r", "none RGBA RGBA8 BYTE false true 0.5").is_none());
+    }
+
+    /// A pack's 1D image and its sampler: the image is loaded, its `uimage1D` declaration
+    /// gets the image's format, and the program reading both translates.
+    #[test]
+    fn a_1d_image_and_its_sampler_load() {
+        let properties =
+            "image.imgTable = texTable RED_INTEGER R32UI UNSIGNED_INT false false 64\n";
+        let csh = "#version 430\nlayout(local_size_x = 64) in;\nwriteonly uniform uimage1D imgTable;\n\
+                   void main() { imageStore(imgTable, int(gl_GlobalInvocationID.x), uvec4(gl_GlobalInvocationID.x)); }\n";
+        let fsh = "#version 430\nuniform usampler1D texTable;\nuniform int blockId;\n\
+                   /* RENDERTARGETS: 0 */\nlayout(location = 0) out vec4 color;\n\
+                   void main() { color = vec4(texelFetch(texTable, blockId % 64, 0).r); }\n";
+        let vsh = "#version 430\nout vec2 uv;\nvoid main() { uv = vec2(0.0); gl_Position = ftransform(); }\n";
+        let pack = Pack::from_zip_bytes(
+            "table.zip",
+            crate::pack::tests::zip(&[
+                ("shaders/shaders.properties", properties),
+                ("shaders/setup.csh", csh),
+                ("shaders/composite.vsh", vsh),
+                ("shaders/composite.fsh", fsh),
+            ]),
+        )
+        .unwrap();
+        let mut macros = Macros::standard();
+        let (properties, notes) = crate::read_properties(&pack, &mut macros);
+        assert!(notes.is_empty(), "{notes:?}");
+        let post = load_post(&pack, "", &properties, &macros, &GameInputs::default());
+        assert!(post.notes.is_empty(), "{:?}", post.notes);
+        assert_eq!(post.images.len(), 1);
+        assert!(post.images[0].is_1d());
+        let composite = post
+            .programs
+            .iter()
+            .find(|p| p.name == "composite")
+            .unwrap();
+        let program = composite.program.as_ref().unwrap();
+        let sampler = program
+            .interface
+            .samplers
+            .iter()
+            .find(|s| s.name == "texTable")
+            .unwrap();
+        assert_eq!(sampler.ty, "usampler1D");
     }
 
     /// A storage buffer declared smaller than the block a stage binds it as: the block's size

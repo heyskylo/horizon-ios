@@ -4,10 +4,10 @@
 //! they treat any ban, and it survives a restart. Operators of level 3 (`/ban`'s level) run it as a player; the
 //! console takes the same words without the slash. Vanilla has no such command, so it is not in the command
 //! tree (and has no completions), as the mute commands are not.
-use super::{Game, dedicated, lan::LanHost};
+use super::{Game, chat_filter::Reply, dedicated, lan::LanHost};
 use horizon_chat_filter::{duration_text, now_millis, parse_duration};
 use horizon_protocol::packets::play::{self, Clientbound as C};
-use horizon_protocol::text::{literal, translatable};
+use horizon_protocol::text::translatable;
 use horizon_server_files::user_lists::{BanEntry, BanList, NameAndId, format_date};
 
 /// The operator level `/tempban` needs, as `/ban`'s.
@@ -86,7 +86,7 @@ impl Game<'_> {
             let words: Vec<&str> = words.iter().copied().filter(|w| !w.is_empty()).collect();
             self.tempban_command(host, &words, &by)
                 .iter()
-                .map(|line| literal(line))
+                .map(Reply::tag)
                 .collect()
         };
         for content in replies {
@@ -106,10 +106,10 @@ impl Game<'_> {
         host: &mut LanHost,
         words: &[&str],
         by: &str,
-    ) -> Vec<String> {
+    ) -> Vec<Reply> {
         match parse(words) {
             Ok(r) => vec![self.tempban(host, r.name, r.millis, r.reason, by)],
-            Err(line) => vec![line],
+            Err(line) => vec![line.into()],
         }
     }
 
@@ -121,7 +121,7 @@ impl Game<'_> {
         millis: i64,
         reason: Option<String>,
         by: &str,
-    ) -> String {
+    ) -> Reply {
         let Some(lists) = self.server_lists.clone() else {
             return "Temporary bans need a dedicated server".into();
         };
@@ -137,7 +137,7 @@ impl Game<'_> {
             })
             .or_else(|| self.resolve_name(name));
         let Some(user) = user else {
-            return format!("No player was found named {name}");
+            return Reply::no_player();
         };
         let now = now_millis();
         let Some(ban) = add_ban(
@@ -148,7 +148,7 @@ impl Game<'_> {
             millis,
             reason.clone(),
         ) else {
-            return format!("{} is already banned", user.name);
+            return Reply::already_banned();
         };
         let what = duration_text(millis);
         let why = reason
@@ -185,6 +185,7 @@ impl Game<'_> {
             user.name,
             format_date(now + millis)
         )
+        .into()
     }
 }
 
