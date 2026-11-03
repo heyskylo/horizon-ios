@@ -1970,20 +1970,24 @@ impl Game<'_> {
         }
         best
     }
-    /// The slots of the cart `id`, for a command: `getChestVehicleItem` and
+    /// The slots of a container vehicle `id`, for a command: `getChestVehicleItem` and
     /// `setChestVehicleItem` first unpack its loot table with no player, so
     /// no `player_generates_container_loot` fires later. While its menu is
     /// open the live slots are the placeholder copy (`open_cart_container`).
-    pub(super) fn cart_slots(&mut self, id: u32) -> Option<&mut Vec<Option<ItemStack>>> {
-        let c = self.carts.iter_mut().find(|c| c.id == id)?;
-        c.loot = None;
+    pub(super) fn vehicle_slots(&mut self, id: u32) -> Option<&mut Vec<Option<ItemStack>>> {
+        let items = if let Some(c) = self.carts.iter_mut().find(|c| c.id == id) {
+            c.loot = None;
+            &mut c.items
+        } else {
+            &mut self.boats.iter_mut().find(|b| b.id == id && b.chest)?.items
+        };
         match self
             .world
             .block_entities
             .get_mut(&(i32::MAX - 15, CART_KEY_Y, id as i32))
         {
             Some(BlockEntity::Chest(open)) => Some(open),
-            _ => Some(&mut c.items),
+            _ => Some(items),
         }
     }
     /// `ContainerEntity.unpackChestVehicleLootTable` for a player who opens a

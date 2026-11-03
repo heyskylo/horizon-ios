@@ -13001,5 +13001,51 @@ CHECKS += ['vehicle-containers']
 CHECK_FNS['vehicle-containers'] = check_vehicle_containers
 
 
+def check_vehicle_command_items(host, guest, out):
+    """Vehicle slot commands and serialized Items must describe the same inventory."""
+    x, y, z = apart(host, guest)['host']
+    at = (x + 2.5, y, z + 0.5)
+    result = {}
+    for kind, size in [('chest_minecart', 27), ('hopper_minecart', 5),
+                       ('oak_chest_boat', 27), ('bamboo_chest_raft', 27)]:
+        tag = 'vehicle_command_items'
+        target = f'@e[tag={tag},limit=1]'
+        try:
+            host('command', command=f'summon minecraft:{kind} {at[0]} {at[1]} {at[2]} {{Tags:["{tag}"]}}')
+            reply = server_reply(host, f'item replace entity {target} container.0 with minecraft:diamond 3', 'slot')
+            assert 'Replaced' in reply, reply
+            host.wait(10)
+            boat = 'boat' in kind or 'raft' in kind
+            if boat:
+                host.raw('key', 'shift', 'down')
+                host.wait(3)
+            host.raw('look-at', at[0], at[1] + 0.3, at[2])
+            host.raw('mouse', 'right', 'click')
+            host.raw('wait-for', 'screen', 'container', '--timeout', 10)
+            host.raw('release')
+            host.wait(5)
+            assert container_items(host) == ({0: 'minecraft:diamond'}, size)
+            reply = server_reply(host, f'item replace entity {target} container.0 with minecraft:emerald 2', 'slot')
+            assert 'Replaced' in reply, reply
+            host.wait(5)
+            assert container_items(host) == ({0: 'minecraft:emerald'}, size)
+            saved = server_reply(host, f'data get entity {target} Items', 'entity data')
+            assert 'minecraft:emerald' in saved and 'minecraft:diamond' not in saved, saved
+            result[kind] = {'pass': True, 'slots': size, 'serialized': saved}
+        except (AssertionError, Failed) as error:
+            result[kind] = {'pass': False, 'error': str(error)}
+        finally:
+            back_to_game(host)
+            host.raw('release')
+            host('command', command=f'kill @e[tag={tag}]')
+    lab.write_json(out / 'vehicle-command-items.json', result)
+    assert all(row['pass'] for row in result.values()), result
+    return result
+
+
+CHECKS += ['vehicle-command-items']
+CHECK_FNS['vehicle-command-items'] = check_vehicle_command_items
+
+
 if __name__ == '__main__':
     main()
