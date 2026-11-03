@@ -104,6 +104,7 @@ pub enum H {
     ShadowCache,
     GraphicsApi,
     TranslucentBatching,
+    HdrSmoothGradients,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -501,6 +502,11 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
                             None,
                             "Sets the three below full screen, one test picture at a time.",
                         ),
+                        h(
+                            H::HdrSmoothGradients,
+                            Low,
+                            "Draws in 16 bits, so dark skies don't band. A bit more VRAM. Next start.",
+                        ),
                     ],
                 ),
                 (
@@ -826,6 +832,7 @@ impl H {
             H::GraphicsApi => labelled("Graphics API", g.api.label()),
             // Greyed out where the device can't (`Item::blocked`): Off, as it is there,
             // while the saved value waits for a device that can.
+            H::HdrSmoothGradients => labelled("Smooth Gradients", on_off(g.hdr_smooth_gradients)),
             H::TranslucentBatching => labelled(
                 "Translucent Batching",
                 on_off(g.translucent_batching && crate::graphics::translucent_batching_offered()),
@@ -942,6 +949,7 @@ impl H {
             H::ShadowCache => g.shadow_cache = !g.shadow_cache,
             H::GraphicsApi => g.api = step(GraphicsApi::choices(), g.api, back),
             H::TranslucentBatching => g.translucent_batching = !g.translucent_batching,
+            H::HdrSmoothGradients => g.hdr_smooth_gradients = !g.hdr_smooth_gradients,
             H::Pacing => {
                 g.pacing = match g.pacing {
                     Pacing::Efficient => Pacing::Precise,
@@ -985,7 +993,8 @@ impl Item {
                 | H::HdrBlackLevel
                 | H::HdrPeak
                 | H::HdrPaperWhite
-                | H::HdrUiBrightness,
+                | H::HdrUiBrightness
+                | H::HdrSmoothGradients,
             ) if !crate::graphics::hdr_offered() => {
                 Some("Your display or system doesn't offer HDR output.")
             }
@@ -994,7 +1003,8 @@ impl Item {
                 | H::HdrBlackLevel
                 | H::HdrPeak
                 | H::HdrPaperWhite
-                | H::HdrUiBrightness,
+                | H::HdrUiBrightness
+                | H::HdrSmoothGradients,
             ) if !s.horizon.hdr => Some("Turn HDR on to use it."),
             Item::Horizon(H::TranslucentBatching)
                 if !crate::graphics::translucent_batching_offered() =>
@@ -1032,6 +1042,7 @@ impl Item {
             Item::Horizon(H::BatteryMode) => g.battery,
             Item::Horizon(H::ShadowCache) => g.shadow_cache,
             Item::Horizon(H::TranslucentBatching) => g.translucent_batching,
+            Item::Horizon(H::HdrSmoothGradients) => g.hdr_smooth_gradients,
             Item::Vanilla(Opt::ViewBobbing) => s.view_bobbing,
             Item::Vanilla(Opt::Vsync) => s.vsync,
             Item::Vanilla(Opt::Fullscreen) => s.fullscreen,
@@ -1098,6 +1109,7 @@ impl Item {
                     | H::ShadowCache
                     | H::GraphicsApi
                     | H::TranslucentBatching
+                    | H::HdrSmoothGradients
             ) | Item::Vanilla(
                 Opt::GuiScale
                     | Opt::Fullscreen

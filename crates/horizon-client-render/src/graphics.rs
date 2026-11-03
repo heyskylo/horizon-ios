@@ -684,6 +684,10 @@ pub struct Graphics {
     /// `batchTranslucent`: `translucentBatching`, which every save wrote as false while it was
     /// off by default and had no switch, stays ignored.
     pub translucent_batching: bool,
+    /// Smooth Gradients (HDR page, on by default): with HDR output on, the frame is drawn in
+    /// 16 bits, so dark gradients don't band (`Renderer::frame_format`). Read when a renderer
+    /// is made (start, resource-pack reload), like `translucent_batching`.
+    pub hdr_smooth_gradients: bool,
     /// The shader pack picked in `shaderpacks/` (`shader_pack_list`); empty: none. Its key is
     /// not `shaderPack`, which versions before the clean-room rewrite saved and which stays
     /// ignored.
@@ -736,6 +740,7 @@ impl Default for Graphics {
             shadow_cache: false,
             api: GraphicsApi::Auto,
             translucent_batching: true,
+            hdr_smooth_gradients: true,
             shader_pack: String::new(),
         }
     }
@@ -867,6 +872,7 @@ impl Graphics {
                 "batteryMode" => g.battery = flag(g.battery),
                 "shadowCache" => g.shadow_cache = flag(g.shadow_cache),
                 "batchTranslucent" => g.translucent_batching = flag(g.translucent_batching),
+                "hdrSmoothGradients" => g.hdr_smooth_gradients = flag(g.hdr_smooth_gradients),
                 "graphicsApi" => g.api = GraphicsApi::from_name(value).unwrap_or_default(),
                 "pickedShaderPack" => g.shader_pack = value.to_owned(),
                 "overlay" => {
@@ -883,7 +889,7 @@ impl Graphics {
     }
     pub fn serialize(&self) -> String {
         let mut text = format!(
-            "preset:{}\nlodDistance:{}\nfarDetail:{}\ncaveCulling:{}\nentityCulling:{}\nparticleCulling:{}\nleafCulling:{}\nblockEntityCacheShulkerBoxes:{}\nblockEntityCacheSigns:{}\nblockEntityCacheDecoratedPots:{}\nblockEntityCacheBells:{}\nblockEntityCacheChests:{}\nblockEntityCacheBanners:{}\nblockEntityCacheCopperGolemStatues:{}\nchunkUpdates:{}\nuploadBudgetKiB:{}\ntextureBudgetMiB:{}\nsky:{}\nfog:{}\nweather:{}\nanimatedTextures:{}\nditherCutoutMips:{}\npresentMode:{}\nframePacing:{}\nworkers:{}\noverlay:{}\nresolutionScale:{}\nfxaa:{}\ntaa:{}\nupscaling:{}\nscreenshotQuality:{}\nframeGeneration:{}\nhdr:{}\nhdrPaperWhite:{}\nhdrPeak:{}\nhdrBlackLevel:{}\nhdrUiBrightness:{}\nhdrKey:{}\nbatteryMode:{}\nshadowCache:{}\ngraphicsApi:{}\npickedShaderPack:{}\nbatchTranslucent:{}\n",
+            "preset:{}\nlodDistance:{}\nfarDetail:{}\ncaveCulling:{}\nentityCulling:{}\nparticleCulling:{}\nleafCulling:{}\nblockEntityCacheShulkerBoxes:{}\nblockEntityCacheSigns:{}\nblockEntityCacheDecoratedPots:{}\nblockEntityCacheBells:{}\nblockEntityCacheChests:{}\nblockEntityCacheBanners:{}\nblockEntityCacheCopperGolemStatues:{}\nchunkUpdates:{}\nuploadBudgetKiB:{}\ntextureBudgetMiB:{}\nsky:{}\nfog:{}\nweather:{}\nanimatedTextures:{}\nditherCutoutMips:{}\npresentMode:{}\nframePacing:{}\nworkers:{}\noverlay:{}\nresolutionScale:{}\nfxaa:{}\ntaa:{}\nupscaling:{}\nscreenshotQuality:{}\nframeGeneration:{}\nhdr:{}\nhdrPaperWhite:{}\nhdrPeak:{}\nhdrBlackLevel:{}\nhdrUiBrightness:{}\nhdrKey:{}\nbatteryMode:{}\nshadowCache:{}\ngraphicsApi:{}\npickedShaderPack:{}\nbatchTranslucent:{}\nhdrSmoothGradients:{}\n",
             self.preset.name(),
             self.lod_distance,
             self.far_detail.name(),
@@ -934,6 +940,7 @@ impl Graphics {
             self.api.name(),
             self.shader_pack,
             bool_text(self.translucent_batching),
+            bool_text(self.hdr_smooth_gradients),
         );
         text += &self.blue_map.serialize();
         text
@@ -951,6 +958,11 @@ impl Graphics {
     }
     /// Paper white, in nits: the player's, or on Auto the desktop's SDR white as the
     /// system reports it, else 203 (BT.2408's reference white).
+    /// Whether a renderer made now draws its frame in 16 bits (`Renderer::new`'s `wide_frame`):
+    /// HDR on, with Smooth Gradients.
+    pub fn wide_frame(&self) -> bool {
+        self.hdr && self.hdr_smooth_gradients
+    }
     pub fn paper_white_nits(&self) -> u32 {
         match self.hdr_paper_white {
             0 => reported().map_or(203, |r| r.paper_white),
@@ -1105,6 +1117,7 @@ mod tests {
             shadow_cache: true,
             api: GraphicsApi::Dx12,
             translucent_batching: false,
+            hdr_smooth_gradients: false,
             shader_pack: "Golden Hour".into(),
         };
         assert_eq!(Graphics::parse(&g.serialize()), g);
@@ -1146,6 +1159,10 @@ mod tests {
         // off by default, not a choice.
         assert!(Graphics::default().translucent_batching);
         assert!(!Graphics::parse("batchTranslucent:false\n").translucent_batching);
+        // Smooth Gradients is on, and draws a 16-bit frame only with HDR on.
+        assert!(Graphics::default().hdr_smooth_gradients && !Graphics::default().wide_frame());
+        assert!(Graphics::parse("hdr:true\n").wide_frame());
+        assert!(!Graphics::parse("hdr:true\nhdrSmoothGradients:false\n").wide_frame());
         assert!(Graphics::parse("translucentBatching:false\n").translucent_batching);
         // 0 is Auto; anything else is a peak the slider reaches.
         assert_eq!(Graphics::parse("hdrPeak:0\n").hdr_peak, 0);

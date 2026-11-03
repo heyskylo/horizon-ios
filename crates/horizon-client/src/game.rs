@@ -14201,7 +14201,7 @@ impl Game<'_> {
             None,
             self.settings.horizon.api,
             self.settings.horizon.translucent_batching,
-            self.settings.horizon.hdr,
+            self.settings.horizon.wide_frame(),
             shader_packs::picked_pack_draws_flat(&self.settings),
         )?;
         renderer.screenshot = screenshot;
@@ -14238,7 +14238,7 @@ impl Game<'_> {
             None,
             self.settings.horizon.api,
             self.settings.horizon.translucent_batching,
-            self.settings.horizon.hdr,
+            self.settings.horizon.wide_frame(),
             shader_packs::picked_pack_draws_flat(&self.settings),
         )
     }
@@ -20427,7 +20427,7 @@ fn build_renderer(
     prepared: Option<horizon_client::gfx::PreparedTextures>,
     api: horizon_client::graphics::GraphicsApi,
     translucent_batching: bool,
-    // The HDR setting: a 16-bit frame where HDR output is offered (`Renderer::new`).
+    // HDR with Smooth Gradients (`Graphics::wide_frame`): a 16-bit frame where HDR output is offered (`Renderer::new`).
     wide_frame: bool,
     shader_pack: bool,
 ) -> Result<Renderer> {
@@ -21117,7 +21117,7 @@ impl Loading {
                 loaded.renderer_cpu,
                 self.settings.horizon.api,
                 self.settings.horizon.translucent_batching,
-                self.settings.horizon.hdr,
+                self.settings.horizon.wide_frame(),
                 shader_packs::picked_pack_draws_flat(&self.settings),
             )
         })?;
