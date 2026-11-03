@@ -1,5 +1,6 @@
 //! A proxy's requests on the control endpoint, for a player it moves between two servers:
-//! `player-expect <uuid> [seconds]` (the target is told who is coming),
+//! `player-expect <uuid> [seconds]` (the target is told who is coming; its login is held),
+//! `player-drop <uuid>` (the target forgets it, and lets a held player go),
 //! `player-export <uuid> [freeze]` (the source answers with the player's record) and
 //! `player-release <uuid> <hand-over> moved [announce] | abort` (the source lets the player
 //! go). They run
@@ -25,6 +26,10 @@ impl Game<'_> {
         match verb {
             "player-expect" => match self.lan.as_mut() {
                 Some(host) => arrivals::expect_request(&mut host.hub, args, Instant::now()),
+                None => json!({ "error": "the server is not open to players" }),
+            },
+            "player-drop" => match self.lan.as_mut() {
+                Some(host) => arrivals::drop_request(&mut host.hub, args),
                 None => json!({ "error": "the server is not open to players" }),
             },
             "player-export" => self.player_export(args),

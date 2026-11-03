@@ -155,6 +155,7 @@ expect_seconds = 10          # how long a player the proxy announced is waited f
 max_expect_seconds = 60      # the longest the proxy may ask for
 max_expected = 64            # players waited for at once
 max_freeze_seconds = 30      # the longest a player stays frozen while it is handed over
+max_hold_seconds = 60        # the longest a player arriving from another server is held before it is dropped
 ```
 
 The supervisor passes the section to the engine as `--transfers expect_seconds=10,...`, beside
@@ -186,8 +187,22 @@ table. The player's next login uses the expectation up as it starts, once the ba
 limit let it in, so a login still in configuration when the time runs out (a resource pack prompt) keeps it. A
 login that then fails before it reaches play (its connection drops in configuration, or the client refuses a
 required pack) gives the expectation back with its own deadline, so the proxy's next attempt within that time is
-still expected. An expectation no login used is reported in the log when its time runs out. For now that is all an expectation does:
-the player still logs in as any other.
+still expected. An expectation no login used is reported in the log when its time runs out.
+
+A login that used up an expectation is a *held* player. It gets the whole join sequence and the level around it
+(chunks, block and light changes, entities, the level's broadcasts), and its acknowledgements are handled (teleport,
+chunk batch, loaded, keep-alive, ping, tick end, client information), but it is not placed: no join message, no
+player-list entry for the others, not among the entities they are shown, not simulated, and nothing else it sends is
+acted on. The world is kept loaded, and generated if need be, around a held player as around a placed one, so a
+server with nobody else on it sends a held player its chunks. The log says `<name> is held: it arrives from another
+server` instead of the join line. A held player nobody takes over is dropped after `max_hold_seconds` (1,200 ticks
+by default), with a warning, and its departure is logged as `<name> was dropped while held: <reason>`, with no "left
+the game" line. `player-export` refuses a held player.
+
+`player-drop <uuid>` forgets the player's expectation, and disconnects the held player without a save or a word to
+anyone. The reply is `{"ok": true, "held": true, "expected": false}`: whether a held player was disconnected, and
+whether an expectation was forgotten. It is refused for an id that is neither held nor expected, and leaves a placed
+player alone.
 
 `player-export <uuid> [freeze]` reads a connected player out of the source server. It first closes the player's open
 menu as vanilla does when a menu closes, in the player's own level (the cursor stack, a crafting table's grid and
@@ -234,7 +249,7 @@ kicked for floating. Every later export of that player, with or without `freeze`
 byte for byte, and does not restart the freeze: a proxy that lost the reply asks again. The hand-over ends after
 `max_freeze_seconds` (counted in ticks, 600 by default) with a warning in the log, and the id is then forgotten.
 Without `freeze` the export is a read: `handover` is null and the player goes on. The request is refused for a
-player who is not connected, has not finished joining, is leaving, is riding, is asleep or is dead.
+player who is not connected, is held, has not finished joining, is leaving, is riding, is asleep or is dead.
 
 While frozen, the player takes no damage (as vanilla's `Abilities.invulnerable`: the void and `/kill` still kill)
 and picks nothing up (items, arrows, experience orbs), so its record stays what it is until the release. A player

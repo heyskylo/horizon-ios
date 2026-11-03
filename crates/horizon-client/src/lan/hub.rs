@@ -746,6 +746,14 @@ impl Hub {
             g.sender.send(body.clone());
         }
     }
+    /// [`Self::broadcast`] to the held players as well, which keep a picture of
+    /// the players and the entities while they wait for their hand-over.
+    pub fn broadcast_watching(&self, packet: &C) {
+        let body = packet.encode();
+        for g in self.guests.iter().filter(|g| g.placed || g.held) {
+            g.sender.send(body.clone());
+        }
+    }
     /// MinecraftServer.onGameRuleChanged: every player is told when
     /// `immediate_respawn` changes; a joining player's Login carries it.
     pub fn set_immediate_respawn(&mut self, on: bool) {
@@ -828,11 +836,27 @@ impl Hub {
     pub fn here(&self, g: &Guest) -> bool {
         g.placed && g.dimension == self.config.dimension
     }
+    /// Whether a guest is sent the level in place: the players placed in it, and
+    /// the held ones, which look at it without being part of it.
+    pub fn watches(&self, g: &Guest) -> bool {
+        (g.placed || g.held) && g.dimension == self.config.dimension
+    }
+    /// The chunk under each player the level in place has to keep loaded: the players placed in
+    /// it and the held ones, which are sent its chunks too ([`Self::watches`]), whose `loads`
+    /// says so (a spectator may not load chunks). A server with only a held player must load
+    /// and generate the world around it, or the player waits for ever for its world.
+    pub fn loading_chunks(&self, loads: impl Fn(&Guest) -> bool) -> Vec<(i32, i32)> {
+        self.guests
+            .iter()
+            .filter(|g| self.watches(g) && loads(g))
+            .map(Guest::chunk)
+            .collect()
+    }
     /// `PlayerList.broadcastAll(packet, dimension)`: the players in the
     /// level in place.
     pub fn broadcast_level(&self, packet: &C) {
         let body = packet.encode();
-        for g in self.guests.iter().filter(|g| self.here(g)) {
+        for g in self.guests.iter().filter(|g| self.watches(g)) {
             g.sender.send(body.clone());
         }
     }
@@ -1003,9 +1027,29 @@ impl Hub {
         );
     }
 
+    /// Disconnects the held player `uuid` and nothing else: no save (it was
+    /// never placed), no word to anyone (no one was told of it). Returns whether
+    /// there was one.
+    pub fn drop_held(&mut self, uuid: u128) -> bool {
+        let Some(g) = self
+            .guests
+            .iter_mut()
+            .find(|g| g.uuid == uuid && g.held && !g.placed)
+        else {
+            return false;
+        };
+        if g.left_reason.is_empty() {
+            g.left_reason = "dropped before its hand-over".to_owned();
+        }
+        g.sender
+            .disconnect(translatable("multiplayer.disconnect.generic", &[]));
+        true
+    }
+
     /// Lets go of what a proxy that stopped answering left behind: the players
-    /// it said would come and did not, and the freezes no hand-over ended.
-    /// Neither may last for ever.
+    /// it said would come and did not, the held players whose hand-over never
+    /// finished, and the freezes no hand-over ended. None may last for ever, and
+    /// a held player goes without a word to anyone, since no one was told of it.
     fn expire_arrivals(&mut self, events: &mut Vec<HostEvent>) {
         // Off: nothing to do (and no player can be frozen).
         let Some(transfers) = &self.transfers else {
@@ -1017,7 +1061,32 @@ impl Hub {
                 horizon_protocol::crypto::uuid_string(uuid)
             )));
         }
-        let max = transfers.settings.max_freeze_ticks;
+        let (max, max_hold) = (
+            transfers.settings.max_freeze_ticks,
+            transfers.settings.max_hold_ticks,
+        );
+        // Not one already kicked or dropped: its connection may take a while to close,
+        // and it must not be kicked (and reported) again on every tick.
+        let stale: Vec<u32> = self
+            .guests
+            .iter()
+            .filter(|g| {
+                g.held
+                    && !g.placed
+                    && g.left_reason.is_empty()
+                    && super::arrivals::held_too_long(g.held_since, self.ticks, max_hold)
+            })
+            .map(|g| g.conn)
+            .collect();
+        for conn in stale {
+            if let Some(g) = self.guest(conn) {
+                events.push(HostEvent::Warn(format!(
+                    "{} was held for {max_hold} ticks and the hand-over never finished: dropped",
+                    g.name,
+                )));
+            }
+            self.kick(conn, translatable("disconnect.timeout", &[]));
+        }
         for g in &mut self.guests {
             let Some(h) = &g.handover else {
                 continue;
@@ -1206,6 +1275,15 @@ impl Hub {
             let g = &self.guests[i];
             (g.name.clone(), g.uuid, g.entity_id, g.game_mode)
         };
+        // A player whose login used up a proxy's expectation (`arrivals`, as the
+        // login started) is held: it gets the whole join sequence, so it can build
+        // its picture of the world, but no one else is told about it.
+        if self.guests[i].expected {
+            let g = &mut self.guests[i];
+            g.held = true;
+            g.held_since = self.ticks;
+        }
+        let held = self.guests[i].held;
         let g = &self.guests[i];
         g.send(&C::Login(play::Login {
             player_id: entity_id,
@@ -1242,21 +1320,24 @@ impl Hub {
         self.send_initial_recipe_book(i);
         // PlayerList.placeNewPlayer broadcasts the join line before
         // players.add: the others read it, the newcomer doesn't (nor those
-        // a native mod hides it from).
-        let joined = C::SystemChat(play::SystemChat {
-            content: yellow_names(
-                "multiplayer.player.joined",
-                vec![self.player_display_name(self.guests[i].uuid, &name)],
-            ),
-            overlay: false,
-        })
-        .encode();
-        for g in self.guests.iter().filter(|g| g.placed && g.conn != conn) {
-            if self.sees(g.permission, uuid) {
-                g.sender.send(joined.clone());
+        // a native mod hides it from). A held player is not announced, and
+        // not placed.
+        if !held {
+            let joined = C::SystemChat(play::SystemChat {
+                content: yellow_names(
+                    "multiplayer.player.joined",
+                    vec![self.player_display_name(self.guests[i].uuid, &name)],
+                ),
+                overlay: false,
+            })
+            .encode();
+            for g in self.guests.iter().filter(|g| g.placed && g.conn != conn) {
+                if self.sees(g.permission, uuid) {
+                    g.sender.send(joined.clone());
+                }
             }
+            self.guests[i].placed = true;
         }
-        self.guests[i].placed = true;
         self.resend_teleport(i, None);
         let g = &self.guests[i];
         g.send(&C::ServerData(play::ServerData {
@@ -1291,12 +1372,20 @@ impl Hub {
             entries: vec![self.player_info(uuid, &name, mode, 0)],
         })
         .encode();
-        let level = self.hidden.get(&uuid).copied();
-        for g in self.guests.iter_mut().filter(|g| g.placed) {
-            if level.is_some_and(|l| g.permission < l) {
-                g.tab_hidden.insert(uuid);
-            } else {
-                g.sender.send(newcomer.clone());
+        if held {
+            // Its own list has itself in it; the others' lists do not.
+            self.guests[i].sender.send(newcomer);
+        } else {
+            let level = self.hidden.get(&uuid).copied();
+            // A held player is shown the entities around it, so it must know the players
+            // who join meanwhile, or its client drops their entity (`ClientPacketListener`
+            // adds a player only with its list entry).
+            for g in self.guests.iter_mut().filter(|g| g.placed || g.held) {
+                if level.is_some_and(|l| g.permission < l) {
+                    g.tab_hidden.insert(uuid);
+                } else {
+                    g.sender.send(newcomer.clone());
+                }
             }
         }
         self.send_level_info(i, ctx, true);
@@ -1895,6 +1984,12 @@ impl Hub {
                         format!("{}'s {handled} packets", g.name)
                     });
                 }
+            } else if self.guests[i].held && self.watches(&self.guests[i]) {
+                // A held player only answers what the server asked of it: its
+                // acknowledgements keep the chunks coming. Whatever else it sends
+                // (moves, clicks, commands) is not for the world.
+                self.keep_acknowledgements(i, &mut events);
+                self.process_inbox(i, ctx, &mut events);
             }
         }
         events
@@ -1906,7 +2001,7 @@ impl Hub {
     /// earlier (`drain_packets`) so scheduled ticks see what they placed.
     pub fn tick_level(&mut self, ctx: &mut TickCtx) -> Vec<HostEvent> {
         let events = Vec::new();
-        if !self.guests.iter().any(|g| self.here(g)) {
+        if !self.guests.iter().any(|g| self.watches(g)) {
             // ServerTickRateManager broadcasts a change to the players there
             // are; one who joins later is sent the state as it is then
             // (`updateJoiningPlayer`).
@@ -1997,7 +2092,7 @@ impl Hub {
         }
     }
 
-    fn remove_guest(&mut self, i: usize, reason: &str) -> Guest {
+    pub(super) fn remove_guest(&mut self, i: usize, reason: &str) -> Guest {
         let mut g = self.guests.remove(i);
         if let Some(m) = g
             .menu
@@ -2009,6 +2104,16 @@ impl Hub {
                     uuid: g.uuid,
                     window: m.window,
                 });
+        }
+        // A held player a proxy dropped keeps, in the log, how its connection really ended
+        // (an unreadable packet, a reset): the drop says only that it was dropped.
+        if g.held
+            && !g.placed
+            && !reason.is_empty()
+            && !g.left_reason.is_empty()
+            && g.left_reason != reason
+        {
+            g.left_reason = format!("{} (the connection ended: {reason})", g.left_reason);
         }
         if g.left_reason.is_empty() {
             g.left_reason = reason.to_owned();
@@ -2027,10 +2132,11 @@ impl Hub {
             &mut self.attachment_snapshots,
             self.sync_attachments,
         );
-        self.broadcast(&C::PlayerInfoRemove(play::PlayerInfoRemove {
+        // To the held players too: they were told of this one, and see its entity.
+        self.broadcast_watching(&C::PlayerInfoRemove(play::PlayerInfoRemove {
             uuids: vec![g.uuid],
         }));
-        self.broadcast(&C::RemoveEntities(play::RemoveEntities {
+        self.broadcast_watching(&C::RemoveEntities(play::RemoveEntities {
             ids: vec![g.entity_id],
         }));
         let left = C::SystemChat(play::SystemChat {
@@ -2188,7 +2294,7 @@ impl Hub {
         }
         let mut batches = Vec::new();
         for i in 0..self.guests.len() {
-            if self.here(&self.guests[i]) {
+            if self.watches(&self.guests[i]) {
                 self.update_view(i);
                 if let Some(batch) = self.next_batch(i, world, ctx.streaming) {
                     batches.push((i, batch));
@@ -2406,7 +2512,7 @@ impl Hub {
             .iter()
             .filter_map(|key| Some((*key, self.encoder.biome_data(world.chunks.get(key)?))))
             .collect();
-        for g in self.guests.iter().filter(|g| self.here(g)) {
+        for g in self.guests.iter().filter(|g| self.watches(g)) {
             let chunks: Vec<_> = data
                 .iter()
                 .filter(|(key, _)| g.sent_chunks.contains(key))
@@ -2450,7 +2556,7 @@ impl Hub {
             let viewers: Vec<usize> = (0..self.guests.len())
                 .filter(|&i| {
                     let g = &self.guests[i];
-                    self.here(g)
+                    self.watches(g)
                         && tracked(g, x, z)
                         && (-1..=1).any(|dz| (-1..=1).any(|dx| !tracked(g, x + dx, z + dz)))
                 })
@@ -2506,7 +2612,7 @@ impl Hub {
                 }
                 let viewers: Vec<usize> = (0..self.guests.len())
                     .filter(|&i| {
-                        self.here(&self.guests[i]) && self.guests[i].sent_chunks.contains(&key)
+                        self.watches(&self.guests[i]) && self.guests[i].sent_chunks.contains(&key)
                     })
                     .collect();
                 if viewers.is_empty() {
@@ -2571,7 +2677,7 @@ impl Hub {
             }
             let viewers: Vec<usize> = (0..self.guests.len())
                 .filter(|&i| {
-                    self.here(&self.guests[i]) && self.guests[i].sent_chunks.contains(&(sx, sz))
+                    self.watches(&self.guests[i]) && self.guests[i].sent_chunks.contains(&(sx, sz))
                 })
                 .collect();
             if viewers.is_empty() {
@@ -2942,7 +3048,9 @@ impl Hub {
         level.synced.clone_from(&self.synced);
         let mut outs = std::mem::take(&mut self.entity_out);
         let dimension = &self.config.dimension;
-        let here = |g: &Guest| g.placed && g.dimension == *dimension;
+        // The viewers include the held players: they are shown the entities
+        // around them, but are not among the entities shown (`track_entities`).
+        let here = |g: &Guest| (g.placed || g.held) && g.dimension == *dimension;
         outs.resize_with(self.guests.iter().filter(|g| here(g)).count(), Vec::new);
         // The prediction's replay excuses a client that may still have an entity that left it.
         let recording = self.recording();
