@@ -12,7 +12,7 @@ on:
   issue_comment:
     types: [created]
   schedule:
-    - cron: "23 5 * * *"
+    - cron: "17 5 * * *"
   workflow_dispatch:
 permissions:
   contents: read

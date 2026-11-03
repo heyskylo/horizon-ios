@@ -12,6 +12,9 @@ on:
     types: [opened, reopened, synchronize, edited, ready_for_review]
 permissions:
   contents: read
+concurrency:
+  group: pr-labels-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 jobs:
   label:
     # Title-only edits change nothing: skip them before a runner starts.

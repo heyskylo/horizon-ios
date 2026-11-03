@@ -15,6 +15,9 @@ on:
       - '.github/workflows/mod-registry.yml'
 permissions:
   contents: read
+concurrency:
+  group: mod-registry-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   check:
     runs-on: ubuntu-latest
