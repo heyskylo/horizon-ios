@@ -1100,6 +1100,56 @@ mod tests {
         assert!(!camel.extra.flag2);
     }
 
+    /// `AbstractNautilus.onPlayerJump` through `handlePlayerCommand`
+    /// START_RIDING_JUMP: the scale the rider's own bar charged reaches the
+    /// mount, and its next travel dashes with it. A nautilus in its dash
+    /// cooldown takes no jump (the pending scale is left alone), and there is
+    /// no sound for the server to play: the nautilus plays its dash sound
+    /// itself when the dash runs.
+    #[test]
+    fn a_guests_released_jump_bar_arms_the_nautilus_dash() {
+        let Some(mut m) = mob("minecraft:nautilus") else {
+            return;
+        };
+        m.set_saddle(Some(horizon_client::items::ItemStack::new(
+            "minecraft:saddle",
+            1,
+        )));
+        // The guest's ride tick fills the rider; the packet arrives after it.
+        m.rider = Some(equine::Rider::default());
+        assert_eq!(start_riding_jump(&mut m, 75), None);
+        let jump = m.rider.expect("the rider stays on").jump;
+        // 0.4 + 0.4 * 75 / 90: a three-quarter bar.
+        assert!((jump - 0.733_333_3).abs() < 1.0e-6, "{jump}");
+        // A full bar is a scale of 1.
+        assert_eq!(start_riding_jump(&mut m, 100), None);
+        assert_eq!(m.rider.expect("the rider stays on").jump, 1.0);
+        // The dash clock: a dash still cooling down refuses the jump, so the
+        // scale already on the rider stays.
+        m.extra.anim_ticks = 40;
+        assert_eq!(start_riding_jump(&mut m, 30), None);
+        assert_eq!(m.rider.expect("the rider stays on").jump, 1.0);
+        // An unsaddled nautilus cannot jump at all (`AbstractNautilus.canJump`).
+        m.extra.saddled = false;
+        m.extra.anim_ticks = 0;
+        assert_eq!(start_riding_jump(&mut m, 100), None);
+        assert_eq!(m.rider.expect("the rider stays on").jump, 1.0);
+        // The scale is spent by the mount's next travel: `executeRidersJump`
+        // pushes along the rider's look, starts the 40-tick dash clock, raises
+        // DASH and queues the dash sound.
+        m.extra.saddled = true;
+        equine::ridden_step(&mut m);
+        assert_eq!(m.rider.expect("the rider stays on").jump, 0.0);
+        assert_eq!(m.extra.anim_ticks, 40, "the dash clock");
+        assert!(m.extra.flag2, "DASH");
+        assert_eq!(m.extra.scratch[1], 1, "the dash sound plays next tick");
+        assert!(
+            m.velocity.z > 0.0 && m.velocity.x.abs() < 1.0e-9,
+            "the dash goes along the rider's look (+z): {:?}",
+            m.velocity
+        );
+    }
+
     #[test]
     fn steering_accepts_the_correct_item_in_either_hand() {
         let carrot = "minecraft:carrot_on_a_stick";
