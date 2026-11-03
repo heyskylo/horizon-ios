@@ -47,6 +47,9 @@ pub struct ParticleOptions {
     /// `GeyserParticleOptions.waterBlocks` and `GeyserBaseParticleOptions`'
     /// `waterBlocks` and `burstImpulseBase` (0 where the type has none).
     pub geyser: Option<(i32, f32)>,
+    /// `VibrationParticleOption`: the listener the signal flies to and its
+    /// arrival time in ticks (`ParticleEngine::vibration` is the same particle).
+    pub vibration: Option<([f64; 3], i32)>,
     /// A native mod's own particle type, by its namespaced name (`mymod:spark`):
     /// `SimpleParticleType` plus the provider `particles/<name>.json` names.
     pub mod_particle: Option<String>,
@@ -62,6 +65,7 @@ impl ParticleOptions {
             trail: None,
             item: None,
             geyser: None,
+            vibration: None,
             mod_particle: None,
         }
     }
@@ -85,6 +89,13 @@ impl ParticleOptions {
         Self {
             geyser: Some((water_blocks, burst_impulse_base)),
             ..Self::simple(ty)
+        }
+    }
+    /// `VibrationParticleOption(destination, arrivalInTicks)`.
+    pub fn vibration(dest: [f64; 3], ticks: i32) -> Self {
+        Self {
+            vibration: Some((dest, ticks)),
+            ..Self::simple(ParticleType::Vibration)
         }
     }
     /// `ItemParticleOption`: the stack's layer particle sprites (`BreakingItemParticle`).
@@ -1435,15 +1446,14 @@ impl ParticleEngine {
         self.particles.clear();
         self.pending.clear();
     }
-    /// A vibration signal flying from `from` to `to` in `ticks`
-    /// (`VibrationParticleOption`).
-    pub fn vibration(&mut self, from: [f64; 3], to: [f64; 3], ticks: i32) {
+    /// `VibrationSignalParticle`'s body: the signal leaves `from` aimed at the
+    /// listener at `to` and lands there in `ticks`.
+    fn vibration_particle(from: [f64; 3], to: [f64; 3], ticks: i32) -> Particle {
         let mut q = Particle::blank(ParticleType::Vibration, from);
         q.size = 0.3;
         q.lifetime = ticks;
         q.has_physics = false;
         q.light = Light::Block15;
-        q.set = self.set_of(ParticleType::Vibration);
         let d = [from[0] - to[0], from[1] - to[1], from[2] - to[2]];
         let rot = d[0].atan2(d[2]) as f32;
         let pitch = d[1].atan2((d[0] * d[0] + d[2] * d[2]).sqrt()) as f32;
@@ -1454,6 +1464,14 @@ impl ParticleEngine {
             pitch,
             pitch_o: pitch,
         };
+        q
+    }
+    /// A vibration signal flying from `from` to `to` in `ticks`
+    /// (`VibrationParticleOption`), as the client's own vibration system
+    /// (`VibrationSystem.Ticker`) spawns one.
+    pub fn vibration(&mut self, from: [f64; 3], to: [f64; 3], ticks: i32) {
+        let mut q = Self::vibration_particle(from, to, ticks);
+        q.set = self.set_of(ParticleType::Vibration);
         self.pending.push(q);
     }
     /// `ParticleEngine.add` (via `particlesToAdd`, applied on the next tick).
@@ -2758,8 +2776,16 @@ impl ParticleEngine {
                 }
                 q
             }
-            // Vibration signals are created by `vibration`, aimed at a listener.
-            T::Vibration => return None,
+            // VibrationSignalParticle.Provider: `VibrationParticleOption` carries
+            // the listener the signal flies to and its arrival time; the sprite
+            // is the set's own draw from the engine's random.
+            T::Vibration => {
+                let (dest, ticks) = o.vibration?;
+                let mut q = Self::vibration_particle(p, dest, ticks);
+                q.set = set;
+                q.sprite = self.sprite_from_set(ty);
+                q
+            }
             // ShriekParticle.
             T::Shriek => {
                 let mut q = Particle::moving(r, ty, p, [0.0; 3]);
@@ -5175,6 +5201,41 @@ mod tests {
             engine.create(&smoke, [0.0; 3], [0.0; 3]);
         }
         assert_eq!(engine.pending.len(), 1010);
+    }
+    /// `VibrationSignalParticle.Provider.createParticle`: the provider path
+    /// the client's packet handler reaches (`add_with`) makes the signal from
+    /// the option's destination and arrival time, where it used to refuse it.
+    #[test]
+    fn a_vibration_option_makes_the_signal_its_provider_draws() {
+        let mut engine = ParticleEngine::new(Path::new(""), &HashMap::new(), &HashSet::new());
+        let options = ParticleOptions::vibration([10.5, 70.5, -3.5], 20);
+        // Within the camera's 32 blocks, so only the provider decides.
+        engine.add_with(&options, [0.5, 1.5, 0.5], [0.0; 3], false, false);
+        assert_eq!(engine.made().get("vibration"), Some(&1));
+        let q = engine.pending.first().expect("the signal is made");
+        assert_eq!(q.ty, ParticleType::Vibration);
+        assert_eq!(q.lifetime, 20);
+        assert!((q.size - 0.3).abs() < 1e-6);
+        assert!(!q.has_physics);
+        match &q.behaviour {
+            Behaviour::Vibration {
+                dest, rot, pitch, ..
+            } => {
+                assert_eq!(*dest, [10.5, 70.5, -3.5]);
+                // The constructor aims it from where it starts at the listener.
+                let d: [f64; 3] = [0.5 - 10.5, 1.5 - 70.5, 0.5 + 3.5];
+                assert!((*rot - d[0].atan2(d[2]) as f32).abs() < 1e-6);
+                let flat = (d[0] * d[0] + d[2] * d[2]).sqrt();
+                assert!((*pitch - d[1].atan2(flat) as f32).abs() < 1e-6);
+            }
+            _ => panic!("a vibration signal"),
+        }
+        // Only `VibrationParticleOption` carries a listener; a bare type has none.
+        let bare = ParticleOptions::simple(ParticleType::Vibration);
+        assert!(
+            engine.make(&bare, [0.0; 3], [0.0; 3], 1).is_none(),
+            "no destination, no signal"
+        );
     }
     #[test]
     fn particle_names_round_trip() {

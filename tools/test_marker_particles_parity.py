@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Compare creative marker selection, ambient sampling and the campfire's own
-particles with the pinned ClientLevel."""
+"""Compare creative marker selection, ambient sampling, the campfire block's
+own tick and the campfire block entity's particles with the pinned ClientLevel."""
 import itertools
 import json
 import random
@@ -59,9 +59,23 @@ def puff_cases(rng):
                    seed=rng.randrange(-2 ** 63, 2 ** 63), puffs=rng.randrange(1, 24))
 
 
+def tick_cases(rng):
+    """CampfireBlock.animateTick: the crackle sound and the lava particles a lit
+    campfire's block tick asks the level random for."""
+    for name, lit, signal, facing, seed in itertools.product(
+            CAMPFIRES, (True, False), (False, True), FACINGS, SEEDS):
+        yield dict(kind='tick', state=state(name, lit, signal, facing), seed=seed)
+    for _ in range(96):
+        yield dict(kind='tick',
+                   state=state(rng.choice(CAMPFIRES), rng.random() < 0.75, rng.random() < 0.5,
+                               rng.choice(FACINGS)),
+                   seed=rng.randrange(-2 ** 63, 2 ** 63))
+
+
 def make_input(build):
     rng = random.Random(0x43414d50)
-    cases = marker_cases() + list(campfire_cases(rng)) + list(puff_cases(rng))
+    cases = (marker_cases() + list(campfire_cases(rng)) + list(puff_cases(rng))
+             + list(tick_cases(random.Random(0x414e494d))))
     path = build / 'cases.jsonl'
     path.write_text(''.join(json.dumps(case) + '\n' for case in cases))
     return path, len(cases)
@@ -71,7 +85,12 @@ def main():
     harness.differential(
         'marker-particles-parity', 'VanillaMarkerParticlesOracle', 'marker_particles_probe',
         make_input, 'Creative main-hand marker selection and barrier marker positions, velocities and random draws, '
-        'and the campfire: the real CampfireBlockEntity.particleTick for both campfire blocks, lit and unlit, signal '
+        'the real CampfireBlock.animateTick for both campfire blocks, lit and unlit, signal fire on and off and '
+        'all four facings, run through the whole ClientLevel.animateTick loop around the player (667 rounds of the '
+        '16- and 32-block sample) on a world that is all campfire, with the crackle sound and the lava particles '
+        'compared by name and exact position, volume and pitch bits in call order, and the level random compared '
+        'through the draw after the last one, and the campfire block entity: the real '
+        'CampfireBlockEntity.particleTick for both campfire blocks, lit and unlit, signal '
         'fire on and off, all four facings and every one of the four cooking slots held or empty, ticked six times '
         'from a seeded level random, and the real CampfireBlock.makeParticles for the cosy and the signal smoke with '
         'and without the plain smoke puff a douse adds. Every particle the level is asked for is compared by its '
@@ -80,7 +99,7 @@ def main():
         'is supplied to the oracle; the always-visible flag, the particle-set limiter, the velocities (each particle '
         'draws its own random for them) and the particles past their creation are outside this comparison.',
         sources=[lab.ROOT / 'tools/test_marker_particles_parity.py',
-                 lab.ROOT / 'crates/horizon-client/src/animate_tick.rs'], expected_lines=25578)
+                 lab.ROOT / 'crates/horizon-client/src/animate_tick.rs'], expected_lines=58268)
 
 
 if __name__ == '__main__':

@@ -290,6 +290,20 @@ console commands do. While it's stopped, they edit vanilla's files directly. `ki
 and `pardon-ip` run the vanilla command on the running server, through its control API; `players` reads the
 lists from the files when the server is stopped. Any console command works through
 `cmd`: `horizon-server cmd ban Griefer`, `horizon-server cmd say Restarting in 5 minutes`.
+#### Temporary bans
+
+`tempban PLAYER DURATION [REASON]` is a Horizon extra for dedicated servers (vanilla has only `ban`, which is
+permanent). Operators of level 3 (`/ban`'s level) run it in game as `/tempban`; the console takes the same words
+without the slash, and `horizon-server cmd tempban Griefer 12h griefing` runs it through the control API. The
+duration is a whole number and `s`, `m`, `h`, `d` or `w`: `30m`, `12h`, `7d`. It writes an entry with `expires` set
+to `banned-players.json`, the way vanilla writes a ban and the chat filter's automatic temporary ban does, so it
+survives a restart, `banlist` shows it, `pardon` lifts it and the entry goes away once it has ended. A player who
+is online is kicked with the reason and the time the ban ends, and the same message is what they read when they
+try to join. A player who is already banned (and whose ban has not ended) is left as they are: `pardon` first to
+change a ban. The player may be offline if the server has seen them. The console logs it as
+`[tempban] <operator> banned <player> for <duration>`, and the event stream (`GET /api/v1/events`) gets a `ban`
+event with `reason`, `by` and `until`. It is not in the command tree, so it has no completions, like `/mute`.
+
 To generate the world around spawn ahead of the players, Horizon has its own `pregen` command, off until
 `server.toml` has `horizon-pregen = true` under `[properties]`: `horizon-server cmd pregen start 2500`
 ([pregeneration](pregeneration.md)).

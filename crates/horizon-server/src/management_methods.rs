@@ -104,6 +104,15 @@ pub fn call(shared: &Shared, client: u32, short: &str, argument: &Value) -> Resu
                     .ok_or_else(|| invalid_params(format!("Not a boolean: {argument}")))?,
             ),
         ),
+        "serversettings/hide_online_players" => game.hide_online_players(client, None),
+        "serversettings/hide_online_players/set" => game.hide_online_players(
+            client,
+            Some(
+                argument
+                    .as_bool()
+                    .ok_or_else(|| invalid_params(format!("Not a boolean: {argument}")))?,
+            ),
+        ),
         "serversettings/player_idle_timeout" => game.player_idle_timeout(client, None),
         "serversettings/player_idle_timeout/set" => {
             game.player_idle_timeout(client, Some(management_int(argument)?))
@@ -541,6 +550,29 @@ impl Game<'_> {
                 &self.shared.dir,
                 "properties",
                 "allow-flight",
+                toml::Value::Boolean(value),
+            )
+            .map_err(|e| (INTERNAL_ERROR, Some(e)))?;
+        }
+        Ok(reply["value"].clone())
+    }
+
+    /// `MinecraftServerSettingsServiceImpl.hidesOnlinePlayers` and `setHidesOnlinePlayers`.
+    fn hide_online_players(&self, client: u32, value: Option<bool>) -> Result<Value, Failure> {
+        let mut request = json!({ "method": "serversettings/hide_online_players" });
+        if let Some(value) = value {
+            request["method"] = json!("serversettings/hide_online_players/set");
+            request["value"] = json!(value);
+        }
+        let reply = self.ask(&format!("management {client} {request}"))?;
+        if let Some(error) = reply["error"].as_str() {
+            return Err((INTERNAL_ERROR, Some(error.to_owned())));
+        }
+        if let Some(value) = value {
+            crate::config::update(
+                &self.shared.dir,
+                "properties",
+                "hide-online-players",
                 toml::Value::Boolean(value),
             )
             .map_err(|e| (INTERNAL_ERROR, Some(e)))?;
