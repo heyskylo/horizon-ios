@@ -6,7 +6,7 @@
 use super::Game;
 use horizon_client::{
     first_person::Hand,
-    mobs::{Species, equine, llama},
+    mobs::{Mob, Species, equine, llama},
 };
 
 impl Game<'_> {
@@ -106,7 +106,7 @@ impl Game<'_> {
     /// villager particle. The server draws it on its own level only, so no
     /// packet brings it.
     pub(super) fn remote_feed_particles(&mut self, i: usize, hand: Hand) {
-        let Some(m) = self.mobs.get(i).filter(|m| m.alive() && m.is_baby()) else {
+        let Some(m) = self.mobs.get(i).filter(|m| m.alive()) else {
             return;
         };
         let stack = match hand {
@@ -114,32 +114,101 @@ impl Game<'_> {
             Hand::Off => self.offhand.as_ref(),
         };
         let item = stack.map_or("", |s| &*s.item);
-        let ages = match m.species() {
-            // Llama.handleEating: wheat 10, hay 90.
-            s if llama::is_llama(s) => matches!(item, "minecraft:wheat" | "minecraft:hay_block"),
-            // Camel.handleEating: its food ages it by 10.
-            Species::Camel => m.kind.food.iter().any(|f| f.as_str() == item),
-            // AbstractHorse.handleEating: every food but the red mushroom.
-            Species::Horse | Species::Donkey | Species::Mule => matches!(
-                item,
-                "minecraft:wheat"
-                    | "minecraft:sugar"
-                    | "minecraft:hay_block"
-                    | "minecraft:apple"
-                    | "minecraft:carrot"
-                    | "minecraft:golden_carrot"
-                    | "minecraft:golden_apple"
-                    | "minecraft:enchanted_golden_apple"
-            ),
-            _ => false,
+        if !ages_on_food(m, item) {
+            return;
+        }
+        let id = m.id;
+        self.particles_around_mob(
+            id,
+            "happy_villager",
+            horizon_client::particles::Burst::HORSE_EATING,
+        );
+    }
+}
+
+/// `AbstractHorse.handleEating` (and the llama and camel variants): this
+/// mouthful is the one that ages the baby up, which is the same moment the
+/// level draws one happy villager particle.
+///
+/// `handleEating` gates both on `isBaby() && !isAgeLocked()` — a locked baby
+/// does not grow, and the particle goes with the growth.
+pub(super) fn ages_on_food(m: &Mob, item: &str) -> bool {
+    if !m.is_baby() || m.extra.age_locked || item.is_empty() {
+        return false;
+    }
+    match m.species() {
+        // Llama.handleEating: wheat 10, hay 90.
+        s if llama::is_llama(s) => matches!(item, "minecraft:wheat" | "minecraft:hay_block"),
+        // Camel.handleEating: its food ages it by 10.
+        Species::Camel => m.kind.food.iter().any(|f| f.as_str() == item),
+        // AbstractHorse.handleEating: every food but the red mushroom.
+        Species::Horse | Species::Donkey | Species::Mule => matches!(
+            item,
+            "minecraft:wheat"
+                | "minecraft:sugar"
+                | "minecraft:hay_block"
+                | "minecraft:apple"
+                | "minecraft:carrot"
+                | "minecraft:golden_carrot"
+                | "minecraft:golden_apple"
+                | "minecraft:enchanted_golden_apple"
+        ),
+        _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+
+    fn mob(kind: &str) -> Option<Mob> {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        if !root.join("entity-types.json").exists() {
+            return None;
+        }
+        let data = horizon_client::mobs::MobTypes::load(&root).ok()?;
+        let kind = Arc::new(data.types.get(kind)?.clone());
+        Some(Mob::new(
+            1,
+            kind,
+            horizon_core::geometry::Vec3::new(0.0, 4.0, 0.0),
+            0.0,
+        ))
+    }
+
+    /// `AbstractHorse.handleEating` draws the particle only while the baby can
+    /// still grow: `isBaby() && !isAgeLocked()` (#8590).
+    #[test]
+    fn a_locked_baby_draws_no_happy_villager() {
+        let Some(mut horse) = mob("minecraft:horse") else {
+            return;
         };
-        if ages {
-            let id = m.id;
-            self.particles_around_mob(
-                id,
-                "happy_villager",
-                horizon_client::particles::Burst::HORSE_EATING,
-            );
+        horse.extra.age = -24000;
+        assert!(ages_on_food(&horse, "minecraft:wheat"));
+        horse.extra.age_locked = true;
+        assert!(!ages_on_food(&horse, "minecraft:wheat"), "locked");
+        horse.extra.age_locked = false;
+        horse.extra.age = 0;
+        assert!(!ages_on_food(&horse, "minecraft:wheat"), "adult");
+        horse.extra.age = -24000;
+        assert!(!ages_on_food(&horse, "minecraft:red_mushroom"), "no food");
+
+        if let Some(mut llama) = mob("minecraft:llama") {
+            llama.extra.age = -24000;
+            assert!(ages_on_food(&llama, "minecraft:hay_block"));
+            llama.extra.age_locked = true;
+            assert!(!ages_on_food(&llama, "minecraft:hay_block"), "locked llama");
+        }
+        if let Some(mut camel) = mob("minecraft:camel")
+            && camel.kind.food.iter().any(|f| f == "minecraft:cactus")
+        {
+            camel.extra.age = -24000;
+            assert!(ages_on_food(&camel, "minecraft:cactus"));
+            camel.extra.age_locked = true;
+            assert!(!ages_on_food(&camel, "minecraft:cactus"), "locked camel");
         }
     }
 }
