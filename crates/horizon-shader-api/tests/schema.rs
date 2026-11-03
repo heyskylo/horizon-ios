@@ -662,3 +662,44 @@ fn reads_particle_lights_and_refuses_bad_ones() {
     assert!(refused(&entry("color = [2.0, 0.0, 0.0]\nreach = 4.0")).contains("0..=1"));
     assert!(refused(&entry("color = [1.0, 1.0, 1.0]\nreach = 40.0")).contains("reach"));
 }
+
+#[test]
+fn displacement_needs_the_material_stage_and_stays_in_range() {
+    let with = |section: &str| format!("{}\n[displacement]\n{section}", sample_text());
+    let d = Manifest::parse(&with(
+        "option = \"reflections\"\ncells_option = \"tonemap\"\n",
+    ));
+    // The sample's `tonemap` choice names no cell counts.
+    assert!(
+        d.unwrap_err()
+            .contains("displacement.cells_option: `tonemap` is no choice of cell counts")
+    );
+    let m = Manifest::parse(&with("distance = 16.0\noption = \"reflections\"\n")).unwrap();
+    let d = m.displacement.unwrap();
+    assert_eq!(
+        (d.distance, d.cells, d.option.as_deref()),
+        (16.0, 16, Some("reflections"))
+    );
+    let cases = [
+        (
+            "distance = 40.0\n",
+            "displacement.distance 40 is not in 4.0..=32.0",
+        ),
+        ("cells = 2\n", "displacement.cells 2 is not in 4..=64"),
+        (
+            "option = \"saturation\"\n",
+            "displacement.option: `saturation` is no bool option",
+        ),
+        (
+            "steps_option = \"samples\"\n",
+            "displacement.steps_option: `samples` is no bool option",
+        ),
+    ];
+    for (section, needle) in cases {
+        let e = refused(&with(section));
+        assert!(e.contains(needle), "{needle:?} not in {e:?}");
+    }
+    let no_stage = "schema = 1\nid = \"p\"\nname = \"P\"\nversion = \"1\"\napi = \"0.1\"\n";
+    let sky_only = format!("{no_stage}[sky]\nfile = \"sky.wgsl\"\n[displacement]\n");
+    assert!(refused(&sky_only).contains("[displacement] needs [material]"));
+}

@@ -259,3 +259,37 @@ fn material(input: MaterialInput) -> Surface {
     );
     assert!(calls(&Pack::from_files(files).unwrap()));
 }
+
+/// The sample with `[displacement]` added to its manifest and `material.wgsl` replaced.
+fn displaced(material: &str) -> Result<horizon_shader_api::Report, Vec<Problem>> {
+    let mut files = sample().files;
+    let manifest = String::from_utf8(files[MANIFEST].clone()).unwrap() + "\n[displacement]\n";
+    files.insert(MANIFEST.into(), manifest.into_bytes());
+    let own = String::from_utf8(files["material.wgsl"].clone()).unwrap() + material;
+    files.insert("material.wgsl".into(), own.into_bytes());
+    check(&Pack::from_files(files).unwrap())
+}
+
+#[test]
+fn displacement_is_checked_with_its_signature() {
+    // Depth below the face by the LabPBR height: 1/8 of a block at the bottom of the relief.
+    let good = "fn displacement(input: DisplacementInput) -> f32 { return (1.0 - input.height) * 0.125; }\n";
+    assert!(displaced(good).is_ok(), "{:#?}", displaced(good).err());
+    let missing = displaced("").expect_err("should fail");
+    assert!(
+        missing.iter().any(|p| p
+            .message
+            .contains("defines no `fn displacement(input: DisplacementInput) -> f32`")),
+        "{missing:#?}"
+    );
+    let wrong = displaced(
+        "fn displacement(input: DisplacementInput) -> vec3<f32> { return input.normal; }\n",
+    )
+    .expect_err("should fail");
+    assert!(
+        wrong.iter().any(|p| p
+            .message
+            .contains("`fn displacement(DisplacementInput) -> vec3<f32>` should be")),
+        "{wrong:#?}"
+    );
+}
