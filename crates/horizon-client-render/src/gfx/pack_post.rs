@@ -2129,6 +2129,7 @@ impl PackPost {
             table: None,
             depth_write: false,
             atlas: None,
+            material_maps: false,
             ids: None,
             cull: false,
         };
