@@ -163,15 +163,15 @@ MESSAGES = [
     '{"jsonrpc":"2.0","id":146,"method":"minecraft:serversettings/allow_flight"}',
     '{"jsonrpc":"2.0","id":147,"method":"minecraft:serversettings/allow_flight/set","params":[true]}',
     '{"jsonrpc":"2.0","id":148,"method":"minecraft:serversettings/allow_flight"}',
-    '{"jsonrpc":"2.0","id":160,"method":"minecraft:serversettings/hide_online_players"}',
-    '{"jsonrpc":"2.0","id":161,"method":"minecraft:serversettings/hide_online_players/set","params":[true]}',
-    '{"jsonrpc":"2.0","id":162,"method":"minecraft:serversettings/hide_online_players"}',
-    '{"jsonrpc":"2.0","id":163,"method":"minecraft:serversettings/hide_online_players/set","params":["yes"]}',
-    '{"jsonrpc":"2.0","id":164,"method":"minecraft:serversettings/hide_online_players"}',
-    '{"jsonrpc":"2.0","id":165,"method":"minecraft:serversettings/hide_online_players/set","params":[false]}',
-    '{"jsonrpc":"2.0","id":166,"method":"minecraft:serversettings/hide_online_players"}',
-    '{"jsonrpc":"2.0","id":167,"method":"minecraft:serversettings/hide_online_players/set","params":[true]}',
-    '{"jsonrpc":"2.0","id":168,"method":"minecraft:serversettings/hide_online_players"}',
+    '{"jsonrpc":"2.0","id":190,"method":"minecraft:serversettings/hide_online_players"}',
+    '{"jsonrpc":"2.0","id":191,"method":"minecraft:serversettings/hide_online_players/set","params":[true]}',
+    '{"jsonrpc":"2.0","id":192,"method":"minecraft:serversettings/hide_online_players"}',
+    '{"jsonrpc":"2.0","id":193,"method":"minecraft:serversettings/hide_online_players/set","params":["yes"]}',
+    '{"jsonrpc":"2.0","id":194,"method":"minecraft:serversettings/hide_online_players"}',
+    '{"jsonrpc":"2.0","id":195,"method":"minecraft:serversettings/hide_online_players/set","params":[false]}',
+    '{"jsonrpc":"2.0","id":196,"method":"minecraft:serversettings/hide_online_players"}',
+    '{"jsonrpc":"2.0","id":197,"method":"minecraft:serversettings/hide_online_players/set","params":[true]}',
+    '{"jsonrpc":"2.0","id":198,"method":"minecraft:serversettings/hide_online_players"}',
     '{"jsonrpc":"2.0","id":65,"method":"minecraft:serversettings/autosave"}',
     '{"jsonrpc":"2.0","id":66,"method":"minecraft:serversettings/autosave/set","params":[false]}',
     '{"jsonrpc":"2.0","id":67,"method":"minecraft:serversettings/autosave"}',
@@ -579,7 +579,7 @@ def main():
                         if not isinstance(reply, dict) or 'method' not in reply or 'id' in reply:
                             break
                     sides[side]['restarted_allow_flight'] = reply
-                    ws.send('{"jsonrpc":"2.0","id":169,"method":"minecraft:serversettings/hide_online_players"}')
+                    ws.send('{"jsonrpc":"2.0","id":199,"method":"minecraft:serversettings/hide_online_players"}')
                     while True:
                         reply = normal(ws.receive(timeout=60))
                         if not isinstance(reply, dict) or 'method' not in reply or 'id' in reply:
@@ -669,7 +669,7 @@ def main():
         if not horizon['saved_config_hide_online_players']:
             failures.append('Horizon did not save hide-online-players in server.toml')
         if vanilla['restarted_hide_online_players'] != horizon['restarted_hide_online_players'] or \
-                vanilla['restarted_hide_online_players'] != {'jsonrpc': '2.0', 'id': 169, 'result': True}:
+                vanilla['restarted_hide_online_players'] != {'jsonrpc': '2.0', 'id': 199, 'result': True}:
             failures.append(f"restarted hide-online-players: vanilla {vanilla['restarted_hide_online_players']!r}, Horizon {horizon['restarted_hide_online_players']!r}")
         (build / 'report.json').write_text(json.dumps(sides, indent=1))
         if failures:
