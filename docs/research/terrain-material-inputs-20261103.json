@@ -449,6 +449,13 @@
         "head": "a50844d94aec0e7eb77928aacc72df20157c593d",
         "working_file_sha256": "37325ad22dfb79db6028d67a1f1ae0d283b4dcbf4a634a86bbfe47fe6bf761a0",
         "scope": "permitted baseline tool/source; targeted alpha-observation fixture precondition review"
+      },
+      {
+        "candidate": "7800",
+        "path": "crates/horizon-client-render/src/gfx/native_material.rs",
+        "head": "a50844d94aec0e7eb77928aacc72df20157c593d",
+        "working_file_sha256": "71ed2c539190aad0a0e2ea58299112fe6abdf79d43fef452adfc69fd6310650b",
+        "scope": "supplied MIT baseline implementation API only; bounded existing native first-array/default and sampler behavior sanity check; no external behavior research"
       }
     ]
   },
