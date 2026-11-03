@@ -1057,11 +1057,12 @@ impl Game<'_> {
             return;
         };
         for (attr, id, _, op) in std::mem::take(&mut self.potions.enchant_modifiers) {
-            let _ = p.set_modifier(&attr, &id, 0.0, &op, false);
+            let _ = p.set_modifier_unclamped(&attr, &id, 0.0, &op, false);
         }
         for (attr, id, amount, op) in &wanted {
-            let _ = p.set_modifier(attr, id, *amount, op, true);
+            let _ = p.set_modifier_unclamped(attr, id, *amount, op, true);
         }
+        let _ = p.clamp_health_to_max();
         self.potions.enchant_modifiers = wanted;
     }
 }

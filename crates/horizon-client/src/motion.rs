@@ -717,6 +717,23 @@ impl PlayerMotion {
         operation: &str,
         present: bool,
     ) -> Result<()> {
+        self.set_modifier_unclamped(attribute, id, amount, operation, present)?;
+        if attribute == "minecraft:max_health" {
+            self.clamp_health_to_max()?;
+        }
+        Ok(())
+    }
+    /// `set_modifier` without the max_health clamp, for a remove-all/re-add
+    /// batch that ends with one `clamp_health_to_max` (vanilla only removes
+    /// the modifiers that really went away, so the hearts must survive it).
+    pub fn set_modifier_unclamped(
+        &mut self,
+        attribute: &str,
+        id: &str,
+        amount: f64,
+        operation: &str,
+        present: bool,
+    ) -> Result<()> {
         let Some(key) = self.attributes.key(attribute) else {
             return Ok(());
         };
@@ -742,9 +759,6 @@ impl PlayerMotion {
                 Ok(())
             })
             .map_err(attribute_error)?;
-        if attribute == "minecraft:max_health" {
-            self.clamp_health_to_max()?;
-        }
         Ok(())
     }
     /// `LivingEntity.onAttributeUpdated` for `max_health`: a health above the
@@ -3115,6 +3129,16 @@ mod tests {
         )
         .unwrap();
         assert_eq!(p.health.health(), 20.0);
+        // A remove-all/re-add batch keeps boosted hearts (unrelated effect).
+        p.set_modifier("minecraft:max_health", boost, 4.0, "add_value", true)
+            .unwrap();
+        p.set_health(24.0, false).unwrap();
+        p.set_modifier_unclamped("minecraft:max_health", boost, 0.0, "add_value", false)
+            .unwrap();
+        p.set_modifier_unclamped("minecraft:max_health", boost, 4.0, "add_value", true)
+            .unwrap();
+        p.clamp_health_to_max().unwrap();
+        assert_eq!(p.health.health(), 24.0);
     }
 
     #[test]
