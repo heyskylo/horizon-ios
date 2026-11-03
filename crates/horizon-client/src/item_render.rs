@@ -695,9 +695,11 @@ impl ItemRenderer {
         library: std::result::Result<Arc<ModelLibrary>, String>,
         drawn: bool,
     ) -> crate::Result<Self> {
-        let prototypes: BTreeMap<String, Components> = horizon_world::item_defaults::read(root)?
-            .into_iter()
-            .map(|(item, components)| Ok((item, serde_json::from_value(components)?)))
+        let prototypes: BTreeMap<String, Components> = horizon_world::item_defaults::shared(root)?
+            .iter()
+            .map(|(item, components)| {
+                Ok((item.clone(), serde::Deserialize::deserialize(components)?))
+            })
             .collect::<serde_json::Result<_>>()?;
         let models = ItemModels {
             definitions: if drawn {
