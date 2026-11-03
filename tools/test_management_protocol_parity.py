@@ -17,8 +17,9 @@ sent the same things over TLS, and every answer is compared exactly:
   `server/system_message` with no one online, the four lists changed (`add`, `remove`, `set`,
   `clear`; with no profile service, players named resolve to offline players on both), the live server
   message, difficulty, default and forced game mode read and changed (including saved properties), autosave
-  read and changed (including its reset after restart), allow-flight read and changed (including invalid input,
-  saved properties and restart), allowlist use and enforcement read and changed
+  read and changed (including its reset after restart), spawn-protection radius read and changed (including
+  invalid input, saved properties and restart), allow-flight read and changed (including invalid input, saved
+  properties and restart), allowlist use and enforcement read and changed
   (including saved properties and restart), max players read and changed (including saved
   properties and restart), player idle timeout read and changed (including disabling it, invalid input,
   saved properties and restart), the live pause-when-empty timer read and changed (including its saved
@@ -163,6 +164,15 @@ MESSAGES = [
     '{"jsonrpc":"2.0","id":61,"method":"minecraft:serversettings/force_game_mode"}',
     '{"jsonrpc":"2.0","id":62,"method":"minecraft:serversettings/force_game_mode/set","params":["yes"]}',
     '{"jsonrpc":"2.0","id":63,"method":"minecraft:serversettings/force_game_mode"}',
+    '{"jsonrpc":"2.0","id":150,"method":"minecraft:serversettings/spawn_protection_radius"}',
+    '{"jsonrpc":"2.0","id":151,"method":"minecraft:serversettings/spawn_protection_radius/set","params":[4]}',
+    '{"jsonrpc":"2.0","id":152,"method":"minecraft:serversettings/spawn_protection_radius"}',
+    '{"jsonrpc":"2.0","id":153,"method":"minecraft:serversettings/spawn_protection_radius/set","params":[-1]}',
+    '{"jsonrpc":"2.0","id":154,"method":"minecraft:serversettings/spawn_protection_radius"}',
+    '{"jsonrpc":"2.0","id":155,"method":"minecraft:serversettings/spawn_protection_radius/set","params":["yes"]}',
+    '{"jsonrpc":"2.0","id":156,"method":"minecraft:serversettings/spawn_protection_radius"}',
+    '{"jsonrpc":"2.0","id":157,"method":"minecraft:serversettings/spawn_protection_radius/set","params":[8]}',
+    '{"jsonrpc":"2.0","id":158,"method":"minecraft:serversettings/spawn_protection_radius"}',
     '{"jsonrpc":"2.0","id":140,"method":"minecraft:serversettings/allow_flight"}',
     '{"jsonrpc":"2.0","id":141,"method":"minecraft:serversettings/allow_flight/set","params":[true]}',
     '{"jsonrpc":"2.0","id":142,"method":"minecraft:serversettings/allow_flight"}',
@@ -501,6 +511,9 @@ def main():
                 sides[side]['saved_view_distance'] = next(
                     (line.partition('=')[2] for line in properties.splitlines()
                      if line.startswith('view-distance=')), None)
+                sides[side]['saved_spawn_protection'] = next(
+                    (line.partition('=')[2] for line in properties.splitlines()
+                     if line.startswith('spawn-protection=')), None)
                 sides[side]['saved_allow_flight'] = next(
                     (line.partition('=')[2] for line in properties.splitlines()
                      if line.startswith('allow-flight=')), None)
@@ -521,6 +534,8 @@ def main():
                     sides[side]['saved_config_player_idle_timeout'] = 'player-idle-timeout = 30' in (
                         folder / 'server.toml').read_text()
                     sides[side]['saved_config_view_distance'] = 'view_distance = 8' in (
+                        folder / 'server.toml').read_text()
+                    sides[side]['saved_config_spawn_protection'] = 'spawn-protection = 8' in (
                         folder / 'server.toml').read_text()
                     sides[side]['saved_config_allow_flight'] = 'allow-flight = true' in (
                         folder / 'server.toml').read_text()
@@ -585,6 +600,12 @@ def main():
                         if not isinstance(reply, dict) or 'method' not in reply or 'id' in reply:
                             break
                     sides[side]['restarted_view_distance'] = reply
+                    ws.send('{"jsonrpc":"2.0","id":159,"method":"minecraft:serversettings/spawn_protection_radius"}')
+                    while True:
+                        reply = normal(ws.receive(timeout=60))
+                        if not isinstance(reply, dict) or 'method' not in reply or 'id' in reply:
+                            break
+                    sides[side]['restarted_spawn_protection'] = reply
                 finally:
                     ws.sock.close()
             finally:
@@ -663,6 +684,13 @@ def main():
         if vanilla['restarted_view_distance'] != horizon['restarted_view_distance'] or \
                 vanilla['restarted_view_distance'] != {'jsonrpc': '2.0', 'id': 169, 'result': 8}:
             failures.append(f"restarted view distance: vanilla {vanilla['restarted_view_distance']!r}, Horizon {horizon['restarted_view_distance']!r}")
+        if vanilla['saved_spawn_protection'] != horizon['saved_spawn_protection'] or vanilla['saved_spawn_protection'] != '8':
+            failures.append(f"saved spawn protection: vanilla {vanilla['saved_spawn_protection']!r}, Horizon {horizon['saved_spawn_protection']!r}")
+        if not horizon['saved_config_spawn_protection']:
+            failures.append('Horizon did not save spawn protection in server.toml')
+        if vanilla['restarted_spawn_protection'] != horizon['restarted_spawn_protection'] or \
+                vanilla['restarted_spawn_protection'] != {'jsonrpc': '2.0', 'id': 159, 'result': 8}:
+            failures.append(f"restarted spawn protection: vanilla {vanilla['restarted_spawn_protection']!r}, Horizon {horizon['restarted_spawn_protection']!r}")
         if vanilla['saved_allow_flight'] != horizon['saved_allow_flight'] or vanilla['saved_allow_flight'] != 'true':
             failures.append(f"saved allow-flight: vanilla {vanilla['saved_allow_flight']!r}, Horizon {horizon['saved_allow_flight']!r}")
         if not horizon['saved_config_allow_flight']:

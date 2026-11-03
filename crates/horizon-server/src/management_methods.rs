@@ -93,6 +93,10 @@ pub fn call(shared: &Shared, client: u32, short: &str, argument: &Value) -> Resu
                     .ok_or_else(|| invalid_params(format!("Not a boolean: {argument}")))?,
             ),
         ),
+        "serversettings/spawn_protection_radius" => game.spawn_protection_radius(client, None),
+        "serversettings/spawn_protection_radius/set" => {
+            game.spawn_protection_radius(client, Some(management_int(argument)?))
+        }
         "serversettings/allow_flight" => game.allow_flight(client, None),
         "serversettings/allow_flight/set" => game.allow_flight(
             client,
@@ -517,6 +521,29 @@ impl Game<'_> {
                 "properties",
                 "force-gamemode",
                 toml::Value::Boolean(value),
+            )
+            .map_err(|e| (INTERNAL_ERROR, Some(e)))?;
+        }
+        Ok(reply["value"].clone())
+    }
+
+    /// `MinecraftServerSettingsServiceImpl.getSpawnProtectionRadius` and `setSpawnProtectionRadius`.
+    fn spawn_protection_radius(&self, client: u32, value: Option<i32>) -> Result<Value, Failure> {
+        let mut request = json!({ "method": "serversettings/spawn_protection_radius" });
+        if let Some(value) = value {
+            request["method"] = json!("serversettings/spawn_protection_radius/set");
+            request["value"] = json!(value);
+        }
+        let reply = self.ask(&format!("management {client} {request}"))?;
+        if let Some(error) = reply["error"].as_str() {
+            return Err((INTERNAL_ERROR, Some(error.to_owned())));
+        }
+        if let Some(value) = value {
+            crate::config::update(
+                &self.shared.dir,
+                "properties",
+                "spawn-protection",
+                toml::Value::Integer(i64::from(value)),
             )
             .map_err(|e| (INTERNAL_ERROR, Some(e)))?;
         }

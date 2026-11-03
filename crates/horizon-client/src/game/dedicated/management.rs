@@ -227,6 +227,31 @@ impl Game<'_> {
                 self.set_force_game_mode(force);
                 return json!({ "value": state.force_game_mode });
             }
+            "serversettings/spawn_protection_radius" => {
+                return json!({
+                    "value": self.lan.as_ref().map_or(0, |host| host.hub.spawn_protection)
+                });
+            }
+            "serversettings/spawn_protection_radius/set" => {
+                let Some(radius) = body["value"]
+                    .as_i64()
+                    .and_then(|value| i32::try_from(value).ok())
+                else {
+                    return json!({ "error": "spawn protection radius must be an integer" });
+                };
+                let current = self
+                    .lan
+                    .as_ref()
+                    .map_or(0, |host| host.hub.spawn_protection);
+                rpc(format!(
+                    "Update spawn protection radius from {current} to {radius}"
+                ));
+                self.set_spawn_protection(radius);
+                self.store_property("spawn-protection", radius.to_string());
+                return json!({
+                    "value": self.lan.as_ref().map_or(0, |host| host.hub.spawn_protection)
+                });
+            }
             "serversettings/allow_flight" => {
                 return json!({
                     "value": self.lan.as_ref().is_some_and(|host| host.hub.config.allow_flight)
