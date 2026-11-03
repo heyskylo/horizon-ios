@@ -3997,6 +3997,10 @@ impl Game<'_> {
                 if p.event == 69 {
                     self.remote_ravager_roar(p.id);
                 }
+                // ClientPacketListener.handleEntityEvent 63: a sniffer's digging sound.
+                if p.event == 63 {
+                    self.start_sniffer_digging_sound(p.id as u32);
+                }
                 // ClientPacketListener.handleEntityEvent 21: a guardian's hum.
                 if p.event == 21 {
                     self.start_guardian_sound(p.id as u32);
