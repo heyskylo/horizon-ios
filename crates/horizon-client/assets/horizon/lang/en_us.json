@@ -445,6 +445,8 @@
   "How far around you BlueMap tiles are downloaded. Next join.": "How far around you BlueMap tiles are downloaded. Next join.",
   "Synchronous": "Synchronous",
   "Asynchronous": "Asynchronous",
+  "Hidden Faces": "Hidden Faces",
+  "Drops leaf faces behind two leaf layers: faster, same crowns.": "Drops leaf faces behind two leaf layers: faster, same crowns.",
   "Solid": "Solid",
   "Solid Aggressive": "Solid Aggressive",
   "Hollow": "Hollow",

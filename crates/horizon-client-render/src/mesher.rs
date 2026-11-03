@@ -1519,12 +1519,24 @@ impl Mesher<'_> {
                         let other = &info[neighbor as usize];
                         // LeavesBlock.skipRendering with opaque leaves.
                         let opaque_leaves = !self.cutout_leaves && state.leaves && other.leaves;
-                        let hollow_leaf = self.leaf_culling == LeafCullingMode::Hollow
-                            && state.leaves
-                            && other.leaves
-                            && leaf_culling::in_section(x + dx, y + dy, z + dz);
+                        let culled_leaf = match self.leaf_culling {
+                            LeafCullingMode::Hollow | LeafCullingMode::Hidden => {
+                                state.leaves
+                                    && other.leaves
+                                    && leaf_culling::in_section(x + dx, y + dy, z + dz)
+                                    && (self.leaf_culling == LeafCullingMode::Hollow
+                                        || leaf_culling::backed(
+                                            pad,
+                                            info,
+                                            region,
+                                            base_y,
+                                            [x + 2 * dx, y + 2 * dy, z + 2 * dz],
+                                        ))
+                            }
+                            _ => false,
+                        };
                         visible[d as usize] = !opaque_leaves
-                            && !hollow_leaf
+                            && !culled_leaf
                             && self
                                 .visibility
                                 .should_render_face(

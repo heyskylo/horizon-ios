@@ -620,6 +620,9 @@ fn description(item: Item, s: &Settings, text: &'static str) -> &'static str {
         },
         (Item::Horizon(H::LeafCulling), _) => match s.horizon.leaf_culling {
             LeafCullingMode::Off => "Every leaf face. Vanilla's fancy leaves.",
+            LeafCullingMode::Hidden => {
+                "Drops leaf faces behind two leaf layers: faster, same crowns."
+            }
             LeafCullingMode::Solid => {
                 "Leaves fully inside a canopy draw solid: fewer see-through layers."
             }
@@ -3031,7 +3034,7 @@ mod tests {
         let item = Item::Horizon(H::LeafCulling);
         assert_eq!(item.switch(&s), None);
         assert_eq!(item.label(&s).plain(), "Leaf Culling: Off");
-        for label in ["Solid", "Solid Aggressive", "Hollow", "Off"] {
+        for label in ["Hidden Faces", "Solid", "Solid Aggressive", "Hollow", "Off"] {
             item.cycle(&mut s, false, FB);
             assert_eq!(item.label(&s).plain(), format!("Leaf Culling: {label}"));
             assert_eq!(
@@ -3101,7 +3104,7 @@ mod tests {
             press(&mut ui, &mut s, (r[0] + 4.0, r[1] + 4.0)),
             [Action::ButtonClick, Action::Changed]
         );
-        assert_eq!(s.horizon.leaf_culling, LeafCullingMode::Solid);
+        assert_eq!(s.horizon.leaf_culling, LeafCullingMode::Hidden);
         assert_eq!(s.horizon.preset, Preset::Custom);
     }
 
