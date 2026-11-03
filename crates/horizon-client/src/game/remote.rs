@@ -1134,6 +1134,13 @@ impl Game<'_> {
         // Kept mod block entity geometry belongs to the world leaving.
         self.kept_block_entities.get_mut().clear();
         self.clear_narrator();
+        // updateLevelInEngines(null): every sound stops and the music manager
+        // lets go of its track. Leaving a server comes straight here, not
+        // through finish_close_world, so the biome's ambient loop would
+        // otherwise play on over the title screen until the next world.
+        self.ambience.clear(&mut self.audio);
+        self.music.stop_playing(None, &mut self.audio);
+        self.audio.stop_all();
         // A world is leaving either way: its icon attempt goes with it.
         self.world_icon = None;
         // Minecraft.disconnect: the client level goes.
