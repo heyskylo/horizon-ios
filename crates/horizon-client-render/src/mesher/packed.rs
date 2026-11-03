@@ -248,3 +248,96 @@ pub fn packed_quads(layout: &[[u32; 6]], quads: usize) -> usize {
         .filter(|w| w[5] & FULL == 0)
         .count()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const TINT: u32 = 0x7F_B238;
+
+    /// An opaque colour the mesher makes of grey level `g` times `tint`.
+    fn tinted(g: u32, tint: u32) -> u32 {
+        let [r, gr, b] = channels(tint).map(|t| g * t / 255);
+        r | gr << 8 | b << 16 | 0xFF00_0000
+    }
+
+    /// The top face of block (3, 15, 5), corners in `order`: tinted, smooth lit, with
+    /// ambient occlusion darkening its corners differently.
+    fn top(order: [usize; 4]) -> [TerrainVertex; 4] {
+        let pos = [
+            [3.0, 16.0, 5.0],
+            [3.0, 16.0, 6.0],
+            [4.0, 16.0, 6.0],
+            [4.0, 16.0, 5.0],
+        ];
+        let uv = [[0, 0], [16 << 10, 0], [16 << 10, 16 << 10], [0, 16 << 10]];
+        let grays = [200, 180, 160, 200];
+        order.map(|i| TerrainVertex {
+            pos: pos[i],
+            uv: uv[i],
+            layer: 7,
+            light: 0xF0 | 0x40 << 8,
+            color: tinted(grays[i], TINT),
+        })
+    }
+
+    fn same(a: &TerrainVertex, b: &TerrainVertex) -> bool {
+        bytemuck::bytes_of(a) == bytemuck::bytes_of(b)
+    }
+
+    #[test]
+    fn a_whole_cube_face_takes_one_record_either_way_round() {
+        for order in [[0, 1, 2, 3], [2, 3, 0, 1], [0, 3, 2, 1]] {
+            let quad = top(order);
+            let words = pack_quad(&quad, TINT).expect("a whole face on the block grid packs");
+            for (corner, v) in quad.iter().enumerate() {
+                assert!(
+                    same(&packed_vertex(&words, corner), v),
+                    "{order:?} corner {corner}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn quads_off_the_grid_or_the_steps_keep_their_vertices() {
+        // Half a block up: a slab's top.
+        let mut slab = top([0, 1, 2, 3]);
+        for v in &mut slab {
+            v.pos[1] = 8.5;
+        }
+        assert!(pack_quad(&slab, TINT).is_none());
+        // A UV between the 1/32 steps.
+        let mut uv = top([0, 1, 2, 3]);
+        uv[2].uv[0] += 1;
+        assert!(pack_quad(&uv, TINT).is_none());
+        // Light between the steps of 4.
+        let mut light = top([0, 1, 2, 3]);
+        light[1].light += 1;
+        assert!(pack_quad(&light, TINT).is_none());
+    }
+
+    #[test]
+    fn a_quad_without_a_record_points_at_its_own_vertices() {
+        let mut odd = top([0, 1, 2, 3]);
+        for v in &mut odd {
+            v.pos[1] = 8.5;
+        }
+        let mut solid: Vec<TerrainVertex> = Vec::new();
+        for _ in 0..4 {
+            solid.extend(top([0, 1, 2, 3]));
+        }
+        solid.extend(odd);
+        let out = layout(&solid, &[TINT; 5]);
+        // Five records, padded to eight slots, then the odd quad's four vertices.
+        assert_eq!(out.len(), 12);
+        assert_eq!(packed_quads(&out, 5), 4);
+        assert_eq!(out[4][5], FULL);
+        let at = 4 + out[4][0] as usize;
+        for (slot, v) in out[at..at + 4].iter().zip(&odd) {
+            assert!(same(&bytemuck::cast::<[u32; 6], TerrainVertex>(*slot), v));
+        }
+        // Nothing smaller to gain: no layout at all.
+        assert!(layout(&odd, &[TINT]).is_empty());
+    }
+}
