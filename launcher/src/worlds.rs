@@ -12,7 +12,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 const LOCK: &str = "session.lock";
 
 /// Hold the same exclusive lock as the game until a filesystem operation finishes.
-fn lock_world(world: &World) -> Result<fs::File, String> {
+fn lock_world(world: &World) -> Result<WorldLock, String> {
     let lock = fs::File::options()
         .write(true)
         .create(true)
@@ -20,7 +20,18 @@ fn lock_world(world: &World) -> Result<fs::File, String> {
         .open(world.path.join(LOCK))
         .map_err(|e| e.to_string())?;
     lock.try_lock().map_err(|e| e.to_string())?;
-    Ok(lock)
+    Ok(WorldLock(lock))
+}
+
+/// A world's lock, released when dropped. Unlocked explicitly: a process started while it was
+/// held shares the open file until it execs, and closing our copy alone would leave the world
+/// locked that long.
+struct WorldLock(fs::File);
+
+impl Drop for WorldLock {
+    fn drop(&mut self) {
+        let _ = self.0.unlock();
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]

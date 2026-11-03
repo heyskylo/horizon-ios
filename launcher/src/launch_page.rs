@@ -130,9 +130,23 @@ impl Launcher {
         self.reload_instances();
     }
 
+    /// The instance the memory row sets: the one being edited while its dialog is open, else the
+    /// selected one.
+    fn memory_instance(&self) -> Option<instances::Instance> {
+        match self
+            .instances
+            .dialog
+            .as_ref()
+            .and_then(|d| d.editing.as_ref())
+        {
+            Some(id) => self.instances.list.iter().find(|i| &i.id == id).cloned(),
+            None => self.selected_instance().cloned(),
+        }
+    }
+
     /// The value under the pointer. Saving waits until the mouse comes up.
     fn pick_memory(&mut self, at: Point<Pixels>, cx: &mut Context<Self>) {
-        let Some(instance) = self.selected_instance().cloned() else {
+        let Some(instance) = self.memory_instance() else {
             return;
         };
         let slider = &mut self.memory_slider;
@@ -159,7 +173,7 @@ impl Launcher {
         let Some(memory) = self.memory_slider.dragging.take() else {
             return;
         };
-        let Some(id) = self.selected_instance().map(|i| i.id.clone()) else {
+        let Some(id) = self.memory_instance().map(|i| i.id) else {
             return;
         };
         self.save_memory(&id, memory);
@@ -351,6 +365,129 @@ impl Launcher {
                 .child(track)
                 .child(text(theme::CAPTION).text_color(t.muted).child(tr(about)))
                 .children(result),
+        )
+    }
+
+    /// Maximum memory in the glass look: a `SettingRow` of the instance's Edit dialog, the name
+    /// and what it does on the left, the mockup's `Slider` (as Settings' Glass and Blur) and the
+    /// box in MB on the right. Saved to the instance as it is set, as on Home.
+    pub(super) fn glass_memory_row(&mut self, cx: &mut Context<Self>) -> Option<Div> {
+        use crate::glass_ui as ui;
+        const TRACK: f32 = 208.;
+        let instance = self.memory_instance()?;
+        let total = self.memory_slider.total();
+        let area = self.memory_slider.area.clone();
+        let memory = self
+            .memory_slider
+            .dragging
+            .unwrap_or_else(|| Self::saved_memory(&instance));
+        self.sync_memory_box(&instance.id, memory);
+        let typed = launch::parse_memory(self.servers.value(Field::MemoryLimit));
+        let memory = match (self.servers.has_focus(Field::MemoryLimit), typed) {
+            (true, Ok(typed)) => typed,
+            _ => memory,
+        };
+        let f = launch::memory_fraction(memory, total).clamp(0., 1.);
+        let about = match instance.java {
+            Some(_) => "How much memory Java may use (-Xmx). Set it too low and the game can crash.",
+            None => "The game stays under this. Very low values make it slower, and it crashes only if it can't run at all. Change it while playing with /ramlimit.",
+        };
+        let track = div()
+            .id("instance-memory")
+            .relative()
+            .flex()
+            .flex_none()
+            .items_center()
+            .w(px(TRACK))
+            .h(px(24.))
+            .cursor_pointer()
+            .child(
+                canvas(move |bounds, _, _| area.set(Some(bounds)), |_, _, _, _| {})
+                    .absolute()
+                    .size_full(),
+            )
+            .child(
+                div()
+                    .h(px(4.))
+                    .w_full()
+                    .rounded_full()
+                    .overflow_hidden()
+                    .bg(ui::white(0.12))
+                    .child(
+                        div()
+                            .h_full()
+                            .w(relative(f))
+                            .rounded_full()
+                            .bg(ui::color(ui::look().accent_soft)),
+                    ),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .left(px(f * (TRACK - 16.)))
+                    .size(px(16.))
+                    .rounded_full()
+                    .bg(gpui::white()),
+            )
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, ev: &MouseDownEvent, _, cx| this.pick_memory(ev.position, cx)),
+            )
+            .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, _, cx| {
+                if ev.pressed_button == Some(MouseButton::Left)
+                    && this.memory_slider.dragging.is_some()
+                {
+                    this.pick_memory(ev.position, cx);
+                }
+            }))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _: &MouseUpEvent, _, cx| this.finish_memory(cx)),
+            )
+            .on_mouse_up_out(
+                MouseButton::Left,
+                cx.listener(|this, _: &MouseUpEvent, _, cx| this.finish_memory(cx)),
+            );
+        let unit = (memory.is_some() || self.servers.has_focus(Field::MemoryLimit))
+            .then(|| ui::text(13., FontWeight::NORMAL, 0.6).child("MB"));
+        let input = self.field(Field::MemoryLimit, tr("No limit"), 96., cx);
+        let result = self.memory_slider.saved.as_ref().map(|s| match s {
+            MemorySaved::Ok(Some(mb)) => div().child(trf(
+                "Saved: the next Play uses at most {mb} MB.",
+                &[("mb", &mb.to_string())],
+            )),
+            MemorySaved::Ok(None) => div().child(tr("Saved: no memory limit on the next Play.")),
+            MemorySaved::Invalid => div()
+                .text_color(ui::color(horizon_theme::glass::DANGER))
+                .child(tr(
+                    "Type a number of MB like 4096, or 4gb, or leave it empty for no limit.",
+                )),
+            MemorySaved::Error(e) => div()
+                .text_color(ui::color(horizon_theme::glass::DANGER))
+                .child(e.clone()),
+        });
+        let note = div()
+            .flex()
+            .flex_col()
+            .gap(px(4.))
+            .child(tr(about))
+            .children(result);
+        Some(
+            ui::setting_row(
+                tr("Maximum memory"),
+                Some(note.into_any_element()),
+                Some(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(12.))
+                        .child(track)
+                        .child(input)
+                        .children(unit)
+                        .into_any_element(),
+                ),
+            )
+            .px_0(),
         )
     }
 

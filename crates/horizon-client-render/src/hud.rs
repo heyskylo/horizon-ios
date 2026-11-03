@@ -96,6 +96,9 @@ pub struct HudAtlas {
     /// A resource pack's own `core/text` shader for the GUI's text, translated;
     /// none draws the text natively.
     pub text_shader: Option<std::sync::Arc<horizon_shaders::CoreProgram>>,
+    /// A resource pack's own `core/rendertype_lines` shader for the block outline, translated;
+    /// none draws the outline natively.
+    pub lines_shader: Option<std::sync::Arc<horizon_shaders::CoreProgram>>,
     /// The packs' OptiFine random entity textures, whose variants this atlas packs.
     pub random_textures: horizon_optifine::random_textures::RandomTextures,
     /// Their emissive overlays (`_e`), packed here too.
@@ -813,6 +816,13 @@ impl HudAtlas {
     pub fn build_over_with_image(root: &Path, defaults: &Path, mod_image: bool) -> Result<Self> {
         let mut atlas = Self::pack(root, defaults, WALKED_TEXTURE_FOLDERS, true, mod_image)?;
         atlas.text_shader = pack_text::load(root, defaults);
+        atlas.lines_shader = pack_text::load_core(
+            root,
+            defaults,
+            "rendertype_lines",
+            &[],
+            &crate::gfx::core_lines::GLUE,
+        );
         Ok(atlas)
     }
     /// Empty slots written at run time: map textures (game/maps.rs), the
@@ -941,6 +951,7 @@ impl HudAtlas {
             glint_armor: (vec![0; 4], 1, 1),
             white,
             text_shader: None,
+            lines_shader: None,
             random_textures: Default::default(),
             emissive: Default::default(),
             blinks: Default::default(),
@@ -1384,6 +1395,7 @@ impl HudAtlas {
             glint,
             glint_armor,
             text_shader: None,
+            lines_shader: None,
             random_textures,
             emissive,
             blinks,

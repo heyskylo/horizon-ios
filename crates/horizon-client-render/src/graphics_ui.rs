@@ -7,7 +7,7 @@
 use crate::{
     graphics::{
         EntityCullingMode, FarDetail, FrameGeneration, GraphicsApi, LeafCullingMode, Overlay,
-        Pacing, PresentMode, Preset, Upscaling,
+        Pacing, ParticleCullingMode, PresentMode, Preset, Upscaling,
     },
     graphics_style::{self as style, Cost},
     hud::{HudAtlas, HudBatch},
@@ -66,6 +66,7 @@ pub enum H {
     BlueMapRadius,
     CaveCulling,
     EntityCulling,
+    ParticleCulling,
     LeafCulling,
     CacheShulkerBoxes,
     CacheSigns,
@@ -380,6 +381,11 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
                             "Hides entities behind opaque blocks.",
                         ),
                         h(
+                            H::ParticleCulling,
+                            None,
+                            "Skips offscreen, subpixel and terrain-hidden particles.",
+                        ),
+                        h(
                             H::LeafCulling,
                             Saves,
                             "Draws or drops leaf faces inside canopies. Off keeps vanilla's fancy leaves.",
@@ -620,6 +626,9 @@ fn description(item: Item, s: &Settings, text: &'static str) -> &'static str {
         },
         (Item::Horizon(H::LeafCulling), _) => match s.horizon.leaf_culling {
             LeafCullingMode::Off => "Every leaf face. Vanilla's fancy leaves.",
+            LeafCullingMode::Hidden => {
+                "Drops leaf faces behind two leaf layers: faster, same crowns."
+            }
             LeafCullingMode::Solid => {
                 "Leaves fully inside a canopy draw solid: fewer see-through layers."
             }
@@ -627,6 +636,15 @@ fn description(item: Item, s: &Settings, text: &'static str) -> &'static str {
                 "Leaves with one open side draw solid too: faster, chunkier edges."
             }
             LeafCullingMode::Hollow => "Drops faces between leaves: faster, but gaps look through.",
+        },
+        (Item::Horizon(H::ParticleCulling), _) => match s.horizon.particle_culling {
+            ParticleCullingMode::Off => "Draws every particle.",
+            ParticleCullingMode::Synchronous => {
+                "Skips offscreen, subpixel and terrain-hidden particles."
+            }
+            ParticleCullingMode::Asynchronous => {
+                "Skips offscreen, subpixel and terrain-hidden particles with less render-thread work."
+            }
         },
         _ => text,
     }
@@ -719,6 +737,7 @@ impl H {
             ),
             H::CaveCulling => labelled("Cave Culling", on_off(g.cave_culling)),
             H::EntityCulling => labelled("Entity Culling", g.entity_culling.label()),
+            H::ParticleCulling => labelled("Particle Culling", g.particle_culling.label()),
             H::LeafCulling => labelled("Leaf Culling", g.leaf_culling.label()),
             H::CacheShulkerBoxes => labelled("Shulker Boxes", on_off(g.cache_shulker_boxes)),
             H::CacheSigns => labelled("Signs", on_off(g.cache_signs)),
@@ -870,6 +889,9 @@ impl H {
             H::CaveCulling => g.cave_culling = !g.cave_culling,
             H::EntityCulling => {
                 g.entity_culling = step(&EntityCullingMode::ALL, g.entity_culling, back)
+            }
+            H::ParticleCulling => {
+                g.particle_culling = step(&ParticleCullingMode::ALL, g.particle_culling, back)
             }
             H::LeafCulling => {
                 g.leaf_culling = step(&LeafCullingMode::ALL, g.leaf_culling, back);
@@ -1902,6 +1924,7 @@ impl GraphicsUi {
         framebuffer: [i32; 2],
         drag: bool,
         right: bool,
+        shift: bool,
     ) -> Vec<Action> {
         self.keep(s);
         let (cols, lines, content) = self.layout(s, w, h);
@@ -1979,7 +2002,7 @@ impl GraphicsUi {
             return Vec::new();
         }
         self.focus = Some(Target::Item(item));
-        let actions = self.activate(s, item, false, framebuffer, Some((x, &cols)));
+        let actions = self.activate(s, item, shift, framebuffer, Some((x, &cols)));
         self.mark(&actions);
         actions
     }
@@ -2358,7 +2381,15 @@ mod tests {
         [cols.list_x, ui.row_y(&cols, &line), cols.list_w, style::ROW]
     }
     fn press(ui: &mut GraphicsUi, s: &mut Settings, (x, y): (f32, f32)) -> Vec<Action> {
-        ui.click(s, (x, y), SIZE, FB, false, false)
+        ui.click(s, (x, y), SIZE, FB, false, false, false)
+    }
+    fn press_shift(
+        ui: &mut GraphicsUi,
+        s: &mut Settings,
+        (x, y): (f32, f32),
+        shift: bool,
+    ) -> Vec<Action> {
+        ui.click(s, (x, y), SIZE, FB, false, false, shift)
     }
 
     #[test]
@@ -2449,7 +2480,15 @@ mod tests {
         assert!(y >= 0.0 && x + w <= size.0);
         // Undo, over Done, stays clear of the page list.
         assert!(cols.button(1)[1] >= y + h);
-        ui.click(&mut s, (x + w / 2.0, y + h / 2.0), size, FB, false, false);
+        ui.click(
+            &mut s,
+            (x + w / 2.0, y + h / 2.0),
+            size,
+            FB,
+            false,
+            false,
+            false,
+        );
         let (_, lines, _) = ui.layout(&s, size.0, size.1);
         assert_eq!(ui.current(&lines), Some(Page::Hdr));
     }
@@ -2566,7 +2605,7 @@ mod tests {
         );
         assert_eq!(H::ChunkUpdates.slider(&s), Some(1.0));
         assert_eq!(
-            ui.click(&mut s, (-100.0, -100.0), SIZE, FB, true, false),
+            ui.click(&mut s, (-100.0, -100.0), SIZE, FB, true, false, false),
             [Action::SliderDrag]
         );
         assert_eq!(H::ChunkUpdates.slider(&s), Some(0.0));
@@ -2638,7 +2677,7 @@ mod tests {
         let (cols, _, content) = ui.layout(&s, SIZE.0, SIZE.1);
         let x = cols.bar_x() + 2.0;
         let drag = |ui: &mut GraphicsUi, s: &mut Settings, y, drag| {
-            ui.click(s, (x, y), SIZE, FB, drag, false)
+            ui.click(s, (x, y), SIZE, FB, drag, false, false)
         };
         assert!(drag(&mut ui, &mut s, cols.top + 5.0, false).is_empty());
         drag(&mut ui, &mut s, cols.top + 15.0, true);
@@ -2658,13 +2697,13 @@ mod tests {
         let mut ui = GraphicsUi::default();
         let (cols, ..) = ui.layout(&s, SIZE.0, SIZE.1);
         let x = cols.bar_x() + 2.0;
-        ui.click(&mut s, (x, cols.top + 5.0), SIZE, FB, false, false);
+        ui.click(&mut s, (x, cols.top + 5.0), SIZE, FB, false, false, false);
         assert!(ui.scroll.held());
         // A 130-high GUI leaves the list under the 40 px the scroller's thumb needs.
         let short = (SIZE.0, 130.0);
         assert!(!Columns::of(short.0, short.1).scrolls());
         assert!(
-            ui.click(&mut s, (x, 80.0), short, FB, true, false)
+            ui.click(&mut s, (x, 80.0), short, FB, true, false, false)
                 .is_empty()
         );
         assert!(!ui.scroll.held());
@@ -2974,6 +3013,92 @@ mod tests {
         assert_eq!(item.label(&s).plain(), "Entity Culling: Asynchronous");
     }
 
+    #[test]
+    fn particle_culling_modes_are_opt_in_and_cycle_from_its_row() {
+        let mut s = Settings::default();
+        let item = Item::Horizon(H::ParticleCulling);
+        assert_eq!(s.horizon.particle_culling, ParticleCullingMode::Off);
+        assert_eq!(item.label(&s).plain(), "Particle Culling: Off");
+        for mode in ParticleCullingMode::ALL {
+            s.horizon.particle_culling = mode;
+            for preset in Preset::ALL {
+                crate::graphics::apply_preset(preset, &mut s);
+                assert_eq!(s.horizon.particle_culling, mode);
+            }
+            assert_eq!(
+                crate::graphics::Graphics::parse(&s.horizon.serialize()).particle_culling,
+                mode
+            );
+        }
+        s.horizon.particle_culling = ParticleCullingMode::Off;
+        let mut ui = GraphicsUi::default();
+        let r = row(&mut ui, &s, item);
+        for (mode, label) in [
+            (ParticleCullingMode::Synchronous, "Synchronous"),
+            (ParticleCullingMode::Asynchronous, "Asynchronous"),
+            (ParticleCullingMode::Off, "Off"),
+        ] {
+            s.horizon.preset = Preset::Balanced;
+            assert_eq!(
+                press(&mut ui, &mut s, (r[0] + 4.0, r[1] + 4.0)),
+                [Action::ButtonClick, Action::Changed]
+            );
+            assert_eq!(s.horizon.particle_culling, mode);
+            assert_eq!(s.horizon.preset, Preset::Custom);
+            assert_eq!(item.label(&s).plain(), format!("Particle Culling: {label}"));
+        }
+    }
+
+    #[test]
+    fn graphics_cycle_button_cycles_forward_and_shift_click_cycles_backward_with_wrapping() {
+        let mut s = Settings::default();
+        let item = Item::Horizon(H::EntityCulling);
+        let mut ui = GraphicsUi::default();
+        let r = row(&mut ui, &s, item);
+        let at = (r[0] + 4.0, r[1] + 4.0);
+
+        // 1. Feature without shift (normal click): cycles forward (+1)
+        assert_eq!(s.horizon.entity_culling, EntityCullingMode::Off);
+        assert_eq!(
+            press_shift(&mut ui, &mut s, at, false),
+            [Action::ButtonClick, Action::Changed]
+        );
+        assert_eq!(s.horizon.entity_culling, EntityCullingMode::Synchronous);
+
+        assert_eq!(
+            press_shift(&mut ui, &mut s, at, false),
+            [Action::ButtonClick, Action::Changed]
+        );
+        assert_eq!(s.horizon.entity_culling, EntityCullingMode::Asynchronous);
+
+        // 3. Wrap-around forward (at max value, normal click wraps to min / 0)
+        assert_eq!(
+            press_shift(&mut ui, &mut s, at, false),
+            [Action::ButtonClick, Action::Changed]
+        );
+        assert_eq!(s.horizon.entity_culling, EntityCullingMode::Off);
+
+        // 4. Wrap-around backward (at min / 0, shift-click wraps to max)
+        assert_eq!(
+            press_shift(&mut ui, &mut s, at, true),
+            [Action::ButtonClick, Action::Changed]
+        );
+        assert_eq!(s.horizon.entity_culling, EntityCullingMode::Asynchronous);
+
+        // 2. Feature with shift: cycles backward (-1)
+        assert_eq!(
+            press_shift(&mut ui, &mut s, at, true),
+            [Action::ButtonClick, Action::Changed]
+        );
+        assert_eq!(s.horizon.entity_culling, EntityCullingMode::Synchronous);
+
+        assert_eq!(
+            press_shift(&mut ui, &mut s, at, true),
+            [Action::ButtonClick, Action::Changed]
+        );
+        assert_eq!(s.horizon.entity_culling, EntityCullingMode::Off);
+    }
+
     /// Translucent Batching: a switch on the Advanced page, on by default, no part of a
     /// preset, and greyed out, reading Off, where the device can't batch.
     #[test]
@@ -3031,7 +3156,7 @@ mod tests {
         let item = Item::Horizon(H::LeafCulling);
         assert_eq!(item.switch(&s), None);
         assert_eq!(item.label(&s).plain(), "Leaf Culling: Off");
-        for label in ["Solid", "Solid Aggressive", "Hollow", "Off"] {
+        for label in ["Hidden Faces", "Solid", "Solid Aggressive", "Hollow", "Off"] {
             item.cycle(&mut s, false, FB);
             assert_eq!(item.label(&s).plain(), format!("Leaf Culling: {label}"));
             assert_eq!(
@@ -3050,7 +3175,12 @@ mod tests {
             .unwrap();
         assert_eq!(culling.0, Page::Performance);
         let block: Vec<Item> = culling.1.iter().map(|r| r.item).collect();
-        for h in [H::CaveCulling, H::EntityCulling, H::LeafCulling] {
+        for h in [
+            H::CaveCulling,
+            H::EntityCulling,
+            H::ParticleCulling,
+            H::LeafCulling,
+        ] {
             assert!(block.contains(&Item::Horizon(h)), "{h:?}");
         }
         // The block-entity caches are the group after it, in this order.
@@ -3101,7 +3231,7 @@ mod tests {
             press(&mut ui, &mut s, (r[0] + 4.0, r[1] + 4.0)),
             [Action::ButtonClick, Action::Changed]
         );
-        assert_eq!(s.horizon.leaf_culling, LeafCullingMode::Solid);
+        assert_eq!(s.horizon.leaf_culling, LeafCullingMode::Hidden);
         assert_eq!(s.horizon.preset, Preset::Custom);
     }
 
@@ -3266,36 +3396,47 @@ mod tests {
         let mut s = Settings::default();
         s.horizon.leaf_culling = LeafCullingMode::Hollow;
         s.horizon.entity_culling = EntityCullingMode::Asynchronous;
-        for (code, leaf, entity, leaf_text) in [
+        s.horizon.particle_culling = ParticleCullingMode::Asynchronous;
+        for (code, leaf, entity, leaf_text, particle, particle_text) in [
             (
                 "de_de",
                 "Laub-Culling: Hohl",
                 "Objekt-Culling: Asynchron",
                 "Lässt Flächen zwischen Blättern weg: schneller, aber Lücken sind durchsichtig.",
+                "Partikel-Culling: Asynchron",
+                "Überspringt Partikel außerhalb des Bildes, unterhalb eines Pixels oder hinter Terrain und entlastet den Render-Thread.",
             ),
             (
                 "pl_pl",
                 "Pomijanie liści: Puste",
                 "Pomijanie bytów: Asynchroniczne",
                 "Pomija ściany między liśćmi: szybciej, ale luki są przezroczyste.",
+                "Pomijanie cząsteczek: Asynchroniczne",
+                "Pomija cząsteczki poza ekranem, mniejsze niż piksel i zasłonięte przez teren, odciążając wątek renderowania.",
             ),
             (
                 "uk_ua",
                 "Відсікання листя: Порожнє",
                 "Відсік. сутностей: Асинхронно",
                 "Прибирає грані між листям: швидше, але прогалини прозорі.",
+                "Відсікання частинок: Асинхронно",
+                "Пропускає частинки поза екраном, менші за піксель і закриті місцевістю, зменшуючи роботу потоку рендерингу.",
             ),
             (
                 "zh_cn",
                 "树叶剔除: 镂空",
                 "实体剔除: 异步",
                 "省略树叶之间的面：更快，但缝隙会透视。",
+                "粒子剔除: 异步",
+                "跳过屏幕外、小于一个像素和被地形遮挡的粒子，减少渲染线程的工作量。",
             ),
             (
                 "fr_fr",
                 "Occlusion feuillage: Creux",
                 "Occlusion des entités: Asynchrone",
                 "Supprime les faces entre feuilles : plus rapide, mais on voit à travers les trous.",
+                "Occlusion des particules: Asynchrone",
+                "Ignore les particules hors écran, trop petites ou masquées par le terrain avec moins de travail sur le thread de rendu.",
             ),
         ] {
             let (shown, _) = lang::scoped(lang::Language::load(&[], code), || {
@@ -3304,11 +3445,19 @@ mod tests {
                     item(H::LeafCulling).label(&s).plain(),
                     item(H::EntityCulling).label(&s).plain(),
                     lang::get(description(item(H::LeafCulling), &s, "")),
+                    item(H::ParticleCulling).label(&s).plain(),
+                    lang::get(description(item(H::ParticleCulling), &s, "")),
                 )
             });
             assert_eq!(
                 shown,
-                (leaf.into(), entity.into(), leaf_text.into()),
+                (
+                    leaf.into(),
+                    entity.into(),
+                    leaf_text.into(),
+                    particle.into(),
+                    particle_text.into(),
+                ),
                 "{code}"
             );
         }
