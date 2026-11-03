@@ -1385,7 +1385,6 @@ fn scale(properties: &Properties, program: &str, group: Group) -> [f32; 3] {
     }
 }
 
-/// `flip.<program>.<buffer>=<bool>` keys of one program.
 /// Whether the pack names the `HIGHER_SHADOWCOLOR` feature, required or optional.
 fn higher_shadowcolor(properties: &Properties) -> bool {
     ["iris.features.required", "iris.features.optional"]
@@ -1394,6 +1393,7 @@ fn higher_shadowcolor(properties: &Properties) -> bool {
         .any(|v| v.split_whitespace().any(|w| w == "HIGHER_SHADOWCOLOR"))
 }
 
+/// `flip.<program>.<buffer>=<bool>` keys of one program.
 fn flips(properties: &Properties, program: &str) -> Vec<(u32, bool)> {
     let prefix = format!("flip.{program}.");
     properties
