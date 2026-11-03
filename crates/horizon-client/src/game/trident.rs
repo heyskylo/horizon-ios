@@ -264,7 +264,7 @@ impl Game<'_> {
     /// gets a lightning bolt and the thunder sound.
     fn channel_lightning(&mut self, at: [f64; 3], guest: Option<u32>) {
         // Level.isThundering: the thunder level, in dimensions with weather.
-        if self.dim != super::Dim::Overworld || self.world.weather.levels(1.0).1 <= 0.9 {
+        if !self.can_have_weather() || self.weather_levels(1.0).1 <= 0.9 {
             return;
         }
         // BlockAndLightGetter.canSeeSky: full sky light.
@@ -855,6 +855,16 @@ impl Game<'_> {
                     t.yaw = t.velocity.x.atan2(t.velocity.z).to_degrees() as f32;
                     t.pitch = t.velocity.y.atan2(h).to_degrees() as f32;
                 }
+            }
+            if !t.no_physics {
+                let half = 0.25;
+                let bounds = Aabb::new(
+                    t.position.add_vector(Vec3::new(-half, 0.0, -half)),
+                    t.position.add_vector(Vec3::new(half, 0.5, half)),
+                );
+                self.entity_powder_snow_particles(
+                    t.previous, t.position, bounds, t.velocity, false,
+                );
             }
             // The stuck branch returns before Entity.baseTick. A flight that
             // just hit a block still reaches it, as does a noPhysics return.
