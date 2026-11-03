@@ -2541,6 +2541,14 @@ pub fn do_hurt_target(m: &mut Mob, who: Who, cx: &mut Cx) {
         cx.events
             .push(MobEvent::Sound("entity.axolotl.attack", at, 1.0, 1.0));
     }
+    // Dolphin.playAttackSound: playSound(DOLPHIN_ATTACK, 1.0, 1.0), once
+    // the blow landed. A dolphin that is hurt takes its attacker as a target
+    // and strikes with the melee goal, so its bite is heard as it lands.
+    if m.species() == Species::Dolphin && !m.silent {
+        let at = [m.position.x, m.position.y, m.position.z];
+        cx.events
+            .push(MobEvent::Sound("entity.dolphin.attack", at, 1.0, 1.0));
+    }
     let _ = Fluid::None;
 }
 /// Mob.ate (sheep regrow wool, babies grow).
