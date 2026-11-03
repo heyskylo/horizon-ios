@@ -122,7 +122,11 @@ def free_port():
     The OS hands out a port when we bind to 0, but we close it before the server binds it, and a harness running
     beside this one (another worktree, the parallel job queue) can be handed the same number in that gap. So each port
     is also claimed with a lock file in the temp dir, held until this process exits; a port another harness has
-    claimed is skipped."""
+    claimed is skipped. Windows has no flock (nor os.getuid): there the port is the OS's answer alone, as before."""
+    if sys.platform == "win32":
+        with socket.socket() as s:
+            s.bind(("127.0.0.1", 0))
+            return s.getsockname()[1]
     import fcntl
     locks = Path(tempfile.gettempdir()) / f"horizon-harness-ports-{os.getuid()}"
     locks.mkdir(exist_ok=True)
