@@ -103,6 +103,29 @@ without the entity_drops gate. The host build and iOS Clippy pass. The real-clie
 cases across four vehicles, two rule values and creative/survival attacks.
 These checks establish item conservation, not full explosion or RNG-stream parity.
 
+## Vehicle death vibrations and TNT coverage
+
+The live `vehicle-explosion-contents` check passes all eight cases: four container
+vehicles with entity_drops on/off retain 64 stored diamonds through a TNT blast.
+The explosion walk snapshots entities, so newly spilled contents are not hit by
+the same blast. No additional explosion repair was needed for those cases.
+
+A separate live sensor test found that /kill on plain/chest minecarts and boats
+omitted ENTITY_DIE: all four left the sensor inactive. Java 26.3 Entity.kill
+calls remove(KILLED), then gameEvent(ENTITY_DIE) at the entity position. The repair
+posts that event after vehicle removal with a non-player source ID and non-living,
+non-targetable context. All four cases now activate the sensor and report
+last_vibration_frequency=15. Host build and iOS Clippy pass.
+
+`tools/lan_e2e.py --check vehicle-kill-vibration` records the behavioural check.
+This verifies vehicle command removal, not every non-living entity's override.
+
+Renderer review: the earlier private-pack diagnostic still reports an optional
+outline-program vaPosition translation failure. Owned renderer/translator source
+already supplies the named attribute mapping; the cause has not been isolated.
+No speculative shader compatibility change was made and no third-party pack
+implementation source was inspected.
+
 ## Java fidelity requirement
 
 Keep Java 26.3 as the behavioural reference for every gameplay repair. Verify the
@@ -113,8 +136,8 @@ whole-game parity.
 
 ## Remaining investigation
 
-- Explosion contents and non-living /kill game-event propagation: audit separately
-  against Java. Command and player-attack item conservation are verified above.
+- Other explosion variants and non-living entity overrides remain to audit;
+  TNT vehicle conservation and vehicle /kill vibrations are verified above.
 
 - Cursor and crafting-grid conservation during disconnect, death, menu replacement
   and vehicle destruction; include full inventories and overflow drops.

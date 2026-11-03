@@ -1931,6 +1931,20 @@ impl Game<'_> {
             }
         }
     }
+    /// Entity.kill posts ENTITY_DIE after removing a non-living entity too.
+    /// Keep its non-player source ID for vibration delivery, but do not
+    /// advertise a living/player source to catalysts, shriekers or wardens.
+    pub(super) fn sculk_nonliving_died(&mut self, id: u32, at: horizon_core::geometry::Vec3) {
+        self.post_game_event(
+            "minecraft:entity_die",
+            [at.x, at.y, at.z],
+            Context {
+                source: Some(Who::Mob(id)),
+                ..Context::default()
+            },
+        );
+    }
+
     /// `LivingEntity.die` with the catalyst's reach: a death event at the
     /// mob's position.
     pub(super) fn sculk_mob_died(&mut self, m: &Mob) {

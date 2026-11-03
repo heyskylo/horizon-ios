@@ -2167,6 +2167,7 @@ impl Game<'_> {
                     let items = std::mem::take(&mut b.items);
                     self.drop_removed_vehicle_contents(b.position, items);
                     self.boat_removed(&b);
+                    self.sculk_nonliving_died(id, b.position);
                 }
             }
             Target::Cart(id) => {
@@ -2174,6 +2175,7 @@ impl Game<'_> {
                 if let Some(i) = self.carts.iter().position(|c| c.id == id) {
                     let c = self.carts.remove(i);
                     self.drop_removed_vehicle_contents(c.position, c.items);
+                    self.sculk_nonliving_died(id, c.position);
                 }
             }
             Target::Other(id) => self.others.retain(|o| o.id != id),

@@ -13060,6 +13060,8 @@ def check_vehicle_kill_contents(host, guest, out, damage=False):
     """Command/attack removal spills contents even with entity_drops disabled."""
     x, y, z = apart(host, guest)['host']
     at = (x + 2.5, y, z + 0.5)
+    if damage == 'explosion':
+        host('command', command=f'fill {x - 3} {y - 1} {z - 3} {x + 4} {y - 1} {z + 6} minecraft:bedrock')
     rows = {}
     previous_mode = host('state')['gamemode']
     if damage:
@@ -13077,7 +13079,9 @@ def check_vehicle_kill_contents(host, guest, out, damage=False):
                 reply = server_reply(host, f'item replace entity @e[tag={tag},limit=1] container.0 with minecraft:diamond 64', 'slot')
                 assert 'Replaced' in reply, reply
                 host.wait(20 if damage == 'survival' else 5)
-                if damage:
+                if damage == 'explosion':
+                    host('command', command=f'summon minecraft:tnt {at[0]} {at[1] + 0.5} {at[2]} {{fuse:5s}}')
+                elif damage:
                     host.raw('look-at', at[0], at[1] + 0.3, at[2])
                     host.raw('mouse', 'left', 'click')
                 else:
@@ -13107,9 +13111,42 @@ def check_vehicle_kill_contents(host, guest, out, damage=False):
 
 CHECKS += ['vehicle-kill-contents']
 CHECK_FNS['vehicle-kill-contents'] = check_vehicle_kill_contents
-CHECKS += ['vehicle-damage-contents', 'vehicle-survival-contents']
+CHECKS += ['vehicle-damage-contents', 'vehicle-survival-contents', 'vehicle-explosion-contents']
 CHECK_FNS['vehicle-damage-contents'] = lambda host, guest, out: check_vehicle_kill_contents(host, guest, out, damage=True)
 CHECK_FNS['vehicle-survival-contents'] = lambda host, guest, out: check_vehicle_kill_contents(host, guest, out, damage='survival')
+CHECK_FNS['vehicle-explosion-contents'] = lambda host, guest, out: check_vehicle_kill_contents(host, guest, out, damage='explosion')
+
+
+def check_vehicle_kill_vibration(host, guest, out):
+    """Entity.kill emits ENTITY_DIE for non-living vehicles too."""
+    x, y, z = apart(host, guest)['host']
+    sensor = (x + 10, y, z)
+    host('command', command=f'tp {GUEST_NAME} {x - 12.5} {y} {z + 0.5}')
+    host('command', command='kill @e[type=!minecraft:player,distance=..40]')
+    host('command', command=f'fill {x + 8} {y - 1} {z - 2} {x + 14} {y - 1} {z + 2} minecraft:stone')
+    host('command', command=f'fill {x + 8} {y} {z - 2} {x + 14} {y + 4} {z + 2} minecraft:air')
+    host('command', command=f'setblock {sensor[0]} {sensor[1]} {sensor[2]} minecraft:sculk_sensor')
+    seen = {}
+    try:
+        for kind in ('minecart', 'chest_minecart', 'oak_boat', 'oak_chest_boat'):
+            host('command', command=f'summon minecraft:{kind} {x + 12.5} {y} {z + 0.5} {{Tags:["kill_vibration"]}}')
+            host.wait(40)
+            assert wait_state(host, sensor, 'sculk_sensor_phase', 'inactive', 120) == 'inactive'
+            host('command', command='kill @e[tag=kill_vibration]')
+            seen[kind] = wait_state(host, sensor, 'sculk_sensor_phase', 'active', 80)
+            if seen[kind] == 'active':
+                frequency = server_reply(host, f'data get block {sensor[0]} {sensor[1]} {sensor[2]} last_vibration_frequency', 'block data')
+                assert re.search(r'block data: 15\s*$', frequency), (kind, frequency)
+            lab.write_json(out / 'vehicle-kill-vibration.json', seen)
+        assert all(value == 'active' for value in seen.values()), seen
+    finally:
+        host('command', command=f'setblock {sensor[0]} {sensor[1]} {sensor[2]} minecraft:air')
+        host('command', command='kill @e[tag=kill_vibration]')
+    return seen
+
+
+CHECKS += ['vehicle-kill-vibration']
+CHECK_FNS['vehicle-kill-vibration'] = check_vehicle_kill_vibration
 
 
 if __name__ == '__main__':
