@@ -47,10 +47,28 @@ pub enum Language {
     Indonesian,
     #[serde(rename = "pt")]
     Portuguese,
+    #[serde(rename = "he")]
+    Hebrew,
+    #[serde(rename = "hu")]
+    Hungarian,
+    #[serde(rename = "ro")]
+    Romanian,
+    #[serde(rename = "da")]
+    Danish,
+    #[serde(rename = "fi")]
+    Finnish,
+    #[serde(rename = "no")]
+    Norwegian,
+    #[serde(rename = "bg")]
+    Bulgarian,
+    #[serde(rename = "sk")]
+    Slovak,
+    #[serde(rename = "lt")]
+    Lithuanian,
 }
 
 impl Language {
-    pub const ALL: [Language; 17] = [
+    pub const ALL: [Language; 26] = [
         Self::English,
         Self::French,
         Self::Russian,
@@ -68,6 +86,15 @@ impl Language {
         Self::Hindi,
         Self::Indonesian,
         Self::Portuguese,
+        Self::Hebrew,
+        Self::Hungarian,
+        Self::Romanian,
+        Self::Danish,
+        Self::Finnish,
+        Self::Norwegian,
+        Self::Bulgarian,
+        Self::Slovak,
+        Self::Lithuanian,
     ];
 
     /// Its code in `settings.json` and on the command line.
@@ -90,6 +117,15 @@ impl Language {
             Self::Hindi => "hi",
             Self::Indonesian => "id",
             Self::Portuguese => "pt",
+            Self::Hebrew => "he",
+            Self::Hungarian => "hu",
+            Self::Romanian => "ro",
+            Self::Danish => "da",
+            Self::Finnish => "fi",
+            Self::Norwegian => "no",
+            Self::Bulgarian => "bg",
+            Self::Slovak => "sk",
+            Self::Lithuanian => "lt",
         }
     }
 
@@ -113,6 +149,15 @@ impl Language {
             Self::Hindi => "हिन्दी",
             Self::Indonesian => "Bahasa Indonesia",
             Self::Portuguese => "Português (Portugal)",
+            Self::Hebrew => "עברית",
+            Self::Hungarian => "Magyar",
+            Self::Romanian => "Română",
+            Self::Danish => "Dansk",
+            Self::Finnish => "Suomi",
+            Self::Norwegian => "Norsk",
+            Self::Bulgarian => "Български",
+            Self::Slovak => "Slovenčina",
+            Self::Lithuanian => "Lietuvių",
         }
     }
 
@@ -173,6 +218,15 @@ impl Language {
             Self::Hindi => include_str!("../lang/hi.json"),
             Self::Indonesian => include_str!("../lang/id.json"),
             Self::Portuguese => include_str!("../lang/pt.json"),
+            Self::Hebrew => include_str!("../lang/he.json"),
+            Self::Hungarian => include_str!("../lang/hu.json"),
+            Self::Romanian => include_str!("../lang/ro.json"),
+            Self::Danish => include_str!("../lang/da.json"),
+            Self::Finnish => include_str!("../lang/fi.json"),
+            Self::Norwegian => include_str!("../lang/no.json"),
+            Self::Bulgarian => include_str!("../lang/bg.json"),
+            Self::Slovak => include_str!("../lang/sk.json"),
+            Self::Lithuanian => include_str!("../lang/lt.json"),
         }
     }
 }

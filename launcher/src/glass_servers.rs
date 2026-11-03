@@ -822,3 +822,165 @@ fn port_of(this: &Launcher) -> u16 {
         .and_then(Value::as_u64)
         .unwrap_or(25565) as u16
 }
+
+/// A settings row in the glass look, the mockup's `SettingRow`: the name in 15 px semibold, one
+/// line on it in 13 px at 60 % (or the refusal in red), the control on the right, 40 px apart.
+pub(super) fn glass_setting_row(
+    name: &str,
+    about: String,
+    error: Option<&'static str>,
+    control: AnyElement,
+) -> Div {
+    let note = match error {
+        Some(e) => ui::card_note(tr(e)).text_color(gpui::rgb(horizon_theme::glass::DANGER)),
+        None => ui::card_note(about).text_color(white(0.6)),
+    };
+    div()
+        .flex()
+        .items_center()
+        .gap(px(40.))
+        .py(px(16.))
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .flex_1()
+                .min_w_0()
+                .gap(px(4.))
+                .child(
+                    ui::text(15., FontWeight::SEMIBOLD, ink::FULL)
+                        .line_height(px(21.))
+                        .child(tr(name).to_string()),
+                )
+                .child(note),
+        )
+        .child(
+            div()
+                .flex()
+                .flex_none()
+                .items_center()
+                .gap(px(8.))
+                .child(control),
+        )
+}
+
+impl Launcher {
+    /// A tab's section heading: the mockup's small card heading in the glass look.
+    pub(super) fn tab_heading(&self, label: impl Into<SharedString>) -> Div {
+        if self.theme.dark {
+            return ui::card_heading(label);
+        }
+        text(theme::HEADING)
+            .text_color(self.theme.ink)
+            .child(label.into())
+    }
+
+    /// A switch with its name and note: a `SettingRow` in the glass look, the switch first in
+    /// the other.
+    pub(super) fn toggle_row(&self, name: &str, about: String, toggle: Stateful<Div>) -> Div {
+        let t = self.theme;
+        if t.dark {
+            return glass_setting_row(name, about, None, toggle.into_any_element());
+        }
+        div()
+            .flex()
+            .items_center()
+            .gap(px(14.))
+            .child(toggle)
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .child(
+                        text(theme::UI)
+                            .text_color(t.ink)
+                            .child(tr(name).to_string()),
+                    )
+                    .child(text(theme::CAPTION).text_color(t.muted).child(about)),
+            )
+    }
+
+    /// A row of a tab's list (backups, banned players): the mockup's `ROW` text in the glass
+    /// look (14 px medium, its detail in 13 px at 55 %), with no plate or rule.
+    pub(super) fn list_row(
+        &self,
+        lead: Option<Div>,
+        name: impl IntoElement,
+        detail: Option<AnyElement>,
+        right: Option<AnyElement>,
+    ) -> Div {
+        let t = self.theme;
+        if !t.dark {
+            return slot_row(lead, name, detail, right, &t);
+        }
+        div()
+            .flex()
+            .items_center()
+            .gap(px(12.))
+            .py(px(10.))
+            .children(lead)
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .min_w_0()
+                    .child(ui::text(14., FontWeight::MEDIUM, ink::FULL).child(name))
+                    .children(
+                        detail.map(|d| ui::text(13., FontWeight::NORMAL, ink::QUIET).child(d)),
+                    ),
+            )
+            .children(right)
+    }
+
+    /// − value + in the glass look: the Create dialog's stepper (a strip with 40 px buttons).
+    pub(super) fn glass_stepper(
+        &self,
+        key: &'static str,
+        value: i64,
+        range: std::ops::RangeInclusive<i64>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let t = self.theme;
+        let step = |id: &'static str, icon: &'static str, to: i64, cx: &mut Context<Self>| {
+            let b = keyboard(
+                div()
+                    .id(SharedString::from(format!("{key}-{id}")))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .size(px(36.))
+                    .rounded(px(radius::CONTROL))
+                    .cursor_pointer()
+                    .hover(|s| s.bg(white(fill::BUTTON)))
+                    .child(ui::icon(icon, 16., white(ink::FULL))),
+                &t,
+            );
+            if range.contains(&to) && to != value {
+                b.on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                    this.set_setting(key, to.to_string());
+                    cx.notify();
+                }))
+            } else {
+                b.opacity(0.35).cursor_default()
+            }
+        };
+        div()
+            .flex()
+            .items_center()
+            .gap(px(4.))
+            .p(px(4.))
+            .rounded(px(radius::LARGE))
+            .bg(white(0.04))
+            .child(step("less", "minus-sign", value - 1, cx))
+            .child(
+                ui::text(15., FontWeight::SEMIBOLD, ink::FULL)
+                    .w(px(44.))
+                    .flex()
+                    .justify_center()
+                    .child(value.to_string()),
+            )
+            .child(step("more", "plus-sign", value + 1, cx))
+            .into_any_element()
+    }
+}

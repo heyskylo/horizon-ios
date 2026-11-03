@@ -3205,6 +3205,11 @@ impl Game<'_> {
             self.guest_mute_command(host, conn, &words);
             return;
         }
+        // Horizon's `/tempban` (game/tempban.rs), on dedicated servers.
+        if super::tempban::TEMPBAN_COMMANDS.contains(&words[0]) && self.server_lists.is_some() {
+            self.guest_tempban_command(host, conn, &words);
+            return;
+        }
         // A native mod's command, for every player its level allows,
         // whether the world allows commands or not (game/native_server.rs).
         let integrated = host.hub.config.integrated;
