@@ -55,3 +55,9 @@ report contains metadata and hashes. CI runs this suite on its configured
 platforms; the local result does not establish those remote results. Chunk
 lifecycle integration, generated terrain, lighting and playable gameplay remain
 pending.
+
+## Related docs
+
+- [World generation](world-generation.md)
+- [Terrain filling](terrain-filling.md)
+- [Collision geometry](collision-geometry.md)
