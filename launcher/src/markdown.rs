@@ -167,7 +167,7 @@ pub fn render(source: &str, t: &Theme) -> AnyElement {
     };
     // The glass look sets notes as the mockup's: 14 px on 1.55 at 75 %, lists with square
     // bullets, 6 px apart.
-    let glass = t.dark;
+    let glass = t.glass;
     let mut column = div()
         .flex()
         .flex_col()
@@ -199,7 +199,7 @@ pub fn render(source: &str, t: &Theme) -> AnyElement {
                         .flex_none()
                         .mt(px(8.5))
                         .size(px(5.))
-                        .bg(gpui::white().opacity(0.4)),
+                        .bg(crate::glass_ui::white(0.4)),
                     _ => div().flex_none().w(px(16.)).text_color(t.muted).child(
                         number
                             .map(|n| format!("{n}."))

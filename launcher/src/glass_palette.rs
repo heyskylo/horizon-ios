@@ -11,7 +11,7 @@ use super::*;
 use crate::glass_ui::{self as ui, white};
 use horizon_launcher::browser::Project;
 use horizon_launcher::instances::Kind as InstanceKind;
-use horizon_theme::glass::{ink, SCRIM};
+use horizon_theme::glass::ink;
 use std::path::PathBuf;
 
 /// Commands listed at most (`slice(0, 8)`).
@@ -348,7 +348,7 @@ impl Launcher {
                         .top_0()
                         .left_0()
                         .size_full()
-                        .bg(ui::color(SCRIM).opacity(0.5))
+                        .bg(ui::scrim())
                         .on_mouse_down(
                             gpui::MouseButton::Left,
                             cx.listener(|this, _: &MouseDownEvent, window, cx| {
