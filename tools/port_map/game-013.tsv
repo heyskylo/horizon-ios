@@ -142,7 +142,7 @@ Sniffer.onScentingStart	inline	crates/horizon-client/src/mobs/animal_brain.rs::t
 Sniffer.onDiggingStart	inline	crates/horizon-client/src/mobs/animal_brain.rs::transition	the seed drop is set 120 ticks ahead (ints[3]); the client sound starts from the animation in tick_sniffer_effects
 Sniffer.dropSeed	inline	crates/horizon-client/src/mobs/sniffer.rs::ai_step	gift loot sniffer_digging at the head block and the drop seed sound when the tick comes
 Sniffer.storeExploredPosition	inline	crates/horizon-client/src/mobs/animal_brain.rs::B::do_stop	the on-pos is put in front of the explored list, kept to 20
-Sniffer.jumpFromGround	missing		minor: no sniffer arm in Mob::jump_from_ground, so its hop gets no extra forward nudge (moveRelative 0.1 forward) when it moves slowly
+Sniffer.jumpFromGround	port	crates/horizon-client/src/mobs/living.rs::jump_from_ground	the sniffer arm: a hop the move control asked for, from under 0.1 a tick of ground speed, adds moveRelative(0.1, forward)
 Sniffer.mobInteract	inline	crates/horizon-client/src/mobs/ai.rs::eating_sound	the eating sound plays when the food was taken (feed_animal)
 Sniffer.playEatingSound	port	crates/horizon-client/src/mobs/ai.rs::eating_sound	Species::Sniffer arm: entity.sniffer.eat with pitch 0.8 to 1.2
 Sniffer.playSearchingSound	port	crates/horizon-client/src/game/sniffers.rs::Game::tick_sniffer_effects	searching sound every 20 ticks while searching, near any player
