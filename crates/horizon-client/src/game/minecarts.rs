@@ -2366,8 +2366,12 @@ impl Game<'_> {
             registry.id(&s)
         };
         // AbstractMinecart.getDisplayBlockState: a custom state wins.
-        if let Some(tag) = &c.custom_display {
-            return horizon_client::entity_nbt::state_from_nbt(registry, tag);
+        if let Some(state) = c
+            .custom_display
+            .as_ref()
+            .and_then(|tag| horizon_client::entity_nbt::state_from_nbt(registry, tag))
+        {
+            return Some(state);
         }
         match c.kind {
             CartKind::Rideable => None,
@@ -2429,7 +2433,7 @@ impl Game<'_> {
                 // up by the display block's offset.
                 if let Some(view) = &self.view_frustum {
                     let top = HEIGHT
-                        + if c.kind == CartKind::Rideable {
+                        + if self.display_state(c).is_none() {
                             0.0
                         } else {
                             display_offset(c) * 0.75 / 16.0
@@ -2771,7 +2775,22 @@ mod tests {
     /// `DisplayOffset` survive a save, the offset only off its default.
     #[test]
     fn custom_display_state_and_offset_roundtrip() {
-        let state = Tag::String("minecraft:diamond_block".into());
+        // BlockState.CODEC for a non-default state: {Name, Properties}.
+        let state = Tag::Compound(
+            [
+                ("Name".into(), Tag::String("minecraft:furnace".into())),
+                (
+                    "Properties".into(),
+                    Tag::Compound(
+                        [("lit".into(), Tag::String("true".into()))]
+                            .into_iter()
+                            .collect(),
+                    ),
+                ),
+            ]
+            .into_iter()
+            .collect(),
+        );
         let saved = saved_cart(
             CartKind::Rideable,
             &[
