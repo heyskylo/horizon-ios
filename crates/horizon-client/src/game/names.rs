@@ -108,14 +108,11 @@ impl Game<'_> {
         let viewer = self.player_team();
         let mut tags = Vec::new();
         let players = self.other_players();
-        let player_ids = hooks.then(|| {
-            players
-                .iter()
-                .map(|(player, _)| player.id)
-                .collect::<std::collections::HashSet<u32>>()
-        });
+        let player_ids = named_by_player_list(&players);
         let named = self.mobs.iter().filter_map(|m| {
-            if player_ids.as_ref().is_some_and(|ids| ids.contains(&m.id)) {
+            // Already named by the player list: a second tag would sit on the
+            // first (`named_by_player_list`).
+            if player_ids.contains(&m.id) {
                 return None;
             }
             // A mannequin with no name still shows its description.
@@ -608,6 +605,23 @@ impl Game<'_> {
 /// positions. The player box is `Pose::dimensions(1.0)`.
 /// shortcut: the scale attribute is not in the tag height, add `model_scale`
 /// when tags on scaled players matter.
+/// The entity ids the player-list pass names, which the custom-name pass must
+/// therefore skip.
+///
+/// Vanilla draws one tag per entity, and names a player from its profile:
+/// `Player.getName` overrides `Entity.getName` and ignores `customName`. So a
+/// server that sets a custom name on a player entity -- a rank, a nickname, a
+/// prefix -- must not get a tag of its own drawn over the one the player list
+/// already draws.
+///
+/// Built whether or not native mods are loaded. It was briefly built only with
+/// them, as a fast path, and without them both tags were drawn on top of each
+/// other on every server that names its players this way. The set is small --
+/// the players in view -- and `other_players` has already allocated a name
+/// string for each, so skipping it saved very little.
+fn named_by_player_list(players: &[(&Mob, String)]) -> std::collections::HashSet<u32> {
+    players.iter().map(|(player, _)| player.id).collect()
+}
 fn name_tag_at(m: &Mob, alpha: f64) -> glam::DVec3 {
     glam::DVec3::new(
         m.previous.x + (m.position.x - m.previous.x) * alpha,
@@ -698,6 +712,36 @@ mod tests {
             tempt: Default::default(),
         };
         Mob::new(0, Arc::new(kind), Vec3::ZERO, 0.0)
+    }
+
+    /// A server that names its players -- a rank prefix, a nickname -- sets a
+    /// custom name on the player entity. The player list already names that
+    /// player, so the custom-name pass has to skip it or the two tags are drawn
+    /// on top of each other. The set of already-named players was briefly built
+    /// only when native mods were loaded, so without mods every such server
+    /// showed the pair overlapping.
+    ///
+    /// An entity the player list does not name keeps its own tag: that is how a
+    /// shopkeeper NPC spawned as a player entity is named at all.
+    #[test]
+    fn a_listed_player_is_named_once_whatever_custom_name_a_server_sets() {
+        let mut listed = player_mob();
+        listed.id = 7;
+        listed.custom_name = Some("[MVP+] Steve".to_owned());
+        let mut unlisted = player_mob();
+        unlisted.id = 9;
+        unlisted.custom_name = Some("Shopkeeper".to_owned());
+        // The player list names 7 and knows nothing of 9.
+        let players = vec![(&listed, "Steve".to_owned())];
+        let named = named_by_player_list(&players);
+        assert!(
+            named.contains(&listed.id),
+            "the player list names 7, so its custom name must not add a second tag"
+        );
+        assert!(
+            !named.contains(&unlisted.id),
+            "9 is named by nothing else, so its custom name is its only tag"
+        );
     }
 
     /// #4129: the tag hangs from the box of the pose (0.6 swimming, 1.5
