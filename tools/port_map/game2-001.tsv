@@ -13,6 +13,7 @@ SnifferAi.Searching.canStillUse	port	crates/horizon-client/src/mobs/animal_brain
 SnifferAi.Searching.stop	port	crates/horizon-client/src/mobs/animal_brain.rs::B::do_stop	
 SnifferAi.Sniffing.stop	port	crates/horizon-client/src/mobs/animal_brain.rs::B::do_stop	
 Squid.registerGoals	port	crates/horizon-client/src/mobs/aquatic.rs::register	
+Squid.getMovementEmission	port	crates/horizon-client/src/mobs/ai.rs::movement_sounds	EVENTS: the flop of a beached squid sends the step game event and no sound
 Squid.rotateVector	inline	crates/horizon-client/src/mobs/aquatic.rs::spawn_ink	xRot then yRot of the body angles, inside spawn_ink
 Squid.finalizeSpawn	port	crates/horizon-client/src/mobs/finalize.rs::Ctx::finalize	S::Squid arm: ageable group with 0.05 baby chance
 Turtle.defineSynchedData	port	crates/horizon-client/src/game/lan.rs::mob_meta	HAS_EGG and LAYING_EGG as entity metadata 18 and 19
