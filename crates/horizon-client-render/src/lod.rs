@@ -4014,7 +4014,7 @@ mod tests {
         // to spare, which is the existing behaviour.
         for cores in [4usize, 8, 11, 12, 16, 64] {
             assert!(
-                sampling_threads(cores) + meshing_threads(cores) <= cores - 1,
+                sampling_threads(cores) + meshing_threads(cores) < cores,
                 "{cores} cores leaves nothing for the frame"
             );
         }
