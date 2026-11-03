@@ -333,8 +333,9 @@ mod's own screen (`native_screen`); without one it closes again. Clients join a 
 types, as with its blocks, and a client that isn't Horizon's is never sent one: the block opens nothing for it. Its
 clicks run on the server's vanilla menu engine (`menu::Kind::Mod`), shift-clicks routed as `ChestMenu`'s, and a native
 mod can decide what a slot takes in code with `native_menu_slot_rules` ([native-mods.md](native-mods.md#menu-slot-rules)).
-Not yet: declared per-slot rules beyond `results`, hooks for shift-click routing and `stillValid`, opening with extra
-data, and client prediction of its clicks.
+A native mod can hand the screen bytes of its own when the block opens it
+([native-mods.md](native-mods.md#menu-extra-data)). Not yet: declared per-slot rules beyond `results`, hooks for
+shift-click routing and `stillValid`, and client prediction of its clicks.
 
 #### Namespaces and limits
 
