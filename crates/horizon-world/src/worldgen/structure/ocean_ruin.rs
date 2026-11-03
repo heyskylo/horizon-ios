@@ -346,7 +346,7 @@ pub fn post_process(piece: &TemplatePiece, c: &mut PieceContext<'_>) -> Result<(
                     true,
                     true,
                 ))?;
-                let sea = 63;
+                let sea = c.world.sea_level()?;
                 let state = if pos[1] > sea {
                     c.state("air")
                 } else {
