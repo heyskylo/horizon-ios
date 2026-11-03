@@ -20,6 +20,7 @@ Entity.collectAllColliders	inline	crates/horizon-world/src/world_movement.rs::re
 Entity.collideWithShapes	port	crates/horizon-core/src/geometry/movement.rs::resolve_shape_movement	axis step order from the movement size
 Entity.debugBlockIntersection	skip:debug		debug subscription for the entity block intersection overlay
 Entity.gameEvent	port	crates/horizon-client/src/game/sculk.rs::Game::post_entity_event	gap: minor: only players and mobs (Who) can be the source
+Entity.playSound	port	crates/horizon-client/src/mobs.rs::voice	mobs: the silent gate of Entity.playSound, the getSoundVolume volume and the getVoicePitch pitch at the feet; the player and the other entities have their own sound paths
 Entity.playMuffledStepSound	port	crates/horizon-client/src/motion.rs::MotionWorld::walking_step_sound	gap: minor: players only; mobs play the floor block's own step and never the muffled floor sound under snow, carpet or other combination blocks
 Entity.shouldPlayAmethystStepSound	port	crates/horizon-client/src/motion.rs::MotionWorld::walking_step_sound	gap: minor: only the player chimes on crystal blocks; mobs walking on amethyst stay silent
 Entity.isInClouds	missing		minor: a happy ghast above the cloud layer should heal a point a second like in rain; only rain and snow count
