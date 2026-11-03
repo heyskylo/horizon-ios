@@ -1033,5 +1033,14 @@
   "3 to 16 letters, numbers or underscores. Switch names from the top bar too. Online servers don't take offline names.": "3 έως 16 γράμματα, αριθμοί ή κάτω παύλες. Μπορείτε επίσης να αλλάξετε όνομα από την επάνω γραμμή. Οι διαδικτυακοί διακομιστές δεν δέχονται ονόματα εκτός σύνδεσης.",
   "Play online with your Microsoft account": "Παίξτε online με τον λογαριασμό σας Microsoft",
   "Sign in with the account that owns Minecraft: Java Edition. Your name and skin come along to online servers, like in other launchers.": "Συνδεθείτε με τον λογαριασμό που κατέχει το Minecraft: Java Edition. Το όνομα και το skin σας σας ακολουθούν στους διαδικτυακούς διακομιστές, όπως και σε άλλους launchers.",
-  "Microsoft's own page opens in your browser. Horizon never sees your password.": "Η σελίδα της ίδιας της Microsoft ανοίγει στο πρόγραμμα περιήγησής σας. Το Horizon δεν βλέπει ποτέ τον κωδικό πρόσβασής σας."
+  "Microsoft's own page opens in your browser. Horizon never sees your password.": "Η σελίδα της ίδιας της Microsoft ανοίγει στο πρόγραμμα περιήγησής σας. Το Horizon δεν βλέπει ποτέ τον κωδικό πρόσβασής σας.",
+  "Colours the buttons, the switches and the sky. Pick one, or type any hex colour.": "Χρωματίζει τα κουμπιά, τους διακόπτες και τον ουρανό. Διαλέξτε ένα ή πληκτρολογήστε οποιοδήποτε χρώμα hex.",
+  "Accent colour, glass, blur, language and the options above go back to how Horizon ships.": "Το χρώμα έμφασης, το γυαλί, το θάμπωμα, η γλώσσα και οι παραπάνω επιλογές επιστρέφουν στις προεπιλογές του Horizon.",
+  "Reset the launcher's look": "Επαναφορά εμφάνισης του launcher",
+  "Reset to defaults": "Επαναφορά προεπιλογών",
+  "{value} px": "{value} px",
+  "{value}%": "{value}%",
+  "Experimental. Builds the native mods you trust into a game of their own.": "Πειραματικό. Μεταγλωττίζει τα εγγενή mods που εμπιστεύεστε σε ένα δικό τους παιχνίδι.",
+  "Native mods": "Εγγενή mods",
+  "Nightly": "Nightly"
 }
