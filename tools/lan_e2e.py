@@ -12755,5 +12755,46 @@ CHECKS += ['damage-attacker']
 CHECK_FNS['damage-attacker'] = check_damage_attacker
 
 
+def check_spectator_container(host, guest, out):
+    """A spectator inspects a container without its lid, its sound or a lid left open (#8517).
+
+    `ChestBlockEntity.startOpen` returns at once for a spectator, and
+    `stopOpen` skips it the same way, so `ContainerOpenersCounter` never counts
+    one: the menu opens (a spectator does look inside), while the lid, its
+    block event and the open and close sounds stay away and nothing is left
+    open when the menu closes.
+    """
+    opened_sound, closed_sound = 'minecraft:block.chest.open', 'minecraft:block.chest.close'
+    x, y, z = (int(v // 1) for v in pos_of(guest))
+    chest = (x, y, z + 2)
+    guest('command', command=f'setblock {chest[0]} {chest[1]} {chest[2]} minecraft:chest')
+    guest('command', command='gamemode spectator')
+    guest.wait(10)
+    before = {g.name: (heard(g, opened_sound), heard(g, closed_sound)) for g in (host, guest)}
+    try:
+        guest.raw('interact', *chest)
+        screen = guest.raw('wait-for', 'screen', 'container', '--timeout', 10)
+        guest.wait(20)
+        opened = {'guest': lid(guest, chest), 'host': lid(host, chest)}
+        guest.shot(out, 'spectator-container-open')
+        guest.raw('key', 'esc', 'tap')
+        guest.wait(20)
+        closed = {'guest': lid(guest, chest), 'host': lid(host, chest)}
+    finally:
+        guest('command', command='gamemode survival')
+        guest('command', command=f'setblock {chest[0]} {chest[1]} {chest[2]} minecraft:air')
+    after = {g.name: (heard(g, opened_sound), heard(g, closed_sound)) for g in (host, guest)}
+    sounds = {name: (after[name][0] - before[name][0], after[name][1] - before[name][1]) for name in after}
+    assert screen, 'the spectator did not get the container screen'
+    assert all(v < 0.1 for v in opened.values()), f'the lid while a spectator looked inside: {opened}'
+    assert all(v < 0.1 for v in closed.values()), f'the lid after the spectator closed it: {closed}'
+    assert not any(any(heard_at) for heard_at in sounds.values()), f'the sounds a spectator caused: {sounds}'
+    return {'opened': opened, 'closed': closed, 'sounds': sounds}
+
+
+CHECKS += ['spectator-container']
+CHECK_FNS['spectator-container'] = check_spectator_container
+
+
 if __name__ == '__main__':
     main()
