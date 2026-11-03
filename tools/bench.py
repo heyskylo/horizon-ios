@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Server load bench: the same horizon-bots load on Horizon, vanilla 26.3 or Pumpkin.
 
-    python3 bench/bench.py --server horizon --exe target/release/horizon-server --bots 50
-    python3 bench/bench.py --server vanilla --jar ~/mc/server.jar --bots 50 --pre-generated ~/worlds/seed12345
-    python3 bench/bench.py --server pumpkin --exe ./pumpkin --bots 50
+    python3 tools/bench.py --server horizon --exe target/release/horizon-server --bots 50
+    python3 tools/bench.py --server vanilla --jar ~/mc/server.jar --bots 50 --pre-generated ~/worlds/seed12345
+    python3 tools/bench.py --server pumpkin --exe ./pumpkin --bots 50
 
 Every run uses a fresh scratch folder (bound to 127.0.0.1, offline, creative so the bots can fly), starts the
 server, lets `horizon-bots` join one every --join-every seconds, warms up, then measures for --seconds:
@@ -38,6 +38,11 @@ import sys
 import tempfile
 import threading
 import time
+
+try:
+    from . import lab
+except ImportError:
+    import lab
 
 ROOT = Path(__file__).resolve().parent.parent
 EXE = '.exe' if os.name == 'nt' else ''
@@ -207,8 +212,7 @@ class Server:
         self.lines = []
         self.lock = threading.Lock()
         self.log = log_path.open('w', encoding='utf-8')
-        env = dict(os.environ, HORIZON_NO_AUDIO='1', HORIZON_HOME=str(directory / 'horizon-home'),
-                   HORIZON_LAUNCHER_NO_SELF_UPDATE='1')
+        env = lab.game_env(HORIZON_HOME=directory / 'horizon-home')
         self.process = subprocess.Popen([str(c) for c in command], cwd=directory, stdin=subprocess.PIPE,
                                         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
                                         encoding='utf-8', errors='replace', env=env)

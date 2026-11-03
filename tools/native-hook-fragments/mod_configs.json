@@ -1,0 +1,46 @@
+{
+  "hooks": [
+    {
+      "name": "register_configs",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_register_configs",
+      "neoforge": "ModContainer.registerConfig",
+      "side": "both",
+      "mod_api": {
+        "contract": "collect",
+        "out": "configs"
+      }
+    },
+    {
+      "name": "config_loading",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_config_loading",
+      "neoforge": "ModConfigEvent.Loading",
+      "side": "both",
+      "cancellable": false,
+      "mod_api": {
+        "contract": "listen"
+      }
+    },
+    {
+      "name": "config_reloading",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_config_reloading",
+      "neoforge": "ModConfigEvent.Reloading",
+      "side": "both",
+      "cancellable": false,
+      "mod_api": {
+        "contract": "listen"
+      }
+    },
+    {
+      "name": "config_unloading",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_config_unloading",
+      "neoforge": "ModConfigEvent.Unloading",
+      "side": "server",
+      "cancellable": false,
+      "mod_api": {
+        "contract": "listen"
+      }
+    }
+  ],
+  "rust_summary": "mod config files, loaded and reloaded (`native_register_configs`, `native_config_loading`,\n`native_config_reloading`, `native_config_unloading`; `native_configs.rs`).",
+  "doc_summary": "mod config files, loaded and reloaded (`ModConfigEvent`). `native_register_configs` lists a mod's configs: `NativeConfig::new(mod_id, kind, default)`, a file `config/<mod id>-<kind>.toml` (`.file(..)` names another inside `config/`) written from `default` when missing. `Client` configs load on the window when the game starts, `Common` once per process (the window, or a dedicated server), `Server` on the server before `native_server_about_to_start` for each world, read from the world's `serverconfig/<file>` when there is one. `native_config_loading` hands over the file's text (`NativeConfigFile`: mod id, kind, file, path, text); the mod parses it, and checks `mod_id`, since every mod hears every config. The game looks at the files' modification times once a second and fires `native_config_reloading` with changed text; the same text saved again fires nothing. `native_config_unloading` drops a server's configs when it stops. Bundles need \"hooks\": @API:mod_configs@."
+}
