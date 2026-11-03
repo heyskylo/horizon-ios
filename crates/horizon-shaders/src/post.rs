@@ -1067,7 +1067,8 @@ impl Loader<'_> {
         };
         self.post.config.read(&vertex);
         self.post.config.read(&fragment);
-        let mut buffers = config::draw_buffers(&fragment).unwrap_or_else(|| (0..8).collect());
+        let mut buffers =
+            config::draw_buffers(&fragment).unwrap_or_else(|| default_draw_buffers(group.shadow()));
         if group.shadow() {
             // Output n writes shadowcolor n (6.3); there are two.
             let kept = buffers
@@ -1190,7 +1191,8 @@ impl Loader<'_> {
             };
         self.post.config.read(vertex);
         self.post.config.read(fragment);
-        let mut buffers = config::draw_buffers(fragment).unwrap_or_else(|| (0..8).collect());
+        let mut buffers =
+            config::draw_buffers(fragment).unwrap_or_else(|| default_draw_buffers(true));
         let kept = buffers
             .iter()
             .position(|&b| b >= 2)
@@ -1254,6 +1256,15 @@ impl Loader<'_> {
         }
         out
     }
+}
+
+/// The buffers a program writes without `RENDERTARGETS` or `DRAWBUFFERS`: only buffer 0, except
+/// in the shadow pass's own programs, where outputs 0 and 1 write shadowcolor0 and shadowcolor1.
+/// Measured in Iris 1.11.7 with probe packs: a `gbuffers_terrain`, `begin`, `prepare`, `deferred`
+/// or `composite` program that writes `gl_FragData[1..]` or `layout(location = n)` leaves those
+/// buffers untouched, while the second output of `shadow` and `shadowcomp` lands in shadowcolor1.
+fn default_draw_buffers(shadow: bool) -> Vec<u32> {
+    if shadow { (0..8).collect() } else { vec![0] }
 }
 
 fn diagnostics(pp: &Preprocessed) -> Vec<String> {
@@ -1695,7 +1706,7 @@ mod tests {
         let names: Vec<&str> = post.programs.iter().map(|p| p.name.as_str()).collect();
         assert_eq!(names, ["deferred", "composite", "composite2", "final"]);
         let p = &post.programs;
-        assert_eq!(p[0].buffers, (0..8).collect::<Vec<_>>());
+        assert_eq!(p[0].buffers, [0]);
         assert_eq!((p[0].mipmaps, p[1].mipmaps), (1 << 5, 0));
         assert_eq!(p[1].buffers, [3]);
         assert_eq!(p[1].flips, [(3, false)]);
@@ -1818,6 +1829,106 @@ mod tests {
             .map(|c| c.0.as_str())
             .collect();
         assert_eq!(compute, ["composite", "composite_a"], "{:?}", post.notes);
+    }
+
+    /// Without RENDERTARGETS or DRAWBUFFERS, a program writes colortex0 only, whatever outputs it
+    /// assigns, while the shadow program's outputs 0 and 1 still write shadowcolor0 and 1. The
+    /// programs are those of probe pack p8107 run in Iris 1.11.7 (the PR has the readings).
+    #[test]
+    fn a_program_without_a_directive_writes_buffer_0_only() {
+        let full = "#version 120\nvarying vec2 uv;\nvoid main() {\n\
+                    gl_Position = ftransform();\nuv = gl_MultiTexCoord0.xy;\n}\n";
+        let deferred = "#version 120\nuniform sampler2D colortex0;\nvarying vec2 uv;\nvoid main() {\n\
+                        gl_FragData[0] = texture2D(colortex0, uv);\n\
+                        gl_FragData[3] = vec4(1.1875);\ngl_FragData[7] = vec4(1.4375);\n}\n";
+        let composite = "#version 330 compatibility\nuniform sampler2D colortex0;\nin vec2 uv;\n\
+                         void main() {\ngl_FragData[0] = texture(colortex0, uv);\n\
+                         gl_FragData[4] = vec4(2.25);\ngl_FragData[5] = vec4(2.3125);\n}\n";
+        let composite1 = "#version 330 compatibility\nuniform sampler2D colortex0;\nin vec2 uv;\n\
+                          layout(location = 0) out vec4 o0;\nlayout(location = 2) out vec4 o2;\n\
+                          void main() {\no0 = texture(colortex0, uv);\no2 = vec4(3.125);\n}\n";
+        let composite3 = "#version 330 compatibility\nuniform sampler2D colortex0;\nin vec2 uv;\n\
+                          /* RENDERTARGETS: 0,12 */\nvoid main() {\n\
+                          gl_FragData[0] = texture(colortex0, uv);\ngl_FragData[1] = vec4(6.5);\n}\n";
+        let terrain_vsh = "#version 120\nvarying vec2 texcoord;\nvarying vec4 color;\nvoid main() {\n\
+                           gl_Position = ftransform();\n\
+                           texcoord = (gl_TextureMatrix[0] * gl_MultiTexCoord0).xy;\ncolor = gl_Color;\n}\n";
+        let terrain = "#version 120\nuniform sampler2D texture;\nvarying vec2 texcoord;\n\
+                       varying vec4 color;\nvoid main() {\n\
+                       vec4 c = texture2D(texture, texcoord) * color;\nif (c.a < 0.1) discard;\n\
+                       gl_FragData[0] = c;\ngl_FragData[6] = vec4(5.0);\n}\n";
+        let shadow_vsh = "#version 120\nvoid main() {\ngl_Position = ftransform();\n}\n";
+        let shadow = "#version 120\nvoid main() {\n\
+                      gl_FragData[0] = vec4(0.25);\ngl_FragData[1] = vec4(0.5);\n}\n";
+        let prepare = "#version 120\nvoid main() {\n\
+                       gl_FragData[0] = vec4(0.375);\ngl_FragData[2] = vec4(8.5);\n}\n";
+        let shadowcomp = "#version 120\nvoid main() {\n\
+                          gl_FragData[0] = vec4(0.75);\ngl_FragData[1] = vec4(0.875);\n}\n";
+        let reads_shadow = "#version 120\nuniform sampler2D shadowcolor1;\nvarying vec2 uv;\n\
+                            void main() { gl_FragColor = texture2D(shadowcolor1, uv); }\n";
+        let pack = Pack::from_zip_bytes(
+            "t",
+            zip(&[
+                ("shaders/deferred.vsh", full),
+                ("shaders/deferred.fsh", deferred),
+                ("shaders/composite.vsh", full),
+                ("shaders/composite.fsh", composite),
+                ("shaders/composite1.vsh", full),
+                ("shaders/composite1.fsh", composite1),
+                ("shaders/composite3.vsh", full),
+                ("shaders/composite3.fsh", composite3),
+                ("shaders/gbuffers_terrain.vsh", terrain_vsh),
+                ("shaders/gbuffers_terrain.fsh", terrain),
+                ("shaders/shadow.vsh", shadow_vsh),
+                ("shaders/shadow.fsh", shadow),
+                ("shaders/prepare.vsh", full),
+                ("shaders/prepare.fsh", prepare),
+                ("shaders/shadowcomp.vsh", full),
+                ("shaders/shadowcomp.fsh", shadowcomp),
+                ("shaders/final.vsh", full),
+                ("shaders/final.fsh", reads_shadow),
+            ]),
+        )
+        .unwrap();
+        let game = crate::GbuffersInputs {
+            declarations: "layout(location = 0) in vec3 hz_v_pos;".into(),
+            body: "    hz_Vertex = vec4(hz_v_pos, 1.0);\n    hz_Color = vec4(1.0);\n".into(),
+            ..Default::default()
+        };
+        let inputs = GameInputs {
+            terrain: Some(game.clone()),
+            entities: Some(game),
+            ..Default::default()
+        };
+        let post = load_post(
+            &pack,
+            "",
+            &Properties::default(),
+            &Macros::standard(),
+            &inputs,
+        );
+        let written: Vec<(&str, &[u32])> = (post.programs.iter())
+            .chain(&post.terrain)
+            .chain(&post.shadow)
+            .chain(&post.shadow_comp)
+            .map(|p| (p.name.as_str(), &p.buffers[..]))
+            .collect();
+        assert_eq!(
+            written,
+            [
+                ("prepare", &[0][..]),
+                ("deferred", &[0]),
+                ("composite", &[0]),
+                ("composite1", &[0]),
+                ("composite3", &[0, 12]),
+                ("final", &[0]),
+                ("gbuffers_terrain", &[0]),
+                ("shadow", &[0, 1]),
+                ("shadowcomp", &[0, 1]),
+            ],
+            "{:?}",
+            post.notes
+        );
     }
 
     /// The shadow pass runs when a program reads a shadow buffer or `shadow.enabled` says so;

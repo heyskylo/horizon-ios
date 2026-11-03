@@ -1,5 +1,6 @@
 {
   "horizon.options.controller": "Controller",
+  "horizon.options.three_d_skin_layers": "3D Skin Layers",
   "horizon.options.vibration": "Vibration",
   "horizon.options.adaptive_triggers": "Adaptive Triggers",
   "horizon.options.lightbar": "Lightbar",
