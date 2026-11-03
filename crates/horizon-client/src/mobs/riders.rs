@@ -124,6 +124,7 @@ pub fn link(mobs: &mut [Mob], rider: u32, vehicle: u32) {
         return;
     }
     if let Some(m) = mobs.iter_mut().find(|m| m.id == rider) {
+        super::shulker::on_start_riding(m);
         m.extra.mount = Some(vehicle);
         m.extra.passenger = true;
     }
@@ -149,6 +150,11 @@ fn top_passenger(mobs: &[Mob], vehicle: u32, counter: i32) -> u32 {
 /// after its boarding cooldown, onto a vehicle with no passenger
 /// (`canRide`, `canAddPassenger`). Returns whether it boarded.
 pub fn start_riding(mobs: &mut [Mob], rider: u32, vehicle: u32) -> bool {
+    // `Shulker.startRiding` puts its attach face back before the ride is
+    // decided, so a shulker that is refused still ends up lid up.
+    if let Some(m) = mobs.iter_mut().find(|m| m.id == rider) {
+        super::shulker::on_start_riding(m);
+    }
     let Some(r) = mobs.iter().find(|m| m.id == rider) else {
         return false;
     };
