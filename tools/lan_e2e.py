@@ -3277,8 +3277,14 @@ def grid_items(game):
 
 
 def check_recipes(host, guest, out):
+    # Isolate both geometry and unlocked recipes from previous suite cases.
+    # The first recipe tile must be oak planks, and later furnace clicks must
+    # not be obscured by another player or a block left by a different check.
+    apart(host, guest)
     guest('command', command='clear @s')
+    guest('command', command='recipe take @s *')
     guest('command', command='give @s minecraft:oak_log 4')
+    guest('command', command='recipe give @s minecraft:oak_planks')
     guest.wait(40)
     guest.raw('key', 'e', 'tap')
     guest.wait(5)

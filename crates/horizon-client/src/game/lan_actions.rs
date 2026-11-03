@@ -1559,6 +1559,28 @@ impl Game<'_> {
         })
     }
 
+    /// ServerPlayer.containerMenu.containerId: zero belongs to the player
+    /// inventory only when no other menu is open. Cached crafting-machine
+    /// views are not owners; their window belongs to the hub's block menu.
+    fn guest_menu_window(&self, host: &LanHost, conn: u32) -> i32 {
+        host.hub
+            .guest(conn)
+            .and_then(|g| g.menu.as_ref().map(|m| m.window))
+            .or_else(|| {
+                host.play.get(&conn).and_then(|p| {
+                    p.crafting
+                        .table
+                        .as_ref()
+                        .map(|t| t.0)
+                        .or_else(|| p.station.as_ref().map(|m| m.window))
+                        .or_else(|| p.merchant.as_ref().map(|m| m.window))
+                        .or_else(|| p.lectern.as_ref().map(|m| m.window))
+                        .or_else(|| p.mount_window.as_ref().map(|m| m.window))
+                })
+            })
+            .unwrap_or(0)
+    }
+
     /// `AbstractContainerMenu.stillValid` of whatever menu the guest has open
     /// (a container or vehicle, a trade, the crafting table, a station, a
     /// lectern, a mount's inventory). True when none is open.
@@ -1755,6 +1777,19 @@ impl Game<'_> {
                 S::ClientCommand(_) | S::ChatCommand(_) | S::ChatCommandSigned(_)
             )
         {
+            return;
+        }
+        // Check ownership before any click, recipe or native-hook dispatch.
+        // A stale window-zero packet must not operate the inventory behind
+        // an open chest, station, trade, lectern or mount menu.
+        let addressed_window = match &packet {
+            S::ContainerClick(p) => Some(p.container),
+            S::ContainerButtonClick(p) => Some(p.container),
+            S::ContainerSlotStateChanged(p) => Some(p.container),
+            S::PlaceRecipe(p) => Some(p.container),
+            _ => None,
+        };
+        if addressed_window.is_some_and(|window| window != self.guest_menu_window(host, conn)) {
             return;
         }
         if matches!(

@@ -22,12 +22,50 @@ and reads serialized entity data while the screen remains open. Three of four
 baseline cases failed; all four repaired cases pass. The host build and iOS Clippy
 pass. This is not a physical-device or crash/restart durability test.
 
+## Active menu ownership (verified and repaired)
+
+A real bot opened a chest, then sent a window-zero inventory THROW packet.
+The baseline server executed it and reduced the player's stone from 640 to 576.
+The patched server retains all 640. This is an invalid inventory mutation;
+a duplication exploit is not established by this result.
+
+Game::lan_inventory_click intercepts window-zero clicks before Hub::container_click,
+so checking only the Hub would miss this reachable path. Menu ownership is now
+validated before inventory, crafting, recipe, station or native-hook dispatch.
+The production-helper test covers inventory, hub containers/native menus, crafting
+tables, stations, merchants, lecterns and mounts, with matching and stale IDs.
+
+Java reference: pinned 26.3 ServerGamePacketListenerImpl.handleContainerClick,
+handlePlaceRecipe, handleContainerButtonClick and handleContainerSlotStateChanged
+all check the packet's menu ID against ServerPlayer.containerMenu.containerId.
+The repair follows those checks rather than introducing a Horizon-only rule.
+This is a window-ID check, not a new rejection rule for stale menu state IDs.
+`tools/server_stale_inventory_e2e.py` exercises the actual dedicated-server path;
+`tests/test_guest_menu_window.py` exercises the production ownership helper and gate.
+
+Validation: the stale-window real-packet regression passes (640 items remain),
+the ownership helper/gate matrix passes, and the iOS Clippy check passes. Live
+containers, crafting, machines, stonecutter and lectern checks pass. Recipe
+placement also passes in an isolated run, but its later furnace/recipe-popup
+transition fails before sending an interaction: the control ray reports no
+visible face. That remains an investigation, not a full recipe-suite pass.
+The recipe fixture now isolates player positions and known recipes so earlier
+checks do not change which recipe tile is selected.
+
+## Java fidelity requirement
+
+Keep Java 26.3 as the behavioural reference for every gameplay repair. Verify the
+relevant vanilla implementation and compare observable outcomes where practical.
+Protocol compatibility alone is not a claim of matching gameplay or complete
+cross-play compatibility. Tests should establish their specific scope, not imply
+whole-game parity.
+
 ## Remaining investigation
 
-- Stale window IDs: Game::lan_inventory_click intercepts window-zero clicks before
-  Hub::container_click. A suspected native-menu bypass in the Hub alone therefore
-  is not proof of a reachable duplication exploit. Trace and exercise the full
-  dispatch, including crafting/table/station menus, before changing authorization.
+- Furnace visibility in the recipe-popup transition: inspect the client block
+  and outline before attributing the control-ray failure to geometry or timing.
+- Container-close handling: Java calls doCloseContainer on its current menu without
+  comparing the packet ID; trace Horizon cursor/grid cleanup before changing this.
 - Cursor and crafting-grid conservation during disconnect, death, menu replacement
   and vehicle destruction; include full inventories and overflow drops.
 - Save/reload consistency across player inventories and world-owned containers.
