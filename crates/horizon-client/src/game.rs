@@ -231,6 +231,7 @@ mod native_panel_recipes;
 mod native_projectiles;
 mod native_quick_move;
 mod native_recipes;
+mod native_reload_listeners;
 mod native_server;
 mod native_shaders;
 mod native_ticks;
@@ -414,6 +415,7 @@ pub use native_falling::NativeFalling;
 pub use native_hooks::{NativeClock, NativeShake};
 pub use native_item_energy::ItemEnergyBuffer;
 pub use native_mob_draw::{NativeMobRender, NativePlayerRender};
+pub use native_reload_listeners::NativeReloadListener;
 pub use native_server::NativeExperienceOrb;
 pub use native_world_columns::NativeColumnBlocks;
 pub use native_world_edit::{NativeBlockEdit, NativeBlockRun, NativeHeightmap};
@@ -12094,8 +12096,9 @@ impl Game<'_> {
             &self.options.resources,
             &pack_files(&self.world_tables),
         );
-        // TagsUpdatedEvent (SERVER_DATA_LOAD): the world's data is in, before
-        // its chunks and players are.
+        // The mods' own data folders, then TagsUpdatedEvent (SERVER_DATA_LOAD):
+        // the world's data is in, before its chunks and players are.
+        self.native_reload_listeners();
         self.native_server_data_loaded(false);
         self.sync_recipe_content();
         self.bosses = Default::default();
@@ -19523,6 +19526,7 @@ impl Game<'_> {
             &overlay,
         ));
         self.adv.reset_tree();
+        self.native_reload_listeners();
         self.native_server_data_loaded(true);
     }
 

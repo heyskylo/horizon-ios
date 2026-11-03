@@ -20,7 +20,7 @@ pub use crate::game::{
     ItemEnergyBuffer, NativeBlockEdit, NativeBlockRun, NativeClock, NativeColumnBlocks,
     NativeDataMapType, NativeExperienceOrb, NativeFalling, NativeHeightmap, NativeHeldItem,
     NativeHit, NativeMapDecoration, NativeMapInfo, NativeMobRender, NativeModEvent,
-    NativePlayerRender, NativeShake,
+    NativePlayerRender, NativeReloadListener, NativeShake,
 };
 pub use crate::gfx::native_render::{
     BlockSpriteArrays, RenderHooks, RenderNeeds, RenderNeedsEvent, WorldDrawn, WorldDrawnEvent,

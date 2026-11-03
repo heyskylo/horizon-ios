@@ -879,6 +879,7 @@ use super::{
     native_block_entity_draw::BlockEntityDraw,
     native_mob_draw::{NativeMobRender, NativePlayerRender},
     native_panel_recipes::RecipePage,
+    native_reload_listeners::NativeReloadListener,
 };
 use horizon_assets::item_model::StackView;
 use horizon_client::mod_api::{
@@ -2192,6 +2193,32 @@ impl Game<'_> {
     /// connected to a server never fires it. API 108.
     pub(super) fn native_server_data_loaded(&mut self, reload: bool) {
         mod_api::dispatch_server_data_loaded(self, mod_api::mods(), reload);
+    }
+    /// The folders of JSON files native mods read from the data
+    /// (`AddServerReloadListenersEvent`): push yours, each a listener id and a
+    /// folder under `data/<namespace>/`. Asked at the start of every data load
+    /// of a server: a world opening, `/reload`. A folder that leaves
+    /// `data/<namespace>/` is skipped. API @API:server_reload_listeners@.
+    pub(super) fn native_add_server_reload_listeners(
+        &mut self,
+        listeners: &mut Vec<NativeReloadListener>,
+    ) {
+        mod_api::dispatch_add_server_reload_listeners(self, mod_api::mods(), listeners);
+    }
+    /// A listener's files were read (`SimpleJsonResourceReloadListener`'s
+    /// `apply`): `files` holds `<namespace>:<path>` (the file's path under
+    /// the folder, without `.json`) and its JSON, sorted by id, from the
+    /// resource root (vanilla's and content mods' data) and the world's enabled
+    /// data packs; for each id the top pack's file, and a file that isn't JSON
+    /// is logged and left out. Every mod hears every listener, so check
+    /// `listener.id`. Fired on each data load before `native_server_data_loaded`.
+    /// Server-side. API @API:server_reload_listeners@.
+    pub(super) fn native_server_reload_listener_apply(
+        &mut self,
+        listener: &NativeReloadListener,
+        files: &[(String, serde_json::Value)],
+    ) {
+        mod_api::dispatch_server_reload_listener_apply(self, mod_api::mods(), listener, files);
     }
     /// The server is assembling its data tables from the world's data packs
     /// (`ReloadableServerResources`): a world is opening, or `/reload` was
