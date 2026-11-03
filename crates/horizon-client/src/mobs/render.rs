@@ -2721,7 +2721,10 @@ mod tests {
         mob.extra.age = 0;
         let mut adult = Vec::new();
         humanoid_armor(&mob, &mut adult);
-        assert_eq!(&*adult[1].texture, "entity/equipment/humanoid_leggings/iron");
+        assert_eq!(
+            &*adult[1].texture,
+            "entity/equipment/humanoid_leggings/iron"
+        );
     }
 
     #[test]
