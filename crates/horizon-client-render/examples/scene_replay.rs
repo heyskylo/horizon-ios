@@ -6,13 +6,15 @@
 //! [--mipmaps N] [--lod-distance CHUNKS] [--render-distance CHUNKS] [--size WxH]
 //! [--section-draws flat|indirect] [--section-cull on|off] [--section-sides on|off]
 //! [--gpu-culling on|off] [--root RESOURCES] [--screenshot PNG]
-//! [--world SAVE --leaf-culling MODE]`
+//! [--world SAVE --leaf-culling MODE] [--memory on]`
 //! `--screenshot` saves the first view's last frame, after the timed frames.
 //! `--world` meshes the captured sections again from that save's region files
 //! (blocks, biomes and saved light; `ao`, `biomeBlendRadius` and `cutoutLeaves`
 //! from `./options.txt`) with `--leaf-culling` (default `off`), so a mesher
 //! change can be measured on the captured view. A section whose 3x3 columns are
 //! not all saved keeps its captured mesh.
+//! `--memory on` adds the renderer's largest GPU resources and, on macOS, the process's
+//! physical footprint by category (`footprint`), taken after the timed frames.
 use horizon_client_render::{
     assets::{Assets, RenderAssets},
     biome::Biomes,
@@ -76,6 +78,7 @@ struct Options {
     screenshot: Option<PathBuf>,
     world: Option<PathBuf>,
     leaf_culling: LeafCullingMode,
+    memory: bool,
 }
 
 fn on_off(value: &str) -> Result<bool, String> {
@@ -127,6 +130,7 @@ fn options() -> Result<Options, String> {
             "--gpu-culling" => o.gpu_culling = Some(on_off(&value)?),
             "--screenshot" => o.screenshot = Some(value.into()),
             "--world" => o.world = Some(value.into()),
+            "--memory" => o.memory = on_off(&value)?,
             "--leaf-culling" => {
                 o.leaf_culling = LeafCullingMode::ALL
                     .into_iter()
@@ -403,6 +407,7 @@ fn replay(window: Arc<Window>) -> Result<(), Box<dyn std::error::Error>> {
     } else {
         "indirect"
     };
+    let memory = o.memory.then(|| memory_report(&renderer));
     let report = json!({
         "capture": o.dir.display().to_string(),
         "adapter": renderer.info.name,
@@ -430,9 +435,52 @@ fn replay(window: Arc<Window>) -> Result<(), Box<dyn std::error::Error>> {
         },
         "notes": notes,
         "views": views,
+        "memory": memory,
     });
     println!("{}", serde_json::to_string_pretty(&report)?);
     Ok(())
+}
+
+fn mb(bytes: u64) -> f64 {
+    (bytes as f64 / 1048576.0 * 10.0).round() / 10.0
+}
+
+/// `--memory`: the renderer's census in MiB and, on macOS, `footprint`'s summary of this
+/// process (GPU buffers and textures count as IOAccelerator memory there).
+fn memory_report(renderer: &Renderer) -> Value {
+    let gpu: serde_json::Map<String, Value> = renderer
+        .gpu_census()
+        .into_iter()
+        .map(|(name, bytes)| (format!("{name}_mb"), json!(mb(bytes))))
+        .collect();
+    let footprint = std::process::Command::new("/usr/bin/footprint")
+        .args(["-f", "bytes", "-p", &std::process::id().to_string()])
+        .output()
+        .ok()
+        .map(|out| String::from_utf8_lossy(&out.stdout).into_owned());
+    let footprint = footprint.map(|text| {
+        let mut total = None;
+        let mut categories = Vec::new();
+        for line in text.lines() {
+            if let Some(at) = line.find("Footprint: ") {
+                total = line[at + 11..]
+                    .split_whitespace()
+                    .next()
+                    .and_then(|v| v.parse::<u64>().ok());
+            }
+            // "  <dirty> B  <clean> B  <reclaimable> B  <regions>  <category>"
+            let words: Vec<&str> = line.split_whitespace().collect();
+            if words.len() >= 8
+                && words[1] == "B"
+                && let Ok(dirty) = words[0].parse::<u64>()
+                && dirty >= 1 << 20
+            {
+                categories.push(json!([words[7..].join(" "), mb(dirty)]));
+            }
+        }
+        json!({ "total_mb": total.map(mb), "dirty_by_category_mb": categories })
+    });
+    json!({ "gpu": gpu, "footprint": footprint })
 }
 
 struct App;

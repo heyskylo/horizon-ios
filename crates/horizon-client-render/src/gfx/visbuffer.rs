@@ -310,6 +310,13 @@ impl Visbuffer {
         flat.draw_phase2(pass, split..total, vertices);
     }
 
+    /// Bytes of its block tables and IDs.
+    pub fn bytes(&self) -> u64 {
+        let blocks = self.blocks.as_ref().map_or(0, |(b, _)| b.size());
+        let ids = self.ids.as_ref().map_or(0, |(_, [w, h])| u64::from(*w) * u64::from(*h) * 4);
+        blocks + ids
+    }
+
     /// Pass 2: shades the solid terrain the IDs show into `target`, the world's colour,
     /// over the sky drawn before. `terrain`: terrain.wgsl's group 0.
     #[allow(clippy::too_many_arguments)]

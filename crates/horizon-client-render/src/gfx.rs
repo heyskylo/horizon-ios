@@ -109,6 +109,19 @@ fn flat_vertices<'a>(
     }
 }
 
+/// Bytes of `texture` with every mip level of every layer.
+pub(crate) fn texture_bytes(texture: &wgpu::Texture) -> u64 {
+    let size = texture.size();
+    let block = u64::from(texture.format().block_copy_size(None).unwrap_or(4));
+    (0..texture.mip_level_count())
+        .map(|level| {
+            let side = |v: u32| u64::from((v >> level).max(1));
+            side(size.width) * side(size.height) * block
+        })
+        .sum::<u64>()
+        * u64::from(size.depth_or_array_layers)
+}
+
 /// Whether translucent quads have an arena of their own: with Translucent Batching
 /// (`batching`), unless a shader pack's frames can draw terrain flat (as for `flat_frame`),
 /// which reads them in the section arena through its tables: where flat draws exist and
@@ -1995,6 +2008,37 @@ impl Renderer {
         let translucent = self.translucent_arena.as_ref();
         let arenas = self.arena.bytes() + translucent.map_or(0, arena::Arena::bytes);
         [arenas, vertices * stride]
+    }
+    /// Bytes of the renderer's largest GPU resources, by name (`scene_replay --memory`):
+    /// the terrain arenas (their pages, and what resident sections and far tiles use of
+    /// them), the quad indices, the block sprites with their mips, the LabPBR maps, flat
+    /// draws' buffers and the visibility buffer's.
+    pub fn gpu_census(&self) -> Vec<(&'static str, u64)> {
+        let stride = std::mem::size_of::<TerrainVertex>() as u64;
+        let used = |s: &SectionGpu| u64::from(s.solid + s.translucent) * 4 * stride;
+        let textures = |t: &[wgpu::Texture]| t.iter().map(texture_bytes).sum::<u64>();
+        let translucent = self.translucent_arena.as_ref();
+        vec![
+            ("section_arena_pages", self.arena.bytes()),
+            ("translucent_arena_pages", translucent.map_or(0, arena::Arena::bytes)),
+            ("sorted_index_pages", self.sorted_indices.bytes()),
+            ("near_section_vertices", self.sections.values().map(used).sum()),
+            (
+                "far_tile_vertices",
+                self.lods.values().map(|tile| used(&tile.mesh)).sum(),
+            ),
+            ("quad_indices", self.indices.size()),
+            ("block_sprites", textures(&self.sprite_textures)),
+            (
+                "pbr_maps",
+                self.pbr_maps.as_ref().map_or(0, |maps| textures(maps)),
+            ),
+            ("flat_draws", self.flat.as_ref().map_or(0, flat::Flat::bytes)),
+            (
+                "visibility_buffer",
+                self.visbuf.as_ref().map_or(0, visbuffer::Visbuffer::bytes),
+            ),
+        ]
     }
     /// Device memory the backend's allocator holds, by the label of what holds
     /// it, largest first, with its allocated and reserved totals (Vulkan and

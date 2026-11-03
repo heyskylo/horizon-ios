@@ -915,6 +915,15 @@ impl Flat {
             );
         }
     }
+    /// Bytes of its buffers: the index list, ranges, origins and block tables.
+    pub fn bytes(&self) -> u64 {
+        let tables: u64 = self.pages.iter().flatten().map(|t| t.blocks.size()).sum();
+        self.indices.size()
+            + self.ranges.size()
+            + self.origins.size()
+            + self.phase2_calls.size()
+            + tables
+    }
     /// The origins by section id, which the visibility buffer's resolve (`visbuffer`) reads
     /// in its fragment shader.
     pub(super) fn origins(&self) -> &wgpu::Buffer {
