@@ -1042,5 +1042,20 @@
   "{value}%": "{value} %",
   "Experimental. Builds the native mods you trust into a game of their own.": "Experimental. Compila los mods nativos en los que confías en un juego propio.",
   "Native mods": "Mods nativos",
-  "Nightly": "Nightly"
+  "Nightly": "Nightly",
+  "Everything you install goes into {instance}. Pick another instance on the left to fill that one.": "Todo lo que instales va a {instance}. Elige otra instancia a la izquierda para llenar esa.",
+  "Import as an instance": "Importar como instancia",
+  "Install in {instance}": "Instalar en {instance}",
+  "Its page": "Su página",
+  "Nothing matches “{query}”.": "Nada coincide con «{query}».",
+  "Remove from {instance}": "Quitar de {instance}",
+  "Search Horizon mods": "Buscar mods de Horizon",
+  "Search resource packs and modpacks": "Buscar paquetes de recursos y modpacks",
+  "Search {count} Horizon mods": "Buscar entre {count} mods de Horizon",
+  "soon": "pronto",
+  "{support} in Horizon": "{support} en Horizon",
+  "Mod": "Mod",
+  "Resource pack": "Paquete de recursos",
+  "Shader pack": "Paquete de shaders",
+  "Data pack": "Paquete de datos"
 }

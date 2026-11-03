@@ -1042,5 +1042,20 @@
   "{value}%": "{value}%",
   "Experimental. Builds the native mods you trust into a game of their own.": "実験的。信頼するネイティブ Mod を専用のゲームにビルドします。",
   "Native mods": "ネイティブ Mod",
-  "Nightly": "Nightly"
+  "Nightly": "Nightly",
+  "Everything you install goes into {instance}. Pick another instance on the left to fill that one.": "インストールしたものはすべて {instance} に入ります。別のインスタンスに入れるには左で選んでください。",
+  "Import as an instance": "インスタンスとしてインポート",
+  "Install in {instance}": "{instance} にインストール",
+  "Its page": "ページを開く",
+  "Nothing matches “{query}”.": "「{query}」に一致するものはありません。",
+  "Remove from {instance}": "{instance} から削除",
+  "Search Horizon mods": "Horizon Mod を検索",
+  "Search resource packs and modpacks": "リソースパックと Modpack を検索",
+  "Search {count} Horizon mods": "{count} 個の Horizon Mod を検索",
+  "soon": "近日公開",
+  "{support} in Horizon": "Horizon では: {support}",
+  "Mod": "Mod",
+  "Resource pack": "リソースパック",
+  "Shader pack": "シェーダーパック",
+  "Data pack": "データパック"
 }

@@ -1042,5 +1042,20 @@
   "{value}%": "{value} %",
   "Experimental. Builds the native mods you trust into a game of their own.": "Eksperimentalno. Gradi nativne modove kojima vjeruješ u zasebnu igru.",
   "Native mods": "Nativni modovi",
-  "Nightly": "Nightly"
+  "Nightly": "Nightly",
+  "Everything you install goes into {instance}. Pick another instance on the left to fill that one.": "Sve što instaliraš ide u {instance}. Odaberi drugu instancu lijevo da napuniš nju.",
+  "Import as an instance": "Uvezi kao instancu",
+  "Install in {instance}": "Instaliraj u {instance}",
+  "Its page": "Njegova stranica",
+  "Nothing matches “{query}”.": "Ništa ne odgovara „{query}”.",
+  "Remove from {instance}": "Ukloni iz {instance}",
+  "Search Horizon mods": "Pretraži Horizon modove",
+  "Search resource packs and modpacks": "Pretraži pakete resursa i modpackove",
+  "Search {count} Horizon mods": "Pretraži {count} Horizon modova",
+  "soon": "uskoro",
+  "{support} in Horizon": "{support} u Horizonu",
+  "Mod": "Mod",
+  "Resource pack": "Paket resursa",
+  "Shader pack": "Paket shadera",
+  "Data pack": "Paket podataka"
 }

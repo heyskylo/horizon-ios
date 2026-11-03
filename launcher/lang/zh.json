@@ -1042,5 +1042,20 @@
   "{value}%": "{value}%",
   "Experimental. Builds the native mods you trust into a game of their own.": "实验性。将你信任的原生模组构建进一个单独的游戏。",
   "Native mods": "原生模组",
-  "Nightly": "Nightly"
+  "Nightly": "Nightly",
+  "Everything you install goes into {instance}. Pick another instance on the left to fill that one.": "你安装的所有内容都会进入 {instance}。在左侧选择另一个实例来填充它。",
+  "Import as an instance": "导入为实例",
+  "Install in {instance}": "安装到 {instance}",
+  "Its page": "它的页面",
+  "Nothing matches “{query}”.": "没有与“{query}”匹配的内容。",
+  "Remove from {instance}": "从 {instance} 移除",
+  "Search Horizon mods": "搜索 Horizon 模组",
+  "Search resource packs and modpacks": "搜索资源包和整合包",
+  "Search {count} Horizon mods": "搜索 {count} 个 Horizon 模组",
+  "soon": "即将推出",
+  "{support} in Horizon": "在 Horizon 中：{support}",
+  "Mod": "模组",
+  "Resource pack": "资源包",
+  "Shader pack": "光影包",
+  "Data pack": "数据包"
 }
