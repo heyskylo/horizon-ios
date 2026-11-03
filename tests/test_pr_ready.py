@@ -5,6 +5,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import threading
 import unittest
 from unittest import mock
 
@@ -345,6 +346,36 @@ class PrReadyTests(unittest.TestCase):
                                                  "their current inputs.\nNothing to run: every harness passed."),
                          "no harness affected")
         self.assertEqual(pr_ready.duration(125), "2 min 5 s")
+
+    def test_python_checks_run_beside_cargo_and_harnesses_after_it(self):
+        steps = pr_ready.plan(args(), "origin/main", {"crates/horizon-core/src/lib.rs"}, PACKAGES, LIBRARIES,
+                              DEPENDENCIES)
+        steps[0].status = "pass"
+        steps[-1].where, steps[-1].command, steps[-1].status = "here", "parity", None
+        cargo_started = threading.Event()
+        runs = []
+
+        def run_script(group, host, verbose):
+            names = [step.name for step in group]
+            if "Python tests" in names:
+                # Waits for cargo: running them first, alone, would time out here.
+                runs.append(("python", cargo_started.wait(2)))
+            elif "rustfmt" in names:
+                cargo_started.set()
+                runs.append(("cargo", host))
+            elif names:
+                runs.append(("after", names))
+
+        with mock.patch.object(pr_ready, "run_script", run_script):
+            pr_ready.run_checks(steps, "local", verbose=False)
+        self.assertCountEqual(runs[:2], [("python", True), ("cargo", "local")])
+        self.assertEqual(runs[2], ("after", ["Parity"]))
+
+        runs.clear()
+        cargo_started.clear()
+        with mock.patch.object(pr_ready, "run_script", run_script):
+            pr_ready.run_checks(steps, "local", verbose=True)
+        self.assertEqual(runs[0], ("python", False))
 
 
 if __name__ == "__main__":
