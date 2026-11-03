@@ -203,7 +203,7 @@ impl Launcher {
             }
             cx.notify();
         });
-        let card = crate::glass::plate(radius::MODAL)
+        let card = ui::dialog_plate(radius::MODAL)
             .id("instance-card")
             .occlude()
             .flex()
@@ -226,6 +226,7 @@ impl Launcher {
                 .p(px(24.))
                 .occlude()
                 .on_scroll(|_, _, cx| cx.stop_propagation())
+                .child(ui::scrim_backdrop())
                 .child(
                     div()
                         .absolute()
