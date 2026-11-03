@@ -358,8 +358,45 @@
   "public_main_integration": {
     "revision": "8dffb823a45d307988dcc0e9d0e1767d665510fb",
     "license": "MIT",
-    "scope": "Only public main was fetched after the independent candidate was frozen; no old PR refs/history fetched. Frozen patch applied without API corrections.",
-    "qualification_api_adjustment": "The first final-main self-check exposed one newly added existing-main Interface test literal without the new field (E0063); initialized neutral48-byte initial contents. Independent production algorithm unchanged. First failed gate preserved."
+    "scope": "Only public main was fetched after the independently CPU/GPU-tested uniform source was frozen; no old PR refs/history fetched. Frozen behavioral patch applied, then the actual gate identified a newly added main Interface test literal requiring neutral initial contents.",
+    "qualification_api_adjustment": "The first final-main self-check exposed one newly added existing-main Interface test literal without the new field (E0063); initialized neutral48-byte initial contents. Independent production algorithm unchanged. First failed gate preserved.",
+    "api_input_files": [
+      {
+        "path": "LICENSE",
+        "sha256_at_public_main": "b4b374ae9d0f2d8f7be35c6783e41327431da3b5662605da9ba31493630621df",
+        "scope": "build/contribution instructions or targeted API/type construction/diff only; existing fixture algorithms preserved"
+      },
+      {
+        "path": "AGENTS.md",
+        "sha256_at_public_main": "acb84a1f4d7478eb6f63e9137f092f2e5939fd82fd430113ce3a540e3a5609a3",
+        "scope": "build/contribution instructions or targeted API/type construction/diff only; existing fixture algorithms preserved"
+      },
+      {
+        "path": "CONTRIBUTING.md",
+        "sha256_at_public_main": "69d36f19de42931e35a2995b552cc638df1f77e7c5b6afda6ad092982f636dd6",
+        "scope": "build/contribution instructions or targeted API/type construction/diff only; existing fixture algorithms preserved"
+      },
+      {
+        "path": ".github/pull_request_template.md",
+        "sha256_at_public_main": "ea124a13798cc74beed096a046f5314f17f32cb9e4b796dfe032e6e85fef7519",
+        "scope": "build/contribution instructions or targeted API/type construction/diff only; existing fixture algorithms preserved"
+      },
+      {
+        "path": "crates/horizon-shaders/src/translate/mod.rs",
+        "sha256_at_public_main": "c2bf0c6df61e55b9919a6e23949a5c465dfaddf1ae90e3ae7d71cc006b0927cf",
+        "scope": "build/contribution instructions or targeted API/type construction/diff only; existing fixture algorithms preserved"
+      },
+      {
+        "path": "crates/horizon-shaders/src/translate/scan.rs",
+        "sha256_at_public_main": "98c69b0863654d5d493996274e078e49d8c8a0e71bc695dfc638d35edf2946d5",
+        "scope": "build/contribution instructions or targeted API/type construction/diff only; existing fixture algorithms preserved"
+      },
+      {
+        "path": "crates/horizon-client-render/src/gfx/pack_post.rs",
+        "sha256_at_public_main": "079dd496cd203fd42656d67c4eb9d71de54870bf2d1fecddd43da8db53ab52ea",
+        "scope": "build/contribution instructions or targeted API/type construction/diff only; existing fixture algorithms preserved"
+      }
+    ]
   },
   "independent_baseline_validation": {
     "rust": "1.99.0; default debug tests; no custom RUSTFLAGS; serialized builds, jobs=2",
