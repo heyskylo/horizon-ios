@@ -91,6 +91,108 @@ fn slime_at(world: &World, facts: &BlockFacts, x: i32, y: i32, z: i32) -> bool {
 mod fluids;
 pub use fluids::update_entity_fluids;
 
+#[cfg(test)]
+mod drop_motion_tests {
+    use super::drop_motion;
+    use horizon_core::random::{LegacyRandom, RandomSource};
+
+    /// Vanilla's own `Mth` and `LegacyRandomSource(7)` running
+    /// `createItemStackToDrop`'s arithmetic: three throws along the view,
+    /// then two scattered drops, bit for bit, then the random's next int.
+    #[test]
+    fn drops_match_vanillas_motion_bit_for_bit() {
+        let mut r = LegacyRandom::new(7);
+        let bits = |v: [f64; 3]| v.map(|c| c.to_bits() as i64);
+        let thrown = [
+            (
+                0.0,
+                0.0,
+                [
+                    -4658604453255681268,
+                    4595435376155295744,
+                    4598847571894135436,
+                ],
+            ),
+            (
+                37.5,
+                -21.25,
+                [
+                    -4627867408251048793,
+                    4597245257657090048,
+                    4597448471913462163,
+                ],
+            ),
+            (
+                -123.4,
+                60.0,
+                [
+                    4593476083220988603,
+                    -4626282285467959296,
+                    -4631965182103987462,
+                ],
+            ),
+        ];
+        for (yaw, pitch, want) in thrown {
+            assert_eq!(
+                bits(drop_motion(&mut r, yaw, pitch, false)),
+                want,
+                "{yaw} {pitch}"
+            );
+        }
+        let scattered = [
+            [
+                -4634512480041697280,
+                4596373779801702400,
+                -4661085178024689664,
+            ],
+            [
+                4600899508711194624,
+                4596373779801702400,
+                -4629159495333838848,
+            ],
+        ];
+        for want in scattered {
+            assert_eq!(bits(drop_motion(&mut r, 0.0, 0.0, true)), want);
+        }
+        assert_eq!(r.next_int(), 357425922);
+    }
+}
+
+/// `LivingEntity.createItemStackToDrop`'s motion for a stack thrown by an
+/// entity facing `yaw` and `pitch` (degrees), from that entity's random:
+/// `randomly` scatters it in any direction (a death's drops), else it goes
+/// along the view (the drop key).
+pub fn drop_motion(
+    r: &mut impl horizon_core::random::RandomSource,
+    yaw: f32,
+    pitch: f32,
+    randomly: bool,
+) -> [f64; 3] {
+    use horizon_core::{
+        geometry::trig::{DEG_TO_RAD, cos, sin},
+        jmath,
+    };
+    let tau = std::f32::consts::TAU;
+    if randomly {
+        let pow = r.next_float() * 0.5;
+        let dir = f64::from(r.next_float() * tau);
+        return [
+            f64::from(-sin(dir) * pow),
+            f64::from(0.2f32),
+            f64::from(cos(dir) * pow),
+        ];
+    }
+    let (x, y) = (f64::from(pitch * DEG_TO_RAD), f64::from(yaw * DEG_TO_RAD));
+    let (sin_x, cos_x, sin_y, cos_y) = (sin(x), cos(x), sin(y), cos(y));
+    let dir = f64::from(r.next_float() * tau);
+    let pow = f64::from(0.02 * r.next_float());
+    [
+        f64::from(-sin_y * cos_x * 0.3) + jmath::cos(dir) * pow,
+        f64::from(-sin_x * 0.3 + 0.1 + (r.next_float() - r.next_float()) * 0.1),
+        f64::from(cos_y * cos_x * 0.3) + jmath::sin(dir) * pow,
+    ]
+}
+
 #[derive(Clone, Debug)]
 pub struct ItemEntity {
     pub health: i32,
