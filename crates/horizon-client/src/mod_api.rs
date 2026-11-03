@@ -318,6 +318,9 @@ pub struct NativeServerPlayer {
     /// (`living_incoming_damage`, `living_knockback`) give for the player; 0 when not known.
     /// API @API:server_player_entity_id@.
     pub entity_id: i32,
+    /// The IP address the player connects from (behind a Velocity proxy: the address the proxy forwards);
+    /// empty when not known. API next.
+    pub address: String,
 }
 
 /// A command a native mod adds, as one usage: words, then arguments
@@ -701,6 +704,7 @@ mod tests {
                 yaw: 0.0,
                 pitch: 0.0,
                 entity_id: 0,
+                address: String::new(),
             })
         }
         fn action_bar(&mut self, _uuid: u128, line: Text) -> bool {
