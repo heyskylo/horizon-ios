@@ -273,14 +273,18 @@ the notes.
 | --- | --- | --- |
 | `horizon-linux-x86_64.tar.gz` | GitHub `ubuntu-22.04` (an older glibc, so it runs on any recent distribution) | the standard loader and libraries only (`tools/check_imports.py`) |
 | `horizon-server-linux-x86_64.tar.gz` | the same Linux job, after the client archive: `horizon-server`, `horizon-prepare` and the game built with `--no-default-features` as `horizon-engine` (docs/server.md) | as above, and neither `libasound.so.2` nor `libudev.so.1` (`tools/check_imports.py --server`) |
-| `horizon-windows-x64.zip` | GitHub `windows-latest`, C runtime linked in | system DLLs only (`tools/check_imports.py`) |
+| `horizon-windows-x64.zip` | GitHub `windows-latest`, C runtime linked in | system DLLs only (`tools/check_imports.py`); PE machine is x64 |
+| `horizon-windows-arm64.zip` | GitHub `windows-11-vs2026-arm`, built for `aarch64-pc-windows-msvc`, C runtime linked in | system DLLs only (`tools/check_imports.py`); PE machine is ARM64 and binaries start on the native runner |
 | `horizon-macos-arm64.zip` | The Mac mini's runner (`vars.MAC_RUNNER=macos-latest` sends it to GitHub) | system libraries only (`otool -L`); a 1500-frame offscreen run of a new world (about 12 s; 300 frames end before the world has loaded) with resources prepared from the runner's own Minecraft (`--offscreen --world smoke --frames 1500 --smoke-report`: frames drawn, chunks generated and meshed, a player, no error) |
 | `horizon-macos-x64.zip` | The same runner, cross-built for `x86_64-apple-darwin` (#1161) | as `horizon-macos-arm64.zip`, every program and the 1500-frame run under Rosetta 2; only the arm64 build's `smoke-test.json` is published |
 
-Each builds `horizon-client`, `horizon-ctl` and `horizon-prepare` in release mode, checks all three exist, starts
-each one (`--help`, `--version`), packages the folder with `cargo run -p xtask -- package` and archives it. The
+Each builds `horizon-client`, `horizon-ctl`, `horizon-prepare` and `horizon-server` in release mode, checks they
+exist, verifies Windows PE architectures, checks the `--help` and `--version` entry points, packages the folder with
+`cargo run -p xtask -- package` and archives it. The
 GitHub jobs keep their Cargo caches (`Swatinem/rust-cache`); the Mac mini keeps its `target/`. Only the Mac
 runs the game: GitHub's runners have neither a GPU worth the name nor the game files.
+
+Building Windows ARM64 locally: [Windows ARM64](windows-arm64.md).
 
 ### Notes
 
@@ -388,11 +392,14 @@ and by hand; pushes to `launcher` and `launcher-*` branches only build.
   `HORIZON_LAUNCHER_TAG`, which `launcher/src/backend.rs` reads with `option_env!` (falling back to `Cargo.toml`'s),
   so `--version`, the window, the User-Agent and the self-update comparison all use them. Each build checks
   `--version` says it.
-- Linux on GitHub `ubuntu-22.04`, Windows on `windows-latest`, macOS on the Mac mini's runner; each runs the
-  launcher's tests, checks its libraries, and installs the latest game release with the new launcher.
+- Linux on GitHub `ubuntu-22.04`, Windows x64 on `windows-latest`, Windows ARM64 on `windows-11-vs2026-arm`, and
+  macOS on the Mac mini's runner; each runs the launcher's tests and checks its libraries. The smoke test installs
+  the newest game build for that platform when one is published; Intel macOS and Windows ARM64 skip only the install
+  step while no matching build is available yet.
 - Published with `--latest=false`: the repository's latest release stays a game release. Notes list the pull
   requests under New and Fixed; Kira posts launcher releases without pinging.
-- Windows also publishes `horizon-launcher-setup.exe`, the launcher's binary under another name: with no
+- Windows also publishes `horizon-launcher-setup.exe` (x64) and `horizon-launcher-setup-arm64.exe`, the launcher's
+  binary under another name: with no
   arguments it opens the per-user setup (`launcher/src/installer.rs`) instead of Home, and
   `horizon-launcher.exe uninstall` removes it again. Both files are in the release's signed `SHA256SUMS`.
 

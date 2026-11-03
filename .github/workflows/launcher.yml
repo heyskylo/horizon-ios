@@ -1,5 +1,5 @@
 name: launcher
-# Builds the launcher on Linux, macOS and Windows, and releases it by itself (docs/release-flow.md): after a
+# Builds the launcher on Linux, macOS, Windows x64 and ARM64, and releases it by itself (docs/release-flow.md): after a
 # push to main that changes the launcher or a crate it builds in (the paths below),
 # every 10 minutes (a release waiting for merges to settle goes out) and by hand, tools/release_train.py decides as
 # for the game.
@@ -15,8 +15,9 @@ name: launcher
 # under Rosetta 2 (#1161). With the repository variable MACOS_SIGN_IDENTITY set, Horizon.app and the .dmg are signed with
 # Developer ID, notarized and stapled, from the runner's signing keychain (packaging/macos/README.md);
 # unset (forks), they are signed ad hoc.
-# Windows ships the launcher's own binary twice: in the ZIP (what a launcher updates itself from) and as
-# horizon-launcher-setup.exe, which opens the per-user installer instead of Home (launcher/src/installer.rs).
+# Windows ships each architecture's launcher in its ZIP (what a launcher updates itself from) and as
+# horizon-launcher-setup.exe or horizon-launcher-setup-arm64.exe, which opens the per-user installer instead of Home
+# (launcher/src/installer.rs).
 #   gh workflow run launcher --ref <branch>                    # dry run: builds everything, publishes nothing
 #   gh workflow run launcher --ref main -f dry_run=false -f force=true
 
@@ -125,8 +126,19 @@ jobs:
             os: windows-latest
             asset: horizon-launcher-windows-x64.zip
             binary: horizon-launcher.exe
+            pe_arch: x64
+            setup_asset: horizon-launcher-setup.exe
             # The C runtime linked in: without it the launcher asks for VCRUNTIME140.dll,
             # which only the Visual C++ redistributable installs.
+            rustflags: -C target-feature=+crt-static
+          - name: windows-arm64
+            os: windows-11-vs2026-arm
+            target: aarch64-pc-windows-msvc
+            asset: horizon-launcher-windows-arm64.zip
+            binary: horizon-launcher.exe
+            pe_arch: arm64
+            setup_asset: horizon-launcher-setup-arm64.exe
+            # The C runtime linked in, so the standalone ARM64 launcher needs no redistributable.
             rustflags: -C target-feature=+crt-static
     runs-on: ${{ matrix.mac && (vars.MAC_RUNNER || 'ludovics-mac-mini') || matrix.os }}
     # Notarizing the app and then the .dmg can take a few minutes each.
@@ -182,6 +194,9 @@ jobs:
       # Every test target (the library, the binary, tests/), on each system the launcher ships for.
       - run: cargo test --release --locked ${{ matrix.target && format('--target {0}', matrix.target) || '' }} ${LAUNCHER_FEATURES:+--features "$LAUNCHER_FEATURES"}
       - run: cargo build --release --locked ${{ matrix.target && format('--target {0}', matrix.target) || '' }} ${LAUNCHER_FEATURES:+--features "$LAUNCHER_FEATURES"}
+      - name: Verify Windows executable architecture
+        if: runner.os == 'Windows'
+        run: python ../tools/check_pe_arch.py "${{ matrix.pe_arch }}" "$BIN/${{ matrix.binary }}"
       - name: The version is the release's
         run: |
           out=$("$BIN/${{ matrix.binary }}" --version)
@@ -210,10 +225,10 @@ jobs:
           retry() { for i in 1 2 3 4; do "$@" && return 0; sleep $((i * 15)); done; return 1; }
           retry "$launcher" versions
           "$launcher" links --json
-          # The Intel Mac launcher can come out before any game build has its asset (#1161): then there is nothing
-          # to install yet. Only that entry skips, and only on a version list that parsed and had no build here
-          # (exit 3); a launcher or a script that fails still fails the step.
-          if [[ "${{ matrix.name }}" == macos-x64 ]]; then
+          # The Intel Mac (#1161) and Windows ARM64 launchers can release before their game assets reach the latest
+          # Nightly. Skip installation only when a valid version list has no matching build (exit 3); a launcher or
+          # a script that fails still fails the step.
+          if [[ "${{ matrix.name }}" == macos-x64 || "${{ matrix.name }}" == windows-arm64 ]]; then
             versions=$(retry "$launcher" --json versions)
             no_build='import json, sys; sys.exit(3 if not any(r["available_here"] for r in json.load(sys.stdin)) else 0)'
             status=0
@@ -236,6 +251,7 @@ jobs:
           # release linked to a Nix store is a warning here, not a broken launcher.
           soft() { if [[ "$RUNNER_OS" == "Linux" ]]; then "$@" || echo "::warning::$* failed"; else "$@"; fi; }
           if [[ "$RUNNER_OS" == "Windows" ]]; then
+            python ../tools/check_pe_arch.py "${{ matrix.pe_arch }}" "$client"
             python ../tools/check_imports.py "$client"
           elif [[ "$RUNNER_OS" == "Linux" ]]; then
             soft python3 ../tools/check_imports.py "$client"
@@ -295,7 +311,7 @@ jobs:
         # installer instead of Home (launcher/src/installer.rs). Its name is what makes it the setup,
         # so the ZIP's copy stays the launcher. Both go into the release's signed SHA256SUMS.
         if: runner.os == 'Windows'
-        run: cp "$BIN/${{ matrix.binary }}" out/horizon-launcher-setup.exe
+        run: cp "$BIN/${{ matrix.binary }}" "out/${{ matrix.setup_asset }}"
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.asset }}

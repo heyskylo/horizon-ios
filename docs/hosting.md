@@ -46,13 +46,14 @@ Linux (x86-64) and macOS (Apple Silicon; Intel from the next Nightly):
 curl -fsSL https://raw.githubusercontent.com/horizon-rust/horizon/main/packaging/server/install.sh | sh
 ```
 
-Windows (x64), in PowerShell:
+Windows (x64 or ARM64), in PowerShell:
 
 ```powershell
 irm https://raw.githubusercontent.com/horizon-rust/horizon/main/packaging/server/install.ps1 | iex
 ```
 
-The script downloads the current Horizon Nightly for your computer from GitHub (the only build Horizon ships;
+The script picks the machine's x64 or ARM64 archive, including when PowerShell runs under x64 emulation. It downloads
+the current Horizon Nightly from GitHub (the only build Horizon ships;
 `--version` picks another), checks it against the SHA-256 GitHub publishes, and never asks for sudo or administrator rights. It installs:
 
 - the release in `~/.local/share/horizon/releases/<version>` (Windows: `%LOCALAPPDATA%\Horizon`), with

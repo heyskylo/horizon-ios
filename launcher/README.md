@@ -307,14 +307,16 @@ Menu entries the launcher writes then start that wrapper, which can
 set `HORIZON_LAUNCHER_NO_SELF_UPDATE=1` to keep launcher updates with the package manager.
 
 Launcher releases are automatic (docs/release-flow.md in the repository): when main changes the
-launcher, `horizon-prepare` or `horizon-theme`, the `launcher` workflow builds Linux, macOS and
-Windows and publishes `launcher-vX.Y.Z` (the next patch, or the next minor after a pull request
+launcher, `horizon-prepare` or `horizon-theme`, the `launcher` workflow builds Linux, macOS, Windows x64 and
+Windows ARM64 and publishes `launcher-vX.Y.Z` (the next patch, or the next minor after a pull request
 labelled `feature`) with `horizon-launcher-linux-x86_64.tar.gz`,
 `horizon-launcher-linux-x86_64.AppImage`, `horizon-launcher-macos-arm64.zip`,
-`horizon-launcher-macos-x64.zip` (Intel Macs) and `horizon-launcher-windows-x64.zip`, never marked latest. The version is built in from the tag
+`horizon-launcher-macos-x64.zip` (Intel Macs), `horizon-launcher-windows-x64.zip` and
+`horizon-launcher-windows-arm64.zip`, never marked latest. The version is built in from the tag
 (`HORIZON_LAUNCHER_VERSION`); `Cargo.toml`'s version is only what local builds report.
 
-Windows also publishes `horizon-launcher-setup.exe`: the launcher's own binary under another name, which opens
+Windows also publishes `horizon-launcher-setup.exe` (x64) and `horizon-launcher-setup-arm64.exe`: the launcher's own
+binary under another name, which opens
 a per-user setup instead of the window (no administrator). It copies itself to
 `%LOCALAPPDATA%\Programs\Horizon Launcher\horizon-launcher.exe`, makes the Start menu shortcut (and the
 desktop one if asked) and an entry in *Apps & features*, then starts the copy. `horizon-launcher-setup.exe

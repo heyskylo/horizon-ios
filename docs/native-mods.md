@@ -1572,8 +1572,10 @@ trusting native code is the player's decision, never an agent's.
    official `rustc`, `cargo` and `rust-std` (and `rust-mingw` on Windows), each pinned by SHA-256, downloaded once
    from static.rust-lang.org into `<launcher data>/rust/`, with its own Cargo home `<launcher data>/cargo/`. No
    rustup, nothing on the system; the player's own Rust is never used. It ships for macOS on Apple Silicon, Linux
-   x86-64 and Windows x64; an Intel Mac has none yet, so native builds there stop with "the launcher has none for
-   macos x86_64". Windows uses the `windows-gnu` host, which links without Visual Studio. `rust-mingw` only links, so on Windows the toolchain also brings MinGW-w64
+   x86-64 and Windows x64. The Windows ARM64 launcher has no bundled native-mod compiler yet and stops with
+   "the launcher has none for windows aarch64"; it doesn't build x64 game binaries for an ARM64 install. An Intel
+   Mac has none either, so native builds there stop with "the launcher has none for macos x86_64". Windows uses the
+   `windows-gnu` host, which links without Visual Studio. `rust-mingw` only links, so on Windows the toolchain also brings MinGW-w64
    (`rust_toolchain::MINGW`: WinLibs' GCC 16.2.0 on MinGW-w64 14.0.0, MSVCRT like `rust-mingw`, one zip pinned by
    SHA-256, its `mingw64/` without the documentation) on the build's `PATH`: `ring` and `hidapi` compile C,
    and `windows-sys`' `raw-dylib` imports need `dlltool` and the assembler it runs. The linker is the system's on

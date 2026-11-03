@@ -16,9 +16,12 @@ $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 
 $Repo = "horizon-rust/horizon"
-$Asset = "horizon-windows-x64.zip"
-if ($env:PROCESSOR_ARCHITECTURE -ne "AMD64") {
-    throw "No Horizon release for Windows on $env:PROCESSOR_ARCHITECTURE yet: build it from source (docs/server.md)"
+$Architecture = $env:PROCESSOR_ARCHITEW6432
+if (-not $Architecture) { $Architecture = $env:PROCESSOR_ARCHITECTURE }
+switch ($Architecture) {
+    "AMD64" { $Asset = "horizon-windows-x64.zip" }
+    "ARM64" { $Asset = "horizon-windows-arm64.zip" }
+    default { throw "No Horizon release for Windows on $Architecture yet: build it from source (docs/server.md)" }
 }
 
 function Get-Release([string]$Path) {

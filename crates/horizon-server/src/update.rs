@@ -17,20 +17,22 @@ use std::{
 const REPO: &str = "horizon-rust/horizon";
 /// The release archives for this computer, most specific first: on Linux the server build (no ALSA or
 /// udev), else the full game (releases before the server build).
-const ASSETS: &[&str] = if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
-    &[
-        "horizon-server-linux-x86_64.tar.gz",
-        "horizon-linux-x86_64.tar.gz",
-    ]
-} else if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
-    &["horizon-macos-arm64.zip"]
-} else if cfg!(all(target_os = "macos", target_arch = "x86_64")) {
-    &["horizon-macos-x64.zip"]
-} else if cfg!(all(target_os = "windows", target_arch = "x86_64")) {
-    &["horizon-windows-x64.zip"]
-} else {
-    &[]
-};
+fn assets_for(os: &str, arch: &str) -> &'static [&'static str] {
+    match (os, arch) {
+        ("linux", "x86_64") => &[
+            "horizon-server-linux-x86_64.tar.gz",
+            "horizon-linux-x86_64.tar.gz",
+        ],
+        ("macos", "aarch64") => &["horizon-macos-arm64.zip"],
+        ("macos", "x86_64") => &["horizon-macos-x64.zip"],
+        ("windows", "aarch64") => &["horizon-windows-arm64.zip"],
+        ("windows", "x86_64") => &["horizon-windows-x64.zip"],
+        _ => &[],
+    }
+}
+
+static ASSETS: std::sync::LazyLock<&'static [&'static str]> =
+    std::sync::LazyLock::new(|| assets_for(std::env::consts::OS, std::env::consts::ARCH));
 
 fn exe(name: &str) -> String {
     format!("{name}{}", std::env::consts::EXE_SUFFIX)
@@ -819,6 +821,18 @@ fn switch_stopped(dir: &Path, install: &Install, tag: &str) -> Result<(), String
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn windows_updates_choose_the_machine_architecture() {
+        assert_eq!(
+            assets_for("windows", "x86_64"),
+            &["horizon-windows-x64.zip"]
+        );
+        assert_eq!(
+            assets_for("windows", "aarch64"),
+            &["horizon-windows-arm64.zip"]
+        );
+    }
 
     #[cfg(unix)]
     fn scratch(name: &str) -> PathBuf {

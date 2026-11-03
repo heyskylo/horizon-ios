@@ -48,10 +48,10 @@ pub struct Release {
     pub nightly: Option<String>,
 }
 
-/// The release assets of each system Horizon ships for: (`std::env::consts::OS`, `ARCH`, the game,
-/// the launcher). game-build.yml builds the game's, nightly-build.yml signs and publishes them, and
-/// launcher.yml builds the launcher's (`platform_assets_are_published`).
-pub const PLATFORMS: [(&str, &str, &str, &str); 4] = [
+/// The release assets of each system Horizon ships for: (OS, architecture, the game, the launcher).
+/// game-build.yml builds the game's, nightly-build.yml signs and publishes them, and launcher.yml
+/// builds the launcher's (`platform_assets_are_published`).
+pub const PLATFORMS: [(&str, &str, &str, &str); 5] = [
     (
         "linux",
         "x86_64",
@@ -76,6 +76,12 @@ pub const PLATFORMS: [(&str, &str, &str, &str); 4] = [
         "x86_64",
         "horizon-windows-x64.zip",
         "horizon-launcher-windows-x64.zip",
+    ),
+    (
+        "windows",
+        "aarch64",
+        "horizon-windows-arm64.zip",
+        "horizon-launcher-windows-arm64.zip",
     ),
 ];
 
@@ -108,18 +114,83 @@ const fn platform_assets(os: &str, arch: &str) -> Option<(&'static str, &'static
     None
 }
 
-const OWN_ASSETS: Option<(&str, &str)> =
-    platform_assets(std::env::consts::OS, std::env::consts::ARCH);
+/// Windows may run this launcher as x64 under emulation. `GetNativeSystemInfo` reports the
+/// emulated processor for x64 apps on Arm, so use IsWow64Process2's native-machine value instead.
+#[cfg(windows)]
+fn native_windows_arch() -> Option<&'static str> {
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, IsWow64Process2};
+    let mut process_machine = 0;
+    let mut native_machine = 0;
+    // SAFETY: the current-process pseudo-handle is valid and both output pointers are writable.
+    if unsafe {
+        IsWow64Process2(
+            GetCurrentProcess(),
+            &mut process_machine,
+            &mut native_machine,
+        )
+    } == 0
+    {
+        return None;
+    }
+    windows_machine_arch(native_machine)
+}
+
+#[cfg(not(windows))]
+fn native_windows_arch() -> Option<&'static str> {
+    None
+}
+
+#[cfg(any(windows, test))]
+const fn windows_machine_arch(machine: u16) -> Option<&'static str> {
+    match machine {
+        IMAGE_FILE_MACHINE_AMD64 => Some("x86_64"),
+        IMAGE_FILE_MACHINE_ARM64 => Some("aarch64"),
+        _ => None,
+    }
+}
+
+// IMAGE_FILE_MACHINE values from the Windows SDK.
+#[cfg(any(windows, test))]
+const IMAGE_FILE_MACHINE_AMD64: u16 = 0x8664;
+#[cfg(any(windows, test))]
+const IMAGE_FILE_MACHINE_ARM64: u16 = 0xAA64;
+
+const fn architecture_for<'a>(
+    os: &str,
+    process_arch: &'a str,
+    native_arch: Option<&'a str>,
+) -> &'a str {
+    if same(os, "windows") {
+        match native_arch {
+            Some(arch) => arch,
+            None => process_arch,
+        }
+    } else {
+        process_arch
+    }
+}
+
+pub(crate) fn host_arch() -> &'static str {
+    architecture_for(
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+        native_windows_arch(),
+    )
+}
+
+fn own_assets() -> Option<(&'static str, &'static str)> {
+    platform_assets(std::env::consts::OS, host_arch())
+}
+
 /// The game build this launcher installs, None where Horizon has none.
-pub const ASSET: Option<&str> = match OWN_ASSETS {
-    Some((game, _)) => Some(game),
-    None => None,
-};
+pub fn game_asset() -> Option<&'static str> {
+    own_assets().map(|(game, _)| game)
+}
+
 /// The launcher build this launcher updates itself from.
-pub const LAUNCHER_ASSET: Option<&str> = match OWN_ASSETS {
-    Some((_, launcher)) => Some(launcher),
-    None => None,
-};
+fn launcher_platform_asset() -> Option<&'static str> {
+    own_assets().map(|(_, launcher)| launcher)
+}
 
 /// The launcher as an AppImage (`packaging/linux/appimage.sh`): the program and its libraries in
 /// one file. A launcher running from one updates by replacing that file ([`appimage_path`]), so it
@@ -382,7 +453,7 @@ pub fn releases() -> Result<Vec<Release>, String> {
 /// The game's builds in `list`, newest first. A Nightly is listed under the version it installs as
 /// ([`crate::nightly::version_of`]); only the current one (`nightly`) is an update.
 pub(crate) fn game_releases(list: &serde_json::Value) -> Vec<Release> {
-    let mut out = parse_releases(list, ASSET, |tag| {
+    let mut out = parse_releases(list, game_asset(), |tag| {
         is_game_tag(tag) || horizon_release_sign::is_nightly(tag)
     });
     for r in &mut out {
@@ -783,11 +854,11 @@ pub fn install(release: &Release, progress: impl Fn(f32)) -> Result<(), String> 
         // Signed for the Nightly channel, served under its own GitHub tag.
         Some(published) => crate::signed::nightly_digest(
             published,
-            ASSET.unwrap_or_default(),
+            game_asset().unwrap_or_default(),
             &horizon_release_sign::trusted_keys(),
             fetch_small,
         )?,
-        None if is_game_tag(tag) => signed_digest(tag, ASSET.unwrap_or_default())?,
+        None if is_game_tag(tag) => signed_digest(tag, game_asset().unwrap_or_default())?,
         None => return Err(format!("{tag} is not a Horizon release.")),
     };
     install_as(release, tag, &sha256, progress)
@@ -2764,7 +2835,7 @@ fn launcher_asset_running_from(appimage: bool) -> Option<&'static str> {
     if appimage {
         LAUNCHER_APPIMAGE_ASSET
     } else {
-        LAUNCHER_ASSET
+        launcher_platform_asset()
     }
 }
 
@@ -3845,14 +3916,57 @@ pub fn {f}("
             Some(("horizon-macos-x64.zip", "horizon-launcher-macos-x64.zip"))
         );
         assert_eq!(
-            platform_assets("windows", "x86_64").map(|(game, _)| game),
-            Some("horizon-windows-x64.zip")
+            platform_assets("windows", "x86_64"),
+            Some((
+                "horizon-windows-x64.zip",
+                "horizon-launcher-windows-x64.zip"
+            ))
+        );
+        assert_eq!(
+            platform_assets("windows", "aarch64"),
+            Some((
+                "horizon-windows-arm64.zip",
+                "horizon-launcher-windows-arm64.zip"
+            ))
         );
         assert_eq!(platform_assets("linux", "aarch64"), None);
         assert_eq!(platform_assets("macos", "x86"), None);
         assert_eq!(
-            ASSET,
-            platform_assets(std::env::consts::OS, std::env::consts::ARCH).map(|(game, _)| game)
+            game_asset(),
+            platform_assets(std::env::consts::OS, host_arch()).map(|(game, _)| game)
+        );
+        #[cfg(all(windows, target_arch = "aarch64"))]
+        assert_eq!(host_arch(), "aarch64");
+        #[cfg(all(windows, target_arch = "x86_64"))]
+        assert_eq!(host_arch(), native_windows_arch().unwrap_or("x86_64"));
+    }
+
+    #[test]
+    fn an_emulated_windows_launcher_uses_the_native_machine_architecture() {
+        assert_eq!(
+            windows_machine_arch(IMAGE_FILE_MACHINE_ARM64),
+            Some("aarch64")
+        );
+        assert_eq!(
+            windows_machine_arch(IMAGE_FILE_MACHINE_AMD64),
+            Some("x86_64")
+        );
+        assert_eq!(windows_machine_arch(0), None);
+        let arch = architecture_for("windows", "x86_64", Some("aarch64"));
+        assert_eq!(
+            platform_assets("windows", arch),
+            Some((
+                "horizon-windows-arm64.zip",
+                "horizon-launcher-windows-arm64.zip"
+            ))
+        );
+        assert_eq!(
+            architecture_for("windows", "x86_64", Some("x86_64")),
+            "x86_64"
+        );
+        assert_eq!(
+            architecture_for("linux", "x86_64", Some("aarch64")),
+            "x86_64"
         );
     }
 
@@ -4004,12 +4118,12 @@ pub fn {f}("
             {"tag_name": "v2026.10.13", "assets": []},
             {"tag_name": "launcher-v0.0.1", "draft": true, "assets": []},
         ]);
-        let game: Vec<_> = parse_releases(&list, ASSET, is_game_tag)
+        let game: Vec<_> = parse_releases(&list, game_asset(), is_game_tag)
             .into_iter()
             .map(|r| r.tag)
             .collect();
         assert_eq!(game, ["v2026.10.13", "v2026.10.12"]);
-        let launcher: Vec<_> = parse_releases(&list, LAUNCHER_ASSET, is_launcher_tag)
+        let launcher: Vec<_> = parse_releases(&list, launcher_platform_asset(), is_launcher_tag)
             .into_iter()
             .map(|r| r.tag)
             .collect();
@@ -4020,7 +4134,7 @@ pub fn {f}("
     /// previous one the newest again: it is what `install latest` and the update check offer.
     #[test]
     fn withdrawn_release_is_never_offered() {
-        let asset = ASSET.unwrap_or("horizon-linux-x86_64.tar.gz");
+        let asset = game_asset().unwrap_or("horizon-linux-x86_64.tar.gz");
         let list = serde_json::json!([
             {"tag_name": "v2026.10.15.1", "draft": true, "assets": [{"name": asset, "browser_download_url": "bad", "size": 1}]},
             {"tag_name": "v2026.10.15", "assets": [{"name": asset, "browser_download_url": "good", "size": 1}]},
@@ -4047,7 +4161,7 @@ pub fn {f}("
     /// had one installed waits for the next release instead of going back.
     #[test]
     fn updates_follow_every_release_and_leave_the_old_alpha_ones_out() {
-        let asset = ASSET.unwrap_or("horizon-linux-x86_64.tar.gz");
+        let asset = game_asset().unwrap_or("horizon-linux-x86_64.tar.gz");
         let list = serde_json::json!([
             {"tag_name": "v0.2.13", "assets": [{"name": asset, "browser_download_url": "n", "size": 1}]},
             {"tag_name": "v0.2.12", "prerelease": true, "assets": [{"name": asset, "browser_download_url": "a", "size": 1}]},
@@ -4284,7 +4398,10 @@ pub fn {f}("
     /// be written inside the AppImage's read-only mount.
     #[test]
     fn an_appimage_updates_with_the_appimage() {
-        assert_eq!(launcher_asset_running_from(false), LAUNCHER_ASSET);
+        assert_eq!(
+            launcher_asset_running_from(false),
+            launcher_platform_asset()
+        );
         assert_eq!(launcher_asset_running_from(true), LAUNCHER_APPIMAGE_ASSET);
         #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
         assert_eq!(
@@ -4357,7 +4474,7 @@ pub fn {f}("
         );
         assert_eq!(compare_versions("launcher@0.2.0", "v0.2.0"), Equal);
 
-        let asset = ASSET.unwrap_or("horizon-linux-x86_64.tar.gz");
+        let asset = game_asset().unwrap_or("horizon-linux-x86_64.tar.gz");
         let list = serde_json::json!([
             {"tag_name": "v0.2.0", "prerelease": true, "assets": [{"name": asset, "browser_download_url": "b", "size": 1}]},
             {"tag_name": "v2026.10.21", "prerelease": true, "assets": [{"name": asset, "browser_download_url": "d", "size": 1}]},
@@ -4491,7 +4608,7 @@ pub fn {f}("
     /// current one as its update, over every release; the last week's are listed, never offered.
     #[test]
     fn every_launcher_updates_to_the_current_nightly() {
-        let asset = ASSET.unwrap_or("horizon-linux-x86_64.tar.gz");
+        let asset = game_asset().unwrap_or("horizon-linux-x86_64.tar.gz");
         let build = |url: &str| serde_json::json!([{"name": asset, "browser_download_url": url, "size": 1}]);
         let list = serde_json::json!([
             {"tag_name": "nightly", "name": "Nightly 2026-10-28 · 9b772b2", "prerelease": true,

@@ -1,6 +1,6 @@
 name: game build
-# Builds the game for every platform from `ref`: the Java exporters, then Linux and the Linux server and Windows on
-# GitHub, macOS on the Mac mini's runner with a 1500-frame offscreen run of a new world (smoke-test.json): Apple
+# Builds the game for every platform from `ref`: the Java exporters, then Linux and the Linux server, Windows x64
+# and ARM64 on GitHub, and macOS on the Mac mini's runner with a 1500-frame offscreen run of a new world (smoke-test.json): Apple
 # Silicon, and Intel cross-built there for x86_64-apple-darwin and checked under Rosetta 2 (#1161). Called by
 # release.yml (the releases) and nightly-build.yml (the opt-in Nightly), always from main's copy of this file: the
 # caller's commit, never the one being built. It holds no secrets: signing the checksums is the callers' own job,
@@ -99,7 +99,17 @@ jobs:
             dir: horizon-windows-x64
             asset: horizon-windows-x64.zip
             exe: .exe
+            pe_arch: x64
             # The C runtime linked in, so the game runs without the Visual C++ redistributable.
+            rustflags: -C target-feature=+crt-static
+          - name: windows-arm64
+            os: windows-11-vs2026-arm
+            target: aarch64-pc-windows-msvc
+            dir: horizon-windows-arm64
+            asset: horizon-windows-arm64.zip
+            exe: .exe
+            pe_arch: arm64
+            # The ARM64 runner builds and runs native ARM64 executables; keep the C runtime in the archive.
             rustflags: -C target-feature=+crt-static
           - name: macos
             mac: true
@@ -156,6 +166,12 @@ jobs:
           for binary in horizon-client horizon-ctl horizon-prepare horizon-server; do
             test -f "$BIN/$binary${{ matrix.exe }}" || { echo "::error::$BIN/$binary${{ matrix.exe }} is missing"; exit 1; }
           done
+      - name: Verify Windows executable architecture
+        if: runner.os == 'Windows'
+        run: |
+          python tools/check_pe_arch.py "${{ matrix.pe_arch }}" \
+            "$BIN/horizon-client${{ matrix.exe }}" "$BIN/horizon-ctl${{ matrix.exe }}" \
+            "$BIN/horizon-prepare${{ matrix.exe }}" "$BIN/horizon-server${{ matrix.exe }}"
       - name: The signing keychain, unlocked
         if: runner.os == 'macOS' && vars.MACOS_SIGN_IDENTITY != '' && inputs.developer_id
         env:
@@ -188,7 +204,7 @@ jobs:
       - name: Baseline x86-64 CPUs only
         # No POPCNT or LZCNT at all (the script says why only those): a C library's count intrinsic killed the
         # game before main on a Core 2 (#7264). Not the Mac builds: every Intel Mac that runs macOS 11 has both.
-        if: runner.os != 'macOS'
+        if: runner.os != 'macOS' && matrix.pe_arch != 'arm64'
         run: |
           set -euo pipefail
           rustup component add llvm-tools
