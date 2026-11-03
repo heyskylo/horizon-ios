@@ -550,6 +550,8 @@ impl Launcher {
             starts_at: Some(1_793_000_000),
             ends_at: Some(1_795_000_000),
             claimed: Some(state != "empty" && state != "closed"),
+            open: state != "closed",
+            preview: false,
         };
         let empty = state == "empty" || state == "closed";
         let catalogue = Catalogue {
