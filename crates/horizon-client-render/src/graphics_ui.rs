@@ -1902,6 +1902,7 @@ impl GraphicsUi {
         framebuffer: [i32; 2],
         drag: bool,
         right: bool,
+        shift: bool,
     ) -> Vec<Action> {
         self.keep(s);
         let (cols, lines, content) = self.layout(s, w, h);
@@ -1979,7 +1980,7 @@ impl GraphicsUi {
             return Vec::new();
         }
         self.focus = Some(Target::Item(item));
-        let actions = self.activate(s, item, false, framebuffer, Some((x, &cols)));
+        let actions = self.activate(s, item, shift, framebuffer, Some((x, &cols)));
         self.mark(&actions);
         actions
     }
@@ -2358,7 +2359,15 @@ mod tests {
         [cols.list_x, ui.row_y(&cols, &line), cols.list_w, style::ROW]
     }
     fn press(ui: &mut GraphicsUi, s: &mut Settings, (x, y): (f32, f32)) -> Vec<Action> {
-        ui.click(s, (x, y), SIZE, FB, false, false)
+        ui.click(s, (x, y), SIZE, FB, false, false, false)
+    }
+    fn press_shift(
+        ui: &mut GraphicsUi,
+        s: &mut Settings,
+        (x, y): (f32, f32),
+        shift: bool,
+    ) -> Vec<Action> {
+        ui.click(s, (x, y), SIZE, FB, false, false, shift)
     }
 
     #[test]
@@ -2449,7 +2458,15 @@ mod tests {
         assert!(y >= 0.0 && x + w <= size.0);
         // Undo, over Done, stays clear of the page list.
         assert!(cols.button(1)[1] >= y + h);
-        ui.click(&mut s, (x + w / 2.0, y + h / 2.0), size, FB, false, false);
+        ui.click(
+            &mut s,
+            (x + w / 2.0, y + h / 2.0),
+            size,
+            FB,
+            false,
+            false,
+            false,
+        );
         let (_, lines, _) = ui.layout(&s, size.0, size.1);
         assert_eq!(ui.current(&lines), Some(Page::Hdr));
     }
@@ -2566,7 +2583,7 @@ mod tests {
         );
         assert_eq!(H::ChunkUpdates.slider(&s), Some(1.0));
         assert_eq!(
-            ui.click(&mut s, (-100.0, -100.0), SIZE, FB, true, false),
+            ui.click(&mut s, (-100.0, -100.0), SIZE, FB, true, false, false),
             [Action::SliderDrag]
         );
         assert_eq!(H::ChunkUpdates.slider(&s), Some(0.0));
@@ -2638,7 +2655,7 @@ mod tests {
         let (cols, _, content) = ui.layout(&s, SIZE.0, SIZE.1);
         let x = cols.bar_x() + 2.0;
         let drag = |ui: &mut GraphicsUi, s: &mut Settings, y, drag| {
-            ui.click(s, (x, y), SIZE, FB, drag, false)
+            ui.click(s, (x, y), SIZE, FB, drag, false, false)
         };
         assert!(drag(&mut ui, &mut s, cols.top + 5.0, false).is_empty());
         drag(&mut ui, &mut s, cols.top + 15.0, true);
@@ -2658,13 +2675,13 @@ mod tests {
         let mut ui = GraphicsUi::default();
         let (cols, ..) = ui.layout(&s, SIZE.0, SIZE.1);
         let x = cols.bar_x() + 2.0;
-        ui.click(&mut s, (x, cols.top + 5.0), SIZE, FB, false, false);
+        ui.click(&mut s, (x, cols.top + 5.0), SIZE, FB, false, false, false);
         assert!(ui.scroll.held());
         // A 130-high GUI leaves the list under the 40 px the scroller's thumb needs.
         let short = (SIZE.0, 130.0);
         assert!(!Columns::of(short.0, short.1).scrolls());
         assert!(
-            ui.click(&mut s, (x, 80.0), short, FB, true, false)
+            ui.click(&mut s, (x, 80.0), short, FB, true, false, false)
                 .is_empty()
         );
         assert!(!ui.scroll.held());
@@ -2972,6 +2989,56 @@ mod tests {
             assert_eq!(s.horizon.preset, Preset::Custom);
         }
         assert_eq!(item.label(&s).plain(), "Entity Culling: Asynchronous");
+    }
+
+    #[test]
+    fn graphics_cycle_button_cycles_forward_and_shift_click_cycles_backward_with_wrapping() {
+        let mut s = Settings::default();
+        let item = Item::Horizon(H::EntityCulling);
+        let mut ui = GraphicsUi::default();
+        let r = row(&mut ui, &s, item);
+        let at = (r[0] + 4.0, r[1] + 4.0);
+
+        // 1. Feature without shift (normal click): cycles forward (+1)
+        assert_eq!(s.horizon.entity_culling, EntityCullingMode::Off);
+        assert_eq!(
+            press_shift(&mut ui, &mut s, at, false),
+            [Action::ButtonClick, Action::Changed]
+        );
+        assert_eq!(s.horizon.entity_culling, EntityCullingMode::Synchronous);
+
+        assert_eq!(
+            press_shift(&mut ui, &mut s, at, false),
+            [Action::ButtonClick, Action::Changed]
+        );
+        assert_eq!(s.horizon.entity_culling, EntityCullingMode::Asynchronous);
+
+        // 3. Wrap-around forward (at max value, normal click wraps to min / 0)
+        assert_eq!(
+            press_shift(&mut ui, &mut s, at, false),
+            [Action::ButtonClick, Action::Changed]
+        );
+        assert_eq!(s.horizon.entity_culling, EntityCullingMode::Off);
+
+        // 4. Wrap-around backward (at min / 0, shift-click wraps to max)
+        assert_eq!(
+            press_shift(&mut ui, &mut s, at, true),
+            [Action::ButtonClick, Action::Changed]
+        );
+        assert_eq!(s.horizon.entity_culling, EntityCullingMode::Asynchronous);
+
+        // 2. Feature with shift: cycles backward (-1)
+        assert_eq!(
+            press_shift(&mut ui, &mut s, at, true),
+            [Action::ButtonClick, Action::Changed]
+        );
+        assert_eq!(s.horizon.entity_culling, EntityCullingMode::Synchronous);
+
+        assert_eq!(
+            press_shift(&mut ui, &mut s, at, true),
+            [Action::ButtonClick, Action::Changed]
+        );
+        assert_eq!(s.horizon.entity_culling, EntityCullingMode::Off);
     }
 
     /// Translucent Batching: a switch on the Advanced page, on by default, no part of a

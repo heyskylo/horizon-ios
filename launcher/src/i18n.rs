@@ -47,6 +47,24 @@ pub enum Language {
     Indonesian,
     #[serde(rename = "pt")]
     Portuguese,
+    #[serde(rename = "he")]
+    Hebrew,
+    #[serde(rename = "hu")]
+    Hungarian,
+    #[serde(rename = "ro")]
+    Romanian,
+    #[serde(rename = "da")]
+    Danish,
+    #[serde(rename = "fi")]
+    Finnish,
+    #[serde(rename = "no")]
+    Norwegian,
+    #[serde(rename = "bg")]
+    Bulgarian,
+    #[serde(rename = "sk")]
+    Slovak,
+    #[serde(rename = "lt")]
+    Lithuanian,
     #[serde(rename = "it")]
     Italian,
     #[serde(rename = "nl")]
@@ -62,7 +80,7 @@ pub enum Language {
 }
 
 impl Language {
-    pub const ALL: [Language; 23] = [
+    pub const ALL: [Language; 32] = [
         Self::English,
         Self::French,
         Self::Russian,
@@ -80,6 +98,15 @@ impl Language {
         Self::Hindi,
         Self::Indonesian,
         Self::Portuguese,
+        Self::Hebrew,
+        Self::Hungarian,
+        Self::Romanian,
+        Self::Danish,
+        Self::Finnish,
+        Self::Norwegian,
+        Self::Bulgarian,
+        Self::Slovak,
+        Self::Lithuanian,
         Self::Italian,
         Self::Dutch,
         Self::Vietnamese,
@@ -108,6 +135,15 @@ impl Language {
             Self::Hindi => "hi",
             Self::Indonesian => "id",
             Self::Portuguese => "pt",
+            Self::Hebrew => "he",
+            Self::Hungarian => "hu",
+            Self::Romanian => "ro",
+            Self::Danish => "da",
+            Self::Finnish => "fi",
+            Self::Norwegian => "no",
+            Self::Bulgarian => "bg",
+            Self::Slovak => "sk",
+            Self::Lithuanian => "lt",
             Self::Italian => "it",
             Self::Dutch => "nl",
             Self::Vietnamese => "vi",
@@ -137,6 +173,15 @@ impl Language {
             Self::Hindi => "हिन्दी",
             Self::Indonesian => "Bahasa Indonesia",
             Self::Portuguese => "Português (Portugal)",
+            Self::Hebrew => "עברית",
+            Self::Hungarian => "Magyar",
+            Self::Romanian => "Română",
+            Self::Danish => "Dansk",
+            Self::Finnish => "Suomi",
+            Self::Norwegian => "Norsk",
+            Self::Bulgarian => "Български",
+            Self::Slovak => "Slovenčina",
+            Self::Lithuanian => "Lietuvių",
             Self::Italian => "Italiano",
             Self::Dutch => "Nederlands",
             Self::Vietnamese => "Tiếng Việt",
@@ -162,7 +207,12 @@ impl Language {
             return Some(Self::PortugueseBrazil);
         }
 
-        let base = normalized.split('-').next().unwrap_or("");
+        let base = match normalized.split('-').next().unwrap_or("") {
+            // Systems name Norwegian by its written form: Bokmål (`nb-NO`, what macOS and Windows
+            // report) or Nynorsk (`nn`). The launcher's one table is Bokmål.
+            "nb" | "nn" => "no",
+            base => base,
+        };
 
         Self::ALL
             .into_iter()
@@ -203,6 +253,15 @@ impl Language {
             Self::Hindi => include_str!("../lang/hi.json"),
             Self::Indonesian => include_str!("../lang/id.json"),
             Self::Portuguese => include_str!("../lang/pt.json"),
+            Self::Hebrew => include_str!("../lang/he.json"),
+            Self::Hungarian => include_str!("../lang/hu.json"),
+            Self::Romanian => include_str!("../lang/ro.json"),
+            Self::Danish => include_str!("../lang/da.json"),
+            Self::Finnish => include_str!("../lang/fi.json"),
+            Self::Norwegian => include_str!("../lang/no.json"),
+            Self::Bulgarian => include_str!("../lang/bg.json"),
+            Self::Slovak => include_str!("../lang/sk.json"),
+            Self::Lithuanian => include_str!("../lang/lt.json"),
             Self::Italian => include_str!("../lang/it.json"),
             Self::Dutch => include_str!("../lang/nl.json"),
             Self::Vietnamese => include_str!("../lang/vi.json"),

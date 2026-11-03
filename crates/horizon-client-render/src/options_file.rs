@@ -263,6 +263,9 @@ static TABLE: LazyLock<Vec<Def>> = LazyLock::new(|| {
     for part in MODEL_PARTS {
         t.push(pb(&format!("modelPart_{part}"), true));
     }
+    // Horizon's own: the outer skin layer drawn as slabs (Options → Skin
+    // Customization), read by the renderer when a skin is resolved.
+    t.push(pb("threeDSkinLayers", false));
     t
 });
 

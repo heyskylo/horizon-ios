@@ -724,6 +724,19 @@ impl Mob {
         // Entity.checkSupportingBlock
         self.supporting = self.supporting_block(w, moved);
         self.movement_emission(w, moved, events);
+        // Entity.move's last step: soul sand, honey and the like slow the
+        // horizontal speed of whatever the mob stands in or on.
+        let factor = self.block_speed_factor(w);
+        self.velocity = horizon_world::entity_move::scale_by_block_speed(self.velocity, factor);
+    }
+    /// `Entity.getBlockSpeedFactor` at the mob's feet.
+    fn block_speed_factor(&self, w: &MobWorld) -> f32 {
+        crate::motion::block_speed_factor_at(
+            w.world,
+            w.movement,
+            self.position,
+            self.supporting.map(|[x, y, z]| BlockPos::new(x, y, z)),
+        )
     }
     /// `Entity.applyEffectsFromBlocks` as `LivingEntity.aiStep` runs it, after
     /// `travel` has moved the mob and applied the drag of its fluid (not inside
@@ -1556,6 +1569,14 @@ impl Mob {
                 self.velocity.z += f64::from(trig::cos(angle)) * 0.2;
             }
         }
+        // Sniffer.jumpFromGround: a hop the move control asked for, taken from
+        // nearly standing still, carries a tenth of a block forward.
+        if self.species() == super::Species::Sniffer
+            && self.ai.mov.speed_modifier > 0.0
+            && self.velocity.horizontal_distance_squared() < 0.01
+        {
+            self.move_relative(0.1, Vec3::new(0.0, 0.0, 1.0));
+        }
         crate::motion::native_living_jump(self.id, &self.kind.id);
     }
     pub fn jump_power(&self) -> f32 {
@@ -2129,6 +2150,46 @@ mod tests {
         );
     }
 
+    /// `Entity.move`'s last step, `getBlockSpeedFactor`: a mob sliding on soul
+    /// sand (0.4) or honey (0.4) keeps 40% of its horizontal speed each move,
+    /// on stone it keeps all of it, and its vertical speed is untouched.
+    #[test]
+    fn a_mob_on_soul_sand_or_honey_is_slowed_by_the_move() {
+        for (block, factor) in [
+            ("minecraft:stone", 1.0),
+            ("minecraft:soul_sand", 0.4),
+            ("minecraft:honey_block", 0.4),
+        ] {
+            let build =
+                |world: &mut crate::world::World,
+                 registry: &horizon_world::registry::BlockRegistry| {
+                    world.chunks.insert(
+                        (0, 0),
+                        std::sync::Arc::new(crate::chunk::Chunk::empty(0, 0)),
+                    );
+                    let id = registry.default_state(block).unwrap();
+                    for x in 0..=4 {
+                        for z in 0..=2 {
+                            world.set(x, 0, z, id).unwrap();
+                        }
+                    }
+                };
+            crate::mobs::world::with_built_test_world(&[], build, |w, types| {
+                let kind = std::sync::Arc::new(types.types["minecraft:zombie"].clone());
+                let mut m = Mob::new(1, kind, Vec3::new(0.5, 1.0, 1.5), 0.0);
+                m.on_ground = true;
+                m.velocity = Vec3::new(0.2, 0.0, 0.0);
+                m.do_move(w, &mut Vec::new());
+                let expected = f64::from(factor as f32) * 0.2;
+                assert!(
+                    (m.velocity.x - expected).abs() < 1.0e-9,
+                    "{block}: velocity.x {} expected {expected}",
+                    m.velocity.x
+                );
+            });
+        }
+    }
+
     /// `Entity.collectColliders`: the world border's wall stops a mob's move
     /// as it stops the player's (#7080). A border of size 10 around (8, 8)
     /// has its east wall at x = 13.
@@ -2280,6 +2341,63 @@ mod tests {
         let mut cow = mob("minecraft:cow", Species::Cow);
         cow.extra.model_scale = 4.0;
         assert_eq!(cow.model_scale(), 4.0);
+    }
+    /// `Sniffer.jumpFromGround`: a hop the move control asked for, taken from
+    /// nearly standing still, carries the sniffer a tenth of a block along its
+    /// yaw (`moveRelative(0.1F, (0, 0, 1))`). A sniffer that already moves, one
+    /// the move control did not ask to move, and every other species keep the
+    /// hop they had.
+    #[test]
+    fn a_sniffers_hop_from_a_standstill_carries_it_forward() {
+        use crate::mobs::Species;
+        let sniffer = |speed: f64, sideways: f64| {
+            let mut kind = (*crate::mobs::sensor_scan_tests::kind()).clone();
+            kind.id = "minecraft:sniffer".into();
+            kind.species = Species::Sniffer;
+            kind.jump_strength = 0.42;
+            let mut m = Mob::new(1, std::sync::Arc::new(kind), Vec3::new(0.5, 64.0, 0.5), 0.0);
+            // `MoveControl.getSpeedModifier` and the speed it moves at.
+            m.ai.mov.speed_modifier = speed;
+            m.velocity = Vec3::new(0.0, 0.0, sideways);
+            m
+        };
+        // Yaw 0 faces south (+z), so the nudge lands on z.
+        let hop = |m: &mut Mob| {
+            let mut jumped = false;
+            if crate::mobs::world::with_test_world(&[], |w, _| m.jump_from_ground(w)) {
+                jumped = true;
+            }
+            jumped
+        };
+        let mut m = sniffer(1.0, 0.0);
+        if !hop(&mut m) {
+            return;
+        }
+        assert!(
+            (m.velocity.z - 0.1).abs() < 1.0e-6 && m.velocity.x.abs() < 1.0e-6,
+            "the hop goes forward: {:?}",
+            m.velocity
+        );
+        assert!(m.velocity.y > 0.0, "and it is still a hop");
+        // Already moving sideways: `horizontalDistanceSqr` is over the 0.01.
+        let mut moving = sniffer(1.0, 0.2);
+        assert!(hop(&mut moving));
+        assert!(
+            (moving.velocity.z - 0.2).abs() < 1.0e-6,
+            "{:?}",
+            moving.velocity
+        );
+        // The move control wanted nothing this tick.
+        let mut still = sniffer(0.0, 0.0);
+        assert!(hop(&mut still));
+        assert_eq!(still.velocity.z, 0.0);
+        // No other species gets the nudge.
+        let mut kind = (*crate::mobs::sensor_scan_tests::kind()).clone();
+        kind.jump_strength = 0.42;
+        let mut cow = Mob::new(1, std::sync::Arc::new(kind), Vec3::new(0.5, 64.0, 0.5), 0.0);
+        cow.ai.mov.speed_modifier = 1.0;
+        assert!(hop(&mut cow));
+        assert_eq!(cow.velocity.z, 0.0);
     }
 
     /// #8140: `LivingEntity.handleOnClimbable` slows any mob in vines, not
