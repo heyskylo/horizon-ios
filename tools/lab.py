@@ -113,11 +113,32 @@ def digest(path, algorithm):
         return hashlib.file_digest(stream, algorithm).hexdigest()
 
 
+_PORT_LOCKS = []  # open lock files, held until this process exits
+
+
 def free_port():
-    """A free local TCP port, for a server a harness starts."""
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+    """A free local TCP port, for a server a harness starts.
+
+    The OS hands out a port when we bind to 0, but we close it before the server binds it, and a harness running
+    beside this one (another worktree, the parallel job queue) can be handed the same number in that gap. So each port
+    is also claimed with a lock file in the temp dir, held until this process exits; a port another harness has
+    claimed is skipped."""
+    import fcntl
+    locks = Path(tempfile.gettempdir()) / f"horizon-harness-ports-{os.getuid()}"
+    locks.mkdir(exist_ok=True)
+    for _ in range(100):
+        with socket.socket() as s:
+            s.bind(("127.0.0.1", 0))
+            port = s.getsockname()[1]
+        handle = open(locks / str(port), "w")
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            handle.close()
+            continue
+        _PORT_LOCKS.append(handle)
+        return port
+    raise RuntimeError("no free port: every port tried was claimed by another harness")
 
 
 def offline_uuid(name):
