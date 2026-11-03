@@ -1164,8 +1164,8 @@ impl Game<'_> {
             );
         }
     }
-    /// `applyEffectsFromBlocks` for a cart: a bubble column lifts or drags it,
-    /// and `onInsideBubbleColumn` resets the fall distance.
+    /// `applyEffectsFromBlocks` for a cart: a bubble column lifts or drags it
+    /// and resets the fall distance.
     fn cart_block_effects(&self, c: &mut Minecart) {
         if c.push_by_bubble_column(
             &self.world,
@@ -1250,6 +1250,15 @@ impl Game<'_> {
         // updateFluidInteraction: being in water resets the fall distance.
         if c.in_water {
             c.fall_distance = 0.0;
+        }
+        // Entity.checkInsideBlocks runs once after the cart tick, sweeping every
+        // movement through powder snow. PowderSnowBlock uses getKnownMovement,
+        // which is getDeltaMovement for a minecart.
+        let snow = self.powder_snow_positions(c.previous, c.position, c.bounds());
+        let position = c.position;
+        let known_movement = c.velocity;
+        for block in snow {
+            self.powder_snow_particle(block, position, known_movement);
         }
         if self.minecart_improvements() {
             // MinecartTNT.tick reads the final delta after AbstractMinecart.tick,

@@ -18,6 +18,19 @@ use horizon_core::{
     random::{LegacyRandom, RandomSource},
 };
 
+/// PowderSnowBlock.entityInside's server-side snowflake roll.
+pub fn powder_snow_particle_velocity(
+    known_movement: Vec3,
+    random: &mut impl RandomSource,
+) -> Option<[f64; 3]> {
+    if (known_movement.x == 0.0 && known_movement.z == 0.0) || !random.next_boolean() {
+        return None;
+    }
+    let x = (random.next_float() * 2.0 - 1.0) * 0.083_333_336_f32;
+    let z = (random.next_float() * 2.0 - 1.0) * 0.083_333_336_f32;
+    Some([f64::from(x), f64::from(0.05_f32), f64::from(z)])
+}
+
 /// The inside-block effects of fire and lava (`InsideBlockEffectType`
 /// FIRE_IGNITE and LAVA_IGNITE): ignite, then hurt.
 fn block_contact_damage(m: &mut Mob, w: &MobWorld, fire: f32) {
@@ -837,6 +850,16 @@ fn effects_from_blocks(
                             m.fall_distance = 0.0;
                             m.stuck_multiplier =
                                 Vec3::new(f64::from(0.9_f32), 1.5, f64::from(0.9_f32));
+                            let known_movement =
+                                w.controlling_player_movement.unwrap_or(m.velocity);
+                            if let Some(velocity) =
+                                powder_snow_particle_velocity(known_movement, level_random)
+                            {
+                                events.push(MobEvent::PowderSnowParticle {
+                                    at: [m.position.x, f64::from(y + 1), m.position.z],
+                                    velocity,
+                                });
+                            }
                         }
                         "minecraft:honey_block" => honey_slide(m, p, level_random, events),
                         _ => continue,
@@ -846,6 +869,68 @@ fn effects_from_blocks(
         }
     }
 }
+
+#[cfg(test)]
+mod powder_snow_particle_tests {
+    use super::*;
+
+    /// A ridden mount uses the controlling player's known movement for the
+    /// powder-snow roll, even when the mount's own delta is zero.
+    #[test]
+    fn a_controlled_mount_uses_its_riders_known_movement() {
+        let seed = (0..1000)
+            .find(|seed| {
+                let mut random = LegacyRandom::new(*seed);
+                random.next_boolean()
+            })
+            .unwrap();
+        let player_movement = Vec3::new(0.2, 0.0, 0.0);
+        let mut expected_random = LegacyRandom::new(seed);
+        let expected =
+            powder_snow_particle_velocity(player_movement, &mut expected_random).unwrap();
+
+        let ran = crate::mobs::world::with_built_test_world(
+            &[],
+            |world, registry| {
+                for cx in -1..1 {
+                    for cz in -1..1 {
+                        world.chunks.insert(
+                            (cx, cz),
+                            std::sync::Arc::new(crate::chunk::Chunk::empty(cx, cz)),
+                        );
+                    }
+                }
+                world
+                    .set(
+                        0,
+                        64,
+                        0,
+                        registry.default_state("minecraft:powder_snow").unwrap(),
+                    )
+                    .unwrap();
+            },
+            |w, types| {
+                let mut w = w.clone();
+                w.controlling_player_movement = Some(player_movement);
+                let kind = std::sync::Arc::new(types.types["minecraft:horse"].clone());
+                let mut horse = Mob::new(1, kind, Vec3::new(0.5, 64.0, 0.5), 0.0);
+                horse.extra.saddled = true;
+                horse.rider = Some(crate::mobs::equine::Rider::default());
+                let mut random = LegacyRandom::new(seed);
+                let mut events = Vec::new();
+
+                effects_from_blocks(&mut horse, &w, &mut random, &mut events);
+
+                assert!(events.iter().any(|event| matches!(
+                    event,
+                    MobEvent::PowderSnowParticle { velocity, .. } if *velocity == expected
+                )));
+            },
+        );
+        assert!(ran, "the vanilla test resources must be available");
+    }
+}
+
 /// `HoneyBlock.entityInside` for a mob: a falling mob beside the honey block at
 /// `p` slides down it (`isSlidingDown`, `doSlideMovement`, `maybeDoSlideEffects`).
 fn honey_slide(

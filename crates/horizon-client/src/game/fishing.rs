@@ -602,7 +602,7 @@ impl Game<'_> {
             state: None,
             at,
             spread,
-            speed,
+            speed: [speed; 3],
             count: count as i32,
             randomization: 0,
         });
