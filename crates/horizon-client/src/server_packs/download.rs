@@ -4,10 +4,11 @@
 //! batch at a time on a thread of its own, every download logged in
 //! `downloads/log.json`, and the cache cut to its 20 newest files on start.
 use super::{Batch, Request};
+use horizon_client_render::zip::Zip as HorizonZip;
 use sha1::{Digest, Sha1};
 use std::{
     fs,
-    io::{self, Read, Write},
+    io::{self, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     sync::mpsc::{Receiver, Sender, channel},
     time::SystemTime,
@@ -177,15 +178,54 @@ fn sha1_of(path: &Path) -> io::Result<String> {
     Ok(hex(&hasher.finalize()))
 }
 /// Server packs are ZIP files. Verify the archive structure and every entry's
-/// checksum before a matching download can enter the cache.
+/// checksum before a matching download can enter the cache. A narrow fallback
+/// accepts the Java-compatible streaming envelope that the pack reader already
+/// supports.
 fn validate_zip(path: &Path) -> io::Result<()> {
-    let file = fs::File::open(path)?;
-    let mut archive = ZipArchive::new(file).map_err(io::Error::other)?;
-    for index in 0..archive.len() {
-        let mut entry = archive.by_index(index).map_err(io::Error::other)?;
-        if !entry.is_dir() {
-            io::copy(&mut entry, &mut io::sink())?;
+    let strict = (|| {
+        let file = fs::File::open(path)?;
+        let mut archive = ZipArchive::new(file).map_err(io::Error::other)?;
+        for index in 0..archive.len() {
+            let mut entry = archive.by_index(index).map_err(io::Error::other)?;
+            if !entry.is_dir() {
+                io::copy(&mut entry, &mut io::sink())?;
+            }
         }
+        Ok(())
+    })();
+    if strict.is_ok() || !looks_like_streaming_pack(path)? {
+        return strict;
+    }
+    validate_streaming_pack(path).or(strict)
+}
+
+/// Some pack generators stream a Java-compatible ZIP with a four-byte EOCD
+/// prefix and a multi-disk marker even though all data is in one response.
+/// Only that exact envelope gets the same tolerant reader used by packs.
+fn looks_like_streaming_pack(path: &Path) -> io::Result<bool> {
+    let mut file = fs::File::open(path)?;
+    let mut head = [0; 8];
+    file.read_exact(&mut head)?;
+    if head[..4] != *b"PK\x05\x06" || head[4..] != *b"PK\x03\x04" {
+        return Ok(false);
+    }
+    let len = file.metadata()?.len();
+    file.seek(SeekFrom::Start(len.saturating_sub(65_557)))?;
+    let mut tail = Vec::new();
+    file.read_to_end(&mut tail)?;
+    let Some(end) = tail
+        .windows(4)
+        .rposition(|signature| signature == b"PK\x05\x06")
+    else {
+        return Ok(false);
+    };
+    Ok(u16::from_le_bytes(tail[end + 4..end + 6].try_into().unwrap()) != 0)
+}
+
+fn validate_streaming_pack(path: &Path) -> io::Result<()> {
+    let archive = HorizonZip::open(path)?;
+    for name in archive.names() {
+        archive.read(name)?;
     }
     Ok(())
 }
@@ -483,6 +523,34 @@ mod tests {
             zip.finish().unwrap();
         }
         out.into_inner()
+    }
+
+    fn streaming_zip() -> Vec<u8> {
+        let mut zip = valid_zip();
+        let end = zip
+            .windows(4)
+            .rposition(|signature| signature == b"PK\x05\x06")
+            .unwrap();
+        zip[end + 4..end + 8].copy_from_slice(&[0xff, 0xff, 0, 0]);
+        let mut streamed = b"PK\x05\x06".to_vec();
+        streamed.extend(zip);
+        streamed
+    }
+
+    #[test]
+    fn a_java_compatible_streaming_zip_is_accepted() {
+        let dir = scratch();
+        let body = streaming_zip();
+        let (url, server) = serve("200 OK", body.clone());
+        let request = Request {
+            id: 10,
+            url,
+            sha1: Some(sha1(&body)),
+        };
+        let path = download_file(&dir, &request, &[], MAX_SIZE, &channel().0).unwrap();
+        assert_eq!(fs::read(path).unwrap(), body);
+        server.join().unwrap();
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
