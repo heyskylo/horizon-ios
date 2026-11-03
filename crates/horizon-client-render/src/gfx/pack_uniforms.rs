@@ -61,6 +61,11 @@ pub struct PackInputs {
     /// camera in world space, of length 100 (`endFlashIntensity`, `endFlashPosition`).
     pub end_flash: f32,
     pub end_flash_direction: Vec3,
+    /// The dimension type's `ambient_light` (`ambientLight`).
+    pub ambient_light: f32,
+    /// The player's cave mood, 0..1 (`BiomeAmbientSoundsHandler`'s moodiness):
+    /// `playerMood` and `constantMood`.
+    pub mood: f32,
 }
 
 /// The `cloudHeight` uniform. Vanilla reads `visual/cloud_height` only while the cloud color
@@ -256,6 +261,9 @@ pub const NAMES: &[&str] = &[
     "is_sprinting",
     "endFlashIntensity",
     "endFlashPosition",
+    "ambientLight",
+    "playerMood",
+    "constantMood",
     "centerDepthSmooth",
     "isRightHanded",
     "is_on_ground",
@@ -387,6 +395,10 @@ pub fn shadow_camera(light: Vec3, camera: DVec3, shadow: &Shadow) -> (Mat4, Mat4
     (view, projection)
 }
 
+/// The seconds a tick of a smoothing half-life (`wetnessHalflife`, `eyeBrightnessHalflife`,
+/// `centerDepthHalflife`) lasts in Iris 1.11.7: measured, twice a game tick.
+const SECONDS_A_TICK: f32 = 0.1;
+
 /// `value` moved toward `target` with a half-life of `half_life` seconds over `dt` (5.6).
 fn smooth(value: f32, target: f32, half_life: f32, dt: f32) -> f32 {
     target + (value - target) * 0.5f32.powf(dt / half_life)
@@ -433,26 +445,29 @@ impl FrameUniforms {
         let tilt = self.shadow.sun_path_rotation;
         let sun = to_view(body(frame.sky.sun_angle, tilt));
         let moon = to_view(body(frame.sky.moon_angle, tilt));
-        // Half-lives are given in ticks (7.2); smoothing runs per frame in seconds (OQ-26).
+        // Half-lives are given in ticks (7.2); smoothing runs per frame in seconds (OQ-26), at
+        // a tenth of a second a tick: Iris 1.11.7 smooths that slowly (measured frame by frame
+        // with a probe pack: wetness 60 s rising, 20 s falling; eyeBrightnessSmooth 1 s;
+        // centerDepthSmooth 0.1 s).
         let half_life = if inputs.rain > self.wetness {
             600.0
         } else {
             200.0
         };
-        self.wetness = smooth(self.wetness, inputs.rain, half_life / 20.0, dt);
+        self.wetness = smooth(self.wetness, inputs.rain, half_life * SECONDS_A_TICK, dt);
         let eye = inputs.eye_light.map(|l| (l * 16) as f32);
         if first_frame {
             self.wetness = inputs.rain;
             self.eye_smooth = eye;
         }
         for (smoothed, target) in self.eye_smooth.iter_mut().zip(eye) {
-            *smoothed = smooth(*smoothed, target, 10.0 / 20.0, dt);
+            *smoothed = smooth(*smoothed, target, 10.0 * SECONDS_A_TICK, dt);
         }
         // `centerDepthHalflife`'s default, 1 tick (OptiFine's shaders.txt); the first value
         // read back is taken as it is.
         if let Some(raw) = self.center_depth_raw {
             self.center_depth = Some(match self.center_depth {
-                Some(v) => smooth(v, raw, 1.0 / 20.0, dt),
+                Some(v) => smooth(v, raw, SECONDS_A_TICK, dt),
                 None => raw,
             });
         }
@@ -549,7 +564,8 @@ impl FrameUniforms {
                 "biome_precipitation" => Value::i(&[inputs.biome_precipitation]),
                 "temperature" => Value::f(&[inputs.temperature]),
                 "rainfall" => Value::f(&[inputs.rainfall]),
-                "eyeBrightnessSmooth" => Value::i(&self.eye_smooth.map(|v| v.round() as i32)),
+                // Rounded down, as Iris 1.11.7 gives it (probe pack).
+                "eyeBrightnessSmooth" => Value::i(&self.eye_smooth.map(|v| v.floor() as i32)),
                 "gbufferModelView" => m4(view),
                 "gbufferModelViewInverse" => m4(view.inverse()),
                 "gbufferProjection" => m4(projection),
@@ -563,6 +579,9 @@ impl FrameUniforms {
                 "isElytraFlying" => Value::i(&[inputs.elytra_flying as i32]),
                 "cloudHeight" => Value::f(&[inputs.cloud_height]),
                 "cloudTime" => Value::f(&[inputs.cloud_time]),
+                "ambientLight" => Value::f(&[inputs.ambient_light]),
+                // Iris 1.11.7 gave both the same value in every scene measured.
+                "playerMood" | "constantMood" => Value::f(&[inputs.mood]),
                 // renderStage is NONE outside gbuffers draws.
                 _ => status_value(name, inputs).unwrap_or(Value::i(&[0])),
             }
@@ -1157,6 +1176,63 @@ mod initial_history_tests {
                 );
             }
         }
+    }
+
+    /// Iris 1.11.7, read frame by frame with a probe pack: eyeBrightnessSmooth falls by half
+    /// in 1 s and is rounded down; wetness takes 60 s to rise halfway and 20 s to fall; the
+    /// centre depth 0.1 s.
+    #[test]
+    fn smoothed_uniforms_take_iris_half_lives() {
+        let hud = HudBatch::new([800, 450]);
+        let f = frame(&hud);
+        let mut u = FrameUniforms::default();
+        // The next frame comes `seconds` after the last (and a few microseconds of the test).
+        let after = |u: &mut FrameUniforms, seconds: f32| {
+            u.last = Some(std::time::Instant::now() - std::time::Duration::from_secs_f32(seconds));
+        };
+        let mut input = PackInputs {
+            eye_light: [0, 15],
+            ..Default::default()
+        };
+        u.center_depth_raw = Some(1.0);
+        u.update(&f, &input, [800, 450]);
+        input.eye_light = [0, 0];
+        u.center_depth_raw = Some(0.0);
+        after(&mut u, 0.1);
+        u.update(&f, &input, [800, 450]);
+        assert!((float(&u, "centerDepthSmooth")[0] - 0.5).abs() < 1e-3);
+        after(&mut u, 0.6);
+        u.update(&f, &input, [800, 450]);
+        // 240 falling toward 0 for 0.7 s: 147.8, read as 147.
+        match u.values[index("eyeBrightnessSmooth").unwrap()] {
+            Value::I(v) => assert_eq!(v[1], 147),
+            _ => panic!("integer uniform expected"),
+        }
+        input.rain = 1.0;
+        after(&mut u, 60.0);
+        u.update(&f, &input, [800, 450]);
+        assert!((float(&u, "wetness")[0] - 0.5).abs() < 1e-3);
+        input.rain = 0.0;
+        after(&mut u, 20.0);
+        u.update(&f, &input, [800, 450]);
+        assert!((float(&u, "wetness")[0] - 0.25).abs() < 1e-3);
+    }
+
+    /// Iris 1.11.7 (probe pack): `ambientLight` is the dimension type's (0.1 in the Nether,
+    /// 0.25 in the End), and `playerMood` and `constantMood` both the cave mood.
+    #[test]
+    fn ambient_light_and_mood_come_from_the_inputs() {
+        let hud = HudBatch::new([800, 450]);
+        let mut u = FrameUniforms::default();
+        let input = PackInputs {
+            ambient_light: 0.25,
+            mood: 0.0235,
+            ..Default::default()
+        };
+        u.update(&frame(&hud), &input, [800, 450]);
+        assert_eq!(float(&u, "ambientLight")[0], 0.25);
+        assert_eq!(float(&u, "playerMood")[0], 0.0235);
+        assert_eq!(float(&u, "constantMood")[0], 0.0235);
     }
 
     fn frame(hud: &HudBatch) -> Frame<'_> {
