@@ -285,6 +285,7 @@ pub struct Guest {
     /// (Entity.DATA_AIR_SUPPLY_ID, Player.DATA_PLAYER_ABSORPTION_ID); their
     /// defaults until either changes.
     pub sent_air: (i32, f32),
+    pub sent_frozen: i32,
     /// The shared flags (Entity.DATA_SHARED_FLAGS_ID) the player's client was
     /// last sent about itself.
     pub sent_shared: i8,
@@ -467,6 +468,7 @@ impl Guest {
             sent_health: None,
             sent_xp: None,
             sent_air: (300, 0.0),
+            sent_frozen: 0,
             sent_shared: 0,
             sent_shoulders: [None; 2],
             last_death: None,
