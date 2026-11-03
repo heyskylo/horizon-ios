@@ -1318,7 +1318,7 @@ impl Game<'_> {
             status: "Playing Studio Replay".into(),
             lang,
             registries: Arc::new(Dynamic::default()),
-            joined: true,
+            joined: false,
             reconfiguring: None,
             logged_in: true,
             entity_id: 0,
@@ -10348,6 +10348,9 @@ impl Game<'_> {
 
     /// Connecting / loading screens; true when it covered the frame.
     pub(super) fn remote_overlay(&mut self, batch: &mut HudBatch) -> bool {
+        if self.studio_replay.is_some() || self.studio_freecam.active {
+            return false;
+        }
         let Some(r) = &self.remote else { return false };
         let loading = r.level_load.is_active();
         if self.player.is_some() && !loading {
@@ -10424,6 +10427,9 @@ impl Game<'_> {
     /// Connected or connecting with no player yet: `ConnectScreen`, then
     /// `LevelLoadingScreen`, over the panorama with its blur.
     pub(super) fn remote_loading(&self) -> bool {
+        if self.studio_replay.is_some() || self.studio_freecam.active {
+            return false;
+        }
         use horizon_client::level_loading::Reason;
         self.remote.as_ref().is_some_and(|r| {
             if r.level_load.is_active() {
