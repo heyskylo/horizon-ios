@@ -28,10 +28,10 @@ use naga::valid::{Capabilities, ValidationFlags, Validator};
 use crate::Preprocessed;
 
 mod anonymous_structs;
+mod array_constructors;
 mod atomic_vectors;
 mod geometry;
 mod image_parameters;
-mod array_constructors;
 mod integer_bounds;
 mod interface_blocks;
 mod ordering;
@@ -1598,7 +1598,6 @@ mod tests {
     const VSH_120: &str = "#version 120\nvarying vec2 texcoord;\nvoid main() {\n    gl_Position = ftransform();\n    \
                            texcoord = (gl_TextureMatrix[0] * gl_MultiTexCoord0).xy;\n}\n";
 
-
     #[test]
     fn mixed_type_array_constructor_arguments_validate() {
         // Drivers take these; naga composed them unconverted ("Composing 0's component type").
@@ -1611,7 +1610,10 @@ mod tests {
             let fsh = format!(
                 "#version 120\nvarying vec2 texcoord;\nfloat n2d() {{ {body} }}\nvoid main() {{ gl_FragColor = vec4(n2d()); }}\n"
             );
-            let p = program(&[("composite.vsh", VSH_120), ("composite.fsh", &fsh)], Target::Window);
+            let p = program(
+                &[("composite.vsh", VSH_120), ("composite.fsh", &fsh)],
+                Target::Window,
+            );
             assert!(p.is_ok(), "{body}: {:?}", p.err());
         }
     }

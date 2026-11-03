@@ -78,7 +78,9 @@ fn push_arg(out: &mut String, ty: &str, arg: &[&str]) {
         out.push_str(&walk(body));
         out.push(')');
     }
-    arg[arg.len() - trail..].iter().for_each(|t| out.push_str(t));
+    arg[arg.len() - trail..]
+        .iter()
+        .for_each(|t| out.push_str(t));
 }
 
 /// If an array constructor `T[N](...)` of a scalar or vector `T` starts at `i`, the index of its `)`.
