@@ -11,6 +11,8 @@ use serde_json::Value;
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
+#[path = "glass_server_dialog.rs"]
+mod glass_server_dialog;
 #[path = "glass_servers.rs"]
 mod glass_servers;
 
@@ -148,6 +150,9 @@ pub(super) struct Create {
     new_world: bool,
     copy: Option<PathBuf>,
     worlds: Vec<(String, PathBuf)>,
+    /// The glass dialog's line under each world: its name and "Horizon · mode · size", read
+    /// once when the dialog opens.
+    details: HashMap<PathBuf, (String, String)>,
     mode: &'static str,
     difficulty: &'static str,
     max_players: u32,
@@ -156,6 +161,9 @@ pub(super) struct Create {
     eula: bool,
     /// Create was pressed without the EULA ticked.
     eula_missing: bool,
+    /// The glass dialog's friends let in, the first an operator (the light one types them in
+    /// `Field::Players`).
+    friends: Vec<String>,
 }
 
 /// What the sidebar shows of the Servers page: its list once the page has read it, and whether
@@ -799,12 +807,34 @@ impl Launcher {
         } else {
             format!("Server {}", self.servers.list.len() + 1)
         };
-        self.servers.text(Field::Name).set(name);
-        self.servers.selected = Some(Field::Name);
+        // The glass dialog starts with an empty name (its placeholder says the default) and the
+        // player as the first friend.
+        let glass = self.theme.dark;
+        let own = own_name(&self.accounts).unwrap_or_default();
+        self.servers
+            .text(Field::Name)
+            .set(if glass { String::new() } else { name });
+        self.servers.selected = (!glass).then_some(Field::Name);
         self.servers.text(Field::Seed).set(String::new());
         self.servers
             .text(Field::Players)
-            .set(own_name(&self.accounts).unwrap_or_default());
+            .set(if glass { String::new() } else { own.clone() });
+        let friends = if glass && !own.is_empty() {
+            vec![own]
+        } else {
+            Vec::new()
+        };
+        let details = if glass {
+            horizon_launcher::worlds::list(&backend::game_home())
+                .into_iter()
+                .map(|w| {
+                    let line = format!("Horizon · {} · {}", tr(w.mode), bytes(w.size));
+                    (w.path, (w.name, line))
+                })
+                .collect()
+        } else {
+            Default::default()
+        };
         self.servers.problem = None;
         self.servers.create_scroll = Scrollbar::default();
         self.servers.create = Some(Create {
@@ -818,6 +848,8 @@ impl Launcher {
             check_accounts: true,
             eula: false,
             eula_missing: false,
+            friends,
+            details,
         });
     }
 
@@ -841,19 +873,20 @@ impl Launcher {
                 seed: self.servers.value(Field::Seed).to_string(),
             },
         };
-        let players: Vec<String> = self
-            .servers
-            .value(Field::Players)
-            .split([',', ' '])
-            .filter(|p| !p.is_empty())
-            .map(str::to_string)
-            .collect();
+        let mut players = c.friends.clone();
+        for p in self.servers.value(Field::Players).split([',', ' ']) {
+            if !p.is_empty() && !players.iter().any(|q| q == p) {
+                players.push(p.to_string());
+            }
+        }
         let name = self.servers.value(Field::Name).trim().to_string();
         let spec = NewServer {
-            name: if name.is_empty() {
+            name: if !name.is_empty() {
+                name
+            } else if self.servers.list.is_empty() {
                 "My server".into()
             } else {
-                name
+                format!("Server {}", self.servers.list.len() + 1)
             },
             world,
             game_mode: c.mode.into(),
@@ -920,7 +953,11 @@ impl Launcher {
                     !invalid
                         && matches!(
                             f,
-                            Field::InstanceName | Field::InstanceGroup | Field::InstanceVersion
+                            Field::InstanceName
+                                | Field::InstanceGroup
+                                | Field::InstanceVersion
+                                | Field::Name
+                                | Field::Seed
                         ),
                     |d| {
                         d.h(px(48.))
@@ -928,6 +965,10 @@ impl Launcher {
                             .bg(crate::glass_ui::white(if focused { 0.1 } else { 0.06 }))
                     },
                 )
+                // The friend field sits in its chip, on the chip's fill.
+                .when(f == Field::Players, |d| {
+                    d.h_full().px(px(14.)).bg(gpui::transparent_black())
+                })
                 // The server's command line: the field is the line's middle, on its fill, in mono.
                 .when(f == Field::Command, |d| {
                     d.h_full()
@@ -1028,6 +1069,8 @@ impl Launcher {
 
     fn field_enter(&mut self, f: Field) {
         match f {
+            // The glass dialog's friend field adds the name typed.
+            Field::Players if self.theme.dark => self.add_create_friend(),
             Field::Name | Field::Seed | Field::Players => self.create_server(),
             Field::Command => {
                 let line = self.servers.text(Field::Command).take();
@@ -2807,6 +2850,9 @@ impl Launcher {
 
     pub(super) fn create_dialog(&mut self, cx: &mut Context<Self>) -> Option<Stateful<Div>> {
         let t = self.theme;
+        if t.dark {
+            return self.glass_create_dialog(cx);
+        }
         let c = self.servers.create.as_ref()?;
         let (new_world, copy, worlds) = (c.new_world, c.copy.clone(), c.worlds.clone());
         let (mode, difficulty, max_players) = (c.mode, c.difficulty, c.max_players);
