@@ -100,6 +100,9 @@ impl ResourceSource for Bundled {
             "assets/horizon/lang/ur_pk.json" => {
                 include_str!("../../horizon-client/assets/horizon/lang/ur_pk.json")
             }
+            "assets/horizon/lang/sah_sah.json" => {
+                include_str!("../../horizon-client/assets/horizon/lang/sah_sah.json")
+            }
             "assets/horizon/lang/fa_ir.json" => {
                 include_str!("../../horizon-client/assets/horizon/lang/fa_ir.json")
             }
