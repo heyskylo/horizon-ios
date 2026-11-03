@@ -2837,8 +2837,9 @@ impl Game<'_> {
                     effect,
                     ticks,
                     amplifier,
+                    ambient,
                 } => {
-                    self.give_player_effect(effect, ticks, amplifier);
+                    self.give_mob_effect(effect, ticks, amplifier, ambient);
                 }
                 MobEvent::Ignite { target, seconds } => match target {
                     Who::Player => {
@@ -3709,15 +3710,16 @@ impl Game<'_> {
     }
     /// A status effect from a mob, arrow or splash potion (`addEffect`).
     pub(super) fn give_player_effect(&mut self, effect: &'static str, ticks: i32, amplifier: i32) {
-        if self.creative || self.spectator() {
-            return;
+        self.give_mob_effect(effect, ticks, amplifier, false);
+    }
+    /// A mob's effect on the player. Creative and spectator players shrug off
+    /// the damaging effects here, but the nautilus's ambient Breath is plain
+    /// `addEffect` and lands in every game mode.
+    fn give_mob_effect(&mut self, effect: &'static str, ticks: i32, amplifier: i32, ambient: bool) {
+        let immune = self.creative || self.spectator();
+        if let Some(instance) = mob_effect_instance(effect, ticks, amplifier, ambient, immune) {
+            self.potions.effects.add(instance);
         }
-        let id = effect.strip_prefix("minecraft:").unwrap_or(effect);
-        self.potions
-            .effects
-            .add(horizon_client::effects::EffectInstance::new(
-                id, ticks, amplifier,
-            ));
     }
     /// `WitherRoseBlock.entityInside` for the player: on a server level that
     /// isn't peaceful, `getBeeInteractionEffect` (Wither, 40 ticks) unless the
@@ -7526,9 +7528,28 @@ fn knock_back(
     );
 }
 
+/// The instance a mob effect gives the player; `None` for a creative or
+/// spectator player (`immune`) unless it is ambient (the nautilus's Breath).
+fn mob_effect_instance(
+    effect: &'static str,
+    ticks: i32,
+    amplifier: i32,
+    ambient: bool,
+    immune: bool,
+) -> Option<horizon_client::effects::EffectInstance> {
+    if immune && !ambient {
+        return None;
+    }
+    let id = effect.strip_prefix("minecraft:").unwrap_or(effect);
+    let mut instance = horizon_client::effects::EffectInstance::new(id, ticks, amplifier);
+    instance.ambient = ambient;
+    Some(instance)
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::perspective::CameraType;
+    use super::mob_effect_instance;
     use super::thrown_item_axes;
     use super::thrown_item_quad;
     use super::{ProjectileKind, is_item_billboard};
@@ -7539,6 +7560,30 @@ mod tests {
             corners.iter().copied().reduce(glam::Vec3::min).unwrap(),
             corners.iter().copied().reduce(glam::Vec3::max).unwrap(),
         )
+    }
+
+    #[test]
+    fn nautilus_breath_lands_in_creative_as_ambient() {
+        // AbstractNautilus.applyEffects: MobEffectInstance(BREATH_OF_THE_NAUTILUS,
+        // 60, 0, ambient true, visible true, showIcon true), no game-mode gate.
+        let e = mob_effect_instance("minecraft:breath_of_the_nautilus", 60, 0, true, true)
+            .expect("applies to a creative player");
+        assert_eq!(
+            (e.id, e.duration, e.amplifier),
+            ("breath_of_the_nautilus", 60, 0)
+        );
+        assert!(e.ambient && e.visible);
+        // Survival gets the same ambient instance.
+        let e =
+            mob_effect_instance("minecraft:breath_of_the_nautilus", 60, 0, true, false).unwrap();
+        assert!(e.ambient);
+    }
+
+    #[test]
+    fn other_mob_effects_stay_blocked_in_creative() {
+        assert!(mob_effect_instance("minecraft:poison", 140, 0, false, true).is_none());
+        let e = mob_effect_instance("minecraft:poison", 140, 0, false, false).unwrap();
+        assert!(!e.ambient);
     }
 
     #[test]
