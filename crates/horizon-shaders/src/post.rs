@@ -437,6 +437,9 @@ pub struct Post {
     pub textures: Vec<crate::CustomTexture>,
     /// `size.buffer.*`, by buffer.
     pub sizes: [Option<BufferSize>; crate::BUFFERS],
+    /// The shadowcolor buffers the shadow programs have: 2, or all 8 when the pack names the
+    /// `HIGHER_SHADOWCOLOR` feature (`iris.features.required` or `.optional`).
+    pub shadow_colors: usize,
     /// `bufferObject.*`, by binding.
     pub buffer_objects: std::collections::BTreeMap<u32, BufferObject>,
     /// `image.*`.
@@ -612,6 +615,11 @@ pub fn load_post(
         custom: Custom::parse(properties),
         textures: Vec::new(),
         sizes: [None; crate::BUFFERS],
+        shadow_colors: if higher_shadowcolor(properties) {
+            crate::SHADOW_COLORS
+        } else {
+            2
+        },
         buffer_objects: Default::default(),
         images: Vec::new(),
         shadow_culling: match properties.get("shadow.culling").map(str::trim) {
@@ -872,7 +880,10 @@ fn load_shadow(
     let reads = (post.programs.iter())
         .chain(gbuffers.into_iter().flatten())
         .flat_map(|p| p.program.iter().flat_map(|q| &q.interface.samplers))
-        .any(|s| SHADOW_SAMPLERS.contains(&s.name.as_str()));
+        .any(|s| {
+            SHADOW_SAMPLERS.contains(&s.name.as_str())
+                || config::shadow_color(&s.name).is_some_and(|n| n < loader.post.shadow_colors)
+        });
     let forced = match loader.properties.get("shadow.enabled").map(str::trim) {
         Some("true") => Some(true),
         Some("false") => Some(false),
@@ -1070,10 +1081,10 @@ impl Loader<'_> {
         let mut buffers =
             config::draw_buffers(&fragment).unwrap_or_else(|| default_draw_buffers(group.shadow()));
         if group.shadow() {
-            // Output n writes shadowcolor n (6.3); there are two.
+            // Output n writes shadowcolor n (6.3); `shadow_buffers` says how many there are.
             let kept = buffers
                 .iter()
-                .position(|&b| b >= 2)
+                .position(|&b| b as usize >= self.shadow_buffers(&fragment))
                 .unwrap_or(buffers.len());
             buffers.truncate(kept);
         }
@@ -1195,7 +1206,7 @@ impl Loader<'_> {
             config::draw_buffers(fragment).unwrap_or_else(|| default_draw_buffers(true));
         let kept = buffers
             .iter()
-            .position(|&b| b >= 2)
+            .position(|&b| b as usize >= self.shadow_buffers(fragment))
             .unwrap_or(buffers.len());
         buffers.truncate(kept);
         Some(PostProgram {
@@ -1211,6 +1222,17 @@ impl Loader<'_> {
             compute: Vec::new(),
             geometry_triangles: triangles,
         })
+    }
+
+    /// The shadowcolor buffers a shadow program's outputs can write: all the pack has with a
+    /// `RENDERTARGETS` or `DRAWBUFFERS` directive, else shadowcolor0 and 1. Iris 1.11.7 with
+    /// `HIGHER_SHADOWCOLOR`: a `shadow` program without a directive leaves shadowcolor2 to 7
+    /// alone, one with `RENDERTARGETS: 0,1,2,3,4` writes all five (probe packs of our own).
+    fn shadow_buffers(&self, fragment: &Preprocessed) -> usize {
+        match config::draw_buffers(fragment) {
+            Some(_) => self.post.shadow_colors,
+            None => 2,
+        }
     }
 
     /// The compute programs of composite-style program `name` that are on and translate.
@@ -1372,6 +1394,14 @@ fn scale(properties: &Properties, program: &str, group: Group) -> [f32; 3] {
         Some(&[s, x, y]) if fraction(s) && offset(x) && offset(y) => [s, x, y],
         _ => FULL,
     }
+}
+
+/// Whether the pack names the `HIGHER_SHADOWCOLOR` feature, required or optional.
+fn higher_shadowcolor(properties: &Properties) -> bool {
+    ["iris.features.required", "iris.features.optional"]
+        .iter()
+        .filter_map(|k| properties.get(k))
+        .any(|v| v.split_whitespace().any(|w| w == "HIGHER_SHADOWCOLOR"))
 }
 
 /// `flip.<program>.<buffer>=<bool>` keys of one program.
@@ -2013,6 +2043,88 @@ mod tests {
         assert!(none("shadow.enabled=true").shadow.is_some());
         let post = none("shadow.enabled=true\nshadowTranslucent=false");
         assert!(post.shadow.is_some() && post.shadow_water.is_none());
+    }
+
+    /// `HIGHER_SHADOWCOLOR` (required or optional) gives the shadow programs shadowcolor2 to 7,
+    /// with their own settings; a directive reaches them, no directive still writes 0 and 1.
+    /// Without the feature, outputs stop at shadowcolor1 as before. As in Iris 1.11.7 with
+    /// probe packs p7951a to c (the PR has the readings).
+    #[test]
+    fn higher_shadowcolor_gives_shadow_programs_eight_buffers() {
+        let shadow_vsh = "#version 120\nvoid main() {\ngl_Position = ftransform();\n}\n";
+        let writes = |targets: Option<&str>| {
+            let directive =
+                targets.map_or(String::new(), |t| format!("/* RENDERTARGETS: {t} */\n"));
+            format!(
+                "#version 120\nconst vec4 shadowcolor5ClearColor = vec4(0.3, 0.4, 0.5, 0.6);\n\
+                 /* const int shadowcolor6Format = RGBA32F; */\n{directive}void main() {{\n\
+                 gl_FragData[0] = vec4(0.0625);\ngl_FragData[1] = vec4(0.125);\n\
+                 gl_FragData[2] = vec4(0.1875);\ngl_FragData[3] = vec4(0.25);\n\
+                 gl_FragData[4] = vec4(0.3125);\n}}\n"
+            )
+        };
+        let full = "#version 120\nvarying vec2 uv;\nvoid main() {\n\
+                    gl_Position = ftransform();\nuv = gl_MultiTexCoord0.xy;\n}\n";
+        let shadowcomp = "#version 120\n/* RENDERTARGETS: 7 */\n\
+                          void main() {\ngl_FragData[0] = vec4(0.9375);\n}\n";
+        let reads = "#version 120\nuniform sampler2D shadowcolor7;\nvarying vec2 uv;\n\
+                     void main() { gl_FragColor = texture2D(shadowcolor7, uv); }\n";
+        let game = crate::GbuffersInputs {
+            declarations: "layout(location = 0) in vec3 hz_v_pos;".into(),
+            body: "    hz_Vertex = vec4(hz_v_pos, 1.0);\n".into(),
+            ..Default::default()
+        };
+        let inputs = GameInputs {
+            terrain: Some(game.clone()),
+            entities: Some(game),
+            ..Default::default()
+        };
+        let load = |properties: &str, targets: Option<&str>| {
+            let shadow = writes(targets);
+            let pack = Pack::from_zip_bytes(
+                "t",
+                zip(&[
+                    ("shaders/shadow.vsh", shadow_vsh),
+                    ("shaders/shadow.fsh", &shadow),
+                    ("shaders/shadowcomp.vsh", full),
+                    ("shaders/shadowcomp.fsh", shadowcomp),
+                    ("shaders/final.vsh", full),
+                    ("shaders/final.fsh", reads),
+                ]),
+            )
+            .unwrap();
+            let properties = Properties::parse(properties, &Macros::default());
+            load_post(&pack, "", &properties, &Macros::standard(), &inputs)
+        };
+        let buffers = |post: &Post| {
+            let shadow = post.shadow.as_ref().map(|p| p.buffers.clone());
+            let comp: Vec<_> = post.shadow_comp.iter().map(|p| p.buffers.clone()).collect();
+            (post.shadow_colors, shadow, comp)
+        };
+        let required = "iris.features.required = HIGHER_SHADOWCOLOR\n";
+        let post = load(required, Some("0,1,2,3,4"));
+        // Reading shadowcolor7 alone turns the shadow pass on.
+        assert!(post.shadow_pass, "{:?}", post.notes);
+        assert_eq!(
+            buffers(&post),
+            (8, Some(vec![0, 1, 2, 3, 4]), vec![vec![7]])
+        );
+        let s = &post.config.shadow;
+        assert_eq!(s.colors[5].clear_color, Some([0.3, 0.4, 0.5, 0.6]));
+        assert_eq!(s.colors[6].format, crate::Format::parse("RGBA32F").unwrap());
+        assert_eq!(s.colors[7].clear_color, Some([1.0; 4]));
+        let optional = "iris.features.optional = HIGHER_SHADOWCOLOR\n";
+        let post = load(optional, Some("0,1,2,3,4"));
+        assert_eq!(buffers(&post).1, Some(vec![0, 1, 2, 3, 4]));
+        // No directive: shadowcolor0 and 1, as without the feature.
+        let post = load(required, None);
+        assert_eq!(buffers(&post).1, Some(vec![0, 1]));
+        // Without the feature: two buffers; shadowcolor7 doesn't turn the shadow pass on, and
+        // with it forced on, RENDERTARGETS: 7 writes nothing.
+        let post = load("", Some("0,1,2,3,4"));
+        assert!(!post.shadow_pass);
+        let post = load("shadow.enabled = true\n", Some("0,1,2,3,4"));
+        assert_eq!(buffers(&post), (2, Some(vec![0, 1]), vec![vec![]]));
     }
 
     /// A shadow program with a geometry stage draws terrain, entities and block entities, each

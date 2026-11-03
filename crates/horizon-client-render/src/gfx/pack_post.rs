@@ -17,7 +17,7 @@
 use std::collections::HashMap;
 
 use glam::{DMat4, DVec3};
-use horizon_shaders::{Format, Group, Kind, Post, Val};
+use horizon_shaders::{Format, Group, Kind, Post, SHADOW_COLORS, Val};
 
 use super::pack_draw::DrawUniforms;
 use super::pack_entities::{PROGRAMS, PackEntities};
@@ -30,6 +30,9 @@ const BUFFERS: usize = horizon_shaders::BUFFERS;
 
 #[cfg(test)]
 mod world_target_tests;
+
+#[cfg(test)]
+mod higher_shadowcolor_tests;
 
 /// The texture behind a pack sampler name.
 #[derive(Clone, Copy, PartialEq)]
@@ -700,11 +703,7 @@ fn fits(ty: &str, sample_type: wgpu::TextureSampleType) -> bool {
 }
 
 fn source(name: &str, shadow_space: bool, shadow_pass: bool, watershadow: bool) -> Source {
-    let shadow_color = match name {
-        "shadowcolor" | "shadowcolor0" => Some(0),
-        "shadowcolor1" => Some(1),
-        _ => None,
-    };
+    let shadow_color = horizon_shaders::shadow_color(name);
     let shadow_depth = match name {
         "shadowtex0" | "watershadow" | "shadowtex0HW" => Some(0),
         "shadowtex1" | "shadowtex1HW" => Some(1),
@@ -1097,7 +1096,7 @@ fn bindings(
     buffers: &[u32],
     geometry: Option<&Geometry<'_>>,
     formats: &[wgpu::TextureFormat; BUFFERS],
-    shadow: Option<&[wgpu::TextureFormat; 2]>,
+    shadow: Option<&[wgpu::TextureFormat; SHADOW_COLORS]>,
     notes: &mut Vec<String>,
     pack: &Resources<'_>,
 ) -> Option<(
@@ -1417,7 +1416,7 @@ fn build_pass(
     device: &wgpu::Device,
     p: horizon_shaders::PostProgram,
     formats: &[wgpu::TextureFormat; BUFFERS],
-    shadow: Option<&[wgpu::TextureFormat; 2]>,
+    shadow: Option<&[wgpu::TextureFormat; SHADOW_COLORS]>,
     screen: wgpu::TextureFormat,
     notes: &mut Vec<String>,
     geometry: Option<&Geometry<'_>>,
@@ -1680,7 +1679,7 @@ fn build_compute(
     group: Group,
     c: horizon_shaders::ComputeProgram,
     formats: &[wgpu::TextureFormat; BUFFERS],
-    shadow: Option<&[wgpu::TextureFormat; 2]>,
+    shadow: Option<&[wgpu::TextureFormat; SHADOW_COLORS]>,
     notes: &mut Vec<String>,
     custom: &[String],
     pack: &Resources<'_>,
@@ -1836,6 +1835,8 @@ impl PackPost {
         }
         let textures = pack_textures::upload(device, queue, post.textures, &mut notes);
         let shadow_config = post.config.shadow.clone();
+        // shadowcolor2 to 7 only for a pack that names `HIGHER_SHADOWCOLOR`.
+        let shadow_colors = (1u16 << post.shadow_colors) - 1;
         let mut custom = post.custom;
         let custom_names: Vec<String> = custom.uniforms().map(|u| u.0.to_owned()).collect();
         // A first run finds the names neither the frame nor the pack defines.
@@ -1851,13 +1852,14 @@ impl PackPost {
         let mut used = 1u16;
         let draws = DrawUniforms::new(device);
         // The shadow buffers' formats when the shadow pass runs; their programs see them as
-        // buffers 0 and 1.
-        let shadow_formats: Option<[wgpu::TextureFormat; 2]> = post.shadow_pass.then(|| {
-            std::array::from_fn(|n| texture_format(shadow_config.colors[n].format, features))
-        });
+        // buffers 0 to 7.
+        let shadow_formats: Option<[wgpu::TextureFormat; SHADOW_COLORS]> =
+            post.shadow_pass.then(|| {
+                std::array::from_fn(|n| texture_format(shadow_config.colors[n].format, features))
+            });
         let shadow_space: [wgpu::TextureFormat; BUFFERS] = std::array::from_fn(|i| {
             shadow_formats
-                .filter(|_| i < 2)
+                .filter(|_| i < SHADOW_COLORS)
                 .map_or(formats[i], |f| f[i])
         });
         let (mut storage, mut copied, mut image_copied, mut snapshotted) = (0u16, 0u16, 0u64, 0u64);
@@ -2295,7 +2297,7 @@ impl PackPost {
                     0
                 };
                 m | own | p.shadow_reads
-            });
+            }) & shadow_colors;
             let depth1 = every_pass()
                 .flat_map(|p| &p.samplers)
                 .any(|s| matches!(s.source, Source::ShadowDepth(1, _)));
@@ -2903,7 +2905,7 @@ impl PackPost {
         // one clearing them.
         let (depth_ops, shadow_ops) = match &mut self.shadow_targets {
             Some(s) if pass.group.shadow() => s.clear_ops(pass.writes.iter().map(|w| w.1)),
-            _ => (super::pack_shadow::load(), [load; 2]),
+            _ => (super::pack_shadow::load(), [load; SHADOW_COLORS]),
         };
         let shadow = self.shadow_targets.as_ref().filter(|_| pass.group.shadow());
         let mut attachments: Vec<Option<wgpu::RenderPassColorAttachment>> = Vec::new();
