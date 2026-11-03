@@ -521,6 +521,17 @@ pub fn translucent_batching_offered() -> bool {
     TRANSLUCENT_BATCHING_OFFERED.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+static SMOOTH_GRADIENTS_OFFERED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+/// Whether the device can draw, blend and filter the 16-bit frame (`Graphics::hdr_smooth_gradients`):
+/// set when the renderer starts. Where it can't, the settings grey its switch out.
+pub fn offer_smooth_gradients(on: bool) {
+    SMOOTH_GRADIENTS_OFFERED.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+pub fn smooth_gradients_offered() -> bool {
+    SMOOTH_GRADIENTS_OFFERED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// The farthest LOD Distance, in chunks, on integrated GPUs other than
 /// Apple's: they share the CPU's memory bandwidth, and past it far terrain
 /// costs them more frame time than it is worth.
@@ -686,7 +697,8 @@ pub struct Graphics {
     pub translucent_batching: bool,
     /// Smooth Gradients (HDR page, on by default): with HDR output on, the frame is drawn in
     /// 16 bits, so dark gradients don't band (`Renderer::frame_format`). Read when a renderer
-    /// is made (start, resource-pack reload), like `translucent_batching`.
+    /// is made (start, resource-pack reload), like `translucent_batching`, where it is offered
+    /// (`smooth_gradients_offered`).
     pub hdr_smooth_gradients: bool,
     /// The shader pack picked in `shaderpacks/` (`shader_pack_list`); empty: none. Its key is
     /// not `shaderPack`, which versions before the clean-room rewrite saved and which stays

@@ -830,12 +830,15 @@ impl H {
             H::BatteryMode => labelled("Battery Mode", on_off(g.battery)),
             H::ShadowCache => labelled("Shadow Cache", on_off(g.shadow_cache)),
             H::GraphicsApi => labelled("Graphics API", g.api.label()),
-            // Greyed out where the device can't (`Item::blocked`): Off, as it is there,
-            // while the saved value waits for a device that can.
-            H::HdrSmoothGradients => labelled("Smooth Gradients", on_off(g.hdr_smooth_gradients)),
+            // These two are greyed out where the device can't (`Item::blocked`): Off, as
+            // they are there, while the saved value waits for a device that can.
             H::TranslucentBatching => labelled(
                 "Translucent Batching",
                 on_off(g.translucent_batching && crate::graphics::translucent_batching_offered()),
+            ),
+            H::HdrSmoothGradients => labelled(
+                "Smooth Gradients",
+                on_off(g.hdr_smooth_gradients && crate::graphics::smooth_gradients_offered()),
             ),
             H::Overlay => labelled(
                 "Performance Overlay",
@@ -981,7 +984,8 @@ impl Item {
     /// folder, a display swapped for an SDR one: the renderer leaves HDR off there, and
     /// the saved values wait for an HDR display), and its sliders do something only
     /// while it is on; Translucent Batching switches only where the device can batch
-    /// (`graphics::translucent_batching_offered`), its saved value waiting for one that can.
+    /// (`graphics::translucent_batching_offered`), its saved value waiting for one that can,
+    /// and Smooth Gradients only where it can draw the 16-bit frame, the same way.
     fn blocked(self, s: &Settings) -> Option<&'static str> {
         if !self.available() {
             return Some("This feature is not yet available in Horizon.");
@@ -997,6 +1001,11 @@ impl Item {
                 | H::HdrSmoothGradients,
             ) if !crate::graphics::hdr_offered() => {
                 Some("Your display or system doesn't offer HDR output.")
+            }
+            Item::Horizon(H::HdrSmoothGradients)
+                if !crate::graphics::smooth_gradients_offered() =>
+            {
+                Some("Your GPU or graphics API doesn't support it.")
             }
             Item::Horizon(
                 H::HdrCalibrate
@@ -2623,6 +2632,29 @@ mod tests {
         assert_eq!(H::ChunkUpdates.slider(&s), Some(0.0));
         assert!(ui.release());
         assert!(!ui.release());
+    }
+
+    #[test]
+    fn smooth_gradients_wait_for_a_device_that_draws_the_16_bit_frame() {
+        let _offer = HDR_OFFER.lock().unwrap_or_else(|e| e.into_inner());
+        crate::graphics::offer_hdr(true);
+        let mut s = Settings::default();
+        s.horizon.hdr = true;
+        let item = Item::Horizon(H::HdrSmoothGradients);
+        // Where the device can't, the saved On reads Off.
+        crate::graphics::offer_smooth_gradients(false);
+        assert_eq!(
+            item.blocked(&s),
+            Some("Your GPU or graphics API doesn't support it.")
+        );
+        assert_eq!(item.label(&s).plain(), "Smooth Gradients: Off");
+        assert!(s.horizon.hdr_smooth_gradients);
+        // Where it can, it waits only for HDR, like the rest of the page.
+        crate::graphics::offer_smooth_gradients(true);
+        assert_eq!(item.blocked(&s), None);
+        assert_eq!(item.label(&s).plain(), "Smooth Gradients: On");
+        s.horizon.hdr = false;
+        assert_eq!(item.blocked(&s), Some("Turn HDR on to use it."));
     }
 
     #[test]

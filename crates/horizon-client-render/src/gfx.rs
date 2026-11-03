@@ -2292,23 +2292,22 @@ impl Renderer {
         // sun on the sky) and then blended over (glass) looks the same. Where the device
         // can't draw, blend and filter it, and with HDR switched on later, the 8-bit frame.
         let wide = wgpu::TextureFormat::Rgba16Unorm;
-        let wide_ok = || {
-            let f = adapter.get_texture_format_features(wide);
-            // Drawing into it is an adapter-specific format feature, beyond the format itself.
-            device.features().contains(
-                wgpu::Features::TEXTURE_FORMAT_16BIT_NORM
-                    | wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES,
-            ) && f.allowed_usages.contains(
-                wgpu::TextureUsages::RENDER_ATTACHMENT
-                    | wgpu::TextureUsages::TEXTURE_BINDING
-                    | wgpu::TextureUsages::COPY_SRC
-                    | wgpu::TextureUsages::COPY_DST,
-            ) && f.flags.contains(
-                wgpu::TextureFormatFeatureFlags::BLENDABLE
-                    | wgpu::TextureFormatFeatureFlags::FILTERABLE,
-            )
-        };
-        let frame_format = if wide_frame && hdr_output.is_some() && wide_ok() {
+        let f = adapter.get_texture_format_features(wide);
+        // Drawing into it is an adapter-specific format feature, beyond the format itself.
+        let wide_ok = device.features().contains(
+            wgpu::Features::TEXTURE_FORMAT_16BIT_NORM
+                | wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES,
+        ) && f.allowed_usages.contains(
+            wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_SRC
+                | wgpu::TextureUsages::COPY_DST,
+        ) && f.flags.contains(
+            wgpu::TextureFormatFeatureFlags::BLENDABLE
+                | wgpu::TextureFormatFeatureFlags::FILTERABLE,
+        );
+        crate::graphics::offer_smooth_gradients(wide_ok);
+        let frame_format = if wide_frame && hdr_output.is_some() && wide_ok {
             wide
         } else {
             config.format.remove_srgb_suffix()
