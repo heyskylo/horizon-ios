@@ -1082,5 +1082,6 @@
   "just now": "agora mesmo",
   "{count} min ago": "há {count} min",
   "1 hour ago": "há 1 hora",
-  "{count} hours ago": "há {count} horas"
+  "{count} hours ago": "há {count} horas",
+  "{count} on the official SMP": "{count} no SMP oficial"
 }

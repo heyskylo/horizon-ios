@@ -1082,5 +1082,6 @@
   "just now": "только что",
   "{count} min ago": "{count} мин назад",
   "1 hour ago": "час назад",
-  "{count} hours ago": "{count} ч назад"
+  "{count} hours ago": "{count} ч назад",
+  "{count} on the official SMP": "{count} на официальном SMP"
 }

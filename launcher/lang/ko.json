@@ -1082,5 +1082,6 @@
   "just now": "방금",
   "{count} min ago": "{count}분 전",
   "1 hour ago": "1시간 전",
-  "{count} hours ago": "{count}시간 전"
+  "{count} hours ago": "{count}시간 전",
+  "{count} on the official SMP": "공식 SMP에 {count}명"
 }

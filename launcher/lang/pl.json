@@ -1082,5 +1082,6 @@
   "just now": "przed chwilą",
   "{count} min ago": "{count} min temu",
   "1 hour ago": "godzinę temu",
-  "{count} hours ago": "{count} godz. temu"
+  "{count} hours ago": "{count} godz. temu",
+  "{count} on the official SMP": "{count} na oficjalnym SMP"
 }

@@ -1082,5 +1082,6 @@
   "just now": "अभी",
   "{count} min ago": "{count} मिनट पहले",
   "1 hour ago": "1 घंटा पहले",
-  "{count} hours ago": "{count} घंटे पहले"
+  "{count} hours ago": "{count} घंटे पहले",
+  "{count} on the official SMP": "आधिकारिक SMP पर {count}"
 }

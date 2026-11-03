@@ -1082,5 +1082,6 @@
   "just now": "الآن",
   "{count} min ago": "قبل {count} دقيقة",
   "1 hour ago": "قبل ساعة",
-  "{count} hours ago": "قبل {count} ساعة"
+  "{count} hours ago": "قبل {count} ساعة",
+  "{count} on the official SMP": "{count} على خادم SMP الرسمي"
 }
