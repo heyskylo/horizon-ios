@@ -924,7 +924,8 @@ impl Game<'_> {
         let zero = match &known {
             Some(k) => err(
                 "commands.item.target.failed.known_item",
-                &[&k.item.to_string()],
+                // The ItemStack itself is the argument: ItemStack.toString.
+                &[&format!("{} {}", k.count, k.item)],
             ),
             None => err("commands.item.target.failed", &[]),
         };
