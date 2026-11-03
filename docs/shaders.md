@@ -213,6 +213,25 @@ override saturation: f32 = 1.15;   // type = "float"; bool → bool, int → i32
 The game shows the options on the pack's settings screen. Branches on an option are on a constant, so the GPU
 skips the side that isn't taken.
 
+The shadow map is most of what a pack with `[shadow]` costs: each frame the terrain in the light's square is drawn again.
+Options can size it, so players pick their own quality. While `option` is off there is no map and no shadow pass
+(`frame.has_shadow` reads 0); `resolution_option` and `distance_option` name an `int` option, or a `choice` whose values
+are numbers, whose value replaces `resolution` or `distance`, checked against their ranges. Changing one rebuilds the map
+at the new size. These two need no `override` in your WGSL: the frame has the map's size.
+
+```toml
+[shadow]
+option = "shadows"                        # a bool: no shadow pass while it is off
+resolution_option = "shadow_resolution"
+
+[[options]]
+id = "shadow_resolution"
+name = "Shadow resolution"
+type = "choice"
+values = ["1024", "2048", "4096"]
+default = "2048"
+```
+
 ## What the check does
 
 The game runs the same check when it loads a pack (a pack that fails is refused with the message, and the last good
@@ -221,7 +240,8 @@ one keeps drawing), the launcher before it installs one, and the registry's CI b
 1. The manifest and the package: known keys, valid ids, every file used, sizes.
 2. Each stage built as the renderer builds it and validated by naga.
 3. The stage function's signature, and the rules above.
-4. Each `override` matches its option's type (or has a default); each option is used.
+4. Each `override` matches its option's type (or has a default); each option is used (those sizing the shadow map
+   may be by `[shadow]` alone).
 5. Budgets: 20 000 expressions and 64 texture reads per stage.
 6. Every entry point translated for Vulkan (SPIR-V), Metal and DirectX 12 (HLSL), with the options at their
    defaults, minimums and maximums.

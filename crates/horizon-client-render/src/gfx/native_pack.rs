@@ -59,6 +59,25 @@ fn chosen_cells(
     chosen.unwrap_or(d.cells)
 }
 
+/// `[shadow]` with the option values `constants`: none while its `option` is off, else the
+/// resolution and distance its `resolution_option` and `distance_option` pick.
+fn chosen_shadow(
+    s: &horizon_shader_api::manifest::Shadow,
+    options: &[horizon_shader_api::manifest::PackOption],
+    constants: &[(String, f64)],
+) -> Option<horizon_shader_api::manifest::Shadow> {
+    let number = |id: Option<&String>| {
+        let option = options.iter().find(|o| Some(&o.id) == id)?;
+        let (_, value) = constants.iter().find(|(k, _)| *k == option.id)?;
+        option.kind.number(*value)
+    };
+    option_on(constants, s.option.as_ref()).then(|| horizon_shader_api::manifest::Shadow {
+        resolution: number(s.resolution_option.as_ref()).map_or(s.resolution, |r| r as u32),
+        distance: number(s.distance_option.as_ref()).map_or(s.distance, |d| d as f32),
+        ..s.clone()
+    })
+}
+
 impl NativePack {
     /// The pack of the checked stages `report` with the option values `constants`, drawing
     /// onto the world's targets as `terrain` describes; the sky reads the terrain's group 0.
@@ -74,8 +93,12 @@ impl NativePack {
     ) -> Result<(Self, Vec<String>), String> {
         let (globals, format) = (terrain.globals, terrain.format);
         let textures = super::native_post::pack_textures(device, queue, &report);
-        let settings = report
+        // `[shadow]`, unless its option is off, at the size its options pick.
+        let chosen = report
             .shadow
+            .as_ref()
+            .and_then(|s| chosen_shadow(s, &report.manifest.options, constants));
+        let settings = chosen
             .as_ref()
             .map(|settings| super::native_shadow::fitted(device, settings));
         let mut frame = NativeFrame::new(device, settings.as_ref(), textures, lights, terrain.pbr);
@@ -96,8 +119,7 @@ impl NativePack {
                     d.steps_option.is_some() && option_on(constants, d.steps_option.as_ref());
                 Displacement::new(device, d.distance, cells, steps, &frame.pbr[0], false)
             });
-        let shadow = report
-            .shadow
+        let shadow = chosen
             .as_ref()
             .map(|s| {
                 let vertex = report.stages.iter().find(|s| s.kind == StageKind::Vertex);
@@ -217,5 +239,63 @@ impl NativePack {
             || self.material.is_some()
             || self.weather.is_some()
             || self.post.is_some()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::chosen_shadow;
+    use horizon_shader_api::manifest::{OptionKind, PackOption, Shadow};
+
+    fn option(id: &str, kind: OptionKind) -> PackOption {
+        PackOption {
+            id: id.into(),
+            name: id.into(),
+            description: String::new(),
+            kind,
+        }
+    }
+
+    #[test]
+    fn the_shadow_map_follows_its_options() {
+        let options = [
+            option("shadows", OptionKind::Bool { default: true }),
+            option(
+                "quality",
+                OptionKind::Choice {
+                    values: vec!["1024".into(), "4096".into()],
+                    default: 0,
+                },
+            ),
+            option(
+                "reach",
+                OptionKind::Int {
+                    default: 96,
+                    min: 32,
+                    max: 512,
+                },
+            ),
+        ];
+        let shadow = Shadow {
+            option: Some("shadows".into()),
+            resolution_option: Some("quality".into()),
+            distance_option: Some("reach".into()),
+            ..Shadow::default()
+        };
+        let values = |on: f64, quality: f64, reach: f64| {
+            [("shadows", on), ("quality", quality), ("reach", reach)].map(|(k, v)| (k.into(), v))
+        };
+        let size = |values: &[(String, f64)]| {
+            chosen_shadow(&shadow, &options, values).map(|s| (s.resolution, s.distance))
+        };
+        assert_eq!(size(&values(1.0, 1.0, 200.0)), Some((4096, 200.0)));
+        assert_eq!(size(&values(1.0, 0.0, 64.0)), Some((1024, 64.0)));
+        assert_eq!(size(&values(0.0, 1.0, 200.0)), None);
+        // Without the options' keys: the manifest's own numbers, always drawn.
+        assert_eq!(
+            chosen_shadow(&Shadow::default(), &options, &values(0.0, 1.0, 200.0))
+                .map(|s| (s.resolution, s.distance)),
+            Some((2048, 128.0))
+        );
     }
 }
