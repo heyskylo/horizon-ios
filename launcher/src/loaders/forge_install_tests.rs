@@ -32,6 +32,142 @@ fn zip(entries: &[(&str, &[u8])]) -> Vec<u8> {
     out.finish().unwrap().into_inner()
 }
 
+/// The client steps a real install profile asks for (Forge's and NeoForge's, recorded from their
+/// installers without their icon and library lists), with an installer carrying `data/client.lzma`.
+fn planned(profile: &str, minecraft: &str) -> (PathBuf, Vec<Step>) {
+    let root = std::env::temp_dir().join(format!(
+        "horizon-plan-{}-{}",
+        std::process::id(),
+        sha1_hex(profile.as_bytes())
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).unwrap();
+    let file = root.join("installer.jar");
+    fs::write(&file, zip(&[("data/client.lzma", b"patch")])).unwrap();
+    let zip = zip::ZipArchive::new(fs::File::open(&file).unwrap()).unwrap();
+    let mut installer = Installer { path: file, zip };
+    let profile: Value = serde_json::from_str(profile).unwrap();
+    assert_eq!(profile["minecraft"], minecraft);
+    let dir = root.join("mc");
+    let data = data(
+        &profile,
+        &mut installer,
+        minecraft,
+        &dir,
+        &root.join("scratch"),
+    )
+    .unwrap();
+    assert_eq!(
+        fs::read(root.join("scratch/data/client.lzma")).unwrap(),
+        b"patch"
+    );
+    let steps = steps(&profile, &data, &dir).unwrap();
+    (root, steps)
+}
+
+#[test]
+fn real_install_profiles_plan_their_client_steps() {
+    let at = |root: &Path, rel: &str| root.join(rel).to_string_lossy().into_owned();
+
+    // NeoForge 26.3: one step, installertools patching the game's jar.
+    let (root, steps) = planned(
+        include_str!("../../tests/fixtures/loaders/neoforge-26.3.0.101.install_profile.json"),
+        "26.3",
+    );
+    assert_eq!(steps.len(), 1);
+    let s = &steps[0];
+    assert_eq!(
+        s.jar,
+        root.join("mc/libraries/net/neoforged/installertools/installertools/4.0.17/installertools-4.0.17-fatjar.jar")
+    );
+    assert_eq!(
+        s.args,
+        [
+            "--task".to_string(),
+            "PROCESS_MINECRAFT_JAR".into(),
+            "--no-mod-manifest".into(),
+            "--input".into(),
+            at(&root, "mc/versions/26.3/26.3.jar"),
+            "--output".into(),
+            at(&root, "mc/libraries/net/neoforged/minecraft-client-patched/26.3.0.101/minecraft-client-patched-26.3.0.101.jar"),
+            "--extract-libraries-to".into(),
+            format!("{}/libraries/", at(&root, "mc")),
+            "--apply-patches".into(),
+            at(&root, "scratch/data/client.lzma"),
+        ]
+    );
+    assert!(s.outputs.is_empty());
+    fs::remove_dir_all(&root).unwrap();
+
+    // Forge 26.3: the server's four steps left out, binarypatcher with its output's sha1.
+    let (root, steps) = planned(
+        include_str!("../../tests/fixtures/loaders/forge-26.3-66.1.0.install_profile.json"),
+        "26.3",
+    );
+    assert_eq!(steps.len(), 1);
+    let s = &steps[0];
+    assert_eq!(s.tool, "binarypatcher");
+    assert_eq!(s.classpath.len(), 6);
+    assert_eq!(s.args[1], at(&root, "mc/versions/26.3/26.3.jar"));
+    let patched = at(
+        &root,
+        "mc/libraries/net/minecraftforge/forge/26.3-66.1.0/forge-26.3-66.1.0-client.jar",
+    );
+    assert_eq!(s.args[3], patched);
+    assert_eq!(s.args.last().unwrap(), ".forge_patched_minecraft");
+    assert_eq!(s.outputs.len(), 1);
+    assert_eq!(s.outputs[0].0, PathBuf::from(&patched));
+    assert_eq!(s.outputs[0].1.len(), 40);
+    fs::remove_dir_all(&root).unwrap();
+
+    // Forge 1.20.1: mappings, Mojang's own mappings for the client side, split, rename, patch.
+    let (root, steps) = planned(
+        include_str!("../../tests/fixtures/loaders/forge-1.20.1-47.4.0.install_profile.json"),
+        "1.20.1",
+    );
+    let tools: Vec<&str> = steps.iter().map(|s| s.tool.as_str()).collect();
+    assert_eq!(
+        tools,
+        [
+            "installertools",
+            "installertools",
+            "installertools",
+            "jarsplitter",
+            "ForgeAutoRenamingTool",
+            "binarypatcher"
+        ]
+    );
+    assert_eq!(
+        steps[0].args[3],
+        at(&root, "mc/libraries/de/oceanlabs/mcp/mcp_config/1.20.1-20230612.114412/mcp_config-1.20.1-20230612.114412.zip")
+    );
+    assert_eq!(
+        steps[1].args[..6],
+        [
+            "--task",
+            "DOWNLOAD_MOJMAPS",
+            "--version",
+            "1.20.1",
+            "--side",
+            "client"
+        ]
+    );
+    let slim = at(&root, "mc/libraries/net/minecraft/client/1.20.1-20230612.114412/client-1.20.1-20230612.114412-slim.jar");
+    assert_eq!(steps[3].args[3], slim);
+    assert_eq!(steps[4].args[1], slim);
+    assert_eq!(
+        steps[3].outputs[0],
+        (
+            PathBuf::from(&slim),
+            "de86b035d2da0f78940796bb95c39a932ed84834".to_string()
+        )
+    );
+    assert!(steps[4]
+        .jar
+        .ends_with("ForgeAutoRenamingTool-0.1.22-all.jar"));
+    fs::remove_dir_all(&root).unwrap();
+}
+
 /// A Forge installer: a library it carries, one to download, one its processor makes from the
 /// game's jar and the installer's patch, with that output's sha1.
 #[cfg(unix)]
@@ -252,4 +388,66 @@ fn a_real_installer_installs() {
             path.display()
         );
     }
+    // The command Play builds, run with the JVM's --dry-run: the JVM resolves the module path and
+    // the classpath and loads the main class, and stops before the game's own code runs. No
+    // account is involved: a made-up player, never the owner gate's.
+    let game_dir = dir.join("instance");
+    let player = crate::java_launch::Player {
+        name: "Dev".into(),
+        uuid: "00000000000000000000000000000000".into(),
+        token: "none".into(),
+        xuid: String::new(),
+    };
+    let command = crate::java_launch::command(
+        &version,
+        &crate::java_launch::Launch {
+            minecraft: &dir,
+            game_dir: &game_dir,
+            natives: &dir.join("natives").join(&id),
+            java: &java,
+            memory_mb: 2048,
+            jvm_args: &[],
+            player: &player,
+            os,
+            window: None,
+            server: None,
+        },
+    )
+    .unwrap();
+    let args: Vec<String> = command
+        .get_args()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
+    assert!(args.iter().all(|a| !a.contains("${")), "{args:?}");
+    let main = version["mainClass"].as_str().unwrap();
+    let at = args.iter().position(|a| a == main).unwrap();
+    // Every jar of the module path (Forge's older bootstrap, `-p`) is there; the classpath's are
+    // checked above for the loader's own.
+    for pair in args[..at].windows(2) {
+        if pair[0] == "-p" || pair[0] == "--module-path" {
+            for part in pair[1].split(if cfg!(windows) { ';' } else { ':' }) {
+                assert!(Path::new(part).is_file(), "{part}");
+            }
+        }
+    }
+    eprintln!(
+        "{} {}",
+        java.display(),
+        args[..=at]
+            .join(" ")
+            .replace(&*dir.to_string_lossy(), "<dir>")
+    );
+    let out = Command::new(&java)
+        .arg("--dry-run")
+        .args(&args[..at])
+        .arg(main)
+        .current_dir(&game_dir)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
 }

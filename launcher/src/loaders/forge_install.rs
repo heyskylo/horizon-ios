@@ -219,29 +219,31 @@ fn main_class(jar: &Path) -> Result<String, String> {
         .ok_or_else(|| format!("{} names no Main-Class", jar.display()))
 }
 
-/// Runs the client's processors on `java`.
-fn run_processors(
-    profile: &Value,
-    data: &HashMap<String, String>,
-    dir: &Path,
-    java: &Path,
-    log: &dyn Fn(String),
-) -> Result<(), String> {
+/// One of the client's processors, ready to run: `java -cp <jar and classpath> <main> <args>`, and
+/// the sha1 each of its outputs must have.
+#[derive(Debug)]
+struct Step {
+    tool: String,
+    jar: PathBuf,
+    classpath: Vec<PathBuf>,
+    args: Vec<String>,
+    outputs: Vec<(PathBuf, String)>,
+}
+
+/// The client's processors (none of `sides`, or `client` among them), their values filled in.
+fn steps(profile: &Value, data: &HashMap<String, String>, dir: &Path) -> Result<Vec<Step>, String> {
     let libraries = dir.join("libraries");
     let library = |name: &str| -> Result<PathBuf, String> {
         Ok(libraries.join(crate::mojang::relative(&maven_path(name)?)?))
     };
-    let processors: Vec<&Value> = profile["processors"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter(|p| {
-            p["sides"]
-                .as_array()
-                .is_none_or(|s| s.iter().any(|s| s == "client"))
-        })
-        .collect();
-    for (n, processor) in processors.iter().enumerate() {
+    let mut steps = Vec::new();
+    for processor in profile["processors"].as_array().into_iter().flatten() {
+        let client = processor["sides"]
+            .as_array()
+            .is_none_or(|s| s.iter().any(|s| s == "client"));
+        if !client {
+            continue;
+        }
         let jar_name = processor["jar"]
             .as_str()
             .ok_or("A processor names no jar")?;
@@ -253,57 +255,67 @@ fn run_processors(
                 value(sha1, data, &libraries)?,
             ));
         }
-        if !outputs.is_empty()
-            && outputs
-                .iter()
-                .all(|(file, sha1)| sha1_file(file).as_ref() == Some(sha1))
-        {
-            continue;
-        }
-        let tool = jar_name.split(':').nth(1).unwrap_or(jar_name);
-        log(format!(
-            "Patching Minecraft ({}/{}: {tool})",
-            n + 1,
-            processors.len()
-        ));
-        let jar = library(jar_name)?;
-        let mut classpath = vec![jar.clone()];
+        let mut classpath = Vec::new();
         for name in processor["classpath"].as_array().into_iter().flatten() {
             classpath.push(library(name.as_str().ok_or("Bad processor classpath")?)?);
         }
         let mut args = Vec::new();
         for arg in processor["args"].as_array().into_iter().flatten() {
-            args.push(value(
-                arg.as_str().ok_or("Bad processor argument")?,
-                data,
-                &libraries,
-            )?);
+            let arg = arg.as_str().ok_or("Bad processor argument")?;
+            args.push(value(arg, data, &libraries)?);
         }
+        steps.push(Step {
+            tool: jar_name.split(':').nth(1).unwrap_or(jar_name).to_string(),
+            jar: library(jar_name)?,
+            classpath,
+            args,
+            outputs,
+        });
+    }
+    Ok(steps)
+}
+
+/// Runs the client's processors on `java`.
+fn run_processors(
+    profile: &Value,
+    data: &HashMap<String, String>,
+    dir: &Path,
+    java: &Path,
+    log: &dyn Fn(String),
+) -> Result<(), String> {
+    let steps = steps(profile, data, dir)?;
+    for (n, step) in steps.iter().enumerate() {
+        let done = |(file, sha1): &(PathBuf, String)| sha1_file(file).as_ref() == Some(sha1);
+        if !step.outputs.is_empty() && step.outputs.iter().all(done) {
+            continue;
+        }
+        let tool = &step.tool;
+        log(format!(
+            "Patching Minecraft ({}/{}: {tool})",
+            n + 1,
+            steps.len()
+        ));
         let separator = if cfg!(windows) { ";" } else { ":" };
-        let classpath: Vec<String> = classpath
-            .iter()
+        let classpath: Vec<String> = std::iter::once(&step.jar)
+            .chain(&step.classpath)
             .map(|p| p.to_string_lossy().into_owned())
             .collect();
         let out = Command::new(java)
             .arg("-cp")
             .arg(classpath.join(separator))
-            .arg(main_class(&jar)?)
-            .args(&args)
+            .arg(main_class(&step.jar)?)
+            .args(&step.args)
             .current_dir(dir)
             .output()
             .map_err(|e| format!("{}: {e}", java.display()))?;
         if !out.status.success() {
             let said = String::from_utf8_lossy(&out.stderr).into_owned()
                 + &String::from_utf8_lossy(&out.stdout);
-            let tail: Vec<&str> = said.lines().rev().take(12).collect();
-            let tail: Vec<&str> = tail.into_iter().rev().collect();
-            return Err(format!(
-                "{tool} failed ({}):\n{}",
-                out.status,
-                tail.join("\n")
-            ));
+            let lines: Vec<&str> = said.lines().collect();
+            let tail = lines[lines.len().saturating_sub(12)..].join("\n");
+            return Err(format!("{tool} failed ({}):\n{tail}", out.status));
         }
-        for (file, sha1) in &outputs {
+        for (file, sha1) in &step.outputs {
             let have = sha1_file(file);
             if have.as_ref() != Some(sha1) {
                 let _ = fs::remove_file(file);
