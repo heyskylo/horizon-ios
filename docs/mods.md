@@ -108,7 +108,13 @@ for a vanilla block that ticks, and its sections count it.
 `"MODEL"` puts its block model in the chunk mesh, `"ENTITYBLOCK_ANIMATED"` leaves the model out for a block whose
 moving parts its block entity draws every frame (a turning shaft, a machine's arm), and `"INVISIBLE"` draws nothing.
 Its outline, collision, light and occlusion stay as declared: on a template that occludes (stone), the faces it
-covers stay hidden, so a block drawn by its block entity usually takes a template that doesn't (glass).
+covers stay hidden unless it also sets `occludes`.
+
+`occludes: false` makes a block occlude nothing whatever its template does, as vanilla's `noOcclusion()`: the faces
+of the blocks beside it are drawn, so a thin panel or a block drawn by its block entity on a full-cube template
+doesn't leave a hole in the floor under it. It is no longer a solid render either, so light passes it as it passes
+leaves: dampened by 1, or not at all if its template lets skylight down. Unset or `true`, it occludes as its template
+does.
 
 A block copies its template's states. It can also declare state properties of
 its own, which its template does not have — how a pipe says which sides it
