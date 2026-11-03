@@ -322,8 +322,8 @@ two seconds behind says `Can't keep up!` as vanilla's does, at most every 15 sec
 `config set` changes `server.toml` without opening it: `horizon-server config set world.difficulty=hard
 server.max_players=10`. Each key is a section and a name from the file (`properties.spawn-protection=0` for any
 other vanilla key). The values are checked as the server checks them, and nothing is written if one is wrong.
-A running server takes the difficulty, the default game mode, the whitelist and the backup settings at once;
-the rest applies at its next start, and `config set` says which. `--json` prints that as `saved`, `applied`
+A running server takes the difficulty, the default game mode, the whitelist, the message of the day, the
+player limit and the backup settings at once; the rest applies at its next start, and `config set` says which. `--json` prints that as `saved`, `applied`
 and `restart`.
 
 The server restarts the game by itself if it crashes: after 5 s, then waiting longer each time, up to 5
