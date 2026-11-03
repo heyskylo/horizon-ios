@@ -8,7 +8,7 @@ use crate::{
     fast_hash::FxHashMap,
     graphics::GraphicsApi,
     hud::{HudBatch, HudRenderer},
-    mesher::{Part as Quads, SectionMesh, Sides, TerrainVertex, Vertex},
+    mesher::{Part as Quads, SectionMesh, Sides, TerrainVertex, Vertex, packed},
     section_mask::SectionMask,
     sprites::SpriteAnimation,
 };
@@ -109,6 +109,19 @@ fn flat_vertices<'a>(
     }
 }
 
+/// Bytes of `texture` with every mip level of every layer.
+pub(crate) fn texture_bytes(texture: &wgpu::Texture) -> u64 {
+    let size = texture.size();
+    let block = u64::from(texture.format().block_copy_size(None).unwrap_or(4));
+    (0..texture.mip_level_count())
+        .map(|level| {
+            let side = |v: u32| u64::from((v >> level).max(1));
+            side(size.width) * side(size.height) * block
+        })
+        .sum::<u64>()
+        * u64::from(size.depth_or_array_layers)
+}
+
 /// Whether translucent quads have an arena of their own: with Translucent Batching
 /// (`batching`), unless a shader pack's frames can draw terrain flat (as for `flat_frame`),
 /// which reads them in the section arena through its tables: where flat draws exist and
@@ -118,8 +131,14 @@ fn translucent_split(batching: bool, flat_draws: bool, terrain: bool, shadow: bo
     batching && !(flat_draws && (terrain || shadow))
 }
 
+/// The compact layout of solid quads, unless `HORIZON_PACKED_QUADS=0` (A/B checks).
+fn packed_wanted() -> bool {
+    std::env::var("HORIZON_PACKED_QUADS").as_deref() != Ok("0")
+}
+
 mod animate;
 mod arena;
+pub mod capture;
 pub mod compositor;
 pub(crate) mod core_lines;
 mod cull;
@@ -171,6 +190,7 @@ mod timing;
 pub mod translucency;
 pub(crate) mod upload;
 mod view;
+mod visbuffer;
 mod wgsl_prefix;
 mod world_post;
 
@@ -342,7 +362,8 @@ struct Globals {
     emissive_count: [u32; 4],
     /// The sunrise fan's triangles as the sky shader tests them (`sunrise_fan::normals`).
     sunrise_fan: [[f32; 4]; 2 * sunrise_fan::TRIANGLES],
-    /// x: `Options.textureFiltering` (0 none, 1 RGSS, 2 anisotropic); y: the sprite arrays' width.
+    /// x: `Options.textureFiltering` (0 none, 1 RGSS, 2 anisotropic); y: the sprite arrays' width;
+    /// z: the mip level at which a sprite is one texel, when the views reach it, else 0.
     filtering: [f32; 4],
     /// HDR output's tier windows, low to very bright: where the lift starts, where it is
     /// full (`hdr::Hdr::windows`); zero without HDR.
@@ -382,6 +403,10 @@ struct SectionGpu {
     /// Unused without translucent quads.
     translucent_at: (u32, u64),
     solid: u32,
+    /// Slots its solid quads take in `arena`: four vertices each, or in the compact layout
+    /// (`packed`, `mesher::packed`) a record each and the vertices of those without one.
+    solid_slots: u64,
+    packed: bool,
     /// Where the solid quads' buckets by facing side end (`mesher::Sides`).
     sides: Sides,
     translucent: u32,
@@ -433,12 +458,12 @@ impl SectionGpu {
     /// is one): (page, first vertex, vertices) of each.
     fn vertex_ranges(&self, split: bool) -> (Option<(u32, u64, u64)>, Option<(u32, u64, u64)>) {
         if !split {
-            let vertices = u64::from(self.solid + self.translucent) * 4;
+            let vertices = self.solid_slots + u64::from(self.translucent) * 4;
             return (Some((self.page, self.start, vertices)), None);
         }
         let (page, start) = self.translucent_at;
         (
-            (self.solid > 0).then(|| (self.page, self.start, u64::from(self.solid) * 4)),
+            (self.solid > 0).then_some((self.page, self.start, self.solid_slots)),
             (self.translucent > 0).then(|| (page, start, u64::from(self.translucent) * 4)),
         )
     }
@@ -448,11 +473,27 @@ impl SectionGpu {
     fn gpu_recorded(&self, key: SectionKey, sections: usize) -> bool {
         self.solid > 0 && (0..sections as i32).contains(&key.1)
     }
+    /// The base vertex of its solid draws: quad `q`'s corners are `base + 4 * q` on (the
+    /// quad indices). In the compact layout they name its record's slot past
+    /// `PACKED_BASE` (terrain.wgsl's `section_corner`).
+    fn solid_base(&self) -> u32 {
+        if self.packed {
+            packed::PACKED_BASE + 4 * self.start as u32
+        } else {
+            self.start as u32
+        }
+    }
     /// GPU culling's record of it at `key`, its quads within `bounds`
     /// (`SectionMesh::bounds`).
     fn record(&self, key: SectionKey, bounds: Option<[Vec3; 2]>) -> gpu_culling::Record {
         let boxed = gpu_culling::rounded_box(bounds);
-        gpu_culling::Record::new(key, self.page, self.start, self.solid, boxed)
+        gpu_culling::Record::new(
+            key,
+            self.page,
+            u64::from(self.solid_base()),
+            self.solid,
+            boxed,
+        )
     }
     /// Whether GPU frames' walk lists it within the render distance
     /// (`Resident::walk`): its mark, kept whether GPU culling is on or
@@ -489,7 +530,7 @@ impl Part {
                 (s.page, s.start) = to;
                 if !split {
                     // Its translucent quads came along, after the solid ones.
-                    s.translucent_at = (to.0, to.1 + u64::from(s.solid) * 4);
+                    s.translucent_at = (to.0, to.1 + s.solid_slots);
                 }
             }
             Self::Translucent => s.translucent_at = to,
@@ -546,7 +587,7 @@ fn move_off_page<'a>(
         if let (Part::Section { .. }, Some(records), Some(id)) =
             (part, records.as_deref_mut(), s.gpu_id)
         {
-            records.relocate(id, to.0, to.1);
+            records.relocate(id, to.0, u64::from(s.solid_base()));
         }
         *budget = budget.saturating_sub(bytes);
         moved = true;
@@ -857,6 +898,12 @@ pub struct Renderer {
     translucent_mark: wgpu::RenderPipeline,
     /// Flat section draws (`flat`), where multi-draw is emulated.
     flat: Option<flat::Flat>,
+    /// Sections upload their solid quads in the compact layout (`mesher::packed`): the solid
+    /// passes read the arena themselves (`flat`) and no shader pack reads it as vertices.
+    packed_quads: bool,
+    /// The visibility buffer for flat frames' solid terrain (`visbuffer`,
+    /// `HORIZON_VISBUFFER=1`).
+    visbuf: Option<visbuffer::Visbuffer>,
     /// `flat` draws this frame's sections (off: the per-section draws).
     flat_on: bool,
     /// Occlusion culling of solid section draws, where the GPU's instance
@@ -1022,6 +1069,10 @@ pub struct Renderer {
     depth: wgpu::TextureView,
     sections: resident::Resident<SectionGpu>,
     lods: HashMap<crate::lod::TileKey, lod::Tile>,
+    /// Far tiles' occlusion culling slots (`lod::Tile::cull_slot`): those
+    /// free, and the next never used.
+    lod_cull_free: Vec<u32>,
+    lod_cull_next: u32,
     /// The chunk columns the resident tiles leave out (`Lod::take_cutout`):
     /// their sections are drawn even past the render distance, so terrain
     /// leaving it never opens a hole before the tiles fill it in.
@@ -1189,6 +1240,13 @@ pub struct Renderer {
     /// Advance animated block textures (Horizon setting; vanilla always does).
     pub animated_textures: bool,
     present_modes: Vec<wgpu::PresentMode>,
+    /// CPU copies of the section and far tile meshes uploaded while `render-capture` is on
+    /// (`keep_capture_copies`, or `HORIZON_RENDER_CAPTURE` at creation); `None` otherwise.
+    capture_copies: Option<capture::Copies>,
+    /// A scene to write from the next frame (`horizon-ctl render-capture DIR`).
+    pub capture: Option<capture::Request>,
+    /// Outcome of the last capture: its summary, or the error.
+    pub capture_result: Option<std::result::Result<serde_json::Value, String>>,
 }
 /// Every layer's mip levels, layer major (`first` is the first layer's
 /// index into `settings`), made by `MipmapGenerator`.
@@ -1990,11 +2048,51 @@ impl Renderer {
             .sections
             .values()
             .chain(self.lods.values().map(|tile| &tile.mesh))
-            .map(|s| u64::from(s.solid + s.translucent) * 4)
+            .map(|s| s.solid_slots + u64::from(s.translucent) * 4)
             .sum();
         let translucent = self.translucent_arena.as_ref();
         let arenas = self.arena.bytes() + translucent.map_or(0, arena::Arena::bytes);
         [arenas, vertices * stride]
+    }
+    /// Bytes of the renderer's largest GPU resources, by name (`scene_replay --memory`):
+    /// the terrain arenas (their pages, and what resident sections and far tiles use of
+    /// them), the quad indices, the block sprites with their mips, the LabPBR maps, flat
+    /// draws' buffers and the visibility buffer's.
+    pub fn gpu_census(&self) -> Vec<(&'static str, u64)> {
+        let stride = std::mem::size_of::<TerrainVertex>() as u64;
+        let used = |s: &SectionGpu| (s.solid_slots + u64::from(s.translucent) * 4) * stride;
+        let textures = |t: &[wgpu::Texture]| t.iter().map(texture_bytes).sum::<u64>();
+        let translucent = self.translucent_arena.as_ref();
+        vec![
+            ("section_arena_pages", self.arena.bytes()),
+            (
+                "translucent_arena_pages",
+                translucent.map_or(0, arena::Arena::bytes),
+            ),
+            ("sorted_index_pages", self.sorted_indices.bytes()),
+            (
+                "near_section_vertices",
+                self.sections.values().map(used).sum(),
+            ),
+            (
+                "far_tile_vertices",
+                self.lods.values().map(|tile| used(&tile.mesh)).sum(),
+            ),
+            ("quad_indices", self.indices.size()),
+            ("block_sprites", textures(&self.sprite_textures)),
+            (
+                "pbr_maps",
+                self.pbr_maps.as_ref().map_or(0, |maps| textures(maps)),
+            ),
+            (
+                "flat_draws",
+                self.flat.as_ref().map_or(0, flat::Flat::bytes),
+            ),
+            (
+                "visibility_buffer",
+                self.visbuf.as_ref().map_or(0, visbuffer::Visbuffer::bytes),
+            ),
+        ]
     }
     /// Device memory the backend's allocator holds, by the label of what holds
     /// it, largest first, with its allocated and reserved totals (Vulkan and
@@ -3894,13 +3992,84 @@ impl Renderer {
                 &bindings,
                 arena.page_vertices(),
                 min_sections,
-                |layout, label, vertex, fragment, blend, cull| {
+                |layout, label, vertex, fragment, blend, cull, pulled| {
+                    let buffers: &[Option<wgpu::VertexBufferLayout<'_>>] =
+                        if pulled { &[] } else { &buffers };
                     pipeline_in(
-                        layout, label, vertex, fragment, &buffers, tri, cull, true, true, blend,
+                        layout, label, vertex, fragment, buffers, tri, cull, true, true, blend,
                     )
                 },
             )
         });
+        // With flat draws' page groups the per-section solid draws read their vertices from
+        // the page too (`Flat::page_group`), in either layout of the solid quads
+        // (`mesher::packed`): only the origins stay a vertex buffer, at slot 1.
+        let (solid, solid_opaque, solid_cutout, solid_mirror) = match &flat {
+            Some(f) => {
+                let pulled_layout = kept.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                    label: Some("Horizon terrain layout (pulled)"),
+                    bind_group_layouts: &[Some(&bindings), Some(&f.draw_layout)],
+                    ..Default::default()
+                });
+                let origins = [None, terrain_buffers[1].clone()];
+                let pulled = |label: &str, vertex: &str, fragment: &str, cull| {
+                    pipeline_in(
+                        &pulled_layout,
+                        label,
+                        vertex,
+                        fragment,
+                        &origins,
+                        tri,
+                        Some(cull),
+                        true,
+                        true,
+                        None,
+                    )
+                };
+                let back = wgpu::Face::Back;
+                (
+                    pulled("Terrain solid", "vs_section", "fs_solid", back),
+                    pulled(
+                        "Terrain solid opaque",
+                        "vs_section_opaque",
+                        "fs_opaque",
+                        back,
+                    ),
+                    pulled(
+                        "Terrain solid cutout",
+                        "vs_section_cutout",
+                        "fs_solid",
+                        back,
+                    ),
+                    pulled(
+                        "Terrain solid (mirrored)",
+                        "vs_section",
+                        "fs_solid_mirror",
+                        wgpu::Face::Front,
+                    ),
+                )
+            }
+            None => (solid, solid_opaque, solid_cutout, solid_mirror),
+        };
+        // The solid quads in the compact layout, while no shader pack reads the arena
+        // (`follow_packed_layout`).
+        let packed_quads = flat.is_some() && !shader_pack && packed_wanted();
+        packed::pack_quads(packed_quads);
+        let visbuf = flat
+            .as_ref()
+            .filter(|_| visbuffer::wanted(&device))
+            .map(|f| {
+                log::info!(
+                    "Horizon: solid terrain through a visibility buffer (HORIZON_VISBUFFER)"
+                );
+                visbuffer::Visbuffer::new(
+                    &device,
+                    &bindings,
+                    f,
+                    config.format.remove_srgb_suffix(),
+                    &sprite_constants,
+                )
+            });
         let multi_draw = device
             .features()
             .contains(wgpu::Features::INDIRECT_FIRST_INSTANCE)
@@ -4035,6 +4204,7 @@ impl Renderer {
             translucent,
             translucent_mark,
             flat_on: flat.is_some(),
+            packed_quads,
             cull_on: cull.is_some(),
             sides_on: true,
             gpu_culling: None,
@@ -4044,6 +4214,7 @@ impl Renderer {
             gpu_checks: 0,
             cull,
             flat,
+            visbuf,
             sky,
             sky_base,
             sunrise_pipeline,
@@ -4151,6 +4322,8 @@ impl Renderer {
             depth,
             sections: resident::Resident::default(),
             lods: HashMap::new(),
+            lod_cull_free: Vec::new(),
+            lod_cull_next: 0,
             lod_cutout: Default::default(),
             lod_retiring: Default::default(),
             lod_leaving: Vec::new(),
@@ -4231,6 +4404,11 @@ impl Renderer {
             fullbright: false,
             animated_textures: true,
             present_modes,
+            capture_copies: std::env::var_os("HORIZON_RENDER_CAPTURE")
+                .is_some()
+                .then(capture::Copies::default),
+            capture: None,
+            capture_result: None,
         })
     }
     /// The first-person hand's quads, which follow `first` quads of the entity buffer.
@@ -4662,6 +4840,9 @@ impl Renderer {
         self.occlusion.update(camera, (distance / 16.0) as i32 + 2);
     }
     pub fn upload(&mut self, key: SectionKey, mesh: &SectionMesh) {
+        if let Some(copies) = &mut self.capture_copies {
+            copies.section(key, mesh);
+        }
         self.occlusion.set(key, mesh.visibility);
         let changed = if mesh.block_entities.is_empty() {
             self.block_entities.remove(&key).is_some()
@@ -4752,13 +4933,20 @@ impl Renderer {
         });
         // The solid quads, and the translucent ones after them unless they have
         // an arena of their own. With video and system memory both full, the
-        // section is not drawn.
+        // section is not drawn. The solid ones in the compact layout where the
+        // mesher made it and the passes read it (`packed_quads`).
+        let packed = self.packed_quads && !mesh.packed.is_empty() && solid > 0;
+        let solid_slots = if packed {
+            mesh.packed.len() as u64
+        } else {
+            mesh.solid.len() as u64
+        };
         let split = self.translucent_arena.is_some();
         let main = if split {
-            mesh.solid.len()
+            solid_slots
         } else {
-            mesh.solid.len() + mesh.translucent.len()
-        } as u64;
+            solid_slots + mesh.translucent.len() as u64
+        };
         let (page, start) = if main > 0 {
             self.arena.alloc(&self.device, encoder, main)?
         } else {
@@ -4780,7 +4968,7 @@ impl Renderer {
                     }
                 }
             }
-            _ => (page, start + u64::from(solid) * 4),
+            _ => (page, start + solid_slots),
         };
         let sorted_indices = if translucent > 0 {
             let indices =
@@ -4817,12 +5005,20 @@ impl Renderer {
         });
         let stride = std::mem::size_of::<TerrainVertex>() as u64;
         let translucent_arena = self.translucent_arena.as_ref().unwrap_or(&self.arena);
-        for (part, arena, (part_page, first)) in [
-            (&mesh.solid, &self.arena, (page, start)),
-            (&mesh.translucent, translucent_arena, translucent_at),
+        let solid_bytes: &[u8] = if packed {
+            bytemuck::cast_slice(&mesh.packed)
+        } else {
+            bytemuck::cast_slice(&mesh.solid)
+        };
+        for (bytes, arena, (part_page, first)) in [
+            (solid_bytes, &self.arena, (page, start)),
+            (
+                bytemuck::cast_slice(&mesh.translucent),
+                translucent_arena,
+                translucent_at,
+            ),
         ] {
-            if !part.is_empty() {
-                let bytes: &[u8] = bytemuck::cast_slice(part);
+            if !bytes.is_empty() {
                 self.uploaded_bytes += bytes.len() as u64;
                 self.section_copy_bytes += bytes.len() as u64;
                 self.section_uploads.buffer(
@@ -4845,6 +5041,8 @@ impl Renderer {
             start,
             translucent_at,
             solid,
+            solid_slots,
+            packed,
             sides: if mesh.sides.quads() == solid {
                 mesh.sides
             } else {
@@ -4888,6 +5086,29 @@ impl Renderer {
         first: u32,
         count: u32,
     ) {
+        self.draw_sections_from(pass, indirect, base, first, count, false);
+    }
+    /// `draw_sections` through the solid pipelines that read the arena page themselves
+    /// (`vs_section`): each page's group is bound as their group 1.
+    fn draw_solid_sections(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        indirect: &wgpu::Buffer,
+        base: u32,
+        first: u32,
+        count: u32,
+    ) {
+        self.draw_sections_from(pass, indirect, base, first, count, self.flat.is_some());
+    }
+    fn draw_sections_from(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        indirect: &wgpu::Buffer,
+        base: u32,
+        first: u32,
+        count: u32,
+        pulled: bool,
+    ) {
         let (draws, pages) = (&self.draws[..], &self.draw_pages[..]);
         let (mut i, end) = (first as usize, (first + count) as usize);
         while i < end {
@@ -4907,6 +5128,12 @@ impl Renderer {
                 ),
             };
             pass.set_vertex_buffer(0, vertices);
+            if pulled
+                && index_page.is_none()
+                && let Some(group) = self.flat.as_ref().and_then(|f| f.page_group(page))
+            {
+                pass.set_bind_group(1, group, &[]);
+            }
             pass.set_index_buffer(indices, wgpu::IndexFormat::Uint32);
             if self.multi_draw {
                 let offset = (i - base as usize) as u64 * 20;
@@ -5182,6 +5409,9 @@ impl Renderer {
     }
     /// Drops every section, for a level whose chunks hold `layout`.
     pub fn clear_sections(&mut self, layout: crate::chunk::ColumnLayout) {
+        if let Some(copies) = &mut self.capture_copies {
+            *copies = capture::Copies::default();
+        }
         self.block_entities.clear();
         self.block_entity_section_revisions.clear();
         self.block_entity_membership_revisions.clear();
@@ -5246,6 +5476,23 @@ impl Renderer {
         );
         if let (Some(flat), Some(arena)) = (&mut self.flat, &self.translucent_arena) {
             flat.set_translucent_page_vertices(arena.page_vertices());
+        }
+    }
+    /// Uploads solid quads in the compact layout (`packed_quads`) while no shader pack runs:
+    /// a pack's terrain and shadow programs, and Horizon's own packs' stages, read the
+    /// arena's vertices as `TerrainVertex`es. Leaving it drops every section and far tile
+    /// for the game to mesh again, as `follow_translucent_layout` does.
+    fn follow_packed_layout(&mut self) {
+        let pack = self.pack_post.as_ref().and_then(|p| p.1.as_ref()).is_some();
+        let want = self.flat.is_some() && !pack && self.native.is_none() && packed_wanted();
+        if want == self.packed_quads {
+            return;
+        }
+        self.packed_quads = want;
+        packed::pack_quads(want);
+        if !want && self.sections.values().any(|s| s.packed) {
+            self.sections_dropped = true;
+            self.clear_sections(self.layout);
         }
     }
     /// Whether every section and far tile was dropped since the last call, to be
@@ -5342,6 +5589,9 @@ impl Renderer {
     }
     pub fn remove_columns(&mut self, columns: impl IntoIterator<Item = (i32, i32)>) {
         let columns: Vec<(i32, i32)> = columns.into_iter().collect();
+        if let Some(copies) = &mut self.capture_copies {
+            copies.remove_columns(&columns);
+        }
         // Most of the view at once (a teleport at render distance 32 drops some 3700
         // columns): a pass over each store instead of a lookup per section key, which
         // took 10 ms of one frame. Far terrain fades the sections out instead.
@@ -6099,6 +6349,10 @@ impl Renderer {
         if self.device_lost() {
             return Err("the graphics device was lost".into());
         }
+        if let Some(request) = self.capture.take() {
+            let result = self.write_capture(&request, frame);
+            self.capture_result = Some(result.map_err(|e| e.to_string()));
+        }
         let scaled = self.screenshot_size();
         let rendered = match scaled {
             Some(size) => self.draw_scaled_frame(frame, size),
@@ -6215,6 +6469,7 @@ impl Renderer {
         // so the next world's sections, which the level loading screen uploads, stay.
         if !frame.title {
             self.follow_translucent_layout();
+            self.follow_packed_layout();
         }
         let released = self.arena.trim();
         self.graveyard.add(released);
@@ -6527,7 +6782,13 @@ impl Renderer {
             filtering: [
                 self.texture_filtering as f32,
                 self.sprite_textures[0].width() as f32,
-                0.0,
+                // The views' last level (`rebuild_terrain_group`), when a sprite is one texel
+                // there: RGSS takes one tap from it on (terrain.wgsl's `rotated_grid`).
+                if self.sprite_textures[0].width() >> self.mipmaps == 1 {
+                    self.mipmaps as f32
+                } else {
+                    0.0
+                },
                 0.0,
             ],
             hdr_windows: self.hdr.as_ref().map_or([[0.0; 4]; 2], hdr::Hdr::windows),
@@ -6539,7 +6800,8 @@ impl Renderer {
                 } else {
                     frame.sky.sky_light_factor
                 },
-                0.0,
+                // Only HDR output reads the solid terrain's lighting alpha.
+                if self.hdr.is_some() { 1.0 } else { 0.0 },
                 0.0,
             ],
         };
@@ -6938,7 +7200,8 @@ impl Renderer {
         self.phase2_runs.clear();
         // On Metal, phase 1 goes the opaque quads of every list, then the cutout
         // ones (`Part`), each solid pass drawing its own: `[..opaque_draws]`,
-        // then the rest. A fading list's quads all draw in the cutout pass.
+        // then the rest; phase 2 likewise. A fading list's quads all draw in the
+        // cutout pass.
         let split_solid = self.info.backend == wgpu::Backend::Metal;
         let parts = |fading: bool| -> &'static [(u8, Quads)] {
             match (split_solid, fading) {
@@ -6947,7 +7210,7 @@ impl Renderer {
                 (true, true) => &[(1, Quads::All)],
             }
         };
-        let mut opaque_draws = 0;
+        let (mut opaque_draws, mut phase2_opaque) = (0, 0);
         debug_assert!(
             !(split_solid && gpu_frame),
             "GPU culling is never offered on Metal"
@@ -6973,43 +7236,106 @@ impl Renderer {
             };
             let instances = u32::from(first_phase);
             let mut indices = 0;
-            // Phase 2 draws every quad, in both passes.
-            let parts = if first_phase {
-                parts(fade_code(s, &v.key) != 0)
-            } else {
-                &[(0, Quads::All)]
-            };
-            let whole = draws.len();
-            for &(group, part) in parts {
+            let parts = parts(fade_code(s, &v.key) != 0);
+            // Each part's (group, first draw, draws).
+            let mut runs = [(0, 0, 0); 2];
+            for (run, &(group, part)) in runs.iter_mut().zip(parts) {
                 let start = draws.len();
                 facing_runs_from(&s.sides, eye, mirror_low, v.origin, part, |first, quads| {
                     indices += quads * 6;
-                    let base = s.start as u32 + first * 4;
+                    let base = s.solid_base() + first * 4;
                     draws.push([quads * 6, instances, 0, base, i as u32]);
                     pages.push((s.page, None));
                 });
-                let len = draws.len() - start;
-                if first_phase {
+                *run = (group, start, draws.len() - start);
+            }
+            let runs = &runs[..parts.len()];
+            if first_phase {
+                for &(group, start, len) in runs {
                     if group == 0 {
                         opaque_draws += len;
                     }
                     self.solid_runs
                         .push_in(group, v.distance, s.page, start, len, [0; 3]);
                 }
+                if let Some(c) = &mut cull {
+                    c.drawn(i, v.slot, indices, cull::SECTION_BOX);
+                }
+            } else if let Some(c) = &mut cull {
+                // One test sees the section's draws in both passes.
+                let total: usize = runs.iter().map(|r| r.2).sum();
+                if let Some(test) = c.deferred(i, v.slot, total, indices, cull::SECTION_BOX) {
+                    for &(group, start, len) in runs {
+                        if group == 0 {
+                            phase2_opaque += len;
+                        }
+                        let tag = [test, u32::from(group), 0];
+                        self.phase2_runs
+                            .push_in(group, v.distance, s.page, start, len, tag);
+                    }
+                }
             }
-            if !first_phase {
-                self.phase2_runs.push(
-                    v.distance,
-                    s.page,
-                    whole,
-                    draws.len() - whole,
-                    [i as u32, v.slot, indices],
-                );
+        }
+        // Distant terrain tiles are occlusion tested as sections are, with their meshes'
+        // bounds, but for those fading or with a stand-in (`lod::Tile::cull_bounds`).
+        for (i, v) in visible_lods.iter().enumerate() {
+            let tile = &self.lods[&v.key];
+            let s = tile.drawn();
+            let index = visible.len() + i;
+            let tested = cull.as_ref().and(tile.cull_bounds(v.fade));
+            let slot = cull::TILE | tile.cull_slot;
+            let first_phase = tested.is_none() || cull.as_ref().is_some_and(|c| c.first(slot));
+            let (draws, pages) = if first_phase {
+                (&mut self.draws, &mut self.draw_pages)
+            } else {
+                (&mut self.phase2_draws, &mut self.phase2_pages)
+            };
+            let instances = u32::from(first_phase);
+            let mut indices = 0;
+            let parts = parts(v.fade != 0);
+            let mut runs = [(0, 0, 0); 2];
+            for (run, &(group, part)) in runs.iter_mut().zip(parts) {
+                let start = draws.len();
+                facing_runs_from(&s.sides, eye, mirror_low, v.origin, part, |first, quads| {
+                    indices += quads * 6;
+                    let base = s.solid_base() + first * 4;
+                    draws.push([quads * 6, instances, 0, base, index as u32]);
+                    pages.push((s.page, None));
+                });
+                *run = (group, start, draws.len() - start);
             }
-            if let Some(c) = &mut cull
-                && first_phase
-            {
-                c.drawn(i, v.slot, indices);
+            let runs = &runs[..parts.len()];
+            let (Some(bounds), Some(c)) = (tested, &mut cull) else {
+                for &(group, start, len) in runs {
+                    if group == 0 {
+                        opaque_draws += len;
+                    }
+                    self.solid_runs
+                        .push_in(group, v.distance, s.page, start, len, [0; 3]);
+                }
+                continue;
+            };
+            if first_phase {
+                for &(group, start, len) in runs {
+                    if group == 0 {
+                        opaque_draws += len;
+                    }
+                    self.solid_runs
+                        .push_in(group, v.distance, s.page, start, len, [0; 3]);
+                }
+                c.drawn(index, slot, indices, bounds);
+            } else {
+                let total: usize = runs.iter().map(|r| r.2).sum();
+                if let Some(test) = c.deferred(index, slot, total, indices, bounds) {
+                    for &(group, start, len) in runs {
+                        if group == 0 {
+                            phase2_opaque += len;
+                        }
+                        let tag = [test, u32::from(group), 0];
+                        self.phase2_runs
+                            .push_in(group, v.distance, s.page, start, len, tag);
+                    }
+                }
             }
         }
         // Phase 2's draws are tested where grouping left them.
@@ -7018,27 +7344,7 @@ impl Renderer {
             .regroup(&mut self.phase2_draws, &mut self.phase2_pages, 0);
         if let Some(c) = &mut cull {
             for r in runs {
-                let [i, slot, indices] = r.tag;
-                c.deferred(i as usize, slot, r.start as usize, r.len as usize, indices);
-            }
-        }
-        // Distant terrain tiles are never occlusion tested: phase 1.
-        for (i, v) in visible_lods.iter().enumerate() {
-            let s = self.lods[&v.key].drawn();
-            let instance = (visible.len() + i) as u32;
-            for &(group, part) in parts(v.fade != 0) {
-                let start = self.draws.len();
-                facing_runs_from(&s.sides, eye, mirror_low, v.origin, part, |first, quads| {
-                    let base = s.start as u32 + first * 4;
-                    self.draws.push([quads * 6, 1, 0, base, instance]);
-                    self.draw_pages.push((s.page, None));
-                });
-                let len = self.draws.len() - start;
-                if group == 0 {
-                    opaque_draws += len;
-                }
-                self.solid_runs
-                    .push_in(group, v.distance, s.page, start, len, [0; 3]);
+                c.place(r.tag[0], r.tag[1], r.start, r.len);
             }
         }
         self.solid_runs
@@ -7054,6 +7360,9 @@ impl Renderer {
         self.draw_pages.extend_from_slice(&self.phase2_pages);
         let culling = cull.is_some();
         let solid_draws = self.draws.len() as u32;
+        // Phase 2's draws `[phase1_draws..phase2_cutout]` hold opaque quads, the rest
+        // cutout ones (without the split, all of them go through one pipeline).
+        let phase2_cutout = phase1_draws + phase2_opaque as u32;
         laps.lap("r_section_groups");
         // LevelRenderer: nearby sections each frame, plus a rotating eighth
         // (at least 15) of the visible list. Cached views avoid needless sorts.
@@ -7214,7 +7523,7 @@ impl Renderer {
                 });
                 let toward = (!unculled).then_some(toward);
                 facing_runs(&s.sides, toward, v.origin, |first, quads| {
-                    let start = s.start as u32 + first * 4;
+                    let start = s.solid_base() + first * 4;
                     self.draws.push([quads * 6, 1, 0, start, instance]);
                     self.draw_pages.push((s.page, None));
                 });
@@ -7779,6 +8088,11 @@ impl Renderer {
                         || pack_terrain
                         || shadow_view.is_some()) =>
             {
+                // The visibility buffer's phase 2 IDs need each call's page (`visbuffer`).
+                flat.page_instances = self.visbuf.is_some()
+                    && !pack_terrain
+                    && shadow_view.is_none()
+                    && self.native.as_ref().is_none_or(|n| n.material.is_none());
                 let sections = &self.sections;
                 let lods = &self.lods;
                 let sorted = &self.sorted_indices;
@@ -7793,7 +8107,7 @@ impl Renderer {
                         phase1_draws as usize,
                         solid_draws as usize,
                         [shadow_first, shadow_first + shadow_solid].map(|d| d as usize),
-                        [opaque_end, cutout_start],
+                        [opaque_end, cutout_start, phase2_cutout as usize],
                         phase2,
                         self.translucent_arena.is_some(),
                         visible
@@ -7818,6 +8132,13 @@ impl Renderer {
             }
             _ => false,
         };
+        // Each page's group binds the page for the solid draws, flat or not.
+        if let Some(flat) = &mut self.flat {
+            let arena = &self.arena;
+            flat.bind_pages(&self.device, |page| {
+                arena.has_page(page).then(|| arena.buffer(page))
+            });
+        }
         if flat_frame {
             self.section_draw_calls = self.flat.as_ref().map_or(0, |f| f.shadow_calls[0]);
         } else if self.multi_draw && !self.draws.is_empty() {
@@ -8253,7 +8574,7 @@ impl Renderer {
                     pass.set_pipeline(&self.solid_mirror);
                     pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
                     pass.set_vertex_buffer(1, self.instances.slice(..));
-                    self.draw_sections(&mut pass, &self.indirect, 0, 0, solid_draws);
+                    self.draw_solid_sections(&mut pass, &self.indirect, 0, 0, solid_draws);
                 }
                 drop(pass);
                 reflection = Some(mirror.color.clone());
@@ -8319,6 +8640,24 @@ impl Renderer {
                     && n.material.as_ref().is_some_and(|m| m.writes_surface)
             })
             .map(|n| n.frame.surface_view.clone());
+        // Solid terrain through the visibility buffer (`visbuffer`): flat frames without a
+        // pack drawing terrain, a material stage, a surface target or a shadow pass.
+        let vis_frame = flat_frame
+            && !frame.title
+            && !pack_terrain
+            && !pack_draws_terrain
+            && material.is_none()
+            && surface.is_none()
+            && shadow_view.is_none()
+            && self
+                .arena
+                .page_buffers()
+                .all(|(page, _)| page < visbuffer::MAX_PAGES)
+            && self.visbuf.is_some();
+        if vis_frame && let (Some(vis), Some(flat)) = (&mut self.visbuf, &self.flat) {
+            let depth = world_depth.texture();
+            vis.fit(&self.device, [depth.width(), depth.height()], flat);
+        }
         {
             let attachments = [Some(wgpu::RenderPassColorAttachment {
                 view: world_view,
@@ -8341,7 +8680,8 @@ impl Renderer {
                     view: world_depth,
                     depth_ops: Some(wgpu::Operations {
                         load: wgpu::LoadOp::Clear(0.0),
-                        store: if cull.is_some() || keep_depth {
+                        // The visibility buffer's passes draw on after it.
+                        store: if cull.is_some() || keep_depth || vis_frame {
                             wgpu::StoreOp::Store
                         } else {
                             wgpu::StoreOp::Discard
@@ -8439,23 +8779,74 @@ impl Renderer {
                 _ if pack_draws_terrain => {
                     pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
                 }
+                // The visibility buffer: the sky stays in the world pass's colour; the solid
+                // calls draw their IDs and depth (phase 1, the occlusion test, phase 2), then
+                // the resolve shades them, and the world pass goes on over both.
+                Some(flat) if vis_frame => {
+                    let vis = self.visbuf.as_ref().expect("a visibility buffer frame");
+                    let vertices = flat_vertices(&self.arena, self.translucent_arena.as_ref());
+                    drop(pass);
+                    let mut ids =
+                        vis.id_pass(&mut encoder, world_depth, true, self.own_timing.as_mut());
+                    ids.set_bind_group(0, &self.group, &[]);
+                    vis.draw_ids(&mut ids, flat, vertices);
+                    drop(ids);
+                    if let Some(cull) = cull {
+                        // The test's pipeline draws into the world's colour.
+                        let mut test = plain_pass(&mut encoder);
+                        cull.test(&mut test);
+                        drop(test);
+                        cull.test_pass(&mut encoder, self.own_timing.as_mut());
+                        flat.flatten_phase2(&mut encoder, self.own_timing.as_mut());
+                        let mut ids =
+                            vis.id_pass(&mut encoder, world_depth, false, self.own_timing.as_mut());
+                        ids.set_bind_group(0, &self.group, &[]);
+                        vis.draw_ids_phase2(&mut ids, flat, vertices);
+                    }
+                    vis.resolve(
+                        &self.device,
+                        &mut encoder,
+                        world_view,
+                        &self.group,
+                        flat,
+                        &self.arena,
+                        self.own_timing.as_mut(),
+                    );
+                    pass = world_pass_after_culling(
+                        &mut encoder,
+                        world_view,
+                        world_depth,
+                        keep_depth,
+                        self.own_timing.as_mut(),
+                        "World after visibility buffer",
+                    );
+                    pass.set_bind_group(0, &self.group, &[]);
+                    pack_frame(&mut pass);
+                    pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
+                }
                 Some(flat) => {
                     let vertices = flat_vertices(&self.arena, self.translucent_arena.as_ref());
                     // Without a pack, on Metal, the opaque pass, then the cutout one
-                    // (terrain.wgsl's `opaque_quad`), each over phase 1's lists with
-                    // quads for it, and over all of phase 2's.
-                    let [opaque, cutout] = flat.pass_calls;
-                    let passes: &[(&wgpu::RenderPipeline, std::ops::Range<usize>)] = match pack_flat
-                    {
-                        Some(p) => &[(&p.0, 0..flat.phase1_calls)],
+                    // (terrain.wgsl's `opaque_quad`), each over phase 1's and phase 2's
+                    // calls with quads for it (phase 2's counted from its first).
+                    let [opaque, cutout, phase2_split] = flat.pass_calls;
+                    let phase2_split = phase2_split - flat.phase1_calls;
+                    let phase2_calls = flat.solid_calls - flat.phase1_calls;
+                    type Calls = std::ops::Range<usize>;
+                    let passes: &[(&wgpu::RenderPipeline, Calls, Calls)] = match pack_flat {
+                        Some(p) => &[(&p.0, 0..flat.phase1_calls, 0..phase2_calls)],
                         None if split_solid => &[
-                            (&flat.solid_opaque, 0..opaque),
-                            (&flat.solid_cutout, cutout..flat.phase1_calls),
+                            (&flat.solid_opaque, 0..opaque, 0..phase2_split),
+                            (
+                                &flat.solid_cutout,
+                                cutout..flat.phase1_calls,
+                                phase2_split..phase2_calls,
+                            ),
                         ],
-                        None => &[(&flat.solid, 0..flat.phase1_calls)],
+                        None => &[(&flat.solid, 0..flat.phase1_calls, 0..phase2_calls)],
                     };
                     let draw = |pass: &mut wgpu::RenderPass<'_>| {
-                        for (pipeline, calls) in passes {
+                        for (pipeline, calls, _) in passes {
                             pass.set_pipeline(pipeline);
                             flat.draw(pass, &flat.calls[calls.clone()], vertices);
                         }
@@ -8486,9 +8877,9 @@ impl Renderer {
                             };
                             pass.set_bind_group(0, &self.group, &[]);
                             pack_frame(&mut pass);
-                            for (pipeline, _) in passes {
+                            for (pipeline, _, calls) in passes {
                                 pass.set_pipeline(pipeline);
-                                flat.draw_phase2(&mut pass, vertices);
+                                flat.draw_phase2(&mut pass, calls.clone(), vertices);
                             }
                         }
                         // Without culling, phase 1 is all the solid calls.
@@ -8500,15 +8891,23 @@ impl Renderer {
                 None => {
                     // Without a native material, on Metal, the opaque pass, then the
                     // cutout one (terrain.wgsl's `opaque_quad`), each over phase 1's
-                    // lists with quads for it, and over all of phase 2's.
+                    // and phase 2's lists with quads for it.
                     let (opaque, cutout) = (opaque_end as u32, cutout_start as u32);
-                    let passes: &[(&wgpu::RenderPipeline, std::ops::Range<u32>)] = match material {
+                    type Draws = std::ops::Range<u32>;
+                    let passes: &[(&wgpu::RenderPipeline, Draws, Draws)] = match material {
                         None if split_solid => &[
-                            (&self.solid_opaque, 0..opaque),
-                            (&self.solid_cutout, cutout..phase1_draws),
+                            (&self.solid_opaque, 0..opaque, phase1_draws..phase2_cutout),
+                            (
+                                &self.solid_cutout,
+                                cutout..phase1_draws,
+                                phase2_cutout..solid_draws,
+                            ),
                         ],
-                        _ => &[(solid_pipeline, 0..phase1_draws)],
+                        _ => &[(solid_pipeline, 0..phase1_draws, phase1_draws..solid_draws)],
                     };
+                    // The vanilla solid pipelines read the page themselves; a native
+                    // material's take it as vertices.
+                    let pulled = material.is_none() && self.flat.is_some();
                     pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
                     pass.set_vertex_buffer(1, self.instances.slice(..));
                     match cull {
@@ -8517,14 +8916,15 @@ impl Renderer {
                             // its pass, or one of their own on Metal), then
                             // what they found in sight, in a pass that loads
                             // both targets (it reads the test's results).
-                            for (pipeline, draws) in passes {
+                            for (pipeline, draws, _) in passes {
                                 pass.set_pipeline(pipeline);
-                                self.draw_sections(
+                                self.draw_sections_from(
                                     &mut pass,
                                     &self.indirect,
                                     0,
                                     draws.start,
                                     draws.len() as u32,
+                                    pulled,
                                 );
                             }
                             if surface.is_some() {
@@ -8552,32 +8952,38 @@ impl Renderer {
                                 wgpu::IndexFormat::Uint32,
                             );
                             pass.set_vertex_buffer(1, self.instances.slice(..));
-                            for (pipeline, _) in passes {
+                            for (pipeline, _, draws) in passes {
                                 pass.set_pipeline(pipeline);
-                                self.draw_sections(
+                                self.draw_sections_from(
                                     &mut pass,
                                     &cull.phase2,
                                     phase1_draws,
-                                    phase1_draws,
-                                    solid_draws - phase1_draws,
+                                    draws.start,
+                                    draws.len() as u32,
+                                    pulled,
                                 );
                             }
                         }
                         // Without culling, phase 1 is all the solid draws.
                         None => {
-                            for (pipeline, draws) in passes {
+                            for (pipeline, draws, _) in passes {
                                 pass.set_pipeline(pipeline);
                                 // GPU culling's draws first, all within the render distance.
                                 if gpu_frame && let Some(gpu) = &self.gpu_culling {
-                                    gpu.draw(&mut pass, &self.arena);
+                                    gpu.draw(&mut pass, &self.arena, |page| {
+                                        pulled
+                                            .then(|| self.flat.as_ref()?.page_group(page))
+                                            .flatten()
+                                    });
                                     pass.set_vertex_buffer(1, self.instances.slice(..));
                                 }
-                                self.draw_sections(
+                                self.draw_sections_from(
                                     &mut pass,
                                     &self.indirect,
                                     0,
                                     draws.start,
                                     draws.len() as u32,
+                                    pulled,
                                 );
                             }
                         }
@@ -10754,6 +11160,9 @@ mod tests {
                 sources.push((path, base + &text));
             } else if name == "static_entity.wgsl" {
                 sources.push((path, static_entity_shader()));
+            } else if name == "visbuffer.wgsl" {
+                // Appended to terrain.wgsl (gfx/visbuffer.rs).
+                sources.push((path, include_str!("terrain.wgsl").to_owned() + &text));
             } else if name == "oit_border.wgsl" {
                 let base = include_str!("border.wgsl").to_owned() + include_str!("oit.wgsl");
                 sources.push((path, base + &text));
