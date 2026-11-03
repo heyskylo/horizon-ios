@@ -46,7 +46,7 @@ except ImportError:
     from test_locator_bar_parity import generate_world
 
 NAME = 'tick-order-parity'
-TOLERANCE = 1e-6
+TOLERANCE = float(os.environ.get('TICK_ORDER_TOLERANCE', '1e-6'))  # 0 for exact
 PROPERTIES = {
     'online-mode': 'false',
     'white-list': 'false',

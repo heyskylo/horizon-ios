@@ -229,67 +229,55 @@ impl Game<'_> {
     /// `PrimedTnt.tick` for every primed TNT, in order; an expired fuse
     /// explodes immediately (later TNT in the list feel its knockback this
     /// tick). TNT primed by an explosion starts ticking next tick.
-    pub(super) fn tick_tnt(&mut self) -> Result<()> {
-        let mut count = self.tnts.len();
-        let mut i = 0;
-        // ServerLevel.tick: only entities in entity-ticking chunks tick.
-        let ticking = self.entity_ticking_area();
-        while i < count {
-            let t = &mut self.tnts[i];
-            if !ticking(t.position.x.floor() as i32, t.position.z.floor() as i32) {
-                i += 1;
-                continue;
-            }
-            let tops = t.tick(
-                &self.world,
-                self.collision,
-                &self.pack.assets,
-                self.res.facts(),
-                &self.res.motion().fluids,
-                Some(self.border.geometry()),
-            )?;
-            let snow = (t.previous, t.position, t.bounds(), t.velocity);
-            self.entity_powder_snow_particles(snow.0, snow.1, snow.2, snow.3, false);
-            for pos in tops {
-                self.bubble_column_particles(pos);
-            }
-            let t = &mut self.tnts[i];
-            if t.fuse <= 0 {
-                let center = [
-                    t.position.x,
-                    t.position.y + PrimedTnt::SIZE * 0.0625,
-                    t.position.z,
-                ];
-                let bounds = t.bounds();
-                let (owner, guest, power) = (t.owner, t.guest, t.power);
-                let in_water = self.bounds_in_water(bounds);
-                self.tnts.remove(i);
-                count -= 1;
-                // ExplosionInteraction.TNT: the tnt_explosion_drop_decay rule.
-                let interaction = self.destroy_type("tnt_explosion_drop_decay");
-                self.combat.explosion_in_water = in_water;
-                // `Explosion.getIndirectSourceEntity`: a player-lit TNT names
-                // its igniter, which `blast_attacker` and the damage type read.
-                self.combat.blast_guest = guest;
-                self.combat.blast_owner = tnt_blast_owner(
-                    owner,
-                    || {
-                        self.lan
-                            .as_ref()
-                            .and_then(|host| self.player_attacker(host, guest))
-                    },
-                    |id| self.mob_display_name(id),
-                );
-                let result = self.with_hive_emptying_blast(|g| {
-                    g.server_explode(center, power, interaction, false)
-                });
-                self.combat.blast_owner = None;
-                self.combat.blast_guest = None;
-                self.combat.explosion_in_water = false;
-                result?;
-            } else {
-                i += 1;
-            }
+    /// One primed TNT's `tick`: it moves, and explodes when its fuse is out.
+    /// `i` is its place in the list; the caller has checked it is ticking.
+    pub(super) fn tick_one_tnt(&mut self, i: usize) -> Result<()> {
+        let t = &mut self.tnts[i];
+        let tops = t.tick(
+            &self.world,
+            self.collision,
+            &self.pack.assets,
+            self.res.facts(),
+            &self.res.motion().fluids,
+            Some(self.border.geometry()),
+        )?;
+        let snow = (t.previous, t.position, t.bounds(), t.velocity);
+        self.entity_powder_snow_particles(snow.0, snow.1, snow.2, snow.3, false);
+        for pos in tops {
+            self.bubble_column_particles(pos);
+        }
+        let t = &mut self.tnts[i];
+        if t.fuse <= 0 {
+            let center = [
+                t.position.x,
+                t.position.y + PrimedTnt::SIZE * 0.0625,
+                t.position.z,
+            ];
+            let bounds = t.bounds();
+            let (owner, guest, power) = (t.owner, t.guest, t.power);
+            let in_water = self.bounds_in_water(bounds);
+            self.tnts.remove(i);
+            // ExplosionInteraction.TNT: the tnt_explosion_drop_decay rule.
+            let interaction = self.destroy_type("tnt_explosion_drop_decay");
+            self.combat.explosion_in_water = in_water;
+            // `Explosion.getIndirectSourceEntity`: a player-lit TNT names
+            // its igniter, which `blast_attacker` and the damage type read.
+            self.combat.blast_guest = guest;
+            self.combat.blast_owner = tnt_blast_owner(
+                owner,
+                || {
+                    self.lan
+                        .as_ref()
+                        .and_then(|host| self.player_attacker(host, guest))
+                },
+                |id| self.mob_display_name(id),
+            );
+            let result = self
+                .with_hive_emptying_blast(|g| g.server_explode(center, power, interaction, false));
+            self.combat.blast_owner = None;
+            self.combat.blast_guest = None;
+            self.combat.explosion_in_water = false;
+            result?;
         }
         Ok(())
     }

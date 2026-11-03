@@ -1053,7 +1053,7 @@ impl Game<'_> {
     /// `Raider.die`: the wave loses its leader, the killing player becomes
     /// a hero of the village, and the raider leaves the raid (its health
     /// stays in the bar's total).
-    pub(super) fn raider_died(&mut self, m: &Mob, by_player: bool) {
+    pub(super) fn raider_died(&mut self, m: &Mob, by_player: bool, killer: Option<u32>) {
         let Some(s) = raider::state(m) else {
             return;
         };
@@ -1063,7 +1063,7 @@ impl Game<'_> {
         let (leader, wave) = (s.patrol_leader, s.wave);
         self.flush_raid_bar(id);
         let living = self.raid_living_health(id, Some(m.id));
-        let uuid = self.level.player_uuid;
+        let uuid = self.player_uuid_of(killer);
         if let Some(r) = self.raiding.raids.get_mut(id) {
             if leader {
                 r.remove_leader(wave);

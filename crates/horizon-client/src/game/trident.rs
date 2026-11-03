@@ -253,7 +253,7 @@ impl Game<'_> {
     /// gets a lightning bolt and the thunder sound.
     fn channel_lightning(&mut self, at: [f64; 3], guest: Option<u32>) {
         // Level.isThundering: the thunder level, in dimensions with weather.
-        if self.dim != super::Dim::Overworld || self.world.weather.levels(1.0).1 <= 0.9 {
+        if !self.can_have_weather() || self.weather_levels(1.0).1 <= 0.9 {
             return;
         }
         // BlockAndLightGetter.canSeeSky: full sky light.

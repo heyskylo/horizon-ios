@@ -168,13 +168,40 @@ pub(super) struct Minecart {
     /// follow the command block only at `onUpdated`.
     pub synced_command: String,
     pub synced_output: String,
+    /// `AbstractMinecart.customDisplayBlockState` (`DisplayState`): the block
+    /// state's NBT form, resolved against the registry where it draws.
+    pub custom_display: Option<horizon_world::nbt::Tag>,
+    /// `AbstractMinecart.customDisplayOffset` (`DisplayOffset`), in sixteenths.
+    pub custom_offset: Option<i32>,
 }
 /// `EntityType.MINECART`'s `sized(0.98F, 0.7F)`: float dimensions, widened.
 pub(super) const WIDTH: f64 = 0.98_f32 as f64;
 pub(super) const HEIGHT: f64 = 0.7_f32 as f64;
 /// AbstractMinecart.getDefaultDisplayOffset, in sixteenths of a block.
-fn display_offset(kind: CartKind) -> f64 {
+fn default_display_offset(kind: CartKind) -> f64 {
     if kind == CartKind::Hopper { 1.0 } else { 6.0 }
+}
+/// `AbstractMinecart.getDisplayOffset`: the saved `DisplayOffset`, else the default.
+fn display_offset(c: &Minecart) -> f64 {
+    c.custom_offset
+        .map_or_else(|| default_display_offset(c.kind), f64::from)
+}
+/// A display state that is air shows nothing.
+fn shown_unless_air(
+    state: Option<BlockStateId>,
+    is_air: impl Fn(BlockStateId) -> bool,
+) -> Option<BlockStateId> {
+    state.filter(|&s| !is_air(s))
+}
+/// `readAdditionalSaveData`'s `input.read("DisplayState", CODEC)` is empty
+/// when the state does not decode: the cart forgets it (and no longer saves it).
+pub(super) fn forget_unreadable_display(
+    c: &mut Minecart,
+    resolves: impl Fn(&horizon_world::nbt::Tag) -> bool,
+) {
+    if c.custom_display.as_ref().is_some_and(|t| !resolves(t)) {
+        c.custom_display = None;
+    }
 }
 /// Where the cart `id` is in `carts`: at `hint` (where it was a moment ago,
 /// the usual case while carts tick in order) or found by a scan. A world
@@ -365,6 +392,8 @@ impl Minecart {
             spawner: (kind == CartKind::Spawner).then(Default::default),
             synced_command: String::new(),
             synced_output: String::new(),
+            custom_display: None,
+            custom_offset: None,
         }
     }
     pub fn bounds(&self) -> Aabb {
@@ -1149,6 +1178,16 @@ impl Game<'_> {
         }
         let v = c.velocity;
         self.move_cart(c, v);
+        // Entity.move's last step: soul sand and honey slow a derailed cart.
+        // The rail paths set the track's velocity again after their move, so
+        // the factor changes nothing there (measured on a rail over soul sand).
+        let factor = crate::motion::block_speed_factor_at(
+            &self.world,
+            &self.motion.blocks,
+            c.position,
+            None,
+        );
+        c.velocity = horizon_world::entity_move::scale_by_block_speed(c.velocity, factor);
         // `comeOffTrack` moves the cart and keeps the delta the move resolved
         // (then scales it by the air drag), so a cart an obstacle stopped here
         // is not moving any more and `MinecartTNT.tick` does not detonate it -
@@ -2348,7 +2387,14 @@ impl Game<'_> {
             }
         }
     }
+    /// The block the cart shows: `None` for air (`AbstractMinecartRenderer`
+    /// draws and stretches its culling box only for a non-air state).
     fn display_state(&self, c: &Minecart) -> Option<BlockStateId> {
+        shown_unless_air(self.display_state_unfiltered(c), |s| {
+            self.res.facts().is_air(s)
+        })
+    }
+    fn display_state_unfiltered(&self, c: &Minecart) -> Option<BlockStateId> {
         let registry = &self.pack.assets.registry;
         let with = |name: &str, props: &[(&str, &str)]| {
             let mut s = registry.state(registry.default_state(name)?)?.clone();
@@ -2357,6 +2403,14 @@ impl Game<'_> {
             }
             registry.id(&s)
         };
+        // AbstractMinecart.getDisplayBlockState: a custom state wins.
+        if let Some(state) = c
+            .custom_display
+            .as_ref()
+            .and_then(|tag| horizon_client::entity_nbt::state_from_nbt(registry, tag))
+        {
+            return Some(state);
+        }
         match c.kind {
             CartKind::Rideable => None,
             CartKind::Chest => with("minecraft:chest", &[("facing", "north")]),
@@ -2407,20 +2461,23 @@ impl Game<'_> {
                 )
             };
             // LevelExtractor.isEntityVisible: the cart the player rides always draws.
+            let mut shown = None;
             if self.riding != Some(c.id) {
                 let d = glam::DVec3::new(c.position.x, c.position.y, c.position.z) - camera;
                 if d.length_squared() >= range * range {
                     continue;
                 }
+                // Looked up once, past the distance cut: the cull and the draw both use it.
+                shown = Some(self.display_state(c));
                 // EntityRenderer.shouldRender: the interpolated box grown by 0.5;
                 // AbstractMinecartRenderer.getBoundingBoxForCulling stretches it
                 // up by the display block's offset.
                 if let Some(view) = &self.view_frustum {
                     let top = HEIGHT
-                        + if c.kind == CartKind::Rideable {
+                        + if shown.flatten().is_none() {
                             0.0
                         } else {
-                            display_offset(c.kind) * 0.75 / 16.0
+                            display_offset(c) * 0.75 / 16.0
                         };
                     let p = glam::DVec3::new(x, y, z) - camera;
                     let lo = p - glam::DVec3::new(WIDTH / 2.0 + 0.5, 0.5, WIDTH / 2.0 + 0.5);
@@ -2482,12 +2539,12 @@ impl Game<'_> {
                 c.position.z.floor() as i32,
             );
             let packed = (u32::from(l >> 4) * 16) | ((u32::from(l & 15) * 16) << 8);
-            if let Some(state) = self.display_state(c) {
+            if let Some(state) = shown.unwrap_or_else(|| self.display_state(c)) {
                 let display = base
                     * glam::Mat4::from_scale(glam::Vec3::splat(0.75))
                     * glam::Mat4::from_translation(glam::Vec3::new(
                         -0.5,
-                        (display_offset(c.kind) as f32 - 8.0) / 16.0,
+                        (display_offset(c) as f32 - 8.0) / 16.0,
                         0.5,
                     ))
                     * glam::Mat4::from_rotation_y(90f32.to_radians());
@@ -2585,6 +2642,8 @@ impl Minecart {
                     map.remove(&JavaString::from(key));
                 }
             }
+            map.remove(&JavaString::from("DisplayOffset"));
+            map.remove(&JavaString::from("DisplayState"));
             let mut put = |k: &str, v: Tag| {
                 map.insert(JavaString::from(k), v);
             };
@@ -2593,6 +2652,15 @@ impl Minecart {
             // Entity.move sets -getFireImmuneTicks(), 0 for all but players.
             put("HasTicked", Tag::Byte(i8::from(self.first_tick)));
             put("Fire", Tag::Short(0));
+            // addAdditionalSaveData: the offset only off its default, the state only when set.
+            if let Some(offset) = self.custom_offset
+                && f64::from(offset) != default_display_offset(self.kind)
+            {
+                put("DisplayOffset", Tag::Int(offset));
+            }
+            if let Some(state) = &self.custom_display {
+                put("DisplayState", state.clone());
+            }
             match self.kind {
                 CartKind::Chest | CartKind::Hopper => {
                     put("Items", horizon_client::save::encode_items(&self.items));
@@ -2663,6 +2731,9 @@ impl Minecart {
         // readAdditionalSaveData: the saved push has no y.
         c.push = Vec3::new(double("PushX"), 0.0, double("PushZ"));
         c.fuse = int("fuse").unwrap_or(-1);
+        // readAdditionalSaveData: DisplayState, DisplayOffset (default offset when absent).
+        c.custom_display = tag.get("DisplayState").cloned();
+        c.custom_offset = int("DisplayOffset");
         if kind == CartKind::CommandBlock {
             c.command = horizon_client::command_block::CommandBlock::load(tag);
             // readAdditionalSaveData sets both synched values.
@@ -2728,14 +2799,108 @@ mod tests {
         }
     }
 
+    use horizon_world::nbt::Tag;
+
+    fn saved_cart(kind: CartKind, extra: &[(&str, Tag)]) -> Tag {
+        use horizon_world::nbt::JavaString;
+        let mut tag = Minecart::new(1, kind, Vec3::ZERO).to_nbt([0; 4], None);
+        if let Tag::Compound(map) = &mut tag {
+            for (k, v) in extra {
+                map.insert(JavaString::from(*k), v.clone());
+            }
+        }
+        tag
+    }
+
+    /// AbstractMinecart.read/addAdditionalSaveData: `DisplayState` and
+    /// `DisplayOffset` survive a save, the offset only off its default.
+    #[test]
+    fn custom_display_state_and_offset_roundtrip() {
+        // BlockState.CODEC for a non-default state: {Name, Properties}.
+        let state = Tag::Compound(
+            [
+                ("Name".into(), Tag::String("minecraft:furnace".into())),
+                (
+                    "Properties".into(),
+                    Tag::Compound(
+                        [("lit".into(), Tag::String("true".into()))]
+                            .into_iter()
+                            .collect(),
+                    ),
+                ),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        let saved = saved_cart(
+            CartKind::Rideable,
+            &[
+                ("DisplayState", state.clone()),
+                ("DisplayOffset", Tag::Int(10)),
+            ],
+        );
+        let cart = Minecart::from_nbt(&saved, 1, CartKind::Rideable).unwrap();
+        assert_eq!(cart.custom_display, Some(state.clone()));
+        assert_eq!(display_offset(&cart), 10.0);
+        let out = cart.to_nbt([0; 4], None);
+        assert_eq!(out.get("DisplayState"), Some(&state));
+        assert_eq!(out.get("DisplayOffset"), Some(&Tag::Int(10)));
+    }
+
+    #[test]
+    fn air_display_state_shows_nothing() {
+        let (air, stone) = (BlockStateId(0), BlockStateId(1));
+        assert_eq!(shown_unless_air(Some(air), |s| s == air), None);
+        assert_eq!(shown_unless_air(Some(stone), |s| s == air), Some(stone));
+        assert_eq!(shown_unless_air(None, |s| s == air), None);
+    }
+
+    #[test]
+    fn an_unreadable_display_state_is_dropped_and_not_saved() {
+        let bad = Tag::String("mod:gone".into());
+        let saved = saved_cart(CartKind::Rideable, &[("DisplayState", bad)]);
+        let mut cart = Minecart::from_nbt(&saved, 1, CartKind::Rideable).unwrap();
+        forget_unreadable_display(&mut cart, |_| false);
+        assert!(cart.custom_display.is_none());
+        assert!(
+            cart.to_nbt([0; 4], Some(&saved))
+                .get("DisplayState")
+                .is_none()
+        );
+        // A readable one is kept.
+        let mut cart = Minecart::from_nbt(&saved, 1, CartKind::Rideable).unwrap();
+        forget_unreadable_display(&mut cart, |_| true);
+        assert!(cart.custom_display.is_some());
+    }
+
+    #[test]
+    fn display_offset_is_not_saved_at_its_default() {
+        // A hopper cart's default is 1, any other kind's 6.
+        for (kind, default) in [(CartKind::Hopper, 1), (CartKind::Chest, 6)] {
+            let saved = saved_cart(kind, &[("DisplayOffset", Tag::Int(default))]);
+            let cart = Minecart::from_nbt(&saved, 1, kind).unwrap();
+            assert_eq!(display_offset(&cart), f64::from(default));
+            let out = cart.to_nbt([0; 4], Some(&saved));
+            assert!(out.get("DisplayOffset").is_none(), "{kind:?}");
+            assert!(out.get("DisplayState").is_none(), "{kind:?}");
+        }
+        // A hopper cart saved with 6 keeps it: that is not its default.
+        let saved = saved_cart(CartKind::Hopper, &[("DisplayOffset", Tag::Int(6))]);
+        let cart = Minecart::from_nbt(&saved, 1, CartKind::Hopper).unwrap();
+        assert_eq!(
+            cart.to_nbt([0; 4], None).get("DisplayOffset"),
+            Some(&Tag::Int(6))
+        );
+    }
+
     #[test]
     fn display_offset_matches_vanilla_for_each_cart_kind() {
-        assert_eq!(display_offset(CartKind::Hopper), 1.0);
-        assert_eq!(display_offset(CartKind::Chest), 6.0);
-        assert_eq!(display_offset(CartKind::Furnace), 6.0);
-        assert_eq!(display_offset(CartKind::Tnt), 6.0);
-        assert_eq!(display_offset(CartKind::CommandBlock), 6.0);
-        assert_eq!(display_offset(CartKind::Rideable), 6.0);
+        assert_eq!(default_display_offset(CartKind::Hopper), 1.0);
+        assert_eq!(default_display_offset(CartKind::Chest), 6.0);
+        assert_eq!(default_display_offset(CartKind::Furnace), 6.0);
+        assert_eq!(default_display_offset(CartKind::Tnt), 6.0);
+        assert_eq!(default_display_offset(CartKind::CommandBlock), 6.0);
+        assert_eq!(default_display_offset(CartKind::Rideable), 6.0);
     }
 
     /// `MinecartSpawner`: its `BaseSpawner` is saved and loaded with the cart (the delay, the
