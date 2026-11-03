@@ -48,7 +48,7 @@ pub struct Route {
 }
 
 /// Every endpoint `start` and [`route`] answer; a test checks the two agree.
-pub const ROUTES: [Route; 28] = [
+pub const ROUTES: [Route; 29] = [
     Route {
         method: "GET",
         path: "/api/v1/status",
@@ -153,6 +153,13 @@ pub const ROUTES: [Route; 28] = [
         takes: "",
         answers: "`online` (name, uuid, address, ping_ms, position, op_level), `max_players`, `ops`, `whitelist` (`enabled`, `players`), `bans`, `ip_bans` (with reason, source, created, expires)",
         what: "Who is online, and vanilla's lists",
+    },
+    Route {
+        method: "GET",
+        path: "/api/v1/mods",
+        takes: "",
+        answers: "`engine` (`found`, `target`, `base`, `horizon`, `hooks`) and `native` (id, version, sha256), from the `native-mods.json` the launcher wrote beside the game program",
+        what: "The native mods the server's game program was built with",
     },
     Route {
         method: "POST",
@@ -720,6 +727,7 @@ pub fn route(shared: &Arc<Shared>, request: &Request) -> Response {
         }
         ("GET", "/api/v1/metrics/prometheus") => admin::prometheus(shared),
         ("GET", "/api/v1/players") => admin::players(shared),
+        ("GET", "/api/v1/mods") => admin::mods(shared),
         ("POST", "/api/v1/players/kick") => admin::act(shared, Action::Kick, &request.body),
         ("POST", "/api/v1/players/ban") => admin::act(shared, Action::Ban, &request.body),
         ("POST", "/api/v1/players/pardon") => admin::act(shared, Action::Pardon, &request.body),
@@ -798,12 +806,8 @@ fn patch_config(shared: &Shared, body: &[u8]) -> Response {
         lines.push(format!("{key}={text}"));
     }
     let lines: Vec<&str> = lines.iter().map(String::as_str).collect();
-    let live = |line: &str| {
-        shared.phase() == Phase::Running
-            && engine::Control::connect(&shared.dir)
-                .and_then(|mut c| c.ask(&format!("console {line}")))
-                .is_ok()
-    };
+    let live =
+        |line: &str| shared.phase() == Phase::Running && settings::ask_game(&shared.dir, line);
     let running = matches!(shared.phase(), Phase::Running | Phase::Restarting);
     match settings::apply(
         &shared.dir,
