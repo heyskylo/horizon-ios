@@ -1695,8 +1695,15 @@ impl Launcher {
             .or_else(|| self.installed.first())
             .map(|tag| backend::resources(tag))
             .unwrap_or_default();
+        // Offline names wear their own skin's face, or the default skin of their offline UUID.
+        let offline: Vec<String> = self
+            .players()
+            .into_iter()
+            .filter(|(who, _, _)| !matches!(who, account::Player::Microsoft(_)))
+            .map(|(_, name, _)| name)
+            .collect();
         self.profile_heads
-            .request(&self.accounts.accounts, resources, &self.tx);
+            .request(&self.accounts.accounts, &offline, resources, &self.tx);
     }
 
     fn begin_auth_job(&mut self, uuid: &str) -> Option<u64> {
