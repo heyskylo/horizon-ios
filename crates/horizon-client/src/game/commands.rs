@@ -4004,6 +4004,8 @@ mod teleport_pitch_tests {
             game.teleport_to_in_level(Target::Mob(42), [0.0; 3], Some(rotation));
             assert_eq!([game.mobs[0].yaw, game.mobs[0].head_pitch], expected);
         }
+        game.build_registries();
+        game.set_allow_commands(true);
         for (command, expected) in [
             ("rotate @e[type=minecraft:zombie,limit=1] 0 360", 90.0),
             ("tp @e[type=minecraft:zombie,limit=1] 0 0 0 0 360", 0.0),
