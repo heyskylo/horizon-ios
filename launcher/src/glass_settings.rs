@@ -3,8 +3,10 @@
 //! the list follows the scroll and takes the pane to a section. The rows inside are the mockup's
 //! `SettingRow`s ([`glass_ui::flat_rows`]).
 //!
-//! Not in the mockup, kept in its patterns: the appearance, the Home background, the logs folder and the applications menu, the AI
-//! clients, data collection (its own entry in the list) and the hidden developer options.
+//! Not in the mockup, kept in its patterns: the appearance, the Home background, the logs folder
+//! and the applications menu (rows under About's tiles), the AI clients, data collection (its own
+//! entry in the list) and the hidden developer options. The mockup's Native mods switch is the
+//! native mods' build profile here: they are always on.
 
 use super::*;
 use crate::glass_ui::{self as ui, white};
@@ -41,6 +43,32 @@ fn card() -> Div {
         .flex()
         .flex_col()
         .p(px(8.))
+}
+
+/// An About tile (`rounded-[14px] bg-white/[0.045] p-5`): its lead, name, a line under it and
+/// what it does.
+fn about_tile(lead: AnyElement, title: String, note: String, action: AnyElement) -> Div {
+    div()
+        .flex()
+        .flex_col()
+        .flex_1()
+        .min_w_0()
+        .rounded(px(radius::LARGE))
+        .bg(white(0.045))
+        .p(px(20.))
+        .child(div().child(lead))
+        .child(
+            ui::text(15., FontWeight::SEMIBOLD, ink::FULL)
+                .mt(px(16.))
+                .child(title),
+        )
+        .child(
+            ui::text(13., FontWeight::NORMAL, 0.6)
+                .mt(px(2.))
+                .truncate()
+                .child(note),
+        )
+        .child(div().mt(px(16.)).flex().items_start().child(action))
 }
 
 fn note(s: &str) -> Option<AnyElement> {
@@ -151,6 +179,143 @@ impl Launcher {
         current
     }
 
+    /// The Game card's Native mods row. The mockup has an on/off switch; native mods are always
+    /// on here, so the row picks the profile they build with, as the Mods page does.
+    fn native_mods_row(&mut self, cx: &mut Context<Self>) -> Div {
+        let t = self.theme;
+        let profile = native_mods::Profile::chosen(&self.settings);
+        let picker = segments(
+            "settings-native-profile",
+            &[
+                (native_mods::Profile::Performance, "Performance build"),
+                (native_mods::Profile::Dev, "Dev build"),
+                (native_mods::Profile::Release, "Release build"),
+            ],
+            profile,
+            &t,
+            {
+                let this = cx.entity().downgrade();
+                move |choice, _, cx| {
+                    let _ = this.update(cx, |this, cx| {
+                        this.settings.native_profile = Some(choice);
+                        this.settings.native_release = false;
+                        this.native_done = None;
+                        this.save_settings();
+                        cx.notify();
+                    });
+                }
+            },
+        );
+        let said = match profile {
+            native_mods::Profile::Performance => tr("The everyday build for playing with mods"),
+            native_mods::Profile::Dev => tr(
+                "For developing a mod: about 6× faster to rebuild a mod edit, game logic up to about twice as slow",
+            ),
+            native_mods::Profile::Release => {
+                tr("Release build: slower to build, slightly faster game")
+            }
+        };
+        ui::setting_row(
+            tr("Native mods"),
+            Some(
+                div()
+                    .child(format!(
+                        "{} {said}.",
+                        tr("Experimental. Builds the native mods you trust into a game of their own.")
+                    ))
+                    .into_any_element(),
+            ),
+            Some(picker.into_any_element()),
+        )
+    }
+
+    /// About's three tiles (the mockup's `AboutTile`s): Horizon and its update, the launcher and
+    /// its own, and the data folder.
+    fn about_tiles(
+        &mut self,
+        horizon: String,
+        horizon_action: Option<AnyElement>,
+        launcher: String,
+        launcher_action: Option<AnyElement>,
+    ) -> Div {
+        let t = self.theme;
+        let installed = self
+            .settings
+            .selected
+            .clone()
+            .map(|tag| match &self.releases {
+                Load::Ready(list) => list
+                    .iter()
+                    .find(|r| r.tag == tag)
+                    .map_or(tag.clone(), |r| update_name(r).to_owned()),
+                _ => tag,
+            });
+        let tone = if self.updates.horizon.is_some() {
+            ui::Tone::Accent(ui::look().accent_soft)
+        } else if self.update_error.is_some() {
+            ui::Tone::Warn
+        } else if self.checked.is_some() {
+            ui::Tone::Live
+        } else {
+            ui::Tone::Busy
+        };
+        let ink = match tone {
+            ui::Tone::Live => ui::color(horizon_theme::glass::LIVE),
+            ui::Tone::Warn => ui::color(horizon_theme::glass::WARN),
+            _ => white(0.7),
+        };
+        let status = div()
+            .flex()
+            .items_center()
+            .gap(px(8.))
+            .text_size(px(13.))
+            .text_color(ink)
+            .child(ui::dot(tone))
+            .child(div().min_w_0().truncate().child(horizon));
+        let square = |icon: &'static str| {
+            div()
+                .flex()
+                .items_center()
+                .justify_center()
+                .size(px(42.))
+                .rounded(px(11.))
+                .bg(white(0.08))
+                .child(ui::icon(icon, 21., white(0.8)))
+                .into_any_element()
+        };
+        let open = ui::quiet("about-open-data", tr("Open"), 36., &t)
+            .on_click(|_, _, cx| cx.open_with_system(&backend::data_dir()))
+            .into_any_element();
+        div()
+            .flex()
+            .gap(px(8.))
+            .child(about_tile(
+                ui::mark_tile(42., ui::look().accent_soft).into_any_element(),
+                "Horizon".into(),
+                installed.unwrap_or_else(|| tr("Nightly").to_string()),
+                div()
+                    .flex()
+                    .flex_col()
+                    .items_start()
+                    .gap(px(12.))
+                    .child(status)
+                    .children(horizon_action)
+                    .into_any_element(),
+            ))
+            .child(about_tile(
+                square("computer"),
+                tr("Launcher").to_string(),
+                launcher,
+                div().children(launcher_action).into_any_element(),
+            ))
+            .child(about_tile(
+                square("folder-01"),
+                tr("Data folder").to_string(),
+                short(&backend::data_dir()),
+                open,
+            ))
+    }
+
     /// The cards, one per entry of [`SECTIONS`], in its order.
     fn glass_settings_sections(&mut self, b: Built, cx: &mut Context<Self>) -> Vec<Div> {
         let t = self.theme;
@@ -201,7 +366,9 @@ impl Launcher {
             ))
             .child(self.reset_look_row(cx));
         let network = card().child(self.proxy_row(n, cx));
-        let game = card().child(self.game_args_row(n, cx));
+        let game = card()
+            .child(self.game_args_row(n, cx))
+            .child(self.native_mods_row(cx));
         let ai = card()
             .child(self.no_ai_row(n, cx))
             .children(self.agents_section(cx));
@@ -213,27 +380,7 @@ impl Launcher {
                 .into_any_element()
         };
         let about = card()
-            .child(index_row(
-                0,
-                "Horizon",
-                Some(div().child(b.horizon).into_any_element()),
-                b.horizon_action,
-                &t,
-            ))
-            .child(index_row(
-                0,
-                tr("Launcher"),
-                Some(div().child(b.launcher).into_any_element()),
-                b.launcher_action,
-                &t,
-            ))
-            .child(index_row(
-                0,
-                tr("Data folder"),
-                Some(mono(short(&backend::data_dir()))),
-                None,
-                &t,
-            ))
+            .child(self.about_tiles(b.horizon, b.horizon_action, b.launcher, b.launcher_action))
             .child(index_row(
                 0,
                 tr("Logs"),

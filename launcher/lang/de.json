@@ -1039,5 +1039,8 @@
   "Reset the launcher's look": "Aussehen des Launchers zurücksetzen",
   "Reset to defaults": "Auf Standard zurücksetzen",
   "{value} px": "{value} px",
-  "{value}%": "{value} %"
+  "{value}%": "{value} %",
+  "Experimental. Builds the native mods you trust into a game of their own.": "Experimentell. Baut die nativen Mods, denen du vertraust, in ein eigenes Spiel.",
+  "Native mods": "Native Mods",
+  "Nightly": "Nightly"
 }

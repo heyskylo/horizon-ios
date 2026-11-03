@@ -1039,5 +1039,8 @@
   "Reset the launcher's look": "런처 모양 초기화",
   "Reset to defaults": "기본값으로 초기화",
   "{value} px": "{value}px",
-  "{value}%": "{value}%"
+  "{value}%": "{value}%",
+  "Experimental. Builds the native mods you trust into a game of their own.": "실험 기능. 신뢰하는 네이티브 모드를 전용 게임으로 빌드합니다.",
+  "Native mods": "네이티브 모드",
+  "Nightly": "Nightly"
 }
