@@ -26,6 +26,7 @@ mod glass_home_packs;
 mod glass_home_tabs;
 mod glass_instance;
 mod glass_instance_java;
+mod glass_notes;
 mod glass_ui;
 mod glass_versions;
 mod home;
@@ -4637,6 +4638,9 @@ impl Launcher {
 
     fn notes_page(&mut self, cx: &mut Context<Self>) -> Div {
         let t = self.theme;
+        if t.dark {
+            return self.glass_notes(cx);
+        }
         let sponsor = (!self.links.sponsor.is_empty()).then(|| {
             plate(&t)
                 .flex()
