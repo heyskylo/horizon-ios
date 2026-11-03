@@ -115,6 +115,9 @@ impl ResourceSource for Bundled {
             "assets/horizon/lang/ja_jp.json" => {
                 include_str!("../../horizon-client/assets/horizon/lang/ja_jp.json")
             }
+            "assets/horizon/lang/ar_sa.json" => {
+                include_str!("../../horizon-client/assets/horizon/lang/ar_sa.json")
+            }
             "assets/horizon/lang/de_de.json" | "assets/horizon/lang/de_at.json" => {
                 include_str!("../../horizon-client/assets/horizon/lang/de_de.json")
             }
