@@ -18,7 +18,14 @@ thread_local! {
     static HERE: Cell<bool> = const { Cell::new(false) };
     /// How many timed spans the thread is inside: the next span's [`Span::depth`].
     static DEPTH: Cell<u8> = const { Cell::new(0) };
+    /// What this thread's slowest steps were busy with since it last took them ([`note`]).
+    static NOTES: RefCell<Vec<(f32, String)>> = const { RefCell::new(Vec::new()) };
 }
+
+/// The shortest step a [`note`] keeps, in milliseconds.
+pub const NOTE_MS: f32 = 10.0;
+/// The notes a thread keeps between two [`take_notes`]: its slowest steps.
+const NOTES_KEPT: usize = 3;
 
 /// A named timing: wall milliseconds and the thread's CPU milliseconds in it.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -82,6 +89,36 @@ pub fn time<T>(name: &'static str, f: impl FnOnce() -> T) -> T {
         })
     });
     out
+}
+/// Notes that one step inside a span took `ms` milliseconds doing `what` (one player's
+/// packets, say), when this thread records spans and the step took at least [`NOTE_MS`]: a
+/// span says where a slow tick went, its notes whose doing it was. Only the slowest few are
+/// kept, and `what` is built only for a step that is.
+pub fn note(ms: f32, what: impl FnOnce() -> String) {
+    if ms < NOTE_MS || !recording_here() {
+        return;
+    }
+    NOTES.with(|n| {
+        let mut n = n.borrow_mut();
+        if n.len() >= NOTES_KEPT {
+            let Some((i, _)) = n
+                .iter()
+                .enumerate()
+                .filter(|(_, (kept, _))| *kept < ms)
+                .min_by(|a, b| a.1.0.total_cmp(&b.1.0))
+            else {
+                return;
+            };
+            n.swap_remove(i);
+        }
+        n.push((ms, what()));
+    });
+}
+/// This thread's notes ([`note`]), slowest first; clears them.
+pub fn take_notes() -> Vec<(f32, String)> {
+    let mut notes = NOTES.with(|n| std::mem::take(&mut *n.borrow_mut()));
+    notes.sort_by(|a, b| b.0.total_cmp(&a.0));
+    notes
 }
 /// Consecutive steps of one function timed as spans: each [`Laps::lap`] records the time since
 /// the previous one (or since [`laps`]) under its name. Nothing is read while spans are off.
@@ -404,6 +441,31 @@ pub mod startup {
 #[cfg(test)]
 mod tests {
     use super::Span;
+
+    /// A slow tick's notes are its slowest steps, slowest first; short steps and steps on a
+    /// thread that records no spans leave none.
+    #[test]
+    fn notes_keep_the_slowest_steps() {
+        super::record_here(false);
+        super::note(500.0, || "unrecorded".into());
+        assert!(super::take_notes().is_empty());
+        super::record_here(true);
+        for (ms, what) in [
+            (12.0, "a"),
+            (900.0, "b"),
+            (3.0, "short"),
+            (40.0, "c"),
+            (11.0, "d"),
+            (60.0, "e"),
+        ] {
+            super::note(ms, || what.into());
+        }
+        let notes: Vec<(f32, String)> = super::take_notes();
+        super::record_here(false);
+        let names: Vec<&str> = notes.iter().map(|(_, w)| w.as_str()).collect();
+        assert_eq!(names, ["b", "e", "c"]);
+        assert!(super::take_notes().is_empty(), "taking them clears them");
+    }
 
     /// Spans of one name add up; a span the thread spent mostly waiting
     /// shows its CPU time after the wall time, short ones are left out.

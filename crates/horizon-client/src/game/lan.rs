@@ -25,6 +25,7 @@ use horizon_world::block_collision::BlockCollisionRegistry;
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
+    time::Instant,
 };
 
 /// What `sync_data` loaded: whether it was with data packs over the game's
@@ -1792,7 +1793,16 @@ impl Game<'_> {
         entities: &[EntityState],
         spawn: [f64; 3],
     ) -> Option<LanHost> {
+        // A slow tick's line says which event took it, and whose (`spans::note`): each event's
+        // time is noted when the next one starts (an event's arm may `continue`), the last's
+        // after the loop.
+        let timed = horizon_client::spans::recording_here();
+        let mut previous = None;
         for event in events {
+            if timed {
+                note_event(&host, previous.take());
+                previous = Some((Instant::now(), event_kind(&event)));
+            }
             match event {
                 event @ (HostEvent::Chat { .. } | HostEvent::Warn(_) | HostEvent::Error(_)) => {
                     self.lan_log_event(event);
@@ -2037,6 +2047,7 @@ impl Game<'_> {
                 }
             }
         }
+        note_event(&host, previous);
         Some(host)
     }
 
@@ -2081,20 +2092,24 @@ impl Game<'_> {
             host.hub.mods_loaded = !horizon_client::mod_api::mods().is_empty();
             let pass = self.level_pass;
             let mut events = if pass.first {
-                host.hub.poll(&mut ctx)
+                horizon_client::spans::time("lan_poll", || host.hub.poll(&mut ctx))
             } else {
                 Vec::new()
             };
-            events.extend(host.hub.drain_packets(&mut ctx));
+            events.extend(horizon_client::spans::time("lan_drain", || {
+                host.hub.drain_packets(&mut ctx)
+            }));
             events
         };
-        let Some(back) = self.lan_process_events(host, events, entities.as_slice(), spawn) else {
+        let Some(back) = horizon_client::spans::time("lan_events", || {
+            self.lan_process_events(host, events, entities.as_slice(), spawn)
+        }) else {
             return;
         };
         host = back;
         if !host.quiet.is_empty() {
             self.lan = Some(host);
-            self.run_quiet_commands();
+            horizon_client::spans::time("lan_quiet_commands", || self.run_quiet_commands());
             host = self
                 .lan
                 .take()
@@ -2102,7 +2117,9 @@ impl Game<'_> {
         }
         if !host.hub.native_advancement_grants.is_empty() {
             self.lan = Some(host);
-            self.run_native_advancement_grants();
+            horizon_client::spans::time("lan_advancement_grants", || {
+                self.run_native_advancement_grants()
+            });
             host = self
                 .lan
                 .take()
@@ -2110,7 +2127,7 @@ impl Game<'_> {
         }
         if !host.hub.native_menu_events.is_empty() {
             self.lan = Some(host);
-            self.run_native_menu_events();
+            horizon_client::spans::time("lan_menu_events", || self.run_native_menu_events());
             host = self
                 .lan
                 .take()
@@ -2969,6 +2986,48 @@ fn equipment_slot_name(slot: horizon_world::player_inventory::EquipmentSlot) -> 
         EquipmentSlot::Body => "body",
         EquipmentSlot::Saddle => "saddle",
     }
+}
+
+/// What a hub event is, whose connection, and the name of a player who left (no longer in the
+/// hub once it is handled): for a slow tick's notes.
+type EventKind = (&'static str, Option<u32>, Option<String>);
+
+fn event_kind(event: &HostEvent) -> EventKind {
+    match event {
+        HostEvent::Joined(c) => ("join", Some(*c), None),
+        HostEvent::Left(g) => ("leave", None, Some(g.name.clone())),
+        HostEvent::Packet(c, p) => (p.name(), Some(*c), None),
+        HostEvent::MainHandChanged(c, _) => ("main hand", Some(*c), None),
+        HostEvent::LocaleChanged(c, _) => ("locale", Some(*c), None),
+        HostEvent::PlayerLoaded(c) => ("loaded", Some(*c), None),
+        HostEvent::RecipeBookSettings { conn, .. } => ("recipe book", Some(*conn), None),
+        HostEvent::Sneak { conn, .. } => ("sneak", Some(*conn), None),
+        HostEvent::Input { conn, .. } => ("input", Some(*conn), None),
+        HostEvent::Kicked { name, .. } => ("kick", None, Some(name.clone())),
+        HostEvent::Flight { conn, .. } => ("flight", Some(*conn), None),
+        HostEvent::Chat { .. } => ("chat line", None, None),
+        HostEvent::PlayerChat { .. } => ("chat", None, None),
+        HostEvent::ChatFiltered { name, .. } => ("filtered chat", None, Some(name.clone())),
+        HostEvent::Warn(_) => ("warning", None, None),
+        HostEvent::Error(_) => ("error", None, None),
+        HostEvent::Ban { name, .. } => ("ban", None, Some(name.clone())),
+    }
+}
+
+/// Notes how long the event that started at `started` took (`spans::note`).
+fn note_event(host: &LanHost, started: Option<(Instant, EventKind)>) {
+    let Some((started, (kind, conn, name))) = started else {
+        return;
+    };
+    horizon_client::spans::note(started.elapsed().as_secs_f32() * 1000.0, || {
+        let who = name
+            .or_else(|| conn.and_then(|c| host.hub.guest(c)).map(|g| g.name.clone()))
+            .or_else(|| conn.map(|c| format!("connection {c}")));
+        match who {
+            Some(who) => format!("{kind} of {who}"),
+            None => kind.to_owned(),
+        }
+    });
 }
 
 #[cfg(test)]
