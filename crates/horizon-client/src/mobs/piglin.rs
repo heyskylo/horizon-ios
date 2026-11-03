@@ -1301,7 +1301,7 @@ pub fn register_brute(m: &mut Mob) {
     // `PiglinBruteAi.createIdleMovementBehaviors`: `StrollToPoi(HOME, 0.6, 2,
     // 100)` ahead of the plain stroll, so a brute that drifts off walks back to
     // the spot `PiglinBruteAi.initMemories` remembered for it.
-    g.add(5, BruteStrollHome);
+    g.add(5, BruteStrollHome { next_ok: 0 });
     g.add(5, Stroll::avoiding_water(0.6));
     g.add(6, LookAtPlayer::new(8.0));
     let mut hurt = HurtByTarget::new().alert();
@@ -1326,9 +1326,14 @@ const HOME_TOO_FAR: f64 = 100.0;
 /// wandering `StrollAroundPoi(HOME, 0.6F, 5)` of the same activity does around
 /// the memory. A goal selector here starts the first goal that may run, where
 /// vanilla draws a weighted one each time, so a home target that outranked the
-/// stroll inside its own reach would leave the brute standing at home.
+/// stroll inside its own reach would leave the brute standing at home. As in
+/// vanilla, a try is followed by 80 ticks without one (`nextOkStartTime`), so a
+/// home it cannot path to costs one search every four seconds, not every tick.
 #[derive(Clone, Debug)]
-struct BruteStrollHome;
+struct BruteStrollHome {
+    /// `StrollToPoi.nextOkStartTime`: the game time before which it does not try.
+    next_ok: i64,
+}
 impl Goal for BruteStrollHome {
     goal_clone!();
     fn flags(&self) -> u8 {
@@ -1345,9 +1350,13 @@ impl Goal for BruteStrollHome {
             f64::from(home[2]) + 0.5,
         );
         let distance = m.distance_sqr(center);
-        if distance >= HOME_TOO_FAR * HOME_TOO_FAR || distance <= 10.0 * 10.0 {
+        if distance >= HOME_TOO_FAR * HOME_TOO_FAR
+            || distance <= 10.0 * 10.0
+            || cx.w.game_time < self.next_ok
+        {
             return false;
         }
+        self.next_ok = cx.w.game_time + 80;
         m.ai.pending_path = m.create_path_to(cx.w, home, HOME_CLOSE_ENOUGH);
         m.ai.pending_path.is_some()
     }
@@ -2421,6 +2430,29 @@ mod brute_home_tests {
                     assert_eq!(target, None, "{label}: and no path");
                 }
             }
+        });
+    }
+    /// `StrollToPoi.nextOkStartTime`: after a try the brute waits 80 ticks before the
+    /// next one, so a home out of reach is not searched for on every tick.
+    #[test]
+    fn a_brute_tries_the_way_home_once_every_80_ticks() {
+        with_built_test_world(&[], build, |w, _| {
+            let mut lr = LegacyRandom::new(3);
+            let mut events = Vec::new();
+            let mut cx = Cx {
+                w,
+                lr: &mut lr,
+                events: &mut events,
+            };
+            let mut m = brute(Vec3::new(0.5, 0.0, 0.5), Some([24, 0, 0]));
+            let mut goal = BruteStrollHome { next_ok: 0 };
+            assert!(goal.can_use(&mut m, &mut cx), "the first try finds a path");
+            m.ai.pending_path = None;
+            assert!(
+                !goal.can_use(&mut m, &mut cx),
+                "no second search in the same 80 ticks"
+            );
+            assert_eq!(goal.next_ok, w.game_time + 80);
         });
     }
     /// `PiglinBruteAi.wasHurtBy` erases nothing: a hit does not cost the brute
