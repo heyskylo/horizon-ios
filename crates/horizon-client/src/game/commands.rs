@@ -1539,8 +1539,12 @@ impl Game<'_> {
                 }
                 self.previous_position = v;
                 if let Some([yaw, pitch]) = rotation {
-                    self.yaw = yaw;
-                    self.pitch = entity_pitch(pitch);
+                    if yaw.is_finite() {
+                        self.yaw = yaw;
+                    }
+                    if pitch.is_finite() {
+                        self.pitch = entity_pitch(pitch);
+                    }
                 }
                 // A server player's teleport is told to the mods once their
                 // move is in the hub (`leave_guest`).
@@ -1568,10 +1572,14 @@ impl Game<'_> {
                     // Entity.teleportSetPosition: setYRot, setYHeadRot, setXRot
                     // (clamped to -90..90), then setOldRot.
                     if let Some([yaw, pitch]) = rotation {
-                        m.yaw = yaw;
-                        m.body_yaw = yaw;
-                        m.head_yaw = yaw;
-                        m.head_pitch = entity_pitch(pitch);
+                        if yaw.is_finite() {
+                            m.yaw = yaw;
+                            m.body_yaw = yaw;
+                            m.head_yaw = yaw;
+                        }
+                        if pitch.is_finite() {
+                            m.head_pitch = entity_pitch(pitch);
+                        }
                         m.previous_yaw = m.yaw;
                         m.previous_head_pitch = m.head_pitch;
                     }
