@@ -92,8 +92,18 @@ final class GameLink: ObservableObject {
 
     /// Uncover the game (Present.swift dismisses the launcher).
     var uncover: () -> Void = {}
+    /// Installed by HomeView; every Play/Join/Create waits for an acknowledged session.
+    var prepareSession: () async throws -> Void = {
+        throw AccountError("Account setup is not ready. Try Play again.")
+    }
     /// What to ask as soon as the title screen can take it: Play tapped while the game was loading.
-    private var queued: (() async -> [String: Any])?
+    private var launchID = UUID()
+    private var queued: (id: UUID, action: () async -> [String: Any])?
+    private let send: (String) async -> [String: Any]
+
+    init(send: @escaping (String) async -> [String: Any] = { await Bridge.send($0) }) {
+        self.send = send
+    }
 
     var ready: Bool { phase == .title }
     /// Whether the worlds and servers can be read: they are files, so before the game starts too.
@@ -109,7 +119,7 @@ final class GameLink: ObservableObject {
     }
 
     func refresh() async {
-        let state = await Bridge.send("launcher-state")
+        let state = await self.send("launcher-state")
         let was = phase
         switch state["phase"] as? String {
         case "waiting":
@@ -127,14 +137,14 @@ final class GameLink: ObservableObject {
         if phase == .title, was != .title {
             if let action = queued {
                 queued = nil
-                await run(action)
+                await run(action.action, attempt: action.id)
             }
         }
     }
 
     /// Read the worlds and servers again.
     func reload() async {
-        let listed = await Bridge.send("worlds")
+        let listed = await self.send("worlds")
         if let list = listed["worlds"] as? [[String: Any]] {
             worlds = list.compactMap(World.init)
         }
@@ -142,7 +152,7 @@ final class GameLink: ObservableObject {
     }
 
     func reloadServers() async {
-        let listed = await Bridge.send("servers")
+        let listed = await self.send("servers")
         guard let list = listed["servers"] as? [[String: Any]] else { return }
         servers = list.enumerated().compactMap { index, json in
             guard let address = json["address"] as? String else { return nil }
@@ -158,8 +168,16 @@ final class GameLink: ObservableObject {
     func play(_ world: World? = nil) async {
         Haptics.launch()
         guard let world else {
-            await start()
-            uncover()
+            guard launching == nil else { return }
+            let attempt = UUID(); launchID = attempt
+            launching = "Preparing account…"
+            defer { if launchID == attempt { launching = nil } }
+            do { try await start(attempt); uncover() }
+            catch {
+                if launchID == attempt, !(error is CancellationError) {
+                    problem = error.localizedDescription; Haptics.failed()
+                }
+            }
             return
         }
         await go("Opening \(world.name)") { await Bridge.world("open", folder: world.folder) }
@@ -170,36 +188,55 @@ final class GameLink: ObservableObject {
         guard let data = try? JSONEncoder().encode(settings), let json = String(data: data, encoding: .utf8) else {
             problem = "Could not prepare world settings."; return
         }
-        await go("Creating \(settings.name)") { await Bridge.send("world-create \(json)") }
+        await go("Creating \(settings.name)") { await self.send("world-create \(json)") }
     }
 
     func join(_ address: String) async {
         Haptics.launch()
         let address = address.trimmingCharacters(in: .whitespaces)
-        await go("Joining \(address)") { await Bridge.send("connect \(address)") }
+        await go("Joining \(address)") { await self.send("connect \(address)") }
     }
 
     /// Let the game load, if it is still waiting to be started.
-    private func start() async {
+    private func start(_ attempt: UUID) async throws {
+        try await prepareSession()
+        try Task.checkCancellation()
+        guard launchID == attempt else { throw CancellationError() }
         if phase == .waiting || phase == .unknown {
-            _ = await Bridge.send("launcher-start")
+            let answer = await self.send("launcher-start")
+            guard answer["ok"] as? Bool == true, answer.error == nil else {
+                throw AccountError("The game could not start. Try again.")
+            }
+            guard launchID == attempt else { throw CancellationError() }
             phase = .loading(0)
         }
     }
 
     /// Ask now, or start the game and ask as soon as it reaches its title; uncover the game once it is on its way.
     private func go(_ label: String, _ action: @escaping () async -> [String: Any]) async {
+        guard launching == nil else { return }
+        let attempt = UUID(); launchID = attempt
         launching = label
-        await start()
+        do { try await start(attempt) }
+        catch {
+            if launchID == attempt {
+                launching = nil
+                if !(error is CancellationError) { problem = error.localizedDescription; Haptics.failed() }
+            }
+            return
+        }
         if ready {
-            await run(action)
+            await run(action, attempt: attempt)
         } else {
-            queued = action
+            queued = (attempt, action)
         }
     }
 
-    private func run(_ action: () async -> [String: Any]) async {
+    private func run(_ action: () async -> [String: Any], attempt: UUID) async {
+        defer { if launchID == attempt { launching = nil } }
+        guard launchID == attempt, !Task.isCancelled else { return }
         let answer = await action()
+        guard launchID == attempt, !Task.isCancelled else { return }
         launching = nil
         if let error = answer.error {
             problem = error
@@ -211,6 +248,7 @@ final class GameLink: ObservableObject {
 
     /// Cancel a launch that is waiting for the game to load.
     func cancelLaunch() {
+        launchID = UUID()
         queued = nil
         launching = nil
     }
@@ -243,17 +281,17 @@ final class GameLink: ObservableObject {
             return
         }
         let name = name.trimmingCharacters(in: .whitespaces)
-        report(await Bridge.send("server-add \(address) \(name.isEmpty ? "Minecraft Server" : name)"))
+        report(await self.send("server-add \(address) \(name.isEmpty ? "Minecraft Server" : name)"))
         await reloadServers()
     }
 
     func removeServer(_ server: Server) async {
-        report(await Bridge.send("server-remove \(server.index)"))
+        report(await self.send("server-remove \(server.index)"))
         await reloadServers()
     }
 
     func ping(_ server: Server) async {
-        let answer = await Bridge.send("server-ping \(server.address)")
+        let answer = await self.send("server-ping \(server.address)")
         var status = ServerStatus()
         if let error = answer.error {
             status.failed = error

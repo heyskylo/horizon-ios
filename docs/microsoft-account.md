@@ -349,3 +349,29 @@ Microsoft, Xbox and Minecraft endpoints, and the keychain abstraction with an in
 - (d) Game: chat signing (profile keys, chat session, signed messages and commands).
 
 Each part ships on its own: online mode needs a session, which only (c) creates.
+
+## Native iOS launcher accounts
+
+The launcher Account sheet can keep several Microsoft accounts. Add an account,
+select the profile to use for the next Play, remove an individual account, or
+choose offline play without deleting the saved accounts. Microsoft profile names
+are read-only. Switching in the launcher does not change an existing multiplayer
+connection's identity.
+
+Every Play waits for the selected account's credentials and the game's session
+acknowledgement. A Minecraft session with five minutes or less remaining is renewed;
+concurrent requests await the same renewal. A renewal failure blocks launch with a
+message instead of silently using offline mode. A still-unexpired token can be
+revoked by the service before its recorded expiry; such revocation is not probed
+on every Play.
+
+Credentials are stored per Minecraft UUID in the device Keychain; preferences keep
+only profile metadata and selection. Existing single-account installations migrate
+by copying credentials successfully before deleting the legacy entry. Updates do
+not delete a working Keychain entry before writing its replacement. Rotated refresh
+tokens are saved before subsequent Xbox/Minecraft requests, so a downstream failure
+does not discard the replacement. Temporary failures keep the saved account;
+Microsoft rejecting the refresh credential asks the user to sign in again.
+
+The simulator authentication tests use intercepted networking, an in-memory vault,
+and isolated preferences. They do not access real Microsoft accounts or credentials.

@@ -61,6 +61,7 @@ targets:
     platform: iOS
     sources:
       - path: FormattingTests.swift
+      - path: AccountTests.swift
     dependencies:
       - target: LauncherPreview
     settings:

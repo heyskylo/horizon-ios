@@ -74,6 +74,17 @@ final class LauncherLayoutTests: XCTestCase {
         app.buttons["Done"].tap()
         let shot = XCTAttachment(screenshot: app.screenshot()); shot.name = "Native-launcher"; shot.lifetime = .keepAlways; add(shot)
     }
+    func testSavedMicrosoftAccountsCanSwitchWithoutEditingTheirNames() {
+        let app = launch(signedIn: true)
+        app.buttons["launcher-account-button"].tap()
+        let second = app.buttons["account-select-22222222222222222222222222222222"]
+        XCTAssertTrue(second.waitForExistence(timeout: 5)); second.tap()
+        XCTAssertFalse(app.buttons["Change Offline Name"].exists)
+        XCTAssertTrue(app.staticTexts["BuilderTwo"].firstMatch.exists)
+        app.buttons["Done"].tap()
+        XCTAssertTrue(app.staticTexts["BuilderTwo"].firstMatch.waitForExistence(timeout: 5))
+    }
+
     func testOfflineNameEditing() {
         let app = launch(signedIn: false)
         app.buttons["launcher-account-button"].tap()

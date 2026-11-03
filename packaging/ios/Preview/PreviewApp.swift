@@ -74,10 +74,13 @@ struct LauncherPreview: App {
         }
         Theme.registerFonts()
         Bridge.submit = previewSubmit
-        if ProcessInfo.processInfo.environment["PREVIEW_SIGNED_IN"] == "1" {
-            let profile = MicrosoftAccount.Profile(name: "SkyExplorer", uuid: "00000000000000000000000000000000")
-            UserDefaults.standard.set(try! JSONEncoder().encode(profile), forKey: "microsoftProfile")
-        } else if ProcessInfo.processInfo.environment["PREVIEW_SIGNED_IN"] == "0" {
+        if let signed = ProcessInfo.processInfo.environment["PREVIEW_SIGNED_IN"] {
+            let profiles = signed == "1" ? [
+                MicrosoftAccount.Profile(name: "SkyExplorer", uuid: "00000000000000000000000000000000"),
+                MicrosoftAccount.Profile(name: "BuilderTwo", uuid: "22222222222222222222222222222222"),
+            ] : []
+            let catalog = MicrosoftAccount.Catalog(profiles: profiles, selected: profiles.first?.uuid)
+            UserDefaults.standard.set(try! JSONEncoder().encode(catalog), forKey: "microsoftAccounts.v2")
             UserDefaults.standard.removeObject(forKey: "microsoftProfile")
         }
         if ProcessInfo.processInfo.environment["PREVIEW_SIGNED_IN"] != nil {

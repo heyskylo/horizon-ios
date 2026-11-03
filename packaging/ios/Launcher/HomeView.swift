@@ -83,11 +83,14 @@ struct HomeView: View {
             get: { link.problem != nil }, set: { if !$0 { link.problem = nil } }
         )) { Button("OK", role: .cancel) {} } message: { Text(link.problem ?? "") }
         .task(id: shownName) { await head.load(shownName) }
-        .task(id: account.profile) { await account.handOver() }
         .onChange(of: account.profile) { profile in
             if profile != nil { editingName = false; nameDraft = "" }
         }
-        .task { link.uncover = onPlay; await link.watch() }
+        .task {
+            link.uncover = onPlay
+            link.prepareSession = { try await account.handOver() }
+            await link.watch()
+        }
         .task(id: link.phase) {
             if link.phase == .waiting { await download.startAutomaticallyIfNeeded() }
         }
@@ -112,6 +115,7 @@ struct HomeView: View {
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Account: \(shownName ?? "Not signed in")")
+            .disabled(link.launching != nil)
             .accessibilityIdentifier("launcher-account-button")
         }
     }
@@ -241,7 +245,7 @@ struct HomeView: View {
                     }.padding(.vertical, 8)
                     if account.profile == nil { Button("Change Offline Name", action: editName) }
                 }
-                Section { AccountCard(account: account) }
+                Section { AccountCard(account: account).disabled(link.launching != nil) }
             }
             .navigationDestination(isPresented: $editingName) { offlineNameEditor }
             .navigationTitle("Account")
