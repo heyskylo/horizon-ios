@@ -320,6 +320,10 @@ impl Launcher {
         let selected = self.selected_instance().map(|i| i.id.clone());
         let name = self.servers.value(Field::InstanceName).trim().to_string();
         let group = Some(self.servers.value(Field::InstanceGroup).to_string());
+        // A Horizon version picked but not installed downloads once the instance is saved.
+        let download = self
+            .draft_horizon()
+            .and_then(|tag| self.release_to_install(&tag));
         let Some(d) = self.instances.dialog.as_mut().filter(|d| !d.busy) else {
             return;
         };
@@ -353,6 +357,7 @@ impl Launcher {
         let Some(d) = self.instances.dialog.as_mut() else {
             return;
         };
+        let download = download.filter(|_| plays_horizon);
         let (java, name) = match (java, minecraft) {
             (Some(_), Some(None)) => {
                 d.error = Some(tr("Mojang's version list isn't here yet.").into());
@@ -407,6 +412,10 @@ impl Launcher {
                         this.instances.dialog = None;
                         this.select_instance(&instance);
                         this.reload_instances();
+                        // Play shows the download's progress; Versions shows it too.
+                        if let Some(release) = download {
+                            this.install_for_instance(release);
+                        }
                         if matches!(instance.kind, InstanceKind::Default | InstanceKind::Own) {
                             this.go(Page::Play);
                         }

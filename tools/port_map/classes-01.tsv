@@ -53,12 +53,12 @@ PiglinBrute.finalizeSpawn	inline	crates/horizon-client/src/mobs/finalize.rs::Ctx
 PiglinBrute.hurtServer	inline	crates/horizon-client/src/mobs/piglin.rs::register_brute	gap: minor: retaliation is the HurtByTarget goal; no PiglinAi.maybeRetaliate for non-piglin attackers
 PiglinBrute.wantsToPickUp	port	crates/horizon-client/src/mobs/equip.rs::wants_to_pick_up	
 PiglinBruteAi.createIdleLookBehaviors	inline	crates/horizon-client/src/mobs/piglin.rs::register_brute	gap: minor: looks at players only (LookAtPlayer); no look at piglins, random look or do-nothing pause
-PiglinBruteAi.createIdleMovementBehaviors	inline	crates/horizon-client/src/mobs/piglin.rs::register_brute	gap: minor: strolls anywhere; no visits to piglins and no return to its home point
+PiglinBruteAi.createIdleMovementBehaviors	inline	crates/horizon-client/src/mobs/piglin.rs::register_brute	the walk back to the home memory is `BruteStrollHome` (`StrollToPoi(HOME, 0.6F, 2, 100)`); gap: minor: no visits to piglins (`InteractWith`) and no `StrollAroundPoi`, and the goal yields within ten blocks of home where vanilla re-targets it every 80 ticks
 PiglinBruteAi.findNearestValidAttackTarget	inline	crates/horizon-client/src/mobs/piglin.rs::register_brute	gap: minor: targets nearest player or wither skeleton through the target goals; no anger memory first
 PiglinBruteAi.initCoreActivity	inline	crates/horizon-client/src/mobs/piglin.rs::register_brute	gap: minor: no door opening and no stop-anger-when-target-dead rule; panic-free float only
 PiglinBruteAi.initFightActivity	inline	crates/horizon-client/src/mobs/piglin.rs::register_brute	melee goal at priority 2; attacks as the MeleeAttack goal does
 PiglinBruteAi.initIdleActivity	inline	crates/horizon-client/src/mobs/piglin.rs::register_brute	idle behaviour as goals: stroll, look at player, targets
-PiglinBruteAi.initMemories	missing		minor: no home point is remembered, so the brute never returns to where it spawned
+PiglinBruteAi.initMemories	port	crates/horizon-client/src/mobs/finalize.rs::Ctx::finalize	the brute's spawn stores its block position as the home memory (`extra.home` plus the brain mirror), which `mobs/piglin.rs::register_brute` now walks it back to; a hit no longer clears it
 PiglinBruteAi.isNearestValidAttackTarget	missing		minor: the brute never drops a target for a nearer one; target goals keep theirs until it dies or is lost
 PiglinBruteAi.maybePlayActivitySound	port	crates/horizon-client/src/mobs/piglin.rs::maybe_play_brute_sound	the level random is drawn every tick and the angry grunt plays under 0.0125 while the brute is fighting
 PiglinBruteAi.playActivitySound	port	crates/horizon-client/src/mobs/piglin.rs::play_brute_sound	entity.piglin_brute.angry when the fight activity starts
