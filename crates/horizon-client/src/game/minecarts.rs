@@ -2447,17 +2447,20 @@ impl Game<'_> {
                 )
             };
             // LevelExtractor.isEntityVisible: the cart the player rides always draws.
+            let mut shown = None;
             if self.riding != Some(c.id) {
                 let d = glam::DVec3::new(c.position.x, c.position.y, c.position.z) - camera;
                 if d.length_squared() >= range * range {
                     continue;
                 }
+                // Looked up once, past the distance cut: the cull and the draw both use it.
+                shown = Some(self.display_state(c));
                 // EntityRenderer.shouldRender: the interpolated box grown by 0.5;
                 // AbstractMinecartRenderer.getBoundingBoxForCulling stretches it
                 // up by the display block's offset.
                 if let Some(view) = &self.view_frustum {
                     let top = HEIGHT
-                        + if self.display_state(c).is_none() {
+                        + if shown.flatten().is_none() {
                             0.0
                         } else {
                             display_offset(c) * 0.75 / 16.0
@@ -2522,7 +2525,7 @@ impl Game<'_> {
                 c.position.z.floor() as i32,
             );
             let packed = (u32::from(l >> 4) * 16) | ((u32::from(l & 15) * 16) << 8);
-            if let Some(state) = self.display_state(c) {
+            if let Some(state) = shown.unwrap_or_else(|| self.display_state(c)) {
                 let display = base
                     * glam::Mat4::from_scale(glam::Vec3::splat(0.75))
                     * glam::Mat4::from_translation(glam::Vec3::new(
