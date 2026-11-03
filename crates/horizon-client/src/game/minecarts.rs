@@ -15,7 +15,7 @@ use horizon_client::{
     mobs::{Part, Species, Who, anim::Poses, riders},
     particles::{ParticleOptions, ParticleType},
     scoreboard::pushable_by,
-    sound_engine::{CartSound, SoundEngine, SoundInstance, Sounds},
+    sound_engine::{CartSound, PlayResult, SoundEngine, SoundInstance, Sounds},
 };
 use horizon_core::{
     geometry::{Aabb, Vec3, trig},
@@ -93,6 +93,8 @@ impl CartKind {
 }
 #[derive(Clone, Debug)]
 pub(super) struct Minecart {
+    /// When it joined its list (`horizon_client::join_seq`); set by the list.
+    pub(super) join: horizon_client::join_seq::JoinSeq,
     pub id: u32,
     pub kind: CartKind,
     pub position: Vec3,
@@ -322,6 +324,7 @@ impl Minecart {
     }
     pub fn new(id: u32, kind: CartKind, position: Vec3) -> Self {
         Self {
+            join: Default::default(),
             id,
             kind,
             position,
@@ -1146,6 +1149,16 @@ impl Game<'_> {
         }
         let v = c.velocity;
         self.move_cart(c, v);
+        // Entity.move's last step: soul sand and honey slow a derailed cart.
+        // The rail paths set the track's velocity again after their move, so
+        // the factor changes nothing there (measured on a rail over soul sand).
+        let factor = crate::motion::block_speed_factor_at(
+            &self.world,
+            &self.motion.blocks,
+            c.position,
+            None,
+        );
+        c.velocity = horizon_world::entity_move::scale_by_block_speed(c.velocity, factor);
         // `comeOffTrack` moves the cart and keeps the delta the move resolved
         // (then scales it by the air drag), so a cart an obstacle stopped here
         // is not moving any more and `MinecartTNT.tick` does not detonate it -
@@ -1757,22 +1770,33 @@ impl Game<'_> {
         self.cart_sounds
             .retain(|id| carts.iter().any(|c| c.id == *id));
         for cart in &carts {
-            if self.cart_sounds.insert(cart.id) {
+            if !self.cart_sounds.contains(&cart.id) {
                 let instance = SoundInstance::minecart(cart, SoundEngine::unseeded());
-                self.audio.play_instance(instance, false);
+                let (_, res) = self.audio.play_instance(instance, false);
+                if res != PlayResult::NotStarted {
+                    self.cart_sounds.insert(cart.id);
+                }
             }
         }
         let vehicle = self.riding.filter(|id| carts.iter().any(|c| c.id == *id));
         if vehicle != self.riding_cart_sounds
             && let Some(cart) = carts.iter().find(|c| Some(c.id) == vehicle)
         {
+            let mut started = true;
             for underwater in [true, false] {
                 let instance =
                     SoundInstance::riding_minecart(cart, underwater, SoundEngine::unseeded());
-                self.audio.play_instance(instance, false);
+                let (_, res) = self.audio.play_instance(instance, false);
+                if res == PlayResult::NotStarted {
+                    started = false;
+                }
             }
+            if started {
+                self.riding_cart_sounds = vehicle;
+            }
+        } else if vehicle.is_none() {
+            self.riding_cart_sounds = None;
         }
-        self.riding_cart_sounds = vehicle;
         (vehicle, carts)
     }
     /// The rider's tick: the cart moves with the rider's input as its push.
@@ -2908,3 +2932,4 @@ mod tests {
         assert_eq!(loaded.push, Vec3::new(0.5, 0.0, 0.25));
     }
 }
+horizon_client::impl_joined!(Minecart);

@@ -129,9 +129,9 @@ pub const ROUTES: [Route; 28] = [
     Route {
         method: "POST",
         path: "/api/v1/restore",
-        takes: "`{\"name\": \"<backup>\"}`",
-        answers: "`{\"name\": \"<backup>\"}`",
-        what: "Restart the game with that backup's world (the current one is kept in backups/)",
+        takes: "`{\"name\": \"<backup>\", \"dimension\": \"minecraft:the_nether\"}` (`dimension` optional)",
+        answers: "`{\"name\": \"<backup>\", \"dimension\": \"<id>\" or null}`",
+        what: "Restart the game with that backup's world, or only one dimension of it (what it replaces is kept in backups/)",
     },
     Route {
         method: "POST",
@@ -151,7 +151,7 @@ pub const ROUTES: [Route; 28] = [
         method: "GET",
         path: "/api/v1/players",
         takes: "",
-        answers: "`online` (name, uuid, address, ping_ms, op_level), `max_players`, `ops`, `whitelist` (`enabled`, `players`), `bans`, `ip_bans` (with reason, source, created, expires)",
+        answers: "`online` (name, uuid, address, ping_ms, position, op_level), `max_players`, `ops`, `whitelist` (`enabled`, `players`), `bans`, `ip_bans` (with reason, source, created, expires)",
         what: "Who is online, and vanilla's lists",
     },
     Route {
@@ -327,8 +327,9 @@ pub struct Shared {
     pub log: Mutex<Log>,
     pub stop: AtomicBool,
     pub restart: AtomicBool,
-    /// The backup to put in place before the game starts again (`restore`).
-    pub restore: Mutex<Option<String>>,
+    /// The backup (and, when only one dimension comes back, its id) to put in place before the game starts
+    /// again (`restore`).
+    pub restore: Mutex<Option<(String, Option<String>)>>,
     /// Held while a backup is written: one at a time.
     pub backing_up: Mutex<()>,
     pub started: Instant,
@@ -529,22 +530,11 @@ fn updates(shared: &Shared) -> Value {
     })
 }
 
-/// A random token: two 64-bit hashes keyed by the OS's random hasher seeds, the time and the process.
+/// A random token: 128 bits from the OS's random generator, as 32 hex digits.
 pub fn random_token() -> String {
-    use std::hash::{BuildHasher, Hasher};
-    (0..2u64)
-        .map(|i| {
-            let mut h = std::collections::hash_map::RandomState::new().build_hasher();
-            h.write_u64(i);
-            h.write_u128(
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map_or(0, |d| d.as_nanos()),
-            );
-            h.write_u32(std::process::id());
-            format!("{:016x}", h.finish())
-        })
-        .collect()
+    let mut bytes = [0u8; 16];
+    getrandom::fill(&mut bytes).expect("OS random generator");
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 pub fn same_token(a: &str, b: &str) -> bool {
@@ -704,9 +694,16 @@ pub fn route(shared: &Arc<Shared>, request: &Request) -> Response {
             let body: Value = serde_json::from_slice(&request.body).unwrap_or(Value::Null);
             match backup::find(&shared.dir, body["name"].as_str().unwrap_or_default()) {
                 Ok(name) => {
-                    *shared.restore.lock().unwrap() = Some(name.clone());
+                    let dimension = match body["dimension"].as_str() {
+                        None => None,
+                        Some(d) => match backup::dimension_folder(d) {
+                            Ok((id, _)) => Some(id),
+                            Err(e) => return Response::error(400, &e),
+                        },
+                    };
+                    *shared.restore.lock().unwrap() = Some((name.clone(), dimension.clone()));
                     shared.restart.store(true, Ordering::SeqCst);
-                    Response::json(200, &json!({ "name": name }))
+                    Response::json(200, &json!({ "name": name, "dimension": dimension }))
                 }
                 Err(e) => Response::error(404, &e),
             }
@@ -938,6 +935,14 @@ mod tests {
                 vec![(LOG_LINES + 8).to_string(), (LOG_LINES + 9).to_string()]
             )
         );
+    }
+
+    #[test]
+    fn tokens_are_32_hex_digits_and_differ() {
+        let (a, b) = (random_token(), random_token());
+        assert_eq!(a.len(), 32);
+        assert!(a.bytes().all(|c| c.is_ascii_hexdigit()));
+        assert_ne!(a, b);
     }
 
     #[test]

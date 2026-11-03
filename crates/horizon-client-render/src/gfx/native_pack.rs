@@ -3,7 +3,8 @@
 
 use horizon_shader_api::{Report, StageKind};
 
-use super::native_material::{NativeMaterial, TerrainShape};
+use super::displace::Displacement;
+use super::native_material::{DisplacedShape, NativeMaterial, TerrainShape};
 use super::native_post::{NativeFrame, NativePost};
 use super::native_shadow::NativeShadow;
 use super::native_sky::NativeSky;
@@ -21,12 +22,41 @@ pub struct NativePack {
     pub weather: Option<wgpu::RenderPipeline>,
     /// The draw of the shadow map the stages read, if the pack asks for one.
     pub shadow: Option<NativeShadow>,
+    /// `[displacement]`'s grid, while it is on and the resource packs have height maps.
+    pub displacement: Option<Displacement>,
     /// `[[particle_lights]]`.
     pub particle_lights: Vec<horizon_shader_api::manifest::ParticleLight>,
     /// `[[lights]]`, for the colour of held and dropped items' light.
     pub light_colors: Vec<horizon_shader_api::manifest::LightColor>,
     /// GPU time of each pass, while the renderer asks for it (`pack_timing.rs`).
     pub timing: Option<PassTiming>,
+}
+
+/// Whether the option `id` (a bool, or a number above 0) is on, or there is none to ask.
+fn option_on(constants: &[(String, f64)], id: Option<&String>) -> bool {
+    id.is_none_or(|id| {
+        constants
+            .iter()
+            .find(|(k, _)| k == id)
+            .is_none_or(|(_, v)| *v != 0.0)
+    })
+}
+
+/// `[displacement]`'s cells: the value of its `cells_option`, if any.
+fn chosen_cells(
+    d: &horizon_shader_api::manifest::Displacement,
+    options: &[horizon_shader_api::manifest::PackOption],
+    constants: &[(String, f64)],
+) -> u32 {
+    let chosen = d.cells_option.as_ref().and_then(|id| {
+        let option = options.iter().find(|o| o.id == *id)?;
+        let horizon_shader_api::manifest::OptionKind::Choice { values, .. } = &option.kind else {
+            return None;
+        };
+        let (_, index) = constants.iter().find(|(k, _)| k == id)?;
+        values.get(*index as usize)?.parse().ok()
+    });
+    chosen.unwrap_or(d.cells)
 }
 
 impl NativePack {
@@ -49,6 +79,23 @@ impl NativePack {
             .as_ref()
             .map(|settings| super::native_shadow::fitted(device, settings));
         let mut frame = NativeFrame::new(device, settings.as_ref(), textures, lights, terrain.pbr);
+        // `[displacement]`, unless its option is off; nothing to displace without heights.
+        let displacement = report
+            .manifest
+            .displacement
+            .as_ref()
+            .filter(|d| option_on(constants, d.option.as_ref()))
+            .filter(|_| terrain.pbr.is_some())
+            .map(|d| {
+                // No more cells than the height maps have texels.
+                let texels = terrain.pbr.map_or(16, |p| p[0].width());
+                let cells = chosen_cells(d, &report.manifest.options, constants)
+                    .min(texels)
+                    .max(1);
+                let steps =
+                    d.steps_option.is_some() && option_on(constants, d.steps_option.as_ref());
+                Displacement::new(device, d.distance, cells, steps, &frame.pbr[0], false)
+            });
         let shadow = report
             .shadow
             .as_ref()
@@ -71,12 +118,7 @@ impl NativePack {
             .iter()
             .find(|s| s.kind == StageKind::Material)
             .is_some_and(|s| s.reads("reflection"))
-            && option.is_none_or(|id| {
-                constants
-                    .iter()
-                    .find(|(k, _)| k == id)
-                    .is_none_or(|(_, v)| *v != 0.0)
-            });
+            && option_on(constants, option);
         let fog = report.material_fog;
         let keeps = |key: fn(&horizon_shader_api::Stage) -> Option<bool>| {
             report.sky.as_ref().and_then(key).unwrap_or(true)
@@ -119,7 +161,22 @@ impl NativePack {
             .iter()
             .find(|s| s.kind == StageKind::Material)
             .map(|stage| {
-                NativeMaterial::new(device, terrain, &frame, stage, constants, fog, has_vertex)
+                let displaced = displacement.as_ref().map(|d| DisplacedShape {
+                    distance: d.distance,
+                    cells: d.view.cells,
+                    steps: d.view.steps,
+                    layout: &d.draw_layout,
+                });
+                NativeMaterial::new(
+                    device,
+                    terrain,
+                    &frame,
+                    stage,
+                    constants,
+                    fog,
+                    has_vertex,
+                    displaced.as_ref(),
+                )
             })
             .transpose()?;
         let post = (!post.is_empty())
@@ -148,6 +205,7 @@ impl NativePack {
             vanilla_stars,
             weather,
             shadow,
+            displacement,
             timing: None,
         };
         Ok((pack, labels))

@@ -206,6 +206,21 @@ pub fn ridden(m: &mut Mob) {
         }
     }
 }
+/// `AbstractNautilus.onPlayerJump` and the momentum `handleStartJump` starts:
+/// a saddled nautilus that is not in its dash cooldown keeps the released
+/// jump bar's scale on the rider, and its next `tickRidden` dashes with it
+/// (`executeRidersJump`). Returns whether the jump was taken.
+pub fn on_player_jump(m: &mut Mob, data: i32) -> bool {
+    // `if (isSaddled() && dashCooldown <= 0) playerJumpPendingScale = ...`
+    if !m.extra.saddled || m.extra.anim_ticks > 0 {
+        return false;
+    }
+    let Some(rider) = m.rider.as_mut() else {
+        return false;
+    };
+    rider.jump = super::equine::jump_pending_scale(data);
+    true
+}
 /// `executeRidersJump` (with `handleStartJump`'s sound): along the rider's
 /// look, 1.2 in water and 0.5 on land.
 fn dash(m: &mut Mob, amount: f32) {
@@ -561,7 +576,7 @@ pub fn anim(m: &Mob, s: &State, p: &mut Poses, animations: &HashMap<String, Anim
     if let Some(a) = animations.get("NautilusAnimation.SWIMMING") {
         a.apply_walk(s.pos + s.age / 5.0, s.speed + 0.2, 2.0, 3.0, p);
     }
-    if m.extra.head.is_some() {
+    if m.extra.body.is_some() {
         p.visible("corals", false);
     }
 }
@@ -679,5 +694,57 @@ mod tests {
         // It turns to the target, which is straight ahead at +z (yaw 0): sin = 0, -cos = -1.
         assert!(x.abs() < 1e-3 && (z + 1.0).abs() < 1e-3, "{x} {z}");
         assert!(!events.iter().any(|e| matches!(e, MobEvent::Push { .. })));
+    }
+
+    /// A saddled nautilus with a rider looking south (`+z`), from the trip's
+    /// own `MobType`, so no prepared resources are needed.
+    fn ridden() -> Mob {
+        let mut kind = crate::mobs::sensor_scan_tests::kind();
+        let k = Arc::make_mut(&mut kind);
+        k.id = "minecraft:nautilus".into();
+        k.species = Species::Nautilus;
+        k.width = 0.9;
+        k.height = 0.9;
+        let mut m = Mob::new(7, kind, Vec3::new(1.5, 40.0, -2.5), 0.0);
+        m.set_saddle(Some(crate::items::ItemStack::new("minecraft:saddle", 1)));
+        m.rider = Some(super::super::equine::Rider {
+            yaw: 0.0,
+            pitch: 0.0,
+            ..Default::default()
+        });
+        m
+    }
+
+    /// `AbstractNautilus.onPlayerJump` keeps the released bar's scale (0.4 to
+    /// 1.0, none while the dash clock runs) and `tickRidden` spends it:
+    /// `executeRidersJump` pushes along the rider's look at 0.5 on land,
+    /// starts the 40-tick clock, raises DASH and queues the dash sound.
+    #[test]
+    fn the_dash_runs_off_the_scale_the_released_bar_left() {
+        let mut m = ridden();
+        assert!(on_player_jump(&mut m, 100));
+        assert_eq!(m.rider.expect("the rider stays on").jump, 1.0);
+        super::super::equine::ridden_step(&mut m);
+        assert_eq!(
+            m.rider.expect("the rider stays on").jump,
+            0.0,
+            "the scale is spent"
+        );
+        assert_eq!(m.extra.anim_ticks, DASH_COOLDOWN);
+        assert!(m.extra.flag2, "DASH");
+        assert_eq!(m.extra.scratch[1], 1, "the dash sound plays next tick");
+        let k = 0.5 * m.movement_speed();
+        assert!(
+            (m.velocity.z - k).abs() < 1.0e-9 && m.velocity.x.abs() < 1.0e-9,
+            "a dash along +z: {:?} against {k}",
+            m.velocity
+        );
+        // A dash still in its cooldown takes nothing (`dashCooldown > 0`), and
+        // neither does an unsaddled nautilus.
+        assert!(!on_player_jump(&mut m, 50));
+        m.extra.anim_ticks = 0;
+        m.extra.saddled = false;
+        assert!(!on_player_jump(&mut m, 50));
+        assert_eq!(m.rider.expect("the rider stays on").jump, 0.0);
     }
 }

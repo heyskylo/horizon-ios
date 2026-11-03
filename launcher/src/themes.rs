@@ -10,24 +10,52 @@ use horizon_theme::{contrast, Blocks};
 use std::path::{Path, PathBuf};
 
 /// An accent: a hue in degrees, or none for Horizon's violet, whose tokens are the palette's own
-/// and stay untouched.
+/// and stay untouched; and for a colour typed as hex, that colour (the glass look wears it as
+/// is, the light look takes its hue).
 #[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct Accent {
     hue: Option<f32>,
+    rgb: Option<u32>,
 }
+
+/// The glass look's colour for each of [`Accent::ALL`]: the mockup's swatches.
+pub const SWATCHES: [u32; 7] = [
+    0x6b4bff, 0x2563eb, 0x0f766e, 0x15803d, 0xc2410c, 0xdc2626, 0xbe185d,
+];
 
 /// [`Accent::ALL`]'s names, in its order.
 const NAMES: [&str; 7] = ["violet", "blue", "teal", "green", "amber", "red", "pink"];
 
 impl Accent {
-    pub const VIOLET: Accent = Accent { hue: None };
-    pub const BLUE: Accent = Accent { hue: Some(212.) };
-    pub const TEAL: Accent = Accent { hue: Some(176.) };
-    pub const GREEN: Accent = Accent { hue: Some(140.) };
-    pub const AMBER: Accent = Accent { hue: Some(36.) };
-    pub const RED: Accent = Accent { hue: Some(356.) };
-    pub const PINK: Accent = Accent { hue: Some(322.) };
+    pub const VIOLET: Accent = Accent {
+        hue: None,
+        rgb: None,
+    };
+    pub const BLUE: Accent = Accent {
+        hue: Some(212.),
+        rgb: None,
+    };
+    pub const TEAL: Accent = Accent {
+        hue: Some(176.),
+        rgb: None,
+    };
+    pub const GREEN: Accent = Accent {
+        hue: Some(140.),
+        rgb: None,
+    };
+    pub const AMBER: Accent = Accent {
+        hue: Some(36.),
+        rgb: None,
+    };
+    pub const RED: Accent = Accent {
+        hue: Some(356.),
+        rgb: None,
+    };
+    pub const PINK: Accent = Accent {
+        hue: Some(322.),
+        rgb: None,
+    };
 
     pub const ALL: [Accent; 7] = [
         Self::VIOLET,
@@ -43,11 +71,49 @@ impl Accent {
     pub fn custom(hue: f32) -> Self {
         Self {
             hue: Some(hue.rem_euclid(360.)),
+            rgb: None,
         }
     }
 
-    /// Its name in `settings.json` and on the command line: a named hue's, else its degrees.
+    /// A colour (`0xrrggbb`): one of the swatches is its named accent.
+    pub fn from_rgb(rgb: u32) -> Self {
+        let rgb = rgb & 0xff_ffff;
+        match SWATCHES.iter().position(|&c| c == rgb) {
+            Some(i) => Self::ALL[i],
+            None => Self {
+                hue: Some(hsl(rgb).0),
+                rgb: Some(rgb),
+            },
+        }
+    }
+
+    /// The colour the glass look wears: the one typed, a named accent's swatch, else the hue at
+    /// the violet's saturation and lightness.
+    pub fn rgb(self) -> u32 {
+        if let Some(rgb) = self.rgb {
+            return rgb;
+        }
+        match (Self::ALL.iter().position(|a| *a == self), self.hue) {
+            (Some(i), _) => SWATCHES[i],
+            (None, Some(hue)) => {
+                let (_, s, l) = hsl(SWATCHES[0]);
+                from_hsl(hue, s, l)
+            }
+            (None, None) => SWATCHES[0],
+        }
+    }
+
+    /// [`rgb`](Self::rgb) as `#rrggbb`.
+    pub fn hex(self) -> String {
+        format!("#{:06x}", self.rgb())
+    }
+
+    /// Its name in `settings.json` and on the command line: a named hue's, a typed colour's
+    /// `#rrggbb`, else its degrees.
     pub fn name(self) -> String {
+        if self.rgb.is_some() {
+            return self.hex();
+        }
         let named = Self::ALL
             .iter()
             .position(|a| *a == self)
@@ -58,9 +124,15 @@ impl Accent {
         })
     }
 
-    /// A name, or a hue in degrees.
+    /// A name, `#rrggbb`, or a hue in degrees.
     pub fn parse(name: &str) -> Option<Self> {
         let name = name.trim().to_ascii_lowercase();
+        if let Some(hex) = name.strip_prefix('#') {
+            return (hex.len() == 6 && hex.bytes().all(|b| b.is_ascii_hexdigit()))
+                .then(|| u32::from_str_radix(hex, 16).ok())
+                .flatten()
+                .map(Self::from_rgb);
+        }
         let name = if name == "purple" || name == "default" {
             "violet"
         } else {

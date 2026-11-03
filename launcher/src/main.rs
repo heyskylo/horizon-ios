@@ -19,6 +19,7 @@ mod frame;
 mod game_tools;
 mod github_mods_page;
 mod glass;
+mod glass_account;
 mod glass_home;
 mod glass_home_lists;
 mod glass_home_mods;
@@ -26,7 +27,10 @@ mod glass_home_packs;
 mod glass_home_tabs;
 mod glass_instance;
 mod glass_instance_java;
+mod glass_notes;
+mod glass_settings;
 mod glass_ui;
+mod glass_versions;
 mod home;
 mod home_tabs;
 mod import_page;
@@ -67,6 +71,7 @@ mod switch_page;
 mod theme;
 mod themes_page;
 mod titlebar;
+mod wardrobe_page;
 mod while_playing;
 mod worlds_page;
 
@@ -100,6 +105,8 @@ enum Page {
     /// Mods, resource packs and modpacks (imported ones and the browser's).
     Mods,
     Servers,
+    /// What the player wears (`wardrobe_page.rs`), with the cosmetics flag on.
+    Wardrobe,
     Notes,
     Settings,
 }
@@ -114,6 +121,7 @@ impl Page {
         match std::env::var("HORIZON_LAUNCHER_PAGE").as_deref() {
             Ok("mods" | "modpacks" | "resourcepacks" | "shaders" | "datapacks") => Page::Mods,
             Ok("servers") => Page::Servers,
+            Ok("wardrobe") if horizon_cosmetics::enabled() => Page::Wardrobe,
             Ok("versions") => Page::Versions,
             Ok("notes") => Page::Notes,
             Ok("settings") => Page::Settings,
@@ -123,14 +131,24 @@ impl Page {
 
     /// Every page, with its name and icon: the top bar shows all but Settings, which has its
     /// own button.
-    const ALL: [(Page, &'static str, &'static str); 6] = [
+    const ALL: [(Page, &'static str, &'static str); 7] = [
         (Page::Play, "Home", "home"),
         (Page::Mods, "Mods", "package"),
         (Page::Servers, "Servers", "server"),
+        (Page::Wardrobe, "Wardrobe", "user"),
         (Page::Versions, "Versions", "archive"),
         (Page::Notes, "Patch notes", "notes"),
         (Page::Settings, "Settings", "sliders"),
     ];
+
+    /// The pages the top bar shows: all but Settings, and the Wardrobe only with cosmetics on.
+    fn in_top_bar() -> impl Iterator<Item = (Page, &'static str, &'static str)> {
+        Self::ALL.into_iter().filter(|(page, ..)| match page {
+            Page::Settings => false,
+            Page::Wardrobe => horizon_cosmetics::enabled(),
+            _ => true,
+        })
+    }
 }
 
 /// The launcher's own update, as the footer and Settings show it.
@@ -184,6 +202,8 @@ struct Launcher {
     /// How many times the page changed, for the page transition.
     switches: usize,
     content_scroll: Scrollbar,
+    /// The glass Settings page's own scroll: its sections beside their list.
+    settings_pane: gpui::ScrollHandle,
     /// The rows of the page's long list (Versions, Patch notes) last drawn.
     long_list: cull::Cull,
     opening: Option<Opening>,
@@ -237,6 +257,8 @@ struct Launcher {
     native_log: native_log_page::NativeLog,
     confirm_remove: Option<String>,
     picker_open: bool,
+    /// Settings' any-colour swatch shows the hue strip (the glass look).
+    accent_strip: bool,
     /// Where the accent picker's hue strip is on screen (`themes_page.rs`), to map a click to a
     /// hue.
     hue_area: std::rc::Rc<std::cell::Cell<Option<Bounds<gpui::Pixels>>>>,
@@ -255,6 +277,12 @@ struct Launcher {
     menu_closed_at: Option<Point<Pixels>>,
     /// Settings > Account's skin panel for an offline name (`skin_page.rs`).
     skin: Option<skin_page::SkinPanel>,
+    /// The Wardrobe page's account and outfit (`wardrobe_page.rs`).
+    wardrobe: Option<wardrobe_page::Wardrobe>,
+    /// Ask the service again on the next draw of the Wardrobe (set by each visit).
+    wardrobe_reload: bool,
+    /// Work the look out again on the next frame (a launcher theme put on or taken off).
+    restyle: bool,
     /// Why the last picture for Home's background was refused.
     background_error: Option<String>,
     settings: Settings,
@@ -492,6 +520,7 @@ impl Launcher {
             page: Page::from_env(),
             switches: 0,
             content_scroll: Scrollbar::default(),
+            settings_pane: gpui::ScrollHandle::new(),
             long_list: cull::Cull::default(),
             opening: (!settings.skip_opening).then(|| {
                 let focus = cx.focus_handle();
@@ -529,6 +558,7 @@ impl Launcher {
             native_log: Default::default(),
             confirm_remove: None,
             picker_open: false,
+            accent_strip: false,
             hue_area: std::rc::Rc::new(std::cell::Cell::new(None)),
             hue_dragging: false,
             language_menu: false,
@@ -537,6 +567,9 @@ impl Launcher {
             look: horizon_theme::glass::Glass::default_look(),
             menu_closed_at: None,
             skin: None,
+            wardrobe: None,
+            wardrobe_reload: false,
+            restyle: horizon_cosmetics::enabled(),
             background_error: None,
             args_input: line_edit::LineEdit::new(settings.game_args.clone(), 1024, 38),
             args_focused: false,
@@ -683,6 +716,11 @@ impl Launcher {
         if std::env::var("HORIZON_LAUNCHER_PAGE").as_deref() == Ok("edit-instance") {
             this.open_instance_dialog(this.selected_instance().cloned());
         }
+        if cfg!(debug_assertions)
+            && std::env::var("HORIZON_LAUNCHER_PAGE").as_deref() == Ok("wardrobe")
+        {
+            this.wardrobe_preview();
+        }
         // What the game and the launcher kept, if the player allows it and there is a server.
         telemetry::send_in_background();
         telemetry::watch_playing(this.tx.clone());
@@ -752,6 +790,7 @@ impl Launcher {
             self.load_auth_statuses(false);
         }
         self.load_profile_heads();
+        self.wardrobe_reload |= page == Page::Wardrobe;
         if page != self.page {
             self.page = page;
             self.switches += 1;
@@ -915,7 +954,10 @@ impl Launcher {
         self.perf.tick();
         match self.bench.as_mut().map(|b| b.tick(&self.perf)) {
             Some(perf::Step::Go(page)) => {
-                self.go(Page::ALL[page % Page::ALL.len()].0);
+                let pages: Vec<Page> = (Page::ALL.iter().map(|p| p.0))
+                    .filter(|p| *p != Page::Wardrobe || horizon_cosmetics::enabled())
+                    .collect();
+                self.go(pages[page % pages.len()]);
                 changed = true;
             }
             Some(perf::Step::Scroll) => {
@@ -1958,6 +2000,9 @@ fn button(
     let id: SharedString = id.into();
     let label: SharedString = label.into();
     let label = SharedString::from(tr(&label).to_string());
+    if t.dark {
+        return glass_ui::button(id, label, kind, t);
+    }
     let t = *t;
     let hover = match kind {
         Kind::Primary => t.on_face.opacity(0.10),
@@ -2068,6 +2113,10 @@ fn sync_system_clipboard(text: String) {
 
 /// An on/off switch: a square knob sliding in a sunk track that turns violet when on.
 fn switch(id: impl Into<SharedString>, on: bool, t: &Theme) -> Stateful<Div> {
+    if t.dark {
+        let look = glass_ui::look();
+        return glass_ui::toggle(id, on, look.accent, look.on_accent, t);
+    }
     let t = *t;
     let id: SharedString = id.into();
     let knob = if on { t.on_face } else { t.muted };
@@ -2105,6 +2154,9 @@ fn switch(id: impl Into<SharedString>, on: bool, t: &Theme) -> Stateful<Div> {
 
 /// A section's title inside a page: a pixel icon in the accent and the name in the pixel face.
 fn section_title(label: &'static str, icon: &'static str, t: &Theme) -> Div {
+    if glass_ui::flat() {
+        return glass_ui::card_heading(tr(label)).px(px(16.)).pt(px(12.));
+    }
     div()
         .flex()
         .items_center()
@@ -2125,6 +2177,9 @@ fn segments<T: Copy + PartialEq + 'static>(
     t: &Theme,
     on_pick: impl Fn(T, &mut Window, &mut App) + Clone + 'static,
 ) -> Stateful<Div> {
+    if t.dark {
+        return glass_ui::segments(id, options, current, t, on_pick);
+    }
     let t = *t;
     div()
         .id(id)
@@ -2262,6 +2317,9 @@ fn disabled(b: Stateful<Div>) -> Stateful<Div> {
 
 /// A page's title in the pixel face and one line on what it is for.
 fn page_header(title: &str, description: &str, t: &Theme) -> Div {
+    if t.dark {
+        return glass_ui::page_head(tr(title), tr(description));
+    }
     div()
         .flex()
         .flex_col()
@@ -2298,6 +2356,9 @@ fn index_row(
     right: Option<AnyElement>,
     t: &Theme,
 ) -> Div {
+    if glass_ui::flat() {
+        return glass_ui::setting_row(name, detail, right);
+    }
     slot_row(None, name, detail, right, t)
 }
 
@@ -2309,6 +2370,16 @@ fn slot_row(
     right: Option<AnyElement>,
     t: &Theme,
 ) -> Div {
+    if glass_ui::flat() {
+        return div()
+            .flex()
+            .items_center()
+            .gap(px(14.))
+            .px(px(16.))
+            .py(px(12.))
+            .children(slot.map(|s| s.rounded(px(8.)).overflow_hidden()))
+            .child(glass_ui::setting_row(name, detail, right).p_0().flex_1());
+    }
     blocks::panel(t)
         .flex()
         .items_center()
@@ -2426,6 +2497,12 @@ fn thousands(n: u64) -> String {
 
 /// A mono line in upper case: the status above a title, the footer's links.
 fn caps(s: impl AsRef<str>) -> Div {
+    // The glass look writes these as the mockup's small headings (`h3`): 13 px, medium.
+    if glass_ui::on() {
+        return glass_ui::text(13., FontWeight::MEDIUM, horizon_theme::glass::ink::BODY)
+            .line_height(px(19.5))
+            .child(s.as_ref().to_string());
+    }
     text(theme::MICRO).child(s.as_ref().to_uppercase())
 }
 
@@ -2458,10 +2535,7 @@ impl Launcher {
             .flex_wrap()
             .items_center()
             .gap(px(4.));
-        for (page, label, _) in Page::ALL {
-            if page == Page::Settings {
-                continue;
-            }
+        for (page, label, _) in Page::in_top_bar() {
             nav = nav.child(
                 shell::tab(format!("nav-{label}"), tr(label), self.page == page, &t).on_click(
                     cx.listener(move |this, _: &ClickEvent, _, cx| {
@@ -3511,8 +3585,6 @@ impl Launcher {
         };
         let mono = |s: String| div().font_family(theme::MONO).child(s).into_any_element();
         let plain = |s: &str| div().child(tr(s).to_string()).into_any_element();
-        let (accounts, n) = self.account_rows(cx);
-        let (offline, n) = self.offline_rows(n, cx);
         let appearance = segments(
             "appearance",
             &[
@@ -3535,6 +3607,24 @@ impl Launcher {
                 }
             },
         );
+        if t.dark {
+            return self.glass_settings(
+                glass_settings::Built {
+                    install: toggle,
+                    prune,
+                    opening,
+                    menu_entry,
+                    appearance: appearance.into_any_element(),
+                    horizon,
+                    horizon_action,
+                    launcher,
+                    launcher_action,
+                },
+                cx,
+            );
+        }
+        let (accounts, n) = self.account_rows(cx);
+        let (offline, n) = self.offline_rows(n, cx);
         let group = |label: &'static str, icon: &'static str| {
             section_title(label, icon, &t).mt(px(20.)).mb(px(12.))
         };
@@ -3892,6 +3982,23 @@ impl Launcher {
     /// rows are numbered from 01; returns them and how many there are.
     fn account_rows(&mut self, cx: &mut Context<Self>) -> (Div, usize) {
         let t = self.theme;
+        let (mut rows, mut n) = self.microsoft_rows(cx);
+        n += 1;
+        let (title, detail, action) = self.sign_in_parts(cx);
+        rows = rows.child(index_row(
+            n,
+            title,
+            Some(detail.into_any_element()),
+            action,
+            &t,
+        ));
+        (rows, n)
+    }
+
+    /// The Microsoft accounts signed in here: each one's head, name and state, Play as,
+    /// Refresh and Sign out.
+    fn microsoft_rows(&mut self, cx: &mut Context<Self>) -> (Div, usize) {
+        let t = self.theme;
         let mut rows = div().flex().flex_col();
         let mut n = 0;
         let selected = self.accounts.selected.clone();
@@ -4012,6 +4119,13 @@ impl Launcher {
                 &t,
             ));
         }
+        (rows, n)
+    }
+
+    /// Adding a Microsoft account, or signing one in again: what the row is called, what is
+    /// happening (the code to enter, a problem), and its buttons.
+    fn sign_in_parts(&self, cx: &mut Context<Self>) -> (String, Div, Option<AnyElement>) {
+        let t = self.theme;
         let configured = account::client_id().is_some();
         let busy = matches!(
             self.sign_in_state,
@@ -4138,20 +4252,12 @@ impl Launcher {
             }
             Some(actions.into_any_element())
         };
-        n += 1;
         let title = match &self.sign_in_target {
             Some(target) => trf("Sign in again as {name}", &[("name", &target.name)]),
             None if self.accounts.accounts.is_empty() => tr("Microsoft account").to_owned(),
             None => tr("Another account").to_owned(),
         };
-        rows = rows.child(index_row(
-            n,
-            title,
-            Some(detail.into_any_element()),
-            action,
-            &t,
-        ));
-        (rows, n)
+        (title, detail, action)
     }
 
     /// Join a friend: a code field and Join, which starts the game straight
@@ -4358,6 +4464,9 @@ impl Launcher {
                 .map(|(_, n)| *n)
         };
         let used: u64 = self.installed.iter().filter_map(on_disk).sum();
+        if t.dark {
+            return self.glass_versions(&on_disk, used, cx);
+        }
         // The list's own action at the end of the line above it: a build the player has.
         let import: AnyElement = if self.importing_build {
             div()
@@ -4585,6 +4694,9 @@ impl Launcher {
 
     fn notes_page(&mut self, cx: &mut Context<Self>) -> Div {
         let t = self.theme;
+        if t.dark {
+            return self.glass_notes(cx);
+        }
         let sponsor = (!self.links.sponsor.is_empty()).then(|| {
             plate(&t)
                 .flex()
@@ -4708,19 +4820,29 @@ impl Launcher {
 /// A thin bar. A known fraction eases from its previous value; an unknown one shuttles slowly.
 /// Progress: a plate-coloured track filling with the accent; work of unknown length shuttles.
 fn progress_bar(fraction: Option<(f32, f32)>, t: &Theme) -> Div {
-    // Night: a thin accent line on a plate's colour, square like the art.
+    // Night: a thin accent line on a plate's colour, square like the art. Glass: the mockup's
+    // `Bar`, 4 px and round, in the accent's soft shade on white at 12 %.
     let n = t.night;
     let bar = div()
         .absolute()
         .top_0()
         .bottom_0()
-        .bg(plate::alpha(n.accent, 1.));
+        .bg(plate::alpha(n.accent, 1.))
+        .when(t.dark, |d| {
+            d.rounded_full()
+                .bg(glass_ui::color(glass_ui::look().accent_soft))
+        });
     let track = div()
         .relative()
         .flex_1()
         .h(px(6.))
         .bg(plate::alpha(n.card_hi, n.card_hi_alpha))
-        .overflow_hidden();
+        .overflow_hidden()
+        .when(t.dark, |d| {
+            d.h(px(4.))
+                .rounded_full()
+                .bg(glass_ui::white(horizon_theme::glass::fill::ACTIVE))
+        });
     match fraction {
         Some((from, to)) => {
             let (from, to) = (from.clamp(0.02, 1.), to.clamp(0.02, 1.));
@@ -4754,6 +4876,13 @@ impl Render for Launcher {
                 .children(titlebar::render(&t, window))
                 .child(specimen::render(&t));
         }
+        if std::mem::take(&mut self.restyle) {
+            self.theme = self.settings_theme(window);
+        }
+        glass_ui::set_on(self.theme.dark);
+        self.look = self.theme.look;
+        glass_ui::set_look(self.look);
+        glass::set_look(self.look);
         self.scale = window.scale_factor();
         self.perf.frame();
         if self.bench.as_ref().is_some_and(perf::Bench::scrolling) {
@@ -4772,6 +4901,7 @@ impl Render for Launcher {
             Page::Versions => self.versions_page(cx),
             Page::Mods => self.mods_page(cx),
             Page::Servers => self.servers_page(cx),
+            Page::Wardrobe => self.wardrobe_page(cx),
             Page::Notes => self.notes_page(cx),
             Page::Settings => self.settings_page(cx),
         };
@@ -4893,12 +5023,20 @@ impl Render for Launcher {
                                                     .w_full()
                                                     .min_w_0()
                                                     .px(px(theme::PAGE_GUTTER))
-                                                    .pt(px(if self.page == Page::Play {
+                                                    // The glass look's page heads hold their
+                                                    // own 40 px above the title.
+                                                    .pt(px(if self.page == Page::Play || t.dark {
                                                         0.
                                                     } else {
                                                         28.
                                                     }))
                                                     .pb(px(48.))
+                                                    // The glass Settings page scrolls its own
+                                                    // pane under a still title.
+                                                    .when(
+                                                        t.dark && self.page == Page::Settings,
+                                                        |d| d.h_full().pb(px(14.)),
+                                                    )
                                                     .child(content),
                                             ),
                                         &t,

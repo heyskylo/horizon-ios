@@ -407,6 +407,52 @@ impl Mob {
     pub fn eye_y(&self) -> f64 {
         self.position.y + self.eye_height()
     }
+    /// `LivingEntity.onClimbable` (`Spider.onClimbable`: the climbing flag):
+    /// the block it stands in is `#minecraft:climbable` (vines, ladders,
+    /// scaffolding...), or an open trapdoor over a ladder facing the same way
+    /// (`trapdoorUsableAsLadder`). A mob gliding (`isFallFlying`) through a
+    /// `#minecraft:can_glide_through` block (vines) is not on it: that test
+    /// comes first.
+    pub fn on_climbable(&self, w: &MobWorld) -> bool {
+        if self.kind.flags.climber {
+            return self.climbing;
+        }
+        let (x, y, z) = (
+            self.position.x.floor() as i32,
+            self.position.y.floor() as i32,
+            self.position.z.floor() as i32,
+        );
+        let state = w.world.block(x, y, z);
+        let facts = w.facts.get(state);
+        if self.extra.fall_flying && w.has_tag("minecraft:can_glide_through", &facts.name) {
+            return false;
+        }
+        if w.has_tag("minecraft:climbable", &facts.name) {
+            return true;
+        }
+        facts.has_class("TrapDoorBlock")
+            && w.prop(x, y, z, "open") == Some("true")
+            && w.block_name(x, y - 1, z) == "minecraft:ladder"
+            && w.prop(x, y - 1, z, "facing") == w.prop(x, y, z, "facing")
+    }
+    /// `LivingEntity.getScale`: the `minecraft:scale` the server sent on this
+    /// living entity (`extra.model_scale`, 0 when none came), through the
+    /// species' `sanitizeScale` override. Every box, eye height, seat and
+    /// shadow radius takes it.
+    pub fn model_scale(&self) -> f32 {
+        let scale = if self.extra.model_scale > 0.0 {
+            self.extra.model_scale
+        } else {
+            1.0
+        };
+        match self.species() {
+            // HappyGhast.sanitizeScale: min(scale, 1), it never grows.
+            super::Species::HappyGhast => scale.min(1.0),
+            // Shulker.sanitizeScale: min(scale, 3).
+            super::Species::Shulker => scale.min(3.0),
+            _ => scale,
+        }
+    }
     /// Entity dimensions: the type's, a class's BABY_DIMENSIONS, or the
     /// slime size scaling.
     /// `EntityDimensions` (float width, height and eye height) widened to double.
@@ -427,15 +473,12 @@ impl Mob {
     /// `Pose.LONG_JUMPING` (what `LongJumpUtil` checks an arc with).
     pub fn awake_dims_in(&self, long_jumping: bool) -> (f64, f64, f64) {
         let k = &self.kind;
-        // Avatar.POSES: a player's or mannequin's box follows its pose, and
-        // LivingEntity.getDimensions scales it by `minecraft:scale`
-        // (`getScale`): a fake player's giant NPC is clickable on its body.
+        // `LivingEntity.getDimensions` is `getDefaultDimensions(pose).scale(
+        // getScale())` on every living entity: the species' box (a player's or
+        // mannequin's follows its pose, Avatar.POSES) times its
+        // `minecraft:scale` (`getScale`), width, height and eye height alike.
+        let scale = self.model_scale();
         if matches!(&*k.id, "minecraft:player" | "minecraft:mannequin") {
-            let scale = if self.extra.model_scale > 0.0 {
-                self.extra.model_scale
-            } else {
-                1.0
-            };
             let d = self.extra.avatar_pose.dimensions(scale);
             return (
                 f64::from(d.width),
@@ -484,6 +527,19 @@ impl Mob {
             let s = self.extra.size as f32;
             (w, h, e) = (w * s, h * s, e * s);
         }
+        // Shulker.getDefaultDimensions: the last scale, over everything
+        // above, is the lid opening upward on a shell attached to the floor.
+        if k.species == super::Species::Shulker
+            && let Some(s) = super::shulker::peek_height_scale(self)
+        {
+            (h, e) = (h * s, e * s);
+        }
+        // Salmon.getDefaultDimensions: the variant's bounding box scale (small
+        // 0.5, medium 1.0, large 1.5) over the whole fish box.
+        if k.species == super::Species::Salmon {
+            let s = super::aquatic::salmon_scale(self.extra.variant);
+            (w, h, e) = (w * s, h * s, e * s);
+        }
         // PolarBear.getDefaultDimensions: the rear-up animation scales the box
         // by (1, 1 + clientSideStandAnimation / 6), so a bear at full height is
         // twice as tall, with its eyes twice as high and the same width.
@@ -491,7 +547,13 @@ impl Mob {
             let f = super::polar_bear::stand_box_scale(self);
             (h, e) = (h * f, e * f);
         }
-        (f64::from(w), f64::from(h), f64::from(e))
+        // `EntityDimensions.scale(getScale())`: width and height by the scale,
+        // the eye height by its height factor (the same one).
+        (
+            f64::from(w * scale),
+            f64::from(h * scale),
+            f64::from(e * scale),
+        )
     }
     pub fn eye_height(&self) -> f64 {
         self.dims().2
@@ -662,6 +724,19 @@ impl Mob {
         // Entity.checkSupportingBlock
         self.supporting = self.supporting_block(w, moved);
         self.movement_emission(w, moved, events);
+        // Entity.move's last step: soul sand, honey and the like slow the
+        // horizontal speed of whatever the mob stands in or on.
+        let factor = self.block_speed_factor(w);
+        self.velocity = horizon_world::entity_move::scale_by_block_speed(self.velocity, factor);
+    }
+    /// `Entity.getBlockSpeedFactor` at the mob's feet.
+    fn block_speed_factor(&self, w: &MobWorld) -> f32 {
+        crate::motion::block_speed_factor_at(
+            w.world,
+            w.movement,
+            self.position,
+            self.supporting.map(|[x, y, z]| BlockPos::new(x, y, z)),
+        )
     }
     /// `Entity.applyEffectsFromBlocks` as `LivingEntity.aiStep` runs it, after
     /// `travel` has moved the mob and applied the drag of its fluid (not inside
@@ -837,9 +912,22 @@ impl Mob {
                 source: self.id,
                 state: horizon_world::registry::BlockStateId(0),
             });
-        } else if w.facts.is_air(state) && self.species() == super::Species::Parrot {
-            // Entity.processFlappingMovement: a move ending in the air.
-            super::parrot::process_flapping(self, events);
+        } else if w.facts.is_air(state) {
+            // Entity.processFlappingMovement: onFlap runs before the game
+            // event. Silent birds still emit it, independently of sound.
+            let flapped = match self.species() {
+                super::Species::Chicken => super::farm::chicken_process_flapping(self),
+                super::Species::Parrot => super::parrot::process_flapping(self, events),
+                _ => false,
+            };
+            if flapped {
+                events.push(MobEvent::GameEvent {
+                    event: "minecraft:flap",
+                    at: [self.position.x, self.position.y, self.position.z],
+                    source: self.id,
+                    state: horizon_world::registry::BlockStateId(0),
+                });
+            }
         }
     }
     /// `Entity.nextStep`: the next whole metre walked; a warden's steps come
@@ -1248,6 +1336,15 @@ impl Mob {
     fn air_drag_modifier(&self) -> f32 {
         super::sulfur_cube::physics(self).map_or(1.0, |a| a.air_drag_modifier.clamp(0.0, 2048.0))
     }
+    /// `LivingEntity.handleOnClimbable` for a mob, which is never a `Player`
+    /// that holds still on a ladder: the move across clamped to 0.15 either
+    /// way and the fall to 0.15, both the float 0.15F (`Mth.clamp`,
+    /// `Math.max`, which keep a NaN).
+    fn climbable_velocity(v: Vec3) -> Vec3 {
+        let limit = f64::from(0.15f32);
+        let y = if v.y.is_nan() { v.y } else { v.y.max(-limit) };
+        Vec3::new(v.x.clamp(-limit, limit), y, v.z.clamp(-limit, limit))
+    }
     fn travel_in_air(&mut self, w: &MobWorld, input: Vec3, events: &mut Vec<MobEvent>) {
         let friction = if self.on_ground {
             // FRICTION_MODIFIER scales the block's slipperiness.
@@ -1259,21 +1356,15 @@ impl Mob {
         };
         let speed = self.friction_speed(friction);
         self.move_relative(speed, input);
-        if self.kind.flags.climber && self.horizontal_collision {
-            // Spider.onClimbable: handleOnClimbable clamps and resets the fall.
+        // LivingEntity.handleRelativeFrictionAndCalculateMovement:
+        // handleOnClimbable, the move, then the climb up a wall.
+        if self.on_climbable(w) {
             self.fall_distance = 0.0;
-            self.velocity = Vec3::new(
-                self.velocity.x.clamp(-0.15, 0.15),
-                self.velocity.y.max(-0.15),
-                self.velocity.z.clamp(-0.15, 0.15),
-            );
+            self.velocity = Self::climbable_velocity(self.velocity);
         }
         self.do_move(w, events);
         let mut movement = self.velocity;
-        if self.kind.flags.climber
-            && (self.horizontal_collision || self.ai.jumping)
-            && self.climbing
-        {
+        if (self.horizontal_collision || self.ai.jumping) && self.on_climbable(w) {
             movement.y = 0.2;
         }
         let mut y = movement.y;
@@ -1477,6 +1568,14 @@ impl Mob {
                 self.velocity.x += f64::from(-trig::sin(angle)) * 0.2;
                 self.velocity.z += f64::from(trig::cos(angle)) * 0.2;
             }
+        }
+        // Sniffer.jumpFromGround: a hop the move control asked for, taken from
+        // nearly standing still, carries a tenth of a block forward.
+        if self.species() == super::Species::Sniffer
+            && self.ai.mov.speed_modifier > 0.0
+            && self.velocity.horizontal_distance_squared() < 0.01
+        {
+            self.move_relative(0.1, Vec3::new(0.0, 0.0, 1.0));
         }
         crate::motion::native_living_jump(self.id, &self.kind.id);
     }
@@ -2051,6 +2150,46 @@ mod tests {
         );
     }
 
+    /// `Entity.move`'s last step, `getBlockSpeedFactor`: a mob sliding on soul
+    /// sand (0.4) or honey (0.4) keeps 40% of its horizontal speed each move,
+    /// on stone it keeps all of it, and its vertical speed is untouched.
+    #[test]
+    fn a_mob_on_soul_sand_or_honey_is_slowed_by_the_move() {
+        for (block, factor) in [
+            ("minecraft:stone", 1.0),
+            ("minecraft:soul_sand", 0.4),
+            ("minecraft:honey_block", 0.4),
+        ] {
+            let build =
+                |world: &mut crate::world::World,
+                 registry: &horizon_world::registry::BlockRegistry| {
+                    world.chunks.insert(
+                        (0, 0),
+                        std::sync::Arc::new(crate::chunk::Chunk::empty(0, 0)),
+                    );
+                    let id = registry.default_state(block).unwrap();
+                    for x in 0..=4 {
+                        for z in 0..=2 {
+                            world.set(x, 0, z, id).unwrap();
+                        }
+                    }
+                };
+            crate::mobs::world::with_built_test_world(&[], build, |w, types| {
+                let kind = std::sync::Arc::new(types.types["minecraft:zombie"].clone());
+                let mut m = Mob::new(1, kind, Vec3::new(0.5, 1.0, 1.5), 0.0);
+                m.on_ground = true;
+                m.velocity = Vec3::new(0.2, 0.0, 0.0);
+                m.do_move(w, &mut Vec::new());
+                let expected = f64::from(factor as f32) * 0.2;
+                assert!(
+                    (m.velocity.x - expected).abs() < 1.0e-9,
+                    "{block}: velocity.x {} expected {expected}",
+                    m.velocity.x
+                );
+            });
+        }
+    }
+
     /// `Entity.collectColliders`: the world border's wall stops a mob's move
     /// as it stops the player's (#7080). A border of size 10 around (8, 8)
     /// has its east wall at x = 13.
@@ -2115,5 +2254,258 @@ mod tests {
         // The mob stands over block (4, 7) but its feet block is (5, 7).
         let straddling = landing_dust_at(Vec3::new(5.1, 65.0, 7.5), [4, 64, 7]);
         assert_eq!(straddling, Vec3::new(5.0, 65.0, 7.5));
+    }
+    /// `LivingEntity.getDimensions` is `getDefaultDimensions(pose).scale(
+    /// getScale())` on every living entity, not only on a player or mannequin
+    /// whose pose sets the box (`Avatar.POSES`): a cow's `EntityType.COW` box
+    /// (0.9 x 1.4, its eyes at 1.3) at `minecraft:scale` 2 is 1.8 x 2.8 with
+    /// the eyes at 2.6, and the box `Mob.bounds` hands the hitbox raycast, the
+    /// attack range and the leash pins grows with it.
+    #[test]
+    fn a_scale_attribute_grows_every_living_entitys_box() {
+        let close = |a: f64, b: f64| (a - b).abs() < 1e-6;
+        let mut cow = Mob::new(1, crate::mobs::sensor_scan_tests::kind(), Vec3::ZERO, 0.0);
+        let (w, h, e) = cow.dims();
+        assert!(
+            close(w, 0.9) && close(h, 1.4) && close(e, 1.3),
+            "no scale: {w}x{h}x{e}"
+        );
+        cow.extra.model_scale = 2.0;
+        let (w, h, e) = cow.dims();
+        assert!(
+            close(w, 1.8) && close(h, 2.8) && close(e, 2.6),
+            "scale 2: {w}x{h}x{e}"
+        );
+        let b = cow.bounds();
+        assert!(
+            close(b.min_position().x, -0.9)
+                && close(b.max_position().x, 0.9)
+                && close(b.max_position().y, 2.8),
+            "scale 2 box: {b:?}"
+        );
+        // `RangedAttribute("attribute.name.scale", 1.0, 0.0625, 16.0)`: its
+        // floor shrinks the cow to 0.05625 x 0.0875, eyes at 0.08125.
+        cow.extra.model_scale = 0.0625;
+        let (w, h, e) = cow.dims();
+        assert!(
+            close(w, 0.05625) && close(h, 0.0875) && close(e, 0.08125),
+            "scale 0.0625: {w}x{h}x{e}"
+        );
+    }
+    /// `LivingEntity.getDimensions` answers a sleeping entity with
+    /// `SLEEPING_DIMENSIONS` before it ever reaches `getScale`: a sleeper's
+    /// 0.2 box and eye height stay 0.2 whatever its `minecraft:scale`.
+    #[test]
+    fn a_sleeping_mob_keeps_its_bed_box_unscaled() {
+        use crate::mobs::Species;
+        let mut kind = (*crate::mobs::sensor_scan_tests::kind()).clone();
+        kind.id = "minecraft:villager".into();
+        kind.species = Species::Villager;
+        let mut villager = Mob::new(1, std::sync::Arc::new(kind), Vec3::ZERO, 0.0);
+        // Villager.sleeping: the bed's facing code, not 0.
+        villager.extra.ints[1] = 1;
+        villager.extra.model_scale = 4.0;
+        let (w, h, e) = villager.dims();
+        let close = |a: f64, b: f64| (a - b).abs() < 1e-6;
+        assert!(
+            close(w, 0.2) && close(h, 0.2) && close(e, 0.2),
+            "asleep: {w}x{h}x{e}"
+        );
+    }
+    /// `LivingEntity.sanitizeScale`: a shulker takes at most 3 and a happy
+    /// ghast at most 1, and the box takes the capped value (`EntityType.SHULKER`
+    /// is 1 x 1 with its eyes at 0.5).
+    #[test]
+    fn a_species_caps_the_scale_it_takes() {
+        use crate::mobs::Species;
+        let mob = |id: &str, species: Species| {
+            let mut kind = (*crate::mobs::sensor_scan_tests::kind()).clone();
+            kind.id = id.into();
+            kind.species = species;
+            (kind.width, kind.height, kind.eye_height) = (1.0, 1.0, 0.5);
+            Mob::new(1, std::sync::Arc::new(kind), Vec3::ZERO, 0.0)
+        };
+        let mut shulker = mob("minecraft:shulker", Species::Shulker);
+        shulker.extra.model_scale = 4.0;
+        assert_eq!(shulker.model_scale(), 3.0);
+        let (w, h, e) = shulker.dims();
+        let close = |a: f64, b: f64| (a - b).abs() < 1e-6;
+        assert!(
+            close(w, 3.0) && close(h, 3.0) && close(e, 1.5),
+            "shulker: {w}x{h}x{e}"
+        );
+        let mut ghast = mob("minecraft:happy_ghast", Species::HappyGhast);
+        ghast.extra.model_scale = 2.0;
+        assert_eq!(ghast.model_scale(), 1.0);
+        // Every other species takes the attribute as it came.
+        let mut cow = mob("minecraft:cow", Species::Cow);
+        cow.extra.model_scale = 4.0;
+        assert_eq!(cow.model_scale(), 4.0);
+    }
+    /// `Sniffer.jumpFromGround`: a hop the move control asked for, taken from
+    /// nearly standing still, carries the sniffer a tenth of a block along its
+    /// yaw (`moveRelative(0.1F, (0, 0, 1))`). A sniffer that already moves, one
+    /// the move control did not ask to move, and every other species keep the
+    /// hop they had.
+    #[test]
+    fn a_sniffers_hop_from_a_standstill_carries_it_forward() {
+        use crate::mobs::Species;
+        let sniffer = |speed: f64, sideways: f64| {
+            let mut kind = (*crate::mobs::sensor_scan_tests::kind()).clone();
+            kind.id = "minecraft:sniffer".into();
+            kind.species = Species::Sniffer;
+            kind.jump_strength = 0.42;
+            let mut m = Mob::new(1, std::sync::Arc::new(kind), Vec3::new(0.5, 64.0, 0.5), 0.0);
+            // `MoveControl.getSpeedModifier` and the speed it moves at.
+            m.ai.mov.speed_modifier = speed;
+            m.velocity = Vec3::new(0.0, 0.0, sideways);
+            m
+        };
+        // Yaw 0 faces south (+z), so the nudge lands on z.
+        let hop = |m: &mut Mob| {
+            let mut jumped = false;
+            if crate::mobs::world::with_test_world(&[], |w, _| m.jump_from_ground(w)) {
+                jumped = true;
+            }
+            jumped
+        };
+        let mut m = sniffer(1.0, 0.0);
+        if !hop(&mut m) {
+            return;
+        }
+        assert!(
+            (m.velocity.z - 0.1).abs() < 1.0e-6 && m.velocity.x.abs() < 1.0e-6,
+            "the hop goes forward: {:?}",
+            m.velocity
+        );
+        assert!(m.velocity.y > 0.0, "and it is still a hop");
+        // Already moving sideways: `horizontalDistanceSqr` is over the 0.01.
+        let mut moving = sniffer(1.0, 0.2);
+        assert!(hop(&mut moving));
+        assert!(
+            (moving.velocity.z - 0.2).abs() < 1.0e-6,
+            "{:?}",
+            moving.velocity
+        );
+        // The move control wanted nothing this tick.
+        let mut still = sniffer(0.0, 0.0);
+        assert!(hop(&mut still));
+        assert_eq!(still.velocity.z, 0.0);
+        // No other species gets the nudge.
+        let mut kind = (*crate::mobs::sensor_scan_tests::kind()).clone();
+        kind.jump_strength = 0.42;
+        let mut cow = Mob::new(1, std::sync::Arc::new(kind), Vec3::new(0.5, 64.0, 0.5), 0.0);
+        cow.ai.mov.speed_modifier = 1.0;
+        assert!(hop(&mut cow));
+        assert_eq!(cow.velocity.z, 0.0);
+    }
+
+    /// #8140: `LivingEntity.handleOnClimbable` slows any mob in vines, not
+    /// only a spider on a wall. A cow let go at rest moves before gravity
+    /// pulls it: 0, then 0.0784, then 0.155232 in open air ((v - 0.08) *
+    /// 0.98); in vines each move down from the third on is held to 0.15F,
+    /// and the fall distance, reset before each move, is that one move.
+    #[test]
+    fn a_mob_in_vines_slides_down_slowly() {
+        let run = |vines: bool| {
+            let mut out = None;
+            let build =
+                |world: &mut crate::world::World,
+                 registry: &horizon_world::registry::BlockRegistry| {
+                    let stone = registry.default_state("minecraft:stone").unwrap();
+                    let mut vine = registry
+                        .state(registry.default_state("minecraft:vine").unwrap())
+                        .unwrap()
+                        .clone();
+                    vine.properties.insert("south".into(), "true".into());
+                    let vine = registry.resolve(&vine).unwrap();
+                    world.chunks.insert(
+                        (0, 0),
+                        std::sync::Arc::new(crate::chunk::Chunk::empty(0, 0)),
+                    );
+                    world.set(1, 0, 1, stone).unwrap();
+                    for y in 1..=12 {
+                        world.set(1, y, 2, stone).unwrap();
+                        if vines {
+                            world.set(1, y, 1, vine).unwrap();
+                        }
+                    }
+                };
+            crate::mobs::world::with_built_test_world(&[], build, |w, types| {
+                let kind = std::sync::Arc::new(types.types["minecraft:cow"].clone());
+                let mut m = Mob::new(1, kind, Vec3::new(1.5, 10.0, 1.5), 0.0);
+                m.on_ground = false;
+                let mut drops = Vec::new();
+                for _ in 0..12 {
+                    let before = m.position.y;
+                    m.travel(w, Vec3::ZERO, &mut Vec::new());
+                    drops.push(before - m.position.y);
+                }
+                out = Some((drops, m.fall_distance));
+            });
+            out
+        };
+        let (Some((open, open_fall)), Some((vines, vine_fall))) = (run(false), run(true)) else {
+            return;
+        };
+        assert_eq!(open[0], 0.0, "open air, tick 1: {open:?}");
+        assert!(
+            (open[1] - 0.0784).abs() < 1.0e-6,
+            "open air, tick 2: {open:?}"
+        );
+        assert!(
+            (open[2] - 0.155232).abs() < 1.0e-6,
+            "open air, tick 3: {open:?}"
+        );
+        assert!(
+            open[11] > 0.5 && open_fall > 3.0,
+            "open air keeps speeding up: {open:?}"
+        );
+        let limit = f64::from(0.15f32);
+        assert_eq!(vines[0], 0.0, "vines, tick 1: {vines:?}");
+        assert!(
+            (vines[1] - 0.0784).abs() < 1.0e-6,
+            "vines, tick 2: {vines:?}"
+        );
+        for (tick, drop) in vines.iter().enumerate().skip(2) {
+            assert!(
+                (drop - limit).abs() < 1.0e-9,
+                "vines, tick {}: {vines:?}",
+                tick + 1
+            );
+        }
+        // Reset before the move, then the move's own drop: never more.
+        assert!(
+            (vine_fall - limit).abs() < 1.0e-9,
+            "the vines reset the fall each tick, got {vine_fall}"
+        );
+    }
+
+    /// `LivingEntity.onClimbable`: `isFallFlying` in a block of
+    /// `#minecraft:can_glide_through` (vines) answers false before the
+    /// climbable test; a ladder is not in that tag, so a glider still holds
+    /// on to it.
+    #[test]
+    fn a_gliding_mob_passes_through_vines_but_not_a_ladder() {
+        let build = |world: &mut crate::world::World,
+                     registry: &horizon_world::registry::BlockRegistry| {
+            world.chunks.insert(
+                (0, 0),
+                std::sync::Arc::new(crate::chunk::Chunk::empty(0, 0)),
+            );
+            let vine = registry.default_state("minecraft:vine").unwrap();
+            let ladder = registry.default_state("minecraft:ladder").unwrap();
+            world.set(1, 5, 1, vine).unwrap();
+            world.set(3, 5, 1, ladder).unwrap();
+        };
+        crate::mobs::world::with_built_test_world(&[], build, |w, types| {
+            let kind = std::sync::Arc::new(types.types["minecraft:zombie"].clone());
+            for (x, block, gliding_holds) in [(1.5, "vine", false), (3.5, "ladder", true)] {
+                let mut m = Mob::new(1, kind.clone(), Vec3::new(x, 5.0, 1.5), 0.0);
+                assert!(m.on_climbable(w), "{block}: climbable when not gliding");
+                m.extra.fall_flying = true;
+                assert_eq!(m.on_climbable(w), gliding_holds, "{block}: while gliding");
+            }
+        });
     }
 }

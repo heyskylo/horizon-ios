@@ -211,9 +211,9 @@ impl Game<'_> {
         arrow_events: &mut Vec<(Vec3, ArrowEvent)>,
     ) {
         // The mods see the projectiles where they will be, as `projectile_hit` does.
-        self.creatures.projectiles = std::mem::take(projectiles);
+        self.creatures.projectiles = std::mem::take(projectiles).into();
         let canceled = self.native_projectile_impacts(&impacts);
-        *projectiles = std::mem::take(&mut self.creatures.projectiles);
+        *projectiles = std::mem::take(&mut self.creatures.projectiles).into();
         if !canceled.contains(&true) {
             return;
         }
@@ -274,14 +274,6 @@ impl Game<'_> {
             p.owner = shooter;
         }
         let mut targets = self.projectile_targets();
-        if p.arrow.is_some()
-            || matches!(
-                p.kind,
-                horizon_client::projectiles::ProjectileKind::Snowball
-            )
-        {
-            targets.extend(self.vehicle_targets());
-        }
         if mob_shot || pvp {
             targets.extend(self.lan_projectile_targets());
         }
