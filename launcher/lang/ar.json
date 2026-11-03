@@ -189,6 +189,7 @@
   "New instance": "نسخة جديدة",
   "Loading filters": "جاري تحميل المرشحات",
   "Stopped": "متوقف",
+  "{mode} · stopped": "{mode} · متوقف",
   "Extra arguments for the game, passed through as-is (quotes group a word with spaces). Applies the next time the game starts.": "وسائط إضافية للعبة، تُمرر كما هي (علامات التنصيص تجموع الكلمات التي تحتوي على مسافات). تُطبق في المرة القادمة التي تبدأ فيها اللعبة.",
   "Horizon never turns on Funnel: the server isn't put on the public internet, only shared with the people you invite.": "لا يفعّل هورايزون ميزة Funnel أبدًا: لا يتم وضع الخادم على الإنترنت العام، بل يتم مشاركته فقط مع الأشخاص الذين تدعوهم.",
   "Minecraft folder": "مجلد ماين كرافت",
@@ -425,6 +426,7 @@
   "No version matches.": "لا يوجد إصدار مطابق.",
   "Invite a friend": "دعوة صديق",
   "Offline": "غير متصل",
+  "{online} of {max}": "{online} من {max}",
   "Shortcut": "اختصار",
   "Update to {version}": "التحديث إلى {version}",
   "{name} is off.": "{name} مُعطّل.",
@@ -1072,5 +1074,6 @@
   "Deleted {name}": "تم حذف {name}",
   "Launcher settings are back to their defaults": "عادت إعدادات المشغّل إلى قيمها الافتراضية",
   "Opened {path}": "تم فتح {path}",
-  "Saved {name}": "تم حفظ {name}"
+  "Saved {name}": "تم حفظ {name}",
+  "My Horizon": "Horizon الخاص بي"
 }
