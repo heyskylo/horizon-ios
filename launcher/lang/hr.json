@@ -1082,5 +1082,6 @@
   "just now": "upravo sada",
   "{count} min ago": "prije {count} min",
   "1 hour ago": "prije 1 sat",
-  "{count} hours ago": "prije {count} sati"
+  "{count} hours ago": "prije {count} sati",
+  "{count} on the official SMP": "{count} na službenom SMP-u"
 }

@@ -1082,5 +1082,6 @@
   "just now": "baru saja",
   "{count} min ago": "{count} mnt lalu",
   "1 hour ago": "1 jam lalu",
-  "{count} hours ago": "{count} jam lalu"
+  "{count} hours ago": "{count} jam lalu",
+  "{count} on the official SMP": "{count} di SMP resmi"
 }

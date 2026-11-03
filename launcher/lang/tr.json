@@ -1082,5 +1082,6 @@
   "just now": "az önce",
   "{count} min ago": "{count} dk önce",
   "1 hour ago": "1 saat önce",
-  "{count} hours ago": "{count} saat önce"
+  "{count} hours ago": "{count} saat önce",
+  "{count} on the official SMP": "resmi SMP'de {count}"
 }

@@ -193,7 +193,13 @@ impl Launcher {
         let official = self.official_players.map(|count| {
             link(
                 "official-players",
-                format!("· {} on the official SMP", thousands(count)),
+                format!(
+                    "· {}",
+                    trf(
+                        "{count} on the official SMP",
+                        &[("count", &thousands(count))]
+                    )
+                ),
             )
             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                 this.go(Page::Servers);

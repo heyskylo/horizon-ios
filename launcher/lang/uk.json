@@ -1082,5 +1082,6 @@
   "just now": "щойно",
   "{count} min ago": "{count} хв тому",
   "1 hour ago": "годину тому",
-  "{count} hours ago": "{count} год тому"
+  "{count} hours ago": "{count} год тому",
+  "{count} on the official SMP": "{count} на офіційному SMP"
 }
