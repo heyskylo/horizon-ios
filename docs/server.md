@@ -317,9 +317,11 @@ refuse. There is no `backups.before_update` setting: an update always backs up t
 - **Changes without opening the file.** `horizon-server config set KEY=VALUE...` (the launcher's Servers
   page uses it) writes through `toml_edit`, checks the result as `server.toml` is checked, and writes nothing
   if a value is wrong. On a running server it sends what vanilla changes live through its console:
-  `difficulty`, `defaultgamemode` and `whitelist on|off`; the backup settings apply at once because the
+  `difficulty`, `defaultgamemode` and `whitelist on|off`; `server.motd` and `server.max_players` go to the
+  game as the management protocol's `serversettings/motd/set` and `serversettings/max_players/set` do, so
+  the server list and the next logins use them at once; the backup settings apply at once because the
   supervisor reads them each time. Everything else waits for the next start, and the command says which. A
-  real hot reload (view distance, MOTD) needs engine support and comes later.
+  hot reload of the view distance needs engine support and comes later.
 - `server.properties`, `ops.json`, `whitelist.json`, `banned-*.json` and `world/` keep vanilla's names and
   formats. A vanilla server folder works as is, and so does going back to vanilla.
 
