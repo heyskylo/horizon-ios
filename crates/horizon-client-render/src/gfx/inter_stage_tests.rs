@@ -124,6 +124,11 @@ fn composed() -> Vec<(&'static str, Vec<&'static str>, String)> {
                 + include_str!("../oit_world.wgsl"),
         ),
         (
+            "visibility buffer",
+            vec!["terrain.wgsl", "visbuffer.wgsl"],
+            include_str!("../terrain.wgsl").to_owned() + include_str!("../visbuffer.wgsl"),
+        ),
+        (
             "improved transparency world border",
             vec!["border.wgsl", "oit.wgsl", "oit_border.wgsl"],
             include_str!("../border.wgsl").to_owned()

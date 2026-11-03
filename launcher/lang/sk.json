@@ -189,6 +189,7 @@
   "New instance": "Nová inštancia",
   "Loading filters": "Načítavajú sa filtre",
   "Stopped": "Zastavené",
+  "{mode} · stopped": "{mode} · zastavené",
   "Extra arguments for the game, passed through as-is (quotes group a word with spaces). Applies the next time the game starts.": "Dodatočné argumenty pre hru, prechádzajúce tak, ako sú (úvodzovky zoskupujú slovo s medzerami). Platí pri ďalšom spustení hry.",
   "Horizon never turns on Funnel: the server isn't put on the public internet, only shared with the people you invite.": "Horizon nikdy nezapne zúženie: server nie je umiestnený na verejnom internete, iba zdieľaný s ľuďmi, ktorých pozvete.",
   "Minecraft folder": "Priečinok Minecraft",
@@ -425,6 +426,7 @@
   "No version matches.": "Žiadna verzia sa nezhoduje.",
   "Invite a friend": "Pozvi priateľa",
   "Offline": "Offline",
+  "{online} of {max}": "{online} z {max}",
   "Shortcut": "Skratka",
   "Update to {version}": "Aktualizovať na {version}",
   "{name} is off.": "{name} je vypnutý.",
@@ -1073,8 +1075,8 @@
   "Shader pack": "Balík shaderov",
   "soon": "čoskoro",
   "{support} in Horizon": "{support} v Horizone",
+  "My Horizon": "Môj Horizon",
   "Game log": "Denník hry",
   "1 line": "1 riadok",
-  "{count} lines": "{count} riadkov",
-  "My Horizon": "Môj Horizon"
+  "{count} lines": "{count} riadkov"
 }
