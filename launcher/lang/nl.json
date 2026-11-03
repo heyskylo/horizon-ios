@@ -260,7 +260,7 @@
   "None needed: Horizon downloads Minecraft from Mojang for your account.": "Niets nodig: Horizon downloadt Minecraft van Mojang voor uw account.",
   "{version} from Horizon's registry, its own profile: {mods}": "{version} uit het register van Horizon, een eigen profiel: {mods}",
   "{loader} mods": "{loader} modificaties",
-  "Horizon crashed": "Horizon is neergestort",
+  "Horizon crashed": "Horizon is gecrasht",
   "Nothing found for {target}.": "Niets gevonden voor {target}.",
   "Installs into a world of {instance}; the game turns the pack on when the world opens.": "Installeert in een wereld van {instance}; het spel zet het pakket aan wanneer de wereld opengaat.",
   "The game ended without a crash report. When you report it on Discord, attach latest.log from the logs folder and say what you were doing.": "De game eindigde zonder een crashrapport. Wanneer u dit rapporteert op Discord, voegt u nieuwste.log toe vanuit de map logs en zegt u wat u aan het doen was.",
@@ -836,7 +836,7 @@
   "Horizon Launcher is installed.": "Horizon Launcher is geïnstalleerd.",
   "Horizon Launcher was removed.": "Horizon Launcher is verwijderd.",
   "These could not be removed:": "Deze konden niet worden verwijderd:",
-  "Launch Horizon": "Lanceer Horizon",
+  "Launch Horizon": "Start Horizon",
   "Something went wrong.": "Er is iets misgegaan.",
   "Instances": "Instanties",
   "Join the Discord": "Sluit je aan bij de onenigheid",
@@ -1025,5 +1025,13 @@
   "Use": "Gebruik",
   "installed": "geïnstalleerd",
   "played by {names}": "gespeeld door {names}",
-  "{day}, {time} UTC": "{day}, {time} UTC"
+  "{day}, {time} UTC": "{day}, {time} UTC",
+  "Microsoft account · online servers too": "Microsoft-account · ook online servers",
+  "Offline · single player and LAN worlds": "Offline · singleplayer en LAN-werelden",
+  "Offline names": "Offline namen",
+  "Add a name": "Naam toevoegen",
+  "3 to 16 letters, numbers or underscores. Switch names from the top bar too. Online servers don't take offline names.": "3 tot 16 letters, cijfers of underscores. Je kunt ook van naam wisselen via de bovenste balk. Online servers accepteren geen offline namen.",
+  "Play online with your Microsoft account": "Online spelen met je Microsoft-account",
+  "Sign in with the account that owns Minecraft: Java Edition. Your name and skin come along to online servers, like in other launchers.": "Meld je aan met het account dat Minecraft: Java Edition bezit. Je naam en skin gaan mee naar online servers, net als in andere launchers.",
+  "Microsoft's own page opens in your browser. Horizon never sees your password.": "De eigen pagina van Microsoft opent in je browser. Horizon ziet je wachtwoord nooit."
 }
