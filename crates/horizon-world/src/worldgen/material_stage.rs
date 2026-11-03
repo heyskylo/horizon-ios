@@ -285,9 +285,15 @@ where
     let highest = chunk
         .highest_filled_section_index()
         .map_or(min - 1, |i| min + (i as i32) * 16 + 15);
+    // The ore veins' densities are sampled up front, all over one volume so
+    // that their shared nodes' caches hit. Above the highest y a vein can
+    // place a block at, no density is asked for. Cutting the volume's top
+    // keeps every value below it (interpolation steps up from each cell's
+    // bottom).
+    let top = highest.min(rule.ore_vein_top());
     let sizes = inputs.noise_volume.sizes();
     let origin = inputs.noise_volume.minimum();
-    let height = highest.wrapping_sub(origin[1]).wrapping_add(1).max(1);
+    let height = top.wrapping_sub(origin[1]).wrapping_add(1).max(1);
     let expected = DensityVolume::new([sizes[0] as i32, height, sizes[2] as i32], origin, [1; 3])
         .map_err(|_| SurfaceError::InvalidVolume)?;
     let mut sources = MaterialDensitySources::new(
@@ -323,7 +329,7 @@ where
 {
     let min = chunk.min_y();
     let rule = worker.add_rule(rule)?;
-    let variants = worker.surface_variants(rule)?;
+    let mut variants = worker.surface_variants(rule)?;
     let cx = chunk.position().x.wrapping_shl(4);
     let cz = chunk.position().z.wrapping_shl(4);
     // One block-id buffer, refilled per column and kept across columns.
@@ -398,12 +404,21 @@ where
                         }
                     }
                     above = above.wrapping_add(1);
-                    worker.update_y(above, y.wrapping_sub(bottom).wrapping_add(1), water, y);
                     if y >= write_min_y && y <= write_max_y {
-                        let above = variants.surface && y >= worker.minimum_surface_level()?;
-                        let rule = variants.rule(y, above);
-                        if let Some(state) = worker.try_apply(rule, BlockPos::new(x, y, z))? {
-                            column.set_block(y, state)?;
+                        let surface = variants.surface && y >= worker.minimum_surface_level()?;
+                        let band = variants.band(y);
+                        // Where the rule gives no block, the block's context
+                        // is not needed: each application sets its own first.
+                        if let Some(rule) = worker.surface_variant(&mut variants, band, surface) {
+                            worker.update_y(
+                                above,
+                                y.wrapping_sub(bottom).wrapping_add(1),
+                                water,
+                                y,
+                            );
+                            if let Some(state) = worker.try_apply(rule, BlockPos::new(x, y, z))? {
+                                column.set_block(y, state)?;
+                            }
                         }
                     }
                 }
