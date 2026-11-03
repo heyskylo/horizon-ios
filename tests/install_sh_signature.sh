@@ -74,12 +74,16 @@ run() {  # dir, path-dir, ...install args: runs the patched install.sh with fake
 }
 case_run() { run "$@"; }
 verdict() { check "$1" "$2" "$3" "$(cat "$4/rc")" "$4/out"; }
+# sed -i differs between GNU and BSD (macOS) sed: edit through a copy instead.
+edit() {  # sed-expression file
+  sed "$1" "$2" > "$2.tmp" && mv "$2.tmp" "$2"
+}
 mkdir -p "$W/home"
 P=/usr/bin:/bin
 
 # 1. Good signature, a Nightly (signed for the channel "nightly" under the tag nightly-2026-11-03).
 d=$W/good; make_release "$d" nightly; with_key "$d"
-sed -i 's/"tag_name": "nightly"/"tag_name": "nightly-2026-11-03"/' "$d/release.json"
+edit 's/"tag_name": "nightly"/"tag_name": "nightly-2026-11-03"/' "$d/release.json"
 run "$d" "$P"; verdict "good signature installs (nightly channel)" 0 "Release signature OK" "$d"
 [ -x "$d/inst/current/horizon-server" ] || { echo "FAIL nothing installed"; fails=$((fails+1)); }
 
@@ -102,19 +106,19 @@ run "$d" "$P" --version v1.2.3; verdict "tampered SHA256SUMS refused" 1 "signatu
 
 # 5. A signature made for another tag does not pass (a release's list replayed under another tag).
 d=$W/replay; make_release "$d" v1.2.3; with_key "$d"
-sed -i 's/"tag_name": "v1.2.3"/"tag_name": "v9.9.9"/' "$d/release.json"
+edit 's/"tag_name": "v1.2.3"/"tag_name": "v9.9.9"/' "$d/release.json"
 run "$d" "$P" --version v9.9.9; verdict "signature replayed under another tag refused" 1 "signature doesn't match" "$d"
 
 # 6. Signed by a key that is not the release key.
 d=$W/wrong; make_release "$d" v1.2.3; with_key "$d"
-sed -i 's|^RELEASE_KEYS=.*|RELEASE_KEYS="MU4oiIQcCxkZvbwSjjXs7SySCuM6ywRQ3nGaJYZG0gw="|' "$d/install.sh"
+edit 's|^RELEASE_KEYS=.*|RELEASE_KEYS="MU4oiIQcCxkZvbwSjjXs7SySCuM6ywRQ3nGaJYZG0gw="|' "$d/install.sh"
 run "$d" "$P" --version v1.2.3; verdict "wrong key refused" 1 "signature doesn't match" "$d"
 
 # 7. No OpenSSL: says so, keeps the SHA-256 check.
 d=$W/none; make_release "$d" v1.2.3; with_key "$d"
 run "$d" "$W/nossl" --version v1.2.3; verdict "no OpenSSL: installs, says it was not checked" 0 "OpenSSL isn't installed" "$d"
 printf 'x' >> "$d/files/horizon-server-linux-x86_64.tar.gz"
-d2=$W/none2; cp -r "$d" "$d2"; rm -rf "$d2/inst" "$d2/bin"; sed -i 's/"digest": "sha256:[0-9a-f]*"/"digest": "sha256:0000"/' "$d2/release.json"
+d2=$W/none2; cp -r "$d" "$d2"; rm -rf "$d2/inst" "$d2/bin"; edit 's/"digest": "sha256:[0-9a-f]*"/"digest": "sha256:0000"/' "$d2/release.json"
 run "$d2" "$W/nossl" --version v1.2.3; verdict "no OpenSSL: a wrong GitHub SHA-256 still refused" 1 "doesn't match its SHA-256" "$d2"
 
 # 8. Old OpenSSL and LibreSSL (macOS): says so, keeps the SHA-256 check.
