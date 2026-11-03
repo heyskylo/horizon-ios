@@ -27,6 +27,7 @@ mod glass_home_tabs;
 mod glass_instance;
 mod glass_instance_java;
 mod glass_notes;
+mod glass_settings;
 mod glass_ui;
 mod glass_versions;
 mod home;
@@ -200,6 +201,8 @@ struct Launcher {
     /// How many times the page changed, for the page transition.
     switches: usize,
     content_scroll: Scrollbar,
+    /// The glass Settings page's own scroll: its sections beside their list.
+    settings_pane: gpui::ScrollHandle,
     /// The rows of the page's long list (Versions, Patch notes) last drawn.
     long_list: cull::Cull,
     opening: Option<Opening>,
@@ -514,6 +517,7 @@ impl Launcher {
             page: Page::from_env(),
             switches: 0,
             content_scroll: Scrollbar::default(),
+            settings_pane: gpui::ScrollHandle::new(),
             long_list: cull::Cull::default(),
             opening: (!settings.skip_opening).then(|| {
                 let focus = cx.focus_handle();
@@ -2146,6 +2150,9 @@ fn switch(id: impl Into<SharedString>, on: bool, t: &Theme) -> Stateful<Div> {
 
 /// A section's title inside a page: a pixel icon in the accent and the name in the pixel face.
 fn section_title(label: &'static str, icon: &'static str, t: &Theme) -> Div {
+    if glass_ui::flat() {
+        return glass_ui::card_heading(tr(label)).px(px(16.)).pt(px(12.));
+    }
     div()
         .flex()
         .items_center()
@@ -2345,6 +2352,9 @@ fn index_row(
     right: Option<AnyElement>,
     t: &Theme,
 ) -> Div {
+    if glass_ui::flat() {
+        return glass_ui::setting_row(name, detail, right);
+    }
     slot_row(None, name, detail, right, t)
 }
 
@@ -3561,8 +3571,6 @@ impl Launcher {
         };
         let mono = |s: String| div().font_family(theme::MONO).child(s).into_any_element();
         let plain = |s: &str| div().child(tr(s).to_string()).into_any_element();
-        let (accounts, n) = self.account_rows(cx);
-        let (offline, n) = self.offline_rows(n, cx);
         let appearance = segments(
             "appearance",
             &[
@@ -3585,6 +3593,24 @@ impl Launcher {
                 }
             },
         );
+        if t.dark {
+            return self.glass_settings(
+                glass_settings::Built {
+                    install: toggle,
+                    prune,
+                    opening,
+                    menu_entry,
+                    appearance: appearance.into_any_element(),
+                    horizon,
+                    horizon_action,
+                    launcher,
+                    launcher_action,
+                },
+                cx,
+            );
+        }
+        let (accounts, n) = self.account_rows(cx);
+        let (offline, n) = self.offline_rows(n, cx);
         let group = |label: &'static str, icon: &'static str| {
             section_title(label, icon, &t).mt(px(20.)).mb(px(12.))
         };
@@ -4972,6 +4998,12 @@ impl Render for Launcher {
                                                         28.
                                                     }))
                                                     .pb(px(48.))
+                                                    // The glass Settings page scrolls its own
+                                                    // pane under a still title.
+                                                    .when(
+                                                        t.dark && self.page == Page::Settings,
+                                                        |d| d.h_full().pb(px(14.)),
+                                                    )
                                                     .child(content),
                                             ),
                                         &t,
