@@ -68,13 +68,16 @@ jobs:
           else
             python tools/check_public_tree.py --history
           fi
-      # Some Python tests compile Rust with a bare `rustc`: GitHub's image has a default toolchain, our runners' own
-      # rustup homes may not.
-      - name: Default Rust toolchain for the Python tests
+      # Our runners as GitHub's: some Python tests compile Rust with a bare `rustc` (GitHub's image has a default
+      # toolchain, our runners' own rustup homes may not), and the GPU tests find no adapter there, so they return
+      # early. Ours have Mesa's software Vulkan for parity; a backend Linux lacks keeps the tests from it, so a pull
+      # request's verify doesn't depend on which pool took it (#8627: a GPU test that flakes on lavapipe).
+      - name: Our runners as GitHub's (a default Rust toolchain, no GPU)
         if: runner.environment != 'github-hosted'
         run: |
           rustup toolchain install stable --profile minimal --component rustfmt --component clippy
           rustup default stable
+          echo "WGPU_BACKEND=dx12" >> "$GITHUB_ENV"
       - name: Test offline research tooling
         run: python -m unittest discover -s tests -v
       - name: Install Rust toolchain and the ALSA and udev headers the client links against
