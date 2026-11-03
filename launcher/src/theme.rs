@@ -105,6 +105,13 @@ impl Theme {
         self
     }
 
+    /// The glass look with the player's Glass (how much white the plates take, 0 to 1) and Blur
+    /// (px).
+    pub fn with_glass(mut self, tint: f32, blur: f32) -> Self {
+        self.look = tokens::glass::Glass::new(self.look.accent, tint, blur);
+        self
+    }
+
     pub fn for_appearance(choice: Appearance, accent: Accent, system: WindowAppearance) -> Self {
         let system_dark = !matches!(
             system,

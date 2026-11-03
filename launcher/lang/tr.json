@@ -1034,5 +1034,10 @@
   "Play online with your Microsoft account": "Microsoft hesabınla çevrim içi oyna",
   "Sign in with the account that owns Minecraft: Java Edition. Your name and skin come along to online servers, like in other launchers.": "Minecraft: Java Edition'a sahip hesapla giriş yap. Adın ve görünümün, diğer başlatıcılarda olduğu gibi çevrim içi sunuculara da gelir.",
   "Microsoft's own page opens in your browser. Horizon never sees your password.": "Microsoft'un kendi sayfası tarayıcında açılır. Horizon parolanı asla görmez.",
-  "Colours the buttons, the switches and the sky. Pick one, or type any hex colour.": "Düğmeleri, anahtarları ve gökyüzünü renklendirir. Birini seç ya da herhangi bir hex rengi yaz."
+  "Colours the buttons, the switches and the sky. Pick one, or type any hex colour.": "Düğmeleri, anahtarları ve gökyüzünü renklendirir. Birini seç ya da herhangi bir hex rengi yaz.",
+  "Accent colour, glass, blur, language and the options above go back to how Horizon ships.": "Vurgu rengi, cam, bulanıklık, dil ve yukarıdaki seçenekler Horizon'un varsayılanlarına döner.",
+  "Reset the launcher's look": "Başlatıcının görünümünü sıfırla",
+  "Reset to defaults": "Varsayılanlara sıfırla",
+  "{value} px": "{value} px",
+  "{value}%": "%{value}"
 }

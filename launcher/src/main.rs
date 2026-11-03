@@ -259,6 +259,8 @@ struct Launcher {
     picker_open: bool,
     /// Settings' any-colour swatch shows the hue strip (the glass look).
     accent_strip: bool,
+    /// Settings' Glass and Blur sliders (the glass look).
+    look_sliders: themes_page::LookSliders,
     /// Where the accent picker's hue strip is on screen (`themes_page.rs`), to map a click to a
     /// hue.
     hue_area: std::rc::Rc<std::cell::Cell<Option<Bounds<gpui::Pixels>>>>,
@@ -516,7 +518,8 @@ impl Launcher {
         // `window.appearance()`, so both draw the same look.
         titlebar::apply_appearance(window, settings.appearance);
         let mut this = Self {
-            theme: Theme::for_appearance(settings.appearance, settings.accent, window.appearance()),
+            theme: Theme::for_appearance(settings.appearance, settings.accent, window.appearance())
+                .with_glass(settings.glass_tint(), settings.glass_blur()),
             page: Page::from_env(),
             switches: 0,
             content_scroll: Scrollbar::default(),
@@ -559,6 +562,7 @@ impl Launcher {
             confirm_remove: None,
             picker_open: false,
             accent_strip: false,
+            look_sliders: Default::default(),
             hue_area: std::rc::Rc::new(std::cell::Cell::new(None)),
             hue_dragging: false,
             language_menu: false,
@@ -4886,7 +4890,9 @@ impl Render for Launcher {
         // The mockup tints the scene with any accent but its violet.
         let tint = (self.theme.dark && self.look.accent != horizon_theme::glass::ACCENT)
             .then(|| horizon_theme::glass::mix_oklab(self.look.accent, 0x767676, 0.58));
-        self.scene.update(cx, |scene, cx| scene.set_tint(tint, cx));
+        let blur = self.look.blur;
+        self.scene
+            .update(cx, |scene, cx| scene.set_look(tint, blur, cx));
         self.scale = window.scale_factor();
         self.perf.frame();
         if self.bench.as_ref().is_some_and(perf::Bench::scrolling) {

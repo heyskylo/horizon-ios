@@ -52,10 +52,11 @@ thread_local! {
     });
 }
 
-/// The scene was built again (a new window size): plates take their pieces from this one.
-pub fn set_backdrop(model: &Model, tint: Option<u32>) {
+/// The scene was built again (a new window size or tint), or the blur changed: plates take
+/// their pieces from this backdrop.
+pub fn set_backdrop(model: &Model, tint: Option<u32>, blur: f32) {
     PIECES.with_borrow_mut(|p| {
-        p.backdrop = Some(Backdrop::new(model, p.look.blur as f64, tint));
+        p.backdrop = Some(Backdrop::new(model, blur as f64, tint));
         p.generation += 1;
     });
 }

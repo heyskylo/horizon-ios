@@ -9,6 +9,34 @@ use gpui::{
 use horizon_launcher::themes::{self, Accent};
 use std::path::PathBuf;
 
+/// Settings' two sliders of the glass look (the mockup's `Slider`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum LookKnob {
+    /// How much white the plates take: 0 to 16 %.
+    Glass,
+    /// How much they blur the scene: 0 to 48 px.
+    Blur,
+}
+
+impl LookKnob {
+    fn max(self) -> f32 {
+        match self {
+            LookKnob::Glass => 16.,
+            LookKnob::Blur => 48.,
+        }
+    }
+}
+
+/// Where each slider's track is, and the one being dragged.
+#[derive(Default)]
+pub(super) struct LookSliders {
+    areas: [std::rc::Rc<std::cell::Cell<Option<Bounds<Pixels>>>>; 2],
+    dragging: Option<LookKnob>,
+}
+
+/// A slider's track (`w-52`), in points.
+const TRACK: f32 = 208.;
+
 /// Each accent's swatch, in points.
 const SWATCH: f32 = 26.;
 /// The hue strip beside the swatches, in points: 0 to 360 degrees across it.
@@ -20,7 +48,8 @@ impl Launcher {
     pub(super) fn settings_theme(&self, window: &Window) -> Theme {
         let worn = self.worn_theme();
         let theme =
-            Theme::for_appearance(self.settings.appearance, self.accent(), window.appearance());
+            Theme::for_appearance(self.settings.appearance, self.accent(), window.appearance())
+                .with_glass(self.settings.glass_tint(), self.settings.glass_blur());
         match worn {
             Some((sky, _)) => theme.with_sky(sky),
             None => theme,
@@ -181,6 +210,178 @@ impl Launcher {
                     .into_any_element(),
             ),
             Some(control.into_any_element()),
+        )
+    }
+
+    /// The Glass or Blur row: the mockup's slider (a 4 px track filled in the soft accent, a
+    /// 16 px white knob) and its value. Dragging changes the look at once and saves on release.
+    pub(super) fn look_slider_row(&mut self, knob: LookKnob, cx: &mut Context<Self>) -> Div {
+        let (title, about, value, shown) = match knob {
+            LookKnob::Glass => {
+                let v = (self.settings.glass_tint() * 100.).round();
+                (
+                    "Glass",
+                    "How light the frosted panels and menus are.",
+                    v,
+                    trf("{value}%", &[("value", &v.to_string())]),
+                )
+            }
+            LookKnob::Blur => {
+                let v = self.settings.glass_blur().round();
+                (
+                    "Blur",
+                    "How frosted the panels are.",
+                    v,
+                    trf("{value} px", &[("value", &v.to_string())]),
+                )
+            }
+        };
+        let f = (value / knob.max()).clamp(0., 1.);
+        let area = self.look_sliders.areas[knob as usize].clone();
+        let track = div()
+            .id(SharedString::from(format!("look-slider-{knob:?}")))
+            .relative()
+            .flex()
+            .flex_none()
+            .items_center()
+            .w(px(TRACK))
+            .h(px(24.))
+            .cursor_pointer()
+            .child(
+                canvas(move |bounds, _, _| area.set(Some(bounds)), |_, _, _, _| {})
+                    .absolute()
+                    .size_full(),
+            )
+            .child(
+                div()
+                    .h(px(4.))
+                    .w_full()
+                    .rounded_full()
+                    .overflow_hidden()
+                    .bg(ui::white(0.12))
+                    .child(
+                        div()
+                            .h_full()
+                            .w(relative(f))
+                            .rounded_full()
+                            .bg(ui::color(ui::look().accent_soft)),
+                    ),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .left(px(f * (TRACK - 16.)))
+                    .size(px(16.))
+                    .rounded_full()
+                    .bg(gpui::white()),
+            )
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, ev: &MouseDownEvent, _, cx| {
+                    this.look_sliders.dragging = Some(knob);
+                    this.pick_look(knob, ev.position, cx);
+                }),
+            )
+            .on_mouse_move(cx.listener(move |this, ev: &MouseMoveEvent, _, cx| {
+                if ev.pressed_button == Some(MouseButton::Left)
+                    && this.look_sliders.dragging == Some(knob)
+                {
+                    this.pick_look(knob, ev.position, cx);
+                }
+            }))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _: &MouseUpEvent, _, cx| this.finish_look(cx)),
+            )
+            // A drag released off the track saves too.
+            .on_mouse_up_out(
+                MouseButton::Left,
+                cx.listener(|this, _: &MouseUpEvent, _, cx| this.finish_look(cx)),
+            );
+        let control = div().flex().items_center().gap(px(16.)).child(track).child(
+            ui::text(13., FontWeight::NORMAL, 0.6)
+                .w(px(48.))
+                .text_right()
+                .child(shown),
+        );
+        ui::setting_row(
+            tr(title),
+            Some(div().child(tr(about)).into_any_element()),
+            Some(control.into_any_element()),
+        )
+    }
+
+    /// The value under the pointer, in whole steps, as the look; saved when the drag ends.
+    fn pick_look(&mut self, knob: LookKnob, at: Point<Pixels>, cx: &mut Context<Self>) {
+        let Some(area) = self.look_sliders.areas[knob as usize].get() else {
+            return;
+        };
+        let width: f32 = area.size.width.into();
+        if width <= 0. {
+            return;
+        }
+        let across: f32 = (at.x - area.origin.x).into();
+        let value = Some(((across / width).clamp(0., 1.) * knob.max()).round());
+        let slot = match knob {
+            LookKnob::Glass => &mut self.settings.glass,
+            LookKnob::Blur => &mut self.settings.blur,
+        };
+        if *slot != value {
+            *slot = value;
+            self.restyle = true;
+            cx.notify();
+        }
+    }
+
+    fn finish_look(&mut self, cx: &mut Context<Self>) {
+        if self.look_sliders.dragging.take().is_some() {
+            self.save_settings();
+            cx.notify();
+        }
+    }
+
+    /// Reset to defaults: the card's options go back to how Horizon ships (the mockup's
+    /// accent, glass, blur, language, while playing and opening; here the appearance and Home's
+    /// background too, being in the same card).
+    pub(super) fn reset_look_row(&mut self, cx: &mut Context<Self>) -> Div {
+        let t = self.theme;
+        ui::setting_row(
+            tr("Reset the launcher's look"),
+            Some(
+                div()
+                    .child(tr(
+                        "Accent colour, glass, blur, language and the options above go back to how Horizon ships.",
+                    ))
+                    .into_any_element(),
+            ),
+            Some(
+                ui::quiet_icon(
+                    "look-reset",
+                    Some("refresh"),
+                    tr("Reset to defaults"),
+                    40.,
+                    &t,
+                )
+                .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                    let s = &mut this.settings;
+                    s.appearance = Default::default();
+                    s.accent = Accent::VIOLET;
+                    s.glass = None;
+                    s.blur = None;
+                    s.background = None;
+                    s.language = None;
+                    s.while_playing = Default::default();
+                    s.skip_opening = false;
+                    this.save_settings();
+                    i18n::set(this.settings.language());
+                    titlebar::apply_appearance(window, this.settings.appearance);
+                    this.accent_strip = false;
+                    this.background_error = None;
+                    this.theme = this.settings_theme(window);
+                    cx.notify();
+                }))
+                .into_any_element(),
+            ),
         )
     }
 

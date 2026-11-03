@@ -1034,5 +1034,10 @@
   "Play online with your Microsoft account": "Jogue online com sua conta Microsoft",
   "Sign in with the account that owns Minecraft: Java Edition. Your name and skin come along to online servers, like in other launchers.": "Entre com a conta que tem o Minecraft: Java Edition. Seu nome e sua skin vão junto para os servidores online, como em outros launchers.",
   "Microsoft's own page opens in your browser. Horizon never sees your password.": "A própria página da Microsoft abre no seu navegador. O Horizon nunca vê sua senha.",
-  "Colours the buttons, the switches and the sky. Pick one, or type any hex colour.": "Colore os botões, os interruptores e o céu. Escolha uma, ou digite qualquer cor hex."
+  "Colours the buttons, the switches and the sky. Pick one, or type any hex colour.": "Colore os botões, os interruptores e o céu. Escolha uma, ou digite qualquer cor hex.",
+  "Accent colour, glass, blur, language and the options above go back to how Horizon ships.": "Cor de destaque, vidro, desfoque, idioma e as opções acima voltam ao padrão do Horizon.",
+  "Reset the launcher's look": "Redefinir a aparência do launcher",
+  "Reset to defaults": "Redefinir para o padrão",
+  "{value} px": "{value} px",
+  "{value}%": "{value}%"
 }

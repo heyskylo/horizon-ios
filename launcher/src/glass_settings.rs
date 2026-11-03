@@ -187,6 +187,8 @@ impl Launcher {
                 &t,
             ))
             .child(self.glass_accent_row(cx))
+            .child(self.look_slider_row(themes_page::LookKnob::Glass, cx))
+            .child(self.look_slider_row(themes_page::LookKnob::Blur, cx))
             .child(self.home_background_row(cx))
             .child(self.language_row(cx))
             .child(self.while_playing_row(n, cx))
@@ -196,7 +198,8 @@ impl Launcher {
                 note("The wordmark, while the release list loads."),
                 Some(b.opening.into_any_element()),
                 &t,
-            ));
+            ))
+            .child(self.reset_look_row(cx));
         let network = card().child(self.proxy_row(n, cx));
         let game = card().child(self.game_args_row(n, cx));
         let ai = card()
