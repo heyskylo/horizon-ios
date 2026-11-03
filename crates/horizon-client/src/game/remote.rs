@@ -8114,8 +8114,8 @@ impl Game<'_> {
     /// Whether `held`'s `Item.use` needs a target this client sees none of
     /// (not SUCCESS): BucketItem.use (a fluid source or powder snow to pick
     /// up through `ClipContext.Fluid.SOURCE_ONLY`, a block to empty a full
-    /// one against, `mayUseItemAt`), BottleItem.use (water to fill from) and
-    /// BoatItem.use (a block or fluid surface with room for the boat).
+    /// one against, `mayUseItemAt`) and BoatItem.use (a block or fluid
+    /// surface with room for the boat).
     fn use_finds_no_target(&self, held: &ItemStack) -> bool {
         let id = &*held.item;
         let facts = |pos: [i32; 3]| {
@@ -8157,9 +8157,6 @@ impl Game<'_> {
         }
         if horizon_client::items::bucket_contents(id).is_some() {
             return !self.may_build() || self.pick().is_none();
-        }
-        if id == "minecraft:glass_bottle" {
-            return !source(Some(Fluid::Water));
         }
         if super::boats::any_boat_wood(id).is_some() {
             return self.boat_to_place(held).is_none();
