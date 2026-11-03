@@ -12,15 +12,29 @@ use std::{
     path::{Path, PathBuf},
 };
 
-/// Where the prepared files go: the installer's `game-files/horizon-client/<version>` (what the release's
-/// `.local/horizon-client` links to), or `resources/` in the server folder when there is no installer.
+/// Where the prepared files go: the first place the server reads them from
+/// (`engine::resource_candidates`). That is `[engine] resources` when `server.toml` sets it, else
+/// `resources/` in the server folder when it exists or there is no installer, else the installer's
+/// `game-files/horizon-client/<version>` (what the release's `.local/horizon-client` links to).
 pub fn destination(dir: &Path) -> PathBuf {
-    match crate::update::Install::find() {
-        Some(install) => install
-            .root
-            .join("game-files/horizon-client")
-            .join(GAME_VERSION),
-        None => dir.join("resources"),
+    let configured = crate::config::Config::load(dir)
+        .map(|c| c.engine.resources)
+        .unwrap_or_default();
+    destination_for(
+        dir,
+        &configured,
+        crate::update::Install::find().map(|i| i.root),
+    )
+}
+
+fn destination_for(dir: &Path, configured: &str, installer: Option<PathBuf>) -> PathBuf {
+    if !configured.is_empty() {
+        return dir.join(configured);
+    }
+    let here = dir.join("resources");
+    match installer {
+        Some(root) if !here.exists() => root.join("game-files/horizon-client").join(GAME_VERSION),
+        _ => here,
     }
 }
 
@@ -216,6 +230,29 @@ mod tests {
             .map(|e| e.file_name().to_string_lossy().into_owned())
             .filter(|n| n.starts_with('.'))
             .collect()
+    }
+
+    /// The import goes where the server will read it: a configured folder first, then an existing
+    /// `resources/` (which shadows the installer's copy), then the installer's folder.
+    #[test]
+    fn the_destination_is_the_folder_the_server_reads_first() {
+        let root = scratch("destination");
+        let installer = Some(root.join("install"));
+        let installed = root
+            .join("install/game-files/horizon-client")
+            .join(GAME_VERSION);
+        assert_eq!(destination_for(&root, "", installer.clone()), installed);
+        assert_eq!(destination_for(&root, "", None), root.join("resources"));
+        assert_eq!(
+            destination_for(&root, "files/mc", installer.clone()),
+            root.join("files/mc")
+        );
+        std::fs::create_dir_all(root.join("resources")).unwrap();
+        assert_eq!(
+            destination_for(&root, "", installer),
+            root.join("resources")
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

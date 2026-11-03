@@ -185,10 +185,10 @@ prepared on their own computer to the server (`scp -r`). Planned wrappers:
   computer, for example by the launcher, to a headless machine. It first checks the folder: `horizon-resources.json`
   is there and names Minecraft 26.3, the derived files match their checksums, and the font and texture folders
   aren't empty; otherwise it lists what is wrong and changes nothing. It copies next to the destination and
-  renames the copy in, so a failure partway keeps the old copy. The destination is the installer's
-  `game-files/horizon-client/26.3` (where the release's `.local/horizon-client` points), or `resources/` in
-  the server folder when the server wasn't installed by `install.sh`. It ends by saying to start or restart
-  the server.
+  renames the copy in, so a failure partway keeps the old copy. The destination is the first place the server
+  reads: `[engine] resources` when set, else `resources/` in the server folder when it exists or the server
+  wasn't installed by `install.sh`, else the installer's `game-files/horizon-client/26.3` (where the release's
+  `.local/horizon-client` points). It ends by saying to start or restart the server.
 
 A server-only `prepare` (from `server.jar` alone, without the client jar or a JDK) is the follow-up that
 removes the last Java step. It needs a list of which prepared files the server really reads, and that list

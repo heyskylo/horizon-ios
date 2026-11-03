@@ -115,7 +115,7 @@ fn start_failure(program: &Path, code: Option<i32>, stderr: &str) -> String {
 }
 
 /// The Minecraft version this server is pinned to; prepared game files must be stamped with it.
-pub const GAME_VERSION: &str = "26.3";
+pub const GAME_VERSION: &str = horizon_core::version::VERSION_ID;
 
 /// Where the prepared game files may be, in the order they are tried.
 pub fn resource_candidates(config: &Config, dir: &Path, program: Option<&Path>) -> Vec<PathBuf> {
