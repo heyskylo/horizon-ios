@@ -724,6 +724,19 @@ impl Mob {
         // Entity.checkSupportingBlock
         self.supporting = self.supporting_block(w, moved);
         self.movement_emission(w, moved, events);
+        // Entity.move's last step: soul sand, honey and the like slow the
+        // horizontal speed of whatever the mob stands in or on.
+        let factor = self.block_speed_factor(w);
+        self.velocity = horizon_world::entity_move::scale_by_block_speed(self.velocity, factor);
+    }
+    /// `Entity.getBlockSpeedFactor` at the mob's feet.
+    fn block_speed_factor(&self, w: &MobWorld) -> f32 {
+        crate::motion::block_speed_factor_at(
+            w.world,
+            w.movement,
+            self.position,
+            self.supporting.map(|[x, y, z]| BlockPos::new(x, y, z)),
+        )
     }
     /// `Entity.applyEffectsFromBlocks` as `LivingEntity.aiStep` runs it, after
     /// `travel` has moved the mob and applied the drag of its fluid (not inside
@@ -2127,6 +2140,46 @@ mod tests {
             "three column blocks lift it by 0.18 after the drag, got {}",
             lifted - plain
         );
+    }
+
+    /// `Entity.move`'s last step, `getBlockSpeedFactor`: a mob sliding on soul
+    /// sand (0.4) or honey (0.4) keeps 40% of its horizontal speed each move,
+    /// on stone it keeps all of it, and its vertical speed is untouched.
+    #[test]
+    fn a_mob_on_soul_sand_or_honey_is_slowed_by_the_move() {
+        for (block, factor) in [
+            ("minecraft:stone", 1.0),
+            ("minecraft:soul_sand", 0.4),
+            ("minecraft:honey_block", 0.4),
+        ] {
+            let build =
+                |world: &mut crate::world::World,
+                 registry: &horizon_world::registry::BlockRegistry| {
+                    world.chunks.insert(
+                        (0, 0),
+                        std::sync::Arc::new(crate::chunk::Chunk::empty(0, 0)),
+                    );
+                    let id = registry.default_state(block).unwrap();
+                    for x in 0..=4 {
+                        for z in 0..=2 {
+                            world.set(x, 0, z, id).unwrap();
+                        }
+                    }
+                };
+            crate::mobs::world::with_built_test_world(&[], build, |w, types| {
+                let kind = std::sync::Arc::new(types.types["minecraft:zombie"].clone());
+                let mut m = Mob::new(1, kind, Vec3::new(0.5, 1.0, 1.5), 0.0);
+                m.on_ground = true;
+                m.velocity = Vec3::new(0.2, 0.0, 0.0);
+                m.do_move(w, &mut Vec::new());
+                let expected = f64::from(factor as f32) * 0.2;
+                assert!(
+                    (m.velocity.x - expected).abs() < 1.0e-9,
+                    "{block}: velocity.x {} expected {expected}",
+                    m.velocity.x
+                );
+            });
+        }
     }
 
     /// `Entity.collectColliders`: the world border's wall stops a mob's move
