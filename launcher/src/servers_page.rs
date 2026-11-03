@@ -967,7 +967,7 @@ impl Launcher {
                     },
                 )
                 // The friend field sits in its chip, on the chip's fill.
-                .when(f == Field::Players, |d| {
+                .when(matches!(f, Field::Players | Field::OfflineName), |d| {
                     d.h_full().px(px(14.)).bg(gpui::transparent_black())
                 })
                 // The server's command line: the field is the line's middle, on its fill, in mono.

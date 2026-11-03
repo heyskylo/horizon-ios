@@ -1025,5 +1025,13 @@
   "Use": "استخدام",
   "installed": "مثبّت",
   "played by {names}": "يلعبه {names}",
-  "{day}, {time} UTC": "{day}، {time} UTC"
+  "{day}, {time} UTC": "{day}، {time} UTC",
+  "Microsoft account · online servers too": "حساب Microsoft · الخوادم عبر الإنترنت أيضًا",
+  "Offline · single player and LAN worlds": "دون اتصال · اللعب الفردي وعوالم الشبكة المحلية",
+  "Offline names": "أسماء دون اتصال",
+  "Add a name": "أضف اسمًا",
+  "3 to 16 letters, numbers or underscores. Switch names from the top bar too. Online servers don't take offline names.": "من 3 إلى 16 حرفًا أو رقمًا أو شرطة سفلية. يمكنك تبديل الأسماء من الشريط العلوي أيضًا. الخوادم عبر الإنترنت لا تقبل الأسماء دون اتصال.",
+  "Play online with your Microsoft account": "العب عبر الإنترنت بحساب Microsoft",
+  "Sign in with the account that owns Minecraft: Java Edition. Your name and skin come along to online servers, like in other launchers.": "سجّل الدخول بالحساب الذي يملك Minecraft: Java Edition. يرافقك اسمك ومظهرك إلى الخوادم عبر الإنترنت، كما في المشغلات الأخرى.",
+  "Microsoft's own page opens in your browser. Horizon never sees your password.": "تُفتح صفحة Microsoft نفسها في متصفحك. لا يرى Horizon كلمة مرورك أبدًا."
 }

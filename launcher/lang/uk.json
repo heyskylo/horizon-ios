@@ -1025,5 +1025,13 @@
   "Use": "Використати",
   "installed": "встановлено",
   "played by {names}": "грає {names}",
-  "{day}, {time} UTC": "{day}, {time} UTC"
+  "{day}, {time} UTC": "{day}, {time} UTC",
+  "Microsoft account · online servers too": "Обліковий запис Microsoft · і онлайн-сервери",
+  "Offline · single player and LAN worlds": "Офлайн · одиночна гра та світи LAN",
+  "Offline names": "Офлайн-імена",
+  "Add a name": "Додати ім'я",
+  "3 to 16 letters, numbers or underscores. Switch names from the top bar too. Online servers don't take offline names.": "Від 3 до 16 літер, цифр або підкреслень. Ім'я можна змінити й у верхній панелі. Онлайн-сервери не приймають офлайн-імена.",
+  "Play online with your Microsoft account": "Грайте онлайн з обліковим записом Microsoft",
+  "Sign in with the account that owns Minecraft: Java Edition. Your name and skin come along to online servers, like in other launchers.": "Увійдіть в обліковий запис, якому належить Minecraft: Java Edition. Ім'я та скін будуть з вами на онлайн-серверах, як в інших лаунчерах.",
+  "Microsoft's own page opens in your browser. Horizon never sees your password.": "Сторінка Microsoft відкривається у вашому браузері. Horizon ніколи не бачить ваш пароль."
 }
