@@ -838,7 +838,6 @@ without an error. Both views were inspected. The
 seven client tests and all-target client Clippy also passed. These checks do not
 establish full vanilla gameplay or final Linux release acceptance on the target machine.
 
-
 ## Pending attribute updates
 
 The resident simulation now dispatches pending attribute callbacks after movement
