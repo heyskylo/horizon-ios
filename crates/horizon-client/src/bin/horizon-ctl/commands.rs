@@ -454,6 +454,9 @@ pub const COMMANDS: &[Cmd] = &[
     cmd!("bench", Scripting, "bench SECONDS", "reset frame stats, wait, reply with the summary", "", ["horizon-ctl bench 10"], &[p("seconds", Ty::Num, "how long to measure")], mcp: true, local: false),
     cmd!("stats", Scripting, "stats [reset] [raw]", "frame-time summary since the last reset", "", ["horizon-ctl stats"], &[opt("reset", Ty::Bool, "start counting again"), opt("raw", Ty::Bool, "every frame time too (frame_ms, cpu_ms, gpu_ms)")], mcp: true, local: false),
     cmd!("gpu-passes", Scripting, "gpu-passes [on|off]", "time Horizon's own render passes on the GPU, shown in F3 and in stats and bench", "", ["horizon-ctl gpu-passes on"], &[opt("mode", Ty::Enum(&["on", "off"]), "on or off; without it, only reports")], mcp: false, local: false),
+    cmd!("render-capture", Scripting, "render-capture on|off|DIR", "keep CPU copies of the meshes the renderer draws (on), or write the next frame's scene to DIR for the scene_replay example",
+        "on meshes every section and far tile again so the copies are complete (HORIZON_RENDER_CAPTURE=1 keeps them from the start). DIR gets the camera, frame inputs, settings and every resident near section and far tile mesh; entities, particles, weather, the hand and the HUD are left out. See docs/graphics.md.",
+        ["horizon-ctl render-capture on", "horizon-ctl render-capture /tmp/scene"], &[], mcp: false, local: false),
     cmd!("fly", Scripting, "fly X1 Y1 Z1 X2 Y2 Z2 SECONDS [PITCH [raw]]", "fly the camera along a line, then reply with the frame summary",
         "The reply's tick_ms and tick_ms_max are the world's smoothed tick time over the flight (the server thread's when single player runs on one). With raw, the reply also lists every frame time in milliseconds (frame_ms).",
         ["horizon-ctl fly 0 100 0 500 100 0 20"], &[], mcp: false, local: false),
@@ -484,7 +487,7 @@ pub fn find(name: &str) -> Option<&'static Cmd> {
 pub fn overview() -> String {
     let mut out = String::from(
         "horizon-ctl: play and script a running Horizon from the command line.\n\n\
-         usage: horizon-ctl [--socket PATH] [--timeout SECONDS] [--pretty] COMMAND [ARGS...]\n\
+         usage: horizon-ctl [--socket PATH] [--timeout SECONDS] [--api LINE] [--pretty] COMMAND [ARGS...]\n\
          \x20      horizon-ctl COMMAND --help      (or: horizon-ctl help COMMAND)\n",
     );
     for group in Group::ALL {
@@ -496,7 +499,8 @@ pub fn overview() -> String {
     out.push_str(
         "\nEvery reply is one JSON line. Errors are {\"error\": \"...\"}; the exit status is 0 on\n\
          success, 1 when the game replied with an error, 2 for a usage error, 3 when the\n\
-         game cannot be reached or started and 4 while No AI is on (the launcher's settings).\n\
+         game cannot be reached or started, 4 while No AI is on (the launcher's settings) and 5 when\n\
+         --api LINE (such as --api 0.1) names a protocol line the game's hello does not report.\n\
          Actions (goto, break, place...) block until done.\n\
          horizon-ctl help --game lists the running game's own commands, test hooks included.\n\
          The socket is $HORIZON_CONTROL, else $XDG_RUNTIME_DIR/horizon-control.sock (on Windows\n\

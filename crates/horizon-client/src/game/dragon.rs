@@ -50,7 +50,7 @@ const BREATH_WAIT: i32 = 20;
 
 /// `AreaEffectCloud.serverTick`: discarded once `tickCount - waitTime >=
 /// duration`, so the wait does not count against the duration.
-fn breath_expired(age: i32, duration: i32) -> bool {
+pub(super) fn breath_expired(age: i32, duration: i32) -> bool {
     age - BREATH_WAIT >= duration
 }
 
