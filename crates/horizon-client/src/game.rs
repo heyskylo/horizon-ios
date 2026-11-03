@@ -16689,6 +16689,18 @@ impl Game<'_> {
             self.all_sections_changed();
         }
         self.prepare_lod();
+        // The columns the single-player server changed in bulk without sending them, which far terrain still drew
+        // as this window last saw them: summarized again (taken every tick, far terrain on or off, so none waits).
+        if self.remote.is_some() {
+            let changed = horizon_client::lan::handoff::take_changed();
+            if let Some(lod) = &mut self.lod {
+                for chunk in changed {
+                    if !self.world.chunks.contains_key(&(chunk.x, chunk.z)) {
+                        lod.observe(chunk, self.res.facts());
+                    }
+                }
+            }
+        }
         if self.lod.is_some() {
             for &((x, _, z), _, _) in &self.world.light_edits {
                 self.lod_observe.insert((x >> 4, z >> 4));
