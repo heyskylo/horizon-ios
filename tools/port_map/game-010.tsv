@@ -114,6 +114,7 @@ Dolphin.readAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::mob
 Dolphin.registerGoals	port	crates/horizon-client/src/mobs/aquatic.rs::register	gap: player: no MoveToItemGoal and PlayWithItemsGoal (dolphins ignore items thrown in the water), no FollowPlayerRiddenEntityGoal for boats or nautiluses, no AvoidEntity of guardians, and HurtByTarget does not skip guardians
 Dolphin.createAttributes	skip:data		attributes come from the entity tables
 Dolphin.canAttack	port	crates/horizon-client/src/mobs/goals.rs::spares_target	a baby dolphin takes nobody as its target
+Dolphin.playAttackSound	port	crates/horizon-client/src/mobs/ai.rs::do_hurt_target	the dolphin arm: DOLPHIN_ATTACK at 1.0/1.0 after the blow lands, skipped for a silent mob
 Dolphin.pickUpItem	port	crates/horizon-client/src/game/foxes.rs::Game::tick_dolphins	the game finds the first allowed item in the water within 8 blocks and takes it
 Dolphin.handleEntityEvent	port	crates/horizon-client-render/src/particles.rs::entity_event_burst	event 38: seven happy villager particles about the dolphin
 Dolphin.closeToNextPos	inline	crates/horizon-client/src/mobs/dolphin.rs::SwimToTreasure::tick	nav target within 12 blocks (144 squared) of the dolphin

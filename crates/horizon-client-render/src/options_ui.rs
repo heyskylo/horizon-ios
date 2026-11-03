@@ -289,6 +289,7 @@ impl Opt {
                 "options.modelPart.right_pants_leg",
                 "options.modelPart.hat",
             ][i],
+            Opt::SkinLayers3d => "horizon.options.three_d_skin_layers",
             Opt::MainHand => "options.mainHand",
             Opt::AllowServerListing => "options.allowServerListing",
             Opt::RealmsNotifications => "options.realmsNotifications.button",
@@ -729,6 +730,11 @@ impl Opt {
             } else {
                 "options.key.hold"
             }),
+            Opt::SkinLayers3d => tr(if s.three_d_skin_layers {
+                "options.on"
+            } else {
+                "options.off"
+            }),
             Opt::ToggleAttack => tr(if s.toggle_attack {
                 "options.key.toggle"
             } else {
@@ -1013,6 +1019,7 @@ impl Opt {
             Opt::ChunkBuilder => s.prioritize_chunk_updates = next(s.prioritize_chunk_updates, 3),
             Opt::ToggleCrouch => s.toggle_crouch = !s.toggle_crouch,
             Opt::ToggleSprint => s.toggle_sprint = !s.toggle_sprint,
+            Opt::SkinLayers3d => s.three_d_skin_layers = !s.three_d_skin_layers,
             Opt::ToggleAttack => s.toggle_attack = !s.toggle_attack,
             Opt::ToggleUse => s.toggle_use = !s.toggle_use,
             Opt::AutoJump => s.auto_jump = !s.auto_jump,
@@ -2661,6 +2668,8 @@ impl OptionsUi {
             Page::Skin => {
                 // SkinCustomizationScreen: the seven layers, then Main Hand.
                 let mut opts: Vec<Opt> = (0..MODEL_PART_KEYS.len()).map(Opt::ModelPart).collect();
+                // Horizon's own: the outer layer as real pixels, not one box.
+                opts.push(Opt::SkinLayers3d);
                 opts.push(Opt::MainHand);
                 pairs(&opts)
             }
