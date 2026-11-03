@@ -10,9 +10,9 @@
 //! ENDS-WHEN: naga's GLSL frontend converts array and struct constructor arguments itself.
 use crate::macros::lex;
 
-const ELEMENTS: [&str; 15] = [
+const ELEMENTS: [&str; 16] = [
     "float", "int", "uint", "bool", "vec2", "vec3", "vec4", "ivec2", "ivec3", "ivec4", "uvec2",
-    "uvec3", "uvec4", "bvec2", "bvec3",
+    "uvec3", "uvec4", "bvec2", "bvec3", "bvec4",
 ];
 
 pub(super) fn rewrite(text: &str) -> String {
@@ -203,6 +203,10 @@ mod tests {
         assert_eq!(
             rewrite(src),
             "int k[2] = int[2](int(1u),\n int(2));\nvec2 v[] = vec2[](vec2(a), vec2(vec2(1, 2)));\nfloat f(int x) { return float[](float(x), float(1.0))[0]; }"
+        );
+        assert_eq!(
+            rewrite("bvec4 b[] = bvec4[](t, u);"),
+            "bvec4 b[] = bvec4[](bvec4(t), bvec4(u));"
         );
     }
 
