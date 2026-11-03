@@ -347,6 +347,11 @@ fn checked_path(path: &Path) -> Result<PathBuf> {
     let mut current = PathBuf::new();
     for part in path.components() {
         current.push(part);
+        // A Windows drive/UNC prefix alone is not a filesystem root. Inspect it
+        // only after RootDir completes it, including canonical verbatim paths.
+        if matches!(part, Component::Prefix(_)) {
+            continue;
+        }
         match fs::symlink_metadata(&current) {
             Ok(meta) => {
                 reject_link(&current, &meta)?;
@@ -618,3 +623,7 @@ fn copy_acl(source: &Path, dest: &Path) -> Result<()> {
 fn problem(path: &Path, error: impl std::fmt::Display) -> String {
     format!("{}: {error}", path.display())
 }
+
+#[cfg(test)]
+#[path = "data_location/tests.rs"]
+mod tests;
