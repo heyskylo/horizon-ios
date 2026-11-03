@@ -9,7 +9,7 @@
 // them as the GPU schedules, and where faces of two sections meet at the same
 // depth the later draw keeps the pixel). Nothing here computes with floats: the
 // origins are the CPU's bits, copied, and the frustum test adds integers the
-// CPU computed.
+// CPU computed. `cull` leaves sections fading in or out to the CPU (`FADING`).
 
 struct Params {
     // Ids to test, records `apply` writes, the arena pages the counts and
@@ -45,7 +45,7 @@ struct Section {
     // free id).
     key: vec4<i32>,
     // The first vertex of its solid quads, its solid quads, its box
-    // (gpu_culling.rs `rounded_box`), then a word unused here.
+    // (gpu_culling.rs `rounded_box`), then its flags (`FADING`).
     a: vec4<u32>,
 }
 
@@ -91,6 +91,8 @@ const UNBOUNDED: u32 = 0x80000000u;
 // reached the box's top layer (the sky band).
 const REACH: u32 = 1u;
 const SKY: u32 = 2u;
+// In a section's `a.w`: it fades in or out, and the CPU draws it with its fade.
+const FADING: u32 = 1u;
 
 // The count of `block`'s draws in `page` (`cull`), then where they start (`scan`).
 fn block_count(block: u32, page: u32) -> u32 {
@@ -186,7 +188,8 @@ fn cull(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
     runs[id] = 0u;
     let s = sections[id];
-    if s.key.w < 0 || s.a.y == 0u || !near(s.key.x, s.key.z) || !reached(s.key.xyz) {
+    if s.key.w < 0 || s.a.y == 0u || (s.a.w & FADING) != 0u || !near(s.key.x, s.key.z)
+        || !reached(s.key.xyz) {
         return;
     }
     let page = u32(s.key.w);

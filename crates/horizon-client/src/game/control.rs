@@ -1237,6 +1237,7 @@ impl Game<'_> {
                 "culled_sections": r.culled_sections(),
                 "gpu_culling": r.gpu_culling(),
                 "gpu_frame": r.gpu_frame(),
+                "gpu_fading": r.gpu_fading(),
                 "uploaded_bytes": r.uploaded_bytes,
                 "resident_sections": r.resident_sections(),
                 "arena_bytes": arena_bytes,
