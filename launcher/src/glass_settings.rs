@@ -3,8 +3,7 @@
 //! the list follows the scroll and takes the pane to a section. The rows inside are the mockup's
 //! `SettingRow`s ([`glass_ui::flat_rows`]).
 //!
-//! Not in the mockup, kept in its patterns: the appearance, the Home background, the account
-//! rows and offline names as they are today, the logs folder and the applications menu, the AI
+//! Not in the mockup, kept in its patterns: the appearance, the Home background, the logs folder and the applications menu, the AI
 //! clients, data collection (its own entry in the list) and the hidden developer options.
 
 use super::*;
@@ -155,9 +154,8 @@ impl Launcher {
     /// The cards, one per entry of [`SECTIONS`], in its order.
     fn glass_settings_sections(&mut self, b: Built, cx: &mut Context<Self>) -> Vec<Div> {
         let t = self.theme;
-        let (accounts, n) = self.account_rows(cx);
-        let (offline, n) = self.offline_rows(n, cx);
-        let account = card().child(accounts).child(offline);
+        let n = 0;
+        let account = card().child(self.glass_account(cx));
         let updates = card()
             .child(index_row(
                 0,

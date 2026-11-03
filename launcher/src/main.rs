@@ -19,6 +19,7 @@ mod frame;
 mod game_tools;
 mod github_mods_page;
 mod glass;
+mod glass_account;
 mod glass_home;
 mod glass_home_lists;
 mod glass_home_mods;
@@ -2366,6 +2367,16 @@ fn slot_row(
     right: Option<AnyElement>,
     t: &Theme,
 ) -> Div {
+    if glass_ui::flat() {
+        return div()
+            .flex()
+            .items_center()
+            .gap(px(14.))
+            .px(px(16.))
+            .py(px(12.))
+            .children(slot.map(|s| s.rounded(px(8.)).overflow_hidden()))
+            .child(glass_ui::setting_row(name, detail, right).p_0().flex_1());
+    }
     blocks::panel(t)
         .flex()
         .items_center()
@@ -3968,6 +3979,23 @@ impl Launcher {
     /// rows are numbered from 01; returns them and how many there are.
     fn account_rows(&mut self, cx: &mut Context<Self>) -> (Div, usize) {
         let t = self.theme;
+        let (mut rows, mut n) = self.microsoft_rows(cx);
+        n += 1;
+        let (title, detail, action) = self.sign_in_parts(cx);
+        rows = rows.child(index_row(
+            n,
+            title,
+            Some(detail.into_any_element()),
+            action,
+            &t,
+        ));
+        (rows, n)
+    }
+
+    /// The Microsoft accounts signed in here: each one's head, name and state, Play as,
+    /// Refresh and Sign out.
+    fn microsoft_rows(&mut self, cx: &mut Context<Self>) -> (Div, usize) {
+        let t = self.theme;
         let mut rows = div().flex().flex_col();
         let mut n = 0;
         let selected = self.accounts.selected.clone();
@@ -4088,6 +4116,13 @@ impl Launcher {
                 &t,
             ));
         }
+        (rows, n)
+    }
+
+    /// Adding a Microsoft account, or signing one in again: what the row is called, what is
+    /// happening (the code to enter, a problem), and its buttons.
+    fn sign_in_parts(&self, cx: &mut Context<Self>) -> (String, Div, Option<AnyElement>) {
+        let t = self.theme;
         let configured = account::client_id().is_some();
         let busy = matches!(
             self.sign_in_state,
@@ -4214,20 +4249,12 @@ impl Launcher {
             }
             Some(actions.into_any_element())
         };
-        n += 1;
         let title = match &self.sign_in_target {
             Some(target) => trf("Sign in again as {name}", &[("name", &target.name)]),
             None if self.accounts.accounts.is_empty() => tr("Microsoft account").to_owned(),
             None => tr("Another account").to_owned(),
         };
-        rows = rows.child(index_row(
-            n,
-            title,
-            Some(detail.into_any_element()),
-            action,
-            &t,
-        ));
-        (rows, n)
+        (title, detail, action)
     }
 
     /// Join a friend: a code field and Join, which starts the game straight
