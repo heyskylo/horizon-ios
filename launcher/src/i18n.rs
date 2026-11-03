@@ -65,10 +65,14 @@ pub enum Language {
     Slovak,
     #[serde(rename = "lt")]
     Lithuanian,
+    #[serde(rename = "lb")]
+    Luxembourgish,
+    #[serde(rename = "ky")]
+    Kyrgyz,
 }
 
 impl Language {
-    pub const ALL: [Language; 26] = [
+    pub const ALL: [Language; 28] = [
         Self::English,
         Self::French,
         Self::Russian,
@@ -95,6 +99,8 @@ impl Language {
         Self::Bulgarian,
         Self::Slovak,
         Self::Lithuanian,
+        Self::Luxembourgish,
+        Self::Kyrgyz,
     ];
 
     /// Its code in `settings.json` and on the command line.
@@ -126,6 +132,8 @@ impl Language {
             Self::Bulgarian => "bg",
             Self::Slovak => "sk",
             Self::Lithuanian => "lt",
+            Self::Luxembourgish => "lb",
+            Self::Kyrgyz => "ky",
         }
     }
 
@@ -158,6 +166,8 @@ impl Language {
             Self::Bulgarian => "Български",
             Self::Slovak => "Slovenčina",
             Self::Lithuanian => "Lietuvių",
+            Self::Luxembourgish => "Lëtzebuergesch",
+            Self::Kyrgyz => "Кыргызча",
         }
     }
 
@@ -232,6 +242,8 @@ impl Language {
             Self::Bulgarian => include_str!("../lang/bg.json"),
             Self::Slovak => include_str!("../lang/sk.json"),
             Self::Lithuanian => include_str!("../lang/lt.json"),
+            Self::Luxembourgish => include_str!("../lang/lb.json"),
+            Self::Kyrgyz => include_str!("../lang/ky.json"),
         }
     }
 }
