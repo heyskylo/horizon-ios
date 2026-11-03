@@ -9,15 +9,21 @@
 //! Every resident section with solid quads has a record here, under an id it
 //! keeps for as long as it stays (`SectionGpu::gpu_id`; resident slots move on
 //! every removal). The pass keeps the sections whose column is within the
-//! render distance (`streaming::in_view_distance`) and whose box is in the
-//! frustum, and draws all the solid quads of each in one draw (the pipelines
-//! cull the faces turned away), with the origin the walk would give it:
-//! `resident::origin`'s f32 bits, copied, never computed on the GPU. Within the
-//! render distance the CPU's walk then lists only the sections whose
-//! translucent quads it draws, or that have no record
+//! render distance (`streaming::in_view_distance`), that cave culling's graph
+//! reaches and whose box is in the frustum, and draws all the solid quads of
+//! each in one draw (the pipelines cull the faces turned away), with the origin
+//! the walk would give it: `resident::origin`'s f32 bits, copied, never
+//! computed on the GPU. Within the render distance the CPU's walk then lists
+//! only the sections whose translucent quads it draws, or that have no record
 //! (`Resident::walk`); past it, it lists every section as before.
-//! Unlike the walk, the pass leaves in the sections the cave graph does not
-//! reach, and draws sections fading in or out whole.
+//! Unlike the walk, the pass draws sections fading in or out whole.
+//!
+//! The graph is the one the walk reads that frame (`occlusion::Reach`). Its
+//! search keeps the cells it reached as bits too, and `Occlusion` a generation
+//! that changes whenever an answer of its `contains` may: the pass keeps a copy
+//! of the bits, sent through the staging belt when the generation moves, and
+//! the shader's `reached` answers as `contains` does, the sky band above a
+//! clamped box included.
 //!
 //! The integer frustum test (`tables`, `rounded_box`) keeps every section the
 //! walk's would and a thin shell more, alike on every backend; a frame whose
@@ -46,6 +52,7 @@
 use super::{
     Frustum, SectionKey,
     arena::{Arena, try_create},
+    occlusion::Reach,
     pack_timing::PassTiming,
     resident,
     submit::Queue,
@@ -155,11 +162,25 @@ struct Params {
     cells: [u32; 4],
     /// Each frustum plane's w term, its margin in (`tables`), then 0, 0.
     w: [[i32; 4]; 2],
+    /// Cave culling's graph (`Reach`): from x, from z, radius, lowest section y.
+    reach: [i32; 4],
+    /// Its height in sections, and the level's (the sky band's top section).
+    reach_height: i32,
+    reach_sections: i32,
+    /// `REACH`, `SKY`.
+    flags: u32,
+    pad: u32,
 }
 
 /// Counts before the pages' (the shader's `STATS`): the sections `cull` kept,
 /// and the draws, fewer only where a region was short.
 const STATS: u64 = 2;
+/// In `Params::flags` (the shader's `REACH`): cave culling's graph is in
+/// `reach`.
+const REACH: u32 = 1;
+/// In `Params::flags` (the shader's `SKY`): its search reached the box's top
+/// layer, so the sky band above a clamped box is reached.
+const SKY: u32 = 2;
 /// Ids per block (the shader's `BLOCK`), and the workgroup of the passes over ids.
 const WORKGROUP: u32 = 64;
 /// Workgroups along x when there are more (the shader's `ROW`).
@@ -193,6 +214,9 @@ pub(super) struct FrameInputs<'a> {
     pub radius: i32,
     /// The frustum the walk culls with (a GPU frame has no water mirror).
     pub frustum: &'a Frustum,
+    /// The cave-culling graph, while cave culling runs and has one
+    /// (`Occlusion::reach`); `None`: every section counts as reached.
+    pub reach: Option<Reach<'a>>,
 }
 
 /// What `GpuCulling::prepare` made of a frame.
@@ -332,7 +356,7 @@ pub(super) fn supported(
         && flat_min_sections.is_none_or(|min| min == usize::MAX)
         && features.contains(wgpu::Features::MULTI_DRAW_INDIRECT_COUNT)
         && downlevel.contains(wgpu::DownlevelFlags::COMPUTE_SHADERS)
-        // The pass binds 7; the eighth keeps room for cave culling's graph.
+        // The pass binds 8, the last cave culling's graph.
         && limits.max_storage_buffers_per_shader_stage >= 8
         && !super::flat::is_broken_intel_vulkan(info)
 }
@@ -539,6 +563,11 @@ pub(super) struct GpuCulling {
     draws: Grown,
     origins: Grown,
     runs: Grown,
+    /// Cave culling's graph, its `Reach::bits`.
+    reach: Grown,
+    /// The generation `reach` holds (`Reach::generation`); `None` until it is
+    /// written, or after it was made anew.
+    reach_generation: Option<u64>,
     /// Dropped as soon as one of its buffers is made anew.
     group: Option<wgpu::BindGroup>,
     /// What `sections` holds once `prepare` writes it; a field of its own, so
@@ -587,6 +616,7 @@ impl GpuCulling {
                 storage(5, false),
                 storage(6, false),
                 storage(7, false),
+                storage(8, true),
             ],
         });
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -660,6 +690,14 @@ impl GpuCulling {
                 U::VERTEX | U::STORAGE | TEST_READ,
             )?,
             runs: Grown::new(device, "GPU culling runs", 1024 * 4, U::STORAGE)?,
+            // Room for render distance 64's graph, 57.5 KB.
+            reach: Grown::new(
+                device,
+                "GPU culling reach",
+                1 << 16,
+                U::STORAGE | U::COPY_DST,
+            )?,
+            reach_generation: None,
             group: None,
             records: Records::default(),
             pages: Vec::new(),
@@ -674,9 +712,10 @@ impl GpuCulling {
     /// Records the frame's uploads into `encoder` and clears its counts, before
     /// the walk: the records that changed (through the queue when the whole
     /// table goes), the origins along each axis and the frustum planes' terms
-    /// (`tables`), the pages' regions and the parameters. Then `dispatch` and the
-    /// world pass's `draw`. Unless the frame is `Prepared::Gpu`, nothing is
-    /// written, and nothing of the frame is dispatched or drawn.
+    /// (`tables`), the pages' regions, cave culling's graph when its generation
+    /// moved, and the parameters. Then `dispatch` and the world pass's `draw`.
+    /// Unless the frame is `Prepared::Gpu`, nothing is written, and nothing of
+    /// the frame is dispatched or drawn.
     pub fn prepare(
         &mut self,
         device: &wgpu::Device,
@@ -745,6 +784,13 @@ impl GpuCulling {
                 self.group = None;
             }
         }
+        // A copy of the graph made anew holds none.
+        if let Some(r) = &input.reach
+            && self.reach.reserve(device, r.bits.len() as u64 * 4)?
+        {
+            self.group = None;
+            self.reach_generation = None;
+        }
         // The planes past what the test's integers hold: the CPU draws the
         // frame, and the records that changed wait for the next.
         let Some(params) = planes else {
@@ -788,13 +834,25 @@ impl GpuCulling {
             0,
             bytemuck::cast_slice(&self.words),
         );
-        let params = Params {
+        let mut params = Params {
             ids,
             updates: self.scratch.len() as u32,
             pages: pass_pages,
             regions,
             ..params
         };
+        if let Some(r) = &input.reach {
+            if self.reach_generation != Some(r.generation) {
+                // Through the belt: a search lands every few frames while the
+                // camera moves or sections load, and a write through the queue
+                // waits for the submit thread.
+                uploads.buffer(encoder, &self.reach.buffer, 0, bytemuck::cast_slice(r.bits));
+                self.reach_generation = Some(r.generation);
+            }
+            params.reach = [r.from_x, r.from_z, r.radius, r.y0];
+            (params.reach_height, params.reach_sections) = (r.height, r.sections);
+            params.flags |= REACH | if r.sky_reached { SKY } else { 0 };
+        }
         uploads.buffer(encoder, &self.params, 0, bytemuck::bytes_of(&params));
         encoder.clear_buffer(&self.counts.buffer, 0, Some(count_words * 4));
         if self.group.is_none() {
@@ -825,6 +883,7 @@ impl GpuCulling {
                 entry(5, &self.draws.buffer),
                 entry(6, &self.origins.buffer),
                 entry(7, &self.runs.buffer),
+                entry(8, &self.reach.buffer),
             ],
         })
     }
@@ -952,8 +1011,9 @@ mod tests {
     }
 
     /// `gpu_culling.wgsl`'s `cull` on the CPU, the reference the pass is held
-    /// to: whether it draws `record` with the parameters and tables `tables`
-    /// makes (and the pages `prepare` gives them).
+    /// to, but for cave culling's graph (its `reached` is `Reach::contains`):
+    /// whether it draws `record` with the parameters and tables `tables` makes
+    /// (and the pages `prepare` gives them).
     fn keeps(params: &Params, words: &[u32], record: &Record) -> bool {
         let (key, a) = (record.key, record.a);
         if key[3] < 0 || a[1] == 0 || !near(params, key[0], key[2]) {
@@ -965,7 +1025,7 @@ mod tests {
             && in_frustum(params, words, c, a[2])
     }
 
-    /// A frame of the overworld's 24 sections.
+    /// A frame of the overworld's 24 sections, cave culling off.
     fn inputs(camera: DVec3, radius: i32, frustum: &Frustum) -> FrameInputs<'_> {
         FrameInputs {
             camera,
@@ -973,6 +1033,7 @@ mod tests {
             sections: 24,
             radius,
             frustum,
+            reach: None,
         }
     }
 
@@ -1247,6 +1308,11 @@ mod tests {
             ("first", offset_of!(Params, first)),
             ("cells", offset_of!(Params, cells)),
             ("w", offset_of!(Params, w)),
+            ("reach", offset_of!(Params, reach)),
+            ("reach_height", offset_of!(Params, reach_height)),
+            ("reach_sections", offset_of!(Params, reach_sections)),
+            ("flags", offset_of!(Params, flags)),
+            ("pad", offset_of!(Params, pad)),
         ] {
             assert!(members.contains(&(name.into(), offset)), "Params.{name}");
         }
@@ -1262,6 +1328,7 @@ mod tests {
         ];
         assert_eq!(layout("Update"), (size_of::<Update>(), named(id)));
         assert_eq!((size_of::<Record>(), size_of::<Update>()), (32, 48));
+        assert_eq!(size_of::<Params>(), 128);
         let constant = |name: &str| {
             let (_, c) = module
                 .constants
@@ -1282,6 +1349,8 @@ mod tests {
             ("BLOCK", u64::from(WORKGROUP)),
             ("STATS", STATS),
             ("UNBOUNDED", u64::from(UNBOUNDED)),
+            ("REACH", u64::from(REACH)),
+            ("SKY", u64::from(SKY)),
         ] {
             assert_eq!(constant(name), value, "{name}");
         }
@@ -1692,15 +1761,21 @@ mod tests {
         bytemuck::pod_collect_to_vec(&rx.recv().unwrap())
     }
 
-    /// The pass draws exactly what its CPU reference (`keeps`) keeps: one draw
-    /// of all the solid quads of each, from its page and first vertex, with the
-    /// instance the CPU path gives a whole section, every page's draws in id
-    /// order. One table serves every case, changed between them as sections
-    /// come, go and move (ids reused, records written as updates and whole),
-    /// cleared once as for another world, and kept through a frame the CPU
-    /// draws; in frusta of every shape, one with a plane that is not finite,
-    /// with boxes of every kind, and from cameras near the world's origin and 20
-    /// million blocks out.
+    /// The pass draws exactly what its CPU reference (`keeps`, and cave
+    /// culling's `Reach::contains`) keeps: one draw of all the solid quads of
+    /// each, from its page and first vertex, with the instance the CPU path
+    /// gives a whole section, every page's draws in id order. One table serves
+    /// every case, changed between them as sections come, go and move (ids
+    /// reused, records written as updates and whole), cleared once as for
+    /// another world, and kept through a frame the CPU draws; in frusta of every
+    /// shape, one with a plane that is not finite, with boxes of every kind,
+    /// and from cameras near the world's origin and 20 million blocks out. Most
+    /// cases have a cave-culling graph, its box as wide as the walk's,
+    /// narrower, or a column wider, full height or clamped, its sky band
+    /// reached or not: the pass reads the copy it holds when a frame brings the
+    /// same graph (once through a bind group made anew), sends a new one after
+    /// a frame the CPU draws, and makes its copy anew for one too large for its
+    /// room.
     #[test]
     fn the_gpu_draws_what_the_integer_test_keeps() {
         on_each_device(draws_match);
@@ -1714,12 +1789,19 @@ mod tests {
         let mut held: BTreeMap<u32, Placed> = BTreeMap::new();
         let (mut camera, mut compared, mut culled) = (DVec3::ZERO, 0, 0);
         let mut words = Vec::new();
+        // Cave culling's graph while a case has one (its generation, from x and
+        // z, radius, height and whether its search reached the sky) and its bits.
+        let (mut graph, mut bits) = (None, Vec::new());
+        // Sections the frustum keeps with a graph, those it leaves out, and
+        // those above its box it leaves out and keeps.
+        let (mut graphed, mut unreached, mut band) = (0, 0, [0; 2]);
         for case in 0..24 {
             let radius = [2, 5, 9][case % 3];
             // Case 4 looks from case 3's camera, 20 million blocks out, while
             // every section moves and none comes: the whole table is written
-            // though it keeps its room.
-            if case != 4 {
+            // though it keeps its room. Cases 11 and 18 look from the camera of
+            // the case before, whose graph they keep.
+            if !matches!(case, 4 | 11 | 18) {
                 let far = |axis| if case % 4 == axis { 10_000.0 } else { 1.0 };
                 camera = DVec3::new(
                     f64::from(rng.range(-2_000, 2_000)) * far(3) + f64::from(rng.unit()),
@@ -1732,6 +1814,47 @@ mod tests {
                 frustum.planes[rng.below(6) as usize] = Vec4::NAN;
             }
             let (cx, cz) = resident::camera_column(camera);
+            // None in a quarter of the cases (cave culling off). Else around the
+            // camera's column, as wide as the walk's search (the distance and 2)
+            // or anything from 1 column to past the distance, full height or
+            // clamped as over low ground, its sky band reached in half the cases,
+            // three quarters of its cells reached. Cases 11 and 18 bring the
+            // graph of the case before: the pass reads the copy it holds, 18
+            // through a bind group made anew. Case 7's is new and comes first with
+            // a frame the CPU draws; case 20's, 131 KB, is past the copy's room.
+            if !matches!(case, 11 | 18) {
+                let given = matches!(case, 4 | 7 | 10 | 17 | 20) || rng.below(4) != 0;
+                graph = given.then(|| {
+                    let span = match case {
+                        20 => 100,
+                        _ if rng.below(2) == 0 => radius + 2,
+                        _ => rng.range(1, radius + 3),
+                    };
+                    let rows = if case % 4 < 2 && case != 20 {
+                        rng.range(3, 8)
+                    } else {
+                        height + 2
+                    };
+                    let cells = ((2 * span + 1).pow(2) * rows) as usize;
+                    bits.clear();
+                    bits.extend(
+                        (0..cells.div_ceil(32)).map(|_| rng.bits() as u32 | rng.bits() as u32),
+                    );
+                    let from = (cx + rng.range(-1, 1), cz + rng.range(-1, 1));
+                    (rng.bits(), from, span, rows, case % 8 < 4)
+                });
+            }
+            let reach = graph.map(|(generation, from, span, rows, sky_reached)| Reach {
+                generation,
+                from_x: from.0,
+                from_z: from.1,
+                radius: span,
+                y0: -1,
+                height: rows,
+                sections: height,
+                sky_reached,
+                bits: &bits,
+            });
             if case == 12 {
                 // Another world.
                 gpu.records.clear();
@@ -1788,6 +1911,7 @@ mod tests {
                 sections: height,
                 radius,
                 frustum: &frustum,
+                reach,
             };
             if case == 7 {
                 // Planes past the integers: the CPU draws that frame, nothing is
@@ -1808,6 +1932,7 @@ mod tests {
                     "case 4: in place, whole"
                 ),
                 18 => assert!(gpu.sections.bytes > room, "case 18: the table grows"),
+                20 => assert!(gpu.reach.bytes > 1 << 16, "case 20: the graph's copy grows"),
                 _ => {}
             }
             let mut params = tables(&input, &mut words).expect("the planes fit");
@@ -1815,7 +1940,19 @@ mod tests {
             let mut expected = Vec::new();
             for &(key, page, start, quads, boxed) in held.values() {
                 let record = Record::new(key, page, start, quads, boxed);
-                if keeps(&params, &words, &record) {
+                let kept = keeps(&params, &words, &record);
+                let reached = reach.is_none_or(|r| r.contains(key));
+                if kept && let Some(r) = reach {
+                    graphed += 1;
+                    unreached += usize::from(!reached);
+                    // Above the box, over its columns: the sky band.
+                    let over = (key.0 - r.from_x).abs() <= r.radius
+                        && (key.2 - r.from_z).abs() <= r.radius;
+                    if over && key.1 >= r.y0 + r.height {
+                        band[usize::from(reached)] += 1;
+                    }
+                }
+                if kept && reached {
                     let origin = resident::origin(key, min_y, camera).as_vec3();
                     let instance = super::super::section_instance(origin.to_array(), 0, 1.0);
                     expected.push((page, start as u32, quads * 6, instance.map(f32::to_bits)));
@@ -1864,8 +2001,18 @@ mod tests {
             compared += expected.len();
         }
         // Not a comparison of empty lists, nor of a test that keeps everything.
+        // The graphs leave out a real share of what the frustum keeps, and their
+        // sky band keeps sections above a box in some cases and not in others.
         assert!(compared > 2_000, "{compared} draws");
         assert!(culled > 2_000, "{culled} within the distance left out");
+        assert!(
+            unreached * 10 > graphed && unreached < graphed,
+            "{unreached} of {graphed} in view unreached"
+        );
+        assert!(
+            band[0] > 0 && band[1] > 0,
+            "the sky band left out and kept {band:?}"
+        );
     }
 
     /// `draw`'s count draws draw what the pass kept, page by page: each kept
@@ -2032,6 +2179,7 @@ struct Quad {
                 sections: levels,
                 radius,
                 frustum,
+                reach: None,
             };
             let prepared = gpu.prepare(device, queue, &mut uploads, &mut encoder, &input);
             assert_eq!(prepared, Prepared::Gpu, "frame {frame}");

@@ -1,14 +1,15 @@
 // GPU culling (gfx/gpu_culling.rs). `apply` writes the records that changed.
 // `cull`: one invocation per section id keeps the sections whose column is
-// within the render distance and whose box is in the frustum, writes each one's
-// origin and counts it in its page, per block of 64 ids. `scan`: one workgroup
-// per page turns the blocks' counts into where each block's draws start, and the
-// page's count. `scatter`: each block writes its sections' draws there, in id
-// order, so a page's draws come in the same order every frame (atomics alone
-// would order them as the GPU schedules, and where faces of two sections meet at
-// the same depth the later draw keeps the pixel). Nothing here computes with
-// floats: the origins are the CPU's bits, copied, and the frustum test adds
-// integers the CPU computed.
+// within the render distance, that cave culling's graph reaches (occlusion.rs)
+// and whose box is in the frustum, writes each one's origin and counts it in
+// its page, per block of 64 ids. `scan`: one workgroup per page turns the
+// blocks' counts into where each block's draws start, and the page's count.
+// `scatter`: each block writes its sections' draws there, in id order, so a
+// page's draws come in the same order every frame (atomics alone would order
+// them as the GPU schedules, and where faces of two sections meet at the same
+// depth the later draw keeps the pixel). Nothing here computes with floats: the
+// origins are the CPU's bits, copied, and the frustum test adds integers the
+// CPU computed.
 
 struct Params {
     // Ids to test, records `apply` writes, the arena pages the counts and
@@ -29,6 +30,13 @@ struct Params {
     cells: vec4<u32>,
     // Each frustum plane's w term, its margin in, then 0, 0.
     w: array<vec4<i32>, 2>,
+    // Cave culling's graph (occlusion.rs `Reach`): from x, from z, radius, lowest
+    // section y; its height in sections and the level's; REACH and SKY; 0.
+    reach: vec4<i32>,
+    reach_height: i32,
+    reach_sections: i32,
+    flags: u32,
+    pad: u32,
 }
 
 // gpu_culling.rs `Record`.
@@ -64,6 +72,9 @@ struct Update {
 @group(0) @binding(6) var<storage, read_write> origins: array<vec4<u32>>;
 // Per id its page + 1 when it is drawn this frame, else 0.
 @group(0) @binding(7) var<storage, read_write> runs: array<u32>;
+// occlusion.rs `Reach::bits`: whether the search reached each cell of its box,
+// a bit each (32 a word, lowest first).
+@group(0) @binding(8) var<storage, read> reached_cells: array<u32>;
 
 // gfx.rs `section_instance`'s w for a whole section: 1 / mesher::UV_STEPS.
 const STEP_BITS: u32 = 0x38000000u;
@@ -76,6 +87,10 @@ const STATS: u32 = 2u;
 // gpu_culling.rs `rounded_box` for a box past what its codes hold: no plane
 // rejects it.
 const UNBOUNDED: u32 = 0x80000000u;
+// In `params.flags`: cave culling's graph is in `params.reach`, and its search
+// reached the box's top layer (the sky band).
+const REACH: u32 = 1u;
+const SKY: u32 = 2u;
 
 // The count of `block`'s draws in `page` (`cull`), then where they start (`scan`).
 fn block_count(block: u32, page: u32) -> u32 {
@@ -98,6 +113,28 @@ fn near(x: i32, z: i32) -> bool {
         return false;
     }
     return gx * gx + gz * gz < r * r;
+}
+
+// occlusion.rs `Occlusion::contains` (`Graph::contains`): with no graph, or with
+// cave culling off, every section; in the searched box, whether the search
+// reached it; above a clamped box, over its columns and within the level, the
+// sky band (all of it or none); else none. `Reach::contains` on the CPU.
+fn reached(key: vec3<i32>) -> bool {
+    if (params.flags & REACH) == 0u {
+        return true;
+    }
+    let r = params.reach.z;
+    let dx = key.x - params.reach.x;
+    let dz = key.z - params.reach.y;
+    let dy = key.y - params.reach.w;
+    if dx < -r || dx > r || dz < -r || dz > r || dy < 0 {
+        return false;
+    }
+    if dy >= params.reach_height {
+        return (params.flags & SKY) != 0u && key.y >= 0 && key.y <= params.reach_sections;
+    }
+    let i = u32(((dz + r) * (2 * r + 1) + dx + r) * params.reach_height + dy);
+    return ((reached_cells[i >> 5u] >> (i & 31u)) & 1u) != 0u;
 }
 
 fn term(at: u32) -> i32 {
@@ -149,7 +186,7 @@ fn cull(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
     runs[id] = 0u;
     let s = sections[id];
-    if s.key.w < 0 || s.a.y == 0u || !near(s.key.x, s.key.z) {
+    if s.key.w < 0 || s.a.y == 0u || !near(s.key.x, s.key.z) || !reached(s.key.xyz) {
         return;
     }
     let page = u32(s.key.w);

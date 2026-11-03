@@ -4466,7 +4466,8 @@ impl Renderer {
     /// Switches GPU culling, for A/B checks. Its pass and its records of the
     /// resident sections are made when it is switched on and dropped when it is
     /// switched off: nothing is kept for it while it is off but the sections'
-    /// walk marks (`SectionGpu::listed`), which are the same either way.
+    /// walk marks (`SectionGpu::listed`) and the cave-culling graph's bits
+    /// (`occlusion::Reach`), which are the same either way.
     pub fn set_gpu_culling(&mut self, on: bool) -> Result<()> {
         if !on {
             if self.gpu_culling.take().is_some() {
@@ -4507,12 +4508,18 @@ impl Renderer {
     /// section, and each page they count is the arena's. A record left behind
     /// would draw another section's quads, or from a freed page. And each
     /// section's walk mark is `SectionGpu::listed`: one unmarked that should be
-    /// would leave its translucent quads, or all of it, undrawn.
+    /// would leave its translucent quads, or all of it, undrawn. And the bits
+    /// the pass copies of the cave-culling graph are its cells'
+    /// (`occlusion::Reach`): one off would hide a section the walk shows.
     #[cfg(debug_assertions)]
     fn check_gpu_records(&self) {
         let Some(gpu) = &self.gpu_culling else {
             return;
         };
+        assert!(
+            self.occlusion.reach_is_exact(),
+            "the reach bits are the graph's cells"
+        );
         let (records, sections) = (&gpu.records, self.layout.sections());
         let mut pages = vec![0; records.page_sections().len()];
         let mut live = 0;
@@ -6576,6 +6583,9 @@ impl Renderer {
             }
             self.gpu_checks = self.gpu_checks.wrapping_add(1);
         }
+        // The walk reads the graph GPU culling is given (checked after it).
+        #[cfg(debug_assertions)]
+        let graph_given = self.occlusion.generation();
         if gpu_frame && let Some(gpu) = &mut self.gpu_culling {
             let input = gpu_culling::FrameInputs {
                 camera,
@@ -6583,6 +6593,7 @@ impl Renderer {
                 sections: self.layout.sections() as i32,
                 radius,
                 frustum: &view,
+                reach: self.occlusion.reach().filter(|_| culling),
             };
             let prepared = crate::spans::time("gpu culling", || {
                 gpu.prepare(
@@ -6630,6 +6641,11 @@ impl Renderer {
                 &mut visible,
             )
         });
+        #[cfg(debug_assertions)]
+        assert!(
+            !gpu_frame || self.occlusion.generation() == graph_given,
+            "the walk reads the graph GPU culling was given"
+        );
         let now = std::time::Instant::now();
         let mut visible_lods = std::mem::take(&mut self.visible_lods);
         visible_lods.clear();
