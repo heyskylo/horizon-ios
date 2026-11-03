@@ -1097,11 +1097,17 @@ impl Projectile {
         let spit_hit = best
             .filter(|_| impact && spit)
             .map_or(Hit::None, |(who, at, _)| Hit::Entity { who, at });
-        if impact && !spit && let Some((who, at, _)) = best {
+        if impact
+            && !spit
+            && let Some((who, at, _)) = best
+        {
             self.position = at;
             return (false, Hit::Entity { who, at });
         }
-        if impact && !(spit && best.is_some()) && let Some((at, pos, face)) = block {
+        if impact
+            && !(spit && best.is_some())
+            && let Some((at, pos, face)) = block
+        {
             self.position = at;
             return (false, Hit::Block { pos, at, face });
         }
