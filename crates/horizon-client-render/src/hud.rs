@@ -3008,8 +3008,14 @@ mod tests {
     }
     /// A resource root holding one animated block texture: a strip of two
     /// 16x16 frames, red then blue, whose mcmeta starts on the blue one.
+    /// Each call gets its own folder: tests run side by side, and one adds
+    /// a strip of its own that another would otherwise find.
     fn animated_root() -> PathBuf {
-        let root = std::env::temp_dir().join(format!("horizon-atlas-anim-{}", std::process::id()));
+        static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let root =
+            std::env::temp_dir().join(format!("horizon-atlas-anim-{}-{n}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
         let block = root.join("assets/minecraft/textures/block");
         fs::create_dir_all(&block).unwrap();
         write_strip(

@@ -173,6 +173,30 @@ pub(super) struct Create {
 /// What the sidebar shows of the Servers page: its list once the page has read it, and whether
 /// a server answers.
 impl Servers {
+    /// A stopped server's line in the list: "Survival · stopped", as the mockup's. The open
+    /// server's mode is the one its settings show now, once read; the others' (and the open one's
+    /// until then) come from their files.
+    pub(super) fn stopped_line(&mut self, dir: &std::path::Path) -> String {
+        let open = Some(self.shown("world", "game_mode"))
+            .filter(|m| !m.is_empty() && self.open.as_deref() == Some(dir));
+        let mode = open.or_else(|| {
+            self.modes
+                .entry(dir.to_path_buf())
+                .or_insert_with(|| servers::game_mode(dir))
+                .clone()
+        });
+        match mode {
+            Some(mode) => {
+                let label = MODES
+                    .iter()
+                    .find(|(id, _)| *id == mode)
+                    .map_or(mode.clone(), |(_, label)| tr(label).to_string());
+                trf("{mode} · stopped", &[("mode", &label)])
+            }
+            None => tr("Stopped").to_string(),
+        }
+    }
+
     pub(super) fn sidebar_list(&self) -> Option<&[Entry]> {
         self.loaded.then_some(&self.list[..])
     }
@@ -188,6 +212,8 @@ pub(super) struct Servers {
     pub(super) open: Option<PathBuf>,
     tab: Tab,
     statuses: HashMap<PathBuf, Status>,
+    /// Each listed server's game mode from its `server.toml`, read once while it is listed.
+    modes: HashMap<PathBuf, Option<String>>,
     polling: bool,
     polled: Option<Instant>,
     log: VecDeque<String>,
@@ -240,6 +266,7 @@ impl Servers {
             open: None,
             tab: Tab::Overview,
             statuses: HashMap::new(),
+            modes: HashMap::new(),
             polling: false,
             polled: None,
             log: VecDeque::new(),
@@ -457,6 +484,8 @@ impl Launcher {
         }
         let s = &mut self.servers;
         s.open = Some(dir);
+        // Its settings may have changed while it was open.
+        s.modes.clear();
         s.tab = Tab::Overview;
         s.config = None;
         s.backups.clear();
@@ -481,7 +510,7 @@ impl Launcher {
         // The glass page shows how friends reach the server beside it, whatever the tab.
         let overview = self.page == Page::Servers
             && self.servers.open.is_some()
-            && (self.servers.tab == Tab::Overview || self.theme.dark);
+            && (self.servers.tab == Tab::Overview || self.theme.glass);
         let mut changed = self.internet_tick(overview);
         while let Ok(event) = self.servers.rx.try_recv() {
             changed = true;
@@ -596,6 +625,8 @@ impl Launcher {
                     Ok(entry) => {
                         s.create = None;
                         s.list = servers::list();
+                        s.modes.clear();
+                        s.modes.clear();
                         self.open_server(entry.dir.clone());
                         self.servers.note = Some(format!(
                             "{} is ready. Press Start, then give your friends the address below.",
@@ -621,6 +652,7 @@ impl Launcher {
                 s.busy = None;
                 s.confirm_delete = false;
                 s.list = servers::list();
+                s.modes.clear();
                 s.statuses.remove(&dir);
                 STARTED_HERE
                     .lock()
@@ -794,7 +826,7 @@ impl Launcher {
             Fix::ShowLog => {
                 self.servers.tab = Tab::Overview;
                 if let Some(dir) = &self.servers.open {
-                    cx.open_with_system(&dir.join("logs"));
+                    crate::glass_toast::open(cx, &dir.join("logs"));
                 }
             }
         }
@@ -813,7 +845,7 @@ impl Launcher {
         };
         // The glass dialog starts with an empty name (its placeholder says the default) and the
         // player as the first friend.
-        let glass = self.theme.dark;
+        let glass = self.theme.glass;
         let own = own_name(&self.accounts).unwrap_or_default();
         self.servers
             .text(Field::Name)
@@ -942,7 +974,7 @@ impl Launcher {
         // Home's Add server line is in the glass look already; the other fields follow with
         // their pages.
         // The dark appearance draws every field in the glass look.
-        let glass = t.dark;
+        let glass = t.glass;
         let base = if glass {
             // The mods filter and the log search sit by buttons: the mockup's small `FIELD`, as
             // tall as they are.
@@ -1082,7 +1114,7 @@ impl Launcher {
     fn field_enter(&mut self, f: Field) {
         match f {
             // The glass dialog's friend field adds the name typed.
-            Field::Players if self.theme.dark => self.add_create_friend(),
+            Field::Players if self.theme.glass => self.add_create_friend(),
             Field::Name | Field::Seed | Field::Players => self.create_server(),
             Field::Command => {
                 let line = self.servers.text(Field::Command).take();
@@ -1165,7 +1197,7 @@ impl Launcher {
             .flex()
             .flex_col()
             .size(px(size))
-            .rounded(px(if self.theme.dark { size / 4. } else { 3. }))
+            .rounded(px(if self.theme.glass { size / 4. } else { 3. }))
             .overflow_hidden()
             .bg(self.theme.plate);
         if let Some(pixels) = face {
@@ -1212,13 +1244,14 @@ impl Launcher {
         let t = self.theme;
         if !self.servers.loaded {
             self.servers.list = servers::list();
+            self.servers.modes.clear();
             self.servers.loaded = true;
             if self.servers.open.is_none() && self.servers.list.len() == 1 {
                 let dir = self.servers.list[0].dir.clone();
                 self.open_server(dir);
             }
         }
-        if t.dark {
+        if t.glass {
             return self.glass_servers_page(cx);
         }
         if let Some(dir) = self.servers.open.clone() {
@@ -1553,7 +1586,7 @@ impl Launcher {
             .child(panel)
             .child(
                 button("server-folder", "Open the folder", Kind::Ghost, &t)
-                    .on_click(move |_, _, cx| cx.open_with_system(&folder)),
+                    .on_click(move |_, _, cx| crate::glass_toast::open(cx, &folder)),
             );
 
         let mut page = div()
@@ -1885,7 +1918,7 @@ impl Launcher {
     fn players_tab(&mut self, dir: &Path, status: &Status, cx: &mut Context<Self>) -> Div {
         let t = self.theme;
         // The glass look draws no rules between rows, as the mockup.
-        let rule = if t.dark {
+        let rule = if t.glass {
             gpui::transparent_black()
         } else {
             t.rule
@@ -1899,7 +1932,7 @@ impl Launcher {
         let mut tab = div().flex().flex_col().gap(px(28.));
         // The glass look's rows are the mockup's: 28 px heads, the name in 14 px medium, its
         // note in 13 px.
-        let glass = t.dark;
+        let glass = t.glass;
         let head = if glass { 28. } else { 24. };
         let person = move |name: String| {
             text(theme::UI)
@@ -2184,7 +2217,7 @@ impl Launcher {
         control: AnyElement,
     ) -> Div {
         let t = self.theme;
-        if t.dark {
+        if t.glass {
             return glass_setting_row(name, about, error, control);
         }
         div()
@@ -2221,7 +2254,7 @@ impl Launcher {
         let t = self.theme;
         let (section, field) = key.split_once('.').unwrap_or_default();
         let value: i64 = self.servers.shown(section, field).parse().unwrap_or(0);
-        if t.dark {
+        if t.glass {
             return self.glass_stepper(key, value, range, cx);
         }
         let make = |id: &'static str, label: &'static str, to: i64, cx: &mut Context<Self>| {
@@ -2285,7 +2318,7 @@ impl Launcher {
     fn settings_tab(&mut self, status: &Status, cx: &mut Context<Self>) -> Div {
         let t = self.theme;
         // The glass look draws no rules between rows, as the mockup.
-        let rule = if t.dark {
+        let rule = if t.glass {
             gpui::transparent_black()
         } else {
             t.rule
@@ -2619,7 +2652,7 @@ impl Launcher {
     fn updates_section(&mut self, status: &Status, cx: &mut Context<Self>) -> Div {
         let t = self.theme;
         // The glass look draws no rules between rows, as the mockup.
-        let rule = if t.dark {
+        let rule = if t.glass {
             gpui::transparent_black()
         } else {
             t.rule
@@ -2731,7 +2764,7 @@ impl Launcher {
     fn backups_tab(&mut self, status: &Status, cx: &mut Context<Self>) -> Div {
         let t = self.theme;
         // The glass look draws no rules between rows, as the mockup.
-        let rule = if t.dark {
+        let rule = if t.glass {
             gpui::transparent_black()
         } else {
             t.rule
@@ -2882,7 +2915,7 @@ impl Launcher {
 
     pub(super) fn create_dialog(&mut self, cx: &mut Context<Self>) -> Option<Stateful<Div>> {
         let t = self.theme;
-        if t.dark {
+        if t.glass {
             return self.glass_create_dialog(cx);
         }
         let c = self.servers.create.as_ref()?;

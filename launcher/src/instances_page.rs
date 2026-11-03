@@ -265,6 +265,7 @@ impl Launcher {
 
     /// Opens the dialog for a new instance, or for changing `editing`.
     pub(super) fn open_instance_dialog(&mut self, editing: Option<Instance>) {
+        let editing_one = editing.is_some();
         let (name, group) = editing
             .as_ref()
             .map(|i| (i.name.clone(), i.group.clone().unwrap_or_default()))
@@ -284,6 +285,10 @@ impl Launcher {
             java: Default::default(),
         });
         self.servers.text(Field::InstanceVersion).set(String::new());
+        // A new one starts with the name it would get ("My Horizon"), until the player types one.
+        if !editing_one {
+            self.change(|_| {});
+        }
     }
 
     /// Opens the dialog for a copy of the selected instance, named after it.
@@ -325,6 +330,7 @@ impl Launcher {
             .as_ref()
             .map(|p| p.as_ref().map(|c| c.png.clone()));
         let editing = d.editing.clone();
+        let edited = editing.is_some();
         let copy = selected.filter(|_| d.copy);
         // The Horizon version is Horizon's instances' alone: a Java one plays its own game.
         let plays_horizon = match &editing {
@@ -392,6 +398,12 @@ impl Launcher {
             let _ = this.update(cx, |this, cx| {
                 match result {
                     Ok(instance) => {
+                        let name = [("name", instance.name.as_str())];
+                        crate::glass_toast::say(if edited {
+                            trf("Saved {name}", &name)
+                        } else {
+                            trf("Created {name}", &name)
+                        });
                         this.instances.dialog = None;
                         this.select_instance(&instance);
                         this.reload_instances();
@@ -414,7 +426,7 @@ impl Launcher {
 
     pub(super) fn instance_dialog(&mut self, cx: &mut Context<Self>) -> Option<Stateful<Div>> {
         let t = self.theme;
-        if t.dark {
+        if t.glass {
             return self.glass_instance_dialog(cx);
         }
         let d = self.instances.dialog.as_ref()?;
@@ -773,7 +785,7 @@ impl Launcher {
                 button("instance-folder", "Open folder", Kind::Ghost, &t).on_click(
                     move |_, _, cx| {
                         let _ = std::fs::create_dir_all(&home);
-                        cx.open_with_system(&home);
+                        crate::glass_toast::open(cx, &home);
                     },
                 ),
             )
@@ -875,8 +887,17 @@ impl Launcher {
         if self.client.is_some() || self.starting_client.is_some() {
             return;
         }
+        let name = self
+            .instances
+            .list
+            .iter()
+            .find(|i| i.id == id)
+            .map(|i| i.name.clone());
         match instances::delete_with_selection(id) {
             Ok((_, saved)) => {
+                if let Some(name) = name {
+                    crate::glass_toast::say(trf("Deleted {name}", &[("name", &name)]));
+                }
                 self.instances.confirm_delete = None;
                 self.instances.delete_error = None;
                 // Play starts Horizon again; the window's copy of the settings says so too.

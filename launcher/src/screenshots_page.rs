@@ -144,7 +144,7 @@ impl Launcher {
         }
         buttons = buttons.child(
             tab_action("screenshots-folder", "Open folder", &t)
-                .on_click(move |_, _, cx| cx.open_with_system(&folder)),
+                .on_click(move |_, _, cx| crate::glass_toast::open(cx, &folder)),
         );
         let grid = div().flex().flex_wrap().gap(px(10.)).children(
             list.into_iter().take(shown).enumerate().map(|(i, shot)| {
@@ -234,7 +234,7 @@ impl Launcher {
                     ))
                     .child(
                         button("screenshot-open", "Open", Kind::Ghost, &t)
-                            .on_click(move |_, _, cx| cx.open_with_system(&open)),
+                            .on_click(move |_, _, cx| crate::glass_toast::open(cx, &open)),
                     )
                     .child(
                         button("screenshot-show", "Show in folder", Kind::Ghost, &t)

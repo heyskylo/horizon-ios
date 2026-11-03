@@ -16,9 +16,10 @@ sent the same things over TLS, and every answer is compared exactly:
   vanilla's data generator), `server/status`, the four lists, `players`, kicking nobody, `server/save` and
   `server/system_message` with no one online, the four lists changed (`add`, `remove`, `set`,
   `clear`; with no profile service, players named resolve to offline players on both), the live server
-  message, difficulty, default and forced game mode read and changed (including saved properties), autosave
-  read and changed (including its reset after restart), allow-flight read and changed (including invalid input,
-  saved properties and restart), hidden online players read and changed (including invalid input, saved properties
+  message, difficulty, default and forced game mode read and changed (including saved properties), operator
+  permission level read and changed (including saved properties and restart), autosave read and changed
+  (including its reset after restart), allow-flight read and changed (including invalid input, saved properties
+  and restart), hidden online players read and changed (including invalid input, saved properties
   and restart), allowlist use and enforcement read and changed
   (including saved properties and restart), max players read and changed (including saved
   properties and restart), player idle timeout read and changed (including disabling it, invalid input,
@@ -145,6 +146,15 @@ MESSAGES = [
     '{"jsonrpc":"2.0","id":52,"method":"minecraft:serversettings/game_mode"}',
     '{"jsonrpc":"2.0","id":53,"method":"minecraft:serversettings/game_mode/set","params":["spectator"]}',
     '{"jsonrpc":"2.0","id":54,"method":"minecraft:serversettings/game_mode"}',
+    '{"jsonrpc":"2.0","id":220,"method":"minecraft:serversettings/operator_user_permission_level"}',
+    '{"jsonrpc":"2.0","id":221,"method":"minecraft:serversettings/operator_user_permission_level/set","params":[2]}',
+    '{"jsonrpc":"2.0","id":222,"method":"minecraft:serversettings/operator_user_permission_level"}',
+    '{"jsonrpc":"2.0","id":223,"method":"minecraft:serversettings/operator_user_permission_level/set","params":[0]}',
+    '{"jsonrpc":"2.0","id":224,"method":"minecraft:serversettings/operator_user_permission_level"}',
+    '{"jsonrpc":"2.0","id":225,"method":"minecraft:serversettings/operator_user_permission_level/set","params":["yes"]}',
+    '{"jsonrpc":"2.0","id":226,"method":"minecraft:serversettings/operator_user_permission_level"}',
+    '{"jsonrpc":"2.0","id":227,"method":"minecraft:serversettings/operator_user_permission_level/set","params":[2]}',
+    '{"jsonrpc":"2.0","id":228,"method":"minecraft:serversettings/operator_user_permission_level"}',
     '{"jsonrpc":"2.0","id":55,"method":"minecraft:serversettings/force_game_mode"}',
     '{"jsonrpc":"2.0","id":56,"method":"minecraft:serversettings/force_game_mode/set","params":[true]}',
     '{"jsonrpc":"2.0","id":57,"method":"minecraft:serversettings/force_game_mode"}',
@@ -498,6 +508,9 @@ def main():
                 sides[side]['saved_player_idle_timeout'] = next(
                     (line.partition('=')[2] for line in properties.splitlines()
                      if line.startswith('player-idle-timeout=')), None)
+                sides[side]['saved_operator_user_permission_level'] = next(
+                    (line.partition('=')[2] for line in properties.splitlines()
+                     if line.startswith('op-permission-level=')), None)
                 sides[side]['saved_allow_flight'] = next(
                     (line.partition('=')[2] for line in properties.splitlines()
                      if line.startswith('allow-flight=')), None)
@@ -519,6 +532,8 @@ def main():
                     sides[side]['saved_config_max_players'] = 'max_players = 30' in (
                         folder / 'server.toml').read_text()
                     sides[side]['saved_config_player_idle_timeout'] = 'player-idle-timeout = 30' in (
+                        folder / 'server.toml').read_text()
+                    sides[side]['saved_config_operator_user_permission_level'] = 'op-permission-level = 2' in (
                         folder / 'server.toml').read_text()
                     sides[side]['saved_config_allow_flight'] = 'allow-flight = true' in (
                         folder / 'server.toml').read_text()
@@ -585,6 +600,12 @@ def main():
                         if not isinstance(reply, dict) or 'method' not in reply or 'id' in reply:
                             break
                     sides[side]['restarted_hide_online_players'] = reply
+                    ws.send('{"jsonrpc":"2.0","id":229,"method":"minecraft:serversettings/operator_user_permission_level"}')
+                    while True:
+                        reply = normal(ws.receive(timeout=60))
+                        if not isinstance(reply, dict) or 'method' not in reply or 'id' in reply:
+                            break
+                    sides[side]['restarted_operator_user_permission_level'] = reply
                 finally:
                     ws.sock.close()
             finally:
@@ -656,6 +677,14 @@ def main():
         if vanilla['restarted_player_idle_timeout'] != horizon['restarted_player_idle_timeout'] or \
                 vanilla['restarted_player_idle_timeout'] != {'jsonrpc': '2.0', 'id': 133, 'result': 30}:
             failures.append(f"restarted player idle timeout: vanilla {vanilla['restarted_player_idle_timeout']!r}, Horizon {horizon['restarted_player_idle_timeout']!r}")
+        if vanilla['saved_operator_user_permission_level'] != horizon['saved_operator_user_permission_level'] or \
+                vanilla['saved_operator_user_permission_level'] != '2':
+            failures.append(f"saved operator permission level: vanilla {vanilla['saved_operator_user_permission_level']!r}, Horizon {horizon['saved_operator_user_permission_level']!r}")
+        if not horizon['saved_config_operator_user_permission_level']:
+            failures.append('Horizon did not save operator permission level in server.toml')
+        if vanilla['restarted_operator_user_permission_level'] != horizon['restarted_operator_user_permission_level'] or \
+                vanilla['restarted_operator_user_permission_level'] != {'jsonrpc': '2.0', 'id': 229, 'result': 2}:
+            failures.append(f"restarted operator permission level: vanilla {vanilla['restarted_operator_user_permission_level']!r}, Horizon {horizon['restarted_operator_user_permission_level']!r}")
         if vanilla['saved_allow_flight'] != horizon['saved_allow_flight'] or vanilla['saved_allow_flight'] != 'true':
             failures.append(f"saved allow-flight: vanilla {vanilla['saved_allow_flight']!r}, Horizon {horizon['saved_allow_flight']!r}")
         if not horizon['saved_config_allow_flight']:
