@@ -121,7 +121,7 @@ Shulker.addAdditionalSaveData	inline	crates/horizon-client/src/entity_nbt.rs::mo
 Shulker.findNewAttachment	inline	crates/horizon-client/src/mobs/shulker.rs::tick	keeps its face or teleports in tick, through attachable and teleport
 Shulker.makeBoundingBox	port	crates/horizon-client/src/mobs/shulker.rs::progress_aabb	
 Shulker.getDefaultDimensions	port	crates/horizon-client/src/mobs/shulker.rs::peek_height_scale	a shell on Direction.DOWN grows `(1, 1 + currentPeekAmount)` tall as its lid opens, applied last in Mob::awake_dims_in
-Shulker.startRiding	missing		no attach-face reset on boarding: `mobs/shulker.rs` sets `extra.variant3` from `Attachable` and the save only, so a shulker on a vehicle keeps the face it had
+Shulker.startRiding	port	crates/horizon-client/src/mobs/shulker.rs::on_start_riding	the attach face goes back to DOWN before the ride is decided, from `riders::start_riding` and `riders::link`; the client's teleport-interpolation reset has no counterpart (there is no slide to clear)
 Shulker.stopRiding	inline	crates/horizon-client/src/mobs/shulker.rs::tick	the body yaw is pinned to 0 on every tick (`shulker::tick`, and `client_tick` for a remote one), so a dismounted shulker shows no leftover body yaw without a reset of its own
 Shulker.move	missing		the `SHULKER_BOX` mover type has no counterpart: `shulker::teleport` runs from the tick and the bullet hit only, so a shulker box pushed by a piston never takes its shulker along
 Shulker.findAttachableSurface	port	crates/horizon-client/src/mobs/shulker.rs::attachable	

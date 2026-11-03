@@ -1107,6 +1107,41 @@ mod tests {
         assert!(o.fully_blocked && !o.knockback);
     }
 
+    /// #7309: on Hard a mob's 4 is scaled to 6 (`Player.hurtServer`), on
+    /// Normal it stays 4, and a non-mob source is never scaled.
+    #[test]
+    fn hard_scales_a_mob_hit_by_one_and_a_half() {
+        use horizon_world::food::Difficulty;
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        if !root.join("movement-properties.nbt").exists() {
+            return;
+        }
+        let assets = crate::assets::Assets::load(&root).unwrap();
+        let resources = crate::motion::MotionResources::load(&root, &assets).unwrap();
+        let health = &resources.health;
+        let id = health.damage.id("minecraft:mob_attack").unwrap();
+        let lost = |difficulty, living| {
+            let mut player =
+                crate::motion::PlayerMotion::new(&resources, horizon_core::geometry::Vec3::ZERO)
+                    .unwrap();
+            let rules = super::HealthRules {
+                difficulty,
+                ..Default::default()
+            };
+            let before = player.health.health();
+            player
+                .hurt_caused_by(health, rules, id, 4.0, None, living, 0)
+                .unwrap();
+            before - player.health.health()
+        };
+        assert_eq!(lost(Difficulty::Hard, true), 6.0);
+        assert_eq!(lost(Difficulty::Normal, true), 4.0);
+        assert_eq!(lost(Difficulty::Easy, true), 3.0);
+        assert_eq!(lost(Difficulty::Hard, false), 4.0);
+    }
+
     /// #2141: an arrow that takes the last of the player's health must kill
     /// them: `LivingEntity.hurt` leaves the health at zero and `Player.die`
     /// follows.

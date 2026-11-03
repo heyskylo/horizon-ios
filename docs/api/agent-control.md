@@ -42,8 +42,6 @@ API offers; the other commands the game's socket answers are test hooks and expe
 
 ## Not there yet
 
-- **A version that is checked.** `hello` answers it (and MCP `serverInfo` carries the release), but `horizon-ctl`
-  still drives any game: it should refuse one whose line it doesn't speak (`horizon-ctl --api 0.1`).
 - **Reply schemas.** Each command's reply described in the table (fields, types, units), so the reference documents
   replies as well as arguments and MCP tools declare an output schema.
 - **Events as a stream.** `events --since` polls today; a subscription that pushes events as they happen.
@@ -55,3 +53,6 @@ API offers; the other commands the game's socket answers are test hooks and expe
 - 0.1.0: the first numbered line. `hello` answers `protocol`, `release` (the game's version, which MCP `serverInfo`
   carries too) and `features` (the command groups the game serves). Before it the command table and the generated
   reference were the contract.
+- `horizon-ctl --api 0.1` (a tool change, the protocol stays 0.1.0): calls `hello` before the first command and refuses a
+  game on another line or one without `hello` (exit status 5, `kind: "api"`). `0.1` takes 0.1.x; a full version must
+  match exactly.

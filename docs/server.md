@@ -7,8 +7,7 @@ should beat vanilla, Paper and Fabric + Lithium on TPS/MSPT, RAM, CPU, chunk gen
 Gameplay stays vanilla: there are no Paper-style rule changes unless the owner turns one on.
 
 This page covers what the server does today (measured), the design of `horizon-server`, and what ships for the
-first working version (2026-10-23). The owner's guide is docs/hosting.md, also at
-https://playhorizon.dev/server.
+first working version (2026-10-23). The owner's guide is [docs/hosting.md](hosting.md).
 
 ## 1. Today
 
@@ -183,7 +182,13 @@ prepared on their own computer to the server (`scp -r`). Planned wrappers:
 - **On this machine:** `horizon-server prepare --server-jar PATH` runs `horizon-prepare` on the owner's own
   server jar plus their launcher install.
 - **Prepared elsewhere:** `horizon-server import-resources DIR` copies a folder prepared on the owner's own
-  computer, for example by the launcher, to a headless machine.
+  computer, for example by the launcher, to a headless machine. It first checks the folder: `horizon-resources.json`
+  is there and names Minecraft 26.3, the derived files match their checksums, and the font and texture folders
+  aren't empty; otherwise it lists what is wrong and changes nothing. It copies next to the destination and
+  renames the copy in, so a failure partway keeps the old copy. The destination is the first place the server
+  reads: `[engine] resources` when set, else `resources/` in the server folder when it exists or the server
+  wasn't installed by `install.sh`, else the installer's `game-files/horizon-client/26.3` (where the release's
+  `.local/horizon-client` points). It ends by saying to start or restart the server.
 
 A server-only `prepare` (from `server.jar` alone, without the client jar or a JDK) is the follow-up that
 removes the last Java step. It needs a list of which prepared files the server really reads, and that list
@@ -311,9 +316,11 @@ refuse. There is no `backups.before_update` setting: an update always backs up t
 - **Changes without opening the file.** `horizon-server config set KEY=VALUE...` (the launcher's Servers
   page uses it) writes through `toml_edit`, checks the result as `server.toml` is checked, and writes nothing
   if a value is wrong. On a running server it sends what vanilla changes live through its console:
-  `difficulty`, `defaultgamemode` and `whitelist on|off`; the backup settings apply at once because the
+  `difficulty`, `defaultgamemode` and `whitelist on|off`; `server.motd` and `server.max_players` go to the
+  game as the management protocol's `serversettings/motd/set` and `serversettings/max_players/set` do, so
+  the server list and the next logins use them at once; the backup settings apply at once because the
   supervisor reads them each time. Everything else waits for the next start, and the command says which. A
-  real hot reload (view distance, MOTD) needs engine support and comes later.
+  hot reload of the view distance needs engine support and comes later.
 - `server.properties`, `ops.json`, `whitelist.json`, `banned-*.json` and `world/` keep vanilla's names and
   formats. A vanilla server folder works as is, and so does going back to vanilla.
 
@@ -339,9 +346,10 @@ horizon-server panel                     the panel's address and a one-time logi
 horizon-server update [--check] [--version vX.Y.Z] [--timeout S]     rollback [--timeout S]
 horizon-server update --archive FILE --version NAME     an archive you have (your own build)
 horizon-server mcp                       MCP server on stdio (section 8)
+horizon-server import-resources <dir>    copy game files prepared elsewhere into place (checked first)
 
 Planned:
-horizon-server import-resources <dir>      prepare --server-jar PATH
+horizon-server prepare --server-jar PATH
 ```
 
 - Every command takes `--dir` (the server folder; default: the current folder).

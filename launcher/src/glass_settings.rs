@@ -284,7 +284,7 @@ impl Launcher {
                 .into_any_element()
         };
         let open = ui::quiet("about-open-data", tr("Open"), 36., &t)
-            .on_click(|_, _, cx| cx.open_with_system(&backend::data_dir()))
+            .on_click(|_, _, cx| crate::glass_toast::open(cx, &backend::data_dir()))
             .into_any_element();
         div()
             .flex()
@@ -394,7 +394,7 @@ impl Launcher {
                         .on_click(|_, _, cx| {
                             let dir = backend::logs_dir();
                             let _ = std::fs::create_dir_all(&dir);
-                            cx.open_with_system(&dir);
+                            crate::glass_toast::open(cx, &dir);
                         })
                         .into_any_element(),
                 ),
