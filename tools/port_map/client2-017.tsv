@@ -51,8 +51,8 @@ WarningScreen	home	crates/horizon-client/src/game/code_of_conduct.rs	title, the 
 AccessibilityOptionsScreen.options	port	crates/horizon-client-render/src/options_ui.rs::OptionsUi::list_rows	ACCESSIBILITY_OPTIONS list, same options in the same order
 AccessibilityOptionsScreen.init	missing		minor: High Contrast is not greyed out without the high_contrast pack, and Rotate with Minecarts is not greyed out without the minecart feature
 AccessibilityOptionsScreen.addOptions	port	crates/horizon-client-render/src/options_ui.rs::OptionsUi::list_rows	Narrator row with the Controls button, then the rest of the rows
-AccessibilityOptionsScreen.addFooter	missing		minor: the Accessibility Help link button is absent from the footer
-AccessibilityOptionsScreen.isMinecartOptionEnabled	missing		minor: no minecart feature-flag check; part of the greying-out in init
+AccessibilityOptionsScreen.addFooter	port	crates/horizon-client-render/src/options_ui.rs::OptionsUi::layout	the Accessibility Help link button sits beside Done on the Accessibility page, and Act::AccessibilityHelp confirms CommonLinks.ACCESSIBILITY_HELP over the options screen
+AccessibilityOptionsScreen.isMinecartOptionEnabled	port	crates/horizon-client-render/src/options_ui.rs::OptionsUi::layout	Rotate with Minecarts is inactive unless a world is open whose feature flags include minecart_improvements
 ChatOptionsScreen.options	port	crates/horizon-client-render/src/options_ui.rs::OptionsUi::list_rows	gap: minor: Chat Delay is on the Accessibility page instead; Chat page rows
 FontOptionsScreen.options	port	crates/horizon-client-render/src/options_ui.rs::OptionsUi::list_rows	Force Unicode Font and Japanese glyph variants
 InWorldGameRulesScreen.initContent	port	crates/horizon-client/src/game/lan_screen.rs::Game::world_options_click	GameRules button: a remote world sends REQUEST_GAMERULE_VALUES (action 2); a local world builds RulesScreen from its rules
