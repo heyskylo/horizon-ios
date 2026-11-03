@@ -3578,7 +3578,13 @@ impl Mob {
     }
     /// Mob.playSound with LivingEntity.getVoicePitch.
     pub fn voice(&mut self, event: &'static str, events: &mut Vec<MobEvent>) {
+        // Java evaluates the arguments of `playSound(event, getSoundVolume(),
+        // getVoicePitch())` before the call, so the pitch is drawn even for a
+        // silent entity, whose `Entity.playSound` then plays nothing.
         let pitch = self.voice_pitch();
+        if self.silent {
+            return;
+        }
         // Entity.playSound: at the entity's feet.
         let at = [self.position.x, self.position.y, self.position.z];
         events.push(MobEvent::Sound(event, at, ai::sound_volume(self), pitch));
@@ -4878,3 +4884,56 @@ mod totem_tests {
     }
 }
 crate::impl_joined!(Mob);
+#[cfg(test)]
+mod silent_voice_tests {
+    use super::*;
+    use crate::mobs::world::with_test_world;
+
+    /// The sounds `Mob::voice` plays for `ambient_sound` of one mob, with
+    /// `silent` set on it, and the random state it leaves behind.
+    fn ambient(silent: bool) -> Option<(Vec<(&'static str, f32, f32)>, f32)> {
+        let mut out = None;
+        let ran = with_test_world(&[], |w, types| {
+            let mut m = Mob::new(
+                1,
+                Arc::new(types.types["minecraft:cow"].clone()),
+                Vec3::new(0.5, 64.0, 0.5),
+                0.0,
+            );
+            m.silent = silent;
+            let mut events = Vec::new();
+            crate::mobs::ai::ambient_sound(&mut m, w, &mut events);
+            let heard = events
+                .iter()
+                .filter_map(|e| match e {
+                    MobEvent::Sound(s, _, volume, pitch) => Some((*s, *volume, *pitch)),
+                    _ => None,
+                })
+                .collect();
+            out = Some((heard, m.random.next_float()));
+        });
+        ran.then_some(out).flatten()
+    }
+
+    /// `Mob.playAmbientSound` plays through `Entity.playSound`, which returns
+    /// early for a silent entity, so a mob summoned with `Silent:1b` makes no
+    /// ambient sound. The pitch is still drawn first, as Java evaluates the
+    /// arguments of `playSound(event, getSoundVolume(), getVoicePitch())`
+    /// before the call, so the random state is the same either way. Without
+    /// the check the silent cow plays `entity.cow.ambient` like the loud one,
+    /// and without drawing first its random state falls two draws behind.
+    #[test]
+    fn a_silent_mob_makes_no_ambient_sound() {
+        let Some((loud, loud_next)) = ambient(false) else {
+            return;
+        };
+        let (quiet, quiet_next) = ambient(true).expect("same data");
+        // Cow.getSoundVolume is 0.4 and the pitch is the voice pitch.
+        assert_eq!(loud.len(), 1);
+        assert_eq!(loud[0].0, "entity.cow.ambient");
+        assert_eq!(loud[0].1, 0.4);
+        assert!((0.8..=1.2).contains(&loud[0].2), "{}", loud[0].2);
+        assert!(quiet.is_empty(), "{quiet:?}");
+        assert_eq!(quiet_next, loud_next, "the pitch is drawn either way");
+    }
+}
