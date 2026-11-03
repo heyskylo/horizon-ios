@@ -1072,5 +1072,6 @@
   "Deleted {name}": "{name} supprimée",
   "Launcher settings are back to their defaults": "Les réglages du launcher sont revenus à leurs valeurs par défaut",
   "Opened {path}": "Ouvert : {path}",
-  "Saved {name}": "{name} enregistrée"
+  "Saved {name}": "{name} enregistrée",
+  "{mode} · stopped": "{mode} · arrêté"
 }

@@ -1072,5 +1072,6 @@
   "Deleted {name}": "{name} dihapus",
   "Launcher settings are back to their defaults": "Pengaturan launcher kembali ke bawaan",
   "Opened {path}": "Dibuka: {path}",
-  "Saved {name}": "{name} disimpan"
+  "Saved {name}": "{name} disimpan",
+  "{mode} · stopped": "{mode} · berhenti"
 }

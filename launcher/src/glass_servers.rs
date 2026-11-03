@@ -575,7 +575,7 @@ impl Launcher {
                         ("max", &status.max_players.unwrap_or(0).to_string()),
                     ],
                 ),
-                "stopped" => tr("Stopped").to_string(),
+                "stopped" => self.servers.stopped_line(&e.dir),
                 _ => phase_label(&status),
             };
             let dir = e.dir.clone();

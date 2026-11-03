@@ -1072,5 +1072,6 @@
   "Deleted {name}": "{name} silindi",
   "Launcher settings are back to their defaults": "Başlatıcı ayarları varsayılanlara döndü",
   "Opened {path}": "Açıldı: {path}",
-  "Saved {name}": "{name} kaydedildi"
+  "Saved {name}": "{name} kaydedildi",
+  "{mode} · stopped": "{mode} · durduruldu"
 }
