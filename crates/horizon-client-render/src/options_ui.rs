@@ -6045,28 +6045,34 @@ mod tests {
             false,
             false,
         );
-        // The pointer moved off the clicked widget: its description goes with
-        // it. A mouse a click left focused (the look-up keeps the click's
-        // widget) does not hint (`focus_from_keyboard`). The click also
-        // cycled the extra, and the fresh UI draws the same settings: the
-        // focus sprite only differs in its texture, not its vertices.
-        let mut clicked = HudBatch::new([480, 480]);
+        // The pointer is still on the clicked widget: it carries the
+        // description (`setTooltip`, drawn while hovered).
+        let mut on = HudBatch::new([480, 480]);
         ui.draw(
             &s,
-            &mut clicked,
+            &mut on,
             &atlas,
-            (extra.x + extra.w + 40.0, extra.y + extra.h + 40.0),
+            (extra.x + extra.w / 2.0, extra.y + extra.h / 2.0),
         );
-        let mut fresh = OptionsUi::default();
-        fresh.show(Page::Extras);
-        let mut none = HudBatch::new([480, 480]);
-        fresh.draw(
+        // The pointer moved off: the description goes with it. A mouse
+        // focus a click left behind (the look-up keeps the click's widget,
+        // `focus_from_keyboard` false) does not keep the tooltip against
+        // the widget, like vanilla's `MenuTooltipPositioner` does for a
+        // keyboard focus.
+        let mut off = HudBatch::new([480, 480]);
+        ui.draw(
             &s,
-            &mut none,
+            &mut off,
             &atlas,
             (extra.x + extra.w + 40.0, extra.y + extra.h + 40.0),
         );
-        assert_eq!(clicked.vertices.len(), none.vertices.len());
+        assert!(
+            off.vertices.len() < on.vertices.len(),
+            "a click left {} tooltip vertices behind when the pointer left ({} vs {})",
+            on.vertices.len() - off.vertices.len(),
+            on.vertices.len(),
+            off.vertices.len(),
+        );
     }
 
     #[test]
