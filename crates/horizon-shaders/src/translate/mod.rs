@@ -1717,6 +1717,131 @@ mod tests {
         assert!(p.is_ok(), "{:?}", p.err());
     }
 
+    /// #8174: the interpolation qualifiers on a varying, in the order and the profile packs write
+    /// them. The reporter's own two-line pair first; each variant alone, so one failing shows.
+    #[test]
+    fn interpolation_qualifiers_translate_on_varyings() {
+        let vsh = |version: &str, decl: &str| {
+            format!(
+                "#version {version}
+{decl}
+void main() {{
+    texcoord = gl_MultiTexCoord0.xy;
+                     gl_Position = gl_ModelViewProjectionMatrix * gl_Vertex;
+}}
+"
+            )
+        };
+        let fsh = |version: &str, decl: &str| {
+            format!(
+                "#version {version}
+{decl}
+void main() {{ gl_FragColor = vec4(texcoord, 0.0, 1.0); }}
+"
+            )
+        };
+        let mut failures = Vec::new();
+        for version in ["430 compatibility", "330 compatibility", "430"] {
+            for qualifier in [
+                "flat",
+                "smooth",
+                "centroid",
+                "noperspective",
+                "centroid smooth",
+                "flat centroid",
+                "centroid flat",
+            ] {
+                for order in [0, 1] {
+                    let (out, input) = if order == 0 {
+                        (
+                            format!("{qualifier} out vec2 texcoord;"),
+                            format!("{qualifier} in vec2 texcoord;"),
+                        )
+                    } else {
+                        (
+                            format!("out {qualifier} vec2 texcoord;"),
+                            format!("in {qualifier} vec2 texcoord;"),
+                        )
+                    };
+                    let p = program(
+                        &[
+                            ("composite.vsh", &vsh(version, &out)),
+                            ("composite.fsh", &fsh(version, &input)),
+                        ],
+                        Target::Buffers,
+                    );
+                    if let Err(e) = p {
+                        failures.push(format!("{version}: `{out}` / `{input}`: {e:?}"));
+                    }
+                }
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "{}",
+            failures.join(
+                "
+"
+            )
+        );
+    }
+
+    /// #8174: the same qualifiers on the members of an interface block, which is how packs with
+    /// a `dimensions/` folder pass their varyings. Before #6875 the members' `flat` reached naga
+    /// as "Expected Void, Struct or a type, found Interpolation(Flat)".
+    #[test]
+    fn interpolation_qualifiers_translate_on_interface_block_members() {
+        let mut failures = Vec::new();
+        for member in [
+            "flat vec2 texcoord;",
+            "flat int id; vec2 texcoord;",
+            "smooth vec2 texcoord;",
+            "centroid vec2 texcoord;",
+            "noperspective vec2 texcoord;",
+            "flat centroid vec2 texcoord;",
+            "centroid flat vec2 texcoord;",
+            "flat sample vec2 texcoord;",
+            "sample flat vec2 texcoord;",
+            "layout(location = 1) flat vec2 texcoord;",
+        ] {
+            let id_out = if member.contains("int id") {
+                "    vOut.id = 1;
+"
+            } else {
+                ""
+            };
+            let vsh = format!(
+                "#version 430 compatibility
+out VertexData {{ {member} }} vOut;
+void main() {{
+{id_out}                     vOut.texcoord = gl_MultiTexCoord0.xy;
+    gl_Position = gl_ModelViewProjectionMatrix * gl_Vertex;
+}}
+"
+            );
+            let fsh = format!(
+                "#version 430 compatibility
+in VertexData {{ {member} }} vIn;
+                 void main() {{ gl_FragColor = vec4(vIn.texcoord, 0.0, 1.0); }}
+"
+            );
+            if let Err(e) = program(
+                &[("composite.vsh", &vsh), ("composite.fsh", &fsh)],
+                Target::Buffers,
+            ) {
+                failures.push(format!("`{member}`: {e:?}"));
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "{}",
+            failures.join(
+                "
+"
+            )
+        );
+    }
+
     #[test]
     fn frag_coord_is_set_for_every_target() {
         let fsh = "#version 120\nvoid main() { gl_FragColor = vec4(gl_FragCoord.x); }\n";
