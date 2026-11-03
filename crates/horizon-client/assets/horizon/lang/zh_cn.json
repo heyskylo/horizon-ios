@@ -354,5 +354,9 @@
   "horizon.agent.off": "关闭：代理无法访问此游戏。",
   "horizon.agent.session_opened": "由启动游戏的程序为本次会话开启。",
   "horizon.agent.socket": "套接字：%s（复制详细信息以获取完整路径）",
-  "horizon.agent.local_only": "仅限本机：此电脑上的代理可用，网络不可用。"
+  "horizon.agent.local_only": "仅限本机：此电脑上的代理可用，网络不可用。",
+  "Particle Culling": "粒子剔除",
+  "Draws every particle.": "绘制所有粒子。",
+  "Skips offscreen, subpixel and terrain-hidden particles.": "跳过屏幕外、小于一个像素和被地形遮挡的粒子。",
+  "Skips offscreen, subpixel and terrain-hidden particles with less render-thread work.": "跳过屏幕外、小于一个像素和被地形遮挡的粒子，减少渲染线程的工作量。"
 }

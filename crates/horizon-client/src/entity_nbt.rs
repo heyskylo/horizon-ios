@@ -79,7 +79,8 @@ impl Base<'_> {
         }
         if let Tag::Compound(map) = &mut tag {
             for (key, value) in [
-                ("Fire", Tag::Short(-1)),
+                // Entity.remainingFireTicks starts at 0 (-1 was the old default).
+                ("Fire", Tag::Short(0)),
                 ("Air", Tag::Short(300)),
                 ("Invulnerable", Tag::Byte(0)),
                 ("PortalCooldown", Tag::Int(0)),
@@ -1139,15 +1140,14 @@ pub fn mob_to_nbt(
     // Zombie and Piglin.setBaby (even for an adult) the speed, Rabbit.setVariant
     // the attack damage.
     use crate::mobs::finalize::Attr;
-    let made = if crate::mobs::doors::is_zombie(species) || species == crate::mobs::Species::Piglin
-    {
-        Some(Attr::MovementSpeed)
-    } else if species == crate::mobs::Species::Rabbit {
-        Some(Attr::AttackDamage)
+    // Every other living entity's first tick makes the movement_speed instance
+    // (LivingEntity.removeFrost reads it through getAttribute).
+    let made = if species == crate::mobs::Species::Rabbit {
+        vec![Attr::MovementSpeed, Attr::AttackDamage]
     } else {
-        None
+        vec![Attr::MovementSpeed]
     };
-    if let Some(attr) = made {
+    for attr in made {
         let base = crate::mobs::finalize::base_value(m, attr);
         let mut list = match map.get(&"attributes".into()) {
             Some(Tag::List(l)) => l.clone(),
@@ -1317,7 +1317,7 @@ fn put_attributes(map: &mut Compound, m: &Mob, a: &crate::mobs::finalize::Attrib
                     Op::AddMultipliedTotal => "add_multiplied_total",
                 };
                 Tag::compound([
-                    ("id", string(x.id)),
+                    ("id", string(&x.id)),
                     ("amount", Tag::Double(x.amount.to_bits())),
                     ("operation", string(op)),
                 ])
@@ -3194,7 +3194,15 @@ pub fn armor_stand_to_nbt(a: &ArmorStand, uuid: [i32; 4], raw: Option<&Tag>) -> 
             ("AbsorptionAmount", Tag::Float(0)),
             ("FallFlying", Tag::Byte(0)),
             ("current_impulse_context_reset_grace_time", Tag::Int(0)),
-            ("attributes", Tag::List(Vec::new())),
+            // AttributeMap.pack: the movement_speed instance every living
+            // entity's first tick makes (removeFrost), at the registry default.
+            (
+                "attributes",
+                Tag::List(vec![Tag::compound([
+                    ("id", string("minecraft:movement_speed")),
+                    ("base", Tag::Double(0.7f64.to_bits())),
+                ])]),
+            ),
             (
                 "Brain",
                 Tag::compound([("memories", Tag::Compound(Compound::new()))]),
@@ -4131,6 +4139,32 @@ mod tests {
         let tag = item_entity_to_nbt(&e, [0; 4], Some(&raw));
         assert_eq!(text(tag.get("CustomName")).as_deref(), Some("x"));
         assert_eq!(number(tag.get("Health")), Some(5));
+    }
+    #[test]
+    fn entities_without_fire_save_zero_and_a_mob_saves_its_speed_instance() {
+        // Entity.remainingFireTicks starts at 0; LivingEntity.removeFrost makes
+        // the movement_speed instance AttributeMap.pack then saves.
+        let orb = ExperienceOrb {
+            join: Default::default(),
+            no_gravity: false,
+            id: 0,
+            position: Vec3::ZERO,
+            previous: Vec3::ZERO,
+            velocity: Vec3::ZERO,
+            value: 1,
+            age: 0,
+            on_ground: false,
+            count: 1,
+            ticks: 0,
+            health: 5,
+        };
+        let tag = orb_to_nbt(&orb, [0; 4]);
+        assert_eq!(tag.get("Fire"), Some(&Tag::Short(0)));
+        let stand = armor_stand_to_nbt(&ArmorStand::new(1, Vec3::ZERO, 0.0), [0; 4], None);
+        let Some(Tag::List(attrs)) = stand.get("attributes") else {
+            panic!("no attributes");
+        };
+        assert_eq!(attrs.len(), 1);
     }
     #[test]
     fn orbs_keep_their_count() {

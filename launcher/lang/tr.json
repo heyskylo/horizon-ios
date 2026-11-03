@@ -94,6 +94,7 @@
   "Play": "Oyna",
   "Running": "Çalışıyor",
   "Stopped": "Durduruldu",
+  "{mode} · stopped": "{mode} · durduruldu",
   "Start the game, or run a server for others to join.": "Oyunu başlatın veya diğerlerinin katılması için bir sunucu çalıştırın.",
   "No version installed yet.": "Henüz yüklenmiş bir sürüm yok.",
   "Choose a version": "Bir sürüm seç",
@@ -1073,5 +1074,5 @@
   "Launcher settings are back to their defaults": "Başlatıcı ayarları varsayılanlara döndü",
   "Opened {path}": "Açıldı: {path}",
   "Saved {name}": "{name} kaydedildi",
-  "{mode} · stopped": "{mode} · durduruldu"
+  "My Horizon": "Horizon'ım"
 }

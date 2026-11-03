@@ -94,6 +94,7 @@
   "Play": "Jogar",
   "Running": "Em execução",
   "Stopped": "Parado",
+  "{mode} · stopped": "{mode} · parado",
   "Start the game, or run a server for others to join.": "Inicie o jogo ou execute um servidor para que outras pessoas possam entrar.",
   "No version installed yet.": "Nenhuma versão instalada ainda.",
   "Choose a version": "Escolher uma versão",
@@ -1073,5 +1074,5 @@
   "Launcher settings are back to their defaults": "As configurações do launcher voltaram ao padrão",
   "Opened {path}": "Aberto: {path}",
   "Saved {name}": "{name} salva",
-  "{mode} · stopped": "{mode} · parado"
+  "My Horizon": "Meu Horizon"
 }

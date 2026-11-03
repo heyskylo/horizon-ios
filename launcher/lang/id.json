@@ -189,6 +189,7 @@
   "New instance": "Instans baru",
   "Loading filters": "Memuat filter",
   "Stopped": "Berhenti",
+  "{mode} · stopped": "{mode} · berhenti",
   "Extra arguments for the game, passed through as-is (quotes group a word with spaces). Applies the next time the game starts.": "Argumen tambahan untuk game, diteruskan apa adanya (tanda kutip mengelompokkan kata dengan spasi). Berlaku pada saat game berikutnya dimulai.",
   "Horizon never turns on Funnel: the server isn't put on the public internet, only shared with the people you invite.": "Horizon tidak pernah mengaktifkan Funnel: server tidak dimasukkan ke internet publik, melainkan hanya dibagikan kepada orang yang Anda undang.",
   "Minecraft folder": "Folder Minecraft",
@@ -1073,5 +1074,5 @@
   "Launcher settings are back to their defaults": "Pengaturan launcher kembali ke bawaan",
   "Opened {path}": "Dibuka: {path}",
   "Saved {name}": "{name} disimpan",
-  "{mode} · stopped": "{mode} · berhenti"
+  "My Horizon": "Horizon Saya"
 }

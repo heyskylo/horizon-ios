@@ -189,6 +189,7 @@
   "New instance": "Новая сборка",
   "Loading filters": "Загрузка фильтров",
   "Stopped": "Остановлен",
+  "{mode} · stopped": "{mode} · остановлен",
   "Extra arguments for the game, passed through as-is (quotes group a word with spaces). Applies the next time the game starts.": "Дополнительные параметры запуска игры, передаются как есть (кавычки объединяют слова с пробелами). Применяется при следующем запуске игры.",
   "Horizon never turns on Funnel: the server isn't put on the public internet, only shared with the people you invite.": "Horizon никогда не включает Funnel: сервер не выставляется в публичный интернет, а доступен только приглашённым вами людям.",
   "Minecraft folder": "Папка Minecraft",
@@ -1073,5 +1074,5 @@
   "Launcher settings are back to their defaults": "Настройки лаунчера сброшены по умолчанию",
   "Opened {path}": "Открыто: {path}",
   "Saved {name}": "{name} сохранена",
-  "{mode} · stopped": "{mode} · остановлен"
+  "My Horizon": "Мой Horizon"
 }

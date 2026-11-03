@@ -189,6 +189,7 @@
   "New instance": "Nova instância",
   "Loading filters": "A carregar filtros",
   "Stopped": "Parado",
+  "{mode} · stopped": "{mode} · parado",
   "Extra arguments for the game, passed through as-is (quotes group a word with spaces). Applies the next time the game starts.": "Argumentos extra para o jogo, passados tal como estão (as aspas agrupam uma palavra com espaços). Aplica-se na próxima vez que o jogo iniciar.",
   "Horizon never turns on Funnel: the server isn't put on the public internet, only shared with the people you invite.": "O Horizon nunca ativa o Funnel: o servidor não é colocado na internet pública, sendo apenas partilhado com as pessoas que convidas.",
   "Minecraft folder": "Pasta do Minecraft",
@@ -1073,5 +1074,5 @@
   "Launcher settings are back to their defaults": "As definições do launcher voltaram às predefinições",
   "Opened {path}": "Aberto: {path}",
   "Saved {name}": "{name} guardada",
-  "{mode} · stopped": "{mode} · parado"
+  "My Horizon": "O meu Horizon"
 }

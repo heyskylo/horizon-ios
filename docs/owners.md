@@ -75,7 +75,7 @@ These belong to `horizon-server`, not to the game:
 
 ## Planned: limiting a server to Horizon clients
 
-The design (`docs/design.md`, section 6 of horizon-rust/horizon-server) adds one more setting. It is not in
+The design ([server-next.md](server-next.md#6-who-can-join), section 6) adds one more setting. It is not in
 `server.toml` yet.
 
 ```toml
