@@ -1039,5 +1039,8 @@
   "Reset the launcher's look": "Скинути вигляд лаунчера",
   "Reset to defaults": "Скинути до типових",
   "{value} px": "{value} пікс.",
-  "{value}%": "{value}%"
+  "{value}%": "{value}%",
+  "Experimental. Builds the native mods you trust into a game of their own.": "Експериментально. Збирає нативні моди, яким ви довіряєте, в окрему гру.",
+  "Native mods": "Нативні моди",
+  "Nightly": "Nightly"
 }

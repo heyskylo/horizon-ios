@@ -1039,5 +1039,8 @@
   "Reset the launcher's look": "重置启动器外观",
   "Reset to defaults": "恢复默认设置",
   "{value} px": "{value} 像素",
-  "{value}%": "{value}%"
+  "{value}%": "{value}%",
+  "Experimental. Builds the native mods you trust into a game of their own.": "实验性。将你信任的原生模组构建进一个单独的游戏。",
+  "Native mods": "原生模组",
+  "Nightly": "Nightly"
 }

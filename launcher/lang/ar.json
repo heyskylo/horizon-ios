@@ -1039,5 +1039,8 @@
   "Reset the launcher's look": "إعادة تعيين مظهر المشغّل",
   "Reset to defaults": "استعادة الإعدادات الافتراضية",
   "{value} px": "{value} بكسل",
-  "{value}%": "{value}٪"
+  "{value}%": "{value}٪",
+  "Experimental. Builds the native mods you trust into a game of their own.": "تجريبي. يبني الإضافات الأصلية التي تثق بها في لعبة خاصة بها.",
+  "Native mods": "الإضافات الأصلية",
+  "Nightly": "Nightly"
 }

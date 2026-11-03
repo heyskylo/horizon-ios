@@ -1039,5 +1039,8 @@
   "Reset the launcher's look": "लॉन्चर का रूप रीसेट करें",
   "Reset to defaults": "डिफ़ॉल्ट पर रीसेट करें",
   "{value} px": "{value} px",
-  "{value}%": "{value}%"
+  "{value}%": "{value}%",
+  "Experimental. Builds the native mods you trust into a game of their own.": "प्रयोगात्मक। जिन नेटिव मॉड पर आप भरोसा करते हैं, उन्हें उनके अपने गेम में बनाता है।",
+  "Native mods": "नेटिव मॉड",
+  "Nightly": "Nightly"
 }
