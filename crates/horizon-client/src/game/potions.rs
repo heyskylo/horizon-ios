@@ -488,7 +488,8 @@ pub(super) fn collect_dragon_breath(
 ) -> bool {
     let search_box = player_box.inflate(Vec3::new(2.0, 2.0, 2.0));
     if let Some(c) = clouds.iter_mut().find(|c| {
-        if !c.from_dragon || c.potion.is_some() || c.age >= c.duration {
+        if !c.from_dragon || c.potion.is_some() || super::dragon::breath_expired(c.age, c.duration)
+        {
             return false;
         }
         let r = f64::from(c.radius);
@@ -2005,6 +2006,7 @@ mod tests {
             age: 0,
             duration: 200,
             from_dragon: true,
+            victims: Vec::new(),
             potion: None,
         }];
         assert!(collect_dragon_breath(player_box, &mut clouds));
@@ -2026,6 +2028,7 @@ mod tests {
             age: 0,
             duration: 600,
             from_dragon: false,
+            victims: Vec::new(),
             potion: None,
         }];
         assert!(!collect_dragon_breath(player_box, &mut non_dragon));
@@ -2039,6 +2042,7 @@ mod tests {
             age: 0,
             duration: 600,
             from_dragon: true,
+            victims: Vec::new(),
             potion: Some(PotionCloud {
                 effects: Vec::new(),
                 hidden: Vec::new(),
@@ -2052,14 +2056,30 @@ mod tests {
         assert!(!collect_dragon_breath(player_box, &mut lingering));
         assert_eq!(lingering[0].radius, 3.0);
 
-        // Expired cloud (`age >= duration`).
+        // Its last tick before the wait-shifted end still holds breath
+        // (`tickCount - waitTime < duration`).
+        let mut last = vec![super::super::dragon::Breath {
+            id: 3,
+            at: [0.0, 64.0, 0.0],
+            radius: 5.0,
+            age: 219,
+            duration: 200,
+            from_dragon: true,
+            victims: Vec::new(),
+            potion: None,
+        }];
+        assert!(collect_dragon_breath(player_box, &mut last));
+        assert_eq!(last[0].radius, 4.5);
+
+        // Expired cloud (`tickCount - waitTime >= duration`).
         let mut expired = vec![super::super::dragon::Breath {
             id: 3,
             at: [0.0, 64.0, 0.0],
             radius: 5.0,
-            age: 200,
+            age: 220,
             duration: 200,
             from_dragon: true,
+            victims: Vec::new(),
             potion: None,
         }];
         assert!(!collect_dragon_breath(player_box, &mut expired));
@@ -2074,6 +2094,7 @@ mod tests {
             age: 0,
             duration: 200,
             from_dragon: true,
+            victims: Vec::new(),
             potion: None,
         }];
         assert!(!collect_dragon_breath(player_box, &mut far));
@@ -2089,6 +2110,7 @@ mod tests {
             age: 0,
             duration: 200,
             from_dragon: true,
+            victims: Vec::new(),
             potion: None,
         }];
         assert!(!collect_dragon_breath(high_player, &mut ground_cloud));
