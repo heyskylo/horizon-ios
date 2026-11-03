@@ -28,6 +28,7 @@ use naga::valid::{Capabilities, ValidationFlags, Validator};
 use crate::Preprocessed;
 
 mod anonymous_structs;
+mod array_constructors;
 mod atomic_vectors;
 mod geometry;
 mod image_parameters;
@@ -1135,7 +1136,7 @@ fn compile(stage: &Stage, text: &str, header_lines: usize) -> Result<naga::Modul
             message,
         }]
     })?;
-    let bounded = integer_bounds::rewrite(&specialized);
+    let bounded = integer_bounds::rewrite(&array_constructors::rewrite(&specialized));
     let text = bounded.as_str();
     let at = |text: &str, span: naga::Span, message: String| {
         let start = span.to_range().map_or(0, |r| r.start);
@@ -1596,6 +1597,62 @@ mod tests {
 
     const VSH_120: &str = "#version 120\nvarying vec2 texcoord;\nvoid main() {\n    gl_Position = ftransform();\n    \
                            texcoord = (gl_TextureMatrix[0] * gl_MultiTexCoord0).xy;\n}\n";
+
+    #[test]
+    fn mixed_type_array_constructor_arguments_validate() {
+        // Drivers take these; naga composed them unconverted ("Composing 0's component type").
+        for body in [
+            "int k[2] = int[2](1u, 2); return float(k[1]);",
+            "float k[] = float[](1u, 2); return k[1];",
+            "uint k[2] = uint[2](1.0, 2); return float(k[1]);",
+            "vec2 k[2] = vec2[](ivec2(1), texcoord); return k[1].x;",
+        ] {
+            let fsh = format!(
+                "#version 120\nvarying vec2 texcoord;\nfloat n2d() {{ {body} }}\nvoid main() {{ gl_FragColor = vec4(n2d()); }}\n"
+            );
+            let p = program(
+                &[("composite.vsh", VSH_120), ("composite.fsh", &fsh)],
+                Target::Window,
+            );
+            assert!(p.is_ok(), "{body}: {:?}", p.err());
+        }
+    }
+
+    #[test]
+    fn mixed_type_constructor_arguments_validate() {
+        // Each kind of constructor and call, with arguments drivers convert (spec 5.4).
+        let cases = [
+            ("", "vec3 k = vec3(1u, 2, texcoord.x); return k.x;"),
+            ("", "ivec2 k = ivec2(1u, 2.0); return float(k.x);"),
+            ("", "mat2 m = mat2(1u, 2, texcoord.x, 4.0); return m[0].x;"),
+            (
+                "struct S { int a; float b; vec2 c; };\n",
+                "S s = S(1u, 2, ivec2(3)); return s.b;",
+            ),
+            (
+                "struct S { uint a; float b; };\n",
+                "S s = S(1.0, 2); return s.b;",
+            ),
+            (
+                "float h(float x, int y) { return x + float(y); }\n",
+                "return h(1, 2);",
+            ),
+        ];
+        let mut bad = Vec::new();
+        for (decl, body) in cases {
+            let fsh = format!(
+                "#version 120\nvarying vec2 texcoord;\n{decl}float n2d() {{ {body} }}\nvoid main() {{ gl_FragColor = vec4(n2d()); }}\n"
+            );
+            let p = program(
+                &[("composite.vsh", VSH_120), ("composite.fsh", &fsh)],
+                Target::Window,
+            );
+            if let Err(e) = p {
+                bad.push(format!("{body}: {:?}", e.first().map(|e| &e.message)));
+            }
+        }
+        assert!(bad.is_empty(), "{}", bad.join("\n"));
+    }
 
     #[test]
     fn compatibility_programs_translate() {

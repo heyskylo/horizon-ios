@@ -160,6 +160,70 @@ fn behind() -> bool {
     false
 }
 
+/// Called by a far terrain thread as it starts (sampling, meshing and decorating
+/// distant tiles): work the near chunks, the ticks and the frames must never
+/// wait behind. On Linux and Android that is `behind_server`. On macOS and
+/// Windows, where `behind_server` changes nothing, the thread lowers itself one
+/// step: utility quality of service on macOS (background would throttle it to a
+/// crawl on battery) and below-normal priority on Windows, so the helpers that
+/// mesh and light the chunks around the player go first. Whether the OS took it.
+pub fn far_terrain_current() -> bool {
+    far()
+}
+
+#[cfg(not(any(target_vendor = "apple", windows)))]
+fn far() -> bool {
+    behind_server()
+}
+
+#[cfg(target_vendor = "apple")]
+fn far() -> bool {
+    // SAFETY: sets the calling thread's own QoS class; no pointers.
+    unsafe { libc::pthread_set_qos_class_self_np(libc::qos_class_t::QOS_CLASS_UTILITY, 0) == 0 }
+}
+
+#[cfg(windows)]
+fn far() -> bool {
+    use windows_sys::Win32::System::Threading::{
+        GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_BELOW_NORMAL,
+    };
+    // SAFETY: GetCurrentThread's pseudo handle needs no closing.
+    unsafe { SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL) != 0 }
+}
+
+/// For a far terrain thread that `far_terrain_current` lowered: behind the
+/// near terrain while it loads (`behind`), and back to the default once it
+/// is in. Kept at utility quality of service for good, macOS ran the far
+/// terrain on the efficiency cores long after the near chunks were in, and
+/// it took minutes to settle. On Linux and Android an unprivileged thread
+/// can't raise its priority again: it stays behind (`behind_server`), as it
+/// always has there, and this changes nothing. Whether the OS took it.
+#[cfg(any(target_vendor = "apple", windows))]
+pub fn far_terrain_behind(behind: bool) -> bool {
+    // Both set the class or priority outright: calling again is harmless.
+    if behind { far() } else { far_back() }
+}
+
+#[cfg(not(any(target_vendor = "apple", windows)))]
+pub fn far_terrain_behind(_behind: bool) -> bool {
+    false
+}
+
+#[cfg(target_vendor = "apple")]
+fn far_back() -> bool {
+    // SAFETY: sets the calling thread's own QoS class; no pointers.
+    unsafe { libc::pthread_set_qos_class_self_np(libc::qos_class_t::QOS_CLASS_DEFAULT, 0) == 0 }
+}
+
+#[cfg(windows)]
+fn far_back() -> bool {
+    use windows_sys::Win32::System::Threading::{
+        GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_NORMAL,
+    };
+    // SAFETY: GetCurrentThread's pseudo handle needs no closing.
+    unsafe { SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_NORMAL) != 0 }
+}
+
 /// Run the calling thread only on a core nothing else wants: work that may
 /// take seconds and that nothing waits for yet (the stronghold rings while a
 /// world opens). The idle class on Linux, background quality of service on

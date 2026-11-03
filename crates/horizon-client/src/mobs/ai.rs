@@ -1471,15 +1471,7 @@ impl Mob {
 }
 /// LivingEntity.onClimbable for the pusher (Spider.onClimbable: climbing a wall).
 fn on_climbable(m: &Mob, w: &MobWorld) -> bool {
-    if m.kind.flags.climber {
-        return m.climbing;
-    }
-    let (x, y, z) = (
-        m.position.x.floor() as i32,
-        m.position.y.floor() as i32,
-        m.position.z.floor() as i32,
-    );
-    w.has_tag("minecraft:climbable", w.block_name(x, y, z))
+    m.on_climbable(w)
 }
 /// `Entity.getRootVehicle` of the mob `id` riding `vehicle`: the bottom of
 /// its stack of vehicles (itself when it rides nothing).
@@ -2404,7 +2396,7 @@ pub fn do_hurt_target(m: &mut Mob, who: Who, cx: &mut Cx) {
     if super::creaking::is_creaking(m) {
         super::creaking::on_attack(m, cx.events);
     }
-    let mut amount = m.attrs.attack_damage;
+    let mut amount = super::gear::attack_damage(m, cx.w.items);
     let from = [m.position.x, m.position.y, m.position.z];
     let source = Damage::mob(m.id, from);
     let first_event = cx.events.len();
@@ -2536,10 +2528,18 @@ pub fn do_hurt_target(m: &mut Mob, who: Who, cx: &mut Cx) {
             .push(MobEvent::Sound("entity.panda.bite", at, 1.0, 1.0));
     }
     // Axolotl.playAttackSound: playSound(AXOLOTL_ATTACK, 1.0, 1.0).
-    if m.species() == Species::Axolotl {
+    if m.species() == Species::Axolotl && !m.silent {
         let at = [m.position.x, m.position.y, m.position.z];
         cx.events
             .push(MobEvent::Sound("entity.axolotl.attack", at, 1.0, 1.0));
+    }
+    // Dolphin.playAttackSound: playSound(DOLPHIN_ATTACK, 1.0, 1.0), once
+    // the blow landed. A dolphin that is hurt takes its attacker as a target
+    // and strikes with the melee goal, so its bite is heard as it lands.
+    if m.species() == Species::Dolphin && !m.silent {
+        let at = [m.position.x, m.position.y, m.position.z];
+        cx.events
+            .push(MobEvent::Sound("entity.dolphin.attack", at, 1.0, 1.0));
     }
     let _ = Fluid::None;
 }
@@ -3275,6 +3275,72 @@ mod hit_effect_tests {
             return;
         }
         assert_eq!(out, Some(vec!["plain 2".to_owned()]));
+    }
+}
+
+#[cfg(test)]
+mod attack_sound_tests {
+    use super::*;
+    use crate::mobs::world::with_test_world;
+    use std::sync::Arc;
+
+    /// The sounds `do_hurt_target` raises for `kind` on a blow that landed,
+    /// with `silent` set on the attacker; `None` without the extracted data.
+    fn attack_sounds(kind: &str, silent: bool) -> Option<Vec<(&'static str, f32, f32)>> {
+        let mut heard = Vec::new();
+        let ran = with_test_world(&[], |w, types| {
+            let mut m = Mob::new(
+                1,
+                Arc::new(types.types[kind].clone()),
+                Vec3::new(0.5, 64.0, 0.5),
+                0.0,
+            );
+            m.silent = silent;
+            let (mut lr, mut events) = (horizon_core::random::LegacyRandom::new(0), Vec::new());
+            let mut cx = Cx {
+                w,
+                lr: &mut lr,
+                events: &mut events,
+            };
+            do_hurt_target(&mut m, Who::Mob(2), &mut cx);
+            heard = events
+                .iter()
+                .filter_map(|e| match e {
+                    MobEvent::Sound(s, _, volume, pitch) => Some((*s, *volume, *pitch)),
+                    _ => None,
+                })
+                .collect();
+        });
+        if !ran {
+            return None;
+        }
+        Some(heard)
+    }
+
+    /// `Mob.doHurtTarget` ends with `playAttackSound`, which `Dolphin`,
+    /// `Axolotl` and `Panda` override with their own bite at volume 1 and
+    /// pitch 1. Without the dolphin arm its bite is silent (no sound event at
+    /// all); the axolotl and the panda sit next to it as the control.
+    #[test]
+    fn a_dolphins_blow_plays_its_attack_sound() {
+        let Some(dolphin) = attack_sounds("minecraft:dolphin", false) else {
+            return;
+        };
+        assert_eq!(dolphin, vec![("entity.dolphin.attack", 1.0, 1.0)]);
+        for (kind, sound) in [
+            ("minecraft:axolotl", "entity.axolotl.attack"),
+            ("minecraft:panda", "entity.panda.bite"),
+        ] {
+            assert_eq!(
+                attack_sounds(kind, false),
+                Some(vec![(sound, 1.0, 1.0)]),
+                "{kind}"
+            );
+        }
+        // Entity.playSound skips a silent entity, so neither attack sound plays.
+        for kind in ["minecraft:dolphin", "minecraft:axolotl", "minecraft:panda"] {
+            assert_eq!(attack_sounds(kind, true), Some(vec![]), "{kind}");
+        }
     }
 }
 
@@ -4183,5 +4249,62 @@ mod iron_golem_push_tests {
             Some(0),
             "a pushed animal is not an Enemy"
         );
+    }
+    /// #7309: a mob's melee hit is its attack damage attribute plus the
+    /// `attack_damage` modifier of the held item (`Mob.doHurtTarget`), for
+    /// every mob that holds a weapon. The modifiers are vanilla's, from the
+    /// items' components in the data reports (iron axe 8, iron sword 5,
+    /// diamond sword 6, stone sword 4, golden axe 6, trident 8, bow none).
+    #[test]
+    fn a_held_weapon_adds_its_attack_damage_to_the_melee_hit() {
+        // (mob, main hand, the item's attack_damage modifier)
+        let cases: [(&str, Option<&str>, f32); 9] = [
+            ("minecraft:vindicator", Some("minecraft:iron_axe"), 8.0),
+            ("minecraft:vindicator", None, 0.0),
+            ("minecraft:zombie", Some("minecraft:iron_sword"), 5.0),
+            ("minecraft:zombie", Some("minecraft:diamond_sword"), 6.0),
+            ("minecraft:zombie", None, 0.0),
+            (
+                "minecraft:wither_skeleton",
+                Some("minecraft:stone_sword"),
+                4.0,
+            ),
+            ("minecraft:skeleton", Some("minecraft:bow"), 0.0),
+            ("minecraft:piglin_brute", Some("minecraft:golden_axe"), 6.0),
+            ("minecraft:drowned", Some("minecraft:trident"), 8.0),
+        ];
+        let mut got = Vec::new();
+        let ran = with_test_world(&[], |w, types| {
+            for (kind, hand, _) in cases {
+                let mut m = Mob::new(
+                    1,
+                    Arc::new(types.types[kind].clone()),
+                    Vec3::new(0.5, 64.0, 0.5),
+                    0.0,
+                );
+                m.extra.main_hand = hand.map(Arc::from);
+                let (mut lr, mut events) = (horizon_core::random::LegacyRandom::new(0), Vec::new());
+                let mut cx = Cx {
+                    w,
+                    lr: &mut lr,
+                    events: &mut events,
+                };
+                do_hurt_target(&mut m, Who::Player, &mut cx);
+                got.push((
+                    m.attrs.attack_damage,
+                    events.iter().find_map(|e| match e {
+                        MobEvent::AttackPlayer(amount, _)
+                        | MobEvent::AttackPlayerWithEffect { amount, .. } => Some(*amount),
+                        _ => None,
+                    }),
+                ));
+            }
+        });
+        if !ran {
+            return;
+        }
+        for ((kind, hand, modifier), (base, hit)) in cases.iter().zip(got) {
+            assert_eq!(hit, Some(base + modifier), "{kind} holding {hand:?}");
+        }
     }
 }

@@ -165,6 +165,39 @@ fn load<E: horizon_server_files::user_lists::Entry>(dir: &Path, file: &str) -> U
     list
 }
 
+/// `GET /api/v1/mods`: the native mods the game program was built with. The launcher writes them to
+/// `native-mods.json` beside a build it makes; a release or Nightly has none, so the list is empty.
+pub fn mods(shared: &Shared) -> Response {
+    let built = crate::config::Config::load(&shared.dir)
+        .ok()
+        .and_then(|c| engine::program_in(&c, &shared.dir, shared.install.as_ref()).ok())
+        .and_then(|p| std::fs::read_to_string(p.with_file_name("native-mods.json")).ok());
+    Response::json(200, &built_with(built.as_deref()))
+}
+
+/// [`mods`]' answer for the text of a `native-mods.json` (None: no program, or no such file).
+fn built_with(built: Option<&str>) -> Value {
+    let info: Value = built
+        .and_then(|b| serde_json::from_str(b).ok())
+        .unwrap_or(Value::Null);
+    let native: Vec<Value> = info["mods"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|m| json!({ "id": m["id"], "version": m["version"], "sha256": m["sha256"] }))
+        .collect();
+    json!({
+        "engine": {
+            "found": built.is_some(),
+            "target": info["target"],
+            "base": info["base"],
+            "horizon": info["horizon"],
+            "hooks": info["hooks"],
+        },
+        "native": native,
+    })
+}
+
 /// `GET /api/v1/players`: who is online, and vanilla's lists.
 pub fn players(shared: &Shared) -> Response {
     let dir = &shared.dir;
@@ -402,6 +435,26 @@ mod tests {
         assert!(line(Action::Kick, json!({ "name": "Kim0", "reason": "a\nstop" })).is_err());
         assert!(line(Action::PardonIp, json!({ "ip": "Kim0" })).is_err());
         assert!(line(Action::Whitelist, json!({})).is_err());
+    }
+
+    #[test]
+    fn mods_come_from_the_build_record() {
+        let none = built_with(None);
+        assert_eq!(
+            (none["engine"]["found"].clone(), none["native"].clone()),
+            (json!(false), json!([]))
+        );
+        let record = r#"{"base":"v1","horizon":"abc","target":"server","hooks":326,"mods":[{"id":"m","version":"1.0","sha256":"ff"}]}"#;
+        let some = built_with(Some(record));
+        assert_eq!(some["engine"]["target"], "server");
+        assert_eq!(some["engine"]["found"], true);
+        assert_eq!(
+            some["native"],
+            json!([{ "id": "m", "version": "1.0", "sha256": "ff" }])
+        );
+        // A release has no record's mods; a broken file is no mods.
+        assert_eq!(built_with(Some("{}"))["native"], json!([]));
+        assert_eq!(built_with(Some("nope"))["native"], json!([]));
     }
 
     #[test]

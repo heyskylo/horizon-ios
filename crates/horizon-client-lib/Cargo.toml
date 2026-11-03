@@ -63,6 +63,10 @@ ab_glyph = "0.2.32"
 log = "0.4"
 chrono = { version = "0.4.42", default-features = false, features = ["clock", "std"] }
 flate2 = { version = "1.1.10", default-features = false, features = ["zlib-rs", "runtime_detection"] }
+# The network threads of a server's players: epoll, kqueue or Windows' AFD (lan/io_pool.rs).
+mio = { version = "1.2.4", features = ["os-poll", "net"] }
+# Shared chunk frames are found by one keyed 128-bit hash of their body (lan/conn.rs SharedFrames).
+xxhash-rust = { version = "0.8.19", features = ["xxh3"] }
 horizon-theme = { path = "../horizon-theme" }
 # Opt-in data collection: the game keeps, the launcher sends (docs/telemetry.md); `live` is
 # the anonymous "I'm playing" ping the game sends itself (`heartbeat.rs`).
