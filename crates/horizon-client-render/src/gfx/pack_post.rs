@@ -2020,6 +2020,7 @@ impl PackPost {
             post.entities_translucent,
             post.particles,
             post.damaged_block,
+            post.beacon_beam,
         ];
         let late = [
             false,
@@ -2027,6 +2028,7 @@ impl PackPost {
             post.translucent_late,
             post.particles_late,
             false,
+            true,
         ];
         let shadow_only = (post.shadow_only_player, post.shadow_only_lit_blocks);
         let shadow_programs = [post.shadow_entities, post.shadow_block];
@@ -3110,6 +3112,7 @@ impl PackPost {
         entities: &[super::Vertex],
         spans: &[super::pack_draw::EntitySpan],
         crumbling: [f32; 4],
+        portal: [f32; 4],
         rest: &mut Vec<super::Vertex>,
         skin: Option<&super::entity_skin::SkinFrame>,
     ) {
@@ -3128,6 +3131,7 @@ impl PackPost {
             spans,
             drawn,
             (crumbling, self.gui_size),
+            portal,
             shadow,
             rest,
             skin,

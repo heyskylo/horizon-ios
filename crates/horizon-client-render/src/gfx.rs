@@ -7269,6 +7269,7 @@ impl Renderer {
                 frame.entities,
                 frame.entity_spans,
                 frame.crumbling_sprite,
+                frame.end_portal_sprites[1],
                 &mut self.pack_entity_rest,
                 skin.filter(|_| pack_skin),
             );
