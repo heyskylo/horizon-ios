@@ -253,6 +253,12 @@ through the proxy is refused, and so is a login signed with another secret. With
 `online_mode = true` the file is ignored (with a warning), and an empty file stops the start, because an empty
 secret could be signed by anyone. How the exchange works: [velocity-forwarding.md](velocity-forwarding.md).
 
+Bedrock players that join through Geyser and Floodgate arrive with a Floodgate UUID (`00000000-0000-0000-0009-` and
+the Xbox id), which is never on `whitelist.json`. With `white-list=true`, list that prefix in a file
+`whitelist-bypass.txt` beside server.properties (one UUID prefix per line, `#` comments, at least 8 characters) and
+everyone whose UUID starts with it passes the whitelist. Bans and the player limit still apply. The log says
+`whitelist-bypass.txt: 1 UUID prefix(es) skip the whitelist`.
+
 ## 5. Commands
 
 ```text
