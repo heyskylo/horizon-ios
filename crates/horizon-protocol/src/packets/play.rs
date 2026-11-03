@@ -72,6 +72,12 @@ packet!(AddEntity {
 });
 packet!(Animate { id: i32 => VarInt, action: u8 => UByte });
 packet!(BlockChangedAck { sequence: i32 => VarInt });
+packet!(
+    /// ClientboundSelectAdvancementsTabPacket: the advancement tab the server keeps for the
+    /// player, or none. `ClientPacketListener.handleSelectAdvancementsTab` opens the screen on
+    /// that tab, and closes it for none.
+    SelectAdvancementsTab { tab: Option<String> => Opt<Ident> }
+);
 packet!(BlockDestruction { id: i32 => VarInt, pos: [i32; 3] => Pos, progress: u8 => UByte });
 packet!(BlockEntityData { pos: [i32; 3] => Pos, kind: i32 => VarInt, tag: Tag => Nbt });
 packet!(BlockUpdate { pos: [i32; 3] => Pos, state: i32 => VarInt });
@@ -2025,6 +2031,7 @@ packet_enum!(Clientbound, crate::ids::play::clientbound {
     // A common packet: the same `configuration::ServerLinks` the
     // configuration phase sends.
     ServerLinks(ServerLinks) = SERVER_LINKS,
+    SelectAdvancementsTab(SelectAdvancementsTab) = SELECT_ADVANCEMENTS_TAB,
     SwingAnimation(SwingAnimation) = SWING_ANIMATION,
     SystemChat(SystemChat) = SYSTEM_CHAT,
     TabList(TabList) = TAB_LIST,
@@ -2272,6 +2279,30 @@ packet!(
         carried: Option<Hashed> => HashedSlot,
     }
 );
+/// ServerboundSeenAdvancementsPacket: the tab the player opened (action 0, `OPENED_TAB`), or
+/// that its screen closed (1, `CLOSED_SCREEN`, which carries no tab).
+#[derive(Clone, Debug, PartialEq)]
+pub struct SeenAdvancements {
+    pub action: i32,
+    pub tab: Option<String>,
+}
+impl Codec<SeenAdvancements> for SeenAdvancements {
+    fn read(r: &mut Reader) -> Result<SeenAdvancements> {
+        let action = r.varint()?;
+        // The identifier is there for OPENED_TAB only (`readIdentifier` in the other branch).
+        let tab = match action {
+            0 => Some(r.string(32767)?),
+            _ => None,
+        };
+        Ok(SeenAdvancements { action, tab })
+    }
+    fn write(v: &SeenAdvancements, w: &mut Writer) {
+        w.varint(v.action);
+        if v.action == 0 {
+            w.string(v.tab.as_deref().unwrap_or_default());
+        }
+    }
+}
 packet!(SelectTrade { item: i32 => VarInt });
 packet!(
     /// ServerboundBlockEntityTagQueryPacket: an operator's F3+I asks for the
@@ -2628,6 +2659,7 @@ packet_enum!(Serverbound, crate::ids::play::serverbound {
     PlayerLoaded(Empty) = PLAYER_LOADED,
     Pong(Ping) = PONG,
     RenameItem(RenameItem) = RENAME_ITEM,
+    SeenAdvancements(SeenAdvancements) = SEEN_ADVANCEMENTS,
     ContainerSlotStateChanged(ContainerSlotStateChanged) = CONTAINER_SLOT_STATE_CHANGED,
     Punch(Empty) = PUNCH,
     JigsawGenerate(JigsawGenerate) = JIGSAW_GENERATE,
@@ -2799,13 +2831,6 @@ mod tests {
             )
             .is_err()
         );
-        // Without the variant the packet was `Unknown`, which the server's
-        // dispatch has no arm for; an id still without one reads that way.
-        assert!(matches!(
-            Serverbound::decode(crate::ids::play::serverbound::SEEN_ADVANCEMENTS, &payload)
-                .unwrap(),
-            Serverbound::Unknown(crate::ids::play::serverbound::SEEN_ADVANCEMENTS, _)
-        ));
     }
 
     fn spawn() -> SpawnInfo {

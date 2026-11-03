@@ -3311,6 +3311,22 @@ impl Hub {
                         self.guests[i].recipe_book.remove_highlight(&id);
                     }
                 }
+                // ServerGamePacketListenerImpl.handleSeenAdvancements: the tab the
+                // player opened, kept when it names a root with a display
+                // (`PlayerAdvancements.setSelectedTab` leaves the tab empty otherwise),
+                // and answered with the tab it now keeps when that changed.
+                S::SeenAdvancements(p) => {
+                    if p.action == 0 {
+                        let tab = p.tab.filter(|id| self.sync.advancements.selectable(id));
+                        let g = &mut self.guests[i];
+                        if g.selected_tab != tab {
+                            g.selected_tab = tab.clone();
+                            g.send(&C::SelectAdvancementsTab(play::SelectAdvancementsTab {
+                                tab,
+                            }));
+                        }
+                    }
+                }
                 // ServerGamePacketListenerImpl.handleRecipeBookChangeSettingsPacket.
                 S::RecipeBookChangeSettings(p) => {
                     if let Some(book) = crate::recipe_book::BookType::ALL.get(p.book_type as usize)
@@ -4363,15 +4379,20 @@ mod tests {
     /// A hub with one placed guest, the speed effect registered, and what the
     /// guest is sent.
     fn hub_with_a_guest() -> (Hub, std::sync::mpsc::Receiver<crate::lan::Out>) {
-        let config = crate::lan::NetConfig {
-            announce: false,
-            ..crate::lan::NetConfig::lan(0, "EffectSyncTest".into(), 2)
-        };
         let mut sync = SyncData::empty();
         sync.builtin.registries.insert(
             "minecraft:mob_effect".to_string(),
             horizon_protocol::registry::Ids::from_names(vec!["minecraft:speed".to_string()]),
         );
+        hub_with_sync(sync)
+    }
+
+    /// [`hub_with_a_guest`] over a sync the test built.
+    fn hub_with_sync(sync: SyncData) -> (Hub, std::sync::mpsc::Receiver<crate::lan::Out>) {
+        let config = crate::lan::NetConfig {
+            announce: false,
+            ..crate::lan::NetConfig::lan(0, "EffectSyncTest".into(), 2)
+        };
         let sync = std::sync::Arc::new(sync);
         let lan = Lan::start_with(sync.clone(), config).unwrap();
         let encoder = ChunkEncoder::new(
