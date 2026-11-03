@@ -1033,5 +1033,14 @@
   "3 to 16 letters, numbers or underscores. Switch names from the top bar too. Online servers don't take offline names.": "Từ 3 đến 16 chữ cái, chữ số hoặc dấu gạch dưới. Bạn cũng có thể đổi tên từ thanh trên cùng. Máy chủ trực tuyến không chấp nhận tên ngoại tuyến.",
   "Play online with your Microsoft account": "Chơi trực tuyến bằng tài khoản Microsoft của bạn",
   "Sign in with the account that owns Minecraft: Java Edition. Your name and skin come along to online servers, like in other launchers.": "Đăng nhập bằng tài khoản sở hữu Minecraft: Java Edition. Tên và skin của bạn đi cùng bạn đến các máy chủ trực tuyến, giống như ở các launcher khác.",
-  "Microsoft's own page opens in your browser. Horizon never sees your password.": "Trang của chính Microsoft mở trong trình duyệt của bạn. Horizon không bao giờ thấy mật khẩu của bạn."
+  "Microsoft's own page opens in your browser. Horizon never sees your password.": "Trang của chính Microsoft mở trong trình duyệt của bạn. Horizon không bao giờ thấy mật khẩu của bạn.",
+  "Colours the buttons, the switches and the sky. Pick one, or type any hex colour.": "Tô màu các nút, công tắc và bầu trời. Chọn một màu hoặc nhập bất kỳ mã màu hex nào.",
+  "Accent colour, glass, blur, language and the options above go back to how Horizon ships.": "Màu nhấn, kính, độ mờ, ngôn ngữ và các tùy chọn ở trên trở về mặc định của Horizon.",
+  "Reset the launcher's look": "Đặt lại giao diện launcher",
+  "Reset to defaults": "Khôi phục mặc định",
+  "{value} px": "{value} px",
+  "{value}%": "{value}%",
+  "Experimental. Builds the native mods you trust into a game of their own.": "Thử nghiệm. Biên dịch các mod gốc bạn tin tưởng thành một bản game riêng.",
+  "Native mods": "Mod gốc",
+  "Nightly": "Nightly"
 }
