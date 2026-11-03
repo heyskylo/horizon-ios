@@ -257,6 +257,10 @@ struct Launcher {
     native_log: native_log_page::NativeLog,
     confirm_remove: Option<String>,
     picker_open: bool,
+    /// Settings' any-colour swatch shows the hue strip (the glass look).
+    accent_strip: bool,
+    /// Settings' Glass and Blur sliders (the glass look).
+    look_sliders: themes_page::LookSliders,
     /// Where the accent picker's hue strip is on screen (`themes_page.rs`), to map a click to a
     /// hue.
     hue_area: std::rc::Rc<std::cell::Cell<Option<Bounds<gpui::Pixels>>>>,
@@ -514,7 +518,8 @@ impl Launcher {
         // `window.appearance()`, so both draw the same look.
         titlebar::apply_appearance(window, settings.appearance);
         let mut this = Self {
-            theme: Theme::for_appearance(settings.appearance, settings.accent, window.appearance()),
+            theme: Theme::for_appearance(settings.appearance, settings.accent, window.appearance())
+                .with_glass(settings.glass_tint(), settings.glass_blur()),
             page: Page::from_env(),
             switches: 0,
             content_scroll: Scrollbar::default(),
@@ -556,6 +561,8 @@ impl Launcher {
             native_log: Default::default(),
             confirm_remove: None,
             picker_open: false,
+            accent_strip: false,
+            look_sliders: Default::default(),
             hue_area: std::rc::Rc::new(std::cell::Cell::new(None)),
             hue_dragging: false,
             language_menu: false,
@@ -3572,12 +3579,18 @@ impl Launcher {
             ),
             SelfUpdate::Downloading(..) => None,
             _ => Some(
-                button("check", "Check now", Kind::Ghost, &t)
-                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                        this.check_updates();
-                        cx.notify();
-                    }))
-                    .into_any_element(),
+                // The glass look's About tile has the mockup's filled button.
+                button(
+                    "check",
+                    "Check now",
+                    if t.dark { Kind::Secondary } else { Kind::Ghost },
+                    &t,
+                )
+                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                    this.check_updates();
+                    cx.notify();
+                }))
+                .into_any_element(),
             ),
         };
         let mono = |s: String| div().font_family(theme::MONO).child(s).into_any_element();
@@ -3887,6 +3900,17 @@ impl Launcher {
                 cx.notify();
             }));
         let field = line_edit::mouse(field, cx, |this| &mut this.args_input);
+        if glass_ui::flat() {
+            return glass_ui::setting_row_stacked(
+                tr("Game arguments"),
+                Some(
+                    div()
+                        .child(tr("Extra arguments for the game, passed through as-is (quotes group a word with spaces). Applies the next time the game starts."))
+                        .into_any_element(),
+                ),
+                glass_ui::wide_field(field, focused).into_any_element(),
+            );
+        }
         index_row(
             n,
             tr("Game arguments"),
@@ -3957,6 +3981,13 @@ impl Launcher {
                 ))
                 .into_any_element(),
         };
+        if glass_ui::flat() {
+            return glass_ui::setting_row_stacked(
+                tr("Proxy"),
+                Some(detail),
+                glass_ui::wide_field(field, focused).into_any_element(),
+            );
+        }
         index_row(
             n,
             tr("Proxy"),
@@ -4877,6 +4908,15 @@ impl Render for Launcher {
             self.theme = self.settings_theme(window);
         }
         glass_ui::set_on(self.theme.dark);
+        self.look = self.theme.look;
+        glass_ui::set_look(self.look);
+        glass::set_look(self.look);
+        // The mockup tints the scene with any accent but its violet.
+        let tint = (self.theme.dark && self.look.accent != horizon_theme::glass::ACCENT)
+            .then(|| horizon_theme::glass::mix_oklab(self.look.accent, 0x767676, 0.58));
+        let blur = self.look.blur;
+        self.scene
+            .update(cx, |scene, cx| scene.set_look(tint, blur, cx));
         self.scale = window.scale_factor();
         self.perf.frame();
         if self.bench.as_ref().is_some_and(perf::Bench::scrolling) {

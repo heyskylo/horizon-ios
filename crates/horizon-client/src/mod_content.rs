@@ -1286,6 +1286,18 @@ impl<'a> Plan<'a> {
         if let Some(shape) = p.render_shape {
             row.set("render_shape", J::Str(shape.name().into()));
         }
+        // `noOcclusion`: a block that can't occlude is never a solid render either, and a solid
+        // render's full light dampening becomes a non-solid block's (`getLightDampening`: 0 when
+        // skylight passes down, else 1, as for leaves and spawners).
+        if p.occludes == Some(false) {
+            let solid = matches!(row.get("solid_render"), Some(J::Bool(true)));
+            if solid {
+                let down = matches!(row.get("skylight_down"), Some(J::Bool(true)));
+                row.set("dampening", J::Num(i64::from(!down).into()));
+            }
+            row.set("can_occlude", J::Bool(false));
+            row.set("solid_render", J::Bool(false));
+        }
         if let Some(v) = p.hardness {
             row.set("hardness", J::f64(v as f64));
         }
@@ -1448,6 +1460,10 @@ impl<'a> Plan<'a> {
                     let Some(entry) = doc.get_mut(&b.decl.id) else {
                         continue;
                     };
+                    // Faces beside a block that occludes nothing are drawn (`Block.shouldRenderFace`).
+                    if !model && b.decl.properties.occludes == Some(false) {
+                        entry.set("can_occlude", J::Bool(false));
+                    }
                     if model && let Some(schema) = entry.get_mut("schema") {
                         for (property_name, property) in &b.decl.state_properties {
                             schema.set(
