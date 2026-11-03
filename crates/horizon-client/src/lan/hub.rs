@@ -4474,19 +4474,9 @@ mod tests {
         world
     }
 
-    /// One tick of the hub that handles a single position move from the guest.
-    fn tick_guest_move(hub: &mut Hub, world: &mut World, to: [f64; 3], flags: u8) {
-        // One position move per client tick (receivedPositionThisTick).
-        hub.guests[0].position_this_tick = false;
-        hub.guests[0].inbox.push_back((
-            S::MovePlayerPos(play::MovePlayerPos {
-                x: to[0],
-                y: to[1],
-                z: to[2],
-                flags,
-            }),
-            0,
-        ));
+    /// One tick of the hub that handles a single packet from the guest.
+    fn tick_packet(hub: &mut Hub, world: &mut World, packet: S) {
+        hub.guests[0].inbox.push_back((packet, 0));
         let mut next_entity = 2;
         let border = crate::worldborder::WorldBorder::default();
         let mut ctx = TickCtx {
@@ -4505,6 +4495,22 @@ mod tests {
             streaming: None,
         };
         let _ = hub.drain_packets(&mut ctx);
+    }
+
+    /// One tick of the hub that handles a single position move from the guest.
+    fn tick_guest_move(hub: &mut Hub, world: &mut World, to: [f64; 3], flags: u8) {
+        // One position move per client tick (receivedPositionThisTick).
+        hub.guests[0].position_this_tick = false;
+        tick_packet(
+            hub,
+            world,
+            S::MovePlayerPos(play::MovePlayerPos {
+                x: to[0],
+                y: to[1],
+                z: to[2],
+                flags,
+            }),
+        );
     }
 
     /// `ServerGamePacketListenerImpl.forceSendPlayerSupportBlocks`: a client that says it stands
@@ -4571,6 +4577,120 @@ mod tests {
             vec![([0, 63, 0], STONE as i32)],
             "one block under a box that sits across a block"
         );
+    }
+
+    /// The tabs the guest was sent in `ClientboundSelectAdvancementsTabPacket`s, in order.
+    fn sent_tabs(rx: &std::sync::mpsc::Receiver<crate::lan::Out>) -> Vec<Option<String>> {
+        let mut sent = Vec::new();
+        while let Ok(out) = rx.try_recv() {
+            let crate::lan::Out::Packet(body) = out else {
+                continue;
+            };
+            let mut r = horizon_protocol::buf::Reader::new(&body);
+            let id = r.varint().unwrap();
+            if let Ok(C::SelectAdvancementsTab(p)) = C::decode(id, r.rest()) {
+                sent.push(p.tab);
+            }
+        }
+        sent
+    }
+
+    /// A data folder holding two advancements: `minecraft:root`, a root with a display, and
+    /// `minecraft:task`, which hangs off it.
+    fn advancement_data() -> std::path::PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "horizon-advancement-tab-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let folder = root.join("data").join("minecraft").join("advancement");
+        std::fs::create_dir_all(&folder).unwrap();
+        let display = |icon: &str, title: &str| {
+            format!(r#"{{"icon":{{"id":"{icon}"}},"title":"{title}","description":"{title}"}}"#)
+        };
+        std::fs::write(
+            folder.join("root.json"),
+            format!(
+                r#"{{"display":{},"criteria":{{}}}}"#,
+                display("minecraft:stone", "Root")
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            folder.join("task.json"),
+            format!(
+                r#"{{"parent":"minecraft:root","display":{},"criteria":{{}}}}"#,
+                display("minecraft:dirt", "Task")
+            ),
+        )
+        .unwrap();
+        root
+    }
+
+    /// ServerGamePacketListenerImpl.handleSeenAdvancements with PlayerAdvancements.setSelectedTab:
+    /// the tab a player opens is kept when it names a root with a display, and the player is told
+    /// the tab the server keeps — none for anything else — whenever that changed. A closed screen
+    /// says nothing about the tab.
+    #[test]
+    fn an_advancement_tab_a_guest_opens_is_kept_and_answered() {
+        let data = advancement_data();
+        let mut sync = SyncData::empty();
+        sync.advancements = crate::lan::advancements::ServerAdvancements::load(
+            &data,
+            &horizon_world::loot::PackOverlay::NONE,
+            Default::default(),
+            Default::default(),
+        );
+        assert!(
+            sync.advancements.selectable("minecraft:root"),
+            "the fixture's root is selectable"
+        );
+        let (mut hub, rx) = hub_with_sync(sync);
+        hub.guests[0].load_timeout = 0;
+        let mut world = World::new(horizon_world::registry::BlockStateId(0), 0);
+        let open = |tab: &str| {
+            S::SeenAdvancements(play::SeenAdvancements {
+                action: 0,
+                tab: Some(tab.to_owned()),
+            })
+        };
+        // The root the client opens is the tab the server keeps now.
+        tick_packet(&mut hub, &mut world, open("minecraft:root"));
+        assert_eq!(sent_tabs(&rx), vec![Some("minecraft:root".to_owned())]);
+        assert_eq!(
+            hub.guests[0].selected_tab.as_deref(),
+            Some("minecraft:root")
+        );
+        // Opening it again changes nothing, so nothing is sent.
+        tick_packet(&mut hub, &mut world, open("minecraft:root"));
+        assert!(
+            sent_tabs(&rx).is_empty(),
+            "an unchanged tab is not sent again"
+        );
+        // A tab that is not a root takes the selection away, and the client is told so.
+        tick_packet(&mut hub, &mut world, open("minecraft:task"));
+        assert_eq!(sent_tabs(&rx), vec![None]);
+        assert_eq!(hub.guests[0].selected_tab, None);
+        // An id the server has no advancement for leaves it empty too, and says nothing more.
+        tick_packet(&mut hub, &mut world, open("minecraft:nowhere"));
+        assert!(sent_tabs(&rx).is_empty(), "the selection was already empty");
+        // The closed screen keeps the tab the server has.
+        tick_packet(&mut hub, &mut world, open("minecraft:root"));
+        assert_eq!(sent_tabs(&rx), vec![Some("minecraft:root".to_owned())]);
+        tick_packet(
+            &mut hub,
+            &mut world,
+            S::SeenAdvancements(play::SeenAdvancements {
+                action: 1,
+                tab: None,
+            }),
+        );
+        assert!(sent_tabs(&rx).is_empty(), "a closed screen keeps the tab");
+        assert_eq!(
+            hub.guests[0].selected_tab.as_deref(),
+            Some("minecraft:root")
+        );
+        let _ = std::fs::remove_dir_all(&data);
     }
 
     /// `handlePlayerCommand` START_RIDING_JUMP (3) and STOP_RIDING_JUMP (4): the

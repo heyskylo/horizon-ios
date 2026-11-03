@@ -2833,6 +2833,62 @@ mod tests {
         );
     }
 
+    /// ServerboundSeenAdvancementsPacket: the action, then the tab only when the player opened
+    /// one — a closed screen is the action on its own.
+    #[test]
+    fn a_seen_advancements_packet_carries_its_tab_only_when_one_was_opened() {
+        let opened = SeenAdvancements {
+            action: 0,
+            tab: Some("minecraft:story/root".into()),
+        };
+        let mut w = crate::buf::Writer::new();
+        w.varint(0);
+        w.string("minecraft:story/root");
+        assert_eq!(
+            Serverbound::decode(crate::ids::play::serverbound::SEEN_ADVANCEMENTS, &w.data).unwrap(),
+            Serverbound::SeenAdvancements(opened.clone())
+        );
+        assert_eq!(
+            &Serverbound::SeenAdvancements(opened).encode()[1..],
+            &w.data[..]
+        );
+        // CLOSED_SCREEN: the action alone, with nothing after it.
+        let closed = [0x01];
+        assert_eq!(
+            Serverbound::decode(crate::ids::play::serverbound::SEEN_ADVANCEMENTS, &closed).unwrap(),
+            Serverbound::SeenAdvancements(SeenAdvancements {
+                action: 1,
+                tab: None,
+            })
+        );
+        // Both packets are typed now, so neither reads as an unknown opcode, and a packet too
+        // short for its tab is malformed rather than a tab-less open.
+        assert!(!matches!(
+            Serverbound::decode(crate::ids::play::serverbound::SEEN_ADVANCEMENTS, &closed).unwrap(),
+            Serverbound::Unknown(..)
+        ));
+        assert!(
+            Serverbound::decode(crate::ids::play::serverbound::SEEN_ADVANCEMENTS, &[0x00]).is_err()
+        );
+        let tab = Clientbound::SelectAdvancementsTab(SelectAdvancementsTab {
+            tab: Some("minecraft:story/root".into()),
+        });
+        assert_eq!(
+            Clientbound::decode(
+                crate::ids::play::clientbound::SELECT_ADVANCEMENTS_TAB,
+                &tab.encode()[1..]
+            )
+            .unwrap(),
+            tab
+        );
+        let none = Clientbound::SelectAdvancementsTab(SelectAdvancementsTab { tab: None });
+        assert_eq!(
+            &none.encode()[1..],
+            &[0x00],
+            "no tab is the absence flag alone"
+        );
+    }
+
     fn spawn() -> SpawnInfo {
         SpawnInfo {
             dimension_type: 0,
