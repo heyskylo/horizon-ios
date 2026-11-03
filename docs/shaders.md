@@ -235,4 +235,4 @@ without the pack.
 
 ## Next
 
-The overlay and lighting stages, and option values other than the defaults.
+The debug overlay and the lighting stages (entities, block entities, particles).
