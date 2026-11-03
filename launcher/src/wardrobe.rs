@@ -204,6 +204,19 @@ impl Saved {
         std::fs::rename(tmp, path)
     }
 
+    /// The launcher theme worn: its sky (`0xrrggbb`, top to bottom) and accent hue.
+    pub fn theme(&self) -> Option<([u32; 6], f32)> {
+        let id = self.me.as_ref()?.equipped.get("theme")?;
+        let entry = self
+            .catalogue
+            .as_ref()?
+            .items
+            .iter()
+            .find(|e| &e.id == id)?;
+        let theme = entry.theme.as_ref()?;
+        Some((theme.sky()?, theme.accent_hue))
+    }
+
     /// Make `change` here: the outfit shows it at once and it waits to be sent. A newer change of
     /// the same slot (or of visibility) replaces an older one still waiting.
     pub fn change(&mut self, change: Change) {
@@ -235,6 +248,17 @@ impl std::fmt::Debug for Session {
 }
 
 impl Session {
+    /// A made-up session for the launcher's screenshot preview (`HORIZON_LAUNCHER_PAGE=wardrobe`):
+    /// it carries no credential, so the service refuses anything sent with it.
+    pub fn preview(uuid: &str, name: &str) -> Self {
+        Self {
+            token: String::new(),
+            until: Instant::now() + Duration::from_secs(3600),
+            uuid: uuid.into(),
+            name: name.into(),
+        }
+    }
+
     pub fn live(&self) -> bool {
         Instant::now() < self.until
     }
@@ -257,6 +281,11 @@ impl Service {
         Self {
             base: base.trim_end_matches('/').to_owned(),
         }
+    }
+
+    /// The service's host, for a failure's details.
+    pub fn host(&self) -> &str {
+        self.base.split_once("://").map_or(&self.base, |(_, h)| h)
     }
 
     pub fn catalogue(&self) -> Result<Catalogue, Error> {
