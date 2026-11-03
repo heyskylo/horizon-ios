@@ -1,7 +1,7 @@
 # Horizon's server against Pumpkin
 
-[Pumpkin](https://github.com/Pumpkin-MC/Pumpkin) is a Minecraft server written in Rust, and the one Horizon's
-server is measured against. It is GPL-3.0: we build it and run it as a black box, and never read or copy its
+[Pumpkin](https://github.com/Pumpkin-MC/Pumpkin) is a Minecraft server written in Rust, and the server Horizon's
+is measured against. It is GPL-3.0: we build it and run it as a black box, and never read or copy its
 source. Only its binary, its log and the configuration file it writes run here.
 
 Both servers speak the same protocol: Pumpkin 0.2.1+26.3-26.60 says "Java Minecraft (Protocol 777)", the
