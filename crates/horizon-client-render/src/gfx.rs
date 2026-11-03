@@ -121,6 +121,7 @@ fn translucent_split(batching: bool, flat_draws: bool, terrain: bool, shadow: bo
 mod animate;
 mod arena;
 pub mod compositor;
+pub(crate) mod core_lines;
 mod cull;
 mod end_sky;
 pub mod entity_skin;
@@ -873,6 +874,8 @@ pub struct Renderer {
     depth_reset: wgpu::RenderPipeline,
     lines: wgpu::RenderPipeline,
     lines_secondary: wgpu::RenderPipeline,
+    /// A resource pack's `core/rendertype_lines`, which draws the block outline in their place.
+    core_lines: Option<core_lines::CoreLines>,
     /// Gizmo lines (`RenderTypes.linesTranslucentNoDepthWrite`) and the
     /// always-on-top ones.
     debug_lines: wgpu::RenderPipeline,
@@ -4035,6 +4038,7 @@ impl Renderer {
             depth_reset,
             lines,
             lines_secondary,
+            core_lines: None,
             debug_lines,
             debug_lines_on_top,
             debug_line_buffer,
@@ -4270,10 +4274,27 @@ impl Renderer {
         }
         pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
     }
+    /// The resource packs' `core/rendertype_lines` (`HudAtlas::lines_shader`) for the block
+    /// outline, or the built-in one.
+    pub fn set_lines_shader(&mut self, program: Option<&horizon_shaders::CoreProgram>) {
+        let format = self.config.format.remove_srgb_suffix();
+        self.core_lines =
+            program.and_then(|program| core_lines::CoreLines::new(&self.device, format, program));
+    }
     /// LevelRenderer.submitBlockOutline: the buffer holds `edges` per stroke, the black
     /// secondary stroke first when high contrast is on.
     fn draw_outline(&self, pass: &mut wgpu::RenderPass<'_>, edges: u32, high_contrast: bool) {
         pass.set_vertex_buffer(0, self.outline.slice(..));
+        // Both strokes are LINES: a pack's rendertype_lines draws them.
+        if let Some(lines) = &self.core_lines {
+            if high_contrast {
+                lines.draw(pass, true, 0..edges);
+            }
+            let first = if high_contrast { edges } else { 0 };
+            lines.draw(pass, false, first..first + edges);
+            pass.set_bind_group(0, &self.group, &[]);
+            return;
+        }
         if high_contrast {
             pass.set_pipeline(&self.lines_secondary);
             pass.draw(0..4, 0..edges);
@@ -6346,12 +6367,13 @@ impl Renderer {
         let taa = !frame.title
             && self.pack_post.as_ref().is_none_or(|p| p.1.is_none())
             && self.native.as_ref().is_none_or(|n| n.post.is_none());
-        let jittered = self.world_post.jitter(
+        let jitter = self.world_post.jitter(
             [self.config.width, self.config.height],
             taa,
             view_proj,
             frame.camera,
-        ) * view_proj;
+        );
+        let jittered = jitter * view_proj;
         if frame.title {
             self.panorama.prepare(
                 &self.device,
@@ -7244,6 +7266,24 @@ impl Renderer {
             };
             self.uploads
                 .buffer(&mut encoder, &self.outline, 0, bytemuck::cast_slice(&lines));
+            if let Some(core) = &self.core_lines {
+                let size = [self.config.width, self.config.height];
+                let block = crate::post_chain::Globals {
+                    glint_alpha: frame.glint_alpha,
+                    ..frame.post_effects.globals
+                };
+                let [sky_end, clouds_end, ..] = globals.fog_ends;
+                let data = core_lines::uniforms(
+                    block.bytes(size, frame.post_effects.menu_blur_radius as i32),
+                    views.primary(),
+                    pose,
+                    jitter,
+                    globals.outline_params[3],
+                    fog_color,
+                    [fog[0], fog[1], fog[2], fog[3], sky_end, clouds_end],
+                );
+                self.uploads.buffer(&mut encoder, core.uniform(), 0, &data);
+            }
         }
         let skin = frame.skin.filter(|skin| match &mut self.entity_skin {
             Some(skinner) => skinner.register(&self.device, &mut self.uploads, &mut encoder, skin),
