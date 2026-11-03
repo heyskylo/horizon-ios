@@ -1042,5 +1042,10 @@
   "Reset the launcher's look": "Нулиране на облика на лаунчера",
   "Reset to defaults": "Възстанови настройките по подразбиране",
   "{value} px": "{value} px",
-  "{value}%": "{value}%"
+  "{value}%": "{value}%",
+  "A native build or cache cleanup is running. Try again when it finishes.": "В момента се изпълнява компилация на нативен код или почистване на кеша. Опитайте отново след приключването.",
+  "Cleared {bytes} bytes of native build cache. The next changed build will compile from scratch.": "Изчистени са {bytes} байта от кеша за компилация на нативен код. Следващата компилация с промени ще започне отначало.",
+  "Could not access the native build cache: {error}": "Няма достъп до кеша за компилация на нативен код: {error}",
+  "Enter a cache limit in GiB; 0 disables automatic cleanup.": "Въведете ограничение за кеша в GiB; 0 изключва автоматичното почистване.",
+  "Refusing native cache cleanup at an unexpected file or link: {path}": "Отказано почистване на кеша за нативен код поради неочакван файл или връзка: {path}"
 }

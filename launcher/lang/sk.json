@@ -1042,5 +1042,10 @@
   "Reset the launcher's look": "Obnoviť vzhľad spúšťača",
   "Reset to defaults": "Obnoviť predvolené",
   "{value} px": "{value} px",
-  "{value}%": "{value} %"
+  "{value}%": "{value} %",
+  "A native build or cache cleanup is running. Try again when it finishes.": "Prebieha kompilácia natívneho kódu alebo čistenie vyrovnávacej pamäte. Skúste to znova po dokončení.",
+  "Cleared {bytes} bytes of native build cache. The next changed build will compile from scratch.": "Z vyrovnávacej pamäte kompilácie natívneho kódu bolo odstránených {bytes} bajtov. Ďalšia kompilácia so zmenami sa začne od začiatku.",
+  "Could not access the native build cache: {error}": "Nepodarilo sa pristúpiť k vyrovnávacej pamäti kompilácie natívneho kódu: {error}",
+  "Enter a cache limit in GiB; 0 disables automatic cleanup.": "Zadajte limit vyrovnávacej pamäte v GiB; hodnota 0 vypne automatické čistenie.",
+  "Refusing native cache cleanup at an unexpected file or link: {path}": "Čistenie vyrovnávacej pamäte natívneho kódu bolo odmietnuté pre neočakávaný súbor alebo odkaz: {path}"
 }
