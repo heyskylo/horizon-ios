@@ -5,9 +5,61 @@
 use super::{Game, dedicated, lan::LanHost};
 use horizon_chat_filter::Action;
 use horizon_client::lan::hub::{HostEvent, chat_filter::Place};
+use horizon_client::text::Text;
 use horizon_protocol::packets::play::{self, Clientbound as C};
 use horizon_protocol::text::{literal, translatable};
 use horizon_server_files::user_lists::{BanEntry, NameAndId};
+use horizon_world::nbt::Tag;
+
+/// One line that `/mute`, `/tempmute`, `/mutelist`, `/unmute` and `/tempban` answer with: Horizon's own words,
+/// or vanilla's message where vanilla has one, which each client shows in its language.
+#[derive(Debug, PartialEq)]
+pub(super) enum Reply {
+    Line(String),
+    /// A vanilla translation key with no argument.
+    Vanilla(&'static str),
+}
+
+impl Reply {
+    /// `EntityArgument.NO_PLAYERS_FOUND`, `argument.entity.notfound.player`: what `/kick` and the other
+    /// player commands answer for a name no player has.
+    pub(super) fn no_player() -> Self {
+        Self::Vanilla("argument.entity.notfound.player")
+    }
+
+    /// `BanPlayerCommands.ERROR_ALREADY_BANNED`: `commands.ban.failed`.
+    pub(super) fn already_banned() -> Self {
+        Self::Vanilla("commands.ban.failed")
+    }
+
+    /// The chat component a player is sent.
+    pub(super) fn tag(&self) -> Tag {
+        match self {
+            Self::Line(line) => literal(line),
+            Self::Vanilla(key) => translatable(key, &[]),
+        }
+    }
+
+    /// The text the console prints.
+    pub(super) fn text(&self) -> Text {
+        match self {
+            Self::Line(line) => Text::literal(line.clone()),
+            Self::Vanilla(key) => Text::translate(key, &[]),
+        }
+    }
+}
+
+impl From<String> for Reply {
+    fn from(line: String) -> Self {
+        Self::Line(line)
+    }
+}
+
+impl From<&str> for Reply {
+    fn from(line: &str) -> Self {
+        Self::Line(line.to_owned())
+    }
+}
 
 /// The operator level the mute commands need, as `/ban`'s.
 const MUTE_LEVEL: u8 = 3;
@@ -171,7 +223,7 @@ impl Game<'_> {
             let words: Vec<&str> = words.iter().copied().filter(|w| !w.is_empty()).collect();
             self.mute_command(host, &words, &by)
                 .iter()
-                .map(|line| literal(line))
+                .map(Reply::tag)
                 .collect()
         };
         for content in replies {
@@ -192,7 +244,7 @@ impl Game<'_> {
         host: &mut LanHost,
         words: &[&str],
         by: &str,
-    ) -> Vec<String> {
+    ) -> Vec<Reply> {
         let reason = |from: usize| (words.len() > from).then(|| words[from..].join(" "));
         match words {
             ["mutelist"] => {
@@ -214,13 +266,13 @@ impl Game<'_> {
                     let why = m.reason.map(|r| format!(": {r}")).unwrap_or_default();
                     lines.push(format!("{} was muted by {by} {until}{why}", m.name));
                 }
-                lines
+                lines.into_iter().map(Reply::from).collect()
             }
-            ["unmute", name] => vec![self.unmute(host, name, by)],
+            ["unmute", name] => vec![self.unmute(host, name, by).into()],
             ["mute", name, ..] => vec![self.mute(host, name, None, reason(2), by)],
             ["tempmute", name, time, ..] => match horizon_chat_filter::parse_duration(time) {
                 Some(ms) => vec![self.mute(host, name, Some(ms), reason(3), by)],
-                None => vec![format!("{time} isn't a duration: 10m, 2h, 1d")],
+                None => vec![format!("{time} isn't a duration: 10m, 2h, 1d").into()],
             },
             ["mute", ..] => vec!["/mute <player> [reason]".into()],
             ["tempmute", ..] => vec!["/tempmute <player> <duration> [reason]".into()],
@@ -237,7 +289,7 @@ impl Game<'_> {
         time: Option<i64>,
         reason: Option<String>,
         by: &str,
-    ) -> String {
+    ) -> Reply {
         // A player here, else one the server has seen (the user cache).
         let user = host
             .hub
@@ -247,7 +299,7 @@ impl Game<'_> {
             .map(|g| (g.uuid, g.name.clone()))
             .or_else(|| self.resolve_name(name).map(|u| (u.id, u.name)));
         let Some((uuid, name)) = user else {
-            return format!("No player was found named {name}");
+            return Reply::no_player();
         };
         let until = time.map(|ms| horizon_chat_filter::now_millis() + ms);
         let what = time.map_or_else(
@@ -265,7 +317,7 @@ impl Game<'_> {
                 &format!("[chat-filter] {by} muted {name} {what}{why}"),
             );
         }
-        format!("Muted {name} {what}{why}")
+        format!("Muted {name} {what}{why}").into()
     }
 
     /// Lifts `name`'s mute, logged; what to answer.
@@ -279,5 +331,29 @@ impl Game<'_> {
             }
             None => format!("{name} isn't muted"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn vanillas_messages_go_out_as_its_translation_keys() {
+        for (reply, key) in [
+            (Reply::no_player(), "argument.entity.notfound.player"),
+            (Reply::already_banned(), "commands.ban.failed"),
+        ] {
+            assert_eq!(reply.tag(), translatable(key, &[]));
+            assert_eq!(reply.text().translation_key(), Some(key));
+        }
+    }
+
+    #[test]
+    fn horizons_own_lines_stay_literal() {
+        let reply = Reply::from("Muted Steve until unmuted");
+        assert_eq!(reply.tag(), literal("Muted Steve until unmuted"));
+        assert_eq!(reply.text().translation_key(), None);
+        assert_eq!(reply.text().plain(), "Muted Steve until unmuted");
     }
 }
