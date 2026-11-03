@@ -260,7 +260,7 @@
   "None needed: Horizon downloads Minecraft from Mojang for your account.": "Není potřeba: Horizon stáhne Minecraft z Mojang pro váš účet.",
   "{version} from Horizon's registry, its own profile: {mods}": "{version} z registru Horizon, jeho vlastní profil: {mods}",
   "{loader} mods": "{loader} modů",
-  "Horizon crashed": "Horizon se zřítil",
+  "Horizon crashed": "Horizon spadl",
   "Nothing found for {target}.": "Pro {target} nebylo nic nalezeno.",
   "Installs into a world of {instance}; the game turns the pack on when the world opens.": "Instaluje se do světa {instance}; hra zapne balíček, když se otevře svět.",
   "The game ended without a crash report. When you report it on Discord, attach latest.log from the logs folder and say what you were doing.": "Hra skončila bez zprávy o pádu. Když to nahlásíte na Discord, připojte nejnovější.log ze složky protokolů a řekněte, co jste dělali.",
@@ -294,7 +294,7 @@
   "Starting the build": "Spuštění sestavení",
   "{days} days ago": "před {days} dny",
   "Prepared for Minecraft {version}": "Připraveno pro Minecraft {version}",
-  "Play": "hrát",
+  "Play": "Hrát",
   "Dedicated graphics card": "Dedikovaná grafická karta",
   "Or {address}. Friends type it in Multiplayer, Add Server, once this computer is shared with them and Tailscale runs on theirs.": "Nebo {address}. Přátelé to zadají v multiplayeru, Add Server, jakmile je tento počítač sdílen s nimi a Tailscale běží na jejich.",
   "Horizon is built in the open. Sponsors fund the next release.": "Horizon je postaven pod širým nebem. Sponzoři financují další vydání.",
@@ -1025,5 +1025,13 @@
   "Use": "Použijte",
   "installed": "nainstalováno",
   "played by {names}": "hraje {names}",
-  "{day}, {time} UTC": "{day}, {time} UTC"
+  "{day}, {time} UTC": "{day}, {time} UTC",
+  "Microsoft account · online servers too": "Účet Microsoft · i online servery",
+  "Offline · single player and LAN worlds": "Offline · hra pro jednoho hráče a světy v LAN",
+  "Offline names": "Offline jména",
+  "Add a name": "Přidat jméno",
+  "3 to 16 letters, numbers or underscores. Switch names from the top bar too. Online servers don't take offline names.": "3 až 16 písmen, číslic nebo podtržítek. Jméno můžete přepnout i v horní liště. Online servery offline jména nepřijímají.",
+  "Play online with your Microsoft account": "Hrajte online se svým účtem Microsoft",
+  "Sign in with the account that owns Minecraft: Java Edition. Your name and skin come along to online servers, like in other launchers.": "Přihlaste se účtem, který vlastní Minecraft: Java Edition. Vaše jméno a skin vás doprovázejí na online servery, stejně jako v jiných launcherech.",
+  "Microsoft's own page opens in your browser. Horizon never sees your password.": "Vlastní stránka Microsoftu se otevře ve vašem prohlížeči. Horizon vaše heslo nikdy nevidí."
 }
