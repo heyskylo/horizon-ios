@@ -36,6 +36,8 @@ pub struct Release {
     pub name: String,
     pub body: String,
     pub date: String,
+    /// When it was published, `HH:MM` UTC (empty if GitHub didn't say).
+    pub time: String,
     pub asset: Option<(String, u64)>,
     /// Listed and installed by hand, never as an update: a GitHub pre-release of the old Alpha
     /// channel (v0.2.1 on), or a Nightly older than the current one.
@@ -352,6 +354,11 @@ pub(crate) fn parse_releases(
                 .chars()
                 .take(10)
                 .collect(),
+            time: r["published_at"]
+                .as_str()
+                .and_then(|d| d.get(11..16))
+                .unwrap_or_default()
+                .into(),
             asset: found,
             prerelease: r["prerelease"].as_bool().unwrap_or(false),
             nightly: None,
@@ -4126,6 +4133,7 @@ pub fn {f}("
             name: String::new(),
             body: String::new(),
             date: String::new(),
+            time: String::new(),
             asset: Some(("u".into(), 1)),
             prerelease: false,
             nightly: None,
@@ -4167,6 +4175,7 @@ pub fn {f}("
             name: String::new(),
             body: String::new(),
             date: String::new(),
+            time: String::new(),
             asset: Some(("u".into(), 1)),
             prerelease: false,
             nightly: None,
@@ -4389,6 +4398,7 @@ pub fn {f}("
             name: String::new(),
             body: String::new(),
             date: String::new(),
+            time: String::new(),
             asset: Some(("u".into(), 1)),
             prerelease: false,
             nightly: None,
