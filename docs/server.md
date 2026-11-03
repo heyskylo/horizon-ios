@@ -142,7 +142,7 @@ The supervisor/engine split stays even after the engine becomes headless, for th
 **The engine today** is `horizon-client --dedicated`. It needs one small, additive change: a status endpoint.
 With `--control-socket <dir>/.horizon/engine.json` (the existing control protocol: TCP on 127.0.0.1 plus a token, on
 every OS), the dedicated loop answers `server-status` with TPS, MSPT (average, P50/P95/P99 from the tick
-clock `/tick query` uses), players (name, UUID, address, ping), loaded chunks and uptime. It answers
+clock `/tick query` uses), players (name, UUID, address, ping, position), loaded chunks and uptime. It answers
 `console <line>` with the command's output.
 
 **The headless engine** comes after perf-ticks-2's work lands: Resources split into shared and per-game, the
@@ -451,7 +451,7 @@ runtime or new dependency. Server-sent events can replace the polling later if a
     `POST stop`, `POST restart`, `GET backups`, `POST backups {name}`, `POST restore {name}`, `POST update
     {tag, timeout}` (without a tag: the newest release, downloaded first; `status` has an `update` object
     that says how it went), `GET metrics?since=`;
-  - built (server-admin): `GET players` (online with address, ping and op level; ops, whitelist, bans, IP
+  - built (server-admin): `GET players` (online with address, ping, position and op level; ops, whitelist, bans, IP
     bans), `POST players/{kick,ban,pardon,ban-ip,pardon-ip,op,deop}`, `POST whitelist {enabled}`,
     `POST whitelist/{add,remove}` (each runs vanilla's console command and answers `changed` and its lines),
     `GET metrics/prometheus` (Prometheus text);

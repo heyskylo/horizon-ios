@@ -73,8 +73,8 @@ addition; a change to one starts `/api/v2`, served beside `/api/v1`.
 
 ## Not there yet
 
-- **Players**: positions in `players`; editing the lists while the game is stopped through the API (the CLI's
-  `op`, `deop` and `whitelist` already do).
+- **Players**: editing the lists while the game is stopped through the API (the CLI's `op`, `deop` and
+  `whitelist` already do).
 - **Metrics**: entities and per-dimension counts in the Prometheus text.
 - **Mods on a dedicated server**: list, turn on and off, and their settings, once native mods can be built for the
   server ([mods.md](../mods.md), [native-mods.md](../native-mods.md#multiplayer)).

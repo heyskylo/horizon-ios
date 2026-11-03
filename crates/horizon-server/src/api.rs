@@ -151,7 +151,7 @@ pub const ROUTES: [Route; 28] = [
         method: "GET",
         path: "/api/v1/players",
         takes: "",
-        answers: "`online` (name, uuid, address, ping_ms, op_level), `max_players`, `ops`, `whitelist` (`enabled`, `players`), `bans`, `ip_bans` (with reason, source, created, expires)",
+        answers: "`online` (name, uuid, address, ping_ms, position, op_level), `max_players`, `ops`, `whitelist` (`enabled`, `players`), `bans`, `ip_bans` (with reason, source, created, expires)",
         what: "Who is online, and vanilla's lists",
     },
     Route {
