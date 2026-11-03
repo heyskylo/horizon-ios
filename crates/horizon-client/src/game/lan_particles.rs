@@ -323,7 +323,9 @@ impl Game<'_> {
         known_movement: Vec3,
         living: bool,
     ) {
-        if self.remote.is_some() {
+        // `particle_velocity` refuses no horizontal movement before any draw,
+        // so a resting entity skips the sweep (most items, orbs and carts).
+        if self.remote.is_some() || (known_movement.x == 0.0 && known_movement.z == 0.0) {
             return;
         }
         let snow = horizon_client::powder_snow::contacts(previous, position, bounds, living, |p| {
