@@ -223,7 +223,7 @@ pub fn run(dir: &Path) -> Result<(), String> {
                     return Ok(());
                 }
                 shared.set_phase(Phase::Stopped);
-                if wait_stopped(&shared) {
+                if wait_stopped(&shared, &console) {
                     continue;
                 }
                 return Ok(());
@@ -656,6 +656,12 @@ fn supervise(
         }
         while let Ok(line) = console.try_recv() {
             let command = line.trim().trim_start_matches('/');
+            // `stop` on the supervisor's own stdin (`run` in a terminal, a hosting panel's console) ends the
+            // supervisor too, as before: such hosts wait for the process to exit. A `stop` that reaches the game
+            // another way (in game, RCON, `horizon-server cmd`) leaves the supervisor and its API up.
+            if command == "stop" {
+                shared.shutdown.store(true, Ordering::SeqCst);
+            }
             if command == "stop" && stopping.is_none() {
                 stopping = Some(Instant::now());
                 shared.set_phase(Phase::Stopping);
@@ -724,8 +730,20 @@ fn supervise(
 }
 
 /// Keeps the supervisor and its API alive after the game stops, until a start/restart or shutdown arrives.
-fn wait_stopped(shared: &Arc<Shared>) -> bool {
+/// The supervisor's stdin still answers: `stop` ends it, `start` starts the game again.
+fn wait_stopped(shared: &Arc<Shared>, console: &mpsc::Receiver<String>) -> bool {
     loop {
+        while let Ok(line) = console.try_recv() {
+            match line.trim().trim_start_matches('/') {
+                "stop" => shared.shutdown.store(true, Ordering::SeqCst),
+                "start" => shared.restart.store(true, Ordering::SeqCst),
+                _ => note(
+                    shared,
+                    "INFO",
+                    "The game is stopped: type `start` to start it, `stop` to end the server",
+                ),
+            }
+        }
         if shared.shutdown.load(Ordering::SeqCst) {
             return false;
         }

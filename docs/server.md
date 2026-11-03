@@ -402,7 +402,9 @@ runtime or new dependency. Server-sent events can replace the polling later if a
   with it). The server stops. The current world is moved to `backups/replaced-<time>/` (never deleted), the
   backup is unpacked into a temporary folder and checked (`level.dat` is there), then moved in, and the server
   starts again if it was running. One command, or one click with confirmation in the panel.
-- **Stopped game.** A console `stop` leaves the supervisor, control API and panel alive with no engine process.
+- **Stopped game.** A `stop` that reaches the game in game, over RCON or through `horizon-server cmd` leaves the
+  supervisor, control API and panel alive with no engine process; `stop` on the supervisor's own stdin (`run`, a
+  hosting panel's console) still ends both, and while the game is stopped that stdin takes `start` and `stop`.
   `horizon-server start` or `POST /api/v1/start` starts the game again; `horizon-server stop` still shuts down
   both the game and the supervisor. File-backed player-list edits are safe during this stopped state.
 - **Crash restart.** If the engine exits without being asked to stop, the supervisor keeps the last 200 log
