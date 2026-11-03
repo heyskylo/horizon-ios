@@ -2276,4 +2276,85 @@ mod tests {
         cow.extra.model_scale = 4.0;
         assert_eq!(cow.model_scale(), 4.0);
     }
+
+    /// #8140: `LivingEntity.handleOnClimbable` slows any mob in vines, not
+    /// only a spider on a wall. A cow let go at rest moves before gravity
+    /// pulls it: 0, then 0.0784, then 0.155232 in open air ((v - 0.08) *
+    /// 0.98); in vines each move down from the third on is held to 0.15F,
+    /// and the fall distance, reset before each move, is that one move.
+    #[test]
+    fn a_mob_in_vines_slides_down_slowly() {
+        let run = |vines: bool| {
+            let mut out = None;
+            let build =
+                |world: &mut crate::world::World,
+                 registry: &horizon_world::registry::BlockRegistry| {
+                    let stone = registry.default_state("minecraft:stone").unwrap();
+                    let mut vine = registry
+                        .state(registry.default_state("minecraft:vine").unwrap())
+                        .unwrap()
+                        .clone();
+                    vine.properties.insert("south".into(), "true".into());
+                    let vine = registry.resolve(&vine).unwrap();
+                    world.chunks.insert(
+                        (0, 0),
+                        std::sync::Arc::new(crate::chunk::Chunk::empty(0, 0)),
+                    );
+                    world.set(1, 0, 1, stone).unwrap();
+                    for y in 1..=12 {
+                        world.set(1, y, 2, stone).unwrap();
+                        if vines {
+                            world.set(1, y, 1, vine).unwrap();
+                        }
+                    }
+                };
+            crate::mobs::world::with_built_test_world(&[], build, |w, types| {
+                let kind = std::sync::Arc::new(types.types["minecraft:cow"].clone());
+                let mut m = Mob::new(1, kind, Vec3::new(1.5, 10.0, 1.5), 0.0);
+                m.on_ground = false;
+                let mut drops = Vec::new();
+                for _ in 0..12 {
+                    let before = m.position.y;
+                    m.travel(w, Vec3::ZERO, &mut Vec::new());
+                    drops.push(before - m.position.y);
+                }
+                out = Some((drops, m.fall_distance));
+            });
+            out
+        };
+        let (Some((open, open_fall)), Some((vines, vine_fall))) = (run(false), run(true)) else {
+            return;
+        };
+        assert_eq!(open[0], 0.0, "open air, tick 1: {open:?}");
+        assert!(
+            (open[1] - 0.0784).abs() < 1.0e-6,
+            "open air, tick 2: {open:?}"
+        );
+        assert!(
+            (open[2] - 0.155232).abs() < 1.0e-6,
+            "open air, tick 3: {open:?}"
+        );
+        assert!(
+            open[11] > 0.5 && open_fall > 3.0,
+            "open air keeps speeding up: {open:?}"
+        );
+        let limit = f64::from(0.15f32);
+        assert_eq!(vines[0], 0.0, "vines, tick 1: {vines:?}");
+        assert!(
+            (vines[1] - 0.0784).abs() < 1.0e-6,
+            "vines, tick 2: {vines:?}"
+        );
+        for (tick, drop) in vines.iter().enumerate().skip(2) {
+            assert!(
+                (drop - limit).abs() < 1.0e-9,
+                "vines, tick {}: {vines:?}",
+                tick + 1
+            );
+        }
+        // Reset before the move, then the move's own drop: never more.
+        assert!(
+            (vine_fall - limit).abs() < 1.0e-9,
+            "the vines reset the fall each tick, got {vine_fall}"
+        );
+    }
 }
