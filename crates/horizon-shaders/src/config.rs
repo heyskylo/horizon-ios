@@ -366,7 +366,7 @@ impl Config {
 }
 
 /// The buffers a fragment shader writes, from the last `DRAWBUFFERS` or `RENDERTARGETS` comment
-/// of its live code, or `None` without one (then it writes buffers 0 to 7). 6.1.4.
+/// of its live code, or `None` without one (then the program loader decides). 6.1.4.
 pub fn draw_buffers(pp: &Preprocessed) -> Option<Vec<u32>> {
     let mut found = None;
     for (_, comment) in &pp.comments {
