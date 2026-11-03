@@ -11,6 +11,9 @@ use serde_json::Value;
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
+#[path = "glass_servers.rs"]
+mod glass_servers;
+
 /// The servers this launcher started in this session, stopped when it closes unless they run as a
 /// service (`stop_on_quit`).
 static STARTED_HERE: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
@@ -463,9 +466,10 @@ impl Launcher {
 
     /// Called with the launcher's other work: what the background sent, and the next status poll.
     pub(super) fn servers_tick(&mut self) -> bool {
+        // The glass page shows how friends reach the server beside it, whatever the tab.
         let overview = self.page == Page::Servers
             && self.servers.open.is_some()
-            && self.servers.tab == Tab::Overview;
+            && (self.servers.tab == Tab::Overview || self.theme.dark);
         let mut changed = self.internet_tick(overview);
         while let Ok(event) = self.servers.rx.try_recv() {
             changed = true;
@@ -900,17 +904,8 @@ impl Launcher {
         self.servers.text(f).show(((width - 24.) / 7.5) as usize);
         // Home's Add server line is in the glass look already; the other fields follow with
         // their pages.
-        let glass = t.dark
-            && matches!(
-                f,
-                Field::ServerName
-                    | Field::ServerAddress
-                    | Field::InstanceModsFilter
-                    | Field::ConsoleSearch
-                    | Field::InstanceName
-                    | Field::InstanceGroup
-                    | Field::InstanceVersion
-            );
+        // The dark appearance draws every field in the glass look.
+        let glass = t.dark;
         let base = if glass {
             // The mods filter and the log search sit by buttons: the mockup's small `FIELD`, as
             // tall as they are.
@@ -933,6 +928,15 @@ impl Launcher {
                             .bg(crate::glass_ui::white(if focused { 0.1 } else { 0.06 }))
                     },
                 )
+                // The server's command line: the field is the line's middle, on its fill, in mono.
+                .when(f == Field::Command, |d| {
+                    d.h_full()
+                        .px_0()
+                        .rounded_none()
+                        .bg(gpui::transparent_black())
+                        .font_family(theme::MONO)
+                        .text_size(px(13.))
+                })
         } else {
             div()
                 .flex()
@@ -1157,6 +1161,9 @@ impl Launcher {
                 let dir = self.servers.list[0].dir.clone();
                 self.open_server(dir);
             }
+        }
+        if t.dark {
+            return self.glass_servers_page(cx);
         }
         if let Some(dir) = self.servers.open.clone() {
             if self.servers.list.iter().any(|e| e.dir == dir) {

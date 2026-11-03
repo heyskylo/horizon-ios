@@ -764,3 +764,17 @@ pub fn page_head(title: impl Into<SharedString>, note: impl Into<SharedString>) 
             )
         })
 }
+
+/// A small heading in a card (`h3`): 13 px, medium, white at 70 %.
+pub fn card_heading(label: impl Into<SharedString>) -> Div {
+    text(13., FontWeight::MEDIUM, ink::BODY)
+        .line_height(px(19.5))
+        .child(label.into())
+}
+
+/// A card's note: 13 px on 1.5, white at 55 %.
+pub fn card_note(label: impl Into<SharedString>) -> Div {
+    text(13., FontWeight::NORMAL, ink::QUIET)
+        .line_height(px(19.5))
+        .child(label.into())
+}
