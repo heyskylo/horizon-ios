@@ -88,6 +88,21 @@ not claim full parity of all attack, explosion or non-living kill-event paths.
 `tools/lan_e2e.py --check vehicle-kill-contents` is the live regression. It uses
 fresh worlds and validates actual entity drops and player inventory counts.
 
+## Minecart contents after player damage (verified and repaired)
+
+The attack/discard path also put minecart inventory drops inside entity_drops.
+The live baseline lost 64 diamonds from both chest and hopper minecarts when a
+creative player broke them with that rule disabled; boat/raft controls retained
+their contents. The corrected path spills contents through the same container
+removal routine and keeps the rule/creative checks on the vehicle item itself.
+
+Reference: pinned Java VehicleEntity.hurtServer/discard/destroy and
+AbstractMinecartContainer.remove. A destroying removal spills container contents
+without the entity_drops gate. The host build and iOS Clippy pass. The real-client
+`vehicle-damage-contents` and `vehicle-survival-contents` checks both pass: 16
+cases across four vehicles, two rule values and creative/survival attacks.
+These checks establish item conservation, not full explosion or RNG-stream parity.
+
 ## Java fidelity requirement
 
 Keep Java 26.3 as the behavioural reference for every gameplay repair. Verify the
@@ -98,8 +113,8 @@ whole-game parity.
 
 ## Remaining investigation
 
-- Vehicle attack/explosion contents and non-living /kill game-event propagation:
-  audit separately against Java; the verified repair above is command removal.
+- Explosion contents and non-living /kill game-event propagation: audit separately
+  against Java. Command and player-attack item conservation are verified above.
 
 - Cursor and crafting-grid conservation during disconnect, death, menu replacement
   and vehicle destruction; include full inventories and overflow drops.

@@ -2274,13 +2274,13 @@ impl Game<'_> {
                 self.carts.insert(i, c);
             } else {
                 let at = [c.position.x, c.position.y, c.position.z];
-                if self.ui.rules.bool("entity_drops") {
-                    for s in c.items.iter().flatten() {
-                        self.spawn_item(s.clone(), at, [0.0, 0.1, 0.0], 10);
-                    }
-                    if !creative {
-                        self.spawn_item(ItemStack::new(c.kind.item(), 1), at, [0.0, 0.1, 0.0], 10);
-                    }
+                // AbstractMinecartContainer.remove spills on both KILLED
+                // and DISCARDED. entity_drops gates the vehicle item, not
+                // the inventory removed with it (including creative hits).
+                let contents = std::mem::take(&mut c.items);
+                self.drop_removed_vehicle_contents(c.position, contents);
+                if !creative && self.ui.rules.bool("entity_drops") {
+                    self.spawn_item(ItemStack::new(c.kind.item(), 1), at, [0.0, 0.1, 0.0], 10);
                 }
             }
         }

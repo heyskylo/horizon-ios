@@ -13056,22 +13056,32 @@ CHECKS += ['vehicle-command-items']
 CHECK_FNS['vehicle-command-items'] = check_vehicle_command_items
 
 
-def check_vehicle_kill_contents(host, guest, out):
-    """KILLED removal spills container contents even with entity_drops disabled."""
+def check_vehicle_kill_contents(host, guest, out, damage=False):
+    """Command/attack removal spills contents even with entity_drops disabled."""
     x, y, z = apart(host, guest)['host']
     at = (x + 2.5, y, z + 0.5)
     rows = {}
+    previous_mode = host('state')['gamemode']
+    if damage:
+        host('command', command=f'gamemode {"survival" if damage == "survival" else "creative"}')
     try:
         for rule in (True, False):
             host('command', command=f'gamerule entity_drops {str(rule).lower()}')
             for kind in ('chest_minecart', 'hopper_minecart', 'oak_chest_boat', 'bamboo_chest_raft'):
                 tag = 'kill_container_contents'
                 host('command', command='clear @s')
+                if damage == 'survival':
+                    host('command', command='item replace entity @s weapon.mainhand with minecraft:diamond_sword')
                 host('command', command='kill @e[type=minecraft:item,distance=..12]')
                 host('command', command=f'summon minecraft:{kind} {at[0]} {at[1]} {at[2]} {{Tags:["{tag}"]}}')
                 reply = server_reply(host, f'item replace entity @e[tag={tag},limit=1] container.0 with minecraft:diamond 64', 'slot')
                 assert 'Replaced' in reply, reply
-                host('command', command=f'kill @e[tag={tag}]')
+                host.wait(20 if damage == 'survival' else 5)
+                if damage:
+                    host.raw('look-at', at[0], at[1] + 0.3, at[2])
+                    host.raw('mouse', 'left', 'click')
+                else:
+                    host('command', command=f'kill @e[tag={tag}]')
                 host.wait(20)
                 def contents():
                     dropped = sum(e['item']['count'] for e in host.raw('entities', 12, 'minecraft:item')['entities']
@@ -13085,16 +13095,21 @@ def check_vehicle_kill_contents(host, guest, out):
                     host.wait(2)
                     seen = contents()
                 rows[f'{kind}:entity_drops={rule}'] = seen
-                lab.write_json(out / 'vehicle-kill-contents.json', rows)
+                lab.write_json(out / ('vehicle-damage-contents.json' if damage else 'vehicle-kill-contents.json'), rows)
         assert all(row['total'] == 64 for row in rows.values()), rows
     finally:
         host('command', command='gamerule entity_drops true')
+        if damage:
+            host('command', command=f'gamemode {previous_mode}')
         host('command', command='kill @e[tag=kill_container_contents]')
     return rows
 
 
 CHECKS += ['vehicle-kill-contents']
 CHECK_FNS['vehicle-kill-contents'] = check_vehicle_kill_contents
+CHECKS += ['vehicle-damage-contents', 'vehicle-survival-contents']
+CHECK_FNS['vehicle-damage-contents'] = lambda host, guest, out: check_vehicle_kill_contents(host, guest, out, damage=True)
+CHECK_FNS['vehicle-survival-contents'] = lambda host, guest, out: check_vehicle_kill_contents(host, guest, out, damage='survival')
 
 
 if __name__ == '__main__':
