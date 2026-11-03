@@ -3940,6 +3940,65 @@ fn difficulty_names(from: u8, to: u8) -> (&'static str, &'static str) {
 #[cfg(test)]
 mod teleport_pitch_tests {
     #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn teleport_keeps_each_non_finite_axis_for_players_and_mobs() {
+        use super::Target;
+        use crate::game::{Audio, Game, Options, Progress, Settings, load_resources};
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        let kind = game
+            .res
+            .mob_types()
+            .get("minecraft:zombie")
+            .unwrap()
+            .clone();
+        game.mobs.push(horizon_client::mobs::Mob::new(
+            42,
+            kind,
+            horizon_core::geometry::Vec3::new(0.0, 0.0, 0.0),
+            0.0,
+        ));
+        for (rotation, expected) in [
+            ([40.0, f32::INFINITY], [40.0, 20.0]),
+            ([f32::INFINITY, 30.0], [10.0, 30.0]),
+        ] {
+            game.yaw = 10.0;
+            game.pitch = 20.0;
+            game.teleport_to_in_level(Target::Player, [0.0; 3], Some(rotation));
+            assert_eq!([game.yaw, game.pitch], expected);
+            game.mobs[0].yaw = 10.0;
+            game.mobs[0].head_pitch = 20.0;
+            game.teleport_to_in_level(Target::Mob(42), [0.0; 3], Some(rotation));
+            assert_eq!([game.mobs[0].yaw, game.mobs[0].head_pitch], expected);
+        }
+    }
+
+    #[test]
     fn pitch_wraps_before_clamping() {
         assert_eq!(super::entity_pitch(360.0), 0.0);
         assert_eq!(super::entity_pitch(450.0), 90.0);
