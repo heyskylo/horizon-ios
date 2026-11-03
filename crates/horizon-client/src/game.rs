@@ -3294,14 +3294,13 @@ fn gliding_pieces(items: &Items, armor: &[Option<ItemStack>; 4]) -> [bool; 4] {
             .is_some_and(|s| horizon_client::item_sync::can_glide_using(s, SLOTS[i], items))
     })
 }
-/// `Camera.setRotation` (`rotationYXZ(π - yaw, -pitch, 0)`) for the player's
-/// view, turned round in third-person front view (`Camera.setup`).
 /// `Level.canHaveWeather`: sky light, no ceiling, and not the End (the one
 /// level the rule names by id).
 fn level_can_have_weather(sky_light: bool, has_ceiling: bool, is_end: bool) -> bool {
     sky_light && !has_ceiling && !is_end
 }
-
+/// `Camera.setRotation` (`rotationYXZ(π - yaw, -pitch, 0)`) for the player's
+/// view, turned round in third-person front view (`Camera.setup`).
 fn camera_rotation(camera_type: perspective::CameraType, yaw: f32, pitch: f32) -> glam::Quat {
     let (view_yaw, view_pitch) = if camera_type == perspective::CameraType::ThirdPersonFront {
         (yaw + 180.0, -pitch)
