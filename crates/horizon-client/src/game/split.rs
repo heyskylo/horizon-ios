@@ -398,6 +398,7 @@ impl<'a> Split<'a> {
             None,
             api,
             batching,
+            self.host.settings.horizon.hdr,
             shader_pack,
         );
         let renderer = match built {
@@ -475,6 +476,7 @@ impl<'a> Split<'a> {
             None,
             api,
             batching,
+            self.host.settings.horizon.hdr,
             shader_pack,
         );
         let renderer = match built {
