@@ -72,6 +72,7 @@ DragonStrafePlayerPhase.navigateToNextPathNode	port	crates/horizon-client/src/ga
 DragonStrafePlayerPhase.begin	inline	crates/horizon-client/src/game/dragon.rs::Game::tick_phase	fresh strafe state (charge 0, no path or target) when entered
 EnderDragonPhaseManager.getPhase	skip:java		lazy cache of phase instances; Horizon phases are enum values
 WitherBoss.createNavigation	port	crates/horizon-client/src/mobs/wither.rs::register	gap: minor: door and float flags are not set here
+WitherBoss.canBeAffected	port	crates/horizon-client/src/mobs.rs::Mob::can_be_affected	the wither effect; the wither rose's own refusal is now that one
 WitherBoss.registerGoals	port	crates/horizon-client/src/mobs/wither.rs::register	
 WitherBoss.defineSynchedData	port	crates/horizon-client/src/game/lan.rs::mob_meta	gap: minor: only heads A and B are synced; the invulnerable counter is sent at index 19, the slot of target C
 WitherBoss.readAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::mob_from_nbt	Invul read; boss bar name not checked here

@@ -1,4 +1,5 @@
 AbstractNautilus.createAttributes	skip:data		attributes come from the entity type table (MobType in mobs.rs)
+AbstractNautilus.canBeAffected	port	crates/horizon-client/src/mobs.rs::Mob::can_be_affected	poison, for the nautilus and its zombie
 AbstractNautilus.checkNautilusSpawnRules	port	crates/horizon-client/src/mobs/spawn_rules.rs::check_spawn_rules	S::Nautilus arm: sea level minus 25 to minus 5, water below and above; only the nautilus has a placement (the zombie nautilus has none of its own)
 AbstractNautilus.canUseSlot	port	crates/horizon-client/src/game/dispenser.rs::mob_can_use_slot	saddle and body slots need an alive, grown, tame nautilus
 AbstractNautilus.canDispenserEquipIntoSlot	port	crates/horizon-client/src/game/dispenser.rs::mob_can_dispenser_equip	body and saddle always, other slots only with pick_up_loot
