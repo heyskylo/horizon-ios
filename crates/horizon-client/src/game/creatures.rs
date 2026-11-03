@@ -760,27 +760,28 @@ impl Game<'_> {
                     "sitting": m.extra.sitting,
                     "temper": m.extra.variant3,
                     "chested": m.extra.chested,
-                    "head": m.extra.head.as_deref(),
-                    "body": m.extra.body.as_deref(),
-                    "warden": horizon_client::mobs::warden::describe(m),
-                    "villager": horizon_client::mobs::villager::ext(m).map(|e| serde_json::json!({
-                        "food_level": e.food_level,
-                        "inventory": e.inventory.iter().map(|s| format!("{}x{}", s.count, s.item)).collect::<Vec<_>>(),
-                        "gossips": e.gossips.len(),
-                        "last_slept": e.last_slept,
-                        "raid": e.raid,
-                    })),
-                    "raider": horizon_client::mobs::raider::state(m).map(|s| serde_json::json!({
-                        "raid": s.raid_id,
-                        "wave": s.wave,
-                        "leader": s.patrol_leader,
-                        "patrolling": s.patrolling,
-                        "patrol_target": s.patrol_target,
-                        "vehicle": m.extra.mount,
-                    })),
                 });
-                // Drawn seated (Entity.isPassenger); set apart because the
-                // json! above is at the macro recursion limit.
+                // Set apart: one json! with every key goes past the default macro recursion
+                // limit, and horizon-client can't raise it (#8169).
+                state["head"] = m.extra.head.as_deref().into();
+                state["body"] = m.extra.body.as_deref().into();
+                state["warden"] = serde_json::json!(horizon_client::mobs::warden::describe(m));
+                state["villager"] = serde_json::json!(horizon_client::mobs::villager::ext(m).map(|e| serde_json::json!({
+                    "food_level": e.food_level,
+                    "inventory": e.inventory.iter().map(|s| format!("{}x{}", s.count, s.item)).collect::<Vec<_>>(),
+                    "gossips": e.gossips.len(),
+                    "last_slept": e.last_slept,
+                    "raid": e.raid,
+                })));
+                state["raider"] = serde_json::json!(horizon_client::mobs::raider::state(m).map(|s| serde_json::json!({
+                    "raid": s.raid_id,
+                    "wave": s.wave,
+                    "leader": s.patrol_leader,
+                    "patrolling": s.patrolling,
+                    "patrol_target": s.patrol_target,
+                    "vehicle": m.extra.mount,
+                })));
+                // Drawn seated (Entity.isPassenger).
                 state["passenger"] = m.extra.passenger.into();
                 state["guardian_beam"] = serde_json::json!(horizon_client::mobs::guardian::beam(m, 0.0));
                 state
@@ -3815,32 +3816,11 @@ impl Game<'_> {
             let w = self.mob_world_base(&[]);
             let rain = self.arrow_rain();
             let scene = self.arrow_scene(&rain);
-            // Arrows and snowballs also hit boats and minecarts
-            // (`VehicleEntity.isPickable`).
-            let vehicles = self.vehicle_targets();
-            let mut arrow_targets = targets.clone();
-            arrow_targets.extend(vehicles.iter().copied());
             // Mobs' projectiles also hit the guests (game/lan_mobs.rs).
             let guests = self.lan_projectile_targets();
-            let mut arrow_targets_guests = arrow_targets.clone();
-            arrow_targets_guests.extend(guests.iter().copied());
             let mut targets_guests = targets.clone();
             targets_guests.extend(guests);
             let border = Some(self.border.bounds());
-            // A snowball meets the vehicles too; the other thrown kinds fly
-            // through them as before. Built only when a snowball flies.
-            let snow = projectiles
-                .iter()
-                .any(|p| matches!(p.kind, ProjectileKind::Snowball));
-            let (snow_targets, snow_targets_guests) = if snow {
-                let mut a = targets.clone();
-                a.extend(vehicles.iter().copied());
-                let mut b = targets_guests.clone();
-                b.extend(vehicles.iter().copied());
-                (a, b)
-            } else {
-                (Vec::new(), Vec::new())
-            };
             let pw = ProjWorld {
                 w: &w,
                 targets,
@@ -3849,16 +3829,6 @@ impl Game<'_> {
             let pw_guests = ProjWorld {
                 w: &w,
                 targets: targets_guests,
-                border,
-            };
-            let pw_snow = ProjWorld {
-                w: &w,
-                targets: snow_targets,
-                border,
-            };
-            let pw_snow_guests = ProjWorld {
-                w: &w,
-                targets: snow_targets_guests,
                 border,
             };
             let guest_entities = self.lan_guest_entities();
@@ -3908,23 +3878,20 @@ impl Game<'_> {
                 if shooter.is_some() {
                     p.owner = shooter;
                 }
-                let snow_flies = matches!(p.kind, ProjectileKind::Snowball);
                 let (keep, hit) = match (p.arrow.is_some(), mob_shot || pvp, winds.is_empty()) {
-                    (true, false, true) => horizon_client::arrows::tick(p, &scene, &arrow_targets),
+                    (true, false, true) => horizon_client::arrows::tick(p, &scene, &pw.targets),
                     (true, true, true) => {
-                        horizon_client::arrows::tick(p, &scene, &arrow_targets_guests)
+                        horizon_client::arrows::tick(p, &scene, &pw_guests.targets)
                     }
                     (true, with_guests, false) => {
                         let mut targets = if with_guests {
-                            arrow_targets_guests.clone()
+                            pw_guests.targets.clone()
                         } else {
-                            arrow_targets.clone()
+                            pw.targets.clone()
                         };
                         targets.extend(winds);
                         horizon_client::arrows::tick(p, &scene, &targets)
                     }
-                    (false, false, true) if snow_flies => p.tick(&pw_snow),
-                    (false, true, true) if snow_flies => p.tick(&pw_snow_guests),
                     (false, false, true) => p.tick(&pw),
                     (false, true, true) => p.tick(&pw_guests),
                     (false, pvp_shot, false) => {
@@ -4164,6 +4131,17 @@ impl Game<'_> {
             8.0,
         )
     }
+    /// A projectile's hurt of `amount` on the boat or minecart `id`
+    /// (`VehicleEntity.hurtServer`): even 0 shakes it (`Snowball`, `ThrownEgg`,
+    /// `ThrownEnderpearl` `.onHitEntity`), 5 from a small fireball destroys it.
+    fn hurt_vehicle(&mut self, p: &Projectile, id: u32, amount: f32) {
+        let creative = p.owner == Some(Who::Player) && self.creative;
+        if let Some(i) = self.boats.iter().position(|b| b.id == id) {
+            self.hurt_boat(i, amount, creative);
+        } else if let Some(i) = self.carts.iter().position(|c| c.id == id) {
+            self.hurt_cart(i, amount, creative, false);
+        }
+    }
     /// `BellBlock.onProjectileHit`: a projectile that strikes the bell proper
     /// rings it, and a player's shot counts as the player's ring.
     fn bell_projectile_hit(&mut self, p: &Projectile, pos: [i32; 3], at: Vec3, face: [i32; 3]) {
@@ -4346,6 +4324,9 @@ impl Game<'_> {
                 .into_iter()
                 .map(|(id, b)| (Who::Mob(id), b)),
         );
+        // Boats and minecarts are pickable for every projectile
+        // (`VehicleEntity.isPickable`), so every kind shares this one list.
+        targets.extend(self.vehicle_targets());
         targets
     }
     pub(super) fn arrow_rain(&self) -> impl Fn(BlockPos) -> bool + '_ {
@@ -4829,12 +4810,7 @@ impl Game<'_> {
                 {
                     // Snowball.onHitEntity: 0 damage, which still shakes a
                     // boat or minecart (VehicleEntity.hurtServer).
-                    let creative = p.owner == Some(Who::Player) && self.creative;
-                    if let Some(i) = self.boats.iter().position(|b| b.id == id) {
-                        self.hurt_boat(i, 0.0, creative);
-                    } else if let Some(i) = self.carts.iter().position(|c| c.id == id) {
-                        self.hurt_cart(i, 0.0, creative, false);
-                    }
+                    self.hurt_vehicle(p, id, 0.0);
                 }
                 self.thrown_break_event(p.id, atp);
                 self.item_burst(atp, "minecraft:snowball");
@@ -4887,6 +4863,12 @@ impl Game<'_> {
                     && let Some(m) = self.mobs.iter_mut().find(|m| m.id == id)
                 {
                     m.damage_projectile(0.0, source, aim, [p.velocity.x, p.velocity.z]);
+                } else if let Hit::Entity {
+                    who: Who::Mob(id), ..
+                } = hit
+                {
+                    // ThrownEgg.onHitEntity: the same 0 damage.
+                    self.hurt_vehicle(p, id, 0.0);
                 }
                 // ThrownEgg.onHit: 1/8 chance of a chick, 1/32 of four.
                 if self.world.random.next_int_bound(8).unwrap_or(1) == 0 {
@@ -4913,6 +4895,12 @@ impl Game<'_> {
                     && let Some(m) = self.mobs.iter_mut().find(|m| m.id == id)
                 {
                     m.damage_projectile(0.0, source, aim, [p.velocity.x, p.velocity.z]);
+                } else if let Hit::Entity {
+                    who: Who::Mob(id), ..
+                } = hit
+                {
+                    // ThrownEnderpearl.onHitEntity: the same 0 damage.
+                    self.hurt_vehicle(p, id, 0.0);
                 }
                 // To where the pearl started its last tick (oldPosition).
                 let mut to = p.previous;
@@ -5015,6 +5003,9 @@ impl Game<'_> {
                         });
                         if hurt {
                             self.player_hurt_mob(p, id);
+                        } else if !self.mobs.iter().any(|m| m.id == id) {
+                            // SmallFireball.onHitEntity: 5 damage to a boat or minecart.
+                            self.hurt_vehicle(p, id, 5.0);
                         }
                     }
                 },
@@ -5116,6 +5107,8 @@ impl Game<'_> {
                     self.native_potion_splash(&item, [at.x, at.y, at.z]);
                 }
             }
+            // LlamaSpit.onHitEntity hurts only when the owner is a LivingEntity.
+            (ProjectileKind::LlamaSpit, Hit::Entity { .. }) if p.owner.is_none() => {}
             (ProjectileKind::LlamaSpit, Hit::Entity { who, .. }) => match who {
                 Who::Player => {
                     self.mob_hits_player(
