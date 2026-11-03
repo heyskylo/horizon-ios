@@ -28,19 +28,23 @@ use horizon_world::{
 };
 use std::collections::HashMap;
 
-/// Reused buffers for one pass over the spawning chunks: the candidate chunks
-/// and the set that keeps each one once. The buffers keep their capacity
-/// between ticks.
+/// Natural spawning's candidate chunks (`ChunkMap.collectSpawningChunks`):
+/// the union of every player's 17×17 chunk square, in player then dx/dz
+/// order, each chunk once. `candidates` is one pass's working list (spawning
+/// shuffles and drains it); the rest is the union for the players' last chunk
+/// positions, kept between ticks. A chunk crossing rebuilds only the squares
+/// it can change, and proximity to players is checked live on every pass.
 #[derive(Default)]
 pub(super) struct SpawnScratch {
     pub(super) candidates: Vec<(i32, i32)>,
-    pub(super) seen: horizon_client::fast_hash::FxHashMap<(i32, i32), usize>,
-    pub(super) close: Vec<bool>,
-    // Kept separate from candidates: spawning shuffles and drains that vector.
-    player_chunks: Vec<(i32, i32)>,
-    ordered: Vec<(i32, i32)>,
-    members: Vec<Vec<usize>>,
-    disjoint: bool,
+    /// Each player's chunk at the last pass.
+    chunks: Vec<(i32, i32)>,
+    /// For each player, the others whose squares overlap its own, in order.
+    neighbours: Vec<Vec<usize>>,
+    /// The chunks each player adds to the union: those of its square, in
+    /// dx/dz order, that no earlier player's square holds.
+    segments: Vec<Vec<(i32, i32)>>,
+    stale: Vec<bool>,
 }
 impl SpawnScratch {
     fn chunk(p: &LevelPlayer) -> (i32, i32) {
@@ -49,77 +53,94 @@ impl SpawnScratch {
             p.position.z.floor() as i32 >> 4,
         )
     }
-    /// Cache the candidate input of `ChunkMap.collectSpawningChunks`, keeping
-    /// the port's player/dx/dz insertion order. Proximity is live even when a
-    /// player moves within a chunk or changes spectator state.
+    /// Whether the square around chunk `centre` holds chunk `c`.
+    fn holds(centre: (i32, i32), c: (i32, i32)) -> bool {
+        centre.0.abs_diff(c.0) <= 8 && centre.1.abs_diff(c.1) <= 8
+    }
+    fn overlap(a: (i32, i32), b: (i32, i32)) -> bool {
+        a.0.abs_diff(b.0) <= 16 && a.1.abs_diff(b.1) <= 16
+    }
+    /// Bring the segments up to date with the players' chunks. A segment
+    /// depends only on its player's chunk and those of the earlier players
+    /// whose squares overlap it, so a move rebuilds the mover's segment and
+    /// the later ones its old or new square overlaps.
     fn prepare(&mut self, players: &[LevelPlayer]) {
-        if players.len() != self.player_chunks.len()
-            || players
-                .iter()
-                .zip(&self.player_chunks)
-                .any(|(p, &c)| Self::chunk(p) != c)
-        {
-            // Disjoint player squares concatenate in vanilla insertion order.
-            // In that common spread-out case, only a moving player's 289
-            // coordinates change; all other slots and membership stay valid.
-            let disjoint = players.iter().enumerate().all(|(i, p)| {
-                let a = Self::chunk(p);
-                players[..i].iter().all(|p| {
-                    let b = Self::chunk(p);
-                    a.0.abs_diff(b.0) > 16 || a.1.abs_diff(b.1) > 16
-                })
-            });
-            if disjoint && self.disjoint && players.len() == self.player_chunks.len() {
-                for (i, (p, old)) in players.iter().zip(&mut self.player_chunks).enumerate() {
-                    let chunk = Self::chunk(p);
-                    if chunk != *old {
-                        for dx in -8..=8 {
-                            for dz in -8..=8 {
-                                let slot = i * 289 + ((dx + 8) * 17 + dz + 8) as usize;
-                                self.ordered[slot] = (chunk.0 + dx, chunk.1 + dz);
-                            }
-                        }
-                        *old = chunk;
-                    }
+        let n = players.len();
+        let all = n != self.chunks.len();
+        self.stale.clear();
+        self.stale.resize(n, all);
+        if !all {
+            let mut moved = false;
+            for m in 0..n {
+                let (old, new) = (self.chunks[m], Self::chunk(&players[m]));
+                if old == new {
+                    continue;
                 }
-            } else {
-                self.player_chunks.clear();
-                self.player_chunks.extend(players.iter().map(Self::chunk));
-                self.ordered.clear();
-                self.seen.clear();
-                self.members.resize_with(players.len(), Vec::new);
-                for (&(pcx, pcz), members) in self.player_chunks.iter().zip(&mut self.members) {
-                    members.clear();
-                    for dx in -8..=8 {
-                        for dz in -8..=8 {
-                            let key = (pcx + dx, pcz + dz);
-                            let i = if disjoint {
-                                let i = self.ordered.len();
-                                self.ordered.push(key);
-                                i
-                            } else {
-                                *self.seen.entry(key).or_insert_with(|| {
-                                    let i = self.ordered.len();
-                                    self.ordered.push(key);
-                                    i
-                                })
-                            };
-                            members.push(i);
-                        }
+                moved = true;
+                self.stale[m] = true;
+                for (i, p) in players.iter().enumerate().skip(m + 1) {
+                    let c = Self::chunk(p);
+                    self.stale[i] |= Self::overlap(old, c) || Self::overlap(new, c);
+                }
+            }
+            if !moved {
+                return;
+            }
+        }
+        self.chunks.clear();
+        self.chunks.extend(players.iter().map(Self::chunk));
+        self.neighbours.resize_with(n, Vec::new);
+        self.neighbours.truncate(n);
+        self.segments.resize_with(n, Vec::new);
+        self.segments.truncate(n);
+        let chunks = &self.chunks;
+        for (i, near) in self.neighbours.iter_mut().enumerate() {
+            near.clear();
+            near.extend((0..n).filter(|&j| j != i && Self::overlap(chunks[i], chunks[j])));
+        }
+        for (i, segment) in self.segments.iter_mut().enumerate() {
+            if !self.stale[i] {
+                continue;
+            }
+            let near = &self.neighbours[i];
+            let earlier = &near[..near.partition_point(|&j| j < i)];
+            let (pcx, pcz) = chunks[i];
+            segment.clear();
+            for dx in -8..=8 {
+                for dz in -8..=8 {
+                    let c = (pcx + dx, pcz + dz);
+                    if !earlier.iter().any(|&j| Self::holds(chunks[j], c)) {
+                        segment.push(c);
                     }
                 }
             }
-            self.disjoint = disjoint;
         }
-        self.close.clear();
-        self.close.resize(self.ordered.len(), false);
-        for (p, members) in players.iter().zip(&self.members) {
-            for &i in members {
-                self.close[i] |= close_enough_for_spawning(p, self.ordered[i]);
-            }
-        }
+    }
+    /// Fill `candidates` with the union's chunks, in order, that are within
+    /// 128 blocks of a non-spectator holding them in its square and that
+    /// `keep` accepts. Returns the union's size.
+    fn collect(
+        &mut self,
+        players: &[LevelPlayer],
+        mut keep: impl FnMut((i32, i32)) -> bool,
+    ) -> i32 {
+        self.prepare(players);
         self.candidates.clear();
-        self.candidates.extend_from_slice(&self.ordered);
+        let mut count = 0;
+        for (i, segment) in self.segments.iter().enumerate() {
+            count += segment.len();
+            let near = &self.neighbours[i];
+            for &c in segment {
+                let close = close_enough_for_spawning(&players[i], c)
+                    || near.iter().any(|&j| {
+                        Self::holds(self.chunks[j], c) && close_enough_for_spawning(&players[j], c)
+                    });
+                if close && keep(c) {
+                    self.candidates.push(c);
+                }
+            }
+        }
+        count as i32
     }
 }
 
@@ -696,20 +717,10 @@ impl<'a> Game<'a> {
         players: &[LevelPlayer],
         scratch: &mut SpawnScratch,
     ) -> i32 {
-        scratch.prepare(players);
-        let candidates = &mut scratch.candidates;
-        let close = &scratch.close;
-        let count = candidates.len() as i32;
         let levels = self.tickets.levels();
-        let mut i = 0;
-        candidates.retain(|&(cx, cz)| {
-            let keep = close[i]
-                && levels.loaded_ticking(cx, cz)
-                && super::ticking_chunk(&self.world, cx, cz);
-            i += 1;
-            keep
-        });
-        count
+        scratch.collect(players, |(cx, cz)| {
+            levels.loaded_ticking(cx, cz) && super::ticking_chunk(&self.world, cx, cz)
+        })
     }
     /// `ServerChunkCache.tickChunks`: the spawn state over the loaded mobs,
     /// the categories under their global caps (creatures every 400 ticks),
@@ -725,9 +736,7 @@ impl<'a> Game<'a> {
             return;
         }
         let mut scratch = std::mem::take(&mut self.spawn_scratch);
-        let spawnable = horizon_client::spans::time("spawning_chunks", || {
-            self.spawning_chunks(&players, &mut scratch)
-        });
+        let spawnable = self.spawning_chunks(&players, &mut scratch);
         for &key in &scratch.candidates {
             *self.world.inhabited.entry(key).or_insert(0) += 1;
         }
@@ -889,6 +898,31 @@ mod tests {
         }
     }
 
+    /// The candidates as the uncached port collected them every tick: each
+    /// player's square in dx/dz order into one ordered set, close to any
+    /// player that holds the chunk. Returns the set's size too.
+    fn uncached_candidates(players: &[LevelPlayer]) -> (i32, Vec<(i32, i32)>) {
+        let mut order = Vec::new();
+        let mut close = Vec::new();
+        let mut seen = HashMap::new();
+        for p in players {
+            let (pcx, pcz) = SpawnScratch::chunk(p);
+            for dx in -8..=8 {
+                for dz in -8..=8 {
+                    let key = (pcx + dx, pcz + dz);
+                    let i = *seen.entry(key).or_insert_with(|| {
+                        order.push(key);
+                        close.push(false);
+                        order.len() - 1
+                    });
+                    close[i] |= close_enough_for_spawning(p, key);
+                }
+            }
+        }
+        let kept = order.iter().zip(&close).filter(|c| *c.1).map(|c| *c.0);
+        (order.len() as i32, kept.collect())
+    }
+
     #[test]
     fn spawn_candidates_keep_order_and_live_proximity_across_cache_hits() {
         let mut players = vec![
@@ -896,66 +930,92 @@ mod tests {
             player(16.0, 64.0, 0.0, false),
         ];
         let mut scratch = SpawnScratch::default();
-        scratch.prepare(&players);
         // Two adjacent 17x17 squares: the first square, then the new east edge.
-        let expected: Vec<_> = (-8..=8)
-            .flat_map(|x| (-8..=8).map(move |z| (x, z)))
-            .chain((-8..=8).map(|z| (9, z)))
-            .collect();
-        assert_eq!(scratch.candidates, expected);
-        let west = scratch.seen[&(-8, 0)];
-        assert!(scratch.close[west]);
-        // The spawn pass consumes its working order; that must not corrupt the cache.
+        assert_eq!(scratch.collect(&players, |_| true), 306);
+        assert!(scratch.candidates.contains(&(-8, 0)));
+        // Spawning consumes the working list; the next pass must not care.
         scratch.candidates.reverse();
-        scratch.candidates.clear();
+        scratch.candidates.truncate(3);
+        // Moving inside its chunk takes player 0 out of range of the west edge.
         players[0].position.x = 15.5;
-        scratch.prepare(&players);
-        assert_eq!(scratch.candidates, expected);
-        assert!(!scratch.close[west]);
+        assert_eq!(scratch.collect(&players, |_| true), 306);
+        assert!(!scratch.candidates.contains(&(-8, 0)));
+        assert_eq!(scratch.candidates, uncached_candidates(&players).1);
+        // Nothing is close to spectators, though the squares still count.
         for p in &mut players {
             p.spectator = true;
         }
-        scratch.prepare(&players);
-        assert_eq!(scratch.candidates, expected);
-        assert!(scratch.close.iter().all(|&close| !close));
-        players.swap(0, 1);
-        scratch.prepare(&players);
-        assert_eq!(scratch.candidates.first(), Some(&(-7, -8)));
-        assert_eq!(scratch.candidates.len(), 306);
-        players.pop();
-        scratch.prepare(&players);
-        assert_eq!(scratch.candidates.len(), 289);
-        players[0].position.x = -0.01;
-        scratch.prepare(&players);
-        assert_eq!(scratch.candidates.first(), Some(&(-9, -8)));
-        players.clear();
-        scratch.prepare(&players);
+        assert_eq!(scratch.collect(&players, |_| true), 306);
         assert!(scratch.candidates.is_empty());
+        for p in &mut players {
+            p.spectator = false;
+        }
+        // Player 1 near its chunk's east side reaches the middle of chunk 9.
+        players[1].position.x = 31.9;
+        assert_eq!(scratch.collect(&players, |_| true), 306);
+        assert!(scratch.candidates.contains(&(9, 0)));
+        assert_eq!(scratch.candidates, uncached_candidates(&players).1);
+        // `keep` filters without reordering.
+        scratch.collect(&players, |(x, z)| x == z);
+        let diagonal: Vec<_> = uncached_candidates(&players)
+            .1
+            .into_iter()
+            .filter(|&(x, z)| x == z)
+            .collect();
+        assert!(diagonal.len() > 1);
+        assert_eq!(scratch.candidates, diagonal);
     }
 
+    /// Players walking, crossing borders, meeting, splitting, joining, leaving
+    /// and swapping order: every pass matches the uncached collection.
     #[test]
-    fn separated_spawn_squares_move_without_changing_other_players_order() {
-        let mut players = vec![
-            player(0.0, 64.0, 0.0, false),
-            player(1200.0, 64.0, 0.0, false),
-        ];
+    fn spawn_candidates_match_the_uncached_union_while_players_move() {
+        let mut seed = 0x5DEECE66Du64;
+        let mut next = move |bound: u64| {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (seed >> 33) % bound
+        };
+        let mut players: Vec<LevelPlayer> = [0.0, 40.0, 300.0, 1200.0, -500.0]
+            .iter()
+            .map(|&x| player(x, 64.0, x / 2.0, false))
+            .collect();
         let mut scratch = SpawnScratch::default();
-        scratch.prepare(&players);
-        let other = scratch.candidates[289..].to_vec();
-        assert_eq!(scratch.candidates.len(), 578);
-        players[0].position.x = 16.0;
-        scratch.prepare(&players);
-        assert_eq!(scratch.candidates.first(), Some(&(-7, -8)));
-        assert_eq!(scratch.candidates[289..], other);
-        // Merge into overlapping squares, then split them again.
-        players[1].position.x = 32.0;
-        scratch.prepare(&players);
-        assert_eq!(scratch.candidates.len(), 306);
-        assert_eq!(scratch.candidates.last(), Some(&(10, 8)));
-        players[1].position.x = 1200.0;
-        scratch.prepare(&players);
-        assert_eq!(scratch.candidates.len(), 578);
-        assert_eq!(scratch.candidates[289..], other);
+        for step in 0..3000 {
+            match next(40) {
+                0 if players.len() < 8 => {
+                    let x = next(1200) as f64 - 600.0;
+                    let at = next(players.len() as u64 + 1) as usize;
+                    players.insert(at, player(x, 64.0, -x, false));
+                }
+                1 if players.len() > 1 => {
+                    players.remove(next(players.len() as u64) as usize);
+                }
+                2 if players.len() > 1 => {
+                    let i = next(players.len() as u64 - 1) as usize;
+                    players.swap(i, i + 1);
+                }
+                3 => {
+                    let i = next(players.len() as u64) as usize;
+                    players[i].spectator = !players[i].spectator;
+                }
+                4 => {
+                    // Teleport onto another player: identical squares.
+                    let (i, j) = (next(players.len() as u64), next(players.len() as u64));
+                    players[i as usize].position = players[j as usize].position;
+                }
+                _ => {
+                    for p in &mut players {
+                        p.position.x += next(13) as f64 - 6.0 + 0.37;
+                        p.position.z += next(13) as f64 - 6.0 - 0.21;
+                    }
+                }
+            }
+            let (count, expected) = uncached_candidates(&players);
+            assert_eq!(scratch.collect(&players, |_| true), count, "step {step}");
+            assert_eq!(scratch.candidates, expected, "step {step}");
+        }
     }
 
     /// The grid finds the same player a look at every one finds, the first of

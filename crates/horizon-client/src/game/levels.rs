@@ -88,6 +88,8 @@ pub(super) struct Parked {
     raiding: Raiding,
     sculk: SculkState,
     creaking: CreakingState,
+    /// Natural spawning's candidate cache: each level keeps its own players' squares.
+    spawn_scratch: super::natural_spawning::SpawnScratch,
     /// Server ticks since a player was last in the level.
     idle: u32,
 }
@@ -231,6 +233,7 @@ impl Game<'_> {
             raiding: Default::default(),
             sculk: Default::default(),
             creaking: Default::default(),
+            spawn_scratch: Default::default(),
             idle: 0,
         })
     }
@@ -297,6 +300,7 @@ impl Game<'_> {
         self.raiding.swap_level(&mut p.raiding);
         self.sculk.swap_level(&mut p.sculk);
         self.creaking.swap_level(&mut p.creaking);
+        swap(&mut self.spawn_scratch, &mut p.spawn_scratch);
         // What only the client draws starts over.
         self.particles.clear();
         self.pickups.clear();
