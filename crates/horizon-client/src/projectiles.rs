@@ -1817,5 +1817,70 @@ mod pearl_owner_tests {
         assert!(!owner_can_take_pearl(false, true), "dead in bed");
     }
 }
+#[cfg(test)]
+mod render_light_tests {
+    use super::*;
 
+    fn shot(kind: ProjectileKind) -> Projectile {
+        Projectile::new(kind, Vec3::new(0.5, 64.0, 0.5), None)
+    }
+
+    /// `EntityRenderer.getBlockLightLevel` and the two overrides: a shulker
+    /// bullet and a fireball are 15 wherever they fly, anything on fire is 15
+    /// by the base class, and an ordinary arrow keeps the level's light.
+    #[test]
+    fn only_the_full_bright_projectiles_override_the_block_light() {
+        let bullet = shot(ProjectileKind::ShulkerBullet {
+            target: None,
+            dir: None,
+            steps: 0,
+            delta: [0.0; 3],
+            seed: 0,
+        });
+        assert_eq!(bullet.block_light_override(), Some(15));
+        assert_eq!(
+            shot(ProjectileKind::SmallFireball).block_light_override(),
+            Some(15)
+        );
+        assert_eq!(
+            shot(ProjectileKind::WitherSkull { dangerous: false }).block_light_override(),
+            Some(15)
+        );
+        let mut arrow = shot(ProjectileKind::Arrow {
+            base_damage: 2.0,
+            critical: false,
+            effect: None,
+        });
+        assert_eq!(arrow.block_light_override(), None);
+        // `Entity.isOnFire` on any projectile is 15, whatever its kind.
+        arrow.ignite_for_ticks(100);
+        assert_eq!(arrow.block_light_override(), Some(15));
+        let mut snowball = shot(ProjectileKind::Snowball);
+        assert_eq!(snowball.block_light_override(), None);
+        snowball.ignite_for_ticks(1);
+        assert_eq!(snowball.block_light_override(), Some(15));
+    }
+
+    /// `Entity.getLightProbePosition` is the eye position, so an arrow lying
+    /// in the top eighth of a block is lit by the block above it.
+    #[test]
+    fn a_projectile_is_lit_from_the_block_its_eye_is_in() {
+        let mut arrow = shot(ProjectileKind::Arrow {
+            base_damage: 2.0,
+            critical: false,
+            effect: None,
+        });
+        arrow.position = Vec3::new(0.5, 64.9, 0.5);
+        assert_eq!(arrow.light_probe_y().floor(), 65.0);
+        assert_eq!(arrow.position.y.floor(), 64.0);
+        // A wind charge's entity type declares no eye height, so it keeps its feet.
+        let mut wind = shot(ProjectileKind::WindCharge);
+        wind.position = Vec3::new(0.5, 64.9, 0.5);
+        assert_eq!(wind.light_probe_y(), 64.9);
+        // A snowball's box is a quarter block: the eye is 0.2125 up.
+        let mut ball = shot(ProjectileKind::Snowball);
+        ball.position = Vec3::new(0.5, 64.8, 0.5);
+        assert!((ball.light_probe_y() - 64.8 - 0.85 * 0.25).abs() < 1e-6);
+    }
+}
 crate::impl_joined!(Projectile);
