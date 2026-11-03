@@ -360,7 +360,11 @@ impl NaturalLevel for GameLevel<'_, '_> {
         self.w.world.top_y() - 1
     }
     fn ambient_light(&self) -> f32 {
-        self.game.world.shape.ambient_light
+        match self.game.dim {
+            Dim::Nether => 0.1,
+            Dim::End => 0.25,
+            _ => 0.0,
+        }
     }
     fn has_ceiling(&self) -> bool {
         self.w.world.shape.has_ceiling

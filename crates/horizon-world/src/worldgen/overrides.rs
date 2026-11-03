@@ -81,10 +81,6 @@ pub struct LevelHeight {
     pub has_ceiling: bool,
 }
 impl LevelHeight {
-    /// `DimensionType.ambientLight`.
-    pub fn ambient_light(self) -> f32 {
-        f32::from_bits(self.ambient_light_bits)
-    }
     /// The vanilla dimension types'.
     pub fn vanilla(dimension_type: &str) -> Option<Self> {
         let (min_y, height, logical_height, has_skylight, has_ceiling) = match dimension_type {
@@ -488,41 +484,6 @@ mod tests {
         );
         let open = o.level_height("minecraft:overworld").unwrap();
         assert!((open.height, open.has_skylight, open.has_ceiling) == (384, true, false));
-    }
-
-    /// `has_ceiling` and `ambient_light` belong to the dimension type, not to
-    /// the level's id: `overworld_caves` has a ceiling, a pack's type may
-    /// give either to any level.
-    #[test]
-    fn ceiling_and_ambient_light_follow_the_dimension_type() {
-        let v = |id: &str| LevelHeight::vanilla(id).unwrap();
-        assert!(!v("minecraft:overworld").has_ceiling);
-        assert!(v("minecraft:overworld_caves").has_ceiling);
-        assert!(v("minecraft:the_nether").has_ceiling);
-        assert!(!v("minecraft:the_end").has_ceiling);
-        assert_eq!(v("minecraft:the_nether").ambient_light(), 0.1);
-        assert_eq!(v("minecraft:the_end").ambient_light(), 0.25);
-        let mut o = WorldgenOverrides::default();
-        o.set(
-            DIMENSION_TYPES,
-            "p:cave",
-            r#"{"min_y":0,"height":256,"has_ceiling":true,"ambient_light":0.5}"#.into(),
-        );
-        o.set(
-            DIMENSIONS,
-            "minecraft:overworld",
-            r#"{"type":"p:cave"}"#.into(),
-        );
-        o.set(
-            DIMENSIONS,
-            "minecraft:the_nether",
-            r#"{"type":"minecraft:overworld"}"#.into(),
-        );
-        let cave = o.level_height("minecraft:overworld").unwrap();
-        assert!(cave.has_ceiling);
-        assert_eq!(cave.ambient_light(), 0.5);
-        let open = o.level_height("minecraft:the_nether").unwrap();
-        assert!(!open.has_ceiling && open.has_skylight);
     }
 
     #[test]

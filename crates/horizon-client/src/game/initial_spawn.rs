@@ -33,9 +33,6 @@ struct Columns<'a, 'r> {
     spawn_height: i32,
 }
 impl SpawnLevel for Columns<'_, '_> {
-    fn cave_spawn_height(&self) -> Option<i32> {
-        self.cave_spawn_height
-    }
     fn min_y(&self) -> i32 {
         self.world.bottom_y()
     }

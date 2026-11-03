@@ -71,20 +71,6 @@ impl LevelShape {
             logical_height,
         })
     }
-    /// The type's `has_ceiling` and `ambient_light` (the codec's other
-    /// fields rules read; `new` leaves them at a ceilingless, unlit type).
-    pub fn with_ceiling(self, has_ceiling: bool, ambient_light: f32) -> Self {
-        Self {
-            has_ceiling,
-            ambient_light,
-            ..self
-        }
-    }
-    /// `Level.canHaveWeather`: sky light, no ceiling, and not the End (the
-    /// one id the rule names).
-    pub fn can_have_weather(self, is_end: bool) -> bool {
-        self.sky_light && !self.has_ceiling && !is_end
-    }
     /// One above the highest block (`getMaxY() + 1`).
     pub fn max_y(self) -> i32 {
         self.min_y + self.height
@@ -108,7 +94,7 @@ impl LevelShape {
 }
 
 /// The shapes of a world's three levels, from its dimension types.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LevelShapes {
     pub overworld: LevelShape,
     pub nether: LevelShape,
@@ -1049,26 +1035,6 @@ mod tests {
         );
         assert!(LevelShape::new(0, 256, 257, true, false).is_err());
         assert!(LevelShape::new(-60, 384, 384, true, false).is_err());
-    }
-
-    /// `Level.canHaveWeather` reads the type: a ceiling or no sky light stops
-    /// weather in any level, an open sky allows it, and only the End is named.
-    #[test]
-    fn weather_follows_the_type_not_the_id() {
-        assert!(LevelShape::OVERWORLD.can_have_weather(false));
-        assert!(!LevelShape::NETHER.can_have_weather(false));
-        assert!(!LevelShape::END.can_have_weather(true));
-        // overworld_caves: sky light and a ceiling.
-        assert!(
-            !LevelShape::OVERWORLD
-                .with_ceiling(true, 0.0)
-                .can_have_weather(false)
-        );
-        // A skyless type with no ceiling.
-        let skyless = LevelShape::new(0, 256, 128, false).unwrap();
-        assert!(!skyless.can_have_weather(false));
-        // A Nether-id level of an open-sky type.
-        assert!(LevelShape::OVERWORLD.can_have_weather(false));
     }
 
     #[test]
