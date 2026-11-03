@@ -70,6 +70,12 @@ impl Game<'_> {
             Species::Sheep => item == "minecraft:shears" || item.ends_with("_dye"),
             // SnowGolem.mobInteract: shears take the pumpkin off.
             Species::SnowGolem => item == "minecraft:shears" && !m.extra.sheared,
+            // IronGolem.mobInteract.
+            Species::IronGolem => iron_golem_takes(item, m.health, m.attrs.max_health),
+            // CopperGolem.mobInteract.
+            Species::CopperGolem => {
+                copper_golem_takes(item, m.extra.main_hand.is_some(), self.golem_shearable(i))
+            }
             // Bucketable.bucketMobPickup.
             Species::Cod
             | Species::Salmon
@@ -124,6 +130,19 @@ impl Game<'_> {
             horizon_client::particles::Burst::HORSE_EATING,
         );
     }
+}
+
+/// `IronGolem.mobInteract`: an iron ingot heals 25 and only answers SUCCESS when
+/// that changed the health, so a full golem leaves the click to the item.
+fn iron_golem_takes(item: &str, health: f32, max_health: f32) -> bool {
+    item == "minecraft:iron_ingot" && health < max_health
+}
+
+/// `CopperGolem.mobInteract` on a client: an empty hand makes the golem throw
+/// what it holds, and shears answer only when `readyForShearing`. Honeycomb and
+/// axes return `PASS` here because the waxing and scraping run on the server.
+fn copper_golem_takes(item: &str, holding: bool, shearable: bool) -> bool {
+    (item.is_empty() && holding) || (item == "minecraft:shears" && shearable)
 }
 
 /// `Allay.mobInteract` on the client's copy: a dancing allay with a
@@ -192,6 +211,41 @@ mod tests {
             horizon_core::geometry::Vec3::new(0.0, 4.0, 0.0),
             0.0,
         ))
+    }
+
+    /// `IronGolem.mobInteract` and `CopperGolem.mobInteract` (#8630): the click
+    /// has to end on the golem, or the client goes on to use the item and turns
+    /// to the off hand.
+    #[test]
+    fn the_golems_answer_the_click() {
+        assert!(iron_golem_takes("minecraft:iron_ingot", 50.0, 100.0));
+        assert!(
+            !iron_golem_takes("minecraft:iron_ingot", 100.0, 100.0),
+            "full"
+        );
+        assert!(
+            !iron_golem_takes("minecraft:stick", 50.0, 100.0),
+            "not ingot"
+        );
+
+        assert!(copper_golem_takes("", true, false), "takes its item back");
+        assert!(!copper_golem_takes("", false, false), "nothing to take");
+        assert!(
+            copper_golem_takes("minecraft:shears", false, true),
+            "shears"
+        );
+        assert!(
+            !copper_golem_takes("minecraft:shears", false, false),
+            "no flower"
+        );
+        assert!(
+            !copper_golem_takes("minecraft:honeycomb", false, true),
+            "waxing is server-only"
+        );
+        assert!(
+            !copper_golem_takes("minecraft:iron_axe", false, true),
+            "scraping too"
+        );
     }
 
     /// `Allay.mobInteract` (#8629): a holding allay gives its item back only to
