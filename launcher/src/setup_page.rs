@@ -295,7 +295,7 @@ impl Setup {
                             } else {
                                 tr("Install").to_string()
                             },
-                            Kind::Secondary,
+                            Kind::Primary,
                             &t,
                         )
                         .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.start(cx))),
@@ -329,7 +329,7 @@ impl Setup {
                                     .on_click(cx.listener(|_, _: &ClickEvent, _, cx| cx.quit())),
                             )
                             .child(
-                                crate::button("go", tr("Uninstall"), Kind::Secondary, &t)
+                                crate::button("go", tr("Uninstall"), Kind::Primary, &t)
                                     .on_click(
                                         cx.listener(|this, _: &ClickEvent, _, cx| this.start(cx)),
                                     ),
@@ -365,7 +365,7 @@ impl Setup {
                 if self.mode == Mode::Install {
                     body = body.child(
                         div().flex().items_center().justify_end().child(
-                            crate::button("launch", tr("Launch Horizon"), Kind::Secondary, &t)
+                            crate::button("launch", tr("Launch Horizon"), Kind::Primary, &t)
                                 .on_click(
                                     cx.listener(|this, _: &ClickEvent, _, cx| this.launch(cx)),
                                 ),
@@ -413,9 +413,10 @@ impl Render for Setup {
                 Theme::for_appearance(settings.appearance, settings.accent, window.appearance())
                     .with_glass(settings.glass_tint(), settings.glass_blur());
         }
-        // A frame every 16 ms, through the same wake the sky uses, so a settings change is
-        // picked up at the launcher's frame rate even while the scene has stopped animating.
-        self.wake_sky(Duration::from_millis(16), cx);
+        // Look again twice a second, through the same wake the sky uses, so a settings change
+        // shows even while the scene has stopped animating, without drawing the window at
+        // 60 fps and reading the file's metadata every frame for it.
+        self.wake_sky(Duration::from_millis(500), cx);
         let t = self.theme;
         let viewport = window.viewport_size();
         // The card's controls use the launcher's glass look and the player's accent, as the
