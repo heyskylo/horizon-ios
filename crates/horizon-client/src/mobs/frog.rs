@@ -162,6 +162,18 @@ pub fn tick(m: &mut Mob) {
     let still = m.fluids.in_water && m.limb_speed <= 1.0e-5;
     m.anim.states[SWIM_IDLE].animate_when(still, age);
 }
+/// `Frog.travelInWater`: `moveRelative(getSpeed(), input)`, the move, then
+/// the motion scaled by 0.9. `getSpeed` is the speed the move control stored.
+/// Out of water the usual travel runs.
+pub fn travel(m: &mut Mob, w: &MobWorld, input: Vec3, events: &mut Vec<MobEvent>) -> bool {
+    if !m.fluids.in_water {
+        return false;
+    }
+    m.move_relative(m.ai.speed, input);
+    m.do_move(w, events);
+    m.velocity = m.velocity.scale(0.9);
+    true
+}
 
 /// `Frog.canEat`: a slime or magma cube of size 1.
 /// `Frog.updateWalkAnimation`: the frog's short steps walk the legs 25 times
@@ -978,6 +990,41 @@ mod tests {
         k.id = "minecraft:frog".into();
         k.species = Species::Frog;
         Mob::new(1, kind, Vec3::new(0.5, 0.0, 0.5), 0.0)
+    }
+
+    /// `Frog.travelInWater`: the move uses `getSpeed` (the speed the move
+    /// control stored, here 0.25, not the movement attribute 1.0 and not the
+    /// turtle's 0.1), then the whole motion is scaled by 0.9. Out of water
+    /// this path does not run.
+    #[test]
+    fn water_travel_uses_get_speed_and_scales_by_nine_tenths() {
+        let ran = crate::mobs::world::with_test_world(&[], |w, _| {
+            let mut m = frog();
+            m.attrs.speed = 1.0;
+            m.ai.speed = 0.25;
+            m.yaw = 0.0;
+            m.velocity = Vec3::new(1.0, -0.5, 0.125);
+            let kept = m.velocity;
+            assert!(!travel(
+                &mut m,
+                w,
+                Vec3::new(0.0, 0.0, 1.0),
+                &mut Vec::new()
+            ));
+            assert_eq!(m.velocity, kept);
+
+            m.fluids.in_water = true;
+            m.position = Vec3::new(0.5, 80.0, 0.5);
+            m.travel(w, Vec3::new(0.0, 0.0, 1.0), &mut Vec::new());
+            // (1, -0.5, 0.125) + (0, 0, getSpeed 0.25) = (1, -0.5, 0.375),
+            // then * 0.9 = (0.9, -0.45, 0.3375).
+            assert!((m.velocity.x - 0.9).abs() < 1.0e-9, "{}", m.velocity.x);
+            assert!((m.velocity.y - -0.45).abs() < 1.0e-9, "{}", m.velocity.y);
+            assert!((m.velocity.z - 0.3375).abs() < 1.0e-9, "{}", m.velocity.z);
+        });
+        if !ran {
+            return;
+        }
     }
 
     /// `Frog.updateWalkAnimation`: target `min(distance * 25, 1)`, 0 while

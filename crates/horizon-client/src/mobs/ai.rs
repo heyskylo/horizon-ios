@@ -2725,6 +2725,9 @@ pub fn custom_travel(m: &mut Mob, w: &MobWorld, input: Vec3, events: &mut Vec<Mo
     if m.species() == Species::Turtle {
         return super::turtle::travel(m, w, input, events);
     }
+    if m.species() == Species::Frog {
+        return super::frog::travel(m, w, input, events);
+    }
     match family(m.species()) {
         Family::Aquatic => aquatic::travel(m, w, input, events),
         Family::Guardian => super::guardian::travel(m, w, input, events),
