@@ -83,6 +83,8 @@ def main():
     parser.add_argument('--binary', type=Path, help='use an already built Horizon game instead of building it')
     parser.add_argument('--slot-codec-diagnostic', action='store_true',
                         help='retain the separate invalid inline slot-range codec diagnostic')
+    parser.add_argument('--item-merge-diagnostic', action='store_true',
+                        help='retain the original two-tag and spectator-selector item-merge diagnostic')
     args = parser.parse_args()
     build = lab.LOCAL / 'command-exec-parity'
     build.mkdir(parents=True, exist_ok=True)
@@ -115,6 +117,14 @@ def main():
     if args.sulfur_power_load_diagnostic:
         groups = [('setup', corpus_module.group_setup()),
                   ('sulfur powered-load diagnostic', corpus_module.sulfur_cube_fuse_ticks(True))]
+    if args.item_merge_diagnostic:
+        try:
+            from .item_merge_corpus import stack_limit_merges
+        except ImportError:
+            from item_merge_corpus import stack_limit_merges
+        groups = [('setup', corpus_module.group_setup()),
+                  ('item stack-size override merges',
+                   stack_limit_merges(corpus_module.cmd, corpus_module.setup, diagnostic=True))]
     if args.only:
         groups = [g for g in groups if args.only in g[0] or g[0] == 'setup']
     if args.slot_codec_diagnostic:

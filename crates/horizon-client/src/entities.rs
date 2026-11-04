@@ -1038,10 +1038,13 @@ pub fn merge_with_neighbours(
             (j, i)
         };
         // ItemEntity.merge(toStack, fromStack, 64).
-        let room = max_stack(&items[to].stack).min(64) - items[to].stack.count;
-        let moved = room.min(items[from].stack.count);
-        items[to].stack.count += moved;
-        items[from].stack.count -= moved;
+        // A component limit above 64 permits an overstacked target. Vanilla's
+        // signed room then moves the excess back into the source stack.
+        let room =
+            i64::from(max_stack(&items[to].stack).min(64)) - i64::from(items[to].stack.count);
+        let moved = room.min(i64::from(items[from].stack.count));
+        items[to].stack.count = (i64::from(items[to].stack.count) + moved) as u32;
+        items[from].stack.count = (i64::from(items[from].stack.count) - moved) as u32;
         let (delay, from_age, to_age) =
             (items[from].pickup_delay, age(items, from), age(items, to));
         let to_item = &mut items[to];
@@ -2457,6 +2460,35 @@ mod merge_tests {
         ];
         assert_eq!(merge(&mut items, 0), [Some(8), None]);
         assert_eq!(items[0].age, 8, "age 7, plus the rest of this tick");
+    }
+
+    /// ItemEntity.merge uses signed room, including zero and negative transfers.
+    #[test]
+    fn overstacked_items_transfer_back_without_losing_merge_metadata() {
+        for (counts, expected) in [([80, 10], [64, 26]), ([64, 26], [64, 26])] {
+            let mut items = [
+                item("minecraft:stone", counts[0], 0.5, 41),
+                item("minecraft:stone", counts[1], 0.6, 7),
+            ];
+            for item in &mut items {
+                item.stack.data_mut().set_other(
+                    "minecraft:max_stack_size",
+                    Some(horizon_world::nbt::Tag::Int(99)),
+                );
+            }
+            let before = [items[0].stack.clone(), items[1].stack.clone()];
+            items[1].pickup_delay = 30;
+            let mut removed = [false; 2];
+            let mut cells = ItemCells::new(&items);
+            merge_with_neighbours(&mut items, &mut removed, &mut cells, 0, &|_| 99);
+            assert_eq!([items[0].stack.count, items[1].stack.count], expected);
+            assert_eq!(removed, [false, false]);
+            assert_eq!(items[0].pickup_delay, 30);
+            assert_eq!(items[0].age, 8, "younger age 7, then this tick ends");
+            for (item, stack) in items.iter().zip(&before) {
+                assert!(item.stack.same_item_same_components(stack));
+            }
+        }
     }
 
     #[test]
