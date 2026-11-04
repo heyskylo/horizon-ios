@@ -4824,13 +4824,23 @@ def check_piston_slide(host, guest, out):
     def moves(replies):
         seen = [(status['ticks'], block['block'].removeprefix('minecraft:'), 'moving' in block)
                 for block, status in zip(replies[1::3], replies[2::3])]
-        moving = next(((tick, own) for tick, name, own in seen if name == 'moving_piston'), None)
-        landed = next((tick for tick, name, _ in seen if name == 'piston_head'), None)
-        return {'seen': seen, 'own': moving is not None and moving[1],
-                'ticks_moving': None if moving is None or landed is None else landed - moving[0]}
+        start = next((i for i, (_, name, _) in enumerate(seen) if name == 'moving_piston'), None)
+        # The head that lands after this move: one left from the last move (the second
+        # extension starts with it) comes before the moving block.
+        end = None if start is None else next(
+            (i for i in range(start, len(seen)) if seen[i][1] == 'piston_head'), None)
+        # The count is exact when the read before the first moving one, and the read before
+        # the landed one, are each one client tick earlier.
+        skipped = start is not None and any(
+            0 < i < len(seen) and seen[i][0] - seen[i - 1][0] != 1 for i in (start, end or start))
+        return {'seen': seen, 'own': start is not None and seen[start][2],
+                'ticks_moving': None if end is None else seen[end][0] - seen[start][0],
+                'skipped': skipped}
 
     result = {'extend': moves(replies[1:19]), 'extend_again': moves(replies[20:])}
     for label, move in result.items():
+        # A loaded machine can run two client ticks between reads: the count is then a guess.
+        assert not move['skipped'], f'{label}: a read skipped a client tick, rerun on a quieter machine: {result}'
         assert move['own'], f'{label}: the client did not move the head itself: {result}'
         assert move['ticks_moving'] == 3, (
             f'{label}: the landed head came {move["ticks_moving"]} ticks after the move: {result}')
