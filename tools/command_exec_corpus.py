@@ -4623,6 +4623,52 @@ def advancement_reward_functions():
     return ops
 
 
+def reinforcement_room():
+    ops = setup('/tick freeze', '/gamerule spawn_mobs false', '/gamerule spawn_monsters true',
+                '/gamerule mob_drops false', '/gamerule advance_time false', '/scoreboard objectives add h300 dummy',
+                '/forceload add -64 -64 63 63', '/tp @s 0.5 -63 3.5 0 0')
+    ops += [{'op': 'settle'}]
+    for x in range(-64, 64, 16):
+        for z in range(-64, 64, 16):
+            ops += [cmd(f'/execute if loaded {x} -63 {z}', expect_result=1)]
+    ops += setup('/fill -50 -63 -50 50 -61 50 air', '/fill -50 -64 -50 50 -64 50 air',
+                 '/fill -50 -60 -50 50 -60 50 air')
+    ops += [cmd('/fill -50 -64 -50 50 -64 50 stone', expect_result=10201),
+            cmd('/fill -50 -60 -50 50 -60 50 stone', expect_result=10201), {'op': 'settle'}]
+    for x, z in [(0, 0), (-16, -16), (-16, 16), (16, -16), (16, 16)]:
+        ops += [{'op': 'light', 'pos': [x, -63, z], 'expect_light': [0, 0]}]
+    ops += setup('/gamerule spawn_mobs true', '/kill @e[type=zombie]', '/kill @e[type=zombified_piglin]',
+                 '/execute store result score start h300 run time query gametime',
+                 '/data modify storage h300:actor uuid set from entity @s UUID')
+    ops += [cmd('/gamerule spawn_mobs', expect_result=1), cmd('/gamerule spawn_monsters', expect_result=1),
+            cmd('/execute if entity @s[type=player,nbt={Pos:[0.5d,-63d,3.5d],Health:20f}]', expect_result=1)]
+    return ops
+
+
+def command_reinforcement_admission():
+    caller = '0000012c-0000-0000-0000-000000000001'
+    ops = reinforcement_room() + setup('/difficulty hard',
+        '/summon zombie 0.5 -63 0.5 {UUID:[I;300,0,0,1],NoAI:1b,Tags:["origin"]}')
+    ops += [cmd(f'/execute if entity {caller}[type=zombie]', expect_result=1)]
+    # UUID strings cannot take selector suffixes; the separate typed tag guard pins both.
+    ops[-1] = cmd('/execute if entity @e[type=zombie,tag=origin,nbt={UUID:[I;300,0,0,1],Health:20f,NoAI:1b,Pos:[0.5d,-63d,0.5d]}]', expect_result=1)
+    ops += [cmd(f'/attribute {caller} minecraft:spawn_reinforcements base set 1', expect_result=1),
+            cmd(f'/attribute {caller} minecraft:spawn_reinforcements base get', expect_result=1),
+            cmd(f'/attribute {caller} minecraft:spawn_reinforcements get', expect_result=1)]
+    ops += setup('/scoreboard players set hit h300 -99', '/scoreboard players set accepted h300 -99')
+    ops += [cmd(f'/execute store result score hit h300 store success score accepted h300 run damage {caller} 1 minecraft:player_attack by @s'),
+            cmd('/scoreboard players get hit h300', expect_result=1),
+            cmd('/scoreboard players get accepted h300', expect_result=1),
+            cmd(f'/data get entity {caller} Health', expect_result=19),
+            cmd('/execute if entity @e[type=zombie,tag=!origin]', expect_result=1),
+            cmd(f'/attribute {caller} minecraft:spawn_reinforcements modifier value get minecraft:reinforcement_caller_charge'),
+            cmd('/attribute @e[type=zombie,tag=!origin,limit=1] minecraft:spawn_reinforcements modifier value get minecraft:reinforcement_callee_charge')]
+    ops += setup('/execute store result score elapsed h300 run time query gametime',
+                 '/scoreboard players operation elapsed h300 -= start h300')
+    ops += [cmd('/scoreboard players get elapsed h300', expect_result=0)]
+    return ops
+
+
 def groups():
     try:
         from .loaded_cloud_corpus import loaded_clouds
@@ -4630,6 +4676,7 @@ def groups():
         from loaded_cloud_corpus import loaded_clouds
     return [
         ('setup', group_setup()),
+        ('command reinforcement admission', command_reinforcement_admission()),
         ('bell server glow', bell_server_glow()),
         ('advancement reward functions', advancement_reward_functions()),
         ('mining_efficiency_9021', mining_efficiency_9021()),
