@@ -111,6 +111,12 @@ pub(super) struct Fight {
     needs_scan: bool,
     pub killed: bool,
     pub previously_killed: bool,
+    /// `dragonUUID`: the fight's own dragon. Only its death wins the fight
+    /// (`setDragonKilled`); a dragon summoned after the fight is won is not it.
+    dragon_uuid: Option<[i32; 4]>,
+    /// `ticksSinceDragonSeen`: ticks since the fight's dragon last ticked
+    /// (`updateDragon`); at 1200 the fight looks for another one.
+    dragon_unseen: i32,
     gateways: Vec<i32>,
     exit_portal: Option<[i32; 3]>,
     alive_crystals: i32,
@@ -838,6 +844,10 @@ impl Game<'_> {
                 Some(Tag::IntArray(v)) if v.len() == 3 => Some([v[0], v[1], v[2]]),
                 _ => None,
             },
+            dragon_uuid: match data.and_then(|d| d.get("dragon_uuid")) {
+                Some(Tag::IntArray(v)) if v.len() == 4 => Some([v[0], v[1], v[2], v[3]]),
+                _ => None,
+            },
             // The first tick scans for players.
             player_scan: 21,
             ..Default::default()
@@ -888,6 +898,9 @@ impl Game<'_> {
         ];
         if let Some(p) = f.exit_portal {
             data.push(("exit_portal_location", Tag::IntArray(p.to_vec())));
+        }
+        if let Some(u) = f.dragon_uuid {
+            data.push(("dragon_uuid", Tag::IntArray(u.to_vec())));
         }
         if let Some((stage, _)) = f.respawn {
             data.push(("respawn_stage", Tag::String(stage.name().into())));
@@ -1033,8 +1046,19 @@ impl Game<'_> {
                 self.tick_respawn();
             }
             if !self.fight.killed {
-                if self.dragon.is_none() {
-                    self.create_new_dragon();
+                // Without a dragon of its own, or 1200 ticks after it last
+                // ticked, the fight takes the End's dragon or makes one
+                // (`findOrCreateDragon`).
+                let look = match self.fight.dragon_uuid {
+                    None => true,
+                    Some(_) => {
+                        self.fight.dragon_unseen += 1;
+                        self.fight.dragon_unseen >= 1200
+                    }
+                };
+                if look {
+                    self.find_or_create_dragon();
+                    self.fight.dragon_unseen = 0;
                 }
                 self.fight.crystal_scan += 1;
                 if self.fight.crystal_scan >= 100 {
@@ -1055,6 +1079,12 @@ impl Game<'_> {
         for c in self.crystals.iter_mut().filter(|c| c.id == 0) {
             self.next_entity += 1;
             c.id = self.next_entity;
+        }
+        // updateDragon, from the fight's dragon's aiStep (not with NoAI) and
+        // tickDeath: it has been seen.
+        let ticks = self.dragon.as_ref().is_some_and(|d| !d.alive() || !d.no_ai);
+        if ticks && self.is_fight_dragon() {
+            self.fight.dragon_unseen = 0;
         }
         self.tick_dragon();
     }
@@ -2424,9 +2454,10 @@ impl Game<'_> {
                 [0.0; 3],
             );
         }
-        // ServerLevel.getDragonFight: only the End has a fight; elsewhere
-        // (`/summon`) a dragon is worth 500 and its death ends nothing.
-        let fight = self.dim == Dim::End;
+        // Only the fight's own dragon has a fight (`dragonFight`): elsewhere
+        // (`/summon`), or summoned in the End after the fight is won, a
+        // dragon is worth 500 and its death ends nothing.
+        let fight = self.is_fight_dragon();
         let first_kill = fight && !self.fight.previously_killed;
         let xp = if first_kill { 12000 } else { 500 };
         let drops = self.ui.rules.bool("mob_drops");
@@ -3565,9 +3596,10 @@ impl Game<'_> {
     /// drops it, and a killed dragon never gets there.
     pub(super) fn kill_dragon(&mut self, id: u32) {
         if self.dragon.as_ref().is_some_and(|d| d.id == id) {
+            // Only the fight's own dragon (`dragonFight`) ends it.
+            let fight = self.is_fight_dragon();
             self.dragon = None;
-            // ServerLevel.getDragonFight: only the End has a fight.
-            if self.dim == Dim::End {
+            if fight {
                 self.dragon_killed();
             }
         }
@@ -3862,10 +3894,41 @@ impl Game<'_> {
         }
     }
     /// `EnderDragonFight.createNewDragon`: over the podium, holding pattern, a random yaw.
+    /// It becomes the fight's dragon (`dragonUUID = dragon.getUUID()`).
     fn create_new_dragon(&mut self) {
         let yaw = self.world.random.next_float() * 360.0;
         let seed = self.world.random.next_long();
-        self.dragon = Some(Dragon::new(Vec3::new(0.0, 128.0, 0.0), yaw, seed));
+        let mut d = Dragon::new(Vec3::new(0.0, 128.0, 0.0), yaw, seed);
+        // EnderDragon's constructor takes its id and its parts' from the
+        // entity counter.
+        d.id = self.next_entity + 1;
+        self.next_entity += 9;
+        let id = d.id;
+        self.dragon = Some(d);
+        self.fight.dragon_uuid = Some(self.uuid_for(id));
+        self.fight.dirty = true;
+    }
+    /// `EnderDragonFight.findOrCreateDragon`: the End's dragon becomes the
+    /// fight's, or a new one is made.
+    fn find_or_create_dragon(&mut self) {
+        match self.dragon.as_ref().map(|d| d.id) {
+            None => self.create_new_dragon(),
+            Some(id) => {
+                self.fight.dragon_uuid = Some(self.uuid_for(id));
+                self.fight.dirty = true;
+            }
+        }
+    }
+    /// The dragon is the End fight's own (`EnderDragon.dragonFight`, set
+    /// only for the dragon whose UUID is the fight's `dragonUUID`).
+    fn is_fight_dragon(&mut self) -> bool {
+        if self.dim != Dim::End {
+            return false;
+        }
+        match (self.dragon.as_ref().map(|d| d.id), self.fight.dragon_uuid) {
+            (Some(id), Some(uuid)) if id != 0 => self.uuid_for(id) == uuid,
+            _ => false,
+        }
     }
     /// The END stage: the portal crystals blow up (no block damage) and a
     /// new dragon takes over.
