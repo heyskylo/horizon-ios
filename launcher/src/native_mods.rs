@@ -1560,12 +1560,19 @@ fn failure(what: &str, status: &str, errors: &[String], tail: &[String]) -> Stri
     )
 }
 
-/// A horizon-mixins diagnostic (`{"code", "message", "file"}`) in one line.
+/// A horizon-mixins diagnostic (`{"code", "message", "file"}`) in one line, led by the mod it
+/// names (`mod_id`, and its `injection_id`), so a player with several mods sees which one
+/// doesn't apply to the build's Horizon: their files' paths are deep in the launcher's folder.
 fn diagnostic(text: &str) -> Option<String> {
     let start = text.find('{')?;
     let value: serde_json::Value = serde_json::from_str(&text[start..]).ok()?;
+    let culprit = match (value["mod_id"].as_str(), value["injection_id"].as_str()) {
+        (Some(m), Some(i)) => format!("{m} ({i}): "),
+        (Some(m), None) => format!("{m}: "),
+        _ => String::new(),
+    };
     let mut line = format!(
-        "{}: {}",
+        "{culprit}{}: {}",
         value["code"].as_str()?,
         value["message"].as_str()?
     );
@@ -4093,6 +4100,31 @@ mod tests {
         assert_eq!(
             diagnostic(err).as_deref(),
             Some("E_REVISION: requires exact Horizon revision a (m.toml)")
+        );
+    }
+
+    #[test]
+    fn a_tool_error_starts_with_the_mod_that_does_not_apply() {
+        // horizon-mixins e8cd0aa on Horizon 998b1d8 with fast_items 0.1.0 and appleskin 1.0.0
+        // (made for ba6344a), as a player's build was on 2026-11-04.
+        let err = r#"{
+  "code": "E_TARGET_NOT_FOUND",
+  "message": "no source function 'horizon_client::game::titles::Game<'_>::draw_titles'",
+  "file": "/home/p/.local/share/horizon-launcher/native/mixins.incoming/appleskin/horizon-mixin.toml",
+  "mod_id": "appleskin",
+  "injection_id": "hud",
+  "target": "horizon_client::game::titles::Game<'_>::draw_titles"
+}"#;
+        let line = diagnostic(err).unwrap();
+        assert!(
+            line.starts_with("appleskin (hud): E_TARGET_NOT_FOUND: no source function"),
+            "{line}"
+        );
+        // About a whole mod, no injection in it.
+        let err = r#"{"code": "E_REVISION", "message": "pinned to a", "mod_id": "chop"}"#;
+        assert_eq!(
+            diagnostic(err).as_deref(),
+            Some("chop: E_REVISION: pinned to a")
         );
     }
 
