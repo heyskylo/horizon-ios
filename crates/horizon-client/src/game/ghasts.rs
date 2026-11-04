@@ -116,7 +116,7 @@ impl Game<'_> {
         // aboard the ghast forgets its home.
         if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
             m.extra.counter = 10;
-            m.ai.home = None;
+            m.ai.clear_home();
         }
         let Some(m) = self.mobs.iter().find(|m| m.id == id) else {
             return;
