@@ -7762,9 +7762,10 @@ impl Game<'_> {
         self.native_leaves_flush();
         // ServerLevel.tick broadcasts the changed blocks after the scheduled and
         // random ticks, before the block events, the entities and the block
-        // entities: what those change goes out with the next tick's. A
-        // piston's moved block reaches the clients once their own copy of it
-        // finished moving, so a slow tick rate shows it slide (#8430).
+        // entities: what those change goes out at the start of the next
+        // tick's `tick_lan`. A piston's moved block reaches the clients once
+        // their own copy of it finished moving, so a slow tick rate shows it
+        // slide (#8430).
         if let (Some(sent), Some(log)) = (sent, self.world.block_log.as_mut()) {
             self.world.block_log_held = log.split_off(sent.min(log.len()));
         }

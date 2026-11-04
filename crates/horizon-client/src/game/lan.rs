@@ -2356,10 +2356,12 @@ impl Game<'_> {
                 self.clock.frozen(),
                 self.clock.step_state(),
             );
-            // `runBlockEvents`' broadcast precedes the tick's block changes
-            // (`ChunkHolder.broadcastChanges` in `tick_level` below): the
-            // guest re-runs a piston's `triggerEvent` while its level still
-            // has the blocks as they were before the move.
+            // ServerLevel.tick: `ServerChunkCache.tick` broadcasts the changed
+            // blocks before `runBlockEvents`, whose broadcast precedes what
+            // the events change (held for the next tick, `tick_world`): the
+            // guest re-runs a piston's `triggerEvent` on the blocks as they
+            // were before the move, a base the last tick restored included.
+            host.hub.broadcast_changes(&mut self.world);
             for (pos, b0, b1, state) in std::mem::take(&mut self.lan_block_events) {
                 host.hub.block_event(pos, b0, b1, state);
             }

@@ -4784,35 +4784,48 @@ def check_fireworks(host, guest, out):
 
 
 def check_piston_slide(host, guest, out):
-    """A pushed block reaches the clients after their own copy of it finished moving (#8430).
+    """A piston's head reaches the clients after their own copy of it finished moving (#8430).
 
-    The block event makes each client move the block itself (PistonBaseBlock.moveBlocks), for three ticks of
-    PistonMovingBlockEntity.tick. ServerLevel.tick broadcasts the changed blocks before it ticks block entities,
-    so the server's landed block goes out the tick after it lands: three ticks after the block event, not two,
-    and at a slow tick rate the client's block slides all the way instead of jumping the rest. The host reads
-    its own copy of the destination once a tick (each read follows the client tick that saw what arrived), at
-    /tick rate 1.
+    The block event makes each client move the blocks itself (PistonBaseBlock.moveBlocks), for three ticks of
+    PistonMovingBlockEntity.tick. ServerLevel.tick broadcasts the changed blocks before the block events and the
+    block entities, so what those change goes out at the start of the next tick: the landed head three ticks
+    after the block event, not two, and at a slow tick rate the client's head slides all the way instead of
+    jumping the rest. That broadcast also comes before the next tick's block events: a repeating command block
+    powers the piston again the tick after its retraction put the base back, and the client must have the base
+    to run that extension itself. The host reads its own copy of the head's cell once a tick (each read follows
+    the client tick that saw what arrived), at /tick rate 1.
     """
     x, y, z = (int(v // 1) for v in pos_of(host))
     y += 3
-    host('command', command=f'fill {x - 2} {y - 1} {z - 1} {x + 4} {y + 1} {z + 1} minecraft:air')
+    head = f'{x + 1} {y} {z}'
+    host('command', command=f'fill {x - 2} {y - 1} {z - 3} {x + 4} {y + 1} {z + 1} minecraft:air')
     host('command', command=f'setblock {x} {y} {z} minecraft:piston[facing=east]')
-    host('command', command=f'setblock {x + 1} {y} {z} minecraft:stone')
+    host('command', command=f'setblock {head} minecraft:stone')
+    again = (f'execute if block {head} minecraft:air if block {x} {y} {z} minecraft:piston[extended=false] '
+             f'if block {x - 1} {y} {z} minecraft:air run setblock {x - 1} {y} {z} minecraft:redstone_block')
+    host('command', command=f'setblock {x} {y} {z - 2} minecraft:repeating_command_block[facing=up]'
+         f'{{auto:1b,Command:"{again}"}}')
     host.wait(5)
     host('command', command='tick rate 1')
+    sample = ['wait 1', f'block {head}', 'status']
     try:
-        replies = host.script([f'command setblock {x - 1} {y} {z} minecraft:redstone_block']
-                              + ['wait 1', f'block {x + 2} {y} {z}', 'status'] * 8, every=True)
+        replies = host.script([f'command setblock {x - 1} {y} {z} minecraft:redstone_block'] + sample * 6
+                              + [f'command setblock {x - 1} {y} {z} minecraft:air'] + sample * 9, every=True)
     finally:
         host('command', command='tick rate 20')
-        host('command', command=f'fill {x - 1} {y} {z} {x + 3} {y} {z} minecraft:air')
-    seen = [(status['ticks'], block['block'].removeprefix('minecraft:'))
-            for block, status in zip(replies[2::3], replies[3::3])]
-    moving = next((tick for tick, name in seen if name == 'moving_piston'), None)
-    landed = next((tick for tick, name in seen if name == 'stone'), None)
-    result = {'seen': seen, 'ticks_moving': None if moving is None or landed is None else landed - moving}
-    assert moving is not None and landed is not None, f'the block did not move and land: {result}'
-    assert result['ticks_moving'] == 3, f'the landed block came {result["ticks_moving"]} ticks after the move: {result}'
+        host('command', command=f'fill {x - 1} {y} {z - 2} {x + 3} {y} {z} minecraft:air')
+
+    def moves(replies):
+        seen = [(status['ticks'], block['block'].removeprefix('minecraft:'))
+                for block, status in zip(replies[1::3], replies[2::3])]
+        moving = next((tick for tick, name in seen if name == 'moving_piston'), None)
+        landed = next((tick for tick, name in seen if name == 'piston_head'), None)
+        return {'seen': seen, 'ticks_moving': None if moving is None or landed is None else landed - moving}
+
+    result = {'extend': moves(replies[1:19]), 'extend_again': moves(replies[20:])}
+    for label, move in result.items():
+        assert move['ticks_moving'] == 3, (
+            f'{label}: the landed head came {move["ticks_moving"]} ticks after the move: {result}')
     return result
 
 
