@@ -340,12 +340,15 @@ pub fn elder_server_ai_step(m: &mut Mob, cx: &mut Cx) {
             at: [m.position.x, m.position.y, m.position.z],
         });
     }
-    if m.extra.home.is_none() {
-        m.extra.home = Some([
-            m.position.x.floor() as i32,
-            m.position.y.floor() as i32,
-            m.position.z.floor() as i32,
-        ]);
+    if m.ai.home.is_none() {
+        m.ai.home = Some((
+            [
+                m.position.x.floor() as i32,
+                m.position.y.floor() as i32,
+                m.position.z.floor() as i32,
+            ],
+            16,
+        ));
     }
 }
 /// Guardian.aiStep's visual attack clock, also used by server clients.
@@ -483,5 +486,111 @@ pub fn attack_scale(m: &Mob) -> f32 {
         m.extra.counter2 as f32 / attack_duration(m) as f32
     } else {
         0.0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::mobs::world::with_test_world;
+    use horizon_core::random::LegacyRandom;
+    use std::sync::Arc;
+
+    fn elder_with_pos(at: Vec3) -> Mob {
+        let mut kind = (*crate::mobs::sensor_scan_tests::kind()).clone();
+        kind.id = "minecraft:elder_guardian".into();
+        kind.species = Species::ElderGuardian;
+        Mob::new(1, Arc::new(kind), at, 0.0)
+    }
+
+    /// Scenario 1 (Positive): `elder_server_ai_step` initializes `ai.home`
+    /// to `Some(([floor(x), floor(y), floor(z)], 16))` when `ai.home` is `None`.
+    #[test]
+    fn elder_server_ai_step_initializes_ai_home() {
+        with_test_world(&[], |w, types| {
+            let kind = Arc::new(types.types["minecraft:elder_guardian"].clone());
+            let mut m = Mob::new(1, kind, Vec3::new(10.7, 64.2, 20.9), 0.0);
+            let mut lr = LegacyRandom::new(0);
+            let mut events = Vec::new();
+            let mut cx = Cx {
+                w,
+                lr: &mut lr,
+                events: &mut events,
+            };
+
+            assert_eq!(m.ai.home, None);
+            elder_server_ai_step(&mut m, &mut cx);
+            assert_eq!(m.ai.home, Some(([10, 64, 20], 16)));
+        });
+    }
+
+    /// Scenario 2 (Idempotency / Negative): If `ai.home` is already set,
+    /// `elder_server_ai_step` does not overwrite it.
+    #[test]
+    fn elder_server_ai_step_preserves_existing_home() {
+        with_test_world(&[], |w, types| {
+            let kind = Arc::new(types.types["minecraft:elder_guardian"].clone());
+            let mut m = Mob::new(1, kind, Vec3::new(10.0, 64.0, 20.0), 0.0);
+            let existing_home = ([100, 50, 100], 24);
+            m.ai.home = Some(existing_home);
+
+            let mut lr = LegacyRandom::new(0);
+            let mut events = Vec::new();
+            let mut cx = Cx {
+                w,
+                lr: &mut lr,
+                events: &mut events,
+            };
+
+            elder_server_ai_step(&mut m, &mut cx);
+            assert_eq!(m.ai.home, Some(existing_home));
+        });
+    }
+
+    /// Scenario 3 (Field isolation): `m.extra.home` must remain `None` and untouched.
+    #[test]
+    fn elder_server_ai_step_leaves_extra_home_untouched() {
+        with_test_world(&[], |w, types| {
+            let kind = Arc::new(types.types["minecraft:elder_guardian"].clone());
+            let mut m = Mob::new(1, kind, Vec3::new(5.0, 64.0, 5.0), 0.0);
+            let mut lr = LegacyRandom::new(0);
+            let mut events = Vec::new();
+            let mut cx = Cx {
+                w,
+                lr: &mut lr,
+                events: &mut events,
+            };
+
+            elder_server_ai_step(&mut m, &mut cx);
+            assert_eq!(m.extra.home, None, "extra.home must remain None");
+        });
+    }
+
+    /// Scenario 4 (Navigation integration): Verify `m.restricted(h, p)` returns `false`
+    /// inside the 16-block home and `true` outside, and `m.toward(h, d)` steers toward the center.
+    #[test]
+    fn elder_guardian_home_restricts_and_steers_navigation() {
+        let mut m = elder_with_pos(Vec3::new(10.0, 64.0, 10.0));
+        let home_center = [10, 64, 10];
+        let radius = 16;
+        m.ai.home = Some((home_center, radius));
+
+        // Inside home radius (e.g. at [15, 64, 15], dist_sq = 5^2 + 5^2 = 50 < 256): not restricted
+        assert!(!m.restricted(0.0, [15, 64, 15]));
+
+        // Outside home radius (e.g. at [30, 64, 10], dist_sq = 20^2 = 400 >= 256): restricted
+        assert!(m.restricted(0.0, [30, 64, 10]));
+
+        // When ai.home is None (the bug scenario where extra.home was set), outside position was NOT restricted
+        let unconstrained = elder_with_pos(Vec3::new(10.0, 64.0, 10.0));
+        assert!(!unconstrained.restricted(0.0, [30, 64, 10]));
+
+        // Toward steering: when mob is displaced east & south from home center (+x, +z),
+        // toward() should lean negative on x and z (back toward the home center).
+        let mut displaced = elder_with_pos(Vec3::new(20.0, 64.0, 20.0));
+        displaced.ai.home = Some((home_center, radius));
+        let picked = displaced.toward(10.0, [0, 0, 0]);
+        assert!(picked[0] <= 20, "x leaned toward center: {}", picked[0]);
+        assert!(picked[2] <= 20, "z leaned toward center: {}", picked[2]);
     }
 }
