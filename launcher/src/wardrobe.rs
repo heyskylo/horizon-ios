@@ -97,6 +97,9 @@ pub struct Entry {
     /// A launcher theme's colours (`slot` is `theme`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub theme: Option<Theme>,
+    /// One line on the item per game language code, for the Shop (optional).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub lines: BTreeMap<String, String>,
 }
 
 /// A launcher theme: the sky's six stops, top to bottom (`#rrggbb`), and the accent's hue.
@@ -125,6 +128,14 @@ impl Entry {
             .get(lang)
             .or_else(|| self.names.get("en_us"))
             .map_or(&self.id, String::as_str)
+    }
+
+    /// Its line in `lang`, else in English; None if the service gave none.
+    pub fn line(&self, lang: &str) -> Option<&str> {
+        self.lines
+            .get(lang)
+            .or_else(|| self.lines.get("en_us"))
+            .map(String::as_str)
     }
 }
 
@@ -210,19 +221,6 @@ impl Saved {
             serde_json::to_vec(self).map_err(std::io::Error::other)?,
         )?;
         std::fs::rename(tmp, path)
-    }
-
-    /// The launcher theme worn: its sky (`0xrrggbb`, top to bottom) and accent hue.
-    pub fn theme(&self) -> Option<([u32; 6], f32)> {
-        let id = self.me.as_ref()?.equipped.get("theme")?;
-        let entry = self
-            .catalogue
-            .as_ref()?
-            .items
-            .iter()
-            .find(|e| &e.id == id)?;
-        let theme = entry.theme.as_ref()?;
-        Some((theme.sky()?, theme.accent_hue))
     }
 
     /// Make `change` here: the outfit shows it at once and it waits to be sent. A newer change of
