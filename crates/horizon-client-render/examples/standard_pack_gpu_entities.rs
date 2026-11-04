@@ -121,6 +121,7 @@ fn fixture(window: Arc<Window>) -> Result<(), Box<dyn std::error::Error>> {
         None,
         GraphicsApi::Vulkan,
         false,
+        false,
         true,
     ))?;
     renderer.resize(320, 180);

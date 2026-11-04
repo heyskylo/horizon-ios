@@ -1086,5 +1086,10 @@
   "{count} min ago": "{count} 分前",
   "1 hour ago": "1 時間前",
   "{count} hours ago": "{count} 時間前",
-  "{count} on the official SMP": "公式 SMP に {count} 人"
+  "{count} on the official SMP": "公式 SMP に {count} 人",
+  "What this change can't keep": "この変更で保てないもの",
+  "Save changes switches it. Nothing in its folder is deleted.": "「変更を保存」で切り替わります。フォルダー内のものは何も削除されません。",
+  "Its mods made for {loader} stay in its folder but won't load.": "{loader} 用の Mod はフォルダーに残りますが、読み込まれません。",
+  "Its mods made for Minecraft {from} stay in its folder; some may not load in {to}.": "Minecraft {from} 用の Mod はフォルダーに残ります。{to} では一部が読み込まれないかもしれません。",
+  "Its worlds were saved by Minecraft {from}: {to} upgrades them for good, and can't open them if it is older.": "ワールドは Minecraft {from} で保存されています：{to} はそれらを元に戻せない形で更新し、より古いバージョンなら開けません。"
 }

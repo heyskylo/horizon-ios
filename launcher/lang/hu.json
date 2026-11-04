@@ -1086,5 +1086,10 @@
   "{count} min ago": "{count} perce",
   "1 hour ago": "1 órája",
   "{count} hours ago": "{count} órája",
-  "{count} on the official SMP": "{count} a hivatalos SMP-n"
+  "{count} on the official SMP": "{count} a hivatalos SMP-n",
+  "What this change can't keep": "Amit ez a változtatás nem tud megtartani",
+  "Save changes switches it. Nothing in its folder is deleted.": "A Változások mentése átállítja. A mappájából semmi sem törlődik.",
+  "Its mods made for {loader} stay in its folder but won't load.": "A(z) {loader}-hoz készült modjai a mappájában maradnak, de nem töltődnek be.",
+  "Its mods made for Minecraft {from} stay in its folder; some may not load in {to}.": "A Minecraft {from}-hoz készült modjai a mappájában maradnak; némelyik talán nem töltődik be a(z) {to} alatt.",
+  "Its worlds were saved by Minecraft {from}: {to} upgrades them for good, and can't open them if it is older.": "A világait a Minecraft {from} mentette: a(z) {to} végleg frissíti őket, és ha régebbi, nem tudja megnyitni őket."
 }

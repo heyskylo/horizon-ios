@@ -37,21 +37,68 @@ pub fn passenger_attachment(v: &Mob) -> [f64; 3] {
     let rear = super::equine::rear_offset(v);
     [x * s + rear[0], y * s + rear[1], z * s + rear[2]]
 }
+/// An `EntityType` attachment point: the builder takes floats, so the double
+/// the position math sees is the float's widening (`Vec3(x, y, z)` of
+/// `0.86875F` is `0.8687499761581421`).
+fn pt(x: f32, y: f32, z: f32) -> [f64; 3] {
+    [f64::from(x), f64::from(y), f64::from(z)]
+}
+/// `EntityTypes` `passengerAttachments(y)` with one height.
+fn up(y: f32) -> [f64; 3] {
+    pt(0.0, y, 0.0)
+}
 fn base_attachment(v: &Mob) -> [f64; 3] {
+    let baby = v.is_baby();
+    // Players and mannequins have no `passengerAttachments`: their box top.
+    if avatar(v) {
+        return [0.0, f64::from(v.height()) / scale(v), 0.0];
+    }
     match v.species() {
-        Species::Chicken => [0.0, 0.7, -0.1],
-        Species::Spider => [0.0, 0.765, 0.0],
-        Species::Ravager => [0.0, 2.2625, -0.0625],
-        Species::Horse => [0.0, 1.44375, 0.0],
-        Species::Donkey => [0.0, 1.1125, 0.0],
-        Species::Mule => [0.0, 1.2125, 0.0],
-        Species::SkeletonHorse | Species::ZombieHorse => [0.0, 1.31875, 0.0],
-        Species::Pig => [0.0, 0.86875, 0.0],
+        Species::Chicken => pt(0.0, 0.7, -0.1),
+        Species::Spider => up(0.765),
+        Species::Ravager => pt(0.0, 2.2625, -0.0625),
+        Species::Horse => up(1.44375),
+        Species::Donkey => up(1.1125),
+        Species::Mule => up(1.2125),
+        Species::SkeletonHorse | Species::ZombieHorse => up(1.31875),
+        Species::Pig => up(0.86875),
         // `Hoglin.BABY_DIMENSIONS` and `EntityType.HOGLIN`.
-        Species::Hoglin if v.is_baby() => [0.0, 0.875, 0.0],
-        Species::Hoglin => [0.0, 1.49375, 0.0],
-        Species::Nautilus | Species::ZombieNautilus => [0.0, 1.1375, 0.0],
+        Species::Hoglin if baby => up(0.875),
+        Species::Hoglin => up(1.49375),
+        Species::Zoglin if !baby => up(1.49375),
+        Species::Nautilus | Species::ZombieNautilus => up(1.1375),
         Species::Camel | Species::CamelHusk => super::camel::passenger_attachment(v),
+        // The rest of the `passengerAttachments(...)` in `EntityTypes`. The
+        // humanoids' babies carry their own dimensions (the default below).
+        Species::Cat => up(0.5125),
+        Species::Cow | Species::Mooshroom => up(1.36875),
+        Species::Sheep => up(1.2375),
+        Species::Goat => up(1.1125),
+        Species::Ocelot => up(0.6375),
+        Species::Parrot => up(0.4625),
+        Species::Phantom => up(0.3375),
+        Species::Vex => up(0.7375),
+        Species::Guardian => up(0.975),
+        Species::ElderGuardian => up(2.350625),
+        Species::Endermite | Species::Silverfish => up(0.2375),
+        Species::Enderman => up(2.80625),
+        Species::Ghast => up(4.0625),
+        Species::HappyGhast => pt(0.0, 4.0, 1.7),
+        Species::Warden => up(3.15),
+        Species::Sniffer => up(2.09375),
+        Species::Fox => pt(0.0, 0.6375, -0.25),
+        Species::Frog => pt(0.0, 0.375, -0.25),
+        Species::Llama | Species::TraderLlama => pt(0.0, 1.37, -0.3),
+        Species::Turtle => pt(0.0, 0.55625, -0.25),
+        Species::Wolf => pt(0.0, 0.81875, -0.0625),
+        Species::Witch => up(2.2625),
+        Species::Evoker | Species::Illusioner | Species::Pillager | Species::Vindicator => up(2.0),
+        Species::ZombifiedPiglin if !baby => up(2.0),
+        Species::Zombie | Species::Drowned | Species::Piglin | Species::PiglinBrute if !baby => {
+            up(2.0125)
+        }
+        Species::Husk if !baby => up(2.075),
+        Species::ZombieVillager if !baby => up(2.125),
         // The default attachments: the top of the bounding box, before
         // `passenger_attachment`'s scale — `height()` carries
         // `minecraft:scale` since `getDimensions` grew every living entity's
@@ -70,7 +117,7 @@ fn unscaled_vehicle_attachment(r: &Mob, vehicle_width: f32) -> f64 {
     use Species as S;
     // Avatar.DEFAULT_VEHICLE_ATTACHMENT.
     if avatar(r) {
-        return 0.6;
+        return f64::from(0.6_f32);
     }
     // `Spider.getVehicleAttachmentPoint` and `CaveSpider.getVehicleAttachmentPoint`:
     // a vehicle no wider than the rider takes the spider's fixed seat, and a
@@ -98,9 +145,14 @@ fn unscaled_vehicle_attachment(r: &Mob, vehicle_width: f32) -> f64 {
         | S::Skeleton
         | S::Stray
         | S::Bogged
-        | S::Parched
-        | S::WitherSkeleton => 0.7,
-        S::Pillager | S::Vindicator | S::Evoker | S::Illusioner => 0.6,
+        | S::Parched => f64::from(0.7_f32),
+        S::WitherSkeleton => f64::from(0.875_f32),
+        // `ridingOffset(0.5F)` and kin: a negative seat offset lifts the rider.
+        S::Ghast | S::HappyGhast => f64::from(-0.5_f32),
+        S::Allay | S::Vex => f64::from(-0.04_f32),
+        S::Phantom => f64::from(0.125_f32),
+        S::Giant => f64::from(3.75_f32),
+        S::Pillager | S::Vindicator | S::Evoker | S::Illusioner => f64::from(0.6_f32),
         _ => 0.0,
     }
 }
@@ -401,9 +453,22 @@ mod tests {
     fn a_scaled_vehicle_seat_stays_scaled() {
         let close = |a: f64, b: f64| (a - b).abs() < 1e-6;
         let mut cow = Mob::new(1, crate::mobs::sensor_scan_tests::kind(), Vec3::ZERO, 0.0);
-        assert!(close(passenger_attachment(&cow)[1], 1.4));
+        // `EntityTypes.COW`: passengerAttachments(1.36875F).
+        assert!(close(passenger_attachment(&cow)[1], 1.36875));
         cow.extra.model_scale = 2.0;
-        assert!(close(passenger_attachment(&cow)[1], 2.8));
+        assert!(close(passenger_attachment(&cow)[1], 2.7375));
+    }
+    /// The attachments are `EntityTypes` floats widened to double, and a
+    /// zombie's seat (2.0125) is above its box (1.95).
+    #[test]
+    fn seats_are_the_entity_type_floats() {
+        let close = |a: f64, b: f64| (a - b).abs() < 1e-12;
+        assert!(close(up(0.86875)[1], 0.868_749_976_158_142_1));
+        assert!(close(f64::from(0.7_f32), 0.699_999_988_079_071));
+        assert!(close(
+            up(2.0125)[1] - f64::from(0.7_f32),
+            1.312_500_059_604_645
+        ));
     }
     #[test]
     fn archers_keep_their_distance_and_brawlers_close_in() {

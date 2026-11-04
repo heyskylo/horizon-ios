@@ -1086,5 +1086,10 @@
   "{count} min ago": "acum {count} min",
   "1 hour ago": "acum o oră",
   "{count} hours ago": "acum {count} ore",
-  "{count} on the official SMP": "{count} pe SMP-ul oficial"
+  "{count} on the official SMP": "{count} pe SMP-ul oficial",
+  "What this change can't keep": "Ce nu poate păstra această schimbare",
+  "Save changes switches it. Nothing in its folder is deleted.": "Salvează modificările o comută. Nimic din folderul ei nu se șterge.",
+  "Its mods made for {loader} stay in its folder but won't load.": "Modurile ei făcute pentru {loader} rămân în folderul ei, dar nu se vor încărca.",
+  "Its mods made for Minecraft {from} stay in its folder; some may not load in {to}.": "Modurile ei făcute pentru Minecraft {from} rămân în folderul ei; unele s-ar putea să nu se încarce în {to}.",
+  "Its worlds were saved by Minecraft {from}: {to} upgrades them for good, and can't open them if it is older.": "Lumile ei au fost salvate de Minecraft {from}: {to} le actualizează definitiv și nu le poate deschide dacă e mai vechi."
 }

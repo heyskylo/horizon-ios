@@ -1086,5 +1086,10 @@
   "{count} min ago": "před {count} min",
   "1 hour ago": "před 1 hodinou",
   "{count} hours ago": "před {count} hodinami",
-  "{count} on the official SMP": "{count} na oficiálním SMP"
+  "{count} on the official SMP": "{count} na oficiálním SMP",
+  "What this change can't keep": "Co tato změna nedokáže zachovat",
+  "Save changes switches it. Nothing in its folder is deleted.": "Uložit změny ji přepne. Z její složky se nic nesmaže.",
+  "Its mods made for {loader} stay in its folder but won't load.": "Její módy pro {loader} zůstanou v její složce, ale nenačtou se.",
+  "Its mods made for Minecraft {from} stay in its folder; some may not load in {to}.": "Její módy pro Minecraft {from} zůstanou v její složce; některé se v {to} možná nenačtou.",
+  "Its worlds were saved by Minecraft {from}: {to} upgrades them for good, and can't open them if it is older.": "Její světy uložil Minecraft {from}: {to} je natrvalo aktualizuje, a pokud je starší, nedokáže je otevřít."
 }
