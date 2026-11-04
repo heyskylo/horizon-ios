@@ -60,3 +60,13 @@ mods' boxes. Code: `crates/horizon-client-render/src/pvp_hud.rs` (lines, cache, 
 Cost: a widget keeps its lines (`pvp_hud::Widget`) and rebuilds them only when what it shows changes (a piece
 takes damage, an effect's second ticks, the count changes); a frame reads a few slots, compares, and adds the
 box's quads. With nothing changing, a frame allocates nothing.
+- **Ping** (top left): the latency the server's player list reports for you (the tab list's bars as a number).
+  Multiplayer only.
+- **Coordinates** (top left): block position and the direction faced (`Direction.fromYRot`), as F3 shows them.
+  Hidden whenever F3 is reduced (`reducedDebugInfo`: the option, the game rule or the server), so it never shows
+  what the server hides.
+- **Server address** (top left): the address you joined (`net::shown_address`: invite codes stay hidden).
+  Multiplayer only.
+- **Combo counter** (top left): your hits in a row, each counted when the server reports the entity you just
+  attacked hurt (`ClientboundDamageEventPacket` within a second of the swing); back to 0 when you are hurt or
+  3 seconds pass without a hit. It counts what the game already shows (the target's hurt flash).

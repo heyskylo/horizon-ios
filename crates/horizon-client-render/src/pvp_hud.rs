@@ -157,6 +157,57 @@ pub fn durability_colour(damage: u32, max: u32) -> u32 {
     0xFF00_0000 | (r as u32) << 16 | (g as u32) << 8
 }
 
+/// `Direction.fromYRot`: the horizontal direction a yaw faces, as F3's "Facing" names it.
+pub fn facing(yaw: f32) -> &'static str {
+    match (f64::from(yaw) / 90.0 + 0.5).floor() as i64 & 3 {
+        0 => "south",
+        1 => "west",
+        2 => "north",
+        _ => "east",
+    }
+}
+
+/// The combo counter: hits in a row on what this player attacked, each counted when the
+/// server reports that entity hurt (`ClientboundDamageEventPacket`) soon after the attack;
+/// back to 0 when this player is hurt or no hit lands for [`Combo::EXPIRE`] seconds.
+#[derive(Default)]
+pub struct Combo {
+    count: u32,
+    /// The entity attacked last and when.
+    target: Option<(i32, f64)>,
+    last_hit: f64,
+}
+impl Combo {
+    /// How long after an attack the server's hurt report still counts it.
+    pub const CONFIRM: f64 = 1.0;
+    pub const EXPIRE: f64 = 3.0;
+    pub fn attacked(&mut self, id: i32, now: f64) {
+        self.target = Some((id, now));
+    }
+    /// The server reports entity `id` hurt.
+    pub fn hurt(&mut self, id: i32, now: f64) {
+        if self
+            .target
+            .is_some_and(|(t, at)| t == id && now - at <= Self::CONFIRM)
+        {
+            self.target = None;
+            self.count += 1;
+            self.last_hit = now;
+        }
+    }
+    /// This player was hurt.
+    pub fn broken(&mut self) {
+        self.count = 0;
+        self.target = None;
+    }
+    pub fn count(&mut self, now: f64) -> u32 {
+        if now - self.last_hit > Self::EXPIRE {
+            self.count = 0;
+        }
+        self.count
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -192,6 +243,46 @@ mod tests {
         assert_eq!(durability_colour(0, 100), 0xFF00_FF00);
         assert_eq!(durability_colour(100, 100), 0xFFFF_0000);
         assert_eq!(durability_colour(50, 100), 0xFFFF_FF00);
+    }
+
+    #[test]
+    fn facing_follows_direction_from_y_rot() {
+        // Yaw 0 looks toward +Z (south); turning right (yaw up) goes west, north, east.
+        let names: Vec<_> = [0.0, 44.9, 45.0, 90.0, 180.0, -90.0, 270.0, -180.0, 720.0]
+            .map(facing)
+            .to_vec();
+        assert_eq!(
+            names,
+            [
+                "south", "south", "west", "west", "north", "east", "east", "north", "south"
+            ]
+        );
+    }
+
+    #[test]
+    fn combos_count_confirmed_hits_until_this_player_is_hurt() {
+        let mut c = Combo::default();
+        c.attacked(7, 0.0);
+        c.hurt(7, 0.1);
+        c.attacked(7, 0.6);
+        c.hurt(7, 0.7);
+        assert_eq!(c.count(0.8), 2);
+        // Another entity hurt, or a report too late after the swing, adds nothing.
+        c.attacked(7, 1.0);
+        c.hurt(9, 1.1);
+        c.hurt(7, 2.5);
+        assert_eq!(c.count(2.5), 2);
+        // One report per swing: a second one (thorns, fire) for the same attack doesn't count.
+        c.attacked(7, 3.0);
+        c.hurt(7, 3.1);
+        c.hurt(7, 3.2);
+        assert_eq!(c.count(3.2), 3);
+        c.broken();
+        assert_eq!(c.count(3.3), 0);
+        c.attacked(7, 4.0);
+        c.hurt(7, 4.1);
+        assert_eq!(c.count(7.0), 1);
+        assert_eq!(c.count(7.2), 0, "more than 3 s since the last hit");
     }
 
     #[test]

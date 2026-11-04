@@ -7,7 +7,7 @@ use horizon_client::{
     hud::{HudBatch, rgba},
     mesher::Vertex,
     pvp::{Colour, CrosshairCache},
-    pvp_hud::{self, Durability, Icon, Line, Widget},
+    pvp_hud::{self, Combo, Durability, Icon, Line, Widget},
 };
 use std::sync::Arc;
 
@@ -20,6 +20,12 @@ pub(super) struct PvpState {
     effects: Widget<Vec<(&'static str, i32, i32)>>,
     /// The counted item's slot and the total.
     held: Widget<Option<(usize, Arc<str>, u32)>>,
+    ping: Widget<Option<i32>>,
+    /// The block position and the direction faced.
+    coords: Widget<Option<([i32; 3], &'static str)>>,
+    server: Widget<Option<String>>,
+    combo: Combo,
+    combo_count: Widget<u32>,
 }
 /// `GuiGraphicsExtractor`'s grey for a detail line (an effect's time left).
 const DETAIL: u32 = 0xFF7F_7F7F;
@@ -131,6 +137,20 @@ impl Game<'_> {
             }
         }
     }
+    /// This player attacked entity `id` (the combo counter waits for the server's report).
+    pub(super) fn pvp_attacked(&mut self, id: i32) {
+        let now = self.started.elapsed().as_secs_f64();
+        self.pvp.combo.attacked(id, now);
+    }
+    /// The server reports entity `id` hurt; `own` when it is this player.
+    pub(super) fn pvp_hurt(&mut self, id: i32, own: bool) {
+        if own {
+            self.pvp.combo.broken();
+        } else {
+            let now = self.started.elapsed().as_secs_f64();
+            self.pvp.combo.hurt(id, now);
+        }
+    }
     /// Whether the effects widget replaces vanilla's effect icons (`Hud.extractEffects`).
     pub(super) fn pvp_effects_shown(&self) -> bool {
         self.settings.extras.pvp.hud.effects
@@ -149,6 +169,17 @@ impl Game<'_> {
             Some((s.item.clone(), s.damage, max))
         });
         let held = if hud.held { self.held_count() } else { None };
+        let multiplayer = self.remote.is_some() && !self.has_singleplayer_server();
+        let ping = self.own_latency().filter(|_| multiplayer);
+        let coords = self.player.as_ref().filter(|_| !self.reduced_debug_info());
+        let coords = coords.map(|p| {
+            let at = [p.position.x, p.position.y, p.position.z].map(|v| v.floor() as i32);
+            (at, pvp_hud::facing(self.yaw))
+        });
+        // The address is copied only when it changed (`server_address` borrows the whole game).
+        let server = self.server_address().filter(|_| multiplayer);
+        let server = (self.pvp.server.next.as_deref() != server).then(|| server.map(str::to_owned));
+        let now = self.started.elapsed().as_secs_f64();
         let atlas = &self.gui.atlas;
         let width = |s: &str| HudBatch::text_width(atlas, s);
         let state = &mut self.pvp;
@@ -229,25 +260,88 @@ impl Game<'_> {
         } else {
             state.held.clear();
         }
+        let text = |key: &str, args: &[&dyn std::fmt::Display]| {
+            let line = horizon_client::lang::tr(key, args);
+            Line::new(Icon::None, line, &width)
+        };
+        if hud.ping {
+            state.ping.next = ping;
+            state.ping.refresh(|ping, lines| {
+                lines.extend(ping.map(|ms| text("horizon.pvp.hud.ping", &[&ms])));
+            });
+        } else {
+            state.ping.clear();
+        }
+        if hud.coords {
+            state.coords.next = coords;
+            state.coords.refresh(|coords, lines| {
+                if let Some(([x, y, z], facing)) = coords {
+                    lines.push(text("horizon.pvp.hud.coords", &[x, y, z]));
+                    let key = format!("horizon.pvp.hud.direction.{facing}");
+                    let name = horizon_client::lang::get_or(&key, facing);
+                    lines.push(text("horizon.pvp.hud.facing", &[&name]));
+                }
+            });
+        } else {
+            state.coords.clear();
+        }
+        if hud.server {
+            // A new String only when the address changes.
+            let w = &mut state.server;
+            if let Some(address) = server {
+                w.next = address;
+            }
+            w.refresh(|address, lines| {
+                if let Some(address) = address {
+                    let shown = horizon_client::net::shown_address(address);
+                    lines.push(Line::new(Icon::None, shown, &width));
+                }
+            });
+        } else {
+            state.server.clear();
+        }
+        if hud.combo {
+            state.combo_count.next = state.combo.count(now);
+            state.combo_count.refresh(|count, lines| {
+                lines.push(text("horizon.pvp.hud.combo", &[count]));
+            });
+        } else {
+            state.combo_count.clear();
+        }
         let background = hud.background;
+        let p = &self.pvp;
         let widgets = [
             (
                 hud.armour,
                 hud.armour_corner,
-                &self.pvp.armour.lines,
-                self.pvp.armour.size,
+                &p.armour.lines,
+                p.armour.size,
             ),
             (
                 hud.effects,
                 hud.effects_corner,
-                &self.pvp.effects.lines,
-                self.pvp.effects.size,
+                &p.effects.lines,
+                p.effects.size,
+            ),
+            (hud.held, hud.held_corner, &p.held.lines, p.held.size),
+            (hud.ping, hud.ping_corner, &p.ping.lines, p.ping.size),
+            (
+                hud.coords,
+                hud.coords_corner,
+                &p.coords.lines,
+                p.coords.size,
             ),
             (
-                hud.held,
-                hud.held_corner,
-                &self.pvp.held.lines,
-                self.pvp.held.size,
+                hud.server,
+                hud.server_corner,
+                &p.server.lines,
+                p.server.size,
+            ),
+            (
+                hud.combo,
+                hud.combo_corner,
+                &p.combo_count.lines,
+                p.combo_count.size,
             ),
         ];
         for (on, corner, lines, size) in widgets {
