@@ -1522,6 +1522,17 @@ impl Hub {
         self.teleport_relative(i, Some(position), relatives);
     }
 
+    /// A rider's own teleport when its vehicle is teleported
+    /// (`Entity.teleportSameDimension`'s passenger transition): the position,
+    /// the rotation the vehicle turned it by (absolute, as
+    /// `ServerPlayer.teleport` sends it), and its motion kept
+    /// (`Relative.DELTA`).
+    pub fn teleport_rider(&mut self, i: usize, position: [f64; 3]) {
+        self.guests[i].above_ground_ticks = 0;
+        use play::relative::{DELTA_X, DELTA_Y, DELTA_Z};
+        self.teleport_relative(i, Some(position), DELTA_X | DELTA_Y | DELTA_Z);
+    }
+
     /// ServerGamePacketListenerImpl.teleport with `relatives`: the rotation
     /// and motion they name are sent as zero changes.
     fn teleport_relative(&mut self, i: usize, position: Option<[f64; 3]>, relatives: i32) {
@@ -2269,6 +2280,16 @@ impl Hub {
         }
     }
 
+    /// `ChunkHolder.broadcastChanges` where `ServerChunkCache.tick` runs it,
+    /// before the block events: what changed since the last time (the last
+    /// tick's block events, entities and block entities, this tick's
+    /// scheduled and random ticks), as it is now.
+    pub fn broadcast_changes(&mut self, world: &mut World) {
+        if self.guests.iter().any(|g| self.here(g)) {
+            self.broadcast_light_changes(world);
+            self.broadcast_block_changes(world);
+        }
+    }
     /// `ChunkHolder.broadcastChanges`' light part: the light sections that
     /// changed in a column go to the players for whom it is on the border of
     /// what they track (`ChunkMap.isChunkOnTrackedBorder`); the others light
@@ -2320,6 +2341,20 @@ impl Hub {
             keys
         };
         if !bulk.is_empty() {
+            // The single-player window's far terrain draws a column it isn't sent as the window last saw it: it is
+            // handed the column to summarize again (`handoff::changed`).
+            let unsent = |g: &Guest, key: &(i32, i32)| {
+                self.here(g)
+                    && g.address == super::conn::MEMORY_ADDRESS
+                    && !g.sent_chunks.contains(key)
+            };
+            for key in &bulk {
+                if let Some(chunk) = world.chunks.get(key)
+                    && self.guests.iter().any(|g| unsent(g, key))
+                {
+                    super::handoff::changed(chunk);
+                }
+            }
             let recording = self.recording();
             let columns: Vec<&Chunk> = bulk
                 .iter()

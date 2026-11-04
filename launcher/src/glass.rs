@@ -6,7 +6,10 @@
 //! own corners, its tint mixed in. The pieces are small images (a texel per 4 logical pixels: a
 //! 24 px blur has nothing finer), kept while the pages that drew them may still be on screen.
 use crate::scene::{Backdrop, Model};
-use gpui::{canvas, div, prelude::*, px, Bounds, Corners, Div, Pixels, RenderImage, Size, Window};
+use gpui::{
+    canvas, div, prelude::*, px, rgb, AnyElement, Bounds, Corners, Div, Pixels, RenderImage, Size,
+    Window,
+};
 use horizon_theme::glass::Glass;
 use std::cell::Cell;
 use std::cell::RefCell;
@@ -42,6 +45,9 @@ struct Pieces {
     /// The light appearance: plates are white at [`LIGHT_GLASS`] or [`LIGHT_FLOAT`] over the dawn
     /// sky, which has no blurred copy.
     light: bool,
+    /// Performance mode: plates are a solid colour instead of glass over the scene, so nothing
+    /// is blurred, tinted or sampled.
+    plain: bool,
 }
 
 /// How much white a light plate takes, and a light menu's.
@@ -57,6 +63,17 @@ thread_local! {
         pieces: HashMap::new(),
         retired: Vec::new(),
         light: false,
+        plain: false,
+    });
+}
+
+/// Performance mode's plates: solid, with no glass behind them.
+pub fn set_plain(plain: bool) {
+    PIECES.with_borrow_mut(|p| {
+        if p.plain != plain {
+            p.plain = plain;
+            p.generation += 1;
+        }
     });
 }
 
@@ -67,10 +84,24 @@ thread_local! {
 /// nothing moves at rest.
 pub const CONTENT_INSET: f32 = 14.;
 
-pub fn set_backdrop(model: &Model, tint: Option<u32>, blur: f32) {
+pub fn set_backdrop(model: &Model, tint: Option<u32>, blur: f32, fast: bool) {
     PIECES.with_borrow_mut(|p| {
-        p.backdrop = Some(Backdrop::new(model, blur as f64, tint));
+        let mut backdrop = Backdrop::new(model, blur as f64, fast);
+        backdrop.set_tint(tint);
+        p.backdrop = Some(backdrop);
         p.generation += 1;
+    });
+}
+
+/// The accent's tint changed (the window and the blur did not): the backdrop is tinted as its
+/// pieces are read, so they are painted again, and nothing is blurred.
+pub fn set_backdrop_tint(tint: Option<u32>) {
+    PIECES.with_borrow_mut(|p| {
+        if let Some(backdrop) = p.backdrop.as_mut() {
+            if backdrop.set_tint(tint) {
+                p.generation += 1;
+            }
+        }
     });
 }
 
@@ -129,8 +160,19 @@ pub fn begin_build(window: &mut Window) {
 }
 
 /// A plate's backdrop with its corners: put it first inside a `relative` element, the content
-/// after it.
-pub fn backdrop(kind: Kind, radius: f32) -> impl IntoElement {
+/// after it. In performance mode it is a solid colour: no backdrop, no glass.
+pub fn backdrop(kind: Kind, radius: f32) -> AnyElement {
+    let (plain, look) = PIECES.with_borrow(|p| (p.plain, p.look));
+    if plain {
+        return div()
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full()
+            .rounded(px(radius))
+            .bg(rgb(look.plate))
+            .into_any_element();
+    }
     canvas(
         |_, _, _| {},
         move |bounds, (), window, _| paint(bounds, kind, Corners::all(px(radius)), window),
@@ -139,6 +181,7 @@ pub fn backdrop(kind: Kind, radius: f32) -> impl IntoElement {
     .top_0()
     .left_0()
     .size_full()
+    .into_any_element()
 }
 
 /// A `relative` div on a glass plate with `radius` corners.

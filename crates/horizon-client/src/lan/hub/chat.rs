@@ -15,7 +15,7 @@ use horizon_world::nbt::{JavaString, Tag};
 /// filter took it). A mod may cancel it, which drops it for everybody (the sender is not told, so push
 /// a line to `replies` to answer them), or only answer. It cannot change the text: a signed message
 /// would no longer verify. Once for each message a player sends, on a server. Commands are
-/// `native_player_command`. API @API:player_chat@.
+/// `native_player_command`. API 399.
 #[inline(never)]
 pub fn native_player_chat(
     player: u128,

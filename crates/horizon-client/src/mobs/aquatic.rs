@@ -64,16 +64,18 @@ pub fn spawn_ink(m: &mut Mob) {
         let dir = rotate(Vec3::new(x, -1.0, z));
         let d = dir.scale(f64::from(offset_scale + m.random.next_float() * 2.0));
         // ServerLevel.sendParticles with a count of 0 and speed 0.1: one
-        // particle moving at the float offset times the float speed.
-        let speed = f64::from(0.1f32);
-        m.outbox.push(MobEvent::ParticleAt {
+        // particle moving at the float offset times the float speed, sent to
+        // the players within 32 blocks.
+        m.outbox.push(MobEvent::LevelParticles {
             kind,
             at: [pos.x, pos.y + 0.5, pos.z],
-            velocity: [
-                speed * f64::from(d.x as f32),
-                speed * f64::from(d.y as f32),
-                speed * f64::from(d.z as f32),
+            spread: [
+                f64::from(d.x as f32),
+                f64::from(d.y as f32),
+                f64::from(d.z as f32),
             ],
+            speed: f64::from(0.1f32),
+            count: 0,
         });
     }
 }
@@ -1157,6 +1159,43 @@ mod school_tests {
         let mut k = kind();
         Arc::make_mut(&mut k).species = Species::Salmon;
         assert_eq!(Mob::new(2, k, Vec3::ZERO, 0.0).dims(), (w, h, e));
+    }
+    /// `Squid.spawnInk`: 30 `sendParticles` calls with a count of 0 and a
+    /// speed of 0.1, so the server sends them (the clients scale the offset
+    /// by the speed). A client-only `ParticleAt` would never leave the server.
+    #[test]
+    fn a_squid_sends_its_ink_as_server_particles() {
+        let mut k = kind();
+        let k2 = Arc::make_mut(&mut k);
+        k2.id = "minecraft:squid".into();
+        k2.species = Species::Squid;
+        let mut m = Mob::new(1, k, Vec3::new(0.0, 60.0, 0.0), 0.0);
+        m.silent = true;
+        spawn_ink(&mut m);
+        let ink: Vec<_> = m
+            .outbox
+            .iter()
+            .filter_map(|e| match e {
+                MobEvent::LevelParticles {
+                    kind: "squid_ink",
+                    spread,
+                    speed,
+                    count: 0,
+                    ..
+                } => Some((*spread, *speed)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(ink.len(), 30);
+        assert!(ink.iter().all(|(_, speed)| *speed == f64::from(0.1f32)));
+        // The offset is the unscaled direction: `0.3 + nextFloat * 2` long
+        // for an adult, mostly downward, never already multiplied by 0.1.
+        assert!(ink.iter().any(|(d, _)| d[1] < -0.3));
+        assert!(
+            !m.outbox
+                .iter()
+                .any(|e| matches!(e, MobEvent::ParticleAt { .. }))
+        );
     }
     #[test]
     fn school_sizes() {

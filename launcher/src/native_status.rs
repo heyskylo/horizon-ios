@@ -65,14 +65,29 @@ pub fn state(enabled: &[Mod], built: Option<&[Mod]>) -> State {
 pub struct Build {
     /// The release or Nightly it was built on (`native_mods::About::base`).
     pub base: String,
+    /// The Horizon commit it compiled.
+    pub horizon: String,
+    /// The mods whose pin made it compile `horizon` rather than `base`'s own commit.
+    pub pinned_by: Vec<String>,
+    /// It compiled another commit than its Nightly's, with no record of why: built before the
+    /// launcher kept which mods pinned it ([`pinning`] reads them from the instance's mods).
+    pub pinned_unknown: bool,
 }
 
 impl Build {
     /// Installed native build `version`'s, from its `native-mods.json`; None for another version.
     pub fn read(version: &str) -> Option<Build> {
-        Some(Build {
-            base: native_mods::about(version)?.base,
-        })
+        Some(Build::of(native_mods::about(version)?))
+    }
+
+    /// What build record `about` says.
+    fn of(about: native_mods::About) -> Build {
+        Build {
+            pinned_unknown: about.off_its_nightly(),
+            base: about.base,
+            horizon: about.horizon,
+            pinned_by: about.pinned_by,
+        }
     }
 
     /// The Horizon it was built on, as a player reads it (`horizon_label`).
@@ -117,6 +132,18 @@ pub fn enabled(home: &Path) -> Vec<Mod> {
         }
     }
     out
+}
+
+/// The native mods turned on in game folder `home` that pin Horizon commit `revision` (those naming
+/// a hook points' version follow the others, so they pin nothing).
+pub fn pinning(home: &Path, revision: &str) -> Vec<String> {
+    hnmods(home)
+        .into_iter()
+        .filter_map(|path| horizon_mods::index::native::Bundle::read(&path).ok())
+        .filter(|b| b.manifest.hooks.is_none() && b.manifest.horizon == revision)
+        .filter(|b| java::is_enabled(home, &b.manifest.id))
+        .map(|b| b.manifest.id)
+        .collect()
 }
 
 /// A native file not tracked by the registry/browser, including GitHub installs.
@@ -393,14 +420,38 @@ mod tests {
         assert_eq!(horizon_label("nightly-2026-10-29"), "Nightly 2026-10-29");
         let build = Build {
             base: "nightly-2026-10-28-0c02067".into(),
+            ..Build::default()
         };
         assert_eq!(build.horizon(), "Nightly 2026-10-28");
         assert_eq!(build.horizon_short(), "Nightly 10-28");
         let release = Build {
             base: "v0.2.93".into(),
+            ..Build::default()
         };
         assert_eq!(release.horizon_short(), "v0.2.93");
         assert_eq!(Build::read("v0.1.0"), None, "not a native build");
+    }
+
+    /// A build from before pins were recorded that compiled another commit than its Nightly's
+    /// was pinned by a mod (the Mods page then reads which from the instance's mods); one on its
+    /// Nightly's commit, a release's, or a newer record's, says itself.
+    #[test]
+    fn an_older_build_off_its_nightlys_commit_was_pinned() {
+        let about = |base: &str, horizon: &str, base_horizon: Option<&str>| native_mods::About {
+            base: base.into(),
+            horizon: horizon.into(),
+            target: native_mods::Target::Client,
+            base_horizon: base_horizon.map(str::to_owned),
+            pinned_by: Vec::new(),
+            on_base: false,
+        };
+        let pin = "9d979caa48a3bb58203319b9ea044db58c38e0d8";
+        let own = "d91cab6000000000000000000000000000000000";
+        let nightly = "nightly-2026-11-01-d91cab6";
+        assert!(Build::of(about(nightly, pin, None)).pinned_unknown);
+        assert!(!Build::of(about(nightly, own, None)).pinned_unknown);
+        assert!(!Build::of(about("v0.2.93", pin, None)).pinned_unknown);
+        assert!(!Build::of(about(nightly, pin, Some(pin))).pinned_unknown);
     }
 
     #[test]

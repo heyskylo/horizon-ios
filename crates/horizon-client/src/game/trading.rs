@@ -451,7 +451,18 @@ impl Game<'_> {
                     };
                     self.audio.play(sound, Some(origin), 1.0, pitch);
                 }
-                merchant::Event::Traded(_, offer) => traded.push(*offer),
+                merchant::Event::Traded(index, offer) => {
+                    // The mods may change the live offer (Bukkit's PlayerTradeEvent#getTrade).
+                    let trader = mob.and_then(|id| {
+                        let m = self.mobs.iter().find(|m| m.id == id)?;
+                        Some((id, super::native_hooks::mob_kind(m)))
+                    });
+                    if let (Some((id, kind)), Some(live)) = (trader, session.offers.get_mut(index))
+                    {
+                        self.native_merchant_offer_traded(id, &kind, live);
+                    }
+                    traded.push(*offer);
+                }
                 merchant::Event::TradeSound => {
                     let sound = if villager {
                         "minecraft:entity.villager.yes"

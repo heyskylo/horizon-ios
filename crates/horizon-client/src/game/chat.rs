@@ -63,8 +63,6 @@ impl Game<'_> {
     ) -> horizon_client::command::Dispatcher {
         let mut names = Vec::new();
         self.native_commands(&mut names);
-        // The window answers this one itself, as it does a client mod's.
-        names.push(horizon_client::ram_limit::COMMAND);
         let base = match base {
             Some(tree) => tree,
             None => horizon_client::command::vanilla::game_dispatcher(),
@@ -152,6 +150,9 @@ pub struct UiState {
     pub registries: Registries,
     pub rules: GameRules,
     pub clock: WorldClock,
+    /// Command state for registered clocks other than Overworld. Overworld's
+    /// canonical ticks stay in World.day_time and its state stays in clock.
+    pub command_clocks: BTreeMap<String, (i64, WorldClock)>,
     /// Time markers and timelines of the overworld clock.
     pub markers: BTreeMap<String, TimeMarker>,
     pub timelines: BTreeMap<String, Option<i64>>,
@@ -1418,11 +1419,13 @@ impl Game<'_> {
             _ => Difficulty::Normal,
         };
     }
-    /// Load per-world command state when a world opens.
+    /// `ServerClockManager.ServerClockInstance.loadFrom`: restore the existing
+    /// Overworld state when a world opens; clear the other command-state cache.
     pub(super) fn load_world_state(&mut self) {
         self.ui.rules =
             GameRules::load_with_features(&self.world_root, &self.level.enabled_features);
         self.ui.clock = WorldClock::default();
+        self.ui.command_clocks.clear();
         // PrimaryLevelData: the difficulty comes back from level.dat's difficulty_settings.
         self.ui.difficulty = self.level.difficulty_id();
         if let Ok(bytes) = std::fs::read(self.world_root.join("data/minecraft/world_clocks.dat"))
@@ -1526,11 +1529,18 @@ impl Game<'_> {
     /// `key.screenshot` mapping (F2 by default) takes the picture before a
     /// screen or a text box sees the key, and the debug modifier suppresses it.
     pub(super) fn screenshot_shortcut(&mut self, key: KeyCode, repeat: bool) -> bool {
-        if repeat || self.debug_keys.modifier_down {
+        if repeat
+            || horizon_client::keybinds::key_name(key)
+                != Some(self.settings.keys.get("key.screenshot"))
+        {
             return false;
         }
-        if horizon_client::keybinds::key_name(key) != Some(self.settings.keys.get("key.screenshot"))
-        {
+        self.screenshot_action()
+    }
+    /// key.screenshot from any device: not while F3 is down, where F3+F2 is a
+    /// debug key.
+    pub(super) fn screenshot_action(&mut self) -> bool {
+        if self.debug_keys.modifier_down {
             return false;
         }
         self.take_screenshot();
@@ -1707,17 +1717,6 @@ mod tests {
         assert_eq!(once.effects, ["b"]);
         assert!(!Arc::ptr_eq(&once, &command_export(&other, false).unwrap()));
         let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn the_ram_limit_command_is_known_to_the_chat_box() {
-        let reg = Registries::default();
-        let vanilla = horizon_client::command::vanilla::game_dispatcher();
-        assert!(vanilla.find(horizon_client::ram_limit::COMMAND).is_none());
-        let tree = with_native_commands(vanilla, &[horizon_client::ram_limit::COMMAND]);
-        for typed in ["ramlimit", "ramlimit 2048", "ramlimit off"] {
-            assert!(tree.parse(typed, &reg).executable().is_ok(), "{typed}");
-        }
     }
 
     /// A native mod's command is in the tree the chat box uses (#456): known

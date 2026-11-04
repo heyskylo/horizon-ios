@@ -29,8 +29,8 @@ SulfurCubeArchetypes.archetype	skip:data		builds the speed, bounce, friction and
 SulfurCubeArchetypes.contactDamage	skip:data		hot archetype's contact damage is a field of the table
 SulfurCubeArchetypes.register	skip:data		registry registration
 TamableAnimal.defineSynchedData	port	crates/horizon-client/src/game/lan.rs::mob_meta	gap: minor: the flags byte (sitting 1, tame 4) is sent to LAN guests; the owner UUID data is never sent
-TamableAnimal.addAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::mob_to_nbt	Owner and Sitting for wolf, cat and parrot
-TamableAnimal.readAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::mob_from_nbt	an owner makes the mob tame (wolf health 40), Sitting restored; old owner-name conversion is not done
+TamableAnimal.addAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::mob_to_nbt	Owner and modeled Sitting for wolf, cat, parrot and both nautili (their species codec)
+TamableAnimal.readAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::mob_from_nbt	an owner makes the mob tame (wolf health 40); Sitting restored independently of owner, including both nautili; old owner-name conversion is not done
 TamableAnimal.handleEntityEvent	port	crates/horizon-client-render/src/particles.rs::entity_event_burst	event 7 hearts, event 6 smoke, seven particles
 TamableAnimal.isTame	skip:other		a field: Mob.extra.tame
 TamableAnimal.setInSittingPose	skip:other		a field: Mob.extra.sitting, set by the sit goals and interactions

@@ -102,11 +102,78 @@ function renderStatus(status) {
         button("Kick", async () => {
           if (confirm(`Kick ${p.name}?`)) toast(await run(`kick ${p.name}`).catch((e) => e.message));
         }, true),
+        button("Ban", async () => {
+          const reason = prompt(`Ban ${p.name}? Reason (optional):`);
+          if (reason === null) return;
+          await api("POST", "/api/v1/players/ban", { name: p.name, reason: reason.trim() || undefined }).then(
+            (r) => { toast(r.output.join("\n") || "Banned."); refreshLists(); },
+            (e) => toast(e.message),
+          );
+        }, true),
       );
       tr.append(cell(p.name), cell(p.ping_ms == null ? "–" : `${p.ping_ms} ms`), actions);
       return tr;
     }),
   );
+}
+
+// The banned players (GET /api/v1/players, "bans") with a Pardon each.
+function renderBans(bans) {
+  $("no-bans").hidden = bans.length > 0;
+  $("bans").replaceChildren(
+    ...bans.map((b) => {
+      const tr = document.createElement("tr");
+      const actions = cell("");
+      actions.append(
+        button("Pardon", async () => {
+          await api("POST", "/api/v1/players/pardon", { name: b.name }).then(
+            (r) => { toast(r.output.join("\n") || "Pardoned."); refreshLists(); },
+            (e) => toast(e.message),
+          );
+        }),
+      );
+      tr.append(cell(b.name), cell(b.reason || "–"), actions);
+      return tr;
+    }),
+  );
+}
+
+// The crash reports (GET /api/v1/crash-reports) and one report's text.
+function renderCrashes(reports) {
+  $("no-crashes").hidden = reports.length > 0;
+  $("crashes").replaceChildren(
+    ...reports.map((r) => {
+      const tr = document.createElement("tr");
+      const actions = cell("");
+      actions.append(
+        button("Read", async () => {
+          try {
+            const response = await fetch(`/api/v1/crash-reports/read?name=${encodeURIComponent(r.name)}`, {
+              credentials: "same-origin",
+              headers: { "X-Horizon": "1" },
+            });
+            if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || `error ${response.status}`);
+            $("crash-text").textContent = await response.text();
+            $("crash-text").hidden = false;
+            $("crash-text").scrollIntoView({ block: "nearest" });
+          } catch (e) {
+            toast(e.message);
+          }
+        }),
+      );
+      tr.append(cell(r.name), cell(bytes(r.bytes)), actions);
+      return tr;
+    }),
+  );
+}
+
+async function refreshLists() {
+  const [players, crashes] = await Promise.all([
+    api("GET", "/api/v1/players"),
+    api("GET", "/api/v1/crash-reports"),
+  ]);
+  renderBans(players.bans || []);
+  renderCrashes(crashes.reports || []);
 }
 
 // Updates (horizon-server update): a newer release, one under way, or how the last one ended.
@@ -232,7 +299,10 @@ async function poll() {
     renderCharts();
     logNext = logs.next;
     appendLog(logs.lines);
-    if (ticks++ % 10 === 0) renderBackups((await api("GET", "/api/v1/backups")).backups);
+    if (ticks++ % 10 === 0) {
+      renderBackups((await api("GET", "/api/v1/backups")).backups);
+      await refreshLists();
+    }
   } catch (e) {
     if (e instanceof SignedOut) show("signed-out");
     else if (lastStatus) {

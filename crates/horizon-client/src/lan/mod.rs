@@ -339,6 +339,9 @@ pub struct Shared {
     max_players: AtomicUsize,
     hide_online_players: AtomicBool,
     enable_status: AtomicBool,
+    /// `DedicatedServer.setAcceptsTransfers`: whether a login by transfer from another server
+    /// is accepted (`accepts-transfers`), live.
+    accepts_transfers: AtomicBool,
     /// PlayerList.players in join order: profile id and name.
     online: Mutex<Vec<(u128, String)>>,
     next: AtomicU32,
@@ -432,6 +435,14 @@ impl Shared {
     }
     pub fn set_enable_status(&self, enable: bool) {
         self.enable_status.store(enable, Ordering::Relaxed);
+    }
+    pub fn accepts_transfers(&self) -> bool {
+        self.accepts_transfers.load(Ordering::Relaxed)
+    }
+    /// `DedicatedServer.setAcceptsTransfers`: the handshake of a transfer is accepted or turned
+    /// away from now on.
+    pub fn set_accepts_transfers(&self, accept: bool) {
+        self.accepts_transfers.store(accept, Ordering::Relaxed);
     }
     pub fn release(&self, uuid: u128) {
         self.online.lock().unwrap().retain(|(u, _)| *u != uuid);
@@ -572,6 +583,7 @@ impl Lan {
             max_players: AtomicUsize::new(config.max_players),
             hide_online_players: AtomicBool::new(hide_online_players),
             enable_status: AtomicBool::new(enable_status),
+            accepts_transfers: AtomicBool::new(config.accepts_transfers),
             online: Mutex::new(Vec::new()),
             next: AtomicU32::new(1),
             stop: AtomicBool::new(false),

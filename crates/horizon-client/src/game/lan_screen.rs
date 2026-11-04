@@ -112,6 +112,10 @@ fn labelled(key: &str, value: Text) -> Text {
 }
 
 impl WorldOptions {
+    /// No button keeps the focus a click gave it.
+    pub(super) fn clear_click_focus(&mut self) {
+        self.focused_button = None;
+    }
     /// Vanilla 26.3 WorldOptionsScreen.generalOptions: guests see difficulty,
     /// game rules and restrictions; game modes, commands and LAN are host-only.
     fn visible_buttons(&self, w: f32) -> Vec<(Button, f32, f32, f32)> {
