@@ -1989,6 +1989,15 @@ impl Game<'_> {
         self.store_property("max-players", max_players.to_string());
     }
 
+    /// `DedicatedServer.setAcceptsTransfers`: whether a transfer's handshake is accepted from
+    /// now on, and `accepts-transfers` in server.properties.
+    fn set_accepts_transfers(&mut self, accept: bool) {
+        if let Some(lan) = &self.lan {
+            lan.hub.lan.shared.set_accepts_transfers(accept);
+        }
+        self.store_property("accepts-transfers", accept.to_string());
+    }
+
     /// `DedicatedServer.setEnforceWhitelist`: the flag, and `enforce-whitelist` in
     /// server.properties.
     pub(super) fn set_enforce_whitelist(&mut self, lists: &Arc<Mutex<Lists>>, on: bool) {
