@@ -47,7 +47,15 @@ impl Launcher {
                 ),
             );
         }
+        // A solid backing under the glass: the plate's backdrop doesn't paint under a popover
+        // whose rows scroll (seen on the desktop run), and the rows must stay legible.
+        let backing = if ui::light() {
+            gpui::white().opacity(0.94)
+        } else {
+            ui::color(0x16112b).opacity(0.94)
+        };
         let menu = ui::popover(220.)
+            .bg(backing)
             .id("language-menu")
             .occlude()
             .on_mouse_down_out(cx.listener(|this, event: &MouseDownEvent, _, cx| {
