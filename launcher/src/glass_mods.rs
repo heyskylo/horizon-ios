@@ -146,24 +146,41 @@ impl Launcher {
                 |d| d.child(div().flex().child(self.mods_source_switch(cx))),
             )
             .children((!registry).then(|| self.mods_filters(cx)))
-            .children(registry.then(|| self.mods_sort_bar(cx)))
             .children(self.mods_target_line(cx));
+        // The search, and the sort on its right.
+        let search = div()
+            .m(px(4.))
+            .mb(px(8.))
+            .flex()
+            .items_center()
+            .gap(px(8.))
+            .child(div().flex_1().min_w_0().child(self.mods_field(cx)))
+            .child(self.glass_mods_sort(cx));
         let list = crate::glass::plate(radius::PANEL)
             .flex()
             .flex_col()
             .flex_1()
             .min_w_0()
             .p(px(8.))
-            .child(div().m(px(4.)).mb(px(8.)).child(self.mods_field(cx)))
+            .child(search)
             .child(extras)
             .child(self.glass_mods_list(cx));
-        let detail = self.glass_mod_detail(&instance, cx);
+        // The card stays in view as the list scrolls (`lg:sticky lg:top-0`, `sticky.rs`).
+        let detail = self.glass_mod_detail(&instance, cx).map(|d| {
+            let down = self.mods_sticky.offset(&self.content_scroll.handle);
+            d.flex_none()
+                .w(px(DETAIL))
+                .top(px(down))
+                .child(self.mods_sticky.panel())
+        });
         let cards = div()
+            .relative()
             .flex()
             .items_start()
             .gap(px(10.))
+            .child(self.mods_sticky.row(&self.content_scroll.handle))
             .child(list)
-            .children(detail.map(|d| d.flex_none().w(px(DETAIL))));
+            .children(detail);
 
         // What the mockup doesn't have, as cards under the two.
         let card = |inner: Div| crate::glass::plate(radius::PANEL).p(px(20.)).child(inner);
@@ -185,6 +202,91 @@ impl Launcher {
                 .mt(px(10.))
                 .children(more),
         )
+    }
+
+    /// The "Sort by" dropdown beside the search: as tall and as round as the search, white at
+    /// 7 % like it; the choices on a glass popover under it, the chosen one ticked.
+    fn glass_mods_sort(&mut self, cx: &mut Context<Self>) -> Div {
+        let t = self.theme;
+        let sorts = self.mods_sorts();
+        let current = self.mods.browse.filters.sort;
+        // A sort the source can't do (Follows, picked on Modrinth) reads as the default.
+        let shown = sorts
+            .iter()
+            .find(|(value, _)| *value == current)
+            .or(sorts.first())
+            .map(|(value, _)| *value);
+        let name = sorts
+            .iter()
+            .find(|(value, _)| Some(*value) == shown)
+            .map_or("", |(_, label)| *label);
+        let open = self.mods.browse.sort_menu;
+        let button = keyboard(
+            div()
+                .id("mods-sort")
+                .flex()
+                .flex_none()
+                .items_center()
+                .gap(px(8.))
+                .h(px(44.))
+                .px(px(14.))
+                .rounded(px(12.))
+                .bg(white(if open { 0.11 } else { 0.07 }))
+                .hover(|s| s.bg(white(0.11)))
+                .cursor_pointer()
+                .font_family(horizon_theme::glass::FONT)
+                .text_size(px(14.))
+                .text_color(white(ink::FULL))
+                .child(trf("Sort by: {order}", &[("order", tr(name))]))
+                .child(
+                    ui::icon("arrow-down-01", 16., white(ink::NOTE)).with_transformation(
+                        gpui::Transformation::rotate(gpui::radians(if open {
+                            std::f32::consts::PI
+                        } else {
+                            0.
+                        })),
+                    ),
+                )
+                .on_click(cx.listener(|this, event: &ClickEvent, _, cx| {
+                    if this.closed_by_this_press(event) {
+                        return;
+                    }
+                    this.mods.browse.sort_menu = !this.mods.browse.sort_menu;
+                    cx.notify();
+                })),
+            &t,
+        );
+        let mut wrap = div().relative().flex_none().child(button);
+        if open {
+            let mut menu = ui::popover(220.)
+                .id("mods-sort-menu")
+                .occlude()
+                .on_mouse_down_out(cx.listener(|this, event: &MouseDownEvent, _, cx| {
+                    this.mods.browse.sort_menu = false;
+                    this.menu_closed_at = Some(event.position);
+                    cx.notify();
+                }));
+            for &(value, label) in &sorts {
+                menu = menu.child(
+                    ui::pick_row(
+                        SharedString::from(format!("mods-sort-pick-{label}")),
+                        tr(label).to_string(),
+                        Some(value) == shown,
+                        &t,
+                    )
+                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                        this.mods.browse.sort_menu = false;
+                        this.mods_filter(|f| f.sort = value);
+                        cx.notify();
+                    })),
+                );
+            }
+            wrap = wrap.child(
+                gpui::deferred(div().absolute().top(px(52.)).right_0().child(menu))
+                    .with_priority(1),
+            );
+        }
+        wrap
     }
 
     /// The search's results as the mockup's rows (`ROW`): a click picks one for the card beside.
