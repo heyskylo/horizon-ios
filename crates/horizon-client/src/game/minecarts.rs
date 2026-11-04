@@ -598,7 +598,14 @@ impl Game<'_> {
             binding: self.collision,
             subject: None,
         };
-        let entities = self.cart_entity_collisions(c);
+        // A zero move stays zero whatever surrounds it (`Entity.collide`, and the
+        // step-up needs a blocked horizontal move): a cart standing on its rails,
+        // as most do, gathers no entity boxes.
+        let entities = if delta.length_squared() == 0.0 {
+            Vec::new()
+        } else {
+            self.cart_entity_collisions(c)
+        };
         let mut scene = horizon_client::collisions::EntityCollisions {
             blocks: scene,
             entities: &entities,
