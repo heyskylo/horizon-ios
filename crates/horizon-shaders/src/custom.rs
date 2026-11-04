@@ -11,6 +11,8 @@
 //!   half-lives counted in tenths of a second (`FADE_UNIT`), `fadeIn` while rising, `fadeOut`
 //!   while falling. Each call keeps its own state, so the optional id is not needed. As in Iris
 //!   1.11.7, the first argument is that id when it is written as a number and more follow.
+//!   A `smooth` in an `if` branch not taken keeps its value until the branch is taken again:
+//!   `if` evaluates only the conditions up to the first true one and that branch (#9371).
 //! - Unknown names, as in Iris 1.11.7 (#8995): an expression naming something the custom
 //!   uniforms can't see (an unknown name, or one of [`HIDDEN`]) reads 0 as a whole, even when
 //!   the name is in an `if` branch not taken, and so does every expression using its uniform or
@@ -27,8 +29,11 @@ use crate::Properties;
 /// The seconds one unit of a `smooth` fade time lasts. Fitted to Iris 1.11.7 with a probe pack of
 /// our own (`smoothprobe`: `smooth(rainStrength, f, f)` for several fades, read across the scene
 /// suite's weather changes): a half-life of a tenth of the fade time's seconds gives every
-/// measured value within 0.016. Horizon's built-in smoothed uniforms use the same 0.1 s unit
-/// (`pack_uniforms.rs` `SECONDS_A_TICK`).
+/// measured value within 0.016. A second probe pack of ours (#9371: a square wave from `if`,
+/// `eyeBrightness`, `worldTime`; fades 0.5 to 100, the default 1, rising and falling) fits the
+/// same unit: half-life / fade between 0.085 and 0.100 over 63 readings. These are fits to our
+/// probes' Iris values, not Iris's rule. Horizon's built-in smoothed uniforms use the same 0.1 s
+/// unit (`pack_uniforms.rs` `SECONDS_A_TICK`).
 const FADE_UNIT: f64 = 0.1;
 
 /// A value: up to 16 components (matrices only as names, for `m.column.row`).
@@ -440,6 +445,18 @@ impl Custom {
                     _ => bool_(a.truth() || b.truth()),
                 }
             }
+            Expr::Call(f, args, _) if f == "if" => {
+                // Only the conditions up to the first true one and its branch are evaluated: a
+                // `smooth` in a branch not taken keeps its value and doesn't advance.
+                let mut i = 0;
+                while i + 1 < args.len() {
+                    if ev(&args[i], self).truth() {
+                        return ev(&args[i + 1], self);
+                    }
+                    i += 2;
+                }
+                args.last().map_or(Val::scalar(0.0), |e| ev(e, self))
+            }
             Expr::Call(f, args, site) => {
                 let a: Vec<Val> = args.iter().map(|e| ev(e, self)).collect();
                 let arg = |i: usize| a.get(i).copied().unwrap_or(Val::scalar(0.0));
@@ -490,16 +507,6 @@ impl Custom {
                         Val::scalar((x + (arg(1).x() - x) * self.random()).floor())
                     }
                     "randomInt" => Val::scalar((self.random() * f64::from(i32::MAX)).floor()),
-                    "if" => {
-                        let mut i = 0;
-                        while i + 1 < a.len() {
-                            if a[i].truth() {
-                                return a[i + 1];
-                            }
-                            i += 2;
-                        }
-                        a.last().copied().unwrap_or(Val::scalar(0.0))
-                    }
                     "smooth" => {
                         // A first argument written as a number names the call when more
                         // follow (`smooth(1, x, 2)`); any other is the value (`smooth(x, 2)`).
@@ -1102,6 +1109,80 @@ mod tests {
                 assert!((g - i).abs() < 0.03, "{got:?} against Iris's {iris:?}");
             }
         }
+    }
+
+    /// Iris 1.11.7 with a probe pack of our own (#9371): a step in `worldTime / 24000` from 0.25
+    /// to 0.75, read 1.355 s later, and a square wave's fall read 0.575 s later. Read there:
+    /// fades 3, 10 and 30 give 0.7282, 0.5545 and 0.3844; the default fade 0.0186. Our probe's
+    /// values fit a half-life of 0.1 s × the fade for every input tried (a fit, not Iris's code).
+    #[test]
+    fn smooth_steps_as_iris_does_for_other_inputs_and_the_default_fade() {
+        let mut c = custom(
+            "uniform.float.a = smooth(worldTime / 24000.0, 3.0)\n\
+             uniform.float.b = smooth(worldTime / 24000.0, 10.0)\n\
+             uniform.float.c = smooth(worldTime / 24000.0, 30.0)\n\
+             uniform.float.d = smooth(if(worldTime > 15000, 0.0, 1.0))\n",
+        );
+        let mut hold = |time: f64, seconds: f64| {
+            let mut read = Vec::new();
+            for _ in 0..(seconds * 120.0).round() as usize {
+                read = c.eval(1.0 / 120.0, &|n: &str| {
+                    (n == "worldTime").then(|| Val::scalar(time))
+                });
+            }
+            read.iter().map(|v| v.v[0]).collect::<Vec<f64>>()
+        };
+        hold(6000.0, 60.0);
+        let got = hold(18000.0, 1.355);
+        for (g, iris) in got.iter().zip([0.7282, 0.5545, 0.3844]) {
+            assert!((g - iris).abs() < 0.01, "{got:?}: Iris read {iris}");
+        }
+        hold(6000.0, 60.0);
+        let got = hold(18000.0, 0.575);
+        assert!(
+            (got[3] - 0.0186).abs() < 0.005,
+            "default fade: {got:?}, Iris read 0.0186"
+        );
+    }
+
+    /// Iris 1.11.7 with a probe pack of our own (#9371): our probe's Iris readings fit a `smooth`
+    /// inside an `if` branch keeping its value while the branch isn't taken (within 0.008;
+    /// updated every frame misses by up to 0.14). A fit, not Iris's code. The probe's
+    /// `if(fmod(frameTimeCounter, 4) < 2, smooth(sq, 10), 0.5)`, with `sq` a square wave of 16 s
+    /// (1 for 8 s, then 0), read in Iris at these points of the wave: 1.214 s 0.5962, 5.557 s
+    /// 0.9205, 12.254 s 0.1965, 13.264 s 0.1041, 13.963 s 0.0603. Updated every frame, the
+    /// smooth would read 0.571, 0.979, 0.052, 0.026 and 0.016 there.
+    #[test]
+    fn smooth_in_a_branch_not_taken_keeps_its_value() {
+        let mut c = custom(
+            "variable.float.sq = if(fmod(frameTimeCounter, 16.0) < 8.0, 1.0, 0.0)\n\
+             uniform.float.br = if(fmod(frameTimeCounter, 4.0) < 2.0, smooth(sq, 10.0), 0.5)\n",
+        );
+        let dt = 1.0 / 120.0;
+        let mut iris = vec![
+            (1.214, 0.5962),
+            (5.557, 0.9205),
+            (12.254, 0.1965),
+            (13.264, 0.1041),
+            (13.963, 0.0603),
+        ];
+        for frame in 0..16 * 120 * 20 {
+            let t = frame as f64 * dt;
+            let got = c.eval(dt, &|n: &str| {
+                (n == "frameTimeCounter").then(|| Val::scalar(t))
+            })[0]
+                .v[0];
+            // The last of 20 periods: the wave has long forgotten where it started.
+            let phase = t - 16.0 * 19.0;
+            if let Some(i) = iris.iter().position(|p| (phase - p.0).abs() < dt / 2.0) {
+                let (at, want) = iris.remove(i);
+                assert!(
+                    (got - want).abs() < 0.02,
+                    "{got} at {at} s, Iris read {want}"
+                );
+            }
+        }
+        assert!(iris.is_empty(), "not reached: {iris:?}");
     }
 
     /// After a restart `smooth` starts from its next value, as on the first frame, instead of
