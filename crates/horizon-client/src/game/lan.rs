@@ -1701,6 +1701,13 @@ impl Game<'_> {
         }
     }
 
+    /// Update the live simulation distance sent to player clients.
+    pub(super) fn set_simulation_distance(&mut self, distance: i32) {
+        if let Some(host) = self.lan.as_mut() {
+            host.hub.set_simulation_distance(distance);
+        }
+    }
+
     /// Update the live movement check's flight policy.
     pub(super) fn set_allow_flight(&mut self, allow: bool) {
         if let Some(host) = self.lan.as_mut() {
