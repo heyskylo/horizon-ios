@@ -60,6 +60,8 @@ pub struct MotionResources {
     pub attributes: Arc<Catalog>,
     pub blocks: BoundMovementProperties,
     pub climbable: BTreeSet<String>,
+    /// The bound BlockTags.CAUSES_SUFFOCATION predicate input.
+    pub causes_suffocation: BTreeSet<String>,
     /// `BlockTags.SOUL_SPEED_BLOCKS`: what Soul Speed's effects look for.
     pub soul_speed_blocks: BTreeSet<String>,
     /// `LivingEntity.onClimbable` tags plus open trapdoors above a ladder.
@@ -134,6 +136,7 @@ impl MotionResources {
                 suppresses_bounce: tag("minecraft:suppresses_bounce")?,
             })?,
             climbable: tag("minecraft:climbable")?,
+            causes_suffocation: tag("minecraft:causes_suffocation")?,
             soul_speed_blocks: tag("minecraft:soul_speed_blocks")?,
             climbing,
             fall_reset: tag("minecraft:fall_damage_resetting")?,

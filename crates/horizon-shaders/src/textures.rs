@@ -40,9 +40,12 @@ pub struct Texture {
     /// The internal format the pack asked for.
     pub format: Format,
     pub texels: Texels,
-    /// From the `.mcmeta` beside it: linear filtering, and clamping instead of repeating.
+    /// Linear filtering, and clamping instead of repeating: on for a raw texture and off for a
+    /// PNG, unless the `.mcmeta` beside it says otherwise.
     pub blur: bool,
     pub clamp: bool,
+    /// A raw dump rather than a PNG.
+    pub raw: bool,
 }
 
 /// Texel values, `components` per texel: 1, 2 or 4 (three widen to four, alpha 1).
@@ -150,7 +153,8 @@ pub fn resolve_resources(
         };
         let meta = read(namespace, &format!("{path}.mcmeta"));
         let text = meta.as_deref().map(String::from_utf8_lossy);
-        (texture.blur, texture.clamp) = mcmeta(text.as_deref());
+        let (blur, clamp) = mcmeta(text.as_deref());
+        (texture.blur, texture.clamp) = (blur.unwrap_or(false), clamp.unwrap_or(false));
         t.source = TextureSource::Image(texture);
         true
     });
@@ -181,17 +185,19 @@ fn source(pack: &Pack, value: &str) -> Result<TextureSource, String> {
     } else {
         raw(&bytes, &rest)?
     };
-    texture.blur = blur;
-    texture.clamp = clamp;
+    // A PNG is nearest and repeating, a raw texture linear and clamped (Iris 1.11.7 with a probe
+    // pack of ours, #9064); each key the `.mcmeta` has overrides its own default only.
+    texture.blur = blur.unwrap_or(texture.raw);
+    texture.clamp = clamp.unwrap_or(texture.raw);
     Ok(TextureSource::Image(texture))
 }
 
-/// `{"texture": {"blur": true, "clamp": false}}`: both off when missing.
-fn mcmeta(text: Option<&str>) -> (bool, bool) {
+/// `{"texture": {"blur": true, "clamp": false}}`: each flag, or `None` when it is missing.
+fn mcmeta(text: Option<&str>) -> (Option<bool>, Option<bool>) {
     let flag = |key: &str| {
         text.and_then(|t| t.split_once(&format!("\"{key}\"")))
             .map(|(_, after)| after.trim_start().trim_start_matches(':').trim_start())
-            .is_some_and(|v| v.starts_with("true"))
+            .map(|v| v.starts_with("true"))
     };
     (flag("blur"), flag("clamp"))
 }
@@ -233,6 +239,7 @@ pub fn decode_png(bytes: &[u8]) -> Option<Texture> {
         texels: Texels::Float(rgba),
         blur: false,
         clamp: false,
+        raw: false,
     })
 }
 
@@ -347,8 +354,9 @@ fn raw(bytes: &[u8], words: &[&str]) -> Result<Texture, String> {
         size,
         format,
         texels,
-        blur: false,
-        clamp: false,
+        blur: true,
+        clamp: true,
+        raw: true,
     })
 }
 
@@ -540,6 +548,63 @@ mod tests {
         assert_eq!(sky.texels, Texels::Float(vec![1.0, 0.0, 0.2, 1.0]));
         assert!(
             matches!(&textures[4].source, TextureSource::Resource(r) if r == "minecraft:dynamic/lightmap_1")
+        );
+    }
+
+    /// Raw textures are linear and clamped, PNGs nearest and repeating, and each key of a
+    /// `.mcmeta` overrides its own default only (Iris 1.11.7 with a probe pack of ours, #9064).
+    #[test]
+    fn raw_textures_are_linear_and_clamped_unless_their_mcmeta_says_otherwise() {
+        let mut png = Vec::new();
+        {
+            let mut e = png::Encoder::new(&mut png, 1, 1);
+            e.set_color(png::ColorType::Rgba);
+            e.set_depth(png::BitDepth::Eight);
+            e.write_header()
+                .unwrap()
+                .write_image_data(&[1, 2, 3, 4])
+                .unwrap();
+        }
+        let texel = [1u8, 2, 3, 4];
+        let files = [
+            ("shaders/a.dat", texel.as_slice()),
+            ("shaders/b.dat", texel.as_slice()),
+            ("shaders/b.dat.mcmeta", b"{\"texture\": {\"blur\": true}}"),
+            ("shaders/c.dat", texel.as_slice()),
+            ("shaders/c.dat.mcmeta", b"{\"texture\": {\"clamp\": false}}"),
+            ("shaders/d.dat", texel.as_slice()),
+            ("shaders/d.dat.mcmeta", b"{\"texture\": {\"blur\": false}}"),
+            ("shaders/p.png", png.as_slice()),
+            ("shaders/q.png", png.as_slice()),
+            ("shaders/q.png.mcmeta", b"{\"texture\": {\"blur\": true}}"),
+        ];
+        let pack = Pack::from_zip_bytes("P.zip", zip(&files)).unwrap();
+        let raw = "TEXTURE_2D RGBA8 1 1 RGBA UNSIGNED_BYTE";
+        let properties = format!(
+            "customTexture.a = a.dat {raw}\ncustomTexture.b = b.dat {raw}\n\
+             texture.composite.c = c.dat {raw}\ntexture.composite.d = d.dat {raw}\n\
+             customTexture.p = p.png\ntexture.composite.gaux2 = q.png\n"
+        );
+        let (textures, notes) =
+            load_textures(&pack, &Properties::parse(&properties, &Macros::standard()));
+        assert!(notes.is_empty(), "{notes:?}");
+        let found: Vec<(&str, bool, bool)> = textures
+            .iter()
+            .map(|t| match &t.source {
+                TextureSource::Image(i) => (t.name.as_str(), i.blur, i.clamp),
+                s => panic!("{s:?}"),
+            })
+            .collect();
+        assert_eq!(
+            found,
+            [
+                ("a", true, true),
+                ("b", true, true),
+                ("c", true, false),
+                ("d", false, true),
+                ("p", false, false),
+                ("gaux2", true, false),
+            ]
         );
     }
 

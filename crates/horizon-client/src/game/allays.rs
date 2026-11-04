@@ -4,6 +4,7 @@
 use super::Game;
 use horizon_client::{
     containers::BlockEntity,
+    first_person::Hand,
     items::ItemStack,
     mobs::{Species, allay},
 };
@@ -44,15 +45,14 @@ impl Game<'_> {
                 self.mobs[i].extra.point = None;
                 continue;
             };
-            let carried = self.mobs[i].extra.ints[1];
-            let max = self
-                .res
-                .items()
-                .get(&held.item)
-                .map_or(64, |i| i.max_stack as i32);
-            // `Mob.aiStep`'s looting loop asks for no AI: `canPickUpLoot`, the
-            // inventory room in `wantsToPickUp` and mob_griefing are its gates.
-            let wants = self.mobs[i].can_pick_up_loot() && griefing && carried < max;
+            // The held filter chooses item types; the pocket independently
+            // decides whether the candidate's full components can fit.
+            let wants = self.mobs[i].can_pick_up_loot() && griefing;
+            let room = |stack: &ItemStack| {
+                self.mobs[i].extra.allay.as_ref().map_or(0, |st| {
+                    st.room(stack, self.mobs[i].kind.inventory_stack_limit(stack))
+                })
+            };
             let reach = allay::pickup_reach(self.mobs[i].bounds());
             // GoToWantedItem: a stack it considers equal within 32 that the
             // allay sees (NearestItemSensor's hasLineOfSight, eye to eye). The
@@ -64,6 +64,7 @@ impl Game<'_> {
                 self.dropped.iter().position(|e| {
                     e.pickup_delay == 0
                         && allay::considers_item_equal(&held, &e.stack)
+                        && room(&e.stack) > 0
                         && reach.contains(e.position)
                 })
             } else {
@@ -76,7 +77,9 @@ impl Game<'_> {
                     .iter()
                     .enumerate()
                     .filter(|(_, e)| {
-                        e.pickup_delay == 0 && allay::considers_item_equal(&held, &e.stack)
+                        e.pickup_delay == 0
+                            && allay::considers_item_equal(&held, &e.stack)
+                            && room(&e.stack) > 0
                     })
                     .map(|(j, e)| (j, e.position.distance_squared(pos)))
                     .filter(|(_, d)| *d < 32.0 * 32.0)
@@ -107,20 +110,20 @@ impl Game<'_> {
             };
             let e = &self.dropped[j];
             if reach.contains(e.position) {
-                let take = (max - carried).min(e.stack.count as i32);
                 let (item, id) = (e.clone(), self.mobs[i].id);
-                // It carries the fetched stack, potion and all, not just its id.
-                self.mobs[i].extra.set_main_hand_stack(Some(ItemStack {
-                    count: 1,
-                    ..e.stack.clone()
-                }));
+                let max = self.mobs[i].kind.inventory_stack_limit(&e.stack);
+                let take = self.mobs[i]
+                    .extra
+                    .allay
+                    .as_mut()
+                    .unwrap()
+                    .add(e.stack.clone(), max);
                 self.add_pickup(
                     super::pickups::Taken::Item(Box::new(item)),
                     super::pickups::Collector::Mob(id),
                 );
-                self.mobs[i].extra.ints[1] += take;
                 let e = &mut self.dropped[j];
-                e.stack.count -= take as u32;
+                e.stack.count -= take;
                 if e.stack.count == 0 {
                     self.remove_dropped(j);
                 }
@@ -174,7 +177,7 @@ impl Game<'_> {
     /// before it picks anything up again.
     fn allay_deliver(&mut self, i: usize) {
         let m = &self.mobs[i];
-        if m.extra.ints[1] <= 0 {
+        if allay::inventory(m).is_none() {
             return;
         }
         // AllayAi.getItemDepositPosition: the liked note block, else the player.
@@ -200,7 +203,7 @@ impl Game<'_> {
         if target.distance_squared(eye) >= 9.0 {
             return;
         }
-        let Some(item) = m.extra.main_hand_stack().cloned() else {
+        let Some(item) = allay::inventory(m).cloned() else {
             return;
         };
         let from = [
@@ -222,7 +225,7 @@ impl Game<'_> {
             target.z.floor() as i32,
         ];
         let uuid = self.allay_liked_uuid(i);
-        // AllayAi.throwItem: one item of the held stack, its components and all.
+        // AllayAi.throwItem: one item of the pocket stack, its components and all.
         let stack = ItemStack { count: 1, ..item };
         self.for_each_player(|g| {
             if g.acting_uuid() == uuid && !g.spectator() {
@@ -230,7 +233,7 @@ impl Game<'_> {
             }
         });
         let m = &mut self.mobs[i];
-        m.extra.ints[1] -= 1;
+        m.extra.allay.as_mut().unwrap().take(1);
         m.extra.ints[3] = 60;
         // ItemEntity.setDefaultPickUpDelay.
         self.spawn_item(stack, from, v, 10);
@@ -289,7 +292,8 @@ impl Game<'_> {
             self.consume_held();
             return true;
         }
-        if holds && item.is_none() {
+        // Allay.mobInteract takes the item back only through an empty main hand.
+        if holds && item.is_none() && self.hand == Hand::Main {
             let m = &mut self.mobs[index];
             // The hand's stack keeps the components (a potion) the items came with.
             let held = m
@@ -298,21 +302,15 @@ impl Game<'_> {
                 .cloned()
                 .unwrap_or_else(|| ItemStack::new("minecraft:air", 1));
             m.extra.set_main_hand(None);
-            let carried = std::mem::take(&mut m.extra.ints[1]);
+            let carried = m.extra.allay.as_mut().and_then(|st| st.inventory.take());
             m.extra.tame = false;
             m.extra.owner = None;
             self.audio
                 .play("minecraft:entity.allay.item_taken", Some(at), 2.0, 1.0);
-            if carried > 0 {
-                self.spawn_item(
-                    ItemStack {
-                        count: carried as u32,
-                        ..held.clone()
-                    },
-                    at,
-                    [0.0, 0.2, 0.0],
-                    40,
-                );
+            // Allay.mobInteract ends with swing(MAIN_HAND, ...).
+            self.mobs[index].swing();
+            if let Some(stack) = carried {
+                self.spawn_item(stack, at, [0.0, 0.2, 0.0], 40);
             }
             if let Some(rest) = self.give(ItemStack { count: 1, ..held })
                 && let Some(eye) = self.eye_position()

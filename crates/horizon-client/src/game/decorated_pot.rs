@@ -59,6 +59,46 @@ pub(super) fn unpack_loot(
 }
 
 impl Game<'_> {
+    /// `DecoratedPotBlockEntity.saveAdditional` for commands: a pure view of
+    /// the existing saved state. Unlike pot_tag, this never unpacks loot.
+    pub(super) fn pot_data(&self, pos: [i32; 3]) -> Option<Tag> {
+        let state = self.world.block(pos[0], pos[1], pos[2]);
+        if &*self.res.facts().get(state).name != "minecraft:decorated_pot" {
+            return None;
+        }
+        let mut tag = spill::saved_entity(&self.world, pos).unwrap_or_else(|| {
+            Tag::compound([
+                ("id", Tag::String("minecraft:decorated_pot".into())),
+                ("x", Tag::Int(pos[0])),
+                ("y", Tag::Int(pos[1])),
+                ("z", Tag::Int(pos[2])),
+            ])
+        });
+        tag = horizon_client::block_entity_nbt::canonical(&tag)?;
+        if let Tag::Compound(map) = &mut tag {
+            map.remove(&"keepPacked".into());
+        }
+        Some(tag)
+    }
+    /// `DecoratedPotBlockEntity.loadAdditional`: command edits and BlockInput
+    /// loading write back to the same saved tag that live pot interactions use.
+    pub(super) fn set_pot_data(&mut self, pos: [i32; 3], input: &Tag) -> Option<bool> {
+        let before = self.pot_data(pos)?;
+        let mut input = input.clone();
+        if let Tag::Compound(map) = &mut input {
+            for key in ["id", "x", "y", "z"] {
+                map.insert(key.into(), before.get(key)?.clone());
+            }
+        }
+        let mut tag = horizon_client::block_entity_nbt::canonical(&input)?;
+        if let Tag::Compound(map) = &mut tag {
+            map.remove(&"keepPacked".into());
+        }
+        let changed = tag != before;
+        spill::put_saved_entity(&mut self.world, pos, tag);
+        self.mark_block_entity_updated((pos[0], pos[1], pos[2]));
+        Some(changed)
+    }
     /// The pot's saved tag at `pos` with its loot unpacked (a new one for a
     /// pot without), or None when no pot is there.
     fn pot_tag(&mut self, pos: [i32; 3]) -> Option<Tag> {
