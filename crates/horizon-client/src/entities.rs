@@ -3677,7 +3677,7 @@ mod render_light_tests {
         assert_eq!(orb(20.0).render_light(light(0, 9)), (15 * 16) << 8);
         assert_eq!(
             orb(20.0).render_light(light(15, 15)),
-            (15 * 16) | (15 * 16 << 8)
+            (15 * 16) | ((15 * 16) << 8)
         );
     }
 

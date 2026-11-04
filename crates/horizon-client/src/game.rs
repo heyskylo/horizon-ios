@@ -11313,7 +11313,7 @@ impl Game<'_> {
                     o.light_probe_y().floor() as i32,
                     o.position.z.floor() as i32,
                 );
-                let packed = o.render_light(light);
+                let packed = o.render_light(i32::from(light));
                 let c = p.as_vec3();
                 // `ExperienceOrbRenderer.submit`: the quad runs from
                 // (-0.5, -0.25) to (0.5, 0.75) and is scaled by 0.3, so the
