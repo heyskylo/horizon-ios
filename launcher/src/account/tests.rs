@@ -544,7 +544,7 @@ fn unread_session_files_go_once_the_game_would_refuse_them() {
     reap(&mut unread, SESSION_FILE_LIFE);
     assert!(waiting.exists(), "a game may still take it");
     assert!(!stale.exists(), "no token left behind");
-    assert_eq!(unread, [waiting.clone()]);
+    assert_eq!(unread, std::slice::from_ref(&waiting));
     let _ = std::fs::remove_dir_all(&dir);
 }
 

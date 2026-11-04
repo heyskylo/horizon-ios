@@ -563,7 +563,7 @@ fn folder_name(name: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{folder_name, local_server, server_gate, LOCAL_ONLY, ONLINE_ONLY};
+    use super::{LOCAL_ONLY, ONLINE_ONLY, folder_name, local_server, server_gate};
 
     #[test]
     fn a_profile_name_never_leaves_the_profiles_folder() {
@@ -629,6 +629,9 @@ mod tests {
             );
         }
         // A Microsoft session never needs the address resolved.
-        assert_eq!(server_gate(Some(false), false, || unreachable!(), true), Ok(()));
+        assert_eq!(
+            server_gate(Some(false), false, || unreachable!(), true),
+            Ok(())
+        );
     }
 }

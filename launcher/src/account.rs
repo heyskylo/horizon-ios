@@ -2263,8 +2263,10 @@ fn account_sessions_until(
         // Under the account lock, as every renewal is: a refresh token Microsoft rotates here is
         // not lost to another launcher renewing the same account at once. Still busy at the
         // deadline: no request, the token while it holds.
-        let operation =
-            session::lock_within(store, Some(deadline.saturating_duration_since(Instant::now())));
+        let operation = session::lock_within(
+            store,
+            Some(deadline.saturating_duration_since(Instant::now())),
+        );
         let Some(secrets) = secrets_in(store, &account.uuid) else {
             list.push(skipped("Sign in again in the launcher."));
             continue;
