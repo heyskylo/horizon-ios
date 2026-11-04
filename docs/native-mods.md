@@ -17,6 +17,21 @@ switch. The first install shows a trust notice, and every build waits behind a r
 after a review (its later releases are checked by machine); and they play in a game of their own, built for the
 instance they are installed in.
 
+## Compilation cache
+
+Native builds share `native/target/fast` (Performance and Dev) and `native/target/release`.
+After a build finishes, the launcher clears these compiler outputs if their combined size exceeds
+30 GiB. The installed game or exported server stays usable; a later changed build recompiles.
+`horizon-launcher settings native-cache-gib N` changes the limit (`default` restores 30; `0`
+disables automatic cleanup). This is an after-build limit, not a cap on peak compilation space.
+
+`horizon-launcher native-cache` reports its path, size in bytes and limit as JSON.
+`horizon-launcher native-cache --clear` frees the compilation cache immediately when builds are idle.
+Both use the same process lock as native builds; cleanup also refuses busy Cargo profile locks.
+It preserves lock files, refuses symbolic links and Windows junctions, and never targets installed
+versions, exported servers, instances, saves, mods, Rust toolchains or downloaded crates.
+
+
 ## Conditional item model properties
 
 A client mod supplies its own namespaced `minecraft:condition` property by implementing

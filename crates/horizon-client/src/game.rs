@@ -3974,9 +3974,7 @@ impl Game<'_> {
         stacks.retain(|stack| stack.count > 0 && &*stack.item != "minecraft:air");
         for stack in stacks {
             let r = &mut self.world.random;
-            let strength = f64::from(r.next_float()) * 0.5;
-            let angle = f64::from(r.next_float()) * std::f64::consts::TAU;
-            let v = [-angle.sin() * strength, 0.2, angle.cos() * strength];
+            let v = horizon_client::entities::drop_motion(r, self.yaw, self.pitch, true);
             self.spawn_item(stack, at, v, 40);
         }
     }
@@ -4161,19 +4159,11 @@ impl Game<'_> {
     /// drop key) names the player as the thrower; `drop(stack, false)`, for
     /// what no longer fits in the inventory, does not.
     fn throw_from_eyes(&mut self, thrown: ItemStack, eye: [f64; 3], thrown_from_hand: bool) {
-        let (yaw, pitch) = (
-            f64::from(self.yaw).to_radians(),
-            f64::from(self.pitch).to_radians(),
-        );
         let r = &mut self.world.random;
-        let spread = f64::from(r.next_float()) * std::f64::consts::TAU;
-        let strength = 0.02 * f64::from(r.next_float());
-        let v = [
-            -yaw.sin() * pitch.cos() * 0.3 + spread.cos() * strength,
-            -pitch.sin() * 0.3 + 0.1 + f64::from(r.next_float() - r.next_float()) * 0.1,
-            yaw.cos() * pitch.cos() * 0.3 + spread.sin() * strength,
-        ];
-        self.spawn_item(thrown, [eye[0], eye[1] - 0.3, eye[2]], v, 40);
+        let v = horizon_client::entities::drop_motion(r, self.yaw, self.pitch, false);
+        // `getEyeY() - 0.3F`.
+        let y = eye[1] - f64::from(0.3f32);
+        self.spawn_item(thrown, [eye[0], y, eye[2]], v, 40);
         // A native mod can keep the item out of the level (native_entity_join_level).
         if thrown_from_hand {
             let uuid = self.acting_player_uuid();
@@ -4301,6 +4291,7 @@ impl Game<'_> {
                 no_physics,
                 &nearby,
                 Some(self.border.geometry()),
+                Some(&self.res.motion().blocks),
                 &mut |splash| entered.push(splash),
             );
             // Entity.doWaterSplashEffect: the server plays the sound (broadcast
