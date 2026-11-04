@@ -623,6 +623,12 @@ impl<'p> Stage<'p> {
             }
             k += 1;
         }
+        // `centroid` and `sample` choose where a varying is interpolated; a `flat` one is not
+        // interpolated, so GLSL (4.60, 4.5) lets them stand beside it and means nothing by
+        // them. naga rejects the pair: `flat` alone says all there is.
+        if interpolation.split_whitespace().any(|w| w == "flat") {
+            interpolation = "flat ".to_owned();
+        }
         self.global_names(&words, k);
         let Some(storage) = storage else {
             return self.initializer(&words, to);

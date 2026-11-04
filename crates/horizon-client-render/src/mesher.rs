@@ -6,6 +6,7 @@
 mod fluid;
 mod leaf_culling;
 mod lighting;
+pub mod packed;
 mod sides;
 use crate::connected::{Pick, TileLayer};
 use crate::{
@@ -353,6 +354,12 @@ pub struct SectionMesh {
     pub translucent: Vec<TerrainVertex>,
     /// `solid_states` for `translucent`.
     pub translucent_states: Vec<QuadState>,
+    /// `solid` in the compact layout (`packed`), when the renderer reads it and it is
+    /// smaller; empty otherwise. Made by `sort_solid`.
+    pub packed: Vec<[u32; 6]>,
+    /// The tint of each solid quad as the mesher multiplied it (`packed::UNKNOWN_TINT` where
+    /// it does not say), for `packed`; dropped once that is made.
+    pub(crate) solid_tints: Vec<u32>,
     /// VisGraph: bit `a * 6 + b` is set when faces `a` and `b` (Direction
     /// order) are connected through non-opaque blocks.
     pub visibility: u64,
@@ -380,6 +387,8 @@ impl Default for SectionMesh {
             sides: Sides::default(),
             translucent: Vec::new(),
             translucent_states: Vec::new(),
+            packed: Vec::new(),
+            solid_tints: Vec::new(),
             visibility: ALL_VISIBLE,
             block_entities: Vec::new(),
             lights: Vec::new(),
@@ -414,6 +423,8 @@ impl SectionMesh {
         self.solid_states.clear();
         self.translucent.clear();
         self.translucent_states.clear();
+        self.packed.clear();
+        self.solid_tints.clear();
         self.block_entities.clear();
         self.lights.clear();
         self.sprite_layers.clear();
@@ -427,6 +438,8 @@ impl SectionMesh {
             + self.translucent.capacity() * std::mem::size_of::<TerrainVertex>()
             + self.solid_states.capacity() * std::mem::size_of::<QuadState>()
             + self.translucent_states.capacity() * std::mem::size_of::<QuadState>()
+            + self.packed.capacity() * std::mem::size_of::<[u32; 6]>()
+            + self.solid_tints.capacity() * std::mem::size_of::<u32>()
             + self.block_entities.capacity() * std::mem::size_of::<([i32; 3], u32)>()
             + self.lights.capacity() * std::mem::size_of::<([i32; 3], u32)>()
             + self.sprite_layers.capacity() * std::mem::size_of::<u16>()
@@ -441,8 +454,21 @@ impl SectionMesh {
             // beats the wrong block.
             self.solid_states.clear();
         }
-        self.sides = sides::sort_with_states(&mut self.solid, &mut self.solid_states);
+        let quads = self.solid.len() / 4;
+        if !self.solid_tints.is_empty() {
+            self.solid_tints.resize(quads, packed::UNKNOWN_TINT);
+        }
+        self.sides = sides::sort_with_metadata(
+            &mut self.solid,
+            &mut self.solid_states,
+            &mut self.solid_tints,
+        );
         self.bounds = self.compute_bounds();
+        self.packed.clear();
+        if packed::packing() && quads > 0 && self.solid_tints.len() == quads {
+            self.packed = packed::layout(&self.solid, &self.solid_tints);
+        }
+        self.solid_tints.clear();
     }
     /// The block of solid quad `quad` (`QuadState::UNKNOWN` without states).
     pub fn solid_state(&self, quad: usize) -> QuadState {
@@ -1645,12 +1671,24 @@ impl Mesher<'_> {
                         let other = &info[neighbor as usize];
                         // LeavesBlock.skipRendering with opaque leaves.
                         let opaque_leaves = !self.cutout_leaves && state.leaves && other.leaves;
-                        let hollow_leaf = self.leaf_culling == LeafCullingMode::Hollow
-                            && state.leaves
-                            && other.leaves
-                            && leaf_culling::in_section(x + dx, y + dy, z + dz);
+                        let culled_leaf = match self.leaf_culling {
+                            LeafCullingMode::Hollow | LeafCullingMode::Hidden => {
+                                state.leaves
+                                    && other.leaves
+                                    && leaf_culling::in_section(x + dx, y + dy, z + dz)
+                                    && (self.leaf_culling == LeafCullingMode::Hollow
+                                        || leaf_culling::backed(
+                                            pad,
+                                            info,
+                                            region,
+                                            base_y,
+                                            [x + 2 * dx, y + 2 * dy, z + 2 * dz],
+                                        ))
+                            }
+                            _ => false,
+                        };
                         visible[d as usize] = !opaque_leaves
-                            && !hollow_leaf
+                            && !culled_leaf
                             && self
                                 .visibility
                                 .should_render_face(
@@ -1900,13 +1938,21 @@ impl Mesher<'_> {
             TileLayer::Skip | TileLayer::Default => own,
         };
         match pick {
-            Pick::Keep => self.quad(out, solid_leaves, own, corners.map(|c| c.0), source(tint)),
+            Pick::Keep => self.quad(
+                out,
+                solid_leaves,
+                own,
+                corners.map(|c| c.0),
+                source(tint),
+                tint,
+            ),
             Pick::Tile(t) => self.quad(
                 out,
                 solid_leaves,
                 tile(t),
                 corners.map(|c| c.0),
                 source(tint),
+                tint,
             ),
             Pick::Quarters(tiles) => {
                 let cuts = cuts(&corners);
@@ -1922,6 +1968,7 @@ impl Mesher<'_> {
                             tile(tiles[quarter]),
                             piece.map(|c| c.0),
                             source_piece(source(tint), points),
+                            tint,
                         );
                     }
                 }
@@ -1974,6 +2021,7 @@ impl Mesher<'_> {
                         piece,
                         false,
                         source_piece(source(tint), points),
+                        tint,
                     );
                 }
             }
@@ -1988,8 +2036,9 @@ impl Mesher<'_> {
         tile: TileLayer,
         v: [TerrainVertex; 4],
         source: QuadState,
+        tint: Option<u32>,
     ) {
-        self.quad_as(out, solid_leaves, tile, v, true, source);
+        self.quad_as(out, solid_leaves, tile, v, true, source, tint);
     }
     /// Whether [`Mesher::quad`] draws `tile` in the translucent pass.
     fn translucent(&self, tile: TileLayer) -> bool {
@@ -2008,7 +2057,8 @@ impl Mesher<'_> {
         }
     }
     /// [`Mesher::quad`], with the sprite's own translucency (`translucent_layers`) counted only
-    /// when `by_sprite`: an overlay's pass is its rule's.
+    /// when `by_sprite`: an overlay's pass is its rule's. `tint`: what its grey levels were
+    /// multiplied by, for the compact layout (`packed`).
     fn quad_as(
         &self,
         out: &mut SectionMesh,
@@ -2017,6 +2067,7 @@ impl Mesher<'_> {
         mut v: [TerrainVertex; 4],
         by_sprite: bool,
         source: QuadState,
+        tint: Option<u32>,
     ) {
         let TileLayer::Layer {
             layer,
@@ -2051,6 +2102,12 @@ impl Mesher<'_> {
             vertex.layer = layer;
         }
         target.extend(v);
+        if !translucent {
+            // Quads other code put in `solid` (lava) have no tint known.
+            let quad = out.solid.len() / 4 - 1;
+            out.solid_tints.resize(quad, packed::UNKNOWN_TINT);
+            out.solid_tints.push(tint.unwrap_or(packed::WHITE));
+        }
     }
 }
 /// The cuts of a `ctm_compact` face, in quad parameters, without allocating: the first `.1`

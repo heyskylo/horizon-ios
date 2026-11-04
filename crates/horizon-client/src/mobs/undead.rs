@@ -1162,7 +1162,10 @@ impl Goal for AttackTurtleEgg {
             self.base.next_start -= 1;
             return false;
         }
-        if self.base.find_nearest(m, cx.w, turtle_egg_target) {
+        // Most of the level holds no turtle egg: its sections' palettes say
+        // so without the walk of every cell in reach.
+        let egg = |s| &*cx.w.facts.get(s).name == "minecraft:turtle_egg";
+        if self.base.may_find(m, cx.w, egg) && self.base.find_nearest(m, cx.w, turtle_egg_target) {
             self.base.next_start = super::goals::reduced(20);
             return true;
         }

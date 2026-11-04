@@ -7,12 +7,14 @@ use std::collections::BTreeMap;
 /// `at_midBlock.w` is the light its block gives. `SEPARATE_HARDWARE_SAMPLERS` (ShaderDoc,
 /// "Separate Hardware Shadow Samplers"): `shadowtex0`/`shadowtex1` stay plain depth samplers when
 /// hardware filtering is on, `shadowtex0HW`/`shadowtex1HW` compare; Horizon picks a comparison
-/// sampler by the declared type (`sampler2DShadow`), so they always are.
-const FEATURES: [&str; 7] = [
+/// sampler by the declared type (`sampler2DShadow`), so they always are. `HIGHER_SHADOWCOLOR`:
+/// `shadowcolor2` to `shadowcolor7` beside the first two.
+const FEATURES: [&str; 8] = [
     "BLOCK_EMISSION_ATTRIBUTE",
     "COMPUTE_SHADERS",
     "CUSTOM_IMAGES",
     "ENTITY_TRANSLUCENT",
+    "HIGHER_SHADOWCOLOR",
     "REVERSED_CULLING",
     "SEPARATE_HARDWARE_SAMPLERS",
     "SSBO",
@@ -453,6 +455,14 @@ mod tests {
             notes,
             ["the pack requires `NOT_A_FEATURE`, which is not supported yet"]
         );
+        // HIGHER_SHADOWCOLOR: Iris 1.11.7 defines it for `iris.features.optional` (probe p7951c).
+        let mut m = Macros::default();
+        let notes = m.define_features(&crate::Properties::parse(
+            "iris.features.optional = HIGHER_SHADOWCOLOR\n\
+             iris.features.required = HIGHER_SHADOWCOLOR\n",
+            &Macros::default(),
+        ));
+        assert!(m.is_defined("IRIS_FEATURE_HIGHER_SHADOWCOLOR") && notes.is_empty());
     }
 
     #[test]

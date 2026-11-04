@@ -62,6 +62,15 @@ impl SpriteAnimation {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct StillKey {
+    frame: u64,
+    pbr: u64,
+    side: u32,
+    settings: [u32; 2],
+    flags: [bool; 4],
+}
+
 #[derive(Default)]
 pub struct Sprites {
     /// Edge length of every array layer and the layers' current frames, set
@@ -90,7 +99,7 @@ pub struct Sprites {
     /// Still textures by their pixels, their LabPBR maps and mip settings: mods copy vanilla's
     /// textures under their own names, and one layer serves them all (the GPU's array may
     /// hold as few as 2048).
-    still: std::collections::HashMap<(Vec<u8>, u64, u32, [u32; 2], [bool; 4]), u32>,
+    still: std::collections::HashMap<StillKey, u32>,
     /// Decoded textures kept on disk between launches ([`Sprites::with_disk_cache`]).
     disk: Option<crate::sprite_cache::SpriteCache>,
     /// Textures [`Sprites::prefetch`] decoded ahead of their insert, by sprite name or
@@ -709,18 +718,20 @@ impl Sprites {
         };
         let still = (animation.is_none() && frames.len() == 1).then(|| {
             use std::hash::{Hash, Hasher};
+            let mut frame = std::collections::hash_map::DefaultHasher::new();
+            frames[0].hash(&mut frame);
             let mut maps = std::collections::hash_map::DefaultHasher::new();
             pbr.hash(&mut maps);
-            (
-                frames[0].clone(),
-                maps.finish(),
+            StillKey {
+                frame: frame.finish(),
+                pbr: maps.finish(),
                 side,
-                [
+                settings: [
                     settings.strategy as u32,
                     settings.alpha_cutoff_bias.to_bits(),
                 ],
-                [settings.has_transparent, settings.item, opaque, translucent],
-            )
+                flags: [settings.has_transparent, settings.item, opaque, translucent],
+            }
         });
         if let Some(&same) = still.as_ref().and_then(|k| self.still.get(k)) {
             self.layers.insert(name.to_owned(), same);

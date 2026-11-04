@@ -7,6 +7,7 @@ pub mod ambience;
 pub mod animate_tick;
 pub mod arrows;
 pub mod block_contact;
+pub mod powder_snow;
 pub use horizon_client_render::{
     assets, atlas_sources, audio, auth, ban_notice, bidi, biome, block_edit, block_entities,
     block_entity_anim, block_entity_render, block_sprites, bluemap, bluemap_detect, border_render,

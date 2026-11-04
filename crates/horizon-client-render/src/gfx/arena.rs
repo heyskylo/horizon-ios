@@ -880,6 +880,8 @@ mod tests {
             start,
             translucent_at,
             solid,
+            solid_slots: u64::from(solid) * 4,
+            packed: false,
             sides: crate::mesher::Sides::unsorted(solid),
             translucent,
             sort: super::super::translucency::SortState::new(Vec::new()),
@@ -1018,7 +1020,7 @@ mod tests {
             label: None,
             entries: &[],
         });
-        let pipeline = |layout: &wgpu::PipelineLayout, label: &str, _: &str, _: &str, _, _| {
+        let pipeline = |layout: &wgpu::PipelineLayout, label: &str, _: &str, _: &str, _, _, _| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(label),
                 layout: Some(layout),
@@ -1075,6 +1077,8 @@ mod tests {
             start: 0,
             translucent_at: (0, at),
             solid: 64,
+            solid_slots: 64 * 4,
+            packed: false,
             sides: crate::mesher::Sides::unsorted(64),
             translucent: 128,
             sort: super::super::translucency::SortState::new(Vec::new()),
@@ -1300,6 +1304,8 @@ mod tests {
                 start: 0,
                 translucent_at: if indices { (7, 7) } else { at },
                 solid,
+                solid_slots: u64::from(solid) * 4,
+                packed: false,
                 sides: crate::mesher::Sides::unsorted(solid),
                 translucent,
                 sort: super::super::translucency::SortState::new(Vec::new()),

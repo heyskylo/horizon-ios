@@ -23,7 +23,8 @@ jobs:
       startsWith(github.event.comment.body, '/reopen') ||
       startsWith(github.event.comment.body, '/label') ||
       startsWith(github.event.comment.body, '/unlabel'))
-    runs-on: ubuntu-latest
+    # One of our small runners (label horizon-light, docs/ci-runners.md): main's script only, as above.
+    runs-on: ${{ vars.SELF_HOSTED_CI != 'off' && fromJSON('["self-hosted", "linux", "horizon-light"]') || 'ubuntu-latest' }}
     timeout-minutes: 5
     permissions:
       contents: read

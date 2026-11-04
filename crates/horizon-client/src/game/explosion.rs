@@ -490,7 +490,9 @@ impl Game<'_> {
                     p.velocity.z + push[2],
                 );
                 if !(creative && flying) {
-                    pushed = (!p.health.sync_velocity).then_some(push);
+                    // ServerExplosion.hitPlayers: the packet carries the push even when the hurt
+                    // also marks the velocity (its motion packet follows).
+                    pushed = Some(push);
                 }
             }
         }

@@ -36,7 +36,9 @@ pub(super) fn images(defs: Vec<CustomImage>) -> Vec<PackImage> {
     defs.into_iter()
         .map(|def| PackImage {
             format: format(def.format),
-            dimension: if def.is_3d() {
+            dimension: if def.is_1d() {
+                wgpu::TextureViewDimension::D1
+            } else if def.is_3d() {
                 wgpu::TextureViewDimension::D3
             } else {
                 wgpu::TextureViewDimension::D2
@@ -51,6 +53,15 @@ pub(super) fn images(defs: Vec<CustomImage>) -> Vec<PackImage> {
             made_for: [0; 2],
         })
         .collect()
+}
+
+/// The texture dimension a view of `view` needs.
+fn texture_dimension(view: wgpu::TextureViewDimension) -> wgpu::TextureDimension {
+    match view {
+        wgpu::TextureViewDimension::D1 => wgpu::TextureDimension::D1,
+        wgpu::TextureViewDimension::D3 => wgpu::TextureDimension::D3,
+        _ => wgpu::TextureDimension::D2,
+    }
 }
 
 /// The wgpu format of an image's internal format: a storage format of the same channels.
@@ -87,7 +98,9 @@ pub(super) fn makeable(device: &wgpu::Device, def: &CustomImage) -> Result<(), S
         ));
     }
     let limits = device.limits();
-    let largest = if def.is_3d() {
+    let largest = if def.is_1d() {
+        limits.max_texture_dimension_1d
+    } else if def.is_3d() {
         limits.max_texture_dimension_3d
     } else {
         limits.max_texture_dimension_2d
@@ -137,11 +150,7 @@ pub(super) fn resize_images(
                     },
                     mip_level_count: 1,
                     sample_count: 1,
-                    dimension: if image.dimension == wgpu::TextureViewDimension::D3 {
-                        wgpu::TextureDimension::D3
-                    } else {
-                        wgpu::TextureDimension::D2
-                    },
+                    dimension: texture_dimension(image.dimension),
                     format: image.format,
                     usage: wgpu::TextureUsages::TEXTURE_BINDING | usage,
                     view_formats: &[],
@@ -334,11 +343,7 @@ pub(super) fn stand_ins(
                     },
                     mip_level_count: 1,
                     sample_count: 1,
-                    dimension: if dimension == wgpu::TextureViewDimension::D3 {
-                        wgpu::TextureDimension::D3
-                    } else {
-                        wgpu::TextureDimension::D2
-                    },
+                    dimension: texture_dimension(dimension),
                     format,
                     usage: wgpu::TextureUsages::STORAGE_BINDING
                         | wgpu::TextureUsages::COPY_DST

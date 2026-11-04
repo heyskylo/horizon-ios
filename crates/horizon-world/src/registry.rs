@@ -96,6 +96,23 @@ impl BlockRegistry {
         let facts: facts::Facts =
             facts::with_shared_strings(|| serde_json::from_reader(io::BufReader::new(reader)))
                 .map_err(|e| invalid(e.to_string()))?;
+        Self::from_facts(facts)
+    }
+
+    /// [`Self::from_facts_json_with_flags`] over bytes already in memory.
+    ///
+    /// `serde_json` cannot borrow out of a reader, so `from_reader` copies
+    /// every string it parses; over one slice it borrows instead. The facts
+    /// are about 10 MB and sit at the head of the start, before anything
+    /// else in the core bundle can begin, so the difference is on the
+    /// critical path.
+    pub fn from_facts_json_bytes(bytes: &[u8]) -> io::Result<(Self, Vec<(bool, bool)>)> {
+        let facts: facts::Facts = facts::with_shared_strings(|| serde_json::from_slice(bytes))
+            .map_err(|e| invalid(e.to_string()))?;
+        Self::from_facts(facts)
+    }
+
+    fn from_facts(facts: facts::Facts) -> io::Result<(Self, Vec<(bool, bool)>)> {
         let flags = facts.states.iter().map(|r| (r.air, r.fluid)).collect();
         let states = facts.states.into_iter().map(|r| r.state).collect();
         Ok((Self::from_states(states, facts.defaults)?, flags))

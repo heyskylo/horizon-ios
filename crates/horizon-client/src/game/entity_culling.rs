@@ -4,12 +4,14 @@ use horizon_client::{
     blocks::{BlockFacts, RenderShape, StateFacts},
     chunk::Chunk,
     entity_culling::Culler,
+    mobs::Species,
     world::World,
 };
 use std::{
     cell::RefCell,
     sync::{
         Arc, Weak,
+        atomic::{AtomicBool, Ordering},
         mpsc::{self, Receiver, SyncSender, TrySendError},
     },
     thread::JoinHandle,
@@ -127,9 +129,10 @@ struct CullJob {
 /// camera and mesh bounds, with the block chunks and rendered sections that
 /// proved occlusion revalidated before hiding anything.
 pub(super) struct AsyncCuller {
-    jobs: SyncSender<CullJob>,
+    jobs: Option<SyncSender<CullJob>>,
     results_rx: Receiver<CullResults>,
-    _thread: JoinHandle<()>,
+    thread: Option<JoinHandle<()>>,
+    stopping: Arc<AtomicBool>,
     snapshot: Option<(SnapshotKey, ChunkBounds, Arc<OcclusionSnapshot>)>,
     opaque_states: Option<Arc<[bool]>>,
     results: Option<CullResults>,
@@ -143,19 +146,26 @@ impl AsyncCuller {
     pub(super) fn new() -> std::io::Result<Self> {
         let (job_tx, job_rx) = mpsc::sync_channel::<CullJob>(1);
         let (result_tx, result_rx) = mpsc::channel::<CullResults>();
+        let stopping = Arc::new(AtomicBool::new(false));
+        let worker_stopping = stopping.clone();
         let thread = std::thread::Builder::new()
             .name("entity-culling".into())
             .spawn(move || {
                 while let Ok(job) = job_rx.recv() {
-                    if result_tx.send(cull_job(job)).is_err() {
+                    if worker_stopping.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    let result = cull_job(job, &worker_stopping);
+                    if worker_stopping.load(Ordering::Relaxed) || result_tx.send(result).is_err() {
                         break;
                     }
                 }
             })?;
         Ok(Self {
-            jobs: job_tx,
+            jobs: Some(job_tx),
             results_rx: result_rx,
-            _thread: thread,
+            thread: Some(thread),
+            stopping,
             snapshot: None,
             opaque_states: None,
             results: None,
@@ -168,6 +178,26 @@ impl AsyncCuller {
             },
             pending: false,
         })
+    }
+
+    fn request_stop(&mut self) {
+        self.stopping.store(true, Ordering::Relaxed);
+        self.jobs.take(); // Wake recv even when the worker has no job.
+    }
+
+    fn shutdown(&mut self) -> bool {
+        self.request_stop();
+        if self
+            .thread
+            .as_ref()
+            .is_some_and(|thread| !thread.is_finished())
+        {
+            return false;
+        }
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+        true
     }
 
     fn begin_frame(&mut self, camera: glam::DVec3, world: &World) {
@@ -262,7 +292,8 @@ impl AsyncCuller {
             snapshot,
             queries,
         };
-        match self.jobs.try_send(job) {
+        let Some(jobs) = &self.jobs else { return };
+        match jobs.try_send(job) {
             Ok(()) => self.pending = true,
             Err(TrySendError::Full(job) | TrySendError::Disconnected(job)) => {
                 *self.queries.get_mut() = job.queries;
@@ -271,13 +302,25 @@ impl AsyncCuller {
     }
 }
 
-fn cull_job(mut job: CullJob) -> CullResults {
+impl Drop for AsyncCuller {
+    fn drop(&mut self) {
+        self.request_stop();
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+fn cull_job(mut job: CullJob, stopping: &AtomicBool) -> CullResults {
     let camera = job.queries[0].camera.map(f64::from_bits);
     let culler = Culler::new(camera, 8_192);
     let mut last_chunk = LastChunk::default();
     let mut hidden = Vec::with_capacity(job.queries.len());
     let mut covered = Vec::new();
     for &key in &job.queries {
+        if stopping.load(Ordering::Relaxed) {
+            break;
+        }
         covered.clear();
         let min = key.min.map(f64::from_bits);
         let max = key.max.map(f64::from_bits);
@@ -377,6 +420,19 @@ fn snapshot_cell(value: f64) -> Option<i32> {
 }
 
 impl Game<'_> {
+    /// Poll both culling workers to completion before releasing an engine session.
+    pub(super) fn shutdown_culling_workers(&mut self) -> bool {
+        let entity_done = self
+            .async_entity_culler
+            .as_mut()
+            .is_none_or(AsyncCuller::shutdown);
+        if entity_done {
+            self.async_entity_culler = None;
+        }
+        let particles_done = self.async_particle_culler.get_mut().shutdown();
+        entity_done && particles_done
+    }
+
     pub(super) fn prepare_entity_culling(&mut self, camera: glam::DVec3) {
         // Spans tell the pack's passes which entities are hidden; without them, nothing changes.
         self.pack_shadow_casters = match (&self.renderer, &self.pack_ids) {
@@ -577,6 +633,30 @@ impl Game<'_> {
 #[cfg(test)]
 mod async_tests {
     use super::*;
+
+    #[test]
+    fn stopping_an_idle_worker_wakes_and_joins_it() {
+        let mut culler = AsyncCuller::new().unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !culler.shutdown() && std::time::Instant::now() < deadline {
+            std::thread::yield_now();
+        }
+        assert!(
+            culler.thread.is_none(),
+            "idle recv must wake during shutdown"
+        );
+        assert!(culler.jobs.is_none());
+        assert!(culler.shutdown(), "shutdown is idempotent");
+    }
+
+    #[test]
+    fn canceled_jobs_stop_before_culling_more_queries() {
+        let (snapshot, _live) = wall(None);
+        let results = cull_job(job(snapshot), &AtomicBool::new(true));
+        assert!(results.hidden.is_empty());
+        assert!(results.scratch_queries.is_empty());
+    }
+
     use horizon_client::chunk::ColumnLayout;
 
     fn wall(hole: Option<[i32; 3]>) -> (Arc<OcclusionSnapshot>, Vec<Arc<Chunk>>) {
@@ -654,17 +734,85 @@ mod async_tests {
     #[test]
     fn async_worker_only_hides_bounds_behind_a_complete_opaque_plane() {
         let (snapshot, live) = wall(None);
-        let results = cull_job(job(snapshot));
+        let results = cull_job(job(snapshot), &AtomicBool::new(false));
         assert_eq!(results.hidden.len(), 1);
         assert_eq!(results.hidden[0].1.sections.len(), 4);
         assert_eq!(results.hidden[0].1.chunks.len(), 2);
         drop(live);
 
         let (snapshot, live) = wall(Some([4, 0, 0]));
-        let results = cull_job(job(snapshot));
+        let results = cull_job(job(snapshot), &AtomicBool::new(false));
         assert!(results.hidden.is_empty());
         drop(live);
     }
+}
+
+/// How far a renderer's `getBoundingBoxForCulling` grows the entity's own box.
+/// `EntityRenderer.shouldRender` culls with that box and inflates it by 0.5
+/// more; the growth here is what the renderer asks for on top.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(super) struct CullGrow {
+    /// Added to all three axes (`AABB.inflate(d)`).
+    all: f64,
+    /// Added to x and z only (`AABB.inflate(x, 0, z)`).
+    side: f64,
+    /// Taken off the bottom (`AABB.setMinY`).
+    down: f64,
+}
+
+impl CullGrow {
+    /// The growth a living entity's renderer asks for: none at all unless it
+    /// is an illusioner, a sniffer, a happy ghast or wearing a dragon head.
+    pub(super) fn of(species: Species, height: f64, dragon_head: bool) -> Self {
+        let mut grow = Self::default();
+        // LivingEntityRenderer.getBoundingBoxForCulling: `inflate(0.5)` while
+        // the head slot holds a dragon head, so the head does not pop out at
+        // the edge of the view.
+        if dragon_head {
+            grow.all += 0.5;
+        }
+        match species {
+            // IllusionerRenderer: `inflate(3, 0, 3)`, room for its mirrors.
+            Species::Illusioner => grow.side += 3.0,
+            // SnifferRenderer: `inflate(0.6)`.
+            Species::Sniffer => grow.all += f64::from(0.6_f32),
+            // HappyGhastRenderer: `setMinY(minY - getBbHeight() / 2)`.
+            Species::HappyGhast => grow.down += height / 2.0,
+            _ => {}
+        }
+        grow
+    }
+}
+
+/// `getBoundingBoxForCulling` for a mob at the frame's partial tick `alpha`,
+/// grown by what its renderer asks for.
+pub(super) fn cull_box(mob: &horizon_client::mobs::Mob, alpha: f64) -> (glam::DVec3, glam::DVec3) {
+    let (width, height, _) = mob.dims();
+    let grow = CullGrow::of(
+        mob.species(),
+        height,
+        mob.extra.head.as_deref() == Some("minecraft:dragon_head"),
+    );
+    let pos = glam::DVec3::new(
+        mob.previous.x + (mob.position.x - mob.previous.x) * alpha,
+        mob.previous.y + (mob.position.y - mob.previous.y) * alpha,
+        mob.previous.z + (mob.position.z - mob.previous.z) * alpha,
+    );
+    grown_box(pos, width, height, grow)
+}
+
+/// The entity's box standing on `pos`, grown by `grow`.
+pub(super) fn grown_box(
+    pos: glam::DVec3,
+    width: f64,
+    height: f64,
+    grow: CullGrow,
+) -> (glam::DVec3, glam::DVec3) {
+    let side = width / 2.0 + grow.side + grow.all;
+    (
+        pos - glam::DVec3::new(side, grow.all + grow.down, side),
+        pos + glam::DVec3::new(side, height + grow.all, side),
+    )
 }
 
 /// An entity's position as a `DVec3`.
@@ -731,6 +879,57 @@ mod tests {
         assert_eq!(default_range(item, entity_view_scale(12, 1.0)), 24.0);
         assert_eq!(default_range(item, entity_view_scale(16, 1.0)), 32.0);
         assert_eq!(default_range(item, entity_view_scale(32, 1.0)), 40.0);
+    }
+
+    /// `getBoundingBoxForCulling`: only four living renderers grow the box.
+    /// An illusioner asks for three blocks either side (room for its mirror
+    /// images, which are drawn outside its own box), a sniffer for 0.6 all
+    /// round, a happy ghast for half its height below (its riders hang under
+    /// it) and anyone wearing a dragon head for 0.5 all round.
+    #[test]
+    fn only_the_four_living_renderers_grow_the_culling_box() {
+        assert_eq!(
+            CullGrow::of(Species::Villager, 1.95, false),
+            CullGrow::default()
+        );
+        let illusioner = CullGrow::of(Species::Illusioner, 1.95, false);
+        assert_eq!(
+            (illusioner.side, illusioner.all, illusioner.down),
+            (3.0, 0.0, 0.0)
+        );
+        let sniffer = CullGrow::of(Species::Sniffer, 1.75, false);
+        assert!((sniffer.all - 0.6).abs() < 1e-7 && sniffer.side == 0.0);
+        let ghast = CullGrow::of(Species::HappyGhast, 4.0, false);
+        assert_eq!((ghast.down, ghast.all), (2.0, 0.0));
+        // A dragon head grows every axis, on any living entity.
+        let headed = CullGrow::of(Species::Villager, 1.95, true);
+        assert_eq!((headed.all, headed.side, headed.down), (0.5, 0.0, 0.0));
+        // The growths add up: an illusioner in a dragon head gets both.
+        let both = CullGrow::of(Species::Illusioner, 1.95, true);
+        assert_eq!((both.all, both.side), (0.5, 3.0));
+    }
+
+    /// The box the frustum test sees: an illusioner's own box is 0.6 wide, so
+    /// its culling box reaches 3.3 blocks either side of its position and
+    /// 0.5 below its feet, where a villager's reaches 0.8.
+    #[test]
+    fn an_illusioner_is_culled_three_blocks_wider_than_its_box() {
+        let pos = glam::DVec3::new(10.0, 64.0, -4.0);
+        let (lo, hi) = grown_box(
+            pos,
+            0.6,
+            1.95,
+            CullGrow::of(Species::Illusioner, 1.95, false),
+        );
+        assert_eq!(lo, glam::DVec3::new(10.0 - 3.3, 64.0, -4.0 - 3.3));
+        assert_eq!(hi, glam::DVec3::new(10.0 + 3.3, 64.0 + 1.95, -4.0 + 3.3));
+        let (lo, hi) = grown_box(pos, 0.6, 1.95, CullGrow::of(Species::Villager, 1.95, false));
+        assert!((lo.x - (10.0 - 0.3)).abs() < 1e-9);
+        assert!((hi.y - (64.0 + 1.95)).abs() < 1e-9);
+        // A happy ghast's box drops by half its height below its feet.
+        let (lo, hi) = grown_box(pos, 4.0, 4.0, CullGrow::of(Species::HappyGhast, 4.0, false));
+        assert_eq!(lo.y, 62.0);
+        assert_eq!(hi.y, 68.0);
     }
 
     /// `Entity.shouldRenderAtSqrDistance` on a broken box: the size falls

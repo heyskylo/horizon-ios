@@ -167,6 +167,16 @@ pub fn main_with(mods: crate::mod_api::Mods) {
                 max_stack,
             );
         },
+        player_chat: |player, name, message, replies, cancel| {
+            crate::mod_api::dispatch_player_chat(
+                crate::mod_api::mods(),
+                player,
+                name,
+                message,
+                replies,
+                cancel,
+            );
+        },
         living_heal: |entity, amount, cancel| {
             crate::mod_api::dispatch_living_heal(crate::mod_api::mods(), entity, amount, cancel);
         },

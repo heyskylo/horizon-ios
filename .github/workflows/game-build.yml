@@ -197,8 +197,11 @@ jobs:
         run: |
           set -euo pipefail
           rustup component add llvm-tools
-          ${{ runner.os == 'Windows' && 'python' || 'python3' }} tools/check_cpu_baseline.py \
-            $(for binary in horizon-client horizon-ctl horizon-prepare horizon-server; do echo "$BIN/$binary${{ matrix.exe }}"; done)
+          binaries=()
+          for binary in horizon-client horizon-ctl horizon-prepare horizon-server; do
+            binaries+=("$BIN/${binary}${{ matrix.exe }}")
+          done
+          ${{ runner.os == 'Windows' && 'python' || 'python3' }} tools/check_cpu_baseline.py "${binaries[@]}"
       - name: Every program starts
         run: |
           set -euo pipefail

@@ -51,6 +51,7 @@ use winit::{
 
 mod frames;
 mod hud;
+pub(super) mod launcher;
 mod pads;
 mod players;
 mod setup;
@@ -143,6 +144,9 @@ pub(super) struct Split<'a> {
     /// Whose game runs now (0 = P1), and P1's buttons while another's does.
     turn: usize,
     host_widgets: widgets::Saved,
+    /// The launcher's other Microsoft accounts' sessions, for splitscreen players to sign in
+    /// with (`launcher::accounts`).
+    accounts: Vec<Arc<horizon_client::auth::AuthSession>>,
     /// `HORIZON_SPLIT_STATS`: when the frame times were last printed.
     stats: Option<Instant>,
     /// For the readout: where a frame's wall time goes (the turns with their renders, presents,
@@ -197,6 +201,7 @@ impl<'a> Split<'a> {
             clock: Default::default(),
             turn: 0,
             host_widgets: Default::default(),
+            accounts: launcher::accounts(),
             stats: std::env::var_os("HORIZON_SPLIT_STATS").map(|_| Instant::now()),
             spent: Default::default(),
             spent_frames: 0,
@@ -216,6 +221,7 @@ impl<'a> Split<'a> {
         fn workers_stopped(game: &mut Game<'_>) -> bool {
             game.audio.stop_all();
             let mut stopped = game.shutdown_server_pack_worker();
+            stopped &= game.shutdown_culling_workers();
             if let Some(renderer) = &mut game.renderer {
                 stopped &= renderer.shutdown_pack_compiler();
             }
@@ -469,6 +475,7 @@ impl<'a> Split<'a> {
             None,
             api,
             batching,
+            self.host.settings.horizon.wide_frame(),
             shader_pack,
         );
         let renderer = match built {
@@ -546,6 +553,7 @@ impl<'a> Split<'a> {
             None,
             api,
             batching,
+            self.host.settings.horizon.wide_frame(),
             shader_pack,
         );
         let renderer = match built {
@@ -577,9 +585,20 @@ impl<'a> Split<'a> {
         Ok(())
     }
 
-    /// P1 is playing in its own world, which others can join.
+    /// P1 is playing in a world others can join: its own (its server thread) or a server's.
     fn in_world(&self) -> bool {
-        self.host.title.is_none() && self.host.player.is_some() && self.host.integrated.is_some()
+        self.host.title.is_none()
+            && self.host.player.is_some()
+            && (self.host.integrated.is_some() || self.p1_server().is_some())
+    }
+
+    /// The server P1 joined over the network (a dedicated server, another computer's LAN
+    /// world, a friend's invite): the others join it too, each as its own profile.
+    fn p1_server(&self) -> Option<String> {
+        if self.host.integrated.is_some() || self.host.remote.is_none() {
+            return None;
+        }
+        self.host.server_address().map(str::to_owned)
     }
 
     /// The pads' players who accepted, and the testing players (`HORIZON_SPLIT`, one a frame),
@@ -834,6 +853,7 @@ impl ApplicationHandler for Split<'_> {
         self.turn(0);
         self.host.about_to_wait(event_loop);
         let mut changed = self.drop_out() | self.admit(event_loop, pad_joins);
+        self.follow_pack_answer();
         self.sync_profiles();
         changed |= self.pick_profiles();
         changed |= self.sync_setup();

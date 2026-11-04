@@ -129,6 +129,25 @@ impl Game<'_> {
             let _ = flight.reply.send(summary.to_string());
         }
     }
+    /// The game's settings a render capture records beside the renderer's own state.
+    fn render_capture_settings(&self) -> horizon_client::gfx::capture::Settings {
+        let s = &self.settings;
+        horizon_client::gfx::capture::Settings {
+            graphics_api: format!("{:?}", s.horizon.api),
+            translucent_batching: s.horizon.translucent_batching,
+            texture_filtering: s.file.int("textureFiltering"),
+            anisotropy_bit: s.file.int("maxAnisotropyBit"),
+            mipmap_levels: s.mipmap_levels.max(0) as u32,
+            resolution_scale: s.horizon.resolution_scale as f32 / 100.0,
+            fxaa: s.horizon.fxaa,
+            taa: s.horizon.taa,
+            upscale: s.horizon.upscaling.ratio(),
+            render_distance: self.streaming.radius,
+            lod_distance: self.far_terrain_choice().0,
+            resources: self.options.resources.clone(),
+            atlas: horizon_client::gfx::capture::AtlasCheck::of(&self.pack.render),
+        }
+    }
     /// The frame summary, with Horizon's own passes' median GPU times while they are timed.
     fn summary_with_passes(&self) -> Value {
         let mut summary = self.frame_stats.summary();
@@ -404,6 +423,53 @@ impl Game<'_> {
                 }
                 Ok(Some(json!({ "ok": true, "gpu_passes": self.gpu_passes })))
             }
+            "render-capture" => match words.get(1).copied() {
+                None => {
+                    let r = self.renderer.as_ref().ok_or("no renderer")?;
+                    Ok(Some(
+                        json!({ "ok": true, "keeping": r.keeps_capture_copies() }),
+                    ))
+                }
+                Some("on") => {
+                    let r = self.renderer.as_mut().ok_or("no renderer")?;
+                    if !r.keeps_capture_copies() {
+                        r.keep_capture_copies(true);
+                        // The copies start empty: every section and far tile is meshed
+                        // again, as after a relayout.
+                        self.clear_lod();
+                        self.all_sections_changed();
+                    }
+                    Ok(Some(json!({ "ok": true, "keeping": true })))
+                }
+                Some("off") => {
+                    let r = self.renderer.as_mut().ok_or("no renderer")?;
+                    r.keep_capture_copies(false);
+                    Ok(Some(json!({ "ok": true, "keeping": false })))
+                }
+                Some(_) => {
+                    if self.pending_render_capture.is_some() {
+                        return Err("a render capture is already pending".into());
+                    }
+                    // The rest of the line: a path may hold spaces.
+                    let dir = line
+                        .trim_start()
+                        .strip_prefix("render-capture")
+                        .unwrap_or("");
+                    let settings = self.render_capture_settings();
+                    let r = self.renderer.as_mut().ok_or("no renderer")?;
+                    if !r.keeps_capture_copies() {
+                        return Err("no mesh copies kept: run render-capture on (or start with \
+                            HORIZON_RENDER_CAPTURE=1) and let the terrain settle first"
+                            .into());
+                    }
+                    r.capture = Some(horizon_client::gfx::capture::Request {
+                        dir: dir.trim().into(),
+                        settings,
+                    });
+                    self.pending_render_capture = Some(reply.clone());
+                    Ok(None)
+                }
+            },
             "section-sides" => {
                 let r = self.renderer.as_mut().ok_or("no renderer")?;
                 match words.get(1).copied() {

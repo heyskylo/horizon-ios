@@ -22,17 +22,24 @@ env:
 
 jobs:
   bench:
-    runs-on: ubuntu-latest
+    # Our checks runners (label horizon-checks, docs/ci-runners.md): the branch and the base on the same machine, as
+    # the comparison needs. SELF_HOSTED_CI=light or off: GitHub's.
+    runs-on: ${{ github.repository == 'horizon-rust/horizon' && vars.SELF_HOSTED_CI != 'off' && vars.SELF_HOSTED_CI != 'light' && fromJSON('["self-hosted", "linux", "horizon-checks"]') || 'ubuntu-latest' }}
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
       - name: Install Rust and the ALSA and udev headers
+        env:
+          HOSTED: ${{ runner.environment == 'github-hosted' }}
         run: |
-          sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev libudev-dev
+          if [ "$HOSTED" = true ]; then
+            sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev libudev-dev
+          fi
           rustup toolchain install stable --profile minimal
       - uses: Swatinem/rust-cache@v2
+        if: runner.environment == 'github-hosted'
         with:
           shared-key: pack-bench
       - name: Bench the branch
@@ -46,11 +53,15 @@ jobs:
           SCALE: ${{ inputs.scale || '1' }}
         run: |
           git fetch -- https://github.com/horizon-rust/horizon.git "$BASE"
+          # Our runners keep the folder beside the checkout between jobs.
+          git worktree remove --force ../base 2> /dev/null || rm -rf ../base
+          git worktree prune
           git worktree add ../base FETCH_HEAD
           cp crates/horizon-client-render/examples/pack_load_bench.rs ../base/crates/horizon-client-render/examples/
           # A bench row that times a function the base lacks keeps it from building there: then
           # the branch's own rows compare the two ways.
-          (cd ../base && CARGO_TARGET_DIR="$GITHUB_WORKSPACE/target" cargo run --profile fast -p horizon-client-render \
+          target=${CARGO_TARGET_DIR:-$GITHUB_WORKSPACE/target}
+          (cd ../base && CARGO_TARGET_DIR="$target" cargo run --profile fast -p horizon-client-render \
             --example pack_load_bench -- --scale "$SCALE") > base.md \
             || echo "The bench does not build on the base." > base.md
       - name: Summary

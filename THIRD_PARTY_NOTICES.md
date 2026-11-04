@@ -28,6 +28,9 @@ documented in `third_party/java_regex/HORIZON.md`.
 fixes to its GLSL frontend that shader packs need, each applied in the commit that needed it. It is licensed under MIT or Apache-2.0; both licenses
 are in that folder (`LICENSE.MIT`, `LICENSE.APACHE`).
 
+The GLSL frontend also resets the common type for each comma-separated declarator so one
+variable's array specifier does not change later variables.
+
 ## libmimalloc-sys and mimalloc
 
 `third_party/libmimalloc-sys` is [libmimalloc-sys](https://github.com/purpleprotocol/mimalloc_rust)
