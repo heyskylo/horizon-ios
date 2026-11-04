@@ -68,7 +68,7 @@ impl Launcher {
             .min_w_0()
             .pt(px(64. - crate::glass::CONTENT_INSET))
             .child(self.edition_tabs(java.is_some(), cx))
-            .child(self.home_title())
+            .child(self.home_title(cx))
             .child(self.played_text(cx))
             .child(actions)
     }
@@ -143,18 +143,29 @@ impl Launcher {
     }
 
     /// The instance's icon and its name in Bricolage, 64 px at this width
-    /// (`clamp(2.75rem, 5vw, 4rem)`).
-    fn home_title(&mut self) -> Div {
+    /// (`clamp(2.75rem, 5vw, 4rem)`). Clickable to open the edit dialog (fixes #8689).
+    fn home_title(&mut self, cx: &mut Context<Self>) -> Div {
         let Some(instance) = self.selected_instance().cloned() else {
             return div();
         };
+        let edit = instance.clone();
         div()
             .mt(px(20.))
             .flex()
             .items_center()
             .gap(px(16.))
             .min_w_0()
-            .child(self.glass_instance_icon(&instance, 56.))
+            .child(
+                div()
+                    .id("home-instance-icon")
+                    .cursor_pointer()
+                    .hover(|s| s.opacity(0.85))
+                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                        this.open_instance_dialog(Some(edit.clone()));
+                        cx.notify();
+                    }))
+                    .child(self.glass_instance_icon(&instance, 56.)),
+            )
             .child(
                 div()
                     .min_w_0()
@@ -752,6 +763,22 @@ impl Launcher {
                     }),
                 ));
             }
+            let edit = instance.clone();
+            let note = trf("Edit {name}", &[("name", &instance.name)]);
+            menu = menu.child(
+                ui::menu_item(
+                    "folder-edit-instance",
+                    tr("Edit instance").into(),
+                    note,
+                    false,
+                    &t,
+                )
+                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                    this.home_menu = HomeMenu::None;
+                    this.open_instance_dialog(Some(edit.clone()));
+                    cx.notify();
+                })),
+            );
             wrap = wrap.child(
                 deferred(div().absolute().top(px(TALL + 8.)).left_0().child(menu)).with_priority(1),
             );
