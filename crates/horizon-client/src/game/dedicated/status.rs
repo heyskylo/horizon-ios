@@ -76,6 +76,48 @@ impl Game<'_> {
         }
     }
 
+    /// Each level's loaded chunks and entities (players and block entities apart), the level in place
+    /// first: what the Prometheus text reports by dimension.
+    fn status_levels(&self) -> Value {
+        let mut levels = vec![json!({
+            "dimension": self.dim.id(),
+            "chunks": self.world.chunks.len(),
+            "entities": self.entity_count(),
+        })];
+        for dim in self.levels.parked_dims() {
+            if let (Some(world), Some(entities)) = (
+                self.levels.parked_world(dim),
+                self.levels.parked_entity_count(dim),
+            ) {
+                levels.push(json!({
+                    "dimension": dim.id(),
+                    "chunks": world.chunks.len(),
+                    "entities": entities,
+                }));
+            }
+        }
+        Value::Array(levels)
+    }
+
+    /// The entities of the level in place: mobs, items, orbs, projectiles, vehicles, falling blocks,
+    /// hangings, armor stands, cushions, tridents, rockets and primed TNT.
+    fn entity_count(&self) -> usize {
+        self.mobs.iter().filter(|m| !m.removed).count()
+            + self.dropped.len()
+            + self.orbs.len()
+            + self.creatures.projectiles.len()
+            + self.carts.len()
+            + self.boats.len()
+            + self.falling.len()
+            + self.paintings.len()
+            + self.item_frames.len()
+            + self.armor_stands.len()
+            + self.cushions.len()
+            + self.tridents.len()
+            + self.rockets.len()
+            + self.tnts.len()
+    }
+
     fn server_status(&self, state: &ServerState) -> Value {
         let millis = |nanos: u64| nanos as f64 / 1e6;
         let samples = self.clock.sorted_samples();
@@ -114,6 +156,7 @@ impl Game<'_> {
             "players": players,
             "max_players": max_players,
             "chunks": self.world.chunks.len(),
+            "levels": self.status_levels(),
             "paused": state.paused,
         })
     }

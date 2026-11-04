@@ -149,6 +149,27 @@ impl Levels {
         self.parked.get_mut(&dim)
     }
 
+    /// The entities of a parked level, counted as `Game::entity_count` counts the one in place.
+    pub(super) fn parked_entity_count(&self, dim: Dim) -> Option<usize> {
+        let l = self.parked.get(&dim)?;
+        Some(
+            l.mobs.iter().filter(|m| !m.removed).count()
+                + l.dropped.len()
+                + l.orbs.len()
+                + l.projectiles.len()
+                + l.carts.len()
+                + l.boats.len()
+                + l.falling.len()
+                + l.paintings.len()
+                + l.item_frames.len()
+                + l.armor_stands.len()
+                + l.cushions.len()
+                + l.tridents.len()
+                + l.rockets.len()
+                + l.tnts.len(),
+        )
+    }
+
     /// The mobs of a parked level.
     pub(super) fn parked_mobs(&self, dim: Dim) -> Option<&[Mob]> {
         self.parked.get(&dim).map(|level| level.mobs.as_slice())
@@ -536,14 +557,16 @@ impl Game<'_> {
             .map(|(end, start)| (end - start).as_secs_f32() * 1000.0);
         // Taken every tick: nothing else takes this thread's spans.
         let spans = horizon_client::spans::take();
+        let notes = horizon_client::spans::take_notes();
         if let Some(threshold) = self.options.spikes
             && wall > threshold
         {
             let cpu = cpu.map_or_else(String::new, |c| format!(", cpu {c:.1} ms"));
             log::info!(
-                "Horizon: slow tick {wall:.1} ms{cpu} ({} mobs): {}",
+                "Horizon: slow tick {wall:.1} ms{cpu} ({} mobs): {}{}",
                 self.mobs.len(),
-                horizon_client::spans::describe(&spans)
+                horizon_client::spans::describe(&spans),
+                slowest_steps(&notes)
             );
         }
         record(wall, cpu, spans);
@@ -736,4 +759,17 @@ impl Game<'_> {
         }
         self.enter_level(None, back)
     }
+}
+
+/// A slow tick's line's end: the steps it noted as its slowest (`spans::note`), whose packets
+/// or which player's event, or nothing.
+fn slowest_steps(notes: &[(f32, String)]) -> String {
+    if notes.is_empty() {
+        return String::new();
+    }
+    let list: Vec<String> = notes
+        .iter()
+        .map(|(ms, what)| format!("{what} {ms:.1}"))
+        .collect();
+    format!("; slowest: {}", list.join(", "))
 }

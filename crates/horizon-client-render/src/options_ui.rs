@@ -730,7 +730,7 @@ impl Opt {
             } else {
                 "options.key.hold"
             }),
-            Opt::SkinLayers3d => tr(if s.three_d_skin_layers {
+            Opt::SkinLayers3d => tr(if s.extras.three_d_skin_layers {
                 "options.on"
             } else {
                 "options.off"
@@ -1019,7 +1019,7 @@ impl Opt {
             Opt::ChunkBuilder => s.prioritize_chunk_updates = next(s.prioritize_chunk_updates, 3),
             Opt::ToggleCrouch => s.toggle_crouch = !s.toggle_crouch,
             Opt::ToggleSprint => s.toggle_sprint = !s.toggle_sprint,
-            Opt::SkinLayers3d => s.three_d_skin_layers = !s.three_d_skin_layers,
+            Opt::SkinLayers3d => s.extras.three_d_skin_layers = !s.extras.three_d_skin_layers,
             Opt::ToggleAttack => s.toggle_attack = !s.toggle_attack,
             Opt::ToggleUse => s.toggle_use = !s.toggle_use,
             Opt::AutoJump => s.auto_jump = !s.auto_jump,
@@ -8039,7 +8039,7 @@ mod tests {
 
         // Also verify Act::Extra on Page::Extras
         ui.show(Page::Extras);
-        let (widgets, _, _, _) = ui.layout(&s, size.0, size.1);
+        let (widgets, top, _, _) = ui.layout(&s, size.0, size.1);
         if let Some(extra_btn) = widgets.iter().find(|wd| {
             matches!(
                 wd.kind,
@@ -8050,6 +8050,22 @@ mod tests {
                 }
             )
         }) {
+            // Extras has enough rows to scroll: click the cycle button inside
+            // the list's viewport, as a player would after scrolling to it.
+            ui.scroll = (extra_btn.y - top).max(0.0);
+            let (widgets, _, _, _) = ui.layout(&s, size.0, size.1);
+            let extra_btn = widgets
+                .iter()
+                .find(|wd| {
+                    matches!(
+                        wd.kind,
+                        WKind::Button {
+                            act: Act::Extra(crate::extras::Item::CosmeticsOthers),
+                            ..
+                        }
+                    )
+                })
+                .unwrap();
             let (ex, ey) = (extra_btn.x + 1.0, extra_btn.y + 1.0);
             use horizon_cosmetics::prefs::Others;
             assert_eq!(s.extras.cosmetics_others, Others::Shown);

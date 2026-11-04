@@ -48,7 +48,7 @@ pub struct Route {
 }
 
 /// Every endpoint `start` and [`route`] answer; a test checks the two agree.
-pub const ROUTES: [Route; 29] = [
+pub const ROUTES: [Route; 30] = [
     Route {
         method: "GET",
         path: "/api/v1/status",
@@ -90,6 +90,13 @@ pub const ROUTES: [Route; 29] = [
         takes: "",
         answers: "`{\"ok\": true}`",
         what: "Stop the game and the supervisor",
+    },
+    Route {
+        method: "POST",
+        path: "/api/v1/start",
+        takes: "",
+        answers: "`{\"ok\": true}`",
+        what: "Start the game while keeping the supervisor and API running",
     },
     Route {
         method: "POST",
@@ -144,7 +151,7 @@ pub const ROUTES: [Route; 29] = [
         method: "GET",
         path: "/api/v1/metrics/prometheus",
         takes: "",
-        answers: "the latest sample as Prometheus text: `horizon_up`, `horizon_tps`, `horizon_mspt{stat}`, `horizon_players_online`, `horizon_memory_rss_bytes`...",
+        answers: "the latest sample as Prometheus text: `horizon_up`, `horizon_tps`, `horizon_mspt{stat}`, `horizon_players_online`, `horizon_memory_rss_bytes`, `horizon_loaded_chunks{dimension}` and `horizon_entities{dimension}` (players and block entities apart)...",
         what: "Metrics for a monitoring tool to scrape",
     },
     Route {
@@ -259,6 +266,8 @@ pub const ROUTES: [Route; 29] = [
 pub enum Phase {
     Starting,
     Running,
+    /// The supervisor stays alive after the game stops so local management can edit its files.
+    Stopped,
     Stopping,
     /// Stopping the game to start it again (`restart`), or waiting to after a crash.
     Restarting,
@@ -269,6 +278,7 @@ impl Phase {
         match self {
             Self::Starting => "starting",
             Self::Running => "running",
+            Self::Stopped => "stopped",
             Self::Stopping => "stopping",
             Self::Restarting => "restarting",
         }
@@ -334,6 +344,8 @@ pub struct Shared {
     pub log: Mutex<Log>,
     pub stop: AtomicBool,
     pub restart: AtomicBool,
+    /// Stop the supervisor after the engine exits; a game-issued stop leaves the API available.
+    pub shutdown: AtomicBool,
     /// The backup (and, when only one dimension comes back, its id) to put in place before the game starts
     /// again (`restore`).
     pub restore: Mutex<Option<(String, Option<String>)>>,
@@ -373,6 +385,7 @@ impl Shared {
             log: Mutex::new(Log::default()),
             stop: AtomicBool::new(false),
             restart: AtomicBool::new(false),
+            shutdown: AtomicBool::new(false),
             restore: Mutex::new(None),
             backing_up: Mutex::new(()),
             started: Instant::now(),
@@ -472,8 +485,15 @@ impl Shared {
         self.state.lock().unwrap().phase = phase;
         self.emit("phase", json!({ "phase": phase.name() }));
     }
-    fn phase(&self) -> Phase {
+    pub(crate) fn phase(&self) -> Phase {
         self.state.lock().unwrap().phase
+    }
+    /// Stops the game and then the supervisor itself (`POST /api/v1/stop`, the management `server/stop`): the
+    /// process exits, as vanilla's does. Only a `stop` that reaches the game some other way leaves the supervisor
+    /// in [`Phase::Stopped`].
+    pub fn shut_down(&self) {
+        self.shutdown.store(true, Ordering::SeqCst);
+        self.stop.store(true, Ordering::SeqCst);
     }
 
     /// A backup while the server runs: the game saves everything and stops writing while the zip is made.
@@ -485,8 +505,8 @@ impl Shared {
                 engine::Control::connect(&self.dir)
                     .map_err(|e| format!("the game didn't answer: {e}"))?,
             ),
-            // Between a crash and the restart nothing writes the world.
-            Phase::Restarting => None,
+            // Between game runs nothing writes the world.
+            Phase::Stopped | Phase::Restarting => None,
             Phase::Starting | Phase::Stopping => {
                 return Err("the game is starting or stopping: try again in a moment".into());
             }
@@ -671,7 +691,14 @@ pub fn route(shared: &Arc<Shared>, request: &Request) -> Response {
             }
         }
         ("POST", "/api/v1/stop") => {
-            shared.stop.store(true, Ordering::SeqCst);
+            shared.shut_down();
+            Response::json(200, &json!({ "ok": true }))
+        }
+        ("POST", "/api/v1/start") => {
+            if shared.phase() != Phase::Stopped {
+                return Response::error(409, "the game isn't stopped right now");
+            }
+            shared.restart.store(true, Ordering::SeqCst);
             Response::json(200, &json!({ "ok": true }))
         }
         ("POST", "/api/v1/restart") => {
@@ -806,12 +833,8 @@ fn patch_config(shared: &Shared, body: &[u8]) -> Response {
         lines.push(format!("{key}={text}"));
     }
     let lines: Vec<&str> = lines.iter().map(String::as_str).collect();
-    let live = |line: &str| {
-        shared.phase() == Phase::Running
-            && engine::Control::connect(&shared.dir)
-                .and_then(|mut c| c.ask(&format!("console {line}")))
-                .is_ok()
-    };
+    let live =
+        |line: &str| shared.phase() == Phase::Running && settings::ask_game(&shared.dir, line);
     let running = matches!(shared.phase(), Phase::Running | Phase::Restarting);
     match settings::apply(
         &shared.dir,
@@ -1153,6 +1176,37 @@ mod tests {
             200
         );
         assert!(backup::list(&dir).is_empty());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn stopped_supervisor_can_edit_lists_and_start_again() {
+        let dir =
+            std::env::temp_dir().join(format!("horizon-server-api-stopped-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(crate::config::FILE), crate::config::TEMPLATE).unwrap();
+        crate::config::update(&dir, "server", "online_mode", toml::Value::Boolean(false)).unwrap();
+        let shared = Shared::with_install(&dir, None);
+        shared.set_phase(Phase::Stopped);
+        let request = |method: &str, path: &str, body: &[u8]| {
+            route(
+                &shared,
+                &Request {
+                    method: method.into(),
+                    path: path.into(),
+                    query: String::new(),
+                    headers: Vec::new(),
+                    body: body.to_vec(),
+                },
+            )
+        };
+        let response = request("POST", "/api/v1/players/op", br#"{"name":"Alex"}"#);
+        assert_eq!(response.status, 200, "{}", response.body);
+        assert!(response.body.contains("Made Alex a server operator"));
+        let response = request("POST", "/api/v1/start", b"");
+        assert_eq!(response.status, 200, "{}", response.body);
+        assert!(shared.restart.load(Ordering::SeqCst));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

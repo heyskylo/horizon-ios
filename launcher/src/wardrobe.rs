@@ -1,6 +1,7 @@
 //! The Wardrobe's link to Horizon's cosmetics service ([docs/cosmetics.md](../../docs/cosmetics.md)):
 //! the catalogue, the account's own items, claiming the founder set while it is open, what each
-//! slot wears and whether others see it. Off with the cosmetics flag (`horizon_cosmetics::enabled`).
+//! slot wears and whether others see it, and whether there is a founder set to show at all
+//! (`Service::shop`).
 //!
 //! The last answers are kept on disk (`Saved`), so the Wardrobe shows the outfit offline and when
 //! the service fails, and a change made offline waits there until the service answers again.
@@ -76,6 +77,13 @@ pub struct Claim {
     /// Whether this account claimed it (in `me` only).
     #[serde(default)]
     pub claimed: Option<bool>,
+    /// It can be claimed now: the public window, or a preview for an account on the service's
+    /// list.
+    #[serde(default)]
+    pub open: bool,
+    /// Open only because the account is on the service's preview list.
+    #[serde(default)]
+    pub preview: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
@@ -89,6 +97,9 @@ pub struct Entry {
     /// A launcher theme's colours (`slot` is `theme`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub theme: Option<Theme>,
+    /// One line on the item per game language code, for the Shop (optional).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub lines: BTreeMap<String, String>,
 }
 
 /// A launcher theme: the sky's six stops, top to bottom (`#rrggbb`), and the accent's hue.
@@ -117,6 +128,14 @@ impl Entry {
             .get(lang)
             .or_else(|| self.names.get("en_us"))
             .map_or(&self.id, String::as_str)
+    }
+
+    /// Its line in `lang`, else in English; None if the service gave none.
+    pub fn line(&self, lang: &str) -> Option<&str> {
+        self.lines
+            .get(lang)
+            .or_else(|| self.lines.get("en_us"))
+            .map(String::as_str)
     }
 }
 
@@ -204,19 +223,6 @@ impl Saved {
         std::fs::rename(tmp, path)
     }
 
-    /// The launcher theme worn: its sky (`0xrrggbb`, top to bottom) and accent hue.
-    pub fn theme(&self) -> Option<([u32; 6], f32)> {
-        let id = self.me.as_ref()?.equipped.get("theme")?;
-        let entry = self
-            .catalogue
-            .as_ref()?
-            .items
-            .iter()
-            .find(|e| &e.id == id)?;
-        let theme = entry.theme.as_ref()?;
-        Some((theme.sky()?, theme.accent_hue))
-    }
-
     /// Make `change` here: the outfit shows it at once and it waits to be sent. A newer change of
     /// the same slot (or of visibility) replaces an older one still waiting.
     pub fn change(&mut self, change: Change) {
@@ -286,6 +292,13 @@ impl Service {
     /// The service's host, for a failure's details.
     pub fn host(&self) -> &str {
         self.base.split_once("://").map_or(&self.base, |(_, h)| h)
+    }
+
+    /// Where the founder set's claim stands for everyone (`GET /v1/shop`, no session): whether
+    /// there is a Shop to show. An account on the service's preview list learns it from its own
+    /// answer (`Me::claim`), with its session.
+    pub fn shop(&self) -> Result<Claim, Error> {
+        parse(self.call("GET", "/v1/shop", None, None)?)
     }
 
     pub fn catalogue(&self) -> Result<Catalogue, Error> {

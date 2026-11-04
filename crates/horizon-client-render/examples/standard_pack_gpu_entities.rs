@@ -121,6 +121,7 @@ fn fixture(window: Arc<Window>) -> Result<(), Box<dyn std::error::Error>> {
         None,
         GraphicsApi::Vulkan,
         false,
+        false,
         true,
     ))?;
     renderer.resize(320, 180);
@@ -377,6 +378,7 @@ fn fixture_frame(hud: &HudBatch) -> Frame<'_> {
         celestial: &[],
         stars: None,
         hand: &[],
+        hand_items: &[],
         hand_fov_degrees: 70.0,
         screen: &[],
         pack: Default::default(),

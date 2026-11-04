@@ -311,6 +311,15 @@ def scenario(bins, folder, server, port):
         check(console.returncode == 0 and 'Attached' in out and 'Detached' in out, f'console attaches and detaches ({out!r})')
         check('[Server] hello from the console' in out and 'There are 0 of a max of 20 players online' in out,
               f'console commands run and their lines show ({out[-600:]!r})')
+
+        api('POST', '/api/v1/command', {'line': 'stop'})
+        wait_until('the supervisor keeps the API after the game stops',
+                   lambda: api('GET', '/api/v1/status')['phase'] == 'stopped')
+        act('/api/v1/players/op', {'name': 'Kim0'}, True, 'Made Kim0 a server operator')
+        act('/api/v1/players/deop', {'name': 'Kim0'}, True, 'Made Kim0 no longer a server operator')
+        api('POST', '/api/v1/start')
+        wait_until('the stopped game starts again',
+                   lambda: api('GET', '/api/v1/status')['phase'] == 'running')
     finally:
         for b in bots:
             b.kill()

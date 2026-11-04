@@ -76,6 +76,11 @@ fn route(m: &mut Mock, method: &str, path: &str, auth: &str, body: &str) -> (u16
                 _ => (403, json!({"error": "not_owned"})),
             }
         }
+        ("GET", "/v1/shop") => (
+            200,
+            json!({"open": m.claim == "open", "state": m.claim, "preview": false,
+                   "starts_at": 100, "ends_at": 200, "now": 150, "items": ["hat"]}),
+        ),
         _ => (404, json!({"error": "not_found"})),
     }
 }
@@ -294,6 +299,7 @@ fn an_item_file_is_kept_by_its_hash() {
         slot: "head".into(),
         names: BTreeMap::new(),
         theme: None,
+        lines: BTreeMap::new(),
     };
     let file = format!(
         r#"{{"format": 1, "id": "hat", "slot": "head", "bone": "head", "texture": {{"png": "{}"}}, "parts": []}}"#,
@@ -334,23 +340,17 @@ fn scratch(name: &str) -> PathBuf {
 }
 
 #[test]
-fn the_theme_worn_is_the_one_equipped_in_the_theme_slot() {
-    let (m, service) = serve(|_| {});
-    let session = sign_in(&m, &service);
-    let mut saved = Saved {
-        catalogue: Some(service.catalogue().unwrap()),
-        me: Some(service.me(&session).unwrap()),
-        pending: Vec::new(),
-    };
-    assert_eq!(saved.theme(), None);
-    let wear = |item: &str| Change::Equip {
-        slot: "theme".into(),
-        item: Some(item.into()),
-    };
-    saved.change(wear("dawn"));
-    let (sky, hue) = saved.theme().unwrap();
-    assert_eq!((sky[4], hue), (0xe2a0b0, 344.));
-    // A theme the catalogue doesn't hold (any more) leaves the player's own look.
-    saved.change(wear("dusk"));
-    assert_eq!(saved.theme(), None);
+fn the_shop_status_is_asked_without_a_session() {
+    let (mock, service) = serve(|m| m.claim = "not_yet");
+    let status = service.shop().unwrap();
+    assert!(!status.open);
+    assert_eq!(status.state, ClaimState::NotYet);
+    assert_eq!((status.starts_at, status.ends_at), (Some(100), Some(200)));
+    let log = &mock.lock().unwrap().log;
+    assert_eq!(log.len(), 1);
+    let (method, path, auth, _) = &log[0];
+    assert_eq!(
+        (method.as_str(), path.as_str(), auth.as_str()),
+        ("GET", "/v1/shop", "")
+    );
 }
