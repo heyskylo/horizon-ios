@@ -235,4 +235,5 @@ without the pack.
 
 ## Next
 
-The debug overlay and the lighting stages (entities, block entities, particles).
+An overlay showing what each pass draws (F3 already shows what each costs), and stages for entities, block entities
+and particles (the material stage covers terrain only).

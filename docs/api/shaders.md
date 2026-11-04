@@ -1,9 +1,9 @@
 # Shader API
 
-Horizon has its own shader packs now: WGSL written against stages of Horizon's renderer, validated before it
-runs. This page is the **Horizon shader API**. A separate clean-room loader handles the existing
-(Iris/OptiFine) pack format; the two share the same renderer hooks. The earlier prototype was removed on
-2026-10-24 and this API is built from scratch on top of it.
+Horizon has its own shader packs: WGSL written against stages of Horizon's renderer, checked before it runs. This
+page is the **Horizon shader API**. A separate clean-room loader reads the existing `shaders/` pack format (its own
+spec, not part of this API); both sit on the same renderer hooks. The earlier implementation was removed on
+2026-10-24; this API was written from scratch after it.
 
 ## Overview: what a shader author will be able to do
 
@@ -162,7 +162,8 @@ Experimental (API 0.1). The stages ship in the game behind pack selection; see [
 
 ## Not there yet
 
-The debug overlay and the lighting stages (entities, block entities, particles).
+An overlay showing what each pass draws (F3 already shows what each costs), and stages for entities, block entities
+and particles (the material stage covers terrain only).
 
 ## Changelog
 
