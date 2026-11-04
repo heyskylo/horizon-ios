@@ -3412,7 +3412,8 @@ impl Mob {
     /// `LivingEntity.addEffect` of a `MobEffectInstance` with its flags: the effect as
     /// `add_effect` has it, and `MobEffectInstance.update`'s rules for the flags of one already
     /// there: it takes the new ambient flag when the new one is not ambient or the effect
-    /// changed, and always the new visibility.
+    /// changed, and always the new visibility. Returns whether the active instance or its
+    /// flags changed (`MobEffectInstance.update` does not count a hidden-chain-only update).
     pub fn add_effect_with(
         &mut self,
         effect: &'static str,
@@ -3420,8 +3421,9 @@ impl Mob {
         amplifier: i32,
         ambient: bool,
         visible: bool,
-    ) {
+    ) -> bool {
         let effect = horizon_client_core::potions::namespaced(effect);
+        let was_visible = !self.extra.hidden_effects.contains(&effect);
         let before = self
             .extra
             .effects
@@ -3451,6 +3453,10 @@ impl Mob {
         if !visible {
             self.extra.hidden_effects.push(effect);
         }
+        after.is_some()
+            && (before != after
+                || present_ambient != self.extra.ambient_effects.contains(&effect)
+                || was_visible != visible)
     }
     /// `LivingEntity.actuallyHurt`: the absorption amount takes the damage first;
     /// what is left reaches the health.
@@ -4643,24 +4649,24 @@ mod magic_absorb_tests {
         let mut m = witch();
         let speed = "minecraft:speed";
         // A new effect takes its flags as they are.
-        m.add_effect_with("speed", 600, 0, true, false);
+        assert!(m.add_effect_with("speed", 600, 0, true, false));
         assert!(
             m.extra.ambient_effects.contains(&speed) && m.extra.hidden_effects.contains(&speed)
         );
         // The same effect, no stronger and no longer, ambient again and visible: ambient stays
         // (nothing changed), the visibility follows.
-        m.add_effect_with("speed", 100, 0, true, true);
+        assert!(m.add_effect_with("speed", 100, 0, true, true));
         assert_eq!(m.extra.effects, vec![(speed, 600, 0)]);
         assert!(
             m.extra.ambient_effects.contains(&speed) && !m.extra.hidden_effects.contains(&speed)
         );
         // Not ambient: it takes the flag off, though nothing else changed.
-        m.add_effect_with("speed", 100, 0, false, true);
+        assert!(m.add_effect_with("speed", 100, 0, false, true));
         assert!(!m.extra.ambient_effects.contains(&speed));
         // Ambient over a not ambient one that does not change: not taken; one that changes: taken.
-        m.add_effect_with("speed", 100, 0, true, true);
+        assert!(!m.add_effect_with("speed", 100, 0, true, true));
         assert!(!m.extra.ambient_effects.contains(&speed));
-        m.add_effect_with("speed", 900, 0, true, true);
+        assert!(m.add_effect_with("speed", 900, 0, true, true));
         assert!(m.extra.ambient_effects.contains(&speed));
         assert_eq!(m.extra.effects, vec![(speed, 900, 0)]);
     }
