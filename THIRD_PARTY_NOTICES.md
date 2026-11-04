@@ -16,6 +16,8 @@ are in that folder (`LICENSE.MIT`, `LICENSE.APACHE`).
 
 The GLSL frontend also resets the common type for each comma-separated declarator so one
 variable's array specifier does not change later variables.
+It also reads a struct member outside a constant expression through a pointer to the member,
+not out of a loaded copy of the whole struct, so a member an atomic function uses can be read.
 
 ## libmimalloc-sys and mimalloc
 

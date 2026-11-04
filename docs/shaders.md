@@ -179,10 +179,12 @@ changes, from at most 2048 sources, the nearest first.
 
 ## Options
 
-A picked pack with options gets a Shader Options... button at the top of the Shader Packs page. A click picks an
-option's next value, a right click the one before, shift-click its default, and Reset all of them; hovering one shows its
-`description`. Each change is saved to `shaderpacks/<pack>.txt` (`id=value` lines, values at their defaults left out) and
-the pack reloads with it within half a second.
+A picked pack with options gets a Shader Options... button at the top of the Shader Packs page. Float and int options
+are sliders that take the nearest `step` (an int's whole numbers), and the arrow keys move a focused one a step at a
+time; bool and choice options are buttons, where a click picks the next value and a right click the one before.
+Shift-click puts either back to its default, and Reset all of them; hovering one shows its `description`. Each change
+is saved to `shaderpacks/<pack>.txt` (`id=value` lines, values at their defaults left out), a slider's when it is
+let go, and the pack reloads with it within half a second.
 
 The page shows every option two a row, unless the pack lays them out in `[[pages]]`: it opens on the first page, and an
 item `"page:<id>"` is a button opening another, so options can be grouped into categories. `""` leaves a slot empty, and
@@ -213,6 +215,25 @@ override saturation: f32 = 1.15;   // type = "float"; bool → bool, int → i32
 The game shows the options on the pack's settings screen. Branches on an option are on a constant, so the GPU
 skips the side that isn't taken.
 
+The shadow map is most of what a pack with `[shadow]` costs: each frame the terrain in the light's square is drawn again.
+Options can size it, so players pick their own quality. While `option` is off there is no map and no shadow pass
+(`frame.has_shadow` reads 0); `resolution_option` and `distance_option` name an `int` option, or a `choice` whose values
+are numbers, whose value replaces `resolution` or `distance`, checked against their ranges. Changing one rebuilds the map
+at the new size. These two need no `override` in your WGSL: the frame has the map's size.
+
+```toml
+[shadow]
+option = "shadows"                        # a bool: no shadow pass while it is off
+resolution_option = "shadow_resolution"
+
+[[options]]
+id = "shadow_resolution"
+name = "Shadow resolution"
+type = "choice"
+values = ["1024", "2048", "4096"]
+default = "2048"
+```
+
 ## What the check does
 
 The game runs the same check when it loads a pack (a pack that fails is refused with the message, and the last good
@@ -221,7 +242,8 @@ one keeps drawing), the launcher before it installs one, and the registry's CI b
 1. The manifest and the package: known keys, valid ids, every file used, sizes.
 2. Each stage built as the renderer builds it and validated by naga.
 3. The stage function's signature, and the rules above.
-4. Each `override` matches its option's type (or has a default); each option is used.
+4. Each `override` matches its option's type (or has a default); each option is used (those sizing the shadow map
+   may be by `[shadow]` alone).
 5. Budgets: 20 000 expressions and 64 texture reads per stage.
 6. Every entry point translated for Vulkan (SPIR-V), Metal and DirectX 12 (HLSL), with the options at their
    defaults, minimums and maximums.

@@ -640,7 +640,7 @@ impl Game<'_> {
     fn apply_raid_action(&mut self, id: i32, action: Action) {
         match action {
             Action::Spawn { pos, wave, spawns } => self.spawn_wave(id, pos, wave, &spawns),
-            Action::Horn { pos, .. } => self.raid_horn(id, pos),
+            Action::Horn { pos, seed } => self.raid_horn(id, pos, seed),
             Action::Remove { id: mob } => {
                 if let Some(m) = self.mobs.iter_mut().find(|m| m.id == mob) {
                     let s = raider::state_mut(m);
@@ -666,20 +666,61 @@ impl Game<'_> {
             }),
         }
     }
-    /// `Raid.playSound`: the horn, 13 blocks away from the player toward the
-    /// wave, for players within 64 blocks or in the raid.
-    fn raid_horn(&mut self, id: i32, pos: [i32; 3]) {
-        let Some(p) = self.level_players().first().map(|p| p.position) else {
-            return;
-        };
+    /// `Raid.playSound`: the horn, 13 blocks from each player toward the wave,
+    /// for everyone within 64 blocks or in the raid. One seed for every packet
+    /// (`SoundSource.NEUTRAL`, volume 64, pitch 1).
+    fn raid_horn(&mut self, id: i32, pos: [i32; 3], seed: i64) {
         let in_raid = self.raiding.raids.get(id).is_some_and(|r| r.bar.player);
         let (rx, rz) = (f64::from(pos[0]) + 0.5, f64::from(pos[2]) + 0.5);
-        let distance = ((rx - p.x).powi(2) + (rz - p.z).powi(2)).sqrt();
-        if distance <= 64.0 || in_raid {
-            let k = 13.0 / distance;
-            let at = [p.x + k * (rx - p.x), p.y, p.z + k * (rz - p.z)];
+        // The raid tracks one participant (`bar.player`): the first player in
+        // the level. Everyone else is heard by distance alone.
+        let local_first = self.player.is_some();
+        if let Some(p) = self.player.as_ref()
+            && let Some(at) = raid::horn_at(
+                [p.position.x, p.position.y, p.position.z],
+                rx,
+                rz,
+                in_raid && local_first,
+            )
+        {
+            // This window only. A positioned `play` would be broadcast to
+            // every guest on top of the packet each of them is sent.
+            let capture = self.audio.capture.take();
+            let neutral = horizon_client::settings::SOUND_SOURCES
+                .iter()
+                .position(|s| *s == "neutral")
+                .unwrap_or(0);
             self.audio
-                .play("minecraft:event.raid.horn", Some(at), 64.0, 1.0);
+                .play_on(neutral, "minecraft:event.raid.horn", Some(at), 64.0, 1.0);
+            self.audio.capture = capture;
+        }
+        let Some(host) = self.lan.as_ref() else {
+            return;
+        };
+        let dim = host.hub.config.dimension.clone();
+        let spotted: Vec<(u32, [f64; 3], bool)> = host
+            .hub
+            .guests
+            .iter()
+            .map(|g| (g.conn, g.position, g.placed && g.dimension == dim))
+            .collect();
+        let neutral = horizon_client::settings::SOUND_SOURCES
+            .iter()
+            .position(|s| *s == "neutral")
+            .unwrap_or(0) as i32;
+        let mut first_guest = !local_first;
+        for (conn, position, here) in spotted {
+            if !here {
+                continue;
+            }
+            let participating = std::mem::replace(&mut first_guest, false) && in_raid;
+            let Some(at) = raid::horn_at(position, rx, rz, participating) else {
+                continue;
+            };
+            let packet =
+                host.hub
+                    .sound_packet("minecraft:event.raid.horn", at, 64.0, 1.0, neutral, seed);
+            host.hub.send_to(conn, &packet);
         }
     }
     /// `Raid.spawnGroup`: a wave of raiders at `pos`, the leader wearing the
