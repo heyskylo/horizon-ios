@@ -662,6 +662,9 @@ pub fn tick(
         if m.species() == Species::Chicken {
             farm::chicken_egg_step(m, events);
         }
+        if m.species() == Species::Allay {
+            super::allay::update_duplication_cooldown(m);
+        }
         if horse {
             super::equine::ai_step(m, w, events);
         }
@@ -2490,6 +2493,7 @@ pub fn do_hurt_target(m: &mut Mob, who: Who, cx: &mut Cx) {
                 effect: "minecraft:poison",
                 ticks: if cx.w.difficulty.base == 2 { 7 } else { 15 } * 20,
                 amplifier: 0,
+                ambient: false,
             })
         }
         // Husk.doHurtTarget: hunger for 140 ticks per whole point of the
@@ -2501,6 +2505,7 @@ pub fn do_hurt_target(m: &mut Mob, who: Who, cx: &mut Cx) {
                     effect: "minecraft:hunger",
                     ticks,
                     amplifier: 0,
+                    ambient: false,
                 })
             }
         }
@@ -2508,6 +2513,7 @@ pub fn do_hurt_target(m: &mut Mob, who: Who, cx: &mut Cx) {
             effect: "minecraft:wither",
             ticks: 200,
             amplifier: 0,
+            ambient: false,
         }),
         _ => {}
     }
@@ -2563,6 +2569,7 @@ pub fn do_hurt_target(m: &mut Mob, who: Who, cx: &mut Cx) {
                 effect,
                 ticks,
                 amplifier,
+                ..
             } => Some((effect, ticks, amplifier)),
             _ => None,
         });

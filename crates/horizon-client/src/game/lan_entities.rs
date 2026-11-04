@@ -647,6 +647,17 @@ impl Game<'_> {
                         Value::Item(hub.stack(&Some((**stack).clone()))),
                     ));
                 }
+                // Fireball.DATA_ITEM_STACK: the item it is drawn as, which a
+                // guest has no other way of learning. A plain fire charge is
+                // the client's default and is not sent.
+                K::SmallFireball | K::LargeFireball { .. }
+                    if p.item.as_ref().is_some_and(|i| {
+                        &*i.item != "minecraft:fire_charge" || i.count != 1 || i.extra.is_some()
+                    }) =>
+                {
+                    e.meta
+                        .push((8, serializer::ITEM_STACK, Value::Item(hub.stack(&p.item))));
+                }
                 _ => {}
             }
             // ChunkMap.addEntity (#7461): a fresh arrow joined before its first tick

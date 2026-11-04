@@ -291,6 +291,8 @@ pub fn ai_step(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
                 effect: "minecraft:breath_of_the_nautilus",
                 ticks: 60,
                 amplifier: 0,
+                // AbstractNautilus.applyEffects: ambient, visible, showIcon.
+                ambient: true,
             });
         }
     } else {

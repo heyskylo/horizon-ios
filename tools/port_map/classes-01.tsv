@@ -79,9 +79,9 @@ PlayerSkin.with	missing		minor: skin patches (body, cape, elytra and model overr
 PlayerSkin.Patch.create	skip:java		record factory for the patch; the patch itself is missing (see PlayerSkin.with)
 SpectralArrow.doPostHurtEffects	port	crates/horizon-client/src/game/potions.rs::Game::arrow_post_hurt_effects	200-tick Glowing on any target a spectral arrow lands on (creatures.rs:3589); a bow, a crossbow and a dispenser also store the effect on the arrow
 SpectralArrow.tick	port	crates/horizon-client/src/game/remote_projectiles.rs::Game::arrow_effect_particles	client tick: an effect sparkle at the arrow's position while it is not stuck; the tipped arrow's colour swirls share the fn
-Fireball.getSlot	missing		minor: the fireball's item slot (its displayed fire charge) is not modelled
-Fireball.readAdditionalSaveData	missing		`fireball_from_nbt` reads no `Item` key, so a saved fireball is drawn as the default fire charge
-Fireball.setItem	missing		minor: the displayed item of a fireball is not set
+Fireball.getSlot	missing		minor: entity slot access (`/loot insert` on an entity) is not modelled, so nothing here can set the slot the fireball's item sits in
+Fireball.readAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::fireball_from_nbt	the `Item` it is drawn as goes through `setItem`, which refuses an empty stack and keeps a single one
+Fireball.setItem	port	crates/horizon-client/src/projectiles.rs::Projectile::set_item	an empty stack puts the default fire charge back, anything else is kept as one (`copyWithCount(1)`); a kind that is no `Fireball` has no item
 Fireball.shouldRenderAtSqrDistance	skip:ui		render distance rule for the first two ticks; Horizon draws the projectile as its own pass
 LargeFireball.onHit	port	crates/horizon-client/src/game/creatures.rs::Game::projectile_hit	LargeFireball arm: explosion of the given power, then the projectile is gone
 LargeFireball.onHitEntity	port	crates/horizon-client/src/game/creatures.rs::Game::projectile_hit	LargeFireball arm: 6 damage to the entity
