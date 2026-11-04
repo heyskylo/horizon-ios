@@ -148,7 +148,8 @@ void main() {
         post,
         wgpu::TextureFormat::Rgba8Unorm,
         world,
-    );
+    )
+    .expect("the pack runs");
     let mut pass = post
         .terrain
         .take()
