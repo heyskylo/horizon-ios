@@ -2404,6 +2404,48 @@ def turtle_summon_home():
                         cmd(f'/data get entity {target} home_pos'),
                         cmd(f'/data get entity {target} Pos')]
     return ops + setup('/kill @e[type=turtle]')
+def command_minecart_loaded_success():
+    """Loaded nonempty commands trigger the synced-data count reset (#8772)."""
+    ops = setup('/fill 9 219 9 11 219 11 stone')
+    for name, command in [('absent', ''), ('empty', ',Command:""'),
+                          ('nonempty', ',Command:"say hi"')]:
+        for count in (2, -3, 0):
+            tag = f'cart_load_{name}_{str(count).replace("-", "n")}'
+            target = f'@e[tag={tag},limit=1]'
+            ops += setup('/summon command_block_minecart 10.5 220 10.5 '
+                         f'{{Tags:["{tag}"],NoGravity:1b,TrackOutput:0b,'
+                         f'SuccessCount:{count}{command}}}')
+            for tick in (0, 1):
+                if tick:
+                    ops.append({'op': 'tick', 'n': 1})
+                ops.append(cmd(f'/execute if entity {target}'))
+                for field in ('Command', 'SuccessCount', 'TrackOutput', 'UpdateLastExecution'):
+                    ops.append(cmd(f'/data get entity {target} {field}'))
+            ops += setup(f'/kill {target}')
+    return ops
+def ravager_noai_counters():
+    ops = setup('/difficulty normal', '/gamerule spawn_mobs false',
+                '/gamerule mob_griefing false', '/forceload add 0 0 31 31',
+                '/fill 0 199 0 15 199 15 stone', '/fill 0 200 0 15 206 15 air')
+    case = 0
+    for no_ai in (0, 1):
+        for attack, stun, roar in ((20, 30, 5), (0, 0, 0), (-2, -3, -4), (2, 2, 0)):
+            case += 1
+            tag = f'h179_{case}'
+            target = f'@e[type=minecraft:ravager,tag={tag},limit=1]'
+            ops += setup('/summon ravager 10.5 200 10.5 '
+                         f'{{Tags:["{tag}"],NoAI:{no_ai}b,NoGravity:1b,Silent:1b,'
+                         f'PersistenceRequired:1b,AttackTick:{attack},StunTick:{stun},RoarTick:{roar}}}')
+            elapsed = 0
+            for tick in (0, 1, 2, 3, 10, 12, 22):
+                if tick > elapsed:
+                    ops.append({'op': 'tick', 'n': tick - elapsed})
+                ops.append(cmd(f'/execute if entity {target}'))
+                for field in ('AttackTick', 'StunTick', 'RoarTick'):
+                    ops.append(cmd(f'/data get entity {target} {field}'))
+                elapsed = tick
+            ops += setup(f'/kill {target}')
+    return ops + setup('/gamerule mob_griefing true', '/forceload remove 0 0 31 31')
 
 
 def groups():
@@ -2419,6 +2461,8 @@ def groups():
         ('forceload query order', forceload_query_order()),
         ('entities', entities()),
         ('turtle summon home', turtle_summon_home()),
+        ('command minecart loaded success', command_minecart_loaded_success()),
+        ('ravager NoAI counters', ravager_noai_counters()),
         ('aquatic FromBucket', aquatic_from_bucket()),
         ('villager command names', villager_command_names()),
         ('item lifetime counters', item_lifetime_counters()),
