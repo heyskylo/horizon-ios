@@ -533,6 +533,13 @@ impl Game<'_> {
             bone_meal: bone_meal(),
         }
     }
+    pub(super) fn block_can_place(&self, pos: [i32; 3], slot: usize, stack: &ItemStack) -> bool {
+        let containers = self.containers();
+        let Some(view) = containers.view((pos[0], pos[1], pos[2]), false) else {
+            return false;
+        };
+        view.kind == Kind::Shulker || containers.can_place(&view, slot, stack)
+    }
     fn slot_mut_at(&mut self, view: &View, slot: usize) -> Option<&mut Option<ItemStack>> {
         let (pos, i) = view.locate(slot)?;
         let entity = self.world.block_entities.get_mut(&pos)?;
@@ -577,6 +584,29 @@ impl Game<'_> {
             });
         }
     }
+    /// `IItemHandler.isItemValid` for a mod's container: the mods' say
+    /// (`native_container_accepts`) on `stack` in `slot`, once its
+    /// `ModContainer` lets the slot be filled. Any other container: true.
+    fn mod_container_accepts(
+        &self,
+        view: &View,
+        slot: usize,
+        stack: &ItemStack,
+        face: Option<Direction>,
+    ) -> bool {
+        if view.kind != Kind::Mod {
+            return true;
+        }
+        let Some((pos, i)) = view.locate(slot) else {
+            return false;
+        };
+        let Some(BlockEntity::Mod(entity)) = self.world.block_entities.get(&pos) else {
+            return false;
+        };
+        let mut cancel = false;
+        self.native_container_accepts([pos.0, pos.1, pos.2], entity, i, stack, face, &mut cancel);
+        !cancel
+    }
     /// `HopperBlockEntity.tryMoveInItem`.
     fn try_move_in_item(
         &mut self,
@@ -584,8 +614,9 @@ impl Game<'_> {
         view: &View,
         stack: ItemStack,
         slot: usize,
+        face: Option<Direction>,
     ) -> Option<ItemStack> {
-        let (rest, moved) = self.move_in_item(from_hopper, view, stack, slot);
+        let (rest, moved) = self.move_in_item(from_hopper, view, stack, slot, face);
         if moved {
             self.view_changed(view);
             // JukeboxBlockEntity.setTheItem through a hopper's or a dropper's
@@ -598,16 +629,18 @@ impl Game<'_> {
         rest
     }
     /// `tryMoveInItem` before its `setChanged`: the remainder, and whether
-    /// anything moved.
+    /// anything moved. `face` is the side it goes in by, for a mod's say.
     fn move_in_item(
         &mut self,
         from_hopper: Option<Pos>,
         view: &View,
         mut stack: ItemStack,
         slot: usize,
+        face: Option<Direction>,
     ) -> (Option<ItemStack>, bool) {
         let c = self.containers();
-        if !c.can_place(view, slot, &stack) {
+        if !c.can_place(view, slot, &stack) || !self.mod_container_accepts(view, slot, &stack, face)
+        {
             return (Some(stack), false);
         }
         let was_empty = c.is_empty(view);
@@ -622,7 +655,12 @@ impl Game<'_> {
         }
         match target {
             None => {
-                *target = Some(stack.clone());
+                // HopperBlockEntity.setItem limits the accepted stack, then
+                // tryMoveInItem consumes the input even when it exceeded that limit.
+                *target = Some(ItemStack {
+                    count: stack.count.min(max),
+                    ..stack.clone()
+                });
                 stack.count = 0;
                 success = true;
             }
@@ -664,7 +702,7 @@ impl Game<'_> {
         let mut rest = Some(stack);
         for slot in view.slots_to_add(face) {
             let Some(stack) = rest.take() else { break };
-            rest = self.try_move_in_item(from_hopper, view, stack, slot);
+            rest = self.try_move_in_item(from_hopper, view, stack, slot, face);
         }
         rest
     }
@@ -1513,6 +1551,7 @@ mod item_column_tests {
     fn item(id: u32, x: f64, y: f64, z: f64) -> ItemEntity {
         let at = Vec3::new(x, y, z);
         ItemEntity {
+            rotation: [0.0, 0.0],
             join: Default::default(),
             no_gravity: false,
             health: 5,

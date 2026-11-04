@@ -19,6 +19,19 @@ The opening, then Play ([clip](docs/opening.webm)):
   built on your fork's Actions, or the zip holding it) and installs it as `imported-<date>-<sha>`:
   a copy of the selected release or Nightly's folder, game files included, with that program as the
   game. Imported builds are listed apart as unsigned, and no update replaces them.
+- **Move data to another drive**: Settings → Data folder → Move… copies the launcher's
+  installations, downloads and account files, the game's worlds and instances, and managed native
+  build data to an empty folder. Close games and servers and wait for active jobs first. The launcher
+  exits while the copy is verified, switches its location only after success, then reopens. Old folders
+  remain as recovery copies and still use disk space; verify your worlds and instances before removing
+  them yourself. External Minecraft/server folders and paths embedded in custom launch commands stay
+  unchanged. Links/junctions and overlapping roots are refused; Windows build destinations need ASCII
+  characters without spaces. Copy or commit failure leaves the original location selected.
+  The location pointer is independent of the moved folders, at the platform config directory's
+  `horizon-launcher-location/location.json`. `HORIZON_LAUNCHER_LOCATION_FILE` selects an alternative
+  absolute pointer file for portable installations. Nonempty `HORIZON_LAUNCHER_HOME` and `HORIZON_HOME`
+  still override their respective roots; remove these overrides before using Move. A missing destination
+  fails explicitly instead of silently creating empty data in the default location.
 - **Play**: prepares resources as `PLAY.txt` describes (your launcher's 26.3 install, the
   26.3 server jar from that version's own json, and Java 25) and copies its sounds from your
   launcher's asset store (`horizon-prepare sounds`; a launcher install without them only
@@ -120,9 +133,9 @@ The opening, then Play ([clip](docs/opening.webm)):
   pack into the selected instance. A data pack is pointed at the world rows, and the Packs section
   and the world rows keep taking their own drops. A note in the corner says what happened.
   `horizon-launcher instance import <file>`.
-- **Maximum memory**: a row on Home, per instance: a slider and a box that takes `4096`, `4gb`, or nothing
-  for no limit (the default), saved at once. For Horizon it goes to the game as
-  `HORIZON_MEMORY_LIMIT_MB` ([what it does](../docs/native-client.md#ram-limit)); a Java instance's sets `-Xmx`.
+- **Maximum memory** (Java instances): set the Java heap limit (`-Xmx`) with the slider or
+  a value such as `4096` or `4gb`. Leave the box empty to restore the default (4096 MB).
+  Find it on Home in the classic layout, or in the instance’s Edit dialog in the glass layout.
 - **Launch options**: Home's Instance row has **Launch…**: per instance, a shell command run in its
   folder before the game (the game starts only if it succeeds), a wrapper the game runs through
   (`nice -n 5`), and environment variables (`NAME=value OTHER="two words"`), kept in
@@ -286,8 +299,16 @@ themselves come from their download links, which that limit doesn't cover.
 
 It also updates itself from GitHub releases tagged `launcher@X.Y.Z` (the game's are `nightly`, and
 `vX.Y.Z` before 2026-10-28; neither is ever taken for the other). Before 0.2 they were `launcher-vX.Y.Z` and `vYYYY.MM.DD`:
-every 0.2 tag counts as newer than all of those (docs/versioning.md). It downloads the new build, replaces its
-own binary, and offers "Restart" in the footer. Development builds and
+every 0.2 tag counts as newer than all of those (docs/versioning.md). It downloads the new build, checks it
+against the release's signed `SHA256SUMS`, and says "A new version is available" in the sidebar with
+**Update**: the window closes, the launcher's own file runs again as the installer (`apply-update`,
+`src/update_handoff.rs`), which waits for the window's process to exit, puts the new launcher in place (the
+binary, the `.app` bundle or the AppImage) and starts it. Closing the window with an update downloaded installs
+it the same way, so the next start is the new launcher. When the installer can't put it in place, the old
+launcher starts again and says why. A copy that can't replace itself says so at once and offers **Download
+again** (the website's install page): one in a read-only folder (the disk image, or the read-only copy macOS
+runs a downloaded app from until it is moved to Applications), or Windows' temporary copy of a program opened
+inside a `.zip`. `horizon-launcher update` replaces it at once. Development builds and
 `HORIZON_LAUNCHER_NO_SELF_UPDATE=1` never replace themselves.
 
 On Linux the release also comes as an AppImage, `horizon-launcher-linux-x86_64.AppImage`: one file
@@ -310,14 +331,16 @@ Menu entries the launcher writes then start that wrapper, which can
 set `HORIZON_LAUNCHER_NO_SELF_UPDATE=1` to keep launcher updates with the package manager.
 
 Launcher releases are automatic (docs/release-flow.md in the repository): when main changes the
-launcher, `horizon-prepare` or `horizon-theme`, the `launcher` workflow builds Linux, macOS and
-Windows and publishes `launcher-vX.Y.Z` (the next patch, or the next minor after a pull request
+launcher, `horizon-prepare` or `horizon-theme`, the `launcher` workflow builds Linux, macOS, Windows x64 and
+Windows ARM64 and publishes `launcher-vX.Y.Z` (the next patch, or the next minor after a pull request
 labelled `feature`) with `horizon-launcher-linux-x86_64.tar.gz`,
 `horizon-launcher-linux-x86_64.AppImage`, `horizon-launcher-macos-arm64.zip`,
-`horizon-launcher-macos-x64.zip` (Intel Macs) and `horizon-launcher-windows-x64.zip`, never marked latest. The version is built in from the tag
+`horizon-launcher-macos-x64.zip` (Intel Macs), `horizon-launcher-windows-x64.zip` and
+`horizon-launcher-windows-arm64.zip`, never marked latest. The version is built in from the tag
 (`HORIZON_LAUNCHER_VERSION`); `Cargo.toml`'s version is only what local builds report.
 
-Windows also publishes `horizon-launcher-setup.exe`: the launcher's own binary under another name, which opens
+Windows also publishes `horizon-launcher-setup.exe` (x64) and `horizon-launcher-setup-arm64.exe`: the launcher's own
+binary under another name, which opens
 a per-user setup instead of the window (no administrator). It copies itself to
 `%LOCALAPPDATA%\Programs\Horizon Launcher\horizon-launcher.exe`, makes the Start menu shortcut (and the
 desktop one if asked) and an entry in *Apps & features*, then starts the copy. `horizon-launcher-setup.exe

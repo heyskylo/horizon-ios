@@ -35,6 +35,8 @@ pub(super) enum Status {
 }
 #[derive(Clone, Debug)]
 pub(super) struct Boat {
+    /// `Entity.xRot`: kept for `/tp` and `Rotation`; the kind turns only in yaw.
+    pub pitch: f32,
     /// When it joined its list (`horizon_client::join_seq`); set by the list.
     pub(super) join: horizon_client::join_seq::JoinSeq,
     pub id: u32,
@@ -52,7 +54,7 @@ pub(super) struct Boat {
     status_known: bool,
     water_level: f64,
     land_friction: f32,
-    out_of_control: f32,
+    pub(super) out_of_control: f32,
     /// `AbstractBoat.DATA_ID_BUBBLE_TIME` (synched): the ticks of `BUBBLE_TIME`
     /// left before a bubble column lifts or drags the boat; 0 when it is not
     /// over one.
@@ -157,6 +159,7 @@ impl Boat {
 
     pub fn new(id: u32, wood: Arc<str>, position: Vec3, yaw: f32) -> Self {
         Self {
+            pitch: 0.0,
             join: Default::default(),
             id,
             wood,
@@ -1375,6 +1378,7 @@ impl Game<'_> {
         if sneaking
             || self.boats[i].out_of_control >= 60.0
             || self.riding.is_some()
+            || !self.may_board()
             || self.ridden_by_guest(self.boats[i].id)
             || !self.boat_has_room(i)
         {

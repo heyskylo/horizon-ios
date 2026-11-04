@@ -129,8 +129,8 @@ ClockTimeMarker.getRepetitionCount	skip:other		no vanilla caller
 ClockTimeMarker.resolveTimeToMoveTo	port	crates/horizon-client/src/game/chat.rs::TimeMarker::resolve	
 ClockTimeMarker.occursAt	port	crates/horizon-client/src/game/chat.rs::TimeMarker::occurs_at	
 ClockTimeMarker.durationToNext	inline	crates/horizon-client/src/game/chat.rs::TimeMarker::resolve	the d > 0 else period + d step
-ServerClockManager.init	inline	crates/horizon-client/src/game/chat.rs::Game::build_registries	overworld timelines and their time markers are loaded; the End clock runs with game time
-ServerClockManager.getInstance	skip:java		clock lookup; Horizon keeps one overworld clock in ui.clock
+ServerClockManager.init	inline	crates/horizon-client/src/game/chat.rs::Game::build_registries	overworld timelines and time markers are loaded; gap: minor: command-only End state is independent, while running/network/save clock initialization remains separate
+ServerClockManager.getInstance	port	crates/horizon-client/src/game/commands.rs::Game::command_clock_time	clock-keyed command values/state; Overworld stays tied to world.day_time; gap: minor: non-Overworld running clocks, network and save lifecycle remain separate
 ServerClockManager.setTotalTicks	inline	crates/horizon-client/src/game/commands.rs::Game::cmd_time	/time set <ticks>
 ServerClockManager.moveToTimeMarker	inline	crates/horizon-client/src/game/commands.rs::Game::cmd_time	/time set <marker>: not found, already there, or moved
 ServerClockManager.addTicks	inline	crates/horizon-client/src/game/commands.rs::Game::cmd_time	/time add, floored at 0

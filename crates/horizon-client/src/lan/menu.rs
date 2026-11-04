@@ -660,8 +660,9 @@ fn bundle_click(view: &mut View, i: usize, right: bool, rules: &dyn Rules) -> bo
     let Some(mut contents) = Contents::of(items, &bundle) else {
         return false;
     };
-    // Slot.allowModification: mayPickup and mayPlace of its item.
-    let allowed = view.may_place(i, &bundle, rules);
+    // `Slot.allowModification`: `mayPickup` and `mayPlace` of the stack it
+    // holds. A slot that withholds the bundle keeps what is inside it.
+    let allowed = view.may_pickup(i, rules) && view.may_place(i, &bundle, rules);
     match (view.guest.carried.take(), right) {
         (Some(mut carried), false) => {
             if allowed {
@@ -1028,6 +1029,64 @@ mod tests {
             Some(("minecraft:ender_pearl", 16))
         );
         assert_eq!(contents(&view.get(2)), []);
+    }
+
+    /// `Slot.allowModification`: `BundleItem.overrideOtherStackedOnMe` asks
+    /// for `mayPickup` and `mayPlace` of the bundle it holds before it
+    /// inserts or removes anything, so a slot whose rules refuse the pickup
+    /// keeps its bundle's contents.
+    #[test]
+    fn guest_bundle_keeps_its_contents_in_a_refusing_slot() {
+        /// The prepared catalog, with a menu that refuses one slot.
+        struct Refusing {
+            items: Items,
+        }
+        impl Rules for Refusing {
+            fn items(&self) -> &Items {
+                &self.items
+            }
+            fn max_stack(&self, item: &str) -> u32 {
+                self.items.get(item).map_or(64, |i| i.max_stack)
+            }
+            fn armor_index(&self, _: &str) -> Option<usize> {
+                None
+            }
+            fn may_pickup(&self, slot: usize, _: &ItemStack) -> bool {
+                slot != 1
+            }
+        }
+        let Some(ItemRules(items)) = rules() else {
+            return;
+        };
+        let rules = Refusing { items };
+        let mut g = guest();
+        let mut bundle = ItemStack::new("minecraft:bundle", 1);
+        bundle.data_mut().bundle_contents = vec![ItemStack::new("minecraft:apple", 16)];
+        let mut chest = vec![Some(ItemStack::new("minecraft:bundle", 1)), Some(bundle)];
+        let mut drag = None;
+        let mut view = View {
+            guest: &mut g,
+            container: Some(&mut chest),
+            shulker: false,
+            hidden: &[],
+        };
+        // Left click with stone in hand over the refused bundle: nothing goes in.
+        view.guest.carried = Some(ItemStack::new("minecraft:stone", 5));
+        let (_, changed) = click(&mut view, &mut drag, 1, 0, input::PICKUP, &rules);
+        assert!(changed.is_empty());
+        assert_eq!(view.guest.carried.as_ref().map(|s| s.count), Some(5));
+        assert_eq!(contents(&view.get(1)), [("minecraft:apple".into(), 16)]);
+        // A right click with an empty hand takes nothing out of it either.
+        view.guest.carried = None;
+        let (_, changed) = click(&mut view, &mut drag, 1, 1, input::PICKUP, &rules);
+        assert!(changed.is_empty());
+        assert!(view.guest.carried.is_none());
+        assert_eq!(contents(&view.get(1)), [("minecraft:apple".into(), 16)]);
+        // The empty bundle in the slot next to it does take the stone.
+        view.guest.carried = Some(ItemStack::new("minecraft:stone", 5));
+        click(&mut view, &mut drag, 0, 0, input::PICKUP, &rules);
+        assert_eq!(view.guest.carried, None);
+        assert_eq!(contents(&view.get(0)), [("minecraft:stone".into(), 5)]);
     }
 
     /// A mod container saved with more items than its menu has slots: the

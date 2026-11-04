@@ -1495,6 +1495,19 @@ impl Game<'_> {
         self.admin_feedback.clear();
     }
 
+    /// `MinecraftServer.createCommandSourceStack`: the console's source is
+    /// bound to the overworld, whichever level the last server tick left in
+    /// place (the last one ticked, often the nether). Its commands run there
+    /// and the level in place is put back afterwards.
+    fn as_console_in_overworld<T>(&mut self, f: impl FnOnce(&mut Self) -> T) -> T {
+        let back = console_level(self.dim).and_then(|dim| self.enter_command_level(dim));
+        let out = self.as_console(f);
+        if let Some(back) = back {
+            self.enter_command_level(back);
+        }
+        out
+    }
+
     /// DedicatedServer.handleConsoleInputs: one console line, run as the
     /// server (permission level 4). The dedicated-only commands are here;
     /// everything else goes to the game's dispatcher.
@@ -1862,7 +1875,7 @@ impl Game<'_> {
                 // A command a native mod registered goes to the mods first,
                 // looked up by the same first word the match above read.
                 if !self.perform_native_console_command(line.trim()) {
-                    self.as_console(|g| g.run_command(line));
+                    self.as_console_in_overworld(|g| g.run_command(line));
                 }
                 for text in self.chat_capture.take().unwrap_or_default() {
                     self.console_reply(text);
@@ -1987,6 +2000,15 @@ impl Game<'_> {
             lan.hub.lan.shared.set_max_players(max_players);
         }
         self.store_property("max-players", max_players.to_string());
+    }
+
+    /// `DedicatedServer.setAcceptsTransfers`: whether a transfer's handshake is accepted from
+    /// now on, and `accepts-transfers` in server.properties.
+    fn set_accepts_transfers(&mut self, accept: bool) {
+        if let Some(lan) = &self.lan {
+            lan.hub.lan.shared.set_accepts_transfers(accept);
+        }
+        self.store_property("accepts-transfers", accept.to_string());
     }
 
     /// `DedicatedServer.setEnforceWhitelist`: the flag, and `enforce-whitelist` in
@@ -2241,6 +2263,13 @@ fn png_size(bytes: &[u8]) -> Option<(u32, u32)> {
     Some((w, h))
 }
 
+/// The level a console command runs in when `active` is in place: always
+/// the overworld (`MinecraftServer.createCommandSourceStack` uses
+/// `overworld()`), so None when it already is.
+fn console_level(active: super::Dim) -> Option<super::Dim> {
+    (active != super::Dim::Overworld).then_some(super::Dim::Overworld)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -2252,6 +2281,15 @@ mod tests {
         process::{Command, Stdio},
         time::{SystemTime, UNIX_EPOCH},
     };
+
+    /// A console line runs in the overworld even after a server tick left the nether in place.
+    #[test]
+    fn console_commands_run_in_the_overworld() {
+        use super::super::Dim;
+        assert_eq!(super::console_level(Dim::Nether), Some(Dim::Overworld));
+        assert_eq!(super::console_level(Dim::End), Some(Dim::Overworld));
+        assert_eq!(super::console_level(Dim::Overworld), None);
+    }
 
     /// `BanIpCommands.banIp`: the info line names the affected players, one or several, and is
     /// absent when no one is affected.
