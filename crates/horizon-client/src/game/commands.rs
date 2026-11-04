@@ -1700,6 +1700,10 @@ impl Game<'_> {
             // Wall-mounted entities do not move.
             Target::Frame(_) | Target::Painting(_) => {}
         }
+        // Entity.teleportPassengers: the riders go with their vehicle at once.
+        if let (Some(from), Some(to)) = (from, self.target_position(t)) {
+            self.teleport_passengers(t, from, to);
+        }
         if self.options.dedicated.is_some()
             && let (Some(entity), Some(from), Some(to)) =
                 (self.network_entity_id(t), from, self.target_position(t))
