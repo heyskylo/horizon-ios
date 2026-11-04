@@ -2797,8 +2797,10 @@ plays nothing.
 
 ### Fluid currents
 
-`native_fluid_flow(pos)` is `FluidState.getFlow(level, pos)`: the normalised current at a position, the push an item
-there gets. It is zero for still water and for no fluid. A water wheel can read its speed from it.
+`native_fluid_flow(dimension, pos)` is `FluidState.getFlow(level, pos)`: the normalised current at a position, the
+push an item there gets. It is zero for still water and for no fluid, and none where the chunk isn't loaded or the
+dimension isn't available (a client has only the level it is in), so a water wheel on a chunk edge can keep its last
+speed rather than stop.
 
 ### A mod's own fluids in tanks
 

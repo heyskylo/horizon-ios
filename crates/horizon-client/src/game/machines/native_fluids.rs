@@ -523,6 +523,16 @@ impl Game<'_> {
             .into_iter()
             .find(|t| t.can_drain && t.amount > 0)?
             .fluid?;
+        // A cauldron reports itself fillable, but holds only vanilla's fluids:
+        // no room for a mod's, so a move answers none rather than draining
+        // and putting it all back.
+        if matches!(
+            self.native_fluid_at(dimension, to),
+            Some(FluidAt::Cauldron(_))
+        ) && !matches!(fluid.as_str(), "minecraft:water" | "minecraft:lava")
+        {
+            return Some(0);
+        }
         let room = self
             .native_fluid_tanks(dimension, to, to_face)?
             .iter()

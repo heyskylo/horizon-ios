@@ -131,17 +131,34 @@ impl Game<'_> {
         read_block(world, self.pack.assets.registry, pos)
     }
 
-    /// The current of the fluid at `pos` in the level in place
+    /// The current of the fluid at `pos` in `dimension`
     /// (`FluidState.getFlow(level, pos)`), normalised: the push an item in it
     /// gets, a water wheel's speed from the water around it. Zero where there
-    /// is no fluid or it doesn't move, and for a block not loaded. A client
-    /// reads its own copy of the level. API @API:fluid_flow@.
+    /// is no fluid or it doesn't move; none where the chunk isn't loaded or
+    /// the dimension isn't available (a client has only the level it is in,
+    /// a server also its parked ones), so a caller can keep its last answer.
+    /// API @API:fluid_flow@.
     #[allow(dead_code)]
-    pub(super) fn native_fluid_flow(&self, pos: [i32; 3]) -> [f64; 3] {
-        if !self.world.loaded(pos[0], pos[2]) {
-            return [0.0; 3];
+    pub(super) fn native_fluid_flow(&self, dimension: &str, pos: [i32; 3]) -> Option<[f64; 3]> {
+        let dim = match dimension {
+            "minecraft:overworld" => Dim::Overworld,
+            "minecraft:the_nether" => Dim::Nether,
+            "minecraft:the_end" => Dim::End,
+            _ => return None,
+        };
+        let world = if dim == self.dim {
+            &self.world
+        } else {
+            self.levels.parked_world(dim)?
+        };
+        if !world.loaded(pos[0], pos[2]) {
+            return None;
         }
-        horizon_client::entities::fluid_flow(&self.world, &self.res.motion().fluids, pos)
+        Some(horizon_client::entities::fluid_flow(
+            world,
+            &self.res.motion().fluids,
+            pos,
+        ))
     }
 }
 
