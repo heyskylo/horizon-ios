@@ -1117,5 +1117,8 @@
   "Move…": "Move…",
   "The launcher closes while your data is copied and verified, then reopens. Old folders are kept and still use disk space until you verify the move and remove them yourself.": "The launcher closes while your data is copied and verified, then reopens. Old folders are kept and still use disk space until you verify the move and remove them yourself.",
   "Open the shop": "Дүкенді ашу",
-  "You don't own any cosmetics yet.": "Сізде әлі косметика жоқ."
+  "You don't own any cosmetics yet.": "Сізде әлі косметика жоқ.",
+  "Claim for free": "Тегін алу",
+  "The shop's payment provider doesn't serve your country, so you can claim the Founder Set here for free.": "Дүкеннің төлем провайдері сіздің елде қызмет көрсетпейді, сондықтан Құрылтайшы жиынтығын осында тегін ала аласыз.",
+  "The Founder Set is yours.": "Құрылтайшы жиынтығы енді сіздікі."
 }

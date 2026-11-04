@@ -1117,5 +1117,8 @@
   "The launcher closes while your data is copied and verified, then reopens. Old folders are kept and still use disk space until you verify the move and remove them yourself.": "데이터를 복사하고 검증하는 동안 런처가 종료되며, 완료되면 다시 열립니다. 기존 폴더는 그대로 보관되며, 이동이 정상적으로 완료되었는지 확인한 후 직접 삭제할 때까지 디스크 공간을 계속 차지합니다.",
   "Could not open the data folder: {error}": "Could not open the data folder: {error}",
   "Open the shop": "상점 열기",
-  "You don't own any cosmetics yet.": "아직 코스메틱이 없습니다."
+  "You don't own any cosmetics yet.": "아직 코스메틱이 없습니다.",
+  "Claim for free": "무료로 받기",
+  "The shop's payment provider doesn't serve your country, so you can claim the Founder Set here for free.": "상점의 결제 서비스가 회원님의 국가를 지원하지 않으므로 창립자 세트를 여기에서 무료로 받을 수 있습니다.",
+  "The Founder Set is yours.": "창립자 세트를 받았습니다."
 }

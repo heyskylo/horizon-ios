@@ -1117,5 +1117,8 @@
   "Move…": "Move…",
   "The launcher closes while your data is copied and verified, then reopens. Old folders are kept and still use disk space until you verify the move and remove them yourself.": "The launcher closes while your data is copied and verified, then reopens. Old folders are kept and still use disk space until you verify the move and remove them yourself.",
   "Open the shop": "Oscail an siopa",
-  "You don't own any cosmetics yet.": "Níl aon chosmaid agat go fóill."
+  "You don't own any cosmetics yet.": "Níl aon chosmaid agat go fóill.",
+  "Claim for free": "Faigh saor in aisce",
+  "The shop's payment provider doesn't serve your country, so you can claim the Founder Set here for free.": "Ní fhreastalaíonn soláthraí íocaíochta an tsiopa ar do thír, mar sin is féidir leat an tSraith bunaitheoir a fháil anseo saor in aisce.",
+  "The Founder Set is yours.": "Is leatsa an tSraith bunaitheoir."
 }

@@ -222,6 +222,7 @@
   "Frame rate and frame times over the game, with a graph.": "Frame rate and frame times over the game, with a graph.",
   "horizon.multiplayer.finding_friend": "Finding your friend's world...",
   "horizon.multiplayer.not_signed_in": "This server is in online mode. Sign in with your Microsoft account in the Horizon launcher to join it.",
+  "horizon.realms.not_signed_in": "Sign in with your Microsoft account in the Horizon launcher to play on Realms.",
   "horizon.multiplayer.invalid_address": "Invalid server address: %s",
   "horizon.multiplayer.connected_friend_direct": "Connected straight to your friend...",
   "horizon.multiplayer.connected_friend_relay": "Connected to your friend through the relay...",

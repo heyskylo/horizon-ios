@@ -1117,5 +1117,8 @@
   "Move…": "Move…",
   "The launcher closes while your data is copied and verified, then reopens. Old folders are kept and still use disk space until you verify the move and remove them yourself.": "The launcher closes while your data is copied and verified, then reopens. Old folders are kept and still use disk space until you verify the move and remove them yourself.",
   "Open the shop": "باز کردن فروشگاه",
-  "You don't own any cosmetics yet.": "هنوز هیچ آیتم تزئینی ندارید."
+  "You don't own any cosmetics yet.": "هنوز هیچ آیتم تزئینی ندارید.",
+  "Claim for free": "دریافت رایگان",
+  "The shop's payment provider doesn't serve your country, so you can claim the Founder Set here for free.": "ارائه‌دهندهٔ پرداخت فروشگاه در کشور شما خدمات نمی‌دهد، پس می‌توانید مجموعه موسس را اینجا رایگان دریافت کنید.",
+  "The Founder Set is yours.": "مجموعه موسس مال شماست."
 }

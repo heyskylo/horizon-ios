@@ -1117,5 +1117,8 @@
   "Move and restart": "迁移并重启",
   "Could not open the data folder: {error}": "无法打开数据文件夹：{error}",
   "Open the shop": "打开商店",
-  "You don't own any cosmetics yet.": "你还没有任何装饰。"
+  "You don't own any cosmetics yet.": "你还没有任何装饰。",
+  "Claim for free": "免费领取",
+  "The shop's payment provider doesn't serve your country, so you can claim the Founder Set here for free.": "商店的支付服务商不在你所在的国家提供服务，因此你可以在这里免费领取创始者套装。",
+  "The Founder Set is yours.": "创始者套装已归你所有。"
 }
