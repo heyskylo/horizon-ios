@@ -1747,6 +1747,7 @@ impl Game<'_> {
         after: u32,
     ) {
         out.clear();
+        let mut speeds = super::lan_attributes::SpeedByType::default();
         for m in self.mobs.iter().filter(|m| !m.removed && m.id > after) {
             // The lead's holder: the player the mob sees, another mob or a
             // fence knot (game/lan_entities.rs).
@@ -1785,7 +1786,7 @@ impl Game<'_> {
                 && horizon_client::mobs::happy_ghast::on_still_timeout(m);
             mob_freeze_meta(m, &mut e.meta, &mut e.defaults);
             mob_equipment(m, hub, &mut e.equipment);
-            self.mob_attributes(m, &mut e.attributes);
+            self.mob_attributes(m, &mut speeds, &mut e.attributes);
             e.leash = leash;
         }
         for d in self.dropped.iter().filter(|d| d.id > after) {
