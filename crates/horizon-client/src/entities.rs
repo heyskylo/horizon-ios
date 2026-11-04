@@ -1189,6 +1189,20 @@ impl ExperienceOrb {
         );
     }
 }
+
+/// `ClientPacketListener.handleRespawn`: a dimension change builds a new
+/// `ClientLevel`, which starts with no entities. Experience orbs from the
+/// level being left are not in it. The same level keeps them (a death that
+/// does not change dimension). An orb left behind follows the player on the
+/// client (`ExperienceOrb.tick`) and is never `ExperienceOrb.playerTouch`ed:
+/// the server already dropped that id, and `Hub::change_level` does not send
+/// `RemoveEntities` for the old level.
+pub fn orbs_after_client_respawn(
+    dimension_changed: bool,
+    orbs: Vec<ExperienceOrb>,
+) -> Vec<ExperienceOrb> {
+    if dimension_changed { Vec::new() } else { orbs }
+}
 /// `Entity.moveTowardsClosestSpace` from the middle of an entity's box
 /// (`bounds`, its feet at `position`): the velocity pushed towards the
 /// nearest side of its block (north, south, west, east or up) without a full
@@ -2977,6 +2991,36 @@ mod unstuck_tests {
         // The nearest free box sits on the block's top face.
         assert_eq!(moved, Vec3::new(0.5, 1.0, 0.5));
         assert!(!ExperienceOrb::box_at(moved).intersects(Aabb::block(BlockPos::new(0, 0, 0))));
+    }
+
+    /// `handleRespawn` when the dimension key changes: the new client level
+    /// has none of the previous level's orbs. A death in the same level keeps
+    /// the orb, including its value, age and health (none of those gate
+    /// `ExperienceOrb.playerTouch`).
+    #[test]
+    fn a_dimension_change_drops_the_previous_levels_orbs() {
+        // 37 is `ExperienceOrb.getExperienceValue`'s tier, 5 is the default
+        // health, 40 is an age still under the 6000 discard. Set here.
+        let orb = ExperienceOrb {
+            join: Default::default(),
+            id: 4,
+            position: Vec3::new(0.5, 65.0, 0.5),
+            previous: Vec3::new(0.5, 65.0, 0.5),
+            velocity: Vec3::ZERO,
+            value: 37,
+            age: 40,
+            on_ground: false,
+            count: 1,
+            ticks: 10,
+            health: 5,
+            no_gravity: false,
+        };
+        assert!(orbs_after_client_respawn(true, vec![orb.clone()]).is_empty());
+        let kept = orbs_after_client_respawn(false, vec![orb]);
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].value, 37);
+        assert_eq!(kept[0].age, 40);
+        assert_eq!(kept[0].health, 5);
     }
 
     #[test]
