@@ -7403,9 +7403,9 @@ impl Game<'_> {
             // CONSUME otherwise: both end the click (nothing behind the box
             // is used), but only SUCCESS swings; the packet carries the hand.
             let response = self.interactions.get(&hit.id).map(|i| i.response);
-            // Objects whose interact passes (paintings, empty/fixed item frames,
-            // occupied/sneaking boats without chests, non-interactive carts)
-            // leave each hand's turn to its item: a crossbow aimed at it shoots.
+            // Objects whose interact passes (paintings, empty or fixed item frames,
+            // boats sneaked at or out of control, carts that pass) leave each hand's
+            // turn to its item: a crossbow aimed at it shoots.
             let is_painting = self.paintings.iter().any(|p| p.id as i32 == hit.id);
             let held = self.with_hand(hand, |g| g.held().cloned());
             let frame_passes = self
@@ -7415,26 +7415,19 @@ impl Game<'_> {
                 .is_some_and(|f| {
                     item_frame_interact_passes(f.fixed, f.item.is_some(), held.is_some())
                 });
-            let (boat_passes, is_boarding_boat) = self
+            let boat_passes = self
                 .boats
                 .iter()
                 .enumerate()
                 .find(|(_, b)| b.id as i32 == hit.id)
-                .map(|(i, b)| {
-                    let riding = self.riding.is_some() || self.ridden_by_guest(b.id);
-                    let has_room = self.boat_has_room(i);
-                    let passes = boat_interact_passes(
+                .is_some_and(|(i, b)| {
+                    boat_interact_passes(
                         b.chest,
                         sneaking,
                         b.out_of_control >= 60.0,
-                        riding,
-                        has_room,
-                    );
-                    let is_boarding =
-                        !(b.chest && (sneaking || self.riding.is_some() || !has_room));
-                    (passes, is_boarding)
-                })
-                .unwrap_or((false, false));
+                        self.boat_has_room(i),
+                    )
+                });
             let (cart_passes, is_rideable_cart) = self
                 .carts
                 .iter()
@@ -7479,9 +7472,10 @@ impl Game<'_> {
             }) {
                 self.open_cart_command_block(hit.id as u32);
             }
-            // AbstractBoat.interact and Minecart.interact board the vehicle and
-            // answer CONSUME on the client, which ends the click without an arm swing.
-            if remote_object_swings(response, is_boarding_boat || is_rideable_cart) {
+            // Minecart.interact boards the cart and answers CONSUME on the client,
+            // which ends the click without an arm swing. AbstractBoat.interact
+            // answers SUCCESS there, which swings.
+            if remote_object_swings(response, is_rideable_cart) {
                 self.with_hand(hand, Game::swing_arm);
             }
             return true;
@@ -10259,7 +10253,7 @@ fn remote_use_swings(held: &ItemStack, consumable: bool) -> bool {
 }
 
 /// Whether an object interaction on the client predicts a hand swing (`InteractionResult.SUCCESS`).
-/// Boarding a vehicle (`Minecart`, `Boat`) answers CONSUME and does not swing.
+/// Boarding a minecart answers CONSUME and does not swing.
 fn remote_object_swings(response: Option<bool>, is_boarding: bool) -> bool {
     response.unwrap_or(!is_boarding)
 }
@@ -10270,19 +10264,16 @@ fn item_frame_interact_passes(fixed: bool, frame_has_item: bool, hand_has_item: 
     fixed || (!frame_has_item && !hand_has_item)
 }
 
-/// Whether right-clicking a boat passes (`InteractionResult.PASS`).
-/// Sneaking without a chest, out of control, already riding, or a full boat passes.
-fn boat_interact_passes(
-    chest: bool,
-    sneaking: bool,
-    out_of_control: bool,
-    riding: bool,
-    has_room: bool,
-) -> bool {
-    if chest && (sneaking || riding || !has_room) {
-        false
+/// Whether right-clicking a boat passes (`InteractionResult.PASS`) on a client.
+/// `AbstractBoat.interact` passes when sneaking or out of control (60 ticks), and
+/// answers SUCCESS otherwise without checking for room (only the server's
+/// `startRiding` does). `AbstractChestBoat.interact` opens the chest instead of
+/// passing, unless it is out of control, not sneaked at and has room.
+fn boat_interact_passes(chest: bool, sneaking: bool, out_of_control: bool, has_room: bool) -> bool {
+    if chest {
+        !sneaking && out_of_control && has_room
     } else {
-        sneaking || out_of_control || riding || !has_room
+        sneaking || out_of_control
     }
 }
 
@@ -10646,23 +10637,24 @@ mod tests {
         assert!(!item_frame_interact_passes(false, false, true)); // inserts
         assert!(!item_frame_interact_passes(false, true, true)); // rotates
 
-        // Boat: sneaking without chest, full boat, out of control, or riding passes.
-        assert!(boat_interact_passes(false, true, false, false, true)); // sneaking
-        assert!(boat_interact_passes(false, false, true, false, true)); // out of control
-        assert!(boat_interact_passes(false, false, false, true, true)); // already riding
-        assert!(boat_interact_passes(false, false, false, false, false)); // full / no room
-        // Boat: boarding does not pass.
-        assert!(!boat_interact_passes(false, false, false, false, true)); // can board
+        // Boat: sneaking or out of control passes.
+        assert!(boat_interact_passes(false, true, false, true)); // sneaking
+        assert!(boat_interact_passes(false, false, true, true)); // out of control
+        // Boat: the client answers SUCCESS, room or not (startRiding is the server's).
+        assert!(!boat_interact_passes(false, false, false, true));
+        assert!(!boat_interact_passes(false, false, false, false));
 
-        // Chest boat: sneaking or full opens chest container (does not pass).
-        assert!(!boat_interact_passes(true, true, false, false, true)); // opens chest
-        assert!(!boat_interact_passes(true, false, false, false, false)); // opens chest
-        assert!(!boat_interact_passes(true, false, false, false, true)); // boards
+        // Chest boat: sneaking opens the chest; boarding answers SUCCESS.
+        assert!(!boat_interact_passes(true, true, false, true)); // opens chest
+        assert!(!boat_interact_passes(true, false, false, false)); // boards (client)
+        // Chest boat out of control: passes with room, else opens the chest.
+        assert!(boat_interact_passes(true, false, true, true));
+        assert!(!boat_interact_passes(true, false, true, false));
 
-        // Swings: boarding boat or rideable cart answers CONSUME (no swing).
-        assert!(!remote_object_swings(None, true)); // boarding vehicle
-        // Swings: non-boarding object interaction answers SUCCESS (swings).
-        assert!(remote_object_swings(None, false)); // rotating frame, chest cart, etc.
+        // Swings: boarding a rideable cart answers CONSUME (no swing).
+        assert!(!remote_object_swings(None, true));
+        // Swings: other object interactions, a boat's boarding too, answer SUCCESS.
+        assert!(remote_object_swings(None, false));
         // Interaction entities honor response.
         assert!(remote_object_swings(Some(true), false));
         assert!(!remote_object_swings(Some(false), false));
