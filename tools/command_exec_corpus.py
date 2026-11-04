@@ -1324,6 +1324,45 @@ def progression():
     ]
 
 
+def function_return_fixtures(group_names):
+    if 'function return feedback' not in group_names:
+        return {}
+    return {'parity:fail': 'return fail\n', 'parity:zero': 'return 0\n',
+            'parity:value': 'return 7\n', 'parity:empty': '# no commands\n',
+            'parity:add': 'scoreboard players add #count audit 1\n'}
+
+
+def function_return_feedback():
+    # No ticks between calls: distinguish failure from a successful zero,
+    # and both explicit returns from functions that leave callbacks untouched.
+    lines = [cmd('/datapack list enabled'),
+             cmd('/scoreboard objectives add audit dummy', expect_result=1),
+             cmd('/scoreboard players set #count audit 0', expect_result=0),
+             cmd('/execute store result score #clock audit run time query gametime', False)]
+    count = 0
+    for name, result, success in [('fail', 0, 0), ('zero', 0, 1),
+                                  ('value', 7, 1), ('empty', 31, 17),
+                                  ('add', 31, 17)]:
+        lines.append(cmd(f'/function parity:{name}'))
+        count += name == 'add'
+        lines.extend([
+            cmd(f'/execute if score #count audit matches {count}', expect_result=1),
+            cmd('/scoreboard players set #r audit 31', expect_result=31),
+            cmd('/scoreboard players set #s audit 17', expect_result=17),
+            cmd(f'/execute store result score #r audit store success score #s audit run function parity:{name}'),
+            cmd('/scoreboard players get #r audit', expect_result=result),
+            cmd('/scoreboard players get #s audit', expect_result=success),
+            cmd(f'/execute if score #r audit matches {result}', expect_result=1),
+            cmd(f'/execute if score #s audit matches {success}', expect_result=1),
+        ])
+        count += name == 'add'
+        lines.append(cmd(f'/execute if score #count audit matches {count}', expect_result=1))
+    lines.extend([cmd('/execute store result score #after audit run time query gametime', False),
+                  cmd('/execute if score #clock audit = #after audit', expect_result=1),
+                  cmd('/scoreboard objectives remove audit')])
+    return lines
+
+
 def functions_and_packs():
     return [
         cmd('/function minecraft:nonexistent'),
@@ -2433,6 +2472,7 @@ def groups():
         ('world', world_misc()),
         ('progression', progression()),
         ('functions and packs', functions_and_packs()),
+        ('function return feedback', function_return_feedback()),
         ('ticking and random', ticking()),
         ('compute', compute()),
         ('social and scoreboard', social()),
