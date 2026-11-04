@@ -334,6 +334,7 @@ fn check(sampler: &str, stage: Stage, scene: Scene, expected: [u8; 4]) {
                 cull: false,
             }),
             block_ids: &[],
+            sprite_rects: &[],
             celestial: None,
             gui_size: SIZE,
             clouds: None,
@@ -707,6 +708,7 @@ fn shadow_depth_filtering(nearest: &str) -> Option<Vec<[u8; 4]>> {
     let mut post = gpu.load(
         files,
         World {
+            sprite_rects: &[],
             atlas: None,
             material_maps: None,
             lightmap: color.clone(),
