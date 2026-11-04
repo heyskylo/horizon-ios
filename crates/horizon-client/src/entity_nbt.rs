@@ -3124,6 +3124,12 @@ pub fn item_frame_to_nbt(f: &ItemFrame, uuid: [i32; 4], raw: Option<&Tag>) -> Ta
         fall_distance: 0.0,
     };
     let mut tag = base.tag(raw);
+    // `Entity.saveWithoutId`: `CustomName` before the frame's own fields.
+    if let Some(name) = &f.custom_name {
+        put(&mut tag, "CustomName", name.clone());
+    } else if let Tag::Compound(map) = &mut tag {
+        map.remove(&"CustomName".into());
+    }
     put(&mut tag, "Facing", Tag::Byte(f.facing as i8));
     put(&mut tag, "block_pos", Tag::IntArray(f.pos.to_vec()));
     put(&mut tag, "ItemRotation", Tag::Byte(f.rotation as i8));
@@ -3155,6 +3161,7 @@ pub fn item_frame_from_nbt(tag: &Tag, id: u32) -> Option<ItemFrame> {
         fixed: flag(tag, "Fixed"),
         invisible: flag(tag, "Invisible"),
         check_interval: 0,
+        custom_name: tag.get("CustomName").cloned(),
     })
 }
 /// ArmorStand.addAdditionalSaveData with LivingEntity's `equipment`.
@@ -6190,6 +6197,41 @@ mod fireball_nbt_tests {
             ("Facing", Tag::Byte(1)),
         ]);
         assert_eq!(item_frame_from_nbt(&frame, 1).unwrap().pos, [-1, 80, 6]);
+    }
+
+    #[test]
+    fn a_named_frame_drops_with_its_custom_name() {
+        // `ItemFrame.getFrameItemStackWithData`: the frame item, then
+        // `DataComponents.CUSTOM_NAME` from `getCustomName`. Glow frames
+        // share it through `GlowItemFrame.getFrameItemStack`.
+        for id in ["minecraft:item_frame", "minecraft:glow_item_frame"] {
+            let tag = Tag::compound([
+                ("id", string(id)),
+                ("Pos", doubles(&[0.5, 64.0, 0.5])),
+                ("Facing", Tag::Byte(2)),
+                ("CustomName", string("Gallery")),
+            ]);
+            let frame = item_frame_from_nbt(&tag, 1).unwrap();
+            let stack = frame.item_stack_with_data();
+            assert_eq!(&*stack.item, id);
+            assert_eq!(stack.count, 1);
+            assert_eq!(stack.custom_name().as_deref(), Some("Gallery"));
+            let saved = item_frame_to_nbt(&frame, [1, 2, 3, 4], None);
+            assert_eq!(text(saved.get("CustomName")).as_deref(), Some("Gallery"));
+        }
+        let bare = Tag::compound([
+            ("id", string("minecraft:item_frame")),
+            ("Pos", doubles(&[0.5, 64.0, 0.5])),
+            ("Facing", Tag::Byte(3)),
+        ]);
+        let frame = item_frame_from_nbt(&bare, 2).unwrap();
+        assert!(frame.custom_name.is_none());
+        assert!(frame.item_stack_with_data().custom_name().is_none());
+        assert!(
+            item_frame_to_nbt(&frame, [1, 2, 3, 4], Some(&bare))
+                .get("CustomName")
+                .is_none()
+        );
     }
 
     #[test]

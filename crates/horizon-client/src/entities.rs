@@ -1550,6 +1550,8 @@ pub struct ItemFrame {
     pub fixed: bool,
     pub invisible: bool,
     pub check_interval: u32,
+    /// `Entity.getCustomName` (`CustomName`), copied onto the dropped frame.
+    pub custom_name: Option<horizon_world::nbt::Tag>,
 }
 impl ItemFrame {
     pub fn step(&self) -> [i32; 3] {
@@ -1578,6 +1580,16 @@ impl ItemFrame {
             std::array::from_fn(|i| c[i] - size[i] / 2.0),
             std::array::from_fn(|i| c[i] + size[i] / 2.0),
         )
+    }
+    /// `ItemFrame.getFrameItemStackWithData`: `getFrameItemStack` (a glow
+    /// frame's own item), then `DataComponents.CUSTOM_NAME` from
+    /// `getCustomName`.
+    pub fn item_stack_with_data(&self) -> ItemStack {
+        let mut item_stack = ItemStack::new(self.kind(), 1);
+        if let Some(name) = &self.custom_name {
+            item_stack.data_mut().custom_name = Some(name.clone());
+        }
+        item_stack
     }
 }
 /// An armor stand (`ArmorStand`).
