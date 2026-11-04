@@ -4017,11 +4017,31 @@ impl Game<'_> {
                 if p.event == 45 {
                     self.fox_eat_particles(p.id as u32);
                 }
-                if p.event == 1
-                    && let Some(m) = self.mob_index.get_mut(&mut self.mobs, p.id as u32)
-                    && m.species() == horizon_client::mobs::Species::Rabbit
-                {
-                    horizon_client::mobs::rabbit::hop_event(m);
+                // Rabbit.handleEntityEvent(1): the hop clocks, and
+                // Entity.spawnSprintParticle (one block-dust crumb).
+                if p.event == 1 {
+                    let hop = {
+                        let m = self.mob_index.get_mut(&mut self.mobs, p.id as u32);
+                        if let Some(m) = m
+                            && m.species() == horizon_client::mobs::Species::Rabbit
+                        {
+                            let sample =
+                                (m.position, m.velocity, f64::from(m.width()), m.supporting);
+                            horizon_client::mobs::rabbit::hop_event(m);
+                            Some(sample)
+                        } else {
+                            None
+                        }
+                    };
+                    if let Some((position, movement, width, support)) = hop {
+                        let id = p.id as u32;
+                        self.sprint_particle(position, movement, support, width, |game| {
+                            // this.random: the rabbit's own, x then z.
+                            game.mob_index
+                                .get_mut(&mut game.mobs, id)
+                                .map(|m| (m.random.next_double(), m.random.next_double()))
+                        });
+                    }
                 }
                 if p.event == 19
                     && let Some(m) = self.mob_index.get_mut(&mut self.mobs, p.id as u32)
