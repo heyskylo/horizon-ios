@@ -39,8 +39,8 @@ except ImportError:
 SEED = 1
 
 
-def install_datapack_fixtures(world, predicates, functions, jar, recipes=None):
-    if not predicates and not functions and not recipes:
+def install_datapack_fixtures(world, predicates, functions, jar, advancements=None, recipes=None):
+    if not predicates and not functions and not advancements and not recipes:
         return
     with zipfile.ZipFile(jar) as archive:
         version = json.loads(archive.read('version.json'))['pack_version']
@@ -60,6 +60,12 @@ def install_datapack_fixtures(world, predicates, functions, jar, recipes=None):
         target = pack / 'data' / namespace / 'function' / (path + '.mcfunction')
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(contents, encoding='utf-8')
+
+    for identifier, advancement in (advancements or {}).items():
+        namespace, path = identifier.split(':', 1)
+        target = pack / 'data' / namespace / 'advancement' / (path + '.json')
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps(advancement), encoding='utf-8')
 
 
     for identifier, recipe in (recipes or {}).items():
@@ -106,6 +112,11 @@ def main():
             sys.exit(f'{name} failed ({result.returncode}):\n{tail}')
 
     groups = corpus_module.groups()
+    # These overlays replace built-in recipes: run each in its own world, never
+    # beside the generic corpus's fixed vanilla recipe-count controls.
+    isolated_recipes = {'crafting recipe priority', 'crafting base recipe control'}
+    if not args.only:
+        groups = [(name, ops) for name, ops in groups if name not in isolated_recipes]
     if args.pot_string_sherd_diagnostic:
         groups = [(name, corpus_module.decorated_pot_data(string_sherd=True)
                    if name == 'decorated pot data' else ops) for name, ops in groups]
@@ -121,6 +132,8 @@ def main():
     if args.slot_codec_diagnostic:
         groups.append(('slot source codec diagnostic', [corpus_module.cmd(
             '/item fill block 4 200 4 {type:"minecraft:slot_range",slots:"container.99"} with diamond')]))
+    if any(name in isolated_recipes for name, _ in groups) and sum(name != 'setup' for name, _ in groups) != 1:
+        parser.error('crafting recipe fixtures require --only with one exact group')
     script = []
     for _, lines in groups:
         script.extend(lines)
@@ -130,12 +143,13 @@ def main():
     predicates = corpus_module.predicate_selector_fixtures([name for name, _ in groups])
     functions = corpus_module.function_return_fixtures([name for name, _ in groups])
     recipes = corpus_module.crafting_priority_recipes([name for name, _ in groups])
+    advancements = corpus_module.advancement_reward_fixtures([name for name, _ in groups])
 
     run(['javac', '--release', lock['minecraft']['java_major'], '-proc:none', '-cp', str(jars['server']) + os.pathsep + dependency_path, '-d', classes, oracle], 'compile-java')
     vanilla_dir = build / 'vanilla'
     shutil.rmtree(vanilla_dir, ignore_errors=True)
     vanilla_dir.mkdir()
-    install_datapack_fixtures(vanilla_dir / 'universe/harness', predicates, functions, jars['server'], recipes=recipes)
+    install_datapack_fixtures(vanilla_dir / 'universe/harness', predicates, functions, jars['server'], advancements=advancements, recipes=recipes)
     run(['java', '-Xmx3G', '-Duser.timezone=UTC', '-cp', os.pathsep.join([str(classes), str(jars['server']), dependency_path]),
          'dev.horizonlab.parity.VanillaCommandExecOracle', vanilla_dir / 'universe', script_path, build / 'vanilla.jsonl', SEED], 'java', cwd=vanilla_dir)
 
@@ -148,7 +162,7 @@ def main():
     rust_dir = build / 'rust'
     shutil.rmtree(rust_dir, ignore_errors=True)
     rust_dir.mkdir()
-    install_datapack_fixtures(rust_dir / 'saves/harness', predicates, functions, jars['server'], recipes=recipes)
+    install_datapack_fixtures(rust_dir / 'saves/harness', predicates, functions, jars['server'], advancements=advancements, recipes=recipes)
     # The oracle's Services resolve no profile (/fetchprofile fails on the next tick): the game gets no services
     # either, a discovery address that refuses at once, rather than Mojang's over the network.
     env = lab.game_env(HORIZON_PLAYER_NAME="Player", HORIZON_COMMAND_SCRIPT=script_path,

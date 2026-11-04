@@ -749,7 +749,8 @@ impl Game<'_> {
             }
         }
     }
-    /// `PlayerAdvancements.award` once done: rewards, toast, announcement.
+    /// `PlayerAdvancements.award` once done: `AdvancementRewards.grant`,
+    /// then toast and announcement.
     fn award(&mut self, index: usize) {
         let tree = self.adv.tree.clone();
         let a = &tree.list[index];
@@ -787,6 +788,9 @@ impl Game<'_> {
                     self.spawn_item(rest, eye, [0.0; 3], 0);
                 }
             }
+        }
+        if let Some(function) = &a.rewards.function {
+            self.run_advancement_reward_function(function);
         }
         if let Some(d) = &a.display {
             // A network player's client shows its own toast.
