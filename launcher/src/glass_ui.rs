@@ -640,6 +640,39 @@ pub fn menu_item(
     keyboard(track_hover(d, id), t)
 }
 
+/// A dropdown's choice: its name on one line, 36 tall, the accent's tick on the one `picked`.
+pub fn pick_row(
+    id: impl Into<SharedString>,
+    label: impl Into<SharedString>,
+    picked: bool,
+    t: &Theme,
+) -> Stateful<Div> {
+    let id = id.into();
+    let d = div()
+        .id(id.clone())
+        .relative()
+        .flex()
+        .items_center()
+        .justify_between()
+        .gap(px(12.))
+        .h(px(36.))
+        .w_full()
+        .px(px(12.))
+        .rounded(px(radius::CONTROL))
+        .cursor_pointer()
+        .child(hover_fade(&id, layer(radius::CONTROL), |d, a| {
+            d.bg(white(0.07 * a))
+        }))
+        .child(
+            text(14., FontWeight::NORMAL, ink::FULL)
+                .relative()
+                .truncate()
+                .child(label.into()),
+        )
+        .children(picked.then(|| icon("tick-02", 17., color(look().accent_soft)).relative()));
+    keyboard(track_hover(d, id), t)
+}
+
 /// A quiet button (`QUIET`): white at 8 %, 14 % under the pointer, 14 px medium, `h` tall.
 pub fn quiet(
     id: impl Into<SharedString>,

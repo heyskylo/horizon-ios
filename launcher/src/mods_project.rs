@@ -284,13 +284,13 @@ impl Launcher {
     }
 
     /// Sets the filters and searches again.
-    fn mods_filter(&mut self, change: impl FnOnce(&mut Filters)) {
+    pub(super) fn mods_filter(&mut self, change: impl FnOnce(&mut Filters)) {
         change(&mut self.mods.browse.filters);
         self.mods_search_keeping(0, true);
     }
 
     /// The orders the current source can sort by, "Best match" first.
-    fn mods_sorts(&self) -> Vec<(Option<Sort>, &'static str)> {
+    pub(super) fn mods_sorts(&self) -> Vec<(Option<Sort>, &'static str)> {
         let own =
             self.mods.source == SourceId::Horizon && self.mods.java_for(self.mods.kind).is_none();
         let all: &[Sort] = if own {
@@ -408,7 +408,7 @@ impl Launcher {
         let t = self.theme;
         let f = self.mods.browse.filters.clone();
         let sorts = self.mods_sorts();
-        let sort = self.mods_sort_dropdown(&sorts, f.sort, cx);
+        let sort = (!t.glass).then(|| self.mods_sort_dropdown(&sorts, f.sort, cx));
         let shown = self.mods.browse.show_filters;
         let active = f.categories.len()
             + f.loader.is_some() as usize
@@ -434,7 +434,7 @@ impl Launcher {
                 .flex_wrap()
                 .items_center()
                 .gap(px(12.))
-                .child(sort)
+                .children(sort)
                 .child(toggle),
         );
         if !shown {
