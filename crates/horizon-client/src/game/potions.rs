@@ -480,6 +480,32 @@ fn thrown_kind(stack: &ItemStack) -> &'static str {
     }
 }
 
+/// `BottleItem.use`: find a living `AreaEffectCloud` owned by an `EnderDragon`
+/// within the player's box grown by 2, and shrink its radius by 0.5.
+pub(super) fn collect_dragon_breath(
+    player_box: Aabb,
+    clouds: &mut [super::dragon::Breath],
+) -> bool {
+    let search_box = player_box.inflate(Vec3::new(2.0, 2.0, 2.0));
+    if let Some(c) = clouds.iter_mut().find(|c| {
+        if !c.from_dragon || c.potion.is_some() || super::dragon::breath_expired(c.age, c.duration)
+        {
+            return false;
+        }
+        let r = f64::from(c.radius);
+        let cloud_box = Aabb::new(
+            Vec3::new(c.at[0] - r, c.at[1], c.at[2] - r),
+            Vec3::new(c.at[0] + r, c.at[1] + 0.5, c.at[2] + r),
+        );
+        search_box.intersects(cloud_box)
+    }) {
+        c.radius = (c.radius - 0.5).max(0.0);
+        true
+    } else {
+        false
+    }
+}
+
 impl Game<'_> {
     /// Right-click with a potion, splash/lingering potion or glass bottle.
     pub(super) fn use_potion_item(&mut self, stack: &ItemStack) -> horizon_client::Result<bool> {
@@ -545,6 +571,25 @@ impl Game<'_> {
                 Ok(true)
             }
             "minecraft:glass_bottle" => {
+                // `BottleItem.use`: before the water check, it looks for a living
+                // AreaEffectCloud owned by an EnderDragon within the player's box
+                // grown by 2. If one is found, it shrinks the cloud's radius by 0.5,
+                // plays item.bottle.fill_dragonbreath at the player, emits
+                // GameEvent.FLUID_PICKUP, and turns one bottle into dragon_breath.
+                if let Some(player) = self.player.as_ref()
+                    && collect_dragon_breath(player.bounds(), &mut self.breath_clouds)
+                {
+                    let player_pos = [player.position.x, player.position.y, player.position.z];
+                    self.audio.play(
+                        "minecraft:item.bottle.fill_dragonbreath",
+                        Some(player_pos),
+                        1.0,
+                        1.0,
+                    );
+                    self.post_entity_event("minecraft:fluid_pickup", Who::Player);
+                    self.fill_held(ItemStack::new("minecraft:dragon_breath", 1));
+                    return Ok(true);
+                }
                 let Some(hit) = self.pick_fluid() else {
                     return Ok(false);
                 };
@@ -586,7 +631,9 @@ impl Game<'_> {
         self.audio
             .play("minecraft:entity.generic.splash", Some(centre), 1.0, 1.0);
         self.fill_held(ItemStack::new("minecraft:glass_bottle", 1));
-        // ServerLevel.sendParticles: five splashes above the block.
+        // PotionItem.useOn: five ServerLevel.sendParticles(SPLASH). The level
+        // random places each one (count 1, no spread, speed 1). The packet is
+        // what the window draws; a window that runs this itself still adds it.
         for _ in 0..5 {
             let r = &mut self.world.random;
             let at = [
@@ -594,8 +641,18 @@ impl Game<'_> {
                 f64::from(pos[1] + 1),
                 f64::from(pos[2]) + r.next_double(),
             ];
-            self.particles
-                .add(&ParticleOptions::simple(ParticleType::Splash), at, [0.0; 3]);
+            let options = ParticleOptions::simple(ParticleType::Splash);
+            self.particles.add(&options, at, [0.0; 3]);
+            self.lan_send_particles(super::lan_particles::QueuedParticle {
+                dimension: self.dim.id(),
+                options,
+                state: None,
+                at,
+                spread: [0.0; 3],
+                speed: [1.0; 3],
+                count: 1,
+                randomization: 0,
+            });
         }
         self.audio
             .play("minecraft:item.bottle.empty", Some(centre), 1.0, 1.0);
@@ -996,11 +1053,13 @@ impl Game<'_> {
             && let Some(p) = self.player.as_mut()
         {
             for (attr, id, _, op) in &self.potions.applied {
-                let _ = p.set_modifier(attr, id, 0.0, op, false);
+                let _ = p.set_modifier_unclamped(attr, id, 0.0, op, false);
             }
             for (attr, id, amount, op) in &modifiers {
-                let _ = p.set_modifier(attr, id, *amount, op, true);
+                let _ = p.set_modifier_unclamped(attr, id, *amount, op, true);
             }
+            // onAttributeUpdated, once the batch settled: a lost health_boost.
+            let _ = p.clamp_health_to_max();
             self.potions.applied = modifiers;
         }
         if let Some(p) = self.player.as_mut()
@@ -1183,6 +1242,11 @@ impl Game<'_> {
                 return false;
             }
             t.position = next;
+            let bounds = Aabb::new(
+                next.add_vector(Vec3::new(-0.125, 0.0, -0.125)),
+                next.add_vector(Vec3::new(0.125, 0.25, 0.125)),
+            );
+            self.entity_powder_snow_particles(t.previous, next, bounds, t.velocity, false);
             t.age < 1200 && t.position.y > -128.0
         });
         self.potions.thrown = thrown;
@@ -1948,5 +2012,127 @@ mod tests {
         assert_eq!(nausea_blend_added(&ending, false), (0.0, 0.0));
         let infinite = EffectInstance::new("nausea", -1, 0);
         assert_eq!(nausea_blend_added(&infinite, false), (1.0, 1.0));
+    }
+
+    /// `BottleItem.use`: collecting dragon's breath from an ender dragon's cloud (#8054).
+    #[test]
+    fn glass_bottle_collects_dragon_breath_from_dragon_cloud() {
+        let player_box = Aabb::new(Vec3::new(-0.3, 64.0, -0.3), Vec3::new(0.3, 65.8, 0.3));
+        let mut clouds = vec![super::super::dragon::Breath {
+            id: 1,
+            at: [1.0, 64.0, 0.0],
+            radius: 5.0,
+            age: 0,
+            duration: 200,
+            from_dragon: true,
+            victims: Vec::new(),
+            potion: None,
+        }];
+        assert!(collect_dragon_breath(player_box, &mut clouds));
+        assert_eq!(clouds[0].radius, 4.5);
+        assert!(collect_dragon_breath(player_box, &mut clouds));
+        assert_eq!(clouds[0].radius, 4.0);
+    }
+
+    /// `BottleItem.use`: clouds that are expired, non-dragon, lingering potions,
+    /// or out of reach cannot be bottled (#8054).
+    #[test]
+    fn glass_bottle_ignores_non_dragon_or_expired_or_out_of_range_clouds() {
+        let player_box = Aabb::new(Vec3::new(-0.3, 64.0, -0.3), Vec3::new(0.3, 65.8, 0.3));
+        // Non-dragon cloud (`from_dragon: false`).
+        let mut non_dragon = vec![super::super::dragon::Breath {
+            id: 1,
+            at: [0.0, 64.0, 0.0],
+            radius: 3.0,
+            age: 0,
+            duration: 600,
+            from_dragon: false,
+            victims: Vec::new(),
+            potion: None,
+        }];
+        assert!(!collect_dragon_breath(player_box, &mut non_dragon));
+        assert_eq!(non_dragon[0].radius, 3.0);
+
+        // Lingering potion cloud (`potion: Some(...)`).
+        let mut lingering = vec![super::super::dragon::Breath {
+            id: 2,
+            at: [0.0, 64.0, 0.0],
+            radius: 3.0,
+            age: 0,
+            duration: 600,
+            from_dragon: true,
+            victims: Vec::new(),
+            potion: Some(PotionCloud {
+                effects: Vec::new(),
+                hidden: Vec::new(),
+                ambient: Vec::new(),
+                radius_per_tick: -3.0 / 600.0,
+                color: 0,
+                victims: Vec::new(),
+                source: Text::empty(),
+            }),
+        }];
+        assert!(!collect_dragon_breath(player_box, &mut lingering));
+        assert_eq!(lingering[0].radius, 3.0);
+
+        // Its last tick before the wait-shifted end still holds breath
+        // (`tickCount - waitTime < duration`).
+        let mut last = vec![super::super::dragon::Breath {
+            id: 3,
+            at: [0.0, 64.0, 0.0],
+            radius: 5.0,
+            age: 219,
+            duration: 200,
+            from_dragon: true,
+            victims: Vec::new(),
+            potion: None,
+        }];
+        assert!(collect_dragon_breath(player_box, &mut last));
+        assert_eq!(last[0].radius, 4.5);
+
+        // Expired cloud (`tickCount - waitTime >= duration`).
+        let mut expired = vec![super::super::dragon::Breath {
+            id: 3,
+            at: [0.0, 64.0, 0.0],
+            radius: 5.0,
+            age: 220,
+            duration: 200,
+            from_dragon: true,
+            victims: Vec::new(),
+            potion: None,
+        }];
+        assert!(!collect_dragon_breath(player_box, &mut expired));
+        assert_eq!(expired[0].radius, 5.0);
+
+        // Out of horizontal reach: cloud at 10 blocks away with radius 1:
+        // cloud X range [9.0, 11.0], player inflated X range [-2.3, 2.3] -> no overlap.
+        let mut far = vec![super::super::dragon::Breath {
+            id: 4,
+            at: [10.0, 64.0, 0.0],
+            radius: 1.0,
+            age: 0,
+            duration: 200,
+            from_dragon: true,
+            victims: Vec::new(),
+            potion: None,
+        }];
+        assert!(!collect_dragon_breath(player_box, &mut far));
+        assert_eq!(far[0].radius, 1.0);
+
+        // Out of vertical reach: cloud at Y=64.0 (Y bounds [64.0, 64.5]),
+        // player at Y=67.0 (inflated Y bounds [65.0, 70.8] does not reach 64.5).
+        let high_player = Aabb::new(Vec3::new(-0.3, 67.0, -0.3), Vec3::new(0.3, 68.8, 0.3));
+        let mut ground_cloud = vec![super::super::dragon::Breath {
+            id: 5,
+            at: [0.0, 64.0, 0.0],
+            radius: 1.0,
+            age: 0,
+            duration: 200,
+            from_dragon: true,
+            victims: Vec::new(),
+            potion: None,
+        }];
+        assert!(!collect_dragon_breath(high_player, &mut ground_cloud));
+        assert_eq!(ground_cloud[0].radius, 1.0);
     }
 }

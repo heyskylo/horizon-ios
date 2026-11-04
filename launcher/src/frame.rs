@@ -559,7 +559,7 @@ impl Launcher {
         let (name, how) = self.who_plays();
         let face = match self.accounts.player() {
             Player::Microsoft(_) => self.accounts.selected().map(|a| a.uuid.clone()),
-            _ => None,
+            _ => Some(profile_heads::offline_key(&name)),
         };
         let open = self.account_menu;
         let chip =
@@ -695,6 +695,7 @@ impl Launcher {
             .px(px(32.))
             .pt(px(14.))
             .child(strip)
+            .children(self.toast_in_topbar())
             .child(
                 div()
                     .ml_auto()
@@ -753,15 +754,18 @@ impl Launcher {
                                 .size(px(30.))
                                 .rounded(px(8.))
                                 .overflow_hidden()
-                                .child(self.profile_heads.draw(
-                                    match &who {
-                                        Player::Microsoft(uuid) => Some(uuid),
-                                        _ => None,
-                                    },
-                                    30.,
-                                    self.scale,
-                                    &t,
-                                )),
+                                .child(
+                                    self.profile_heads.draw(
+                                        match &who {
+                                            Player::Microsoft(uuid) => Some(uuid.clone()),
+                                            _ => Some(profile_heads::offline_key(&name)),
+                                        }
+                                        .as_deref(),
+                                        30.,
+                                        self.scale,
+                                        &t,
+                                    ),
+                                ),
                         )
                         .child(
                             div()
@@ -874,7 +878,7 @@ impl Launcher {
                     move |this, _: &ClickEvent, _, cx| {
                         this.row_menu.open = None;
                         let _ = std::fs::create_dir_all(&home);
-                        cx.open_with_system(&home);
+                        crate::glass_toast::open(cx, &home);
                         cx.notify();
                     },
                 )),

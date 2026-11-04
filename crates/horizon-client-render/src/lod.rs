@@ -38,10 +38,27 @@ const QUEUED_PER_SAMPLER: usize = 32;
 const MAX_REFRESHED: usize = 64;
 /// Threads that sample far tiles beside the mesher. Sampling is the cold-load
 /// bottleneck (each task evaluates a shared density lattice for 256 columns),
-/// so medium machines use half their cores, not a quarter.
+/// so medium machines use two thirds of their cores, not half.
+///
+/// The mesher has little to do until tiles are sampled, so its threads sit
+/// idle through the part of a cold build that waits on sampling. Measured on
+/// a 12-thread machine building 4336 tiles at LOD distance 256, from the game
+/// answering the control socket until every target tile is sampled, four runs
+/// a configuration:
+///
+/// | samplers / meshers | sampling | whole build |
+/// |---|---|---|
+/// | 6 / 5 (before) | 15.0 s | 23.9 s |
+/// | 8 / 3 | 11.8 s | 18.6 s |
+/// | 9 / 2 | 10.6 s | 19.1 s |
+///
+/// Nine samplers finish sampling sooner still, but leave the mesher two
+/// threads and the whole build ends later. The cap keeps a large machine
+/// from starving its mesher, and `meshing_threads` keeps the frame and the
+/// ticks a core either way.
 fn sampling_threads(cores: usize) -> usize {
     if cores >= 8 {
-        (cores / 2).min(8)
+        (cores * 2 / 3).min(8)
     } else {
         (cores / 4).clamp(1, 3)
     }
@@ -179,7 +196,11 @@ pub struct Column {
 }
 impl Column {
     /// Reduce an entire horizontal footprint, rather than inflating its corner
-    /// column (a single leaf used to become a whole distant tree-sized slab).
+    /// column. A height is drawn where any column of the footprint holds a
+    /// block there, in the material most of them hold: anything joined to
+    /// the ground stays joined at every width. Drawing only heights most of
+    /// the footprint held dropped trunks (one column of 16 or 256) under the
+    /// crowns they hold up, and the crowns hung in the air as slabs.
     pub fn reduced(columns: &[Column; 256], x: usize, z: usize, width: usize) -> Self {
         if width == 1 {
             return columns[z * 16 + x].clone();
@@ -203,7 +224,7 @@ impl Column {
         let mut bottom = MIN_Y as i16;
         for (y, material, change) in events {
             if bottom < y {
-                if occupied * 2 >= (width * width) as i32
+                if occupied > 0
                     && let Some(&((state, biome), _)) =
                         votes.iter().max_by_key(|&(material, count)| {
                             (*count, std::cmp::Reverse((material.0.0, material.1)))
@@ -3291,7 +3312,7 @@ mod tests {
         assert_eq!(kelp.surface.unwrap().height, 40);
     }
     #[test]
-    fn coarse_voxels_reduce_the_area_instead_of_inflating_one_leaf() {
+    fn coarse_voxels_keep_what_any_column_holds_so_crowns_stay_on_trunks() {
         let span = |min, max, state| Span {
             min,
             max,
@@ -3303,8 +3324,8 @@ mod tests {
             surface: None,
             spans: vec![span(0, 4, 1)].into(),
         });
-        columns[0].spans.push(span(8, 10, 2));
-        assert_eq!(Column::reduced(&columns, 0, 0, 4).spans, [span(0, 4, 1)]);
+        // One trunk column under a crown over the whole footprint.
+        columns[0].spans.push(span(4, 12, 2));
         for z in 0..4 {
             for x in 0..4 {
                 columns[z * 16 + x].spans.push(span(12, 14, 3));
@@ -3312,17 +3333,20 @@ mod tests {
         }
         assert_eq!(
             Column::reduced(&columns, 0, 0, 4).spans,
-            [span(0, 4, 1), span(12, 14, 3)]
+            [span(0, 4, 1), span(4, 12, 2), span(12, 14, 3)]
         );
         assert_eq!(Column::reduced(&columns, 0, 0, 1), columns[0]);
         let reduced = ReducedColumns::new(Arc::new(columns));
         assert_eq!(
-            reduced.get(0, 0, 1).spans,
-            [span(0, 4, 1), span(8, 10, 2), span(12, 14, 3)]
+            reduced.get(0, 0, 4).spans,
+            [span(0, 4, 1), span(4, 12, 2), span(12, 14, 3)]
         );
-        assert_eq!(reduced.get(0, 0, 4).spans, [span(0, 4, 1), span(12, 14, 3)]);
         assert_eq!(reduced.get(4, 8, 4).spans, [span(0, 4, 1)]);
-        assert_eq!(reduced.get(0, 0, 16).spans, [span(0, 4, 1)]);
+        assert_eq!(
+            reduced.get(0, 0, 16).spans,
+            [span(0, 4, 1), span(4, 12, 2), span(12, 14, 3)],
+            "a crown over one corner of a wide cell still sits on its trunk"
+        );
     }
     /// Detail read before a refresh over its chunk is dropped (asked
     /// again); elsewhere, or read after, it is kept.
@@ -4028,9 +4052,22 @@ mod tests {
     }
     #[test]
     fn extra_sampling_threads_only_on_large_machines() {
-        assert_eq!([1, 2, 4, 8, 11].map(sampling_threads), [1, 1, 1, 4, 5]);
-        assert_eq!([12, 16, 64].map(sampling_threads), [6, 8, 8]);
-        assert_eq!([2, 8, 12, 16].map(meshing_threads), [1, 3, 5, 7]);
+        // Small machines are unchanged: a quarter of their cores, never more
+        // than three, so the near chunks and the frame keep theirs.
+        assert_eq!([1, 2, 4].map(sampling_threads), [1, 1, 1]);
+        // From eight, two thirds rather than half, still capped at eight.
+        assert_eq!([8, 11, 12].map(sampling_threads), [5, 7, 8]);
+        assert_eq!([16, 64].map(sampling_threads), [8, 8]);
+        assert_eq!([2, 8, 12, 16].map(meshing_threads), [1, 2, 3, 7]);
+        // From four cores up the two pools together leave one for the frame
+        // and the ticks. Below that both clamp to one and there is nothing
+        // to spare, which is the existing behaviour.
+        for cores in [4usize, 8, 11, 12, 16, 64] {
+            assert!(
+                sampling_threads(cores) + meshing_threads(cores) < cores,
+                "{cores} cores leaves nothing for the frame"
+            );
+        }
     }
 
     /// Review point 3 on #4747: a result from a batch that is no longer the
