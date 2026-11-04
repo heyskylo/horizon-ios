@@ -1163,6 +1163,8 @@
   "Paid": "Dibayar",
   "Order {id}": "Pesanan {id}",
   "The claim didn't go through: the checkout's address isn't Horizon's.": "Klaim tidak berhasil: alamat checkout bukan milik Horizon.",
+  "Paste a friend's invite code": "Tempel kode undangan teman",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Memainkan {build}, dibangun di atas Horizon {commit}, commit yang disematkan oleh {mods}, bukan di atas {version}.",
   "Choose an empty folder for Horizon's data.": "Pilih folder kosong untuk data Horizon.",
   "Choose data folder": "Pilih folder data",
   "Close the game and servers, and wait for downloads, builds, imports and sign-in to finish before moving data.": "Tutup game dan hentikan server, lalu tunggu hingga unduhan, build, impor, dan proses masuk selesai sebelum memindahkan data.",

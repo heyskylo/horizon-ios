@@ -1163,6 +1163,8 @@
   "Paid": "Платено",
   "Order {id}": "Нарачка {id}",
   "The claim didn't go through: the checkout's address isn't Horizon's.": "Барањето не помина: адресата на плаќањето не е на Horizon.",
+  "Paste a friend's invite code": "Залепете го кодот за покана на пријател",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Игра {build}, изградена на Horizon {commit}, комитот закачен од {mods}, а не на {version}.",
   "Choose an empty folder for Horizon's data.": "Choose an empty folder for Horizon's data.",
   "Choose data folder": "Choose data folder",
   "Close the game and servers, and wait for downloads, builds, imports and sign-in to finish before moving data.": "Close the game and servers, and wait for downloads, builds, imports and sign-in to finish before moving data.",

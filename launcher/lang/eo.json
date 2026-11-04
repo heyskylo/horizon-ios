@@ -1163,6 +1163,8 @@
   "Paid": "Pagita",
   "Order {id}": "Mendo {id}",
   "The claim didn't go through: the checkout's address isn't Horizon's.": "La postulo ne sukcesis: la adreso de la pago ne estas tiu de Horizon.",
+  "Paste a friend's invite code": "Algluu la invitkodon de amiko",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Ludas {build}, konstruitan sur Horizon {commit}, la enmeto fiksita de {mods}, ne sur {version}.",
   "Choose an empty folder for Horizon's data.": "Choose an empty folder for Horizon's data.",
   "Choose data folder": "Choose data folder",
   "Close the game and servers, and wait for downloads, builds, imports and sign-in to finish before moving data.": "Close the game and servers, and wait for downloads, builds, imports and sign-in to finish before moving data.",

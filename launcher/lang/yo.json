@@ -1163,6 +1163,8 @@
   "Paid": "A ti sanwó",
   "Order {id}": "Àṣẹ ríra {id}",
   "The claim didn't go through: the checkout's address isn't Horizon's.": "Ìbéèrè náà kò yọrí: àdírẹ́sì ojú ìwé sísan owó kì í ṣe ti Horizon.",
+  "Paste a friend's invite code": "Lẹẹmọ koodu ifiwepe ọrẹ kan",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Ń ṣe {build}, ti a kọ lori Horizon {commit}, commit ti {mods} so mọ, kii ṣe lori {version}.",
   "Choose an empty folder for Horizon's data.": "Choose an empty folder for Horizon's data.",
   "Choose data folder": "Choose data folder",
   "Close the game and servers, and wait for downloads, builds, imports and sign-in to finish before moving data.": "Close the game and servers, and wait for downloads, builds, imports and sign-in to finish before moving data.",

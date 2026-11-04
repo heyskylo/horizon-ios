@@ -1163,6 +1163,8 @@
   "Paid": "Makstud",
   "Order {id}": "Tellimus {id}",
   "The claim didn't go through: the checkout's address isn't Horizon's.": "Nõue ei läinud läbi: makselehe aadress ei kuulu Horizonile.",
+  "Paste a friend's invite code": "Kleepige sõbra kutsekood",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Mängib {build}, ehitatud Horizon {commit} peale, mille on kinnitanud {mods}, mitte {version} peale.",
   "Choose an empty folder for Horizon's data.": "Choose an empty folder for Horizon's data.",
   "Choose data folder": "Choose data folder",
   "Close the game and servers, and wait for downloads, builds, imports and sign-in to finish before moving data.": "Close the game and servers, and wait for downloads, builds, imports and sign-in to finish before moving data.",

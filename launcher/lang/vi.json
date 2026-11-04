@@ -1163,6 +1163,8 @@
   "Paid": "Đã thanh toán",
   "Order {id}": "Đơn hàng {id}",
   "The claim didn't go through: the checkout's address isn't Horizon's.": "Yêu cầu không thành công: địa chỉ trang thanh toán không phải của Horizon.",
+  "Paste a friend's invite code": "Dán mã mời của bạn bè",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Chạy {build}, được xây dựng trên Horizon {commit}, commit được {mods} ghim, không phải trên {version}.",
   "Could not open the data folder: {error}": "Could not open the data folder: {error}",
   "Choose an empty folder for Horizon's data.": "Choose an empty folder for Horizon's data.",
   "Choose data folder": "Choose data folder",

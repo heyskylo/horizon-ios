@@ -1163,6 +1163,8 @@
   "Paid": "ಪಾವತಿಸಲಾಗಿದೆ",
   "Order {id}": "ಆರ್ಡರ್ {id}",
   "The claim didn't go through: the checkout's address isn't Horizon's.": "ಕ್ಲೈಮ್ ಪೂರ್ಣಗೊಳ್ಳಲಿಲ್ಲ: ಚೆಕ್‌ಔಟ್‌ನ ವಿಳಾಸ Horizon ನದಲ್ಲ.",
+  "Paste a friend's invite code": "ಸ್ನೇಹಿತನ ಆಹ್ವಾನ ಕೋಡ್ ಅನ್ನು ಅಂಟಿಸಿ",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "{build} ಆಡುತ್ತದೆ, {version} ಅಲ್ಲ, {mods} ಪಿನ್ ಮಾಡಿದ ಕಮಿಟ್ Horizon {commit} ನಲ್ಲಿ ನಿರ್ಮಿಸಲಾಗಿದೆ.",
   "Choose an empty folder for Horizon's data.": "Choose an empty folder for Horizon's data.",
   "Choose data folder": "Choose data folder",
   "Close the game and servers, and wait for downloads, builds, imports and sign-in to finish before moving data.": "Close the game and servers, and wait for downloads, builds, imports and sign-in to finish before moving data.",

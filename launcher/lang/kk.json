@@ -1163,6 +1163,8 @@
   "Paid": "Төленді",
   "Order {id}": "Тапсырыс {id}",
   "The claim didn't go through: the checkout's address isn't Horizon's.": "Сұрау өтпеді: төлем мекенжайы Horizon-ның мекенжайы емес.",
+  "Paste a friend's invite code": "Достың шақыру кодын қойыңыз",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "{build} ойнайды: {version} емес, {mods} бекіткен Horizon {commit} коммиті негізінде салынған.",
   "Choose an empty folder for Horizon's data.": "Choose an empty folder for Horizon's data.",
   "Choose data folder": "Choose data folder",
   "Close the game and servers, and wait for downloads, builds, imports and sign-in to finish before moving data.": "Close the game and servers, and wait for downloads, builds, imports and sign-in to finish before moving data.",

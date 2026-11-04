@@ -1163,6 +1163,8 @@
   "Paid": "Ödendi",
   "Order {id}": "Sipariş {id}",
   "The claim didn't go through: the checkout's address isn't Horizon's.": "Talep tamamlanamadı: ödeme adresi Horizon'a ait değil.",
+  "Paste a friend's invite code": "Bir arkadaşının davet kodunu yapıştır",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "{build} ile oynuyor; {version} üzerinde değil, {mods} tarafından sabitlenen Horizon {commit} commit'i üzerinde derlendi.",
   "Data move failed: {error}": "Veriler taşınamadı: {error}",
   "Data moved. Old folders still use disk space: {paths}. Verify your worlds and instances before removing them yourself.": "Veriler taşındı. Eski klasörler hâlâ disk alanı kullanıyor: {paths}. Bu klasörleri kendiniz silmeden önce dünyalarınızı ve örneklerinizi kontrol edin.",
   "Data folders are set by HORIZON_LAUNCHER_HOME or HORIZON_HOME. Remove these environment overrides and restart the launcher before moving data here.": "Veri klasörleri HORIZON_LAUNCHER_HOME veya HORIZON_HOME tarafından belirleniyor. Verileri buradan taşımadan önce bu ortam değişkenlerini kaldırıp başlatıcıyı yeniden başlatın.",

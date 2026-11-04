@@ -1163,6 +1163,8 @@
   "Paid": "भुगतान हो गया",
   "Order {id}": "ऑर्डर {id}",
   "The claim didn't go through: the checkout's address isn't Horizon's.": "दावा पूरा नहीं हो सका: चेकआउट का पता Horizon का नहीं है।",
+  "Paste a friend's invite code": "किसी दोस्त का आमंत्रण कोड पेस्ट करें",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "{build} खेलता है, Horizon {commit} पर निर्मित, जो {mods} द्वारा पिन किया गया कमिट है, {version} पर नहीं।",
   "Choose an empty folder for Horizon's data.": "Horizon के डेटा के लिए एक खाली फ़ोल्डर चुनें।",
   "Choose data folder": "डेटा फ़ोल्डर चुनें",
   "Close the game and servers, and wait for downloads, builds, imports and sign-in to finish before moving data.": "डेटा स्थानांतरित करने से पहले गेम और सर्वर बंद करें और डाउनलोड, बिल्ड, आयात और साइन-इन पूरा होने की प्रतीक्षा करें।",

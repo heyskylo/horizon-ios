@@ -1163,6 +1163,8 @@
   "Paid": "Оплачено",
   "Order {id}": "Заказ {id}",
   "The claim didn't go through: the checkout's address isn't Horizon's.": "Заявка не прошла: адрес страницы оплаты не принадлежит Horizon.",
+  "Paste a friend's invite code": "Вставьте код приглашения друга",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Играет {build}, скомпилировано на Horizon {commit} — коммите, закреплённом {mods}, а не на {version}.",
   "Data move failed: {error}": "Не удалось перенести данные: {error}",
   "Data moved. Old folders still use disk space: {paths}. Verify your worlds and instances before removing them yourself.": "Данные перенесены. Старые папки по-прежнему занимают место на диске: {paths}. Проверьте свои миры и сборки, прежде чем удалять эти папки вручную.",
   "Data folders are set by HORIZON_LAUNCHER_HOME or HORIZON_HOME. Remove these environment overrides and restart the launcher before moving data here.": "Папки данных заданы переменными HORIZON_LAUNCHER_HOME или HORIZON_HOME. Удалите эти переменные окружения и перезапустите лаунчер, прежде чем переносить данные здесь.",

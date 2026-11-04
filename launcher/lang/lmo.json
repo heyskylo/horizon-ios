@@ -1163,6 +1163,8 @@
   "Paid": "Pagà",
   "Order {id}": "Ordin {id}",
   "The claim didn't go through: the checkout's address isn't Horizon's.": "La richiesta la gh'a minga fa: l'indirizz del pagament l'è minga quel de Horizon.",
+  "Paste a friend's invite code": "Incolla el codex de invito d'un amigo",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Gioca {build}, costruida su Horizon {commit}, el commit fissaa de {mods}, minga su {version}.",
   "Choose an empty folder for Horizon's data.": "Choose an empty folder for Horizon's data.",
   "Choose data folder": "Choose data folder",
   "Close the game and servers, and wait for downloads, builds, imports and sign-in to finish before moving data.": "Close the game and servers, and wait for downloads, builds, imports and sign-in to finish before moving data.",

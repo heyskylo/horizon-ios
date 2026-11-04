@@ -1163,6 +1163,8 @@
   "Paid": "שולם",
   "Order {id}": "הזמנה {id}",
   "The claim didn't go through: the checkout's address isn't Horizon's.": "הבקשה לא עברה: כתובת התשלום אינה של Horizon.",
+  "Paste a friend's invite code": "הדבק קוד הזמנה של חבר",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "מריץ את {build}, שנבנה על Horizon {commit}, הקומיט שננעץ על ידי {mods}, ולא על {version}.",
   "Could not open the data folder: {error}": "Could not open the data folder: {error}",
   "Choose an empty folder for Horizon's data.": "Choose an empty folder for Horizon's data.",
   "Choose data folder": "Choose data folder",

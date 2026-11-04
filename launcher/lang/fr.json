@@ -1163,6 +1163,8 @@
   "Paid": "Payé",
   "Order {id}": "Commande {id}",
   "The claim didn't go through: the checkout's address isn't Horizon's.": "La demande n'a pas abouti : l'adresse du paiement n'est pas celle de Horizon.",
+  "Paste a friend's invite code": "Collez le code d'invitation d'un ami",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Joue {build}, compilé sur Horizon {commit}, le commit épinglé par {mods}, et non sur {version}.",
   "Data move failed: {error}": "Échec du déplacement des données : {error}",
   "Data moved. Old folders still use disk space: {paths}. Verify your worlds and instances before removing them yourself.": "Données déplacées. Les anciens dossiers occupent encore de l'espace disque : {paths}. Vérifiez vos mondes et vos instances avant de supprimer vous-même ces dossiers.",
   "Data folders are set by HORIZON_LAUNCHER_HOME or HORIZON_HOME. Remove these environment overrides and restart the launcher before moving data here.": "Les dossiers de données sont définis par HORIZON_LAUNCHER_HOME ou HORIZON_HOME. Supprimez ces variables d'environnement et redémarrez le launcher avant de déplacer les données ici.",

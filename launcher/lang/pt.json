@@ -1163,6 +1163,8 @@
   "Paid": "Pago",
   "Order {id}": "Encomenda {id}",
   "The claim didn't go through: the checkout's address isn't Horizon's.": "O pedido não foi concluído: o endereço do pagamento não é o da Horizon.",
+  "Paste a friend's invite code": "Colar o código de convite de um amigo",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Joga {build}, construído no Horizon {commit}, o commit fixado por {mods}, não no {version}.",
   "Choose an empty folder for Horizon's data.": "Escolhe uma pasta vazia para os dados do Horizon.",
   "Choose data folder": "Escolher pasta de dados",
   "Close the game and servers, and wait for downloads, builds, imports and sign-in to finish before moving data.": "Fecha o jogo e para os servidores, e espera que os downloads, builds, importações e o início de sessão terminem antes de mover os dados.",

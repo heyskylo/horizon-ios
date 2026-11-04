@@ -1163,6 +1163,8 @@
   "Paid": "Talwyd",
   "Order {id}": "Archeb {id}",
   "The claim didn't go through: the checkout's address isn't Horizon's.": "Ni aeth y cais drwodd: nid cyfeiriad Horizon yw cyfeiriad y ddesg dalu.",
+  "Paste a friend's invite code": "Gludwch god gwahoddiad ffrind",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Yn chwarae {build}, wedi'i adeiladu ar Horizon {commit}, y commit a binnwyd gan {mods}, nid ar {version}.",
   "Choose an empty folder for Horizon's data.": "Choose an empty folder for Horizon's data.",
   "Choose data folder": "Choose data folder",
   "Close the game and servers, and wait for downloads, builds, imports and sign-in to finish before moving data.": "Close the game and servers, and wait for downloads, builds, imports and sign-in to finish before moving data.",

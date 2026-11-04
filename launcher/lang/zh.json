@@ -1163,6 +1163,8 @@
   "Paid": "已支付",
   "Order {id}": "订单 {id}",
   "The claim didn't go through: the checkout's address isn't Horizon's.": "领取未成功：结账页面的地址不是 Horizon 的。",
+  "Paste a friend's invite code": "粘贴好友的邀请码",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "运行 {build}，基于 Horizon {commit} 构建（{mods} 固定的提交），而不是 {version}。",
   "Data move failed: {error}": "数据迁移失败：{error}",
   "Data moved. Old folders still use disk space: {paths}. Verify your worlds and instances before removing them yourself.": "数据已迁移。旧文件夹仍占用磁盘空间：{paths}。请确认世界和实例正常后，再自行删除旧文件夹。",
   "Data folders are set by HORIZON_LAUNCHER_HOME or HORIZON_HOME. Remove these environment overrides and restart the launcher before moving data here.": "数据文件夹由 HORIZON_LAUNCHER_HOME 或 HORIZON_HOME 指定。请先取消这些环境变量的设置并重启启动器，再在此迁移数据。",

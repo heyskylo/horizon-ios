@@ -661,7 +661,13 @@ impl Game<'_> {
                     // The system's auto-repeat while the key is held.
                     "repeat" => {
                         self.physical_keys.insert(physical);
-                        self.mapped_key(key, true, true, key)?;
+                        self.mapped_key(
+                            key,
+                            true,
+                            true,
+                            key,
+                            horizon_client::held::Source::Keyboard,
+                        )?;
                     }
                     "tap" => {
                         self.control_key_down(key, physical)?;

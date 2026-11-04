@@ -1163,6 +1163,8 @@
   "Paid": "செலுத்தப்பட்டது",
   "Order {id}": "ஆர்டர் {id}",
   "The claim didn't go through: the checkout's address isn't Horizon's.": "கோரிக்கை நிறைவேறவில்லை: செக்அவுட்டின் முகவரி Horizon-உடையது அல்ல.",
+  "Paste a friend's invite code": "நண்பரின் அழைப்புக் குறியீட்டை ஒட்டவும்",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "{build} விளையாடுகிறது, {version} இல் அல்ல, {mods} பின் செய்த commit ஆன Horizon {commit} இல் கட்டப்பட்டது.",
   "Choose an empty folder for Horizon's data.": "Choose an empty folder for Horizon's data.",
   "Choose data folder": "Choose data folder",
   "Close the game and servers, and wait for downloads, builds, imports and sign-in to finish before moving data.": "Close the game and servers, and wait for downloads, builds, imports and sign-in to finish before moving data.",
