@@ -55,6 +55,54 @@ def group_setup():
     ]
 
 
+def mob_baby_attribute_reads():
+    """Effective/transient command reads, with raw-base and permanent controls."""
+    ops = setup('/fill 0 199 0 6 199 6 stone', '/scoreboard objectives add h227 dummy',
+                '/execute store result score before h227 run time query gametime')
+    ops.append(cmd('/execute if loaded 2 200 2', expect_result=1))
+    next_id = 0
+    def spawn(kind, baby):
+        nonlocal next_id
+        next_id += 1
+        target = f'000000e3-0000-0000-0000-{next_id:012x}'
+        tag = f'h227_{next_id}'
+        ops.extend(setup(f'/summon {kind} 2.5 200 2.5 {{UUID:[I;227,0,0,{next_id}],Tags:["{tag}"],NoAI:1b,IsBaby:{int(baby)}b}}'))
+        return target, tag
+    def reads(subject, baby, effective=None, modifier=None):
+        target, tag = subject
+        ops.append(cmd(f'/execute as {target} if entity @s[tag={tag},nbt={{Pos:[2.5d,200d,2.5d],Health:20f,NoAI:1b,IsBaby:{int(baby)}b}}]', expect_result=1))
+        ops.append(cmd(f'/attribute {target} movement_speed base get 1000000', expect_result=230000))
+        ops.append(cmd(f'/attribute {target} movement_speed get 1000000', expect_result=effective if effective is not None else (345000 if baby else 230000)))
+        ops.append(cmd(f'/attribute {target} movement_speed modifier value get minecraft:baby 1000000', expect_result=modifier if modifier is not None else (500000 if baby else None)))
+    for kind in ['zombie', 'husk', 'drowned', 'zombie_villager', 'zombified_piglin']:
+        adult = spawn(kind, False)
+        reads(adult, False)
+        baby = spawn(kind, True)
+        reads(baby, True)
+        for state in (True, False):
+            ops.append(cmd(f'/data merge entity {adult[0]} {{IsBaby:{int(state)}b}}', expect_result=1))
+            reads(adult, state)
+    # A distinct permanent modifier remains visible beside the transient one.
+    for baby in (False, True):
+        subject = spawn('zombie', baby)
+        target = subject[0]
+        ops.append(cmd(f'/attribute {target} movement_speed modifier add h227:permanent 0.125 add_value', expect_result=1))
+        reads(subject, baby, 532500 if baby else 355000)
+        ops.append(cmd(f'/attribute {target} movement_speed modifier value get h227:permanent 1000000', expect_result=125000))
+        ops.append(cmd(f'/attribute {target} movement_speed modifier remove h227:permanent', expect_result=1))
+        reads(subject, baby)
+    # The same identifier is a valid permanent modifier on an adult.
+    subject = spawn('zombie', False)
+    target = subject[0]
+    ops.append(cmd(f'/attribute {target} movement_speed modifier add minecraft:baby 0.125 add_value', expect_result=1))
+    reads(subject, False, 355000, 125000)
+    ops.append(cmd(f'/attribute {target} movement_speed modifier remove minecraft:baby', expect_result=1))
+    reads(subject, False)
+    ops.extend(setup('/execute store result score after h227 run time query gametime'))
+    ops.append(cmd('/execute if score after h227 = before h227', expect_result=1))
+    return ops
+
+
 def client_commands():
     return [
         cmd('/version'),
@@ -2419,6 +2467,7 @@ def groups():
         ('levels', levels()),
         ('end portal entities', end_portal_entities()),
         ('items and loot', items_and_loot()),
+        ('mob baby attribute reads', mob_baby_attribute_reads()),
         ('summoned fangs lifetime', summoned_fangs_lifetime()),
         ('summoned fangs edits', summoned_fangs_edits()),
         ('summoned fangs levels', summoned_fangs_levels()),
