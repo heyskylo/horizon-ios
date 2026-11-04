@@ -128,6 +128,75 @@ def allay_pocket_inventory():
     return ops
 
 
+def mob_team_command_names():
+    """Live mob command decoration; no damage, entity ticks or rendering claims."""
+    uid = '00000125-0000-0000-0000-000000000001'
+    team = 'command_red'
+    objective = 'team_name_cmd'
+    out = []
+
+    def check(command, result=1):
+        out.append(cmd(command, expect_result=result))
+
+    check('/tick freeze')
+    check('/gamerule minecraft:spawn_mobs', 0)
+    out.extend(setup('/forceload remove 0 0'))
+    check('/forceload add 0 0')
+    out.append({'op': 'settle'})
+    check('/execute if loaded 10 200 10')
+    check('/setblock 10 199 10 stone')
+    check('/execute if block 10 199 10 stone')
+    check(f'/scoreboard objectives add {objective} dummy')
+    out.extend(setup(f'/execute store result score #before {objective} run time query gametime'))
+    check('/summon zombie 10.5 200 10.5 {UUID:[I;293,0,0,1],Tags:["command_team_subject"],'
+          'NoAI:1b,NoGravity:1b,Silent:1b,PersistenceRequired:1b}')
+
+    def observe(member, host_member, custom):
+        # Guard the actual actor and values before absence/default assertions.
+        check(f'/execute as {uid} if entity @s[type=minecraft:zombie,tag=command_team_subject]')
+        check(f'/execute if data entity {uid} {{UUID:[I;293,0,0,1],Health:20f,'
+              'Pos:[10.5d,200d,10.5d],NoAI:1b,NoGravity:1b,Silent:1b,PersistenceRequired:1b}')
+        check(f'/data get entity {uid} UUID', 4)
+        check(f'/data get entity {uid} Pos', 3)
+        check(f'/data get entity {uid} Health', 20)
+        check(f'/execute as {uid} {"if" if member else "unless"} entity @s[team={team}]')
+        check(f'/execute {"if" if host_member else "unless"} entity @s[team={team}]')
+        if custom:
+            check(f'/data get entity {uid} CustomName', 3)
+        else:
+            out.append(cmd(f'/data get entity {uid} CustomName'))
+        check(f'/tp {uid} 10.5 200 10.5')
+        check('/tp @s 8.5 230 8.5')
+        out.extend(setup(f'/execute store result score #clock {objective} run time query gametime'))
+        check(f'/scoreboard players operation #clock {objective} -= #before {objective}', 0)
+
+    observe(False, False, False)
+    check(f'/team add {team}')
+    check(f'/team modify {team} prefix "[P] "')
+    check(f'/team modify {team} suffix " [S]"')
+    check(f'/team modify {team} color red', 0)
+    check(f'/team join {team} @s')
+    # The host witnesses the same stored formatting before the mob joins.
+    observe(False, True, False)
+    check(f'/team join {team} {uid}')
+    observe(True, True, False)
+    check(f'/data merge entity {uid} {{CustomName:"Bob"}}')
+    observe(True, True, True)
+    check(f'/team modify {team} prefix ""')
+    observe(True, True, True)
+    check(f'/team modify {team} suffix ""')
+    observe(True, True, True)
+    check(f'/team leave {uid}')
+    observe(False, True, True)
+    check('/team leave @s')
+    check(f'/data remove entity {uid} CustomName')
+    observe(False, False, False)
+    check(f'/team remove {team}', 0)
+    out.extend(setup(f'/kill {uid}', f'/scoreboard objectives remove {objective}',
+                     '/setblock 10 199 10 air', '/forceload remove 0 0', '/tick unfreeze'))
+    return out
+
+
 def client_commands():
     return [
         cmd('/version'),
@@ -4483,6 +4552,7 @@ def groups():
         from loaded_cloud_corpus import loaded_clouds
     return [
         ('setup', group_setup()),
+        ('mob team command names', mob_team_command_names()),
         ('mining_efficiency_9021', mining_efficiency_9021()),
         ('structured item slots', structured_item_slots()),
         ('loaded potion clouds', loaded_clouds(cmd, setup)),
