@@ -1,4 +1,5 @@
-//! PvP and HUD options (`docs/pvp.md`): a custom crosshair, block outline and hit colour. Kept in
+//! PvP and HUD options (`docs/pvp.md`): a custom crosshair, block outline, hit colour and HUD
+//! widgets (`pvp_hud`). Kept in
 //! `horizon-extras.txt` with the other extras ([`crate::extras::Extras::pvp`]) and shown on
 //! Horizon Settings > PvP & HUD. Every option is off by default, so the game looks like
 //! vanilla until the player changes one, and none of them shows anything vanilla doesn't
@@ -448,11 +449,47 @@ impl Pvp {
     }
 }
 
+/// The HUD widgets (`pvp_hud`), each in a corner of its own.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Hud {
+    /// The armour worn, head first, with each piece's durability.
+    pub armour: bool,
+    pub armour_corner: Corner,
+    pub armour_percent: bool,
+    /// The active effects: icon, name and level, time left. They replace vanilla's icons.
+    pub effects: bool,
+    pub effects_corner: Corner,
+    /// How many of the held item the inventory holds (arrows with a bow or crossbow).
+    pub held: bool,
+    pub held_corner: Corner,
+    /// A dark box behind each widget.
+    pub background: bool,
+}
+impl Default for Hud {
+    fn default() -> Self {
+        Self {
+            armour: false,
+            armour_corner: Corner::BottomRight,
+            armour_percent: false,
+            effects: false,
+            effects_corner: Corner::TopRight,
+            held: false,
+            held_corner: Corner::BottomRight,
+            background: true,
+        }
+    }
+}
+pub use crate::extras::Corner;
+fn corner_label(c: Corner) -> String {
+    crate::lang::get_or(&format!("horizon.pvp.corner.{}", c.name()), c.label())
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Pvp {
     pub crosshair: Crosshair,
     pub outline: Outline,
     pub hit: Hit,
+    pub hud: Hud,
 }
 fn flag(value: &str, d: bool) -> bool {
     match value {
@@ -468,7 +505,7 @@ impl Pvp {
     /// One `key:value` line of `horizon-extras.txt`; false when the key isn't a PvP one.
     pub fn parse_line(&mut self, key: &str, value: &str) -> bool {
         let c = &mut self.crosshair;
-        let (o, h) = (&mut self.outline, &mut self.hit);
+        let (o, h, u) = (&mut self.outline, &mut self.hit, &mut self.hud);
         match key {
             "crosshair" => c.custom = flag(value, c.custom),
             "crosshairShape" => c.shape = Shape::parse(value).unwrap_or(c.shape),
@@ -497,6 +534,14 @@ impl Pvp {
             "hit" => h.custom = flag(value, h.custom),
             "hitColour" => h.colour = Colour::parse(value).unwrap_or(h.colour),
             "hitOpacity" => h.opacity = num(value, HIT_OPACITIES, h.opacity),
+            "hudArmour" => u.armour = flag(value, u.armour),
+            "hudArmourCorner" => u.armour_corner = Corner::parse(value, u.armour_corner),
+            "hudArmourPercent" => u.armour_percent = flag(value, u.armour_percent),
+            "hudEffects" => u.effects = flag(value, u.effects),
+            "hudEffectsCorner" => u.effects_corner = Corner::parse(value, u.effects_corner),
+            "hudHeld" => u.held = flag(value, u.held),
+            "hudHeldCorner" => u.held_corner = Corner::parse(value, u.held_corner),
+            "hudBackground" => u.background = flag(value, u.background),
             _ => return false,
         }
         true
@@ -530,6 +575,19 @@ impl Pvp {
             h.custom,
             h.colour.name(),
             h.opacity,
+        );
+        let u = &self.hud;
+        let _ = write!(
+            out,
+            "hudArmour:{}\nhudArmourCorner:{}\nhudArmourPercent:{}\nhudEffects:{}\nhudEffectsCorner:{}\nhudHeld:{}\nhudHeldCorner:{}\nhudBackground:{}\n",
+            u.armour,
+            u.armour_corner.name(),
+            u.armour_percent,
+            u.effects,
+            u.effects_corner.name(),
+            u.held,
+            u.held_corner.name(),
+            u.background,
         );
     }
 }
@@ -580,6 +638,18 @@ opts! {
         "Changes the colour mobs and players flash when they are hurt. Red at 30% is vanilla's.";
     HitColour, "hit_colour", "Colour", "The colour hurt mobs and players flash.";
     HitOpacity, "hit_opacity", "Opacity", "How much of the colour covers them.";
+    HudArmour, "hud_armour", "Armour",
+        "The armour you wear, head first, with how many uses each piece has left.";
+    HudArmourCorner, "hud_armour_corner", "Armour corner", "Where the armour shows.";
+    HudArmourPercent, "hud_armour_percent", "Durability in %",
+        "Uses left as a percent of the piece's maximum instead of a number.";
+    HudEffects, "hud_effects", "Effects",
+        "Your effects with their names, levels and time left, in place of the icons at the top right.";
+    HudEffectsCorner, "hud_effects_corner", "Effects corner", "Where the effects show.";
+    HudHeld, "hud_held", "Held item count",
+        "How many of the item in your hand your inventory holds; arrows with a bow or crossbow.";
+    HudHeldCorner, "hud_held_corner", "Held count corner", "Where the count shows.";
+    HudBackground, "hud_background", "Widget backgrounds", "A dark box behind each widget.";
 }
 /// The PvP & HUD page: headers (language keys) and options.
 pub fn rows() -> Vec<Result<Opt, &'static str>> {
@@ -612,6 +682,20 @@ pub fn rows() -> Vec<Result<Opt, &'static str>> {
     );
     rows.push(Err("horizon.pvp.header.hit"));
     rows.extend([Hit, HitColour, HitOpacity].map(Ok));
+    rows.push(Err("horizon.pvp.header.hud"));
+    rows.extend(
+        [
+            HudArmour,
+            HudArmourCorner,
+            HudArmourPercent,
+            HudEffects,
+            HudEffectsCorner,
+            HudHeld,
+            HudHeldCorner,
+            HudBackground,
+        ]
+        .map(Ok),
+    );
     rows
 }
 impl Opt {
@@ -622,6 +706,10 @@ impl Opt {
             Crosshair | Outline | Hit => None,
             OutlineColour | OutlineOpacity | OutlineThickness | OutlineFill => Some(Outline),
             HitColour | HitOpacity => Some(Hit),
+            HudArmour | HudEffects | HudHeld | HudBackground => None,
+            HudArmourCorner | HudArmourPercent => Some(HudArmour),
+            HudEffectsCorner => Some(HudEffects),
+            HudHeldCorner => Some(HudHeld),
             _ => Some(Crosshair),
         }
     }
@@ -633,6 +721,11 @@ impl Opt {
             Opt::CrosshairDot => c.dot,
             Opt::Outline => p.outline.custom,
             Opt::Hit => p.hit.custom,
+            Opt::HudArmour => p.hud.armour,
+            Opt::HudArmourPercent => p.hud.armour_percent,
+            Opt::HudEffects => p.hud.effects,
+            Opt::HudHeld => p.hud.held,
+            Opt::HudBackground => p.hud.background,
             _ => return None,
         })
     }
@@ -658,13 +751,17 @@ impl Opt {
             },
             Opt::HitColour => p.hit.colour.label(),
             Opt::HitOpacity => format!("{}%", p.hit.opacity),
+            Opt::HudArmourCorner => corner_label(p.hud.armour_corner),
+            Opt::HudEffectsCorner => corner_label(p.hud.effects_corner),
+            Opt::HudHeldCorner => corner_label(p.hud.held_corner),
             _ => return None,
         })
     }
     /// A click; `back` (right button, wheel up) goes the other way.
     pub fn cycle(self, p: &mut Pvp, back: bool) {
         let c = &mut p.crosshair;
-        let (o, h) = (&mut p.outline, &mut p.hit);
+        let (o, h, u) = (&mut p.outline, &mut p.hit, &mut p.hud);
+        let corner = |c: Corner| step(&Corner::ALL, c, back);
         // Off, then every solid colour.
         let solid_or_off = |v: Option<Colour>| {
             let all = [None]
@@ -700,6 +797,14 @@ impl Opt {
             Opt::Hit => h.custom = !h.custom,
             Opt::HitColour => h.colour = h.colour.step_solid(back),
             Opt::HitOpacity => h.opacity = step_by(h.opacity, HIT_OPACITIES, 10, back),
+            Opt::HudArmour => u.armour = !u.armour,
+            Opt::HudArmourCorner => u.armour_corner = corner(u.armour_corner),
+            Opt::HudArmourPercent => u.armour_percent = !u.armour_percent,
+            Opt::HudEffects => u.effects = !u.effects,
+            Opt::HudEffectsCorner => u.effects_corner = corner(u.effects_corner),
+            Opt::HudHeld => u.held = !u.held,
+            Opt::HudHeldCorner => u.held_corner = corner(u.held_corner),
+            Opt::HudBackground => u.background = !u.background,
         }
     }
 }
@@ -917,6 +1022,10 @@ mod tests {
         }
         for header in rows().into_iter().filter_map(Result::err) {
             assert!(en.get(header).is_some(), "{header}");
+        }
+        for c in Corner::ALL {
+            let key = format!("horizon.pvp.corner.{}", c.name());
+            assert_eq!(en.get(&key), Some(c.label()), "{key}");
         }
         let names = Colour::ALL.map(|c| (format!("horizon.pvp.colour.{}", c.name()), c.english()));
         let shapes = Shape::ALL.map(|c| (format!("horizon.pvp.shape.{}", c.name()), c.english()));

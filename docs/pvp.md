@@ -43,3 +43,20 @@ Each feature is built from what it visibly does, never from another client's or 
   vanilla's: `OverlayTexture`'s red over 30%.
 - The texel rides in the frame's uniforms (`colored_count.y`, 0 for vanilla's), so changing it costs nothing.
 - Shader packs keep vanilla's red (`pack_entities::entity_color`).
+
+## HUD widgets (each default off)
+
+Boxes in the screen corners, placed like the minimap and mods' boxes (`extras_hud::Corners`), each in a corner of
+its own, with an optional dark background (on by default). F3's debug screen takes the top corners as it does from
+mods' boxes. Code: `crates/horizon-client-render/src/pvp_hud.rs` (lines, cache, layout) and `game/pvp.rs`.
+
+- **Armour** (bottom right): each piece worn, head first, with the uses left as a number or a percent, coloured
+  like the item's durability bar (green to red). Only what the inventory already shows.
+- **Effects** (top right): icon, name and level, time left, for every active effect; in place of vanilla's
+  icons there (`Hud.extractEffects`), as the inventory's effect panels show them.
+- **Held item count** (bottom right): how many of the held item the inventory and off hand hold; with a bow or
+  crossbow, the arrows. Hidden for a single item.
+
+Cost: a widget keeps its lines (`pvp_hud::Widget`) and rebuilds them only when what it shows changes (a piece
+takes damage, an effect's second ticks, the count changes); a frame reads a few slots, compares, and adds the
+box's quads. With nothing changing, a frame allocates nothing.
