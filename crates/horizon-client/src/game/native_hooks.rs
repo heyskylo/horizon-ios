@@ -1845,6 +1845,27 @@ pub struct NativeShake {
     pub offset: [f32; 3],
 }
 
+/// A mod's camera (`native_camera_pose`): each value that isn't finite keeps vanilla's from `view`.
+fn posed_camera(
+    view: (glam::DVec3, f32, f32),
+    position: [f64; 3],
+    yaw: f32,
+    pitch: f32,
+) -> (glam::DVec3, f32, f32) {
+    let position = std::array::from_fn(|i| {
+        if position[i].is_finite() {
+            position[i]
+        } else {
+            view.0[i]
+        }
+    });
+    (
+        glam::DVec3::from_array(position),
+        if yaw.is_finite() { yaw } else { view.1 },
+        if pitch.is_finite() { pitch } else { view.2 },
+    )
+}
+
 /// The largest turn a shake gives, in degrees, on each axis.
 const SHAKE_MAX_DEGREES: f32 = 10.0;
 /// The largest offset a shake gives, in blocks, along each axis.
@@ -2783,6 +2804,21 @@ impl Game<'_> {
         );
     }
 
+    /// The camera this frame is drawn from, `partial` ticks past the last tick, after vanilla
+    /// placed it (`Camera.setup`): its position, and its yaw and pitch in degrees. Set them to
+    /// draw the world from anywhere: a cinematic or replay camera. Only the picture, the sound's
+    /// listener and the billboards facing the camera follow it; the player, where they aim, the
+    /// first-person hand and which chunks load stay the player's. Values that aren't finite keep
+    /// vanilla's. Not called on the title screen's panorama. API @API:camera_pose@.
+    pub(super) fn native_camera_pose(
+        &self,
+        partial: f32,
+        position: &mut [f64; 3],
+        yaw: &mut f32,
+        pitch: &mut f32,
+    ) {
+        mod_api::dispatch_camera_pose(self, mod_api::mods(), partial, position, yaw, pitch);
+    }
     /// Final scaled third-person camera distance, before visual-shape collision clipping.
     /// `entity` includes its living scale/distance and optional mount scale/distance.
     /// Only finite requests in 0..=1024 blocks replace the vanilla distance.
@@ -10017,6 +10053,18 @@ impl Game<'_> {
         shake_pose(bounded_shake(shake, self.screen_effect_scale()))
     }
 
+    /// The camera native mods draw this frame from (`native_camera_pose`), starting from
+    /// `view`, vanilla's position, yaw and pitch.
+    pub(super) fn native_camera_pose_now(
+        &self,
+        partial: f32,
+        view: (glam::DVec3, f32, f32),
+    ) -> (glam::DVec3, f32, f32) {
+        let (mut position, mut yaw, mut pitch) = (view.0.to_array(), view.1, view.2);
+        self.native_camera_pose(partial, &mut position, &mut yaw, &mut pitch);
+        posed_camera(view, position, yaw, pitch)
+    }
+
     /// What native mods hand shader packs in this frame (`native_shader_params`),
     /// with values that aren't finite as 0.
     pub(super) fn native_shader_params_now(&self, partial: f32) -> [[f32; 4]; 8] {
@@ -10389,6 +10437,26 @@ mod tests {
         assert_eq!(super::chars_to_type("ab", |_| true), None);
         // Nothing typed: nothing to hand over.
         assert_eq!(super::chars_to_type("", |_| false), None);
+    }
+
+    /// A mod's camera replaces vanilla's value by value; one that isn't finite keeps vanilla's.
+    #[test]
+    fn a_mod_camera_replaces_each_finite_value() {
+        use super::posed_camera;
+        let vanilla = (glam::DVec3::new(1.0, 2.0, 3.0), 10.0, 20.0);
+        assert_eq!(
+            posed_camera(vanilla, [-40.5, 90.0, 1e7], 270.0, -35.0),
+            (glam::DVec3::new(-40.5, 90.0, 1e7), 270.0, -35.0)
+        );
+        assert_eq!(
+            posed_camera(
+                vanilla,
+                [f64::NAN, 5.0, f64::INFINITY],
+                f32::NAN,
+                f32::NEG_INFINITY
+            ),
+            (glam::DVec3::new(1.0, 5.0, 3.0), 10.0, 20.0)
+        );
     }
 
     /// A shake is scaled by Distortion Effects, bounded on each axis, and a

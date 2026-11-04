@@ -2799,6 +2799,9 @@ struct Game<'a> {
     /// The camera the last frame drew from (position, yaw, pitch, fov), for the locator bar.
     locator_camera: Option<([f64; 3], f32, f32, f32)>,
     native_camera_frame: Option<horizon_client::mod_api::NativeCamera>,
+    /// The yaw and pitch a native mod's camera drew the last frame from (`native_camera_pose`),
+    /// none when it drew from vanilla's.
+    posed_rotation: Option<(f32, f32)>,
     /// `LocalPlayer.postEffects`: the chains the server has the screen run
     /// (`ClientboundPostEffectsPacket`), in order.
     post_effects: Vec<String>,
@@ -10868,7 +10871,11 @@ impl Game<'_> {
     /// `Camera.setRotation`: the camera's orientation, turned round in
     /// third-person front view.
     pub(super) fn camera_orientation(&self) -> glam::Quat {
-        camera_rotation(self.camera_type, self.yaw, self.pitch)
+        match self.posed_rotation {
+            // The frame's camera, already turned round in front view.
+            Some((yaw, pitch)) => camera_rotation(perspective::CameraType::FirstPerson, yaw, pitch),
+            None => camera_rotation(self.camera_type, self.yaw, self.pitch),
+        }
     }
     /// The entity whose geometry starts at vertex `start` (0: none), for frame
     /// generation to follow its own motion. Each run lasts until the next mark.
@@ -15689,7 +15696,18 @@ impl Game<'_> {
         // Camera.getCameraEntityPartialTicks: the view, the hand and the
         // player's own model stay smooth while the level is frozen.
         let camera_alpha = self.clock.camera_fraction();
-        let view = self.camera_view(camera_alpha as f32);
+        let vanilla = self.camera_view(camera_alpha as f32);
+        let view = vanilla.map(|view| {
+            if self.shows_panorama() {
+                view
+            } else {
+                self.native_camera_pose_now(camera_alpha as f32, view)
+            }
+        });
+        // What faces the camera (particles, item sprites, block entity text) faces a mod's.
+        self.posed_rotation = view
+            .filter(|posed| Some(*posed) != vanilla)
+            .map(|(_, yaw, pitch)| (yaw, pitch));
         let eye = view.map(|_| {
             (
                 glam::DVec3::from_array(self.view.eye),
@@ -19130,6 +19148,7 @@ impl<'a> Game<'a> {
             waypoints: Default::default(),
             locator_camera: None,
             native_camera_frame: None,
+            posed_rotation: None,
             post_effects: Vec::new(),
             spectated_post_effect: None,
             experience_display: Default::default(),
