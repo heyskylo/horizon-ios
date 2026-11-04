@@ -9,6 +9,9 @@ use std::time::Instant;
 
 /// Play, the version and the big icons are this tall (`h-14`).
 const TALL: f32 = 56.;
+/// The window width from which Home's head is laid out as the mockup's `xl` (1280 px); under it
+/// Play and the version are narrower and the invite code takes what is left of their row.
+const WIDE: f32 = 1280.;
 
 /// Which of Home's menus is open.
 #[derive(Clone, Copy, PartialEq, Default)]
@@ -35,49 +38,45 @@ impl Launcher {
             (None, Some(_)) => self.client_since = None,
             _ => {}
         }
-        let left =
-            div()
-                .flex()
-                .flex_col()
-                .flex_1()
-                .min_w_0()
-                .child(self.edition_tabs(java.is_some()))
-                .child(self.home_title())
-                .child(self.played_text(cx))
-                .child(
-                    div()
-                        .mt(px(32.))
-                        .flex()
-                        // One line, unlike the mockup's `flex-wrap`: at 1280 px the folder's ⋯
-                        // would wrap the row away from under the pointer, which hides it again.
-                        .items_center()
-                        .gap(px(10.))
-                        .child(self.play_group(tag, prepared || java.is_some(), cx))
-                        .children(java.is_none().then(|| self.glass_picker(cx)))
-                        .child(ui::big_icon("home-mods", "puzzle", &self.theme).on_click(
-                            cx.listener(|this, _: &ClickEvent, _, cx| {
-                                this.home_tab = home_tabs::HomeTab::Mods;
-                                cx.notify();
-                            }),
-                        ))
-                        .children(self.folder_group(java.is_none(), cx)),
-                );
-        // The mockup's `xl:flex-row`: under 1280 px the invite code goes under the actions, as
-        // wide as the page.
-        let wide = self.window_width >= 1280.;
+        // The invite code stays on the actions' row at every width (unlike the mockup's
+        // `xl:flex-row`, which moves it under them): on the right, 340 wide from 1280 px; under
+        // that it takes what is left, and the puzzle (the Mods tab below does the same) gives
+        // way to it.
+        let wide = self.window_width >= WIDE;
+        let mods = ui::big_icon("home-mods", "puzzle", &self.theme).on_click(cx.listener(
+            |this, _: &ClickEvent, _, cx| {
+                this.home_tab = home_tabs::HomeTab::Mods;
+                cx.notify();
+            },
+        ));
+        let actions = div()
+            .mt(px(32.))
+            .flex()
+            // One line, unlike the mockup's `flex-wrap`: at 1280 px the folder's ⋯ would wrap the
+            // row away from under the pointer, which hides it again.
+            .items_center()
+            .gap(px(10.))
+            .child(self.play_group(tag, prepared || java.is_some(), cx))
+            .children(java.is_none().then(|| self.glass_picker(cx)))
+            .children(wide.then_some(mods))
+            .children(self.folder_group(java.is_none(), cx))
+            .when(wide, |d| d.child(div().flex_1().min_w(px(22.))))
+            .child(self.glass_join_friend(tag, wide, cx));
         div()
             .flex()
-            .when(wide, |d| d.items_end().justify_between())
-            .when(!wide, |d| d.flex_col())
-            .gap(px(32.))
+            .flex_col()
+            .min_w_0()
             .pt(px(64. - crate::glass::CONTENT_INSET))
-            .child(left)
-            .child(self.glass_join_friend(tag, wide, cx))
+            .child(self.edition_tabs(java.is_some(), cx))
+            .child(self.home_title())
+            .child(self.played_text(cx))
+            .child(actions)
     }
 
     /// The edition tabs (`Tabs`, size `sm`): the instance's own lit. An instance's edition is
-    /// chosen when it is made, so the other one is shown but can't be picked.
-    fn edition_tabs(&mut self, java: bool) -> Div {
+    /// chosen when it is made, so the other tab goes to an instance of that edition
+    /// ([`Self::switch_edition`]).
+    fn edition_tabs(&mut self, java: bool, cx: &mut Context<Self>) -> Div {
         let grass = self.vanilla_icon().and_then(|path| {
             self.icon_image("mark:grass".into(), 18., false, move || {
                 std::fs::read(&path).ok()
@@ -85,6 +84,7 @@ impl Launcher {
         });
         let tab = |label: &'static str, icon: AnyElement, open: bool| {
             let d = div()
+                .id(SharedString::from(format!("edition-{label}")))
                 .flex()
                 .flex_none()
                 .items_center()
@@ -103,6 +103,12 @@ impl Launcher {
                     .text_color(white(ink::FULL))
             } else {
                 d.text_color(white(ink::OFF))
+                    .cursor_pointer()
+                    .hover(|s| s.bg(white(fill::ROW_HOVER)).text_color(white(ink::FULL)))
+                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                        this.switch_edition(label == "Java Edition", cx);
+                        cx.notify();
+                    }))
             }
         };
         let java_icon = match grass {
@@ -123,6 +129,24 @@ impl Launcher {
                 !java,
             ))
             .child(tab("Java Edition", java_icon, java))
+    }
+
+    /// An edition tab's click: the instance of that edition (`java`) played last, or, with none,
+    /// the New instance dialog on Vanilla or Horizon.
+    pub(super) fn switch_edition(&mut self, java: bool, cx: &mut Context<Self>) {
+        let pick = edition_pick(&self.instances.list, java).cloned();
+        match pick {
+            Some(instance) => self.select_instance(&instance),
+            None => {
+                self.open_instance_dialog(None);
+                let kind = if java {
+                    new_instance::NewKind::Vanilla
+                } else {
+                    new_instance::NewKind::Horizon
+                };
+                self.pick_kind(kind, cx);
+            }
+        }
     }
 
     /// The instance's icon and its name in Bricolage, 64 px at this width
@@ -281,7 +305,12 @@ impl Launcher {
             .relative()
             .flex()
             .items_center()
-            .w(px(200.))
+            .flex_none()
+            .w(px(if self.window_width >= WIDE {
+                200.
+            } else {
+                160.
+            }))
             .h(px(TALL))
             .overflow_hidden()
             .rounded(px(radius::LARGE));
@@ -508,7 +537,12 @@ impl Launcher {
                 .justify_between()
                 .gap(px(24.))
                 .h(px(TALL))
-                .min_w(px(220.))
+                .flex_none()
+                .min_w(px(if self.window_width >= WIDE {
+                    220.
+                } else {
+                    170.
+                }))
                 .px(px(16.))
                 .rounded(px(radius::LARGE))
                 .bg(white(fill::BUTTON))
@@ -721,8 +755,8 @@ impl Launcher {
         Some(wrap)
     }
 
-    /// The invite code field (`JoinFriend`): 340 wide (`wide`), else the page's width; the icon
-    /// inside on the left, Join inside on the right.
+    /// The invite code field (`JoinFriend`): 340 wide (`wide`), else what its row leaves, with a
+    /// shorter placeholder; the icon inside on the left, Join inside on the right.
     fn glass_join_friend(&self, tag: &str, wide: bool, cx: &mut Context<Self>) -> Div {
         let t = self.theme;
         let focused = self.friend_focused;
@@ -747,7 +781,11 @@ impl Launcher {
                 focused,
                 false,
                 false,
-                "Paste a friend's invite code",
+                if wide {
+                    "Paste a friend's invite code"
+                } else {
+                    "Paste an invite code"
+                },
             ))
             .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                 window.focus(&this.friend_focus, cx);
@@ -777,9 +815,8 @@ impl Launcher {
         };
         div()
             .relative()
-            .flex_none()
-            .when(wide, |d| d.w(px(340.)))
-            .when(!wide, |d| d.w_full())
+            .when(wide, |d| d.flex_none().w(px(340.)))
+            .when(!wide, |d| d.flex_1().min_w(px(150.)))
             .h(px(TALL))
             .child(field)
             .child(
@@ -791,6 +828,19 @@ impl Launcher {
             )
             .child(div().absolute().right(px(8.)).top(px(8.)).child(join))
     }
+}
+
+/// The instance of one edition (`java`) an edition tab goes to: of those the player can select,
+/// the one played last; among never played ones, the first listed.
+fn edition_pick(
+    list: &[horizon_launcher::instances::Instance],
+    java: bool,
+) -> Option<&horizon_launcher::instances::Instance> {
+    use horizon_launcher::instances::Kind;
+    list.iter()
+        .filter(|i| matches!(i.kind, Kind::Default | Kind::Own) && i.java.is_some() == java)
+        .rev()
+        .max_by_key(|i| i.last_played)
 }
 
 /// How long an instance was played, as the mockup writes it: "41 hours", "1 hour", "25 min".
@@ -845,6 +895,45 @@ fn launch_command(id: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_edition_tab_goes_to_that_editions_instance_played_last() {
+        use horizon_launcher::instances::{Instance, JavaGame, Kind};
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let at = |secs: u64| Some(UNIX_EPOCH + Duration::from_secs(secs));
+        let one = |id: &str, kind: Kind, java: bool, last: Option<SystemTime>| Instance {
+            id: id.into(),
+            name: id.into(),
+            kind,
+            work: Default::default(),
+            home: Default::default(),
+            icon: None,
+            group: None,
+            version: None,
+            played: Duration::ZERO,
+            last_played: last,
+            launch: Default::default(),
+            java: java.then(JavaGame::default),
+        };
+        let list = [
+            one("horizon", Kind::Default, false, at(50)),
+            one("vanilla-old", Kind::Own, true, at(10)),
+            one("vanilla-new", Kind::Own, true, at(20)),
+            one("port:pack", Kind::Port, true, at(99)),
+            one("mine", Kind::Own, false, None),
+        ];
+        let id = |java| edition_pick(&list, java).map(|i| i.id.as_str());
+        // A modpack isn't selected from Home, however recent.
+        assert_eq!(id(true), Some("vanilla-new"));
+        assert_eq!(id(false), Some("horizon"));
+        // Never played: the first listed; none of an edition: none (New instance opens).
+        let fresh = [
+            one("a", Kind::Own, true, None),
+            one("b", Kind::Own, true, None),
+        ];
+        assert_eq!(edition_pick(&fresh, true).map(|i| i.id.as_str()), Some("a"));
+        assert!(edition_pick(&fresh, false).is_none());
+    }
 
     #[test]
     fn played_time_reads_as_the_mockup_writes_it() {

@@ -941,6 +941,74 @@ mod tests {
         assert!(up(&shared));
     }
 
+    /// A stand-in for the game: a shell script, its stdin and output piped as the engine's are.
+    #[cfg(unix)]
+    fn game(script: &str) -> Child {
+        use std::process::{Command, Stdio};
+        Command::new("sh")
+            .args(["-c", script])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap()
+    }
+
+    #[cfg(unix)]
+    /// What the supervisor does once the game has stopped, on another thread: `false` when it ends, `true`
+    /// when it starts the game again; nothing comes while it waits.
+    fn after_stop(shared: &Arc<Shared>) -> mpsc::Receiver<bool> {
+        let (console, lines) = mpsc::channel::<String>();
+        let (done, ended) = mpsc::channel();
+        let shared = shared.clone();
+        thread::spawn(move || {
+            let _console = console;
+            let _ = done.send(wait_stopped(&shared, &lines));
+        });
+        ended
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_management_stop_ends_the_supervisor_and_a_stop_in_game_keeps_it() {
+        let dir = std::env::temp_dir().join(format!("horizon-server-stop-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (_console, console) = mpsc::channel();
+        let stop = |shared: &Shared| {
+            let answer =
+                crate::management_methods::call(shared, 1, "server/stop", &serde_json::Value::Null);
+            assert_eq!(answer.ok(), Some(json!(true)));
+        };
+
+        // vanilla's `server/stop`: the game saves and stops, then the process exits.
+        let shared = Shared::with_install(&dir, None);
+        let mut child = game("read line && [ \"$line\" = stop ]");
+        let asked = {
+            let shared = shared.clone();
+            thread::spawn(move || {
+                thread::sleep(Duration::from_millis(100));
+                stop(&shared);
+            })
+        };
+        let exit = supervise(&shared, &mut child, &console, &mut None);
+        asked.join().unwrap();
+        assert!(matches!(exit, Exit::Stopped));
+        let ended = after_stop(&shared);
+        assert_eq!(ended.recv_timeout(Duration::from_secs(5)), Ok(false));
+
+        // A game that stopped by itself (`stop` in game, through RCON) leaves the supervisor and its API up
+        // (#8245) until a stop or a start comes.
+        let shared = Shared::with_install(&dir, None);
+        let mut child = game("exit 0");
+        let exit = supervise(&shared, &mut child, &console, &mut None);
+        assert!(matches!(exit, Exit::Stopped));
+        let ended = after_stop(&shared);
+        assert!(ended.recv_timeout(Duration::from_millis(300)).is_err());
+        stop(&shared);
+        assert_eq!(ended.recv_timeout(Duration::from_secs(5)), Ok(false));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn one_supervisor_per_folder() {
         let dir = std::env::temp_dir().join(format!("horizon-server-lock-{}", std::process::id()));
