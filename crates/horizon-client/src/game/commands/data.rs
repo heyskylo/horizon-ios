@@ -347,6 +347,10 @@ impl Game<'_> {
                         slot.extra.tame = old.extra.tame;
                         slot.extra.owner = old.extra.owner;
                     }
+                    // Entity.load mutates the existing living entity; its damage
+                    // cooldown and previous-hit amount are not read from saved NBT.
+                    slot.invulnerable = old.invulnerable;
+                    slot.last_hurt = old.last_hurt;
                     slot.ai = old.ai;
                     slot.extra.armor_attributes = old.extra.armor_attributes;
                     slot.age = old.age;
