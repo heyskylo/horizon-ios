@@ -1034,7 +1034,8 @@ impl Game<'_> {
             .clone()
             .map(horizon_client::lan::arrivals::Transfers::new);
         if transfers.is_some() && forwarding_secret.is_none() {
-            return Err("server.toml's [transfer] is on, but players can join this server without the proxy:                  turn on Velocity forwarding (forwarding.secret, docs/velocity-forwarding.md) or turn [transfer] off"
+            return Err("server.toml's [transfer] is on, but players can join this server without the proxy: \
+                 turn on Velocity forwarding (forwarding.secret, docs/velocity-forwarding.md) or turn [transfer] off"
                 .into());
         }
         let net = NetConfig {
