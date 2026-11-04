@@ -1117,5 +1117,8 @@
   "Move…": "Move…",
   "The launcher closes while your data is copied and verified, then reopens. Old folders are kept and still use disk space until you verify the move and remove them yourself.": "The launcher closes while your data is copied and verified, then reopens. Old folders are kept and still use disk space until you verify the move and remove them yourself.",
   "Open the shop": "Abrir a tenda",
-  "You don't own any cosmetics yet.": "Aínda non tes ningún cosmético."
+  "You don't own any cosmetics yet.": "Aínda non tes ningún cosmético.",
+  "Claim for free": "Obter de balde",
+  "The shop's payment provider doesn't serve your country, so you can claim the Founder Set here for free.": "O provedor de pagos da tenda non opera no teu país, así que podes obter o Set fundador aquí de balde.",
+  "The Founder Set is yours.": "O Set fundador é teu."
 }

@@ -1117,5 +1117,8 @@
   "Move…": "Move…",
   "The launcher closes while your data is copied and verified, then reopens. Old folders are kept and still use disk space until you verify the move and remove them yourself.": "The launcher closes while your data is copied and verified, then reopens. Old folders are kept and still use disk space until you verify the move and remove them yourself.",
   "Open the shop": "Opna handilin",
-  "You don't own any cosmetics yet.": "Tú eigur enn einki kosmetikk."
+  "You don't own any cosmetics yet.": "Tú eigur enn einki kosmetikk.",
+  "Claim for free": "Fá ókeypis",
+  "The shop's payment provider doesn't serve your country, so you can claim the Founder Set here for free.": "Gjaldsveitarin hjá handlinum tænar ikki tínum landi, so tú kanst fáa Stovnara settið her ókeypis.",
+  "The Founder Set is yours.": "Stovnara settið er títt."
 }

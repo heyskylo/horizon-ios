@@ -1117,5 +1117,8 @@
   "Move…": "Move…",
   "The launcher closes while your data is copied and verified, then reopens. Old folders are kept and still use disk space until you verify the move and remove them yourself.": "The launcher closes while your data is copied and verified, then reopens. Old folders are kept and still use disk space until you verify the move and remove them yourself.",
   "Open the shop": "Open de winkel",
-  "You don't own any cosmetics yet.": "Je hebt nog geen cosmetica."
+  "You don't own any cosmetics yet.": "Je hebt nog geen cosmetica.",
+  "Claim for free": "Gratis ophalen",
+  "The shop's payment provider doesn't serve your country, so you can claim the Founder Set here for free.": "De betaalprovider van de winkel is niet actief in jouw land, dus je kunt de Oprichtersset hier gratis ophalen.",
+  "The Founder Set is yours.": "De Oprichtersset is van jou."
 }

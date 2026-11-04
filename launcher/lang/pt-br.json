@@ -1117,5 +1117,8 @@
   "Move and restart": "Mover e reiniciar",
   "Could not open the data folder: {error}": "Could not open the data folder: {error}",
   "Open the shop": "Abrir a loja",
-  "You don't own any cosmetics yet.": "Você ainda não tem nenhum cosmético."
+  "You don't own any cosmetics yet.": "Você ainda não tem nenhum cosmético.",
+  "Claim for free": "Resgatar grátis",
+  "The shop's payment provider doesn't serve your country, so you can claim the Founder Set here for free.": "O provedor de pagamentos da loja não atende o seu país, então você pode resgatar o Conjunto fundador aqui de graça.",
+  "The Founder Set is yours.": "O Conjunto fundador é seu."
 }

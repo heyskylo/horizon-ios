@@ -1117,5 +1117,8 @@
   "Move…": "Move…",
   "The launcher closes while your data is copied and verified, then reopens. Old folders are kept and still use disk space until you verify the move and remove them yourself.": "The launcher closes while your data is copied and verified, then reopens. Old folders are kept and still use disk space until you verify the move and remove them yourself.",
   "Open the shop": "Fosgail am bùth",
-  "You don't own any cosmetics yet.": "Chan eil cungaidh-maise sam bith agad fhathast."
+  "You don't own any cosmetics yet.": "Chan eil cungaidh-maise sam bith agad fhathast.",
+  "Claim for free": "Faigh an-asgaidh",
+  "The shop's payment provider doesn't serve your country, so you can claim the Founder Set here for free.": "Chan eil solaraiche pàighidh a' bhùtha a' frithealadh na dùthcha agad, mar sin gheibh thu an Seata stèidheadair an-seo an-asgaidh.",
+  "The Founder Set is yours.": "'S ann leatsa a tha an Seata stèidheadair."
 }

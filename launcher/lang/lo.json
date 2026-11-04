@@ -1117,5 +1117,8 @@
   "Move…": "Move…",
   "The launcher closes while your data is copied and verified, then reopens. Old folders are kept and still use disk space until you verify the move and remove them yourself.": "The launcher closes while your data is copied and verified, then reopens. Old folders are kept and still use disk space until you verify the move and remove them yourself.",
   "Open the shop": "ເປີດຮ້ານ",
-  "You don't own any cosmetics yet.": "ເຈົ້າຍັງບໍ່ມີເຄື່ອງສໍາອາງເທື່ອ."
+  "You don't own any cosmetics yet.": "ເຈົ້າຍັງບໍ່ມີເຄື່ອງສໍາອາງເທື່ອ.",
+  "Claim for free": "ຮັບຟຣີ",
+  "The shop's payment provider doesn't serve your country, so you can claim the Founder Set here for free.": "ຜູ້ໃຫ້ບໍລິການຊຳລະເງິນຂອງຮ້ານບໍ່ໃຫ້ບໍລິການໃນປະເທດຂອງທ່ານ, ສະນັ້ນທ່ານສາມາດຮັບຊຸດຜູ້ກໍ່ຕັ້ງໄດ້ທີ່ນີ້ຟຣີ.",
+  "The Founder Set is yours.": "ຊຸດຜູ້ກໍ່ຕັ້ງເປັນຂອງທ່ານແລ້ວ."
 }

@@ -1117,5 +1117,8 @@
   "Move and restart": "Taşı ve yeniden başlat",
   "Could not open the data folder: {error}": "Could not open the data folder: {error}",
   "Open the shop": "Mağazayı aç",
-  "You don't own any cosmetics yet.": "Henüz hiç kozmetiğin yok."
+  "You don't own any cosmetics yet.": "Henüz hiç kozmetiğin yok.",
+  "Claim for free": "Ücretsiz al",
+  "The shop's payment provider doesn't serve your country, so you can claim the Founder Set here for free.": "Mağazanın ödeme sağlayıcısı ülkende hizmet vermiyor, bu yüzden Kurucu setini burada ücretsiz alabilirsin.",
+  "The Founder Set is yours.": "Kurucu seti artık senin."
 }

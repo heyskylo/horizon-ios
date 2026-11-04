@@ -1117,5 +1117,8 @@
   "Move…": "Move…",
   "The launcher closes while your data is copied and verified, then reopens. Old folders are kept and still use disk space until you verify the move and remove them yourself.": "The launcher closes while your data is copied and verified, then reopens. Old folders are kept and still use disk space until you verify the move and remove them yourself.",
   "Open the shop": "Buksan ang shop",
-  "You don't own any cosmetics yet.": "Wala ka pang pampaganda."
+  "You don't own any cosmetics yet.": "Wala ka pang pampaganda.",
+  "Claim for free": "Kunin nang libre",
+  "The shop's payment provider doesn't serve your country, so you can claim the Founder Set here for free.": "Hindi nagseserbisyo sa bansa mo ang payment provider ng shop, kaya puwede mong kunin dito nang libre ang Set ng founder.",
+  "The Founder Set is yours.": "Sa iyo na ang Set ng founder."
 }

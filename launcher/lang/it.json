@@ -1117,5 +1117,8 @@
   "Move…": "Move…",
   "The launcher closes while your data is copied and verified, then reopens. Old folders are kept and still use disk space until you verify the move and remove them yourself.": "The launcher closes while your data is copied and verified, then reopens. Old folders are kept and still use disk space until you verify the move and remove them yourself.",
   "Open the shop": "Apri il negozio",
-  "You don't own any cosmetics yet.": "Non possiedi ancora nessun cosmetico."
+  "You don't own any cosmetics yet.": "Non possiedi ancora nessun cosmetico.",
+  "Claim for free": "Ottieni gratis",
+  "The shop's payment provider doesn't serve your country, so you can claim the Founder Set here for free.": "Il fornitore di pagamenti del negozio non opera nel tuo paese, quindi puoi ottenere qui gratis l'Insieme del fondatore.",
+  "The Founder Set is yours.": "L'Insieme del fondatore è tuo."
 }

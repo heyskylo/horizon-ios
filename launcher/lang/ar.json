@@ -1117,5 +1117,8 @@
   "The launcher closes while your data is copied and verified, then reopens. Old folders are kept and still use disk space until you verify the move and remove them yourself.": "يُغلق المشغل أثناء نسخ بياناتك والتحقق منها، ثم يُفتح مجددًا. يُحتفظ بالمجلدات القديمة وتظل تشغل مساحة على القرص حتى تتحقق من نجاح النقل وتحذفها بنفسك.",
   "Could not open the data folder: {error}": "Could not open the data folder: {error}",
   "Open the shop": "فتح المتجر",
-  "You don't own any cosmetics yet.": "لا تملك أي مظاهر بعد."
+  "You don't own any cosmetics yet.": "لا تملك أي مظاهر بعد.",
+  "Claim for free": "احصل عليه مجانًا",
+  "The shop's payment provider doesn't serve your country, so you can claim the Founder Set here for free.": "مزوّد الدفع في المتجر لا يخدم بلدك، لذا يمكنك الحصول على طقم المؤسسين هنا مجانًا.",
+  "The Founder Set is yours.": "طقم المؤسسين أصبح لك."
 }
