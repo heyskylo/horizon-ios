@@ -111,7 +111,13 @@ for a vanilla block that ticks, and its sections count it.
 `"MODEL"` puts its block model in the chunk mesh, `"ENTITYBLOCK_ANIMATED"` leaves the model out for a block whose
 moving parts its block entity draws every frame (a turning shaft, a machine's arm), and `"INVISIBLE"` draws nothing.
 Its outline, collision, light and occlusion stay as declared: on a template that occludes (stone), the faces it
-covers stay hidden, so a block drawn by its block entity usually takes a template that doesn't (glass).
+covers stay hidden unless it also sets `occludes`.
+
+`occludes: false` makes a block occlude nothing whatever its template does, as vanilla's `noOcclusion()`: the faces
+of the blocks beside it are drawn, so a thin panel or a block drawn by its block entity on a full-cube template
+doesn't leave a hole in the floor under it. It is no longer a solid render either, so light passes it as it passes
+leaves: dampened by 1, or not at all if its template lets skylight down. Unset or `true`, it occludes as its template
+does.
 
 A block copies its template's states. It can also declare state properties of
 its own, which its template does not have — how a pipe says which sides it
@@ -442,7 +448,10 @@ one, what it pins and why it is not sandboxed: [native-mods.md](native-mods.md).
 A native mod's config files go in the game's shared `config/` folder, beside `options.txt` (on a dedicated server,
 beside `server.properties`), as Fabric and NeoForge mods' do: the mod picks its own file names, such as
 `config/<mod id>.json`. It asks for the folder with `Game::native_config_dir()` (hook points API 26), which needs no
-game, so it works from any hook, and makes the folder when missing. Settings kept with `native_set_setting` stay where they were, in `horizon-mods/.horizon-mod-data/<id>/`.
+game, so it works from any hook, and makes the folder when missing. A mod that lists its files with
+`native_register_configs` gets them read for it, written from their defaults when missing, and handed over again
+when edited (`native_config_loading`, `native_config_reloading`, as NeoForge's `ModConfigEvent`), and a world can
+keep its own server config in `serverconfig/` ([native-mods.md](native-mods.md)). Settings kept with `native_set_setting` stay where they were, in `horizon-mods/.horizon-mod-data/<id>/`.
 
 ## Publish your mod
 

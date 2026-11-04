@@ -667,7 +667,10 @@ impl Game<'_> {
                     .iter()
                     .find(|m| m.id == id)
                     .and_then(|m| m.extra.owner)
-                    .and_then(|u| self.target_with_uuid(u))
+                    // A guest owner too, not only the player in place.
+                    .and_then(|u| {
+                        self.target_by_uuid(horizon_client::lan::playerdata::ints_uuid(u))
+                    })
                     .filter(|owner| {
                         matches!(
                             owner,
@@ -807,7 +810,7 @@ impl Game<'_> {
     /// so a killed entity and a later summon of the same UUID can both be
     /// in it; the one the level still holds is the entity.
     pub(in crate::game) fn target_with_uuid(&self, uuid: [i32; 4]) -> Option<Target> {
-        if Some(uuid) == self.level.player_uuid {
+        if is_player_in_place(uuid, self.lan_acting_uuid, self.level.player_uuid) {
             return Some(Target::Player);
         }
         self.persist.uuids.iter().find_map(|(&id, found)| {
@@ -1143,5 +1146,45 @@ impl Game<'_> {
         let entries = self.tag_entries("worldgen/biome", tag);
         entries.iter().any(|id| id == biome)
             || (entries.is_empty() && self.res.mob_data().biome_has(tag, biome))
+    }
+}
+
+/// Whether `uuid` is the player in place (`Target::Player`): during a guest's turn that is the guest, not the
+/// level's own player (the world owner), whom `Level.getEntity(UUID)` finds only while they are in the level.
+fn is_player_in_place(
+    uuid: [i32; 4],
+    acting: Option<u128>,
+    level_player: Option<[i32; 4]>,
+) -> bool {
+    match acting {
+        Some(guest) => horizon_client::lan::playerdata::ints_uuid(uuid) == guest,
+        None => Some(uuid) == level_player,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_player_in_place;
+    use horizon_client::lan::playerdata::ints_uuid;
+
+    const OWNER: [i32; 4] = [0, 0, 0, 12];
+    const GUEST: [i32; 4] = [0, 0, 0, 13];
+
+    /// A owns the world, B is a guest: the sequence of one command each way.
+    #[test]
+    fn the_owners_uuid_is_not_the_guest_in_place() {
+        // A's own command, or the single-player one: no guest in place, the level's player is.
+        assert!(is_player_in_place(OWNER, None, Some(OWNER)));
+        assert!(!is_player_in_place(GUEST, None, Some(OWNER)));
+        // B's turn: only B is in place, the owner's UUID names someone else.
+        let b = Some(ints_uuid(GUEST));
+        assert!(is_player_in_place(GUEST, b, Some(OWNER)));
+        assert!(!is_player_in_place(OWNER, b, Some(OWNER)));
+        // A's own turn as a guest of an integrated server.
+        let a = Some(ints_uuid(OWNER));
+        assert!(is_player_in_place(OWNER, a, Some(OWNER)));
+        assert!(!is_player_in_place(GUEST, a, Some(OWNER)));
+        // No level player at all (a dedicated server): nobody is in place without a guest.
+        assert!(!is_player_in_place(OWNER, None, None));
     }
 }
