@@ -16,11 +16,13 @@ $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 
 $Repo = "horizon-rust/horizon"
+$Fallback = $null
 $Architecture = $env:PROCESSOR_ARCHITEW6432
 if (-not $Architecture) { $Architecture = $env:PROCESSOR_ARCHITECTURE }
 switch ($Architecture) {
     "AMD64" { $Asset = "horizon-windows-x64.zip" }
-    "ARM64" { $Asset = "horizon-windows-arm64.zip" }
+    # A release without an ARM64 build installs the x64 one, which Windows runs under emulation.
+    "ARM64" { $Asset = "horizon-windows-arm64.zip"; $Fallback = "horizon-windows-x64.zip" }
     default { throw "No Horizon release for Windows on $Architecture yet: build it from source (docs/server.md)" }
 }
 
@@ -40,6 +42,11 @@ if (($Tag -eq "nightly" -or $Tag.StartsWith("nightly-")) -and
     $Tag = "nightly-$($Matches[1])-$($Matches[2])"
 }
 $Item = $Release.assets | Where-Object { $_.name -eq $Asset } | Select-Object -First 1
+if (-not $Item -and $Fallback) {
+    Write-Host "Release $Tag has no ${Asset}: installing $Fallback (x64, under emulation)"
+    $Asset = $Fallback
+    $Item = $Release.assets | Where-Object { $_.name -eq $Asset } | Select-Object -First 1
+}
 if (-not $Item) { throw "Release $Tag has no $Asset" }
 if (-not $Item.digest -or -not $Item.digest.StartsWith("sha256:")) { throw "Release $Tag publishes no SHA-256 for $Asset" }
 $Digest = $Item.digest.Substring(7)

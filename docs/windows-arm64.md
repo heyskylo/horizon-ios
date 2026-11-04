@@ -36,7 +36,14 @@ and listed in its signed `SHA256SUMS`. The launcher archive, `horizon-launcher-w
 and `horizon-launcher-setup-arm64.exe` are attached to the [launcher releases](https://github.com/horizon-rust/horizon/releases)
 and listed in their signed `SHA256SUMS`.
 
-The launcher uses `IsWow64Process2`'s native-machine value, so an x64 launcher running under emulation
-on an ARM64 PC selects ARM64 game and launcher downloads. Native-mod builds on Windows ARM64 are not
-supported yet: the launcher's bundled Windows compiler is x64-only, and the ARM64 launcher reports
-that no matching compiler is available instead of building x64 binaries.
+Each launcher keeps its own architecture: an x64 launcher on an ARM64 PC (under emulation) updates
+itself from the x64 archive and installs the x64 game, so an update never moves a working setup to
+another build. `horizon-launcher-setup-arm64.exe` installs the ARM64 launcher, which installs
+`horizon-windows-arm64.zip` and falls back to `horizon-windows-x64.zip` (under emulation) for a release
+without an ARM64 build. Native-mod builds need the x64 launcher for now: the bundled Windows compiler is
+x64-only, and the ARM64 launcher reports that no matching compiler is available instead of building x64
+binaries.
+
+The `Windows ARM64 game and launcher` check in `ci.yml` runs only by hand
+(`gh workflow run checks --ref <branch>`); the Nightly and launcher releases build these archives on
+every run.

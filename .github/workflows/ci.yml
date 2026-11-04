@@ -159,10 +159,13 @@ jobs:
           cargo +stable fmt --check
           cargo +stable clippy --all-targets --locked -- -D warnings
           cargo +stable test --locked --lib
-  # Compile and test Windows ARM64 on an actual ARM64 host, and inspect the resulting PE headers. The release
-  # workflows also build and package these binaries; this PR lane catches target-only Rust and linker issues.
+  # Compile and test Windows ARM64 on an actual ARM64 host, and inspect the resulting PE headers. By hand only
+  # (`gh workflow run checks --ref <branch>`): GitHub's runner queue is the bottleneck, and main's runs gate the
+  # releases (tools/release_train.py waits for them), so neither pull requests nor main's pushes start this
+  # 90-minute job. The Nightly and launcher releases build and check these binaries on every run.
   windows-arm64:
     name: Windows ARM64 game and launcher
+    if: github.event_name == 'workflow_dispatch'
     runs-on: windows-11-vs2026-arm
     timeout-minutes: 90
     env:
@@ -171,48 +174,27 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Does this pull request touch code or Windows ARM64 build configuration?
-        if: github.event_name == 'pull_request'
-        id: scope
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        shell: pwsh
-        run: |
-          $changed = git diff --name-only $env:BASE_SHA $env:HEAD_SHA
-          $required = $changed | Where-Object {
-            $_ -match '^(Cargo\.toml|Cargo\.lock|rust-toolchain\.toml|\.cargo/.*|crates/.*|launcher/.*|\.github/workflows/(ci|game-build|launcher|nightly-build)\.yml|tools/check_pe_arch\.py)$'
-          }
-          $run = [bool]$required
-          "required=$($run.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
       - name: Use every runner core for Cargo
-        if: github.event_name != 'pull_request' || steps.scope.outputs.required == 'true'
         shell: pwsh
         run: |
           $cores = (Get-CimInstance Win32_Processor | Measure-Object -Property NumberOfLogicalProcessors -Sum).Sum
           "CARGO_BUILD_JOBS=$cores" >> $env:GITHUB_ENV
       - uses: dtolnay/rust-toolchain@stable
-        if: github.event_name != 'pull_request' || steps.scope.outputs.required == 'true'
         with:
           targets: aarch64-pc-windows-msvc
       - name: Build the game for native Windows ARM64
-        if: github.event_name != 'pull_request' || steps.scope.outputs.required == 'true'
         run: cargo build --release --locked --target aarch64-pc-windows-msvc -p horizon-client -p horizon-client-lib --bin horizon-client --bin horizon-ctl -p horizon-prepare --bin horizon-prepare -p horizon-server --bin horizon-server
       - name: Check the game's PE machine
-        if: github.event_name != 'pull_request' || steps.scope.outputs.required == 'true'
         run: python tools/check_pe_arch.py arm64 target/aarch64-pc-windows-msvc/release/horizon-client.exe target/aarch64-pc-windows-msvc/release/horizon-ctl.exe target/aarch64-pc-windows-msvc/release/horizon-prepare.exe target/aarch64-pc-windows-msvc/release/horizon-server.exe
       - name: Test and build the native Windows ARM64 launcher
-        if: github.event_name != 'pull_request' || steps.scope.outputs.required == 'true'
         working-directory: launcher
         run: |
           cargo test --release --locked --target aarch64-pc-windows-msvc --lib
           cargo build --release --locked --target aarch64-pc-windows-msvc
       - name: Check the launcher's PE machine
-        if: github.event_name != 'pull_request' || steps.scope.outputs.required == 'true'
         working-directory: launcher
         run: python ../tools/check_pe_arch.py arm64 target/aarch64-pc-windows-msvc/release/horizon-launcher.exe
       - uses: actions/upload-artifact@v4
-        if: github.event_name != 'pull_request' || steps.scope.outputs.required == 'true'
         with:
           name: windows-arm64-verification
           path: |

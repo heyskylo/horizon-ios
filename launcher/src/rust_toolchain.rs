@@ -108,11 +108,10 @@ const HOSTS: &[Host] = &[
     },
 ];
 
-/// This computer's host, if the launcher ships a toolchain for it (macOS on Apple silicon, Linux
-/// x86-64, Windows x64). Windows uses the machine architecture so an emulated x64 launcher doesn't
-/// offer an x64 native-mod build on an ARM64 machine.
+/// This computer's host, if the launcher ships a toolchain for it (the platforms it is released
+/// for: macOS on Apple silicon, Linux x86-64, Windows x64).
 pub fn host() -> Option<&'static Host> {
-    let target = match (std::env::consts::OS, backend::host_arch()) {
+    let target = match (std::env::consts::OS, std::env::consts::ARCH) {
         ("macos", "aarch64") => "aarch64-apple-darwin",
         ("linux", "x86_64") => "x86_64-unknown-linux-gnu",
         ("windows", "x86_64") => "x86_64-pc-windows-gnu",
@@ -316,7 +315,7 @@ pub fn install(progress: impl Fn(f32)) -> Result<Toolchain, String> {
         format!(
             "Native mods need Rust, and the launcher has none for {} {}.",
             std::env::consts::OS,
-            backend::host_arch()
+            std::env::consts::ARCH
         )
     })?;
     let dir = dir_for(host);
@@ -627,14 +626,6 @@ mod tests {
         );
         if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
             assert_eq!(host().unwrap().target, "aarch64-apple-darwin");
-        }
-        if cfg!(windows) {
-            let expected = match backend::host_arch() {
-                "x86_64" => Some("x86_64-pc-windows-gnu"),
-                "aarch64" => None,
-                _ => None,
-            };
-            assert_eq!(host().map(|host| host.target), expected);
         }
     }
 
