@@ -450,6 +450,51 @@ fn ids_in(root: &Path, extension: &str, namespace: &str) -> Vec<String> {
     out
 }
 
+/// `SuggestionProviders.SUMMONABLE_ENTITIES`: Entity types available for
+/// `/summon` autocomplete, filtering out types that cannot be summoned.
+pub(super) fn summonable_entities(
+    entity_types: &[String],
+    mob_types: impl IntoIterator<Item = impl AsRef<str>>,
+) -> Vec<String> {
+    let mut summonable: Vec<String> = if !entity_types.is_empty() {
+        entity_types
+            .iter()
+            .filter(|id| !matches!(id.as_str(), "minecraft:player" | "minecraft:fishing_bobber"))
+            .cloned()
+            .collect()
+    } else {
+        let mut list: Vec<String> = mob_types
+            .into_iter()
+            .map(|k| horizon_client::command::args::normalize(k.as_ref()))
+            .filter(|id| !matches!(id.as_str(), "minecraft:player" | "minecraft:fishing_bobber"))
+            .collect();
+        list.extend(
+            [
+                "minecraft:item",
+                "minecraft:experience_orb",
+                "minecraft:falling_block",
+                "minecraft:arrow",
+                "minecraft:lightning_bolt",
+                "minecraft:minecart",
+                "minecraft:chest_minecart",
+                "minecraft:hopper_minecart",
+                "minecraft:furnace_minecart",
+                "minecraft:tnt_minecart",
+                "minecraft:wind_charge",
+                "minecraft:breeze_wind_charge",
+            ]
+            .map(String::from),
+        );
+        list
+    };
+    // content mods' thrown types.
+    let thrown = horizon_client::projectiles::thrown_types().iter();
+    summonable.extend(thrown.map(|t| t.id.to_owned()));
+    summonable.sort();
+    summonable.dedup();
+    summonable
+}
+
 impl Game<'_> {
     /// The caches `build_registries` and `join_server` read (`resource_ids`,
     /// `block_properties`, `command_export`, `builtin_registries`), filled on a helper
@@ -572,33 +617,7 @@ impl Game<'_> {
             .collect();
         reg.block_tags.sort();
         reg.blocks = BlockProperties::clone(&block_properties(self.pack.assets.registry));
-        let mut summonable: Vec<String> = self
-            .res
-            .mob_types()
-            .keys()
-            .map(|k| horizon_client::command::args::normalize(k))
-            .collect();
-        summonable.extend(
-            [
-                "minecraft:item",
-                "minecraft:experience_orb",
-                "minecraft:falling_block",
-                "minecraft:arrow",
-                "minecraft:lightning_bolt",
-                "minecraft:minecart",
-                "minecraft:chest_minecart",
-                "minecraft:hopper_minecart",
-                "minecraft:furnace_minecart",
-                "minecraft:tnt_minecart",
-            ]
-            .map(String::from),
-        );
-        // content mods' thrown types.
-        let thrown = horizon_client::projectiles::thrown_types().iter();
-        summonable.extend(thrown.map(|t| t.id.to_owned()));
-        summonable.sort();
-        summonable.dedup();
-        reg.summonable = summonable;
+        reg.summonable = summonable_entities(&ids.entity_types, self.res.mob_types().keys());
         let mut types = ids.entity_types.clone();
         if types.is_empty() {
             types = reg.summonable.clone();
@@ -1735,5 +1754,148 @@ mod tests {
             vanilla.parse("help", &reg).executable().map(|e| e.1)
         );
         assert_eq!(shared.nodes.len(), vanilla.nodes.len());
+    }
+
+    /// When `entity_types` is empty (no `entity-types.json`), fallback includes
+    /// standard mobs, non-mob entities, and `wind_charge` / `breeze_wind_charge`.
+    #[test]
+    fn summonable_entities_empty_fallback_includes_mobs_and_non_mobs() {
+        let mobs = ["cow", "zombie", "skeleton"];
+        let summonable = summonable_entities(&[], mobs);
+        assert!(summonable.contains(&"minecraft:cow".to_string()));
+        assert!(summonable.contains(&"minecraft:zombie".to_string()));
+        assert!(summonable.contains(&"minecraft:skeleton".to_string()));
+        assert!(summonable.contains(&"minecraft:item".to_string()));
+        assert!(summonable.contains(&"minecraft:arrow".to_string()));
+        assert!(summonable.contains(&"minecraft:lightning_bolt".to_string()));
+        assert!(summonable.contains(&"minecraft:minecart".to_string()));
+        assert!(summonable.contains(&"minecraft:wind_charge".to_string()));
+        assert!(summonable.contains(&"minecraft:breeze_wind_charge".to_string()));
+    }
+
+    /// Non-summonables `minecraft:player` and `minecraft:fishing_bobber` are
+    /// never included in `reg.summonable`.
+    #[test]
+    fn summonable_entities_never_includes_player_or_fishing_bobber() {
+        let all_types = vec![
+            "minecraft:cow".to_string(),
+            "minecraft:player".to_string(),
+            "minecraft:fishing_bobber".to_string(),
+            "minecraft:wind_charge".to_string(),
+        ];
+        let summonable = summonable_entities(&all_types, &[] as &[&str]);
+        assert!(!summonable.contains(&"minecraft:player".to_string()));
+        assert!(!summonable.contains(&"minecraft:fishing_bobber".to_string()));
+        assert!(summonable.contains(&"minecraft:cow".to_string()));
+        assert!(summonable.contains(&"minecraft:wind_charge".to_string()));
+
+        let fallback = summonable_entities(&[], ["player", "fishing_bobber", "zombie"]);
+        assert!(!fallback.contains(&"minecraft:player".to_string()));
+        assert!(!fallback.contains(&"minecraft:fishing_bobber".to_string()));
+        assert!(fallback.contains(&"minecraft:zombie".to_string()));
+    }
+
+    /// `minecraft:wind_charge` and `minecraft:breeze_wind_charge` are in
+    /// `reg.summonable`, and `/summon wind` or `/summon minecraft:wind_charg`
+    /// suggest them via `Suggests::SummonableEntities` / `resource_matches`.
+    #[test]
+    fn summonable_entities_suggests_wind_charge_variants() {
+        let all_types = vec![
+            "minecraft:wind_charge".to_string(),
+            "minecraft:breeze_wind_charge".to_string(),
+            "minecraft:zombie".to_string(),
+        ];
+        let summonable = summonable_entities(&all_types, &[] as &[&str]);
+        assert!(summonable.contains(&"minecraft:wind_charge".to_string()));
+        assert!(summonable.contains(&"minecraft:breeze_wind_charge".to_string()));
+
+        assert!(horizon_client::command::args::resource_matches(
+            "wind",
+            "minecraft:wind_charge"
+        ));
+        assert!(horizon_client::command::args::resource_matches(
+            "wind",
+            "minecraft:breeze_wind_charge"
+        ));
+        assert!(horizon_client::command::args::resource_matches(
+            "minecraft:wind_charg",
+            "minecraft:wind_charge"
+        ));
+        assert!(!horizon_client::command::args::resource_matches(
+            "minecraft:wind_charg",
+            "minecraft:breeze_wind_charge"
+        ));
+
+        let reg = Registries {
+            permission: 2,
+            summonable,
+            ..Default::default()
+        };
+        let vanilla = horizon_client::command::vanilla::game_dispatcher();
+
+        let parse = vanilla.parse("summon wind", &reg);
+        let (_range, suggestions) = vanilla.client_suggestions(&parse, "summon wind".len(), &reg);
+        let texts: Vec<String> = suggestions.into_iter().map(|s| s.text).collect();
+        assert!(texts.contains(&"minecraft:wind_charge".to_string()));
+        assert!(texts.contains(&"minecraft:breeze_wind_charge".to_string()));
+
+        let parse = vanilla.parse("summon minecraft:wind_charg", &reg);
+        let (_range, suggestions) =
+            vanilla.client_suggestions(&parse, "summon minecraft:wind_charg".len(), &reg);
+        let texts: Vec<String> = suggestions.into_iter().map(|s| s.text).collect();
+        assert_eq!(texts, vec!["minecraft:wind_charge".to_string()]);
+    }
+
+    /// `Registries::fill_from_export` and `fill_from_exported` populate
+    /// `self.summonable` and `self.entity_types` when present in export JSON,
+    /// and sort/dedup properly.
+    #[test]
+    fn export_propagation_populates_and_dedups_summonable_and_entity_types() {
+        let export_json = serde_json::json!({
+            "summonable": [
+                "minecraft:zombie",
+                "minecraft:arrow",
+                "minecraft:zombie",
+                "minecraft:wind_charge"
+            ],
+            "entity_types": [
+                "minecraft:zombie",
+                "minecraft:player",
+                "minecraft:arrow",
+                "minecraft:zombie"
+            ]
+        });
+        let mut reg = Registries::default();
+        reg.fill_from_export(&export_json);
+        assert_eq!(
+            reg.summonable,
+            vec![
+                "minecraft:arrow".to_string(),
+                "minecraft:wind_charge".to_string(),
+                "minecraft:zombie".to_string(),
+            ]
+        );
+        assert_eq!(
+            reg.entity_types,
+            vec![
+                "minecraft:arrow".to_string(),
+                "minecraft:player".to_string(),
+                "minecraft:zombie".to_string(),
+            ]
+        );
+
+        let mut dest = Registries::default();
+        dest.fill_from_exported(&reg);
+        assert_eq!(dest.summonable, reg.summonable);
+        assert_eq!(dest.entity_types, reg.entity_types);
+
+        let mut prefilled = Registries {
+            summonable: vec!["minecraft:pig".to_string()],
+            entity_types: vec!["minecraft:pig".to_string()],
+            ..Default::default()
+        };
+        prefilled.fill_from_exported(&reg);
+        assert_eq!(prefilled.summonable, vec!["minecraft:pig".to_string()]);
+        assert_eq!(prefilled.entity_types, vec!["minecraft:pig".to_string()]);
     }
 }

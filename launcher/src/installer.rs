@@ -256,25 +256,73 @@ fn register(dir: &Path, exe: &Path, version: &str) -> io::Result<()> {
     Ok(())
 }
 
-/// Uninstall copies that stepped aside in %TEMP% in earlier runs and are no longer in use.
-fn clean_temp() {
+/// Uninstall copies that stepped aside in earlier runs and are no longer in use: in %TEMP%, and
+/// beside `install` (the install folder) when %TEMP% was on another drive.
+fn clean_aside(install: &Path) {
     let own = format!("{ASIDE_PREFIX}{}.exe", std::process::id());
-    let Ok(entries) = fs::read_dir(std::env::temp_dir()) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let name = entry.file_name().to_string_lossy().to_string();
-        if name.starts_with(ASIDE_PREFIX) && name.ends_with(".exe") && name != own {
-            let _ = fs::remove_file(entry.path());
+    let temp = std::env::temp_dir();
+    let places =
+        crate::uninstall_aside::aside_dirs(&install.to_string_lossy(), &temp.to_string_lossy());
+    for place in std::iter::once(temp).chain(places.into_iter().map(PathBuf::from)) {
+        for entry in fs::read_dir(&place).into_iter().flatten().flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.starts_with(ASIDE_PREFIX) && name.ends_with(".exe") && name != own {
+                let _ = fs::remove_file(entry.path());
+            }
         }
     }
 }
 
+/// Moves the running launcher out of `dir` so the folder can go: into %TEMP% when it is on the
+/// same drive, else beside `dir` as a hidden file (a rename never crosses volumes: os error 17).
+/// Windows deletes it at the next restart when the account may ask that (administrators), and
+/// the next setup or uninstall clears it anyway ([`clean_aside`]).
+fn step_aside(own: &Path, dir: &Path) -> io::Result<()> {
+    let name = format!("{ASIDE_PREFIX}{}.exe", std::process::id());
+    let temp = std::env::temp_dir();
+    let mut last = io::Error::new(io::ErrorKind::NotFound, "no folder to step aside to");
+    for place in crate::uninstall_aside::aside_dirs(&dir.to_string_lossy(), &temp.to_string_lossy())
+    {
+        let aside = Path::new(&place).join(&name);
+        match fs::rename(own, &aside) {
+            Ok(()) => {
+                if !same_path(Path::new(&place), &temp) {
+                    hide(&aside);
+                }
+                delete_at_restart(&aside);
+                return Ok(());
+            }
+            Err(e) => last = e,
+        }
+    }
+    Err(last)
+}
+
+fn wide(path: &Path) -> Vec<u16> {
+    use std::os::windows::ffi::OsStrExt;
+    path.as_os_str().encode_wide().chain([0]).collect()
+}
+
+fn hide(path: &Path) {
+    use windows_sys::Win32::Storage::FileSystem::{SetFileAttributesW, FILE_ATTRIBUTE_HIDDEN};
+    let path = wide(path);
+    // SAFETY: `path` is a NUL-terminated UTF-16 string that outlives the call.
+    unsafe { SetFileAttributesW(path.as_ptr(), FILE_ATTRIBUTE_HIDDEN) };
+}
+
+/// Best effort: without administrator rights Windows refuses, and [`clean_aside`] does it later.
+fn delete_at_restart(path: &Path) {
+    use windows_sys::Win32::Storage::FileSystem::{MoveFileExW, MOVEFILE_DELAY_UNTIL_REBOOT};
+    let path = wide(path);
+    // SAFETY: as in `hide`; a null new name means "delete".
+    unsafe { MoveFileExW(path.as_ptr(), std::ptr::null(), MOVEFILE_DELAY_UNTIL_REBOOT) };
+}
+
 /// Installs the launcher this process is into `options.dir`. Returns the installed `.exe`.
 pub fn install(options: &Options, progress: impl Fn(Step, f32)) -> Result<PathBuf, String> {
-    clean_temp();
     let source = std::env::current_exe().map_err(|e| e.to_string())?;
     let dir = options.dir.clone();
+    clean_aside(&dir);
     if dir.file_name().is_none() {
         return Err(format!("{} is not a folder to install in.", dir.display()));
     }
@@ -319,10 +367,10 @@ fn remove_all(path: &Path, left: &mut Vec<String>) {
 
 /// Takes the install away. Returns what could not be removed (a file in use, say).
 pub fn uninstall(remove_data: bool, progress: impl Fn(Step, f32)) -> Result<Vec<String>, String> {
-    clean_temp();
     let dir = registered()
         .ok_or("Horizon Launcher is not installed for this account.")?
         .dir;
+    clean_aside(&dir);
     let exe = dir.join(BINARY);
     let own = backend::exe_path().to_path_buf();
     let mut left = Vec::new();
@@ -366,11 +414,9 @@ pub fn uninstall(remove_data: bool, progress: impl Fn(Step, f32)) -> Result<Vec<
     }
 
     progress(Step::Removing, 0.55);
-    // The running file can be renamed but not deleted: it steps out of the folder into %TEMP%
-    // (the same volume), and the next setup or uninstall clears it ([`clean_temp`]).
+    // The running file can be renamed but not deleted: it steps out of the folder ([`step_aside`]).
     if own.starts_with(&dir) {
-        let aside = std::env::temp_dir().join(format!("{ASIDE_PREFIX}{}.exe", std::process::id()));
-        if let Err(e) = fs::rename(&own, &aside) {
+        if let Err(e) = step_aside(&own, &dir) {
             left.push(format!("{}: {e}", own.display()));
         }
     }
@@ -524,7 +570,14 @@ mod tests {
 
     #[test]
     fn the_shell_reads_the_target_of_the_shortcut_it_gets() {
-        let dir = std::env::temp_dir().join(format!("horizon-link-{}", std::process::id()));
+        // GitHub's Windows runners give TEMP as an 8.3 short path (C:\Users\RUNNER~1\...), which the
+        // shell hands back expanded: start from the long path, as an install folder is.
+        let temp = fs::canonicalize(std::env::temp_dir()).unwrap();
+        let temp = temp
+            .to_str()
+            .and_then(|t| t.strip_prefix(r"\\?\"))
+            .map_or(temp.clone(), PathBuf::from);
+        let dir = temp.join(format!("horizon-link-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         let exe = dir.join("Horizon Launcher").join("horizon-launcher.exe");
         fs::create_dir_all(exe.parent().unwrap()).unwrap();
