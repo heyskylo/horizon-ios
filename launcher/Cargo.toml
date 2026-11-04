@@ -89,6 +89,8 @@ keyring = { version = "3", features = ["windows-native"] }
 # The computer's memory, the end of the Launch panel's memory slider; the uninstaller's running
 # copy hidden and deleted at restart (installer::step_aside). Already in the lockfile.
 windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_System_LibraryLoader",
     "Win32_Storage_FileSystem",
     "Win32_System_SystemInformation",
     "Win32_System_Threading",

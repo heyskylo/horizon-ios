@@ -232,7 +232,7 @@ jobs:
             versions=$(retry "$launcher" --json versions)
             no_build='import json, sys; sys.exit(3 if not any(r["available_here"] for r in json.load(sys.stdin)) else 0)'
             status=0
-            python3 -c "$no_build" <<<"$versions" || status=$?
+            ${{ runner.os == 'Windows' && 'python' || 'python3' }} -c "$no_build" <<<"$versions" || status=$?
             if [[ $status == 3 ]]; then
               echo "::warning::No game build has an asset for ${{ matrix.name }} yet: install not tested"
               rm -rf "$HORIZON_LAUNCHER_HOME"

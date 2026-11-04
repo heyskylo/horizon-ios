@@ -118,21 +118,50 @@ const fn platform_assets(os: &str, arch: &str) -> Option<(&'static str, &'static
 /// emulated processor for x64 apps on Arm, so use IsWow64Process2's native-machine value instead.
 #[cfg(windows)]
 fn native_windows_arch() -> Option<&'static str> {
-    use windows_sys::Win32::System::Threading::{GetCurrentProcess, IsWow64Process2};
-    let mut process_machine = 0;
-    let mut native_machine = 0;
-    // SAFETY: the current-process pseudo-handle is valid and both output pointers are writable.
-    if unsafe {
-        IsWow64Process2(
-            GetCurrentProcess(),
-            &mut process_machine,
-            &mut native_machine,
-        )
-    } == 0
-    {
-        return None;
+    use windows_sys::core::BOOL;
+    use windows_sys::Win32::Foundation::HANDLE;
+    use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleA, GetProcAddress};
+    use windows_sys::Win32::System::SystemInformation::{
+        GetNativeSystemInfo, PROCESSOR_ARCHITECTURE_AMD64, PROCESSOR_ARCHITECTURE_ARM64,
+        SYSTEM_INFO,
+    };
+    use windows_sys::Win32::System::Threading::GetCurrentProcess;
+    type IsWow64Process2Fn = unsafe extern "system" fn(HANDLE, *mut u16, *mut u16) -> BOOL;
+
+    let kernel32 = unsafe { GetModuleHandleA(c"kernel32.dll".as_ptr().cast()) };
+    // IsWow64Process2 is absent on older Windows versions. Resolve it at runtime to preserve the
+    // launcher's existing minimum OS, while exposing the host architecture on Windows ARM.
+    let function = if kernel32.is_null() {
+        None
+    } else {
+        unsafe { GetProcAddress(kernel32, c"IsWow64Process2".as_ptr().cast()) }
+    };
+    if let Some(function) = function {
+        // SAFETY: GetProcAddress resolved the named Win32 function with this documented ABI.
+        let function: IsWow64Process2Fn = unsafe { std::mem::transmute(function) };
+        let (mut process_machine, mut native_machine) = (0, 0);
+        // SAFETY: The output pointers are writable, and GetCurrentProcess returns a valid pseudo-handle.
+        if unsafe {
+            function(
+                GetCurrentProcess(),
+                &mut process_machine,
+                &mut native_machine,
+            )
+        } != 0
+        {
+            return windows_machine_arch(native_machine);
+        }
     }
-    windows_machine_arch(native_machine)
+
+    // Older Windows builds without x64 emulation still report the process-visible architecture.
+    let mut info = SYSTEM_INFO::default();
+    // SAFETY: Windows fills the provided, correctly sized SYSTEM_INFO structure.
+    unsafe { GetNativeSystemInfo(&mut info) };
+    match unsafe { info.Anonymous.Anonymous.wProcessorArchitecture } {
+        PROCESSOR_ARCHITECTURE_AMD64 => Some("x86_64"),
+        PROCESSOR_ARCHITECTURE_ARM64 => Some("aarch64"),
+        _ => None,
+    }
 }
 
 #[cfg(not(windows))]
@@ -178,18 +207,35 @@ pub(crate) fn host_arch() -> &'static str {
     )
 }
 
-fn own_assets() -> Option<(&'static str, &'static str)> {
-    platform_assets(std::env::consts::OS, host_arch())
+fn game_assets_for(os: &str, arch: &str) -> Vec<&'static str> {
+    let mut assets = platform_assets(os, arch)
+        .map(|(game, _)| vec![game])
+        .unwrap_or_default();
+    // Prefer native ARM64 when the release has it, but keep older x64-only releases installable.
+    if same(os, "windows") && same(arch, "aarch64") {
+        if let Some((game, _)) = platform_assets(os, "x86_64") {
+            assets.push(game);
+        }
+    }
+    assets
+}
+
+fn game_assets() -> Vec<&'static str> {
+    game_assets_for(std::env::consts::OS, host_arch())
 }
 
 /// The game build this launcher installs, None where Horizon has none.
 pub fn game_asset() -> Option<&'static str> {
-    own_assets().map(|(game, _)| game)
+    game_assets().first().copied()
 }
 
-/// The launcher build this launcher updates itself from.
+/// The launcher build this process updates itself from. An x64 process under emulation stays x64.
 fn launcher_platform_asset() -> Option<&'static str> {
-    own_assets().map(|(_, launcher)| launcher)
+    launcher_asset_for(std::env::consts::OS, std::env::consts::ARCH)
+}
+
+fn launcher_asset_for(os: &str, process_arch: &str) -> Option<&'static str> {
+    platform_assets(os, process_arch).map(|(_, launcher)| launcher)
 }
 
 /// The launcher as an AppImage (`packaging/linux/appimage.sh`): the program and its libraries in
@@ -401,19 +447,31 @@ pub(crate) fn parse_releases(
     asset: Option<&str>,
     keep: fn(&str) -> bool,
 ) -> Vec<Release> {
+    let assets: Vec<_> = asset.into_iter().collect();
+    parse_releases_for_assets(list, &assets, keep)
+}
+
+fn parse_releases_for_assets(
+    list: &serde_json::Value,
+    assets: &[&str],
+    keep: fn(&str) -> bool,
+) -> Vec<Release> {
     let mut out = Vec::new();
     for r in list.as_array().into_iter().flatten() {
         let tag = r["tag_name"].as_str().unwrap_or_default();
         if r["draft"].as_bool().unwrap_or(false) || !keep(tag) {
             continue;
         }
-        let found = r["assets"].as_array().into_iter().flatten().find_map(|a| {
-            (Some(a["name"].as_str()?) == asset).then(|| {
+        let found = assets.iter().find_map(|asset| {
+            r["assets"].as_array()?.iter().find_map(|a| {
+                if a["name"].as_str()? != *asset {
+                    return None;
+                }
                 Some((
                     a["browser_download_url"].as_str()?.to_string(),
                     a["size"].as_u64()?,
                 ))
-            })?
+            })
         });
         out.push(Release {
             tag: tag.into(),
@@ -453,7 +511,8 @@ pub fn releases() -> Result<Vec<Release>, String> {
 /// The game's builds in `list`, newest first. A Nightly is listed under the version it installs as
 /// ([`crate::nightly::version_of`]); only the current one (`nightly`) is an update.
 pub(crate) fn game_releases(list: &serde_json::Value) -> Vec<Release> {
-    let mut out = parse_releases(list, game_asset(), |tag| {
+    let assets = game_assets();
+    let mut out = parse_releases_for_assets(list, &assets, |tag| {
         is_game_tag(tag) || horizon_release_sign::is_nightly(tag)
     });
     for r in &mut out {
@@ -850,15 +909,20 @@ fn unpack(archive: &Path, url: &str, to: &Path) -> Result<(), String> {
 /// the fraction done.
 pub fn install(release: &Release, progress: impl Fn(f32)) -> Result<(), String> {
     let tag = release.tag.as_str();
+    let asset = release
+        .asset
+        .as_ref()
+        .and_then(|(url, _)| url.rsplit('/').next())
+        .ok_or_else(|| format!("{tag} has no build for this platform."))?;
     let sha256 = match &release.nightly {
         // Signed for the Nightly channel, served under its own GitHub tag.
         Some(published) => crate::signed::nightly_digest(
             published,
-            game_asset().unwrap_or_default(),
+            asset,
             &horizon_release_sign::trusted_keys(),
             fetch_small,
         )?,
-        None if is_game_tag(tag) => signed_digest(tag, game_asset().unwrap_or_default())?,
+        None if is_game_tag(tag) => signed_digest(tag, asset)?,
         None => return Err(format!("{tag} is not a Horizon release.")),
     };
     install_as(release, tag, &sha256, progress)
@@ -3947,7 +4011,7 @@ pub fn {f}("
     }
 
     #[test]
-    fn an_emulated_windows_launcher_uses_the_native_machine_architecture() {
+    fn an_emulated_windows_launcher_uses_native_game_and_process_launcher_architectures() {
         assert_eq!(
             windows_machine_arch(IMAGE_FILE_MACHINE_ARM64),
             Some("aarch64")
@@ -3959,11 +4023,16 @@ pub fn {f}("
         assert_eq!(windows_machine_arch(0), None);
         let arch = architecture_for("windows", "x86_64", Some("aarch64"));
         assert_eq!(
-            platform_assets("windows", arch),
-            Some((
-                "horizon-windows-arm64.zip",
-                "horizon-launcher-windows-arm64.zip"
-            ))
+            platform_assets("windows", arch).map(|(game, _)| game),
+            Some("horizon-windows-arm64.zip")
+        );
+        assert_eq!(
+            launcher_asset_for("windows", "x86_64"),
+            Some("horizon-launcher-windows-x64.zip")
+        );
+        assert_eq!(
+            launcher_asset_for("windows", "aarch64"),
+            Some("horizon-launcher-windows-arm64.zip")
         );
         assert_eq!(
             architecture_for("windows", "x86_64", Some("x86_64")),
@@ -3972,6 +4041,50 @@ pub fn {f}("
         assert_eq!(
             architecture_for("linux", "x86_64", Some("aarch64")),
             "x86_64"
+        );
+    }
+
+    #[test]
+    fn windows_arm64_game_prefers_native_and_falls_back_per_release() {
+        let assets = game_assets_for("windows", "aarch64");
+        assert_eq!(
+            assets,
+            ["horizon-windows-arm64.zip", "horizon-windows-x64.zip"]
+        );
+        let list = serde_json::json!([
+            {"tag_name": "v2026.10.20", "assets": [
+                {"name": "horizon-windows-x64.zip", "browser_download_url": "x64", "size": 2},
+                {"name": "horizon-windows-arm64.zip", "browser_download_url": "arm64", "size": 1}
+            ]},
+            {"tag_name": "v2026.10.19", "assets": [
+                {"name": "horizon-windows-x64.zip", "browser_download_url": "legacy-x64", "size": 3}
+            ]},
+            {"tag_name": "v2026.10.18", "assets": []}
+        ]);
+        let releases = parse_releases_for_assets(&list, &assets, is_game_tag);
+        assert_eq!(releases[0].asset, Some(("arm64".into(), 1)));
+        assert_eq!(releases[1].asset, Some(("legacy-x64".into(), 3)));
+        assert_eq!(releases[2].asset, None);
+    }
+
+    #[cfg(all(windows, target_arch = "x86_64"))]
+    #[test]
+    fn native_machine_and_process_architectures_select_assets_independently() {
+        let native =
+            native_windows_arch().expect("Windows reports a supported native architecture");
+        assert!(matches!(native, "x86_64" | "aarch64"));
+        assert_eq!(host_arch(), native);
+        assert_eq!(
+            game_asset(),
+            platform_assets("windows", native).map(|(game, _)| game)
+        );
+        assert_eq!(
+            launcher_platform_asset(),
+            platform_assets("windows", std::env::consts::ARCH).map(|(_, launcher)| launcher)
+        );
+        println!(
+            "launcher process architecture: {}; native machine architecture: {native}",
+            std::env::consts::ARCH
         );
     }
 
