@@ -8039,7 +8039,7 @@ mod tests {
 
         // Also verify Act::Extra on Page::Extras
         ui.show(Page::Extras);
-        let (widgets, _, _, _) = ui.layout(&s, size.0, size.1);
+        let (widgets, top, _, _) = ui.layout(&s, size.0, size.1);
         if let Some(extra_btn) = widgets.iter().find(|wd| {
             matches!(
                 wd.kind,
@@ -8050,6 +8050,22 @@ mod tests {
                 }
             )
         }) {
+            // Extras has enough rows to scroll: click the cycle button inside
+            // the list's viewport, as a player would after scrolling to it.
+            ui.scroll = (extra_btn.y - top).max(0.0);
+            let (widgets, _, _, _) = ui.layout(&s, size.0, size.1);
+            let extra_btn = widgets
+                .iter()
+                .find(|wd| {
+                    matches!(
+                        wd.kind,
+                        WKind::Button {
+                            act: Act::Extra(crate::extras::Item::CosmeticsOthers),
+                            ..
+                        }
+                    )
+                })
+                .unwrap();
             let (ex, ey) = (extra_btn.x + 1.0, extra_btn.y + 1.0);
             use horizon_cosmetics::prefs::Others;
             assert_eq!(s.extras.cosmetics_others, Others::Shown);

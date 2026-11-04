@@ -30,6 +30,7 @@ use crate::Preprocessed;
 mod anonymous_structs;
 mod array_constructors;
 mod atomic_vectors;
+mod buffer_bools;
 mod defaults;
 mod geometry;
 mod image_parameters;
@@ -270,11 +271,24 @@ fn translate(
     let (vertex_flat, fragment_flat) = (flat(vertex), flat(fragment));
     let vertex = vertex_flat.as_ref().unwrap_or(vertex);
     let fragment = fragment_flat.as_ref().unwrap_or(fragment);
+    // A `bool` member of a storage buffer travels as a `uint` (`buffer_bools`).
+    let ((vertex_bools, vertex_bool_errors), (fragment_bools, fragment_bool_errors)) = (
+        buffer_bools::rewrite(vertex),
+        buffer_bools::rewrite(fragment),
+    );
+    let vertex = vertex_bools.as_ref().unwrap_or(vertex);
+    let fragment = fragment_bools.as_ref().unwrap_or(fragment);
     let mut v = Stage::scan(vertex, ShaderStage::Vertex);
     let mut f = Stage::scan(fragment, ShaderStage::Fragment);
     v.gbuffers = gbuffers.is_some();
     f.gbuffers = gbuffers.is_some();
-    let mut errors: Vec<Error> = v.errors.drain(..).chain(f.errors.drain(..)).collect();
+    let mut errors: Vec<Error> = v
+        .errors
+        .drain(..)
+        .chain(f.errors.drain(..))
+        .chain(vertex_bool_errors)
+        .chain(fragment_bool_errors)
+        .collect();
 
     // One uniform block and one set of samplers for both stages.
     let mut uniforms: BTreeMap<String, String> = BTreeMap::new();
@@ -674,8 +688,11 @@ pub fn translate_compute(compute: &Preprocessed) -> Result<ComputeProgram, Vec<E
     let compute = named.as_ref().unwrap_or(compute);
     let split = atomic_vectors::rewrite(compute);
     let compute = split.as_ref().unwrap_or(compute);
+    let (bools, bool_errors) = buffer_bools::rewrite(compute);
+    let compute = bools.as_ref().unwrap_or(compute);
     let mut c = Stage::scan(compute, ShaderStage::Compute);
     let mut errors = std::mem::take(&mut c.errors);
+    errors.extend(bool_errors);
     let mut uniforms: BTreeMap<String, String> = BTreeMap::new();
     for (name, ty, _) in &c.uniforms {
         uniforms.insert(name.clone(), ty.clone());
@@ -1841,6 +1858,133 @@ mod tests {
             })
         });
         assert!(clamped, "sqrt's argument is clamped at zero");
+    }
+
+    /// #8175: a `bool` member of a `layout(std430)` buffer (GLSL: size and alignment 4) is
+    /// "not host-shareable" to naga. The shapes packs write: read in a condition, in an
+    /// expression, written from a comparison, an array of them, beside other members.
+    #[test]
+    fn bool_members_of_std430_buffers_translate() {
+        let mut failures = Vec::new();
+        for (block, body) in [
+            (
+                "layout(std430, binding = 4) buffer State { mat4 matrix; bool flag; };",
+                "if (flag) { gl_FragColor = vec4(1.0); } else { gl_FragColor = vec4(0.0); }",
+            ),
+            (
+                "layout(std430, binding = 4) buffer State { bool flag; };",
+                "gl_FragColor = vec4(float(flag), 0.0, 0.0, 1.0);",
+            ),
+            (
+                "layout(std430, binding = 4) buffer State { int count; bool flag; } state;",
+                "gl_FragColor = vec4(state.flag ? 1.0 : 0.0, float(state.count), 0.0, 1.0);",
+            ),
+            (
+                "layout(std430, binding = 4) buffer State { bool flags[4]; };",
+                "gl_FragColor = vec4(flags[2] && !flags[1] ? 1.0 : 0.0, 0.0, 0.0, 1.0);",
+            ),
+            (
+                "layout(std430, binding = 4) buffer State { vec2 size; bool flag; };",
+                "flag = size.x > 1.0;
+    gl_FragColor = vec4(size, flag ? 1.0 : 0.0, 1.0);",
+            ),
+        ] {
+            let fsh = format!(
+                "#version 430 compatibility
+{block}
+void main() {{
+    {body}
+}}
+"
+            );
+            if let Err(e) = program(
+                &[("composite.vsh", VSH_120), ("composite.fsh", &fsh)],
+                Target::Buffers,
+            ) {
+                failures.push(format!("`{block}` / `{body}`: {e:?}"));
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "{}",
+            failures.join(
+                "
+"
+            )
+        );
+    }
+
+    /// #8175: what the rewrite cannot make sure of is refused with the member's name and its
+    /// line, not left to naga's "Global variable [6] '' is invalid".
+    #[test]
+    fn bool_buffer_members_that_cannot_be_rewritten_are_named() {
+        for (block, body, wanted) in [
+            (
+                "layout(std430, binding = 4) buffer State { bool flag; };",
+                "flag |= true;",
+                "`flag`: `|=`",
+            ),
+            (
+                "layout(std430, binding = 4) buffer State { bool flag; };",
+                "bool other = (flag = true);",
+                "`flag` is assigned inside an expression",
+            ),
+            (
+                "layout(std430, binding = 4) buffer State { bool flag; };",
+                "bool flag = false;",
+                "`flag` is also declared as a local or parameter",
+            ),
+            (
+                "layout(std430, binding = 4) buffer State { bvec2 pair; };",
+                "",
+                "`pair`: a `bvec2` is not supported",
+            ),
+            (
+                "layout(std430, binding = 4) buffer State { bool flag; } states[2];",
+                "",
+                "an instance array",
+            ),
+        ] {
+            let fsh = format!(
+                "#version 430 compatibility
+{block}
+void main() {{
+    {body}
+    gl_FragColor = vec4(1.0);
+}}
+"
+            );
+            let errors = program(
+                &[("composite.vsh", VSH_120), ("composite.fsh", &fsh)],
+                Target::Buffers,
+            )
+            .err()
+            .unwrap_or_else(|| panic!("`{body}` translated"));
+            let error = errors
+                .iter()
+                .find(|e| e.message.contains(wanted))
+                .unwrap_or_else(|| panic!("`{wanted}` in {errors:?}"));
+            assert_eq!(error.file, "composite.fsh");
+            assert!(error.line >= 2, "{error:?}");
+            assert!(!error.message.contains("host-shareable"), "{error:?}");
+        }
+    }
+
+    /// #8175: a compute program reads and writes a `bool` of its buffer too.
+    #[test]
+    fn bool_members_of_std430_buffers_translate_in_compute_programs() {
+        let source = "#version 430
+layout(local_size_x = 1) in;
+                      layout(std430, binding = 3) buffer State { int count; bool flag; };
+                      void main() {
+    flag = count > 2;
+    if (flag) { count = 0; }
+}
+";
+        let pack = Pack::from_zip_bytes("P.zip", zip(&[("shaders/setup.csh", source)])).unwrap();
+        let stage = crate::preprocess(&pack, "setup.csh", &crate::Macros::standard());
+        let result = crate::translate_compute(&stage);
+        assert!(result.is_ok(), "{:?}", result.err());
     }
 
     #[test]
