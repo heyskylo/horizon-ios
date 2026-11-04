@@ -672,6 +672,7 @@ fn shadow_depth_filtering(nearest: &str) -> Option<Vec<[u8; 4]>> {
             attributes: vec![],
             after: String::new(),
             alpha_test: None,
+            item_id_declared: false,
         }),
         ..Default::default()
     };
@@ -707,6 +708,7 @@ fn shadow_depth_filtering(nearest: &str) -> Option<Vec<[u8; 4]>> {
         files,
         World {
             atlas: None,
+            material_maps: None,
             lightmap: color.clone(),
             terrain: Some(Geometry {
                 buffers: &layouts,
@@ -715,6 +717,7 @@ fn shadow_depth_filtering(nearest: &str) -> Option<Vec<[u8; 4]>> {
                 atlas: None,
                 ids: None,
                 cull: false,
+                material_maps: false,
             }),
             block_ids: &[],
             celestial: None,
