@@ -512,3 +512,112 @@ async fn the_launchers_uploader_reaches_it_end_to_end() {
         None
     );
 }
+
+async fn aggregate_for(s: &Server, days: u32, from: &str) -> (StatusCode, String) {
+    s.send(
+        Request::get(format!("/v1/aggregate?days={days}"))
+            .header("x-forwarded-for", from)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn deleting_an_unknown_install_keeps_the_cached_totals() {
+    let s = server(Config {
+        min_install_days: 1,
+        ..generous()
+    });
+    assert_eq!(
+        s.post(&install(1), vec![perf("Apple M4 Pro", 12)]).await,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(s.aggregate().await["groups"][0]["sessions"], 1);
+    assert_eq!(
+        s.post(&install(2), vec![perf("Apple M4 Pro", 12)]).await,
+        StatusCode::NO_CONTENT
+    );
+    // An install that sent nothing: nothing deleted, the cached answer stays (no rebuild).
+    let (code, _) = s
+        .send(
+            Request::delete(format!("/v1/installs/{}", install(77)))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(code, StatusCode::NO_CONTENT);
+    assert_eq!(
+        s.aggregate().await["groups"][0]["sessions"],
+        1,
+        "still cached"
+    );
+    // A real deletion drops it.
+    s.send(
+        Request::delete(format!("/v1/installs/{}", install(1)))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(
+        s.aggregate().await["groups"][0]["sessions"],
+        1,
+        "rebuilt: install 2 only"
+    );
+}
+
+#[tokio::test]
+async fn the_totals_are_rate_limited_per_address() {
+    let s = server(Config {
+        reads_per_hour: 30.0,
+        trust_proxy: true,
+        ..generous()
+    });
+    for _ in 0..3 {
+        assert_eq!(aggregate_for(&s, 30, "203.0.113.5").await.0, StatusCode::OK);
+    }
+    assert_eq!(
+        aggregate_for(&s, 30, "203.0.113.5").await.0,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    assert_eq!(aggregate_for(&s, 30, "203.0.113.6").await.0, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn uncached_totals_have_a_budget_cached_ones_dont() {
+    // A burst of one build (a tenth of 10 an hour, at least one).
+    let s = server(Config {
+        aggregate_builds_per_hour: 10.0,
+        ..generous()
+    });
+    assert_eq!(aggregate_for(&s, 30, "203.0.113.5").await.0, StatusCode::OK);
+    // Another window would be another build: past the budget, 503.
+    assert_eq!(
+        aggregate_for(&s, 31, "203.0.113.5").await.0,
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    // The cached one is still served.
+    assert_eq!(aggregate_for(&s, 30, "203.0.113.5").await.0, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn the_windows_answered_can_be_listed() {
+    let s = server(Config {
+        aggregate_days: Some(vec![7, 30]),
+        ..generous()
+    });
+    assert_eq!(aggregate_for(&s, 30, "203.0.113.5").await.0, StatusCode::OK);
+    let (code, body) = aggregate_for(&s, 31, "203.0.113.5").await;
+    assert_eq!(code, StatusCode::BAD_REQUEST);
+    assert!(body.contains("7, 30"), "{body}");
+    // Unset: any value from 1 to 366, as before.
+    let s = server(generous());
+    assert_eq!(aggregate_for(&s, 31, "203.0.113.5").await.0, StatusCode::OK);
+    assert_eq!(
+        horizon_telemetry_server::parse_days(" 7, 30,90 ,366"),
+        Some(vec![7, 30, 90, 366])
+    );
+    for bad in ["", ",", "0", "367", "30,x"] {
+        assert_eq!(horizon_telemetry_server::parse_days(bad), None, "{bad:?}");
+    }
+}

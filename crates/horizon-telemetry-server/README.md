@@ -13,7 +13,7 @@ It runs at **https://telemetry.playhorizon.dev** (`DEFAULT_ENDPOINT` in `crates/
 |---|---|
 | `POST /v1/batch` | A zstd batch (`Content-Encoding: zstd`, at most 256 KiB, 1 MiB inflated, 64 items). Returns 204. Returns 400 for a bad batch, 413 for one too large, 415 if it is not zstd, 429 when over a limit. |
 | `DELETE /v1/installs/<id>` | Deletes everything that install sent. Its share of the daily totals is rebuilt at once. |
-| `GET /v1/aggregate?days=30` | The totals the website reads. Cached 10 minutes, with `Access-Control-Allow-Origin` set to the website. |
+| `GET /v1/aggregate?days=30` | The totals the website reads. Cached 10 minutes, with `Access-Control-Allow-Origin` set to the website. 429 over the address's read limit; 503 when building an uncached window would pass the hour's build budget; 400 for a `days` outside `HORIZON_TELEMETRY_AGGREGATE_DAYS` when that is set. |
 | `GET /v1/benchmarks/summary` | Players' benchmark uploads grouped by GPU, CPU, render distance and game, for the website's Benchmarks page (below). Cached 10 minutes, same `Access-Control-Allow-Origin`. |
 | `GET /v1/export/benchmarks?after=<id>&limit=100` | Owner-only: the raw benchmark reports, oldest first, `{"reports": [{"id", "day", "version", "report"}], "next": <id>\|null}` (pass `next` as `after`). No install ID. Needs `Authorization: Bearer <TELEMETRY_EXPORT_TOKEN>`: 401 without it, 404 while the server has no token, gzip if the client accepts it, never cached. |
 | `GET /v1/export/hardware?days=30&offset=0&limit=200` | Owner-only, same token: the play sessions of the last `days` per machine (CPU, threads, physical cores, RAM, GPU, drive, OS…), busiest first, with installs, sessions, hours, mean p50/p99 and the frame buckets. No minimum number of installs; no install ID. `next_offset` pages. |
@@ -93,6 +93,9 @@ All are environment variables:
 - `HORIZON_TELEMETRY_HUB_KEEP_DAYS` (90)
 - `HORIZON_TELEMETRY_GITHUB_TOKEN`: a fine-grained token with Issues read and write on the repository only (unset: `POST /hub/report` answers 503 and the form points to GitHub and Discord)
 - `HORIZON_TELEMETRY_GITHUB_REPO` (`horizon-rust/horizon`)
+- `HORIZON_TELEMETRY_READS_PER_HOUR` per address, for `/v1/aggregate` and `/v1/benchmarks/summary` (600, bursts of 60)
+- `HORIZON_TELEMETRY_AGGREGATE_BUILDS_PER_HOUR` from everyone (600, bursts of 60): totals built from the database on a cache miss; past it a miss answers 503
+- `HORIZON_TELEMETRY_AGGREGATE_DAYS`, e.g. `7,30,90,366`: the only `days` `/v1/aggregate` answers (others get 400), so the cache holds a handful of windows. Unset: any value from 1 to 366. List every value the website asks for before setting it.
 - `TELEMETRY_EXPORT_TOKEN` (or `HORIZON_TELEMETRY_EXPORT_TOKEN`): the bearer token of `/v1/export/*` (unset: those answer 404). A long random secret; requests with a wrong one count against the address's rate limit.
 
 ## Hosting
