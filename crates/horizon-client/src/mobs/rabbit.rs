@@ -410,18 +410,16 @@ fn jump_scale(m: &Mob) -> f32 {
 
 /// Rabbit.jumpFromGround: ordinary small hops, larger hops toward raised terrain.
 pub fn jump(m: &mut Mob, w: &MobWorld) {
-    let power = jump_power(m, block_jump_factor(m, w));
+    let power = m.jump_power_with(w, jump_scale(m));
     apply_jump(m, power);
 }
+
+#[cfg(test)]
 fn jump_power(m: &Mob, block_factor: f32) -> f32 {
-    let boost = m
-        .extra
-        .effects
-        .iter()
-        .find(|e| e.0 == "minecraft:jump_boost")
-        .map_or(0.0, |e| 0.1 * (e.2 + 1) as f32);
-    m.attrs.jump_strength as f32 * jump_scale(m) * block_factor + boost
+    m.attrs.jump_strength as f32 * jump_scale(m) * block_factor + m.jump_boost_power()
 }
+
+pub use super::living::block_jump_factor;
 fn apply_jump(m: &mut Mob, power: f32) {
     if power > 1.0e-5 {
         m.velocity.y = f64::from(power).max(m.velocity.y);
@@ -445,29 +443,6 @@ fn apply_jump(m: &mut Mob, power: f32) {
 pub fn hop_event(m: &mut Mob) {
     m.extra.ints[CLIENT_JUMP_DURATION] = 15;
     m.extra.ints[CLIENT_JUMP_TICKS] = 0;
-}
-
-fn block_jump_factor(m: &Mob, w: &MobWorld) -> f32 {
-    let properties = w.movement;
-    let current = w.world.block(
-        m.position.x.floor() as i32,
-        m.position.y.floor() as i32,
-        m.position.z.floor() as i32,
-    );
-    let below = m.on_pos(0.500_001);
-    // shortcut: use mobs' existing on_pos until they track supporting blocks like the player.
-    let lower = w.world.block(below[0], below[1], below[2]);
-    let current = properties
-        .get(current)
-        .expect("validated movement registry")
-        .coefficients
-        .jump_factor;
-    let lower = properties
-        .get(lower)
-        .expect("validated movement registry")
-        .coefficients
-        .jump_factor;
-    if current == 1.0 { lower } else { current }
 }
 
 #[cfg(test)]
