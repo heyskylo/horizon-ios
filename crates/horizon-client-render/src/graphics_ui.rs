@@ -1060,7 +1060,9 @@ impl Item {
         Some(match self {
             Item::Horizon(H::BlueMapAutoDetect) => g.blue_map.auto_detect,
             Item::Horizon(H::CaveCulling) => g.cave_culling,
-            Item::Horizon(H::GpuCulling) => g.gpu_culling,
+            Item::Horizon(H::GpuCulling) => {
+                g.gpu_culling && crate::graphics::gpu_culling_offer().reason().is_none()
+            }
             Item::Horizon(H::CacheShulkerBoxes) => g.cache_shulker_boxes,
             Item::Horizon(H::CacheSigns) => g.cache_signs,
             Item::Horizon(H::CacheDecoratedPots) => g.cache_decorated_pots,
@@ -3260,6 +3262,8 @@ mod tests {
             assert!(offer.reason().is_some());
             assert_eq!(item.blocked(&s), offer.reason());
             assert_eq!(item.label(&s).plain(), "GPU Culling: Off");
+            // The box, the narrator and the widget tree read the switch.
+            assert_eq!(item.switch(&s), Some(false), "{offer:?}");
             let mut ui = GraphicsUi::default();
             let r = row(&mut ui, &s, item);
             assert!(press(&mut ui, &mut s, (r[0] + 4.0, r[1] + 4.0)).is_empty());
@@ -3272,6 +3276,7 @@ mod tests {
         crate::graphics::offer_gpu_culling(GpuCullingOffer::Offered);
         assert_eq!(item.blocked(&s), None);
         assert_eq!(item.label(&s).plain(), "GPU Culling: On");
+        assert_eq!(item.switch(&s), Some(true));
         let mut ui = GraphicsUi::default();
         let r = row(&mut ui, &s, item);
         assert_eq!(

@@ -7425,15 +7425,21 @@ impl Renderer {
             mark_fades(sections, &mut gpu.records, &mut gpu.fades, rows, fades);
         }
         // The near solid sections culled and drawn on the GPU (`gpu_culling`): never where a
-        // shader pack's terrain, a shadow pass or the water mirror draws the CPU's lists.
-        // Decided before the walk, so that a pass whose buffers no longer fit can still
-        // switch GPU culling off.
+        // shader pack's terrain, a shadow pass or the water mirror draws the CPU's lists, nor
+        // under a native pack's `[displacement]`, whose grid takes its quads from the walk's
+        // `visible`. Decided before the walk, so that a pass whose buffers no longer fit can
+        // still switch GPU culling off.
         let radius = (frame.detail_distance / 16.0) as i32;
+        let displaced = self
+            .native
+            .as_ref()
+            .is_some_and(|n| n.displacement.is_some());
         let mut gpu_frame = self.gpu_culling.is_some()
             && !frame.title
             && !pack_terrain
             && shadow_view.is_none()
-            && mirror_plane.is_none();
+            && mirror_plane.is_none()
+            && !displaced;
         #[cfg(debug_assertions)]
         if gpu_frame {
             if self.gpu_checks.is_multiple_of(64) {
