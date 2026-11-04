@@ -66,7 +66,7 @@ pub struct BlockEntityDraw {
 
 /// A part of a block entity's frame that turns by itself (`BlockEntityDraw::spin`).
 #[derive(Clone, Copy, Debug, PartialEq)]
-struct Spin {
+pub(super) struct Spin {
     axis: Vec3,
     pivot: Vec3,
     degrees_per_tick: f32,
@@ -93,7 +93,7 @@ impl Spin {
 /// `vertices`, drawn relative to the block, moved to the camera by `origin`
 /// and each part of `spins` (starts relative to `vertices`) turned as it is
 /// at `game_time` plus `partial`, onto `out`.
-fn place_turning(
+pub(super) fn place_turning(
     vertices: &[Vertex],
     spins: &[(usize, Option<Spin>)],
     game_time: i64,
@@ -160,6 +160,10 @@ impl BlockEntityDraw {
     /// The vertices drawn, with those it was made with first.
     pub(super) fn into_vertices(self) -> Vec<Vertex> {
         self.vertices
+    }
+    /// The vertices drawn and where its turning parts start in them (`spin`).
+    pub(super) fn into_turning(self) -> (Vec<Vertex>, Vec<(usize, Option<Spin>)>) {
+        (self.vertices, self.spins)
     }
     /// `PoseStack.pushPose`: `pop` comes back to the pose as it is now.
     pub fn push(&mut self) {

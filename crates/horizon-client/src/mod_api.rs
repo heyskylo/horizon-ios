@@ -206,6 +206,28 @@ pub struct NativeMinimap {
     pub round: bool,
 }
 
+/// One block of a scene a mod draws in a screen (`Host::draw_scene`): its
+/// place in the scene, its state, and the block entity drawn with it, if any
+/// (a mod's, through `native_block_entity_submit` as in the world).
+#[derive(Clone, Copy, Debug)]
+pub struct NativeSceneBlock<'a> {
+    pub pos: [i32; 3],
+    pub state: BlockStateId,
+    pub entity: Option<&'a ModBlockEntity>,
+}
+
+/// How a scene in a screen is seen (`Host::draw_scene`): the point at the
+/// middle of the screen's box, in blocks; the turn about the scene's vertical
+/// axis and the tilt of its top towards the viewer, in degrees; and how many
+/// GUI pixels a block is across.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct NativeSceneView {
+    pub center: [f32; 3],
+    pub yaw: f32,
+    pub pitch: f32,
+    pub scale: f32,
+}
+
 /// A mod block's screen over its menu (`native_screen`): its size, where
 /// each of the container's slots is (`Slot.x`, `Slot.y`; none hides the
 /// slot, and so do slots past the list; the server's menu does not have a
