@@ -153,6 +153,7 @@ pub enum ParticleData {
     /// Delay in ticks (shriek).
     Delay(i32),
     /// Trail: target (3 doubles), ARGB color, duration.
+    /// A duration of -1 is the adapter's internal marker for the pre-1.21.4 client-chosen lifetime.
     Trail([f64; 3], i32, i32),
     /// An item (ItemStackTemplate: item, count, patch).
     Item(Stack),
@@ -214,7 +215,12 @@ impl Particle {
             59 => {
                 let at = [r.f64()?, r.f64()?, r.f64()?];
                 let color = r.i32()?;
-                Some(ParticleData::Trail(at, color, r.varint()?))
+                let duration = if ids::quirks().trail_without_duration {
+                    -1
+                } else {
+                    r.varint()?
+                };
+                Some(ParticleData::Trail(at, color, duration))
             }
             57 => Some(ParticleData::Item(Template::read(r)?)),
             58 => {

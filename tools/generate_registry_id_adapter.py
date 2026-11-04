@@ -13,6 +13,9 @@ registry gets two tables of runs `(from, to, length)`: `<NAME>_UP` from the old 
 `--inherit PREPARED_VERSION` reuses that version's generated module where its reports have identical
 registry or block-state ids. Both modules must target the same pinned version. Changed registries
 are generated normally, so a patch release need not duplicate unchanged tables.
+
+`--state-alias BLOCK[old=value]=BLOCK[new=value]` matches changed state properties explicitly.
+Repeat an old state for several new states to map all back; its first alias is used going forward.
 """
 
 import argparse
@@ -82,7 +85,9 @@ def table(source, target, renames=None):
     to), or NONE."""
     renames = renames or {}
     by_id = sorted(source.items(), key=lambda kv: kv[1])
-    return [target.get(renames.get(key, key), NONE) for key, _ in by_id]
+    # A removed entry may alias an entry that still exists (creaking_transient -> creaking).
+    # Prefer that exact name in reverse, rather than sending the removed variant back.
+    return [target.get(key, target.get(renames.get(key, key), NONE)) for key, _ in by_id]
 
 
 def runs(values):
@@ -97,6 +102,17 @@ def runs(values):
         else:
             found.append([i, v, 1])
     return found
+
+
+def state_alias(spec):
+    """Two block-state keys, keeping property order irrelevant as it is in the reports."""
+    left, right = spec.split("]=", 1)
+
+    def key(value):
+        block, properties = value.rstrip("]").split("[", 1)
+        return block, tuple(sorted(tuple(pair.split("=", 1)) for pair in properties.split(",") if pair))
+
+    return key(left), key(right)
 
 
 def rust_table(name, values):
@@ -123,6 +139,8 @@ def main():
     parser.add_argument("--rename", action="append", default=[], metavar="REGISTRY:OLD=NEW",
                         help="an entry the pinned version knows by another name, e.g. "
                              "minecraft:command_argument_type:minecraft:color=minecraft:team_color")
+    parser.add_argument("--state-alias", action="append", default=[], metavar="OLD_STATE=NEW_STATE",
+                        help="explicit state properties, e.g. minecraft:block[old=a]=minecraft:block[new=b]")
     args = parser.parse_args()
     renames = {}
     for spec in args.rename:
@@ -157,13 +175,20 @@ def main():
     old_states = states(json.loads((old_reports / "blocks.json").read_text()),
                         renames.get("minecraft:block"))
     new_states = states(json.loads((new_reports / "blocks.json").read_text()))
-    inherit_states = old_states == inherited_states
+    state_up, state_down = {}, {}
+    for spec in args.state_alias:
+        old, new = state_alias(spec)
+        if old not in old_states or new not in new_states:
+            parser.error(f"state alias is absent from the reports: {spec}")
+        state_up.setdefault(old, new)
+        state_down.setdefault(new, old)
+    inherit_states = old_states == inherited_states and not args.state_alias
     if not inherit_states:
         lines.append(f"/// Block states: {len(old_states)} in {old_info['id']}, {len(new_states)} pinned.")
         lines.append(f"pub const OLD_STATES: u32 = {len(old_states)};")
         lines.append(f"pub const PINNED_STATES: u32 = {len(new_states)};")
-        lines.extend(rust_table("BLOCK_STATE_UP", table(old_states, new_states)))
-        lines.extend(rust_table("BLOCK_STATE_DOWN", table(new_states, old_states)))
+        lines.extend(rust_table("BLOCK_STATE_UP", table(old_states, new_states, state_up)))
+        lines.extend(rust_table("BLOCK_STATE_DOWN", table(new_states, old_states, state_down)))
     same = []
     inherited = []
     for registry in REGISTRIES:

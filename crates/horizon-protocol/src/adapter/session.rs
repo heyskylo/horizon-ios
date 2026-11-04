@@ -98,7 +98,7 @@ impl Session {
     pub fn clientbound(&self, id: i32, payload: Vec<u8>) -> Result<Option<(i32, Vec<u8>)>> {
         let state = self.reading();
         // Vanilla 1.21.4's separate add_experience_orb (id 2) became AddEntity plus metadata.
-        if self.version == ServerVersion::V1_21_4 && state == State::Play && id == 2 {
+        if self.version.at_most(ServerVersion::V1_21_4) && state == State::Play && id == 2 {
             return translate::old_experience_orb(self, &payload).map(Some);
         }
         let Some(pinned) = self.version.clientbound_id(state, id) else {
@@ -215,6 +215,7 @@ mod tests {
             (ServerVersion::V1_21_6, 771),
             (ServerVersion::V1_21_5, 770),
             (ServerVersion::V1_21_4, 769),
+            (ServerVersion::V1_21_3, 768),
         ] {
             let s = Session::new(version);
             let mut payload = Writer::new();

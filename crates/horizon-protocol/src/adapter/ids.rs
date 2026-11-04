@@ -98,6 +98,10 @@ pub struct Quirks {
     pub count_first_templates: bool,
     /// Optional name/UUID and properties, without the pinned profile tag or skin patch.
     pub optional_profile_fields: bool,
+    /// Before 1.21.4, custom model data was one VarInt instead of four lists.
+    pub integer_custom_model_data: bool,
+    /// Before 1.21.4, trail options left the lifetime to the client particle provider.
+    pub trail_without_duration: bool,
 }
 impl Quirks {
     pub const NONE: Self = Self {
@@ -107,6 +111,8 @@ impl Quirks {
         components_before_1_21_5: false,
         count_first_templates: false,
         optional_profile_fields: false,
+        integer_custom_model_data: false,
+        trail_without_duration: false,
     };
 }
 

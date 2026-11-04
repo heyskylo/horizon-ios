@@ -380,4 +380,115 @@ mod tests {
             assert_eq!(read_back, stack, "{label}");
         }
     }
+    #[test]
+    fn vanilla_1_21_3_component_stacks_match_the_pinned_oracle_and_go_back() {
+        // Independent vanilla ItemStack.OPTIONAL_STREAM_CODEC outputs, including integer model data.
+        for (label, old, pinned) in [
+            (
+                "attributes",
+                "01e60601000d02020b6d696e6563726166743a783ff80000000000000001150b6d696e6563726166743a793fd0000000000000020001",
+                "01a40801001002030b6d696e6563726166743a783ff80000000000000001001a0b6d696e6563726166743a793fd0000000000000020000",
+            ),
+            (
+                "equip_bare",
+                "01e60601001c0347000000010101",
+                "01a40801002003470000000101010000a80b",
+            ),
+            (
+                "equip_list",
+                "01e60601001c0448010e6d696e6563726166743a676f6c64011a6d696e6563726166743a6d6973632f70756d706b696e626c757201035f9001000000",
+                "01a4080100200448010e6d696e6563726166743a676f6c64011a6d696e6563726166743a6d6973632f70756d706b696e626c75720103659a010000000000a80b",
+            ),
+            (
+                "equip_direct",
+                "01e60601001c04000e6d696e6563726166743a746573740140800000000000010101",
+                "01a40801002004000e6d696e6563726166743a7465737401408000000000000101010000a80b",
+            ),
+            (
+                "combined",
+                "01e60603000d01000b6d696e6563726166743a7a400800000000000000000103111c0347000000010101",
+                "01a40803001001010b6d696e6563726166743a7a400800000000000000000003112003470000000101010000a80b",
+            ),
+            (
+                "model",
+                "01e60602000eb9600311",
+                "01a408020011014640e4000000000311",
+            ),
+            (
+                "model_negative",
+                "01e60601000eefffffff0f",
+                "01a40801001101c1880000000000",
+            ),
+            (
+                "model_large",
+                "01e60601000e80808008",
+                "01a408010011014b800000000000",
+            ),
+            (
+                "tool",
+                "01e60601001a020301c30201408000000101001a6d696e6563726166743a6d696e6561626c652f7069636b61786500004000000002",
+                "01a40801001c020301900301408000000101001a6d696e6563726166743a6d696e6561626c652f7069636b6178650000400000000201",
+            ),
+            (
+                "profile",
+                "01e606010039010b486f72697a6f6e576972650000",
+                "01a40801004800010b486f72697a6f6e57697265000000000000",
+            ),
+            (
+                "color_hidden",
+                "01e60601002200ff000000",
+                "01a40802002f00ff00001200012f",
+            ),
+            (
+                "unbreakable_hidden",
+                "01e60601000400",
+                "01a40802000412000104",
+            ),
+            (
+                "container",
+                "01e60601003e06030100000000000002f1020000",
+                "01a40801004d0601010300000000000001d903020000",
+            ),
+            (
+                "can_break_hidden",
+                "01e60601000c01010201000000",
+                "01a40802001200010f0f0101020100000000",
+            ),
+        ] {
+            let old = bytes(old);
+            let pinned = bytes(pinned);
+            let mut r = Reader::new(&old);
+            let stack = {
+                let _up = ids::renumbering(ServerVersion::V1_21_3.ids().unwrap(), Way::Up);
+                Slot::read(&mut r).unwrap()
+            };
+            assert_eq!(r.remaining(), 0, "{label}");
+            let mut expected = Slot::read(&mut Reader::new(&pinned)).unwrap();
+            let mut actual = stack.clone();
+            actual
+                .as_mut()
+                .unwrap()
+                .added
+                .sort_by_key(|(kind, _)| *kind);
+            expected
+                .as_mut()
+                .unwrap()
+                .added
+                .sort_by_key(|(kind, _)| *kind);
+            assert_eq!(actual, expected, "{label}");
+            let mut w = Writer::new();
+            {
+                let _down = ids::renumbering(ServerVersion::V1_21_3.ids().unwrap(), Way::Down);
+                Slot::write(&stack, &mut w);
+            }
+            assert_eq!(w.data, old, "{label}");
+            let mut w = Writer::new();
+            DelimitedSlot::write(&stack, &mut w);
+            assert_eq!(
+                DelimitedSlot::read(&mut Reader::new(&w.data)).unwrap(),
+                stack,
+                "{label}"
+            );
+        }
+    }
 }

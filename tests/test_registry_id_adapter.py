@@ -1,6 +1,6 @@
 """Renamed blocks retain every state's properties in both adapter directions."""
 import unittest
-from tools.generate_registry_id_adapter import states, table
+from tools.generate_registry_id_adapter import states, table, state_alias
 
 
 class RenamedBlockStates(unittest.TestCase):
@@ -18,6 +18,30 @@ class RenamedBlockStates(unittest.TestCase):
         self.assertEqual(table(source, target), [1, 0])
         self.assertEqual(table(target, source), [1, 0])
         self.assertEqual(table(states(old), target), [65535, 65535])
+
+    def test_a_removed_variant_uses_the_surviving_type_without_changing_its_reverse_id(self):
+        old = {"minecraft:creaking": 0, "minecraft:creaking_transient": 1}
+        new = {"minecraft:creaking": 0}
+        forward = {"minecraft:creaking_transient": "minecraft:creaking"}
+        backward = {v: k for k, v in forward.items()}
+        self.assertEqual(table(old, new, forward), [0, 0])
+        self.assertEqual(table(new, old, backward), [0])
+
+    def test_changed_properties_map_both_new_variants_back_to_the_old_state(self):
+        specs = [
+            "minecraft:creaking_heart[axis=y,creaking=active]="
+            f"minecraft:creaking_heart[natural={natural},creaking_heart_state=awake,axis=y]"
+            for natural in ("false", "true")
+        ]
+        pairs = [state_alias(spec) for spec in specs]
+        old = {pairs[0][0]: 0}
+        new = {pairs[0][1]: 0, pairs[1][1]: 1}
+        forward, backward = {}, {}
+        for a, b in pairs:
+            forward.setdefault(a, b)
+            backward.setdefault(b, a)
+        self.assertEqual(table(old, new, forward), [0])
+        self.assertEqual(table(new, old, backward), [0, 0])
 
 
 if __name__ == "__main__":

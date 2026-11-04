@@ -181,6 +181,7 @@ mod tests {
             ServerVersion::V1_21_6,
             ServerVersion::V1_21_5,
             ServerVersion::V1_21_4,
+            ServerVersion::V1_21_3,
         ] {
             player_metadata(version);
         }

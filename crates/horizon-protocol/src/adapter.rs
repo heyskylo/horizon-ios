@@ -12,6 +12,8 @@ pub mod v1_21_10;
 mod v1_21_10_ids;
 pub mod v1_21_11;
 mod v1_21_11_ids;
+pub mod v1_21_3;
+mod v1_21_3_ids;
 pub mod v1_21_4;
 mod v1_21_4_ids;
 pub mod v1_21_5;
@@ -49,11 +51,12 @@ pub enum ServerVersion {
     V1_21_6,
     V1_21_5,
     V1_21_4,
+    V1_21_3,
 }
 
 impl ServerVersion {
     /// Newest first.
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 10] = [
         Self::Current,
         Self::V26_2,
         Self::V26_1,
@@ -63,6 +66,7 @@ impl ServerVersion {
         Self::V1_21_6,
         Self::V1_21_5,
         Self::V1_21_4,
+        Self::V1_21_3,
     ];
 
     /// Whether this is `other` or an older release: the translation steps from `other` up apply.
@@ -83,6 +87,7 @@ impl ServerVersion {
             Self::V1_21_6 => v1_21_6::PROTOCOL,
             Self::V1_21_5 => v1_21_5::PROTOCOL,
             Self::V1_21_4 => v1_21_4::PROTOCOL,
+            Self::V1_21_3 => v1_21_3::PROTOCOL,
         }
     }
 
@@ -98,6 +103,7 @@ impl ServerVersion {
             Self::V1_21_6 => v1_21_6::NAME,
             Self::V1_21_5 => v1_21_5::NAME,
             Self::V1_21_4 => v1_21_4::NAME,
+            Self::V1_21_3 => v1_21_3::NAME,
         }
     }
 
@@ -248,6 +254,15 @@ impl ServerVersion {
             },
             ..v1_21_4_ids::IDS
         };
+        static V1_21_3: ids::Ids = ids::Ids {
+            quirks: ids::Quirks {
+                integer_custom_model_data: true,
+                trail_without_duration: true,
+                ..V1_21_4.quirks
+            },
+            entity_data_serializer: V1_21_4.entity_data_serializer,
+            ..v1_21_3_ids::IDS
+        };
         match self {
             Self::Current => None,
             Self::V26_2 => Some(&V26_2),
@@ -258,6 +273,7 @@ impl ServerVersion {
             Self::V1_21_6 => Some(&V1_21_6),
             Self::V1_21_5 => Some(&V1_21_5),
             Self::V1_21_4 => Some(&V1_21_4),
+            Self::V1_21_3 => Some(&V1_21_3),
         }
     }
 
@@ -280,6 +296,8 @@ impl ServerVersion {
             (Self::V1_21_5, Direction::Serverbound) => v1_21_5::serverbound(state),
             (Self::V1_21_4, Direction::Clientbound) => v1_21_4::clientbound(state),
             (Self::V1_21_4, Direction::Serverbound) => v1_21_4::serverbound(state),
+            (Self::V1_21_3, Direction::Clientbound) => v1_21_3::clientbound(state),
+            (Self::V1_21_3, Direction::Serverbound) => v1_21_3::serverbound(state),
         };
         let mapped = *table.get(usize::try_from(id).ok()?)?;
         mapped.map(i32::from)
@@ -350,7 +368,11 @@ mod tests {
             ServerVersion::from_protocol(769),
             Some(ServerVersion::V1_21_4)
         );
-        assert_eq!(ServerVersion::from_protocol(768), None);
+        assert_eq!(
+            ServerVersion::from_protocol(768),
+            Some(ServerVersion::V1_21_3)
+        );
+        assert_eq!(ServerVersion::from_protocol(767), None);
         assert!(ServerVersion::V26_1.at_most(ServerVersion::V26_2));
         assert!(!ServerVersion::V26_2.at_most(ServerVersion::V26_1));
     }

@@ -3364,7 +3364,13 @@ impl ParticleEngine {
                     scaled(o.color[2], jb),
                 );
                 q.size = 0.26;
-                q.lifetime = duration;
+                // The older-server adapter marks pre-1.21.4 TargetColorParticleOption with -1.
+                // Its TrailParticle.Provider chose nextInt(40) + 10 after constructing the particle.
+                q.lifetime = if duration == -1 {
+                    self.level_random.next_int_bound(40).unwrap_or(0) + 10
+                } else {
+                    duration
+                };
                 q.has_physics = false;
                 q.free_move = true;
                 q.light = Light::FullBright;
@@ -5536,6 +5542,33 @@ mod tests {
         let s =
             (p.velocity[0].powi(2) + (p.velocity[1] - 0.1).powi(2) + p.velocity[2].powi(2)).sqrt();
         assert!((0.15 * 0.4 - 1e-6..=0.45 * 0.4 + 1e-6).contains(&s));
+    }
+    #[test]
+    fn legacy_trails_choose_a_lifetime_for_each_particle_from_the_level_random() {
+        let mut engine = ParticleEngine::new(Path::new(""), &HashMap::new(), &HashSet::new());
+        engine.seed_randoms(1, 42, 2);
+        for _ in 0..5 {
+            engine.create(
+                &ParticleOptions::trail([1.0, 2.0, 3.0], 0x7f3f1f, -1),
+                [0.0; 3],
+                [0.0; 3],
+            );
+        }
+        // java.util.Random(42).nextInt(40) + 10, as vanilla 1.21.3 TrailParticle.Provider does.
+        assert_eq!(
+            engine
+                .pending
+                .iter()
+                .map(|p| p.lifetime)
+                .collect::<Vec<_>>(),
+            [20, 13, 18, 14, 20]
+        );
+        engine.create(
+            &ParticleOptions::trail([1.0, 2.0, 3.0], 0x7f3f1f, 37),
+            [0.0; 3],
+            [0.0; 3],
+        );
+        assert_eq!(engine.pending.last().unwrap().lifetime, 37);
     }
     #[test]
     fn sizes_follow_vanilla_curves() {

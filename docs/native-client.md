@@ -114,7 +114,7 @@ reason.
 ### Experimental older servers
 
 The native Rust adapter recognizes 26.2, 26.1.x, 1.21.11, 1.21.9/1.21.10,
-1.21.7/1.21.8, 1.21.6, 1.21.5 and 1.21.4. It is off by default while compatibility is incomplete. Set
+1.21.7/1.21.8, 1.21.6, 1.21.5, 1.21.4 and 1.21.2/1.21.3. It is off by default while compatibility is incomplete. Set
 `HORIZON_OLDER_SERVERS=1` before starting the game; the server's status ping selects
 the adapter. The client still needs its prepared **26.3** resources.
 
@@ -136,6 +136,12 @@ team rules and entity metadata. Old inventory clicks use the server's authoritat
 slot/cursor resynchronization. Smithing previews follow the server's synced trim
 registry; inline 1.21.4 trim holders and templates outside the known vanilla item
 set remain unsupported.
+The 1.21.2/1.21.3 bridge also handles particle flags and client-chosen trail lifetimes,
+vehicle movement, tab-list hats, integer custom-model data, old creaking-heart states
+and the transient creaking type. Custom-model data uses the first float when sent
+back; integers beyond exact float precision can lose precision. Server-delegated
+block/entity picking is not supported on these two releases, whose old pick packet
+requires a client inventory index instead of a world target.
 Online-mode login and complete interactive playthroughs on these versions
 have not been validated. Earlier Java releases, Classic/Alpha/Beta,
 April Fools and Bedrock are outside the implemented adapter set.
@@ -143,7 +149,7 @@ April Fools and Bedrock are outside the implemented adapter set.
 For a protocol-only development check, append `--server-protocol 772` to
 `cargo run -p horizon-protocol --example protocol_probe -- 127.0.0.1:25565 20`.
 The probe fails if it encounters packet or chunk decode errors.
-Use `--server-protocol 769` for 1.21.4, `770` for 1.21.5, or `771` for 1.21.6;
+Use `--server-protocol 768` for 1.21.2/1.21.3, `769` for 1.21.4, `770` for 1.21.5, or `771` for 1.21.6;
 1.21.7 and 1.21.8 both use `772`.
 
 ### Agent control (`horizon-ctl` and MCP)

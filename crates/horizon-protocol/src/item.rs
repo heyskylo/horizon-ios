@@ -406,6 +406,14 @@ impl Component {
                 })
             }
             CUSTOM_MODEL_DATA => {
+                if ids::quirks().integer_custom_model_data {
+                    return Ok(Self::CustomModelData {
+                        floats: vec![r.varint()? as f32],
+                        flags: Vec::new(),
+                        strings: Vec::new(),
+                        colors: Vec::new(),
+                    });
+                }
                 let n = r.count(r.remaining())?;
                 let floats = (0..n).map(|_| r.f32()).collect::<Result<_>>()?;
                 let n = r.count(r.remaining())?;
@@ -623,6 +631,11 @@ impl Component {
                 strings,
                 colors,
             } => {
+                if matches!(ids::active(),Some((ids,ids::Way::Down)) if ids.quirks.integer_custom_model_data)
+                {
+                    w.varint(floats.first().copied().unwrap_or(0.0) as i32);
+                    return;
+                }
                 w.varint(floats.len() as i32);
                 floats.iter().for_each(|f| w.f32(*f));
                 w.varint(flags.len() as i32);

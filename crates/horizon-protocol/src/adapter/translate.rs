@@ -18,6 +18,7 @@ use crate::{
     packets::{configuration, play},
 };
 
+mod v1_21_3;
 mod v1_21_4;
 mod v1_21_5;
 
@@ -94,7 +95,8 @@ pub fn clientbound(
     // A release at a time: an older server's packets are brought to 26.2's layout first, oldest step first.
     let mut before: Option<Vec<u8>> = None;
     type Step = fn(&Session, State, i32, &[u8]) -> Result<Option<Vec<u8>>>;
-    let steps: [(ServerVersion, Step); 5] = [
+    let steps: [(ServerVersion, Step); 6] = [
+        (ServerVersion::V1_21_3, v1_21_3::clientbound),
         (ServerVersion::V1_21_4, v1_21_4::clientbound),
         (ServerVersion::V1_21_5, v1_21_5::clientbound),
         (ServerVersion::V1_21_8, v1_21_8::clientbound),
@@ -284,6 +286,10 @@ pub fn serverbound(
     };
     use packet_ids::play::serverbound as sb;
     match (state, id) {
+        (State::Play, sb::MOVE_VEHICLE) if session.version.at_most(ServerVersion::V1_21_3) => {
+            play::Serverbound::decode(id, payload)?;
+            renumbered(id, payload[..payload.len() - 1].to_vec())
+        }
         (State::Play, sb::CHAT | sb::CHAT_COMMAND_SIGNED)
             if session.version.at_most(ServerVersion::V1_21_4) =>
         {
@@ -336,7 +342,9 @@ pub fn serverbound(
         (State::Play, sb::PUNCH) => {
             let mut w = Writer::new();
             w.varint(0);
-            let swing = if session.version.at_most(ServerVersion::V1_21_4) {
+            let swing = if session.version.at_most(ServerVersion::V1_21_3) {
+                56 // Vanilla 1.21.2/1.21.3, before block/entity picking and player_loaded.
+            } else if session.version.at_most(ServerVersion::V1_21_4) {
                 58 // Vanilla 1.21.4, before the two 1.21.5 test-block packets.
             } else if session.version.at_most(ServerVersion::V1_21_5) {
                 59 // Vanilla 1.21.5's swing, before change_game_mode shifted the later ids.
