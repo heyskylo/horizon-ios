@@ -48,7 +48,7 @@ pub struct Route {
 }
 
 /// Every endpoint `start` and [`route`] answer; a test checks the two agree.
-pub const ROUTES: [Route; 30] = [
+pub const ROUTES: [Route; 32] = [
     Route {
         method: "GET",
         path: "/api/v1/status",
@@ -132,6 +132,20 @@ pub const ROUTES: [Route; 30] = [
         takes: "`?name=<file>`",
         answers: "the zip",
         what: "Download a backup",
+    },
+    Route {
+        method: "GET",
+        path: "/api/v1/crash-reports",
+        takes: "",
+        answers: "`{\"reports\": [{\"name\", \"bytes\"}]}`, newest first (the `.txt` files in `crash-reports/`)",
+        what: "List the game's crash reports",
+    },
+    Route {
+        method: "GET",
+        path: "/api/v1/crash-reports/read",
+        takes: "`?name=<file>` (a name `crash-reports` lists)",
+        answers: "the report's text (`text/plain`)",
+        what: "Read one crash report",
     },
     Route {
         method: "POST",
@@ -789,6 +803,31 @@ pub fn route(shared: &Arc<Shared>, request: &Request) -> Response {
             }
             Response::file(shared.dir.join(backup::DIR).join(name), name)
         }
+        ("GET", "/api/v1/crash-reports") => {
+            let list: Vec<Value> = crash_reports(&shared.dir)
+                .into_iter()
+                .map(|(name, bytes)| json!({ "name": name, "bytes": bytes }))
+                .collect();
+            Response::json(200, &json!({ "reports": list }))
+        }
+        ("GET", "/api/v1/crash-reports/read") => {
+            // Only a name the listing holds is read, so a path (`../`, `/`) matches nothing.
+            let name = request.param("name").unwrap_or_default();
+            if !crash_reports(&shared.dir).iter().any(|(n, _)| n == name) {
+                return Response::error(
+                    404,
+                    "no such crash report (`GET /api/v1/crash-reports` lists them)",
+                );
+            }
+            match std::fs::read(shared.dir.join(CRASH_DIR).join(name)) {
+                Ok(bytes) => Response::text(
+                    200,
+                    "text/plain; charset=utf-8",
+                    String::from_utf8_lossy(&bytes).into_owned(),
+                ),
+                Err(e) => Response::error(409, &e.to_string()),
+            }
+        }
         ("GET", "/api/v1/config") => match settings::shown(&shared.dir) {
             Ok(config) => Response::json(200, &json!({ "config": config })),
             Err(e) => Response::error(409, &e),
@@ -797,6 +836,25 @@ pub fn route(shared: &Arc<Shared>, request: &Request) -> Response {
         (_, path) if ROUTES.iter().any(|r| r.path == path) => Response::error(405, "wrong method"),
         _ => Response::error(404, "no such endpoint"),
     }
+}
+
+/// Where the game writes its crash reports, under the server folder.
+const CRASH_DIR: &str = "crash-reports";
+
+/// The crash reports (`*.txt` files directly in `crash-reports/`) with their sizes, newest name first.
+fn crash_reports(dir: &std::path::Path) -> Vec<(String, u64)> {
+    let mut out: Vec<(String, u64)> = std::fs::read_dir(dir.join(CRASH_DIR))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| {
+            let meta = e.metadata().ok().filter(|m| m.is_file())?;
+            let name = e.file_name().to_string_lossy().into_owned();
+            name.ends_with(".txt").then_some((name, meta.len()))
+        })
+        .collect();
+    out.sort_by(|a, b| b.0.cmp(&a.0));
+    out
 }
 
 /// `PATCH /api/v1/config`: `config set` for a program, without the settings that change who can reach the
@@ -1056,6 +1114,65 @@ mod tests {
         };
         assert_eq!((get(token), get("a-token-for-the-discord-bo")), (200, 401));
         drop(_endpoint);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn crash_reports_over_the_api() {
+        let dir =
+            std::env::temp_dir().join(format!("horizon-server-api-crash-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("crash-reports")).unwrap();
+        std::fs::write(dir.join("secret.txt"), "not a report").unwrap();
+        std::fs::write(
+            dir.join("crash-reports/crash-2026-11-01_10.00.00-server.txt"),
+            "old",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("crash-reports/crash-2026-11-02_10.00.00-server.txt"),
+            "---- Horizon Crash Report ----\nOutOfMemory",
+        )
+        .unwrap();
+        std::fs::write(dir.join("crash-reports/notes.log"), "skipped").unwrap();
+        let shared = Shared::with_install(&dir, None);
+        let get = |path: &str, query: &str| {
+            let r = route(
+                &shared,
+                &Request {
+                    method: "GET".into(),
+                    path: path.into(),
+                    query: query.into(),
+                    headers: Vec::new(),
+                    body: Vec::new(),
+                },
+            );
+            (r.status, r.body)
+        };
+        let (status, body) = get("/api/v1/crash-reports", "");
+        let list: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(status, 200);
+        assert_eq!(list["reports"].as_array().unwrap().len(), 2);
+        assert_eq!(
+            list["reports"][0]["name"],
+            "crash-2026-11-02_10.00.00-server.txt"
+        );
+        let (status, text) = get(
+            "/api/v1/crash-reports/read",
+            "name=crash-2026-11-02_10.00.00-server.txt",
+        );
+        assert_eq!(status, 200);
+        assert!(text.contains("OutOfMemory"));
+        for name in [
+            "../secret.txt",
+            "..%2Fsecret.txt",
+            "/etc/passwd",
+            "notes.log",
+            "",
+        ] {
+            let (status, body) = get("/api/v1/crash-reports/read", &format!("name={name}"));
+            assert_eq!(status, 404, "{name}");
+            assert!(!body.contains("not a report"), "{name}");
+        }
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

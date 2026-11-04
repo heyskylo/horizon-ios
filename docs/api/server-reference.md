@@ -172,6 +172,8 @@ HTTP and JSON on 127.0.0.1. A running server writes its address and a random tok
 | `POST` | `/api/v1/backups` | `{"name": "..."}` (optional) | `{"name": "<file>"}` | Back up now (a running game saves first and stays up) |
 | `DELETE` | `/api/v1/backups` | `?name=<file>` (the full name `backups` lists) | `{"name": "<file>"}` | Delete a backup |
 | `GET` | `/api/v1/backups/download` | `?name=<file>` | the zip | Download a backup |
+| `GET` | `/api/v1/crash-reports` | nothing | `{"reports": [{"name", "bytes"}]}`, newest first (the `.txt` files in `crash-reports/`) | List the game's crash reports |
+| `GET` | `/api/v1/crash-reports/read` | `?name=<file>` (a name `crash-reports` lists) | the report's text (`text/plain`) | Read one crash report |
 | `POST` | `/api/v1/restore` | `{"name": "<backup>", "dimension": "minecraft:the_nether"}` (`dimension` optional) | `{"name": "<backup>", "dimension": "<id>" or null}` | Restart the game with that backup's world, or only one dimension of it (what it replaces is kept in backups/) |
 | `POST` | `/api/v1/update` | `{"tag": "...", "timeout": seconds}` (both optional) | `{"ok": true}`; `status` says how it went (`update`) | Restart on that installed release, or download the newest first; goes back if the game isn't up within the timeout |
 | `GET` | `/api/v1/metrics/prometheus` | nothing | the latest sample as Prometheus text: `horizon_up`, `horizon_tps`, `horizon_mspt{stat}`, `horizon_players_online`, `horizon_memory_rss_bytes`... | Metrics for a monitoring tool to scrape |
