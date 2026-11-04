@@ -2926,6 +2926,16 @@ impl Game<'_> {
                 } => {
                     self.give_mob_effect(effect, ticks, amplifier, ambient);
                 }
+                MobEvent::EffectMob {
+                    target,
+                    effect,
+                    ticks,
+                    amplifier,
+                } => {
+                    if let Some(t) = self.mobs.iter_mut().find(|m| m.id == target) {
+                        t.add_effect(effect, ticks, amplifier);
+                    }
+                }
                 MobEvent::Ignite { target, seconds } => match target {
                     Who::Player => {
                         if !self.creative
