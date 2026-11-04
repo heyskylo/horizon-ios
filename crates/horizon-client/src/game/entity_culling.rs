@@ -4,6 +4,7 @@ use horizon_client::{
     blocks::{BlockFacts, RenderShape, StateFacts},
     chunk::Chunk,
     entity_culling::Culler,
+    mobs::Species,
     world::World,
 };
 use std::{
@@ -435,7 +436,8 @@ impl Game<'_> {
 
     /// Use complete generated geometry so equipment, animation and custom
     /// models cannot stick out of an assumed collision-sized culling box.
-    pub(super) fn cull_entity_vertices(&self, vertices: &mut Vec<Vertex>, start: usize) {
+    /// Returns this entity's occlusion result, including retained shadow casters.
+    pub(super) fn cull_entity_vertices(&self, vertices: &mut Vec<Vertex>, start: usize) -> bool {
         if let Some(culler) = &self.entity_culler {
             let hidden = culler.hidden(vertices, start, |pos| self.occluder_ready(pos));
             // A shader pack's shadow pass still draws what the camera cannot see.
@@ -444,14 +446,14 @@ impl Game<'_> {
             {
                 vertices.truncate(start);
             }
-            return;
+            return hidden;
         }
 
         let Some(culler) = &self.async_entity_culler else {
-            return;
+            return false;
         };
         let Some(query) = culler.query(vertices, start) else {
-            return;
+            return false;
         };
         let hidden = self
             .async_entity_culler
@@ -464,6 +466,7 @@ impl Game<'_> {
         if let Some(culler) = &self.async_entity_culler {
             culler.queue(query);
         }
+        hidden
     }
 
     fn async_proof_is_current(&self, proof: &OcclusionProof) -> bool {
@@ -657,6 +660,74 @@ mod async_tests {
     }
 }
 
+/// How far a renderer's `getBoundingBoxForCulling` grows the entity's own box.
+/// `EntityRenderer.shouldRender` culls with that box and inflates it by 0.5
+/// more; the growth here is what the renderer asks for on top.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(super) struct CullGrow {
+    /// Added to all three axes (`AABB.inflate(d)`).
+    all: f64,
+    /// Added to x and z only (`AABB.inflate(x, 0, z)`).
+    side: f64,
+    /// Taken off the bottom (`AABB.setMinY`).
+    down: f64,
+}
+
+impl CullGrow {
+    /// The growth a living entity's renderer asks for: none at all unless it
+    /// is an illusioner, a sniffer, a happy ghast or wearing a dragon head.
+    pub(super) fn of(species: Species, height: f64, dragon_head: bool) -> Self {
+        let mut grow = Self::default();
+        // LivingEntityRenderer.getBoundingBoxForCulling: `inflate(0.5)` while
+        // the head slot holds a dragon head, so the head does not pop out at
+        // the edge of the view.
+        if dragon_head {
+            grow.all += 0.5;
+        }
+        match species {
+            // IllusionerRenderer: `inflate(3, 0, 3)`, room for its mirrors.
+            Species::Illusioner => grow.side += 3.0,
+            // SnifferRenderer: `inflate(0.6)`.
+            Species::Sniffer => grow.all += f64::from(0.6_f32),
+            // HappyGhastRenderer: `setMinY(minY - getBbHeight() / 2)`.
+            Species::HappyGhast => grow.down += height / 2.0,
+            _ => {}
+        }
+        grow
+    }
+}
+
+/// `getBoundingBoxForCulling` for a mob at the frame's partial tick `alpha`,
+/// grown by what its renderer asks for.
+pub(super) fn cull_box(mob: &horizon_client::mobs::Mob, alpha: f64) -> (glam::DVec3, glam::DVec3) {
+    let (width, height, _) = mob.dims();
+    let grow = CullGrow::of(
+        mob.species(),
+        height,
+        mob.extra.head.as_deref() == Some("minecraft:dragon_head"),
+    );
+    let pos = glam::DVec3::new(
+        mob.previous.x + (mob.position.x - mob.previous.x) * alpha,
+        mob.previous.y + (mob.position.y - mob.previous.y) * alpha,
+        mob.previous.z + (mob.position.z - mob.previous.z) * alpha,
+    );
+    grown_box(pos, width, height, grow)
+}
+
+/// The entity's box standing on `pos`, grown by `grow`.
+pub(super) fn grown_box(
+    pos: glam::DVec3,
+    width: f64,
+    height: f64,
+    grow: CullGrow,
+) -> (glam::DVec3, glam::DVec3) {
+    let side = width / 2.0 + grow.side + grow.all;
+    (
+        pos - glam::DVec3::new(side, grow.all + grow.down, side),
+        pos + glam::DVec3::new(side, height + grow.all, side),
+    )
+}
+
 /// An entity's position as a `DVec3`.
 pub(super) fn at(p: horizon_core::geometry::Vec3) -> glam::DVec3 {
     glam::DVec3::new(p.x, p.y, p.z)
@@ -721,6 +792,57 @@ mod tests {
         assert_eq!(default_range(item, entity_view_scale(12, 1.0)), 24.0);
         assert_eq!(default_range(item, entity_view_scale(16, 1.0)), 32.0);
         assert_eq!(default_range(item, entity_view_scale(32, 1.0)), 40.0);
+    }
+
+    /// `getBoundingBoxForCulling`: only four living renderers grow the box.
+    /// An illusioner asks for three blocks either side (room for its mirror
+    /// images, which are drawn outside its own box), a sniffer for 0.6 all
+    /// round, a happy ghast for half its height below (its riders hang under
+    /// it) and anyone wearing a dragon head for 0.5 all round.
+    #[test]
+    fn only_the_four_living_renderers_grow_the_culling_box() {
+        assert_eq!(
+            CullGrow::of(Species::Villager, 1.95, false),
+            CullGrow::default()
+        );
+        let illusioner = CullGrow::of(Species::Illusioner, 1.95, false);
+        assert_eq!(
+            (illusioner.side, illusioner.all, illusioner.down),
+            (3.0, 0.0, 0.0)
+        );
+        let sniffer = CullGrow::of(Species::Sniffer, 1.75, false);
+        assert!((sniffer.all - 0.6).abs() < 1e-7 && sniffer.side == 0.0);
+        let ghast = CullGrow::of(Species::HappyGhast, 4.0, false);
+        assert_eq!((ghast.down, ghast.all), (2.0, 0.0));
+        // A dragon head grows every axis, on any living entity.
+        let headed = CullGrow::of(Species::Villager, 1.95, true);
+        assert_eq!((headed.all, headed.side, headed.down), (0.5, 0.0, 0.0));
+        // The growths add up: an illusioner in a dragon head gets both.
+        let both = CullGrow::of(Species::Illusioner, 1.95, true);
+        assert_eq!((both.all, both.side), (0.5, 3.0));
+    }
+
+    /// The box the frustum test sees: an illusioner's own box is 0.6 wide, so
+    /// its culling box reaches 3.3 blocks either side of its position and
+    /// 0.5 below its feet, where a villager's reaches 0.8.
+    #[test]
+    fn an_illusioner_is_culled_three_blocks_wider_than_its_box() {
+        let pos = glam::DVec3::new(10.0, 64.0, -4.0);
+        let (lo, hi) = grown_box(
+            pos,
+            0.6,
+            1.95,
+            CullGrow::of(Species::Illusioner, 1.95, false),
+        );
+        assert_eq!(lo, glam::DVec3::new(10.0 - 3.3, 64.0, -4.0 - 3.3));
+        assert_eq!(hi, glam::DVec3::new(10.0 + 3.3, 64.0 + 1.95, -4.0 + 3.3));
+        let (lo, hi) = grown_box(pos, 0.6, 1.95, CullGrow::of(Species::Villager, 1.95, false));
+        assert!((lo.x - (10.0 - 0.3)).abs() < 1e-9);
+        assert!((hi.y - (64.0 + 1.95)).abs() < 1e-9);
+        // A happy ghast's box drops by half its height below its feet.
+        let (lo, hi) = grown_box(pos, 4.0, 4.0, CullGrow::of(Species::HappyGhast, 4.0, false));
+        assert_eq!(lo.y, 62.0);
+        assert_eq!(hi.y, 68.0);
     }
 
     /// `Entity.shouldRenderAtSqrDistance` on a broken box: the size falls

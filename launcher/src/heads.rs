@@ -75,6 +75,12 @@ fn profile_pixels(png: &[u8]) -> Option<Vec<[u8; 4]>> {
         .flatten()
 }
 
+/// The whole skin PNG `profile_face` kept for `url` in `cache`, if it fetched it.
+pub fn cached_skin(url: &str, cache: &Path) -> Option<Vec<u8>> {
+    use sha1::{Digest, Sha1};
+    std::fs::read(cache.join(format!("{:x}.png", Sha1::digest(url.as_bytes())))).ok()
+}
+
 /// A signed-in profile's public skin, cached independently of its authentication tokens.
 /// This may do disk/network I/O and must run on a worker. Missing skins use the UUID default;
 /// the `bool` says the download failed, so the real skin is worth asking for again later.
@@ -107,6 +113,57 @@ pub fn profile_face(
     (face, failed.get())
 }
 
+/// How long a skin URL the session server gave is trusted before it is asked again (a skin
+/// changed on minecraft.net shows within a day).
+const SESSION_SKIN_FOR: std::time::Duration = std::time::Duration::from_secs(24 * 3600);
+
+/// The skin URL Mojang's public session server lists for the profile `uuid` (32 hex digits), kept
+/// beside the cached skins for [`SESSION_SKIN_FOR`]. None when it has none (the default skin) or
+/// can't be reached.
+fn session_skin(
+    uuid: &str,
+    cache: &Path,
+    fetch: &dyn Fn(&str) -> Option<Vec<u8>>,
+) -> Option<String> {
+    use base64::Engine;
+    if uuid.len() != 32 || !uuid.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    let file = cache.join(format!("{uuid}.skin-url"));
+    let fresh = std::fs::metadata(&file)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.elapsed().ok())
+        .is_some_and(|age| age < SESSION_SKIN_FOR);
+    if fresh {
+        if let Ok(url) = std::fs::read_to_string(&file) {
+            return (!url.is_empty()).then_some(url);
+        }
+    }
+    let body = fetch(&format!(
+        "https://sessionserver.mojang.com/session/minecraft/profile/{uuid}"
+    ))?;
+    let profile: serde_json::Value = serde_json::from_slice(&body).ok()?;
+    let textures = profile["properties"]
+        .as_array()?
+        .iter()
+        .find(|p| p["name"] == "textures")?["value"]
+        .as_str()?;
+    let textures = base64::engine::general_purpose::STANDARD
+        .decode(textures)
+        .ok()?;
+    let textures: serde_json::Value = serde_json::from_slice(&textures).ok()?;
+    // No SKIN: the profile wears its default skin; remembered as such (empty) too.
+    let url = textures["textures"]["SKIN"]["url"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned();
+    if std::fs::create_dir_all(cache).is_ok() {
+        let _ = std::fs::write(&file, &url);
+    }
+    (!url.is_empty()).then_some(url)
+}
+
 fn profile_face_with(
     account: &crate::account::Account,
     cache: &Path,
@@ -114,7 +171,14 @@ fn profile_face_with(
     fetch: &dyn Fn(&str) -> Option<Vec<u8>>,
 ) -> Option<Vec<[u8; 4]>> {
     use sha1::{Digest, Sha1};
-    if let Some((url, _)) = &account.skin {
+    // An account saved without its skin (signed in before skins were kept, or its profile
+    // answered without one) asks Mojang's session server, which needs no token.
+    let url = account
+        .skin
+        .as_ref()
+        .map(|(url, _)| url.clone())
+        .or_else(|| session_skin(&account.uuid, cache, fetch));
+    if let Some(url) = &url {
         // Public Minecraft texture URLs only; never send credentials to a skin host.
         let texture = url
             .strip_prefix("https://textures.minecraft.net/texture/")
@@ -223,6 +287,64 @@ mod tests {
             )
             .unwrap();
         assert!(profile_pixels(&oversized).is_none());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn an_account_saved_without_its_skin_asks_the_session_server() {
+        use base64::Engine;
+        let dir = std::env::temp_dir().join(format!(
+            "hz-profile-session-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let mut skin = image::RgbaImage::new(64, 64);
+        skin.put_pixel(8, 8, image::Rgba([90, 80, 70, 255]));
+        let mut png = Vec::new();
+        skin.write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .unwrap();
+        let uuid = "069a79f444e94726a5befca90e38aaf5";
+        let textures = base64::engine::general_purpose::STANDARD.encode(
+            r#"{"textures":{"SKIN":{"url":"http://textures.minecraft.net/texture/ab12"}}}"#,
+        );
+        let session = format!(
+            r#"{{"id":"{uuid}","name":"Notch","properties":[{{"name":"textures","value":"{textures}"}}]}}"#
+        );
+        let asked = std::cell::RefCell::new(Vec::new());
+        let fetch = |url: &str| {
+            asked.borrow_mut().push(url.to_owned());
+            if url.contains("sessionserver.mojang.com") {
+                Some(session.clone().into_bytes())
+            } else if url == "http://textures.minecraft.net/texture/ab12" {
+                Some(png.clone())
+            } else {
+                None
+            }
+        };
+        let account = crate::account::Account {
+            name: "Notch".into(),
+            uuid: uuid.into(),
+            skin: None,
+            cape: None,
+        };
+        // No default skins in `resources`: the face can only be the session's skin.
+        let none = dir.join("no-resources");
+        let head = profile_face_with(&account, &dir, &none, &fetch).unwrap();
+        assert_eq!(head[0], [90, 80, 70, 255]);
+        assert_eq!(
+            asked.borrow()[0],
+            format!("https://sessionserver.mojang.com/session/minecraft/profile/{uuid}")
+        );
+        // Asked once: the URL and the skin are kept.
+        asked.borrow_mut().clear();
+        assert_eq!(profile_face_with(&account, &dir, &none, &fetch), Some(head));
+        assert!(asked.borrow().is_empty(), "{:?}", asked.borrow());
+        // Offline, with nothing kept: no face, so the launcher draws its user icon.
+        let fresh = dir.join("fresh");
+        assert!(profile_face_with(&account, &fresh, &none, &|_| None).is_none());
         std::fs::remove_dir_all(dir).unwrap();
     }
 

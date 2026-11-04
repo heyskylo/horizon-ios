@@ -386,6 +386,7 @@ impl World {
             chunk.motion_blocking(x & 15, z & 15, |v| blocks(BlockStateId(v)))
         })
     }
+    #[inline]
     pub fn block(&self, x: i32, y: i32, z: i32) -> BlockStateId {
         self.chunks
             .get(&(x >> 4, z >> 4))
