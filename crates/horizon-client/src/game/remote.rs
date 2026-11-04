@@ -6038,15 +6038,19 @@ impl Game<'_> {
             // at 10, the hurt tilt restarted every frame and shook the camera.
             player.health.advance_clock();
             if riding && !dead {
-                MotionWorld {
+                player.client_side = true;
+                let mut passenger = MotionWorld {
                     entities: &entity_collisions,
                     player: &mut *player,
                     scene: &mut self.world,
                     assets: &self.pack.assets,
                     collision_binding: self.collision,
                     resources: self.motion,
-                }
-                .passenger_pose_tick()?;
+                };
+                passenger.passenger_pose_tick()?;
+                // LivingEntity.aiStep: a passenger freezes in powder snow too, and the
+                // frostbite overlay shows it (#8156).
+                passenger.passenger_block_effects_tick()?;
             }
         }
         // The server decides fire the window cannot predict (blaze fireballs,

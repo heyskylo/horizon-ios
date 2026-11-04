@@ -151,7 +151,7 @@ pub const ROUTES: [Route; 30] = [
         method: "GET",
         path: "/api/v1/metrics/prometheus",
         takes: "",
-        answers: "the latest sample as Prometheus text: `horizon_up`, `horizon_tps`, `horizon_mspt{stat}`, `horizon_players_online`, `horizon_memory_rss_bytes`...",
+        answers: "the latest sample as Prometheus text: `horizon_up`, `horizon_tps`, `horizon_mspt{stat}`, `horizon_players_online`, `horizon_memory_rss_bytes`, `horizon_loaded_chunks{dimension}` and `horizon_entities{dimension}` (players and block entities apart)...",
         what: "Metrics for a monitoring tool to scrape",
     },
     Route {
@@ -1070,6 +1070,71 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    const LIFECYCLE_GOLDENS: &str = include_str!("../testdata/api-v1-lifecycle.json");
+
+    fn golden_phase(name: &str) -> Phase {
+        match name {
+            "starting" => Phase::Starting,
+            "running" => Phase::Running,
+            "stopped" => Phase::Stopped,
+            "stopping" => Phase::Stopping,
+            "restarting" => Phase::Restarting,
+            _ => panic!("unknown golden phase {name:?}"),
+        }
+    }
+
+    fn normalize_lifecycle_reply(path: &str, body: &mut Value) {
+        if path == "/api/v1/status" {
+            assert!(body["version"].is_string());
+            assert!(body["pid"].is_u64());
+            assert!(body["uptime_seconds"].is_u64());
+            assert!(body["engine_uptime_seconds"].is_u64());
+            body["version"] = json!("$VERSION");
+            body["pid"] = json!("$PID");
+            body["uptime_seconds"] = json!("$TIME");
+            body["engine_uptime_seconds"] = json!("$TIME");
+        }
+    }
+
+    #[test]
+    fn lifecycle_replies_match_api_v1_goldens() {
+        let cases: Value = serde_json::from_str(LIFECYCLE_GOLDENS).unwrap();
+        for case in cases.as_array().unwrap() {
+            let shared = Shared::with_install(Path::new("unused"), None);
+            let sample = json!({ "t": 200, "tps": 20, "players": 2 });
+            {
+                let mut state = shared.state.lock().unwrap();
+                state.phase = golden_phase(case["phase"].as_str().unwrap());
+                state.engine_pid = Some(4242);
+                state.engine_started = Some(Instant::now());
+                state.crashes = 2;
+                state.last_crash = Some("exit status: 1".into());
+                state.sample = sample.clone();
+            }
+            shared.record(json!({ "t": 100, "tps": 19, "players": 1 }));
+            shared.record(sample);
+            shared.log.lock().unwrap().push("first".into());
+            shared.log.lock().unwrap().push("second".into());
+
+            let raw_path = case["path"].as_str().unwrap();
+            let (path, query) = raw_path.split_once('?').unwrap_or((raw_path, ""));
+            let response = route(
+                &shared,
+                &Request {
+                    method: case["method"].as_str().unwrap().into(),
+                    path: path.into(),
+                    query: query.into(),
+                    headers: Vec::new(),
+                    body: Vec::new(),
+                },
+            );
+            let mut body: Value = serde_json::from_str(&response.body).unwrap();
+            normalize_lifecycle_reply(path, &mut body);
+            assert_eq!(response.status, case["status"], "{}", case["name"]);
+            assert_eq!(body, case["body"], "{}", case["name"]);
+        }
+    }
+
     #[test]
     fn log_keeps_the_last_lines_numbered() {
         let mut log = Log::default();
@@ -1298,6 +1363,131 @@ mod tests {
             200
         );
         assert!(backup::list(&dir).is_empty());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    fn backup_reply(mut response: Response) -> Value {
+        let body = if let Some(write) = response.stream.take() {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let mut client = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+            let (server, _) = listener.accept().unwrap();
+            write(&server);
+            server.shutdown(std::net::Shutdown::Write).unwrap();
+            let mut bytes = Vec::new();
+            std::io::Read::read_to_end(&mut client, &mut bytes).unwrap();
+            Value::String(
+                bytes
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect::<Vec<_>>()
+                    .join(""),
+            )
+        } else {
+            serde_json::from_str(&response.body).unwrap()
+        };
+        json!({
+            "status": response.status,
+            "content_type": response.content_type,
+            "headers": response.headers,
+            "body": body,
+        })
+    }
+
+    #[test]
+    fn backup_replies_match_api_v1_goldens() {
+        let golden: Value =
+            serde_json::from_str(include_str!("../testdata/api-v1-backups.json")).unwrap();
+        let dir = std::env::temp_dir().join(format!(
+            "horizon-server-api-backup-goldens-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("backups")).unwrap();
+        std::fs::create_dir_all(dir.join("world/dimensions/minecraft/the_end")).unwrap();
+        std::fs::write(dir.join(crate::config::FILE), crate::config::TEMPLATE).unwrap();
+        std::fs::write(dir.join("world/level.dat"), b"level").unwrap();
+        std::fs::write(
+            dir.join("world/dimensions/minecraft/the_end/region.mca"),
+            b"end",
+        )
+        .unwrap();
+        let name = "2026-11-04_00-00-00-golden.zip";
+        std::fs::write(dir.join("backups").join(name), b"PK\x05\x06zip").unwrap();
+        let shared = Shared::with_install(&dir, None);
+        shared.set_phase(Phase::Stopped);
+        let call = |method: &str, target: &str, body: Value| {
+            let (path, query) = target.split_once('?').unwrap_or((target, ""));
+            route(
+                &shared,
+                &Request {
+                    method: method.into(),
+                    path: path.into(),
+                    query: query.into(),
+                    headers: Vec::new(),
+                    body: body.to_string().into_bytes(),
+                },
+            )
+        };
+        let check = |case: &str, response: Response| {
+            assert_eq!(backup_reply(response), golden[case], "{case}");
+        };
+        check("list", call("GET", "/api/v1/backups", Value::Null));
+        check(
+            "download",
+            call(
+                "GET",
+                &format!("/api/v1/backups/download?name={name}"),
+                Value::Null,
+            ),
+        );
+        check(
+            "restore",
+            call("POST", "/api/v1/restore", json!({ "name": name })),
+        );
+        check(
+            "restore_dimension",
+            call(
+                "POST",
+                "/api/v1/restore",
+                json!({ "name": name, "dimension": "the_end" }),
+            ),
+        );
+        check(
+            "bad_dimension",
+            call(
+                "POST",
+                "/api/v1/restore",
+                json!({ "name": name, "dimension": "../end" }),
+            ),
+        );
+        check(
+            "restore_missing",
+            call("POST", "/api/v1/restore", json!({ "name": "missing" })),
+        );
+        check(
+            "delete_missing",
+            call("DELETE", "/api/v1/backups?name=../server.toml", Value::Null),
+        );
+        check(
+            "delete",
+            call(
+                "DELETE",
+                &format!("/api/v1/backups?name={name}"),
+                Value::Null,
+            ),
+        );
+        check("list_empty", call("GET", "/api/v1/backups", Value::Null));
+
+        let mut created = backup_reply(call(
+            "POST",
+            "/api/v1/backups",
+            json!({ "name": "created" }),
+        ));
+        let created_name = created["body"]["name"].as_str().unwrap();
+        assert!(created_name.ends_with("-created.zip"));
+        assert!(dir.join("backups").join(created_name).is_file());
+        created["body"]["name"] = json!("$BACKUP");
+        assert_eq!(created, golden["create"]);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
