@@ -653,6 +653,30 @@ pub fn around_self(
     }
 }
 
+/// `LivingEntity.handleEntityEvent(46)`: 128 `ParticleTypes.PORTAL` samples
+/// from the entity's old position (`xo`, `yo`, `zo`) to its current one,
+/// spread across the bounding box (`getBbWidth() * 2` on x and z, `getBbHeight`
+/// on y). The speeds are `(nextFloat() - 0.5) * 0.2`.
+pub fn living_teleport_particles(
+    random: &mut impl RandomSource,
+    from: [f64; 3],
+    to: [f64; 3],
+    width: f64,
+    height: f64,
+    mut emit: impl FnMut([f64; 3], [f64; 3]),
+) {
+    for i in 0..128 {
+        let d = i as f64 / 127.0;
+        let velocity = [0; 3].map(|_| f64::from((random.next_float() - 0.5) * 0.2));
+        let position = [
+            from[0] + d * (to[0] - from[0]) + (random.next_double() - 0.5) * width * 2.0,
+            from[1] + d * (to[1] - from[1]) + random.next_double() * height,
+            from[2] + d * (to[2] - from[2]) + (random.next_double() - 0.5) * width * 2.0,
+        ];
+        emit(position, velocity);
+    }
+}
+
 /// ClientLevel.addDestroyBlockEffect placement and pre-constructor velocities.
 pub fn destroy_positions(
     pos: [i32; 3],
@@ -5316,6 +5340,47 @@ mod tests {
         assert!(vertices.iter().all(
             |v| v.color >> 24 == 127 && v.layer & crate::gfx::TRANSLUCENT_PARTICLE_OVERLAY != 0
         ));
+    }
+
+    /// `LivingEntity.handleEntityEvent(46)`: 128 samples, the first on the old
+    /// box and the last on the new one, with speeds inside ±0.1.
+    #[test]
+    fn living_teleport_particles_span_the_old_and_new_boxes() {
+        let mut random = LegacyRandom::new(1);
+        let mut samples = Vec::new();
+        living_teleport_particles(
+            &mut random,
+            [0.0, 1.0, 0.0],
+            [8.0, 1.0, 0.0],
+            0.6,
+            1.8,
+            |p, v| samples.push((p, v)),
+        );
+        assert_eq!(samples.len(), 128);
+        let first = samples[0].0;
+        let last = samples[127].0;
+        assert!(first[0].abs() <= 0.6, "{first:?}");
+        assert!((1.0..2.8).contains(&first[1]), "{first:?}");
+        assert!(first[2].abs() <= 0.6, "{first:?}");
+        assert!((7.4..8.6).contains(&last[0]), "{last:?}");
+        assert!((1.0..2.8).contains(&last[1]), "{last:?}");
+        assert!(last[2].abs() <= 0.6, "{last:?}");
+        // `(nextDouble - 0.5) * width * 2` reaches ±width. A spread of only
+        // `width` (the factor of 2 dropped) stays inside 0.3 of the line.
+        let edge = samples
+            .iter()
+            .enumerate()
+            .map(|(i, (p, _))| {
+                let along = (i as f64 / 127.0) * 8.0;
+                (p[0] - along).abs()
+            })
+            .fold(0.0_f64, f64::max);
+        assert!(edge > 0.45, "box spread reached only {edge}");
+        for (_, v) in &samples {
+            for c in v {
+                assert!((-0.1..0.1).contains(c), "{v:?}");
+            }
+        }
     }
 
     #[test]

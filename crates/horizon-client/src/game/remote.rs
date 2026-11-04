@@ -4095,6 +4095,11 @@ impl Game<'_> {
                 if let Some(m) = self.mob_index.get_mut(&mut self.mobs, p.id as u32) {
                     horizon_client::mobs::sync::entity_event(m, p.event as u8);
                 }
+                // LivingEntity.handleEntityEvent 46: portal particles from the
+                // old position to the new one (chorus fruit, an enderman).
+                if p.event == 46 {
+                    self.entity_teleport_particles(p.id);
+                }
                 // LivingEntity.handleEntityEvent 60: the poof as the dead body goes.
                 if p.event == 60
                     && let Some(m) = self.mob_index.get(&self.mobs, p.id as u32)
