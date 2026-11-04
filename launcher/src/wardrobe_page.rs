@@ -1038,7 +1038,7 @@ impl Launcher {
                  players who claimed it keep it.",
                 &[("day", &until)],
             ))),
-            ClaimState::NotYet => me
+            ClaimState::NotYet | ClaimState::Unknown => me
                 .owned
                 .is_empty()
                 .then(|| row(tr("Nothing in your wardrobe yet.").into())),

@@ -6,7 +6,7 @@
 //! answer); signed out, it asks for the catalogue alone, to know whether there is a Shop to show.
 use super::*;
 use horizon_launcher::shop::{self as rules, Window};
-use horizon_launcher::wardrobe::{Entry, Me};
+use horizon_launcher::wardrobe::{service_now, Entry, Me};
 use horizon_theme::glass::{ink, radius};
 
 /// The founder panel's left column.
@@ -253,7 +253,7 @@ fn details(e: &Error) -> String {
 }
 
 fn now() -> i64 {
-    chrono::Utc::now().timestamp()
+    service_now()
 }
 
 impl Launcher {

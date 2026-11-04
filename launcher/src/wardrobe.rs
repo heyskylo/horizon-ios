@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::{Duration, Instant};
 
 /// Why a request to the service failed, in words for the player.
@@ -64,6 +65,10 @@ pub enum ClaimState {
     NotYet,
     Open,
     Closed,
+    /// A state this launcher doesn't know, from a newer service: no claim offered, no word that
+    /// the set is over.
+    #[serde(other)]
+    Unknown,
 }
 
 /// The founder set: free to claim between `starts_at` and `ends_at` (Unix seconds, `[start,
@@ -237,6 +242,22 @@ impl Saved {
         self.pending.retain(|c| !same(c));
         self.pending.push(change);
     }
+}
+
+/// How many seconds this computer's clock is ahead of the service's, by the `Date` of its last
+/// answer. Stays 0 for a clock on time or behind, and until an answer comes.
+static CLOCK_AHEAD: AtomicI64 = AtomicI64::new(0);
+
+/// The time to read the claim window's dates against: this computer's clock, without what the
+/// service's last answer showed it to be ahead by.
+pub fn service_now() -> i64 {
+    chrono::Utc::now().timestamp() - CLOCK_AHEAD.load(Ordering::Relaxed)
+}
+
+/// How far `local` (this computer's clock when the answer came) is ahead of an answer's `Date`.
+fn clock_ahead(date: &str, local: i64) -> Option<i64> {
+    let said = chrono::DateTime::parse_from_rfc2822(date).ok()?;
+    Some((local - said.timestamp()).max(0))
 }
 
 /// A session with the service: an opaque token, good for the time it said.
@@ -461,6 +482,10 @@ impl Service {
             }
             Err(ureq::Error::Transport(_)) => return Err(Error::Offline),
         };
+        let local = chrono::Utc::now().timestamp();
+        if let Some(ahead) = response.header("Date").and_then(|d| clock_ahead(d, local)) {
+            CLOCK_AHEAD.store(ahead, Ordering::Relaxed);
+        }
         response.into_json().map_err(|_| Error::Service(200))
     }
 }

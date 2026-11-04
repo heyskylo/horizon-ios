@@ -37,8 +37,12 @@ pub enum Window {
 
 /// The service's word on the window, moved on by the clock: a window that ended since the last
 /// answer reads as over at once, one that opened reads as open (the service still decides each
-/// claim).
+/// claim). `now` is on the service's time (`wardrobe::service_now`), so a fast clock doesn't end a
+/// window early. A state this launcher doesn't know offers nothing and says nothing of the end.
 pub fn window(claim: &Claim, now: i64) -> Window {
+    if claim.state == ClaimState::Unknown {
+        return Window::NotYet { starts_at: None };
+    }
     let ended = claim.ends_at.is_some_and(|end| now >= end);
     let started = claim.starts_at.is_some_and(|start| now >= start);
     let closed = Window::Closed {

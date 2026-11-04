@@ -20,6 +20,8 @@ struct Mock {
     down: bool,
     /// "Show my cosmetics", as the service keeps it.
     visible: bool,
+    /// The `Date` header of its answers.
+    date: Option<&'static str>,
 }
 
 fn me(claim: &str, owned: Value, equipped: Value) -> Value {
@@ -131,16 +133,18 @@ fn serve(f: impl FnOnce(&mut Mock)) -> (Arc<Mutex<Mock>>, Service) {
             if (method.as_str(), path.as_str()) == ("GET", "/") {
                 continue;
             }
-            let (status, reply) = {
+            let (status, reply, date) = {
                 let mut m = shared.lock().unwrap();
                 m.log
                     .push((method.clone(), path.clone(), auth.clone(), body.clone()));
-                route(&mut m, &method, &path, &auth, &body)
+                let (status, reply) = route(&mut m, &method, &path, &auth, &body);
+                let date = m.date.map_or(String::new(), |d| format!("Date: {d}\r\n"));
+                (status, reply, date)
             };
             let text = reply.to_string();
             let _ = write!(
                 stream,
-                "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{text}",
+                "HTTP/1.1 {status} X\r\n{date}Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{text}",
                 text.len()
             );
         }
@@ -353,4 +357,61 @@ fn the_shop_status_is_asked_without_a_session() {
         (method.as_str(), path.as_str(), auth.as_str()),
         ("GET", "/v1/shop", "")
     );
+}
+
+// The only test whose mock sends a `Date`, so the only one that moves `CLOCK_AHEAD`.
+#[test]
+fn a_fast_clock_keeps_an_open_window_until_the_services_time_ends_it() {
+    use crate::shop::{window, Window};
+    // The service's time is 150 and the window ends at 200; this computer's clock is decades on.
+    let (_, service) = serve(|m| m.date = Some("Thu, 01 Jan 1970 00:02:30 GMT"));
+    let status = service.shop().unwrap();
+    assert!(status.open);
+    let at = service_now();
+    assert_eq!(window(&status, at), Window::Open { ends_at: Some(200) });
+    // A minute after the answer, by the same offset: the window has really ended.
+    assert_eq!(
+        window(&status, at + 60),
+        Window::Closed {
+            ended_at: Some(200)
+        }
+    );
+}
+
+#[test]
+fn only_a_clock_ahead_of_the_services_date_is_corrected() {
+    // 150 by this `Date`.
+    let date = "Thu, 01 Jan 1970 00:02:30 GMT";
+    assert_eq!(clock_ahead(date, 5_000), Some(4_850));
+    // Behind: read as before, by the computer's own clock.
+    assert_eq!(clock_ahead(date, 100), Some(0));
+    assert_eq!(clock_ahead("not a date", 5_000), None);
+}
+
+#[test]
+fn a_state_this_launcher_does_not_know_offers_no_claim_and_no_end() {
+    use crate::shop::{window, Window};
+    let (m, service) = serve(|m| m.claim = "paused");
+    assert_eq!(
+        service.catalogue().unwrap().claim.state,
+        ClaimState::Unknown
+    );
+    assert_eq!(service.shop().unwrap().state, ClaimState::Unknown);
+    let me = service.me(&sign_in(&m, &service)).unwrap();
+    assert_eq!(me.claim.state, ClaimState::Unknown);
+    // Before, inside and past the dates (100 to 200): never open, never over.
+    for now in [50, 150, 250] {
+        assert_eq!(
+            window(&me.claim, now),
+            Window::NotYet { starts_at: None },
+            "at {now}"
+        );
+    }
+    // Not even with `open`: no Claim on a state it can't read.
+    let mut open = me.claim.clone();
+    open.open = true;
+    assert_eq!(window(&open, 150), Window::NotYet { starts_at: None });
+    // Kept on disk, it reads back the same.
+    let kept = serde_json::to_vec(&me).unwrap();
+    assert_eq!(serde_json::from_slice::<Me>(&kept).unwrap(), me);
 }
