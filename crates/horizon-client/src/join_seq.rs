@@ -27,6 +27,13 @@ impl JoinSeq {
     fn next() -> Self {
         Self(NEXT.fetch_add(1, Ordering::Relaxed))
     }
+    /// Above every number a join can get.
+    pub const MAX: Self = Self(u64::MAX);
+    /// The number the next join will get or a later one: every entity that has
+    /// joined so far is below it.
+    pub fn upcoming() -> Self {
+        Self(NEXT.load(Ordering::Relaxed))
+    }
     pub fn is_joined(self) -> bool {
         self.0 != 0
     }

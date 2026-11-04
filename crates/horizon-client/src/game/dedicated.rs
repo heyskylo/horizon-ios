@@ -441,6 +441,37 @@ pub(super) struct Lists {
     pub stop: bool,
     /// `MinecraftServer.isAutoSave`: all of Horizon's server levels share this save flag.
     pub autosave: bool,
+    /// UUID prefixes (lower case, with dashes) that pass the whitelist: `whitelist-bypass.txt`.
+    pub whitelist_bypass: Vec<String>,
+}
+
+/// The lines of `whitelist-bypass.txt`: one UUID prefix each, e.g. `00000000-0000-0000-0009-` for Floodgate's
+/// Bedrock players. `#` starts a comment. A prefix has to be a dashed UUID start of at least 8 characters, so
+/// a typo can't open the whitelist to everybody.
+fn parse_whitelist_bypass(text: &str) -> std::result::Result<Vec<String>, String> {
+    let mut out = Vec::new();
+    for (n, line) in text.lines().enumerate() {
+        let line = line
+            .split('#')
+            .next()
+            .unwrap_or("")
+            .trim()
+            .to_ascii_lowercase();
+        if line.is_empty() {
+            continue;
+        }
+        if line.len() < 8
+            || line.len() > 36
+            || !line.chars().all(|c| c.is_ascii_hexdigit() || c == '-')
+        {
+            return Err(format!(
+                "whitelist-bypass.txt line {}: {line:?} is not a UUID prefix",
+                n + 1
+            ));
+        }
+        out.push(line);
+    }
+    Ok(out)
 }
 impl Lists {
     fn load() -> Self {
@@ -455,7 +486,24 @@ impl Lists {
             player_idle_timeout: 0,
             stop: false,
             autosave: true,
+            whitelist_bypass: Vec::new(),
         };
+        // Horizon only: players from a proxy's Bedrock bridge (Floodgate) are never on whitelist.json.
+        if let Ok(text) = std::fs::read_to_string("whitelist-bypass.txt") {
+            match parse_whitelist_bypass(&text) {
+                Ok(prefixes) => {
+                    log(
+                        "INFO",
+                        &format!(
+                            "whitelist-bypass.txt: {} UUID prefix(es) skip the whitelist",
+                            prefixes.len()
+                        ),
+                    );
+                    l.whitelist_bypass = prefixes;
+                }
+                Err(e) => log("ERROR", &format!("{e}; the file is ignored")),
+            }
+        }
         // Each list tells the event stream what changes in it, as vanilla's tell their `NotificationService`.
         l.ops.watch(|change| {
             let (kind, e) = listed("operators", change);
@@ -501,7 +549,16 @@ impl Lists {
     }
     /// PlayerList.isWhiteListed.
     fn whitelisted(&self, user: &NameAndId) -> bool {
-        !self.use_whitelist || self.ops.contains(user) || self.white.contains(user)
+        !self.use_whitelist
+            || self.ops.contains(user)
+            || self.white.contains(user)
+            || self.bypasses_whitelist(user.id)
+    }
+    fn bypasses_whitelist(&self, id: u128) -> bool {
+        let id = horizon_protocol::crypto::uuid_string(id);
+        self.whitelist_bypass
+            .iter()
+            .any(|p| id.starts_with(p.as_str()))
     }
     /// PlayerList.canPlayerLogin before the player count.
     fn can_login(&mut self, address: std::net::SocketAddr, user: &NameAndId) -> Option<Tag> {
@@ -1577,7 +1634,7 @@ impl Game<'_> {
                     let replies = self.mute_command(&mut host, &words, "Server");
                     self.lan = Some(host);
                     for reply in replies {
-                        self.console_reply(lit(&reply));
+                        self.console_reply(reply.text());
                     }
                 }
             }
@@ -1588,7 +1645,7 @@ impl Game<'_> {
                     let replies = self.tempban_command(&mut host, &words, "Server");
                     self.lan = Some(host);
                     for reply in replies {
-                        self.console_reply(lit(&reply));
+                        self.console_reply(reply.text());
                     }
                 }
             }
@@ -2185,7 +2242,9 @@ fn console_level(active: super::Dim) -> Option<super::Dim> {
 
 #[cfg(test)]
 mod tests {
-    use super::{capture_log, log, log_from, overload_warning, panic_message};
+    use super::{
+        capture_log, log, log_from, overload_warning, panic_message, parse_whitelist_bypass,
+    };
     use std::{
         fs,
         io::{self, BufRead, BufReader, Read, Write},
@@ -2200,6 +2259,18 @@ mod tests {
         assert_eq!(super::console_level(Dim::Nether), Some(Dim::Overworld));
         assert_eq!(super::console_level(Dim::End), Some(Dim::Overworld));
         assert_eq!(super::console_level(Dim::Overworld), None);
+    }
+
+    #[test]
+    fn whitelist_bypass_file_takes_uuid_prefixes_and_refuses_junk() {
+        let ok =
+            parse_whitelist_bypass("# Bedrock\n00000000-0000-0000-0009-  # floodgate\n\n").unwrap();
+        assert_eq!(ok, vec!["00000000-0000-0000-0009-".to_owned()]);
+        assert!(
+            parse_whitelist_bypass("0-").is_err(),
+            "a short prefix would match nearly everyone"
+        );
+        assert!(parse_whitelist_bypass("not-a-uuid-at-all").is_err());
     }
 
     /// `SaveAllCommand.saveAll`: a save that throws is the `ERROR_FAILED` the
@@ -2354,6 +2425,7 @@ mod tests {
             player_idle_timeout: 0,
             stop: false,
             autosave: true,
+            whitelist_bypass: Vec::new(),
         };
         // Every translation key and string in a message, in the order they come.
         fn words(tag: &super::Tag, out: &mut Vec<String>) {

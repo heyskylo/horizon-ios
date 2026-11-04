@@ -69,7 +69,7 @@ pub(super) struct Creatures {
     /// The wind charge whose burst is being handled, by entity id: which
     /// entities have already ticked in vanilla's spawn-ordered tick list
     /// (game/wind.rs).
-    pub wind_source: Option<u32>,
+    pub wind_source: Option<horizon_client::join_seq::JoinSeq>,
     /// Wind pushes held until the entity's own tick has run, by entity id
     /// (game/wind.rs `apply_late_wind_pushes`).
     pub late_wind_pushes: Vec<(u32, crate::game::Vec3)>,
@@ -331,6 +331,7 @@ impl Game<'_> {
             sleeping: self.sleeping.is_some(),
             sleep_timer: self.sleep_timer,
             passenger: self.riding.is_some(),
+            riding_vehicle: self.riding,
             vehicle: self.riding.and_then(|id| {
                 if let Some(b) = self.boats.iter().find(|b| b.id == id) {
                     // A boat's box: 1.375 wide and 0.5625 high around its position.
@@ -812,6 +813,7 @@ impl Game<'_> {
             movement: &self.motion.blocks,
             collision: self.collision,
             data: self.res.mob_data(),
+            controlling_player_movement: None,
             nearest_player: player.as_ref().filter(|p| !p.spectator).map(|p| p.position),
             player,
             others,
@@ -1032,6 +1034,20 @@ impl Game<'_> {
                     ..base.clone()
                 };
                 let m = &mut mobs[i];
+                w.controlling_player_movement = horizon_client::mobs::equine::controlled(m)
+                    .then(|| {
+                        base.player
+                            .as_ref()
+                            .filter(|p| p.riding_vehicle == Some(m.id))
+                            .map(|p| p.velocity)
+                            .or_else(|| {
+                                guests
+                                    .iter()
+                                    .find(|(_, p)| p.riding_vehicle == Some(m.id))
+                                    .map(|(_, p)| p.velocity)
+                            })
+                    })
+                    .flatten();
                 // getCurrentDifficultyAt(blockPosition()): the mob's own chunk,
                 // not the local player's (a server thread has no player).
                 w.difficulty = self.local_difficulty([m.position.x, m.position.y, m.position.z]);
@@ -1187,6 +1203,7 @@ impl Game<'_> {
         }
         self.handle_mob_events(events)?;
         self.lan_guest_mob_events(guest_events);
+        self.ordered_before(super::ordered_tick::Batch::Projectiles)?;
         self.tick_projectiles()?;
         self.tick_fangs();
         self.tick_allays();
@@ -1905,6 +1922,9 @@ impl Game<'_> {
                         .find(|m| m.id == mob)
                         .map_or([0.0; 3], |m| [m.velocity.x, m.velocity.y, m.velocity.z]);
                     self.drown_particles(at, v);
+                }
+                MobEvent::PowderSnowParticle { at, velocity } => {
+                    self.snowflake_particle(at, velocity);
                 }
                 MobEvent::SunProtectionWear { mob } => self.wear_sun_protection(mob),
                 MobEvent::ArmorHurt { mob, amount, kind } => self.hurt_mob_armor(mob, amount, kind),
@@ -3799,6 +3819,7 @@ impl Game<'_> {
         let mut shoot_events = Vec::new();
         let mut trails = Vec::new();
         let mut bubble_tops = Vec::new();
+        let mut snow_contacts = Vec::new();
         let mut keep_flags = vec![true; projectiles.len()];
         // The impacts the mods may cancel (`native_projectile_impact`), on a server.
         let hear = self.native_hears_impacts();
@@ -3913,6 +3934,19 @@ impl Game<'_> {
                         })
                     }
                 };
+                if (p.is_thrown() && !matches!(p.kind, ProjectileKind::LlamaSpit))
+                    || p.is_arrow() && p.arrow.as_ref().is_none_or(|a| !a.no_physics)
+                {
+                    for block in horizon_client::powder_snow::contacts(
+                        p.previous,
+                        p.position,
+                        p.bounds(),
+                        false,
+                        |at| w.block_name(at.x, at.y, at.z) == "minecraft:powder_snow",
+                    ) {
+                        snow_contacts.push((block, p.position, p.velocity));
+                    }
+                }
                 if shooter.is_some() {
                     p.owner = Some(Who::Player);
                 }
@@ -4002,6 +4036,9 @@ impl Game<'_> {
                     super::deflect::aim_deflect(wind, look, owner, owner_uuid, guest);
                 }
             }
+        }
+        for (block, position, movement) in snow_contacts {
+            self.powder_snow_particle(block, position, movement);
         }
         let listed = keep_flags.clone();
         let mut idx = 0;
@@ -6072,7 +6109,7 @@ impl Game<'_> {
                 state: None,
                 at,
                 spread,
-                speed: 0.2,
+                speed: [0.2; 3],
                 count: count as i32,
                 randomization: 0,
             });
@@ -6999,14 +7036,19 @@ impl Game<'_> {
             }
             let p = glam::DVec3::from_array(at) - camera;
             let c = p.as_vec3();
+            // EntityRenderer.getPackedLightCoords: the block its light probe
+            // (the eye) is in, not the one under its feet.
             let light = self.world.light(
                 a.position.x.floor() as i32,
-                a.position.y.floor() as i32,
+                a.light_probe_y().floor() as i32,
                 a.position.z.floor() as i32,
             );
             let mut packed = (u32::from(light >> 4) * 16) | ((u32::from(light & 15) * 16) << 8);
-            if a.is_fireball() {
-                packed = (15 * 16) | ((15 * 16) << 8);
+            // EntityRenderer.getBlockLightLevel: a shulker bullet and anything
+            // on fire are drawn at 15 block light (the fireball renderers'
+            // own override); the sky light stays the level's.
+            if let Some(block) = a.block_light_override() {
+                packed = (packed & 0xFF) | (u32::from(block) * 16) << 8;
             }
             if a.is_arrow() {
                 let Some(model) = self.arrow_model.as_ref() else {
@@ -7192,6 +7234,19 @@ impl Game<'_> {
                 let size = a.kind.size() as f32;
                 flame_geometry(atlas, c, size, size, self.yaw, light, out);
             }
+            // `ThrownItemRenderer` for a fireball: the item `Fireball.getItem`
+            // returns (a fire charge until `setItem` gave it another), its model
+            // at the renderer's scale for the kind. `packed` is already 15, the
+            // renderer's full bright.
+            if let Some(stack) = a.item.as_ref() {
+                let owner = super::item_draw::owner_at(at, 0.0, a.kind.id());
+                let state = self.resolve_item(stack, DisplayContext::Ground, Some(&owner), 0);
+                let pose = glam::Mat4::from_translation(c)
+                    * glam::Mat4::from_quat(self.camera_orientation())
+                    * glam::Mat4::from_scale(glam::Vec3::splat(a.sprite_scale()));
+                self.submit_item_world(&state, pose, packed, out);
+                continue;
+            }
             let Some(name) = a.item_sprite() else {
                 continue;
             };
@@ -7252,15 +7307,12 @@ fn thrown_item_quad(
 }
 /// Whether vanilla draws the kind as `ThrownItemRenderer`'s item billboard, the
 /// only ones that take that lift. Llama spit shares this quad but
-/// `LlamaSpitRenderer` is a model, with its own offset.
+/// `LlamaSpitRenderer` is a model, with its own offset, and a fireball's item
+/// is drawn as the item model that carries the lift itself.
 fn is_item_billboard(kind: &ProjectileKind) -> bool {
     matches!(
         kind,
-        ProjectileKind::Snowball
-            | ProjectileKind::Egg
-            | ProjectileKind::EnderPearl
-            | ProjectileKind::SmallFireball
-            | ProjectileKind::LargeFireball { .. }
+        ProjectileKind::Snowball | ProjectileKind::Egg | ProjectileKind::EnderPearl
     )
 }
 /// `Bucketable.getBucketItemStack` and `getPickupSound` of a mob that a water
@@ -7506,13 +7558,15 @@ mod tests {
 
     #[test]
     fn thrown_item_billboard_lifts_by_the_generated_ground_transform() {
-        // The kinds vanilla draws with `ThrownItemRenderer`: the only lifted ones.
+        // The kinds vanilla draws with `ThrownItemRenderer` as a billboard: the
+        // only lifted ones. A fireball hands `getItem` to the item renderer
+        // instead, which carries the ground transform itself.
         assert!(is_item_billboard(&ProjectileKind::Snowball));
         assert!(is_item_billboard(&ProjectileKind::Egg));
         assert!(is_item_billboard(&ProjectileKind::EnderPearl));
-        assert!(is_item_billboard(&ProjectileKind::SmallFireball));
+        assert!(!is_item_billboard(&ProjectileKind::SmallFireball));
         let large = ProjectileKind::LargeFireball { power: 1 };
-        assert!(is_item_billboard(&large));
+        assert!(!is_item_billboard(&large));
         // A projectile at y = 100 with right = +X, up = +Y: the sprite sits
         // 0.125 blocks above the entity (2 of `item/generated`'s 16 units) and
         // stays 0.5 blocks wide, so the quad's y runs 99.875 .. 100.375.
@@ -7522,13 +7576,6 @@ mod tests {
         let (lo, hi) = bounds(&thrown_item_quad(at, right, up, 1.0, lifted));
         assert_eq!((lo.y, hi.y), (99.875, 100.375));
         assert_eq!((lo.x, hi.x), (-0.25, 0.25));
-        // A small fireball's 0.75 scale: the same quad scaled down, lifted by
-        // 0.09375, half extent 0.1875.
-        let (lo, hi) = bounds(&thrown_item_quad(at, right, up, 0.75, lifted));
-        assert_eq!((lo.y, hi.y), (99.90625, 100.28125));
-        // A large fireball's 3.0: lift 0.375, half extent 0.75.
-        let (lo, hi) = bounds(&thrown_item_quad(at, right, up, 3.0, lifted));
-        assert_eq!((lo.y, hi.y), (99.625, 101.125));
         // Llama spit shares the quad here but is a model in vanilla
         // (`LlamaSpitRenderer`): no lift at all.
         let lifted = is_item_billboard(&ProjectileKind::LlamaSpit);
@@ -7721,6 +7768,7 @@ mod pearl_tests {
             collision: &collision,
             data: &data,
             player: None,
+            controlling_player_movement: None,
             nearest_player: None,
             others: &[],
             dragon: None,

@@ -135,6 +135,16 @@ pub(super) fn remote_text(tag: &Tag) -> horizon_client::text::Text {
     comp_text(&tag_to_json(tag))
 }
 
+/// `Player.getVoicePitch`: a constant 1.0
+/// (`javap -p -c -constants net.minecraft.world.entity.player.Player`:
+/// `0: fconst_1  1: freturn`), so a player's own hurt and death sounds are
+/// neither raised for a baby nor jittered - `LivingEntity.getVoicePitch`, which
+/// the mobs port, does both. It takes no random, so it draws nothing from the
+/// level random either.
+pub(super) fn player_voice_pitch() -> f32 {
+    1.0
+}
+
 /// The hurt sound of a `ClientboundDamageEventPacket`'s damage type, by its
 /// synchronized registry id: `Player.getHurtSound` picks the type's effects.
 fn hurt_sound_for(
@@ -654,6 +664,8 @@ pub(super) struct Remote {
     death_message: Option<horizon_client::text::Text>,
     /// `LocalPlayer.showDeathScreen`: off with `immediate_respawn`.
     show_death_screen: bool,
+    /// `Player.isReducedDebugInfo`: the server's `reduced_debug_info` rule.
+    pub(super) reduced_debug_info: bool,
     /// `LocalPlayer.doLimitedCrafting`: whether limited crafting is enabled.
     pub(super) do_limited_crafting: bool,
     player_type: Option<Arc<MobType>>,
@@ -1091,6 +1103,7 @@ impl Game<'_> {
             flat: false,
             death_message: None,
             show_death_screen: true,
+            reduced_debug_info: false,
             do_limited_crafting: false,
             player_type,
             synced: vec![None; CREATIVE_SYNCED],
@@ -3077,6 +3090,7 @@ impl Game<'_> {
                     r.view_distance = p.chunk_radius;
                     r.simulation_distance = p.simulation_distance;
                     r.show_death_screen = p.show_death_screen;
+                    r.reduced_debug_info = p.reduced_debug_info;
                     r.do_limited_crafting = p.limited_crafting;
                 }
                 self.streaming.radius =
@@ -3916,9 +3930,10 @@ impl Game<'_> {
             // ClientPacketListener.handleDamageEvent: LivingEntity.handleDamageEvent
             // jolts the walk animation and restarts the hurt flash, and the
             // hurt player's own client plays its hurt sound (`Player.getHurtSound`:
-            // the damage type's effects) at `getSoundVolume` with a pitch that
-            // walks 1.0 ± 0.2 on the level random. The server's sound packet
-            // reaches every other player around, never this one (#4149).
+            // the damage type's effects) at `getSoundVolume` and
+            // `Player.getVoicePitch`, which is 1.0 for every player. The
+            // server's sound packet reaches every other player around, never
+            // this one (#4149), and that copy is played at 1.0.
             // This player's own hurt tilt and flash come from the server too
             // (sent to the player itself): its own moves never hurt it.
             C::DamageEvent(p) => {
@@ -3932,9 +3947,7 @@ impl Game<'_> {
                     }
                     if let Some(at) = at {
                         let sound = self.remote_hurt_sound(p.source_type);
-                        let pitch = 1.0
-                            + (self.world.random.next_float() - self.world.random.next_float())
-                                * 0.2;
+                        let pitch = player_voice_pitch();
                         self.audio.play_on(
                             horizon_client::settings::sound_source(sound),
                             sound,
@@ -3982,6 +3995,12 @@ impl Game<'_> {
                 {
                     self.ui.registries.permission = (p.event - 24) as u8;
                     self.remote_world_options_permission(p.event >= 26);
+                }
+                // Player.handleEntityEvent 22 / 23: reduced debug info on / off.
+                if (22..=23).contains(&p.event)
+                    && let Some(r) = self.remote.as_mut().filter(|r| r.entity_id == p.id)
+                {
+                    r.reduced_debug_info = p.event == 22;
                 }
                 // Ravager.handleEntityEvent 69: the roar's puff and push.
                 if p.event == 69 {
@@ -4038,8 +4057,7 @@ impl Game<'_> {
                 {
                     let at = [pl.position.x, pl.position.y, pl.position.z];
                     let sound = "minecraft:entity.player.death";
-                    let pitch = 1.0
-                        + (self.world.random.next_float() - self.world.random.next_float()) * 0.2;
+                    let pitch = player_voice_pitch();
                     self.audio.play_on(
                         horizon_client::settings::sound_source(sound),
                         sound,
@@ -8242,6 +8260,9 @@ impl Game<'_> {
             return !self.may_build() || self.pick().is_none();
         }
         if id == "minecraft:glass_bottle" {
+            // A dragon's breath cloud never counts here: its owner is not
+            // synced, so this client's BottleItem.use finds none and PASSes;
+            // the packet still goes and the server fills the bottle.
             return !source(Some(Fluid::Water));
         }
         if super::boats::any_boat_wood(id).is_some() {

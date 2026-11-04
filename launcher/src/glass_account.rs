@@ -296,6 +296,8 @@ impl Launcher {
                         .mt(px(24.))
                         .rounded(px(radius::ROW))
                         .bg(gpui::white())
+                        // On a light plate, Microsoft's white button keeps an edge.
+                        .when(ui::light(), |d| d.border_1().border_color(ui::white(0.15)))
                         .cursor_pointer()
                         .hover(|s| s.opacity(0.9))
                         .font_family(horizon_theme::glass::FONT)
