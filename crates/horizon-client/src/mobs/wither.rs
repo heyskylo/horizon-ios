@@ -1,7 +1,7 @@
 //! The wither (`WitherBoss`): eleven seconds of invulnerable charging that
 //! end in a blast, then flying after its target while three heads fire
-//! skulls, breaking blocks around it when hurt, immune to arrows below half
-//! health.
+//! skulls, breaking blocks around it when hurt, immune to arrows and a
+//! player's wind charges below half health.
 use super::{
     DamageKind, Mob, MobEvent, MobWorld, Species, Who,
     anim::{Poses, State},
@@ -449,6 +449,14 @@ pub fn accepts(m: &mut Mob, kind: DamageKind, attacker: Option<Who>, others_unde
     m.extra.ints[5] += 3;
     true
 }
+/// `WitherBoss.hurtServer`: a powered wither's armor refuses a direct
+/// `WindCharge`. A breeze's `BreezeWindCharge` is not one (both only extend
+/// `AbstractWindCharge`), so it still hurts. Checked on the projectile, not on
+/// `DamageKind`: the `wind_charge` damage type alone has no direct charge
+/// (`/damage @s minecraft:wind_charge`) and goes through.
+pub fn armor_refuses(m: &Mob, direct: &ProjectileKind) -> bool {
+    m.species() == Species::Wither && *direct == ProjectileKind::WindCharge && powered(m)
+}
 /// `WitherBossModel.setupAnim`.
 pub fn anim(m: &Mob, s: &State, p: &mut Poses) {
     let body =
@@ -517,6 +525,40 @@ mod tests {
         assert!(shielded_from(Species::Wither, Species::Skeleton));
         assert!(!shielded_from(Species::Wither, Species::Creeper));
         assert!(!shielded_from(Species::Zombie, Species::Wither));
+    }
+    /// `WitherBoss.hurtServer` tests `instanceof WindCharge`: a powered wither
+    /// took a point of damage from every charge (#8779), and a breeze's charge,
+    /// a sibling class, has to keep hurting it.
+    #[test]
+    fn only_a_powered_withers_armor_refuses_a_wind_charge() {
+        use crate::mobs::Damage;
+        use crate::mobs::sensor_scan_tests::kind;
+        use std::sync::Arc;
+        let mob = |species, health: f32| {
+            let mut kind = kind();
+            Arc::make_mut(&mut kind).species = species;
+            let mut m = Mob::new(1, kind, Vec3::ZERO, 0.0);
+            m.attrs.max_health = 300.0;
+            m.health = health;
+            m
+        };
+        let (charge, breeze) = (ProjectileKind::WindCharge, ProjectileKind::BreezeWindCharge);
+        // `isPowered` is `health <= max / 2`: the armor starts at exactly half.
+        let half = mob(Species::Wither, 150.0);
+        assert!(armor_refuses(&half, &charge));
+        assert!(armor_refuses(&mob(Species::Wither, 1.0), &charge));
+        assert!(!armor_refuses(&half, &breeze));
+        assert!(!armor_refuses(&mob(Species::Wither, 150.5), &charge));
+        assert!(!armor_refuses(&mob(Species::Zombie, 150.0), &charge));
+
+        // What `wind_charge_damage` lets through still lands on the armor...
+        let mut m = mob(Species::Wither, 150.0);
+        assert!(m.damage(1.0, Damage::of(DamageKind::Thrown)));
+        assert!(m.health < 150.0);
+        // ...and arrows stay refused by the damage filter.
+        let mut m = mob(Species::Wither, 150.0);
+        assert!(!m.damage(1.0, Damage::of(DamageKind::Arrow)));
+        assert_eq!(m.health, 150.0);
     }
     /// A spawning wither rolled the three particles of `aiStep`'s
     /// `getInvulnerableTicks() > 0` block and dropped them on the floor: the
