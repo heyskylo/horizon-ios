@@ -22,7 +22,7 @@ jobs:
     outputs:
       platforms: ${{ steps.platforms.outputs.platforms }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - id: platforms
         run: echo "platforms=$(python3 -c 'import json, tools.horizon_mod_binstall as m; print(json.dumps(m.PLATFORMS))')" >> "$GITHUB_OUTPUT"
   build:
@@ -35,7 +35,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
@@ -67,7 +67,7 @@ jobs:
           [ -f "$binary.exe" ] && binary="$binary.exe"
           mkdir -p dist
           tar -czf "dist/$(basename "$binary" | sed 's/\.exe$//')-${{ matrix.target }}.tar.gz" -C "$(dirname "$binary")" "$(basename "$binary")"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: cargo-horizon-mod-${{ matrix.target }}
           path: dist/*.tar.gz
@@ -81,8 +81,8 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
         with:
           pattern: cargo-horizon-mod-*
           path: dist
