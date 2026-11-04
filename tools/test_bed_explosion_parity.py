@@ -6,10 +6,14 @@ full netherite) stands in the Nether on an obsidian floor at y=200 and right-cli
 each facing (north, south, west, east) she stands in three places: behind the bed's foot, beside the head, and beside
 the foot with an obsidian block hiding her from the head. Her health after the blast and the push her client is sent
 are compared exactly (AbstractBedBlock.useWithoutItem, BedBlock.destroyOnUse, ServerExplosion.hurtEntities).
+What the blast does to something that is not a player is compared too: an armour stand, an invisible one, an item and
+a boat stand in front of the bed's head, and each one is asked whether it survived and, if it did, where it is and how
+it moves (`Entity.ignoreExplosion` and `ArmorStand.ignoreExplosion`'s `isInvisible`).
 """
 import os
 from pathlib import Path
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -28,6 +32,21 @@ NAME = 'bed-explosion-parity'
 FACINGS = {'north': (0, -1), 'south': (0, 1), 'west': (-1, 0), 'east': (1, 0)}
 NETHERITE = [f'cmd Alice item replace entity @s armor.{s} with minecraft:netherite_{p}'
              for s, p in (('head', 'helmet'), ('chest', 'chestplate'), ('legs', 'leggings'), ('feet', 'boots'))]
+
+
+# The things that are not the player standing in the blast, by the tag their
+# facts are read back under: an armour stand, one made invisible
+# (`ArmorStand.ignoreExplosion` asks `isInvisible`), an item and a boat.
+VICTIMS = ('stand', 'invisible', 'item', 'boat')
+
+
+def victim_facts(tag):
+    """What the blast did to one victim: whether it is still there, and its
+    position and motion if it is."""
+    at = f'@e[tag={tag},limit=1]'
+    return [f'cmd Alice execute if entity {at}',
+            f'cmd Alice data get entity {at} Pos',
+            f'cmd Alice data get entity {at} Motion']
 
 
 def scene(index, facing, place):
@@ -51,10 +70,21 @@ def scene(index, facing, place):
             f'cmd Alice setblock {hx} 200 {hz} minecraft:red_bed[facing={facing},part=head]']
     if wall:
         cmds.append(f'cmd Alice setblock {wall[0]} 200 {wall[1]} minecraft:obsidian')
+    # The victims stand in front of the head, where no placement puts Alice or
+    # the wall, and none of them carries gravity, so the only motion any of
+    # them can get is the blast's own.
+    def spot(along, side):
+        return f'{hx + dx * along + lx * side}.5 200 {hz + dz * along + lz * side}.5'
+    cmds += [f'cmd Alice summon minecraft:armor_stand {spot(2, 0)} {{Tags:["stand"],NoGravity:1b}}',
+             f'cmd Alice summon minecraft:armor_stand {spot(3, 0)} {{Tags:["invisible"],Invisible:1b,NoGravity:1b}}',
+             f'cmd Alice summon minecraft:item {spot(4, 0)} '
+             f'{{Item:{{id:"minecraft:stone",count:1}},Tags:["item"],NoGravity:1b,Age:1s}}',
+             f'cmd Alice summon minecraft:oak_boat {spot(2, -2)} {{Tags:["boat"],NoGravity:1b}}']
     pos = f'{at[0]} 200.0 {at[1]}'
     return [*cmds, f'cmd Alice tp Alice {pos} 0 0', f'pos Alice {pos} 0 0 1', 'ticks 20',
             'cmd Alice effect give @s minecraft:instant_health 1 10 true', 'ticks 5',
             f'useblock Alice {hx} 200 {hz}', 'ticks 10', 'cmd Alice data get entity @s Health',
+            *[line for tag in VICTIMS for line in victim_facts(tag)],
             'cmd Alice kill @e[type=!player]']
 
 
@@ -65,6 +95,21 @@ SETUP = ['cmd Alice gamerule spawn_mobs false', 'cmd Alice gamerule advance_time
          'ticks 20']
 
 
+DATA = re.compile(r'has the following entity data: (\[.*\])$')
+
+
+def nine(text):
+    """A list of doubles or floats to 9 decimal places. The blast writes
+    arbitrary bits into a victim's Pos and Motion, and NBT prints the shortest
+    form that round-trips, so the raw text of those two is not a stable
+    comparison (`test_server_knockback_parity` reads its mob the same way).
+    A scalar (`@s Health`) stays as it was printed."""
+    found = DATA.search(text)
+    if not found:
+        return text
+    return 'data ' + ' '.join(f'{float(v.rstrip("df")):.9f}' for v in found.group(1)[1:-1].split(', '))
+
+
 def compared(lines):
     cases = {}
     for line in lines:
@@ -73,8 +118,13 @@ def compared(lines):
         if step not in CASES:
             continue
         kept = cases.setdefault(step, [])
-        if 'has the following entity data' in text or text.startswith(('explode push', 'error', 'disconnected')):
+        if 'has the following entity data' in text:
+            kept.append(nine(text))
+        elif text.startswith(('explode push', 'error', 'disconnected')):
             kept.append(text)
+        elif text.removeprefix('chat ').startswith(('Test passed', 'Test failed')):
+            # `/execute if entity`: whether the victim survived the blast.
+            kept.append(text.removeprefix('chat '))
     return cases
 
 
