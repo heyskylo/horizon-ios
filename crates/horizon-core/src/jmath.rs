@@ -17,6 +17,23 @@
 //! So these functions return what vanilla returns on the same machine, on
 //! Linux and on an Apple silicon Mac alike.
 
+/// `Math.round(float)`, bit for bit: exact (no `x + 0.5` in `f32`), ties toward
+/// positive infinity, saturating to the `int` range, NaN to 0.
+pub fn round_f32(a: f32) -> i32 {
+    let bits = a.to_bits() as i32;
+    let biased_exp = (bits & 0x7F80_0000) >> 23;
+    let shift = (22 + 127) - biased_exp;
+    if shift & -32 == 0 {
+        let mut r = bits & 0x007F_FFFF | 0x0080_0000;
+        if bits < 0 {
+            r = -r;
+        }
+        ((r >> shift) + 1) >> 1
+    } else {
+        a as i32
+    }
+}
+
 /// `Math.sin`.
 pub fn sin(x: f64) -> f64 {
     if cfg!(target_arch = "aarch64") {
@@ -91,7 +108,7 @@ pub fn cbrt(x: f64) -> f64 {
 
 /// `Math.atan2`.
 pub fn atan2(y: f64, x: f64) -> f64 {
-    libm::atan2(y, x)
+    crate::geometry::trig::fdlibm_atan2(y, x)
 }
 
 /// `Math.atan`.
@@ -112,6 +129,13 @@ pub fn acos(x: f64) -> f64 {
 /// `Math.hypot`.
 pub fn hypot(x: f64, y: f64) -> f64 {
     fdlibm::hypot(x, y)
+}
+
+/// `Math.round(double)`: the nearest `long`, ties toward positive infinity
+/// (so `-2.5` is `-2`), saturating, `NaN` is 0.
+pub fn round(x: f64) -> i64 {
+    let f = x.floor();
+    (if x - f >= 0.5 { f + 1.0 } else { f }) as i64
 }
 
 fn hi(x: f64) -> i32 {
@@ -526,7 +550,42 @@ pub mod aarch64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{aarch64, fdlibm};
+    use super::{aarch64, fdlibm, round_f32};
+
+    #[test]
+    fn round_f32_is_exact_like_java() {
+        for (x, expected) in [
+            (0.499_999_97, 0),
+            (0.5, 1),
+            (-0.5, 0),
+            (2.5, 3),
+            (-2.5, -2),
+            (1e10, i32::MAX),
+            (-1e10, i32::MIN),
+            (f32::NAN, 0),
+            (8_388_609.0, 8_388_609),
+        ] {
+            assert_eq!(round_f32(x), expected, "{x}");
+        }
+    }
+
+    #[test]
+    fn round_ties_toward_positive_infinity() {
+        for (x, want) in [
+            (-2.5, -2),
+            (2.5, 3),
+            (-0.5, 0),
+            (-1.5, -1),
+            (0.5, 1),
+            (-2.6, -3),
+            (0.49999999999999994, 0),
+            (f64::NAN, 0),
+            (f64::INFINITY, i64::MAX),
+            (f64::NEG_INFINITY, i64::MIN),
+        ] {
+            assert_eq!(super::round(x), want, "round({x})");
+        }
+    }
 
     fn check1(f: fn(f64) -> f64, (x, expected): (u64, u64)) {
         assert_eq!(f(f64::from_bits(x)).to_bits(), expected, "{x:x}");
@@ -613,5 +672,95 @@ mod tests {
         check1(libm::tan, (0xbfebf862877c88ec, 0xbff31f61e3e8539e));
         check1(libm::tan, (0xc00e37e234490564, 0xbfe79ca6eee66726));
         check1(libm::tan, (0xc075c085c04800b5, 0x3fea18b4a92fcf22));
+    }
+
+    #[test]
+    fn atan2_matches_strictmath() {
+        // (y bits, x bits, StrictMath.atan2 bits) from HotSpot 25: x < 0 and
+        // |y/x| > 2^60, where libm::atan2 rounds one ulp lower,
+        check2(
+            super::atan2,
+            (0x440e8aff5d1e293c, 0xc007e9768e83b37e, 0x3ff921fb54442d19),
+        );
+        check2(
+            super::atan2,
+            (0x440c610b44a22b37, 0xbfb07327bcb4c280, 0x3ff921fb54442d19),
+        );
+        check2(
+            super::atan2,
+            (0x43eb71600e035874, 0xbfeaff77e5a9ea38, 0x3ff921fb54442d19),
+        );
+        check2(
+            super::atan2,
+            (0x440edb2112965d8f, 0xbffaec4345ac33b1, 0x3ff921fb54442d19),
+        );
+        check2(
+            super::atan2,
+            (0x3ff0000000000000, 0x8000000000000001, 0x3ff921fb54442d19),
+        );
+        check2(
+            super::atan2,
+            (0xbff0000000000000, 0x8000000000000001, 0xbff921fb54442d19),
+        );
+        check2(
+            super::atan2,
+            (0x7fefffffffffffff, 0xbff0000000000000, 0x3ff921fb54442d19),
+        );
+        check2(
+            super::atan2,
+            (0xffefffffffffffff, 0xbff0000000000000, 0xbff921fb54442d19),
+        );
+        check2(
+            super::atan2,
+            (0x38fd955bf292fbac, 0xb4f940da66879af2, 0x3ff921fb54442d19),
+        );
+        check2(
+            super::atan2,
+            (0xf8954a6a9b403072, 0xf49292c2e2d50436, 0xbff921fb54442d19),
+        );
+        check2(
+            super::atan2,
+            (0x07e155d47eb507f2, 0x83d22629ee8e8471, 0x3ff921fb54442d19),
+        );
+        check2(
+            super::atan2,
+            (0xd2471cd599853356, 0xce403e2e72061985, 0xbff921fb54442d19),
+        );
+        // and the other quadrants and special cases, which it already matched
+        check2(
+            super::atan2,
+            (0x440e8aff5d1e293c, 0x4007e9768e83b37e, 0x3ff921fb54442d18),
+        );
+        check2(
+            super::atan2,
+            (0xc40e8aff5d1e293c, 0x4007e9768e83b37e, 0xbff921fb54442d18),
+        );
+        check2(
+            super::atan2,
+            (0x0000000000000000, 0xbff0000000000000, 0x400921fb54442d18),
+        );
+        check2(
+            super::atan2,
+            (0x8000000000000000, 0xbff0000000000000, 0xc00921fb54442d18),
+        );
+        check2(
+            super::atan2,
+            (0x3ff0000000000000, 0x3ff0000000000000, 0x3fe921fb54442d18),
+        );
+        check2(
+            super::atan2,
+            (0x3ff0000000000000, 0xc410000000000000, 0x400921fb54442d18),
+        );
+        check2(
+            super::atan2,
+            (0x3e7ad7f29abcaf48, 0xc0f86a0000000000, 0x400921fb5444244c),
+        );
+        check2(
+            super::atan2,
+            (0x7ff0000000000000, 0xfff0000000000000, 0x4002d97c7f3321d2),
+        );
+        // NaN payloads may differ, so only NaN-ness is checked.
+        assert!(super::atan2(f64::NAN, 1.0).is_nan());
+        assert!(super::atan2(1.0, f64::NAN).is_nan());
     }
 }

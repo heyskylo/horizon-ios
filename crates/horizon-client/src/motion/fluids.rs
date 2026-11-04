@@ -72,6 +72,7 @@ impl FluidResources {
     }
 }
 /// The player's `EntityFluidInteraction` and the water flags around it.
+#[derive(Clone)]
 pub struct PlayerFluids {
     pub interaction: EntityFluidInteraction,
     /// `Entity.wasTouchingWater` (`isInWater`).
@@ -82,6 +83,16 @@ pub struct PlayerFluids {
     pub first_tick: bool,
     /// The dimension's `FAST_LAVA` (the Nether), set by the game.
     pub fast_lava: bool,
+    /// The boat the player sits in (`Entity.getVehicle`), set by the game.
+    pub boat: Option<RiddenBoat>,
+}
+/// What `AbstractBoat.modifyPassengerFluidInteractionBox` reads of a boat.
+#[derive(Clone, Copy, Debug)]
+pub struct RiddenBoat {
+    /// `AbstractBoat.isUnderWater`.
+    pub under_water: bool,
+    /// The top of the boat's box (`getBoundingBox().maxY`).
+    pub max_y: f64,
 }
 impl Default for PlayerFluids {
     fn default() -> Self {
@@ -91,6 +102,7 @@ impl Default for PlayerFluids {
             was_eye_in_water: false,
             first_tick: true,
             fast_lava: false,
+            boat: None,
         }
     }
 }
@@ -132,53 +144,124 @@ pub fn bubble_column_push(
     bounds: Aabb,
     velocity: &mut Vec3,
 ) -> bool {
+    bubble_column_push_over(world, registry, facts, collision, bounds, velocity, |_| {})
+}
+/// [`bubble_column_push`], telling `surface` the position of each column block
+/// the entity is at the top of: `handleOnAboveBubbleColumn` sends the splash and
+/// bubble particles over it (`Entity.sendBubbleColumnParticles`).
+pub fn bubble_column_push_over(
+    world: &World,
+    registry: &horizon_world::registry::BlockRegistry,
+    facts: &crate::blocks::BlockFacts,
+    collision: &horizon_world::block_collision::BlockCollisionRegistry<'_>,
+    bounds: Aabb,
+    velocity: &mut Vec3,
+    mut surface: impl FnMut(BlockPos),
+) -> bool {
+    let mut reset_fall = false;
+    bubble_columns_touching(world, registry, facts, collision, bounds, |pos, column| {
+        reset_fall |= column.push(velocity);
+        if column.surface {
+            surface(pos);
+        }
+    });
+    reset_fall
+}
+/// The column blocks `bounds` touches that it is at the top of: where the
+/// particles of `Entity.sendBubbleColumnParticles` start.
+pub fn bubble_column_surfaces(
+    world: &World,
+    registry: &horizon_world::registry::BlockRegistry,
+    facts: &crate::blocks::BlockFacts,
+    collision: &horizon_world::block_collision::BlockCollisionRegistry<'_>,
+    bounds: Aabb,
+) -> Vec<BlockPos> {
+    let mut surfaces = Vec::new();
+    bubble_columns_touching(world, registry, facts, collision, bounds, |pos, column| {
+        if column.surface {
+            surfaces.push(pos);
+        }
+    });
+    surfaces
+}
+/// Every bubble column block the box touches (`Entity.getInsideBlockPoints`).
+fn bubble_columns_touching(
+    world: &World,
+    registry: &horizon_world::registry::BlockRegistry,
+    facts: &crate::blocks::BlockFacts,
+    collision: &horizon_world::block_collision::BlockCollisionRegistry<'_>,
+    bounds: Aabb,
+    mut each: impl FnMut(BlockPos, BubbleColumn),
+) {
     let b = bounds.deflate(Vec3::new(
         f64::from(1.0e-5f32),
         f64::from(1.0e-5f32),
         f64::from(1.0e-5f32),
     ));
     let (lo, hi) = (b.min_position(), b.max_position());
-    let mut reset_fall = false;
     for x in lo.x.floor() as i32..=(hi.x.ceil() as i32 - 1) {
         for y in lo.y.floor() as i32..=(hi.y.ceil() as i32 - 1) {
             for z in lo.z.floor() as i32..=(hi.z.ceil() as i32 - 1) {
-                let state = world.block(x, y, z);
-                if &*facts.get(state).name != "minecraft:bubble_column" {
-                    continue;
+                let pos = BlockPos::new(x, y, z);
+                if let Some(column) = bubble_column_at(world, registry, facts, collision, pos) {
+                    each(pos, column);
                 }
-                let drag = registry
-                    .state(state)
-                    .and_then(|s| s.properties.get("drag"))
-                    .is_some_and(|d| d == "true");
-                let above = world.block(x, y + 1, z);
-                // stateAbove.getCollisionShape(level, pos): the shape is asked
-                // at the column's own position.
-                let mut scene = SceneCollisions {
-                    world,
-                    binding: collision,
-                    subject: None,
-                };
-                let context = horizon_world::collision_context::CollisionContext::empty(false);
-                let nothing_above = collision
-                    .collision_shape_with_context(
-                        &mut scene,
-                        above,
-                        BlockPos::new(x, y, z),
-                        &context,
-                    )
-                    .is_ok_and(|shape| shape.is_empty())
-                    && facts.get(above).fluid == crate::blocks::Fluid::None;
-                velocity.y = match (nothing_above, drag) {
-                    (true, true) => (-0.9_f64).max(velocity.y - 0.03),
-                    (true, false) => 1.8_f64.min(velocity.y + 0.1),
-                    (false, true) => (-0.3_f64).max(velocity.y - 0.03),
-                    (false, false) => 0.7_f64.min(velocity.y + 0.06),
-                };
-                reset_fall |= !nothing_above;
             }
         }
     }
-    reset_fall
+}
+/// A bubble column block as `BubbleColumnBlock.entityInside` sees it: whether
+/// it drags down (`DRAG_DOWN`), and whether it is the surface (nothing above it
+/// to collide with and no fluid there).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BubbleColumn {
+    pub drag: bool,
+    pub surface: bool,
+}
+impl BubbleColumn {
+    /// `Entity.handleOnAboveBubbleColumn` at the surface (it throws harder),
+    /// else `handleOnInsideBubbleColumn`. Returns whether it was inside below
+    /// the surface, which resets the fall distance.
+    pub fn push(self, velocity: &mut Vec3) -> bool {
+        velocity.y = match (self.surface, self.drag) {
+            (true, true) => (-0.9_f64).max(velocity.y - 0.03),
+            (true, false) => 1.8_f64.min(velocity.y + 0.1),
+            (false, true) => (-0.3_f64).max(velocity.y - 0.03),
+            (false, false) => 0.7_f64.min(velocity.y + 0.06),
+        };
+        !self.surface
+    }
+}
+/// The bubble column at `pos`, if there is one.
+pub fn bubble_column_at(
+    world: &World,
+    registry: &horizon_world::registry::BlockRegistry,
+    facts: &crate::blocks::BlockFacts,
+    collision: &horizon_world::block_collision::BlockCollisionRegistry<'_>,
+    pos: BlockPos,
+) -> Option<BubbleColumn> {
+    let state = world.block(pos.x, pos.y, pos.z);
+    if &*facts.get(state).name != "minecraft:bubble_column" {
+        return None;
+    }
+    let drag = registry
+        .state(state)
+        .and_then(|s| s.properties.get("drag"))
+        .is_some_and(|d| d == "true");
+    let above = world.block(pos.x, pos.y + 1, pos.z);
+    // stateAbove.getCollisionShape(level, pos): the shape is asked
+    // at the column's own position.
+    let mut scene = SceneCollisions {
+        world,
+        binding: collision,
+        subject: None,
+    };
+    let context = horizon_world::collision_context::CollisionContext::empty(false);
+    let surface = collision
+        .collision_shape_with_context(&mut scene, above, pos, &context)
+        .is_ok_and(|shape| shape.is_empty())
+        && facts.get(above).fluid == crate::blocks::Fluid::None;
+    Some(BubbleColumn { drag, surface })
 }
 /// Which fluids `FluidTags.WATER` and `FluidTags.LAVA` hold.
 pub struct FluidTags;
@@ -196,7 +279,13 @@ impl MotionWorld<'_, '_, '_> {
     pub fn fluid_base_tick(&mut self) -> Result<()> {
         self.player.fluids.was_eye_in_water = self.player.is_eye_in_fluid(WATER);
         self.update_fluids()?;
+        // `Player.updateSwimming`'s flying guard over `Entity.updateSwimming`,
+        // whose both branches need `!isPassenger()`: a rider keeps no swim, so
+        // the server's copy of a guest who boards a boat while swimming is not
+        // left in the swimming box (eye 0.4) in the seat, at the waterline,
+        // where the boat drowned and suffocated them (#4427).
         self.player.swimming = !self.player.flying
+            && !self.player.is_passenger
             && self.player.sprinting
             && if self.player.swimming {
                 self.player.fluids.was_touching_water
@@ -266,10 +355,22 @@ impl FluidInteractionWorld for MotionWorld<'_, '_, '_> {
     type Error = Box<dyn std::error::Error>;
     type Chunk = ();
     fn interaction_box(&mut self) -> Result<Option<Aabb>> {
-        // Entity.getFluidInteractionBox (not riding).
-        Ok(Some(
-            self.player.bounds().deflate(Vec3::new(0.001, 0.001, 0.001)),
-        ))
+        // Entity.getFluidInteractionBox: the box less 0.001, then the vehicle's
+        // say (`AbstractBoat.modifyPassengerFluidInteractionBox`).
+        let b = self.player.bounds().deflate(Vec3::new(0.001, 0.001, 0.001));
+        let Some(boat) = self.player.fluids.boat.filter(|boat| !boat.under_water) else {
+            return Ok(Some(b));
+        };
+        let (lo, hi) = (b.min_position(), b.max_position());
+        // A boat that reaches the passenger's head shelters all of it; else
+        // only what lies above the boat's top counts.
+        if boat.max_y >= hi.y {
+            return Ok(None);
+        }
+        Ok(Some(Aabb::new(
+            Vec3::new(lo.x, lo.y.max(boat.max_y), lo.z),
+            hi,
+        )))
     }
     fn loaded_chunk(&mut self, x: i32, z: i32) -> Result<Option<()>> {
         Ok(self.scene.chunks.contains_key(&(x, z)).then_some(()))
@@ -277,10 +378,10 @@ impl FluidInteractionWorld for MotionWorld<'_, '_, '_> {
     fn chunk_sections(&mut self, _: ()) -> Result<FluidSections<'_>> {
         // Resident sections keep no fluid count: scanning the box finds no
         // fluid where a section without fluid would have skipped it.
-        static SECTIONS: [bool; crate::chunk::SECTIONS] = [true; crate::chunk::SECTIONS];
+        let layout = self.scene.layout();
         Ok(FluidSections {
-            minimum_section_y: crate::chunk::MIN_Y >> 4,
-            has_fluid: &SECTIONS,
+            minimum_section_y: layout.min_y() >> 4,
+            has_fluid: crate::chunk::every_section(layout),
         })
     }
     fn bounding_box_min_y(&self) -> f64 {
@@ -324,6 +425,10 @@ impl EntityFluidTickWorld for MotionWorld<'_, '_, '_> {
         self.player.fluids.first_tick
     }
     fn water_splash(&mut self) -> Result<()> {
+        // `Player.doWaterSplashEffect`: spectators skip the effect (and its random draws).
+        if self.player.spectator {
+            return Ok(());
+        }
         water_splash::water_splash(self, 1_000_000).map_err(|e| e.to_string())?;
         Ok(())
     }

@@ -2,7 +2,7 @@
 //! `ItemFrame.survives`, `interact` (put an item in, then rotate it),
 //! `hurtServer` (take the item out, then break the frame) and
 //! `ItemFrameRenderer` (the frame model and the item at a 45 degree step).
-use super::{Game, Hit};
+use super::{Game, Hit, InteractTarget};
 use horizon_assets::{bake::bake_model, model::CuboidModel, resolve::ModelLibrary};
 use horizon_client::{entities::ItemFrame, items::ItemStack, mesher::Vertex};
 use horizon_core::{
@@ -125,6 +125,39 @@ impl Game<'_> {
                 .iter()
                 .any(|o| o.id != f.id && o.facing == f.facing && overlaps(o.bounds()))
     }
+    /// Asks the mods whether the acting guest may place a hanging entity
+    /// of type `kind` at `pos` (`native_hanging_place`): true when one
+    /// cancelled it. A game's own player is not asked.
+    pub(super) fn hanging_place_cancelled(&mut self, kind: &str, pos: [i32; 3]) -> bool {
+        let (Some(uuid), Some(name)) = (self.lan_acting_uuid, self.lan_acting_name.clone()) else {
+            return false;
+        };
+        let mut cancel = false;
+        self.native_hanging_place(uuid, &name, kind, pos, &mut cancel);
+        cancel
+    }
+    /// Asks the mods whether a hanging entity of type `kind` at `pos` may
+    /// break (`native_hanging_break`): true when one cancelled it. A break by
+    /// a player is asked only for the acting guest, with them as the player;
+    /// a break by anything else is asked with none.
+    pub(super) fn hanging_break_cancelled(
+        &mut self,
+        kind: &str,
+        pos: [i32; 3],
+        by_player: bool,
+    ) -> bool {
+        let player = if by_player {
+            let Some(uuid) = self.lan_acting_uuid else {
+                return false;
+            };
+            Some(uuid)
+        } else {
+            None
+        };
+        let mut cancel = false;
+        self.native_hanging_break(player, kind, pos, &mut cancel);
+        cancel
+    }
     /// `ItemFrameItem.useOn`.
     pub(super) fn place_item_frame(&mut self, hit: &Hit, stack: &ItemStack) -> bool {
         let glow = match &*stack.item {
@@ -132,7 +165,21 @@ impl Game<'_> {
             "minecraft:glow_item_frame" => true,
             _ => return false,
         };
-        let pos = std::array::from_fn(|i| hit.pos[i] + hit.face[i]);
+        let invisible = stack.extra.as_ref().is_some_and(|extra| {
+            extra.other.iter().any(|(k, v)| {
+                (k == "minecraft:entity_data" || k == "entity_data")
+                    && horizon_client::save::number(v.get("Invisible")).unwrap_or(0) != 0
+            })
+        });
+        let pos: [i32; 3] = std::array::from_fn(|i| hit.pos[i] + hit.face[i]);
+        // `ItemFrameItem.mayPlace`: `Level.isInsideBuildHeight(blockPos)`, so a frame is not
+        // placed on the top face of the highest block or under the lowest one.
+        if !(horizon_client::chunk::MIN_Y
+            ..horizon_client::chunk::MIN_Y + horizon_client::chunk::HEIGHT)
+            .contains(&pos[1])
+        {
+            return false;
+        }
         let frame = ItemFrame {
             id: self.next_entity + 1,
             pos,
@@ -142,11 +189,19 @@ impl Game<'_> {
             rotation: 0,
             drop_chance: 1.0,
             fixed: false,
-            invisible: false,
+            invisible,
             check_interval: 0,
         };
         if !self.frame_survives(&frame) {
             return false;
+        }
+        let kind = if glow {
+            "minecraft:glow_item_frame"
+        } else {
+            "minecraft:item_frame"
+        };
+        if self.hanging_place_cancelled(kind, pos) {
+            return true;
         }
         self.next_entity += 1;
         self.audio
@@ -161,7 +216,7 @@ impl Game<'_> {
     /// The frame under the crosshair within reach and its distance.
     pub(super) fn frame_hit(&self) -> Option<(usize, f64)> {
         let (eye, dir) = self.aim()?;
-        let reach: f64 = if self.creative { 5.0 } else { 3.0 };
+        let reach: f64 = self.entity_reach;
         let mut best: Option<(usize, f64)> = None;
         for (i, f) in self.item_frames.iter().enumerate() {
             let (lo, hi) = f.bounds();
@@ -187,7 +242,7 @@ impl Game<'_> {
     }
     /// Nearer than the targeted block?
     pub(super) fn before_block(&self, distance: f64) -> bool {
-        self.pick().is_none_or(|h| {
+        self.pick_unfiltered().is_none_or(|h| {
             let eye = self.aim().map(|(eye, _)| eye).unwrap_or_default();
             (0..3)
                 .map(|a| (h.point[a] - eye[a]).powi(2))
@@ -196,20 +251,28 @@ impl Game<'_> {
                 > distance
         })
     }
-    /// `ItemFrame.interact` for the frame under the crosshair.
-    pub(super) fn interact_frame(&mut self) -> bool {
-        let Some((i, d)) = self.frame_hit() else {
+    /// `ItemFrame.interact` for the frame under the crosshair, or the one a
+    /// guest's interact packet named.
+    pub(super) fn interact_frame(&mut self, target: Option<InteractTarget>) -> bool {
+        let Some((i, d)) = (match target {
+            Some(t) => Self::named_entity(&self.item_frames, t.id, |f| f.id).map(|i| (i, 0.0)),
+            None => self.frame_hit(),
+        }) else {
             return false;
         };
-        if !self.before_block(d) || self.item_frames[i].fixed {
+        // Only a client's own pick is stopped by a block: the range check passed.
+        if (target.is_none() && !self.before_block(d)) || self.item_frames[i].fixed {
             return false;
         }
         let at = center(&self.item_frames[i]);
+        let entity_id = self.item_frames[i].id;
+        let action;
         if self.item_frames[i].item.is_none() {
             let Some(held) = self.held().cloned() else {
                 return false;
             };
             self.item_frames[i].item = Some(ItemStack { count: 1, ..held });
+            action = "put";
             self.audio
                 .play(&sound(&self.item_frames[i], "add_item"), Some(at), 1.0, 1.0);
             if !self.creative {
@@ -218,12 +281,21 @@ impl Game<'_> {
         } else {
             let f = &mut self.item_frames[i];
             f.rotation = (f.rotation + 1) % 8;
+            action = "rotate";
             let s = sound(f, "rotate_item");
             self.audio.play(&s, Some(at), 1.0, 1.0);
         }
         let p = self.item_frames[i].pos;
         self.world.modified.insert((p[0] >> 4, p[2] >> 4));
         self.frame_output_changed(p);
+        if let (Some(player), Some(name)) = (self.lan_acting_uuid, self.lan_acting_name.clone()) {
+            let frame = self.item_frames.iter().find(|f| f.id == entity_id);
+            let item = frame
+                .and_then(|f| f.item.as_ref())
+                .map_or_else(String::new, |s| s.item.to_string());
+            let rotation = frame.map_or(0, |f| f.rotation);
+            self.native_player_item_frame_change(player, &name, entity_id, action, &item, rotation);
+        }
         self.swing_arm();
         true
     }
@@ -236,9 +308,28 @@ impl Game<'_> {
             return false;
         }
         if self.item_frames[i].fixed {
+            // A fixed frame refuses the hit of a player who isn't in creative
+            // (canHurtWhenFixed), so skipAttackInteraction is false and
+            // Player.attack goes on to onAttack.
+            if !self.creative {
+                self.attack_ticks = 0;
+            }
             return true;
         }
         let with_frame = self.item_frames[i].item.is_none();
+        let entity_id = self.item_frames[i].id;
+        if with_frame {
+            let (kind, pos) = (self.item_frames[i].kind(), self.item_frames[i].pos);
+            if self.hanging_break_cancelled(kind, pos, true) {
+                return true;
+            }
+        }
+        let old_item = self.item_frames[i]
+            .item
+            .as_ref()
+            .map_or("", |s| &*s.item)
+            .to_owned();
+        let rotation = self.item_frames[i].rotation;
         let at = center(&self.item_frames[i]);
         let f = if with_frame {
             self.item_frames.remove(i)
@@ -259,6 +350,16 @@ impl Game<'_> {
         if f.item.is_some() {
             self.frame_output_changed(f.pos);
         }
+        if let (Some(player), Some(name)) = (self.lan_acting_uuid, self.lan_acting_name.clone()) {
+            self.native_player_item_frame_change(
+                player,
+                &name,
+                entity_id,
+                if with_frame { "break" } else { "remove_item" },
+                if with_frame { "" } else { &old_item },
+                rotation,
+            );
+        }
         true
     }
     /// `ItemFrame.setItem` / `setRotation`: `updateNeighbourForOutputSignal`, so
@@ -269,25 +370,83 @@ impl Game<'_> {
     }
     /// `ItemFrame.dropItem`: the frame (when breaking) and the held item.
     fn drop_frame_items(&mut self, f: &ItemFrame, with_frame: bool, by_player: bool) {
+        // The framed map forgets the frame, except when the drops are off and
+        // something caused the break (`removeFramedMap` runs only for a null
+        // `causedBy` then).
+        if self.ui.rules.bool("entity_drops") || !by_player {
+            self.remove_framed_map(f);
+        }
         if !self.ui.rules.bool("entity_drops") || (by_player && self.creative) {
             return;
         }
         let s = f.step().map(f64::from);
         let c = center(f);
         let at = [c[0] + s[0] * 0.15, c[1], c[2] + s[2] * 0.15];
+        let mut drops = Vec::new();
         if with_frame {
-            let frame = ItemStack {
+            drops.push(ItemStack {
                 item: Arc::from(f.kind()),
                 count: 1,
                 damage: 0,
                 extra: None,
-            };
-            self.spawn_item(frame, at, [0.0; 3], 10);
+            });
         }
         if let Some(item) = f.item.clone()
             && self.world.random.next_float() < f.drop_chance
         {
-            self.spawn_item(item, at, [0.0; 3], 10);
+            drops.push(item);
+        }
+        if by_player && !drops.is_empty() {
+            let tool = self.held().cloned();
+            self.native_use_drops(
+                "",
+                c,
+                None,
+                Some((f.id, f.kind())),
+                tool.as_ref(),
+                &mut drops,
+            );
+        }
+        for stack in drops {
+            self.spawn_item(stack, at, [0.0; 3], 10);
+        }
+    }
+    /// `ServerExplosion.hurtEntities` for item frames: a frame within the blast
+    /// is killed and dropped with its item (`BlockAttachedEntity.hurtServer`).
+    /// A fixed frame is not hurt by an explosion, and `blast_spares_decorations`
+    /// keeps every frame without `mobGriefing`.
+    pub(super) fn explosion_breaks_frames(
+        &mut self,
+        blast: [f64; 3],
+        diameter: f64,
+        interaction: super::explosion::BlockInteraction,
+    ) {
+        if self.blast_spares_decorations(interaction) {
+            return;
+        }
+        let mut i = 0;
+        while i < self.item_frames.len() {
+            let c = center(&self.item_frames[i]);
+            let dist =
+                ((c[0] - blast[0]).powi(2) + (c[1] - blast[1]).powi(2) + (c[2] - blast[2]).powi(2))
+                    .sqrt()
+                    / diameter;
+            let (kind, pos) = (self.item_frames[i].kind(), self.item_frames[i].pos);
+            if dist > 1.0
+                || self.item_frames[i].fixed
+                || self.hanging_break_cancelled(kind, pos, false)
+            {
+                i += 1;
+                continue;
+            }
+            let f = self.item_frames.remove(i);
+            self.audio
+                .play(&sound(&f, "break"), Some(center(&f)), 1.0, 1.0);
+            self.drop_frame_items(&f, true, false);
+            self.world.modified.insert((f.pos[0] >> 4, f.pos[2] >> 4));
+            if f.item.is_some() {
+                self.frame_output_changed(f.pos);
+            }
         }
     }
     /// BlockAttachedEntity.tick for frames.
@@ -305,7 +464,8 @@ impl Game<'_> {
             if self.item_frames[i].check_interval >= 100 {
                 self.item_frames[i].check_interval = 0;
                 let f = self.item_frames[i].clone();
-                if !self.frame_survives(&f) {
+                if !self.frame_survives(&f) && !self.hanging_break_cancelled(f.kind(), f.pos, false)
+                {
                     self.item_frames.remove(i);
                     self.audio
                         .play(&sound(&f, "break"), Some(center(&f)), 1.0, 1.0);
@@ -377,6 +537,7 @@ impl Game<'_> {
             };
             let frame_packed =
                 (u32::from(frame_light >> 4) * 16) | ((u32::from(frame_light & 15) * 16) << 8);
+            let frame_start = out.len();
             let mut quad =
                 |m: &glam::DMat4, corners: [[f64; 3]; 4], uv: [[f32; 2]; 4], light: u32| {
                     // The frame model is drawn with the entity shader, lit by its face normal.
@@ -424,7 +585,21 @@ impl Game<'_> {
                     );
                 }
             }
+            // HDR output: a glow frame shines softly (entity.wgsl fs_hdr_mark); the item in it
+            // is only lit, as vanilla draws it.
+            if f.glow {
+                for v in &mut out[frame_start..] {
+                    v.layer |= u32::from(horizon_client::mesher::INCANDESCENT) << 16;
+                }
+            }
             self.cull_entity_vertices(out, entity_start);
+            if let Some(stack) = &f.item {
+                let mut canceled = false;
+                self.native_render_item_in_frame(f.id, f.pos, stack, &mut canceled);
+                if canceled {
+                    continue;
+                }
+            }
             if let Some(id) = map {
                 // ItemFrameRenderer: the map fills the face, in 90-degree steps.
                 let depth = if f.invisible { 0.5 } else { 0.4375 };
@@ -455,6 +630,9 @@ impl Game<'_> {
             items.push((stack, f.id, m.as_mat4(), item_light));
         }
         // `extractRenderState`: FIXED, seeded by the frame entity.
+        let skinning = self.skinning();
+        let lights =
+            horizon_client::block_entity_render::diffuse_lights(self.dim == super::Dim::Nether);
         for (stack, id, m, light) in items {
             let entity_start = out.len();
             let owner = super::item_draw::owner_at([0.0; 3], 0.0, "minecraft:item_frame");
@@ -464,13 +642,15 @@ impl Game<'_> {
                 Some(&owner),
                 id as i32,
             );
-            self.submit_item_world(
-                &state,
-                m,
-                horizon_client::block_entity_render::vertex_light(light),
-                out,
-            );
-            self.cull_entity_vertices(out, entity_start);
+            let light = horizon_client::block_entity_render::vertex_light(light);
+            // Posed on the GPU when every layer can be.
+            let skinned = skinning
+                .then(|| self.submit_item_skinned(&state, &[m], light, lights))
+                .flatten();
+            if skinned.is_none() {
+                self.submit_item_world(&state, m, light, out);
+            }
+            self.cull_skinned(out, entity_start, skinned);
         }
         for (id, m, light) in maps {
             let entity_start = out.len();

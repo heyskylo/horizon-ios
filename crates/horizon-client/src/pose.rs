@@ -94,7 +94,8 @@ impl PlayerMotion {
         Ok(pose.dimensions(self.attribute("minecraft:scale")? as f32))
     }
     pub fn refresh_dimensions(&mut self) -> Result<()> {
-        self.dimensions = self.dimensions_for_pose(self.pose)?;
+        self.scale = self.attribute("minecraft:scale")? as f32;
+        self.dimensions = self.pose.dimensions(self.scale);
         Ok(())
     }
     pub fn set_pose(&mut self, pose: Pose) -> Result<()> {
@@ -166,5 +167,47 @@ impl MotionWorld<'_, '_, '_> {
             Pose::Swimming
         };
         self.player.set_pose(pose)
+    }
+    /// The end of a server's copy of a player's tick (`ServerPlayer.doTick`
+    /// runs `Player.tick`): `LivingEntity.aiStep` counts a Riptide spin down,
+    /// `LivingEntity.tick` then runs `refreshDirtyAttributes` (a changed
+    /// `minecraft:scale` rebuilds the box, `onAttributeUpdated`), and
+    /// `Player.tick` ends with `updatePlayerPose`. The server checks the
+    /// player's moves with that box (#3684).
+    pub fn server_player_pose_tick(&mut self) -> Result<()> {
+        self.player.count_down_server_spin();
+        self.player.refresh_attributes()?;
+        self.update_player_pose()
+    }
+    /// The pose part of `Player.tick` for a passenger (`Entity.rideTick` runs
+    /// `tick`, not the travel): `Entity.updateSwimming` stops a swim, since it
+    /// needs `!isPassenger()`, and `updatePlayerPose` follows. A player who
+    /// boards a boat while swimming sits up instead of lying under it (#3308).
+    /// The server's `LivingEntity.updateFallFlying` ends a glide the same way
+    /// (`canGlide` needs `!isPassenger()`) and `LivingEntity.tick` resets
+    /// `fallFlyTicks`: a player who boards while gliding sits up instead of
+    /// keeping the glide pose (#3093).
+    /// `Entity.baseTick` still samples the fluids first, in the box the vehicle
+    /// allows (the boat the game stores in the player's fluid state), so a boat
+    /// afloat keeps the eyes dry.
+    pub fn passenger_pose_tick(&mut self) -> Result<()> {
+        self.player.fluids.was_eye_in_water = self.player.is_eye_in_fluid(crate::motion::WATER);
+        self.update_fluids()?;
+        // Player.tick: a passenger is never on the ground (setOnGround(false)
+        // clears the supporting block too), so its look packets say so.
+        self.player.ground.on_ground = false;
+        self.player.ground.on_ground_no_blocks = false;
+        self.player.ground.supporting_block = None;
+        self.player.swimming = false;
+        self.player.fall_flying = false;
+        self.player.fall_fly_ticks = 0;
+        self.update_player_pose()?;
+        // A cushion's seat puts the feet in the support block, so neither
+        // standing nor crawling fits and `updatePlayerPose` keeps the old
+        // pose. A prior swim would stick (#4509); sit up like a boat rider.
+        if self.player.pose == Pose::Swimming && !self.player.sleeping {
+            self.player.set_pose(Pose::Standing)?;
+        }
+        Ok(())
     }
 }

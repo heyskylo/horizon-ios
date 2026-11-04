@@ -93,7 +93,37 @@ pub fn save(path: &Path, servers: &[ServerEntry]) -> std::io::Result<()> {
             Tag::List(servers.iter().map(ServerEntry::to_tag).collect()),
         )]),
     };
-    let bytes = nbt::write_named(&root, nbt::Limits::default()).map_err(std::io::Error::other)?;
+    write(path, &root)
+}
+/// Puts `entry` first, keeping every other entry and field as the file has them (the hidden
+/// ones too). A file that is there but can't be read is left as it is.
+pub fn prepend(path: &Path, entry: &ServerEntry) -> std::io::Result<()> {
+    let mut root = match std::fs::read(path) {
+        Ok(bytes) => {
+            nbt::read_named(&bytes, nbt::Limits::default())
+                .map_err(std::io::Error::other)?
+                .0
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => NamedTag {
+            name: JavaString::from(""),
+            tag: Tag::Compound(Default::default()),
+        },
+        Err(e) => return Err(e),
+    };
+    let Tag::Compound(top) = &mut root.tag else {
+        return Err(std::io::Error::other("servers.dat is not a compound"));
+    };
+    match top
+        .entry(JavaString::from("servers"))
+        .or_insert_with(|| Tag::List(Vec::new()))
+    {
+        Tag::List(list) => list.insert(0, entry.to_tag()),
+        _ => return Err(std::io::Error::other("servers.dat has no server list")),
+    }
+    write(path, &root)
+}
+fn write(path: &Path, root: &NamedTag) -> std::io::Result<()> {
+    let bytes = nbt::write_named(root, nbt::Limits::default()).map_err(std::io::Error::other)?;
     let tmp = path.with_extension("dat_tmp");
     std::fs::write(&tmp, bytes)?;
     std::fs::rename(tmp, path)
@@ -144,6 +174,41 @@ mod tests {
             nbt::read_named(&std::fs::read(&path).unwrap(), nbt::Limits::default()).unwrap();
         assert_eq!(root.name, JavaString::from(""));
         assert!(matches!(root.tag.get("servers"), Some(Tag::List(l)) if l.len() == 2));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn prepend_keeps_hidden_entries_and_unknown_fields() {
+        let dir = std::env::temp_dir().join(format!("horizon-prepend-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("servers.dat");
+        prepend(&path, &ServerEntry::new("First", "a.example")).unwrap();
+        assert_eq!(load(&path), [ServerEntry::new("First", "a.example")]);
+        let hidden = Tag::compound([
+            ("name", Tag::String(JavaString::from("Direct"))),
+            ("ip", Tag::String(JavaString::from("b.example"))),
+            ("hidden", Tag::Byte(1)),
+            ("acceptedCodeOfConduct", Tag::String(JavaString::from("x"))),
+        ]);
+        let root = NamedTag {
+            name: JavaString::from(""),
+            tag: Tag::compound([("servers", Tag::List(vec![hidden.clone()]))]),
+        };
+        write(&path, &root).unwrap();
+        prepend(&path, &ServerEntry::new("Top", "c.example")).unwrap();
+        let (root, _) =
+            nbt::read_named(&std::fs::read(&path).unwrap(), nbt::Limits::default()).unwrap();
+        let Some(Tag::List(list)) = root.tag.get("servers") else {
+            panic!("a server list");
+        };
+        assert_eq!(
+            list,
+            &[ServerEntry::new("Top", "c.example").to_tag(), hidden]
+        );
+        // A file that can't be read stays as it is.
+        std::fs::write(&path, b"not nbt").unwrap();
+        assert!(prepend(&path, &ServerEntry::new("Top", "c.example")).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), b"not nbt");
         std::fs::remove_dir_all(dir).unwrap();
     }
 

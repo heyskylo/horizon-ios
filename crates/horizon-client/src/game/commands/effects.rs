@@ -21,7 +21,7 @@ impl Tracker {
     }
 }
 fn effect_name(id: &str) -> Text {
-    Text::translate(&format!("effect.minecraft.{id}"), &[])
+    Text::translate(&brewing::description_id(id), &[])
 }
 impl Game<'_> {
     fn effect_arg(ctx: &Context) -> R<&'static brewing::EffectDef> {
@@ -73,11 +73,10 @@ impl Game<'_> {
                 Target::Mob(id) => match self.mobs.iter_mut().find(|m| m.id == id) {
                     Some(m) => {
                         let name = namespaced(effect.id);
-                        m.add_effect(name, duration, amplifier);
-                        m.extra.hidden_effects.retain(|h| *h != name);
-                        if !particles {
-                            m.extra.hidden_effects.push(name);
-                        }
+                        let new = !m.has_effect(name);
+                        // `new MobEffectInstance(effect, duration, amplifier, false, particles)`.
+                        m.add_effect_with(name, duration, amplifier, false, particles);
+                        self.mod_effect_added(name, Some(id as i32), amplifier, new);
                         true
                     }
                     None => false,
@@ -144,6 +143,9 @@ impl Game<'_> {
                         m.extra
                             .hidden_effects
                             .retain(|h| left.iter().any(|x| x.0 == *h));
+                        m.extra
+                            .ambient_effects
+                            .retain(|h| left.iter().any(|x| x.0 == *h));
                         m.extra.effects.len() != before
                     }
                     None => false,
@@ -182,7 +184,7 @@ impl Game<'_> {
             return Ok(0);
         };
         let level = Self::int(ctx, "level").unwrap_or(1);
-        let enchantments = &self.res.stations().enchantments;
+        let enchantments = &self.stations().enchantments;
         let Some(def) = enchantments.get(&id) else {
             return Err(err(
                 "argument.resource.not_found",
@@ -208,8 +210,8 @@ impl Game<'_> {
                         }
                         continue;
                     };
-                    let e = &self.res.stations().enchantments;
-                    let compatible = e.can_enchant(self.res.items(), &id, &stack.item)
+                    let e = &self.stations().enchantments;
+                    let compatible = e.can_enchant(self.items(), &id, &stack.item)
                         && stack
                             .crafting_enchantments()
                             .iter()
@@ -223,10 +225,9 @@ impl Game<'_> {
                         // getHoverName().getString(): the custom or item name, no brackets.
                         return Err(err(
                             "commands.enchant.failed.incompatible",
-                            &[&stack.custom_name().map_or_else(
-                                || self.pack.names.item(&stack.item).to_string(),
-                                str::to_owned,
-                            )],
+                            &[&stack
+                                .custom_name()
+                                .unwrap_or_else(|| self.pack.names.item(&stack.item).to_string())],
                         ));
                     }
                 }

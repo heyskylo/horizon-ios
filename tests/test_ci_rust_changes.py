@@ -11,7 +11,7 @@ class RustChangesTests(unittest.TestCase):
     def test_only_content_changes_skip_rust(self):
         self.assertFalse(needs_rust([]))
         self.assertFalse(needs_rust([
-            "docs/setup.md", "docs/media/banner.html", "README.md",
+            "docs/setup.md", "docs/media/banner.webp", "README.md",
         ]))
         for path in [
             "crates/horizon-client/src/game.rs", "xtask/src/main.rs", "Cargo.lock",
@@ -27,6 +27,7 @@ class RustChangesTests(unittest.TestCase):
             with self.subTest(path=path):
                 self.assertFalse(needs_launcher([path]))
         for path in ["launcher/src/main.rs", "launcher/Cargo.lock", "crates/horizon-port-pack/src/net.rs",
+                     "crates/horizon-mcp/src/lib.rs", "crates/horizon-mod-api-gen/src/injection.rs",
                      "crates/horizon-theme/src/lib.rs", "Cargo.toml", "Cargo.lock",
                      ".github/workflows/ci.yml"]:
             with self.subTest(path=path):

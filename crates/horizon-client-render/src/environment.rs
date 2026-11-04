@@ -120,7 +120,7 @@ pub struct Environment {
     tracks: HashMap<String, Track>,
     base: HashMap<String, [f32; 4]>,
 }
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct Sky {
     pub sky_color: [f32; 3],
     pub fog_color: [f32; 3],
@@ -141,6 +141,8 @@ pub struct Sky {
     pub fog_end: f32,
     /// `visual/cloud_fog_end_distance`.
     pub cloud_fog_end: f32,
+    /// `visual/cloud_height`.
+    pub cloud_height: f32,
 }
 impl Environment {
     pub fn load(root: &Path) -> Result<Self> {
@@ -309,6 +311,10 @@ impl Environment {
                 .base
                 .get("minecraft:visual/cloud_fog_end_distance")
                 .map_or(2048.0, |v| v[0]),
+            cloud_height: self
+                .base
+                .get("minecraft:visual/cloud_height")
+                .map_or(crate::clouds::CLOUD_HEIGHT as f32, |v| v[0]),
         }
     }
 }
@@ -387,5 +393,38 @@ pub fn apply_weather(sky: &mut Sky, rain: f32, thunder: f32) {
                 s[3],
             ],
         );
+    }
+}
+
+pub fn sky_darken(environment: &Environment, day_time: i64, rain: f32, thunder: f32) -> i32 {
+    let mut sky = environment.sample(day_time, None, None);
+    apply_weather(&mut sky, rain, thunder);
+    // Level.updateSkyBrightness: darkening from the sky light level.
+    (15.0 - 15.0 * sky.sky_light_level).round() as i32
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn overworld() -> Option<Environment> {
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client/26.3");
+        root.join("data/minecraft/timeline/day.json")
+            .exists()
+            .then(|| Environment::load(&root).unwrap())
+    }
+
+    #[test]
+    fn dark_outside_follows_time_and_weather_levels() {
+        let Some(env) = overworld() else {
+            return;
+        };
+        let dark = |time, rain, thunder| sky_darken(&env, time, rain, thunder) >= 4;
+        assert!(!dark(6000, 0.0, 0.0), "clear noon");
+        assert!(!dark(6000, 1.0, 0.0), "rainy noon");
+        assert!(dark(6000, 1.0, 1.0), "thunderstorm at noon");
+        assert!(dark(18000, 0.0, 0.0), "clear midnight");
+        assert!(!dark(1000, 0.0, 0.0), "clear morning");
     }
 }

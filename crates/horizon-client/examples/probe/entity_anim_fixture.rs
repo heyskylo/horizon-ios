@@ -116,7 +116,7 @@ fn entity_state(mob: &mut Mob, species: Species, case: &Value) {
                 for (i, flags) in ticks.iter().enumerate() {
                     mob.age = i as u32 + 1;
                     bat::set_resting(mob, flags.as_i64().unwrap_or(0) & 1 != 0);
-                    if flag("@batInFrame") {
+                    if flag("@batServerTick") {
                         bat::tick(mob);
                     } else {
                         bat::setup_animation_states(mob);
@@ -150,7 +150,7 @@ fn entity_state(mob: &mut Mob, species: Species, case: &Value) {
             mob.extra.crouching = flag("isCrouching");
             mob.extra.passenger = flag("isPassenger");
             if flag("isHoldingBow") {
-                mob.extra.main_hand = Some("minecraft:bow".into());
+                mob.extra.set_main_hand(Some("minecraft:bow".into()));
             }
         }
         Species::IronGolem => {
@@ -275,7 +275,7 @@ fn entity_state(mob: &mut Mob, species: Species, case: &Value) {
             }
         }
         Species::HappyGhast => {
-            mob.extra.head = case["bodyItem"].as_str().map(Into::into);
+            mob.extra.body = case["bodyItem"].as_str().map(Into::into);
             if flag("isRidden") {
                 mob.rider = Some(Default::default());
             }
@@ -298,7 +298,7 @@ fn entity_state(mob: &mut Mob, species: Species, case: &Value) {
             }
         }
         Species::Witch if flag("isHoldingItem") => {
-            mob.extra.main_hand = Some("minecraft:potion".into());
+            mob.extra.set_main_hand(Some("minecraft:potion".into()));
         }
         _ => {}
     }
@@ -386,7 +386,7 @@ pub fn main() -> horizon_client::Result<()> {
             .cloned()
             .unwrap_or_else(|| kind.model.clone());
         let mut mob = Mob::new(7, kind, Vec3::new(0.0, 64.0, 0.0), 0.0);
-        mob.extra.main_hand = None;
+        mob.extra.set_main_hand(None);
         let case = &v["case"];
         let f = |k: &str| case[k].as_f64().unwrap_or(0.0) as f32;
         if baby {
@@ -593,6 +593,7 @@ pub fn main() -> horizon_client::Result<()> {
                     num("maxCrossbowChageDuration"),
                     num("ticksUsingItem"),
                     false,
+                    flag("isRiding"),
                 );
             }
             Species::Evoker | Species::Illusioner | Species::Pillager | Species::Vindicator => {

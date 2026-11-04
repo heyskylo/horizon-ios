@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Compare options.txt loading and saving, and the key mapping table, with the
 pinned client: every file is loaded through the real Options.load and written
-back with Options.save. The Rust probe normalizes Horizon's intentional 33..64
+back with Options.save. The Rust probe normalizes Horizon's intentional 33..128
 render-distance extension to vanilla's default; a Rust slider/persistence
 regression covers the extended range."""
 from pathlib import Path
@@ -184,7 +184,7 @@ def main():
              'fields, lenient Gson parsing and syntax-error aborts, key mappings (names, scancode-number forms, unbinding), '
              'sound volumes, model parts, line endings, the OPTIONS data fixers across version boundaries, and the '
              'KeyMapping table (order, defaults, categories, toggle mappings). Does not cover option screens or '
-             'runtime side effects of setting an option. Horizon render distances 33..64 are normalized to vanilla\'s '
+             'runtime side effects of setting an option. Horizon render distances 33..128 are normalized to vanilla\'s '
              'default by options_probe; the slider/persistence unit regression checks that intentional extension.')
     harness.differential(
         'rust-options-parity', 'VanillaOptionsOracle', 'options_probe', make_cases, scope,

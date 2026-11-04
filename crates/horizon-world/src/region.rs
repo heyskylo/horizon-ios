@@ -11,7 +11,7 @@ use std::{
     fs::{self, File, OpenOptions},
     io::{self, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
-    sync::atomic::{AtomicU64, Ordering},
+    sync::atomic::{AtomicU32, Ordering},
 };
 
 const SECTOR: usize = 4096;
@@ -38,15 +38,17 @@ impl ChunkRecord {
             timestamp,
         })
     }
+    /// `RegionFileStorage.read`: the root read straight off the decompressing
+    /// stream, so bytes after it, and a damaged stream past it, are never read.
     pub fn nbt(&self, limits: Limits) -> io::Result<NamedTag> {
-        let bytes = self
+        let mut bytes = Vec::new();
+        let decoded = self
             .compression
-            .decode(&self.compressed, limits.max_bytes)?;
-        let (root, used) = nbt::read_named(&bytes, limits).map_err(|e| invalid(e.to_string()))?;
-        if used != bytes.len() {
-            return Err(invalid("trailing bytes after region chunk NBT"));
+            .decode_into(&self.compressed, limits.max_bytes, &mut bytes);
+        match nbt::read_named(&bytes, limits) {
+            Ok((root, _)) => Ok(root),
+            Err(e) => Err(decoded.err().unwrap_or_else(|| invalid(e.to_string()))),
         }
-        Ok(root)
     }
 }
 
@@ -232,7 +234,11 @@ impl RegionFile {
         if external {
             let temporary = directory.join(format!(".c.{}.{}.mcc.tmp", chunk.x, chunk.z));
             let written = File::create(&temporary)
-                .and_then(|mut f| f.write_all(&record.compressed))
+                .and_then(|mut f| {
+                    f.write_all(&record.compressed)?;
+                    // The region's sync only covers the stub, not this external payload.
+                    f.sync_all()
+                })
                 .and_then(|_| fs::rename(&temporary, &external_file));
             if let Err(e) = written {
                 let _ = fs::remove_file(&temporary);
@@ -258,7 +264,7 @@ impl RegionFile {
         let old = self.offsets[i];
         self.offsets[i] = (start as u32) << 8 | sectors as u32;
         self.timestamps[i] = record.timestamp;
-        self.write_header_entry(i)?;
+        self.write_header()?;
         if !external {
             remove_if_exists(&external_file)?;
         }
@@ -278,7 +284,7 @@ impl RegionFile {
         }
         self.offsets[i] = 0;
         self.timestamps[i] = timestamp;
-        self.write_header_entry(i)?;
+        self.write_header()?;
         let directory = self.path.parent().unwrap_or(Path::new("."));
         remove_if_exists(&external_path(directory, chunk))?;
         self.free((old >> 8) as usize, (old & 255) as usize);
@@ -290,12 +296,17 @@ impl RegionFile {
         self.file.sync_data()
     }
 
-    /// The header's offset and timestamp of slot `i`.
-    fn write_header_entry(&mut self, i: usize) -> io::Result<()> {
-        self.file.seek(SeekFrom::Start((i * 4) as u64))?;
-        self.file.write_all(&self.offsets[i].to_be_bytes())?;
-        self.file.seek(SeekFrom::Start((SECTOR + i * 4) as u64))?;
-        self.file.write_all(&self.timestamps[i].to_be_bytes())
+    /// `RegionFile.writeHeader`: both header sectors from memory, so the
+    /// entries dropped as invalid when the file was opened are zero on disk too.
+    fn write_header(&mut self) -> io::Result<()> {
+        let mut header = [0; HEADER];
+        for i in 0..1024 {
+            header[i * 4..i * 4 + 4].copy_from_slice(&self.offsets[i].to_be_bytes());
+            header[SECTOR + i * 4..SECTOR + i * 4 + 4]
+                .copy_from_slice(&self.timestamps[i].to_be_bytes());
+        }
+        self.file.seek(SeekFrom::Start(0))?;
+        self.file.write_all(&header)
     }
 
     pub fn chunks(&self) -> impl Iterator<Item = (ChunkPos, u32)> + '_ {
@@ -380,7 +391,7 @@ impl RegionFile {
 }
 type BTreeChanges<'a> = std::collections::BTreeMap<usize, Option<&'a ChunkRecord>>;
 
-static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
+static NEXT_TEMP: AtomicU32 = AtomicU32::new(0);
 
 /// Writes a complete new region to a temporary sibling, then publishes it with
 /// an atomic, non-overwriting hard link. Drop rolls back unpublished files.

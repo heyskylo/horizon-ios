@@ -4,10 +4,10 @@ FeatureRendererMap	skip:java		type-indexed lookup table of feature renderers
 FlameFeatureRenderer.buildGroup	port	crates/horizon-client/src/fire_render.rs::flames	loop over burning entities
 FlameFeatureRenderer.prepare	port	crates/horizon-client/src/fire_render.rs::flames	two alternating fire sprites stacked up the entity
 FlameFeatureRenderer.fireVertex	inline	crates/horizon-client/src/fire_render.rs::flames	vertex push folded into flames
-GizmoFeatureRenderer.buildGroup	port	crates/horizon-client/src/gizmos.rs::camera_relative	gap: minor: only lines are drawn; quads, triangle fans, points and texts are not
-GizmoFeatureRenderer.buildTexts	missing		minor: debug gizmo text labels are not drawn; Gizmos has no text kind
+GizmoFeatureRenderer.buildGroup	port	crates/horizon-client/src/gizmos.rs::camera_relative	gap: minor: lines, cuboid fills and billboard texts are drawn; points and triangle fans have no kind
+GizmoFeatureRenderer.buildTexts	inline	crates/horizon-client/src/game/debug_renderers.rs::Game::debug_renderer_geometry	the debug renderers' billboard texts become centred quads at billboard_text_unit scale, without a background; the game-test markers draw theirs the same way, and a text from any other gizmo source has no kind
 GizmoFeatureRenderer.buildTriangleFans	missing		minor: debug triangle fans are not drawn; Gizmos has no fan kind
-GizmoFeatureRenderer.buildQuads	missing		minor: debug filled quads are not drawn; cuboid gizmos are edges only
+GizmoFeatureRenderer.buildQuads	inline	crates/horizon-client/src/game/debug_renderers.rs::Game::debug_renderer_geometry	the colour fill of a cuboid gizmo becomes four vertices per quad, for the debug renderers that fill; no free quad is submitted anywhere
 GizmoFeatureRenderer.buildPoints	missing		minor: debug points are not drawn; Gizmos has no point kind
 ItemFeatureRenderer.buildGroup	port	crates/horizon-client/src/item_render.rs::ItemRenderState::submit	loop over item submits
 ItemFeatureRenderer.prepareSubmit	port	crates/horizon-client/src/item_render.rs::ItemRenderState::submit	layer loop, quads or special model
@@ -27,33 +27,33 @@ RenderTypeFeatureRenderer.Group	skip:other		GPU render-type batching, as above
 ShadowFeatureRenderer.buildGroup	port	crates/horizon-client/src/shadows.rs::shadow	loop over shadow submits
 ShadowFeatureRenderer.prepare	port	crates/horizon-client/src/shadows.rs::shadow	shadow quads per piece, clamped by the block below
 ShadowFeatureRenderer.shadowVertex	inline	crates/horizon-client/src/shadows.rs::shadow	vertex push folded into shadow
-ShapeOutlineFeatureRenderer.buildGroup	port	crates/horizon-client/src/gfx.rs::outline_vertices	block selection outline edges as line vertices
+ShapeOutlineFeatureRenderer.buildGroup	port	crates/horizon-client-render/src/gfx.rs::outline_vertices	block selection outline edges as line vertices
 TextFeatureRenderer.buildGroup	skip:other		dispatch over text and background submits; each kind is covered below or by Horizon's text draw
-TextFeatureRenderer.renderText	missing		minor: unsure: no outlined-text path found (font.rs, hud.rs, names.rs); the outline colour of a text submit is not drawn
+TextFeatureRenderer.renderText	port	crates/horizon-client-render/src/block_entity_render.rs::draw_text	the outline as the eight one-pixel offsets NORMAL under the text POLYGON_OFFSET; both share a mesh here, so the text is lifted 0.05 of a font pixel instead of z-fighting
 TextFeatureRenderer.GlyphRenderer.acceptRenderable	skip:other		glyph sink for the text pass; Horizon's font pass draws the glyphs
 FeatureRenderPhase.Output.acceptFeatureGroup	skip:other		phase plumbing: hands sorted groups to the renderer pass
 SimpleFeatureRenderPhase	skip:other		submit, sort, shuffle (debug only) and clear of feature submits; Horizon sorts its own draws
 SimpleFeatureRenderPhase.FeatureSubmits	skip:other		batching bookkeeping of feature submits
-TranslucentFeatureRenderPhase.submit	inline	crates/horizon-client/src/gfx/translucency.rs::Sorter::sort	collects submits; distances are taken in sort
-TranslucentFeatureRenderPhase.sortInto	port	crates/horizon-client/src/gfx/translucency.rs::Sorter::sort	back-to-front by distance, equal distances keep submit order
-TranslucentFeatureRenderPhase.sortIndices	port	crates/horizon-client/src/gfx/translucency.rs::Sorter::sort	far to near, stable on ties
-TranslucentSubmit.computeDistanceToCameraSq	inline	crates/horizon-client/src/gfx/translucency.rs::Sorter::sort	distance from the quad centre to the camera, computed inside sort
+TranslucentFeatureRenderPhase.submit	inline	crates/horizon-client-render/src/gfx/translucency.rs::Sorter::sort	collects submits; distances are taken in sort
+TranslucentFeatureRenderPhase.sortInto	port	crates/horizon-client-render/src/gfx/translucency.rs::Sorter::sort	back-to-front by distance, equal distances keep submit order
+TranslucentFeatureRenderPhase.sortIndices	port	crates/horizon-client-render/src/gfx/translucency.rs::Sorter::sort	far to near, stable on ties
+TranslucentSubmit.computeDistanceToCameraSq	inline	crates/horizon-client-render/src/gfx/translucency.rs::Sorter::sort	distance from the quad centre to the camera, computed inside sort
 FogRenderer.getBuffer	skip:other		selects the fog uniform slice; Horizon hands its fog values to its own shader per frame
 FogRenderer.updateBuffer	skip:other		writes the fog uniform buffer; Horizon's frame_fog passes FogData to its own shader
-AtmosphericFogEnvironment.getBaseColor	port	crates/horizon-client/src/fog.rs::setup_fog	gap: minor: sky fog end uses constant 512 instead of the SKY_FOG_END_DISTANCE attribute
-AtmosphericFogEnvironment.applyWeatherDarken	inline	crates/horizon-client/src/fog.rs::setup_fog	rain and thunder darkening folded into the atmospheric colour
-BlindnessFogEnvironment.setupFog	port	crates/horizon-client/src/fog.rs::setup_fog	blindness distance and sky/cloud ends
-BlindnessFogEnvironment.getModifiedDarkness	inline	crates/horizon-client/src/fog.rs::setup_fog	blindness darkness folded into setup_fog
-LavaFogEnvironment.setupFog	port	crates/horizon-client/src/fog.rs::setup_fog	gap: player: spectator (-8 start, half render distance) and fire resistance (0 to 5) are not applied in lava
+AtmosphericFogEnvironment.getBaseColor	port	crates/horizon-client-render/src/fog.rs::setup_fog	gap: minor: sky fog end uses constant 512 instead of the SKY_FOG_END_DISTANCE attribute
+AtmosphericFogEnvironment.applyWeatherDarken	inline	crates/horizon-client-render/src/fog.rs::setup_fog	rain and thunder darkening folded into the atmospheric colour
+BlindnessFogEnvironment.setupFog	port	crates/horizon-client-render/src/fog.rs::setup_fog	blindness distance and sky/cloud ends
+BlindnessFogEnvironment.getModifiedDarkness	inline	crates/horizon-client-render/src/fog.rs::setup_fog	blindness darkness folded into setup_fog
+LavaFogEnvironment.setupFog	port	crates/horizon-client-render/src/fog.rs::setup_fog	gap: player: spectator (-8 start, half render distance) and fire resistance (0 to 5) are not applied in lava
 MobEffectFogEnvironment.isApplicable	inline	crates/horizon-client/src/game/render_tick.rs::Game::frame_fog	effect gate is where frame_fog builds the blindness and darkness inputs
-PowderedSnowFogEnvironment.setupFog	port	crates/horizon-client/src/fog.rs::setup_fog	gap: player: spectator case (-8 start, half render distance) is not applied
-WaterFogEnvironment.setupFog	port	crates/horizon-client/src/fog.rs::setup_fog	gap: minor: water fog start is fixed at -8; vanilla reads the WATER_FOG_START_DISTANCE attribute
+PowderedSnowFogEnvironment.setupFog	port	crates/horizon-client-render/src/fog.rs::setup_fog	gap: player: spectator case (-8 start, half render distance) is not applied
+WaterFogEnvironment.setupFog	port	crates/horizon-client-render/src/fog.rs::setup_fog	gap: minor: water fog start is fixed at -8; vanilla reads the WATER_FOG_START_DISTANCE attribute
 DrawableGizmoPrimitives.addPoint	missing		minor: debug points are not drawn; Gizmos has no point kind
 DrawableGizmoPrimitives.addLine	port	crates/horizon-client/src/gizmos.rs::Gizmos::line	
 DrawableGizmoPrimitives.addTriangleFan	missing		minor: debug triangle fans are not drawn
-DrawableGizmoPrimitives.addQuad	missing		minor: debug filled quads are not drawn
-DrawableGizmoPrimitives.addText	missing		minor: debug gizmo text labels are not drawn
-DrawableGizmoPrimitives.submit	port	crates/horizon-client/src/game.rs::Game::render	gap: minor: lines of both lists go to camera_relative in Game::render; only lines are drawn
+DrawableGizmoPrimitives.addQuad	inline	crates/horizon-client/src/gizmos.rs::cuboid_fill_quads	a cuboid's six fill quads, which the debug renderers push into their fill list; there is no general quad kind
+DrawableGizmoPrimitives.addText	inline	crates/horizon-client/src/gizmos.rs::billboard_text_unit	one font pixel's world size for a text scale, which the debug renderers' and game-test markers' billboard text quads are built at (name_tag_quads)
+DrawableGizmoPrimitives.submit	port	crates/horizon-client/src/game.rs::Game::render	gap: minor: lines of both lists go to camera_relative in Game::render; the fills and texts of the debug renderers are built as vertices in debug_renderers::Game::debug_renderer_geometry instead
 BundleSelectedItemSpecialRenderer.update	port	crates/horizon-assets/src/item_model.rs::Resolve::node	bundle selected item layers via the BundleSelectedItem arm
 CompositeModel.update	port	crates/horizon-assets/src/item_model.rs::Resolve::node	composite arm: each child in order
 CompositeModel.Unbaked.resolveDependencies	port	crates/horizon-assets/src/item_model.rs::ItemModelNode::dependencies	

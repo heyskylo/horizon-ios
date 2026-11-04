@@ -35,7 +35,7 @@ impl Launcher {
     }
 
     /// Everyone the player can play as, with how each signs in.
-    fn players(&self) -> Vec<(Player, String, &'static str)> {
+    pub(super) fn players(&self) -> Vec<(Player, String, &'static str)> {
         let mut out: Vec<_> = self
             .accounts
             .accounts
@@ -81,7 +81,12 @@ impl Launcher {
             .bg(t.surface)
             .flex()
             .flex_col()
-            .occlude();
+            .occlude()
+            .on_mouse_down_out(cx.listener(|this, event: &MouseDownEvent, _, cx| {
+                this.account_menu = false;
+                this.menu_closed_at = Some(event.position);
+                cx.notify();
+            }));
         for (i, (who, name, how)) in self.players().into_iter().enumerate() {
             let chosen = who == now;
             menu = menu.child(
@@ -96,10 +101,20 @@ impl Launcher {
                     .rounded(px(theme::RADIUS))
                     .cursor_pointer()
                     .hover(move |s| s.bg(t.plate_soft))
+                    .child(self.profile_heads.draw(
+                        match &who {
+                            Player::Microsoft(uuid) => Some(uuid),
+                            _ => None,
+                        },
+                        24.,
+                        self.scale,
+                        &t,
+                    ))
                     .child(
                         div()
                             .flex()
                             .flex_col()
+                            .flex_1()
                             .min_w_0()
                             .child(text(theme::LABEL).truncate().text_color(t.ink).child(name))
                             .child(text(theme::CAPTION).text_color(t.muted).child(how)),
@@ -142,7 +157,19 @@ impl Launcher {
         }
         self.play_as(Player::Offline(name));
         if !matches!(self.sign_in_state, Some(SignInState::Done(Err(_)))) {
-            self.servers.text(Field::OfflineName).clear();
+            self.servers.text(Field::OfflineName).set(String::new());
+        }
+    }
+
+    /// Forgets an offline name and its skin.
+    pub(super) fn forget_offline(&mut self, name: &str) {
+        let mut accounts = Accounts::load();
+        if accounts
+            .remove_offline(name, &horizon_launcher::skins::dir())
+            .is_ok()
+            && accounts.save().is_ok()
+        {
+            self.accounts = accounts;
         }
     }
 
@@ -184,14 +211,7 @@ impl Launcher {
             actions = actions.child(
                 button(format!("offline-forget-{i}"), "Forget", Kind::Ghost, &t).on_click(
                     cx.listener(move |this, _: &ClickEvent, _, cx| {
-                        let mut accounts = Accounts::load();
-                        if accounts
-                            .remove_offline(&forget, &horizon_launcher::skins::dir())
-                            .is_ok()
-                            && accounts.save().is_ok()
-                        {
-                            this.accounts = accounts;
-                        }
+                        this.forget_offline(&forget);
                         cx.notify();
                     }),
                 ),

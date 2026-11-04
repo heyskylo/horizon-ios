@@ -6,7 +6,6 @@ use super::{Game, dispenser::entity_random};
 use horizon_client::{
     Result,
     assets::Properties,
-    chunk::{HEIGHT, MIN_Y},
     collisions::{SceneCollisions, no_collision_or_liquid},
     world::World,
     world_spawn::{
@@ -29,16 +28,19 @@ struct Columns<'a, 'r> {
     world: &'a World,
     properties: &'a Properties,
     binding: &'a BlockCollisionRegistry<'r>,
+    has_ceiling: bool,
+    /// `ChunkGenerator.getSpawnHeight` (64 for the vanilla generators).
+    spawn_height: i32,
 }
 impl SpawnLevel for Columns<'_, '_> {
     fn min_y(&self) -> i32 {
-        MIN_Y
+        self.world.bottom_y()
     }
     fn height(&self, kind: HeightmapType, x: i32, z: i32) -> i32 {
-        (MIN_Y..MIN_Y + HEIGHT)
+        (self.world.bottom_y()..self.world.top_y())
             .rev()
             .find(|&y| kind.is_opaque(self.properties.heightmap_state(self.world.block(x, y, z))))
-            .map_or(MIN_Y, |y| y + 1)
+            .map_or(self.world.bottom_y(), |y| y + 1)
     }
     fn has_fluid(&self, x: i32, y: i32, z: i32) -> bool {
         use horizon_world::heightmap::HeightmapState;
@@ -67,6 +69,12 @@ impl SpawnLevel for Columns<'_, '_> {
                 .is_ok_and(|differs| !differs)
         })
     }
+    fn has_ceiling(&self) -> bool {
+        self.has_ceiling
+    }
+    fn spawn_height(&self) -> i32 {
+        self.spawn_height
+    }
 }
 
 impl Game<'_> {
@@ -75,6 +83,10 @@ impl Game<'_> {
             world: &self.world,
             properties: &self.pack.assets.properties,
             binding: self.collision,
+            // The spawn searches are the overworld's (PlayerSpawnFinder); a
+            // ceiling starts them at the generator's spawn height.
+            has_ceiling: self.level_shapes.overworld.has_ceiling,
+            spawn_height: self.spawn_origin.map_or(64, |(_, height)| height),
         }
     }
     /// ChunkGenerator.getOrigin and getSpawnHeight of the overworld.
@@ -84,7 +96,8 @@ impl Game<'_> {
                 horizon_client::flatgen::FlatTerrain::from_settings(
                     &s,
                     self.pack.assets.registry,
-                    self.res.biomes(),
+                    world_biomes!(self),
+                    self.level_shapes.overworld,
                 )
             })
         {
@@ -110,7 +123,17 @@ impl Game<'_> {
         while let Some((dx, dz)) = self.spawn_spiral.current() {
             if self.spawn_spiral.tested() {
                 let (cx, cz) = (ox + dx, oz + dz);
-                if !self.streaming.is_lit(cx, cz) {
+                if self.standalone_server() {
+                    // getChunk(FULL) of the tested chunk alone: its 3x3 is decorated.
+                    if !self.world.chunks.contains_key(&(cx, cz)) {
+                        let area = [((cx, cz), -1)];
+                        if self.streaming.extra != area {
+                            self.streaming.extra = area.to_vec();
+                            self.streaming.rank_full_task(cx, cz);
+                        }
+                        return Ok(None);
+                    }
+                } else if !self.streaming.is_lit(cx, cz) {
                     self.streaming.center = (cx, cz);
                     return Ok(None);
                 }
@@ -197,7 +220,7 @@ impl Game<'_> {
         self.process_level_events()
     }
     /// The block at `pos` has no collision shape.
-    fn collision_empty(&self, pos: [i32; 3]) -> bool {
+    pub(super) fn collision_empty(&self, pos: [i32; 3]) -> bool {
         let mut scene = SceneCollisions {
             world: &self.world,
             binding: self.collision,
@@ -336,11 +359,11 @@ impl Game<'_> {
     /// down onto the ground.
     fn fixup_spawn_height(&self, pos: [i32; 3]) -> Vec3 {
         let [x, mut y, z] = pos;
-        while !self.player_fits([x, y, z]) && y < MIN_Y + HEIGHT - 1 {
+        while !self.player_fits([x, y, z]) && y < self.world.top_y() - 1 {
             y += 1;
         }
         y -= 1;
-        while self.player_fits([x, y, z]) && y > MIN_Y {
+        while self.player_fits([x, y, z]) && y > self.world.bottom_y() {
             y -= 1;
         }
         bottom_center([x, y + 1, z])

@@ -17,6 +17,18 @@ use horizon_core::{
 // Happy ghast state: `head` the harness, `scratch[0]` 1 once set up as a
 // baby and 2 as an adult, `ai.home` the restriction, `counter`
 // the end tick of the follow-an-adult range pick.
+// `scratch[1]` is `leashHolderTime` on the server and `IS_LEASH_HOLDER` (1 or 0) on a client.
+/// `HappyGhast.notifyLeashHolder` for a leashed mob that supports a quad lead.
+pub fn notify_leash_holder(m: &mut Mob) {
+    if m.species() == super::Species::HappyGhast {
+        m.extra.scratch[1] = 5;
+    }
+}
+/// `HappyGhast.isLeashHolder`: `IS_LEASH_HOLDER`, true while a quad-leashed
+/// mob hangs on it (and four ticks after).
+pub fn is_leash_holder(m: &Mob) -> bool {
+    m.extra.scratch[1] > 0
+}
 /// `Attributes.FLYING_SPEED` and the speed `travel` uses (`* 5 / 3`).
 pub const FLYING_SPEED: f64 = 0.05;
 pub const AIR_SPEED: f32 = 0.05 * 5.0 / 3.0;
@@ -67,15 +79,19 @@ fn setup(m: &mut Mob, baby: bool) {
     g.add(5, FloatAround { blocks: 16 });
 }
 fn wearing_harness(m: &Mob) -> bool {
-    m.extra.head.is_some()
+    m.extra.body.is_some()
 }
 /// `getControllingPassenger`: a player on a harnessed adult.
 pub fn controlled(m: &Mob) -> bool {
-    m.rider.is_some() && wearing_harness(m) && !m.is_baby()
+    m.rider.is_some() && harnessed_adult(m)
+}
+/// A harnessed adult, whether or not a rider is on it yet.
+pub fn harnessed_adult(m: &Mob) -> bool {
+    wearing_harness(m) && !m.is_baby()
 }
 /// `getHappyGhastRestrictionRadius`.
 fn restriction_radius(m: &Mob) -> i32 {
-    if !m.is_baby() && m.extra.head.is_none() {
+    if !m.is_baby() && m.extra.body.is_none() {
         64
     } else {
         32
@@ -475,7 +491,7 @@ impl Goal for FloatAround {
         let mut t = result.unwrap_or_else(|| choose(m));
         let top =
             cx.w.motion_blocking_height(t.x.floor() as i32, t.z.floor() as i32);
-        if top < t.y.floor() as i32 && top > crate::chunk::MIN_Y {
+        if top < t.y.floor() as i32 && top > cx.w.world.bottom_y() {
             t.y = m.position.y - (m.position.y - t.y).abs();
         }
         m.ai.mov.set_wanted(t.x, t.y, t.z, 1.0);
@@ -522,6 +538,10 @@ pub fn ensure_setup(m: &mut Mob) {
 /// setup at the age boundary, the home, face-the-motion and slow healing.
 pub fn ai_step(m: &mut Mob, w: &MobWorld) {
     ensure_setup(m);
+    // HappyGhast.tick: `leashHolderTime` runs down (the synced flag follows it).
+    if m.extra.scratch[1] > 0 {
+        m.extra.scratch[1] -= 1;
+    }
     // checkRestriction.
     if m.extra.leash.is_none() && m.rider.is_none() {
         let radius = restriction_radius(m);
@@ -554,7 +574,7 @@ pub fn ai_step(m: &mut Mob, w: &MobWorld) {
         let wet = w.precipitation_at(x, y, z).is_some();
         let interval = if wet { 20 } else { 600 };
         if m.age.is_multiple_of(interval) {
-            m.health = (m.health + 1.0).min(m.attrs.max_health);
+            m.heal(1.0);
         }
     }
     still_tick(m, w);
@@ -646,5 +666,41 @@ mod tests {
     #[test]
     fn travel_speed_is_five_thirds_of_the_flying_speed() {
         assert!((f64::from(AIR_SPEED) - FLYING_SPEED * 5.0 / 3.0).abs() < 1e-7);
+    }
+
+    /// `HappyGhast.ageBoundaryReached` runs the setup at the age crossing, not
+    /// at the next tick: `DriedGhastBlock.spawnGhastling` makes its ghastling a
+    /// baby before `addFreshEntity`, and `AgeableMob.setAge` calls
+    /// `ageBoundaryReached` there. Without it the hatched ghastling joins the
+    /// level with the adult's three goals, its ground navigation and its brain
+    /// stopped, and only its first `aiStep` (`ensure_setup`) fixes that.
+    #[test]
+    fn a_hatched_ghastling_is_set_up_as_one_at_the_age_crossing() {
+        use crate::mobs::Species;
+        let mut t = (*crate::mobs::sensor_scan_tests::kind()).clone();
+        t.species = Species::HappyGhast;
+        let mut m = Mob::new(
+            1,
+            std::sync::Arc::new(t),
+            horizon_core::geometry::Vec3::ZERO,
+            0.0,
+        );
+        // `Mob::new` registers the adult's goals (HappyGhastFloat, its tempt
+        // goal and FloatAround) for the age-zero ghast it makes.
+        assert_eq!(m.extra.scratch[0], 2, "an adult's setup at construction");
+        assert!(m.ai.goals.has("HappyGhastFloatGoal"));
+
+        crate::mobs::finalize::set_age(&mut m, -24000);
+
+        assert!(m.is_baby());
+        assert_eq!(m.extra.scratch[0], 1, "babyGhastSetup ran");
+        assert!(
+            !m.ai.goals.has("HappyGhastFloatGoal")
+                && !m.ai.goals.has("RandomFloatAroundGoal")
+                && !m.ai.goals.has("ForNonPathfinders"),
+            "a ghastling has no goals: its brain drives it"
+        );
+        assert_eq!(m.ai.nav.kind, crate::mobs::nav::NavKind::Flying);
+        assert!(m.ai.nav.can_float);
     }
 }

@@ -152,6 +152,14 @@ impl DebugCharts {
         }
         self.packet_tick = (self.packet_tick + 1) % 20;
     }
+    /// Whether `draw` (or the lightmap view) puts something in the bottom
+    /// left and the bottom right corner, for a `remote` server or not.
+    pub fn corners(&self, remote: bool) -> [bool; 2] {
+        [
+            self.fps || (self.network && remote),
+            (self.fps && !self.tick_times.is_empty()) || self.network || self.lightmap,
+        ]
+    }
     /// The charts along the bottom of the screen (`extractRenderState`):
     /// frame times left and tick times right, or bandwidth left (remote
     /// servers only) and ping right. `mspt` is the level's milliseconds
@@ -460,7 +468,7 @@ fn gradient(
     }
 }
 /// `ARGB.srgbLerp`: each channel by `Mth.lerpInt`.
-fn srgb_lerp(alpha: f32, p0: u32, p1: u32) -> u32 {
+pub fn srgb_lerp(alpha: f32, p0: u32, p1: u32) -> u32 {
     let channel = |shift: u32| {
         let (a, b) = (((p0 >> shift) & 255) as i32, ((p1 >> shift) & 255) as i32);
         (a + (alpha * (b - a) as f32).floor() as i32) as u32
@@ -523,6 +531,26 @@ mod tests {
         overlay = false;
         c.toggle_fps(&mut overlay);
         assert!(overlay && c.fps);
+    }
+
+    #[test]
+    fn corners_are_where_the_charts_are_drawn() {
+        let mut c = DebugCharts::default();
+        assert_eq!(c.corners(true), [false, false]);
+        // Frame times left; tick times right once the server logged a tick.
+        c.fps = true;
+        assert_eq!(c.corners(false), [true, false]);
+        c.tick_times.log(1);
+        assert_eq!(c.corners(false), [true, true]);
+        // Ping right; bandwidth left on a remote server only.
+        c.fps = false;
+        c.network = true;
+        assert_eq!(c.corners(false), [false, true]);
+        assert_eq!(c.corners(true), [true, true]);
+        // The lightmap view, bottom right.
+        c.network = false;
+        c.lightmap = true;
+        assert_eq!(c.corners(true), [false, true]);
     }
 
     #[test]

@@ -19,7 +19,7 @@ impl Game<'_> {
             .position(|m| m.id == id && m.species() == Species::Villager)
     }
     fn item_max_stack(&self, item: &str) -> u32 {
-        self.res.items().get(item).map_or(64, |i| i.max_stack)
+        self.items().get(item).map_or(64, |i| i.max_stack)
     }
     /// `WorkAtComposter.useWorkstation`: at a composter the farmer makes
     /// bread, then composts seeds.
@@ -68,7 +68,7 @@ impl Game<'_> {
             return;
         };
         let now = self.world.game_time;
-        let items = self.res.items();
+        let items = world_items!(self);
         let meeting = villager::meet(&mut self.mobs, ia, ib, now, |item| {
             items.get(item).map_or(64, |i| i.max_stack)
         });
@@ -126,6 +126,7 @@ impl Game<'_> {
                 .play(&format!("minecraft:{sound}"), Some(at), 1.0, 1.0);
         }
         self.mobs.push(golem);
+        self.native_mobs_joined(self.mobs.len() - 1, false);
         true
     }
 
@@ -353,7 +354,7 @@ impl Game<'_> {
                 }
                 match rest {
                     None => {
-                        self.dropped.remove(j);
+                        self.remove_dropped(j);
                     }
                     Some(rest) => {
                         self.dropped[j].stack.count = rest.count;
@@ -364,14 +365,24 @@ impl Game<'_> {
         }
     }
 
-    /// `Villager.setLastHurtByMob` and `ServerLevel.onReputationEvent`: a hit
-    /// from the player counts against it with the villager that was hit.
-    pub(super) fn villager_reputation_tick(&mut self) {
-        let Some(uuid) = self.level.player_uuid else {
-            return;
+    /// The UUID of the player who last hurt a mob (`last_hurt_by_player`:
+    /// None for the host, else the guest's connection): the reputation a
+    /// villager keeps is that player's, the one trading looks up.
+    pub(super) fn player_uuid_of(&self, who: Option<u32>) -> Option<[i32; 4]> {
+        let uuid = match who {
+            None => return self.level.player_uuid,
+            // While that guest acts its own UUID is swapped in.
+            Some(conn) if self.lan_acting == Some(conn) => self.lan_acting_uuid?,
+            Some(conn) => self.lan.as_ref()?.hub.guest(conn)?.uuid,
         };
+        Some(horizon_client::lan::playerdata::uuid_ints(uuid))
+    }
+    /// `Villager.setLastHurtByMob` and `ServerLevel.onReputationEvent`: a hit
+    /// from a player counts against that player with the villager that was hit.
+    pub(super) fn villager_reputation_tick(&mut self) {
         let mut angry = Vec::new();
-        for m in &mut self.mobs {
+        for i in 0..self.mobs.len() {
+            let m = &self.mobs[i];
             if m.species() != Species::Villager
                 || m.ai.last_hurt_by != Some(horizon_client::mobs::Who::Player)
             {
@@ -380,17 +391,22 @@ impl Game<'_> {
             let time = m.ai.last_hurt_by_time;
             let alive = m.alive();
             let at = m.id;
-            let e = villager::ext_mut(m);
-            if e.hurt_seen != time {
-                e.hurt_seen = time;
-                e.gossips.add(
-                    uuid,
-                    GossipType::MinorNegative,
-                    gossip::REPUTATION_CHANGE_PER_EVENT,
-                );
-                if alive {
-                    angry.push(at);
-                }
+            if villager::ext(m).is_some_and(|e| e.hurt_seen == time) {
+                continue;
+            }
+            let hurt_by = self.last_hurt_by_player.get(&at).copied().flatten();
+            let Some(uuid) = self.player_uuid_of(hurt_by) else {
+                continue;
+            };
+            let e = villager::ext_mut(&mut self.mobs[i]);
+            e.hurt_seen = time;
+            e.gossips.add(
+                uuid,
+                GossipType::MinorNegative,
+                gossip::REPUTATION_CHANGE_PER_EVENT,
+            );
+            if alive {
+                angry.push(at);
             }
         }
         // Villager.setLastHurtByMob: entity event 13.
@@ -400,11 +416,12 @@ impl Game<'_> {
     }
     /// `Villager.tellWitnessesThatIWasMurdered`: the villagers that saw a
     /// player kill one remember it as a major wrong.
-    pub(super) fn villager_murdered(&mut self, victim: &Mob, by_player: bool) {
+    /// `killer` is the guest connection that last hurt it (None: the host).
+    pub(super) fn villager_murdered(&mut self, victim: &Mob, by_player: bool, killer: Option<u32>) {
         if victim.species() != Species::Villager || !by_player {
             return;
         }
-        let Some(uuid) = self.level.player_uuid else {
+        let Some(uuid) = self.player_uuid_of(killer) else {
             return;
         };
         let eye = Vec3::new(victim.position.x, victim.eye_y(), victim.position.z);

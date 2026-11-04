@@ -2,6 +2,7 @@
 //! This supplies identities and default properties, not block behavior.
 mod facts;
 mod json;
+pub(crate) mod snapshot;
 use crate::{DATA_VERSION, chunk::BlockState, compression::invalid, nbt::Tag};
 pub use json::BlockStateJsonCodec;
 pub(crate) use json::java_integer;
@@ -75,8 +76,26 @@ impl BlockRegistry {
     pub fn from_facts_json_with_flags(
         reader: impl io::Read,
     ) -> io::Result<(Self, Vec<(bool, bool)>)> {
-        let facts: facts::Facts = serde_json::from_reader(io::BufReader::new(reader))
+        let facts: facts::Facts =
+            facts::with_shared_strings(|| serde_json::from_reader(io::BufReader::new(reader)))
+                .map_err(|e| invalid(e.to_string()))?;
+        Self::from_facts(facts)
+    }
+
+    /// [`Self::from_facts_json_with_flags`] over bytes already in memory.
+    ///
+    /// `serde_json` cannot borrow out of a reader, so `from_reader` copies
+    /// every string it parses; over one slice it borrows instead. The facts
+    /// are about 10 MB and sit at the head of the start, before anything
+    /// else in the core bundle can begin, so the difference is on the
+    /// critical path.
+    pub fn from_facts_json_bytes(bytes: &[u8]) -> io::Result<(Self, Vec<(bool, bool)>)> {
+        let facts: facts::Facts = facts::with_shared_strings(|| serde_json::from_slice(bytes))
             .map_err(|e| invalid(e.to_string()))?;
+        Self::from_facts(facts)
+    }
+
+    fn from_facts(facts: facts::Facts) -> io::Result<(Self, Vec<(bool, bool)>)> {
         let flags = facts.states.iter().map(|r| (r.air, r.fluid)).collect();
         let states = facts.states.into_iter().map(|r| r.state).collect();
         Ok((Self::from_states(states, facts.defaults)?, flags))
@@ -92,7 +111,10 @@ impl BlockRegistry {
             collided: BTreeMap::new(),
             defaults: BTreeMap::new(),
         };
-        for (i, state) in states.into_iter().enumerate() {
+        // The states' property names and values: a few hundred strings, shared.
+        let mut strings = crate::block_state_properties::SharedStrings::default();
+        for (i, mut state) in states.into_iter().enumerate() {
+            state.properties.share(&mut strings);
             if result.id(&state).is_some() {
                 return Err(invalid("duplicate block registry state"));
             }
@@ -147,6 +169,27 @@ impl BlockRegistry {
     }
     pub fn default_state(&self, name: &str) -> Option<BlockStateId> {
         self.defaults.get(name).copied()
+    }
+
+    /// The values `property` takes on `block`, in `Property.getPossibleValues`
+    /// order. The state list is in `StateDefinition` order (properties sorted
+    /// by name, values in their own order), so a value's first appearance is
+    /// that order.
+    pub fn property_values(&self, block: &str, property: &str) -> Vec<&str> {
+        let mut values: Vec<&str> = Vec::new();
+        for state in self
+            .states
+            .iter()
+            .filter(|state| state.name.as_str() == block)
+        {
+            if let Some(value) = state.properties.get(property) {
+                let value = value.as_str();
+                if !values.contains(&value) {
+                    values.push(value);
+                }
+            }
+        }
+        values
     }
 
     /// Resolve a saved descriptor, supplying omitted default properties. Unlike

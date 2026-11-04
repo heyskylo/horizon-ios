@@ -1,8 +1,11 @@
 //! Brushing suspicious sand and gravel: `BrushItem.onUseTick` and
 //! `BrushableBlockEntity`. The block's loot table stays in its saved block
 //! entity (like a decorated pot's) until the first counted stroke rolls it.
-use super::{Game, Hit, decorated_pot, spill, view_vector};
+use super::{Game, Hit, decorated_pot, view_vector};
 use horizon_client::{
+    block_entity_render::vertex_light,
+    containers::BlockEntity,
+    mesher::Vertex,
     particles::{ParticleOptions, ParticleType},
     save,
 };
@@ -68,7 +71,7 @@ impl Game<'_> {
         }
         let at = hit.pos.map(|v| f64::from(v) + 0.5);
         self.audio.play(sound, Some(at), 1.0, 1.0);
-        if brushable && self.brush_block(hit.pos, hit.face) {
+        if brushable && self.brush_block(hit.pos, hit.face, slot) {
             self.damage_held(1);
         }
     }
@@ -110,10 +113,24 @@ impl Game<'_> {
     }
 
     /// `BrushableBlockEntity.brush`: whether the block changed (the brush wears).
-    fn brush_block(&mut self, pos: [i32; 3], face: [i32; 3]) -> bool {
+    fn brush_block(&mut self, pos: [i32; 3], face: [i32; 3], slot: usize) -> bool {
         let time = self.world.game_time;
         let mut brush = self.brushing.remove(&pos).unwrap_or_default();
         brush.hit_face.get_or_insert(face);
+        let direction = match brush.hit_face.unwrap() {
+            [0, -1, 0] => 0,
+            [0, 1, 0] => 1,
+            [0, 0, -1] => 2,
+            [0, 0, 1] => 3,
+            [-1, 0, 0] => 4,
+            [1, 0, 0] => 5,
+            _ => return false,
+        };
+        if let Some(BlockEntity::Brushable(b)) =
+            self.world.block_entities.get_mut(&(pos[0], pos[1], pos[2]))
+        {
+            b.hit_direction = Some(direction);
+        }
         brush.resets_at = time + 40;
         if time < brush.cooldown_ends_at {
             self.brushing.insert(pos, brush);
@@ -124,7 +141,7 @@ impl Game<'_> {
         let before = completion_state(brush.count);
         brush.count += 1;
         if brush.count >= 10 {
-            self.brushing_completed(pos, brush.hit_face);
+            self.brushing_completed(pos, brush.hit_face, slot);
             return true;
         }
         self.schedule_brushable_tick(pos);
@@ -139,13 +156,24 @@ impl Game<'_> {
     /// `BrushableBlockEntity.unpackLootTable`: the table's roll becomes the
     /// block entity's item.
     fn unpack_brush_loot(&mut self, pos: [i32; 3]) {
-        let Some(mut tag) = spill::saved_entity(&self.world, pos) else {
+        let key = (pos[0], pos[1], pos[2]);
+        let Some(BlockEntity::Brushable(b)) = self.world.block_entities.get(&key) else {
             return;
         };
-        if tag.get("LootTable").is_none() {
+        let Some(horizon_world::nbt::Tag::String(table)) = &b.loot_table else {
             return;
-        }
-        let loot = horizon_client::structure_blocks::loot_data(&self.options.resources);
+        };
+        let table = table.to_string_lossy();
+        let mut tag = save::encode_block_entity(
+            key,
+            &BlockEntity::Brushable(b.clone()),
+            "minecraft:brushable_block",
+        );
+        self.trigger_loot_table(&table);
+        let loot = horizon_client::structure_blocks::loot_data(
+            &self.options.resources,
+            &self.pack_files(),
+        );
         decorated_pot::unpack_loot(
             &mut tag,
             loot.as_deref(),
@@ -153,12 +181,17 @@ impl Game<'_> {
             &mut self.rand_sequences,
             self.level.seed,
         );
-        spill::put_saved_entity(&mut self.world, pos, tag);
+        if let Some(BlockEntity::Brushable(b)) = self.world.block_entities.get_mut(&key) {
+            b.loot_table = tag.get("LootTable").cloned();
+            b.loot_seed = tag.get("LootTableSeed").cloned();
+            b.item = tag.get("item").and_then(save::item_from_nbt);
+        }
+        self.world.modified.insert((pos[0] >> 4, pos[2] >> 4));
     }
 
     /// `BrushableBlockEntity.brushingCompleted`: the item drops out of the
     /// brushed face and the block turns into its sand or gravel.
-    fn brushing_completed(&mut self, pos: [i32; 3], face: Option<[i32; 3]>) {
+    fn brushing_completed(&mut self, pos: [i32; 3], face: Option<[i32; 3]>, slot: usize) {
         let state = self.world.block(pos[0], pos[1], pos[2]);
         let turns_into = match &*self.res.facts().get(state).name {
             "minecraft:suspicious_sand" => "minecraft:sand",
@@ -166,8 +199,10 @@ impl Game<'_> {
             _ => "minecraft:air",
         };
         // dropContent: the item at the middle of the block beside that face.
-        let item = spill::saved_entity(&self.world, pos)
-            .and_then(|tag| tag.get("item").and_then(save::item_from_nbt));
+        let item = match self.world.block_entities.get(&(pos[0], pos[1], pos[2])) {
+            Some(BlockEntity::Brushable(b)) => b.item.clone(),
+            _ => None,
+        };
         if let Some(mut item) = item {
             let face = face.unwrap_or([0, 1, 0]);
             let take = 10 + self.world.random.next_int_bound(21).unwrap_or(0);
@@ -177,7 +212,20 @@ impl Game<'_> {
                 f64::from(pos[1] + face[1]) + 0.625,
                 f64::from(pos[2] + face[2]) + 0.5,
             ];
-            self.spawn_item(item, at, [0.0; 3], 0);
+            let mut drops = vec![item];
+            let tool = self.stack_in(slot).cloned();
+            let origin = pos.map(|c| f64::from(c) + 0.5);
+            self.native_use_drops(
+                "",
+                origin,
+                Some((pos, state)),
+                None,
+                tool.as_ref(),
+                &mut drops,
+            );
+            for item in drops {
+                self.spawn_item(item, at, [0.0; 3], 0);
+            }
         }
         // Level event 3008 for every player, then the block change.
         self.level_event_at(3008, pos, state.0 as i32);
@@ -221,9 +269,67 @@ impl Game<'_> {
         if brush.count != 0 {
             self.brushing.insert(pos, brush);
             self.schedule_brushable_tick(pos);
+        } else if let Some(BlockEntity::Brushable(b)) =
+            self.world.block_entities.get_mut(&(pos[0], pos[1], pos[2]))
+        {
+            b.hit_direction = None;
         }
         if before != after {
             self.set_dusted(pos, after);
+        }
+    }
+
+    /// `BrushableBlockRenderer`: reveal the item from the first brushed face.
+    pub(super) fn brushable_geometry(&self, camera: glam::DVec3, out: &mut Vec<Vertex>) {
+        use horizon_assets::item_model::DisplayContext;
+        for (key, entity) in &self.world.block_entities {
+            let BlockEntity::Brushable(b) = entity else {
+                continue;
+            };
+            let (Some(item), Some(face)) = (&b.item, b.hit_direction) else {
+                continue;
+            };
+            let at = glam::DVec3::new(f64::from(key.0), f64::from(key.1), f64::from(key.2));
+            if at.distance_squared(camera) >= 64.0 * 64.0 {
+                continue;
+            }
+            let state = self.world.block(key.0, key.1, key.2);
+            let progress = self
+                .pack
+                .assets
+                .registry
+                .state(state)
+                .and_then(|s| s.properties.get("dusted"))
+                .and_then(|s| s.parse::<u8>().ok())
+                .unwrap_or(0);
+            if progress == 0 {
+                continue;
+            }
+            let offset = f32::from(progress) * 0.075;
+            let (translation, adjacent, east_west) = match face {
+                0 => (glam::Vec3::new(0.5, -0.23 - offset, 0.5), [0, -1, 0], false),
+                1 => (glam::Vec3::new(0.5, 0.25 + offset, 0.5), [0, 1, 0], false),
+                2 => (glam::Vec3::new(0.5, 0.0, 0.25 - offset), [0, 0, -1], false),
+                3 => (glam::Vec3::new(0.5, 0.0, 0.73 + offset), [0, 0, 1], false),
+                4 => (glam::Vec3::new(0.25 - offset, 0.0, 0.5), [-1, 0, 0], true),
+                5 => (glam::Vec3::new(0.73 + offset, 0.0, 0.5), [1, 0, 0], true),
+                _ => continue,
+            };
+            let item = self.resolve_item(item, DisplayContext::Fixed, None, 0);
+            if item.is_empty() {
+                continue;
+            }
+            let pose = glam::Mat4::from_translation(
+                (at - camera).as_vec3() + glam::Vec3::new(0.0, 0.5, 0.0) + translation,
+            ) * glam::Mat4::from_rotation_y(
+                (86.0_f32 + if east_west { 90.0 } else { 0.0 }).to_radians(),
+            ) * glam::Mat4::from_scale(glam::Vec3::splat(0.5));
+            let light = self.world.light(
+                key.0 + adjacent[0],
+                key.1 + adjacent[1],
+                key.2 + adjacent[2],
+            );
+            self.submit_item_world(&item, pose, vertex_light(light), out);
         }
     }
 

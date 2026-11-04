@@ -39,7 +39,7 @@ pub fn named_color(name: &str) -> Option<u32> {
     COLORS.iter().find(|c| c.1 == name).map(|c| c.2)
 }
 
-/// Click actions carried by locally constructed text components.
+/// Click actions carried by text components.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ClickEvent {
     /// `ClickEvent.OpenUrl`: an http or https link.
@@ -53,15 +53,44 @@ pub enum ClickEvent {
     /// `ClickEvent.ShowDialog`: a `minecraft:dialog` registry id, or the
     /// dialog itself as the component carried it.
     ShowDialog(horizon_world::nbt::Tag),
+    /// `ClickEvent.Custom`: a server-defined action with an optional NBT payload.
+    Custom {
+        id: String,
+        payload: Option<horizon_world::nbt::Tag>,
+    },
     /// A local file to open with the system handler.
     /// Only allow this in locally constructed messages, never server/LAN text.
     OpenFile(String),
+}
+
+/// A non-character `minecraft:object` embedded in a text component.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum InlineObject {
+    Player {
+        profile: Value,
+        hat: bool,
+        fallback: String,
+    },
+    Atlas {
+        atlas: String,
+        sprite: String,
+        fallback: String,
+    },
+}
+impl InlineObject {
+    pub fn fallback(&self) -> &str {
+        match self {
+            Self::Player { fallback, .. } | Self::Atlas { fallback, .. } => fallback,
+        }
+    }
 }
 
 /// Text style; `None` fields inherit from the enclosing style.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Style {
     pub color: Option<u32>,
+    /// Text component `shadow_color` as packed ARGB. Zero suppresses shadows.
+    pub shadow_color: Option<u32>,
     pub bold: Option<bool>,
     pub italic: Option<bool>,
     pub underlined: Option<bool>,
@@ -72,11 +101,15 @@ pub struct Style {
     pub hover: Option<Box<Text>>,
     /// `HoverEvent.ShowItem`: the event's `{id, count?, components?}` object.
     pub hover_item: Option<Box<Value>>,
+    /// `HoverEvent.ShowEntity`: the event's `{id, uuid, name?}` object.
+    pub hover_entity: Option<Box<Value>>,
     /// `Style.insertion`: the text a Shift-click puts in the chat box.
     pub insertion: Option<String>,
     /// The font (`FontDescription.Resource`), a full id like
     /// `minecraft:alt`; the default font when unset.
     pub font: Option<String>,
+    /// Content metadata for a single U+FFFC object span; never inherited.
+    pub inline_object: Option<InlineObject>,
 }
 /// A style's `font` field: an identifier (`alt` is `minecraft:alt`).
 pub fn font_id(v: &Value) -> Option<String> {
@@ -92,6 +125,7 @@ impl Style {
     /// Fill unset fields from `base` (Style.applyTo).
     pub fn inherit(&mut self, base: &Style) {
         self.color = self.color.or(base.color);
+        self.shadow_color = self.shadow_color.or(base.shadow_color);
         self.bold = self.bold.or(base.bold);
         self.italic = self.italic.or(base.italic);
         self.underlined = self.underlined.or(base.underlined);
@@ -100,11 +134,12 @@ impl Style {
         if self.click.is_none() {
             self.click.clone_from(&base.click);
         }
-        if self.hover.is_none() {
+        // One HoverEvent: its three kinds are inherited together, so a style
+        // with its own event never picks up another kind from `base`.
+        if self.hover.is_none() && self.hover_item.is_none() && self.hover_entity.is_none() {
             self.hover.clone_from(&base.hover);
-        }
-        if self.hover_item.is_none() {
             self.hover_item.clone_from(&base.hover_item);
+            self.hover_entity.clone_from(&base.hover_entity);
         }
         if self.insertion.is_none() {
             self.insertion.clone_from(&base.insertion);
@@ -210,6 +245,28 @@ impl Text {
         }
         t.source = Some(Value::Object(c).into());
         t
+    }
+    /// Component.translatableWithFallback(key, fallback, args): `translate`, with `fallback` as
+    /// the template when the language has no `key`.
+    pub fn translate_with_fallback(key: &str, fallback: &str, args: &[Text]) -> Self {
+        let template = lang::current()
+            .and_then(|l| l.get(key).map(str::to_owned))
+            .unwrap_or_else(|| fallback.to_owned());
+        let mut t = format_translation(&template, args);
+        let mut c = Map::new();
+        c.insert("translate".into(), key.into());
+        c.insert("fallback".into(), fallback.into());
+        if !args.is_empty() {
+            c.insert("with".into(), args.iter().map(Text::argument).collect());
+        }
+        t.source = Some(Value::Object(c).into());
+        t
+    }
+    /// CommonComponents.optionNameValue: "Caption: value" joined as the language joins them
+    /// (`options.generic_value`: "%s : %s" in French, "%s：%s" in Chinese). English's "%s: %s"
+    /// when the language has no such key, as without prepared resources.
+    pub fn option_name_value(caption: Text, value: Text) -> Self {
+        Self::translate_with_fallback("options.generic_value", "%s: %s", &[caption, value])
     }
     /// A translatable message whose arguments are plain strings.
     pub fn tr(key: &str, args: &[&dyn std::fmt::Display]) -> Self {
@@ -337,7 +394,13 @@ impl Text {
     }
     /// Component.getString: the plain characters.
     pub fn plain(&self) -> String {
-        self.spans.iter().map(|s| s.text.as_str()).collect()
+        self.spans
+            .iter()
+            .map(|s| match &s.style.inline_object {
+                Some(object) if s.text == "\u{fffc}" => object.fallback(),
+                _ => s.text.as_str(),
+            })
+            .collect()
     }
     pub fn is_empty(&self) -> bool {
         self.spans.iter().all(|s| s.text.is_empty())
@@ -403,31 +466,7 @@ impl Text {
                     continue;
                 }
                 let Some(code) = chars.next() else { break };
-                let code = code.to_ascii_lowercase();
-                let next = if let Some(c) = COLORS.iter().find(|c| c.0 == code) {
-                    // Style.applyLegacyFormat: a colour clears the decorations.
-                    Style {
-                        color: Some(c.2),
-                        bold: Some(false),
-                        italic: Some(false),
-                        underlined: Some(false),
-                        strikethrough: Some(false),
-                        obfuscated: Some(false),
-                        ..style.clone()
-                    }
-                } else {
-                    let mut s = style.clone();
-                    match code {
-                        'k' => s.obfuscated = Some(true),
-                        'l' => s.bold = Some(true),
-                        'm' => s.strikethrough = Some(true),
-                        'n' => s.underlined = Some(true),
-                        'o' => s.italic = Some(true),
-                        'r' => s = span.style.clone(),
-                        _ => {}
-                    }
-                    s
-                };
+                let next = legacy_format(&style, code, &span.style);
                 if next != style {
                     if !current.is_empty() {
                         out.spans.push(Span {
@@ -514,8 +553,9 @@ impl Text {
 }
 
 /// The style fields of a component's JSON.
-const STYLE_KEYS: [&str; 10] = [
+const STYLE_KEYS: [&str; 11] = [
     "color",
+    "shadow_color",
     "bold",
     "italic",
     "underlined",
@@ -526,7 +566,7 @@ const STYLE_KEYS: [&str; 10] = [
     "insertion",
     "font",
 ];
-/// Style.Serializer: the fields a style sets.
+/// `Style.Serializer`: the fields a style sets.
 fn style_json(style: &Style) -> Vec<(String, Value)> {
     let mut out = Vec::new();
     if let Some(c) = style.color {
@@ -535,6 +575,9 @@ fn style_json(style: &Style) -> Vec<(String, Value)> {
             .find(|n| n.2 == c)
             .map_or_else(|| format!("#{c:06X}"), |n| n.1.to_owned());
         out.push(("color".to_owned(), name.into()));
+    }
+    if let Some(shadow) = style.shadow_color {
+        out.push(("shadow_color".to_owned(), Value::from(shadow as i32)));
     }
     for (key, flag) in [
         ("bold", style.bold),
@@ -565,6 +608,13 @@ fn style_json(style: &Style) -> Vec<(String, Value)> {
                 "action": "show_dialog",
                 "dialog": crate::scoreboard::tag_to_json(dialog),
             }),
+            ClickEvent::Custom { id, payload } => {
+                let mut event = json!({ "action": "custom", "id": id });
+                if let Some(payload) = payload {
+                    event["payload"] = crate::scoreboard::tag_to_json(payload);
+                }
+                event
+            }
             ClickEvent::OpenFile(path) => json!({ "action": "open_file", "path": path }),
         };
         out.push(("click_event".to_owned(), event));
@@ -578,6 +628,10 @@ fn style_json(style: &Style) -> Vec<(String, Value)> {
         let mut event = item.clone();
         event.insert("action".into(), "show_item".into());
         out.push(("hover_event".to_owned(), Value::Object(event)));
+    } else if let Some(Value::Object(entity)) = style.hover_entity.as_deref() {
+        let mut event = entity.clone();
+        event.insert("action".into(), "show_entity".into());
+        out.push(("hover_event".to_owned(), Value::Object(event)));
     }
     if let Some(insertion) = &style.insertion {
         out.push(("insertion".to_owned(), insertion.clone().into()));
@@ -586,6 +640,35 @@ fn style_json(style: &Style) -> Vec<(String, Value)> {
         out.push(("font".to_owned(), font.clone().into()));
     }
     out
+}
+
+/// `Style.applyLegacyFormat` for the code after a `§`, `§r` going back to
+/// `reset` (`StringDecomposer.iterateFormatted`); an unknown code changes nothing.
+pub fn legacy_format(style: &Style, code: char, reset: &Style) -> Style {
+    let code = code.to_ascii_lowercase();
+    if let Some(c) = COLORS.iter().find(|c| c.0 == code) {
+        // A colour clears the decorations.
+        return Style {
+            color: Some(c.2),
+            bold: Some(false),
+            italic: Some(false),
+            underlined: Some(false),
+            strikethrough: Some(false),
+            obfuscated: Some(false),
+            ..style.clone()
+        };
+    }
+    let mut s = style.clone();
+    match code {
+        'k' => s.obfuscated = Some(true),
+        'l' => s.bold = Some(true),
+        'm' => s.strikethrough = Some(true),
+        'n' => s.underlined = Some(true),
+        'o' => s.italic = Some(true),
+        'r' => s = reset.clone(),
+        _ => {}
+    }
+    s
 }
 
 /// TranslatableContents.decomposeTemplate: `%s` takes the next argument,

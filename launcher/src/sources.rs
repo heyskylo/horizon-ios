@@ -504,7 +504,6 @@ fn make_link(target: &Path, link: &Path) -> std::io::Result<()> {
 /// copy on another volume).
 #[cfg(windows)]
 fn make_link(target: &Path, link: &Path) -> std::io::Result<()> {
-    use std::os::windows::process::CommandExt;
     if !target.is_dir() {
         return fs::hard_link(target, link).or_else(|_| fs::copy(target, link).map(|_| ()));
     }

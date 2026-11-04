@@ -2,13 +2,13 @@
 use super::{
     biome::BiomeId,
     block_feature::FeatureBlockBindings,
-    generator::{ChunkWork, GeneratorData, GeneratorError},
+    generator::{ChunkWork, GeneratorData, GeneratorError, shard_of},
     structure::{
         StructureResources,
         jigsaw::PoolPiece,
         start::{
             Piece, Rings, StartContext, StructureRegistry, StructureStart, beardifier,
-            create_starts,
+            create_starts, try_generate,
         },
         stronghold::RingSearch,
     },
@@ -19,12 +19,18 @@ use std::collections::BTreeMap;
 use std::{
     collections::{BTreeSet, HashMap},
     sync::{
-        Arc, Condvar, Mutex, OnceLock, RwLock,
+        Arc, Condvar, Mutex, OnceLock, RwLock, TryLockError,
         atomic::{AtomicUsize, Ordering},
     },
 };
 
 pub(super) type Starts = Arc<Vec<Arc<StructureStart>>>;
+impl StructureState {
+    /// [`StartCache::census`].
+    pub(super) fn start_census(&self) -> (usize, usize) {
+        self.starts.census()
+    }
+}
 pub(super) struct StructureState {
     pub(super) registry: StructureRegistry,
     pub(super) resources: Arc<StructureResources>,
@@ -39,6 +45,10 @@ pub(super) struct StructureState {
     rings: Arc<OnceLock<Rings>>,
     /// Their biome searches while they are computed.
     ring_work: OnceLock<RingWork>,
+    /// The seed the rings are searched with when it is not the world's (a superflat world's 0).
+    pub(super) ring_seed: Option<i64>,
+    /// The biome source is a `FixedBiomeSource` (a single-biome world, a superflat one).
+    pub(super) fixed_biome: bool,
     /// `StructureRegistry::zone_reach`.
     zone_reach: i32,
 }
@@ -49,6 +59,8 @@ pub(super) struct StructureState {
 /// ones others took. Done by the first thread alone, the 128 stronghold
 /// searches kept every other worker blocked for seconds after each world load.
 struct RingWork {
+    /// The biome source is a `FixedBiomeSource`, which has its own horizontal search.
+    fixed: bool,
     /// The concentric-ring sets, some with no positions.
     sets: Vec<usize>,
     /// Set index and search, sets in `possible_sets` order.
@@ -66,6 +78,7 @@ impl RingWork {
             .flat_map(|(set, searches)| searches.into_iter().map(move |s| (set, s)))
             .collect();
         Self {
+            fixed: false,
             sets: indices,
             next: AtomicUsize::new(0),
             found: (0..searches.len()).map(|_| OnceLock::new()).collect(),
@@ -85,7 +98,12 @@ impl RingWork {
             let Some((set, search)) = self.searches.get(i) else {
                 break;
             };
-            let _ = self.found[i].set(search.find(preferred(*set), biomes));
+            let found = if self.fixed {
+                search.find_fixed(preferred(*set), biomes)
+            } else {
+                search.find(preferred(*set), biomes)
+            };
+            let _ = self.found[i].set(found);
             let mut left = self.left.lock().unwrap();
             *left -= 1;
             if *left == 0 {
@@ -120,8 +138,27 @@ const START_SHARDS: usize = 64;
 /// (`references`) and the server thread reads the starts of the chunks its
 /// mobs and players are in; with one lock for all, the server thread waited
 /// on the workers.
+///
+/// Each shard keeps two generations: a full one becomes the old one, and a
+/// start found in the old one moves back to the new. The starts still in use
+/// (the chunks around every player, which natural spawning asks about each
+/// tick) stay, where clearing a full shard threw them away and players spread
+/// far apart had their villages' jigsaws built again and again.
 struct StartCache {
-    shards: Box<[RwLock<HashMap<(i32, i32), Starts>>]>,
+    shards: Box<[RwLock<StartShard>]>,
+}
+#[derive(Default)]
+struct StartShard {
+    new: HashMap<(i32, i32), Starts>,
+    old: HashMap<(i32, i32), Starts>,
+}
+impl StartShard {
+    /// Room for one more in the new generation.
+    fn make_room(&mut self) {
+        if self.new.len() >= START_CACHE_LIMIT / START_SHARDS {
+            self.old = std::mem::take(&mut self.new);
+        }
+    }
 }
 impl StartCache {
     fn new() -> Self {
@@ -129,29 +166,67 @@ impl StartCache {
             shards: (0..START_SHARDS).map(|_| RwLock::default()).collect(),
         }
     }
-    fn shard(&self, key: (i32, i32)) -> &RwLock<HashMap<(i32, i32), Starts>> {
-        let hash =
-            (key.0 as u32).wrapping_mul(0x9E37_79B9) ^ (key.1 as u32).wrapping_mul(0x85EB_CA6B);
-        &self.shards[(hash >> (32 - START_SHARDS.trailing_zeros())) as usize]
+    fn shard(&self, key: (i32, i32)) -> &RwLock<StartShard> {
+        &self.shards[shard_of(key, START_SHARDS)]
     }
     fn get(&self, key: (i32, i32)) -> Option<Starts> {
-        self.shard(key).read().unwrap().get(&key).cloned()
+        let shard = self.shard(key);
+        {
+            let read = shard.read().unwrap();
+            if let Some(found) = read.new.get(&key) {
+                return Some(found.clone());
+            }
+            if !read.old.contains_key(&key) {
+                return None;
+            }
+        }
+        let mut write = shard.write().unwrap();
+        if let Some(found) = write.new.get(&key) {
+            return Some(found.clone());
+        }
+        let found = write.old.remove(&key)?;
+        write.make_room();
+        write.new.insert(key, found.clone());
+        Some(found)
     }
     /// Keeps `starts` unless another thread built the same chunk's first:
     /// everyone keeps the first, so placement state on its pieces is shared.
     fn insert_first(&self, key: (i32, i32), starts: Starts) -> Starts {
         let mut shard = self.shard(key).write().unwrap();
-        if shard.len() >= START_CACHE_LIMIT / START_SHARDS {
-            shard.clear();
+        let first = shard.new.remove(&key).or_else(|| shard.old.remove(&key));
+        shard.make_room();
+        shard
+            .new
+            .entry(key)
+            .or_insert(first.unwrap_or(starts))
+            .clone()
+    }
+    /// Chunks cached, and how many of them hold a start.
+    fn census(&self) -> (usize, usize) {
+        let mut census = (0, 0);
+        for shard in &self.shards {
+            let shard = shard.read().unwrap();
+            census.0 += shard.new.len() + shard.old.len();
+            census.1 += shard
+                .new
+                .values()
+                .chain(shard.old.values())
+                .filter(|s| !s.is_empty())
+                .count();
         }
-        shard.entry(key).or_insert(starts).clone()
+        census
     }
     fn replace(&self, key: (i32, i32), starts: Starts) {
-        self.shard(key).write().unwrap().insert(key, starts);
+        let mut shard = self.shard(key).write().unwrap();
+        shard.old.remove(&key);
+        if !shard.new.contains_key(&key) {
+            shard.make_room();
+        }
+        shard.new.insert(key, starts);
     }
     fn clear(&self) {
         for shard in &self.shards {
-            shard.write().unwrap().clear();
+            *shard.write().unwrap() = StartShard::default();
         }
     }
 }
@@ -203,11 +278,7 @@ impl StructureState {
         for (i, def) in registry.structures.iter().enumerate() {
             by_step[def.step].push(i);
         }
-        let mut bindings = FeatureBlockBindings::with_tags(
-            data.registry(),
-            data.integers().clone(),
-            &data.block_tags,
-        )?;
+        let mut bindings = data.feature_block_bindings()?;
         // Processors that test what a block is made of read canOcclude.
         if let Some(blocks) = data
             .feature_resources
@@ -228,7 +299,34 @@ impl StructureState {
             start_work: ChunkWork::new(),
             rings,
             ring_work: OnceLock::new(),
+            ring_seed: None,
+            fixed_biome: false,
         }))
+    }
+    /// `FlatLevelGeneratorSettings.structureOverrides`: only the structure sets named
+    /// (`minecraft:villages`) may generate.
+    pub(super) fn restrict_to(&mut self, names: &[String]) {
+        let registry = &self.registry;
+        let bare = |name: &str| name.strip_prefix("minecraft:").unwrap_or(name).to_owned();
+        // `lenientOptionalFieldOf`: a list naming a set that does not exist fails to decode,
+        // which counts as the key being absent: every set generates.
+        if names.iter().any(|name| {
+            !registry
+                .sets
+                .iter()
+                .any(|set| bare(&set.name) == bare(name))
+        }) {
+            return;
+        }
+        self.possible_sets.retain(|&set| {
+            names.iter().any(|name| {
+                name.strip_prefix("minecraft:").unwrap_or(name)
+                    == registry.sets[set]
+                        .name
+                        .strip_prefix("minecraft:")
+                        .unwrap_or(&registry.sets[set].name)
+            })
+        });
     }
     /// Concentric ring positions of a structure set (vanilla's
     /// getRingPositionsFor), computed now if no lookup needed them yet.
@@ -241,10 +339,12 @@ impl StructureState {
     }
     fn ring_work(&self, context: &impl StartContext) -> &RingWork {
         self.ring_work.get_or_init(|| {
-            RingWork::new(
-                self.registry
-                    .ring_searches(&self.possible_sets, context.seed()),
-            )
+            let mut work = RingWork::new(self.registry.ring_searches(
+                &self.possible_sets,
+                self.ring_seed.unwrap_or_else(|| context.seed()),
+            ));
+            work.fixed = self.fixed_biome;
+            work
         })
     }
     /// The concentric ring positions, computing them with the threads that
@@ -279,6 +379,15 @@ impl StructureState {
             .any(|(_, search)| search.may_land_near(chunk.x, chunk.z, self.zone_reach));
         if near { self.rings(context) } else { &NONE }
     }
+    /// `StructureRegistry::needs_dimension_origin`: whether any set is placed
+    /// by the dimension's origin chunk alone.
+    pub(super) fn needs_dimension_origin(&self) -> bool {
+        self.registry.needs_dimension_origin()
+    }
+    /// `ChunkGenerator.getOrigin` for this dimension's structure state.
+    pub(super) fn set_dimension_origin(&mut self, origin: ChunkPos) {
+        self.registry.set_dimension_origin(origin);
+    }
     /// Drop the cached starts, so that later chunks build fresh pieces (the
     /// pieces keep per-start placement state such as a shipwreck's height).
     pub(super) fn forget_starts(&self) {
@@ -292,16 +401,123 @@ impl StructureState {
         context: &mut impl super::structure::start::StartContext,
         chunk: ChunkPos,
     ) -> Starts {
+        self.build_starts(context, chunk, true)
+            .expect("waits for another worker's build")
+    }
+    /// The starts a chunk saved (`structures.starts`), which vanilla loads with their pieces
+    /// (`StructureStart.loadStaticStart`) so that the neighbours place the parts that cross
+    /// into them and the beardifier shapes the terrain around them. A jigsaw start (villages,
+    /// outposts, bastions, ancient cities, trial chambers, trail ruins) is loaded from its
+    /// saved pieces (`PoolPiece::from_saved`). Another structure's pieces have no loader yet:
+    /// it is the start this generator makes in the chunk when that one has the same name and the
+    /// same pieces' box (the same layout from the same seed), else the name and box alone (found
+    /// by `/locate` and maps, but not placed).
+    fn saved_starts_at(
+        &self,
+        context: &mut impl super::structure::start::StartContext,
+        chunk: ChunkPos,
+    ) -> Starts {
+        let saved = context.saved_starts(chunk);
+        let mut generated: Option<Vec<Arc<StructureStart>>> = None;
+        let starts = saved
+            .into_iter()
+            .filter_map(|start| {
+                let index = (self.registry.structures.iter()).position(|s| s.name == start.name)?;
+                let def = &self.registry.structures[index];
+                if !start.pieces.is_empty()
+                    && let Some(pieces) = start
+                        .pieces
+                        .iter()
+                        .map(|piece| self.saved_pool_piece(piece))
+                        .collect::<Option<Vec<_>>>()
+                {
+                    return Some(Arc::new(StructureStart::new(index, def, chunk, pieces)));
+                }
+                if let Some(bounds) = start.bounds {
+                    let made = generated.get_or_insert_with(|| {
+                        let rings = self.rings_for(context, chunk);
+                        create_starts(
+                            &self.registry,
+                            &self.resources,
+                            &self.bindings,
+                            context,
+                            &self.possible_sets,
+                            rings,
+                            chunk,
+                        )
+                        .into_iter()
+                        .map(Arc::new)
+                        .collect()
+                    });
+                    let same = made.iter().find(|made| {
+                        made.name == start.name && pieces_box(&made.pieces) == Some(bounds)
+                    });
+                    if let Some(same) = same {
+                        return Some(same.clone());
+                    }
+                }
+                let [x0, y0, z0, x1, y1, z1] = start.bounds.unwrap_or([
+                    chunk.x * 16,
+                    0,
+                    chunk.z * 16,
+                    chunk.x * 16 + 15,
+                    0,
+                    chunk.z * 16 + 15,
+                ]);
+                Some(Arc::new(StructureStart {
+                    structure: index,
+                    name: start.name,
+                    chunk,
+                    pieces: Vec::new(),
+                    bounding_box: crate::worldgen::structure::BoundingBox::new(
+                        [x0, y0, z0],
+                        [x1, y1, z1],
+                    ),
+                }))
+            })
+            .collect();
+        Arc::new(starts)
+    }
+    /// A saved `minecraft:jigsaw` piece, or `None` for any other piece or one that does not decode.
+    fn saved_pool_piece(&self, piece: &crate::nbt::Tag) -> Option<Piece> {
+        let crate::nbt::Tag::Compound(map) = piece else {
+            return None;
+        };
+        let id = map.get(&"id".into())?;
+        if !matches!(id, crate::nbt::Tag::String(s) if s.to_string_lossy() == "minecraft:jigsaw") {
+            return None;
+        }
+        PoolPiece::from_saved(&tag_json(piece), &self.resources, &self.bindings)
+            .ok()
+            .map(Piece::Pool)
+    }
+    /// `starts_at`, or `None` when another worker is building them and
+    /// `wait` is false.
+    fn build_starts(
+        &self,
+        context: &mut impl super::structure::start::StartContext,
+        chunk: ChunkPos,
+        wait: bool,
+    ) -> Option<Starts> {
         if let Some(found) = self.starts.get((chunk.x, chunk.z)) {
-            return found;
+            return Some(found);
+        }
+        if context.is_old_chunk(chunk) {
+            // Decoded once: the neighbours ask for these starts again and again.
+            let starts = self.saved_starts_at(context, chunk);
+            return Some(self.starts.insert_first((chunk.x, chunk.z), starts));
         }
         // Ring searches enlist other workers and wait for them: never hold a
         // chunk-work lock while helping, even when this chunk has no starts.
         let rings = self.rings_for(context, chunk);
         let work = self.start_work.at((chunk.x, chunk.z));
-        let _work = work.lock().unwrap();
+        let _work = match work.try_lock() {
+            Ok(guard) => guard,
+            Err(TryLockError::WouldBlock) if !wait => return None,
+            Err(_) => work.lock().unwrap(),
+        };
         if let Some(found) = self.starts.get((chunk.x, chunk.z)) {
-            return found;
+            return Some(found);
         }
         let starts: Starts = Arc::new(
             create_starts(
@@ -317,7 +533,29 @@ impl StructureState {
             .map(Arc::new)
             .collect(),
         );
-        self.starts.insert_first((chunk.x, chunk.z), starts)
+        Some(self.starts.insert_first((chunk.x, chunk.z), starts))
+    }
+    /// `Structure.generate` for `/place structure`: the start `structure`
+    /// builds in `chunk`, whether or not a structure set would place one
+    /// there (vanilla calls the structure's own generate, not the set's
+    /// placement, with its `biome -> true` predicate). Nothing is cached: the
+    /// chunk's own starts are untouched.
+    pub(super) fn structure_start(
+        &self,
+        context: &mut impl StartContext,
+        structure: &str,
+        chunk: ChunkPos,
+    ) -> Option<StructureStart> {
+        let index = (self.registry.structures.iter()).position(|s| s.name == structure)?;
+        try_generate(
+            &self.registry,
+            &self.resources,
+            &self.bindings,
+            context,
+            index,
+            chunk,
+            true,
+        )
     }
     /// Puts a saved start of `structure` in `chunk`, in place of the one
     /// this generator builds there from the same structure sets (a set
@@ -361,13 +599,16 @@ impl StructureState {
     /// ChunkGenerator.findNearestMapStructure: the nearest start of one of
     /// `names` from block `from` (rings: every ring chunk; random spreads:
     /// sectors in growing squares up to `radius`). Returns the structure and
-    /// its locate position (the start chunk's corner at y 0).
+    /// its locate position (the start chunk's corner at y 0). `skip` says a
+    /// start (structure name, its chunk) can't be referenced again
+    /// (`StructureStart.canBeReferenced`): the search goes on past it.
     pub(super) fn locate(
         &self,
         context: &mut impl super::structure::start::StartContext,
         names: &[String],
         from: [i32; 3],
         radius: i32,
+        skip: &dyn Fn(&str, ChunkPos) -> bool,
     ) -> Option<(String, [i32; 3])> {
         let seed = context.seed();
         let rings = self.rings(context).clone();
@@ -380,7 +621,7 @@ impl StructureState {
         let found_at = |this: &Self, context: &mut _, chunk: ChunkPos| -> Option<String> {
             this.starts_at(context, chunk)
                 .iter()
-                .find(|s| wanted(s.structure))
+                .find(|s| wanted(s.structure) && !skip(&s.name, chunk))
                 .map(|s| s.name.clone())
         };
         for &si in &self.possible_sets {
@@ -394,20 +635,19 @@ impl StructureState {
                     let Some(chunks) = rings.get(&set.name) else {
                         continue;
                     };
-                    let mut nearest: Option<(f64, ChunkPos)> = None;
+                    let mut nearest: Option<(f64, ChunkPos, String)> = None;
                     for &c in chunks {
                         let d = dist([c.x * 16 + 8, 32, c.z * 16 + 8]);
-                        if nearest.is_none_or(|(n, _)| d < n)
+                        if nearest.as_ref().is_none_or(|(n, ..)| d < *n)
                             && self
                                 .registry
                                 .is_structure_chunk(set, seed, c.x, c.z, &rings)
+                            && let Some(name) = found_at(self, context, c)
                         {
-                            nearest = Some((d, c));
+                            nearest = Some((d, c, name));
                         }
                     }
-                    if let Some((_, c)) = nearest
-                        && let Some(name) = found_at(self, context, c)
-                    {
+                    if let Some((_, c, name)) = nearest {
                         let p = set.locate_pos(c);
                         let d = dist(p);
                         if best.as_ref().is_none_or(|(b, ..)| d < *b) {
@@ -459,18 +699,23 @@ impl StructureState {
         chunk: ChunkPos,
     ) -> Vec<Arc<StructureStart>> {
         let (bx, bz) = (chunk.x * 16, chunk.z * 16);
+        let around: Vec<ChunkPos> = (chunk.x - 8..=chunk.x + 8)
+            .flat_map(|sx| (chunk.z - 8..=chunk.z + 8).map(move |sz| ChunkPos::new(sx, sz)))
+            .collect();
+        // Workers generating neighbouring chunks ask for the same starts in the
+        // same order: build those no other worker is building first, and wait
+        // for the others only then, rather than all queueing behind each one.
+        let found: Vec<Option<Starts>> = around
+            .iter()
+            .map(|&at| self.build_starts(context, at, false))
+            .collect();
         let mut out = Vec::new();
-        for sx in chunk.x - 8..=chunk.x + 8 {
-            for sz in chunk.z - 8..=chunk.z + 8 {
-                for start in self.starts_at(context, ChunkPos::new(sx, sz)).iter() {
-                    let b = start.bounding_box;
-                    if b.max[0] >= bx
-                        && b.min[0] <= bx + 15
-                        && b.max[2] >= bz
-                        && b.min[2] <= bz + 15
-                    {
-                        out.push(start.clone());
-                    }
+        for (&at, found) in around.iter().zip(found) {
+            let starts = found.unwrap_or_else(|| self.starts_at(context, at));
+            for start in starts.iter() {
+                let b = start.bounding_box;
+                if b.max[0] >= bx && b.min[0] <= bx + 15 && b.max[2] >= bz && b.min[2] <= bz + 15 {
+                    out.push(start.clone());
                 }
             }
         }
@@ -505,6 +750,42 @@ impl StructureState {
     }
 }
 
+/// The union of the pieces' boxes as `[min x, min y, min z, max x, max y, max z]`.
+fn pieces_box(pieces: &[Piece]) -> Option<[i32; 6]> {
+    let mut union: Option<crate::worldgen::structure::BoundingBox> = None;
+    for piece in pieces {
+        let b = piece.bounding_box();
+        match union.as_mut() {
+            Some(u) => u.encapsulate(&b),
+            None => union = Some(b),
+        }
+    }
+    union.map(|b| [b.min[0], b.min[1], b.min[2], b.max[0], b.max[1], b.max[2]])
+}
+/// A saved piece's tag as the JSON `PoolPiece::from_saved` reads: compounds and lists as they
+/// are, numbers as numbers.
+fn tag_json(tag: &crate::nbt::Tag) -> Value {
+    use crate::nbt::Tag;
+    match tag {
+        Tag::Byte(v) => Value::from(i64::from(*v)),
+        Tag::Short(v) => Value::from(i64::from(*v)),
+        Tag::Int(v) => Value::from(i64::from(*v)),
+        Tag::Long(v) => Value::from(*v),
+        Tag::Float(bits) => Value::from(f64::from(f32::from_bits(*bits))),
+        Tag::Double(bits) => Value::from(f64::from_bits(*bits)),
+        Tag::String(s) => Value::from(s.to_string_lossy()),
+        Tag::List(items) => Value::Array(items.iter().map(tag_json).collect()),
+        Tag::ByteArray(v) => Value::Array(v.iter().map(|b| Value::from(i64::from(*b))).collect()),
+        Tag::IntArray(v) => Value::Array(v.iter().map(|i| Value::from(i64::from(*i))).collect()),
+        Tag::LongArray(v) => Value::Array(v.iter().map(|i| Value::from(*i)).collect()),
+        Tag::Compound(map) => Value::Object(
+            map.iter()
+                .map(|(k, v)| (k.to_string_lossy(), tag_json(v)))
+                .collect(),
+        ),
+        Tag::End => Value::Null,
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -541,6 +822,61 @@ mod tests {
         }
         cache.clear();
         assert!(cache.get((3, -4)).is_none());
+    }
+
+    /// A full shard forgets the starts nobody asked for since it last filled,
+    /// and keeps the ones still asked for (a player's surroundings).
+    #[test]
+    fn start_cache_keeps_the_starts_still_asked_for() {
+        let cache = StartCache::new();
+        let hot: Starts = Arc::new(Vec::new());
+        let cold: Starts = Arc::new(Vec::new());
+        let shard = shard_of((0, 0), START_SHARDS);
+        let mut same_shard = (1..)
+            .map(|x| (x, 0))
+            .filter(|&k| shard_of(k, START_SHARDS) == shard);
+        let cold_key = same_shard.next().unwrap();
+        cache.insert_first((0, 0), hot.clone());
+        cache.insert_first(cold_key, cold);
+        // Three shards' worth of other chunks, with the hot one asked for now and then.
+        for (i, key) in same_shard
+            .take(3 * START_CACHE_LIMIT / START_SHARDS)
+            .enumerate()
+        {
+            cache.insert_first(key, Arc::new(Vec::new()));
+            if i % 100 == 0 {
+                assert!(Arc::ptr_eq(&cache.get((0, 0)).unwrap(), &hot));
+            }
+        }
+        assert!(Arc::ptr_eq(&cache.get((0, 0)).unwrap(), &hot));
+        assert!(cache.get(cold_key).is_none());
+    }
+
+    #[test]
+    fn start_cache_counts_both_generations_and_replaces_old_starts() {
+        let cache = StartCache::new();
+        let key = (3, -4);
+        let first: Starts = Arc::new(Vec::new());
+        cache.insert_first(key, first.clone());
+        {
+            let mut shard = cache.shard(key).write().unwrap();
+            shard.old = std::mem::take(&mut shard.new);
+        }
+        cache.insert_first((99, 100), Arc::new(Vec::new()));
+        assert_eq!(cache.census(), (2, 0));
+        assert!(Arc::ptr_eq(
+            &cache.insert_first(key, Arc::new(Vec::new())),
+            &first
+        ));
+        {
+            let mut shard = cache.shard(key).write().unwrap();
+            let value = shard.new.remove(&key).unwrap();
+            shard.old.insert(key, value);
+        }
+        let replacement: Starts = Arc::new(Vec::new());
+        cache.replace(key, replacement.clone());
+        assert!(Arc::ptr_eq(&cache.get(key).unwrap(), &replacement));
+        assert_eq!(cache.census(), (2, 0));
     }
 
     /// A ring search ends where `may_land_near` allows: on its ring chunk

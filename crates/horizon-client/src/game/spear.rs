@@ -8,6 +8,7 @@
 //! players around as entity event 2. A left click jabs instead
 //! (`PiercingWeapon.attack`), which Lunge turns into a dash.
 use super::{Game, view_vector};
+pub(super) use horizon_client::spear::hits_in_reach;
 use horizon_client::{
     attack_strength::delay,
     collisions::SceneCollisions,
@@ -31,8 +32,7 @@ impl Game<'_> {
         let Some(kinetic) = Kinetic::of(&stack.item) else {
             return false;
         };
-        if self.using.is_none() {
-            self.using = Some((self.held_slot(), 0));
+        if self.start_using_item() {
             let actor = self.lan_acting;
             self.stabbed.retain(|(who, _), _| *who != actor);
             if let Some(p) = &self.player {
@@ -99,36 +99,16 @@ impl Game<'_> {
         .flatten()
     }
 
-    /// `ProjectileUtil.getHitEntitiesAlong` for the mobs: those whose box the
-    /// segment `from`..`to` meets, or comes within the margin of with no
-    /// block between.
-    fn mobs_along(&self, from: Vec3, to: Vec3, margin: f64) -> Vec<usize> {
-        let grow = Vec3::new(margin, margin, margin);
-        let mut hits = Vec::new();
-        for (i, m) in self.mobs.iter().enumerate() {
-            // PiercingWeapon.canHitEntity: alive, and not the vehicle ridden.
-            if !m.alive() || m.removed || self.riding == Some(m.id) {
-                continue;
-            }
-            let bounds: Aabb = m.bounds();
-            let hit = bounds.contains(from)
-                || bounds.clip(from, to).is_some()
-                || (margin > 0.0
-                    && bounds.inflate(grow).clip(from, to).is_some_and(|outside| {
-                        let centre = bounds.center();
-                        let toward = self.clip_collider(outside, centre).unwrap_or(centre);
-                        bounds.clip(outside, toward).is_some()
-                    }));
-            if hit {
-                hits.push(i);
-            }
-        }
-        hits
+    /// The boxes of the mobs a spear can hit: alive, and not the vehicle
+    /// ridden (`PiercingWeapon.canHitEntity`), with their index.
+    pub(super) fn hittable_mob_boxes(&self) -> Vec<(usize, Aabb)> {
+        (self.mobs.iter().enumerate())
+            .filter(|(_, m)| m.alive() && !m.removed && self.riding != Some(m.id))
+            .map(|(i, m)| (i, m.bounds()))
+            .collect()
     }
 
-    /// `ProjectileUtil.getHitEntitiesAlong` with the spear's `AttackRange`: the
-    /// mobs along the view from the minimum reach to the maximum plus the
-    /// attacker's own movement, none when a block is closer than the minimum.
+    /// `ProjectileUtil.getHitEntitiesAlong` with the spear's `AttackRange`.
     fn stab_targets(&self, eye: Vec3, look: Vec3, movement: Vec3) -> Vec<usize> {
         // AttackRange.effectiveMinRange and effectiveMaxRange for a player.
         let (min, max) = if self.creative {
@@ -136,16 +116,13 @@ impl Game<'_> {
         } else {
             (REACH.min, REACH.max)
         };
-        let from = eye.add_vector(look.scale(f64::from(min)));
-        let mut to = eye.add_vector(look.scale(f64::from(max) + movement.dot(look).max(0.0)));
-        // A block closer than the minimum reach takes the whole stab.
-        if let Some(block) = self.clip_collider(eye, to) {
-            to = block;
-            if eye.distance_squared(to) < eye.distance_squared(from) {
-                return Vec::new();
-            }
-        }
-        self.mobs_along(from, to, f64::from(REACH.hitbox_margin))
+        let reach = (min, max, REACH.hitbox_margin);
+        let clip = |from, to| self.clip_collider(from, to);
+        let boxes = self.hittable_mob_boxes();
+        hits_in_reach(&boxes, eye, look, movement, reach, clip)
+            .into_iter()
+            .map(|(i, _)| i)
+            .collect()
     }
 
     /// `KineticWeapon.damageEntities`: one tick of the spear in use, `ticks`
@@ -224,6 +201,7 @@ impl Game<'_> {
         let Some(p) = self.player.as_ref() else {
             return false;
         };
+        let _attacker = self.knockback_scope(p.entity_id);
         let from = [p.position.x, p.position.y, p.position.z];
         // The enchantments' share, scaled by the attack strength unless the
         // weapon is in use.
@@ -244,12 +222,16 @@ impl Game<'_> {
         };
         let old_health = self.mobs[index].health;
         let hurt = deals_damage && self.hurt_by_player(index, total, Damage::spear(from));
+        if hurt && old_health > 0.0 && !self.mobs[index].alive() {
+            self.native_kill_event(index);
+        }
         // causeExtraKnockback: a push of 0.4, then the weapon's Knockback.
         if deals_knockback {
             let (xd, zd) = self.extra_knockback_direction();
-            self.mobs[index].knockback(0.4, xd, zd);
+            let source = Damage::spear(from);
+            self.mobs[index].knockback(0.4, xd, zd, &source);
             let (strength, _) = self.extra_knockback(&kind, 0.0);
-            self.mobs[index].knockback(f64::from(strength), xd, zd);
+            self.mobs[index].knockback(f64::from(strength), xd, zd, &source);
             // ...and the attacker stops sprinting.
             self.stop_sprint_after_extra_knockback();
         }
@@ -274,7 +256,7 @@ impl Game<'_> {
         // itemAttackInteraction: hurtEnemy (statistic, wear), and the
         // post-attack enchantments when the target was hurt.
         if let Some(stack) = self.held().cloned() {
-            self.stats.add("used", &stack.item, 1);
+            self.award_stat("used", &stack.item, 1);
             if hurt {
                 self.post_attack(index);
             }
@@ -282,8 +264,7 @@ impl Game<'_> {
         }
         // damageStatsAndHearts.
         let actual = old_health - self.mobs[index].health;
-        self.stats
-            .custom("damage_dealt", (actual * 10.0).round() as i32);
+        self.award_custom_stat("damage_dealt", (actual * 10.0).round() as i32);
         if actual > 2.0 {
             let indicator = horizon_client::particles::ParticleOptions::simple(
                 horizon_client::particles::ParticleType::DamageIndicator,
@@ -295,6 +276,17 @@ impl Game<'_> {
                 0.2,
                 (actual * 0.5) as u32,
             );
+            // The players a server serves are sent them too (the window of the server thread).
+            self.lan_send_particles(super::lan_particles::QueuedParticle {
+                dimension: self.dim.id(),
+                options: indicator,
+                state: None,
+                at: [feet[0], feet[1] + height * 0.5, feet[2]],
+                spread: [0.1, 0.0, 0.1],
+                speed: [0.2; 3],
+                count: (actual * 0.5) as u32 as i32,
+                randomization: 0,
+            });
         }
         if hurt {
             self.last_hurt_by_player.insert(id, self.lan_acting);
@@ -326,9 +318,7 @@ impl Game<'_> {
         let look = view_vector(self.yaw, self.pitch);
         let look = Vec3::new(look[0], look[1], look[2]);
         // The attack damage attribute.
-        let damage = 1.0
-            + self.attack_item_info().map_or(0.0, |i| i.attack_damage)
-            + self.effect_attack_bonus();
+        let damage = self.attack_damage();
         let movement = self.known_player_movement();
         let mut hit = false;
         for i in self.stab_targets(eye, look, movement) {

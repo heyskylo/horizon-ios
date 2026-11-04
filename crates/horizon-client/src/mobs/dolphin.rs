@@ -1,11 +1,13 @@
 //! Dolphin goals: `DolphinSwimToTreasureGoal`, `DolphinSwimWithPlayerGoal`
 //! and `DolphinJumpGoal`. `extra.flag` is `gotFish` and `extra.home` the
-//! `treasurePos` the game found for it (`MobEvent::DolphinTreasure`).
+//! `treasurePos` the game found for it (`MobEvent::DolphinTreasure`). `extra.point` is where the
+//! game saw the first item floating within 8 blocks (`Dolphin.ALLOWED_ITEMS`).
 use super::{
     Mob, MobEvent, Who,
     goals::{Cx, Goal, JUMP, LOOK, MOVE, goal_clone, reduced},
 };
 use crate::blocks::Fluid;
+use horizon_core::geometry::trig::Mth;
 use horizon_core::random::RandomSource;
 
 /// `Entity.getMotionDirection`: the horizontal step of the yaw
@@ -177,6 +179,7 @@ fn grace() -> MobEvent {
         effect: "minecraft:dolphins_grace",
         ticks: 100,
         amplifier: 0,
+        ambient: false,
     }
 }
 
@@ -261,5 +264,331 @@ impl Goal for Jump {
             m.head_pitch = ((-v.y).atan2(horizontal) * f64::from(180.0f32)
                 / f64::from(std::f32::consts::PI)) as f32;
         }
+    }
+}
+
+/// `FollowPlayerRiddenEntityGoal(mob, AbstractBoat / AbstractNautilus)`: a
+/// dolphin swims to the back of a boat or nautilus a player steers within 5
+/// blocks of it, then ahead of it in the direction it moves, and goes back
+/// when it is more than 12 blocks off.
+///
+/// Only the player the mob sees (the nearest) is considered.
+#[derive(Clone, Debug)]
+pub struct FollowPlayerRidden {
+    nautilus: bool,
+    following: bool,
+    recalc: i32,
+    leading: bool,
+}
+impl FollowPlayerRidden {
+    pub fn new(nautilus: bool) -> Self {
+        Self {
+            nautilus,
+            following: false,
+            recalc: 0,
+            leading: false,
+        }
+    }
+    /// `Entity.hasMovedHorizontallyRecently` of the rider, and the player's
+    /// own position (its yaw gives the directions).
+    fn rider<'a>(&self, cx: &'a Cx) -> Option<&'a super::PlayerView> {
+        cx.w.player.as_ref().filter(|p| {
+            p.vehicle
+                .as_ref()
+                .is_some_and(|v| v.nautilus == self.nautilus)
+        })
+    }
+    fn moved(p: &super::PlayerView) -> bool {
+        p.vehicle.as_ref().is_some_and(|v| {
+            (v.velocity.x * v.velocity.x + v.velocity.z * v.velocity.z).sqrt() > 1.0e-5
+        })
+    }
+}
+impl Goal for FollowPlayerRidden {
+    goal_clone!();
+    fn name(&self) -> &'static str {
+        "FollowPlayerRiddenEntityGoal"
+    }
+    fn flags(&self) -> u8 {
+        0
+    }
+    /// `FollowPlayerRiddenEntityGoal.canUse`.
+    fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
+        let Some(p) = self.rider(cx) else {
+            return false;
+        };
+        if self.following && Self::moved(p) {
+            return true;
+        }
+        let area = m
+            .bounds()
+            .inflate(horizon_core::geometry::Vec3::new(5.0, 5.0, 5.0));
+        p.vehicle
+            .as_ref()
+            .is_some_and(|v| v.bounds.intersects(area))
+            && Self::moved(p)
+    }
+    /// `FollowPlayerRiddenEntityGoal.canContinueToUse`.
+    fn can_continue(&mut self, _: &mut Mob, cx: &mut Cx) -> bool {
+        self.following
+            && self
+                .rider(cx)
+                .is_some_and(|p| p.passenger && Self::moved(p))
+    }
+    /// `FollowPlayerRiddenEntityGoal.start`.
+    fn start(&mut self, _: &mut Mob, cx: &mut Cx) {
+        self.following = self.rider(cx).is_some();
+        self.recalc = 0;
+        self.leading = false;
+    }
+    /// `FollowPlayerRiddenEntityGoal.stop`.
+    fn stop(&mut self, _: &mut Mob, _: &mut Cx) {
+        self.following = false;
+    }
+    /// `FollowPlayerRiddenEntityGoal.tick`.
+    fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
+        let Some(p) = self.rider(cx) else { return };
+        let (position, yaw) = (p.position, p.yaw);
+        let speed = if self.leading { 0.01 } else { 0.015 };
+        let input = horizon_core::geometry::Vec3::new(
+            f64::from(m.ai.xxa),
+            f64::from(m.ai.yya),
+            f64::from(m.ai.zza),
+        );
+        m.move_relative(speed, input);
+        m.do_move(cx.w, cx.events);
+        self.recalc -= 1;
+        if self.recalc > 0 {
+            return;
+        }
+        self.recalc = reduced(10);
+        let [dx, dz] = motion_step(yaw);
+        let block = [
+            position.x.floor() as i32,
+            position.y.floor() as i32,
+            position.z.floor() as i32,
+        ];
+        if !self.leading {
+            // The block behind the player, one lower.
+            let behind = [block[0] - dx, block[1] - 1, block[2] - dz];
+            m.nav_move_to(
+                cx.w,
+                [
+                    f64::from(behind[0]),
+                    f64::from(behind[1]),
+                    f64::from(behind[2]),
+                ],
+                1.0,
+            );
+            if m.distance_sqr(position) < 16.0 {
+                self.recalc = 0;
+                self.leading = true;
+            }
+        } else {
+            let ahead = [block[0] + dx * 10, block[1] - 1, block[2] + dz * 10];
+            m.nav_move_to(
+                cx.w,
+                [
+                    f64::from(ahead[0]),
+                    f64::from(ahead[1]),
+                    f64::from(ahead[2]),
+                ],
+                1.0,
+            );
+            if m.distance_sqr(position) > 144.0 {
+                self.recalc = 0;
+                self.leading = false;
+            }
+        }
+    }
+}
+
+/// Where the first item floating in the water within 8 blocks lies (`Dolphin.ALLOWED_ITEMS`:
+/// no pickup delay, alive, in water), found by the game each tick.
+pub fn set_item_at(m: &mut Mob, at: Option<[f64; 3]>) {
+    m.extra.point = at;
+}
+/// `Dolphin.ItemGoal.drop` of the item in the mouth (`dropItem`): thrown from the eye, in
+/// the direction it faces, with a pickup delay of 40. False when the mouth is empty.
+fn drop_item(m: &mut Mob, events: &mut Vec<MobEvent>) -> bool {
+    let Some(stack) = super::finalize::item_stack(m, super::equip::Slot::MainHand.index()) else {
+        return false;
+    };
+    let y_hand = m.eye_y() - f64::from(0.3_f32);
+    let pow = 0.3_f32;
+    let dir = m.random.next_float() * (std::f32::consts::PI * 2.0);
+    let pow2 = 0.02_f32 * m.random.next_float();
+    let to_rad = std::f32::consts::PI / 180.0;
+    let (yaw, pitch) = (m.yaw * to_rad, m.head_pitch * to_rad);
+    let motion = [
+        f64::from(pow * -yaw.msin() * pitch.mcos() + dir.mcos() * pow2),
+        f64::from(pow * pitch.msin() * 1.5),
+        f64::from(pow * yaw.mcos() * pitch.mcos() + dir.msin() * pow2),
+    ];
+    events.push(MobEvent::ThrowItem {
+        mob: m.id,
+        stack,
+        at: [m.position.x, y_hand, m.position.z],
+        motion,
+        pickup_delay: 40,
+    });
+    m.extra.set_main_hand_stack(None);
+    true
+}
+/// `Dolphin.MoveToItemGoal`: swim to a floating item, playing a sound; drops what it holds
+/// when it stops and rests for up to 100 ticks.
+#[derive(Clone, Debug, Default)]
+pub struct MoveToItem {
+    cooldown: i64,
+}
+impl Goal for MoveToItem {
+    goal_clone!();
+    fn flags(&self) -> u8 {
+        MOVE
+    }
+    fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
+        if self.cooldown > cx.w.game_time {
+            return false;
+        }
+        m.extra.point.is_some()
+    }
+    fn stop(&mut self, m: &mut Mob, cx: &mut Cx) {
+        if drop_item(m, cx.events) {
+            self.cooldown = cx.w.game_time + i64::from(m.random.next_int_bound(100).unwrap_or(0));
+        }
+    }
+    fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
+        if let Some(at) = m.extra.point {
+            m.nav_move_to_entity(cx.w, at, 0, f64::from(1.2_f32));
+            cx.events.push(MobEvent::Sound(
+                "entity.dolphin.play",
+                [m.position.x, m.position.y, m.position.z],
+                1.0,
+                1.0,
+            ));
+        }
+        self.cooldown = 0;
+    }
+    fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
+        if let Some(at) = m.extra.point {
+            m.nav_move_to_entity(cx.w, at, 0, f64::from(1.2_f32));
+        }
+    }
+}
+/// `Dolphin.PlayWithItemsGoal`: a dolphin that holds something throws it away.
+#[derive(Clone, Debug, Default)]
+pub struct PlayWithItems;
+impl Goal for PlayWithItems {
+    goal_clone!();
+    fn flags(&self) -> u8 {
+        0
+    }
+    fn can_use(&mut self, m: &mut Mob, _cx: &mut Cx) -> bool {
+        m.extra.main_hand.is_some()
+    }
+    fn stop(&mut self, m: &mut Mob, cx: &mut Cx) {
+        drop_item(m, cx.events);
+    }
+    fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
+        drop_item(m, cx.events);
+    }
+}
+
+#[cfg(test)]
+mod item_tests {
+    use super::*;
+    use crate::items::ItemStack;
+    use crate::mobs::{Species, sensor_scan_tests::kind};
+    use horizon_core::geometry::Vec3;
+
+    fn dolphin() -> Mob {
+        let mut kind = kind();
+        let k = std::sync::Arc::make_mut(&mut kind);
+        k.id = "minecraft:dolphin".into();
+        k.species = Species::Dolphin;
+        Mob::new(1, kind, Vec3::ZERO, 0.0)
+    }
+
+    /// `Dolphin.ItemGoal.dropItem`: a dolphin facing south (yaw 0, level) throws the item
+    /// forward (+Z) at 0.3, off by at most 0.02 sideways, with a pickup delay of 40, and
+    /// its mouth is empty after. An empty mouth throws nothing.
+    #[test]
+    fn a_dolphin_throws_its_item_ahead_and_empties_its_mouth() {
+        let mut m = dolphin();
+        let mut events = Vec::new();
+        assert!(!drop_item(&mut m, &mut events), "nothing to throw");
+        assert!(events.is_empty());
+        let stack = ItemStack {
+            item: "minecraft:cod".into(),
+            count: 3,
+            damage: 0,
+            extra: None,
+        };
+        crate::mobs::finalize::set_item_stack(
+            &mut m,
+            crate::mobs::equip::Slot::MainHand.index(),
+            stack,
+        );
+        assert!(drop_item(&mut m, &mut events));
+        let [
+            MobEvent::ThrowItem {
+                stack,
+                motion,
+                pickup_delay,
+                ..
+            },
+        ] = events.as_slice()
+        else {
+            panic!("one thrown item, got {events:?}");
+        };
+        assert_eq!(
+            (&*stack.item, stack.count, *pickup_delay),
+            ("minecraft:cod", 3, 40)
+        );
+        assert!(
+            motion[0].abs() <= 0.02 + 1e-6,
+            "sideways at most 0.02: {motion:?}"
+        );
+        assert!(
+            (motion[2] - 0.3).abs() <= 0.02 + 1e-6,
+            "ahead at 0.3: {motion:?}"
+        );
+        assert_eq!(motion[1], 0.0, "level, so no climb");
+        assert!(m.extra.main_hand.is_none(), "the mouth is empty");
+    }
+}
+
+#[cfg(test)]
+mod target_tests {
+    use super::*;
+    use crate::mobs::world::with_test_world;
+    use crate::mobs::{Species, sensor_scan_tests::kind};
+    use horizon_core::geometry::Vec3;
+
+    fn dolphin(baby: bool) -> Mob {
+        let mut kind = kind();
+        let k = std::sync::Arc::make_mut(&mut kind);
+        k.id = "minecraft:dolphin".into();
+        k.species = Species::Dolphin;
+        let mut m = Mob::new(1, kind, Vec3::ZERO, 0.0);
+        m.extra.age = if baby { -24000 } else { 0 };
+        m
+    }
+
+    /// `Dolphin.canAttack`: a baby takes nobody as its target, so a hit on it
+    /// is not answered; an adult does take the one that hurt it.
+    #[test]
+    fn a_baby_dolphin_spares_whatever_hurt_it() {
+        let ran = with_test_world(&[], |w, _| {
+            assert!(
+                dolphin(true).spares_target(w, Who::Mob(7)),
+                "a baby dolphin fights nobody"
+            );
+            assert!(
+                !dolphin(false).spares_target(w, Who::Mob(7)),
+                "an adult dolphin takes its attacker"
+            );
+        });
+        let _ = ran;
     }
 }

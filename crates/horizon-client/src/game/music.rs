@@ -4,22 +4,145 @@ use super::Game;
 use horizon_client::{
     blocks::Fluid,
     music::{BackgroundMusic, Music, MusicFrequency, Situation},
-    sound_engine::TickContext,
+    options_ui::MusicGroup,
+    sound_engine::{SoundEngine, SoundInstance, Sounds, TickContext},
 };
 
 impl Game<'_> {
     /// `Minecraft.tick` -> `MusicManager.tick`, once per client tick.
     pub(super) fn tick_music(&mut self) {
-        let (music, volume) = self.situational_music();
+        // Splitscreen: one music, P1's.
+        if self.options.split_guest {
+            return;
+        }
+        let (mut music, mut volume) = self.situational_music();
+        // A native mod's own choice of track and volume, then its layers.
+        self.native_music(&mut music, &mut volume);
+        let mut layers = Vec::new();
+        self.native_music_layers(&mut layers);
+        self.music_layers.tick(&layers, &mut self.audio);
         // Options.musicFrequency's listener: MusicManager.setMinutesBetweenSongs.
         let frequency = MusicFrequency::parse(&self.settings.file.name("musicFrequency"));
         if frequency != self.music.frequency {
             self.music.set_frequency(frequency, music.as_ref());
         }
+        // The Music page's off tracks leave every pool they play in (the
+        // extra off: nothing is filtered, vanilla's pools play as they are).
+        let off = if self.settings.extras.music_page {
+            &self.settings.extras.music_off[..]
+        } else {
+            &[][..]
+        };
+        self.music.set_off(off);
         // LevelLoadingScreen: no new track before the player is in the world.
         let loading = self.title.is_none() && self.player.is_none() && self.win.is_none();
         self.music
             .tick(music.as_ref(), volume, loading, &mut self.audio);
+        // Options.musicToast's listener: ToastManager.setMusicToastDisplayState.
+        let state = self.settings.file.int("musicToast").clamp(0, 2) as u8;
+        if state != self.music_toast_state {
+            self.music_toast_state = state;
+            self.set_music_toast_state(state);
+        }
+        // MusicManager's showNowPlayingToast and hideNowPlayingToast calls.
+        let multiplier = f64::from(self.settings.notification_display_time);
+        for show in std::mem::take(&mut self.music.toast_requests) {
+            if let Some(toast) = &mut self.now_playing {
+                if show {
+                    toast.show(multiplier);
+                } else {
+                    toast.hide();
+                }
+            }
+        }
+    }
+    /// The Music page's groups: every track the loaded `sounds.json` can play,
+    /// by situation (see `music::track_groups`).
+    pub(super) fn music_groups(&self) -> Vec<MusicGroup> {
+        horizon_client::music::track_groups(&self.audio.engine.registry)
+    }
+    /// A Music page row: play this track of `event` now.
+    pub(super) fn play_music_track(&mut self, event: &str, track: &str) {
+        self.music.play_track(event, track, &mut self.audio);
+    }
+    /// `Options.getFinalSoundSourceVolume(SoundSource.MUSIC)`.
+    fn final_music_volume(&self) -> f32 {
+        self.settings.master_volume * self.settings.volumes[1]
+    }
+    /// `ToastManager.setMusicToastDisplayState`: Pause and Pause and Toast make
+    /// the toast (the second one shows it at once while music is audible),
+    /// Never drops it.
+    fn set_music_toast_state(&mut self, state: u8) {
+        self.now_playing = match state {
+            0 => None,
+            _ => {
+                let mut toast = horizon_client::toasts::NowPlayingToast::default();
+                if state == 2 && self.final_music_volume() > 0.0 {
+                    toast.show(f64::from(self.settings.notification_display_time));
+                }
+                Some(toast)
+            }
+        };
+    }
+    /// `NowPlayingToast.getNowPlayingString` of the song the music manager
+    /// plays: its file's short language key, slashes as dots.
+    fn now_playing_song(&self) -> Option<String> {
+        let id = self.music.current_instance()?;
+        let location = self
+            .audio
+            .engine
+            .instance(id)?
+            .sound
+            .as_ref()?
+            .location
+            .as_str();
+        let (namespace, path) = location.split_once(':').unwrap_or(("minecraft", location));
+        // Identifier.toShortLanguageKey.
+        let key = if namespace == "minecraft" {
+            path.to_owned()
+        } else {
+            format!("{namespace}.{path}")
+        }
+        .replace('/', ".");
+        Some(horizon_client::lang::get_or(&key, &key))
+    }
+    /// `ToastManager.update` (it plays no toast sound for this toast) and
+    /// `extractRenderState` for the Now Playing toast, which slides in at the
+    /// top left over every screen but the pause screen, and
+    /// `PauseScreen.extractRenderState` with its `tick`, which draws the song
+    /// name on the pause menu under the Pause and Pause and Toast settings
+    /// while music is audible. `hidden` (F1) keeps the toast
+    /// timing out without drawing it.
+    pub(super) fn draw_music_toast(
+        &mut self,
+        batch: &mut horizon_client::hud::HudBatch,
+        hidden: bool,
+    ) {
+        let song = self.now_playing_song();
+        let Some(toast) = self.now_playing.as_mut() else {
+            return;
+        };
+        toast.update(song.is_some(), &mut self.music_notes);
+        let Some(song) = song else {
+            return;
+        };
+        if self.screen == super::Screen::Paused {
+            if self.pause_menu && self.final_music_volume() > 0.0 {
+                self.music_notes.tick();
+                horizon_client::toasts::draw_now_playing(
+                    &self.gui.atlas,
+                    batch,
+                    0.0,
+                    &song,
+                    self.music_notes.color,
+                );
+            }
+        } else if !hidden
+            && self.music_toast_state == 2
+            && let Some(toast) = &self.now_playing
+        {
+            toast.draw(&self.gui.atlas, batch, &song, &self.music_notes);
+        }
     }
     /// `Minecraft.tick` -> `SoundManager.tick(pause)`, after the music, with
     /// `pauseAllExcept(MUSIC, UI)` when the game pauses and `resume` when it
@@ -35,6 +158,23 @@ impl Game<'_> {
         }
         let (vehicle, carts) = self.start_cart_sounds();
         let mobs = self.start_mob_sounds();
+        let ridden = self.start_riding_sound();
+        let (player_position, player_speed_sqr, player_fall_flying) =
+            self.player.as_ref().map_or(([0.0; 3], 0.0, false), |p| {
+                let at = p.position;
+                (
+                    [at.x, at.y, at.z],
+                    p.velocity.length_squared(),
+                    p.fall_flying,
+                )
+            });
+        // LocalPlayer.onSyncedDataUpdated: starting to glide starts the
+        // elytra's flying sound.
+        if player_fall_flying && !self.was_fall_flying {
+            let instance = SoundInstance::elytra(player_position, SoundEngine::unseeded());
+            self.audio.play_instance(instance, false);
+        }
+        self.was_fall_flying = player_fall_flying;
         let ctx = TickContext {
             player_underwater: self.ambience.was_underwater(),
             player_removed: self.player.is_none(),
@@ -42,7 +182,13 @@ impl Game<'_> {
             carts,
             mobs,
             frozen: !self.clock.runs_normally(),
+            player_position,
+            player_speed_sqr,
+            player_fall_flying,
+            ridden,
         };
+        self.audio
+            .set_listener_reserve(self.settings.extras.ui_sound_reserve);
         self.audio.tick(self.pause, &ctx);
     }
     /// `Minecraft.setLevel` -> `updateLevelInEngines`: `SoundManager.stop()`.
@@ -106,7 +252,7 @@ impl Game<'_> {
             .chunks
             .get(&(x >> 4, z >> 4))
             .map_or("minecraft:plains", |c| {
-                self.res.biomes().list[c.biome(x, y, z) as usize]
+                world_biomes!(self).list[c.biome(x, y, z) as usize]
                     .name
                     .as_str()
             })

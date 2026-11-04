@@ -121,7 +121,7 @@ impl Game<'_> {
             horizon_world::level::flags::UPDATE_CLIENTS,
         );
         // The remainders come from the grid as it was before anything moved.
-        let remainders = self.res.recipes().remainders(&recipe, &grid, 3);
+        let remainders = self.recipes().remainders(&recipe, &grid, 3);
         self.crafter_eject(key, facing, result, &recipe);
         for rest in remainders.into_iter().flatten() {
             self.crafter_eject(key, facing, rest, &recipe);
@@ -137,6 +137,7 @@ impl Game<'_> {
             }
         }
         self.container_changed(key);
+        self.native_crafter_craft([key.0, key.1, key.2], &recipe);
         Ok(())
     }
     /// `CrafterBlock.dispenseItem`: into the container in front, else out as an item.
@@ -203,7 +204,7 @@ impl Game<'_> {
     pub(in crate::game) fn crafter_result(&self) -> Option<ItemStack> {
         let key = self.container?;
         let c = self.crafter_at(key)?;
-        self.res.recipes().craft(&c.items, 3)
+        self.recipes().craft(&c.items, 3)
     }
     fn crafter_open(&self) -> bool {
         matches!(self.container_kind(), Some(BlockEntity::Crafter(_)))
@@ -246,9 +247,16 @@ impl Game<'_> {
         self.paint_screen(batch, ox, oy, background, true);
         let atlas = &self.gui.atlas;
         let grey = rgba(64, 64, 64, 255);
-        let title = self.container_title(self.translate("container.crafter", "Crafter"));
-        let tw = HudBatch::text_width(atlas, &title);
-        batch.text(
+        // A server's crafter menu has the title it was given.
+        let title = self.remote_menu_title().unwrap_or_else(|| {
+            horizon_client::text::Text::literal(
+                self.container_title(self.translate("container.crafter", "Crafter")),
+            )
+            .resolve_legacy()
+        });
+        crate::game::screen_info::name_container(|| title.plain());
+        let tw = atlas.font.width_text(&title);
+        batch.text_styled(
             atlas,
             &title,
             ox + ((176.0 - tw) / 2.0).trunc(),

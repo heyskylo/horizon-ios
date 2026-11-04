@@ -93,10 +93,26 @@ pub struct RenderAssets {
     pub model_gallery: Vec<Value>,
     pub animations: Vec<crate::sprites::SpriteAnimation>,
     pub sprite_layers: std::collections::BTreeMap<String, u32>,
+    /// OptiFine's emissive block overlays: base sprite and overlay sprite names.
+    pub emissive: Vec<(String, String)>,
     pub translucent_layers: Vec<bool>,
     /// Each layer's `MipmapGenerator` settings.
     pub sprite_mips: Vec<crate::mipmap::Settings>,
+    /// The resource packs' LabPBR maps (normals, specular), layer by layer at `pbr_size`:
+    /// empty when they ship none.
+    pub pbr_normals: Vec<u8>,
+    pub pbr_specular: Vec<u8>,
+    pub pbr_size: u32,
+    /// OptiFine connected textures (empty without `optifine/ctm` files).
+    pub connected: crate::connected::ConnectedTextures,
+    /// Fusion connected textures (empty without Fusion's connecting textures and models).
+    pub fusion: crate::fusion::FusionTextures,
+    /// Counts up each time resources load, from 1: a native mod asks again where blocks'
+    /// sprites are when it changes (`native_block_sprites_version`).
+    pub generation: u64,
 }
+/// The last `RenderAssets::generation` handed out.
+static GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 fn invalid(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
 }
@@ -108,8 +124,7 @@ impl Assets {
         if manifest["data_version"].as_i64() != Some(i64::from(DATA_VERSION)) {
             return Err(invalid("resources do not match Horizon's pinned data version").into());
         }
-        let (registry, flags) =
-            BlockRegistry::from_facts_json_with_flags(File::open(root.join("facts.json"))?)?;
+        let (registry, flags) = horizon_world::level::data::load_registry_with_flags(root)?;
         let bundle: Value =
             serde_json::from_reader(BufReader::new(File::open(root.join("block-tags.json"))?))?;
         let mut definitions = TagDefinitions::default();
@@ -192,17 +207,66 @@ impl Assets {
     pub fn reload(&self, root: &Path) -> Result<RenderAssets> {
         RenderAssets::load(root, self)
     }
+    /// [`Assets::reload`] with the model library already parsed.
+    ///
+    /// Parsing it reads every model file under `assets/`, which needs no
+    /// block registry, so a caller that has the files to spare can start
+    /// it before `Assets::load` finishes and hand the result in here. On
+    /// a cold cache that is most of a second of reading moved off the
+    /// critical path.
+    pub fn reload_with_models(
+        &self,
+        root: &Path,
+        parsed: crate::model_library::ParsedModels,
+    ) -> Result<RenderAssets> {
+        RenderAssets::load_with_parsed(root, self, true, Some(parsed))
+    }
+    /// [`Assets::reload`] for a server, which draws nothing: the sprites'
+    /// layers, without the block or item models or the textures' pixels.
+    pub fn reload_for_server(&self, root: &Path) -> Result<RenderAssets> {
+        RenderAssets::load_with(root, self, false)
+    }
 }
 impl RenderAssets {
     pub fn load(root: &Path, assets: &Assets) -> Result<Self> {
+        Self::load_with(root, assets, true)
+    }
+    fn load_with(root: &Path, assets: &Assets, draws: bool) -> Result<Self> {
+        Self::load_with_parsed(root, assets, draws, None)
+    }
+    /// `parsed`: the model library when a caller parsed it ahead of this
+    /// (see [`Assets::reload_with_models`]); otherwise it is parsed here.
+    fn load_with_parsed(
+        root: &Path,
+        assets: &Assets,
+        draws: bool,
+        parsed: Option<crate::model_library::ParsedModels>,
+    ) -> Result<Self> {
         let registry = assets.registry;
         let mut sprites = crate::sprites::Sprites::with_disk_cache(root);
         for name in MATERIALS {
             sprites.insert(root, &format!("minecraft:block/{name}"))?;
         }
-        let parsed = crate::model_library::ParsedModels::load(root);
-        let models = crate::models::prepare_with_models(root, registry, &mut sprites, &parsed)?;
-        let model_library = parsed.into_item_library();
+        // A server draws no block and no item: its block models (about 24 MB
+        // baked) and item model library (7 MB) stay empty.
+        let parsed = match parsed {
+            Some(parsed) => parsed,
+            None if draws => {
+                let _step = crate::spans::startup::step("core.models_parse");
+                crate::model_library::ParsedModels::load(root)
+            }
+            None => crate::model_library::ParsedModels::default(),
+        };
+        let mut models = if draws {
+            let _step = crate::spans::startup::step("core.models_bake");
+            crate::models::prepare_with_models(root, registry, &mut sprites, &parsed)?
+        } else {
+            crate::models::PreparedModels::default()
+        };
+        let model_library = {
+            let _step = crate::spans::startup::step("core.item_library");
+            parsed.into_item_library()
+        };
         // Fluids are drawn by the fluid renderer, not block models; breaking
         // progress uses the destroy-stage overlays.
         for name in [
@@ -217,8 +281,52 @@ impl RenderAssets {
         for stage in 0..10 {
             sprites.insert(root, &format!("minecraft:block/destroy_stage_{stage}"))?;
         }
+        let fusion = if draws {
+            let _step = crate::spans::startup::step("core.fusion");
+            crate::fusion::FusionTextures::load(root, registry, &mut sprites, &mut models.catalog)
+        } else {
+            Default::default()
+        };
+        let mut emissive = Vec::new();
+        let connected = if draws {
+            crate::native_emissive::load(root, &mut sprites);
+            // A side's sprite, for rules that connect by tile: the first quad facing it.
+            let catalog = &models.catalog;
+            let mut found = Vec::new();
+            crate::connected::ConnectedTextures::load(
+                root,
+                registry,
+                &mut sprites,
+                |state, face| {
+                    let side = horizon_assets::model::Direction::ALL[face as usize];
+                    catalog
+                        .models_at(
+                            state,
+                            horizon_core::position::BlockPos::new(0, 0, 0),
+                            &mut found,
+                        )
+                        .ok()?;
+                    found
+                        .iter()
+                        .flat_map(|m| &m.faces)
+                        .find(|f| f.quad.facing == side)
+                        .map(|f| f.layer)
+                },
+            )
+        } else {
+            Default::default()
+        };
+        // After the connected tiles: a tile identical to a block shares its layer, and the
+        // overlays skip shared layers.
+        if draws {
+            emissive = crate::native_emissive::load_optifine(root, &mut sprites);
+        }
         sprites.save_disk_cache();
-        sprites.finish();
+        if draws {
+            sprites.finish();
+        } else {
+            sprites.finish_without_pixels();
+        }
         // `finish` grows the buffer by doubling: keep only the bytes in use.
         sprites.pixels.shrink_to_fit();
         Ok(Self {
@@ -232,8 +340,15 @@ impl RenderAssets {
             model_gallery: models.states,
             animations: sprites.animations,
             sprite_layers: sprites.layers,
+            emissive,
             translucent_layers: sprites.translucent,
             sprite_mips: sprites.mips,
+            pbr_normals: sprites.normals,
+            pbr_specular: sprites.specular,
+            pbr_size: sprites.pbr_size,
+            connected,
+            fusion,
+            generation: GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1,
         })
     }
 }
@@ -241,6 +356,7 @@ impl RenderAssets {
 #[cfg(test)]
 mod tests {
     use crate::items::ConsumeEffect;
+    use horizon_world::loot::PackOverlay;
 
     #[test]
     fn always_edible_and_consume_effects_loaded() {
@@ -251,7 +367,8 @@ mod tests {
         }
         let assets = crate::assets::Assets::load(&root).unwrap();
         let facts = crate::blocks::BlockFacts::load(&root, assets.registry).unwrap();
-        let items = crate::items::Items::load(&root, assets.registry, &facts).unwrap();
+        let items =
+            crate::items::Items::load(&root, assets.registry, &facts, &PackOverlay::NONE).unwrap();
 
         let apple = items.get("minecraft:golden_apple").expect("golden apple");
         assert!(apple.can_always_eat);

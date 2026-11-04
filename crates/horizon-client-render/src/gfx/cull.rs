@@ -19,6 +19,10 @@
 //! the results only sorts sections between the phases: a stale result draws
 //! a hidden section in phase 1, or tests a section that is in sight.
 //!
+//! Far terrain tiles are tested the same way, with their meshes' own
+//! bounds for a box (grown by a block too, which keeps their faces off the
+//! box's), and resident slots of their own (`TILE`).
+//!
 //! Every solid draw is an entry of one of the two lists, so the CPU records
 //! as many draws as without culling: drivers that unroll an indirect
 //! multi-draw on the CPU (Mesa's on Intel Gen9) pay per entry. Phase 2's
@@ -39,6 +43,11 @@ use std::sync::{
 };
 
 const WORDS: u64 = 5 * 4;
+/// A tested section's box, around its origin: its cell grown by a block.
+pub const SECTION_BOX: [[f32; 3]; 2] = [[-1.0; 3], [17.0; 3]];
+/// The bit that marks a far tile's slot (`Renderer::tile_cull_slot`): tiles
+/// count their slots apart from the sections' resident ones.
+pub const TILE: u32 = 1 << 31;
 /// Phase 1's sections are each tested every `RETEST` frames.
 const RETEST: u32 = 8;
 /// Culling runs while the last result read back hid at least this share of
@@ -62,6 +71,17 @@ const READBACKS: usize = 3;
 const FREE: u8 = 0;
 const PENDING: u8 = 1;
 const MAPPED: u8 = 2;
+
+/// One test, as `cull.wgsl` reads it: visible index and phase 2 draws
+/// (`place`), then its box's corners around the origin.
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct Test {
+    data: [u32; 4],
+    low: [f32; 4],
+    high: [f32; 4],
+}
+const TEST_BYTES: u64 = std::mem::size_of::<Test>() as u64;
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -131,8 +151,10 @@ pub struct Cull {
     phase2_capacity: u64,
     tests: wgpu::Buffer,
     tests_capacity: u64,
-    /// This frame's tests: visible index, first phase 2 draw, phase 2 draws.
-    test_data: Vec<[u32; 4]>,
+    /// This frame's tests: visible index, then its phase 2 draws in each
+    /// solid pass (`place`): the first of the first pass's, both counts (the
+    /// second's in the high half), the first of the second pass's; and its box.
+    test_data: Vec<Test>,
     test_slots: Vec<u32>,
     test_indices: Vec<u32>,
     total: u64,
@@ -142,8 +164,10 @@ pub struct Cull {
     readbacks: Vec<Readback>,
     next: usize,
     current: Option<usize>,
-    /// Per resident slot: whether the last result read back saw it.
+    /// Per resident slot: whether the last result read back saw it; and per
+    /// far tile's slot (`TILE`).
     seen: Vec<bool>,
+    seen_tiles: Vec<bool>,
     stamp: u32,
     /// Of the boxes the last test read back drew, how many it did not see
     /// and how many it drew, and the share of solid indices hidden.
@@ -325,7 +349,7 @@ impl Cull {
             ),
             phase2: buffer(device, "Section draws, phase 2", WORDS, PHASE2_USAGE),
             phase2_capacity: 1,
-            tests: buffer(device, "Section tests", 16, TESTS_USAGE),
+            tests: buffer(device, "Section tests", TEST_BYTES, TESTS_USAGE),
             tests_capacity: 1,
             test_data: Vec::new(),
             test_slots: Vec::new(),
@@ -347,6 +371,7 @@ impl Cull {
             next: 0,
             current: None,
             seen: Vec::new(),
+            seen_tiles: Vec::new(),
             stamp: 0,
             hidden: ([0; 2], 1.0),
             always: false,
@@ -378,11 +403,15 @@ impl Cull {
                 let share = indices as f32 / r.total.max(1) as f32;
                 self.hidden = ([hidden, results.len()], share);
                 for (&slot, &result) in r.slots.iter().zip(&results) {
-                    let slot = slot as usize;
-                    if slot >= self.seen.len() {
-                        self.seen.resize(slot + 1, false);
+                    let (seen, slot) = if slot & TILE != 0 {
+                        (&mut self.seen_tiles, (slot & !TILE) as usize)
+                    } else {
+                        (&mut self.seen, slot as usize)
+                    };
+                    if slot >= seen.len() {
+                        seen.resize(slot + 1, false);
                     }
-                    self.seen[slot] = result == r.stamp;
+                    seen[slot] = result == r.stamp;
                 }
             }
             r.buffer.unmap();
@@ -397,30 +426,61 @@ impl Cull {
         !self.probe || self.stamp.is_multiple_of(PROBE)
     }
 
-    /// Whether phase 1 draws the section in resident `slot`.
+    /// Whether phase 1 draws the section in resident `slot` (or the far tile
+    /// in its `TILE` slot).
     pub fn first(&self, slot: u32) -> bool {
+        if slot & TILE != 0 {
+            return self
+                .seen_tiles
+                .get((slot & !TILE) as usize)
+                .copied()
+                .unwrap_or(false);
+        }
         self.seen.get(slot as usize).copied().unwrap_or(false)
     }
 
     /// A section phase 1 draws, `index` in the visible list, with `indices`
-    /// solid indices: tested in turn.
-    pub fn drawn(&mut self, index: usize, slot: u32, indices: u32) {
+    /// solid indices and the box `bounds` around its origin: tested in turn.
+    pub fn drawn(&mut self, index: usize, slot: u32, indices: u32, bounds: [[f32; 3]; 2]) {
         self.total += u64::from(indices);
         if indices > 0 && (self.probe || slot.wrapping_add(self.stamp).is_multiple_of(RETEST)) {
-            self.push([index as u32, 0, 0, 0], slot, indices);
+            self.push(index, bounds, slot, indices);
         }
     }
 
-    /// A section left to phase 2: its `draws` from phase 2's `first`.
-    pub fn deferred(&mut self, index: usize, slot: u32, first: usize, draws: usize, indices: u32) {
+    /// A section left to phase 2, with `draws` draws there: its test, whose
+    /// draws `place` gives once phase 2's list is in its final order.
+    pub fn deferred(
+        &mut self,
+        index: usize,
+        slot: u32,
+        draws: usize,
+        indices: u32,
+        bounds: [[f32; 3]; 2],
+    ) -> Option<u32> {
         self.total += u64::from(indices);
-        if draws > 0 {
-            self.push([index as u32, first as u32, draws as u32, 0], slot, indices);
-        }
+        (draws > 0).then(|| {
+            self.push(index, bounds, slot, indices);
+            self.test_data.len() as u32 - 1
+        })
     }
 
-    fn push(&mut self, test: [u32; 4], slot: u32, indices: u32) {
-        self.test_data.push(test);
+    /// `test`'s draws in solid pass `pass` (0 or 1): `draws` from phase 2's
+    /// `first`. Each pass draws its own part of the section's quads.
+    pub fn place(&mut self, test: u32, pass: u32, first: u32, draws: u32) {
+        debug_assert!(pass < 2 && draws < 1 << 16);
+        let t = &mut self.test_data[test as usize].data;
+        t[1 + 2 * pass as usize] = first;
+        t[2] |= draws << (16 * pass);
+    }
+
+    fn push(&mut self, index: usize, bounds: [[f32; 3]; 2], slot: u32, indices: u32) {
+        let [low, high] = bounds.map(|[x, y, z]| [x, y, z, 0.0]);
+        self.test_data.push(Test {
+            data: [index as u32, 0, 0, 0],
+            low,
+            high,
+        });
         self.test_slots.push(slot);
         self.test_indices.push(indices);
     }
@@ -454,7 +514,7 @@ impl Cull {
             self.tests = buffer(
                 device,
                 "Section tests",
-                self.tests_capacity * 16,
+                self.tests_capacity * TEST_BYTES,
                 TESTS_USAGE,
             );
             self.results = buffer(
@@ -489,10 +549,6 @@ impl Cull {
         {
             self.group = Some(self.make_group(device, origins, globals));
         }
-    }
-
-    pub fn depth_test(&self) -> DepthTest {
-        self.depth_test
     }
 
     /// In the world pass after phase 1 (`Early`): draw the tested boxes
@@ -532,7 +588,11 @@ impl Cull {
 
     /// Between the phases (`InShader`): draw the tested boxes in a pass of
     /// their own that reads phase 1's depth, bound by `bind_depth`.
-    pub fn test_pass(&self, encoder: &mut wgpu::CommandEncoder) {
+    pub fn test_pass(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        timing: Option<&mut super::pack_timing::PassTiming>,
+    ) {
         let (Some(Group { group, .. }), Some(DepthGroup { view, group: depth })) =
             (&self.group, &self.depth_group)
         else {
@@ -543,6 +603,7 @@ impl Cull {
         }
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("Section culling"),
+            timestamp_writes: timing.and_then(|t| t.writes("Occlusion test")),
             color_attachments: &[],
             depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                 view,
@@ -584,23 +645,25 @@ impl Cull {
         self.current = Some(self.next);
     }
 
-    /// After the frame's submission: start reading its results back.
-    pub fn submitted(&mut self) {
-        let Some(i) = self.current.take() else {
-            return;
-        };
+    /// The frame's results to read back, started by calling it right after the frame's
+    /// submission (on the submit thread, when the frame goes there).
+    pub fn submitted(&mut self) -> Option<impl FnOnce() + Send + 'static> {
+        let i = self.current.take()?;
         let r = &self.readbacks[i];
         let state = r.state.clone();
         state.store(PENDING, Ordering::Release);
-        r.buffer
-            .slice(..r.slots.len() as u64 * 4)
-            .map_async(wgpu::MapMode::Read, move |result| {
-                state.store(
-                    if result.is_ok() { MAPPED } else { FREE },
-                    Ordering::Release,
-                );
-            });
+        let (buffer, bytes) = (r.buffer.clone(), r.slots.len() as u64 * 4);
         self.next = (i + 1) % READBACKS;
+        Some(move || {
+            buffer
+                .slice(..bytes)
+                .map_async(wgpu::MapMode::Read, move |result| {
+                    state.store(
+                        if result.is_ok() { MAPPED } else { FREE },
+                        Ordering::Release,
+                    );
+                });
+        })
     }
 
     fn make_group(

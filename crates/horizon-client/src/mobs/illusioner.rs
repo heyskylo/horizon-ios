@@ -23,8 +23,9 @@ pub struct Illusions {
     pub offsets: [[[f64; 3]; COPIES]; 2],
 }
 
-pub const MIRROR: u8 = 5;
-pub const BLINDNESS_SPELL: u8 = 4;
+// `IllagerSpell` ids: DISAPPEAR (the mirror spell) 4, BLINDNESS 5.
+pub const MIRROR: u8 = 4;
+pub const BLINDNESS_SPELL: u8 = 5;
 
 pub fn register(m: &mut Mob) {
     let g = &mut m.ai.goals;
@@ -62,7 +63,7 @@ pub fn register(m: &mut Mob) {
 
 /// `Illusioner.finalizeSpawn`: a bow in the main hand.
 pub fn finalize(m: &mut Mob) {
-    m.extra.main_hand = Some("minecraft:bow".into());
+    m.extra.set_main_hand(Some("minecraft:bow".into()));
 }
 
 /// `IllusionerMirrorSpellGoal` and `IllusionerBlindnessSpellGoal`.
@@ -135,6 +136,7 @@ impl Goal for Spell {
                 effect: BLINDNESS,
                 ticks: 400,
                 amplifier: 0,
+                ambient: false,
             });
         }
         cx.events.push(MobEvent::Sound(

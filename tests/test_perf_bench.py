@@ -1,7 +1,80 @@
 import json
+import sys
 import unittest
 
 from tools.perf_bench import HISTOGRAM_EDGES_MS, OPTIONS, frames, rnd, summary
+
+
+class ComparisonConditionsTests(unittest.TestCase):
+    def test_rejects_incompatible_or_unknown_conditions_before_printing(self):
+        import contextlib
+        import io
+        import tempfile
+        from pathlib import Path
+        from unittest import mock
+        import tools.perf_bench as pb
+
+        conditions = {"scenario": "flight", "seed": "1234", "render_distance": 8, "simulation_distance": 12,
+                      "window": [1920, 1080], "vsync": False, "offscreen": False}
+        differences = {"scenario": "other", "seed": "5678", "simulation_distance": 8, "window": [1280, 720],
+                       "vsync": True, "offscreen": True, "fps_cap": 60}
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            reports = root / "benchmarks/perf"
+            reports.mkdir(parents=True)
+            def write(label, values):
+                (reports / f"{label}-rd8.json").write_text(
+                    json.dumps({"conditions": values, "metrics": {}}), encoding="utf-8")
+            write("first", conditions)
+            with mock.patch.object(pb, "ROOT", root):
+                for key, value in differences.items():
+                    with self.subTest(key=key):
+                        write("second", dict(conditions, **{key: value}))
+                        out = io.StringIO()
+                        with contextlib.redirect_stdout(out), self.assertRaisesRegex(ValueError, key):
+                            pb.table(["first", "second"])
+                        self.assertEqual(out.getvalue(), "")
+                incomplete = dict(conditions)
+                del incomplete["window"]
+                write("second", incomplete)
+                with contextlib.redirect_stdout(io.StringIO()), self.assertRaisesRegex(ValueError, "window"):
+                    pb.table(["first", "second"])
+                stderr, stdout = io.StringIO(), io.StringIO()
+                with mock.patch("sys.argv", ["perf_bench.py", "--table", "first", "second"]), \
+                        contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr), \
+                        self.assertRaises(SystemExit) as exit_error:
+                    pb.main()
+                self.assertEqual(exit_error.exception.code, 2)
+                self.assertEqual(stdout.getvalue(), "")
+                self.assertIn("window missing in second", stderr.getvalue())
+                self.assertNotIn("Traceback", stderr.getvalue())
+                write("second", dict(conditions, fps_cap=None))
+                with contextlib.redirect_stdout(io.StringIO()), self.assertRaisesRegex(ValueError, "fps_cap"):
+                    pb.table(["first", "second"])
+
+    def test_matching_reports_and_single_incomplete_report_remain_readable(self):
+        import contextlib
+        import io
+        import tempfile
+        from pathlib import Path
+        from unittest import mock
+        import tools.perf_bench as pb
+
+        conditions = {"scenario": "flight", "seed": "1234", "render_distance": 8, "simulation_distance": 12,
+                      "window": [1920, 1080], "vsync": False, "offscreen": False}
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            reports = root / "benchmarks/perf"
+            reports.mkdir(parents=True)
+            for label, values in (("first", conditions), ("second", conditions),
+                                  ("single", {"render_distance": 8})):
+                (reports / f"{label}-rd8.json").write_text(
+                    json.dumps({"conditions": values, "metrics": {}}), encoding="utf-8")
+            with mock.patch.object(pb, "ROOT", root), contextlib.redirect_stdout(io.StringIO()) as out:
+                pb.table(["first", "second"])
+                pb.table(["single"])
+            self.assertIn("| 8 |", out.getvalue())
+
 
 
 class PerfBenchStatsTests(unittest.TestCase):
@@ -49,6 +122,37 @@ class PerfBenchStatsTests(unittest.TestCase):
     def test_one_options_file_sets_the_render_distance(self):
         self.assertEqual(OPTIONS["renderDistance"].format(distance=16), "16")
         self.assertEqual(OPTIONS["graphicsPreset"], '"custom"')
+
+    def test_table_distinguishes_missing_scene_load_from_zero(self):
+        import contextlib
+        import io
+        import tempfile
+        from pathlib import Path
+        from unittest import mock
+        import tools.perf_bench as pb
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            reports = root / "benchmarks" / "perf"
+            reports.mkdir(parents=True)
+            # Comparable runs: table() refuses reports whose conditions differ or are missing.
+            conditions = {"scenario": "flight", "seed": "1234", "render_distance": 8, "simulation_distance": 12,
+                          "window": [1920, 1080], "vsync": False, "offscreen": False}
+            for label, metrics in (
+                ("missing", {}),
+                ("zero", {"chunks.village.load_ms": {"mean": 0}}),
+                ("measured", {"chunks.village.load_ms": {"mean": 1000},
+                              "chunks.forest.load_ms": {"mean": 3000}}),
+            ):
+                (reports / f"{label}-rd8.json").write_text(
+                    json.dumps({"conditions": conditions, "metrics": metrics}), encoding="utf-8")
+            output = io.StringIO()
+            with mock.patch.object(pb, "ROOT", root), contextlib.redirect_stdout(output):
+                pb.table(["missing", "zero", "measured"])
+        row = next(line for line in output.getvalue().splitlines() if line.startswith("| 8 |"))
+        self.assertEqual([cell.strip().split(", ")[1] for cell in row.split("|")[2:-1]], ["–", "0.0", "2.0"])
+
+
 
 
 if __name__ == "__main__":
@@ -106,3 +210,193 @@ class WaitLoadedTests(unittest.TestCase):
         self.assertLess(took, 4.0)
         # Without one (the old call), the quiet start ends the wait at once.
         self.assertLess(self.run_script(idle + loading + tail), 1.6)
+
+
+class PortabilityTests(unittest.TestCase):
+    """What the driver needs from the OS also works where it differs (Windows: no ps, no load average,
+    no Unix sockets in Python, nvidia-smi without per-process memory)."""
+
+    def test_resident_memory_of_this_process(self):
+        import os
+        from tools.perf_bench import rss_bytes
+        self.assertGreater(rss_bytes(os.getpid()), 1 << 20)
+
+    def test_load_average_is_a_number_or_absent(self):
+        from tools.perf_bench import load_average
+        self.assertTrue(load_average() is None or load_average() >= 0)
+
+    def test_report_without_a_load_average(self):
+        import argparse
+        import tools.perf_bench as pb
+        run = {"startup": {"title_s": 1.0, "world_s": 5.0}, "memory": {}, "load_before": None,
+               "scenes": {"village": {"load_s": 2.0, "frame_ms": [5.0] * 100, "meshes_load": 10}}}
+        args = argparse.Namespace(offscreen=False, settle=2.0, label="x")
+        r = pb.report(args, 8, [run], {"name": "horizon-client"})
+        self.assertNotIn("load_avg_1m", r["conditions"])
+        self.assertEqual(r["metrics"]["fps.village.avg_fps"]["mean"], 200.0)
+        self.assertEqual(pb.report(args, 8, [dict(run, load_before=1.25)], {})["conditions"]["load_avg_1m"], 1.25)
+        self.assertTrue(r["hardware"]["os"] and r["hardware"]["cpu_threads"])
+        self.assertNotIn("server", r["conditions"])
+        # A run on a dedicated server only compares with runs on the same kind of server.
+        on_server = argparse.Namespace(offscreen=False, settle=2.0, label="x", server="vanilla")
+        self.assertEqual(pb.report(on_server, 8, [run], {})["conditions"]["server"], "vanilla")
+
+    def test_nvidia_memory_not_available(self):
+        from unittest import mock
+        import subprocess
+        import tools.perf_bench as pb
+        out = subprocess.CompletedProcess([], 0, stdout="1234, [N/A]\n4321, 812\n")
+        with mock.patch.object(pb.shutil, "which", return_value="nvidia-smi"), \
+                mock.patch.object(pb.subprocess, "run", return_value=out):
+            self.assertIsNone(pb.nvidia_memory_mb(1234))
+            self.assertEqual(pb.nvidia_memory_mb(4321), 812.0)
+            self.assertIsNone(pb.nvidia_memory_mb(99))
+
+    @unittest.skipUnless(sys.platform == "win32", "the console's OEM code page is Windows'")
+    def test_windows_version_reads_the_console_code_page(self):
+        # pr_ready runs the tests with PYTHONUTF8=1, and `cmd /C ver` answers in the OEM code page:
+        # decoding it as UTF-8 left `stdout` None (issue #5201).
+        import os
+        import subprocess
+        from pathlib import Path
+        root = Path(__file__).resolve().parents[1]
+        out = subprocess.run(
+            [sys.executable, "-c",
+             "from tools.perf_bench import windows_version; print(windows_version())"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace", check=True,
+            env={**os.environ, "PYTHONUTF8": "1"}, cwd=root)
+        self.assertIn("Windows", out.stdout)
+
+    def test_control_over_the_tcp_endpoint(self):
+        # The game's TCP transport (Windows, or an endpoint path ending in .json): the file names a port and
+        # a token, and the first line must be `auth TOKEN`.
+        import socket
+        import tempfile
+        import threading
+        from pathlib import Path
+        from tools.perf_bench import Control, control_path
+        self.assertIn(control_path().suffix, (".sock", ".json"))
+        server = socket.create_server(("127.0.0.1", 0))
+        lines = []
+
+        def serve():
+            for _ in range(2):
+                conn, _ = server.accept()
+                with conn, conn.makefile("rwb") as f:
+                    auth = f.readline().decode().strip()
+                    lines.append(auth)
+                    if auth != "auth secret":
+                        f.write(b'{"error":"bad or missing token"}\n')
+                        f.flush()
+                        continue
+                    f.write(b'{"ok":true}\n')
+                    f.flush()
+                    lines.append(f.readline().decode().strip())
+                    f.write(b'{"screen":"title"}\n')
+                    f.flush()
+
+        thread = threading.Thread(target=serve, daemon=True)
+        thread.start()
+        with tempfile.TemporaryDirectory() as tmp, server:
+            path = Path(tmp) / "control.json"
+            port = server.getsockname()[1]
+            path.write_text(json.dumps({"transport": "tcp", "port": port, "token": "secret"}))
+            self.assertEqual(Control(path)("status", timeout=10), {"screen": "title"})
+            path.write_text(json.dumps({"transport": "tcp", "port": port, "token": "wrong"}))
+            with self.assertRaises(OSError):
+                Control(path)("status", timeout=10)
+            thread.join(10)
+        self.assertEqual(lines, ["auth secret", "status", "auth wrong"])
+
+    def test_a_release_build_reports_its_own_version(self):
+        import tempfile
+        from pathlib import Path
+        from tools.perf_bench import release_version
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / "horizon-rd8.log"
+            log.write_text("Horizon v0.2.97\nload assets: 1.29s\n")
+            self.assertEqual(release_version(log), "v0.2.97")
+            log.write_text("Horizon nightly-2026-10-28-0c02067\n")
+            self.assertEqual(release_version(log), "nightly-2026-10-28-0c02067")
+            for dev in ("Horizon 0.1.0\n", "Horizon v0.2.97 (client 0.1.0)\n"):
+                log.write_text(dev)
+                self.assertIsNone(release_version(log))
+            self.assertIsNone(release_version(Path(tmp) / "missing.log"))
+
+    def test_vanilla_gets_the_manifest_jvm_flags(self):
+        from tools.perf_bench import manifest_jvm_flags
+        manifest = {"arguments": {"jvm": [
+            {"rules": [{"action": "allow", "os": {"name": "osx"}}], "value": ["-XstartOnFirstThread"]},
+            {"rules": [{"action": "allow", "os": {"arch": "x86"}}], "value": "-Xss1M"},
+            "-XX:StackShadowPages=32", "--enable-native-access=ALL-UNNAMED",
+            "-Djava.library.path=${natives_directory}/java", "-cp", "${classpath}"]}}
+        self.assertEqual(manifest_jvm_flags(manifest), ["-XX:StackShadowPages=32"])
+        self.assertEqual(manifest_jvm_flags({}), [])
+
+
+class StressSceneTests(unittest.TestCase):
+    def test_stress_selects_every_stress_scene_after_the_flights(self):
+        import argparse
+        from tools import stress_scenes
+        from tools.perf_bench import scene_list
+        names = [s[0] for s in scene_list(argparse.Namespace(scenes="ocean,stress"))]
+        self.assertEqual(names, ["ocean"] + stress_scenes.NAMES)
+        self.assertEqual([s[0] for s in scene_list(argparse.Namespace(scenes="stress_mobs"))], ["stress_mobs"])
+
+    def test_scenes_have_their_entity_counts(self):
+        from tools import stress_scenes
+        summons = lambda name, kind: sum(c.startswith(f"summon {kind} ") for c in stress_scenes.setup(name))
+        self.assertEqual(sum(summons("stress_mobs", k) for k in stress_scenes.MOBS), 1000)
+        self.assertEqual(summons("stress_items", "item"), 2000)
+        self.assertEqual(sum(summons("stress_held", k) for k in stress_scenes.HOLDERS), 1000)
+        self.assertEqual(sum(summons("stress_eyes", k) for k in stress_scenes.EYED), 1000)
+        self.assertEqual(sum(summons("stress_glowing", k) for k in stress_scenes.MOBS), 1000)
+        self.assertEqual(summons("stress_markings", "horse") + summons("stress_markings", "slime"), 1000)
+        self.assertEqual(summons("stress_frames", "item_frame"), 512)
+        self.assertEqual(summons("stress_armor_stands", "armor_stand"), 500)
+        self.assertEqual(summons("stress_avatars", "mannequin"), 300)
+        self.assertEqual(stress_scenes.setup("stress_empty"), stress_scenes.SETTINGS + stress_scenes.floor(
+            *stress_scenes.origin("stress_empty")))
+        # Only the run's first stress scene sets the game rules.
+        self.assertEqual(stress_scenes.setup("stress_empty", first=False),
+                         stress_scenes.floor(*stress_scenes.origin("stress_empty")))
+
+    def test_every_entity_is_near_enough_to_be_drawn_at_rd16(self):
+        # Entity.shouldRenderAtSqrDistance with viewScale 2: a dropped item (0.25) within 32 blocks.
+        from tools import stress_scenes
+        for name in ("stress_mobs", "stress_items", "stress_frames", "stress_armor_stands", "stress_avatars"):
+            _, at, _, _ = stress_scenes.scene(name)
+            eye = (at[0], at[1] + 1.62, at[2])
+            for line in stress_scenes.setup(name):
+                if line.startswith("summon "):
+                    x, y, z = map(float, line.split()[2:5])
+                    distance = sum((a - b) ** 2 for a, b in zip((x, y, z), eye)) ** 0.5
+                    self.assertLess(distance, 32.0, (name, line))
+                    self.assertGreater(z, eye[2], (name, line))
+
+    def test_commands_are_single_lines_inside_the_world(self):
+        from tools import stress_scenes
+        for name in stress_scenes.NAMES:
+            for line in stress_scenes.setup(name):
+                self.assertNotIn("\n", line)
+                self.assertLess(len(line), 1024)
+            self.assertTrue(all(len(c) < 1024 for c in stress_scenes.cleanup(name)))
+
+    def test_cleanup_covers_every_block_a_scene_places(self):
+        from tools import stress_scenes
+        slabs = [list(map(int, c.split()[1:7])) for c in stress_scenes.cleanup("stress_mobs") if c.startswith("fill")]
+        for slab in slabs:
+            dx, dy, dz = (abs(slab[i + 3] - slab[i]) + 1 for i in range(3))
+            self.assertLessEqual(dx * dy * dz, 32768)  # vanilla's fill limit
+        covered = lambda x, y, z: any(s[0] <= x <= s[3] and s[1] <= y <= s[4] and s[2] <= z <= s[5] for s in slabs)
+        for name in stress_scenes.NAMES:
+            for line in stress_scenes.setup(name):
+                words = line.split()
+                if words[0] == "fill":
+                    a, b = list(map(int, words[1:4])), list(map(int, words[4:7]))
+                    for x in (a[0], b[0]):
+                        for y in (a[1], b[1]):
+                            for z in (a[2], b[2]):
+                                self.assertTrue(covered(x, y, z), (name, line))
+                elif words[0] == "setblock":
+                    self.assertTrue(covered(*map(int, words[1:4])), (name, line))

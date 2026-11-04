@@ -8,7 +8,6 @@ use horizon_core::random::{LegacyRandom, RandomSource};
 use serde_json::Value;
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
-    fs,
     path::Path,
     sync::Arc,
 };
@@ -87,36 +86,23 @@ fn string_list(v: &Value) -> Vec<String> {
     }
 }
 fn read_tag_dir(dir: &Path) -> HashMap<String, Vec<String>> {
-    fn walk(dir: &Path, base: &Path, out: &mut HashMap<String, Vec<String>>) {
-        let Ok(entries) = fs::read_dir(dir) else {
-            return;
-        };
-        for e in entries.flatten() {
-            let p = e.path();
-            if p.is_dir() {
-                walk(&p, base, out);
-            } else if p.extension().is_some_and(|x| x == "json")
-                && let Ok(rel) = p.strip_prefix(base)
-                && let Ok(bytes) = fs::read(&p)
-                && let Ok(v) = serde_json::from_slice::<Value>(&bytes)
-            {
-                let name = format!(
-                    "minecraft:{}",
-                    rel.with_extension("").to_string_lossy().replace('\\', "/")
-                );
-                let values = v["values"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .filter_map(|e| e.as_str().or_else(|| e["id"].as_str()).map(str::to_owned))
-                    .collect();
-                out.insert(name, values);
-            }
-        }
-    }
-    let mut out = HashMap::new();
-    walk(dir, dir, &mut out);
-    out
+    let Ok(folder) = horizon_world::json_folder::read(dir) else {
+        return HashMap::new();
+    };
+    folder
+        .files
+        .iter()
+        .filter_map(|file| {
+            let v = serde_json::from_slice::<Value>(file.bytes().ok()?).ok()?;
+            let values = v["values"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|e| e.as_str().or_else(|| e["id"].as_str()).map(str::to_owned))
+                .collect();
+            Some((format!("minecraft:{}", file.name), values))
+        })
+        .collect()
 }
 /// Expand a tag keeping first-seen order (`TagLoader` builds a linked set).
 fn expand_ordered(
@@ -146,8 +132,33 @@ pub fn level_name(level: u32) -> String {
 
 impl Enchantments {
     pub fn load(root: &Path) -> Self {
+        Self::load_with(root, &horizon_world::loot::PackOverlay::NONE)
+    }
+    /// Load from a resource root; `overlay` (a world's data packs' content
+    /// files) joins the game's own enchantment tags in pack order, a
+    /// `replace` file dropping the lower sources' (`TagLoader.load`).
+    pub fn load_with(root: &Path, overlay: &horizon_world::loot::PackOverlay) -> Self {
         let data = root.join("data/minecraft");
-        let raw_tags = read_tag_dir(&data.join("tags/enchantment"));
+        let mut raw_tags = read_tag_dir(&data.join("tags/enchantment"));
+        for (id, files) in overlay.tag_kind("enchantment") {
+            let slot = raw_tags.entry(id).or_default();
+            for bytes in files {
+                let Ok(v) = serde_json::from_slice::<Value>(bytes) else {
+                    continue;
+                };
+                if v["replace"].as_bool() == Some(true) {
+                    slot.clear();
+                }
+                if let Some(values) = v["values"].as_array() {
+                    slot.extend(
+                        values
+                            .iter()
+                            .filter_map(|e| e.as_str().or_else(|| e["id"].as_str()))
+                            .map(str::to_owned),
+                    );
+                }
+            }
+        }
         let tags: HashMap<String, Vec<Arc<str>>> = raw_tags
             .keys()
             .map(|k| {
@@ -172,44 +183,42 @@ impl Enchantments {
         let damage_tags = unordered(read_tag_dir(&data.join("tags/damage_type")));
         // The registry lists entries sorted by id, like the data-pack loader.
         let mut files: BTreeMap<String, Value> = BTreeMap::new();
-        if let Ok(entries) = fs::read_dir(data.join("enchantment")) {
-            for e in entries.flatten() {
-                let p = e.path();
-                if let (Some(stem), Ok(bytes)) =
-                    (p.file_stem().and_then(|s| s.to_str()), fs::read(&p))
-                    && let Ok(v) = serde_json::from_slice(&bytes)
-                {
-                    files.insert(format!("minecraft:{stem}"), v);
+        // The folder's own files, not its subfolders'.
+        if let Ok(folder) = horizon_world::json_folder::read(&data.join("enchantment")) {
+            for file in folder.files.iter().filter(|f| !f.name.contains('/')) {
+                if let Ok(v) = serde_json::from_slice(file.bytes().unwrap_or_default()) {
+                    files.insert(format!("minecraft:{}", file.name), v);
                 }
             }
         }
-        let lang: HashMap<String, String> = fs::read(root.join("assets/minecraft/lang/en_us.json"))
-            .ok()
-            .and_then(|b| serde_json::from_slice::<HashMap<String, String>>(&b).ok())
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|(k, _)| {
-                k.starts_with("enchantment.")
-                    || k.starts_with("attribute.")
-                    || k.starts_with("item.modifiers.")
-                    || k.starts_with("effect.")
-                    || k.starts_with("item.minecraft.potion")
-                    || k.starts_with("item.minecraft.splash_potion")
-                    || k.starts_with("item.minecraft.lingering_potion")
-                    || k.starts_with("item.minecraft.tipped_arrow")
-                    || k.starts_with("item.minecraft.firework_rocket.")
-                    || k.starts_with("item.minecraft.firework_star.")
-                    || k.starts_with("trim_")
-                    || k.starts_with("potion.")
-                    || k.starts_with("container.")
-                    || k.starts_with("merchant.")
-                    || k.starts_with("entity.minecraft.")
-                    || k.starts_with("gui.recipebook.")
-                    || k.starts_with("gui.togglable_slot")
-                    || k.starts_with("block.minecraft.banner.")
-                    || k.starts_with("recipe.toast.")
-            })
-            .collect();
+        let lang: HashMap<String, String> =
+            horizon_core::prepared_files::read(&root.join("assets/minecraft/lang/en_us.json"))
+                .ok()
+                .and_then(|b| serde_json::from_slice::<HashMap<String, String>>(&b).ok())
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|(k, _)| {
+                    k.starts_with("enchantment.")
+                        || k.starts_with("attribute.")
+                        || k.starts_with("item.modifiers.")
+                        || k.starts_with("effect.")
+                        || k.starts_with("item.minecraft.potion")
+                        || k.starts_with("item.minecraft.splash_potion")
+                        || k.starts_with("item.minecraft.lingering_potion")
+                        || k.starts_with("item.minecraft.tipped_arrow")
+                        || k.starts_with("item.minecraft.firework_rocket.")
+                        || k.starts_with("item.minecraft.firework_star.")
+                        || k.starts_with("trim_")
+                        || k.starts_with("potion.")
+                        || k.starts_with("container.")
+                        || k.starts_with("merchant.")
+                        || k.starts_with("entity.minecraft.")
+                        || k.starts_with("gui.recipebook.")
+                        || k.starts_with("gui.togglable_slot")
+                        || k.starts_with("block.minecraft.banner.")
+                        || k.starts_with("recipe.toast.")
+                })
+                .collect();
         let mut list = Vec::new();
         for (id, v) in &files {
             let exclusive = match &v["exclusive_set"] {
@@ -247,9 +256,7 @@ impl Enchantments {
             .map(|(i, e)| (e.id.clone(), i))
             .collect();
         let mut props = HashMap::new();
-        if let Ok(bytes) = fs::read(root.join("items.json"))
-            && let Ok(raw) = serde_json::from_slice::<BTreeMap<String, Value>>(&bytes)
-        {
+        if let Ok(raw) = horizon_world::item_defaults::read(root) {
             for (id, c) in raw {
                 props.insert(
                     Arc::from(id.as_str()),
@@ -284,6 +291,39 @@ impl Enchantments {
     }
     pub fn get(&self, id: &str) -> Option<&Enchantment> {
         self.index.get(id).map(|&i| &self.list[i])
+    }
+    /// The longest `minecraft:ignite` the attacker's `minecraft:post_attack`
+    /// effects (Fire Aspect) set on the victim, in seconds: the effects whose
+    /// requirements hold for `ctx` (0 when none).
+    pub fn ignite_seconds(
+        &self,
+        enchants: &[(Arc<str>, u32)],
+        ctx: &EffectContext<'_>,
+        random: &mut LegacyRandom,
+    ) -> f32 {
+        let mut seconds = 0.0f32;
+        for (id, level) in enchants {
+            let Some(def) = self.get(id) else { continue };
+            for effect in def.effects["minecraft:post_attack"]
+                .as_array()
+                .into_iter()
+                .flatten()
+            {
+                let e = &effect["effect"];
+                let is_ignite = matches!(e["type"].as_str(), Some("minecraft:ignite" | "ignite"));
+                if !is_ignite
+                    || effect["enchanted"] != "attacker"
+                    || effect["affected"] != "victim"
+                    || !effect
+                        .get("requirements")
+                        .is_none_or(|r| self.condition(r, *level, ctx, random))
+                {
+                    continue;
+                }
+                seconds = seconds.max(level_value(&e["duration"], *level));
+            }
+        }
+        seconds
     }
     pub fn tag(&self, name: &str) -> &[Arc<str>] {
         self.tags
@@ -337,7 +377,7 @@ impl Enchantments {
         let language = horizon_client_core::lang::current();
         self.full_name_in(language.as_deref(), id, level)
     }
-    /// `full_name` against `language`; `None` (no language loaded: a
+    /// `Enchantment.getFullname` against `language`; `None` (no language loaded: a
     /// dedicated server, the probes) keeps the English names loaded above.
     pub fn full_name_in(
         &self,
@@ -352,9 +392,17 @@ impl Enchantments {
         let mut name = tr(&e.description_key).unwrap_or_else(|| e.description.clone());
         if level != 1 || e.max_level != 1 {
             name.push(' ');
-            name.push_str(
-                &tr(&format!("enchantment.level.{level}")).unwrap_or_else(|| level_name(level)),
-            );
+            let key = format!("enchantment.level.{level}");
+            let suffix = tr(&key)
+                .or_else(|| self.lang.get(&key).cloned())
+                .unwrap_or_else(|| {
+                    if (1..=10).contains(&level) {
+                        level_name(level)
+                    } else {
+                        key
+                    }
+                });
+            name.push_str(&suffix);
         }
         (name, self.is_curse(id))
     }
@@ -1131,6 +1179,22 @@ pub mod tests {
         assert!(e.compatible("minecraft:sharpness", "minecraft:unbreaking"));
     }
 
+    #[test]
+    fn high_enchantment_names_keep_the_untranslated_key() {
+        let mut e = sample();
+        assert_eq!(
+            e.full_name_in(None, "minecraft:sharpness", 255).0,
+            "sharpness enchantment.level.255"
+        );
+        // A pack may supply names beyond vanilla's I through X, including
+        // the English fallback used when no client language is loaded.
+        e.lang.insert("enchantment.level.11".into(), "XI".into());
+        assert_eq!(
+            e.full_name_in(None, "minecraft:sharpness", 11).0,
+            "sharpness XI"
+        );
+    }
+
     /// The enchantment's name and its level come from the selected language,
     /// with the English name loaded above as the fallback.
     #[test]
@@ -1158,5 +1222,53 @@ pub mod tests {
             e.full_name_in(Some(&ru), "minecraft:mending", 1).0,
             "mending"
         );
+    }
+}
+
+#[cfg(test)]
+mod ignite_tests {
+    use super::*;
+    use serde_json::json;
+
+    /// Fire Aspect as the data pack has it: 4 seconds per level.
+    fn registry() -> Enchantments {
+        let fire_aspect = Enchantment {
+            id: Arc::from("minecraft:fire_aspect"),
+            description: "fire_aspect".into(),
+            description_key: String::new(),
+            max_level: 2,
+            weight: 2,
+            anvil_cost: 4,
+            min_cost: Cost::parse(&json!({"base":10,"per_level_above_first":20})),
+            max_cost: Cost::parse(&json!({"base":60,"per_level_above_first":20})),
+            supported: vec![],
+            primary: None,
+            exclusive: HashSet::new(),
+            slots: vec![],
+            effects: json!({"minecraft:post_attack":[{"effect":{"type":"minecraft:ignite","duration":{"type":"minecraft:linear","base":4.0,"per_level_above_first":4.0}},"enchanted":"attacker","affected":"victim"}]}),
+        };
+        let index = [(fire_aspect.id.clone(), 0)].into_iter().collect();
+        Enchantments {
+            list: vec![fire_aspect],
+            index,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn fire_aspect_ignites_for_four_seconds_a_level() {
+        let reg = registry();
+        let mut random = LegacyRandom::new(0);
+        let ctx = EffectContext {
+            this: Some("minecraft:player"),
+            ..Default::default()
+        };
+        let mut fire = |level| {
+            let held = [(Arc::from("minecraft:fire_aspect"), level)];
+            reg.ignite_seconds(&held, &ctx, &mut random)
+        };
+        assert_eq!(fire(1) * 20.0, 80.0);
+        assert_eq!(fire(2) * 20.0, 160.0);
+        assert_eq!(reg.ignite_seconds(&[], &ctx, &mut random), 0.0);
     }
 }

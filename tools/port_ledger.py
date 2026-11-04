@@ -15,9 +15,9 @@ no port.
 Both sides' call graphs then show where a port exists but is not wired like vanilla, the kind of bug a
 method-by-method reading misses:
 
-- seam: a vanilla method ported on both paths (the in-frame game and the server-client side,
-  game/remote*.rs, or the server, game/lan*.rs), one of which reaches the port of a callee and the other
-  doesn't;
+- seam: a vanilla method ported on more than one path (the shared game code, the server-client side,
+  game/remote*.rs, or the server's network side, game/lan*.rs), one of which reaches the port of a callee
+  and another doesn't;
 - callee: a ported vanilla method whose ported callee no Rust counterpart reaches;
 - client: a vanilla effect only the client's copy draws (`addParticle`, `playLocalSound`,
   `itemUsed`, a `isClientSide()` branch) whose port nothing on the server-client side (game/remote*.rs)
@@ -407,7 +407,7 @@ def parse_java(path_and_root):
     path, root = path_and_root
     rel = os.path.relpath(path, root).replace(os.sep, "/")
     try:
-        text = open(path, encoding="utf-8", errors="replace").read()
+        text = Path(path).read_text(encoding="utf-8", errors="replace")
     except OSError:
         return []
     code, strings = blank_java(text)
@@ -599,6 +599,7 @@ def parse_class_bytes(item):
         "extends": [x for x in [cf.super] + cf.interfaces if x and not x.startswith("java/")],
         "methods": {}, "imports": {}, "package": name.rsplit("/", 1)[0],
         "outer": name.rsplit("$", 1)[0] if "$" in name else None, "fields": {}, "bytecode": True,
+        "declared_fields": {field.split(" ", 1)[0] for field in cf.fields},
     }
     if any(p[:1].isdigit() for p in name.rsplit("/", 1)[-1].split("$")[1:]):
         cls["anonymous"] = True
@@ -1031,6 +1032,70 @@ def registry_aliases(sources, van):
     return out
 
 
+ORACLE_DIR = ROOT / "mods" / "horizon" / "src" / "test" / "java" / "dev" / "horizonlab" / "parity"
+
+
+def harness_coverage(van, methods, fns, edges, known):
+    """The parity harnesses that cover each ported method. A harness (tools/test_*_parity.py) runs a vanilla oracle
+    (mods/horizon/src/test/java/.../parity/*.java) and a Rust fixture (crates/*/examples/**/*_fixture.rs) on the same
+    inputs. It covers a method when its fixture reaches the method's port and the vanilla side is in reach too: the
+    oracle calls into the method, or the harness or oracle names the method's class (oracles often reach vanilla
+    through an interface, a block state for the block, which a call graph can't follow)."""
+    oracles = {p.stem: p for p in ORACLE_DIR.glob("*.java")} if ORACLE_DIR.is_dir() else {}
+    fixture_fns = defaultdict(list)  # the probes' example files: *_fixture.rs, *_probe.rs and the like
+    for fn in fns:
+        if "/examples/" in fn["file"]:
+            fixture_fns[fn["file"].rsplit("/", 1)[-1][:-3]].append(fn["id"])
+
+    def java_reach(names, depth=3):
+        keys = set()
+        for name in names:
+            text = oracles[name].read_text(encoding="utf-8", errors="replace")
+            imported = {m.group(2): m.group(1).replace(".", "/") + "/" + m.group(2)
+                        for m in re.finditer(r"^import\s+((?:net|com)\.minecraft[\w.]*|com\.mojang[\w.]*)\.([A-Z]\w*);", text, re.M)}
+            called = set(re.findall(r"\.(\w+)\s*\(", text)) | {m for _, m in re.findall(r"\b([A-Z]\w*)::(\w+)", text)}
+            for cp in imported.values():
+                if cp not in van.classes:
+                    continue
+                for meth in called:
+                    decl, _ = van.find_method(cp, meth)
+                    if decl:
+                        keys.add(key(decl, meth))
+        frontier = set(keys)
+        for _ in range(depth):
+            frontier = {c for k in frontier for c in methods.get(k, {}).get("callees", ())} - keys
+            keys |= frontier
+        return keys
+
+    def rust_reach(starts, depth=5):
+        seen = set(starts)
+        frontier = set(starts)
+        for _ in range(depth):
+            frontier = {c for f in frontier for c in edges.get(f, ())} - seen
+            seen |= frontier
+        return seen
+
+    covered = defaultdict(list)
+    for path in sorted((ROOT / "tools").glob("test_*_parity.py")):
+        text = path.read_text(encoding="utf-8", errors="replace")
+        tokens = set(re.findall(r"\w+", text))
+        names = tokens & oracles.keys()
+        fixtures = {n for n in tokens & fixture_fns.keys() if n.endswith(("_fixture", "_probe"))}
+        if not names or not fixtures:
+            continue
+        vkeys = java_reach(names)
+        rfns = rust_reach([f for n in fixtures for f in fixture_fns[n]])
+        words = set(re.findall(r"\b[A-Z]\w+", text + "".join(oracles[n].read_text(encoding="utf-8", errors="replace") for n in names)))
+        harness_name = path.stem.removeprefix("test_").removesuffix("_parity")
+        for k, fids in known.items():
+            if not fids & rfns:
+                continue
+            simple = methods[k]["class"].rsplit("/", 1)[-1] if k in methods else ""
+            if k in vkeys or simple.split("$")[0] in words:
+                covered[k].append(harness_name)
+    return dict(covered)
+
+
 def build(sources, jars, jobs):
     if not sources and not jars:
         sys.exit("No vanilla code: run `python3 tools/lab.py decompile`, or pass --sources DIR / --jar JAR.")
@@ -1179,8 +1244,12 @@ def build(sources, jars, jobs):
                     decl, meth = van.find_method(cp, member)
                     if not decl:
                         cls = van.classes[cp]
-                        fields = re.search(r"\b" + re.escape(member) + r"\b", open(os.path.join(next(s for s in sources if os.path.exists(os.path.join(s, cls["file"]))), cls["file"]), errors="replace").read()) if member[0].islower() else None
-                        if not fields:
+                        field = any(member in van.classes[p].get("declared_fields", ()) for p in van.lineage(cp))
+                        source = next((Path(s) / cls["file"] for s in sources if (Path(s) / cls["file"]).is_file()), None)
+                        if not field and source is not None and member[0].islower():
+                            field = bool(re.search(r"\b" + re.escape(member) + r"\b",
+                                                   source.read_text(encoding="utf-8", errors="replace")))
+                        if not field:
                             stale.append({"what": "method", "cite": f"{short(cp)}.{member}", "file": f["file"], "line": line})
                         continue
                     k = key(decl, member)
@@ -1616,6 +1685,8 @@ def build(sources, jars, jobs):
     for k, v in structural.items():
         known.setdefault(k, set()).add(v["fn"])
 
+    harness = harness_coverage(van, methods, fns, edges, known)
+
     def reach(fid, depth=5):
         """Names of the fns `fid` reaches within `depth` calls, and of the calls left unresolved."""
         seen, frontier = {fid}, {fid}
@@ -1645,14 +1716,14 @@ def build(sources, jars, jobs):
         return seen
 
     def side(fid):
-        """Which path a port runs on: the server-client side (game/remote*.rs), the server
-        (game/lan*.rs, src/lan/), or the in-frame game."""
+        """Which path a port runs on: the server-client side (game/remote*.rs), the server's network
+        side (game/lan*.rs, src/lan/), or the shared game code the server runs for its players."""
         f = fns[fid]["file"]
         if re.search(r"/game/remote[^/]*\.rs$", f):
             return "client"
         if re.search(r"/game/lan[^/]*\.rs$|/src/lan/", f):
             return "server"
-        return "frame"
+        return "game"
 
     def callee_port_names(c):
         """Names of the fns that port vanilla method c: those whose doc opens with it, else a fn with the
@@ -1714,11 +1785,8 @@ def build(sources, jars, jobs):
                 for i in miss:
                     peers = [h for h in hit if side(clusters[h][0]) != side(clusters[i][0]) and ccover[h] & ccover[i]]
                     if peers:
-                        # Singleplayer runs as a client of the integrated server, so a gap on the
-                        # in-frame path rarely shows; it sorts after the others.
                         gaps.append({"kind": "seam", "vanilla": k, "callee": callee, "fn": clusters[i][0],
-                                     "cluster": clusters[i], "sibling": clusters[peers[0]][0],
-                                     "old_path": side(clusters[i][0]) == "frame"})
+                                     "cluster": clusters[i], "sibling": clusters[peers[0]][0]})
             elif not hit and len(targets) <= 3 and substantial(callee):
                 gaps.append({"kind": "callee", "vanilla": k, "callee": callee, "fn": fids[0]})
         if m["client"] and not any(reached_from_remote(fid) for fid in fids):
@@ -1807,6 +1875,7 @@ def build(sources, jars, jobs):
         "absent": absent,
         "homes": homes,
         "aliases": aliases,
+        "harness": harness,
         "inferred": inferred,
         "class_cites": {k: sorted(set(v)) for k, v in class_cites.items()},
         "file_class_cites": {k: sorted(v) for k, v in file_class_cites.items()},
@@ -1924,6 +1993,7 @@ def method_view(led, k):
                 [f"skip:{led['skipped'][k]['reason']} {led['skipped'][k]['note']} ({led['skipped'][k]['src']})"] if k in led.get("skipped", {}) else
                 [f"missing {led['absent'][k]['note']} ({led['absent'][k]['src']})"] if k in led.get("absent", {}) else []),
         "class_home": led.get("homes", {}).get(m["class"]) or led.get("homes", {}).get(m["class"].split("$")[0], []),
+        "parity_harnesses": led.get("harness", {}).get(k, []),
         "inferred": [f"{fn_ref(led, i['fn'])} (score {i['score']}, shares {', '.join(i['shared'])})" for i in led["inferred"].get(k, [])],
         "client_effect": m["client"],
         "calls": [f"{short(led['methods'][c]['class'], led['methods'][c]['name'])} [{status_of(led, c)}]" for c in m["callees"] if c in led["methods"]][:40],
@@ -2029,7 +2099,7 @@ def gap_text(led, g):
         rest = [led["fns"][f]["name"] for f in g.get("cluster", [])[1:]]
         with_rest = f" (with {', '.join(rest)})" if rest else ""
         return (f"seam: {fn_ref(led, g['fn'])}{with_rest} ports {name(g['vanilla'])} but never reaches the port of "
-                f"{name(g['callee'])}; {fn_ref(led, g['sibling'])} does" + (" (old in-frame path)" if g.get("old_path") else ""))
+                f"{name(g['callee'])}; {fn_ref(led, g['sibling'])} does")
     if g["kind"] == "callee":
         return f"callee: {name(g['vanilla'])} calls {name(g['callee'])}; {fn_ref(led, g['fn'])} doesn't reach its port"
     if g["kind"] == "client":
@@ -2057,8 +2127,26 @@ GAP_ORDER = {"map": -1, "seam": 0, "client": 1, "drift": 2, "class": 3, "callee"
 
 def gap_rank(g):
     """Best leads first: by kind, the live path before the old one, then the classes with the most ported neighbours."""
-    return (GAP_ORDER.get(g["kind"], 9), g.get("old_path", False), -g.get("package_ported", 0), -len(g.get("ids", ())),
+    return (GAP_ORDER.get(g["kind"], 9), -g.get("package_ported", 0), -len(g.get("ids", ())),
             g.get("vanilla") or g.get("vanilla_class") or g.get("file", ""))
+
+
+def untested(led, package=None, limit=50):
+    """Ported methods no parity harness covers, most-called first: where a harness would catch the most drift."""
+    harness = led.get("harness", {})
+    rows = []
+    for k, m in led["methods"].items():
+        if m["class"].startswith(SKIP_PACKAGES) or k in harness or m["name"].startswith("<"):
+            continue
+        if package and not m["class"].startswith("net/minecraft/" + package):
+            continue
+        # Sure pairs only (cited, or answered in the map), and methods with behaviour of their own.
+        if status_of(led, k) not in ("ported", "mapped") or m.get("accessor") or m.get("size", 0) <= 8:
+            continue
+        rows.append((len(led["callers"].get(k, [])), k))
+    rows.sort(reverse=True)
+    return [{"vanilla": short(led["methods"][k]["class"], led["methods"][k]["name"]), "callers": n,
+             "port": fn_ref(led, port_of(led, k)[0]) if port_of(led, k) else ""} for n, k in rows[:limit]]
 
 
 def unported(led, package=None, limit=50):
@@ -2083,6 +2171,9 @@ def unported(led, package=None, limit=50):
 def cmd_gaps(led, kind, package, limit, as_json):
     if kind == "unported":
         emit(unported(led, package, limit), as_json, "Nothing unported there.")
+        return
+    if kind == "untested":
+        emit(untested(led, package, limit), as_json, "Every port there has a parity harness.")
         return
     gaps = [g for g in led["gaps"] if (not kind or g["kind"] == kind)]
     if package:
@@ -2611,7 +2702,7 @@ def cmd_report(led):
         lines.append(f"| {p} | {c['total']} | " + " | ".join(str(c[k]) for k in COVERAGE_COLS) + f" | {found_pct(c):.0f} |")
     counts = Counter(g["kind"] for g in led["gaps"])
     lines += ["", "## Gaps", "", ", ".join(f"{k}: {v}" for k, v in counts.most_common()), ""]
-    for kind, title in (("seam", "Ported on both paths (in-frame and server-client), wired on only one"),
+    for kind, title in (("seam", "Ported on more than one path, wired on only one"),
                         ("client", "Client-only effects the server-client path never reaches"),
                         ("drift", "Ports that never name a sound, particle, item or constant vanilla uses"),
                         ("class", "Whole classes nothing ports, next to ported neighbours"),
@@ -2670,7 +2761,7 @@ def main():
     c.add_argument("--package")
     c.add_argument("--depth", type=int, default=2)
     g = sub.add_parser("gaps")
-    g.add_argument("--kind", choices=["seam", "client", "drift", "class", "callee", "stale", "map", "unported"])
+    g.add_argument("--kind", choices=["seam", "client", "drift", "class", "callee", "stale", "map", "unported", "untested"])
     g.add_argument("--package")
     g.add_argument("--limit", type=int, default=50)
     sub.add_parser("report")
@@ -2697,7 +2788,8 @@ def main():
             tot.update(r)
         print(f"{len(led['methods'])} vanilla methods, {len(led['fns'])} Rust functions; of {tot['total']} outside the "
               f"skipped packages: " + ", ".join(f"{tot[k]} {k}" for k in COVERAGE_COLS)
-              + f" ({found_pct(tot):.0f}% of those worth porting found, {classified_pct(tot):.0f}% of all answered); gaps: "
+              + f" ({found_pct(tot):.0f}% of those worth porting found, {classified_pct(tot):.0f}% of all answered;"
+              f" {len(led.get('harness', {}))} covered by a parity harness); gaps: "
               + ", ".join(f"{k} {v}" for k, v in Counter(gg['kind'] for gg in led['gaps']).most_common())
               + f" -> {LEDGER}")
         return

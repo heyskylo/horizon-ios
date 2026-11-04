@@ -1,76 +1,160 @@
 //! The player's own look, on top of Dark, Light or System: an accent colour and a picture behind
 //! Home.
 //!
-//! An accent is a hue. Horizon's violet is the default; another hue turns the violet tokens
-//! (`horizon_theme::Blocks`' accent and the main action's face, bevel and lip) to it, keeping
-//! their saturation and lightness, then darkens or lightens each just enough to read as well as
-//! the violet does: white on the face at 4.5:1, the accent at 3:1 on every background.
+//! An accent is a hue, and the player may pick any of them; seven hues have names, as shortcuts.
+//! Horizon's violet is the default. Another hue turns the violet tokens (`horizon_theme::Blocks`'
+//! accent and the main action's face, bevel and lip) to it, keeping their saturation and
+//! lightness, then darkens or lightens each just enough to read as well as the violet does: white
+//! on the face at 4.5:1, the accent at 3:1 on every background.
 use horizon_theme::{contrast, Blocks};
 use std::path::{Path, PathBuf};
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Accent {
-    #[default]
-    Violet,
-    Blue,
-    Teal,
-    Green,
-    Amber,
-    Red,
-    Pink,
+/// An accent: a hue in degrees, or none for Horizon's violet, whose tokens are the palette's own
+/// and stay untouched; and for a colour typed as hex, that colour (the glass look wears it as
+/// is, the light look takes its hue).
+#[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct Accent {
+    hue: Option<f32>,
+    rgb: Option<u32>,
 }
 
+/// The glass look's colour for each of [`Accent::ALL`]: the mockup's swatches.
+pub const SWATCHES: [u32; 7] = [
+    0x6b4bff, 0x2563eb, 0x0f766e, 0x15803d, 0xc2410c, 0xdc2626, 0xbe185d,
+];
+
+/// [`Accent::ALL`]'s names, in its order.
+const NAMES: [&str; 7] = ["violet", "blue", "teal", "green", "amber", "red", "pink"];
+
 impl Accent {
+    pub const VIOLET: Accent = Accent {
+        hue: None,
+        rgb: None,
+    };
+    pub const BLUE: Accent = Accent {
+        hue: Some(212.),
+        rgb: None,
+    };
+    pub const TEAL: Accent = Accent {
+        hue: Some(176.),
+        rgb: None,
+    };
+    pub const GREEN: Accent = Accent {
+        hue: Some(140.),
+        rgb: None,
+    };
+    pub const AMBER: Accent = Accent {
+        hue: Some(36.),
+        rgb: None,
+    };
+    pub const RED: Accent = Accent {
+        hue: Some(356.),
+        rgb: None,
+    };
+    pub const PINK: Accent = Accent {
+        hue: Some(322.),
+        rgb: None,
+    };
+
     pub const ALL: [Accent; 7] = [
-        Self::Violet,
-        Self::Blue,
-        Self::Teal,
-        Self::Green,
-        Self::Amber,
-        Self::Red,
-        Self::Pink,
+        Self::VIOLET,
+        Self::BLUE,
+        Self::TEAL,
+        Self::GREEN,
+        Self::AMBER,
+        Self::RED,
+        Self::PINK,
     ];
 
-    /// Its name in `settings.json` and on the command line.
-    pub fn name(self) -> &'static str {
-        match self {
-            Self::Violet => "violet",
-            Self::Blue => "blue",
-            Self::Teal => "teal",
-            Self::Green => "green",
-            Self::Amber => "amber",
-            Self::Red => "red",
-            Self::Pink => "pink",
+    /// Any hue the player picks.
+    pub fn custom(hue: f32) -> Self {
+        Self {
+            hue: Some(hue.rem_euclid(360.)),
+            rgb: None,
         }
     }
 
+    /// A colour (`0xrrggbb`): one of the swatches is its named accent.
+    pub fn from_rgb(rgb: u32) -> Self {
+        let rgb = rgb & 0xff_ffff;
+        match SWATCHES.iter().position(|&c| c == rgb) {
+            Some(i) => Self::ALL[i],
+            None => Self {
+                hue: Some(hsl(rgb).0),
+                rgb: Some(rgb),
+            },
+        }
+    }
+
+    /// The colour the glass look wears: the one typed, a named accent's swatch, else the hue at
+    /// the violet's saturation and lightness.
+    pub fn rgb(self) -> u32 {
+        if let Some(rgb) = self.rgb {
+            return rgb;
+        }
+        match (Self::ALL.iter().position(|a| *a == self), self.hue) {
+            (Some(i), _) => SWATCHES[i],
+            (None, Some(hue)) => {
+                let (_, s, l) = hsl(SWATCHES[0]);
+                from_hsl(hue, s, l)
+            }
+            (None, None) => SWATCHES[0],
+        }
+    }
+
+    /// [`rgb`](Self::rgb) as `#rrggbb`.
+    pub fn hex(self) -> String {
+        format!("#{:06x}", self.rgb())
+    }
+
+    /// Its name in `settings.json` and on the command line: a named hue's, a typed colour's
+    /// `#rrggbb`, else its degrees.
+    pub fn name(self) -> String {
+        if self.rgb.is_some() {
+            return self.hex();
+        }
+        let named = Self::ALL
+            .iter()
+            .position(|a| *a == self)
+            .map(|i| NAMES[i].to_owned());
+        named.unwrap_or_else(|| match self.hue {
+            None => "violet".to_owned(),
+            Some(hue) => format!("{hue}"),
+        })
+    }
+
+    /// A name, `#rrggbb`, or a hue in degrees.
     pub fn parse(name: &str) -> Option<Self> {
         let name = name.trim().to_ascii_lowercase();
+        if let Some(hex) = name.strip_prefix('#') {
+            return (hex.len() == 6 && hex.bytes().all(|b| b.is_ascii_hexdigit()))
+                .then(|| u32::from_str_radix(hex, 16).ok())
+                .flatten()
+                .map(Self::from_rgb);
+        }
         let name = if name == "purple" || name == "default" {
             "violet"
         } else {
             &name
         };
-        Self::ALL.into_iter().find(|a| a.name() == name)
+        if let Some(i) = NAMES.iter().position(|n| *n == name) {
+            return Some(Self::ALL[i]);
+        }
+        name.parse::<f32>()
+            .ok()
+            .filter(|hue| hue.is_finite())
+            .map(Self::custom)
     }
 
     /// Its hue in degrees; None for the violet, whose tokens stay as they are.
-    fn hue(self) -> Option<f32> {
-        match self {
-            Self::Violet => None,
-            Self::Blue => Some(212.),
-            Self::Teal => Some(176.),
-            Self::Green => Some(140.),
-            Self::Amber => Some(36.),
-            Self::Red => Some(356.),
-            Self::Pink => Some(322.),
-        }
+    pub fn hue(self) -> Option<f32> {
+        self.hue
     }
 
     /// `palette` with this accent.
     pub fn apply(self, mut p: Blocks) -> Blocks {
-        let Some(hue) = self.hue() else {
+        let Some(hue) = self.hue else {
             return p;
         };
         let turn = |c: u32| {
@@ -91,6 +175,25 @@ impl Accent {
         p.accent = fit(turn(p.accent), reads, if p.dark { 1. } else { -1. });
         p
     }
+}
+
+impl TryFrom<String> for Accent {
+    type Error = String;
+
+    fn try_from(name: String) -> Result<Self, Self::Error> {
+        Self::parse(&name).ok_or_else(|| format!("{name}: a colour name or a hue in degrees"))
+    }
+}
+
+impl From<Accent> for String {
+    fn from(accent: Accent) -> Self {
+        accent.name()
+    }
+}
+
+/// The colour the hue picker shows for `hue`: a strip of them, at one saturation and lightness.
+pub fn hue_colour(hue: f32) -> u32 {
+    from_hsl(hue.rem_euclid(360.), 0.62, 0.55)
 }
 
 /// The colour's hue (degrees), saturation and lightness (0 to 1).

@@ -1,7 +1,10 @@
 //! Probe for tools/test_marker_particles_parity.py.
 use horizon_client::{
     Result,
-    animate_tick::{AnimateContext, AnimateTables, animate_tick, marker_particle_target},
+    animate_tick::{
+        AnimateContext, AnimateTables, animate_tick, campfire_particles, make_campfire_smoke,
+        marker_particle_target,
+    },
     assets::Assets,
     biome::Biomes,
     blocks::BlockFacts,
@@ -13,6 +16,7 @@ use horizon_client::{
     world::World,
 };
 use horizon_core::random::RandomSource;
+use horizon_world::chunk::BlockState;
 use serde_json::Value;
 use std::{
     collections::HashMap,
@@ -21,6 +25,26 @@ use std::{
     path::Path,
     sync::Arc,
 };
+
+/// A `minecraft:name[k=v,...]` block state, as the cases write one.
+fn parse_state(spec: &str) -> BlockState {
+    let (name, properties) = match spec.split_once('[') {
+        Some((name, rest)) => (name, rest.trim_end_matches(']')),
+        None => (spec, ""),
+    };
+    BlockState {
+        name: name.to_owned(),
+        properties: properties
+            .split(',')
+            .filter_map(|pair| pair.split_once('='))
+            .map(|(k, v)| (k.to_owned(), v.to_owned()))
+            .collect(),
+    }
+}
+/// A position as the oracle prints it: exact double bits.
+fn d(v: f64) -> String {
+    format!("{:016x}", v.to_bits())
+}
 
 pub fn main() -> Result<()> {
     let args: Vec<String> = crate::args().collect();
@@ -50,9 +74,144 @@ pub fn main() -> Result<()> {
         }
     }
     let mut engine = ParticleEngine::new(root, &HashMap::new(), &Default::default());
+    // One all-of-that-block world per state the tick cases name: the whole
+    // animateTick loop samples inside the box the barriers already fill.
+    let mut tick_worlds: HashMap<String, World> = HashMap::new();
     let mut out = BufWriter::new(File::create(&args[2])?);
-    for line in BufReader::new(File::open(&args[1])?).lines() {
+    for (index, line) in BufReader::new(File::open(&args[1])?).lines().enumerate() {
         let case: Value = serde_json::from_str(&line?)?;
+        let kind = case["kind"].as_str().unwrap_or("marker");
+        // A block's own tick through the whole ClientLevel.animateTick loop,
+        // over a world that is all of it: every particle and sound it asks the
+        // engine for, from the level random seeded by the case.
+        if kind == "tick" {
+            let spec = case["state"].as_str().ok_or("state")?.to_owned();
+            if !tick_worlds.contains_key(&spec) {
+                let state = assets.registry.resolve(&parse_state(&spec))?;
+                let mut world = World::new(facts.air, 0);
+                for cz in -2..2 {
+                    for cx in -2..2 {
+                        world
+                            .chunks
+                            .insert((cx, cz), Arc::new(Chunk::empty(cx, cz)));
+                        for y in 33..96 {
+                            for z in 0..16 {
+                                for x in 0..16 {
+                                    world.set(cx * 16 + x, y, cz * 16 + z, state)?;
+                                }
+                            }
+                        }
+                    }
+                }
+                tick_worlds.insert(spec.clone(), world);
+            }
+            let world = &tick_worlds[&spec];
+            let ctx = AnimateContext {
+                world,
+                facts: &facts,
+                collision: &collision,
+                biomes: &biomes,
+                registry: assets.registry,
+                raining_at: &|_| false,
+                height_no_leaves: &|_| 0,
+                firefly_bush_sounds: false,
+                creaking_active: false,
+                sky_darken: 0,
+                marker: None,
+                model_offset: &|_, _, _| None,
+                gateway_particles: &|_, _| 0,
+                thundering: false,
+                ultrawarm: false,
+            };
+            engine.clear();
+            engine.sounds.clear();
+            engine.created_requests = None;
+            // `requested` records before the 32-block limiter, as the oracle's
+            // level records at `addParticle` itself.
+            engine.requested = Some(Vec::new());
+            engine.camera = [0.5, 64.5, 0.5];
+            engine.seed_randoms(case["seed"].as_i64().ok_or("seed")?, 0, 0);
+            animate_tick(&tables, &mut engine, &ctx, [0, 64, 0]);
+            writeln!(out, "== {index} tick")?;
+            for (name, p, volume, pitch, _) in &engine.sounds {
+                write!(out, "sound {name}")?;
+                for x in p {
+                    write!(out, " {}", d(*x))?;
+                }
+                writeln!(out, " {:08x} {:08x}", volume.to_bits(), pitch.to_bits())?;
+            }
+            for (options, p, v) in engine.requested.take().ok_or("requests")? {
+                write!(out, "{}", options.ty.name())?;
+                for x in p.into_iter().chain(v) {
+                    write!(out, " {}", d(x))?;
+                }
+                writeln!(out)?;
+            }
+            writeln!(out, "next {}", engine.random().next_int())?;
+            continue;
+        }
+        // The campfire's own particles: the block entity's tick and the smoke a
+        // douse adds, both from the block at [0, 64, 0] with the level random
+        // seeded by the case.
+        if kind == "campfire" || kind == "make" {
+            let seed = case["seed"].as_i64().ok_or("seed")?;
+            let ctx = AnimateContext {
+                world: &world,
+                facts: &facts,
+                collision: &collision,
+                biomes: &biomes,
+                registry: assets.registry,
+                raining_at: &|_| false,
+                height_no_leaves: &|_| 0,
+                firefly_bush_sounds: false,
+                creaking_active: false,
+                sky_darken: 0,
+                marker: None,
+                model_offset: &|_, _, _| None,
+                gateway_particles: &|_, _| 0,
+                thundering: false,
+                ultrawarm: false,
+            };
+            let pos = [0, 64, 0];
+            // Every particle the level is asked for: the engine records them
+            // instead of making them, and the camera sits on the block so the
+            // limiter keeps them all.
+            engine.clear();
+            engine.requested = None;
+            engine.created_requests = Some(Vec::new());
+            engine.camera = [0.5, 64.5, 0.5];
+            engine.seed_randoms(seed, 0, 0);
+            if kind == "campfire" {
+                let state = assets
+                    .registry
+                    .resolve(&parse_state(case["state"].as_str().ok_or("state")?))?;
+                let slots = case["slots"].as_array().ok_or("slots")?;
+                let mut cooking = [false; 4];
+                for (slot, held) in slots.iter().take(4).enumerate() {
+                    cooking[slot] = held.as_u64() != Some(0);
+                }
+                let blocks = [(pos, state.0)];
+                for _ in 0..case["ticks"].as_u64().ok_or("ticks")? {
+                    campfire_particles(&tables, &mut engine, &ctx, blocks.iter(), &|_| cooking);
+                }
+            } else {
+                let signal = case["signal"].as_bool().ok_or("signal")?;
+                let smoking = case["smoking"].as_bool().ok_or("smoking")?;
+                for _ in 0..case["puffs"].as_u64().ok_or("puffs")? {
+                    make_campfire_smoke(&mut engine, pos, signal, smoking);
+                }
+            }
+            writeln!(out, "== {index} {kind}")?;
+            for (options, p, v) in engine.created_requests.take().ok_or("requests")? {
+                write!(out, "{}", options.ty.name())?;
+                for x in p.into_iter().chain(v) {
+                    write!(out, " {}", d(x))?;
+                }
+                writeln!(out)?;
+            }
+            writeln!(out, "next {}", engine.random().next_int())?;
+            continue;
+        }
         let mode = GameMode::ALL
             .into_iter()
             .find(|mode| Some(mode.name()) == case["mode"].as_str())
@@ -76,6 +235,7 @@ pub fn main() -> Result<()> {
             raining_at: &|_| false,
             height_no_leaves: &|_| 0,
             firefly_bush_sounds: false,
+            creaking_active: false,
             sky_darken: 0,
             marker: target.map(|name| (name, &options as &dyn Fn(_) -> _)),
             model_offset: &|_, _, _| None,

@@ -2,7 +2,10 @@
 //! the parts of them commands use: `.mcfunction` functions (with macros and
 //! line continuation), function tags and predicates.
 use crate::zip::Zip;
-use horizon_world::nbt::Tag;
+use horizon_world::{
+    nbt::Tag,
+    worldgen::overrides::{self, PackFile, WorldgenOverrides},
+};
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
@@ -20,7 +23,7 @@ enum Source {
 }
 impl DataPack {
     /// Every file path under `prefix` (relative to the pack root).
-    fn list(&self, prefix: &str) -> Vec<String> {
+    pub fn list(&self, prefix: &str) -> Vec<String> {
         match &self.source {
             Source::Zip(z) => z
                 .names()
@@ -55,12 +58,13 @@ impl DataPack {
         }
         out
     }
-    fn read(&self, path: &str) -> Option<Vec<u8>> {
+    pub fn read(&self, path: &str) -> Option<Vec<u8>> {
         match &self.source {
             Source::Zip(z) => z.read(path).ok(),
             Source::Dir(root) => std::fs::read(root.join(path)).ok(),
         }
     }
+
     /// The `description` of `pack.mcmeta`, as text.
     pub fn description(&self) -> String {
         let Some(bytes) = self.read("pack.mcmeta") else {
@@ -71,6 +75,24 @@ impl DataPack {
             serde_json::Value::String(s) => s.clone(),
             other => other["text"].as_str().unwrap_or_default().to_owned(),
         }
+    }
+    /// The `features.enabled` flag ids of `pack.mcmeta`
+    /// (`FeatureFlagsMetadataSection`): the flags the pack asks to turn on.
+    pub fn features(&self) -> Vec<String> {
+        self.mcmeta()["features"]["enabled"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|f| f.as_str().map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+    /// The `pack.mcmeta` as JSON, empty when it is missing or unreadable.
+    fn mcmeta(&self) -> serde_json::Value {
+        self.read("pack.mcmeta")
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or_default()
     }
 }
 fn walk(root: &Path, dir: &Path, out: &mut Vec<String>) {
@@ -99,7 +121,11 @@ impl DataPack {
 }
 /// The packs in `<world>/datapacks`, sorted by name.
 pub fn discover(world: &Path) -> Vec<DataPack> {
-    let Ok(entries) = std::fs::read_dir(world.join("datapacks")) else {
+    discover_folder(&world.join("datapacks"))
+}
+/// Packs in Create World's temporary pack folder, before a world exists.
+pub fn discover_folder(dir: &Path) -> Vec<DataPack> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
         return Vec::new();
     };
     let mut packs = Vec::new();
@@ -123,6 +149,246 @@ pub fn discover(world: &Path) -> Vec<DataPack> {
     }
     packs.sort_by(|a, b| a.id.cmp(&b.id));
     packs
+}
+/// The resources root's built-in feature packs (`ServerPacksSource`
+/// scanning the game's `data/minecraft/datapacks`): every folder with a
+/// `pack.mcmeta`, a feature pack (`PackSource.FEATURE`). Off until a world
+/// selects them.
+pub fn feature_packs(resources: &Path) -> Vec<DataPack> {
+    let Ok(entries) = std::fs::read_dir(resources.join("data").join("minecraft").join("datapacks"))
+    else {
+        return Vec::new();
+    };
+    let mut packs = Vec::new();
+    for e in entries.flatten() {
+        let path = e.path();
+        if path.join("pack.mcmeta").exists() {
+            packs.push(DataPack {
+                id: e.file_name().to_string_lossy().into_owned(),
+                source: Source::Dir(path),
+            });
+        }
+    }
+    packs.sort_by(|a, b| a.id.cmp(&b.id));
+    packs
+}
+/// The packs of `<world>/datapacks` plus the resources root's feature packs:
+/// the world's whole repository, as `PackRepository.reload` sees it.
+pub fn discover_with_features(world_root: &Path, resources: &Path) -> Vec<DataPack> {
+    let mut packs = discover(world_root);
+    packs.extend(feature_packs(resources));
+    packs
+}
+
+// ---- Create World ------------------------------------------------------------
+
+/// Create World's Data Packs screen (`PackSelectionScreen` on vanilla's
+/// `mcworld-` folder): the folder's packs (`PackSource.WORLD`), the
+/// built-in one (`resources` holds its `pack.png`), and the feature packs
+/// of `resources` (`PackSource.FEATURE`), available at the bottom and off
+/// until picked — the Experiments.
+pub fn screen_packs(dir: &Path, resources: &Path) -> Vec<crate::pack_screen::PackInfo> {
+    use crate::{
+        pack_screen::{Compat, PackInfo, Source, load_icon},
+        packs::Position,
+        text::{Style, Text},
+    };
+    let format = horizon_core::version::DATA_PACK_FORMAT;
+    let mut infos: Vec<PackInfo> = crate::packs::folder(dir, format)
+        .into_iter()
+        .map(|p| PackInfo {
+            icon: p.icon_png().as_deref().and_then(load_icon),
+            id: p.id,
+            title: p.title,
+            description: p.raw_description,
+            description_style: p.description_style,
+            source: Source::World,
+            compat: p.compatibility,
+            required: false,
+            position: Position::Top,
+            fixed: false,
+        })
+        .collect();
+    infos.push(PackInfo {
+        id: "vanilla".into(),
+        title: Text::translate("dataPack.vanilla.name", &[]),
+        description: Text::translate("dataPack.vanilla.description", &[]),
+        description_style: Style::default(),
+        source: Source::BuiltIn,
+        compat: Compat::Compatible,
+        icon: std::fs::read(resources.join("pack.png"))
+            .ok()
+            .as_deref()
+            .and_then(load_icon),
+        required: false,
+        position: Position::Bottom,
+        fixed: false,
+    });
+    for p in feature_packs(resources) {
+        let meta = p.mcmeta();
+        let (description, description_style) =
+            crate::packs::component_root(&meta["pack"]["description"]);
+        infos.push(PackInfo {
+            icon: None,
+            id: p.id.clone(),
+            title: Text::translate(&format!("dataPack.{}.name", p.id), &[]),
+            description,
+            description_style,
+            source: Source::Feature,
+            compat: crate::packs::compatibility_for(&meta, format),
+            required: false,
+            position: Position::Bottom,
+            fixed: false,
+        });
+    }
+    infos
+}
+/// A new empty folder for Create World's packs
+/// (`Files.createTempDirectory("mcworld-")`).
+pub fn temp_folder() -> std::io::Result<PathBuf> {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let dir = std::env::temp_dir().join(format!("mcworld-{}-{nanos}", std::process::id()));
+    std::fs::create_dir_all(&dir)?;
+    Ok(dir)
+}
+/// `PackSelectionScreen.onFilesDrop`'s `PackDetector`: a zip is a pack; a
+/// folder is one when it holds a `pack.mcmeta`, or exactly one folder that
+/// does (a folder zipped by the system, which adds a wrapper). Copied into
+/// `dir`; false when `path` is no pack.
+pub fn copy_pack(path: &Path, dir: &Path) -> bool {
+    fn copy_dir(from: &Path, at: &Path) {
+        let _ = std::fs::create_dir_all(at);
+        for entry in std::fs::read_dir(from).into_iter().flatten().flatten() {
+            let path = entry.path();
+            let to = at.join(entry.file_name());
+            if path.is_dir() {
+                copy_dir(&path, &to);
+            } else {
+                let _ = std::fs::copy(&path, &to);
+            }
+        }
+    }
+    let name = || {
+        path.file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default()
+    };
+    if path.is_file() {
+        return path
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("zip"))
+            && {
+                let _ = std::fs::create_dir_all(dir);
+                std::fs::copy(path, dir.join(name())).is_ok()
+            };
+    }
+    if !path.is_dir() {
+        return false;
+    }
+    if path.join("pack.mcmeta").is_file() {
+        copy_dir(path, &dir.join(name()));
+        return true;
+    }
+    let own: Vec<PathBuf> = std::fs::read_dir(path)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.is_dir() && p.join("pack.mcmeta").is_file())
+        .collect();
+    match own.as_slice() {
+        [one] => {
+            copy_dir(one, &dir.join(one.file_name().unwrap_or_default()));
+            true
+        }
+        _ => false,
+    }
+}
+/// What's in a folder of packs, to notice packs added or removed while the
+/// screen shows it (`PackSelectionScreen.Watcher`).
+pub fn folder_stamp(dir: &Path) -> Vec<(String, Option<std::time::SystemTime>)> {
+    let mut stamp: Vec<_> = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| {
+            let modified = e.metadata().and_then(|m| m.modified()).ok();
+            (e.file_name().to_string_lossy().into_owned(), modified)
+        })
+        .collect();
+    stamp.sort();
+    stamp
+}
+/// Create World's packs into the new world before it opens
+/// (`copyTempDataPackDirToNewWorld`): every pack of `dir` goes to
+/// `<world>/datapacks`, and `datapacks.json` enables those `selected`
+/// (lowest priority first) and disables the rest.
+pub fn install(dir: &Path, world: &Path, selected: &[String]) -> Result<(), String> {
+    let err = |p: &Path, e: std::io::Error| format!("{}: {e}", p.display());
+    let target = world.join("datapacks");
+    std::fs::create_dir_all(&target).map_err(|e| err(&target, e))?;
+    let mut disabled = Vec::new();
+    for pack in crate::packs::folder(dir, horizon_core::version::DATA_PACK_FORMAT) {
+        let (crate::packs::Source::Dir(from) | crate::packs::Source::Zip(from)) = &pack.source;
+        copy(from, &target.join(pack.id.trim_start_matches("file/")))?;
+        if !selected.contains(&pack.id) {
+            disabled.push(pack.id);
+        }
+    }
+    if !selected.iter().any(|id| id == "vanilla") {
+        disabled.push("vanilla".into());
+    }
+    let json = serde_json::json!({ "enabled": selected, "disabled": disabled });
+    let file = world.join("datapacks.json");
+    std::fs::write(&file, json.to_string()).map_err(|e| err(&file, e))
+}
+/// Re-Create World's packs from a saved world: a new folder holding a copy of
+/// its `datapacks` (`CreateWorldScreen.createTempDataPackDirFromExistingWorld`; `None` when the
+/// world has none), and the selection its `datapacks.json` makes, lowest
+/// priority first (`WorldOpenFlows.recreateWorldData` keeps the world's `DataConfiguration`).
+/// The built-in pack is selected unless the world turned it off.
+pub fn for_recreate(world: &Path) -> (Option<PathBuf>, Vec<String>) {
+    let packs = discover(world);
+    // No flags here: the recreated world keeps the original's
+    // `enabled_features`, and the flag-aware load re-adds the feature packs
+    // it asks for (`for_recreate`'s selection only seeds the new world's
+    // `datapacks.json`).
+    let mut selected = enabled_ids(world, &packs, &[]);
+    let vanilla_off = std::fs::read(world.join("datapacks.json"))
+        .ok()
+        .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+        .and_then(|v| v["disabled"].as_array().cloned())
+        .is_some_and(|a| a.iter().any(|id| id.as_str() == Some("vanilla")));
+    if !vanilla_off {
+        selected.insert(0, "vanilla".into());
+    }
+    if packs.is_empty() {
+        return (None, selected);
+    }
+    let dir = temp_folder().ok().and_then(|dir| {
+        if copy(&world.join("datapacks"), &dir).is_ok() {
+            Some(dir)
+        } else {
+            let _ = std::fs::remove_dir_all(&dir);
+            None
+        }
+    });
+    (dir, selected)
+}
+/// A file, or a folder and everything in it.
+fn copy(from: &Path, to: &Path) -> Result<(), String> {
+    let err = |e: std::io::Error| format!("{} -> {}: {e}", from.display(), to.display());
+    if !from.is_dir() {
+        return std::fs::copy(from, to).map(drop).map_err(err);
+    }
+    std::fs::create_dir_all(to).map_err(err)?;
+    for e in std::fs::read_dir(from).map_err(err)?.flatten() {
+        copy(&e.path(), &to.join(e.file_name()))?;
+    }
+    Ok(())
 }
 
 // ---- functions ---------------------------------------------------------------
@@ -312,8 +578,34 @@ pub struct DataStore {
     pub predicates: BTreeMap<String, serde_json::Value>,
     /// `item_modifier` files, for `/item modify`.
     pub item_modifiers: BTreeMap<String, serde_json::Value>,
+    /// The content tables' raw files from the packs after the built-in one:
+    /// `recipe/`, `recipe_filter/`, `loot_table/`, `advancement/`, `dialog/`, `data_maps/` and `tags/…/` files, by
+    /// `<kind-dir>/<ns>:<path>`, each id's files in pack order. The tables
+    /// merge them over what they read from the resource root.
+    pub files: BTreeMap<String, Vec<Vec<u8>>>,
     /// Functions that failed to parse (id, message), for logging.
     pub errors: Vec<(String, String)>,
+}
+/// `<kind-dir>/<ns>:<path>` for a pack file the content tables read:
+/// `recipe/`, `recipe_filter/`, `loot_table/`, `advancement/`, `trade_set/`,
+/// `villager_trade/`, `dialog/`, `data_maps/` or `tags/<sub>/`, where the id keeps the sub
+/// path so a nested tag kind stays addressable.
+fn content_id(file: &str) -> Option<String> {
+    let rest = file.strip_prefix("data/")?;
+    let (ns, rest) = rest.split_once('/')?;
+    let (kind, rest) = rest.split_once('/')?;
+    let kind = match kind {
+        "recipe" | "recipe_filter" | "loot_table" | "advancement" | "trade_set"
+        | "villager_trade" | "dialog" | "data_maps" => kind,
+        // A tag id is `{ns}:{path-under-tags}` (`tags/worldgen/biome/
+        // test:sub/mytag`), the whole path after the namespace, so nested
+        // registries keep their directory (`TagLoader`'s id shape).
+        "tags" => {
+            return Some(format!("tags/{ns}:{}", rest.strip_suffix(".json")?));
+        }
+        _ => return None,
+    };
+    Some(format!("{kind}/{ns}:{}", rest.strip_suffix(".json")?))
 }
 /// `ns:path` for a file `data/<ns>/<kind>/<path>.<ext>`.
 fn resource_id(file: &str, kind: &str, ext: &str) -> Option<String> {
@@ -329,7 +621,27 @@ impl DataStore {
     pub fn load(packs: &[&DataPack]) -> Self {
         let mut s = Self::default();
         for pack in packs {
-            for f in pack.list_kinds(&["function", "item_modifier", "predicate", "tags/function"]) {
+            // `tags` walks the whole tags tree, so a `tags/function` file is
+            // listed by both kinds: handle every file once.
+            let mut seen = std::collections::BTreeSet::new();
+            let builtin = pack.id == "vanilla";
+            for f in pack.list_kinds(&[
+                "advancement",
+                "data_maps",
+                "dialog",
+                "function",
+                "item_modifier",
+                "loot_table",
+                "predicate",
+                "recipe",
+                "recipe_filter",
+                "tags",
+                "trade_set",
+                "villager_trade",
+            ]) {
+                if !seen.insert(f.clone()) {
+                    continue;
+                }
                 if let Some(id) = resource_id(&f, "function", ".mcfunction")
                     && let Some(bytes) = pack.read(&f)
                 {
@@ -359,6 +671,14 @@ impl DataStore {
                     && let Ok(v) = serde_json::from_slice(&bytes)
                 {
                     s.item_modifiers.insert(id, v);
+                } else if !builtin
+                    && let Some(id) = content_id(&f)
+                    && let Some(bytes) = pack.read(&f)
+                {
+                    // The built-in pack's content files are the resource
+                    // root's own, which the tables read from disk; only the
+                    // world's packs come through here.
+                    s.files.entry(id).or_default().push(bytes);
                 }
             }
         }
@@ -368,11 +688,21 @@ impl DataStore {
     /// included, each function once).
     pub fn tag_functions(&self, id: &str) -> Vec<String> {
         let mut out = Vec::new();
-        self.expand(id, &mut out, 0);
+        let mut seen_fns = std::collections::HashSet::new();
+        let mut seen_tags = std::collections::HashSet::new();
+        self.expand(id, &mut out, &mut seen_fns, &mut seen_tags);
         out
     }
-    fn expand(&self, id: &str, out: &mut Vec<String>, depth: usize) {
-        if depth > 16 {
+    /// Depth-first walk keeping first-seen order. Each tag is expanded at most
+    /// once, so reference cycles end and nesting depth is not capped.
+    fn expand<'a>(
+        &'a self,
+        id: &'a str,
+        out: &mut Vec<String>,
+        seen_fns: &mut std::collections::HashSet<&'a str>,
+        seen_tags: &mut std::collections::HashSet<&'a str>,
+    ) {
+        if !seen_tags.insert(id) {
             return;
         }
         let Some(entries) = self.function_tags.get(id) else {
@@ -380,9 +710,9 @@ impl DataStore {
         };
         for (e, required) in entries {
             match e.strip_prefix('#') {
-                Some(inner) => self.expand(inner, out, depth + 1),
+                Some(inner) => self.expand(inner, out, seen_fns, seen_tags),
                 None => {
-                    if (self.functions.contains_key(e) || *required) && !out.contains(e) {
+                    if (self.functions.contains_key(e) || *required) && seen_fns.insert(e) {
                         out.push(e.clone());
                     }
                 }
@@ -421,9 +751,214 @@ fn hash_normalize(s: &str) -> String {
     }
 }
 
+/// Whether every flag `pack` asks for (`Pack.getRequestedFeatures`) is among
+/// the world's `enabled_features`.
+fn features_enabled(pack: &DataPack, enabled_features: &[String]) -> bool {
+    pack.features()
+        .iter()
+        .all(|f| enabled_features.iter().any(|e| e == f))
+}
+
+/// The ids of `packs` (a world's, from `discover`) that are enabled, lowest
+/// priority first: those `<world>/datapacks.json` lists as enabled, in its
+/// order, then every pack it lists neither way, in name order.
+///
+/// `enabled_features` are the world's feature flags
+/// (`WorldDataConfiguration.enabledFeatures`): a pack a pack file selected
+/// while asking for missing features comes off
+/// (`MinecraftServer.configurePackRepository`), and a feature pack whose
+/// features the world enables is forced on however the world's selection
+/// feels about it (`MinecraftServer.enableForcedFeaturePacks`).
+pub fn enabled_ids(world: &Path, packs: &[DataPack], enabled_features: &[String]) -> Vec<String> {
+    let saved: Option<serde_json::Value> = std::fs::read(world.join("datapacks.json"))
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok());
+    let list = |key: &str| -> Vec<String> {
+        saved
+            .as_ref()
+            .and_then(|v| v[key].as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|s| s.as_str().map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let disabled = list("disabled");
+    let mut enabled: Vec<String> = list("enabled")
+        .into_iter()
+        .filter(|id| packs.iter().any(|p| &p.id == id))
+        .filter(|id| {
+            packs
+                .iter()
+                .find(|p| &p.id == id)
+                .is_none_or(|p| features_enabled(p, enabled_features))
+        })
+        .collect();
+    for p in packs {
+        // A pack nobody mentions comes on (`PackRepository.reload` selects
+        // every new pack), but a feature pack stays off until the world
+        // enabled its flag (`PackSource.FEATURE` starts unselected).
+        if !enabled.contains(&p.id)
+            && !disabled.contains(&p.id)
+            && p.id.starts_with("file/")
+            && features_enabled(p, enabled_features)
+        {
+            enabled.push(p.id.clone());
+        }
+    }
+    for p in packs {
+        let feature_pack = !p.id.starts_with("file/") && p.id != "vanilla";
+        if feature_pack
+            && !p.features().is_empty()
+            && features_enabled(p, enabled_features)
+            && !enabled.contains(&p.id)
+        {
+            enabled.push(p.id.clone());
+        }
+    }
+    enabled
+}
+
+/// The level stems of `packs` (`data/<namespace>/dimension/<path>.json`, lowest priority first,
+/// as `enabled_ids` orders them): the id `namespace:path` and the parsed JSON, a later pack's
+/// file for an id replacing an earlier one's. This is `context.datapackDimensions()` of
+/// `WorldOpenFlows.loadWorldStem`.
+pub fn dimension_stems(packs: &[&DataPack]) -> BTreeMap<String, serde_json::Value> {
+    let mut out = BTreeMap::new();
+    for pack in packs {
+        for file in pack.list_kinds(&["dimension"]) {
+            let Some(rest) = file.strip_prefix("data/") else {
+                continue;
+            };
+            let Some((namespace, rest)) = rest.split_once('/') else {
+                continue;
+            };
+            let Some(path) = rest
+                .strip_prefix("dimension/")
+                .and_then(|p| p.strip_suffix(".json"))
+            else {
+                continue;
+            };
+            if let Some(json) = pack
+                .read(&file)
+                .and_then(|b| serde_json::from_slice(&b).ok())
+            {
+                out.insert(format!("{namespace}:{path}"), json);
+            }
+        }
+    }
+    out
+}
+
+// ---- worldgen ----------------------------------------------------------------
+
+/// The worldgen entries of `packs` (lowest priority first, the built-in pack
+/// left out: the prepared bundles are it) for the chunk generator, and what
+/// it leaves out, for the log. `biomes` says which biomes the game has: a
+/// pack's new biome is left out (the game has no colours, sounds or id for it).
+pub fn worldgen_overrides(
+    packs: &[&DataPack],
+    biomes: impl Fn(&str) -> bool,
+) -> (WorldgenOverrides, Vec<String>) {
+    let mut out = WorldgenOverrides::default();
+    let mut not_read: BTreeMap<String, usize> = BTreeMap::new();
+    let mut warnings = Vec::new();
+    for pack in packs {
+        for file in pack.list_kinds(&overrides::PACK_KINDS) {
+            let read = || String::from_utf8(pack.read(&file)?).ok();
+            match out.add_file(&pack.id, &file, read) {
+                PackFile::Read | PackFile::Other => {}
+                PackFile::NotRead(kind) => {
+                    *not_read.entry(format!("{}: {kind}", pack.id)).or_default() += 1
+                }
+                PackFile::Unreadable => warnings.push(format!("{}: {file}: unreadable", pack.id)),
+            }
+        }
+    }
+    warnings.extend(out.finish(biomes));
+    for (kind, files) in not_read {
+        warnings.push(format!("{kind}: {files} files the generator does not read"));
+    }
+    (out, warnings)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn data_map_files_are_content_files_keyed_by_map_namespace_and_registry() {
+        assert_eq!(
+            content_id("data/mymod/data_maps/item/fuel.json").as_deref(),
+            Some("data_maps/mymod:item/fuel")
+        );
+        assert_eq!(content_id("data/mymod/data_maps/item/fuel.txt"), None);
+    }
+
+    #[test]
+    fn enabled_packs_override_worldgen_in_order() {
+        let dir = std::env::temp_dir().join(format!("hz-datapack-worldgen-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let write = |pack: &str, p: &str, t: &str| {
+            let path = dir.join("datapacks").join(pack).join(p);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, t).unwrap();
+        };
+        for pack in ["a", "b", "off"] {
+            write(pack, "pack.mcmeta", "{}");
+            write(pack, "data/minecraft/worldgen/noise/cave.json", pack);
+            write(
+                pack,
+                "data/minecraft/tags/worldgen/biome/is_hill.json",
+                "{\"values\":[]}",
+            );
+        }
+        write("a", "data/minecraft/worldgen/biome/new_peaks.json", "{}");
+        write("a", "data/minecraft/worldgen/biome/plains.json", "{}");
+        write(
+            "a",
+            "data/minecraft/worldgen/world_preset/normal.json",
+            "{}",
+        );
+        write(
+            "b",
+            "data/minecraft/dimension_type/overworld.json",
+            "{\"min_y\":-64,\"height\":2096}",
+        );
+        // `b` is enabled first, so `a` (enabled after it) wins.
+        std::fs::write(
+            dir.join("datapacks.json"),
+            "{\"enabled\":[\"file/b\",\"file/a\"],\"disabled\":[\"file/off\"]}",
+        )
+        .unwrap();
+        let packs = discover(&dir);
+        let enabled = enabled_ids(&dir, &packs, &[]);
+        assert_eq!(enabled, ["file/b", "file/a"]);
+        let enabled: Vec<&DataPack> = enabled
+            .iter()
+            .map(|id| packs.iter().find(|p| &p.id == id).unwrap())
+            .collect();
+        let (o, warnings) = worldgen_overrides(&enabled, |b| b == "minecraft:plains");
+        assert_eq!(
+            o.entries("noises").collect::<Vec<_>>(),
+            [("minecraft:cave", "a")]
+        );
+        assert_eq!(
+            o.entries("biomes").collect::<Vec<_>>(),
+            [("minecraft:plains", "{}")]
+        );
+        let tag_packs: Vec<&str> = o.tags("biome_tags").map(|(_, p, _)| p).collect();
+        assert_eq!(tag_packs, ["file/b", "file/a"]);
+        assert_eq!(warnings.len(), 2, "{warnings:?}");
+        assert!(warnings[0].contains("minecraft:new_peaks"));
+        assert!(warnings[1].contains("worldgen/world_preset"));
+        assert_eq!(
+            o.level_height("minecraft:overworld").map(|h| h.height),
+            Some(2096)
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
     use horizon_world::nbt::parse_snbt;
 
     #[test]
@@ -512,6 +1047,10 @@ mod tests {
             "data/mine/predicate/p.json",
             "{\"condition\":\"minecraft:random_chance\",\"chance\":1}",
         );
+        write(
+            "data/mine/dialog/config/points.json",
+            "{\"type\":\"minecraft:notice\",\"title\":\"Points\"}",
+        );
         let packs = discover(&dir);
         assert_eq!(packs.len(), 1);
         assert_eq!(packs[0].id, "file/mypack");
@@ -524,7 +1063,46 @@ mod tests {
             ["mine:a", "mine:sub/b"]
         );
         assert!(store.predicates.contains_key("mine:p"));
+        // Dialogs reach the synchronized registry through the content files.
+        assert_eq!(
+            store.files["dialog/mine:config/points"],
+            [b"{\"type\":\"minecraft:notice\",\"title\":\"Points\"}".to_vec()]
+        );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn tag_resolution_dedupes_fast_ends_cycles_and_nests_deeply() {
+        let mut store = DataStore::default();
+        let big: Vec<(String, bool)> = (0..50_000)
+            .map(|i| (format!("t:f{}", i % 25_000), true))
+            .collect();
+        store.function_tags.insert("t:big".into(), big);
+        let start = std::time::Instant::now();
+        let got = store.tag_functions("t:big");
+        assert_eq!(got.len(), 25_000);
+        assert_eq!(got[0], "t:f0");
+        assert!(start.elapsed() < std::time::Duration::from_secs(5));
+        // A cycle terminates and keeps first-seen order.
+        store.function_tags.insert(
+            "t:a".into(),
+            vec![("#t:b".into(), true), ("t:x".into(), true)],
+        );
+        store.function_tags.insert(
+            "t:b".into(),
+            vec![("#t:a".into(), true), ("t:y".into(), true)],
+        );
+        assert_eq!(store.tag_functions("t:a"), ["t:y", "t:x"]);
+        // Nesting deeper than the old cap of 16 still resolves.
+        for i in 0..40 {
+            store
+                .function_tags
+                .insert(format!("d:{i}"), vec![(format!("#d:{}", i + 1), true)]);
+        }
+        store
+            .function_tags
+            .insert("d:40".into(), vec![("t:deep".into(), true)]);
+        assert_eq!(store.tag_functions("d:0"), ["t:deep"]);
     }
 
     #[test]
@@ -565,5 +1143,60 @@ mod tests {
         assert_eq!(wanted.len(), 7);
         assert_eq!(p.list_kinds(&kinds), wanted);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn create_world_installs_its_packs() {
+        let root = std::env::temp_dir().join(format!("hz-datapack-install-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (dir, world) = (root.join("mcworld"), root.join("world"));
+        let write = |pack: &str, p: &str, t: &str| {
+            let path = dir.join(pack).join(p);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, t).unwrap();
+        };
+        write(
+            "fns",
+            "pack.mcmeta",
+            r#"{"pack":{"min_format":121,"max_format":121}}"#,
+        );
+        write("fns", "data/x/function/f.mcfunction", "say hi");
+        write(
+            "off",
+            "pack.mcmeta",
+            r#"{"pack":{"min_format":121,"max_format":121}}"#,
+        );
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut zip = zip::ZipWriter::new(std::fs::File::create(dir.join("old.zip")).unwrap());
+        zip.start_file("pack.mcmeta", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        std::io::Write::write_all(&mut zip, br#"{"pack":{"pack_format":48}}"#).unwrap();
+        zip.finish().unwrap();
+        let infos = screen_packs(&dir, &root);
+        let ids: Vec<&str> = infos.iter().map(|p| p.id.as_str()).collect();
+        assert_eq!(ids, ["file/fns", "file/off", "file/old.zip", "vanilla"]);
+        let compat: Vec<_> = infos.iter().map(|p| p.compat).collect();
+        use crate::pack_screen::Compat;
+        assert_eq!(
+            compat,
+            [
+                Compat::Compatible,
+                Compat::Compatible,
+                Compat::TooOld,
+                Compat::Compatible
+            ]
+        );
+        let selected = ["vanilla", "file/old.zip", "file/fns"].map(String::from);
+        install(&dir, &world, &selected).unwrap();
+        let packs = discover(&world);
+        let ids: Vec<&str> = packs.iter().map(|p| p.id.as_str()).collect();
+        assert_eq!(ids, ["file/fns", "file/off", "file/old.zip"]);
+        let saved: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(world.join("datapacks.json")).unwrap()).unwrap();
+        assert_eq!(
+            saved,
+            serde_json::json!({"enabled": selected, "disabled": ["file/off"]})
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

@@ -56,8 +56,10 @@ import time
 
 try:
     from . import parity_reach
+    from . import file_lock
 except ImportError:
     import parity_reach
+    import file_lock
 
 ROOT = Path(__file__).resolve().parents[1]
 LOCAL = ROOT / ".local"
@@ -564,7 +566,7 @@ def dependencies(trace, scope=None):
         path = Path(path) if os.path.isabs(path) else ROOT / path
         if inside(path, ROOT) and not inside(path, LOCAL) and not inside(path, ROOT / "target") and path.is_file() \
                 and "__pycache__" not in path.parts:  # bytecode caches vary; their sources are dependencies already
-            kept.add(str(path.resolve().relative_to(ROOT)))
+            kept.add(path.resolve().relative_to(ROOT).as_posix())
     unique = []
     for artifact in artifacts:
         if artifact not in unique:
@@ -594,8 +596,9 @@ def java_sources(arguments):
 def run_environment(reuse_oracles=False):
     environment = dict(os.environ, CARGO_TARGET_DIR=str(TARGET), PYTHONDONTWRITEBYTECODE="1", HORIZON_NO_AUDIO="1", **PROFILE)
     environment.pop("CARGO_BUILD_JOBS", None)
-    if reuse_oracles:
-        # tools/parity_shim.py stands in for java and javac and replays unchanged oracle runs.
+    # tools/parity_shim.py stands in for java and javac and replays unchanged oracle runs. Not on Windows: a
+    # program started without a shell is found there only as an .exe, and the shim's execv returns before the program.
+    if reuse_oracles and os.name != "nt":
         SHIM.mkdir(parents=True, exist_ok=True)
         for name in ("java", "javac"):
             link = SHIM / name
@@ -644,6 +647,15 @@ def prebuild_commands(artifacts, packages=None):
         if len(artifact) < 5:
             continue
         kind, name, profile, selection, examples = artifact
+        owner = (packages or {}).get((kind, name))
+        selected = [value for flag, value in zip(selection, selection[1:]) if flag == "-p"]
+        if not name and kind in ("bins", "examples") and "horizon-client" in selected \
+                and "horizon-client-lib" in (packages or {}).values():
+            # Broad records predate the client package split too.
+            owner = "horizon-client-lib"
+        if owner and selected and owner not in selected:
+            # A recorded target may have moved packages; retain its feature flags and old selections.
+            selection = [*selection, "-p", owner]
         targets = groups.setdefault((profile, tuple(selection), examples), [])
         target = [f"--{kind}", name] if name else [f"--{kind}"]
         if target not in targets:
@@ -727,16 +739,13 @@ def publish(name, record):
 
 def machine_slot():
     """One of MACHINE_JOBS lock files shared by every runner on this machine, or None if all are taken."""
-    import fcntl
     slots = SHARED / "slots"
     slots.mkdir(parents=True, exist_ok=True)
     for index in range(MACHINE_JOBS):
         handle = open(slots / f"{index}.lock", "w")
-        try:
-            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        if file_lock.lock(handle, wait=False):
             return handle
-        except OSError:
-            handle.close()
+        handle.close()
     return None
 
 
@@ -783,7 +792,8 @@ def outcome(name, script, passed, elapsed, trace_path, hasher=None):
         trace = None  # killed before writing it, or the disk was full: the pass can't be keyed
     if trace:
         record["dependencies"], record["artifacts"] = dependencies(trace, harness_settings(script).get("PARITY_RUST_SCOPE"))
-        record["peak_bytes"] = trace["peak_bytes"]
+        if "peak_bytes" in trace:
+            record["peak_bytes"] = trace["peak_bytes"]
         if passed:
             clear_large_outputs(name, trace)
         if hasher is not None:
@@ -864,7 +874,7 @@ class LocalExecutor:
             if process.poll() is None and elapsed < self.timeout:
                 continue
             if process.poll() is None:
-                os.killpg(process.pid, 9)
+                kill_tree(process)
                 process.wait()
                 print(f"--- {name}: timed out after {self.timeout}s", file=item["log"])
             item["log"].close()
@@ -875,10 +885,18 @@ class LocalExecutor:
 
     def stop(self):
         for item in self.running.values():
-            try:
-                os.killpg(item["process"].pid, 9)
-            except ProcessLookupError:
-                pass
+            kill_tree(item["process"])
+
+
+def kill_tree(process):
+    """Kill a harness and what it started: its process group (start_new_session), or its tree on Windows."""
+    if os.name == "nt":
+        subprocess.run(["taskkill", "/T", "/F", "/PID", str(process.pid)], capture_output=True)
+        return
+    try:
+        os.killpg(process.pid, 9)
+    except ProcessLookupError:
+        pass
 
 
 def host_config():
@@ -914,15 +932,25 @@ class RemoteExecutor:
         ssh = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-o", "ServerAliveInterval=30", self.config["ssh"]]
         started = time.monotonic()
         shared = f"{self.config['root']}/shared-local"
-        mkdir = subprocess.run([*ssh, f"mkdir -p {shlex.quote(self.mirror)}"], capture_output=True, text=True)
+        try:
+            mkdir = subprocess.run([*ssh, f"mkdir -p {shlex.quote(self.mirror)}"], capture_output=True, text=True)
+        except OSError as error:
+            self._log(f"unreachable, running everything here: {error}")
+            self.dead = True
+            return
         if mkdir.returncode:
             self._log(f"unreachable, running everything here: {mkdir.stderr.strip()[-300:]}")
             self.dead = True
             return
-        sync = subprocess.run(
-            ["rsync", "-a", "--delete", "--filter=:- .gitignore", "--exclude=/.git", "--exclude=/.local", "--exclude=/target",
-             "--exclude=__pycache__", "-e", " ".join(ssh[:-1]), f"--rsync-path={self.config.get('rsync', 'rsync')}",
-             f"{ROOT}/", f"{self.config['ssh']}:{self.mirror}/"], capture_output=True, text=True)
+        try:
+            sync = subprocess.run(
+                ["rsync", "-a", "--delete", "--filter=:- .gitignore", "--exclude=/.git", "--exclude=/.local", "--exclude=/target",
+                 "--exclude=__pycache__", "-e", " ".join(ssh[:-1]), f"--rsync-path={self.config.get('rsync', 'rsync')}",
+                 f"{ROOT}/", f"{self.config['ssh']}:{self.mirror}/"], capture_output=True, text=True)
+        except OSError as error:
+            self._log(f"sync failed, running everything here: {error}")
+            self.dead = True
+            return
         if sync.returncode:
             self._log(f"sync failed, running everything here: {sync.stderr.strip()[-300:]}")
             self.dead = True
@@ -931,8 +959,13 @@ class RemoteExecutor:
         command = (f"{self.config.get('setup', 'true')} && cd {shlex.quote(self.mirror)} && "
                    f"exec nice -n {int(self.config.get('nice', 0))} env PARITY_MACHINE_JOBS={self.config.get('jobs', 8)} "
                    f"{environment} {self.config.get('python', 'python3')} tools/parity.py --worker {shlex.quote(shared)}")
-        self.process = subprocess.Popen([*ssh, f"{self.config.get('shell', 'sh -c')} {shlex.quote(command)}"],
-                                        stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, bufsize=1)
+        try:
+            self.process = subprocess.Popen([*ssh, f"{self.config.get('shell', 'sh -c')} {shlex.quote(command)}"],
+                                            stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, bufsize=1)
+        except OSError as error:
+            self._log(f"worker failed to start, running everything here: {error}")
+            self.dead = True
+            return
         self._send({"prebuild": artifacts, "timeout": self.timeout})
         self._log(f"synced in {time.monotonic() - started:.0f}s, building probes...")
         for line in self.process.stdout:
@@ -1143,9 +1176,10 @@ def run(selected, state, hasher, environment_digest, executors, reuse_oracles, r
 def exit_on_termination():
     """SIGTERM and SIGHUP (a cancelled CI job, a dropped ssh) end this process through its finally blocks, which stop
     the running harnesses. Each runs in its own session, so without that they, and the vanilla servers they started,
-    outlive it (orphans of days were found on the Mac mini's runners, 2026-10-26)."""
-    for number in (signal.SIGTERM, signal.SIGHUP):
-        signal.signal(number, lambda received, _frame: sys.exit(128 + received))
+    outlive it (orphans of days were found on the Mac mini's runners, 2026-10-26). Windows has no SIGHUP."""
+    for name in ("SIGTERM", "SIGHUP"):
+        if hasattr(signal, name):
+            signal.signal(getattr(signal, name), lambda received, _frame: sys.exit(128 + received))
 
 
 def worker_main(shared_local):
@@ -1233,8 +1267,11 @@ def stale(name, state, hasher, environment):
 def trace_main(output, script, arguments):
     """Run one harness and record what it read and executed."""
     import atexit
-    import resource
     import runpy
+    try:
+        import resource
+    except ImportError:  # Windows: no peak to report, the scheduler assumes DEFAULT_MEMORY
+        resource = None
     read, commands = set(), []
 
     def audit(event, details):
@@ -1249,14 +1286,16 @@ def trace_main(output, script, arguments):
 
     def write():
         modules = [getattr(module, "__file__", None) for module in list(sys.modules.values())]
-        peak = max(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss, resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss)
-        peak //= 1024 if sys.platform == "darwin" else 1  # bytes on macOS, KiB elsewhere
-        Path(output).write_text(json.dumps({
+        trace = {
             "modules": sorted({m for m in modules if m and inside(m, ROOT)}),
             "read": sorted(path for path in read if os.path.isabs(path) or not path.startswith("<")),
             "commands": commands,
-            "peak_bytes": peak * 1024,
-        }))
+        }
+        if resource:
+            peak = max(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss, resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss)
+            peak //= 1024 if sys.platform == "darwin" else 1  # bytes on macOS, KiB elsewhere
+            trace["peak_bytes"] = peak * 1024
+        Path(output).write_text(json.dumps(trace))
 
     atexit.register(write)
     sys.addaudithook(audit)
@@ -1350,6 +1389,9 @@ def feature_sources_changed(crate, feature, changed):
             break
     else:
         return False
+    if any(not root.is_relative_to(manifest.parent.resolve()) for root in parity_reach.crate_roots(manifest.parent)):
+        # A directory-only scan cannot prove that shared external sources changed too.
+        return False
     table = re.search(r"^\[features\]\n(.*?)(?=^\[|\Z)", text, re.M | re.S)
     implies = {name: re.findall(r'"([^"]+)"', value) for name, value in
                re.findall(r'^([\w-]+)\s*=\s*\[([^\]]*)\]', table.group(1) if table else "", re.M)}
@@ -1376,6 +1418,12 @@ def changed_files(ref):
         set(filter(None, git("ls-files", "--others", "--exclude-standard") or []))
 
 
+def canonical_dependency_path(path: str) -> str:
+    """Normalize legacy Windows paths without changing their narrowed-root annotation."""
+    prefix, separator, suffix = path.partition(KEEP)
+    return prefix.replace("\\", "/") + separator + suffix
+
+
 def changed_harnesses(found, records, ref):
     """Harnesses new or changed since the merge base of HEAD and ref: their script, or a dependency of theirs that is
     an oracle (Java under mods/horizon/src/test) or a probe (a crate's example or binary), changed or was added."""
@@ -1385,7 +1433,8 @@ def changed_harnesses(found, records, ref):
         return set()
     found_changed = set()
     for name, script in found.items():
-        specific = [path for path in records.get(name, {}).get("dependencies", [])
+        dependencies = map(canonical_dependency_path, records.get(name, {}).get("dependencies", []))
+        specific = [path.split(KEEP)[0] for path in dependencies
                     if path.startswith("mods/horizon/src/test/") or "/examples/" in path or "/src/bin/" in path]
         if Path(script).relative_to(ROOT).as_posix() in changed or any(path in changed for path in specific):
             found_changed.add(name)
@@ -1425,6 +1474,7 @@ def affected_harnesses(found, records, changed, reach=True, base=None):
         if dependencies is None or Path(script).relative_to(ROOT).as_posix() in changed:
             affected.add(name)
             continue
+        dependencies = [canonical_dependency_path(path) for path in dependencies]
         plain = {path.split(KEEP)[0] for path in dependencies}
         hit = (plain & changed) | parity_reach.unrecorded(ROOT, plain, changed)
         if not hit:
@@ -1439,7 +1489,8 @@ def affected_harnesses(found, records, changed, reach=True, base=None):
         if over:
             affected.add(name)
             continue
-        narrowed = parity_reach.narrow(dependencies, recorded_artifacts(record), graph, changed, stop)
+        narrowed = parity_reach.narrow(dependencies, recorded_artifacts(dict(record, dependencies=dependencies)),
+                                      graph, changed, stop)
         if any(path.split(KEEP)[0] in changed and (children is None or parity_reach.declarations_changed(
                 ROOT, path.split(KEEP)[0], children, base, whole)) for path, (whole, children) in narrowed.items()):
             affected.add(name)

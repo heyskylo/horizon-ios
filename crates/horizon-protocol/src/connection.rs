@@ -1,7 +1,9 @@
 //! A blocking connection with vanilla's pipeline: optional AES/CFB8
 //! encryption, VarInt21 framing and threshold compression. After login it
-//! splits into a reader (for a receive thread) and a shareable writer. It runs
-//! over TCP, or over an in-memory pipe between two threads of one process
+//! splits into a reader (for a receive thread) and a shareable writer, or
+//! gives its stream up ([`Connection::detach`]) to be polled without blocking,
+//! the halves then keeping only the framing, compression and encryption. It
+//! runs over TCP, or over an in-memory pipe between two threads of one process
 //! (vanilla's `LocalChannel`, which an integrated server's player uses).
 use crate::{Error, Result, buf::Reader, crypto::Cfb8, frame};
 use std::{
@@ -14,17 +16,30 @@ use std::{
     time::{Duration, Instant},
 };
 
+/// Called when a [`Pipe`] end has bytes to read or was closed ([`Pipe::on_ready`]).
+type Notify = Arc<dyn Fn() + Send + Sync>;
+
 /// One direction of a [`Pipe`]: the bytes written and not read yet, and
 /// whether either end closed it.
 #[derive(Default)]
 struct Channel {
     state: Mutex<(std::collections::VecDeque<u8>, bool)>,
     ready: Condvar,
+    /// The reading end's [`Pipe::on_ready`].
+    notify: Mutex<Option<Notify>>,
 }
 impl Channel {
     fn close(&self) {
         self.state.lock().unwrap().1 = true;
         self.ready.notify_all();
+        self.notify();
+    }
+    /// Tell a reader that doesn't block, outside the state's lock.
+    fn notify(&self) {
+        let notify = self.notify.lock().unwrap().clone();
+        if let Some(notify) = notify {
+            notify();
+        }
     }
 }
 /// The channels of one end; dropping the end's last clone closes them, as
@@ -44,6 +59,8 @@ pub struct Pipe {
     end: Arc<End>,
     /// The read timeout (`set_read_timeout`).
     timeout: Mutex<Option<Duration>>,
+    /// Reads with nothing to read fail with `WouldBlock` instead of waiting.
+    nonblocking: bool,
 }
 impl Pipe {
     /// Two connected ends.
@@ -52,6 +69,7 @@ impl Pipe {
         let end = |incoming, outgoing| Self {
             end: Arc::new(End { incoming, outgoing }),
             timeout: Mutex::new(None),
+            nonblocking: false,
         };
         (end(a.clone(), b.clone()), end(b, a))
     }
@@ -59,6 +77,24 @@ impl Pipe {
         Self {
             end: self.end.clone(),
             timeout: Mutex::new(*self.timeout.lock().unwrap()),
+            nonblocking: self.nonblocking,
+        }
+    }
+    /// Reads with nothing to read fail with `WouldBlock`, as a non-blocking socket's do.
+    pub fn set_nonblocking(&mut self, nonblocking: bool) {
+        self.nonblocking = nonblocking;
+    }
+    /// Call `notify` whenever bytes arrive at this end or the pipe closes (also
+    /// now, if either already happened), as a poller's readiness would: a
+    /// non-blocking reader then reads until `WouldBlock`.
+    pub fn on_ready(&self, notify: impl Fn() + Send + Sync + 'static) {
+        let incoming = &self.end.incoming;
+        *incoming.notify.lock().unwrap() = Some(Arc::new(notify));
+        let state = incoming.state.lock().unwrap();
+        let ready = !state.0.is_empty() || state.1;
+        drop(state);
+        if ready {
+            incoming.notify();
         }
     }
     /// Close both directions: reads at either end then see the end of the stream.
@@ -71,6 +107,9 @@ impl Read for Pipe {
     fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
         let deadline = self.timeout.lock().unwrap().map(|t| Instant::now() + t);
         let mut state = self.end.incoming.state.lock().unwrap();
+        if self.nonblocking && state.0.is_empty() && !state.1 {
+            return Err(std::io::ErrorKind::WouldBlock.into());
+        }
         while state.0.is_empty() && !state.1 {
             state = match deadline {
                 None => self.end.incoming.ready.wait(state).unwrap(),
@@ -83,11 +122,7 @@ impl Read for Pipe {
                 }
             };
         }
-        let n = out.len().min(state.0.len());
-        for (o, b) in out.iter_mut().zip(state.0.drain(..n)) {
-            *o = b;
-        }
-        Ok(n)
+        state.0.read(out)
     }
 }
 impl Write for Pipe {
@@ -98,6 +133,8 @@ impl Write for Pipe {
         }
         state.0.extend(data);
         self.end.outgoing.ready.notify_all();
+        drop(state);
+        self.end.outgoing.notify();
         Ok(data.len())
     }
     fn flush(&mut self) -> std::io::Result<()> {
@@ -109,12 +146,18 @@ impl Write for Pipe {
 enum Stream {
     Tcp(TcpStream),
     Memory(Pipe),
+    /// Given up by [`Connection::detach`]: reads and writes fail.
+    Detached,
+}
+fn detached() -> std::io::Error {
+    std::io::ErrorKind::NotConnected.into()
 }
 impl Stream {
     fn try_clone(&self) -> std::io::Result<Self> {
         Ok(match self {
             Self::Tcp(s) => Self::Tcp(s.try_clone()?),
             Self::Memory(p) => Self::Memory(p.try_clone()),
+            Self::Detached => Self::Detached,
         })
     }
     fn set_read_timeout(&self, timeout: Option<Duration>) -> std::io::Result<()> {
@@ -124,6 +167,7 @@ impl Stream {
                 *p.timeout.lock().unwrap() = timeout;
                 Ok(())
             }
+            Self::Detached => Ok(()),
         }
     }
     fn shutdown(&self) {
@@ -132,6 +176,7 @@ impl Stream {
                 let _ = s.shutdown(Shutdown::Both);
             }
             Self::Memory(p) => p.shutdown(),
+            Self::Detached => {}
         }
     }
 }
@@ -140,6 +185,7 @@ impl Read for Stream {
         match self {
             Self::Tcp(s) => s.read(out),
             Self::Memory(p) => p.read(out),
+            Self::Detached => Err(detached()),
         }
     }
 }
@@ -148,14 +194,22 @@ impl Write for Stream {
         match self {
             Self::Tcp(s) => s.write(data),
             Self::Memory(p) => p.write(data),
+            Self::Detached => Err(detached()),
         }
     }
     fn flush(&mut self) -> std::io::Result<()> {
         match self {
             Self::Tcp(s) => s.flush(),
             Self::Memory(p) => p.flush(),
+            Self::Detached => Err(detached()),
         }
     }
+}
+
+/// A connection's stream, given up by [`Connection::detach`].
+pub enum Socket {
+    Tcp(TcpStream),
+    Memory(Pipe),
 }
 
 /// Packets received/sent and bytes in/out, for the debug screen.
@@ -169,16 +223,33 @@ pub struct Counters {
 
 pub struct ConnReader {
     stream: Stream,
+    /// Bytes read: `buffer[start..end]` are not consumed yet, and reads go
+    /// straight into `buffer[end..]`.
     buffer: Vec<u8>,
+    start: usize,
+    end: usize,
+    inflater: frame::Inflater,
     decrypt: Option<Cfb8>,
     pub threshold: Option<usize>,
     pub counters: Arc<Counters>,
+    /// Set for a server of an older release: what arrives is renumbered.
+    adapter: Option<Arc<crate::adapter::Session>>,
 }
+/// Closes a connection from another thread: a read or a write blocked on it fails.
+pub struct Closer(Stream);
+impl Closer {
+    pub fn close(&self) {
+        self.0.shutdown();
+    }
+}
+
 pub struct ConnWriter {
     stream: Stream,
     encrypt: Option<Cfb8>,
     pub threshold: Option<usize>,
     counters: Arc<Counters>,
+    /// Set for a server of an older release: what is sent is renumbered.
+    adapter: Option<Arc<crate::adapter::Session>>,
 }
 /// `InetAddress.getByName` under Java's default `java.net.preferIPv6Addresses=false`: IPv4
 /// addresses first, whatever order the system resolver gives (macOS lists IPv6 first). Vanilla
@@ -203,11 +274,21 @@ impl Connection {
             .collect();
         Self::connect_addresses(host, addrs, timeout)
     }
-    /// Minecraft's SRV redirect applies to the socket destination only. Callers
-    /// keep the player's original host and port in the protocol handshake.
+    /// Connect through Minecraft's SRV redirect. Status requests still use the
+    /// original address in their handshake (`ServerStatusPinger.pingServer`).
     pub fn connect_server(host: &str, port: u16, timeout: Duration) -> Result<Self> {
-        let addrs = crate::resolver::resolve(host, port)?;
-        Self::connect_addresses(host, addrs, timeout)
+        Self::connect_server_with_address(host, port, timeout).map(|(connection, _, _)| connection)
+    }
+    /// `ConnectScreen.startConnecting`: login handshakes use the resolved host
+    /// and port, including an SRV redirect, rather than the status request's address.
+    pub fn connect_server_with_address(
+        host: &str,
+        port: u16,
+        timeout: Duration,
+    ) -> Result<(Self, String, u16)> {
+        let resolved = crate::resolver::resolve(host, port)?;
+        let connection = Self::connect_addresses(host, resolved.addresses, timeout)?;
+        Ok((connection, resolved.host, resolved.port))
     }
     /// Each address starts once the earlier ones fail or [`ATTEMPT_DELAY`] after the last
     /// start, alongside those still trying, and the first to connect wins: a dead address
@@ -273,17 +354,30 @@ impl Connection {
             reader: ConnReader {
                 stream,
                 buffer: Vec::new(),
+                start: 0,
+                end: 0,
+                inflater: frame::Inflater::default(),
                 decrypt: None,
                 threshold: None,
                 counters: counters.clone(),
+                adapter: None,
             },
             writer: ConnWriter {
                 stream: write,
                 encrypt: None,
                 threshold: None,
                 counters,
+                adapter: None,
             },
         })
+    }
+    /// Speak to a server of `version` from now on (before the handshake): packets are renumbered both
+    /// ways (crate::adapter). The pinned version needs nothing.
+    pub fn adapt(&mut self, version: crate::adapter::ServerVersion) {
+        let session = (version != crate::adapter::ServerVersion::Current)
+            .then(|| Arc::new(crate::adapter::Session::new(version)));
+        self.reader.adapter = session.clone();
+        self.writer.adapter = session;
     }
     /// `Connection.isMemoryConnection`: through a [`Pipe`] rather than a socket.
     pub fn is_memory(&self) -> bool {
@@ -299,7 +393,8 @@ impl Connection {
     pub fn enable_encryption(&mut self, secret: &[u8; 16]) {
         let mut decrypt = Cfb8::new(secret, secret);
         // Bytes already read past the last packet were sent encrypted.
-        decrypt.decrypt(&mut self.reader.buffer);
+        let r = &mut self.reader;
+        decrypt.decrypt(&mut r.buffer[r.start..r.end]);
         self.reader.decrypt = Some(decrypt);
         self.writer.encrypt = Some(Cfb8::new(secret, secret));
     }
@@ -312,63 +407,229 @@ impl Connection {
     pub fn split(self) -> (ConnReader, ConnWriter) {
         (self.reader, self.writer)
     }
+    /// Take the stream out, to read and write it elsewhere (a poller's thread,
+    /// without blocking): the halves keep the framing, compression and
+    /// encryption, and bytes already read past the last packet. What arrives
+    /// goes in through [`ConnReader::read_from`]; [`ConnWriter::frame_into`]
+    /// makes what is to be sent. Their own reads and writes fail from now on.
+    pub fn detach(mut self) -> (Socket, ConnReader, ConnWriter) {
+        self.writer.stream = Stream::Detached;
+        let socket = match std::mem::replace(&mut self.reader.stream, Stream::Detached) {
+            Stream::Tcp(s) => Socket::Tcp(s),
+            Stream::Memory(p) => Socket::Memory(p),
+            Stream::Detached => unreachable!("a connection is detached once, by value"),
+        };
+        (socket, self.reader, self.writer)
+    }
+}
+
+/// The next frame in a reader's buffer.
+enum Next {
+    Packet((i32, Vec<u8>)),
+    /// A frame with no packet in it.
+    Empty,
+    /// No whole frame yet: the bytes it needs, once its length is known (0 before).
+    Partial(usize),
 }
 impl ConnReader {
+    /// Read exactly `len` bytes as they are, with no framing.
+    pub fn read_raw(&mut self, len: usize) -> Result<Vec<u8>> {
+        let mut out = vec![0u8; len];
+        self.stream.read_exact(&mut out)?;
+        Ok(out)
+    }
     /// Block until a whole packet arrives: (id, payload).
     pub fn recv(&mut self) -> Result<(i32, Vec<u8>)> {
+        if let Some(packet) = self.adapter.as_ref().and_then(|a| a.next_incoming()) {
+            return Ok(packet);
+        }
         loop {
-            if let Some(frame) = frame::split(&mut self.buffer)? {
-                let body = frame::decompress(frame, self.threshold)?;
+            match self.next()? {
+                Next::Packet(packet) => match &self.adapter {
+                    None => return Ok(packet),
+                    Some(a) => {
+                        if let Some(packet) = a.clientbound(packet.0, packet.1)? {
+                            return Ok(packet);
+                        }
+                        if let Some(packet) = a.next_incoming() {
+                            return Ok(packet);
+                        }
+                    }
+                },
+                Next::Empty => {}
+                Next::Partial(wanted) => self.fill(wanted)?,
+            }
+        }
+    }
+    /// The next whole packet among the bytes already read, without reading
+    /// more: for a detached reader, after [`Self::read_from`]. No adapter
+    /// renumbers it (a server's connection has none).
+    pub fn buffered(&mut self) -> Result<Option<(i32, Vec<u8>)>> {
+        loop {
+            match self.next()? {
+                Next::Packet(packet) => return Ok(Some(packet)),
+                Next::Empty => {}
+                Next::Partial(_) => return Ok(None),
+            }
+        }
+    }
+    /// Read once from `source` (a detached stream, without blocking) into the
+    /// buffer: the bytes read, 0 at the end of the stream, or its error
+    /// (`WouldBlock` when nothing waits).
+    pub fn read_from(&mut self, source: &mut impl Read) -> std::io::Result<usize> {
+        let wanted = match self.next_header() {
+            Ok(Some(wanted)) => wanted,
+            _ => 0,
+        };
+        self.fill_from(source, wanted)
+    }
+    /// The bytes the next frame needs, once its length prefix is whole.
+    fn next_header(&self) -> Result<Option<usize>> {
+        Ok(frame::header(&self.buffer[self.start..self.end])?.map(|(prefix, len)| prefix + len))
+    }
+    /// Take the next frame off the buffer, if it is whole.
+    fn next(&mut self) -> Result<Next> {
+        let Some(wanted) = self.next_header()? else {
+            return Ok(Next::Partial(0));
+        };
+        if self.end - self.start < wanted {
+            return Ok(Next::Partial(wanted));
+        }
+        let (prefix, _) = frame::header(&self.buffer[self.start..self.end])?.expect("whole");
+        let frame = self.start + prefix..self.start + wanted;
+        self.start = frame.end;
+        Ok(match self.packet(frame)? {
+            Some(packet) => {
+                self.counters.received.fetch_add(1, Ordering::Relaxed);
+                Next::Packet(packet)
+            }
+            None => Next::Empty,
+        })
+    }
+    /// The packet in `buffer[frame]`, or `None` for a frame with no packet in it:
+    /// vanilla's PacketDecoder only decodes a packet from a readable buffer, so an
+    /// empty compressed frame is skipped and the connection stays up.
+    fn packet(&mut self, frame: std::ops::Range<usize>) -> Result<Option<(i32, Vec<u8>)>> {
+        let frame = &self.buffer[frame];
+        match frame::body(frame, self.threshold, &mut self.inflater)? {
+            frame::Body::Plain(at) => {
+                let body = &frame[at..];
                 if body.is_empty() {
-                    // A frame with no packet in it. Vanilla's PacketDecoder
-                    // only decodes a packet from a readable buffer, so an
-                    // empty compressed frame is skipped and the connection
-                    // stays up.
-                    continue;
+                    return Ok(None);
                 }
+                let mut r = Reader::new(body);
+                let id = r.varint()?;
+                Ok(Some((id, body[r.position()..].to_vec())))
+            }
+            frame::Body::Inflated(mut body) => {
                 let mut r = Reader::new(&body);
                 let id = r.varint()?;
-                let start = r.position();
-                self.counters.received.fetch_add(1, Ordering::Relaxed);
-                return Ok((id, body[start..].to_vec()));
+                let at = r.position();
+                body.drain(..at);
+                Ok(Some((id, body)))
             }
-            let mut chunk = [0u8; 16384];
-            let n = self.stream.read(&mut chunk)?;
-            if n == 0 {
-                return Err(Error::new("Connection closed by the server"));
-            }
-            self.counters
-                .bytes_in
-                .fetch_add(n as i64, Ordering::Relaxed);
-            let data = &mut chunk[..n];
-            if let Some(c) = &mut self.decrypt {
-                c.decrypt(data);
-            }
-            self.buffer.extend_from_slice(data);
         }
+    }
+    /// Read once from the stream into the buffer, with room for at least
+    /// `frame` bytes of unconsumed data (a whole frame, once its length is known).
+    fn fill(&mut self, frame: usize) -> Result<()> {
+        let mut stream = std::mem::replace(&mut self.stream, Stream::Detached);
+        let read = self.fill_from(&mut stream, frame);
+        self.stream = stream;
+        match read {
+            Ok(0) => Err(Error::end_of_stream()),
+            Ok(_) => Ok(()),
+            // A signal (a profiler attaching, SIGCHLD...) cut the read short
+            // before any byte came: nothing is wrong with the connection, the
+            // caller reads again.
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => Ok(()),
+            // The read timeout passed: Windows reports TimedOut, Unix
+            // WouldBlock.
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+                ) =>
+            {
+                Err(Error::timed_out())
+            }
+            Err(e) => Err(e.into()),
+        }
+    }
+    /// [`Self::fill`] from `source`: the bytes read, decrypted into the buffer.
+    fn fill_from(&mut self, source: &mut impl Read, frame: usize) -> std::io::Result<usize> {
+        const READ: usize = 1 << 16;
+        let pending = self.end - self.start;
+        let room = READ.max(frame.saturating_sub(pending));
+        if self.buffer.len() - self.end < room {
+            self.buffer.copy_within(self.start..self.end, 0);
+            (self.start, self.end) = (0, pending);
+            if self.buffer.len() < pending + room {
+                self.buffer.resize(pending + room, 0);
+            }
+        }
+        let n = source.read(&mut self.buffer[self.end..])?;
+        self.counters
+            .bytes_in
+            .fetch_add(n as i64, Ordering::Relaxed);
+        let data = &mut self.buffer[self.end..self.end + n];
+        if let Some(c) = &mut self.decrypt {
+            c.decrypt(data);
+        }
+        self.end += n;
+        Ok(n)
+    }
+    /// A [`Closer`] for this connection.
+    pub fn closer(&self) -> Result<Closer> {
+        Ok(Closer(self.stream.try_clone()?))
     }
     pub fn set_read_timeout(&self, timeout: Option<Duration>) -> Result<()> {
         Ok(self.stream.set_read_timeout(timeout)?)
     }
 }
 impl ConnWriter {
+    /// Write bytes as they are, with no framing: the legacy server list ping
+    /// (`LegacyServerPinger`) is not a framed protocol.
+    pub fn write_raw(&mut self, data: &[u8]) -> Result<()> {
+        self.stream.write_all(data)?;
+        self.stream.flush()?;
+        Ok(())
+    }
     /// Send one packet body (VarInt id + payload).
     pub fn send(&mut self, body: &[u8]) -> Result<()> {
+        if let Some(a) = self.adapter.clone() {
+            if let Some(body) = a.serverbound(body)? {
+                self.send_contents(&frame::contents(&body, self.threshold)?)?;
+            }
+            for body in a.take_outgoing() {
+                self.send_contents(&frame::contents(&body, self.threshold)?)?;
+            }
+            return Ok(());
+        }
         self.send_contents(&frame::contents(body, self.threshold)?)
     }
     /// Send a frame whose contents [`frame::contents`] made with this
     /// writer's threshold.
     pub fn send_contents(&mut self, contents: &[u8]) -> Result<()> {
-        let mut framed = frame::prefixed(contents);
-        if let Some(c) = &mut self.encrypt {
-            c.encrypt(&mut framed);
-        }
+        let mut framed = Vec::with_capacity(contents.len() + 3);
+        self.frame_into(contents, &mut framed);
         self.stream.write_all(&framed)?;
+        Ok(())
+    }
+    /// The bytes [`Self::send_contents`] writes, appended to `out` instead: a
+    /// detached writer's, written later, in the order framed (the cipher
+    /// runs on).
+    pub fn frame_into(&mut self, contents: &[u8], out: &mut Vec<u8>) {
+        let at = out.len();
+        crate::buf::write_varint(out, contents.len() as i32);
+        out.extend_from_slice(contents);
+        if let Some(c) = &mut self.encrypt {
+            c.encrypt(&mut out[at..]);
+        }
         self.counters.sent.fetch_add(1, Ordering::Relaxed);
         self.counters
             .bytes_out
-            .fetch_add(framed.len() as i64, Ordering::Relaxed);
-        Ok(())
+            .fetch_add((out.len() - at) as i64, Ordering::Relaxed);
     }
     pub fn shutdown(&self) {
         self.stream.shutdown();
@@ -403,7 +664,7 @@ mod tests {
     fn peer(c: &Connection) -> SocketAddr {
         match &c.reader.stream {
             Stream::Tcp(s) => s.peer_addr().unwrap(),
-            Stream::Memory(_) => panic!("not a socket"),
+            Stream::Memory(_) | Stream::Detached => panic!("not a socket"),
         }
     }
 
@@ -482,6 +743,23 @@ mod tests {
     }
 
     #[test]
+    fn a_silent_peer_times_out_and_a_closed_one_ends_the_stream() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let mut c = Connection::connect("127.0.0.1", port, Duration::from_secs(5)).unwrap();
+        let (server, _) = listener.accept().unwrap();
+        c.reader
+            .set_read_timeout(Some(Duration::from_millis(100)))
+            .unwrap();
+        let silent = c.recv().unwrap_err();
+        assert!(silent.is_timed_out(), "{silent}");
+        assert_eq!(silent.to_string(), "Timed out");
+        drop(server);
+        let closed = c.recv().unwrap_err();
+        assert!(closed.is_end_of_stream(), "{closed}");
+    }
+
+    #[test]
     fn loopback_with_compression_and_encryption() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
@@ -534,6 +812,38 @@ mod tests {
         assert_eq!(c.reader.counters.received.load(Ordering::Relaxed), 1);
         server.join().unwrap();
         assert!(c.recv().is_err());
+    }
+
+    /// Packets from one byte to past the read size, compressed and
+    /// encrypted, arrive whole and in order however the reads cut them.
+    #[test]
+    fn packets_of_every_size_arrive_whole() {
+        let (a, b) = Pipe::pair();
+        let bodies: Vec<Vec<u8>> = (0..400u32)
+            .map(|i| {
+                let len = [1, 2, 63, 64, 65, 300, 4000, 70_000, 200_000][i as usize % 9];
+                (0..len).map(|j| (j as u32 * 31 + i) as u8 & 0x7f).collect()
+            })
+            .collect();
+        let sent = bodies.clone();
+        let server = std::thread::spawn(move || {
+            let mut c = Connection::local(b);
+            c.set_compression(64);
+            c.enable_encryption(&[3; 16]);
+            for body in &sent {
+                c.send(body).unwrap();
+            }
+            c
+        });
+        let mut c = Connection::local(a);
+        c.set_compression(64);
+        c.enable_encryption(&[3; 16]);
+        for body in &bodies {
+            let (id, payload) = c.recv().unwrap();
+            assert_eq!(id, i32::from(body[0]));
+            assert_eq!(payload, body[1..]);
+        }
+        drop(server.join().unwrap());
     }
 
     #[test]

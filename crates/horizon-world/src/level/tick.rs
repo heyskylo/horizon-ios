@@ -1,7 +1,7 @@
 //! Scheduled block ticks (`BlockBehaviour.tick`), random ticks
 //! (`BlockBehaviour.randomTick`) and the per-tick drivers.
 use super::{
-    Behaviours, LevelAccess, LevelEvent, Sim, Ticks,
+    Behaviours, LevelAccess, LevelEvent, Sim, Spread, Ticks,
     classes::Class,
     data::state_flags,
     update::{HORIZONTAL, above, below, rel},
@@ -13,6 +13,8 @@ use horizon_core::{
     random::RandomSource,
     ticks::TickTypeId,
 };
+use std::rc::Rc;
+use std::sync::Arc;
 
 impl<L: LevelAccess + ?Sized> Sim<'_, L> {
     fn rand_int(&mut self, bound: i32) -> i32 {
@@ -79,7 +81,10 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
                 Class::Coral => {
                     if !self.coral_scan_for_water(pos) {
                         if let Some(dead) = b.data(state).link {
-                            self.set_block(pos, b.default_of(dead), 2);
+                            let next = b.default_of(dead);
+                            if self.level.allow_block_fade(pos, state, next) {
+                                self.set_block(pos, next, 2);
+                            }
                         }
                     }
                 }
@@ -91,7 +96,9 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
                             if class == Class::CoralWallFan {
                                 next = b.table.set_dir(next, p.facing, b.facing(state));
                             }
-                            self.set_block(pos, next, 2);
+                            if self.level.allow_block_fade(pos, state, next) {
+                                self.set_block(pos, next, 2);
+                            }
                         }
                     }
                 }
@@ -102,9 +109,46 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
                     if let Some((previous, count)) = self.level.recheck_container_openers(pos) {
                         self.block_event(pos, block, 1, count);
                         if previous != count && b.data(state).is(Class::TrappedChest) {
-                            self.update_neighbors_at(pos, block);
-                            self.update_neighbors_at(below(pos), block);
+                            self.trapped_chest_update_neighbors(pos, state);
                         }
+                        if count > 0 {
+                            self.schedule_tick(pos, block, 5);
+                        }
+                    }
+                }
+                Class::Barrel => {
+                    // BarrelBlock.tick → BarrelBlockEntity.recheckOpen →
+                    // ContainerOpenersCounter.recheckOpeners: the barrel
+                    // recounts its openers, and the count crossing zero opens
+                    // or closes it. Unlike a chest it broadcasts no block
+                    // event (BarrelBlockEntity$1.openerCountChanged is empty):
+                    // the `open` property, the barrel's own sound and the
+                    // container game events are its whole report.
+                    if let Some((previous, count)) = self.level.recheck_container_openers(pos) {
+                        if previous != count {
+                            let open = count > 0;
+                            let sound: Arc<str> = if open {
+                                "minecraft:block.barrel.open".into()
+                            } else {
+                                "minecraft:block.barrel.close".into()
+                            };
+                            // BarrelBlockEntity.playSound: volume 0.5, pitch
+                            // 0.9 to 1.0 from the level random.
+                            let pitch = 0.9 + self.random().next_float() * 0.1;
+                            self.sound(pos, &sound, 0.5, pitch);
+                            // BarrelBlockEntity.updateBlockState.
+                            self.set_block_and_update(pos, b.table.set_bool(state, p.open, open));
+                            self.game_event(
+                                pos,
+                                if open {
+                                    "minecraft:container_open"
+                                } else {
+                                    "minecraft:container_close"
+                                },
+                            );
+                        }
+                        // ContainerOpenersCounter.scheduleRecheck holds only
+                        // while someone has it open.
                         if count > 0 {
                             self.schedule_tick(pos, block, 5);
                         }
@@ -123,6 +167,14 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
                         pos,
                         state,
                         kind: "command_block",
+                    });
+                }
+                // TestBlock.tick resets the block entity: the caller owns it.
+                Class::TestBlock => {
+                    self.emit(LevelEvent::BlockEvent {
+                        pos,
+                        state,
+                        kind: "test_block_tick",
                     });
                 }
                 Class::FallingBlock => self.falling_block_tick(pos, state),
@@ -165,12 +217,11 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
                 // LecternBlock.tick: the page-turn pulse ends.
                 Class::Lectern => {
                     self.set_block_and_update(pos, b.table.set_bool(state, p.powered, false));
-                    self.update_neighbors_at(below(pos), block);
+                    self.lectern_update_below(pos, state);
                 }
                 Class::LightningRod => {
                     self.set_block_and_update(pos, b.table.set_bool(state, p.powered, false));
-                    let facing = b.facing(state);
-                    self.update_neighbors_at(rel(pos, facing.opposite()), block);
+                    self.lightning_rod_update_neighbors(pos, state);
                 }
                 Class::Liquid => {
                     if self.should_bubble_column_occupy(state) {
@@ -213,11 +264,31 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         }
     }
 
+    /// `ServerLevel.tickBlock` once the block at `pos` is the tick's: the
+    /// level may handle the tick first, else `BlockState.tick`.
+    fn tick_due_block(&mut self, state: BlockStateId, pos: BlockPos) {
+        let (mut current, mut handled) = (state, false);
+        self.level
+            .before_tick_block(self.ticks, pos, &mut current, &mut handled);
+        // A block the level changed ticks as it is now, if it is still the
+        // tick's block.
+        if !handled && (current == state || self.block_of(current) == self.block_of(state)) {
+            self.tick_block(current, pos);
+        }
+    }
+
     /// `BlockState.randomTick` followed by the fluid's random tick.
     pub fn random_tick_at(&mut self, pos: BlockPos) {
         let state = self.state(pos);
         if self.b.is_randomly_ticking(state) {
-            self.random_tick_block(state, pos);
+            let (mut current, mut handled) = (state, false);
+            self.level
+                .before_random_tick(self.ticks, pos, &mut current, &mut handled);
+            // A block the level changed ticks as it is now, if it still ticks
+            // randomly.
+            if !handled && (current == state || self.b.is_randomly_ticking(current)) {
+                self.random_tick_block(current, pos);
+            }
         }
         // Only lava's fluid state ticks randomly. A lava block is ticked twice
         // (LiquidBlock.randomTick, then FluidState.randomTick), as in vanilla.
@@ -309,6 +380,9 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
                 }
                 Class::Leaves => {
                     if !b.table.bool(state, p.persistent) && b.table.int(state, p.distance) == 7 {
+                        if !self.level.allow_leaves_decay(pos) {
+                            continue;
+                        }
                         self.drop_resources(state, pos);
                         self.remove_block(pos, false);
                     }
@@ -361,6 +435,9 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
                 }
                 Class::SnowLayer => {
                     if self.level.block_light(pos) > 11 {
+                        if !self.level.allow_block_fade(pos, state, b.air()) {
+                            continue;
+                        }
                         self.drop_resources(state, pos);
                         self.remove_block(pos, false);
                         self.game_event(pos, "minecraft:block_destroy");
@@ -417,6 +494,13 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
     pub(crate) fn turn_to_base_block(&mut self, pos: BlockPos, state: BlockStateId) {
         let b = self.b;
         let base = b.data(state).link.unwrap_or(b.named.dirt);
+        // Block.pushEntitiesUp(state, base, level, pos): the game lifts what
+        // stands in the new block's added top onto it.
+        self.emit(LevelEvent::BlockEvent {
+            pos,
+            state,
+            kind: "push_entities_up",
+        });
         self.set_block_and_update(pos, b.default_of(base));
         self.game_event(pos, "minecraft:block_change");
     }
@@ -583,7 +667,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
             (Direction::North, 300),
             (Direction::South, 300),
         ] {
-            self.fire_check_burn_out(rel(pos, direction), chance + extra, age);
+            self.fire_check_burn_out(pos, rel(pos, direction), chance + extra, age);
         }
         for xx in -1..=1 {
             for zz in -1..=1 {
@@ -607,8 +691,12 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
                             && (!self.level.is_raining() || !self.fire_near_rain(test))
                         {
                             let spread_age = 15.min(age + self.rand_int(5) / 4);
-                            let next = self.fire_state_with_age(test, spread_age);
-                            self.set_block_and_update(test, next);
+                            if self.level.allow_spread(Spread::Fire, pos, test)
+                                && self.level.allow_block_ignite(test, "spread")
+                            {
+                                let next = self.fire_state_with_age(test, spread_age);
+                                self.set_block_and_update(test, next);
+                            }
                         }
                     }
                 }
@@ -633,19 +721,29 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
             || self.level.is_raining_at(rel(pos, Direction::North))
             || self.level.is_raining_at(rel(pos, Direction::South))
     }
-    fn fire_check_burn_out(&mut self, pos: BlockPos, chance: i32, age: i32) {
+    /// `FireBlock.checkBurnOut` of the block at `pos` by the fire at `fire`.
+    fn fire_check_burn_out(&mut self, fire: BlockPos, pos: BlockPos, chance: i32, age: i32) {
         let b = self.b;
         let odds = self.burn_odds(self.state(pos));
         if self.rand_int(chance) < odds {
             let old = self.state(pos);
+            let allowed = self.level.allow_spread(Spread::Fire, fire, pos);
+            let mut burned = false;
             if self.rand_int(age + 10) < 5 && !self.level.is_raining_at(pos) {
                 let new_age = (age + self.rand_int(5) / 4).min(15);
-                let next = self.fire_state_with_age(pos, new_age);
-                self.set_block_and_update(pos, next);
-            } else {
+                if allowed
+                    && self.level.allow_block_burn(pos)
+                    && self.level.allow_block_ignite(pos, "spread")
+                {
+                    let next = self.fire_state_with_age(pos, new_age);
+                    self.set_block_and_update(pos, next);
+                    burned = true;
+                }
+            } else if allowed && self.level.allow_block_burn(pos) {
                 self.remove_block(pos, false);
+                burned = true;
             }
-            if b.instance_of(old, Class::Tnt) {
+            if burned && b.instance_of(old, Class::Tnt) {
                 self.prime_tnt(pos);
             }
         }
@@ -908,15 +1006,20 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         }
         if !near_water && !self.level.is_raining_at(above(pos)) {
             if moisture > 0 {
-                self.set_block(
-                    pos,
-                    b.table.set_int(state, b.props.moisture, moisture - 1),
-                    2,
-                );
+                if self
+                    .level
+                    .allow_moisture_change(pos, moisture, moisture - 1)
+                {
+                    self.set_block(
+                        pos,
+                        b.table.set_int(state, b.props.moisture, moisture - 1),
+                        2,
+                    );
+                }
             } else if !b.in_set(self.above_state(pos), &b.tags.maintains_farmland) {
                 self.turn_to_base_block(pos, state);
             }
-        } else if moisture < 7 {
+        } else if moisture < 7 && self.level.allow_moisture_change(pos, moisture, 7) {
             self.set_block(pos, b.table.set_int(state, b.props.moisture, 7), 2);
         }
     }
@@ -1385,7 +1488,11 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         let top = info.top;
         let below_pos = below(top);
         if info.freezes_below {
-            self.set_block_and_update(below_pos, b.default_of(b.named.ice));
+            let from = self.state(below_pos);
+            let to = b.default_of(b.named.ice);
+            if self.level.allow_block_form(below_pos, from, to) {
+                self.set_block_and_update(below_pos, to);
+            }
         }
         if !self.level.is_raining() {
             return;
@@ -1396,10 +1503,16 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
             if b.is_block(state, b.named.snow) {
                 let layers = b.table.int(state, p.layers);
                 if layers < max_height.min(8) {
-                    self.set_block_and_update(top, b.table.set_int(state, p.layers, layers + 1));
+                    let to = b.table.set_int(state, p.layers, layers + 1);
+                    if self.level.allow_block_form(top, state, to) {
+                        self.set_block_and_update(top, to);
+                    }
                 }
             } else {
-                self.set_block_and_update(top, b.default_of(b.named.snow));
+                let to = b.default_of(b.named.snow);
+                if self.level.allow_block_form(top, state, to) {
+                    self.set_block_and_update(top, to);
+                }
             }
         }
         if info.kind != PrecipitationKind::None {
@@ -1412,6 +1525,20 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
             };
             if data.is(Class::Cauldron) {
                 if self.random().next_float() < chance {
+                    // Both place the cauldron's default state, level 1
+                    // (CauldronBlock.handlePrecipitation).
+                    let to = 1;
+                    let reason = if info.kind == PrecipitationKind::Rain {
+                        "rain"
+                    } else {
+                        "snow"
+                    };
+                    if !self
+                        .level
+                        .allow_cauldron_level_change(below_pos, 0, to, reason)
+                    {
+                        return;
+                    }
                     let next = if info.kind == PrecipitationKind::Rain {
                         b.named.water_cauldron
                     } else {
@@ -1426,6 +1553,18 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
                     || (info.kind == PrecipitationKind::Snow
                         && b.is_block(below_state, b.named.powder_snow_cauldron));
                 if b.table.int(below_state, p.level) != 3 && matches {
+                    let level = b.table.int(below_state, p.level);
+                    let reason = if info.kind == PrecipitationKind::Rain {
+                        "rain"
+                    } else {
+                        "snow"
+                    };
+                    if !self
+                        .level
+                        .allow_cauldron_level_change(below_pos, level, level + 1, reason)
+                    {
+                        return;
+                    }
                     self.set_block_and_update(below_pos, b.table.cycle(below_state, p.level));
                     self.game_event(below_pos, "minecraft:block_change");
                 }
@@ -1605,7 +1744,7 @@ impl Behaviours {
             let mut sim = self.sim(level, ticks);
             let state = sim.state(tick.pos);
             if u32::from(self.block(state).0) == tick.kind.0 {
-                sim.tick_block(state, tick.pos);
+                sim.tick_due_block(state, tick.pos);
             }
         }
         let _ = ticks.blocks.finish_tick();
@@ -1684,7 +1823,7 @@ impl Behaviours {
             let mut sim = self.sim(level, ticks);
             let state = sim.state(tick.pos);
             if u32::from(self.block(state).0) == tick.kind.0 {
-                sim.tick_block(state, tick.pos);
+                sim.tick_due_block(state, tick.pos);
             }
         }
         true
@@ -1712,6 +1851,22 @@ impl Behaviours {
         chunk: ChunkPos,
         mut next_ticking: impl FnMut(&mut L, i32) -> Option<i32>,
     ) {
+        self.tick_chunk_random_masked(level, ticks, chunk, |level, from| {
+            next_ticking(level, from).map(|min_y| (min_y, None))
+        });
+    }
+    /// [`Self::tick_chunk_random`], where `next_ticking` may also give the
+    /// section's [`RandomTickMask`]: a drawn position outside it is not read,
+    /// as its random tick would do nothing. The draws are the same. After a
+    /// position that did tick, the section is asked for again (its blocks may
+    /// have changed): a mask is only trusted for the blocks as they are.
+    pub fn tick_chunk_random_masked<L: LevelAccess + ?Sized>(
+        &self,
+        level: &mut L,
+        ticks: &mut Ticks,
+        chunk: ChunkPos,
+        mut next_ticking: impl FnMut(&mut L, i32) -> Option<(i32, Option<Rc<RandomTickMask>>)>,
+    ) {
         let speed = level.game_rules().random_tick_speed;
         if speed <= 0 {
             return;
@@ -1726,13 +1881,32 @@ impl Behaviours {
             }
         }
         let mut from = level.min_y();
-        while let Some(min_y) = next_ticking(level, from).filter(|&y| y < level.max_y()) {
+        while let Some((min_y, mut mask)) =
+            next_ticking(level, from).filter(|&(y, _)| y < level.max_y())
+        {
             for _ in 0..speed {
                 let pos = ticks.block_random_pos(min_x, min_y, min_z, 15);
-                self.sim(level, ticks).random_tick_at(pos);
+                if mask.as_ref().is_none_or(|m| m.may_tick(pos)) {
+                    self.sim(level, ticks).random_tick_at(pos);
+                    // The same section as it is now; one that stopped
+                    // ticking still gets the rest of its draws, unfiltered.
+                    mask = next_ticking(level, min_y)
+                        .filter(|&(y, _)| y == min_y)
+                        .and_then(|(_, m)| m);
+                }
             }
             from = min_y + 16;
         }
+    }
+    /// Whether a random tick at a block of `state` can do anything: what
+    /// [`Self::tick_chunk_random_masked`]'s masks hold. `random_tick_at`
+    /// ticks a randomly ticking block, then lava's fluid.
+    pub fn random_tick_candidate(&self, state: BlockStateId) -> bool {
+        self.is_randomly_ticking(state)
+            || matches!(
+                self.fluid(state).kind(),
+                FluidKind::Lava | FluidKind::FlowingLava
+            )
     }
     /// Random-tick a single position (block then fluid), as `tickChunk` does.
     pub fn random_tick<L: LevelAccess + ?Sized>(
@@ -1771,5 +1945,36 @@ impl Behaviours {
         pos: BlockPos,
     ) {
         self.sim(level, ticks).fluid_tick(pos);
+    }
+}
+
+/// Which of a section's 4,096 blocks a random tick can do anything for
+/// ([`Behaviours::random_tick_candidate`]), one bit each in the section's
+/// index order (`y << 8 | z << 4 | x`). Vanilla reads the block at every drawn
+/// position; most hold stone, dirt or air, and the read is a cache miss.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RandomTickMask(pub [u64; 64]);
+impl RandomTickMask {
+    /// The mask of `blocks` (4,096 states in index order).
+    pub fn of(blocks: &[u32], mut candidate: impl FnMut(u32) -> bool) -> Self {
+        let mut bits = [0u64; 64];
+        let mut last = None;
+        for (i, &state) in blocks.iter().enumerate().take(4096) {
+            let hit = match last {
+                Some((s, hit)) if s == state => hit,
+                _ => {
+                    let hit = candidate(state);
+                    last = Some((state, hit));
+                    hit
+                }
+            };
+            bits[i >> 6] |= u64::from(hit) << (i & 63);
+        }
+        Self(bits)
+    }
+    #[inline]
+    pub fn may_tick(&self, pos: BlockPos) -> bool {
+        let i = ((pos.y & 15) << 8 | (pos.z & 15) << 4 | (pos.x & 15)) as usize;
+        self.0[i >> 6] >> (i & 63) & 1 != 0
     }
 }

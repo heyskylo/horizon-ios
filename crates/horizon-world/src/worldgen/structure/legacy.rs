@@ -182,10 +182,28 @@ impl<W: FeatureWorld + PlacementContext> PieceWorld for W {
 pub struct PieceContext<'a> {
     pub world: &'a mut dyn PieceWorld,
     pub resources: &'a StructureResources,
+    /// `BlockState.isSolidRender` of the blocks around the piece.
+    pub blocks: &'a dyn SolidRender,
     pub random: &'a mut dyn PieceRandom,
     pub chunk_box: BoundingBox,
     pub chunk: ChunkPos,
     pub reference: [i32; 3],
+}
+/// `BlockState.isSolidRender`: whether a block draws as a solid block. The
+/// structure pieces ask it of the blocks around them, the way
+/// `StructurePiece.reorient` does.
+pub trait SolidRender {
+    fn solid_render(&self, state: BlockStateId) -> bool;
+}
+impl SolidRender for crate::worldgen::tree_blocks::TreeBlocks {
+    fn solid_render(&self, state: BlockStateId) -> bool {
+        self.has(state, crate::worldgen::tree_blocks::SOLID_RENDER)
+    }
+}
+impl<T: SolidRender + ?Sized> SolidRender for std::sync::Arc<T> {
+    fn solid_render(&self, state: BlockStateId) -> bool {
+        (**self).solid_render(state)
+    }
 }
 impl PieceContext<'_> {
     pub fn state(&self, name: &str) -> BlockStateId {
@@ -411,14 +429,27 @@ impl PieceFrame {
         y: i32,
         z: i32,
     ) -> Result<()> {
+        self.place_block(c, state, x, y, z).map(|_| ())
+    }
+    /// `StructurePiece.placeBlock`, answering whether the block was written: the
+    /// piece's box or one of the blocks it keeps declines a placement, and then no
+    /// block entity is created at that position either.
+    pub fn place_block(
+        &self,
+        c: &mut PieceContext<'_>,
+        state: BlockStateId,
+        x: i32,
+        y: i32,
+        z: i32,
+    ) -> Result<bool> {
         let pos = self.world_pos(x, y, z);
         if !c.chunk_box.is_inside(pos) {
-            return Ok(());
+            return Ok(false);
         }
         if !self.keep.is_empty() {
             let current = c.world.block(pos)?;
             if self.keep.contains(&c.name(current)) {
-                return Ok(());
+                return Ok(false);
             }
         }
         let mut state = state;
@@ -450,7 +481,7 @@ impl PieceFrame {
         ) {
             c.world.post_process(pos)?;
         }
-        Ok(())
+        Ok(true)
     }
     pub fn get(&self, c: &mut PieceContext<'_>, x: i32, y: i32, z: i32) -> Result<BlockStateId> {
         let pos = self.world_pos(x, y, z);
@@ -660,8 +691,12 @@ impl PieceFrame {
             return Ok(false);
         }
         let state = c.state_with("dispenser", &[("facing", direction_name(facing))]);
-        self.place(c, state, x, y, z)?;
-        c.loot_table(pos, "minecraft:dispenser", table)?;
+        // `level.getBlockEntity(pos) instanceof DispenserBlockEntity` after
+        // `placeBlock`: a placement the piece declines leaves no block entity, and
+        // then no loot table is set and no seed is drawn.
+        if self.place_block(c, state, x, y, z)? {
+            c.loot_table(pos, "minecraft:dispenser", table)?;
+        }
         Ok(true)
     }
 }
@@ -679,8 +714,9 @@ pub fn offset(pos: [i32; 3], d: Direction, n: i32) -> [i32; 3] {
     let s = d.normal();
     [pos[0] + s[0] * n, pos[1] + s[1] * n, pos[2] + s[2] * n]
 }
+/// `BlockState.isSolidRender` of a state: whether it draws as a solid block.
 pub fn solid_render(c: &PieceContext<'_>, state: BlockStateId) -> bool {
-    c.resources.transforms.full_block(state) && !c.is_liquid(state)
+    c.blocks.solid_render(state)
 }
 /// StructurePiece.createChest with an absolute position.
 pub fn create_chest(
@@ -700,46 +736,71 @@ pub fn create_chest(
     c.loot_table(pos, "minecraft:chest", table)?;
     Ok(true)
 }
-/// StructurePiece.reorient for chests (solid-render approximated by the
-/// full collision cube of non-liquid blocks).
+/// `StructurePiece.reorient` for chests: the facing a chest takes from the
+/// blocks around it.
 fn reorient(c: &mut PieceContext<'_>, pos: [i32; 3], state: BlockStateId) -> Result<BlockStateId> {
-    let mut solid: Option<Direction> = None;
-    for d in HORIZONTAL {
-        let n = c.world.block(offset(pos, d, 1))?;
-        if c.name(n) == "minecraft:chest" {
-            return Ok(state);
-        }
-        if solid_render(c, n) {
-            if solid.is_some() {
-                solid = None;
-                break;
-            }
-            solid = Some(d);
-        }
+    let mut states = [BlockStateId(0); 4];
+    for (index, d) in HORIZONTAL.iter().enumerate() {
+        states[index] = c.world.block(offset(pos, *d, 1))?;
     }
-    if let Some(d) = solid {
-        return Ok(c.with_property(state, "facing", direction_name(opposite(d))));
-    }
-    let mut facing = match c.property(state, "facing") {
+    let facing = match c.property(state, "facing") {
         Some("south") => Direction::South,
         Some("east") => Direction::East,
         Some("west") => Direction::West,
         _ => Direction::North,
     };
-    let solid_at = |c: &mut PieceContext<'_>, d: Direction| -> Result<bool> {
-        let s = c.world.block(offset(pos, d, 1))?;
-        Ok(solid_render(c, s))
+    let blocks = c.blocks;
+    let is_chest = |s: BlockStateId| c.name(s) == "minecraft:chest";
+    let Some(facing) = reorient_facing(facing, states, &is_chest, blocks) else {
+        return Ok(state);
     };
-    if solid_at(c, facing)? {
-        facing = opposite(facing);
-    }
-    if solid_at(c, facing)? {
-        facing = clockwise(facing);
-    }
-    if solid_at(c, facing)? {
-        facing = opposite(facing);
-    }
     Ok(c.with_property(state, "facing", direction_name(facing)))
+}
+/// `StructurePiece.reorient`: the facing of a chest, from the blocks around
+/// it. `states` are the four horizontal neighbours (north, east, south, west).
+/// `is_chest` tells whether a state is a chest, and `blocks` whether it draws
+/// as solid (`BlockState.isSolidRender`). None: a chest is next to it, and
+/// the state is kept.
+fn reorient_facing(
+    facing: Direction,
+    states: [BlockStateId; 4],
+    is_chest: &dyn Fn(BlockStateId) -> bool,
+    blocks: &dyn SolidRender,
+) -> Option<Direction> {
+    let index = |d: Direction| match d {
+        Direction::North => 0,
+        Direction::East => 1,
+        Direction::South => 2,
+        Direction::West => 3,
+        _ => 0,
+    };
+    let mut solid_neighbour: Option<Direction> = None;
+    for (i, d) in HORIZONTAL.iter().enumerate() {
+        if is_chest(states[i]) {
+            return None;
+        }
+        if blocks.solid_render(states[i]) {
+            if solid_neighbour.is_some() {
+                solid_neighbour = None;
+                break;
+            }
+            solid_neighbour = Some(*d);
+        }
+    }
+    if let Some(d) = solid_neighbour {
+        return Some(opposite(d));
+    }
+    let mut lock = facing;
+    if blocks.solid_render(states[index(lock)]) {
+        lock = opposite(lock);
+    }
+    if blocks.solid_render(states[index(lock)]) {
+        lock = clockwise(lock);
+    }
+    if blocks.solid_render(states[index(lock)]) {
+        lock = opposite(lock);
+    }
+    Some(lock)
 }
 pub fn opposite(d: Direction) -> Direction {
     match d {
@@ -975,4 +1036,268 @@ fn filter_blocks(
                 })
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::worldgen::structure::{BlockRegistry, StateTransforms};
+
+    const AIR: BlockStateId = BlockStateId(0);
+    const GLASS: BlockStateId = BlockStateId(1);
+    const STONE: BlockStateId = BlockStateId(2);
+    const CHEST: BlockStateId = BlockStateId(3);
+
+    /// `BlockState.isSolidRender`: only the stone draws as a solid block;
+    /// glass, leaves, ice, a spawner and a barrier do not.
+    struct Blocks;
+    impl SolidRender for Blocks {
+        fn solid_render(&self, state: BlockStateId) -> bool {
+            state == STONE
+        }
+    }
+
+    /// `StructurePiece.reorient`: the chest's facing from the blocks around
+    /// it, as vanilla has it. The solidity is `BlockState.isSolidRender`:
+    /// glass is not solid to render, stone is.
+    #[test]
+    fn a_chest_next_to_glass_faces_away_from_the_stone() {
+        // North: glass, east: stone.
+        assert_eq!(
+            reorient_facing(
+                Direction::North,
+                [GLASS, STONE, AIR, AIR],
+                &|s| s == CHEST,
+                &Blocks
+            ),
+            Some(Direction::West)
+        );
+    }
+
+    /// Two solid neighbours: the chest keeps its own facing, turned away from
+    /// the one it faced.
+    #[test]
+    fn two_solid_neighbours_turn_the_chest_away_from_one_of_them() {
+        // North and east are solid.
+        assert_eq!(
+            reorient_facing(
+                Direction::North,
+                [STONE, STONE, AIR, AIR],
+                &|s| s == CHEST,
+                &Blocks
+            ),
+            Some(Direction::South)
+        );
+    }
+
+    /// A chest next to it: the state is kept.
+    #[test]
+    fn a_chest_next_to_a_chest_keeps_its_facing() {
+        assert_eq!(
+            reorient_facing(
+                Direction::North,
+                [CHEST, AIR, AIR, AIR],
+                &|s| s == CHEST,
+                &Blocks
+            ),
+            None
+        );
+    }
+
+    /// Air, sandstone, the six dispenser facings and the water a piece may tick.
+    fn registry() -> &'static BlockRegistry {
+        let facings = ["north", "east", "south", "west", "up", "down"];
+        let mut rows = Vec::new();
+        let mut defaults = std::collections::BTreeMap::new();
+        let plain = [
+            "minecraft:air",
+            "minecraft:cave_air",
+            "minecraft:void_air",
+            "minecraft:sandstone",
+            "minecraft:water",
+        ];
+        for name in plain {
+            defaults.insert(name.to_owned(), rows.len() as i64);
+            rows.push(serde_json::json!([name, name.ends_with("air"), false, "",
+                {"id": name, "properties": {}}]));
+        }
+        defaults.insert("minecraft:dispenser".into(), rows.len() as i64);
+        for facing in facings {
+            rows.push(serde_json::json!(["minecraft:dispenser", false, false, "",
+                {"id": "minecraft:dispenser", "properties": {"facing": facing}}]));
+        }
+        let facts = serde_json::json!({"states": rows, "defaults": defaults});
+        let registry = BlockRegistry::from_facts_json(facts.to_string().as_bytes()).unwrap();
+        Box::leak(Box::new(registry))
+    }
+
+    /// The piece's world: one block everywhere, recording what the piece writes.
+    struct DispenserWorld {
+        registry: &'static BlockRegistry,
+        block: BlockStateId,
+        sets: Vec<([i32; 3], BlockStateId)>,
+        entities: Vec<([i32; 3], Compound)>,
+    }
+    impl PieceWorld for DispenserWorld {
+        fn block(&mut self, _: [i32; 3]) -> Result<BlockStateId> {
+            Ok(self.block)
+        }
+        fn set(&mut self, pos: [i32; 3], state: BlockStateId, _: i32) -> Result<bool> {
+            self.sets.push((pos, state));
+            Ok(true)
+        }
+        fn fluid(&mut self, _: [i32; 3]) -> Result<FluidState> {
+            Ok(FluidState::EMPTY)
+        }
+        fn height(&mut self, _: HeightmapType, _: i32, _: i32) -> Result<i32> {
+            Err(PlacementQueryError::Unavailable)
+        }
+        fn min_y(&mut self) -> Result<i32> {
+            Ok(-64)
+        }
+        fn max_y(&mut self) -> Result<i32> {
+            Ok(384)
+        }
+        fn block_entity(&mut self, pos: [i32; 3], nbt: Compound) -> Result<()> {
+            self.entities.push((pos, nbt));
+            Ok(())
+        }
+        fn entity(&mut self, _: Compound) -> Result<()> {
+            Ok(())
+        }
+        fn post_process(&mut self, _: [i32; 3]) -> Result<()> {
+            Ok(())
+        }
+        fn fluid_tick(&mut self, _: [i32; 3], _: crate::fluid::FluidKind, _: i32) -> Result<()> {
+            Ok(())
+        }
+        fn seed(&mut self) -> Result<i64> {
+            Ok(0)
+        }
+        fn level_boolean(&mut self) -> Result<bool> {
+            Ok(false)
+        }
+        fn level_float(&mut self) -> Result<f32> {
+            Ok(0.0)
+        }
+        fn level_int(&mut self, _: i32) -> Result<i32> {
+            Ok(0)
+        }
+        fn sea_level(&mut self) -> Result<i32> {
+            Ok(63)
+        }
+        fn face_full(&mut self, _: [i32; 3], _: Direction) -> Result<bool> {
+            Ok(false)
+        }
+        fn face_sturdy(&mut self, _: [i32; 3], _: Direction) -> Result<bool> {
+            Ok(false)
+        }
+        fn center_sturdy(&mut self, _: [i32; 3], _: Direction) -> Result<bool> {
+            Ok(false)
+        }
+        fn biome(&mut self, _: [i32; 3]) -> Result<crate::worldgen::biome::BiomeId> {
+            Err(PlacementQueryError::Unavailable)
+        }
+        fn place_template(
+            &mut self,
+            _: &StructureResources,
+            _: &StructureTemplate,
+            _: [i32; 3],
+            _: [i32; 3],
+            _: &mut PlaceSettings<'_>,
+            _: &mut dyn ProcessorRandom,
+            _: i32,
+        ) -> Result<bool> {
+            Ok(false)
+        }
+    }
+    impl DispenserWorld {
+        fn name_of(&self, state: BlockStateId) -> &str {
+            self.registry.state(state).map(|s| s.name.as_str()).unwrap()
+        }
+    }
+
+    /// `StructurePiece.createDispenser` at local (3, 5, 1) of an unoriented piece,
+    /// in a world of `block`, for a piece that keeps `keep`.
+    fn dispense(block: &str, keep: &'static [&'static str]) -> (bool, DispenserWorld) {
+        let registry = registry();
+        let resources = StructureResources::new(
+            registry,
+            StateTransforms::default(),
+            std::path::Path::new("/nonexistent"),
+            std::collections::BTreeMap::new(),
+            &std::collections::BTreeMap::new(),
+        );
+        let frame = PieceFrame {
+            bounding_box: BoundingBox::new([0, 0, 0], [16, 16, 16]),
+            orientation: None,
+            mirror: Mirror::None,
+            rotation: Rotation::None,
+            keep,
+        };
+        let mut world = DispenserWorld {
+            registry,
+            block: registry.default_state(block).unwrap(),
+            sets: Vec::new(),
+            entities: Vec::new(),
+        };
+        let mut blocks = Blocks;
+        let mut random = LegacyRandom::new(7);
+        let placed = {
+            let mut c = PieceContext {
+                world: &mut world,
+                resources: &resources,
+                blocks: &mut blocks,
+                random: &mut random,
+                chunk_box: BoundingBox::new([0, 0, 0], [16, 16, 16]),
+                chunk: ChunkPos::new(0, 0),
+                reference: [0, 0, 0],
+            };
+            frame
+                .create_dispenser(
+                    &mut c,
+                    3,
+                    5,
+                    1,
+                    Direction::North,
+                    "minecraft:chests/simple_dungeon",
+                )
+                .unwrap()
+        };
+        (placed, world)
+    }
+
+    /// The dispenser block entity takes the loot table once the dispenser is in
+    /// the world.
+    #[test]
+    fn a_placed_dispenser_takes_the_loot_table() {
+        let (placed, world) = dispense("minecraft:air", &[]);
+        assert!(placed);
+        assert_eq!(world.sets, vec![([3, 5, 1], world.sets[0].1)]);
+        assert_eq!(world.name_of(world.sets[0].1), "minecraft:dispenser");
+        assert_eq!(world.entities.len(), 1);
+        let (pos, nbt) = &world.entities[0];
+        assert_eq!(*pos, [3, 5, 1]);
+        assert_eq!(
+            nbt.get(&JavaString::from("id")),
+            Some(&crate::nbt::Tag::String("minecraft:dispenser".into()))
+        );
+        assert_eq!(
+            nbt.get(&JavaString::from("LootTable")),
+            Some(&crate::nbt::Tag::String(
+                "minecraft:chests/simple_dungeon".into()
+            ))
+        );
+        assert!(nbt.get(&JavaString::from("LootTableSeed")).is_some());
+    }
+
+    /// A block the piece keeps declines the placement, so there is no dispenser
+    /// block entity to take a loot table: vanilla sets none and keeps its seed.
+    #[test]
+    fn a_declined_dispenser_takes_no_loot_table() {
+        let (placed, world) = dispense("minecraft:sandstone", &["minecraft:sandstone"]);
+        assert!(placed);
+        assert!(world.sets.is_empty());
+        assert!(world.entities.is_empty());
+    }
 }

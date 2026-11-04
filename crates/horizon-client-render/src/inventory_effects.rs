@@ -47,7 +47,7 @@ pub fn panels(
         .into_iter()
         .enumerate()
         .map(|(i, (effect, icon))| {
-            let mut name = translate(&format!("effect.minecraft.{}", effect.id))
+            let mut name = translate(&horizon_client_core::potions::description_id(effect.id))
                 .unwrap_or_else(|| effect.id.to_owned());
             if (1..=9).contains(&effect.amplifier) {
                 let level = effect.amplifier + 1;
@@ -59,13 +59,7 @@ pub fn panels(
                 translate("effect.duration.infinite").unwrap_or_else(|| "∞".to_owned())
             } else {
                 // StringUtil.formatTickDuration uses the level's current rate.
-                let seconds = (effect.duration as f32 / tick_rate) as i32;
-                let (hours, minutes, seconds) = (seconds / 3600, seconds / 60 % 60, seconds % 60);
-                if hours > 0 {
-                    format!("{hours:02}:{minutes:02}:{seconds:02}")
-                } else {
-                    format!("{minutes:02}:{seconds:02}")
-                }
+                crate::brewing::format_tick_duration(effect.duration, tick_rate)
             };
             let width = max_width.min(39 + text_width(&name).max(text_width(&duration)));
             EffectPanel {
@@ -157,17 +151,11 @@ pub fn paint(
             );
         }
         icon.clear();
-        icon.push_str("mob_effect/");
-        icon.push_str(&panel.icon.id);
-        batch.sprite_scaled(
-            atlas,
-            &icon,
-            (panel.x + 7) as f32,
-            (panel.y + 7) as f32,
-            18.0,
-            18.0,
-            u32::MAX,
-        );
+        horizon_client_core::potions::push_sprite(&mut icon, &panel.icon.id);
+        if let Some(r) = atlas.sprite_or_missing(&icon) {
+            let (x, y) = ((panel.x + 7) as f32, (panel.y + 7) as f32);
+            batch.rect_uv(x, y, 18.0, 18.0, r, u32::MAX);
+        }
         if (text_width <= 0 || clipped)
             && cursor[0] >= panel.x
             && cursor[0] <= panel.x + panel.width

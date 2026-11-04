@@ -1,9 +1,11 @@
 //! Headless multiplayer client for `tools/test_dedicated_server_parity.py`:
 //! with `--server` and `HORIZON_NET_REPORT` set, the client joins without a
 //! window, waits until it stands in the world with the chunks around it,
-//! sends a chat message and `/list`, collects the chat it is shown, leaves
-//! and writes a JSON report (position, chunks, chat lines, whether the
-//! server kept it connected throughout). With `HORIZON_NET_QUIET` (lines
+//! sends a chat message and `/list` (or the lines of `HORIZON_NET_CHAT`,
+//! split by `;`, one at a time; `.delay N` sets Chat Delay instead, `.click COMMAND` runs a clicked command and
+//! `.answer yes` or `.answer no` answers what it asks), collects the chat it is shown, leaves and
+//! writes a JSON report (position, chunks, chat lines, whether it signed its
+//! chat, whether the server kept it connected throughout). With `HORIZON_NET_QUIET` (lines
 //! split by `;`) it then sends them as one batch of a mod's quiet commands
 //! (`horizon_protocol::quiet`, `tools/quiet_commands_e2e.py`) and waits two
 //! seconds for any chat they bring.
@@ -29,6 +31,13 @@ impl Game<'_> {
         let quiet: Vec<String> = std::env::var("HORIZON_NET_QUIET")
             .map(|v| v.split(';').map(str::to_owned).collect())
             .unwrap_or_default();
+        let lines: Vec<String> = std::env::var("HORIZON_NET_CHAT")
+            .map(|v| v.split(';').map(str::to_owned).collect())
+            .unwrap_or_else(|_| vec!["hello from the horizon client".into(), "/list".into()]);
+        let mut sent = 0;
+        let mut prompts = Vec::new();
+        let mut chat_box = None;
+        let mut signed = false;
         let mut chunks = 0;
         let mut error = None;
         while Instant::now() < deadline {
@@ -45,6 +54,8 @@ impl Game<'_> {
             if Instant::now() >= next {
                 next += Duration::from_millis(50);
                 self.tick()?;
+                // Gui.tick: ChatListener.tick, which the frame runs in play.
+                self.tick_chat_queue();
             }
             let now = Instant::now();
             if let Some(p) = &self.player {
@@ -59,21 +70,36 @@ impl Game<'_> {
             // Each step waits for what it sent to be answered (its chat line,
             // the /list reply), however busy the machine, up to 15 s.
             let shown = self.remote.as_ref().map_or(0, |r| r.chat.len());
-            let answered = shown > chat_at || now - step_at > Duration::from_secs(15);
+            let answered = shown > chat_at
+                || self.command_prompt.is_some()
+                || now - step_at > Duration::from_secs(15);
             match step {
                 0 if spawned_at.is_some()
                     && count > 0
                     && now - quiet_since > Duration::from_secs(3) =>
                 {
                     chunks = count;
-                    self.send_chat("hello from the horizon client");
-                    step = 1;
+                    signed = self.remote.as_ref().is_some_and(|r| r.secure_chat.signed());
+                    self.send_chat(&lines[0]);
+                    sent = 1;
+                    step = 2;
                     step_at = now;
                     chat_at = shown;
                 }
-                1 if answered => {
-                    self.send_chat("/list");
-                    step = 2;
+                2 if answered && sent < lines.len() => {
+                    let line = &lines[sent];
+                    if let Some(delay) = line.strip_prefix(".delay ") {
+                        self.settings.chat_delay = delay.parse().unwrap_or(0.0);
+                    } else if let Some(command) = line.strip_prefix(".click ") {
+                        self.click_command(command);
+                        prompts.push(self.command_prompt_message());
+                    } else if let Some(answer) = line.strip_prefix(".answer ") {
+                        self.answer_command_prompt(answer == "yes");
+                        chat_box = self.ui.chat_screen.as_ref().map(|c| c.value().to_owned());
+                    } else {
+                        self.send_chat(line);
+                    }
+                    sent += 1;
                     step_at = now;
                     chat_at = shown;
                 }
@@ -118,6 +144,9 @@ impl Game<'_> {
                 "position": position,
                 "chunks": chunks,
                 "chat": chat,
+                "signed": signed,
+                "prompts": prompts,
+                "chat_box": chat_box,
                 "error": error,
             })
             .to_string(),

@@ -66,7 +66,7 @@ impl Game<'_> {
         {
             // addBook: one book goes in (a creative player keeps theirs).
             let book = book.clone();
-            self.stats.add("used", &book.item, 1);
+            self.award_stat("used", &book.item, 1);
             let sound = if &*book.item == "minecraft:enchanted_book" {
                 "minecraft:block.chiseled_bookshelf.insert.enchanted"
             } else {
@@ -87,6 +87,9 @@ impl Game<'_> {
             return None;
         }
         if !occupied {
+            // useWithoutItem's CONSUME on an empty slot still consumes the
+            // click (ServerPlayerGameMode.useItemOn's DEFAULT_BLOCK_USE).
+            self.trigger_default_block_use(pos);
             return Some(false);
         }
         // removeBook: the book goes to the inventory, or is dropped.
@@ -100,6 +103,8 @@ impl Game<'_> {
         self.audio.play(sound, Some(centre), 1.0, 1.0);
         self.give_or_drop(retrieved);
         self.post_block_game_event("minecraft:block_change", pos, Some(Who::Player), None);
+        // ServerPlayerGameMode.useItemOn: useWithoutItem consumed the click.
+        self.trigger_default_block_use(pos);
         Some(true)
     }
 

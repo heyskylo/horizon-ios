@@ -114,11 +114,18 @@ impl Goal for DrinkItem {
         m.extra.using_item > 0
     }
     fn start(&mut self, m: &mut Mob, _: &mut Cx) {
-        m.extra.main_hand = Some(self.item.into());
+        // The potion of invisibility keeps its contents (the item model tints by them).
+        if self.item == "minecraft:potion" {
+            m.extra.set_main_hand_stack(Some(
+                crate::items::ItemStack::new(self.item, 1).with_potion("minecraft:invisibility"),
+            ));
+        } else {
+            m.extra.set_main_hand(Some(self.item.into()));
+        }
         m.extra.using_item = 1;
     }
     fn stop(&mut self, m: &mut Mob, cx: &mut Cx) {
-        m.extra.main_hand = None;
+        m.extra.set_main_hand(None);
         m.extra.using_item = 0;
         let pitch = m.random.next_float() * 0.2 + 0.9;
         cx.events

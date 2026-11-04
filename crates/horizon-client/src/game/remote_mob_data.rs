@@ -5,8 +5,8 @@
 use super::Game;
 use horizon_client::mobs::render::{PROFESSIONS, VILLAGER_TYPES};
 use horizon_client::mobs::{
-    Mob, Species, Who, armadillo, bat, bee, camel, creaking, equine, finalize, illusioner, panda,
-    sniffer, sync, tame, zombie_villager,
+    Mob, Species, Who, armadillo, bat, bee, camel, creaking, drops, equine, finalize, illusioner,
+    panda, phantom, sniffer, sync, tame, zombie_villager,
 };
 use horizon_client::particles::{ParticleOptions, ParticleType};
 use horizon_protocol::entity_data::{Particle, ParticleData, Value};
@@ -18,7 +18,7 @@ use horizon_world::registry::BlockStateId;
 /// `builtin` names the ids of built-in registries.
 fn apply(m: &mut Mob, values: &[(u8, i32, Value)], builtin: &Builtin, local_entity: i32) {
     let species = m.species();
-    let baby = super::lan::baby_index(&m.kind.id);
+    let baby = super::lan::baby_index(species);
     if &*m.kind.id == "minecraft:player" {
         player_poses(m, values);
     }
@@ -35,6 +35,8 @@ fn apply(m: &mut Mob, values: &[(u8, i32, Value)], builtin: &Builtin, local_enti
             // fire down: the flag goes off when the server's fire is out.
             (0, Value::Byte(flags)) => {
                 m.fire_ticks = i32::from(flags & 1);
+                // Entity.isSprinting: a dashing cat's or ocelot's model.
+                m.extra.sprinting = flags & 8 != 0;
                 // Drowned.setSwimming: the shared flag of swimming.
                 if species == Species::Drowned {
                     m.extra.flag = flags & 16 != 0;
@@ -48,11 +50,15 @@ fn apply(m: &mut Mob, values: &[(u8, i32, Value)], builtin: &Builtin, local_enti
                     m.invisible = invisible;
                 }
             }
+            // Entity.DATA_SILENT: Entity.isSilent, which keeps the sounds
+            // a client plays itself quiet (LivingEntity.breakItem's).
+            (4, Value::Bool(silent)) => m.silent = *silent,
             // Entity.DATA_POSE: the pose the species animates by.
             (6, Value::Id(pose)) => sync::set_pose(m, (*pose).clamp(0, 17) as u8),
             // LivingEntity.DATA_LIVING_ENTITY_FLAGS: using an item 1, in the
-            // off hand 2. The flag starts and stops the use; the client ticks
-            // the count itself (a bow's pull follows it).
+            // off hand 2. Bit 0 starts and stops the use; the client ticks the
+            // count itself (a bow's pull follows it). stopUsingItem clears
+            // only bit 0, so a stopped off-hand use arrives as 2.
             (8, Value::Byte(flags)) => {
                 m.extra.using_off_hand = flags & 2 != 0;
                 if flags & 1 == 0 {
@@ -76,7 +82,20 @@ fn apply(m: &mut Mob, values: &[(u8, i32, Value)], builtin: &Builtin, local_enti
                 m.extra.left_handed = flags & 2 != 0;
                 m.ai.aggressive = flags & 4 != 0;
             }
-            (i, Value::Bool(b)) if Some(i) == baby => m.extra.age = if *b { -1 } else { 0 },
+            // AgeableMob.isBaby: `canBeABaby` too, so a parrot or a slime
+            // sent as one is still drawn grown.
+            (i, Value::Bool(b)) if Some(i) == baby => {
+                m.extra.age = if *b && drops::can_be_baby(species) {
+                    -1
+                } else {
+                    0
+                };
+            }
+            // AgeableMob.AGE_LOCKED, the entry after DATA_BABY_ID (not
+            // Zombie's or Piglin's).
+            (17, Value::Bool(locked)) if baby == Some(16) && finalize::ageable(species) => {
+                m.extra.age_locked = *locked
+            }
             _ => {}
         }
         match (species, *index, value) {
@@ -117,8 +136,13 @@ fn apply(m: &mut Mob, values: &[(u8, i32, Value)], builtin: &Builtin, local_enti
             }
             // SnowGolem.DATA_PUMPKIN_ID: 16 while the pumpkin is on.
             (Species::SnowGolem, 16, Value::Byte(flags)) => m.extra.sheared = flags & 16 == 0,
-            // MushroomCow.DATA_TYPE: 0 red, 1 brown.
-            (Species::Mooshroom, 17, Value::Int(variant)) => {
+            // Bogged.DATA_SHEARED: the mushrooms on its head are gone.
+            (Species::Bogged, 16, Value::Bool(sheared)) => m.extra.sheared = *sheared,
+            // Tadpole.AGE_LOCKED (after AbstractFish's FROM_BUCKET).
+            (Species::Tadpole, 17, Value::Bool(locked)) => m.extra.age_locked = *locked,
+            // MushroomCow.DATA_TYPE (after AgeableMob's DATA_BABY_ID and
+            // AGE_LOCKED): 0 red, 1 brown.
+            (Species::Mooshroom, 18, Value::Int(variant)) => {
                 m.extra.variant = (*variant == 1) as u8
             }
             // Piglin.DATA_IS_DANCING: the dance pose.
@@ -131,14 +155,29 @@ fn apply(m: &mut Mob, values: &[(u8, i32, Value)], builtin: &Builtin, local_enti
             // Cat.IS_LYING and RELAX_STATE_ONE.
             (Species::Cat, 21, Value::Bool(lying)) => m.extra.flag = *lying,
             (Species::Cat, 22, Value::Bool(relaxing)) => m.extra.relax_one = *relaxing,
+            // Ocelot.DATA_TRUSTING (after AgeableMob's two).
+            (Species::Ocelot, 18, Value::Bool(trusting)) => m.extra.trusting = *trusting,
+            // Wolf.DATA_INTERESTED_ID: begging, which tilts the head.
+            (Species::Wolf, 20, Value::Bool(begging)) => m.extra.flag = *begging,
             // Wolf.DATA_COLLAR_COLOR and Cat's.
             (Species::Wolf, 21, Value::Int(c)) | (Species::Cat, 23, Value::Int(c)) => {
                 m.extra.color = (*c & 15) as u8;
             }
             // AbstractCubeMob.ID_SIZE: its size and box (refreshDimensions).
-            (Species::Slime | Species::MagmaCube, 18, Value::Int(size)) => {
+            (Species::Slime | Species::MagmaCube | Species::SulfurCube, 18, Value::Int(size)) => {
                 m.extra.size = (*size).clamp(1, 127);
             }
+            // SulfurCube.MAX_FUSE: onSyncedDataUpdated copies it into the fuse
+            // the client ticks for swell / white flash (#4548).
+            (Species::SulfurCube, 20, Value::Int(fuse)) => {
+                m.extra.counter2 = (*fuse).max(0) + 1;
+            }
+            (Species::SulfurCube, 19, Value::Bool(from_bucket)) => {
+                m.extra.scratch[3] = i32::from(*from_bucket);
+            }
+            // Phantom.ID_SIZE: `updatePhantomSizeInfo` grows its box and bite,
+            // and `PhantomRenderer.scale` its model.
+            (Species::Phantom, 16, Value::Int(size)) => phantom::set_size(m, *size),
             // Enderman.DATA_CREEPY (after DATA_CARRY_STATE): the open mouth
             // and raised head of an angry enderman.
             (Species::Enderman, 17, Value::Bool(creepy)) => m.extra.flag = *creepy,
@@ -176,6 +215,10 @@ fn apply(m: &mut Mob, values: &[(u8, i32, Value)], builtin: &Builtin, local_enti
             }
             // Vex.DATA_FLAGS_ID: charging in bit 0.
             (Species::Vex, 16, Value::Byte(flags)) => m.extra.flag = flags & 1 != 0,
+            // GlowSquid.DATA_DARK_TICKS_REMAINING (after AgeableMob's two).
+            (Species::GlowSquid, 18, Value::Int(ticks)) => {
+                horizon_client::mobs::aquatic::set_dark_ticks(m, *ticks);
+            }
             // Creaking.CAN_MOVE, IS_ACTIVE and IS_TEARING_DOWN.
             (Species::Creaking, 16, Value::Bool(can_move)) => m.extra.flag2 = !*can_move,
             (Species::Creaking, 17, Value::Bool(active)) => m.extra.flag = *active,
@@ -246,6 +289,11 @@ fn apply(m: &mut Mob, values: &[(u8, i32, Value)], builtin: &Builtin, local_enti
             (Species::Zombie | Species::Husk, 18, Value::Bool(converting)) => {
                 m.extra.counter2 = i32::from(*converting);
             }
+            // Skeleton.DATA_STRAY_CONVERSION_ID (the first entry after Mob's):
+            // the freezing conversion's shaking.
+            (Species::Skeleton, 16, Value::Bool(converting)) => {
+                m.extra.counter2 = i32::from(*converting);
+            }
             // ZombieVillager.DATA_CONVERTING_ID (before its villager data).
             (Species::ZombieVillager, 19, Value::Bool(converting)) => {
                 zombie_villager::set_converting(m, *converting);
@@ -276,6 +324,10 @@ fn apply(m: &mut Mob, values: &[(u8, i32, Value)], builtin: &Builtin, local_enti
             // HappyGhast.STAYS_STILL (after AgeableMob's two and IS_LEASH_HOLDER):
             // `isOnStillTimeout` on a client, which keeps the ghast solid to
             // the player (`canBeCollidedWith`).
+            // HappyGhast.IS_LEASH_HOLDER: RopesLayer draws the ropes while set.
+            (Species::HappyGhast, 18, Value::Bool(holder)) => {
+                m.extra.scratch[1] = i32::from(*holder)
+            }
             (Species::HappyGhast, 19, Value::Bool(still)) => m.extra.counter = i32::from(*still),
             // SpellcasterIllager.DATA_SPELL_CASTING_ID: the casting pose.
             (Species::Evoker | Species::Illusioner, 17, Value::Byte(spell)) => {
@@ -289,6 +341,13 @@ fn apply(m: &mut Mob, values: &[(u8, i32, Value)], builtin: &Builtin, local_enti
             // wears; update_remote_skins resolves it like a tab player's.
             (Species::Mannequin, 17, Value::Profile(profile)) => {
                 m.profile = Some(profile.clone());
+            }
+            // Mannequin.DATA_IMMOVABLE and DATA_DESCRIPTION (an empty one is hidden).
+            (Species::Mannequin, 18, Value::Bool(immovable)) => m.extra.immovable = *immovable,
+            (Species::Mannequin, 19, Value::OptText(description)) => {
+                m.extra.description = horizon_client::mobs::MannequinDescription::from_component(
+                    description.as_ref(),
+                );
             }
             _ => {}
         }
@@ -355,6 +414,16 @@ fn player_poses(m: &mut Mob, values: &[(u8, i32, Value)]) {
             (0, Value::Byte(flags)) => m.extra.fall_flying = flags & -128 != 0,
             (6, Value::Id(pose)) => m.extra.synced_pose = (*pose).clamp(0, 17) as u8,
             (8, Value::Byte(flags)) => m.extra.auto_spin_attack = flags & 4 != 0,
+            // LivingEntity.DATA_ARROW_COUNT_ID and DATA_STINGER_COUNT_ID.
+            (12, Value::Int(count)) => m.extra.arrow_count = *count,
+            (13, Value::Int(count)) => m.extra.stinger_count = *count,
+            // Player.DATA_SHOULDER_PARROT_LEFT and _RIGHT.
+            (19, Value::Id(v)) => {
+                m.extra.shoulder_parrots[0] = (*v > 0).then(|| (*v - 1).clamp(0, 4))
+            }
+            (20, Value::Id(v)) => {
+                m.extra.shoulder_parrots[1] = (*v > 0).then(|| (*v - 1).clamp(0, 4))
+            }
             _ => {}
         }
     }
@@ -418,7 +487,7 @@ impl Game<'_> {
             (14, _, Value::OptPos(bed)) => Some(bed.map_or(0, |b| self.bed_facing(b))),
             _ => None,
         });
-        if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id as u32) {
+        if let Some(m) = self.mob_index.get_mut(&mut self.mobs, id as u32) {
             apply(m, values, &r.builtin, r.entity_id);
             apply_registry_data(m, values, &r.registries, self.world.game_time);
             if let Some(code) = bed
@@ -440,6 +509,10 @@ pub(super) fn client_defaults(m: &mut Mob) {
     if m.species() == Species::Bat {
         // Bat's constructor sets resting only on the server; the data default is 0.
         bat::set_resting(m, false);
+    }
+    // A horse's jump strength until the server syncs its own: the type's.
+    if equine::moved_by_rider(m.species()) {
+        m.extra.vector[0] = m.kind.jump_strength;
     }
 }
 
@@ -471,6 +544,23 @@ mod tests {
         let mut m = Mob::new(1, t, horizon_core::geometry::Vec3::ZERO, 0.0);
         client_defaults(&mut m);
         Some(m)
+    }
+
+    /// #2920: a server's horse is moved by its rider's client, which jumps
+    /// it by the type's jump strength (`createBaseHorseAttributes`,
+    /// `createBaseChestedHorseAttributes`) until the server syncs its own.
+    #[test]
+    fn a_servers_horse_jumps_its_types_strength() {
+        for (kind, strength) in [("horse", 0.7), ("donkey", 0.5), ("mule", 0.5)] {
+            let Some(m) = mob(&format!("minecraft:{kind}")) else {
+                return;
+            };
+            assert!(
+                (m.extra.vector[0] - strength).abs() < 1e-6,
+                "{kind}: {}",
+                m.extra.vector[0]
+            );
+        }
     }
 
     #[test]
@@ -517,6 +607,21 @@ mod tests {
     }
 
     #[test]
+    fn a_mooshroom_takes_its_type_after_the_age_lock() {
+        let Some(mut m) = mob("minecraft:mooshroom") else {
+            return;
+        };
+        // AgeableMob.AGE_LOCKED (17) is not the colour.
+        apply(&mut m, &[(17, s::BOOLEAN, Value::Bool(true))]);
+        assert_eq!(m.extra.variant, 0);
+        // MushroomCow.DATA_TYPE (18): what MushroomCow.thunderHit changes.
+        apply(&mut m, &[(18, s::INT, Value::Int(1))]);
+        assert_eq!(m.extra.variant, 1);
+        apply(&mut m, &[(18, s::INT, Value::Int(0))]);
+        assert_eq!(m.extra.variant, 0);
+    }
+
+    #[test]
     fn a_sheep_takes_its_wool_and_a_calf_its_size() {
         let Some(mut m) = mob("minecraft:sheep") else {
             return;
@@ -530,6 +635,61 @@ mod tests {
         assert!(calf.is_baby());
         apply(&mut calf, &[(16, s::BOOLEAN, Value::Bool(false))]);
         assert!(!calf.is_baby());
+    }
+
+    /// #6133: a server's baby happy ghast (a hatched dried ghast) and baby
+    /// nautilus come with AgeableMob.DATA_BABY_ID (16) like any other animal;
+    /// a parrot never is one (`Parrot.canBeABaby`).
+    #[test]
+    fn a_happy_ghast_and_a_nautilus_take_their_babyhood() {
+        use horizon_client::mobs::MobTypes;
+        use std::{fs, sync::Arc};
+
+        let root = std::env::temp_dir().join(format!("horizon-baby-flag-{}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        fs::write(
+            root.join("entity-types.json"),
+            r#"{"minecraft:happy_ghast": {}, "minecraft:nautilus": {}, "minecraft:parrot": {}}"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("entity-models.json"),
+            r#"{"minecraft:happy_ghast#main": {}, "minecraft:nautilus#main": {},
+                "minecraft:parrot#main": {}}"#,
+        )
+        .unwrap();
+        let mut types = MobTypes::load(&root).unwrap();
+        fs::remove_dir_all(root).unwrap();
+        for kind in ["minecraft:happy_ghast", "minecraft:nautilus"] {
+            let t = Arc::new(types.types.remove(kind).unwrap());
+            let mut m = Mob::new(1, t, horizon_core::geometry::Vec3::ZERO, 0.0);
+            client_defaults(&mut m);
+            assert!(!m.is_baby(), "{kind}");
+            apply(&mut m, &[(16, s::BOOLEAN, Value::Bool(true))]);
+            assert!(m.is_baby(), "{kind}");
+            apply(&mut m, &[(16, s::BOOLEAN, Value::Bool(false))]);
+            assert!(!m.is_baby(), "{kind}");
+        }
+        let t = Arc::new(types.types.remove("minecraft:parrot").unwrap());
+        let mut parrot = Mob::new(1, t, horizon_core::geometry::Vec3::ZERO, 0.0);
+        client_defaults(&mut parrot);
+        apply(&mut parrot, &[(16, s::BOOLEAN, Value::Bool(true))]);
+        assert!(!parrot.is_baby());
+    }
+
+    #[test]
+    fn cube_mobs_receive_size_from_metadata() {
+        for kind in ["slime", "magma_cube", "sulfur_cube"] {
+            let Some(mut m) = mob(&format!("minecraft:{kind}")) else {
+                return;
+            };
+            assert_eq!(m.extra.size, 1);
+            apply(&mut m, &[(18, s::INT, Value::Int(2))]);
+            assert_eq!(m.extra.size, 2);
+            if kind == "sulfur_cube" {
+                assert!(!m.is_baby());
+            }
+        }
     }
 
     #[test]
@@ -610,6 +770,35 @@ mod tests {
         );
         assert!(m.extra.tame && m.extra.sitting);
         assert_eq!(m.extra.color, 11);
+    }
+
+    /// Wolf.DATA_INTERESTED_ID: the begging flag reaches the client, whose
+    /// own `Wolf.tick` eases `interestedAngle` toward it (0.4 of the way a
+    /// tick), and `getHeadRollAngle` tilts the head by it.
+    #[test]
+    fn a_wolf_tilts_its_head_while_the_server_says_it_begs() {
+        use horizon_client::mobs::sync::client_tick;
+        let Some(mut m) = mob("minecraft:wolf") else {
+            return;
+        };
+        apply(&mut m, &[(20, s::BOOLEAN, Value::Bool(true))]);
+        client_tick(&mut m, 0);
+        assert!((m.anim.v[tame::INTEREST] - 0.4).abs() < 1e-6);
+        assert_eq!(m.anim.vo[tame::INTEREST], 0.0);
+        client_tick(&mut m, 0);
+        assert!((m.anim.v[tame::INTEREST] - 0.64).abs() < 1e-6);
+        assert!((m.anim.lerp(tame::INTEREST, 0.5) - 0.52).abs() < 1e-6);
+        for _ in 0..30 {
+            client_tick(&mut m, 0);
+        }
+        assert!(m.anim.v[tame::INTEREST] > 0.999);
+        apply(&mut m, &[(20, s::BOOLEAN, Value::Bool(false))]);
+        client_tick(&mut m, 0);
+        assert!(m.anim.v[tame::INTEREST] < 0.61);
+        for _ in 0..30 {
+            client_tick(&mut m, 0);
+        }
+        assert!(m.anim.v[tame::INTEREST] < 0.001);
     }
 
     #[test]
@@ -703,11 +892,31 @@ mod tests {
         apply(&mut m, &[(8, s::BYTE, Value::Byte(1))]);
         assert_eq!(m.extra.using_item, 1);
         assert!(!m.extra.using_off_hand);
-        // Using in the off hand.
+        // Using in the off hand: bit 0 for the use, bit 1 for the hand.
         apply(&mut m, &[(8, s::BYTE, Value::Byte(3))]);
+        assert_eq!(m.extra.using_item, 1);
+        assert!(m.extra.using_off_hand);
+        // LivingEntity.stopUsingItem clears bit 0 only, so the stop of an
+        // off-hand use arrives as 2.
+        apply(&mut m, &[(8, s::BYTE, Value::Byte(2))]);
+        assert_eq!(m.extra.using_item, 0);
         assert!(m.extra.using_off_hand);
         apply(&mut m, &[(8, s::BYTE, Value::Byte(0))]);
         assert_eq!(m.extra.using_item, 0);
+    }
+
+    /// LivingEntity.DATA_ARROW_COUNT_ID and DATA_STINGER_COUNT_ID of another
+    /// player, which ArrowLayer and BeeStingerLayer draw.
+    #[test]
+    fn another_players_stuck_arrows_and_stingers_are_kept() {
+        let Some(mut m) = mob("minecraft:player") else {
+            return;
+        };
+        apply(&mut m, &[(12, s::INT, Value::Int(4))]);
+        apply(&mut m, &[(13, s::INT, Value::Int(2))]);
+        assert_eq!((m.extra.arrow_count, m.extra.stinger_count), (4, 2));
+        apply(&mut m, &[(12, s::INT, Value::Int(0))]);
+        assert_eq!((m.extra.arrow_count, m.extra.stinger_count), (0, 2));
     }
 
     #[test]
@@ -738,5 +947,90 @@ mod tests {
             &[(17, s::RESOLVABLE_PROFILE, Value::Profile(profile.clone()))],
         );
         assert_eq!(m.profile, Some(profile));
+    }
+
+    /// `Ocelot.DATA_TRUSTING` (after AgeableMob's two).
+    #[test]
+    fn an_ocelot_takes_its_trusting_flag() {
+        let Some(mut m) = mob("minecraft:ocelot") else {
+            return;
+        };
+        assert!(!m.extra.trusting);
+        apply(&mut m, &[(18, s::BOOLEAN, Value::Bool(true))]);
+        assert!(m.extra.trusting);
+        apply(&mut m, &[(18, s::BOOLEAN, Value::Bool(false))]);
+        assert!(!m.extra.trusting);
+    }
+
+    /// `Mannequin.DATA_IMMOVABLE` and `DATA_DESCRIPTION`: the default component is the default
+    /// description, an empty one hides it, any other is the server's own.
+    #[test]
+    fn a_mannequin_takes_its_immovable_flag_and_description() {
+        use horizon_client::mobs::MannequinDescription as D;
+        let Some(mut m) = mob("minecraft:mannequin") else {
+            return;
+        };
+        assert_eq!(
+            (m.extra.immovable, m.extra.description.clone()),
+            (false, D::Default)
+        );
+        let own = horizon_protocol::text::literal("Guard");
+        apply(
+            &mut m,
+            &[
+                (18, s::BOOLEAN, Value::Bool(true)),
+                (19, s::OPTIONAL_COMPONENT, Value::OptText(Some(own.clone()))),
+            ],
+        );
+        assert_eq!(
+            (m.extra.immovable, m.extra.description.clone()),
+            (true, D::Custom(own))
+        );
+        apply(&mut m, &[(19, s::OPTIONAL_COMPONENT, Value::OptText(None))]);
+        assert_eq!(m.extra.description, D::Hidden);
+        let default = D::Default.component();
+        apply(
+            &mut m,
+            &[(19, s::OPTIONAL_COMPONENT, Value::OptText(default))],
+        );
+        assert_eq!(m.extra.description, D::Default);
+    }
+
+    /// `LivingEntity.getDimensions`: the pose's box times `minecraft:scale` —
+    /// a lobby's giant fake player is clickable on its visible body, not only
+    /// on the unscaled box at its feet.
+    #[test]
+    fn a_scaled_fake_player_gets_a_scaled_box() {
+        for kind in ["minecraft:player", "minecraft:mannequin"] {
+            let Some(mut m) = mob(kind) else {
+                continue;
+            };
+            let (w, h, e) = m.dims();
+            assert!(
+                (w - 0.6).abs() < 1e-6 && (h - 1.8).abs() < 1e-6 && (e - 1.62).abs() < 1e-5,
+                "{kind}: {w}x{h}x{e}"
+            );
+            m.extra.model_scale = 4.0;
+            let (w, h, e) = m.dims();
+            assert!(
+                (w - 2.4).abs() < 1e-6 && (h - 7.2).abs() < 1e-6 && (e - 6.48).abs() < 1e-5,
+                "{kind} scaled: {w}x{h}x{e}"
+            );
+        }
+    }
+
+    /// #4548: SulfurCube.MAX_FUSE copies into the fuse the client ticks for swell.
+    #[test]
+    fn sulfur_cube_max_fuse_sets_the_client_fuse() {
+        let Some(mut m) = mob("minecraft:sulfur_cube") else {
+            return;
+        };
+        assert_eq!(m.extra.counter2, 0);
+        apply(&mut m, &[(20, s::INT, Value::Int(40))]);
+        assert_eq!(horizon_client::mobs::sulfur_cube::fuse(&m), 40);
+        assert!(horizon_client::mobs::sulfur_cube::primed(&m));
+        apply(&mut m, &[(20, s::INT, Value::Int(0))]);
+        // Last fuse tick: still primed at 0 until the server removes it.
+        assert_eq!(horizon_client::mobs::sulfur_cube::fuse(&m), 0);
     }
 }

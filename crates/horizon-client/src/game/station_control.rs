@@ -47,13 +47,20 @@ impl Game<'_> {
         use winit::keyboard::KeyCode;
         let saved = self.cursor;
         self.cursor = (x, y);
-        let had_shift = self.physical_keys.contains(&KeyCode::ShiftLeft);
-        if shift {
-            self.physical_keys.insert(KeyCode::ShiftLeft);
-        }
+        let held = shift.then(|| {
+            horizon_client_input::modifiers::hold(
+                &mut self.modifiers,
+                &mut self.physical_keys,
+                KeyCode::ShiftLeft,
+            )
+        });
         self.click_inventory(right);
-        if shift && !had_shift {
-            self.physical_keys.remove(&KeyCode::ShiftLeft);
+        if let Some(held) = held {
+            horizon_client_input::modifiers::restore(
+                &mut self.modifiers,
+                &mut self.physical_keys,
+                held,
+            );
         }
         self.cursor = saved;
     }
@@ -127,7 +134,7 @@ impl Game<'_> {
             "enchant" => {
                 let e = id(arg(1)?);
                 let level: u32 = arg(2)?.parse()?;
-                if self.res.stations().enchantments.get(&e).is_none() {
+                if self.stations().enchantments.get(&e).is_none() {
                     return Err(format!("unknown enchantment {e}").into());
                 }
                 let held = self.inventory[self.selected]

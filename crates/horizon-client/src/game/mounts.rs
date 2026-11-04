@@ -4,12 +4,27 @@
 //! mount's health and jump bar on the HUD.
 use super::Game;
 use horizon_client::{
+    blocks::Fluid,
     hud::HudBatch,
     items::ItemStack,
-    mobs::{MobEvent, Species, equine},
+    mobs::{MobEvent, Species, Who, equine},
+    motion::{MotionWorld, PlayerMotion},
+    pose::{Dimensions, Pose},
     sprint::Keys,
 };
-use horizon_core::{geometry::Vec3, random::RandomSource};
+use horizon_core::{
+    geometry::{Aabb, Vec3, VoxelShape, trig},
+    random::RandomSource,
+};
+
+fn steering_item(species: Species, main: Option<&str>, offhand: Option<&str>) -> bool {
+    let item = match species {
+        Species::Pig => "minecraft:carrot_on_a_stick",
+        Species::Strider => "minecraft:warped_fungus_on_a_stick",
+        _ => return false,
+    };
+    main == Some(item) || offhand == Some(item)
+}
 
 /// `passengerAttachments` minus the player's 0.6 vehicle attachment.
 fn seat(s: Species) -> f64 {
@@ -39,8 +54,29 @@ impl MountState {
         self.jump_scale = 0.0;
     }
 }
+/// `EntityTypeTags.DISMOUNTS_UNDERWATER` (`Entity.dismountsUnderwater`): the mounts that throw their
+/// riders off when the rider's eyes are in water.
+pub(super) fn dismounts_underwater(species: Species) -> bool {
+    matches!(
+        species,
+        Species::Camel
+            | Species::Chicken
+            | Species::Donkey
+            | Species::HappyGhast
+            | Species::Horse
+            | Species::Llama
+            | Species::Mule
+            | Species::Pig
+            | Species::Ravager
+            | Species::Spider
+            | Species::Strider
+            | Species::TraderLlama
+            | Species::ZombieHorse
+    )
+}
+
 impl Game<'_> {
-    fn mount_index(&self) -> Option<usize> {
+    pub(super) fn mount_index(&self) -> Option<usize> {
         let id = self.riding?;
         self.mobs.iter().position(|m| m.id == id)
     }
@@ -66,10 +102,16 @@ impl Game<'_> {
                 .insert((at[0].floor() as i32 >> 4, at[2].floor() as i32 >> 4));
             return true;
         }
-        if !m.extra.saddled || self.keys.contains(&winit::keyboard::KeyCode::ShiftLeft) {
+        // Pig.mobInteract: held food goes to Animal.mobInteract, not a ride.
+        let food = m.kind.food.iter().any(|f| f.as_str() == item);
+        if !m.extra.saddled || food || self.keys.contains(&winit::keyboard::KeyCode::ShiftLeft) {
             return false;
         }
-        self.riding = Some(m.id);
+        let id = m.id;
+        if !self.native_may_board(id) {
+            return true;
+        }
+        self.riding = Some(id);
         self.trigger_player("minecraft:started_riding");
         true
     }
@@ -89,7 +131,7 @@ impl Game<'_> {
         if !self.creative
             && let Some(stack) = self.inventory[self.selected].clone()
         {
-            self.trigger_item_durability(&stack);
+            self.trigger_item_durability(&stack, stack.damage + wear);
             if let Some(stack) = self.inventory[self.selected].as_mut() {
                 stack.damage += wear;
                 let max = self
@@ -98,8 +140,14 @@ impl Game<'_> {
                     .get(&stack.item)
                     .map_or(25, |i| i.max_damage);
                 if stack.damage >= max {
+                    let broken = stack.clone();
                     self.inventory[self.selected] =
                         Some(ItemStack::new("minecraft:fishing_rod", 1));
+                    // ItemStack.hurtAndBreak: onEquippedItemBroken, then the replacement.
+                    self.player_equipment_broke(
+                        horizon_world::player_inventory::EquipmentSlot::MainHand,
+                        &broken,
+                    );
                 }
             }
         }
@@ -142,13 +190,36 @@ impl Game<'_> {
         {
             return false;
         }
+        // SkeletonHorse.mobInteract: nothing for an untamed one.
+        if species == Species::SkeletonHorse && !m.extra.tame {
+            return false;
+        }
+        let sneaking = self.keys.contains(&winit::keyboard::KeyCode::ShiftLeft)
+            || self.keys.contains(&winit::keyboard::KeyCode::ShiftRight);
+        // Horse / ZombieHorse.mobInteract: food is fed, and anything else in
+        // hand makes an untamed one mad instead of seating the player.
+        let dandelion = [self.held(), self.offhand.as_ref()]
+            .into_iter()
+            .flatten()
+            .any(|s| &*s.item == "minecraft:golden_dandelion");
+        let mut events = Vec::new();
+        match equine::held_item(
+            &mut self.mobs[index],
+            item,
+            sneaking,
+            dandelion,
+            &mut events,
+        ) {
+            Some(equine::HeldItem::Feed) => return self.feed_mount(index, item),
+            Some(equine::HeldItem::Refused) => {
+                let _ = self.handle_mob_events(events);
+                return true;
+            }
+            None => {}
+        }
         let m = &self.mobs[index];
         // AbstractHorse.mobInteract: shift + use opens a tamed adult's inventory.
-        if !m.is_baby()
-            && m.extra.tame
-            && (self.keys.contains(&winit::keyboard::KeyCode::ShiftLeft)
-                || self.keys.contains(&winit::keyboard::KeyCode::ShiftRight))
-        {
+        if !m.is_baby() && m.extra.tame && sneaking {
             self.open_mount_menu(index);
             return true;
         }
@@ -163,13 +234,18 @@ impl Game<'_> {
         let tamed = m.extra.tame;
         let sound = if item == "minecraft:saddle" && tamed && !m.extra.saddled {
             m.set_saddle(held);
-            Some("minecraft:entity.horse.saddle")
+            // Camel.getSaddleSound (the equip sound of a camel's saddle).
+            Some(match species {
+                Species::Camel => "minecraft:entity.camel.saddle",
+                Species::CamelHusk => "minecraft:entity.camel_husk.saddle",
+                _ => "minecraft:entity.horse.saddle",
+            })
         } else if item.ends_with("_horse_armor")
             && species == Species::Horse
             && tamed
-            && m.extra.head.is_none()
+            && m.extra.body.is_none()
         {
-            m.extra.head = Some(item.into());
+            m.extra.body = Some(item.into());
             Some("minecraft:entity.horse.armor")
         } else if item == "minecraft:chest"
             && matches!(species, Species::Donkey | Species::Mule)
@@ -192,6 +268,10 @@ impl Game<'_> {
             return true;
         }
         // doPlayerRide
+        let id = self.mobs[index].id;
+        if !self.native_may_board(id) {
+            return true;
+        }
         let m = &mut self.mobs[index];
         m.extra.flag = false;
         m.extra.counter = 0;
@@ -240,7 +320,7 @@ impl Game<'_> {
             loved = true;
         }
         if m.health < m.attrs.max_health && heal > 0.0 {
-            m.health = (m.health + heal).min(m.attrs.max_health);
+            m.heal(heal);
             used = true;
         }
         if m.is_baby() && age_up > 0 && !m.extra.age_locked {
@@ -270,6 +350,9 @@ impl Game<'_> {
         self.audio.play(sound, Some(at), 1.0, pitch);
         // Animal.setInLove: entity event 18.
         if loved {
+            self.love_cause.insert(id, self.lan_acting);
+            let kind = self.mobs[index].kind.id.clone();
+            self.native_entity_enter_love_mode(id, &kind, self.lan_acting_uuid);
             self.mob_event_particles(id, 18);
         }
         self.consume_held();
@@ -291,12 +374,9 @@ impl Game<'_> {
             if st.was_jumping && !keys.jump {
                 st.jump_ticks = -10;
                 let amount = (st.jump_scale * 100.0).floor() as i32;
-                // PlayerRideableJumping.getPlayerJumpPendingScale
-                jump = if amount >= 90 {
-                    1.0
-                } else {
-                    0.4 + 0.4 * amount as f32 / 90.0
-                };
+                // PlayerRideableJumping.getPlayerJumpPendingScale, the scale a
+                // guest's START_RIDING_JUMP carries as `data`.
+                jump = equine::jump_pending_scale(amount);
             } else if !st.was_jumping && keys.jump {
                 st.jump_ticks = 0;
                 st.jump_scale = 0.0;
@@ -312,6 +392,19 @@ impl Game<'_> {
         }
         jump
     }
+    /// Whether the rider's eyes are in water (`Entity.updateFluidOnEyes` then `isEyeInFluid(WATER)`),
+    /// and not in a bubble column, as `LivingEntity.baseTick` asks before it lets a rider stay.
+    fn rider_eyes_in_water(&self) -> bool {
+        let Some([x, y, z]) = self.eye_position() else {
+            return false;
+        };
+        let (bx, by, bz) = (x.floor() as i32, y.floor() as i32, z.floor() as i32);
+        if &*self.res.facts().get(self.world.block(bx, by, bz)).name == "minecraft:bubble_column" {
+            return false;
+        }
+        self.fluid_height_of(bx, by, bz, Some(Fluid::Water))
+            .is_some_and(|(height, _)| f64::from(by) + f64::from(height) > y)
+    }
     /// The rider's input for this tick; returns false when not on a mount.
     pub(super) fn tick_mount_riding(&mut self, keys: Keys) -> bool {
         let Some(i) = self.mount_index() else {
@@ -321,39 +414,34 @@ impl Game<'_> {
             self.dismount_mount();
             return true;
         }
+        // `LivingEntity.baseTick`: a rider whose eyes are in water gets off a mount of the
+        // `dismounts_underwater` tag (a server's player too: `leave_guest` tells their client).
+        if dismounts_underwater(self.mobs[i].species()) && self.rider_eyes_in_water() {
+            self.dismount_mount();
+            return true;
+        }
         let strafe = f32::from(u8::from(keys.left)) - f32::from(u8::from(keys.right));
         let forward = f32::from(u8::from(keys.forward)) - f32::from(u8::from(keys.backward));
         // LocalPlayer.aiStep: the riding jump charges while space is held.
-        let held = self.held().map(|s| s.item.clone());
-        let steer = match self.mobs[i].species() {
-            Species::Pig => held.as_deref() == Some("minecraft:carrot_on_a_stick"),
-            Species::Strider => held.as_deref() == Some("minecraft:warped_fungus_on_a_stick"),
-            _ => false,
-        };
+        let steer = steering_item(
+            self.mobs[i].species(),
+            self.held().map(|s| s.item.as_ref()),
+            self.offhand.as_ref().map(|s| s.item.as_ref()),
+        );
         let jump = self.charge_mount_jump(i, keys);
         let m = &mut self.mobs[i];
         if jump > 0.0 {
-            // onPlayerJump: rear while jumping (horses).
-            if matches!(
-                m.species(),
-                Species::Horse | Species::SkeletonHorse | Species::ZombieHorse
-            ) {
-                m.extra.counter = 20;
+            // AbstractHorse.onPlayerJump: slide on the keys and rear (horses,
+            // donkeys and mules).
+            if equine::is_equine(m.species()) {
+                equine::on_player_jump(m);
             }
             // The nautilus plays its dash sound itself.
             if equine::is_equine(m.species()) {
-                // playJumpSound: Donkey and Mule have their own; a skeleton
-                // horse in water splashes.
-                let sound = match m.species() {
-                    Species::Donkey => "minecraft:entity.donkey.jump",
-                    Species::Mule => "minecraft:entity.mule.jump",
-                    Species::SkeletonHorse if m.fluids.in_water => {
-                        "minecraft:entity.skeleton_horse.jump_water"
-                    }
-                    _ => "minecraft:entity.horse.jump",
-                };
+                // playJumpSound, which the server broadcasts for a guest.
+                let sound = format!("minecraft:{}", equine::jump_sound(m));
                 let at = m.center();
-                self.audio.play(sound, Some(at), 0.4, 1.0);
+                self.audio.play(&sound, Some(at), 0.4, 1.0);
             }
         }
         let m = &mut self.mobs[i];
@@ -367,8 +455,28 @@ impl Game<'_> {
             steer,
             sprint: keys.sprint || self.keys.contains(&winit::keyboard::KeyCode::ControlLeft),
             jumping: keys.jump,
+            // A server's player (a LAN guest, single player's window) drives
+            // a horse from its own client (`handleMoveVehicle`).
+            client: self.lan_acting.is_some(),
         });
         true
+    }
+    /// `LivingEntity.baseTick` for the mobs that ride a mount of the `dismounts_underwater` tag (a baby
+    /// zombie on a chicken): with their eyes in water they get off it.
+    pub(super) fn dismount_underwater_mob_riders(&mut self) {
+        let swimmers: Vec<u32> = self
+            .mobs
+            .iter()
+            .filter(|m| m.alive() && m.fluids.eye_in_water)
+            .filter_map(|m| {
+                let mount = m.extra.mount?;
+                let under = self.mobs.iter().find(|v| v.id == mount)?;
+                dismounts_underwater(under.species()).then_some(m.id)
+            })
+            .collect();
+        for rider in swimmers {
+            self.dismount_mob(rider);
+        }
     }
     /// `positionRider`: the player sits on the mount after it moves.
     pub(super) fn position_rider(&mut self) {
@@ -379,18 +487,15 @@ impl Game<'_> {
         let mut at = Vec3::new(m.position.x, m.position.y + seat(m.species()), m.position.z);
         if horizon_client::mobs::camel::is_camel(m.species()) {
             // Camel.getPassengerAttachmentPoint: the driver half a block
-            // forward, at the body anchor (lower while sitting).
-            let scale = if m.is_baby() { 0.6 } else { 1.0 };
-            let anchor = if horizon_client::mobs::camel::sitting(m) {
-                (2.375 - 1.43) * scale - if m.is_baby() { 0.09375 } else { 0.375 } + 0.2 * scale
-            } else {
-                2.375 * scale - if m.is_baby() { 0.09375 } else { 0.375 }
-            };
-            let yaw = m.yaw.to_radians();
+            // forward, at the body anchor (lower while sitting), turned with
+            // the camel.
+            let a = horizon_client::mobs::camel::passenger_attachment(m);
+            let turned = Vec3::new(a[0], a[1], a[2])
+                .rotate_y(-m.yaw * (std::f64::consts::PI / 180.0) as f32);
             at = Vec3::new(
-                m.position.x - f64::from(0.5 * scale * yaw.sin()),
-                m.position.y + f64::from(anchor) - 0.6,
-                m.position.z + f64::from(0.5 * scale * yaw.cos()),
+                m.position.x + turned.x,
+                m.position.y + turned.y - 0.6,
+                m.position.z + turned.z,
             );
         }
         if m.species() == Species::HappyGhast {
@@ -416,8 +521,20 @@ impl Game<'_> {
                 m.position.z + z * yaw.cos(),
             );
         }
+        // AbstractHorse.getPassengerAttachmentPoint: the rider slides back and
+        // up while the horse rears.
+        let rear = equine::rear_offset(m);
+        let rear = Vec3::new(rear[0], rear[1], rear[2])
+            .rotate_y(-m.yaw * (std::f64::consts::PI / 180.0) as f32);
+        at = Vec3::new(at.x + rear.x, at.y + rear.y, at.z + rear.z);
+        // The tick a rider takes its seat is a teleport (`Entity.moveTo`), which
+        // sets the old position too: the camera must not sweep from where the
+        // player stood to the seat. The ticks after it move with the mount and
+        // are interpolated as usual.
+        let first = self.posed_rider != self.riding;
+        self.posed_rider = self.riding;
         if let Some(p) = self.player.as_mut() {
-            self.previous_position = p.position;
+            self.previous_position = if first { at } else { p.position };
             p.position = at;
             p.velocity = Vec3::ZERO;
             p.fall_distance = 0.0;
@@ -425,9 +542,13 @@ impl Game<'_> {
     }
     /// `removePassenger` + `getDismountLocationForPassenger`: beside the mount.
     pub(super) fn dismount_mount(&mut self) {
-        let Some(id) = self.riding.take() else {
+        let Some(id) = self.riding else {
             return;
         };
+        if !self.native_may_leave(id) {
+            return;
+        }
+        self.riding = None;
         let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) else {
             return;
         };
@@ -437,64 +558,168 @@ impl Game<'_> {
             self.dismount_happy_ghast(id);
             return;
         }
-        let yaw = m.yaw.to_radians();
-        let side = Vec3::new(f64::from(yaw.cos()), 0.0, f64::from(yaw.sin()));
-        let w = f64::from(m.width()) / 2.0 + 0.4;
-        let base = m.position;
-        let candidates = [
-            Vec3::new(base.x - side.x * w, base.y, base.z - side.z * w),
-            Vec3::new(base.x + side.x * w, base.y, base.z + side.z * w),
-            Vec3::new(base.x, base.y + f64::from(m.height()), base.z),
-        ];
-        let spot = candidates
-            .into_iter()
-            .find(|c| {
-                let f = |dy: i32| {
-                    self.res
-                        .facts()
-                        .get(self.world.block(
-                            c.x.floor() as i32,
-                            c.y.floor() as i32 + dy,
-                            c.z.floor() as i32,
-                        ))
-                        .full_collision
-                };
-                !f(0) && !f(1)
-            })
-            .unwrap_or(candidates[2]);
+        let mount = Mount {
+            species: m.species(),
+            position: m.position,
+            bounds: m.bounds(),
+            width: m.width(),
+            height: m.height(),
+            yaw: m.yaw,
+        };
+        let Some(p) = self.player.as_ref() else {
+            return;
+        };
+        let rider = Rider {
+            yaw: self.yaw,
+            width: p.dimensions.width,
+            poses: rider_poses(p),
+        };
+        let (spot, pose) = dismount_location(&mount, &rider, &GameDismountWorld(self));
         if let Some(p) = self.player.as_mut() {
             p.position = spot;
             p.velocity = Vec3::ZERO;
+            // LivingEntity.setPose: the dismount pose that fit.
+            if let Some(pose) = pose
+                && let Err(e) = p.set_pose(pose)
+            {
+                log::warn!("dismount pose: {e}");
+            }
+        }
+    }
+    /// `AbstractHorse.tameWithName`: the acting player owns `mob`, then gets
+    /// the `tame_animal` trigger.
+    fn tame_mount(&mut self, mob: u32) {
+        let owner = self.acting_player_uuid();
+        if let Some(m) = self.mobs.iter_mut().find(|m| m.id == mob) {
+            m.extra.owner = Some(owner);
+            m.persistent = true;
+            // AbstractHorse.tameWithName: entity event 7, spawnTamingParticles(true).
+            self.mob_event_particles(mob, 7);
+        }
+        if let Some(view) = self
+            .mobs
+            .iter()
+            .find(|m| m.id == mob)
+            .map(|m| self.mob_entity(m))
+        {
+            self.trigger_entity("minecraft:tame_animal", "entity", &view);
+        }
+        if let Some(kind) = self
+            .mobs
+            .iter()
+            .find(|m| m.id == mob)
+            .map(|m| m.kind.id.clone())
+        {
+            let owner = horizon_client::lan::playerdata::ints_uuid(owner);
+            self.native_entity_tame(mob, &kind, Some(owner));
         }
     }
     pub(super) fn mount_event(&mut self, e: &MobEvent) {
         match *e {
             MobEvent::Tamed { mob } => {
-                let owner = self.level.player_uuid.or(Some([0, 0, 0, 1]));
-                if let Some(view) = self
-                    .mobs
-                    .iter()
-                    .find(|m| m.id == mob)
-                    .map(|m| self.mob_entity(m))
+                // tameWithName(player): the rider, a server's player in its turn.
+                let rider = self.lan.as_ref().and_then(|h| {
+                    h.hub
+                        .guests
+                        .iter()
+                        .find(|g| g.vehicle == Some(mob))
+                        .map(|g| g.conn)
+                });
+                if let Some(conn) = rider
+                    && let Some(mut host) = self.lan.take()
                 {
-                    self.trigger_entity("minecraft:tame_animal", "entity", &view);
-                }
-                if let Some(m) = self.mobs.iter_mut().find(|m| m.id == mob) {
-                    m.extra.owner = owner;
-                    m.persistent = true;
-                    // AbstractHorse.tameWithName: entity event 7, spawnTamingParticles(true).
-                    self.mob_event_particles(mob, 7);
+                    self.as_guest(&mut host, conn, |g| g.tame_mount(mob));
+                    self.lan = Some(host);
+                } else {
+                    self.tame_mount(mob);
                 }
             }
             MobEvent::Buck { mob } => {
                 if self.riding == Some(mob) {
                     self.dismount_mount();
+                } else {
+                    // ejectPassengers: a server's player gets off too
+                    // (leave_guest tells their client).
+                    let rider = self.lan.as_ref().and_then(|h| {
+                        h.hub
+                            .guests
+                            .iter()
+                            .find(|g| g.vehicle == Some(mob))
+                            .map(|g| g.conn)
+                    });
+                    if let Some(conn) = rider
+                        && let Some(mut host) = self.lan.take()
+                    {
+                        self.as_guest(&mut host, conn, |g| g.dismount_mount());
+                        self.lan = Some(host);
+                    }
                 }
                 // RunAroundLikeCrazyGoal.tick: entity event 6, smoke.
                 self.mob_event_particles(mob, 6);
             }
+            // `LivingEntity.stabAttack`: `target.stopRiding()`.
+            MobEvent::StabDismount { target } => match target {
+                Who::Player => self.stop_riding(),
+                Who::Mob(id) => self.dismount_mob(id),
+            },
             _ => {}
         }
+    }
+    /// `Entity.propagateFallToPassengers`: whoever rides the mob `mob` takes
+    /// `causeFallDamage` of its fall, as the mount's own damage does. The local
+    /// player, the server players and the mob on its back each get it, with
+    /// their own safe distance and armour.
+    pub(super) fn fall_to_passengers(&mut self, mob: u32, distance: f64, modifier: f32) {
+        if self.riding == Some(mob) {
+            self.rider_fall_damage(distance, modifier);
+        }
+        let guests: Vec<u32> = self.lan.as_ref().map_or_else(Vec::new, |h| {
+            h.hub
+                .guests
+                .iter()
+                .filter(|g| g.vehicle == Some(mob) && Some(g.conn) != self.lan_acting)
+                .map(|g| g.conn)
+                .collect()
+        });
+        if !guests.is_empty()
+            && let Some(mut host) = self.lan.take()
+        {
+            for conn in guests {
+                self.guest_hit_by(&mut host, conn, |g| g.rider_fall_damage(distance, modifier));
+            }
+            self.lan = Some(host);
+        }
+        let rider = self
+            .mobs
+            .iter()
+            .find(|m| m.id == mob)
+            .and_then(|m| m.extra.rider);
+        if let Some(rider) = rider
+            && let Some(r) = self.mobs.iter_mut().find(|m| m.id == rider)
+        {
+            let mut events = Vec::new();
+            r.cause_fall_damage_from(distance, modifier, &mut events);
+            let _ = self.handle_mob_events(events);
+        }
+    }
+    /// The player this game runs (the local one, or the server player it acts
+    /// as) takes the fall of the mount under it. `cause_mount_fall` runs the
+    /// landing code's own fall damage for the player: creative flight is
+    /// exempt, and the statistic, the sounds and the damage records wait in the
+    /// player's events for its next tick, as a landing of its own leaves them.
+    fn rider_fall_damage(&mut self, distance: f64, modifier: f32) {
+        let Some(player) = self.player.as_mut() else {
+            return;
+        };
+        let _ = MotionWorld {
+            entities: &[],
+            player,
+            scene: &mut self.world,
+            assets: &self.pack.assets,
+            collision_binding: self.collision,
+            resources: self.motion,
+        }
+        .cause_mount_fall(distance, modifier);
     }
     /// `PlayerRideableJumping`: horses, camels and nautili (the dash).
     fn jumps(species: Species) -> bool {
@@ -510,36 +735,558 @@ impl Game<'_> {
     pub(super) fn mount_jumping(&self) -> bool {
         self.mount.jump_scale > 0.0 || self.mount.jump_ticks < 0
     }
-    /// `Hud.extractVehicleHealth`, and the jump bar when it is the
-    /// contextual bar (`jump_bar`). Returns the mount's heart count
+    /// `Hud.extractVehicleHealth` (a native mod's `minecraft:vehicle_health`
+    /// layer, only while riding a mount). Returns the mount's heart count
     /// (`getVehicleMaxHearts`).
-    pub(super) fn draw_mount_hud(
-        &self,
-        batch: &mut HudBatch,
-        w: i32,
-        h: i32,
-        jump_bar: bool,
-    ) -> i32 {
+    pub(super) fn draw_mount_hud(&mut self, batch: &mut HudBatch, w: i32, h: i32) -> i32 {
         let Some(i) = self.mount_index() else {
             return 0;
         };
         let m = &self.mobs[i];
-        let atlas = &self.gui.atlas;
         let hearts = horizon_client::hud_layout::vehicle_max_hearts(m.attrs.max_health);
         let draws = horizon_client::hud_layout::vehicle_health(w, h, hearts, m.health);
-        horizon_client::hud_layout::paint(batch, atlas, &draws);
-        if jump_bar {
-            // JumpableVehicleBar: `getJumpCooldown`, which only the camel's and
-            // the nautilus' dash have; a horse always shows the progress.
-            let cooldown = i32::from(
-                self.mount.jump_ticks < 0
-                    && (matches!(m.species(), Species::Camel | Species::CamelHusk)
-                        || horizon_client::mobs::nautilus::is_nautilus(m.species())),
-            );
-            let draws =
-                horizon_client::hud_overlays::jump_bar(w, h, cooldown, self.mount.jump_scale);
-            horizon_client::hud_layout::paint(batch, atlas, &draws);
-        }
+        self.gui_layer("minecraft:vehicle_health", batch, |g, batch| {
+            horizon_client::hud_layout::paint(batch, &g.gui.atlas, &draws);
+        });
         hearts
+    }
+    /// The jump bar when it is the contextual bar.
+    pub(super) fn draw_jump_bar(&self, batch: &mut HudBatch, w: i32, h: i32) {
+        let Some(i) = self.mount_index() else {
+            return;
+        };
+        let m = &self.mobs[i];
+        // JumpableVehicleBar: `getJumpCooldown`, which only the camel's and
+        // the nautilus' dash have; a horse always shows the progress.
+        let cooldown = i32::from(
+            self.mount.jump_ticks < 0
+                && (matches!(m.species(), Species::Camel | Species::CamelHusk)
+                    || horizon_client::mobs::nautilus::is_nautilus(m.species())),
+        );
+        let draws = horizon_client::hud_overlays::jump_bar(w, h, cooldown, self.mount.jump_scale);
+        horizon_client::hud_layout::paint(batch, &self.gui.atlas, &draws);
+    }
+}
+
+/// The mount a rider gets off: its kind, where it stands, its box,
+/// `getBbWidth`, `getBbHeight` and body yaw.
+struct Mount {
+    species: Species,
+    position: Vec3,
+    bounds: Aabb,
+    width: f32,
+    height: f32,
+    yaw: f32,
+}
+/// The rider getting off: `getYRot`, `getBbWidth`, and
+/// `getLocalBoundsForPose` for each of `Player.getDismountPoses`.
+struct Rider {
+    yaw: f32,
+    width: f32,
+    poses: Vec<(Pose, Dimensions)>,
+}
+/// `Player.getDismountPoses`: standing, crouching, then crawling.
+const DISMOUNT_POSES: [Pose; 3] = [Pose::Standing, Pose::Crouching, Pose::Swimming];
+/// The rider's box in each dismount pose, at their `minecraft:scale`.
+fn rider_poses(p: &PlayerMotion) -> Vec<(Pose, Dimensions)> {
+    // EntityDimensions.scale: every player pose scales alike, so the
+    // standing width gives the scale without a mutable attribute lookup.
+    let scale = p.dimensions.width / Pose::Standing.dimensions(1.0).width;
+    DISMOUNT_POSES
+        .iter()
+        .map(|&pose| (pose, pose.dimensions(scale)))
+        .collect()
+}
+/// The level queries a dismount makes.
+trait DismountWorld {
+    /// A full collision block (the generic rule's test).
+    fn full_collision(&self, p: [i32; 3]) -> bool;
+    /// `getFluidState(pos).is(FluidTags.LAVA)`.
+    fn lava(&self, p: [i32; 3]) -> bool;
+    /// `BlockGetter.getBlockFloorHeight(pos)`.
+    fn floor_height(&self, p: [i32; 3]) -> f64;
+    /// `DismountHelper.canDismountTo(level, passenger, box)`.
+    fn can_dismount_to(&self, bounds: Aabb) -> bool;
+}
+struct GameDismountWorld<'a, 'g>(&'a Game<'g>);
+impl DismountWorld for GameDismountWorld<'_, '_> {
+    fn full_collision(&self, p: [i32; 3]) -> bool {
+        let g = self.0;
+        g.res
+            .facts()
+            .get(g.world.block(p[0], p[1], p[2]))
+            .full_collision
+    }
+    fn lava(&self, p: [i32; 3]) -> bool {
+        let g = self.0;
+        g.res.facts().get(g.world.block(p[0], p[1], p[2])).fluid == Fluid::Lava
+    }
+    fn floor_height(&self, p: [i32; 3]) -> f64 {
+        let shape = self.0.block_collision_shape(p);
+        let below = std::cell::OnceCell::<VoxelShape>::new();
+        horizon_core::geometry::block_floor_height(&shape, || {
+            below.get_or_init(|| self.0.block_collision_shape([p[0], p[1] - 1, p[2]]))
+        })
+    }
+    fn can_dismount_to(&self, bounds: Aabb) -> bool {
+        self.0.can_dismount_to(bounds)
+    }
+}
+/// `getDismountLocationForPassenger`, and the pose the rider takes there.
+fn dismount_location(
+    mount: &Mount,
+    rider: &Rider,
+    world: &impl DismountWorld,
+) -> (Vec3, Option<Pose>) {
+    if mount.species == Species::Strider {
+        return strider_dismount_location(mount, rider, world);
+    }
+    // Beside the mount, else on top of it.
+    let yaw = mount.yaw.to_radians();
+    let side = Vec3::new(f64::from(yaw.cos()), 0.0, f64::from(yaw.sin()));
+    let w = f64::from(mount.width) / 2.0 + 0.4;
+    let base = mount.position;
+    let candidates = [
+        Vec3::new(base.x - side.x * w, base.y, base.z - side.z * w),
+        Vec3::new(base.x + side.x * w, base.y, base.z + side.z * w),
+        Vec3::new(base.x, base.y + f64::from(mount.height), base.z),
+    ];
+    let spot = candidates
+        .into_iter()
+        .find(|c| {
+            let f = |dy: i32| {
+                world.full_collision([
+                    c.x.floor() as i32,
+                    c.y.floor() as i32 + dy,
+                    c.z.floor() as i32,
+                ])
+            };
+            !f(0) && !f(1)
+        })
+        .unwrap_or(candidates[2]);
+    (spot, None)
+}
+/// `Entity.getCollisionHorizontalEscapeVector`: out of the vehicle's box
+/// along `yaw`, to the edge of the square it spans.
+fn escape_vector(vehicle_width: f64, passenger_width: f64, yaw: f32) -> Vec3 {
+    // 1.0E-5F: a float literal widened to double.
+    let distance = (vehicle_width + passenger_width + f64::from(1.0e-5_f32)) / 2.0;
+    let radians = f64::from(yaw * 0.017_453_292);
+    let (sin, cos) = (-trig::sin(radians), trig::cos(radians));
+    let max = f64::from(sin.abs().max(cos.abs()));
+    Vec3::new(
+        f64::from(sin) * distance / max,
+        0.0,
+        f64::from(cos) * distance / max,
+    )
+}
+/// `Strider.getDismountLocationForPassenger`: the columns along the rider's
+/// facing and 22.5 and 45 degrees either side of it, each from the top of
+/// the strider's box down to half a block below its feet. The first block
+/// with no lava, a valid floor (`DismountHelper.isBlockFloorValid`) and room
+/// for one of the rider's dismount poses (`canDismountTo`) wins, with that
+/// pose; without one, on top of the strider with the pose unchanged.
+fn strider_dismount_location(
+    strider: &Mount,
+    rider: &Rider,
+    world: &impl DismountWorld,
+) -> (Vec3, Option<Pose>) {
+    let (vehicle, passenger) = (f64::from(strider.width), f64::from(rider.width));
+    let top = strider.bounds.max_position().y;
+    let bottom = strider.bounds.min_position().y - 0.5;
+    // A LinkedHashSet: each block once, in the order first reached.
+    let mut blocks: Vec<[i32; 3]> = Vec::new();
+    for turn in [0.0, -22.5, 22.5, -45.0, 45.0] {
+        let offset = escape_vector(vehicle, passenger, rider.yaw + turn);
+        let (x, z) = (
+            (strider.position.x + offset.x).floor() as i32,
+            (strider.position.z + offset.z).floor() as i32,
+        );
+        let mut y = top;
+        let mut block_y = top.floor() as i32;
+        while y > bottom {
+            if !blocks.contains(&[x, block_y, z]) {
+                blocks.push([x, block_y, z]);
+            }
+            block_y -= 1;
+            y -= 1.0;
+        }
+    }
+    for p in blocks {
+        if world.lava(p) {
+            continue;
+        }
+        // DismountHelper.isBlockFloorValid.
+        let floor = world.floor_height(p);
+        if floor.is_infinite() || floor >= 1.0 {
+            continue;
+        }
+        // Vec3.upFromBottomCenterOf.
+        let at = Vec3::new(
+            f64::from(p[0]) + 0.5,
+            f64::from(p[1]) + floor,
+            f64::from(p[2]) + 0.5,
+        );
+        for (pose, dimensions) in &rider.poses {
+            if world.can_dismount_to(dimensions.bounds(at)) {
+                return (at, Some(*pose));
+            }
+        }
+    }
+    (Vec3::new(strider.position.x, top, strider.position.z), None)
+}
+
+/// `ServerGamePacketListenerImpl.handlePlayerCommand` START_RIDING_JUMP on the
+/// vehicle `m` (`PlayerRideableJumping`): `canJump()`, a scale above zero and
+/// then the vehicle's own `handleStartJump`. Returns the sound the server has
+/// to play, with its volume — `AbstractHorse.playJumpSound` at 0.4, `Camel`'s
+/// dash at 1.0 — or None when the mount takes no such jump or plays its own
+/// dash sound (the nautilus does).
+///
+/// Nothing here moves the mount on its own: what a horse, camel or nautilus
+/// does with the jump is its `handleStartJump`, and the travel that follows
+/// (a dash, a rear) is the mount's own tick.
+pub(super) fn start_riding_jump(
+    m: &mut horizon_client::mobs::Mob,
+    data: i32,
+) -> Option<(&'static str, f32)> {
+    // PlayerRideableJumping.canJump: AbstractHorse.isSaddled, and a camel that
+    // is not refusing to move keeps its own gate.
+    if data <= 0 || !m.extra.saddled {
+        return None;
+    }
+    if crate::mobs::camel::is_camel(m.species()) {
+        if crate::mobs::camel::refuse_to_move(m) {
+            return None;
+        }
+        // Camel.handleStartJump: the dash sound, the entity action and DASH.
+        crate::mobs::camel::set_dashing(m, true);
+        Some((crate::mobs::camel::voice(m, 3), 1.0))
+    } else if crate::mobs::nautilus::is_nautilus(m.species()) {
+        // AbstractNautilus.handleStartJump: DASH, and the dash sound it makes
+        // itself when the dash runs. The momentum is `onPlayerJump`'s pending
+        // scale, which the nautilus spends on its next travel; a guest's ride
+        // tick fills `Rider::jump` from the keys the host hears, so the scale
+        // its own bar charged comes from this packet.
+        crate::mobs::nautilus::on_player_jump(m, data);
+        None
+    } else if equine::is_equine(m.species()) {
+        // AbstractHorse.handleStartJump, which is onPlayerJump for the slide
+        // and the rear, then playJumpSound.
+        equine::on_player_jump(m);
+        Some((equine::jump_sound(m), 0.4))
+    } else {
+        None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    #[test]
+    fn the_mounts_that_throw_a_swimmer_off_are_the_dismounts_underwater_tag() {
+        // data/minecraft/tags/entity_type/dismounts_underwater.json of 26.3.
+        for species in [
+            Species::Camel,
+            Species::Chicken,
+            Species::Donkey,
+            Species::HappyGhast,
+            Species::Horse,
+            Species::Llama,
+            Species::Mule,
+            Species::Pig,
+            Species::Ravager,
+            Species::Spider,
+            Species::Strider,
+            Species::TraderLlama,
+            Species::ZombieHorse,
+        ] {
+            assert!(dismounts_underwater(species), "{species:?}");
+        }
+        // Not in the tag: a skeleton horse swims with its rider, a camel husk is not the camel.
+        for species in [Species::SkeletonHorse, Species::CamelHusk, Species::Cow] {
+            assert!(!dismounts_underwater(species), "{species:?}");
+        }
+    }
+
+    /// A mob of the prepared resources' type `kind` (None without them).
+    fn mob(kind: &str) -> Option<horizon_client::mobs::Mob> {
+        let root = std::env::var_os("HORIZON_RESOURCES")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| {
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../.local/horizon-client")
+                    .join(horizon_core::VANILLA_VERSION)
+            });
+        let types = horizon_client::mobs::MobTypes::load(&root).ok()?;
+        let t = std::sync::Arc::new(types.types.get(kind)?.clone());
+        Some(horizon_client::mobs::Mob::new(
+            7,
+            t,
+            horizon_core::geometry::Vec3::new(1.5, 64.0, -2.5),
+            0.0,
+        ))
+    }
+
+    /// `handlePlayerCommand` START_RIDING_JUMP reaches the ridden vehicle's
+    /// `handleStartJump`: a saddled horse rears, slides on the rider's keys and
+    /// its jump sound is played at 0.4; a donkey and a mule have their own
+    /// sound; a camel dashes with its dash sound at 1.0. An unsaddled mount
+    /// (`canJump` false) or a scale of zero takes nothing.
+    #[test]
+    fn a_released_jump_bar_starts_the_mounts_own_jump() {
+        let Some(mut horse) = mob("minecraft:horse") else {
+            return;
+        };
+        // Unsaddled: AbstractHorse.canJump is isSaddled.
+        assert_eq!(start_riding_jump(&mut horse, 100), None);
+        assert_eq!(horse.extra.counter, 0, "no rear without a jump");
+        assert!(!horse.extra.stand_sliding);
+        horse.set_saddle(Some(horizon_client::items::ItemStack::new(
+            "minecraft:saddle",
+            1,
+        )));
+        // A scale of zero is not a jump (`data > 0`).
+        assert_eq!(start_riding_jump(&mut horse, 0), None);
+        assert_eq!(horse.extra.counter, 0);
+        assert_eq!(
+            start_riding_jump(&mut horse, 100),
+            Some(("entity.horse.jump", 0.4))
+        );
+        assert_eq!(
+            horse.extra.counter, 20,
+            "standIfPossible rears for 20 ticks"
+        );
+        assert!(horse.extra.stand_sliding, "onPlayerJump slides on the keys");
+        for (kind, sound) in [
+            ("minecraft:donkey", "entity.donkey.jump"),
+            ("minecraft:mule", "entity.mule.jump"),
+        ] {
+            let Some(mut m) = mob(kind) else {
+                continue;
+            };
+            m.set_saddle(Some(horizon_client::items::ItemStack::new(
+                "minecraft:saddle",
+                1,
+            )));
+            assert_eq!(start_riding_jump(&mut m, 55), Some((sound, 0.4)), "{kind}");
+        }
+        // A skeleton horse in water splashes instead.
+        let Some(mut skeleton) = mob("minecraft:skeleton_horse") else {
+            return;
+        };
+        skeleton.set_saddle(Some(horizon_client::items::ItemStack::new(
+            "minecraft:saddle",
+            1,
+        )));
+        skeleton.fluids.in_water = true;
+        assert_eq!(
+            start_riding_jump(&mut skeleton, 100),
+            Some(("entity.skeleton_horse.jump_water", 0.4))
+        );
+    }
+
+    /// `Camel.handleStartJump`: the dash sound, then DASH, which starts the
+    /// cooldown; a sitting camel refuses to move and cannot jump
+    /// (`Camel.canJump`).
+    #[test]
+    fn a_released_jump_bar_starts_a_camels_dash() {
+        let Some(mut camel) = mob("minecraft:camel") else {
+            return;
+        };
+        assert_eq!(start_riding_jump(&mut camel, 100), None, "no saddle");
+        camel.set_saddle(Some(horizon_client::items::ItemStack::new(
+            "minecraft:saddle",
+            1,
+        )));
+        assert_eq!(
+            start_riding_jump(&mut camel, 100),
+            Some(("entity.camel.dash", 1.0))
+        );
+        assert!(camel.extra.flag2, "Camel.setDashing(true)");
+        assert_eq!(
+            camel.extra.anim_ticks, 0,
+            "an age-0 camel starts no cooldown"
+        );
+        // Sitting out the ride: refuseToMove keeps the dash from starting.
+        camel.extra.camel_sitting = true;
+        camel.extra.flag2 = false;
+        assert_eq!(start_riding_jump(&mut camel, 100), None);
+        assert!(!camel.extra.flag2);
+    }
+
+    /// `AbstractNautilus.onPlayerJump` through `handlePlayerCommand`
+    /// START_RIDING_JUMP: the scale the rider's own bar charged reaches the
+    /// mount, and its next travel dashes with it. A nautilus in its dash
+    /// cooldown takes no jump (the pending scale is left alone), and there is
+    /// no sound for the server to play: the nautilus plays its dash sound
+    /// itself when the dash runs.
+    #[test]
+    fn a_guests_released_jump_bar_arms_the_nautilus_dash() {
+        let Some(mut m) = mob("minecraft:nautilus") else {
+            return;
+        };
+        m.set_saddle(Some(horizon_client::items::ItemStack::new(
+            "minecraft:saddle",
+            1,
+        )));
+        // The guest's ride tick fills the rider; the packet arrives after it.
+        m.rider = Some(equine::Rider::default());
+        assert_eq!(start_riding_jump(&mut m, 75), None);
+        let jump = m.rider.expect("the rider stays on").jump;
+        // 0.4 + 0.4 * 75 / 90: a three-quarter bar.
+        assert!((jump - 0.733_333_3).abs() < 1.0e-6, "{jump}");
+        // A full bar is a scale of 1.
+        assert_eq!(start_riding_jump(&mut m, 100), None);
+        assert_eq!(m.rider.expect("the rider stays on").jump, 1.0);
+        // The dash clock: a dash still cooling down refuses the jump, so the
+        // scale already on the rider stays.
+        m.extra.anim_ticks = 40;
+        assert_eq!(start_riding_jump(&mut m, 30), None);
+        assert_eq!(m.rider.expect("the rider stays on").jump, 1.0);
+        // An unsaddled nautilus cannot jump at all (`AbstractNautilus.canJump`).
+        m.extra.saddled = false;
+        m.extra.anim_ticks = 0;
+        assert_eq!(start_riding_jump(&mut m, 100), None);
+        assert_eq!(m.rider.expect("the rider stays on").jump, 1.0);
+        // The scale is spent by the mount's next travel: `executeRidersJump`
+        // pushes along the rider's look, starts the 40-tick dash clock, raises
+        // DASH and queues the dash sound.
+        m.extra.saddled = true;
+        equine::ridden_step(&mut m);
+        assert_eq!(m.rider.expect("the rider stays on").jump, 0.0);
+        assert_eq!(m.extra.anim_ticks, 40, "the dash clock");
+        assert!(m.extra.flag2, "DASH");
+        assert_eq!(m.extra.scratch[1], 1, "the dash sound plays next tick");
+        assert!(
+            m.velocity.z > 0.0 && m.velocity.x.abs() < 1.0e-9,
+            "the dash goes along the rider's look (+z): {:?}",
+            m.velocity
+        );
+    }
+
+    #[test]
+    fn steering_accepts_the_correct_item_in_either_hand() {
+        let carrot = "minecraft:carrot_on_a_stick";
+        let fungus = "minecraft:warped_fungus_on_a_stick";
+        assert!(steering_item(Species::Pig, Some(carrot), None));
+        assert!(steering_item(Species::Pig, None, Some(carrot)));
+        assert!(steering_item(Species::Strider, None, Some(fungus)));
+        assert!(!steering_item(Species::Pig, Some(fungus), None));
+        assert!(!steering_item(Species::Horse, Some(carrot), Some(fungus)));
+    }
+
+    /// A lava sea up to y 30 with full blocks placed in it; air above.
+    struct Sea {
+        blocks: HashMap<[i32; 3], ()>,
+    }
+    impl Sea {
+        fn with(blocks: &[[i32; 3]]) -> Self {
+            Self {
+                blocks: blocks.iter().map(|&b| (b, ())).collect(),
+            }
+        }
+        fn solid(&self, p: [i32; 3]) -> bool {
+            self.blocks.contains_key(&p)
+        }
+    }
+    impl DismountWorld for Sea {
+        fn full_collision(&self, p: [i32; 3]) -> bool {
+            self.solid(p)
+        }
+        fn lava(&self, p: [i32; 3]) -> bool {
+            p[1] <= 30 && !self.solid(p)
+        }
+        fn floor_height(&self, p: [i32; 3]) -> f64 {
+            if self.solid(p) {
+                1.0
+            } else if self.solid([p[0], p[1] - 1, p[2]]) {
+                0.0
+            } else {
+                f64::NEG_INFINITY
+            }
+        }
+        fn can_dismount_to(&self, bounds: Aabb) -> bool {
+            let (lo, hi) = (bounds.min_position(), bounds.max_position());
+            let cells = |a: f64, b: f64| a.floor() as i32..=(b - 1.0e-7).floor() as i32;
+            !cells(lo.x, hi.x).any(|x| {
+                cells(lo.y, hi.y).any(|y| cells(lo.z, hi.z).any(|z| self.solid([x, y, z])))
+            })
+        }
+    }
+    /// The top of a lava source at y 30 (`FlowingFluid.getOwnHeight`, 8/9).
+    const SURFACE: f64 = 30.0 + 8.0 / 9.0;
+    /// A strider (0.9 by 1.7) standing on the lava at x, z, facing south.
+    fn strider_at(x: f64, z: f64) -> Mount {
+        Mount {
+            species: Species::Strider,
+            position: Vec3::new(x, SURFACE, z),
+            bounds: Aabb::new(
+                Vec3::new(x - 0.45, SURFACE, z - 0.45),
+                Vec3::new(x + 0.45, SURFACE + 1.7, z + 0.45),
+            ),
+            width: 0.9,
+            height: 1.7,
+            yaw: 0.0,
+        }
+    }
+    fn rider(yaw: f32) -> Rider {
+        Rider {
+            yaw,
+            width: 0.6,
+            poses: DISMOUNT_POSES
+                .iter()
+                .map(|&pose| (pose, pose.dimensions(1.0)))
+                .collect(),
+        }
+    }
+    fn block_of(at: Vec3) -> [i32; 3] {
+        [
+            at.x.floor() as i32,
+            at.y.floor() as i32,
+            at.z.floor() as i32,
+        ]
+    }
+
+    #[test]
+    fn a_strider_in_open_lava_puts_its_rider_on_its_back() {
+        // #3513: getting off in a lava sea used to put the player beside the
+        // strider, in the lava; with no floor in reach vanilla puts the rider
+        // on top of the strider instead.
+        let sea = Sea::with(&[]);
+        let (at, pose) = dismount_location(&strider_at(0.5, 0.5), &rider(0.0), &sea);
+        assert!(!sea.lava(block_of(at)), "dismounted into lava at {at:?}");
+        assert_eq!(at, Vec3::new(0.5, SURFACE + 1.7, 0.5));
+        assert_eq!(pose, None);
+    }
+
+    #[test]
+    fn a_strider_by_the_shore_puts_its_rider_on_the_shore() {
+        // Netherrack 45 degrees to the right of a rider facing south (+z);
+        // the straight-ahead and 22.5 degree columns are lava.
+        let sea = Sea::with(&[[-1, 30, 1]]);
+        let (at, pose) = dismount_location(&strider_at(0.5, 0.5), &rider(0.0), &sea);
+        assert_eq!(at, Vec3::new(-0.5, 31.0, 1.5));
+        assert_eq!(pose, Some(Pose::Standing));
+    }
+
+    #[test]
+    fn a_low_ceiling_on_the_shore_makes_the_rider_crawl_off() {
+        let sea = Sea::with(&[[0, 30, 1], [0, 32, 1]]);
+        let (at, pose) = dismount_location(&strider_at(0.5, 0.5), &rider(0.0), &sea);
+        assert_eq!(at, Vec3::new(0.5, 31.0, 1.5));
+        assert_eq!(pose, Some(Pose::Swimming));
+    }
+
+    #[test]
+    fn the_escape_vector_reaches_the_edge_of_the_square() {
+        let edge = (0.9 + 0.6 + f64::from(1.0e-5_f32)) / 2.0;
+        let v = escape_vector(0.9, 0.6, 0.0);
+        assert!((v.z - edge).abs() < 1.0e-6 && v.x.abs() < 1.0e-6);
+        // Facing west of south: the corner of the square.
+        let v = escape_vector(0.9, 0.6, 45.0);
+        assert!((v.x + edge).abs() < 1.0e-3 && (v.z - edge).abs() < 1.0e-3);
     }
 }

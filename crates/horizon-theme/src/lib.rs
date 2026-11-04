@@ -3,14 +3,18 @@
 //! generated from [`css`] by `cargo run -p xtask -- tokens`, which the site's build reads from main). Change a value here and all three
 //! follow. The system is described in `docs/design-system.md`.
 //!
-//! Cool neutrals in two appearances and one violet accent; Geist and Geist Mono only, bundled
-//! here under the SIL Open Font License (`fonts/OFL-Geist.txt`). Colours are `0xRRGGBB`; sizes
+//! Cool neutrals in two appearances and one violet accent; Geist and Geist Mono, bundled here
+//! under the SIL Open Font License (`fonts/OFL-Geist.txt`). The launcher's night look and its
+//! Bricolage Grotesque are in [`night`]. Colours are `0xRRGGBB`; sizes
 //! are in logical pixels.
 use std::fmt::Write as _;
 use std::time::Duration;
 
 pub const FONT: &str = "Geist";
 pub const MONO: &str = "Geist Mono";
+pub mod glass;
+pub mod night;
+
 /// The launcher's and the website's display face (headings, navigation, buttons, badges only):
 /// Pixelify Sans, bundled under the SIL Open Font License (`fonts/OFL-PixelifySans.txt`).
 pub const PIXEL: &str = "Pixelify Sans";
@@ -24,6 +28,81 @@ pub mod fonts {
     pub const PIXEL_MEDIUM: &[u8] = include_bytes!("../fonts/PixelifySans-Medium.ttf");
     pub const PIXEL_SEMIBOLD: &[u8] = include_bytes!("../fonts/PixelifySans-SemiBold.ttf");
     pub const PIXEL_BOLD: &[u8] = include_bytes!("../fonts/PixelifySans-Bold.ttf");
+    /// [`crate::night`]'s faces, cut from upstream's variable font by `tools/bake_bricolage.py`.
+    pub const BRICOLAGE_REGULAR: &[u8] = include_bytes!("../fonts/BricolageGrotesque-Regular.ttf");
+    pub const BRICOLAGE_MEDIUM: &[u8] = include_bytes!("../fonts/BricolageGrotesque-Medium.ttf");
+    pub const BRICOLAGE_SEMIBOLD: &[u8] =
+        include_bytes!("../fonts/BricolageGrotesque-SemiBold.ttf");
+    pub const BRICOLAGE_BOLD: &[u8] = include_bytes!("../fonts/BricolageGrotesque-Bold.ttf");
+    pub const BRICOLAGE_DISPLAY_BOLD: &[u8] =
+        include_bytes!("../fonts/BricolageGrotesqueDisplay-Bold.ttf");
+    /// The glass look's headings ([`crate::glass`]): SemiBold at optical sizes 56 and 28.
+    pub const BRICOLAGE_DISPLAY_SEMIBOLD: &[u8] =
+        include_bytes!("../fonts/BricolageGrotesqueDisplay-SemiBold.ttf");
+    pub const BRICOLAGE_HEADING_SEMIBOLD: &[u8] =
+        include_bytes!("../fonts/BricolageGrotesqueHeading-SemiBold.ttf");
+}
+
+/// The glass look's icons: Hugeicons' free set (MIT, `icons/glass/LICENSE-hugeicons.txt`), the
+/// ones the mockup uses, 24 unit outlines stroked 1.6 in `currentColor`, by Hugeicons' name
+/// (`"folder-01"`, `"more-vertical"`…). `github` is GitHub's mark, drawn for Horizon (filled,
+/// its cat cut out by a mask), beside the links to GitHub Sponsors.
+pub mod glass_icons {
+    macro_rules! icons {
+        ($($name:literal),* $(,)?) => {
+            /// Every icon, `(name, svg)`.
+            pub const ALL: &[(&str, &[u8])] = &[
+                $(($name, include_bytes!(concat!("../icons/glass/", $name, ".svg")))),*
+            ];
+        };
+    }
+    icons!(
+        "ai-chat-02",
+        "arrow-down-01",
+        "arrow-right-01",
+        "cancel-01",
+        "color-picker",
+        "computer",
+        "computer-terminal-01",
+        "copy-01",
+        "dashboard-square-01",
+        "delete-02",
+        "discord",
+        "download-04",
+        "earth",
+        "favourite",
+        "folder-01",
+        "game-controller-01",
+        "github",
+        "globe-02",
+        "image-01",
+        "information-circle",
+        "link-01",
+        "minus-sign",
+        "more-horizontal",
+        "more-vertical",
+        "package-01",
+        "pencil-edit-02",
+        "play",
+        "plus-sign",
+        "puzzle",
+        "refresh",
+        "search-01",
+        "sliders-horizontal",
+        "stop",
+        "tick-02",
+        "upload-04",
+        "user",
+        "user-add-01",
+        "user-multiple-02",
+        "view",
+        "view-off-slash",
+    );
+
+    /// The icon called `name`, if there is one.
+    pub fn get(name: &str) -> Option<&'static [u8]> {
+        ALL.iter().find(|(n, _)| *n == name).map(|(_, svg)| *svg)
+    }
 }
 
 /// The launcher's pixel icons: Pixelarticons (MIT, `icons/pixel/LICENSE-pixelarticons.txt`), 24
@@ -547,6 +626,10 @@ pub fn css() -> String {
             "  color-scheme: {};",
             if p.dark { "dark" } else { "light" }
         );
+        // The launcher's night look, for pages that wear it.
+        s.push_str(&if p.dark { night::NIGHT } else { night::DAWN }.css());
+        // The launcher's glass look, the same in both appearances.
+        s.push_str(&glass::Glass::default_look().css());
     };
     s.push_str(
         "/* Generated from crates/horizon-theme by `cargo run -p xtask -- tokens`; do not edit.\n   \
@@ -555,7 +638,10 @@ pub fn css() -> String {
     colors(&mut s, &BLOCKS_LIGHT);
     let _ = writeln!(
         s,
-        "  --font: \"{FONT}\", ui-sans-serif, system-ui, sans-serif;\n  --mono: \"{MONO}\", ui-monospace, monospace;\n  --pixel: \"{PIXEL}\", \"{FONT}\", ui-sans-serif, sans-serif;"
+        "  --font: \"{FONT}\", ui-sans-serif, system-ui, sans-serif;\n  --mono: \"{MONO}\", ui-monospace, monospace;\n  --pixel: \"{PIXEL}\", \"{FONT}\", ui-sans-serif, sans-serif;\n  --night-font: \"{}\", \"{FONT}\", ui-sans-serif, sans-serif;\n  --night-display-font: \"{}\", \"{}\", ui-sans-serif, sans-serif;",
+        night::FONT,
+        night::DISPLAY_FONT,
+        night::FONT
     );
     for (name, v) in [
         ("block-outline", BLOCK_OUTLINE),
@@ -564,7 +650,7 @@ pub fn css() -> String {
     ] {
         let _ = writeln!(s, "  --{name}: {}px;", num(v));
     }
-    for step in TYPE {
+    for step in TYPE.iter().chain(&night::TYPE) {
         let size = match step.web {
             Web::Fixed => format!("{}px", num(step.px)),
             Web::Fluid(min, max) => format!(
@@ -600,6 +686,9 @@ pub fn css() -> String {
         ("index", INDEX),
         ("plate-bleed", PLATE_BLEED),
         ("rise", RISE),
+        ("night-pixel-corner", night::PIXEL_CORNER),
+        ("night-radius-control", night::RADIUS_CONTROL),
+        ("night-play", night::PLAY),
     ] {
         let _ = writeln!(s, "  --{name}: {}px;", num(v));
     }
@@ -674,7 +763,12 @@ mod tests {
     /// main action's label too, and the focus ring (the accent) reaches 3:1 (WCAG 1.4.11).
     #[test]
     fn blocks_text_meets_wcag_aa_in_both_appearances() {
-        for p in [BLOCKS_DARK, BLOCKS_LIGHT] {
+        for p in [
+            BLOCKS_DARK,
+            BLOCKS_LIGHT,
+            night::NIGHT.blocks(),
+            night::DAWN.blocks(),
+        ] {
             let theme = if p.dark { "dark" } else { "light" };
             let backgrounds = [
                 ("page", p.page),

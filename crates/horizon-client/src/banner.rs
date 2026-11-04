@@ -92,9 +92,7 @@ impl Banners {
             });
         }
         banners.no_item_required = read_tag(root, "no_item_required", 0);
-        if let Some(raw) = fs::read(root.join("items.json")).ok().and_then(|b| {
-            serde_json::from_slice::<std::collections::BTreeMap<String, Value>>(&b).ok()
-        }) {
+        if let Ok(raw) = horizon_world::item_defaults::read(root) {
             for (item, c) in raw {
                 let id: Arc<str> = Arc::from(item.as_str());
                 if let Some(dye) = c["minecraft:dye"].as_str() {
@@ -263,7 +261,8 @@ mod tests {
             crate::item_data::OMINOUS_LAYERS.len()
         );
         assert!(tooltip_layers(&banner).is_empty());
-        banner.data_mut().custom_name = Some("Captain's Standard".into());
+        banner.data_mut().custom_name =
+            Some(horizon_world::nbt::Tag::String("Captain's Standard".into()));
         assert!(tooltip_layers(&banner).is_empty());
         banner.data_mut().ominous_banner = false;
         assert_eq!(tooltip_layers(&banner), layers(&banner));

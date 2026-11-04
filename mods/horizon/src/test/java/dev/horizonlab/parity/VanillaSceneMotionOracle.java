@@ -65,6 +65,7 @@ public final class VanillaSceneMotionOracle {
         @Override public void recordDamage(DamageSource source,float amount){actor.events.add(String.format("record-damage %08x",Float.floatToIntBits(amount)));}
     }
     static float single(JsonElement v){return Float.intBitsToFloat(Integer.parseUnsignedInt(v.getAsString(),16));}
+    static double dbl(JsonElement v){return Double.longBitsToDouble(Long.parseUnsignedLong(v.getAsString(),16));}
     static void write(Field f,Object o,Object value){try{f.set(o,value);}catch(Exception e){throw new AssertionError(e);}}
     static Field field(Class<?> c,String n)throws Exception{var f=c.getDeclaredField(n);f.setAccessible(true);return f;}
     static String blockPos(BlockPos p){return p.getX()+","+p.getY()+","+p.getZ();}
@@ -125,7 +126,20 @@ public final class VanillaSceneMotionOracle {
         @Override public void addParticle(net.minecraft.core.particles.ParticleOptions particle,double x,double y,double z,double xd,double yd,double zd){
             actor.events.add("splash-particle "+(particle==net.minecraft.core.particles.ParticleTypes.BUBBLE?"bubble":particle==net.minecraft.core.particles.ParticleTypes.SPLASH?"splash":"unknown")+" "+vectorBits(new Vec3(x,y,z))+" "+vectorBits(new Vec3(xd,yd,zd)));
         }
-        @Override public List<VoxelShape> getEntityCollisions(Entity e,AABB b){return List.of();}
+        // CollisionGetter.getEntityCollisions over the fixture's other entities,
+        // which the scene holds only as boxes: the 1e-7 query inflation, the
+        // degenerate-bounds shortcut and the per-entity shape, without needing
+        // Entity objects for bodies whose velocity the scene never compares.
+        // getPushableEntities stays empty: LivingEntity.pushEntities would push
+        // those bodies (and can cram the player), and the probe carries player
+        // state only, so the corpus does not claim the pushing half.
+        List<AABB> boxes=new ArrayList<>();
+        @Override public List<VoxelShape> getEntityCollisions(Entity e,AABB b){
+            if(b.getSize()<1e-7)return List.of();
+            var shapes=new ArrayList<VoxelShape>();
+            for(var box:boxes)if(box.intersects(b.inflate(1e-7)))shapes.add(Shapes.create(box));
+            return shapes;
+        }
         @Override public List<Entity> getPushableEntities(Entity e,AABB b){return List.of();}
         @Override public List<Entity> getEntities(Entity e,AABB b){return e!=actor&&b.intersects(actor.getBoundingBox())?List.of(actor):List.of();}
         @Override public WorldBorder getWorldBorder(){return border;}
@@ -391,6 +405,9 @@ public final class VanillaSceneMotionOracle {
                 items[healthKey.id()]=p.healthItem=new SynchedEntityData.DataItem<Float>(healthKey,1f);items[absorptionKey.id()]=p.absorptionItem=new SynchedEntityData.DataItem<Float>(absorptionKey,0f);
                 write(field(Entity.class,"entityData"),p,dataCtor.newInstance(p,items));p.setHealth(p.getMaxHealth());p.events.clear();level.time=0;level.rules.regenerate=true;level.difficulty=net.minecraft.world.Difficulty.NORMAL;
                 p.setDeltaMovement(Vec3.ZERO);p.setPos(VanillaSceneCollisionOracle.vector(row.get("position")));
+                // The fixture's other entities as boxes: min xyz then max xyz, exact bits.
+                level.boxes=new ArrayList<>();
+                if(row.has("entities"))for(var box:row.getAsJsonArray("entities")){var c=box.getAsJsonArray();level.boxes.add(new AABB(dbl(c.get(0)),dbl(c.get(1)),dbl(c.get(2)),dbl(c.get(3)),dbl(c.get(4)),dbl(c.get(5))));}
                 for(var value:row.getAsJsonArray("ops")){
                     var op=value.getAsJsonObject();switch(op.get("mode").getAsString()){
                         case "shift"->p.setShiftKeyDown(op.get("value").getAsBoolean());
@@ -461,7 +478,7 @@ public final class VanillaSceneMotionOracle {
                         case "frozen"->p.frozen=op.get("value").getAsInt();
                         case "portal_tick"->p.portalTick(op.get("creative").getAsBoolean());
                         case "weaving"->p.weaving=op.get("value").getAsBoolean();
-                        case "flying"->{var a=p.getAbilities();a.flying=op.get("value").getAsBoolean();a.mayfly=op.has("may_fly")?op.get("may_fly").getAsBoolean():a.flying;}
+                        case "flying"->{var a=p.getAbilities();a.flying=op.get("value").getAsBoolean();a.mayfly=op.has("may_fly")?op.get("may_fly").getAsBoolean():a.flying;if(op.has("speed"))a.setFlyingSpeed(single(op.get("speed")));}
                         case "trigger"->trigger.setInt(p,op.get("value").getAsInt());
                         case "delay"->delay.setInt(p,op.get("value").getAsInt());
                         case "ack_attributes"->{p.attrs.getAttributesToUpdate().clear();p.attrs.getAttributesToSync().clear();}

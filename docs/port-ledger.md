@@ -1,7 +1,7 @@
 # Port ledger
 
-`tools/port_ledger.py` lists every vanilla method next to the Horizon functions that port it, both ways, and
-points at the places where a port exists but isn't wired like vanilla. It answers the questions every parity
+`tools/port_ledger.py` lists every vanilla method beside the Horizon function that ports it, in both
+directions, and points at ports that exist but aren't wired like vanilla. It answers the questions every parity
 fix starts with, without searching:
 
 - where is vanilla's `Class.method` in Horizon (`where`), and which vanilla method does this Rust function
@@ -85,7 +85,7 @@ type where it is known (`self`, a parameter, a `let`, a struct field, a trait to
 
 | Kind | Means | Example it found |
 |---|---|---|
-| `seam` | A vanilla method ported on two paths (the in-frame game, the server-client side in `game/remote*.rs`, the server in `game/lan*.rs` and `src/lan/`), where one path reaches the port of a callee and the other doesn't. Single player runs on the server thread, so this is where most player-visible bugs sit; a gap on the old in-frame path sorts last. | `remote_use` ported `Minecraft.startUseItem` without `LocalPlayer.itemUsed`: the held block never dipped after a placement on a server |
+| `seam` | A vanilla method ported on more than one path (the shared game code the server runs for its players, the server-client side in `game/remote*.rs`, the server's network side in `game/lan*.rs` and `src/lan/`), where one path reaches the port of a callee and another doesn't. Single player runs on the server thread, so this is where most player-visible bugs sit. | `remote_use` ported `Minecraft.startUseItem` without `LocalPlayer.itemUsed`: the held block never dipped after a placement on a server |
 | `client` | A vanilla method with an effect only the client's copy of the world shows (`addParticle`, `playLocalSound`, `itemUsed`, an `isClientSide()` branch), whose port nothing in `game/remote*.rs` reaches. | `AbstractHorse.handleEating`'s happy-villager particle, drawn only on the server's level |
 | `drift` | A port that never names a sound, particle, item, block, effect or game event its vanilla method uses, or lacks one of its rare numbers. Names count however Rust spells them (`Sound::AnvilLand`, `"block.anvil.land"`). | `throw_ender_eye`, the port of `EnderEyeItem.use`, names neither the `used_ender_eye` trigger nor the `projectile_shoot` game event (a lead, not yet checked) |
 | `class` | A whole class nothing ports while most of its package is ported. Renderers, sound instances and goals are reached by registration, so no call graph shows them. | `ShulkerBulletRenderer`, `ElytraOnPlayerSoundInstance` |
@@ -122,6 +122,16 @@ survive edits around them; a row whose class, method or fn doesn't exist shows u
 at a time, with each class's Java source, home files, and Rust functions in them with similar names: the input
 for whoever (or whichever agent) writes the next batch file. Set `PORT_LEDGER_OUT` to build into another
 directory, so several people can check their own rows at once.
+
+## Parity harness coverage
+
+A mapped method says where the port is, not that it behaves like vanilla; the parity harnesses check that
+(`tools/test_*_parity.py`: a vanilla oracle in `mods/horizon/src/test/java/dev/horizonlab/parity/` and a Rust
+fixture or probe under `crates/*/examples/` run on the same inputs). The ledger links them: a harness covers a
+ported method when its fixture reaches the port and the vanilla side is in reach (the oracle calls into the
+method, or the harness or oracle names its class). `where` lists a method's harnesses, and
+`gaps --kind untested [--package world/entity]` lists the sure pairs (cited or mapped) with behaviour of their
+own that no harness covers, most-called first: where a new harness would catch the most drift.
 
 ## Bug reports and branches
 

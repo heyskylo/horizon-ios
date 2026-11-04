@@ -2,6 +2,7 @@
 //! strength, chests and carpets, taming by riding (maximum temper 30), the
 //! spit ranged attack, hunting wolves (and, for traders, zombies and
 //! illagers) and `LlamaModel`.
+use super::finalize::{Attr, set_base};
 use super::{
     Mob, MobEvent, MobWorld, Seen, Species, Who, equine,
     goals::{
@@ -103,7 +104,7 @@ pub fn finalize(m: &mut Mob) {
     let max = if r.next_float() < 0.04 { 5 } else { 3 };
     let strength = 1 + r.next_int_bound(max).unwrap_or(0);
     let variant = r.next_int_bound(4).unwrap_or(0);
-    m.attrs.max_health = health;
+    set_base(m, Attr::MaxHealth, f64::from(health));
     m.health = health;
     m.extra.variant2 = strength as u8;
     m.extra.variant = variant as u8;
@@ -170,10 +171,10 @@ pub fn breed_offspring(m: &mut Mob, partner: &Seen) -> Offspring {
 }
 /// The game makes the baby drawn by `breed_offspring`.
 pub fn apply_offspring(child: &mut Mob, o: &Offspring) {
-    child.attrs.max_health = o.max_health;
+    set_base(child, Attr::MaxHealth, f64::from(o.max_health));
     child.health = o.max_health;
     child.extra.vector[0] = o.jump;
-    child.attrs.speed = o.speed;
+    set_base(child, Attr::MovementSpeed, o.speed);
     child.extra.variant2 = o.strength;
     child.extra.variant = o.variant;
     if is_trader(child) {
@@ -244,7 +245,7 @@ fn spit(m: &mut Mob, who: Who, _power: f32, cx: &mut Cx) {
 /// `AbstractHorse.aiStep` for llamas, which never graze: the slow healing.
 pub fn ai_step(m: &mut Mob, w: &MobWorld) {
     if m.alive() && m.random.next_int_bound(900).unwrap_or(1) == 0 && m.death_time == 0 {
-        m.health = (m.health + 1.0).min(m.attrs.max_health);
+        m.heal(1.0);
     }
     if is_trader(m) {
         super::caravan::trader_llama_tick(m, w);
@@ -277,9 +278,9 @@ pub fn texture(m: &Mob) -> String {
     format!("entity/llama/llama_{coat}{baby}")
 }
 /// The carpet colour on the llama, if it wears one.
-fn carpet(m: &Mob) -> Option<&str> {
+pub(super) fn carpet(m: &Mob) -> Option<&str> {
     m.extra
-        .head
+        .body
         .as_deref()
         .and_then(|i| i.strip_prefix("minecraft:"))
         .and_then(|i| i.strip_suffix("_carpet"))

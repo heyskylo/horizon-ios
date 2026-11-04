@@ -20,7 +20,10 @@ import net.minecraft.world.item.ItemStack;
  * (FullTextSearchTree over creative tooltip lines and item ids, IdSearchTree
  * over item tags after "#").
  *
- *   VanillaCreativeSearchOracle QUERIES.json EXPORT.json OUT.json
+ *   VanillaCreativeSearchOracle QUERIES.json EXPORT.json OUT.json [permissions]
+ *
+ * With "permissions", the screen's tabs are built as for an operator in creative
+ * with the Operator Items Tab option on (CreativeModeInventoryScreen.hasPermissions).
  *
  * The queries are the file's list, then every search stack's item path and
  * tooltip lines and every item tag, each also as a prefix and with "#".
@@ -29,11 +32,12 @@ public final class VanillaCreativeSearchOracle {
     public static void main(String[] args) throws Exception {
         ParityData.init();
         var lookup = ParityData.lookup;
+        boolean hasPermissions = args.length > 3 && args[3].equals("permissions");
         Files.writeString(Path.of(args[1]),
-            VanillaCreativeTabsExporter.export(FeatureFlags.DEFAULT_FLAGS, VanillaCreativeTabsExporter.HAS_PERMISSIONS, lookup).toString(),
+            VanillaCreativeTabsExporter.export(FeatureFlags.DEFAULT_FLAGS, lookup).toString(),
             StandardCharsets.UTF_8);
         // CreativeModeInventoryScreen.tryRebuildTabContents, as the screen calls it.
-        CreativeModeTabs.tryRebuildTabContents(FeatureFlags.DEFAULT_FLAGS, VanillaCreativeTabsExporter.HAS_PERMISSIONS, lookup);
+        CreativeModeTabs.tryRebuildTabContents(FeatureFlags.DEFAULT_FLAGS, hasPermissions, lookup);
         List<ItemStack> searchItems = List.copyOf(CreativeModeTabs.searchTab().getDisplayItems());
         var trees = new SessionSearchTrees();
         trees.updateCreativeTooltips(lookup, searchItems);
@@ -45,7 +49,7 @@ public final class VanillaCreativeSearchOracle {
             var o = new JsonObject();
             o.addProperty("id", BuiltInRegistries.CREATIVE_MODE_TAB.getKey(tab).toString());
             o.addProperty("type", tab.getType().name());
-            o.addProperty("shown", tab.getType() != CreativeModeTab.Type.HOTBAR && tab.shouldDisplay());
+            o.addProperty("shown", tab.shouldDisplay());
             o.addProperty("title", tab.getDisplayName().getString());
             o.addProperty("icon", BuiltInRegistries.ITEM.getKey(tab.getIconItem().getItem()).toString());
             o.addProperty("row", tab.row().name());

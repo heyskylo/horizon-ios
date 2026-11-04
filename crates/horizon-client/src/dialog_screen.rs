@@ -5,8 +5,32 @@
 use crate::{
     dialog::{Body, Control, Dialog, Kind},
     font::Font,
-    text::Text,
+    text::{Style, Text},
 };
+
+/// `ActiveTextCollector.ClickableStyleFinder.accept`: the style under a drawn
+/// message glyph, using the same visual order and advances as rendering.
+pub fn line_style_at(
+    font: &Font,
+    text: &Text,
+    x: f32,
+    y: f32,
+    cursor: (f32, f32),
+) -> Option<Style> {
+    let mut left = cursor.0 - x;
+    if left < 0.0 || !(0.0..9.0).contains(&(cursor.1 - y)) {
+        return None;
+    }
+    let text = text.resolve_legacy();
+    let visual = crate::bidi::visual(&text);
+    for (c, style) in visual.chars() {
+        left -= font.advance(c, style);
+        if left < 0.0 {
+            return Some(style.clone());
+        }
+    }
+    None
+}
 
 /// `HeaderAndFooterLayout.DEFAULT_HEADER_AND_FOOTER_HEIGHT`.
 const BAR: f32 = 33.0;
@@ -31,6 +55,44 @@ pub enum Part {
     Check { input: usize, rect: [f32; 4] },
     /// A button of `Dialog::buttons`.
     Button { index: usize, rect: [f32; 4] },
+    /// A single option input's cycle button.
+    Cycle { input: usize, rect: [f32; 4] },
+    /// A number range input's slider.
+    Slider { input: usize, rect: [f32; 4] },
+    /// An item body's widget; `body` indexes `Dialog::body`.
+    Item { body: usize, rect: [f32; 4] },
+}
+impl Part {
+    /// The part moved by `(dx, dy)`.
+    fn moved(self, dx: f32, dy: f32) -> Self {
+        match self {
+            Self::Line(t, x, y) => Self::Line(t, x + dx, y + dy),
+            Self::Field { input, rect } => Self::Field {
+                input,
+                rect: shift(rect, dx, dy),
+            },
+            Self::Check { input, rect } => Self::Check {
+                input,
+                rect: shift(rect, dx, dy),
+            },
+            Self::Button { index, rect } => Self::Button {
+                index,
+                rect: shift(rect, dx, dy),
+            },
+            Self::Cycle { input, rect } => Self::Cycle {
+                input,
+                rect: shift(rect, dx, dy),
+            },
+            Self::Slider { input, rect } => Self::Slider {
+                input,
+                rect: shift(rect, dx, dy),
+            },
+            Self::Item { body, rect } => Self::Item {
+                body,
+                rect: shift(rect, dx, dy),
+            },
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -55,21 +117,7 @@ struct Element {
 impl Element {
     /// Its parts moved to `(x, y)`.
     fn at(self, x: f32, y: f32) -> impl Iterator<Item = Part> {
-        self.parts.into_iter().map(move |p| match p {
-            Part::Line(t, px, py) => Part::Line(t, px + x, py + y),
-            Part::Field { input, rect } => Part::Field {
-                input,
-                rect: shift(rect, x, y),
-            },
-            Part::Check { input, rect } => Part::Check {
-                input,
-                rect: shift(rect, x, y),
-            },
-            Part::Button { index, rect } => Part::Button {
-                index,
-                rect: shift(rect, x, y),
-            },
-        })
+        self.parts.into_iter().map(move |p| p.moved(x, y))
     }
 }
 fn shift([x, y, w, h]: [f32; 4], dx: f32, dy: f32) -> [f32; 4] {
@@ -100,36 +148,89 @@ fn message(font: &Font, contents: &Text, width: f32) -> Element {
     }
 }
 
-/// `InputControlHandlers`: the control for input `i`, if Horizon has it.
-fn input(font: &Font, i: usize, control: &Control) -> Option<Element> {
-    Some(match control {
+/// `DialogBodyHandlers.ItemHandler`: the item widget, with its description 2
+/// to the right of it, both centred on each other vertically.
+fn item(
+    font: &Font,
+    body: usize,
+    description: Option<&(Text, i32)>,
+    (w, h): (f32, f32),
+) -> Element {
+    let widget = |rect_h: f32, y: f32| Part::Item {
+        body,
+        rect: [0.0, y, w, rect_h],
+    };
+    let Some((contents, width)) = description else {
+        return Element {
+            w,
+            h,
+            parts: vec![widget(h, 0.0)],
+        };
+    };
+    let text = message(font, contents, *width as f32);
+    let height = h.max(text.h);
+    let mut parts = vec![widget(h, centre(height, h))];
+    parts.extend(
+        text.parts
+            .into_iter()
+            .map(|p| p.moved(w + 2.0, centre(height, text.h))),
+    );
+    Element {
+        w: w + 2.0 + text.w,
+        h: height,
+        parts,
+    }
+}
+
+/// `TextInputHandler.addControl`: the 20 high `EditBox`, or the
+/// `MultiLineEditBox` of the options' height, by default as tall as their most
+/// lines (4 without a limit) need, at most 512.
+pub fn text_height(multiline: Option<(Option<i32>, Option<i32>)>) -> f32 {
+    match multiline {
+        None => 20.0,
+        Some((max_lines, height)) => {
+            height.unwrap_or_else(|| (9 * max_lines.unwrap_or(4) + 8).min(512)) as f32
+        }
+    }
+}
+
+/// `InputControlHandlers`: the control for input `i`.
+fn input(font: &Font, i: usize, control: &Control) -> Element {
+    match control {
         Control::Text {
             width,
             label,
             label_visible,
+            multiline,
             ..
         } => {
             let w = *width as f32;
+            let h = text_height(*multiline);
             if !label_visible {
-                return Some(Element {
+                return Element {
                     w,
-                    h: 20.0,
+                    h,
                     parts: vec![Part::Field {
                         input: i,
-                        rect: [0.0, 0.0, w, 20.0],
+                        rect: [0.0, 0.0, w, h],
                     }],
-                });
+                };
             }
             // CommonLayouts.labeledElement: the label, 4 below it the box,
-            // both on the left.
+            // both on the left. The label is a plain StringWidget: it has no
+            // click handler, so a click event in it does nothing.
+            let mut shown = label.clone();
+            for span in &mut shown.spans {
+                span.style.click = None;
+            }
             Element {
                 w: w.max(font.width_text(label)),
-                h: 9.0 + 4.0 + 20.0,
+                h: 9.0 + 4.0 + h,
                 parts: vec![
-                    Part::Line(label.clone(), 0.0, 0.0),
+                    Part::Line(shown, 0.0, 0.0),
                     Part::Field {
                         input: i,
-                        rect: [0.0, 13.0, w, 20.0],
+                        rect: [0.0, 13.0, w, h],
                     },
                 ],
             }
@@ -145,8 +246,25 @@ fn input(font: &Font, i: usize, control: &Control) -> Option<Element> {
                 }],
             }
         }
-        Control::SingleOption { .. } | Control::NumberRange { .. } => return None,
-    })
+        // CycleButton and AbstractSliderButton: one 20 high button whose
+        // message holds the label.
+        Control::SingleOption { width, .. } => Element {
+            w: *width as f32,
+            h: 20.0,
+            parts: vec![Part::Cycle {
+                input: i,
+                rect: [0.0, 0.0, *width as f32, 20.0],
+            }],
+        },
+        Control::NumberRange { width, .. } => Element {
+            w: *width as f32,
+            h: 20.0,
+            parts: vec![Part::Slider {
+                input: i,
+                rect: [0.0, 0.0, *width as f32, 20.0],
+            }],
+        },
+    }
 }
 
 /// `DialogScreen.packControlsIntoColumns`: full rows in a grid 2 apart, what
@@ -210,9 +328,20 @@ impl Layout {
         let mut elements: Vec<Element> = dialog
             .body
             .iter()
-            .filter_map(|b| match b {
-                Body::Message { contents, width } => Some(message(font, contents, *width as f32)),
-                Body::Item { .. } => None,
+            .enumerate()
+            .map(|(i, b)| match b {
+                Body::Message { contents, width } => message(font, contents, *width as f32),
+                Body::Item {
+                    description,
+                    width,
+                    height,
+                    ..
+                } => item(
+                    font,
+                    i,
+                    description.as_ref(),
+                    (*width as f32, *height as f32),
+                ),
             })
             .collect();
         elements.extend(
@@ -220,26 +349,24 @@ impl Layout {
                 .inputs
                 .iter()
                 .enumerate()
-                .filter_map(|(i, input_)| input(font, i, &input_.control)),
+                .map(|(i, input_)| input(font, i, &input_.control)),
         );
         let buttons = dialog.buttons();
         let (listed, footer_buttons, footer_h) = match &dialog.kind {
             Kind::MultiAction {
-                actions,
-                exit,
-                columns: n,
+                exit, columns: n, ..
+            }
+            | Kind::DialogList {
+                exit, columns: n, ..
             } => {
-                let widths: Vec<f32> = actions.iter().map(|b| b.width as f32).collect();
+                let listed = buttons.len() - usize::from(exit.is_some());
+                let widths: Vec<f32> = buttons[..listed].iter().map(|b| b.width as f32).collect();
                 elements.push(columns(&widths, *n as usize, 0));
                 // ButtonListDialogScreen: the exit button in the footer, else a 5 high one.
-                let footer = exit.as_ref().map(|_| actions.len()).into_iter().collect();
-                (
-                    actions.len(),
-                    footer,
-                    if exit.is_some() { BAR } else { 5.0 },
-                )
+                let footer = exit.as_ref().map(|_| listed).into_iter().collect();
+                (listed, footer, if exit.is_some() { BAR } else { 5.0 })
             }
-            Kind::ServerLinks { exit, .. } | Kind::DialogList { exit, .. } => {
+            Kind::ServerLinks { exit, .. } => {
                 let footer = exit.as_ref().map(|_| 0).into_iter().collect();
                 (0, footer, if exit.is_some() { BAR } else { 5.0 })
             }
@@ -303,24 +430,10 @@ impl Layout {
     /// whether it is in the body (clipped to its area).
     pub fn placed(&self, scroll: f32) -> impl Iterator<Item = (Part, bool)> + '_ {
         let dy = self.area[1] - scroll;
-        let body = self.body.iter().map(move |p| {
-            let p = match p.clone() {
-                Part::Line(t, x, y) => Part::Line(t, x, y + dy),
-                Part::Field { input, rect } => Part::Field {
-                    input,
-                    rect: shift(rect, 0.0, dy),
-                },
-                Part::Check { input, rect } => Part::Check {
-                    input,
-                    rect: shift(rect, 0.0, dy),
-                },
-                Part::Button { index, rect } => Part::Button {
-                    index,
-                    rect: shift(rect, 0.0, dy),
-                },
-            };
-            (p, true)
-        });
+        let body = self
+            .body
+            .iter()
+            .map(move |p| (p.clone().moved(0.0, dy), true));
         body.chain(self.footer.iter().map(|p| (p.clone(), false)))
     }
 }
@@ -345,6 +458,52 @@ mod tests {
     use super::*;
 
     #[test]
+    fn message_hit_testing_respects_sprite_advances_and_glyph_bounds() {
+        use crate::{component, hud::Rect, text::ClickEvent};
+        let font = Font::load(
+            std::path::Path::new("/nonexistent-horizon-dialog-test-resources"),
+            &std::collections::HashMap::new(),
+            &[],
+            (1, 1),
+            (0, 0),
+            Rect {
+                u0: 0.0,
+                v0: 0.0,
+                u1: 1.0,
+                v1: 1.0,
+                w: 1,
+                h: 1,
+            },
+        );
+        let text = component::to_text(
+            &serde_json::json!([
+                {"object": "atlas", "sprite": "minecraft:item/potion"},
+                {"object": "atlas", "sprite": "minecraft:item/potion", "click_event": {
+                    "action": "custom", "id": "test:shop"
+                }},
+                {"object": "atlas", "sprite": "minecraft:item/potion"},
+            ]),
+            &mut |_| Text::empty(),
+        );
+        let style = |x, y| line_style_at(&font, &text, 10.0, 20.0, (x, y));
+        assert!(style(9.9, 20.0).is_none());
+        assert_eq!(style(17.9, 20.0).unwrap().click, None);
+        for x in [18.0, 21.0, 25.9] {
+            assert_eq!(
+                style(x, 24.0).unwrap().click,
+                Some(ClickEvent::Custom {
+                    id: "test:shop".into(),
+                    payload: None,
+                })
+            );
+        }
+        assert_eq!(style(26.0, 20.0).unwrap().click, None);
+        assert!(style(34.0, 20.0).is_none());
+        assert!(style(21.0, 19.9).is_none());
+        assert!(style(21.0, 29.0).is_none());
+    }
+
+    #[test]
     fn grids_pack_full_rows_and_centre_the_rest() {
         // AuthMe's two buttons: one row, 2 apart.
         let two = columns(&[150.0, 150.0], 2, 0);
@@ -362,6 +521,17 @@ mod tests {
         // One in two columns spreads over both.
         let one = columns(&[100.0], 2, 0);
         assert_eq!(one.w, 100.0);
+    }
+
+    #[test]
+    fn a_multiline_input_is_as_tall_as_its_lines_or_its_height() {
+        assert_eq!(text_height(None), 20.0);
+        // No options: four lines and the padding.
+        assert_eq!(text_height(Some((None, None))), 44.0);
+        assert_eq!(text_height(Some((Some(10), None))), 98.0);
+        // Never over 512; a height wins over the lines.
+        assert_eq!(text_height(Some((Some(100), None))), 512.0);
+        assert_eq!(text_height(Some((Some(2), Some(70)))), 70.0);
     }
 
     #[test]

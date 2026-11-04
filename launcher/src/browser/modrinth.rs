@@ -42,6 +42,8 @@ pub(super) fn facets(query: &Query) -> String {
         None => {}
     }
     let loaders: Vec<String> = match &f.loader {
+        // Quilt loads Fabric mods: what runs on Quilt.
+        Some(l) if l == "quilt" => vec!["categories:quilt".into(), "categories:fabric".into()],
         Some(l) => vec![format!("categories:{l}")],
         None => details::default_loaders(query.kind)
             .iter()
@@ -178,6 +180,20 @@ pub fn version_files(version: &str) -> Result<Vec<FileRef>, String> {
     parse_version(&v)
         .map(|v| v.files)
         .ok_or_else(|| format!("Modrinth: no version {version}."))
+}
+
+/// Projects' icons in one request (`GET /projects?ids=[…]`, at most 100 ids): id → icon URL, for
+/// those that have one.
+pub fn icons(ids: &[String]) -> Result<Vec<(String, String)>, String> {
+    let ids = &ids[..ids.len().min(100)];
+    let list = serde_json::to_string(ids).map_err(|e| e.to_string())?;
+    let v = get(&format!("{API}/projects?ids={}", encode(&list)))?;
+    Ok(v.as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|p| Some((text(&p["id"]), p["icon_url"].as_str()?.to_owned())))
+        .filter(|(id, url)| !id.is_empty() && !url.is_empty())
+        .collect())
 }
 
 impl Source for Modrinth {

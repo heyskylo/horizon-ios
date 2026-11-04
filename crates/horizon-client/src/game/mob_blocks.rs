@@ -1,7 +1,6 @@
 //! Blocks mobs carry: block items in a hand (`ItemInHandLayer`) and the
-//! block an enderman holds (`CarriedBlockLayer`), drawn as shaded cubes like
-//! dropped block items. Also the block models mobs wear (`SnowGolemHeadLayer`,
-//! `MushroomCowMushroomLayer`).
+//! block state an enderman holds (`CarriedBlockLayer`). Also the block
+//! models mobs wear (`SnowGolemHeadLayer`, `MushroomCowMushroomLayer`).
 use super::Game;
 use horizon_client::{
     items::ItemStack,
@@ -9,44 +8,36 @@ use horizon_client::{
     mobs::{Mob, Species, render},
 };
 
-/// The six faces of the unit cube with their shade: top, bottom, the two
-/// z faces, the two x faces.
-const FACES: [([[f32; 3]; 4], f32, u8); 6] = [
-    (
-        [[0., 1., 1.], [1., 1., 1.], [1., 1., 0.], [0., 1., 0.]],
-        1.0,
-        0,
-    ),
-    (
-        [[0., 0., 0.], [1., 0., 0.], [1., 0., 1.], [0., 0., 1.]],
-        0.5,
-        0,
-    ),
-    (
-        [[1., 0., 0.], [0., 0., 0.], [0., 1., 0.], [1., 1., 0.]],
-        0.8,
-        1,
-    ),
-    (
-        [[0., 0., 1.], [1., 0., 1.], [1., 1., 1.], [0., 1., 1.]],
-        0.8,
-        1,
-    ),
-    (
-        [[0., 0., 0.], [0., 0., 1.], [0., 1., 1.], [0., 1., 0.]],
-        0.6,
-        2,
-    ),
-    (
-        [[1., 0., 1.], [1., 0., 0.], [1., 1., 0.], [1., 1., 1.]],
-        0.6,
-        2,
-    ),
-];
-/// The sprites of a cube's top, z sides and x sides, and the top's tint.
-struct Cube<'a> {
-    sprites: [&'a str; 3],
-    tint: u32,
+/// `CarriedBlockLayer.submit`: block models use coordinates in [0, 1].
+fn carried_block_matrix(base: glam::Mat4) -> glam::Mat4 {
+    base * glam::Mat4::from_translation(glam::Vec3::new(0.0, 0.6875, -0.75))
+        * glam::Mat4::from_rotation_x(20.0f32.to_radians())
+        * glam::Mat4::from_rotation_y(45.0f32.to_radians())
+        * glam::Mat4::from_translation(glam::Vec3::new(0.25, 0.1875, 0.25))
+        * glam::Mat4::from_scale(glam::Vec3::new(-0.5, -0.5, 0.5))
+        * glam::Mat4::from_rotation_y(90.0f32.to_radians())
+}
+
+/// Drops the quads of `out[first..]` whose face normal points away from the eye, which
+/// is the origin of camera-relative vertices. Each quad is four vertices carrying its
+/// face normal in `Vertex::normal`, as `block_model_vertices` writes for diffuse faces.
+fn cull_back_quads(out: &mut Vec<Vertex>, first: usize) {
+    let mut kept = first;
+    for quad in (first..out.len()).step_by(4) {
+        let vertices = &out[quad..quad + 4];
+        let n = vertices[0].normal;
+        let normal = glam::Vec3::new(f32::from(n[0]), f32::from(n[1]), f32::from(n[2]));
+        let centre = vertices.iter().fold(glam::Vec3::ZERO, |sum, v| {
+            sum + glam::Vec3::from_array(v.pos)
+        }) * 0.25;
+        // The eye is at the origin: the face is seen from its front when the eye is on the
+        // side its normal points to, that is when `normal . (eye - centre) > 0`.
+        if normal.dot(centre) < 0.0 {
+            out.copy_within(quad..quad + 4, kept);
+            kept += 4;
+        }
+    }
+    out.truncate(kept);
 }
 
 /// `CustomHeadLayer.translateToHead` and the banner's `head` display.
@@ -59,6 +50,24 @@ fn banner_matrix(head: glam::Mat4) -> glam::Mat4 {
         * glam::Mat4::from_scale(glam::Vec3::splat(1.5))
         * glam::Mat4::from_translation(glam::Vec3::new(0.0, -0.5, 0.0))
         * glam::Mat4::from_scale(glam::Vec3::new(2.0 / 3.0, -2.0 / 3.0, -2.0 / 3.0))
+}
+
+/// `BlockDecorationLayer.submit` and `CopperGolemModel.applyBlockOnAntennaTransform`, then the
+/// block model's own display transformation, which `BlockModelRenderState.submitModel` post-multiplies.
+fn antenna_block_matrix(head: glam::Mat4, flowerbed_shift: bool) -> glam::Mat4 {
+    // UNIT_CUBE_BOTTOM_CENTER_TO_ANTENNA_CENTER: translation(-0.5, 0, -0.5)
+    // then rotateAround(Z 180, 0.5, 0.5, 0.5), which JOML post-multiplies.
+    let unit = glam::Mat4::from_translation(glam::Vec3::new(-0.5, 0.0, -0.5))
+        * glam::Mat4::from_translation(glam::Vec3::splat(0.5))
+        * glam::Mat4::from_rotation_z(180.0f32.to_radians())
+        * glam::Mat4::from_translation(glam::Vec3::splat(-0.5));
+    let t = head * glam::Mat4::from_translation(glam::Vec3::new(0.0, -1.75, 0.0)) * unit;
+    if flowerbed_shift {
+        // `BuiltInBlockModels.createFlowerBedModel`'s Transformation(0.25, 0, 0.25).
+        t * glam::Mat4::from_translation(glam::Vec3::new(0.25, 0.0, 0.25))
+    } else {
+        t
+    }
 }
 
 /// `ElderGuardianParticle.lifetime`.
@@ -128,18 +137,11 @@ impl Game<'_> {
         light: u32,
         out: &mut Vec<Vertex>,
     ) {
-        use horizon_client::mobs::{Part, anim::Poses, load_model};
-        static MODELS: std::sync::OnceLock<Option<(Part, Part)>> = std::sync::OnceLock::new();
+        use horizon_client::mobs::anim::Poses;
         if !horizon_client::mobs::raider::is_captain(mob) {
             return;
         }
-        let Some((pole, flag)) = MODELS.get_or_init(|| {
-            let root = &self.options.resources;
-            Some((
-                load_model(root, "minecraft:standing_banner#main")?,
-                load_model(root, "minecraft:standing_banner#flag")?,
-            ))
-        }) else {
+        let Some((pole, flag)) = &self.entity_models.banner else {
             return;
         };
         let Some(head) =
@@ -178,38 +180,6 @@ impl Game<'_> {
             render::draw(flag, m, &flag_poses, r, color, light, 0, out);
         }
     }
-    fn push_cube(
-        &self,
-        t: glam::Mat4,
-        cube: &Cube,
-        light: u32,
-        overlay: u32,
-        out: &mut Vec<Vertex>,
-    ) {
-        for (corners, shade, side) in FACES {
-            let name = cube.sprites[usize::from(side)];
-            let Some(r) = self.gui.atlas.sprites.get(name).copied() else {
-                continue;
-            };
-            let tint = if side == 0 { cube.tint } else { 0xFF_FFFF };
-            let c = |sft: u32| (((tint >> sft) & 255) as f32 * shade) as u32;
-            let color = 0xFF00_0000 | c(0) << 16 | c(8) << 8 | c(16);
-            let uvs = [[r.u0, r.v1], [r.u1, r.v1], [r.u1, r.v0], [r.u0, r.v0]];
-            for (corner, uv) in corners.iter().zip(uvs) {
-                let p = t.transform_point3(glam::Vec3::from(*corner));
-                out.push(Vertex {
-                    normal: [0; 4],
-                    pos: p.to_array(),
-                    uv,
-                    layer: overlay,
-                    color,
-                    light,
-
-                    glint_uv: [0.0, 0.0],
-                });
-            }
-        }
-    }
     /// The blocks one mob holds or carries.
     pub(super) fn mob_block_geometry(
         &self,
@@ -217,36 +187,122 @@ impl Game<'_> {
         camera: glam::DVec3,
         alpha: f64,
         light: u32,
+        skin: Option<&mut super::creatures::Skinned>,
         out: &mut Vec<Vertex>,
     ) {
         self.captain_banner_geometry(mob, camera, alpha, light, out);
-        self.held_item_geometry(mob, camera, alpha, light, true, out);
+        self.held_item_geometry(mob, camera, alpha, light, true, skin, out);
         self.worn_block_geometry(mob, camera, alpha, light, out);
+        self.head_item_geometry(mob, camera, alpha, light, true, out);
+        self.golem_flower_geometry(mob, camera, alpha, light, out);
+        self.antenna_block_geometry(mob, camera, alpha, light, out);
         if mob.species() == Species::Enderman
             && let Some(state) = mob.extra.carried
-            && let Some((sprite, tint)) = self.block_face_sprite(state)
         {
-            // CarriedBlockLayer: OverlayTexture.NO_OVERLAY, never the hurt tint.
+            // CarriedBlockLayer: OverlayTexture.NO_OVERLAY, never the hurt tint;
+            // the block's baked model (seed 42) on the unit cube, not centred.
             let base = render::base_transform(mob, alpha as f32, camera);
-            let t = base
-                * glam::Mat4::from_translation(glam::Vec3::new(0.0, 0.6875, -0.75))
-                * glam::Mat4::from_rotation_x(20.0f32.to_radians())
-                * glam::Mat4::from_rotation_y(45.0f32.to_radians())
-                * glam::Mat4::from_translation(glam::Vec3::new(0.25, 0.1875, 0.25))
-                * glam::Mat4::from_scale(glam::Vec3::new(-0.5, -0.5, 0.5))
-                * glam::Mat4::from_rotation_y(90.0f32.to_radians())
-                * glam::Mat4::from_translation(glam::Vec3::splat(-0.5));
-            self.push_cube(
-                t,
-                &Cube {
-                    sprites: [&sprite, &sprite, &sprite],
-                    tint,
-                },
-                light,
-                0,
-                out,
-            );
+            let t = carried_block_matrix(base);
+            // Preserve cross models (flowers, fungi) and state properties (facing).
+            let first = out.len();
+            self.block_model_vertices(state, 42, t, light, true, out);
+            // The carried block uses the item cutout render type, which culls back faces
+            // (RenderPipelines.ITEM_CUTOUT). Without that, both coplanar sides of a cross
+            // model are drawn and flicker. CULL_BACK would drop them too, but it turns off
+            // the normal lighting this model needs.
+            cull_back_quads(out, first);
         }
+    }
+    /// `BlockDecorationLayer.submit`: the block item in a copper golem's
+    /// antenna slot (a flower, or any block item), drawn at the antenna by
+    /// `CopperGolemModel.applyBlockOnAntennaTransform` with `NO_OVERLAY`. Only
+    /// the block's default state with the item's `block_state` component
+    /// applied (`BlockItemStateProperties.apply`).
+    fn antenna_block_geometry(
+        &self,
+        mob: &Mob,
+        camera: glam::DVec3,
+        alpha: f64,
+        light: u32,
+        out: &mut Vec<Vertex>,
+    ) {
+        if mob.species() != Species::CopperGolem || horizon_client::mobs::trader::is_invisible(mob)
+        {
+            return;
+        }
+        let Some(stack) = mob.saddle_item() else {
+            return;
+        };
+        let Some(mut state) = self.pack.assets.registry.default_state(&stack.item) else {
+            return;
+        };
+        // CopperGolemRenderer.extractRenderState: blockItemState.apply, one
+        // property at a time; a property the block lacks or a value it
+        // cannot take leaves the state as it was.
+        if let Some(horizon_world::nbt::Tag::Compound(saved)) =
+            stack.data().and_then(|d| d.other("minecraft:block_state"))
+        {
+            for (k, v) in saved.iter() {
+                let horizon_world::nbt::Tag::String(v) = v else {
+                    continue;
+                };
+                let (k, v) = (k.to_string_lossy(), v.to_string_lossy());
+                let has = self
+                    .pack
+                    .assets
+                    .registry
+                    .state(state)
+                    .is_some_and(|s| s.properties.contains_key(&*k));
+                if has && let Some(next) = self.with_props(state, &[(&*k, &*v)]) {
+                    state = next;
+                }
+            }
+        }
+        let Some(head) =
+            render::part_transform(mob, alpha as f32, camera, self.res.mob_data(), "head")
+        else {
+            return;
+        };
+        // Only wildflowers and pink petals carry the flowerbed display shift.
+        let flowerbeds = matches!(
+            &*stack.item,
+            "minecraft:wildflowers" | "minecraft:pink_petals"
+        );
+        let t = antenna_block_matrix(head, flowerbeds);
+        self.block_model_vertices(state, 42, t, light, true, out);
+    }
+    /// `IronGolemFlowerLayer`: the poppy in the right arm while the golem
+    /// offers it (`getOfferFlowerTick() > 0`), drawn with `NO_OVERLAY`.
+    fn golem_flower_geometry(
+        &self,
+        mob: &Mob,
+        camera: glam::DVec3,
+        alpha: f64,
+        light: u32,
+        out: &mut Vec<Vertex>,
+    ) {
+        use glam::{Mat4, Vec3};
+        if mob.species() != Species::IronGolem
+            || mob.extra.counter <= 0
+            || horizon_client::mobs::trader::is_invisible(mob)
+        {
+            return;
+        }
+        let Some(state) = self.pack.assets.registry.default_state("minecraft:poppy") else {
+            return;
+        };
+        let Some(arm) =
+            render::part_transform(mob, alpha as f32, camera, self.res.mob_data(), "right_arm")
+        else {
+            return;
+        };
+        let t = arm
+            * Mat4::from_translation(Vec3::new(-1.1875, 1.0625, -0.9375))
+            * Mat4::from_translation(Vec3::splat(0.5))
+            * Mat4::from_scale(Vec3::splat(0.5))
+            * Mat4::from_rotation_x((-90.0f32).to_radians())
+            * Mat4::from_translation(Vec3::splat(-0.5));
+        self.block_model_vertices(state, 42, t, light, true, out);
     }
     /// `SnowGolemHeadLayer` and `MushroomCowMushroomLayer`: the carved pumpkin
     /// on a snow golem's head, and the mushrooms on an adult mooshroom's back
@@ -321,6 +377,7 @@ impl Game<'_> {
     /// `ItemInHandLayer`: both hands through the item model pipeline; `lit`
     /// applies the level's diffuse lighting (off for GUI previews, which
     /// light the projected quads themselves).
+    /// `skin`: the mob's GPU path draws, which a lit item joins when it can.
     pub(super) fn held_item_geometry(
         &self,
         mob: &Mob,
@@ -328,15 +385,26 @@ impl Game<'_> {
         alpha: f64,
         light: u32,
         lit: bool,
+        mut skin: Option<&mut super::creatures::Skinned>,
         out: &mut Vec<Vertex>,
     ) {
         // ItemInHandLayer submits with OverlayTexture.NO_OVERLAY: no hurt tint.
         for (item, off_hand) in [(&mob.extra.main_hand, false), (&mob.extra.off_hand, true)] {
             let Some(item) = item else { continue };
             let left = off_hand != mob.main_arm_left();
-            let Some(t) =
+            // PlayerItemInHandLayer.submitArmWithItem (avatars only): a spyglass
+            // in use, with no swing in progress, is held to the eye (`heldOnHead`).
+            let spyglass_to_eye = &**item == "minecraft:spyglass"
+                && (&*mob.kind.id == "minecraft:player" || mob.species() == Species::Mannequin)
+                && off_hand == mob.extra.using_off_hand
+                && mob.extra.using_item > 0
+                && horizon_client::mobs::anim::state(mob, alpha as f32).swing < 1.0e-5;
+            let t = if spyglass_to_eye {
+                render::held_to_eye_matrix(mob, alpha as f32, camera, self.res.mob_data(), left)
+            } else {
                 render::held_item_transform(mob, alpha as f32, camera, self.res.mob_data(), left)
-            else {
+            };
+            let Some(t) = t else {
                 continue;
             };
             let slot = if off_hand {
@@ -357,8 +425,20 @@ impl Game<'_> {
                     continue;
                 };
                 stack.clone()
+            } else if mob.species() == Species::Witch
+                && horizon_client::mobs::witch::holds_potion(item)
+                && &**item != "minecraft:potion"
+            {
+                // A drinking witch's main hand holds the potion's type, drawn as a potion item.
+                ItemStack::new("minecraft:potion", 1).with_potion(item)
             } else {
-                ItemStack::new(item, 1)
+                // The stack the equipment packet (or the mob's own AI) left:
+                // its components are what the item model reads, a loaded
+                // crossbow's `charged_projectiles` included.
+                let Some(stack) = render::held_item_stack(&mob.extra, off_hand) else {
+                    continue;
+                };
+                stack
             };
             if !local_player && horizon_client::mobs::gear::enchanted(mob, slot) {
                 // The gear's enchantments are not tracked, only that it has some.
@@ -387,19 +467,315 @@ impl Game<'_> {
                 owner.crossbow_charge_duration = 25;
             }
             use horizon_assets::item_model::DisplayContext as Context;
-            // PandaHoldsItemLayer shows the item as it lies on the ground.
+            // PandaHoldsItemLayer, FoxHeldItemLayer and DolphinCarryingItemLayer
+            // show the item as it lies on the ground.
             let (context, ordinal) = match (mob.species(), left) {
-                (Species::Panda, _) => (Context::Ground, 7),
+                // The spyglass held to the eye is the HEAD display.
+                _ if spyglass_to_eye => (Context::Head, 5),
+                (Species::Panda | Species::Fox | Species::Witch | Species::Dolphin, _) => {
+                    (Context::Ground, 7)
+                }
                 (_, true) => (Context::ThirdPersonLeftHand, 1),
                 (_, false) => (Context::ThirdPersonRightHand, 2),
             };
             // `updateForLiving`: seeded by the entity id plus the context ordinal.
             let seed = mob.id as i32 + ordinal;
-            let state = self.resolve_item(&stack, context, Some(&owner), seed);
+            let hand = if off_hand {
+                horizon_client::cit::Hand::Off
+            } else {
+                horizon_client::cit::Hand::Main
+            };
+            let state = self.resolve_item_in_hand(&stack, context, Some(&owner), seed, hand);
+            if lit
+                && let Some(skinned) = skin.as_deref_mut()
+                && self.skin_item_into(&state, t, light, skinned)
+            {
+                continue;
+            }
             if lit {
                 self.submit_item_world(&state, t, light, out);
             } else {
                 self.submit_item_unlit(&state, t, light, out);
+            }
+        }
+    }
+    /// `CustomHeadLayer`: non-armour items worn in the head slot (carved
+    /// pumpkins, mob skulls and player heads, or custom blocks) on players
+    /// and mobs.
+    pub(super) fn head_item_geometry(
+        &self,
+        mob: &Mob,
+        camera: glam::DVec3,
+        alpha: f64,
+        light: u32,
+        lit: bool,
+        out: &mut Vec<Vertex>,
+    ) {
+        // The layer also draws on an invisible mob.
+        let species = mob.species();
+        if species == Species::SnowGolem
+            || horizon_client::mobs::species::body_slot(species)
+            || horizon_client::mobs::equine::is_equine(species)
+            || horizon_client::mobs::raider::is_captain(mob)
+        {
+            return;
+        }
+        let local_player = self
+            .player_model
+            .as_ref()
+            .is_some_and(|p| p.id == mob.id && p.kind.id == mob.kind.id);
+        let mut stack = if local_player {
+            let Some(stack) = &self.armor[0] else { return };
+            stack.clone()
+        } else if let Some(stack) = &mob.extra.armor[0] {
+            stack.clone()
+        } else if let Some(head) = &mob.extra.head {
+            ItemStack::new(head, 1)
+        } else {
+            return;
+        };
+        // Helmets are drawn by HumanoidArmorLayer, not CustomHeadLayer.
+        if self
+            .res
+            .items()
+            .get(&stack.item)
+            .and_then(|i| i.equip_asset.as_ref())
+            .is_some()
+        {
+            return;
+        }
+        if !local_player
+            && horizon_client::mobs::gear::enchanted(mob, horizon_client::mobs::gear::HEAD)
+        {
+            stack.enchant("minecraft:unbreaking", 1);
+        }
+        let Some(head) =
+            render::part_transform(mob, alpha as f32, camera, self.res.mob_data(), "head")
+        else {
+            return;
+        };
+        if let Some(kind) = super::armor_stands::skull_kind(&stack.item) {
+            // Only the renderers that add a `CustomHeadLayer` draw a skull:
+            // the humanoid mobs, the illagers, the villagers, the copper golem
+            // and the avatars.
+            if !(&*mob.kind.id == "minecraft:player"
+                || matches!(
+                    species,
+                    Species::Zombie
+                        | Species::Husk
+                        | Species::Drowned
+                        | Species::ZombieVillager
+                        | Species::Skeleton
+                        | Species::Stray
+                        | Species::Bogged
+                        | Species::Parched
+                        | Species::WitherSkeleton
+                        | Species::Piglin
+                        | Species::PiglinBrute
+                        | Species::ZombifiedPiglin
+                        | Species::Pillager
+                        | Species::Vindicator
+                        | Species::Evoker
+                        | Species::Illusioner
+                        | Species::Villager
+                        | Species::WanderingTrader
+                        | Species::CopperGolem
+                        | Species::Mannequin
+                ))
+            {
+                return;
+            }
+            // translateToHead, the renderer's `skullYOffset` (the villager's
+            // `CUSTOM_HEAD_TRANSFORMS`), then the skull's SKULL_SCALE.
+            let y_offset = if species == Species::Villager {
+                -0.074_218_75
+            } else {
+                0.0
+            };
+            let pose = head
+                * glam::Mat4::from_translation(glam::Vec3::new(0.0, y_offset, 0.0))
+                * glam::Mat4::from_scale(glam::Vec3::splat(1.1875));
+            let special = horizon_assets::item_model::SpecialModel {
+                kind: if kind == "player" {
+                    horizon_assets::item_model::SpecialKind::PlayerHead
+                } else {
+                    horizon_assets::item_model::SpecialKind::Head {
+                        kind: kind.to_owned(),
+                        texture: None,
+                        animation: worn_head_animation(
+                            mob,
+                            // The local player's synthetic mob carries no `mount`.
+                            mob.extra
+                                .mount
+                                .or(if local_player { self.riding } else { None }),
+                            &self.mobs,
+                            alpha as f32,
+                        ),
+                    }
+                },
+            };
+            let mut sink = horizon_client::item_render::WorldSink {
+                out,
+                light,
+                lights: if lit {
+                    Some(horizon_client::block_entity_render::diffuse_lights(
+                        self.dim == super::Dim::Nether,
+                    ))
+                } else {
+                    None
+                },
+                glint: self.glint(),
+                tier: 0,
+            };
+            let profile = stack
+                .extra
+                .as_deref()
+                .and_then(|d| d.other.iter().find(|(k, _)| k == "minecraft:profile"))
+                .map(|(_, t)| horizon_client::scoreboard::tag_to_json(t))
+                .unwrap_or(serde_json::Value::Null);
+            let has_foil = stack.data().is_some_and(|d| !d.enchantments.is_empty());
+            self.pack.item_renderer.submit_special(
+                &special,
+                &profile,
+                has_foil,
+                pose,
+                &self.gui.atlas.sprites,
+                &self.item_host(),
+                &mut sink,
+            );
+            return;
+        }
+        use horizon_assets::item_model::DisplayContext;
+        let pose = head
+            * glam::Mat4::from_translation(glam::Vec3::new(0.0, -0.25, 0.0))
+            * glam::Mat4::from_rotation_y(std::f32::consts::PI)
+            * glam::Mat4::from_scale(glam::Vec3::new(0.625, -0.625, -0.625));
+        let owner = super::item_draw::owner_at(
+            [mob.position.x, mob.position.y, mob.position.z],
+            mob.body_yaw,
+            &mob.kind.id,
+        );
+        let seed = mob.id as i32 + 5;
+        let state = self.resolve_item(&stack, DisplayContext::Head, Some(&owner), seed);
+        if lit {
+            self.submit_item_world(&state, pose, light, out);
+        } else {
+            self.submit_item_unlit(&state, pose, light, out);
+        }
+    }
+}
+
+/// `LivingEntityRenderer.extractRenderState`'s `wornHeadAnimationPos`: the
+/// walk position of the living mob `mount` carries the wearer on (a boat or
+/// minecart is no mob, so it is not found), else the wearer's own.
+fn worn_head_animation(wearer: &Mob, mount: Option<u32>, mobs: &[Mob], alpha: f32) -> f32 {
+    mount
+        .and_then(|id| mobs.iter().find(|m| m.id == id))
+        .map_or_else(
+            || horizon_client::mobs::anim::state(wearer, alpha).pos,
+            |v| horizon_client::mobs::anim::walk_position(v, alpha),
+        )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use glam::{Mat4, Vec3};
+
+    /// A mob of the prepared resources' type `kind` (None without them).
+    fn mob(id: u32, kind: &str) -> Option<horizon_client::mobs::Mob> {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        let types = horizon_client::mobs::MobTypes::load(&root).ok()?;
+        let t = std::sync::Arc::new(types.types.get(kind)?.clone());
+        Some(horizon_client::mobs::Mob::new(
+            id,
+            t,
+            horizon_core::geometry::Vec3::new(0.0, 0.0, 0.0),
+            0.0,
+        ))
+    }
+
+    #[test]
+    fn a_worn_head_follows_the_living_vehicle() {
+        let (Some(mut wearer), Some(mut horse)) =
+            (mob(1, "minecraft:zombie"), mob(2, "minecraft:horse"))
+        else {
+            return;
+        };
+        wearer.limb_position = 1.0;
+        wearer.limb_speed = 0.5;
+        horse.limb_position = 4.0;
+        horse.limb_speed = 1.0;
+        let mobs = [horse];
+        // Walking on its own: its own position (1 - 0.5 * 0.5).
+        assert_eq!(worn_head_animation(&wearer, None, &mobs, 0.5), 0.75);
+        // A mount that is no mob (boat, minecart) or unknown: still its own.
+        assert_eq!(worn_head_animation(&wearer, Some(99), &mobs, 0.5), 0.75);
+        // Riding the horse (a passenger's own position is 0): the horse's.
+        wearer.extra.passenger = true;
+        assert_eq!(worn_head_animation(&wearer, None, &mobs, 0.5), 0.0);
+        assert_eq!(worn_head_animation(&wearer, Some(2), &mobs, 0.5), 3.5);
+        // Dead wearer, living vehicle: the vehicle's.
+        wearer.health = 0.0;
+        assert_eq!(worn_head_animation(&wearer, Some(2), &mobs, 0.5), 3.5);
+    }
+
+    #[test]
+    fn carried_block_vertices_match_vanilla_block_coordinates() {
+        // Captured from 26.3 CarriedBlockLayer.submit with an identity PoseStack:
+        // origin, three unit axes, opposite corner, and the block's center.
+        let samples = [
+            (Vec3::ZERO, Vec3::new(0.3535534, 0.8636924, -0.68587124)),
+            (Vec3::X, Vec3::new(0.0, 0.9846148, -1.0181028)),
+            (Vec3::Y, Vec3::new(0.3535534, 0.3938461, -0.8568813)),
+            (Vec3::Z, Vec3::new(0.0, 0.74277, -0.35363975)),
+            (Vec3::ONE, Vec3::new(-0.3535534, 0.3938461, -0.85688126)),
+            (Vec3::splat(0.5), Vec3::new(0.0, 0.6287693, -0.77137625)),
+        ];
+        let bases = [
+            Mat4::IDENTITY,
+            Mat4::from_translation(Vec3::new(3.0, 2.0, -7.0))
+                * Mat4::from_rotation_y(1.2)
+                * Mat4::from_scale(Vec3::new(-1.0, -1.0, 1.0)),
+        ];
+        for base in bases {
+            let block = carried_block_matrix(base);
+            for (point, expected) in samples {
+                let actual = block.transform_point3(point);
+                let expected = base.transform_point3(expected);
+                assert!(
+                    actual.abs_diff_eq(expected, 1e-6),
+                    "{actual:?} != {expected:?}"
+                );
+            }
+        }
+        // `antenna_block_matrix` with an identity head, from the 26.3 expressions:
+        // `UNIT_CUBE_BOTTOM_CENTER_TO_ANTENNA_CENTER` (`translate(-0.5, 0, -0.5)`
+        // then `rotateAround(Z 180, 0.5, 0.5, 0.5)`) sends (x, y, z) to
+        // (0.5 - x, 1 - y, z - 0.5), the antenna drops it 1.75, and
+        // `createFlowerBedModel`'s quarter block lands on (-0.25, 0, 0.25) because
+        // the Z-180 turn flips it.
+        let antenna = [
+            (Vec3::ZERO, Vec3::new(0.5, -0.75, -0.5)),
+            (Vec3::X, Vec3::new(-0.5, -0.75, -0.5)),
+            (Vec3::Y, Vec3::new(0.5, -1.75, -0.5)),
+            (Vec3::Z, Vec3::new(0.5, -0.75, 0.5)),
+            (Vec3::ONE, Vec3::new(-0.5, -1.75, 0.5)),
+            (Vec3::splat(0.5), Vec3::new(0.0, -1.25, 0.0)),
+        ];
+        for (shifted, shift) in [(false, Vec3::ZERO), (true, Vec3::new(-0.25, 0.0, 0.25))] {
+            for base in bases {
+                let m = antenna_block_matrix(base, shifted);
+                for (point, expected) in antenna {
+                    let actual = m.transform_point3(point);
+                    let expected = base.transform_point3(expected + shift);
+                    assert!(
+                        actual.abs_diff_eq(expected, 1e-6),
+                        "{actual:?} != {expected:?}"
+                    );
+                }
             }
         }
     }

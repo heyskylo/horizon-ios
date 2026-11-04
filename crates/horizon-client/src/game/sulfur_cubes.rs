@@ -6,9 +6,10 @@ use super::Game;
 use horizon_client::{
     items::ItemStack,
     mesher::Vertex,
-    mobs::{Mob, Species, sulfur_cube},
+    mobs::{Mob, Species, Who, sulfur_cube},
+    projectiles::Projectile,
 };
-use horizon_core::random::RandomSource;
+use horizon_core::{position::BlockPos, random::RandomSource};
 
 fn block_transform(base: glam::Mat4, baby: bool) -> glam::Mat4 {
     base * glam::Mat4::from_scale(glam::Vec3::new(1.0, -1.0, -1.0))
@@ -44,7 +45,7 @@ impl Game<'_> {
         light: u32,
         out: &mut Vec<Vertex>,
     ) {
-        let Some(item) = mob.extra.head.as_deref() else {
+        let Some(item) = mob.extra.body.as_deref() else {
             return;
         };
         if super::armor_stands::skull_kind(item).is_some() {
@@ -52,7 +53,7 @@ impl Game<'_> {
         }
         // shortcut: the body slot retains only an item id; preserve the stack
         // before supporting its block-state components here.
-        let Some(state) = self.res.items().get(item).and_then(|item| item.block) else {
+        let Some(state) = self.items().get(item).and_then(|item| item.block) else {
             return;
         };
         let start = out.len();
@@ -84,7 +85,7 @@ impl Game<'_> {
     /// Spit the swallowed block out on top (`EntityAttachment.PASSENGER`).
     fn eject_sulfur_block(&mut self, index: usize) {
         let m = &mut self.mobs[index];
-        let Some(item) = m.extra.head.take() else {
+        let Some(item) = m.extra.body.take() else {
             return;
         };
         let at = [
@@ -101,13 +102,15 @@ impl Game<'_> {
             return false;
         }
         if m.is_baby() {
-            // Slime balls grow a baby up by a tenth.
-            if !m.kind.food.iter().any(|f| f == item) || m.extra.age_locked {
+            // Slime balls grow a baby up by a tenth (`canAgeUp`: not while an
+            // age lock holds it).
+            if !m.kind.food.iter().any(|f| f == item) || !horizon_client::mobs::ai::can_age_up(m) {
                 return false;
             }
             let m = &mut self.mobs[index];
             let secs = (-m.extra.age / 20) as f32 * 0.1;
-            m.extra.age = (m.extra.age + (secs as i32) * 20).min(0);
+            // AgeableMob.ageUp: a grown cube is size 2 (SulfurCube.ageBoundaryReached).
+            horizon_client::mobs::ai::age_up(m, secs as i32, false);
             self.consume_held();
             self.sulfur_sound(index, "entity.small_sulfur_cube.eat");
             return true;
@@ -130,24 +133,77 @@ impl Game<'_> {
         }
         if item == "minecraft:shears" && sulfur_cube::has_body(m) {
             // shear: out comes the block, and nothing is swallowed for 5 s.
+            let sheared = self.mobs[index].extra.body.clone();
             self.eject_sulfur_block(index);
             self.mobs[index].extra.ints[3] = sulfur_cube::PICKUP_TIMER;
             self.sulfur_sound(index, "entity.sulfur_cube.eject");
             self.damage_held_tool();
+            // CriteriaTriggers.PLAYER_SHEARED_EQUIPMENT with the body block.
+            if let Some(body) = sheared {
+                let target = self.mob_entity(&self.mobs[index]);
+                self.trigger_item_entity(
+                    "minecraft:player_sheared_equipment",
+                    &ItemStack::new(&body, 1),
+                    &target,
+                );
+            }
             return true;
         }
         if sulfur_cube::swallowable(m, item) {
             // equipItem: not the same block again; the old one comes out.
-            if m.extra.head.as_deref() == Some(item) {
+            if m.extra.body.as_deref() == Some(item) {
                 return false;
             }
             self.eject_sulfur_block(index);
-            self.mobs[index].extra.head = Some(item.into());
+            self.mobs[index].extra.body = Some(item.into());
             self.consume_held();
             self.sulfur_sound(index, "entity.sulfur_cube.absorb");
             return true;
         }
         false
+    }
+    /// `SulfurCube.primeWhenOnPoweredPosition`: an explosive cube standing in
+    /// or next to redstone power lights its fuse (`getBestOwnOrNeighbourSignal`;
+    /// no block has an own signal, so the neighbour signal is all there is).
+    pub(super) fn sulfur_cube_power_priming(&mut self) {
+        if !self.ui.rules.bool("tnt_explodes") {
+            return;
+        }
+        for i in 0..self.mobs.len() {
+            let m = &self.mobs[i];
+            if m.species() != Species::SulfurCube
+                || !sulfur_cube::archetype(m).is_some_and(|a| a.explosion.is_some())
+                || !m.alive()
+                || sulfur_cube::primed(m)
+            {
+                continue;
+            }
+            let at = BlockPos::new(
+                m.position.x.floor() as i32,
+                m.position.y.floor() as i32,
+                m.position.z.floor() as i32,
+            );
+            let signal =
+                self.with_level(|b, level, ticks| b.best_neighbor_signal(level, ticks, at));
+            if signal != 0 {
+                sulfur_cube::prime(&mut self.mobs[i], false);
+            }
+        }
+    }
+    /// `SulfurCube.hurtServer`: an arrow or a trident on fire that hits an
+    /// explosive cube with a block lights its fuse (with `tnt_explodes`, as
+    /// `primeTime` asks), called after the hit's hurt, which the priming
+    /// leaves as it is, so its knock and the fuse both go ahead.
+    pub(super) fn burning_arrow_primes(&mut self, p: &Projectile, who: Who) {
+        if !p.arrow.as_ref().is_some_and(|a| a.on_fire()) || !self.ui.rules.bool("tnt_explodes") {
+            return;
+        }
+        if let Who::Mob(id) = who
+            && let Some(m) = self.mobs.iter_mut().find(|m| m.id == id)
+            && m.species() == Species::SulfurCube
+        {
+            sulfur_cube::burning_arrow_hit(m);
+        }
     }
     /// `SulfurCubeSearchForItemsGoal` and `pickUpItem`: an adult with nothing
     /// inside hops to a block it can swallow within 8 and takes it in.
@@ -205,10 +261,10 @@ impl Game<'_> {
             let e = &mut self.dropped[j];
             e.stack.count -= 1;
             if e.stack.count == 0 {
-                self.dropped.remove(j);
+                self.remove_dropped(j);
             }
             let m = &mut self.mobs[i];
-            m.extra.head = Some(item);
+            m.extra.body = Some(item);
             m.extra.point = None;
             self.sulfur_sound(i, "entity.sulfur_cube.absorb");
             if thrown_by_player {

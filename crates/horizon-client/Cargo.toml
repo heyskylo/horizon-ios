@@ -6,8 +6,13 @@ edition.workspace = true
 license.workspace = true
 rust-version = "1.90"
 description = "Horizon native development client"
+autobins = false
+autoexamples = false
+autotests = false
 
 [dependencies]
+horizon-cosmetics = { path = "../horizon-cosmetics" }
+horizon-client-lib = { path = "../horizon-client-lib", default-features = false }
 horizon-assets = { path = "../horizon-assets" }
 horizon-client-core = { path = "../horizon-client-core" }
 horizon-client-input = { path = "../horizon-client-input" }
@@ -15,6 +20,8 @@ horizon-client-render = { path = "../horizon-client-render" }
 horizon-command = { path = "../horizon-command" }
 horizon-items = { path = "../horizon-items" }
 horizon-core = { path = "../horizon-core" }
+# OptiFine-format pack files: custom entity models, random entity textures.
+horizon-optifine = { path = "../horizon-optifine" }
 # The server thread ahead of the workers (MinecraftServer.spin's Thread.setPriority).
 horizon-threads = { path = "../horizon-threads" }
 horizon-hdr = { path = "../horizon-hdr" }
@@ -22,11 +29,17 @@ horizon-world = { path = "../horizon-world" }
 horizon-protocol = { path = "../horizon-protocol" }
 # server.properties, eula.txt and the user lists, shared with horizon-server.
 horizon-server-files = { path = "../horizon-server-files" }
+# The dedicated server's anticheat, off unless server.toml's [anticheat] turns it on (docs/anticheat.md).
+horizon-anticheat = { path = "../horizon-anticheat" }
+# The dedicated server's chat filter: [chat_filter], the slur list, mutes (docs/chat-filter.md).
+horizon-chat-filter = { path = "../horizon-chat-filter" }
 # Shader packs: reading them and turning their GLSL into naga modules.
 horizon-shaders = { path = "../horizon-shaders" }
 # Horizon's own shader packs: the format, the stages and the check (docs/shaders.md).
 horizon-shader-api = { path = "../horizon-shader-api" }
 horizon-friends = { path = "../horizon-friends" }
+# The narrator (GameNarrator): text-to-speech of chat, system messages and screens.
+horizon-narrator = { path = "../horizon-narrator" }
 # Horizon mods: sandboxed WebAssembly components, off unless installed and turned on (docs/mods.md).
 # Their runtime is the `mods` feature.
 horizon-mods = { path = "../horizon-mods", default-features = false, features = ["index"] }
@@ -54,7 +67,7 @@ horizon-theme = { path = "../horizon-theme" }
 # the anonymous "I'm playing" ping the game sends itself (`heartbeat.rs`).
 horizon-telemetry = { path = "../horizon-telemetry", default-features = false, features = ["live"] }
 horizon-bench = { path = "../horizon-bench" }
-zip = { version = "2", default-features = false, features = ["deflate"] }
+zip = { version = "9.1.3", default-features = false, features = ["deflate"] }
 # Controllers (evdev + libudev on Linux, IOKit on macOS, Windows.Gaming.Input); the `controllers` feature.
 gilrs = { version = "0.11", optional = true }
 # The DualSense's rumble, adaptive triggers and lights over HID (gilrs only reads it).
@@ -62,10 +75,12 @@ horizon-dualsense = { path = "../horizon-dualsense", optional = true }
 # HTTPS to the Minecraft services (online-mode session join).
 ureq = { version = "2", default-features = false, features = ["tls"] }
 unicode-bidi = "0.3.18"
+# `LevelStorageAccess.estimateDiskSpace`: usable disk space, without unsafe code on Windows.
+fs4 = { version = "1.1.0", default-features = false, features = ["sync"] }
 
 [target.'cfg(unix)'.dependencies]
 # The server thread's CPU time per tick (`HORIZON_SPIKES`, spans.rs).
-rustix = { version = "1", default-features = false, features = ["std", "time"] }
+rustix = { version = "1", default-features = false, features = ["std", "time", "process", "fs"] }
 
 [target.'cfg(windows)'.dependencies]
 # Use the registered URI handler without routing links through Explorer/cmd.
@@ -74,6 +89,13 @@ open = { version = "5.4.5", features = ["shellexecute-on-windows"] }
 # Shaders compile with FXC (d3dcompiler_47.dll, part of Windows), or DXC when dxcompiler.dll is
 # on the PATH.
 wgpu = { version = "30.0.1", default-features = false, features = ["dx12"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# Splitscreen: a window filling a monitor goes over its menu bar (game/split/windows.rs
+# `above_menu_bar`); all already in the tree through winit and wgpu.
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSResponder", "NSWindow", "NSScreen"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSString"] }
 
 [target.'cfg(not(target_os = "macos"))'.dependencies]
 # OpenGL (WGL on Windows, EGL on Linux), the last fallback, for GPUs with no Vulkan or
@@ -88,19 +110,40 @@ winresource = "0.1"
 default = ["audio", "controllers"]
 # Sound output. Without it (and `controllers`) the program links neither libasound nor libudev on
 # Linux: the server build (`--no-default-features`, released as horizon-engine; docs/server.md).
-audio = ["horizon-client-render/audio"]
+audio = ["horizon-client-render/audio", "horizon-client-lib/audio"]
 # Controllers: gilrs, and the DualSense's own output. Without it only `horizon-ctl pad`'s virtual pad.
-controllers = ["dep:gilrs", "dep:horizon-dualsense", "horizon-client-input/controllers"]
-# Runs code mods (wasmtime and cranelift: a quarter of a clean build). On in every release build
-# (release.yml); the tests and probes don't need it. Content mods load without it.
-mods = ["horizon-mods/runtime"]
+controllers = ["horizon-client-lib/controllers", "dep:gilrs", "dep:horizon-dualsense", "horizon-client-input/controllers"]
 # Records the call sites of mob random draws (`mob_ai_probe` traces).
-rng-trace = ["horizon-core/rng-trace"]
+rng-trace = ["horizon-core/rng-trace", "horizon-client-lib/rng-trace"]
+# Rust's allocations go to the system heap instead of mimalloc, where heap profilers that replace
+# malloc (heaptrack, valgrind's massif) see them. For profiling only: mimalloc is faster.
+system-allocator = []
+# mimalloc with a tag on each block: `horizon-ctl memory` lists the live heap by startup step and
+# thread (`heap_by_tag_mb`). For measuring only: each block costs 16 bytes more.
+alloc-census = ["horizon-threads/alloc-census"]
+# Compatibility with earlier experiment commands: main already uses mimalloc.
+windows-mimalloc = []
+# Opt-in Windows heap experiment; see docs/windows-allocators.md.
+windows-segment-heap = []
 
-# Its own name, not `probe`: Cargo copies every crate's examples into one target/<profile>/examples.
-[[example]]
-name = "client_probe"
-path = "examples/probe/main.rs"
+[[bin]]
+name = "horizon-client"
+path = "src/main.rs"
+
+[[test]]
+name = "datapack_biome_sync"
+path = "tests/datapack_biome_sync.rs"
+
+[[test]]
+name = "launch_api"
+path = "tests/launch_api.rs"
+
+[[test]]
+name = "mod_api_hooks"
+path = "tests/mod_api_hooks.rs"
+
+[build-dependencies]
+horizon-mod-api-gen = { path = "../horizon-mod-api-gen" }
 
 [lints]
 workspace = true

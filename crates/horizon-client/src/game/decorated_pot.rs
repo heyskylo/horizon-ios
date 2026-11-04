@@ -74,7 +74,10 @@ impl Game<'_> {
                 ("z", Tag::Int(pos[2])),
             ])
         });
-        let loot = horizon_client::structure_blocks::loot_data(&self.options.resources);
+        let loot = horizon_client::structure_blocks::loot_data(
+            &self.options.resources,
+            &self.pack_files(),
+        );
         unpack_loot(
             &mut tag,
             loot.as_deref(),
@@ -108,13 +111,19 @@ impl Game<'_> {
                 1.0,
                 1.0,
             );
+            // DecoratedPotBlockEntity.wobble: Level.blockEvent, which the
+            // clients answer with triggerEvent (the window's pot wobbles).
             self.block_entity_event(pos, 1, WOBBLE_NEGATIVE);
+            self.lan_block_event(pos, 1, WOBBLE_NEGATIVE);
             self.post_block_game_event("minecraft:block_change", pos, Some(Who::Player), None);
+            // ServerPlayerGameMode.useItemOn: useWithoutItem consumed the click.
+            self.trigger_default_block_use(pos);
             return true;
         };
         let stack = stack.clone();
         self.block_entity_event(pos, 1, WOBBLE_POSITIVE);
-        self.stats.add("used", &stack.item, 1);
+        self.lan_block_event(pos, 1, WOBBLE_POSITIVE);
+        self.award_stat("used", &stack.item, 1);
         // consumeAndReturn(1): one item goes in (a creative player keeps theirs).
         let inserted = match &mut pot_item {
             Some(p) => {
@@ -140,13 +149,22 @@ impl Game<'_> {
             1.0,
             0.7 + 0.5 * pitch_bend,
         );
-        self.particles.send_particles(
-            &ParticleOptions::simple(ParticleType::DustPlume),
-            [center[0], f64::from(pos[1]) + 1.2, center[2]],
-            [0.0; 3],
-            0.0,
-            7,
-        );
+        // ServerLevel.sendParticles(DUST_PLUME, x + 0.5, y + 1.2, z + 0.5, 7, 0, 0, 0, 0):
+        // the server draws none of it; the players within 32 blocks do, the window included.
+        let plume = ParticleOptions::simple(ParticleType::DustPlume);
+        let plume_at = [center[0], f64::from(pos[1]) + 1.2, center[2]];
+        self.particles
+            .send_particles(&plume, plume_at, [0.0; 3], 0.0, 7);
+        self.lan_send_particles(super::lan_particles::QueuedParticle {
+            dimension: self.dim.id(),
+            options: plume,
+            state: None,
+            at: plume_at,
+            spread: [0.0; 3],
+            speed: [0.0; 3],
+            count: 7,
+            randomization: 0,
+        });
         self.post_block_game_event("minecraft:block_change", pos, Some(Who::Player), None);
         self.trigger_block("minecraft:item_used_on_block", pos, &stack);
         true

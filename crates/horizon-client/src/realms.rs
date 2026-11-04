@@ -358,7 +358,10 @@ impl Screen {
             }
             Some(30) => {
                 // Toggle Realm open / close in Configure subscreen
-                let action_info = if let SubScreen::Configure { ref server, busy, .. } = self.subscreen {
+                let action_info = if let SubScreen::Configure {
+                    ref server, busy, ..
+                } = self.subscreen
+                {
                     if !busy {
                         Some((server.id, server.is_open()))
                     } else {
@@ -430,7 +433,8 @@ impl Screen {
             }
             Some(btn @ 100..=200) => {
                 // Accept or Reject in PendingInvites
-                let invites_arc = if let SubScreen::PendingInvites { ref invites } = self.subscreen {
+                let invites_arc = if let SubScreen::PendingInvites { ref invites } = self.subscreen
+                {
                     Some(Arc::clone(invites))
                 } else {
                     None
@@ -653,15 +657,7 @@ impl Screen {
                 let join_text = crate::lang::get_or("mco.selectServer.joinRealm", "Join Realm");
                 let join_w = 112.0;
                 let join_x = cx - 68.0 - join_w;
-                buttons.push((
-                    join_x,
-                    12.0,
-                    join_w,
-                    join_text,
-                    true,
-                    14,
-                    None,
-                ));
+                buttons.push((join_x, 12.0, join_w, join_text, true, 14, None));
 
                 // Right: Invites (20px) and News (20px) with icons!
                 buttons.push((
@@ -875,7 +871,14 @@ impl Screen {
                         "Validating code...",
                     );
                     let vw = HudBatch::text_width(atlas, &val_txt);
-                    batch.text(atlas, &val_txt, cx - (vw / 2.0).floor(), 88.0, u32::MAX, true);
+                    batch.text(
+                        atlas,
+                        &val_txt,
+                        cx - (vw / 2.0).floor(),
+                        88.0,
+                        u32::MAX,
+                        true,
+                    );
                 } else if let Some(err) = error {
                     let ew = HudBatch::text_width(atlas, err);
                     batch.text(
@@ -967,9 +970,7 @@ impl Screen {
                 }
             }
             SubScreen::Configure {
-                server,
-                status_msg,
-                ..
+                server, status_msg, ..
             } => {
                 crate::ui::menu_background(batch, atlas, 0.0, 0.0, w, h, false);
                 let title = format!("Konfiguracja: {}", server.name);
@@ -1069,14 +1070,7 @@ impl Screen {
                 } else {
                     let title = crate::lang::get_or("mco.title", "Minecraft Realms");
                     let tw = HudBatch::text_width(atlas, &title);
-                    batch.text(
-                        atlas,
-                        &title,
-                        cx - (tw / 2.0).floor(),
-                        12.0,
-                        u32::MAX,
-                        true,
-                    );
+                    batch.text(atlas, &title, cx - (tw / 2.0).floor(), 12.0, u32::MAX, true);
                 }
 
                 // 3. Selection list background with standard separators
@@ -1097,8 +1091,7 @@ impl Screen {
 
                 match &*lock {
                     FetchState::Unauthenticated => {
-                        let msg =
-                            "Please sign in with a Microsoft account in Horizon Launcher to play Realms.";
+                        let msg = "Please sign in with a Microsoft account in Horizon Launcher to play Realms.";
                         let mw = HudBatch::text_width(atlas, msg);
                         batch.text(
                             atlas,
@@ -1119,8 +1112,8 @@ impl Screen {
                         let millis = SystemTime::now()
                             .duration_since(UNIX_EPOCH)
                             .map_or(0, |d| d.as_millis());
-                        let dots = ["O o o", "o O o", "o o O", "o O o"]
-                            [(millis / 300 % 4) as usize];
+                        let dots =
+                            ["O o o", "o O o", "o o O", "o O o"][(millis / 300 % 4) as usize];
                         let dw = HudBatch::text_width(atlas, dots);
                         batch.text(
                             atlas,
@@ -1305,13 +1298,19 @@ mod tests {
         let screen = Screen::new();
         let btns = screen.buttons(800.0, 600.0);
 
-        let invite_btn = btns.iter().find(|b| b.5 == 15).expect("Invites button exists");
+        let invite_btn = btns
+            .iter()
+            .find(|b| b.5 == 15)
+            .expect("Invites button exists");
         assert_eq!(invite_btn.6, Some(("icon/invite", 14.0)));
 
         let news_btn = btns.iter().find(|b| b.5 == 16).expect("News button exists");
         assert_eq!(news_btn.6, Some(("icon/news", 14.0)));
 
-        let join_btn = btns.iter().find(|b| b.5 == 14).expect("Join Realm button exists");
+        let join_btn = btns
+            .iter()
+            .find(|b| b.5 == 14)
+            .expect("Join Realm button exists");
         assert_eq!(join_btn.6, None);
     }
 
@@ -1325,9 +1324,15 @@ mod tests {
 
         let btns = screen.buttons(800.0, 600.0);
         let join_btn = btns.iter().find(|b| b.5 == 20).expect("Join button exists");
-        assert!(!join_btn.4, "Join button should be disabled when code is empty");
+        assert!(
+            !join_btn.4,
+            "Join button should be disabled when code is empty"
+        );
 
-        let cancel_btn = btns.iter().find(|b| b.5 == 21).expect("Cancel button exists");
+        let cancel_btn = btns
+            .iter()
+            .find(|b| b.5 == 21)
+            .expect("Cancel button exists");
         assert!(cancel_btn.4);
 
         // Escape key returns to Main

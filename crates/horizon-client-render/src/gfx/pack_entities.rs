@@ -104,9 +104,35 @@ pub fn inputs() -> horizon_shaders::GbuffersInputs {
     }
 }
 
+/// What a shadow program with a geometry stage reads of entities and block entities: the
+/// inputs of [`inputs`], each vertex read from set 1 (`hz_entity_vertices`), as `Vertex` lays
+/// it out. The draw's corners walk its quads two triangles each, as `quad_indices` does: corner
+/// `c` of a draw from vertex `first` (a whole quad) is drawn as vertex `first / 4 * 6 + c`.
+pub fn geometry_inputs() -> horizon_shaders::GeometryInputs {
+    let words = std::mem::size_of::<Vertex>() / 4;
+    let pull = format!(
+        "        uint hz_pw = hz_vertex_index * {words}u;\n        \
+         hz_v_pos = uintBitsToFloat(uvec3(hz_entity_vertices[hz_pw], hz_entity_vertices[hz_pw + 1u], hz_entity_vertices[hz_pw + 2u]));\n        \
+         hz_v_uv = uintBitsToFloat(uvec2(hz_entity_vertices[hz_pw + 3u], hz_entity_vertices[hz_pw + 4u]));\n        \
+         hz_v_overlay = hz_entity_vertices[hz_pw + 5u];\n        \
+         hz_v_color = unpackUnorm4x8(hz_entity_vertices[hz_pw + 6u]);\n        \
+         uint hz_pl = hz_entity_vertices[hz_pw + 7u];\n        \
+         hz_v_light = uvec4(hz_pl & 255u, (hz_pl >> 8u) & 255u, (hz_pl >> 16u) & 255u, hz_pl >> 24u);\n        \
+         hz_v_normal = unpackSnorm4x8(hz_entity_vertices[hz_pw + 8u]);\n"
+    );
+    horizon_shaders::GeometryInputs {
+        inputs: inputs(),
+        pull,
+        // Quad `c / 6`, corner 0, 1, 2, 0, 2, 3 of it.
+        index:
+            "((@) / 6u * 4u + ((@) % 6u < 3u ? (@) % 6u : ((@) % 6u == 3u ? 0u : (@) % 6u - 2u)))"
+                .to_owned(),
+    }
+}
+
 /// What `gbuffers_clouds` reads from the clouds' mesh (entity vertices, `vs_cloud`): the
 /// position moved by the clouds' offset, the colour of the face's shade from their palette,
-/// full sky light. Set 1 holds the clouds' uniform (`clouds::Uniform`).
+/// full light, the face's normal. Set 1 holds the clouds' uniform (`clouds::Uniform`).
 pub fn cloud_inputs() -> horizon_shaders::GbuffersInputs {
     let declarations = "layout(location = 0) in vec3 hz_v_pos;\nlayout(location = 1) in vec2 hz_v_uv;\n\
          layout(location = 2) in uint hz_v_overlay;\nlayout(location = 3) in vec4 hz_v_color;\n\
@@ -115,7 +141,7 @@ pub fn cloud_inputs() -> horizon_shaders::GbuffersInputs {
         .to_owned();
     let body = "    hz_Vertex = vec4(hz_v_pos + hz_cloud_offset.xyz, 1.0);\n    \
          hz_MultiTexCoord0 = vec4(hz_v_uv, 0.0, 1.0);\n    \
-         hz_MultiTexCoord1 = vec4(0.0, 240.0, 0.0, 1.0);\n    \
+         hz_MultiTexCoord1 = vec4(240.0, 240.0, 0.0, 1.0);\n    \
          hz_MultiTexCoord2 = hz_MultiTexCoord1;\n    \
          hz_Color = hz_cloud_colors[min(hz_v_light.x, 3u)];\n    \
          hz_Normal = dot(hz_v_normal.xyz, hz_v_normal.xyz) > 0.01 ? normalize(hz_v_normal.xyz) : vec3(0.0, 1.0, 0.0);\n"
@@ -123,7 +149,7 @@ pub fn cloud_inputs() -> horizon_shaders::GbuffersInputs {
     let attributes = [
         ("vaPosition", "hz_Vertex.xyz"),
         ("vaUV0", "hz_v_uv"),
-        ("vaUV2", "ivec2(0, 240)"),
+        ("vaUV2", "ivec2(240, 240)"),
         ("vaColor", "hz_Color"),
         ("vaNormal", "hz_Normal"),
     ];
@@ -168,6 +194,8 @@ pub(super) struct Draw {
     /// The pack's shadow program draws it into the shadow map too.
     pub shadow: bool,
     pub slot: u32,
+    /// End portal or gateway faces: drawn with `end_portal.png` bound as the atlas.
+    pub portal: bool,
 }
 
 /// Which entity runs a pack's shadow pass draws (2.4, 3.2).
@@ -297,6 +325,10 @@ impl PackEntities {
         (buffer, group)
     }
 
+    pub fn skin_target(&self) -> &wgpu::Buffer {
+        &self.vertices
+    }
+
     pub fn vertices(&self) -> wgpu::BufferSlice<'_> {
         self.vertices.slice(..)
     }
@@ -319,56 +351,122 @@ impl PackEntities {
         entities: &[Vertex],
         spans: &[EntitySpan],
         drawn: [bool; PROGRAMS],
+        crack: ([f32; 4], [u32; 2]),
         shadow: Casters,
         rest: &mut Vec<Vertex>,
+        skin: Option<&super::entity_skin::SkinFrame>,
     ) {
         self.draws.clear();
         self.scratch.clear();
         self.uniforms.clear();
         rest.clear();
-        let first = spans.first().map_or(entities.len(), |s| s.start as usize);
-        rest.extend_from_slice(&entities[..first.min(entities.len())]);
-        for (span, range) in runs(entities.len(), spans) {
-            let run = &entities[range];
-            let program = program_of(&span).filter(|_| plain(run));
-            let pack = program.is_some_and(|p| drawn[p]) && !span.hidden;
-            let casts = program.is_some_and(|p| shadow.cast(&span, p));
-            if !pack && !span.hidden {
-                rest.extend_from_slice(run);
+        let posed = skin.map_or(0, |s| s.vertices);
+        if let Some(skin) = skin {
+            for (span, range, overlay) in skin_runs(skin) {
+                let program = program_of(&span).expect("tagged skin stage");
+                let pack = drawn[program] && !span.hidden;
+                let casts = shadow.cast(&span, program);
+                if !pack && !casts {
+                    continue;
+                }
+                self.push_draw(
+                    span,
+                    range.start,
+                    range.len() as u32,
+                    program,
+                    pack,
+                    casts,
+                    overlay,
+                    false,
+                );
             }
-            let Some(program) = program.filter(|_| (pack || casts) && !run.is_empty()) else {
-                continue;
-            };
-            let start = self.scratch.len() as u32;
-            self.scratch.extend_from_slice(run);
-            let (entity_id, block_id) = match program {
-                BLOCK => (0, span.id),
-                _ => (span.id, 0),
-            };
-            let mut bytes = [0u8; SLOT as usize];
-            bytes[0..4].copy_from_slice(&(span.stage as i32).to_le_bytes());
-            bytes[4..8].copy_from_slice(&entity_id.to_le_bytes());
-            bytes[8..12].copy_from_slice(&block_id.to_le_bytes());
-            for (i, c) in entity_color(run[0].layer).iter().enumerate() {
-                bytes[16 + 4 * i..20 + 4 * i].copy_from_slice(&c.to_le_bytes());
-            }
-            self.uniforms.extend_from_slice(&bytes);
-            self.uniforms
-                .resize(self.uniforms.len() + (self.stride - SLOT) as usize, 0);
-            self.draws.push(Draw {
-                base: start,
-                quads: run.len() as u32 / 4,
-                program,
-                pack,
-                shadow: casts,
-                slot: self.draws.len() as u32,
-            });
         }
-        if self.draws.is_empty() {
+        let first = spans.first().map_or(entities.len(), |s| s.start as usize);
+        extend_without_portals(rest, &entities[..first.min(entities.len())]);
+        let (mut other, mut portal_faces, mut beam_faces) = (Vec::new(), Vec::new(), Vec::new());
+        for (span, range) in runs(entities.len(), spans) {
+            let whole = &entities[range];
+            // A block entity's run can hold End portal faces and beams beside plain parts (an End
+            // gateway: its cube and its beam): each goes to its own program.
+            // Beacon beams come in a run of their own, at stage NONE (game.rs: no stage of 5.4
+            // is theirs), for gbuffers_beaconbeam.
+            let split = (program_of(&span) == Some(BLOCK) || span.stage == render_stage("NONE"))
+                && whole
+                    .chunks(4)
+                    .any(|q| matches!(q[0].layer & 0xffff, 6 | 9 | 10));
+            let parts: [(&[Vertex], Part); 3] = if split {
+                other.clear();
+                portal_faces.clear();
+                beam_faces.clear();
+                for quad in whole.chunks(4) {
+                    match quad[0].layer & 0xffff {
+                        9 | 10 => portal_faces.extend_from_slice(quad),
+                        6 => beam_faces.extend_from_slice(quad),
+                        _ => other.extend_from_slice(quad),
+                    }
+                }
+                [
+                    (&other, Part::Plain),
+                    (&portal_faces, Part::Portal),
+                    (&beam_faces, Part::Beam),
+                ]
+            } else {
+                [(whole, Part::Plain), (&[], Part::Plain), (&[], Part::Plain)]
+            };
+            for (run, part) in parts {
+                if run.is_empty() {
+                    continue;
+                }
+                let program = match part {
+                    Part::Portal => Some(BLOCK),
+                    Part::Beam => Some(BEAM),
+                    Part::Plain => program_of(&span).filter(|&p| {
+                        plain(run)
+                            || (p == DESTROY && run.iter().all(|v| matches!(v.layer, 11 | 12)))
+                    }),
+                };
+                let pack = program.is_some_and(|p| drawn[p]) && !span.hidden;
+                let casts = part == Part::Plain && program.is_some_and(|p| shadow.cast(&span, p));
+                if !pack && !span.hidden {
+                    extend_without_portals(rest, run);
+                }
+                let Some(program) = program.filter(|_| pack || casts) else {
+                    continue;
+                };
+                let start = self.scratch.len() as u32;
+                match part {
+                    Part::Beam => beam_segments(run, &mut self.scratch),
+                    _ => self.scratch.extend_from_slice(run),
+                }
+                if program == DESTROY {
+                    project_cracks(&mut self.scratch[start as usize..], crack.0, crack.1);
+                }
+                if part == Part::Portal {
+                    as_portal_texture(&mut self.scratch[start as usize..]);
+                }
+                let vertices = self.scratch.len() as u32 - start;
+                let overlay = self.scratch[start as usize].layer & 0xffff;
+                let portal = part == Part::Portal;
+                self.push_draw(
+                    span,
+                    posed + start,
+                    vertices,
+                    program,
+                    pack,
+                    casts,
+                    overlay,
+                    portal,
+                );
+            }
+        }
+        if self.draws.is_empty() && posed == 0 {
             return;
         }
         let vertex_size = std::mem::size_of::<Vertex>() as u64;
-        let (need_vertices, need_slots) = (self.scratch.len() as u64, self.draws.len() as u64);
+        let (need_vertices, need_slots) = (
+            u64::from(posed) + self.scratch.len() as u64,
+            self.draws.len() as u64,
+        );
         let have_vertices = self.vertices.size() / vertex_size;
         let have_slots = self.slots.size() / self.stride;
         if need_vertices > have_vertices {
@@ -384,8 +482,54 @@ impl PackEntities {
             self.quads = quads.next_power_of_two();
             self.indices = quad_indices(device, self.quads);
         }
-        queue.write_buffer(&self.vertices, 0, bytemuck::cast_slice(&self.scratch));
-        queue.write_buffer(&self.slots, 0, &self.uniforms);
+        if !self.scratch.is_empty() {
+            queue.write_buffer(
+                &self.vertices,
+                u64::from(posed) * vertex_size,
+                bytemuck::cast_slice(&self.scratch),
+            );
+        }
+        if !self.uniforms.is_empty() {
+            queue.write_buffer(&self.slots, 0, &self.uniforms);
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn push_draw(
+        &mut self,
+        span: EntitySpan,
+        start: u32,
+        vertices: u32,
+        program: usize,
+        pack: bool,
+        casts: bool,
+        overlay: u32,
+        portal: bool,
+    ) {
+        let (entity_id, block_id) = match program {
+            BLOCK => (0, span.id),
+            _ => (span.id, 0),
+        };
+        let mut bytes = [0u8; SLOT as usize];
+        bytes[0..4].copy_from_slice(&(span.stage as i32).to_le_bytes());
+        bytes[4..8].copy_from_slice(&entity_id.to_le_bytes());
+        bytes[8..12].copy_from_slice(&block_id.to_le_bytes());
+        // The overlay: the layer's low 16 bits (HDR output's tier rides in the high ones).
+        for (i, c) in entity_color(overlay & 0xffff).iter().enumerate() {
+            bytes[16 + 4 * i..20 + 4 * i].copy_from_slice(&c.to_le_bytes());
+        }
+        self.uniforms.extend_from_slice(&bytes);
+        self.uniforms
+            .resize(self.uniforms.len() + (self.stride - SLOT) as usize, 0);
+        self.draws.push(Draw {
+            base: start,
+            quads: vertices / 4,
+            program,
+            pack,
+            shadow: casts,
+            slot: self.draws.len() as u32,
+            portal,
+        });
     }
 }
 
@@ -410,7 +554,96 @@ pub(super) fn quad_indices(device: &wgpu::Device, quads: u32) -> wgpu::Buffer {
 fn plain(run: &[Vertex]) -> bool {
     run.iter()
         .step_by(4)
-        .all(|v| !matches!(v.layer, 2 | 4 | 6 | 9 | 10 | 11 | 12 | 34))
+        .all(|v| !matches!(v.layer & 0xffff, 2 | 4 | 6 | 9 | 10 | 11 | 12 | 34))
+}
+
+/// What part of a block entity's run goes to which program (`prepare`).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Part {
+    Plain,
+    Portal,
+    Beam,
+}
+
+/// Beam faces (`block_entity_render::beam`: layer 6, v counting the sprite's repeats up the
+/// beam, the sprite's v range in the light bytes) for a pack: each face cut where its texture
+/// repeats, so every piece holds one copy of the sprite in plain atlas coordinates (at most 64
+/// pieces a face; a taller beam stretches its copies), white light and its colour kept.
+fn beam_segments(run: &[Vertex], out: &mut Vec<Vertex>) {
+    for quad in run.as_chunks::<4>().0 {
+        let wrap = quad[0].light;
+        let (v0, size) = (
+            (wrap & 65535) as f32 / 65535.0,
+            (wrap >> 16) as f32 / 65535.0,
+        );
+        // Corners 0 and 3 at the beam's end (v1), 1 and 2 at its start (v2); 0 and 1 on one
+        // side, 2 and 3 on the other.
+        let (v1, v2) = (quad[0].uv[1], quad[1].uv[1]);
+        if (v1 - v2).abs() < 1e-6 {
+            continue;
+        }
+        let (lo, hi) = (v1.min(v2), v1.max(v2));
+        let first = lo.floor();
+        let repeats = (hi.ceil() - first).max(1.0);
+        let step = (repeats / 64.0).ceil().max(1.0);
+        let pieces = (repeats / step).ceil() as u32;
+        let at = |side: usize, v: f32| {
+            let (a, b) = if side == 0 {
+                (quad[1], quad[0])
+            } else {
+                (quad[2], quad[3])
+            };
+            let t = (v - v2) / (v1 - v2);
+            glam::Vec3::from(a.pos)
+                .lerp(glam::Vec3::from(b.pos), t)
+                .to_array()
+        };
+        for k in 0..pieces {
+            let base = first + k as f32 * step;
+            let (a, b) = (base.max(lo), (base + step).min(hi));
+            if b <= a {
+                continue;
+            }
+            // The end-side corners take the piece's bound nearer v1.
+            let (end_v, start_v) = if v1 > v2 { (b, a) } else { (a, b) };
+            for (i, corner) in quad.iter().enumerate() {
+                let side = usize::from(i >= 2);
+                let v = if i == 0 || i == 3 { end_v } else { start_v };
+                let mut out_v = *corner;
+                out_v.pos = at(side, v);
+                out_v.uv = [corner.uv[0], v0 + (v - base) / step * size];
+                out_v.layer = 0;
+                out_v.light = 0x0000_f0f0;
+                out.push(out_v);
+            }
+        }
+    }
+}
+
+/// `run` added to Horizon's own draw without End portal faces: under a shader pack Horizon's
+/// entity shader would put its screen-projected starfield into the pack's buffers as if they
+/// were its own frame (misplaced where the pack renders at another size), so a portal the pack
+/// does not draw (its programs not there, or not yet) is better left out.
+fn extend_without_portals(rest: &mut Vec<Vertex>, run: &[Vertex]) {
+    for quad in run.chunks(4) {
+        if !quad.iter().all(|v| matches!(v.layer & 0xffff, 6 | 9 | 10)) {
+            rest.extend_from_slice(quad);
+        }
+    }
+}
+
+/// End portal faces for a pack's `gbuffers_block` (block entities): each face textured with the
+/// whole of `end_portal.png`, which the draw binds as the atlas (a texture of its own, so a
+/// pack's own portal effect can wrap it), white, at full light; the pack tells the portal by its
+/// `blockEntityId`.
+fn as_portal_texture(run: &mut [Vertex]) {
+    const CORNERS: [[f32; 2]; 4] = [[0.0, 0.0], [0.0, 1.0], [1.0, 1.0], [1.0, 0.0]];
+    for (i, v) in run.iter_mut().enumerate() {
+        v.uv = CORNERS[i % 4];
+        v.layer = 0;
+        v.color = 0xFFFF_FFFF;
+        v.light = 0x0000_f0f0;
+    }
 }
 
 /// The programs of entity runs, in the order they draw.
@@ -418,7 +651,10 @@ pub const ENTITY: usize = 0;
 pub const BLOCK: usize = 1;
 pub const TRANSLUCENT: usize = 2;
 pub const PARTICLE: usize = 3;
-pub const PROGRAMS: usize = 4;
+pub const DESTROY: usize = 4;
+/// Beacon and End gateway beams (`gbuffers_beaconbeam`).
+pub const BEAM: usize = 5;
+pub const PROGRAMS: usize = 6;
 
 /// Which program draws `span`'s run, given which of them (or their fallbacks) the pack has;
 /// `None`: Horizon draws it.
@@ -439,6 +675,8 @@ pub fn program_of(span: &EntitySpan) -> Option<usize> {
         BLOCK
     } else if span.stage == render_stage("PARTICLES") {
         PARTICLE
+    } else if span.stage == render_stage("DESTROY") {
+        DESTROY
     } else {
         return None;
     })
@@ -459,6 +697,16 @@ pub fn runs(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn destroy_stage_uses_the_pack_only_when_a_program_is_available() {
+        let destroy = EntitySpan {
+            stage: render_stage("DESTROY"),
+            ..Default::default()
+        };
+        assert!(drawn_by_pack(&destroy, [true; PROGRAMS]).is_some());
+        assert_eq!(drawn_by_pack(&destroy, [false; PROGRAMS]), None);
+    }
 
     #[test]
     fn runs_split_the_list_between_pack_and_horizon() {
@@ -482,15 +730,21 @@ mod tests {
         let all = [true; PROGRAMS];
         assert_eq!(drawn_by_pack(&spans[0], all), Some(ENTITY));
         assert_eq!(drawn_by_pack(&spans[1], all), Some(PARTICLE));
-        assert_eq!(drawn_by_pack(&spans[1], [true, true, true, false]), None);
-        assert_eq!(drawn_by_pack(&spans[2], [true, false, true, true]), None);
+        assert_eq!(
+            drawn_by_pack(&spans[1], [true, true, true, false, true, true]),
+            None
+        );
+        assert_eq!(
+            drawn_by_pack(&spans[2], [true, false, true, true, true, true]),
+            None
+        );
         assert_eq!(drawn_by_pack(&spans[2], all), Some(BLOCK));
         let shadow = EntitySpan {
             translucent: true,
             ..spans[0]
         };
         assert_eq!(drawn_by_pack(&shadow, all), Some(TRANSLUCENT));
-        assert_eq!(drawn_by_pack(&span(0, "DESTROY", 0), all), None);
+        assert_eq!(drawn_by_pack(&span(0, "DESTROY", 0), all), Some(DESTROY));
         // A beacon beam's quads stay Horizon's.
         assert!(plain(&[v(0), v(0), v(0), v(0), v(1)]));
         assert!(!plain(&[v(0), v(0), v(0), v(0), v(6)]));
@@ -520,5 +774,407 @@ mod tests {
         };
         assert!(!some.cast(&spans[0], ENTITY) && some.cast(&player, ENTITY));
         assert!(!some.cast(&spans[2], BLOCK) && some.cast(&lit, BLOCK));
+    }
+}
+
+/// Decode the destroy-stage origin stored in the light bytes and project one continuous
+/// sprite over each model face. Pack geometry uses ordinary atlas UVs, not Horizon's overlay codes.
+fn project_cracks(vertices: &mut [Vertex], sprite: [f32; 4], atlas: [u32; 2]) {
+    let dims = [atlas[0].max(1) as f32, atlas[1].max(1) as f32];
+    for quad in vertices.as_chunks_mut::<4>().0 {
+        let origin = [
+            (quad[0].light & 65535) as f32 / 65535.0,
+            (quad[0].light >> 16) as f32 / 65535.0,
+        ];
+        let origin = [0, 1].map(|i| (origin[i] * dims[i]).round() / dims[i]);
+        let min = [0, 1]
+            .map(|i| (quad.iter().map(|v| v.uv[i]).fold(f32::INFINITY, f32::min) + 0.0001).floor());
+        for v in quad {
+            v.uv =
+                [0, 1].map(|i| origin[i] + (v.uv[i] - min[i]).clamp(0.001, 0.999) * sprite[i + 2]);
+            v.layer = 0;
+            v.light = 0x0000_f0f0;
+        }
+    }
+}
+
+#[cfg(test)]
+mod portal_beam_tests {
+    use super::*;
+
+    fn quad(layer: u32, light: u32, corners: [([f32; 3], [f32; 2]); 4]) -> [Vertex; 4] {
+        corners.map(|(pos, uv)| Vertex {
+            pos,
+            uv,
+            layer,
+            color: 0xFF20_40FF,
+            light,
+            ..bytemuck::Zeroable::zeroed()
+        })
+    }
+
+    #[test]
+    fn a_beam_face_becomes_one_sprite_copy_per_repeat() {
+        // `block_entity_render::beam`'s corner order: 0 and 3 at the end (v1), 1 and 2 at the
+        // start (v2); the sprite's v range (0.25, height 0.5) in the light bytes.
+        let wrap = (0.25f32 * 65535.0).round() as u32 | ((0.5f32 * 65535.0).round() as u32) << 16;
+        let face = quad(
+            6,
+            wrap,
+            [
+                ([0.0, 3.0, 0.0], [0.9, 3.0]),
+                ([0.0, 0.0, 0.0], [0.9, 0.0]),
+                ([1.0, 0.0, 0.0], [0.1, 0.0]),
+                ([1.0, 3.0, 0.0], [0.1, 3.0]),
+            ],
+        );
+        let mut out = Vec::new();
+        beam_segments(&face, &mut out);
+        assert_eq!(out.len(), 12, "three repeats, three pieces");
+        for (k, piece) in out.chunks(4).enumerate() {
+            let (bottom, top) = (k as f32, k as f32 + 1.0);
+            assert_eq!([piece[0].pos[1], piece[1].pos[1]], [top, bottom]);
+            assert_eq!([piece[2].pos[1], piece[3].pos[1]], [bottom, top]);
+            for v in piece {
+                assert!((0.25 - 1e-4..=0.75 + 1e-4).contains(&v.uv[1]), "{:?}", v.uv);
+                assert_eq!(v.layer, 0);
+                assert_eq!(v.light, 0x0000_f0f0);
+                assert_eq!(v.color, 0xFF20_40FF);
+            }
+            assert!((piece[0].uv[1] - 0.75).abs() < 1e-4 && (piece[1].uv[1] - 0.25).abs() < 1e-4);
+            assert_eq!([piece[0].uv[0], piece[2].uv[0]], [0.9, 0.1]);
+        }
+    }
+
+    #[test]
+    fn a_very_tall_beam_is_cut_into_at_most_64_pieces() {
+        let face = quad(
+            6,
+            0xFFFF_0000,
+            [
+                ([0.0, 2000.0, 0.0], [1.0, 2000.0]),
+                ([0.0, 0.0, 0.0], [1.0, 0.0]),
+                ([1.0, 0.0, 0.0], [0.0, 0.0]),
+                ([1.0, 2000.0, 0.0], [0.0, 2000.0]),
+            ],
+        );
+        let mut out = Vec::new();
+        beam_segments(&face, &mut out);
+        assert!(out.len() / 4 <= 64, "{} pieces", out.len() / 4);
+        let top = out.iter().map(|v| v.pos[1]).fold(f32::MIN, f32::max);
+        let bottom = out.iter().map(|v| v.pos[1]).fold(f32::MAX, f32::min);
+        assert_eq!(
+            (bottom, top),
+            (0.0, 2000.0),
+            "the pieces still span the whole beam"
+        );
+    }
+
+    #[test]
+    fn portal_faces_take_the_whole_portal_texture_at_full_light() {
+        let mut face = quad(9, 0, [([0.0; 3], [0.0; 2]); 4]).to_vec();
+        as_portal_texture(&mut face);
+        let uvs: Vec<[f32; 2]> = face.iter().map(|v| v.uv).collect();
+        assert_eq!(uvs, [[0.0, 0.0], [0.0, 1.0], [1.0, 1.0], [1.0, 0.0]]);
+        assert!(
+            face.iter()
+                .all(|v| v.layer == 0 && v.color == 0xFFFF_FFFF && v.light == 0x0000_f0f0)
+        );
+    }
+
+    #[test]
+    fn horizon_keeps_no_portal_or_beam_face_under_a_pack() {
+        let mut run = Vec::new();
+        for layer in [0, 6, 9, 10, 2] {
+            run.extend(quad(layer, 0, [([0.0; 3], [0.0; 2]); 4]));
+        }
+        let mut rest = Vec::new();
+        extend_without_portals(&mut rest, &run);
+        let kept: Vec<u32> = rest.chunks(4).map(|q| q[0].layer).collect();
+        assert_eq!(kept, [0, 2]);
+    }
+}
+
+#[cfg(test)]
+mod crack_projection_tests {
+    use super::*;
+    #[test]
+    fn crack_uvs_keep_a_full_sprite_and_decode_each_stage() {
+        let mut vertices: Vec<Vertex> = [[-1.0, -1.0], [-1.0, 0.0], [0.0, 0.0], [0.0, -1.0]]
+            .into_iter()
+            .map(|uv| Vertex {
+                uv,
+                layer: 11,
+                light: crate::breaking::stage_light([0.25, 0.5]),
+                ..bytemuck::Zeroable::zeroed()
+            })
+            .collect();
+        project_cracks(
+            &mut vertices,
+            [0.0, 0.0, 16.0 / 4096.0, 16.0 / 9216.0],
+            [4096, 9216],
+        );
+        assert!(
+            vertices
+                .iter()
+                .all(|v| v.layer == 0 && v.uv[0] >= 0.25 && v.uv[0] < 0.25 + 16.0 / 4096.0)
+        );
+        assert!((vertices[2].uv[0] - vertices[0].uv[0]) > 15.0 / 4096.0);
+        assert!((vertices[1].uv[1] - vertices[0].uv[1]) > 15.0 / 9216.0);
+    }
+}
+
+/// Intersects shader identities with overlay runs, without reading posed vertices back.
+fn skin_runs(skin: &super::entity_skin::SkinFrame) -> Vec<(EntitySpan, Range<u32>, u32)> {
+    let mut out: Vec<(EntitySpan, Range<u32>, u32)> = Vec::new();
+    let mut span_index = 0;
+    for job in &skin.jobs {
+        let mut at = job.dst;
+        let end = at + job.count;
+        while at < end {
+            while span_index + 1 < skin.spans.len() && skin.spans[span_index + 1].start <= at {
+                span_index += 1;
+            }
+            let Some(&span) = skin.spans.get(span_index) else {
+                break;
+            };
+            let stop = end.min(skin.spans.get(span_index + 1).map_or(end, |s| s.start));
+            if stop <= at {
+                break;
+            }
+            if let Some((old, range, overlay)) = out.last_mut()
+                && (EntitySpan { start: 0, ..*old }) == (EntitySpan { start: 0, ..span })
+                && *overlay == job.overlay
+                && range.end == at
+            {
+                range.end = stop;
+            } else {
+                out.push((span, at..stop, job.overlay));
+            }
+            at = stop;
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod gpu_span_tests {
+    use super::*;
+    use crate::gfx::entity_skin::{SkinFrame, SkinJob};
+    #[test]
+    fn posed_draws_preserve_subject_ids_overlays_and_hidden_shadow_casters() {
+        let mut skin = SkinFrame {
+            vertices: 24,
+            ..Default::default()
+        };
+        skin.spans = vec![
+            EntitySpan {
+                start: 0,
+                stage: render_stage("ENTITIES"),
+                id: 40,
+                ..Default::default()
+            },
+            EntitySpan {
+                start: 12,
+                stage: render_stage("ENTITIES"),
+                id: 41,
+                hidden: true,
+                ..Default::default()
+            },
+        ];
+        skin.jobs = vec![
+            SkinJob {
+                dst: 0,
+                count: 4,
+                overlay: 1,
+                ..Default::default()
+            },
+            SkinJob {
+                dst: 4,
+                count: 4,
+                overlay: 1,
+                ..Default::default()
+            },
+            SkinJob {
+                dst: 8,
+                count: 12,
+                overlay: 5,
+                ..Default::default()
+            },
+            SkinJob {
+                dst: 20,
+                count: 4,
+                overlay: 5,
+                ..Default::default()
+            },
+        ];
+        let runs = skin_runs(&skin);
+        assert_eq!(
+            runs.iter()
+                .map(|(s, r, o)| (s.id, r.clone(), *o, s.hidden))
+                .collect::<Vec<_>>(),
+            [
+                (40, 0..8, 1, false),
+                (40, 8..12, 5, false),
+                (41, 12..24, 5, true)
+            ]
+        );
+        assert_eq!(entity_color(runs[0].2)[3], 0.30196077);
+        assert!(
+            Casters {
+                entities: true,
+                ..Default::default()
+            }
+            .cast(&runs[2].0, ENTITY)
+        );
+        skin.truncate((2, 0, 8));
+        assert_eq!(skin.vertices, 8);
+        assert_eq!(skin.spans.len(), 1);
+    }
+
+    #[test]
+    fn posed_and_cpu_draws_keep_offsets_uniforms_and_special_fallbacks() {
+        let instance = crate::gfx::test_gpu::instance();
+        let Ok(adapter) = pollster::block_on(instance.request_adapter(&Default::default())) else {
+            return;
+        };
+        let Ok((device, queue)) = pollster::block_on(adapter.request_device(&Default::default()))
+        else {
+            return;
+        };
+        let layout = super::super::pack_draw::DrawUniforms::new(&device);
+        let mut geometry = PackEntities::new(&device, &layout.layout);
+        let entity = |start, id| EntitySpan {
+            start,
+            id,
+            stage: render_stage("ENTITIES"),
+            ..Default::default()
+        };
+        let mut skin = SkinFrame {
+            vertices: 12,
+            spans: vec![
+                entity(0, 40),
+                EntitySpan {
+                    hidden: true,
+                    ..entity(4, 41)
+                },
+                EntitySpan {
+                    start: 8,
+                    id: 99,
+                    stage: render_stage("BLOCK_ENTITIES"),
+                    emissive: true,
+                    ..Default::default()
+                },
+            ],
+            jobs: [1 | (2 << 16), 5, 0]
+                .into_iter()
+                .enumerate()
+                .map(|(i, overlay)| SkinJob {
+                    dst: i as u32 * 4,
+                    count: 4,
+                    overlay,
+                    ..Default::default()
+                })
+                .collect(),
+            ..Default::default()
+        };
+        let cpu = vec![
+            Vertex {
+                layer: 0,
+                ..bytemuck::Zeroable::zeroed()
+            };
+            8
+        ];
+        let spans = [entity(4, 50)];
+        let mut rest = Vec::new();
+        let shadows = Casters {
+            entities: true,
+            blocks: true,
+            ..Default::default()
+        };
+        geometry.prepare(
+            &device,
+            &queue,
+            &layout.layout,
+            &cpu,
+            &spans,
+            [true; PROGRAMS],
+            ([0.; 4], [1; 2]),
+            shadows,
+            &mut rest,
+            Some(&skin),
+        );
+        assert_eq!(rest.len(), 4, "untagged CPU prefix stays in Horizon's draw");
+        assert_eq!(geometry.scratch.len(), 4, "only CPU geometry is uploaded");
+        assert_eq!(
+            geometry
+                .draws
+                .iter()
+                .map(|d| (d.base, d.quads, d.pack, d.shadow))
+                .collect::<Vec<_>>(),
+            [
+                (0, 1, true, true),
+                (4, 1, false, true),
+                (8, 1, true, true),
+                (12, 1, true, true)
+            ]
+        );
+        let slot = |i: usize| &geometry.uniforms[i * geometry.stride as usize..][..SLOT as usize];
+        let word = |bytes: &[u8], at| i32::from_le_bytes(bytes[at..at + 4].try_into().unwrap());
+        assert_eq!((word(slot(0), 4), word(slot(0), 8)), (40, 0));
+        assert_eq!((word(slot(1), 4), word(slot(1), 8)), (41, 0));
+        assert_eq!((word(slot(2), 4), word(slot(2), 8)), (0, 99));
+        assert_eq!((word(slot(3), 4), word(slot(3), 8)), (50, 0));
+        let hurt: &[f32] = bytemuck::cast_slice(&slot(0)[16..32]);
+        assert_eq!(&hurt[..3], &[1.0, 0.0, 0.0]);
+        assert!((hurt[3] - 77.0 / 255.0).abs() < 1e-6);
+        let flash: &[f32] = bytemuck::cast_slice(&slot(1)[16..32]);
+        assert_eq!(&flash[..3], &[1.0, 1.0, 1.0]);
+        assert!((flash[3] - 192.0 / 255.0).abs() < 1e-6);
+        assert_eq!(word(slot(2), 0), render_stage("BLOCK_ENTITIES") as i32);
+
+        let mut special = cpu.clone();
+        special[4..].iter_mut().for_each(|v| v.layer = 2);
+        geometry.prepare(
+            &device,
+            &queue,
+            &layout.layout,
+            &special,
+            &spans,
+            [true; PROGRAMS],
+            ([0.; 4], [1; 2]),
+            shadows,
+            &mut rest,
+            None,
+        );
+        assert!(geometry.draws.is_empty());
+        assert_eq!(
+            bytemuck::cast_slice::<_, u8>(&rest),
+            bytemuck::cast_slice::<_, u8>(&special)
+        );
+
+        // Culling can retain hidden jobs for a pack whose entity caster is absent.
+        // The compute output must still fit, even though no visible/shadow draw uses it.
+        skin.vertices = 5000;
+        skin.jobs.truncate(1);
+        skin.jobs[0].count = 5000;
+        skin.spans = vec![EntitySpan {
+            hidden: true,
+            ..entity(0, 60)
+        }];
+        geometry.prepare(
+            &device,
+            &queue,
+            &layout.layout,
+            &[],
+            &[],
+            [false; PROGRAMS],
+            ([0.; 4], [1; 2]),
+            Casters::default(),
+            &mut rest,
+            Some(&skin),
+        );
+        assert!(geometry.draws.is_empty());
+        assert!(geometry.skin_target().size() >= 5000 * 44);
     }
 }

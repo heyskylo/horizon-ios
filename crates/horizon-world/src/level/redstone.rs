@@ -1,4 +1,4 @@
-//! Redstone: `SignalGetter`, redstone wire (default evaluator), torches,
+//! Redstone: `SignalGetter`, default and experimental wire evaluators, torches,
 //! diodes (repeaters, comparators), observers, lamps and the power-driven
 //! responses of doors, trapdoors, gates and other consumers.
 use super::{
@@ -17,6 +17,8 @@ use horizon_core::{
     ticks::TickPriority,
 };
 
+mod experimental;
+
 const SIGNAL_ORDER: [Direction; 6] = [
     Direction::Down,
     Direction::Up,
@@ -34,7 +36,8 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         if self.b.is_block(state, self.b.named.redstone_wire) {
             return !self.wire_signal_off.get();
         }
-        self.b.has_flag(state, state_flags::SIGNAL_SOURCE)
+        self.level
+            .adjust_signal_source(state, self.b.has_flag(state, state_flags::SIGNAL_SOURCE))
     }
     /// `BlockState.getSignal(level, pos, direction)`.
     pub(crate) fn state_signal(
@@ -43,7 +46,17 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         pos: BlockPos,
         direction: Direction,
     ) -> i32 {
+        let vanilla = self.vanilla_signal(state, pos, direction);
+        self.level
+            .adjust_signal(pos, state, direction, false, vanilla)
+    }
+    fn vanilla_signal(&self, state: BlockStateId, pos: BlockPos, direction: Direction) -> i32 {
         let b = self.b;
+        // BlockBehaviour.getSignal is `ownSignal` for a TestBlock, which is
+        // not an `isSignalSource`.
+        if b.data(state).class == Class::TestBlock {
+            return self.level.block_entity_signal(pos, state, direction);
+        }
         if !b.has_flag(state, state_flags::SIGNAL_SOURCE) {
             return 0;
         }
@@ -70,6 +83,16 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         pos: BlockPos,
         direction: Direction,
     ) -> i32 {
+        let vanilla = self.vanilla_direct_signal(state, pos, direction);
+        self.level
+            .adjust_signal(pos, state, direction, true, vanilla)
+    }
+    fn vanilla_direct_signal(
+        &self,
+        state: BlockStateId,
+        pos: BlockPos,
+        direction: Direction,
+    ) -> i32 {
         let b = self.b;
         if !b.has_flag(state, state_flags::SIGNAL_SOURCE) {
             return 0;
@@ -82,7 +105,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
                     self.wire_signal(state, pos, direction)
                 }
             }
-            Class::Comparator => self.state_signal(state, pos, direction),
+            Class::Comparator => self.vanilla_signal(state, pos, direction),
             Class::TrappedChest => {
                 if direction == Direction::Up {
                     self.level.block_entity_signal(pos, state, direction)
@@ -202,8 +225,13 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
             _ => self.is_signal_source(state) && direction.is_some(),
         }
     }
-    fn wire_can_survive_on(&self, state: BlockStateId) -> bool {
-        self.b.is_face_sturdy(state, Direction::Up) || self.b.is_block(state, self.b.named.hopper)
+    /// `RedstoneWireBlock.canSurvive` and `updateShape`'s down face: the block
+    /// below is read through `support_state`, since a retracting piston's
+    /// `moving_piston` block carries the extended base only through its block
+    /// entity and its exported facts call every face unsupported (#4728).
+    fn wire_can_survive_on(&self, pos: BlockPos) -> bool {
+        let state = self.support_state(pos);
+        self.sturdy(pos, Direction::Up) || self.b.is_block(state, self.b.named.hopper)
     }
     fn wire_connecting_side(
         &self,
@@ -216,7 +244,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         let relative = self.state(relative_pos);
         if can_connect_up {
             let placeable_above =
-                b.instance_of(relative, Class::TrapDoor) || self.wire_can_survive_on(relative);
+                b.instance_of(relative, Class::TrapDoor) || self.wire_can_survive_on(relative_pos);
             if placeable_above && self.should_wire_connect_to(self.state(above(relative_pos)), None)
             {
                 return if b.is_face_sturdy(relative, direction.opposite()) {
@@ -306,13 +334,13 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         state: BlockStateId,
         pos: BlockPos,
         direction: Direction,
-        _npos: BlockPos,
-        neighbour: BlockStateId,
+        npos: BlockPos,
+        _neighbour: BlockStateId,
     ) -> BlockStateId {
         let b = self.b;
         match direction {
             Direction::Down => {
-                if self.wire_can_survive_on(neighbour) {
+                if self.wire_can_survive_on(npos) {
                     state
                 } else {
                     b.air()
@@ -408,7 +436,17 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         (signal - 1).max(0)
     }
     /// `DefaultRedstoneWireEvaluator.updatePowerStrength`.
-    pub(crate) fn wire_update_power(&mut self, pos: BlockPos, state: BlockStateId) {
+    pub(crate) fn wire_update_power(
+        &mut self,
+        pos: BlockPos,
+        state: BlockStateId,
+        orientation: Option<super::orientation::Orientation>,
+        update_shape: bool,
+    ) {
+        if self.level.redstone_experiments() {
+            self.experimental_wire_update(pos, orientation, update_shape);
+            return;
+        }
         let block_signal = self.wire_block_signal(pos);
         let target = if block_signal == 15 {
             15
@@ -488,13 +526,13 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         };
         if b.instance_of(state, Class::Comparator) {
             let target_state = self.state(target);
-            if b.has_flag(target_state, state_flags::ANALOG_OUTPUT) {
+            if self.has_analog_output(target_state) {
                 result = self.analog_output(target_state, target, facing.opposite());
             } else if result < 15 && self.is_redstone_conductor(target_state, target) {
                 let further = rel(target, facing);
                 let further_state = self.state(further);
-                let block = b
-                    .has_flag(further_state, state_flags::ANALOG_OUTPUT)
+                let block = self
+                    .has_analog_output(further_state)
                     .then(|| self.analog_output(further_state, further, facing.opposite()));
                 // ComparatorBlock.getInputSignal: an item frame behind the
                 // conductor counts too, the larger signal winning.
@@ -528,8 +566,9 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         let direction = self.b.facing(state);
         let opposite_pos = rel(pos, direction.opposite());
         let block = self.b.block(state);
-        self.neighbor_changed_at(opposite_pos, block);
-        self.update_neighbors_at_except(opposite_pos, block, direction);
+        let orientation = self.initial_orientation(Some(direction.opposite()), Some(Direction::Up));
+        self.neighbor_changed_at_oriented(opposite_pos, block, orientation);
+        self.update_neighbors_at_except_oriented(opposite_pos, block, direction, orientation);
     }
     fn comparator_calculate_output(&self, pos: BlockPos, state: BlockStateId) -> i32 {
         let input = self.diode_input_signal(pos, state);
@@ -641,8 +680,25 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         }
     }
 
-    /// `getAnalogOutputSignal` for state-only sources; others ask the caller.
+    /// `BlockState.hasAnalogOutputSignal`, as the level answers it (a mod's block).
+    pub(crate) fn has_analog_output(&self, state: BlockStateId) -> bool {
+        let vanilla = self.b.has_flag(state, state_flags::ANALOG_OUTPUT);
+        self.level.adjust_has_analog_output(state, vanilla)
+    }
+    /// `BlockState.getAnalogOutputSignal`, as the level answers it (a mod's block), 0 to 15.
     pub(crate) fn analog_output(
+        &self,
+        state: BlockStateId,
+        pos: BlockPos,
+        direction: Direction,
+    ) -> i32 {
+        let vanilla = self.vanilla_analog_output(state, pos, direction);
+        self.level
+            .adjust_analog_output(pos, state, direction, vanilla)
+            .clamp(0, 15)
+    }
+    /// `getAnalogOutputSignal` for state-only sources; others ask the caller.
+    fn vanilla_analog_output(
         &self,
         state: BlockStateId,
         pos: BlockPos,
@@ -697,8 +753,17 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
     }
     pub(crate) fn torch_notify_neighbors(&mut self, pos: BlockPos, state: BlockStateId) {
         let block = self.b.block(state);
+        let front = self
+            .b
+            .instance_of(state, Class::RedstoneWallTorch)
+            .then(|| self.b.facing(state).opposite());
+        let orientation = self.initial_orientation(front, Some(Direction::Up));
         for direction in Direction::ALL {
-            self.update_neighbors_at(rel(pos, direction), block);
+            self.update_neighbors_at_oriented(
+                rel(pos, direction),
+                block,
+                orientation.map(|o| o.with_front(direction)),
+            );
         }
     }
     pub(crate) fn torch_neighbor_changed(&mut self, pos: BlockPos, state: BlockStateId) {
@@ -759,8 +824,9 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         let direction = self.b.facing(state);
         let opposite = rel(pos, direction.opposite());
         let block = self.b.block(state);
-        self.neighbor_changed_at(opposite, block);
-        self.update_neighbors_at_except(opposite, block, direction);
+        let orientation = self.initial_orientation(Some(direction.opposite()), None);
+        self.neighbor_changed_at_oriented(opposite, block, orientation);
+        self.update_neighbors_at_except_oriented(opposite, block, direction, orientation);
     }
     pub(crate) fn observer_tick(&mut self, pos: BlockPos, state: BlockStateId) {
         let b = self.b;
@@ -773,14 +839,41 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         self.observer_update_in_front(pos, state);
     }
 
+    /// `LecternBlock.updateBelow`.
+    pub fn lectern_update_below(&mut self, pos: BlockPos, state: BlockStateId) {
+        let orientation =
+            self.initial_orientation(Some(self.b.facing(state).opposite()), Some(Direction::Up));
+        self.update_neighbors_at_oriented(below(pos), self.b.block(state), orientation);
+    }
+    /// `LightningRodBlock.updateNeighbours`.
+    pub fn lightning_rod_update_neighbors(&mut self, pos: BlockPos, state: BlockStateId) {
+        let front = self.b.facing(state).opposite();
+        let orientation = self.initial_orientation(Some(front), None);
+        self.update_neighbors_at_oriented(rel(pos, front), self.b.block(state), orientation);
+    }
+    /// `TrappedChestBlockEntity.signalOpenCount`.
+    pub fn trapped_chest_update_neighbors(&mut self, pos: BlockPos, state: BlockStateId) {
+        let orientation =
+            self.initial_orientation(Some(self.b.facing(state).opposite()), Some(Direction::Up));
+        let block = self.b.block(state);
+        self.update_neighbors_at_oriented(pos, block, orientation);
+        self.update_neighbors_at_oriented(below(pos), block, orientation);
+    }
+
     // ---- buttons, levers, plates ----
 
     /// `ButtonBlock/LeverBlock.updateNeighbours`.
     pub(crate) fn attached_update_neighbours(&mut self, pos: BlockPos, state: BlockStateId) {
         let front = self.face_attached_connected(state).opposite();
         let block = self.b.block(state);
-        self.update_neighbors_at(pos, block);
-        self.update_neighbors_at(rel(pos, front), block);
+        let up = if axis_of(front) == Axis::Y {
+            self.b.facing(state)
+        } else {
+            Direction::Up
+        };
+        let orientation = self.initial_orientation(Some(front), Some(up));
+        self.update_neighbors_at_oriented(pos, block, orientation);
+        self.update_neighbors_at_oriented(rel(pos, front), block, orientation);
     }
     pub(crate) fn plate_update_neighbours(&mut self, pos: BlockPos, block: BlockId) {
         self.update_neighbors_at(pos, block);
@@ -1169,6 +1262,18 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
     }
     /// `NoteBlock.playNote`: queues the block event and emits the game event.
     pub(crate) fn note_play(&mut self, pos: BlockPos, state: BlockStateId) {
+        if !self.note_play_allowed(pos, state) {
+            return;
+        }
+        self.note_play_unchecked(pos, state);
+    }
+    pub(crate) fn note_play_allowed(&self, pos: BlockPos, state: BlockStateId) -> bool {
+        let b = self.b;
+        let instrument = b.table.text(state, b.props.instrument);
+        let note = b.table.int(state, b.props.note);
+        self.level.allow_note_play(pos, instrument, note)
+    }
+    pub(crate) fn note_play_unchecked(&mut self, pos: BlockPos, state: BlockStateId) {
         let b = self.b;
         let instrument = b.table.text(state, b.props.instrument);
         let mob_head = super::data::INSTRUMENTS
@@ -1201,8 +1306,17 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
             });
             horizon_core::jmath::pow(2.0, f64::from(note - 12) / 12.0) as f32
         };
+        // NoteBlock.getCustomSoundId: the sound saved in the skull above is
+        // read by the client; no skull or no sound means no sound.
+        if instrument == "custom_head" {
+            self.emit(LevelEvent::BlockEvent {
+                pos,
+                state,
+                kind: "note_custom_sound",
+            });
+            return;
+        }
         let sound = match instrument.as_str() {
-            "custom_head" => "minecraft:ui.button.click".to_owned(),
             "dragon" => "minecraft:block.note_block.imitate.ender_dragon".to_owned(),
             name if mob_head => format!("minecraft:block.note_block.imitate.{name}"),
             name => format!("minecraft:block.note_block.{name}"),
@@ -1226,7 +1340,9 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
     }
     /// `TntBlock.prime` then `removeBlock`.
     pub(crate) fn tnt_check(&mut self, pos: BlockPos) {
-        if self.has_neighbor_signal(pos) {
+        // TntBlock.prime succeeds only on a ServerLevel. A client's piston
+        // replay must leave priming and block removal to the server.
+        if !self.level.is_client_side() && self.has_neighbor_signal(pos) {
             self.prime_tnt(pos);
             self.remove_block(pos, false);
         }
@@ -1294,6 +1410,9 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
     /// `BellBlock.attemptToRing`: `BellBlockEntity.onHit` queues block event 1
     /// with the struck direction, then the sound and game event.
     pub(crate) fn bell_ring(&mut self, pos: BlockPos, state: BlockStateId, direction: Direction) {
+        if !self.level.allow_bell_ring(pos) {
+            return;
+        }
         self.block_event(pos, self.b.block(state), 1, direction as i32);
         self.emit(LevelEvent::Sound {
             pos,

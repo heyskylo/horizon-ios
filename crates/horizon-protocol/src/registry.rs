@@ -3,7 +3,10 @@
 //! registries report. Data-driven registries (dimension types, biomes, chat
 //! types, damage types ...) are numbered in the order the server sends them
 //! during configuration.
-use crate::{Error, Result, packets::configuration::RegistryData};
+use crate::{
+    Error, Result,
+    packets::configuration::{RegistryData, UpdateTags},
+};
 use horizon_world::nbt::{JavaString, Tag};
 use std::{collections::HashMap, path::Path};
 
@@ -38,6 +41,27 @@ impl Ids {
 pub struct Builtin {
     pub registries: HashMap<String, Ids>,
 }
+/// The names of both kinds of registry a connection knows: the built-in ones
+/// first (as a hub's `SyncData::id` does), then those the server synced.
+pub struct SyncedNames<'a> {
+    pub builtin: &'a Builtin,
+    pub dynamic: &'a Dynamic,
+}
+impl crate::item::Names for SyncedNames<'_> {
+    fn name(&self, registry: &str, id: i32) -> Option<String> {
+        self.builtin
+            .get(registry)
+            .and_then(|ids| ids.name(id))
+            .or_else(|| self.dynamic.name(registry, id))
+            .or_else(|| {
+                (self.dynamic.custom_components && registry == "minecraft:data_component_type")
+                    .then(|| crate::item::custom::name(id))
+                    .flatten()
+            })
+            .map(str::to_owned)
+    }
+}
+
 impl Builtin {
     pub fn load(path: &Path) -> Result<Self> {
         let text = std::fs::read_to_string(path)
@@ -89,8 +113,26 @@ impl Builtin {
 #[derive(Clone, Debug, Default)]
 pub struct Dynamic {
     pub registries: HashMap<String, Vec<(String, Option<Tag>)>>,
+    /// The `minecraft:dialog` tags the server sent: each tag's entries by id.
+    pub dialog_tags: HashMap<String, Vec<i32>>,
+    /// The peer confirmed the native component registry identity.
+    pub custom_components: bool,
 }
 impl Dynamic {
+    /// The dialog tags of a `ClientboundUpdateTagsPacket`.
+    pub fn add_tags(&mut self, packet: &UpdateTags) {
+        for r in packet
+            .registries
+            .iter()
+            .filter(|r| r.registry == "minecraft:dialog")
+        {
+            self.dialog_tags = r
+                .tags
+                .iter()
+                .map(|t| (t.name.clone(), t.ids.clone()))
+                .collect();
+        }
+    }
     pub fn add(&mut self, packet: RegistryData) {
         let entries = packet.entries.into_iter().map(|e| (e.id, e.data)).collect();
         self.registries.insert(packet.registry, entries);
@@ -136,9 +178,34 @@ impl Dynamic {
             if let Some(v) = int("height") {
                 d.height = v;
             }
+            if let Some(v) = int("logical_height") {
+                d.logical_height = v;
+            }
             if let Some(Tag::Byte(v)) = map.get(&JavaString::from("has_skylight")) {
                 d.has_skylight = *v != 0;
             }
+            if let Some(Tag::Byte(v)) = map.get(&JavaString::from("has_ceiling")) {
+                d.has_ceiling = *v != 0;
+            }
+            // Any number, as vanilla's codec reads it (Horizon's own server sends a
+            // world pack's JSON numbers as doubles).
+            d.ambient_light = match map.get(&JavaString::from("ambient_light")) {
+                Some(Tag::Float(v)) => f32::from_bits(*v),
+                Some(Tag::Double(v)) => f64::from_bits(*v) as f32,
+                Some(Tag::Int(v)) => *v as f32,
+                Some(Tag::Byte(v)) => f32::from(*v),
+                _ => d.ambient_light,
+            };
+            // DimensionType.defaultClock: the world clock this level's day
+            // time follows (absent in the Nether).
+            d.default_clock = match map.get(&JavaString::from("default_clock")) {
+                Some(Tag::String(s)) => Some(s.to_string_lossy()),
+                Some(Tag::Compound(c)) => match c.get(&JavaString::from("id")) {
+                    Some(Tag::String(s)) => Some(s.to_string_lossy()),
+                    _ => d.default_clock,
+                },
+                _ => d.default_clock,
+            };
         }
         d
     }
@@ -149,20 +216,39 @@ pub struct DimensionType {
     pub name: String,
     pub min_y: i32,
     pub height: i32,
+    pub logical_height: i32,
     pub has_skylight: bool,
+    /// `DimensionType.hasCeiling`: weather, spawning and maps read it.
+    pub has_ceiling: bool,
+    /// `DimensionType.ambientLight`: the light every block gets, whatever its light level.
+    pub ambient_light: f32,
+    /// `DimensionType.defaultClock`: the `minecraft:world_clock` this level
+    /// samples for day time (`None` in the Nether).
+    pub default_clock: Option<String>,
 }
 impl DimensionType {
     pub fn vanilla(name: &str) -> Self {
-        let (min_y, height, has_skylight) = match name {
-            "minecraft:the_nether" => (0, 256, false),
-            "minecraft:the_end" => (0, 256, false),
-            _ => (-64, 384, true),
+        let (min_y, height, logical_height, has_skylight, has_ceiling, default_clock) = match name {
+            "minecraft:the_nether" => (0, 256, 128, false, true, None),
+            "minecraft:the_end" => (0, 256, 256, true, false, Some("minecraft:the_end")),
+            // overworld_caves builds like the Overworld but has a ceiling.
+            "minecraft:overworld_caves" => (-64, 384, 384, true, true, Some("minecraft:overworld")),
+            _ => (-64, 384, 384, true, false, Some("minecraft:overworld")),
+        };
+        let ambient_light = match name {
+            "minecraft:the_nether" => 0.1,
+            "minecraft:the_end" => 0.25,
+            _ => 0.0,
         };
         Self {
             name: name.to_owned(),
             min_y,
             height,
+            logical_height,
             has_skylight,
+            has_ceiling,
+            ambient_light,
+            default_clock: default_clock.map(str::to_owned),
         }
     }
     pub fn sections(&self) -> usize {
@@ -220,8 +306,62 @@ mod tests {
         );
         assert_eq!(d.dimension(1).sections(), 16);
         assert!(!d.dimension(1).has_skylight);
+        // The type's data leaves has_ceiling out; the Nether default holds.
+        assert!(d.dimension(1).has_ceiling);
+        assert_eq!(d.dimension(1).default_clock, None);
+        // ...and so does its ambient light.
+        assert_eq!(d.dimension(1).ambient_light, 0.1);
         assert_eq!(ceil_log2(35723), 16);
         assert_eq!(ceil_log2(65), 7);
         assert_eq!(ceil_log2(64), 6);
+    }
+
+    #[test]
+    fn dimension_reads_default_clock() {
+        let mut d = Dynamic::default();
+        d.add(RegistryData {
+            registry: "minecraft:dimension_type".into(),
+            entries: vec![RegistryEntry {
+                id: "pack:custom".into(),
+                data: Some(Tag::compound([
+                    ("min_y", Tag::Int(-64)),
+                    ("height", Tag::Int(384)),
+                    ("logical_height", Tag::Int(384)),
+                    ("has_skylight", Tag::Byte(1)),
+                    ("default_clock", Tag::String("minecraft:overworld".into())),
+                ])),
+            }],
+        });
+        let dim = d.dimension(0);
+        assert_eq!(dim.name, "pack:custom");
+        assert_eq!(dim.default_clock.as_deref(), Some("minecraft:overworld"));
+    }
+
+    #[test]
+    fn dimension_reads_ambient_light() {
+        let mut d = Dynamic::default();
+        d.add(RegistryData {
+            registry: "minecraft:dimension_type".into(),
+            entries: vec![RegistryEntry {
+                id: "pack:custom".into(),
+                data: Some(Tag::compound([
+                    ("height", Tag::Int(384)),
+                    ("ambient_light", Tag::Float(0.375f32.to_bits())),
+                ])),
+            }],
+        });
+        assert_eq!(d.dimension(0).ambient_light, 0.375);
+        // A world pack's JSON number, as Horizon's server sends it.
+        d.add(RegistryData {
+            registry: "minecraft:dimension_type".into(),
+            entries: vec![RegistryEntry {
+                id: "pack:custom".into(),
+                data: Some(Tag::compound([(
+                    "ambient_light",
+                    Tag::Double(0.5f64.to_bits()),
+                )])),
+            }],
+        });
+        assert_eq!(d.dimension(0).ambient_light, 0.5);
     }
 }

@@ -79,6 +79,52 @@ pub struct BlockCollisionHit {
     pub shape: VoxelShape,
 }
 
+#[derive(Clone, Copy, Debug)]
+enum CellError {
+    InvalidBounds,
+    TooLarge,
+}
+
+/// The cursor a scan of `bounds` walks: its padded start, the box's extents in
+/// cells and the cell count. `new` and [`scan_cells`] share it, so a caller
+/// that sizes a budget from a box counts exactly what the scan will visit.
+fn cells(bounds: Aabb) -> Result<(BlockPos, [i32; 3], usize), CellError> {
+    let min = bounds.min_position();
+    let max = bounds.max_position();
+    if !min.is_finite() || !max.is_finite() {
+        return Err(CellError::InvalidBounds);
+    }
+    let start = BlockPos::containing(Vec3::new(min.x - 1.0e-7, min.y - 1.0e-7, min.z - 1.0e-7))
+        .offset(-1, -1, -1);
+    let end = BlockPos::containing(Vec3::new(max.x + 1.0e-7, max.y + 1.0e-7, max.z + 1.0e-7))
+        .offset(1, 1, 1);
+    let sizes = [
+        end.x.wrapping_sub(start.x).wrapping_add(1),
+        end.y.wrapping_sub(start.y).wrapping_add(1),
+        end.z.wrapping_sub(start.z).wrapping_add(1),
+    ];
+    if sizes.iter().any(|size| *size <= 0) {
+        return Err(CellError::TooLarge);
+    }
+    let count = sizes
+        .into_iter()
+        .try_fold(1u64, |n, size| {
+            n.checked_mul(size as u64).filter(|n| *n <= i32::MAX as u64)
+        })
+        .ok_or(CellError::TooLarge)? as usize;
+    Ok((start, sizes, count))
+}
+
+/// The cells a scan of `bounds` visits, or `None` for a box `new` refuses
+/// (`InvalidBounds`, `TooLarge`): the most a budget can usefully be.
+pub fn scan_cells(bounds: Aabb) -> Option<usize> {
+    cells(bounds).ok().map(|(_, _, count)| count)
+}
+
+/// Sections whose `may_reach_out` a scan remembers: 2 x 2 columns by two
+/// sections holds every section of a box up to 16 blocks on each side.
+const REACH_SECTIONS: usize = 8;
+
 pub struct BlockCollisionScan<'w, 'c, W: BlockCollisionWorld> {
     world: &'w mut W,
     context: CollisionContext<'c>,
@@ -95,8 +141,12 @@ pub struct BlockCollisionScan<'w, 'c, W: BlockCollisionWorld> {
     count: usize,
     budget: usize,
     chunk: Option<(ChunkPos, W::Chunk)>,
-    /// `may_reach_out` of the last section an outer cell was in.
-    reach: Option<(ChunkPos, i32, bool)>,
+    /// `may_reach_out` of the last sections outer cells were in, replaced
+    /// in turn. A box across a chunk border goes back and forth between
+    /// two columns on every row, so one remembered section is asked again
+    /// at each crossing.
+    reach: [Option<(ChunkPos, i32, bool)>; REACH_SECTIONS],
+    reach_next: usize,
     failed: bool,
 }
 impl<'w, 'c, W: BlockCollisionWorld> BlockCollisionScan<'w, 'c, W> {
@@ -110,29 +160,10 @@ impl<'w, 'c, W: BlockCollisionWorld> BlockCollisionScan<'w, 'c, W> {
         only_suffocating: bool,
         candidate_budget: usize,
     ) -> Result<Self, CollisionScanError<W::Error>> {
-        let min = bounds.min_position();
-        let max = bounds.max_position();
-        if !min.is_finite() || !max.is_finite() {
-            return Err(CollisionScanError::InvalidBounds);
-        }
-        let start = BlockPos::containing(Vec3::new(min.x - 1.0e-7, min.y - 1.0e-7, min.z - 1.0e-7))
-            .offset(-1, -1, -1);
-        let end = BlockPos::containing(Vec3::new(max.x + 1.0e-7, max.y + 1.0e-7, max.z + 1.0e-7))
-            .offset(1, 1, 1);
-        let sizes = [
-            end.x.wrapping_sub(start.x).wrapping_add(1),
-            end.y.wrapping_sub(start.y).wrapping_add(1),
-            end.z.wrapping_sub(start.z).wrapping_add(1),
-        ];
-        if sizes.iter().any(|size| *size <= 0) {
-            return Err(CollisionScanError::TooLarge);
-        }
-        let count = sizes
-            .into_iter()
-            .try_fold(1u64, |n, size| {
-                n.checked_mul(size as u64).filter(|n| *n <= i32::MAX as u64)
-            })
-            .ok_or(CollisionScanError::TooLarge)? as usize;
+        let (start, sizes, count) = cells(bounds).map_err(|error| match error {
+            CellError::InvalidBounds => CollisionScanError::InvalidBounds,
+            CellError::TooLarge => CollisionScanError::TooLarge,
+        })?;
         Ok(Self {
             world,
             context,
@@ -146,7 +177,8 @@ impl<'w, 'c, W: BlockCollisionWorld> BlockCollisionScan<'w, 'c, W> {
             count,
             budget: candidate_budget,
             chunk: None,
-            reach: None,
+            reach: [None; REACH_SECTIONS],
+            reach_next: 0,
             failed: false,
         })
     }
@@ -219,14 +251,20 @@ impl<'w, 'c, W: BlockCollisionWorld> BlockCollisionScan<'w, 'c, W> {
             // mob's box).
             if kind != 0 {
                 let section_y = p.y >> 4;
-                let reaches = match self.reach {
-                    Some((at, y, reaches)) if at == chunk_position && y == section_y => reaches,
-                    _ => {
+                let known = self
+                    .reach
+                    .iter()
+                    .flatten()
+                    .find(|(at, y, _)| *at == chunk_position && *y == section_y);
+                let reaches = match known {
+                    Some(&(_, _, reaches)) => reaches,
+                    None => {
                         let reaches = self
                             .world
                             .may_reach_out(chunk, section_y)
                             .map_err(CollisionScanError::World)?;
-                        self.reach = Some((chunk_position, section_y, reaches));
+                        self.reach[self.reach_next] = Some((chunk_position, section_y, reaches));
+                        self.reach_next = (self.reach_next + 1) % REACH_SECTIONS;
                         reaches
                     }
                 };

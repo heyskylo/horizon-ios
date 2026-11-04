@@ -13,7 +13,9 @@ use horizon_core::{geometry::Direction, position::BlockPos};
 impl<L: LevelAccess + ?Sized> Sim<'_, L> {
     /// `BlockState.canSurvive(level, pos)`.
     pub fn can_survive(&self, state: BlockStateId, pos: BlockPos) -> bool {
-        self.can_survive_at(0, state, pos)
+        let mut survives = None;
+        self.level.before_can_survive(pos, state, &mut survives);
+        survives.unwrap_or_else(|| self.can_survive_at(0, state, pos))
     }
     fn can_survive_at(&self, depth: usize, state: BlockStateId, pos: BlockPos) -> bool {
         let chain = &self.b.data(state).chain;
@@ -277,8 +279,11 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
                 self.sturdy(rel(pos, facing.opposite()), facing)
             }
             Class::RedstoneWire => {
-                let below_state = self.below_state(pos);
-                b.is_face_sturdy(below_state, Direction::Up) || b.is_block(below_state, n.hopper)
+                // `RedstoneWireBlock.canSurvive`'s `canSurviveOn`, through
+                // `support_state` so a retracting piston's moving base still
+                // holds its dust (#4728).
+                let below = below(pos);
+                self.sturdy(below, Direction::Up) || b.is_block(self.state(below), n.hopper)
             }
             Class::Scaffolding => self.scaffolding_distance(pos) < 7,
             Class::SeaPickle => {
@@ -318,9 +323,11 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
                     let below = below(pos);
                     for direction in HORIZONTAL {
                         let at = rel(below, direction);
+                        // Read block state before fluid state, matching vanilla's call order.
+                        let adjacent = self.state(at);
                         let fluid = self.fluid_at(at);
                         if b.fluid_in(fluid.kind(), b.fluid_tags.supports_sugar_cane_adjacently)
-                            || b.in_set(self.state(at), &t.supports_sugar_cane_adjacently)
+                            || b.in_set(adjacent, &t.supports_sugar_cane_adjacently)
                         {
                             return Some(true);
                         }
@@ -354,6 +361,12 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         ground: BlockStateId,
         ground_pos: BlockPos,
     ) -> bool {
+        let mut may = None;
+        self.level
+            .before_may_place_on(state, ground, ground_pos, &mut may);
+        if let Some(may) = may {
+            return may;
+        }
         let b = self.b;
         let t = &b.tags;
         let data = b.data(state);
@@ -480,18 +493,34 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         self.ignite_odds(state) > 0
     }
     pub(crate) fn ignite_odds(&self, state: BlockStateId) -> i32 {
-        if self.b.is_waterlogged(state) {
-            0
-        } else {
-            self.b.data(state).ignite_odds
-        }
+        self.fire_odds(state).0
     }
     pub(crate) fn burn_odds(&self, state: BlockStateId) -> i32 {
+        self.fire_odds(state).1
+    }
+    /// `FireBlock.getIgniteOdds` and `getBurnOdds`: the level's answer, else
+    /// `FireBlock.bootStrap`'s table.
+    fn fire_odds(&self, state: BlockStateId) -> (i32, i32) {
         if self.b.is_waterlogged(state) {
-            0
-        } else {
-            self.b.data(state).burn_odds
+            return (0, 0);
         }
+        let mut odds = None;
+        self.level.before_fire_odds(state, &mut odds);
+        odds.unwrap_or_else(|| {
+            let data = self.b.data(state);
+            (data.ignite_odds, data.burn_odds)
+        })
+    }
+    /// `CampfireBlock.isSmokeSource`: a hay bale, unless the level answers.
+    pub(crate) fn is_smoke_source(&self, state: BlockStateId) -> bool {
+        let mut smoke = None;
+        self.level.before_smoke_source(state, &mut smoke);
+        smoke.unwrap_or_else(|| {
+            self.b
+                .table
+                .block_by_name("minecraft:hay_block")
+                .is_some_and(|hay| self.b.is_block(state, hay))
+        })
     }
     /// `ScaffoldingBlock.getDistance`.
     pub(crate) fn scaffolding_distance(&self, pos: BlockPos) -> i32 {

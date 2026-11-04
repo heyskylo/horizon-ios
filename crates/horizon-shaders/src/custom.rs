@@ -9,13 +9,14 @@
 //!   reported once.
 //! - OQ-26: `smooth` runs per frame with the frame time; its fade times are seconds (1 by
 //!   default) to cover half of the remaining distance, `fadeIn` while rising, `fadeOut` while
-//!   falling. Each call keeps its own state, so the optional id is not needed.
+//!   falling. Each call keeps its own state, so the optional id is not needed. As in Iris
+//!   1.11.7, the first argument is that id when it is written as a number and more follow.
 
 use std::collections::{HashMap, HashSet};
 
 use crate::Properties;
 
-/// A value: up to 16 components (matrices only as names, for `m.row.column`).
+/// A value: up to 16 components (matrices only as names, for `m.column.row`).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Val {
     pub v: [f64; 16],
@@ -63,7 +64,7 @@ impl Val {
 #[derive(Clone, Debug)]
 enum Expr {
     Num(f64),
-    /// A name and its component (`x`, `2`, `2.1` as row 2, column 1).
+    /// A name and its component (`x`, `2`, `2.1` as column 2, row 1).
     Name(String, Option<(usize, Option<usize>)>),
     Call(String, Vec<Expr>, usize),
     Neg(Box<Expr>),
@@ -116,7 +117,10 @@ impl Custom {
                     .push(format!("{}: type `{ty}` is not supported", e.key));
                 continue;
             }
-            match Parser::new(&e.value, &mut out.calls).expr_all() {
+            // Tolerate one final terminator, while leaving extra statements to the parser.
+            let value = e.value.trim();
+            let value = value.strip_suffix(';').unwrap_or(value).trim_end();
+            match Parser::new(value, &mut out.calls).expr_all() {
                 Ok(expr) => out.items.push(Item {
                     name: name.to_owned(),
                     ty: ty.to_owned(),
@@ -127,6 +131,13 @@ impl Custom {
             }
         }
         out
+    }
+
+    /// Forgets what `smooth` keeps: each starts again from its next value, as on the first frame
+    /// (for runs whose values are not the world's: the load-time dry run, frames before the
+    /// camera's biome is known).
+    pub fn restart_smoothing(&mut self) {
+        self.smooth.clear();
     }
 
     /// Names the game's biomes (registry identifiers, in id order) for `BIOME_*`.
@@ -218,8 +229,9 @@ impl Custom {
                 };
                 match component {
                     None => v,
-                    // GLSL's m[column][row] is stored column after column.
-                    Some((row, Some(column))) => Val::scalar(v.v[column * 4 + row]),
+                    // `m.c.r` is GLSL's m[c][r], stored column after column: packs transform a
+                    // view vector to the world as `inverse.0.0 * x + inverse.1.0 * y + ...`.
+                    Some((column, Some(row))) => Val::scalar(v.v[column * 4 + row]),
                     Some((i, None)) => Val::scalar(v.v[*i]),
                 }
             }
@@ -307,12 +319,14 @@ impl Custom {
                         a.last().copied().unwrap_or(Val::scalar(0.0))
                     }
                     "smooth" => {
-                        let (val, fade_in, fade_out) = match a.len() {
-                            4 => (arg(1).x(), arg(2).x(), arg(3).x()),
-                            3 => (x, arg(1).x(), arg(2).x()),
-                            2 => (x, arg(1).x(), arg(1).x()),
-                            _ => (x, 1.0, 1.0),
-                        };
+                        // A first argument written as a number names the call when more
+                        // follow (`smooth(1, x, 2)`); any other is the value (`smooth(x, 2)`).
+                        let named = a.len() > 1 && matches!(args[0], Expr::Num(_));
+                        let rest = &a[usize::from(named)..];
+                        let at = |i: usize| rest.get(i).map(Val::x);
+                        let val = at(0).unwrap_or(0.0);
+                        let fade_in = at(1).unwrap_or(1.0);
+                        let fade_out = at(2).unwrap_or(fade_in);
                         let state = self.smooth.entry(*site).or_insert(val);
                         let fade = if val > *state { fade_in } else { fade_out };
                         if fade > 0.0 {
@@ -492,6 +506,9 @@ impl<'a> Parser<'a> {
                     }
                 }
             }
+            if t == "smooth" {
+                smooth_arguments(&args)?;
+            }
             *self.calls += 1;
             return Ok(Expr::Call(t, args, *self.calls));
         }
@@ -519,6 +536,26 @@ impl<'a> Parser<'a> {
     }
 }
 
+/// The `smooth` calls Iris 1.11.7 resolves: `smooth(val)`, `smooth(val, fade)`,
+/// `smooth(val, fadeIn, fadeOut)`, and the same with a number written first as the call's id
+/// (`smooth(1, val, fadeIn, fadeOut)`). It drops a uniform with any other, which then reads 0.
+fn smooth_arguments(args: &[Expr]) -> Result<(), String> {
+    let named = args.len() > 1 && matches!(args[0], Expr::Num(_));
+    if (1..=3).contains(&(args.len() - usize::from(named))) {
+        Ok(())
+    } else {
+        Err(format!(
+            "`smooth` with {} arguments{} (Iris reads it as 0)",
+            args.len(),
+            if named {
+                ""
+            } else {
+                ", the first not a number"
+            }
+        ))
+    }
+}
+
 fn is_name(t: &str) -> bool {
     t.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
 }
@@ -533,6 +570,29 @@ mod tests {
     }
 
     #[test]
+    fn one_trailing_terminator_preserves_variable_and_uniform_values() {
+        for text in [
+            "variable.float.base = 0.25;\nuniform.float.answer = base * 2;\n",
+            "variable.float.base = 0.25;  \nuniform.float.answer = base * 2;  \n",
+            "variable.float.base = 0.25\nuniform.float.answer = base * 2\n",
+        ] {
+            let mut parsed = custom(text);
+            assert!(parsed.notes.is_empty(), "{:?}", parsed.notes);
+            assert_eq!(parsed.eval(0.016, &|_| None), [Val::scalar(0.5)]);
+            assert!(parsed.notes.is_empty(), "{:?}", parsed.notes);
+        }
+    }
+
+    #[test]
+    fn terminator_does_not_allow_extra_statements_or_empty_expressions() {
+        for expression in ["0.5; 0.1", "0.5;;", ";"] {
+            let parsed = custom(&format!("uniform.float.answer = {expression}\n"));
+            assert!(!parsed.notes.is_empty(), "{expression}");
+            assert_eq!(parsed.uniforms().count(), 0);
+        }
+    }
+
+    #[test]
     fn expressions_follow_c_precedence_and_file_order() {
         let mut c = custom(
             "variable.float.a = 1 + 2 * 3 - 4 % 3\n\
@@ -541,7 +601,7 @@ mod tests {
              uniform.int.d = -7 / 2\n\
              uniform.vec3.e = vec3(a, cameraPosition.y, 2) * 2\n\
              uniform.float.f = if(a < 0, 1, a < 7, 2, 3) + clamp(fmod(-1, 4), 0, 2.5) + min(4, 2, 3)\n\
-             uniform.float.g = gbufferModelView.1.0 + frac(sunAngle - 0.25) + pi * 0\n\
+             uniform.float.g = gbufferModelView.0.1 + frac(sunAngle - 0.25) + pi * 0\n\
              uniform.float.h = unknownThing + in(biome, 3, BIOME_DESERT)\n\
              uniform.int.i = biome == BIOME_PALE_GARDEN || biome == BIOME_OLD\n\
              uniform.int.j = CAT_OCEAN + PPT_RAIN\n",
@@ -553,7 +613,8 @@ mod tests {
         let builtin = |n: &str| match n {
             "cameraPosition" => Some(Val::vector(&[1.0, 64.0, 2.0])),
             "sunAngle" => Some(Val::scalar(0.125)),
-            "biome" => Some(Val::scalar(1.0)),
+            // Desert, as Iris numbers it.
+            "biome" => Some(Val::scalar(5.0)),
             "gbufferModelView" => {
                 let mut m = Val::scalar(0.0);
                 m.v[1] = 9.0; // column 0, row 1
@@ -600,6 +661,55 @@ mod tests {
         assert_eq!(run(0.0, 0.0), 0.0);
         assert!((run(1.0, 2.0) - 0.5).abs() < 1e-9, "rising: fadeIn");
         assert!((run(0.0, 0.5) - 0.25).abs() < 1e-9, "falling: fadeOut");
+    }
+
+    /// After a restart `smooth` starts from its next value, as on the first frame, instead of
+    /// fading from the old one (a 1000-second fade from a dry run's zero).
+    #[test]
+    fn smooth_starts_again_from_its_next_value_after_a_restart() {
+        let mut c = custom("uniform.float.s = smooth(target, 1000, 1000)\n");
+        let eval = |c: &mut Custom, t: f64| {
+            c.eval(0.05, &|n: &str| (n == "target").then(|| Val::scalar(t)))[0].v[0]
+        };
+        assert_eq!(eval(&mut c, 0.0), 0.0);
+        assert!(eval(&mut c, 0.6) < 0.01, "the fade holds the old value");
+        c.restart_smoothing();
+        assert_eq!(eval(&mut c, 0.6), 0.6);
+    }
+
+    /// Iris 1.11.7, with a probe pack of our own: a first argument written as a number is the
+    /// call's id when more follow (`smooth(1, 5, f)` reads 5, `smooth(5, f)` reads f); any
+    /// other first argument is the value (`smooth(1.5 * 2, 6.5)` reads 3).
+    #[test]
+    fn smooth_reads_a_leading_number_as_its_id() {
+        let mut c = custom(
+            "uniform.float.a = smooth(1, 5, 0.0001)\n\
+             uniform.float.b = smooth(5, 0.0001)\n\
+             uniform.float.c = smooth(2.5, 6, 0.0001)\n\
+             uniform.float.d = smooth((2), 6, 0.0001)\n\
+             uniform.float.e = smooth(y, 5, 0.0001)\n\
+             uniform.float.f = smooth(1.5 * 2, 6.5)\n\
+             uniform.float.g = smooth(-3, 6, 0.0001)\n\
+             uniform.float.h = smooth(7, y)\n\
+             uniform.float.i = smooth(4)\n",
+        );
+        assert!(c.notes.is_empty(), "{:?}", c.notes);
+        let v = c.eval(0.016, &|n: &str| (n == "y").then(|| Val::scalar(6.96)));
+        let x: Vec<f64> = v.iter().map(|v| v.v[0]).collect();
+        assert_eq!(x, [5.0, 0.0001, 6.0, 6.0, 6.96, 3.0, -3.0, 6.96, 4.0]);
+    }
+
+    /// Iris 1.11.7 drops a uniform whose `smooth` has four arguments and no number first, or
+    /// five: it reads 0 there, as a uniform Horizon leaves out does.
+    #[test]
+    fn smooth_calls_iris_does_not_resolve_are_left_out() {
+        let c = custom(
+            "uniform.float.a = smooth(y, 5, 0.0001, 0.0001)\n\
+             uniform.float.b = smooth(3, 6.5, 0.0001, 0.0001, 9)\n\
+             uniform.float.c = smooth(3, 6.5, 0.0001, 0.0001)\n",
+        );
+        assert_eq!(c.uniforms().map(|u| u.0).collect::<Vec<_>>(), ["c"]);
+        assert_eq!(c.notes.len(), 2, "{:?}", c.notes);
     }
 
     #[test]

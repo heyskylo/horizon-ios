@@ -8,9 +8,15 @@ name: launcher
 # feature. The version and the tag are given to the build (HORIZON_LAUNCHER_VERSION, HORIZON_LAUNCHER_TAG): no bump
 # commits.
 # Never marked latest. Pushes to launcher branches only build. RELEASES_PAUSED=1 stops releases.
-# macOS: with the repository variable MACOS_SIGN_IDENTITY set, Horizon.app and the .dmg are signed with
+# Linux ships two archives of one binary: the .tar.gz the launcher updates itself from, and an
+# AppImage (packaging/linux/appimage.sh) for players without a distribution package, which replaces
+# itself instead (launcher/src/backend.rs).
+# macOS: Apple Silicon, and Intel cross-built for x86_64-apple-darwin on the same runner, its tests and smoke test
+# under Rosetta 2 (#1161). With the repository variable MACOS_SIGN_IDENTITY set, Horizon.app and the .dmg are signed with
 # Developer ID, notarized and stapled, from the runner's signing keychain (packaging/macos/README.md);
 # unset (forks), they are signed ad hoc.
+# Windows ships the launcher's own binary twice: in the ZIP (what a launcher updates itself from) and as
+# horizon-launcher-setup.exe, which opens the per-user installer instead of Home (launcher/src/installer.rs).
 #   gh workflow run launcher --ref <branch>                    # dry run: builds everything, publishes nothing
 #   gh workflow run launcher --ref main -f dry_run=false -f force=true
 
@@ -18,16 +24,19 @@ on:
   push:
     branches: [main, launcher, 'launcher-*']
     paths:
-      # Every crate the launcher builds in, as tools/release_train.py's LAUNCHER_PATHS.
+      # Everything the launcher is built and packaged from, as tools/release_train.py's LAUNCHER_PATHS.
       - 'launcher/**'
       - 'crates/horizon-bench/**'
       - 'crates/horizon-friends/**'
+      - 'crates/horizon-mcp/**'
       - 'crates/horizon-mods/**'
       - 'crates/horizon-port-pack/**'
       - 'crates/horizon-prepare/**'
       - 'crates/horizon-release-sign/**'
       - 'crates/horizon-telemetry/**'
       - 'crates/horizon-theme/**'
+      - 'packaging/linux/**'
+      - 'packaging/icons/**'
       - '.github/workflows/launcher.yml'
   schedule:
     - cron: '7-59/10 * * * *'
@@ -105,6 +114,13 @@ jobs:
             mac: true
             asset: horizon-launcher-macos-arm64.zip
             binary: horizon-launcher
+            mac_arch: arm64
+          - name: macos-x64
+            mac: true
+            target: x86_64-apple-darwin
+            asset: horizon-launcher-macos-x64.zip
+            binary: horizon-launcher
+            mac_arch: x64
           - name: windows
             os: windows-latest
             asset: horizon-launcher-windows-x64.zip
@@ -117,6 +133,8 @@ jobs:
     timeout-minutes: ${{ matrix.mac && 60 || 40 }}
     env:
       RUSTFLAGS: ${{ matrix.rustflags }}
+      # Where cargo puts the launcher: target/release, or target/<target>/release for another target.
+      BIN: ${{ matrix.target && format('target/{0}/release', matrix.target) || 'target/release' }}
       # Horizon's Azure app for Microsoft sign-in (docs/microsoft-account.md): a repository
       # variable, not a secret. Unset, the launcher says sign-in is not configured.
       HORIZON_MSA_CLIENT_ID: ${{ vars.HORIZON_MSA_CLIENT_ID }}
@@ -140,6 +158,8 @@ jobs:
           # parity jobs, and nothing they leave may end up in a launcher release (target/ is rebuilt from scratch).
           clean: true
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
         if: runner.environment == 'github-hosted'
         with:
@@ -149,7 +169,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libxkbcommon-x11-dev libwayland-dev libx11-xcb-dev libfontconfig-dev libvulkan-dev libasound2-dev
+          sudo apt-get install -y libxkbcommon-x11-dev libwayland-dev libx11-xcb-dev libfontconfig-dev libvulkan-dev libasound2-dev patchelf
       - name: Metal shaders compiled now, or at run time without the Metal toolchain
         # GPUI compiles its Metal shaders when it builds; the Mac mini has Xcode without the Metal toolchain
         # (xcodebuild -downloadComponent MetalToolchain), so there they are compiled when the launcher starts.
@@ -157,20 +177,20 @@ jobs:
         run: |
           if ! xcrun metal --version > /dev/null 2>&1; then
             echo "::notice::No Metal toolchain on this runner: GPUI compiles its shaders at run time"
-            echo "LAUNCHER_FEATURES=gpui/runtime_shaders" >> "$GITHUB_ENV"
+            echo "LAUNCHER_FEATURES=gpui_platform/runtime_shaders" >> "$GITHUB_ENV"
           fi
       # Every test target (the library, the binary, tests/), on each system the launcher ships for.
-      - run: cargo test --release --locked ${LAUNCHER_FEATURES:+--features "$LAUNCHER_FEATURES"}
-      - run: cargo build --release --locked ${LAUNCHER_FEATURES:+--features "$LAUNCHER_FEATURES"}
+      - run: cargo test --release --locked ${{ matrix.target && format('--target {0}', matrix.target) || '' }} ${LAUNCHER_FEATURES:+--features "$LAUNCHER_FEATURES"}
+      - run: cargo build --release --locked ${{ matrix.target && format('--target {0}', matrix.target) || '' }} ${LAUNCHER_FEATURES:+--features "$LAUNCHER_FEATURES"}
       - name: The version is the release's
         run: |
-          out=$(target/release/${{ matrix.binary }} --version)
+          out=$("$BIN/${{ matrix.binary }}" --version)
           echo "$out"
           expected="${HORIZON_LAUNCHER_VERSION:-$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)}"
           [[ "$out" == "horizon-launcher $expected" ]] || { echo "::error::expected horizon-launcher $expected"; exit 1; }
       - name: Only system libraries
         run: |
-          file=target/release/${{ matrix.binary }}
+          file="$BIN/${{ matrix.binary }}"
           case "$RUNNER_OS" in
             Windows) python ../tools/check_imports.py "$file" ;;
             macOS) others=$(otool -L "$file" | tail -n +2 | awk '{print $1}' | grep -v -E '^(/usr/lib/|/System/Library/)' || true)
@@ -185,13 +205,28 @@ jobs:
           export HORIZON_LAUNCHER_HOME="${RUNNER_TEMP//\\//}/horizon-launcher-smoke"
           export HORIZON_HOME="$HORIZON_LAUNCHER_HOME/game"
           rm -rf "$HORIZON_LAUNCHER_HOME"
-          launcher="$PWD/target/release/${{ matrix.binary }}"
+          launcher="$PWD/$BIN/${{ matrix.binary }}"
           # GitHub's API rate-limits shared runner addresses now and then: try a few times.
           retry() { for i in 1 2 3 4; do "$@" && return 0; sleep $((i * 15)); done; return 1; }
           retry "$launcher" versions
+          "$launcher" links --json
+          # The Intel Mac launcher can come out before any game build has its asset (#1161): then there is nothing
+          # to install yet. Only that entry skips, and only on a version list that parsed and had no build here
+          # (exit 3); a launcher or a script that fails still fails the step.
+          if [[ "${{ matrix.name }}" == macos-x64 ]]; then
+            versions=$(retry "$launcher" --json versions)
+            no_build='import json, sys; sys.exit(3 if not any(r["available_here"] for r in json.load(sys.stdin)) else 0)'
+            status=0
+            python3 -c "$no_build" <<<"$versions" || status=$?
+            if [[ $status == 3 ]]; then
+              echo "::warning::No game build has an asset for ${{ matrix.name }} yet: install not tested"
+              rm -rf "$HORIZON_LAUNCHER_HOME"
+              exit 0
+            fi
+            [[ $status == 0 ]] || exit $status
+          fi
           retry "$launcher" install latest
           "$launcher" versions --installed
-          "$launcher" links --json
           # `install latest` is the Nightly since #3342 (versions/nightly-<date>-<commit>), a vX.Y.Z before.
           clients=("$HORIZON_LAUNCHER_HOME"/versions/*/horizon-client*)
           client="${clients[0]}"
@@ -208,6 +243,18 @@ jobs:
           # The client starts: --help prints before any window or GPU is needed.
           help() { "$client" --help > "$RUNNER_TEMP/help.txt" 2>&1 && head -3 "$RUNNER_TEMP/help.txt" && grep -q -- '--resources' "$RUNNER_TEMP/help.txt"; }
           soft help
+          # The per-user Windows setup: the same binary under the setup's name installs into a scratch
+          # folder, and the copy it installs uninstalls itself. HKCU of the runner only.
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            setup="$RUNNER_TEMP/setup-smoke"
+            cp "$launcher" "$RUNNER_TEMP/horizon-launcher-setup.exe"
+            "$RUNNER_TEMP/horizon-launcher-setup.exe" setup --quiet --dir "$setup"
+            installed="$setup/Horizon Launcher/horizon-launcher.exe"
+            [[ -f "$installed" ]] || { echo "::error::the setup copied no launcher"; exit 1; }
+            "$installed" uninstall --quiet
+            [[ ! -f "$installed" ]] || { echo "::error::uninstall left the launcher"; exit 1; }
+            rm -rf "$setup"
+          fi
           rm -rf "$HORIZON_LAUNCHER_HOME"
       - name: The signing keychain, unlocked
         if: runner.os == 'macOS' && vars.MACOS_SIGN_IDENTITY != ''
@@ -224,11 +271,18 @@ jobs:
             # Developer ID): packaging/macos.
             python3 -m venv "$RUNNER_TEMP/dmg" && "$RUNNER_TEMP/dmg/bin/pip" install --quiet dmgbuild==1.6.5
             version=${HORIZON_LAUNCHER_VERSION:-$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)}
-            DMGBUILD="$RUNNER_TEMP/dmg/bin/dmgbuild" ../packaging/macos/package.sh target/release/${{ matrix.binary }} "$version" out
+            DMGBUILD="$RUNNER_TEMP/dmg/bin/dmgbuild" ../packaging/macos/package.sh "$BIN/${{ matrix.binary }}" "$version" out ${{ matrix.mac_arch }}
             rm -rf out/Horizon.app
           else
+            version=${HORIZON_LAUNCHER_VERSION:-$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)}
+            if [[ "$RUNNER_OS" == "Linux" ]]; then
+              # The .tar.gz below is what the launcher updates itself from; the AppImage is what a
+              # player downloads and double-clicks, and it replaces itself instead
+              # (packaging/linux/appimage.sh, launcher/src/backend.rs).
+              ../packaging/linux/appimage.sh "$BIN/${{ matrix.binary }}" "$version" out
+            fi
             mkdir -p dist
-            cp target/release/${{ matrix.binary }} dist/
+            cp "$BIN/${{ matrix.binary }}" dist/
             if [[ "${{ matrix.asset }}" == *.tar.gz ]]; then
               (cd dist && tar czf ../out/${{ matrix.asset }} ${{ matrix.binary }})
             else
@@ -236,6 +290,12 @@ jobs:
             fi
           fi
           ls -l out
+      - name: Setup exe (Windows)
+        # The launcher's binary under another name: started with no arguments it shows the per-user
+        # installer instead of Home (launcher/src/installer.rs). Its name is what makes it the setup,
+        # so the ZIP's copy stays the launcher. Both go into the release's signed SHA256SUMS.
+        if: runner.os == 'Windows'
+        run: cp "$BIN/${{ matrix.binary }}" out/horizon-launcher-setup.exe
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.asset }}

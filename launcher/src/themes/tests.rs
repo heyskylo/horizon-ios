@@ -1,5 +1,5 @@
 use super::*;
-use horizon_theme::{BLOCKS_DARK, BLOCKS_LIGHT};
+use horizon_theme::night::{DAWN, NIGHT};
 
 fn blend(top: u32, under: u32, alpha: f32) -> u32 {
     let channel = |shift: u32| {
@@ -11,8 +11,11 @@ fn blend(top: u32, under: u32, alpha: f32) -> u32 {
 
 #[test]
 fn every_accent_reads_as_well_as_the_violet() {
-    for base in [BLOCKS_DARK, BLOCKS_LIGHT] {
-        for accent in Accent::ALL {
+    for base in [NIGHT.blocks(), DAWN.blocks()] {
+        for accent in Accent::ALL
+            .into_iter()
+            .chain((0..720).map(|i| Accent::custom(i as f32 * 0.5)))
+        {
             let p = accent.apply(base);
             let what = format!(
                 "{} {}",
@@ -33,14 +36,13 @@ fn every_accent_reads_as_well_as_the_violet() {
                 hsl(p.face_bevel).2 > face && hsl(p.face_lip).2 < face,
                 "{what}"
             );
-            if accent != Accent::Violet {
+            if let Some(want) = accent.hue() {
                 let (h, _, _) = hsl(p.face);
-                let want = accent.hue().unwrap();
                 let off = ((h - want).rem_euclid(360.)).min((want - h).rem_euclid(360.));
                 assert!(off < 3., "{what}: face hue {h:.0}, not {want}");
             }
         }
-        let violet = Accent::Violet.apply(base);
+        let violet = Accent::VIOLET.apply(base);
         assert_eq!((violet.accent, violet.face), (base.accent, base.face));
     }
 }
@@ -53,10 +55,10 @@ fn colours_go_to_hsl_and_back() {
         let (h, s, l) = hsl(c);
         assert_eq!(from_hsl(h, s, l), c, "{c:06x}");
     }
-    assert_eq!(Accent::parse("Teal"), Some(Accent::Teal));
-    assert_eq!(Accent::parse("purple"), Some(Accent::Violet));
+    assert_eq!(Accent::parse("Teal"), Some(Accent::TEAL));
+    assert_eq!(Accent::parse("purple"), Some(Accent::VIOLET));
     assert_eq!(Accent::parse("chartreuse"), None);
-    assert_eq!(serde_json::to_string(&Accent::Amber).unwrap(), "\"amber\"");
+    assert_eq!(serde_json::to_string(&Accent::AMBER).unwrap(), "\"amber\"");
 }
 
 #[test]
@@ -104,4 +106,42 @@ fn a_background_is_a_picture_kept_once() {
         "a refused file keeps the old one"
     );
     std::fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn a_picked_hue_is_any_degree_and_survives_settings_json() {
+    assert_eq!(Accent::parse("blue"), Some(Accent::BLUE));
+    assert_eq!(Accent::parse("217"), Some(Accent::custom(217.)));
+    assert_eq!(Accent::custom(370.).name(), "10");
+    assert_eq!(Accent::custom(212.).name(), "blue");
+    assert_eq!(Accent::VIOLET.name(), "violet");
+    let saved = serde_json::to_string(&Accent::custom(217.5)).unwrap();
+    assert_eq!(saved, "\"217.5\"");
+    assert_eq!(
+        serde_json::from_str::<Accent>(&saved).unwrap(),
+        Accent::custom(217.5)
+    );
+}
+
+#[test]
+fn a_typed_colour_is_worn_as_is_and_survives_settings_json() {
+    // The mockup's swatches are the named accents.
+    assert_eq!(Accent::parse("#2563EB"), Some(Accent::BLUE));
+    assert_eq!(Accent::BLUE.hex(), "#2563eb");
+    assert_eq!(Accent::VIOLET.hex(), "#6b4bff");
+    // Any other colour keeps its exact value for the glass look, and its hue for the light one.
+    let typed = Accent::parse("#ff8800").unwrap();
+    assert_eq!(typed.rgb(), 0xff8800);
+    assert!((typed.hue().unwrap() - 32.).abs() < 0.5);
+    let saved = serde_json::to_string(&typed).unwrap();
+    assert_eq!(saved, "\"#ff8800\"");
+    assert_eq!(serde_json::from_str::<Accent>(&saved).unwrap(), typed);
+    // Half-typed or not hex: no accent.
+    for wrong in ["#ff88", "#ff88001", "#gg8800", "#"] {
+        assert_eq!(Accent::parse(wrong), None, "{wrong}");
+    }
+    // A picked hue wears the violet's saturation and lightness.
+    let (h, s, l) = hsl(Accent::custom(120.).rgb());
+    let (_, vs, vl) = hsl(0x6b4bff);
+    assert!((h - 120.).abs() < 1. && (s - vs).abs() < 0.02 && (l - vl).abs() < 0.02);
 }

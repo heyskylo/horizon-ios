@@ -39,10 +39,13 @@ fn state<'a>(pad: &Padded, info: &'a [Info], p: [i32; 3]) -> &'a Info {
 /// `LightCoordsUtil.getLightCoords`: light at `p` as seen through `state`
 /// (block level << 4 | sky level << 20).
 pub(super) fn coords(pad: &Padded, state: &Info, p: [i32; 3]) -> u32 {
+    packed_coords(state, pad.light[pi(p[0], p[1], p[2])])
+}
+/// `coords` of a stored light byte (sky level << 4 | block level).
+pub(super) fn packed_coords(state: &Info, packed: u8) -> u32 {
     if state.emissive {
         return FULL_BRIGHT;
     }
-    let packed = pad.light[pi(p[0], p[1], p[2])];
     let block = u32::from((packed & 15).max(state.emission));
     block << 4 | u32::from(packed >> 4) << 20
 }
@@ -50,13 +53,13 @@ pub(super) fn coords(pad: &Padded, state: &Info, p: [i32; 3]) -> u32 {
 pub(super) fn max_coords(a: u32, b: u32) -> u32 {
     (a >> 4 & 15).max(b >> 4 & 15) << 4 | (a >> 20 & 15).max(b >> 20 & 15) << 20
 }
-/// `LightCoordsUtil.lightCoordsWithEmission` (a quad's element light emission).
-pub(super) fn with_emission(coords: u32, emission: u8) -> u32 {
-    if emission == 0 {
+/// `LightCoordsUtil.lightCoordsWithEmission` (a quad's element light emission), with
+/// NeoForge's separate block and sky minimums: `[emission; 2]` is vanilla's.
+pub(super) fn with_min(coords: u32, [block, sky]: [u8; 2]) -> u32 {
+    if block == 0 && sky == 0 {
         return coords;
     }
-    let e = u32::from(emission);
-    (coords >> 4 & 15).max(e) << 4 | (coords >> 20 & 15).max(e) << 20
+    (coords >> 4 & 15).max(u32::from(block)) << 4 | (coords >> 20 & 15).max(u32::from(sky)) << 20
 }
 /// `LightCoordsUtil.smoothBlend`: zero samples take the centre; samples without
 /// sky light borrow the centre's sky.
@@ -80,9 +83,17 @@ fn weighted_blend(c: [u32; 4], w: [f32; 4]) -> u32 {
     };
     channel(0) | channel(16) << 16
 }
-/// `ARGB.gray` channel: `Mth.floor(brightness * 255)`.
+/// `ARGB.gray` channel: `Mth.floor(brightness * 255)`. Without the `floorf`
+/// call x86-64's baseline instruction set makes of `f32::floor`: truncation,
+/// one lower where that rounded a negative value up (saturating as `as` does).
 pub(super) fn gray(brightness: f32) -> i32 {
-    (brightness * 255.0).floor() as i32
+    let v = brightness * 255.0;
+    let whole = v as i32;
+    if whole as f32 > v {
+        whole.saturating_sub(1)
+    } else {
+        whole
+    }
 }
 /// One channel of `ARGB.scaleRGB(color, float)`.
 pub(super) fn scale(channel: i32, by: f32) -> i32 {
@@ -274,8 +285,28 @@ pub(super) fn flat(
     positions: &[[f32; 3]; 4],
     face: D,
 ) -> u32 {
-    let cubic = shape(positions, face, own.full).cubic;
-    coords(pad, own, if cubic { step(pos, face) } else { pos })
+    coords(
+        pad,
+        own,
+        flat_position(pos, positions, face, None, own.full),
+    )
+}
+/// Where `tesselateFlat` reads the light of a quad of a block at `pos`: the
+/// neighbour on its cull face, else `prepareQuadFlat`'s choice (the neighbour
+/// when the quad is cubic, else the block itself). `full` is the block's
+/// `isCollisionShapeFullBlock`.
+pub(super) fn flat_position(
+    pos: [i32; 3],
+    positions: &[[f32; 3]; 4],
+    face: D,
+    cull: Option<D>,
+    full: bool,
+) -> [i32; 3] {
+    match cull {
+        Some(d) => step(pos, d),
+        None if shape(positions, face, full).cubic => step(pos, face),
+        None => pos,
+    }
 }
 /// `prepareQuadAmbientOcclusion`: per-vertex AO brightness (before `ARGB.gray`)
 /// and smooth light coords, by vertex index.
@@ -383,6 +414,28 @@ mod tests {
         );
     }
     #[test]
+    fn gray_floors_like_f32_floor() {
+        let mut values = vec![
+            f32::NAN,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            -0.0,
+            1.0,
+            -1.0,
+            1e10,
+            -1e10,
+        ];
+        for bits in (0..u32::MAX).step_by(7919) {
+            values.push(f32::from_bits(bits));
+        }
+        for i in -3000..3000 {
+            values.push(i as f32 / 1024.0);
+        }
+        for v in values {
+            assert_eq!(gray(v), (v * 255.0).floor() as i32, "{v:e}");
+        }
+    }
+    #[test]
     fn colour_arithmetic_matches_argb_helpers() {
         assert_eq!(gray(1.0), 255);
         assert_eq!(gray(0.8), 204);
@@ -393,9 +446,48 @@ mod tests {
     }
     #[test]
     fn emission_raises_both_channels_and_drops_fractions() {
-        assert_eq!(with_emission(0x0087_0013, 0), 0x0087_0013);
-        assert_eq!(with_emission(0x0087_0013, 3), packed(3, 8));
+        assert_eq!(with_min(0x0087_0013, [0; 2]), 0x0087_0013);
+        assert_eq!(with_min(0x0087_0013, [3; 2]), packed(3, 8));
         assert_eq!(max_coords(packed(3, 9), packed(7, 2)), packed(7, 9));
+    }
+    #[test]
+    fn block_and_sky_minimums_raise_their_own_channel() {
+        assert_eq!(with_min(0x0087_0013, [15, 0]), packed(15, 8));
+        assert_eq!(with_min(0x0087_0013, [0, 15]), packed(1, 15));
+        assert_eq!(with_min(0x0087_0013, [15, 15]), packed(15, 15));
+    }
+    #[test]
+    fn flat_light_reads_the_neighbour_a_face_looks_at() {
+        let pos = [4, 64, -2];
+        let full_top = [
+            [0.0, 1.0, 0.0],
+            [0.0, 1.0, 1.0],
+            [1.0, 1.0, 1.0],
+            [1.0, 1.0, 0.0],
+        ];
+        // A cull face samples its neighbour, whatever the quad's shape.
+        let inset = full_top.map(|[x, _, z]| [x, 0.75, z]);
+        assert_eq!(
+            flat_position(pos, &inset, D::Up, Some(D::Up), false),
+            [4, 65, -2]
+        );
+        // A flush quad without a cull face samples its neighbour too: a block
+        // drawn at a cell that is now opaque (a moving block, #3002) still
+        // takes the light around it.
+        assert_eq!(
+            flat_position(pos, &full_top, D::Up, None, false),
+            [4, 65, -2]
+        );
+        let west = [
+            [0.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [0.0, 1.0, 1.0],
+            [0.0, 1.0, 0.0],
+        ];
+        assert_eq!(flat_position(pos, &west, D::West, None, false), [3, 64, -2]);
+        // An inset quad (a piston head's arm) takes the block's own light.
+        assert_eq!(flat_position(pos, &inset, D::Up, None, false), pos);
+        assert_eq!(flat_position(pos, &inset, D::Up, None, true), [4, 65, -2]);
     }
     #[test]
     fn quad_shape_classifies_partial_and_cubic_faces() {

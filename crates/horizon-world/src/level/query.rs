@@ -7,8 +7,12 @@ use super::{
     states::{BlockId, PropKey},
     update::{above, below, rel},
 };
+use crate::block_support::SupportType;
 use crate::{fluid::FluidKind, registry::BlockStateId};
-use horizon_core::{geometry::Direction, position::BlockPos};
+use horizon_core::{
+    geometry::{Direction, Vec3, VoxelShape},
+    position::BlockPos,
+};
 
 pub(crate) const fn clockwise(direction: Direction) -> Direction {
     match direction {
@@ -186,19 +190,88 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
             None => super::data::ShapeInfo::default(),
         }
     }
+    /// The state whose cached support facts stand in for the block at `pos`.
+    /// Vanilla reads a retracting piston's `moving_piston` block through its
+    /// block entity, whose collision shape contains the extended base; the
+    /// exported facts see no block entity and call every face unsupported,
+    /// which made a lever on the piston's back pop off when it retracted.
+    pub(super) fn support_state(&self, pos: BlockPos) -> BlockStateId {
+        let state = self.state(pos);
+        if self.b.is_block(state, self.b.named.moving_piston) {
+            if let Some(piston) = self.moving_piston(pos) {
+                // `PistonMovingBlockEntity.getCollisionShape`: only a piston base.
+                if piston.source
+                    && !piston.extending
+                    && (self.b.is_block(piston.moved_state, self.b.named.piston)
+                        || self
+                            .b
+                            .is_block(piston.moved_state, self.b.named.sticky_piston))
+                {
+                    return self
+                        .b
+                        .table
+                        .set_bool(piston.moved_state, self.b.props.extended, true);
+                }
+            }
+        }
+        state
+    }
+    /// `PistonMovingBlockEntity.getCollisionShape` for a block a piston moves (not the
+    /// piston's own base or head): the moved block's collision shape, offset by
+    /// `getExtendedProgress(progress)` along the movement (`progress - 1` while
+    /// extending, `1 - progress` while retracting). `MOVING_PISTON` has a dynamic shape,
+    /// so `isFaceSturdy` asks this shape every time. When `PistonBaseBlock.moveBlocks`
+    /// updates the neighbours, progress is 0 and the shape sits a whole block back,
+    /// outside the cell: a rail on a pushed block loses its support and pops. At
+    /// progress 1, before the block entity finishes, it sits in the cell: a rail
+    /// carried by slime finishes on top of a slime block still moving below it
+    /// (#8111). None for other cells, and for moved blocks without a fixed shape.
+    fn moving_block_shape(&self, pos: BlockPos) -> Option<VoxelShape> {
+        if !self.b.is_block(self.state(pos), self.b.named.moving_piston) {
+            return None;
+        }
+        let piston = self.moving_piston(pos)?;
+        if piston.source {
+            return None;
+        }
+        let shape = self.b.collision_shape(piston.moved_state)?;
+        let [x, y, z] = piston.shape_state().interpolated_offset(1.0);
+        Some(shape.moved(Vec3::new(f64::from(x), f64::from(y), f64::from(z))))
+    }
+    /// `isFaceSturdy(level, pos, direction, support)` of a moved block's cell, from its
+    /// shape ([`Self::moving_block_shape`]); None for every other cell.
+    fn moving_block_supports(
+        &self,
+        pos: BlockPos,
+        direction: Direction,
+        support: SupportType,
+    ) -> Option<bool> {
+        let shape = self.moving_block_shape(pos)?;
+        Some(support.is_supporting(&shape, direction).unwrap_or(false))
+    }
     pub fn sturdy(&self, pos: BlockPos, direction: Direction) -> bool {
-        self.b.is_face_sturdy(self.state(pos), direction)
+        if let Some(sturdy) = self.moving_block_supports(pos, direction, SupportType::Full) {
+            return sturdy;
+        }
+        self.b.is_face_sturdy(self.support_state(pos), direction)
     }
     /// `Block.canSupportRigidBlock(level, below)`.
     pub fn can_support_rigid_block(&self, pos: BlockPos) -> bool {
-        self.b.is_face_sturdy_rigid(self.state(pos), Direction::Up)
+        if let Some(rigid) = self.moving_block_supports(pos, Direction::Up, SupportType::Rigid) {
+            return rigid;
+        }
+        self.b
+            .is_face_sturdy_rigid(self.support_state(pos), Direction::Up)
     }
     /// `Block.canSupportCenter(level, pos, direction)`.
     pub fn can_support_center(&self, pos: BlockPos, direction: Direction) -> bool {
-        let state = self.state(pos);
+        let state = self.support_state(pos);
         if direction == Direction::Down && self.b.in_set(state, &self.b.tags.unstable_bottom_center)
         {
             return false;
+        }
+        if let Some(center) = self.moving_block_supports(pos, direction, SupportType::Center) {
+            return center;
         }
         self.b.is_face_sturdy_center(state, direction)
     }

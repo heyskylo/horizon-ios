@@ -1,6 +1,7 @@
 //! What a mod jar holds, read without decompiling: its metadata
-//! (`neoforge.mods.toml`, `mods.toml`, `fabric.mod.json`) and a census of
-//! its data, assets and classes.
+//! (`neoforge.mods.toml`, `mods.toml`, `fabric.mod.json`, `mcmod.info`) and a
+//! census of its data, assets and classes. Legacy metadata contributes identity
+//! only; license and dependency fields are not interpreted.
 use serde::{Deserialize, Serialize};
 use std::{fs, io::Read, path::Path};
 
@@ -41,12 +42,16 @@ pub fn read(path: &Path) -> Result<JarInfo, String> {
         zip.by_name(name).ok()?.read_to_string(&mut s).ok()?;
         Some(s)
     };
-    let mut info = if let Some(t) = text(&mut zip, "META-INF/neoforge.mods.toml")
-        .or_else(|| text(&mut zip, "META-INF/mods.toml"))
-    {
-        mods_toml(&t)?
+    let tomls: Vec<String> = ["META-INF/neoforge.mods.toml", "META-INF/mods.toml"]
+        .iter()
+        .filter_map(|n| text(&mut zip, n))
+        .collect();
+    let mut info = if !tomls.is_empty() {
+        metadata(&tomls)?
     } else if let Some(t) = text(&mut zip, "fabric.mod.json") {
         fabric(&t)?
+    } else if let Some(t) = text(&mut zip, "mcmod.info") {
+        mcmod_info(&t)?
     } else {
         JarInfo::default()
     };
@@ -56,7 +61,11 @@ pub fn read(path: &Path) -> Result<JarInfo, String> {
             .and_then(|m| manifest_value(&m, "Implementation-Version"))
             .unwrap_or_default();
     }
-    let names: Vec<String> = zip.file_names().map(str::to_owned).collect();
+    let names: Vec<String> = zip
+        .file_names()
+        .map(|name| name.map(|name| name.into_owned()))
+        .collect::<Result<_, _>>()
+        .map_err(|e| format!("{}: {e}", path.display()))?;
     info.census = census(&names);
     if info.mod_id.is_empty() {
         info.mod_id = path
@@ -75,6 +84,71 @@ fn manifest_value(manifest: &str, key: &str) -> Option<String> {
         .find_map(|l| l.strip_prefix(key)?.strip_prefix(':'))
         .map(|v| v.trim().to_owned())
         .filter(|v| !v.is_empty())
+}
+
+/// The jar's mod from its metadata files (`neoforge.mods.toml` first, then
+/// `mods.toml`). A jar built for one loader may carry the other loader's file
+/// as an unfilled template (`modId = "${id}"`, `[[dependencies.${id}]]`), which
+/// its own loader never reads: the first file that parses and names a real mod
+/// id is the one. When none parses, the first file is read line by line
+/// ([`mods_toml_lines`]), as a loader that reads past what it does not need.
+pub fn metadata(tomls: &[String]) -> Result<JarInfo, String> {
+    let real = |i: &JarInfo| !i.mod_id.is_empty() && !i.mod_id.contains("${");
+    let mut first_error = None;
+    for t in tomls {
+        match mods_toml(t) {
+            Ok(i) if real(&i) => return Ok(i),
+            Ok(_) => {}
+            Err(e) => {
+                first_error.get_or_insert(e);
+            }
+        }
+    }
+    tomls
+        .iter()
+        .map(|t| mods_toml_lines(t))
+        .find(real)
+        .ok_or_else(|| first_error.unwrap_or_else(|| "mods.toml: no [[mods]] modId".into()))
+}
+
+/// The first `[[mods]]` table's `modId`, `displayName` and `version` and the
+/// top-level `license`, read line by line (`key = "value"`, `#` comments), for
+/// a metadata file a TOML parser refuses. Dependencies are not read.
+pub fn mods_toml_lines(text: &str) -> JarInfo {
+    let mut info = JarInfo::default();
+    // 0: top level, 1: the first [[mods]], 2: past it.
+    let mut section = 0;
+    for line in text.lines() {
+        let line = line.trim();
+        if line.starts_with('[') {
+            let name = line.trim_matches(['[', ']']).trim();
+            section = match (section, name) {
+                (0, "mods") => 1,
+                _ => 2,
+            };
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        let value = value.trim();
+        let Some(value) = value
+            .strip_prefix('"')
+            .and_then(|v| v.split_once('"'))
+            .or_else(|| value.strip_prefix('\'').and_then(|v| v.split_once('\'')))
+            .map(|(v, _)| v.to_owned())
+        else {
+            continue;
+        };
+        match (section, key.trim()) {
+            (0, "license") => info.license = value,
+            (1, "modId") if info.mod_id.is_empty() => info.mod_id = value,
+            (1, "displayName") => info.name = value,
+            (1, "version") => info.version = value,
+            _ => {}
+        }
+    }
+    info
 }
 
 /// `[[mods]]` (the first one is the jar's mod), the top-level `license`, and
@@ -150,6 +224,35 @@ pub fn fabric(text: &str) -> Result<JarInfo, String> {
     })
 }
 
+/// Read the first mod's identity from legacy Forge metadata.
+/// License and dependency fields remain unknown.
+fn mcmod_info(text: &str) -> Result<JarInfo, String> {
+    let value: serde_json::Value =
+        serde_json::from_str(text).map_err(|e| format!("mcmod.info: {e}"))?;
+    let first = match &value {
+        serde_json::Value::Array(mods) => mods.first(),
+        serde_json::Value::Object(root) => root
+            .get("modList")
+            .and_then(serde_json::Value::as_array)
+            .and_then(|mods| mods.first()),
+        _ => None,
+    }
+    .and_then(serde_json::Value::as_object);
+    let get = |key: &str| {
+        first
+            .and_then(|mod_info| mod_info.get(key))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("")
+            .to_owned()
+    };
+    Ok(JarInfo {
+        mod_id: get("modid"),
+        name: get("name"),
+        version: get("version"),
+        ..JarInfo::default()
+    })
+}
+
 pub fn census(names: &[String]) -> Census {
     let mut c = Census::default();
     for n in names {
@@ -184,6 +287,45 @@ pub fn census(names: &[String]) -> Census {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{
+        io::Write,
+        path::PathBuf,
+        sync::atomic::{AtomicU64, Ordering},
+    };
+
+    static NEXT_TEST_JAR: AtomicU64 = AtomicU64::new(0);
+
+    struct SyntheticJar(PathBuf, PathBuf);
+
+    impl Drop for SyntheticJar {
+        fn drop(&mut self) {
+            let _ = fs::remove_file(&self.0);
+            let _ = fs::remove_dir(&self.1);
+        }
+    }
+
+    fn synthetic_jar(stem: &str, entries: &[(&str, &str)]) -> SyntheticJar {
+        let id = NEXT_TEST_JAR.fetch_add(1, Ordering::Relaxed);
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join(format!(
+            ".jar-info-test-{}-{}-{id}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir(&dir).unwrap();
+        let path = dir.join(format!("{stem}.jar"));
+        let mut archive = zip::ZipWriter::new(fs::File::create(&path).unwrap());
+        for (name, contents) in entries {
+            archive
+                .start_file(*name, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            archive.write_all(contents.as_bytes()).unwrap();
+        }
+        archive.finish().unwrap();
+        SyntheticJar(path, dir)
+    }
 
     #[test]
     fn reads_neoforge_metadata() {
@@ -220,6 +362,34 @@ mandatory = true
         assert_eq!(info.depends, ["geckolib", "curios"]);
     }
 
+    /// Drip Sounds' Forge jar carries an unfilled NeoForge template beside its
+    /// `mods.toml`; a file no parser reads still gives its id line by line.
+    #[test]
+    fn templates_and_broken_files_are_read_tolerantly() {
+        let template = "license = \"LGPL\"\n[[mods]]\nmodId = \"${id}\"\nversion = \"${version}\"\n\n[[dependencies.${id}]]\nmodId = \"minecraft\"\n";
+        let forge = "license = \"LGPL-3.0-only\"\n[[mods]]\nmodId = \"waterdripsound\"\ndisplayName = \"Drip Sounds\"\nversion = \"0.6.3\"\n[[dependencies.waterdripsound]]\nmodId = \"cloth_config\"\nmandatory = true\n";
+        assert!(mods_toml(template).is_err());
+        let info = metadata(&[template.to_owned(), forge.to_owned()]).unwrap();
+        assert_eq!(
+            (info.mod_id.as_str(), info.version.as_str()),
+            ("waterdripsound", "0.6.3")
+        );
+        assert_eq!(info.depends, ["cloth_config"]);
+        // Nothing parses: the lines still name the mod (a duplicate key is a TOML error).
+        let broken = "license = 'MIT' # x\n[[mods]]\nmodId = \"ruby\"\nmodId = \"ruby\"\nversion = \"2\"\ndisplayName = \"Ruby\"\n[[mods]]\nmodId = \"other\"\n";
+        assert!(mods_toml(broken).is_err());
+        let info = metadata(&[template.to_owned(), broken.to_owned()]).unwrap();
+        assert_eq!(
+            (
+                info.mod_id.as_str(),
+                info.name.as_str(),
+                info.license.as_str()
+            ),
+            ("ruby", "Ruby", "MIT")
+        );
+        assert!(metadata(&[template.to_owned()]).is_err());
+    }
+
     #[test]
     fn reads_fabric_metadata() {
         let info = fabric(
@@ -229,6 +399,196 @@ mandatory = true
         .unwrap();
         assert_eq!(info.license, "MIT OR Apache-2.0");
         assert_eq!(info.depends, ["cloth-config"]);
+    }
+
+    #[test]
+    fn reads_first_legacy_mod_from_root_array_without_inventing_license_or_dependencies() {
+        let jar = synthetic_jar(
+            "legacy-array",
+            &[(
+                "mcmod.info",
+                r#"[
+                    {"modid":"legacy_array","name":"Legacy Array","version":"1.2.3","requiredMods":["other_mod"]},
+                    {"modid":"ignored_second","name":"Second Mod","version":"9.9"}
+                ]"#,
+            )],
+        );
+
+        let info = read(&jar.0).unwrap();
+
+        assert_eq!(
+            (
+                info.mod_id.as_str(),
+                info.name.as_str(),
+                info.version.as_str()
+            ),
+            ("legacy_array", "Legacy Array", "1.2.3")
+        );
+        assert!(info.license.is_empty());
+        assert!(
+            info.depends.is_empty(),
+            "legacy dependency fields are intentionally not interpreted"
+        );
+    }
+
+    #[test]
+    fn reads_first_legacy_mod_from_object_mod_list_and_keeps_unverified_license_empty() {
+        let jar = synthetic_jar(
+            "legacy-object",
+            &[(
+                "mcmod.info",
+                r#"{
+                    "modListVersion": 2,
+                    "modList": [
+                        {"modid":"legacy_object","name":"Legacy Object","version":"2.4","license":"unverified-custom"},
+                        {"modid":"ignored_second","name":"Second Mod","version":"9.9"}
+                    ]
+                }"#,
+            )],
+        );
+
+        let info = read(&jar.0).unwrap();
+
+        assert_eq!(
+            (
+                info.mod_id.as_str(),
+                info.name.as_str(),
+                info.version.as_str()
+            ),
+            ("legacy_object", "Legacy Object", "2.4")
+        );
+        assert!(info.license.is_empty());
+        assert!(info.depends.is_empty());
+    }
+
+    #[test]
+    fn preserves_neoforge_forge_and_fabric_precedence_over_legacy_metadata() {
+        let neoforge = synthetic_jar(
+            "neoforge-precedence",
+            &[
+                (
+                    "META-INF/neoforge.mods.toml",
+                    "[[mods]]\nmodId = \"neo\"\nversion = \"neo-version\"\ndisplayName = \"NeoForge\"\n",
+                ),
+                (
+                    "META-INF/mods.toml",
+                    "[[mods]]\nmodId = \"forge\"\nversion = \"forge-version\"\ndisplayName = \"Forge\"\n",
+                ),
+                (
+                    "fabric.mod.json",
+                    r#"{"id":"fabric","name":"Fabric","version":"fabric-version"}"#,
+                ),
+                (
+                    "mcmod.info",
+                    r#"[{"modid":"legacy","name":"Legacy","version":"legacy-version"}]"#,
+                ),
+            ],
+        );
+        let forge = synthetic_jar(
+            "forge-precedence",
+            &[
+                (
+                    "META-INF/mods.toml",
+                    "[[mods]]\nmodId = \"forge\"\nversion = \"forge-version\"\ndisplayName = \"Forge\"\n",
+                ),
+                (
+                    "fabric.mod.json",
+                    r#"{"id":"fabric","name":"Fabric","version":"fabric-version"}"#,
+                ),
+                (
+                    "mcmod.info",
+                    r#"[{"modid":"legacy","name":"Legacy","version":"legacy-version"}]"#,
+                ),
+            ],
+        );
+        let fabric = synthetic_jar(
+            "fabric-precedence",
+            &[
+                (
+                    "fabric.mod.json",
+                    r#"{"id":"fabric","name":"Fabric","version":"fabric-version"}"#,
+                ),
+                (
+                    "mcmod.info",
+                    r#"[{"modid":"legacy","name":"Legacy","version":"legacy-version"}]"#,
+                ),
+            ],
+        );
+
+        let neo_info = read(&neoforge.0).unwrap();
+        let forge_info = read(&forge.0).unwrap();
+        let fabric_info = read(&fabric.0).unwrap();
+
+        assert_eq!(
+            (neo_info.mod_id.as_str(), neo_info.version.as_str()),
+            ("neo", "neo-version")
+        );
+        assert_eq!(
+            (forge_info.mod_id.as_str(), forge_info.version.as_str()),
+            ("forge", "forge-version")
+        );
+        assert_eq!(
+            (fabric_info.mod_id.as_str(), fabric_info.version.as_str()),
+            ("fabric", "fabric-version")
+        );
+    }
+
+    #[test]
+    fn malformed_legacy_json_is_an_error_instead_of_filename_fallback() {
+        let jar = synthetic_jar("malformed-legacy", &[("mcmod.info", "[{not-json]")]);
+
+        let error = read(&jar.0).unwrap_err();
+
+        assert!(error.starts_with("mcmod.info:"), "{error}");
+    }
+
+    #[test]
+    fn missing_or_empty_legacy_mod_id_uses_the_jar_filename() {
+        let missing = synthetic_jar(
+            "missing-id",
+            &[(
+                "mcmod.info",
+                r#"[{"name":"No Identifier","version":"1.0"}]"#,
+            )],
+        );
+        let empty = synthetic_jar(
+            "empty-id",
+            &[(
+                "mcmod.info",
+                r#"[{"modid":"","name":"Empty Identifier","version":"1.1"}]"#,
+            )],
+        );
+
+        let missing_info = read(&missing.0).unwrap();
+        let empty_info = read(&empty.0).unwrap();
+
+        assert_eq!(missing_info.mod_id, "missing-id");
+        assert_eq!(empty_info.mod_id, "empty-id");
+        assert_eq!(missing_info.name, "No Identifier");
+        assert_eq!(missing_info.version, "1.0");
+        assert_eq!(empty_info.name, "Empty Identifier");
+        assert_eq!(empty_info.version, "1.1");
+    }
+
+    #[test]
+    fn resolves_legacy_version_placeholder_from_manifest() {
+        let jar = synthetic_jar(
+            "legacy-manifest-version",
+            &[
+                (
+                    "mcmod.info",
+                    r#"[{"modid":"legacy","name":"Legacy","version":"${file.jarVersion}"}]"#,
+                ),
+                (
+                    "META-INF/MANIFEST.MF",
+                    "Manifest-Version: 1.0\r\nImplementation-Version: 6.2.1\r\n\r\n",
+                ),
+            ],
+        );
+
+        let info = read(&jar.0).unwrap();
+
+        assert_eq!(info.version, "6.2.1");
     }
 
     #[test]

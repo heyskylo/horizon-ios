@@ -67,6 +67,12 @@ pub(super) struct LineEdit {
     dragging: bool,
 }
 
+impl Default for LineEdit {
+    fn default() -> Self {
+        LineEdit::new(String::new(), 256, 60)
+    }
+}
+
 const HISTORY: usize = 100;
 
 impl LineEdit {
@@ -91,6 +97,24 @@ impl LineEdit {
 
     pub(super) fn text(&self) -> &str {
         &self.text
+    }
+
+    /// Replaces the text from outside (not an edit: no undo), the caret at its end.
+    pub(super) fn set(&mut self, text: String) {
+        *self = LineEdit::new(text, self.max, self.visible);
+    }
+
+    /// The text, leaving the field empty.
+    pub(super) fn take(&mut self) -> String {
+        let text = self.text.clone();
+        self.set(String::new());
+        text
+    }
+
+    /// How many characters the box shows.
+    pub(super) fn show(&mut self, visible: usize) {
+        self.visible = visible;
+        self.reveal();
     }
 
     pub(super) fn select_all(&mut self) {
@@ -483,8 +507,35 @@ pub(super) fn content(
     mask: bool,
     placeholder: &'static str,
 ) -> Div {
+    content_with(edit, t, focused, whole, mask, tr(placeholder).into())
+}
+
+/// [`content`] with a placeholder already translated (one with a value in it).
+pub(super) fn content_with(
+    edit: &LineEdit,
+    t: &theme::Theme,
+    focused: bool,
+    whole: bool,
+    mask: bool,
+    placeholder: gpui::SharedString,
+) -> Div {
     if edit.text.is_empty() && !focused {
-        return div().text_color(t.muted).child(placeholder);
+        // The glass look's placeholders are white at 40 % (`.hzl input::placeholder`).
+        let color = if t.glass {
+            crate::glass_ui::white(horizon_theme::glass::ink::PLACEHOLDER)
+        } else {
+            t.muted
+        };
+        return div().text_color(color).child(placeholder);
+    }
+    // A focused empty glass field keeps its placeholder after the caret, as a browser's does.
+    if edit.text.is_empty() && t.glass {
+        let color = crate::glass_ui::white(horizon_theme::glass::ink::PLACEHOLDER);
+        return div()
+            .flex()
+            .items_center()
+            .child(div().flex_none().w(px(1.)).h(px(14.)).bg(t.ink))
+            .child(div().text_color(color).child(placeholder));
     }
     let (before, selected, after, caret_first) = edit.view(whole);
     let text = |s: String| {
@@ -659,11 +710,16 @@ mod tests {
     }
 
     #[test]
-    fn a_selected_text_is_replaced_by_what_is_typed() {
+    fn set_resets_the_history_and_a_selected_suggestion_is_replaced() {
         let mut e = edit("My server");
         e.select_all();
         e.key("f", Some("F"), false, false);
         assert_eq!(e.text(), "F");
+        e.set("Other".into());
+        e.key("z", None, true, false);
+        assert_eq!(e.text(), "Other");
+        assert_eq!(e.take(), "Other");
+        assert_eq!(e.text(), "");
     }
 
     #[test]

@@ -20,6 +20,22 @@ impl InteractionResult {
     pub fn consumes_action(self) -> bool {
         !matches!(self, Self::Pass)
     }
+
+    /// Whether the interaction swings the player's arm.
+    ///
+    /// In vanilla, InteractionResult.SUCCESS swings (swing source CLIENT),
+    /// while CONSUME consumes the action without swinging (swing source SERVER).
+    pub fn should_swing(self) -> bool {
+        matches!(self, Self::Success)
+    }
+}
+/// Which part of `BlockState` answered a use on a block.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UseBranch {
+    /// `useItemOn`, with the held item.
+    ItemOn,
+    /// `useWithoutItem`, after `useItemOn` asked to try with an empty hand.
+    WithoutItem,
 }
 
 /// `SelectableSlotContainer.getHitSlot`: the slot of a block with `rows` by
@@ -219,8 +235,29 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
                 }
                 Class::Note => {
                     let next = table.cycle(state, p.note);
+                    let old_note = table.int(state, p.note);
+                    let new_note = table.int(next, p.note);
+                    let instrument = table.text(state, p.instrument);
+                    let Some(note) = self
+                        .level
+                        .note_block_change(pos, instrument, old_note, new_note)
+                    else {
+                        return Success;
+                    };
+                    let next = table.set_int(
+                        next,
+                        p.note,
+                        if (0..=24).contains(&note) {
+                            note
+                        } else {
+                            new_note
+                        },
+                    );
+                    if !self.note_play_allowed(pos, next) {
+                        return Success;
+                    }
                     self.set_block_and_update(pos, next);
-                    self.note_play(pos, next);
+                    self.note_play_unchecked(pos, next);
                     Success
                 }
                 Class::RedstoneWire => self.wire_use(pos, state, player),
@@ -397,9 +434,11 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
                 | Class::BrewingStand
                 | Class::CartographyTable
                 | Class::Chest
+                | Class::CopperChest
                 | Class::Crafter
                 | Class::CraftingTable
                 | Class::Dispenser
+                | Class::Dropper
                 | Class::EnchantingTable
                 | Class::EnderChest
                 | Class::Grindstone
@@ -409,11 +448,33 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
                 | Class::Sign
                 | Class::SmithingTable
                 | Class::Stonecutter
+                | Class::TrappedChest
                 | Class::Lectern => {
                     self.player_effect(pos, state, PlayerEffect::OpenMenu);
                     Success
                 }
-                Class::Command | Class::Structure | Class::Jigsaw => {
+                // DecoratedPotBlock.useWithoutItem: the wobble always succeeds.
+                Class::DecoratedPot => Success,
+                // MovingPistonBlock.useWithoutItem: a moving piston whose block
+                // entity is gone (`Level.getBlockEntity` null) is removed by the
+                // click on a server; one still in flight passes it on.
+                Class::MovingPiston => {
+                    if !self.level.is_client_side() && self.moving_piston(pos).is_none() {
+                        self.remove_block(pos, false);
+                        // CONSUME: the action is used, the arm does not swing.
+                        Consume
+                    } else {
+                        Pass
+                    }
+                }
+                // JukeboxBlock.useWithoutItem: ejecting a disc is SUCCESS (the
+                // insert is useItemOn). An empty jukebox passes.
+                Class::Jukebox if table.bool(state, p.has_record) => Success,
+                Class::Command
+                | Class::Structure
+                | Class::Jigsaw
+                | Class::TestBlock
+                | Class::TestInstanceBlock => {
                     if player.game_master {
                         self.player_effect(pos, state, PlayerEffect::OpenMenu);
                         Success
@@ -458,13 +519,19 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
             return InteractionResult::Pass;
         }
         self.set_block_and_update(pos, next);
+        let orientation = self.initial_orientation(None, Some(Direction::Up));
         for direction in horizontal {
             let relative = super::update::rel(pos, direction);
             if connected(state, direction) != connected(next, direction)
                 && self.is_redstone_conductor(self.state(relative), relative)
             {
                 let block = b.block(next);
-                self.update_neighbors_at_except(relative, block, direction.opposite());
+                self.update_neighbors_at_except_oriented(
+                    relative,
+                    block,
+                    direction.opposite(),
+                    orientation.map(|o| o.with_front(direction)),
+                );
             }
         }
         InteractionResult::Success
@@ -672,6 +739,75 @@ impl Behaviours {
         );
         true
     }
+    /// `FenceGateBlock.onExplosionHit` for a blast that can trigger blocks (a
+    /// wind charge): an unpowered gate at `pos` toggles (`setBlockAndUpdate`),
+    /// with the open or close sound at a random pitch and the matching game
+    /// event, which has no source entity. Unlike a click, the gate keeps its
+    /// facing. False when the block is no fence gate or is powered.
+    pub fn fence_gate_exploded<L: LevelAccess + ?Sized>(
+        &self,
+        level: &mut L,
+        ticks: &mut Ticks,
+        pos: BlockPos,
+    ) -> bool {
+        let state = level.block_state(pos);
+        let data = self.data(state);
+        if !data.is(Class::FenceGate) || self.table.bool(state, self.props.powered) {
+            return false;
+        }
+        let open = self.table.bool(state, self.props.open);
+        let sound = if open {
+            data.gate_close.clone()
+        } else {
+            data.gate_open.clone()
+        };
+        let mut sim = self.sim(level, ticks);
+        sim.set_block_and_update(pos, self.table.set_bool(state, self.props.open, !open));
+        let pitch = sim.random().next_float() * 0.1 + 0.9;
+        if let Some(sound) = sound {
+            sim.sound(pos, &sound, 1.0, pitch);
+        }
+        sim.game_event_state(
+            pos,
+            if open {
+                "minecraft:block_close"
+            } else {
+                "minecraft:block_open"
+            },
+            state,
+        );
+        true
+    }
+    /// `AbstractCandleBlock.isLit` (a lit block of `#candles` or `#candle_cakes`) then
+    /// `AbstractCandleBlock.extinguish(null, ...)`:
+    /// a lit candle or candle cake at `pos` goes out (`setBlock` with flags 11), with
+    /// the extinguish sound and the block-change game event, which has no source
+    /// entity. The smoke is drawn by a client's own `addParticle`, never by the
+    /// server. False when the block is not a lit candle.
+    pub fn extinguish_candle<L: LevelAccess + ?Sized>(
+        &self,
+        level: &mut L,
+        ticks: &mut Ticks,
+        pos: BlockPos,
+    ) -> bool {
+        let state = level.block_state(pos);
+        let data = self.data(state);
+        // `#candles` is every `CandleBlock`, `#candle_cakes` every `CandleCakeBlock`.
+        if !(data.is(Class::Candle) || data.is(Class::CandleCake))
+            || !self.table.bool(state, self.props.lit)
+        {
+            return false;
+        }
+        let mut sim = self.sim(level, ticks);
+        sim.set_block(
+            pos,
+            self.table.set_bool(state, self.props.lit, false),
+            super::flags::UPDATE_ALL_IMMEDIATE,
+        );
+        sim.sound(pos, &"minecraft:block.candle.extinguish".into(), 1.0, 1.0);
+        sim.game_event(pos, "minecraft:block_change");
+        true
+    }
     /// `BlockState.useItemOn` with `item` in the main hand, then, when the
     /// block asks to try with an empty hand (the default), `useWithoutItem`.
     /// `SweetBerryBushBlock.useItemOn` passes bone meal on a bush that can
@@ -687,15 +823,104 @@ impl Behaviours {
         player: PlayerContext,
         item: Option<&str>,
     ) -> InteractionResult {
+        self.use_item_on_branch(level, ticks, pos, face, hit, player, item)
+            .0
+    }
+    /// `use_item_on`, and which of the two answered: `ServerPlayerGameMode.useItemOn`
+    /// triggers ITEM_USED_ON_BLOCK when `useItemOn` consumes the click and
+    /// DEFAULT_BLOCK_USE when `useWithoutItem` does.
+    #[allow(clippy::too_many_arguments)]
+    pub fn use_item_on_branch<L: LevelAccess + ?Sized>(
+        &self,
+        level: &mut L,
+        ticks: &mut Ticks,
+        pos: BlockPos,
+        face: Direction,
+        hit: Vec3,
+        player: PlayerContext,
+        item: Option<&str>,
+    ) -> (InteractionResult, UseBranch) {
+        match self.block_use_item_on(level, ticks, pos, face, hit, player, item) {
+            Some(result) => (result, UseBranch::ItemOn),
+            None => (
+                self.use_without_item(level, ticks, pos, face, hit, player),
+                UseBranch::WithoutItem,
+            ),
+        }
+    }
+    /// `BlockState.useItemOn`: the result, or `None` for
+    /// `TRY_WITH_EMPTY_HAND`.
+    #[allow(clippy::too_many_arguments)]
+    fn block_use_item_on<L: LevelAccess + ?Sized>(
+        &self,
+        level: &mut L,
+        ticks: &mut Ticks,
+        pos: BlockPos,
+        face: Direction,
+        hit: Vec3,
+        player: PlayerContext,
+        item: Option<&str>,
+    ) -> Option<InteractionResult> {
         let state = level.block_state(pos);
         if item == Some("minecraft:bone_meal")
             && self.data(state).chain.contains(&Class::SweetBerryBush)
             && self.table.int(state, self.props.age) < 3
         {
-            return InteractionResult::Pass;
+            return Some(InteractionResult::Pass);
+        }
+        // FlowerPotBlock.useItemOn: a plant on an empty flower pot pots it.
+        // If the pot is not empty and a plant is held, CONSUME (nothing happens).
+        // Otherwise, TRY_WITH_EMPTY_HAND (falls through to use_without_item,
+        // which takes the plant out if potted, or CONSUME if empty).
+        if self.data(state).is(Class::FlowerPot) {
+            let is_empty = self
+                .data(state)
+                .link
+                .is_none_or(|c| self.is_air(self.default_of(c)));
+            let potted = item
+                .and_then(|i| self.item_binding(i))
+                .and_then(|b| self.potted_block(b.block));
+            if let Some(potted) = potted {
+                if !is_empty {
+                    return Some(InteractionResult::Consume);
+                }
+                let next = self.default_of(potted);
+                let mut sim = self.sim(level, ticks);
+                sim.set_block_and_update(pos, next);
+                sim.game_event(pos, "minecraft:block_change");
+                return Some(InteractionResult::Success);
+            }
+        }
+        // CakeBlock.useItemOn: a candle on an uneaten cake turns it into a candle cake.
+        if let Some(candle_cake) = self.cake_candle_state(state, item) {
+            let mut sim = self.sim(level, ticks);
+            sim.sound(pos, &"minecraft:block.cake.add_candle".into(), 1.0, 1.0);
+            sim.set_block_and_update(pos, candle_cake);
+            sim.game_event(pos, "minecraft:block_change");
+            return Some(InteractionResult::Success);
         }
         if self.data(state).chain.contains(&Class::CopperGolemStatue) {
-            return self.turn_statue(level, ticks, pos, state, item);
+            return Some(self.turn_statue(level, ticks, pos, state, item));
+        }
+        // RespawnAnchorBlock.useItemOn: glowstone (`isRespawnFuel`) charges an
+        // anchor below 4 charges (`canBeCharged`) and the click ends there.
+        if item == Some("minecraft:glowstone")
+            && self.data(state).chain.contains(&Class::RespawnAnchor)
+            && self.table.int(state, self.props.charges) < 4
+        {
+            // RespawnAnchorBlock.charge.
+            let charges = self.table.int(state, self.props.charges);
+            let next = self.table.set_int(state, self.props.charges, charges + 1);
+            let mut sim = self.sim(level, ticks);
+            sim.set_block_and_update(pos, next);
+            sim.game_event_state(pos, "minecraft:block_change", next);
+            sim.sound(
+                pos,
+                &"minecraft:block.respawn_anchor.charge".into(),
+                1.0,
+                1.0,
+            );
+            return Some(InteractionResult::Success);
         }
         // NoteBlock.useItemOn: a mob head on the top face is placed, not tuned
         // (`#minecraft:noteblock_top_instruments`).
@@ -714,9 +939,90 @@ impl Behaviours {
                 )
             })
         {
-            return InteractionResult::Pass;
+            return Some(InteractionResult::Pass);
         }
-        self.use_without_item(level, ticks, pos, face, hit, player)
+        // WallHangingSignBlock.useItemOn: a hanging sign aimed at the sign's side
+        // (not its editable faces, `isHittingEditableSide`) chains onto it. Sign
+        // text has no click commands here, so `canExecuteClickCommands` is false.
+        if self.data(state).is(Class::WallHangingSign)
+            && item
+                .and_then(|i| self.item_binding(i))
+                .is_some_and(|binding| binding.kind == super::data::ItemKind::HangingSign)
+            && face != self.facing(state)
+            && face != self.facing(state).opposite()
+        {
+            return Some(InteractionResult::Pass);
+        }
+        // CandleCakeBlock.useItemOn: flint and steel and fire charges pass, so
+        // the item lights a fire by the cake instead of eating it.
+        if self.data(state).chain.contains(&Class::CandleCake)
+            && item
+                .is_some_and(|i| matches!(i, "minecraft:flint_and_steel" | "minecraft:fire_charge"))
+        {
+            return Some(InteractionResult::Pass);
+        }
+        // CandleBlock.useItemOn: an empty hand snuffs a lit candle (`mayBuild`).
+        // CandleCakeBlock.useItemOn: the same on the cake's lit candle, when the
+        // hit is above half a block (`candleHit`).
+        if item.is_none()
+            && ((self.data(state).chain.contains(&Class::Candle) && player.may_build)
+                || (self.data(state).chain.contains(&Class::CandleCake)
+                    && hit.y - f64::from(pos.y) > 0.5))
+            && self.table.bool(state, self.props.lit)
+            && self.extinguish_candle(level, ticks, pos)
+        {
+            // AbstractCandleBlock.extinguish's wick smoke is a `level.addParticle`,
+            // which only a client draws: the clicking client gets it as an event.
+            let next = self.table.set_bool(state, self.props.lit, false);
+            let mut sim = self.sim(level, ticks);
+            sim.emit(LevelEvent::BlockEvent {
+                pos,
+                state: next,
+                kind: "candle_smoke",
+            });
+            return Some(InteractionResult::Success);
+        }
+        None
+    }
+
+    /// `CakeBlock.useItemOn`: the unlit candle cake that `item` (a `#minecraft:candles` item)
+    /// turns the uneaten cake `state` into (`CandleCakeBlock.byCandle`), if any.
+    pub fn cake_candle_state(
+        &self,
+        state: BlockStateId,
+        item: Option<&str>,
+    ) -> Option<BlockStateId> {
+        if !self.data(state).chain.contains(&Class::Cake)
+            || self.table.int(state, self.props.bites) != 0
+        {
+            return None;
+        }
+        // Every candle item is `[color_]candle` and its candle cake `[color_]candle_cake`.
+        let candle = item?.strip_suffix("candle")?;
+        let id = self.table.block_by_name(&format!("{candle}candle_cake"))?;
+        Some(self.default_of(id))
+    }
+
+    /// `FlowerPotBlock.useItemOn`: the potted plant block state that `item`
+    /// turns the empty flower pot `state` into (`POTTED_BY_CONTENT`), if any.
+    pub fn potted_flower_state(
+        &self,
+        state: BlockStateId,
+        item: Option<&str>,
+    ) -> Option<BlockStateId> {
+        if !self.data(state).is(Class::FlowerPot) {
+            return None;
+        }
+        let is_empty = self
+            .data(state)
+            .link
+            .is_none_or(|c| self.is_air(self.default_of(c)));
+        if !is_empty {
+            return None;
+        }
+        let binding = self.item_binding(item?)?;
+        let potted = self.potted_block(binding.block)?;
+        Some(self.default_of(potted))
     }
 
     /// `CopperGolemStatueBlock.useItemOn` (and its weathering subclass's): anything but an axe

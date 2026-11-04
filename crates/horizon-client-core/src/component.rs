@@ -1,6 +1,6 @@
 //! Text components from commands: `ComponentArgument` reads an SNBT (or JSON)
 //! value, `ComponentSerialization` turns it into styled text.
-use crate::text::{Style, Text, named_color};
+use crate::text::{InlineObject, Style, Text, named_color};
 use horizon_world::nbt::Tag;
 use serde_json::{Map, Value};
 
@@ -11,13 +11,18 @@ pub fn parse_snbt(input: &str) -> Result<(Value, usize), String> {
     let mut p = Parser {
         s: input.as_bytes(),
         i: 0,
+        depth: 0,
     };
     let v = p.value()?;
     Ok((v, p.i))
 }
+/// Nesting deeper than NBT's own limit (`NbtAccounter`'s 512) is refused
+/// rather than overflowing the stack.
+const SNBT_MAX_DEPTH: usize = 512;
 struct Parser<'a> {
     s: &'a [u8],
     i: usize,
+    depth: usize,
 }
 impl Parser<'_> {
     fn ws(&mut self) {
@@ -41,57 +46,22 @@ impl Parser<'_> {
         self.ws();
         match self.peek() {
             Some(b'{') => {
-                self.i += 1;
-                let mut map = Map::new();
-                self.ws();
-                if self.peek() == Some(b'}') {
-                    self.i += 1;
-                    return Ok(Value::Object(map));
+                if self.depth >= SNBT_MAX_DEPTH {
+                    return Err(format!("tag nesting too deep at {}", self.i));
                 }
-                loop {
-                    self.ws();
-                    let key = self.string()?;
-                    self.expect(b':')?;
-                    map.insert(key, self.value()?);
-                    self.ws();
-                    match self.peek() {
-                        Some(b',') => self.i += 1,
-                        Some(b'}') => {
-                            self.i += 1;
-                            return Ok(Value::Object(map));
-                        }
-                        _ => return Err("expected ',' or '}'".into()),
-                    }
-                }
+                self.depth += 1;
+                let v = self.object();
+                self.depth -= 1;
+                v
             }
             Some(b'[') => {
-                self.i += 1;
-                let mut list = Vec::new();
-                self.ws();
-                // Typed arrays [B;...], [I;...], [L;...].
-                if matches!(
-                    self.s.get(self.i..self.i + 2),
-                    Some([b'B' | b'I' | b'L', b';'])
-                ) {
-                    self.i += 2;
+                if self.depth >= SNBT_MAX_DEPTH {
+                    return Err(format!("tag nesting too deep at {}", self.i));
                 }
-                self.ws();
-                if self.peek() == Some(b']') {
-                    self.i += 1;
-                    return Ok(Value::Array(list));
-                }
-                loop {
-                    list.push(self.value()?);
-                    self.ws();
-                    match self.peek() {
-                        Some(b',') => self.i += 1,
-                        Some(b']') => {
-                            self.i += 1;
-                            return Ok(Value::Array(list));
-                        }
-                        _ => return Err("expected ',' or ']'".into()),
-                    }
-                }
+                self.depth += 1;
+                let v = self.array();
+                self.depth -= 1;
+                v
             }
             Some(b'"' | b'\'') => Ok(Value::String(self.string()?)),
             Some(_) => {
@@ -105,15 +75,78 @@ impl Parser<'_> {
                     _ => {
                         let digits = word
                             .trim_end_matches(['b', 'B', 's', 'S', 'l', 'L', 'f', 'F', 'd', 'D']);
-                        match (digits.parse::<i64>(), digits.parse::<f64>()) {
-                            (Ok(n), _) if digits.len() + 1 >= word.len() => Value::from(n),
-                            (_, Ok(f)) if digits.len() + 1 >= word.len() => Value::from(f),
-                            _ => Value::String(word),
+                        // Only digits (and an exponent) make a number: `nan`
+                        // or `Infinity`, which Rust's parse would take, stays
+                        // a string.
+                        if digits
+                            .bytes()
+                            .any(|c| c.is_ascii_alphabetic() && c != b'e' && c != b'E')
+                        {
+                            Value::String(word)
+                        } else {
+                            match (digits.parse::<i64>(), digits.parse::<f64>()) {
+                                (Ok(n), _) if digits.len() + 1 >= word.len() => Value::from(n),
+                                (_, Ok(f)) if digits.len() + 1 >= word.len() => Value::from(f),
+                                _ => Value::String(word),
+                            }
                         }
                     }
                 })
             }
             None => Err("expected a value".into()),
+        }
+    }
+    fn object(&mut self) -> Result<Value, String> {
+        self.i += 1;
+        let mut map = Map::new();
+        self.ws();
+        if self.peek() == Some(b'}') {
+            self.i += 1;
+            return Ok(Value::Object(map));
+        }
+        loop {
+            self.ws();
+            let key = self.string()?;
+            self.expect(b':')?;
+            map.insert(key, self.value()?);
+            self.ws();
+            match self.peek() {
+                Some(b',') => self.i += 1,
+                Some(b'}') => {
+                    self.i += 1;
+                    return Ok(Value::Object(map));
+                }
+                _ => return Err("expected ',' or '}'".into()),
+            }
+        }
+    }
+    fn array(&mut self) -> Result<Value, String> {
+        self.i += 1;
+        let mut list = Vec::new();
+        self.ws();
+        // Typed arrays [B;...], [I;...], [L;...].
+        if matches!(
+            self.s.get(self.i..self.i + 2),
+            Some([b'B' | b'I' | b'L', b';'])
+        ) {
+            self.i += 2;
+        }
+        self.ws();
+        if self.peek() == Some(b']') {
+            self.i += 1;
+            return Ok(Value::Array(list));
+        }
+        loop {
+            list.push(self.value()?);
+            self.ws();
+            match self.peek() {
+                Some(b',') => self.i += 1,
+                Some(b']') => {
+                    self.i += 1;
+                    return Ok(Value::Array(list));
+                }
+                _ => return Err("expected ',' or ']'".into()),
+            }
         }
     }
     fn unquoted(&mut self) -> String {
@@ -153,66 +186,116 @@ impl Parser<'_> {
         Err("unterminated string".into())
     }
 }
+/// `click_event` / `hover_event`, or the pre-datafixer `clickEvent` /
+/// `hoverEvent` names SNBT and older chat JSON still use.
+fn style_event_object<'a>(
+    o: &'a serde_json::Map<String, Value>,
+    modern: &str,
+    legacy: &str,
+) -> Option<&'a serde_json::Map<String, Value>> {
+    o.get(modern)
+        .or_else(|| o.get(legacy))
+        .and_then(Value::as_object)
+}
+
+/// Style flags from JSON bools, or SNBT `1b`/`0b` which parse as numbers.
+fn style_flag(v: Option<&Value>) -> Option<bool> {
+    match v {
+        Some(Value::Bool(b)) => Some(*b),
+        Some(Value::Number(n)) => n.as_i64().map(|i| i != 0),
+        _ => None,
+    }
+}
+
+fn untrusted_http_url(url: &str) -> bool {
+    // ExtraCodecs.UNTRUSTED_URI / Util.parseAndValidateUntrustedUri: http and
+    // https only, scheme case-insensitive.
+    url.split_once(':').is_some_and(|(scheme, _)| {
+        scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https")
+    })
+}
+
+/// `ClickEvent.CODEC` plus the legacy `value` field TextComponentHoverAndClickEventFix
+/// renames (`url` / `command` / `page`).
+fn parse_click_event(e: &serde_json::Map<String, Value>) -> Option<crate::text::ClickEvent> {
+    let text = |k: &str| e.get(k).and_then(Value::as_str).map(str::to_owned);
+    let legacy = || text("value");
+    match e.get("action").and_then(Value::as_str) {
+        Some("open_url") => text("url")
+            .or_else(legacy)
+            .filter(|u| untrusted_http_url(u))
+            .map(crate::text::ClickEvent::OpenUrl),
+        Some("change_page") => e
+            .get("page")
+            .and_then(Value::as_i64)
+            .or_else(|| e.get("value").and_then(Value::as_i64))
+            .or_else(|| {
+                e.get("value")
+                    .and_then(Value::as_str)
+                    .and_then(|s| s.parse().ok())
+            })
+            .and_then(|p| i32::try_from(p).ok())
+            .filter(|p| *p >= 1)
+            .map(crate::text::ClickEvent::ChangePage),
+        Some("suggest_command") => text("command")
+            .or_else(legacy)
+            .map(crate::text::ClickEvent::SuggestCommand),
+        Some("run_command") => text("command")
+            .or_else(legacy)
+            .map(crate::text::ClickEvent::RunCommand),
+        Some("copy_to_clipboard") => text("value").map(crate::text::ClickEvent::CopyToClipboard),
+        // ClickEvent.ShowDialog.CODEC: a `minecraft:dialog` registry id or
+        // the dialog itself; the server may send it (isAllowedFromServer).
+        Some("show_dialog") => e.get("dialog").map(|dialog| {
+            crate::text::ClickEvent::ShowDialog(crate::scoreboard::json_to_tag(dialog))
+        }),
+        Some("custom") => Some(crate::text::ClickEvent::Custom {
+            id: crate::identifier::parse_identifier(&text("id")?)?,
+            payload: e
+                .get("payload")
+                .filter(|value| !value.is_null())
+                .map(crate::scoreboard::json_to_tag),
+        }),
+        _ => None,
+    }
+}
+
 /// The style fields of a component object.
 fn object_style(o: &serde_json::Map<String, Value>) -> Style {
     let mut style = Style::default();
     if let Some(c) = o.get("color").and_then(Value::as_str) {
-        style.color = named_color(c).or_else(|| {
-            c.strip_prefix('#')
-                .and_then(|h| u32::from_str_radix(h, 16).ok())
-        });
+        style.color = named_color(c).or_else(|| hex_color(c));
     }
-    let flag = |k: &str| o.get(k).and_then(Value::as_bool);
-    style.bold = flag("bold");
-    style.italic = flag("italic");
-    style.underlined = flag("underlined");
-    style.strikethrough = flag("strikethrough");
-    style.obfuscated = flag("obfuscated");
+    style.shadow_color = o.get("shadow_color").and_then(shadow_color);
+    style.bold = style_flag(o.get("bold"));
+    style.italic = style_flag(o.get("italic"));
+    style.underlined = style_flag(o.get("underlined"));
+    style.strikethrough = style_flag(o.get("strikethrough"));
+    style.obfuscated = style_flag(o.get("obfuscated"));
     style.font = o.get("font").and_then(crate::text::font_id);
     // ClickEvent.CODEC: the actions a chat line acts on here. A component
     // from a server never opens a file.
-    if let Some(e) = o.get("click_event").and_then(Value::as_object) {
-        let text = |k: &str| e.get(k).and_then(Value::as_str).map(str::to_owned);
-        style.click = match e.get("action").and_then(Value::as_str) {
-            // ClickEvent.OpenUrl.CODEC: ExtraCodecs.UNTRUSTED_URI allows http and
-            // https only, the scheme in any case (Util.parseAndValidateUntrustedUri).
-            Some("open_url") => text("url")
-                .filter(|u| {
-                    u.split_once(':').is_some_and(|(scheme, _)| {
-                        scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https")
-                    })
-                })
-                .map(crate::text::ClickEvent::OpenUrl),
-            // ClickEvent.ChangePage.CODEC: ExtraCodecs.POSITIVE_INT.
-            Some("change_page") => e
-                .get("page")
-                .and_then(Value::as_i64)
-                .and_then(|p| i32::try_from(p).ok())
-                .filter(|p| *p >= 1)
-                .map(crate::text::ClickEvent::ChangePage),
-            Some("suggest_command") => text("command").map(crate::text::ClickEvent::SuggestCommand),
-            Some("run_command") => text("command").map(crate::text::ClickEvent::RunCommand),
-            Some("copy_to_clipboard") => {
-                text("value").map(crate::text::ClickEvent::CopyToClipboard)
-            }
-            // ClickEvent.ShowDialog.CODEC: a `minecraft:dialog` registry id or
-            // the dialog itself; the server may send it (isAllowedFromServer).
-            Some("show_dialog") => e.get("dialog").map(|dialog| {
-                crate::text::ClickEvent::ShowDialog(crate::scoreboard::json_to_tag(dialog))
-            }),
-            _ => None,
-        };
+    if let Some(e) = style_event_object(o, "click_event", "clickEvent") {
+        style.click = parse_click_event(e);
     }
-    // HoverEvent.ShowText and ShowItem.
-    if let Some(e) = o.get("hover_event").and_then(Value::as_object) {
+    // HoverEvent.ShowText, ShowItem and ShowEntity.
+    if let Some(e) = style_event_object(o, "hover_event", "hoverEvent") {
         match e.get("action").and_then(Value::as_str) {
             Some("show_text") => {
-                if let Some(value) = e.get("value") {
+                // Modern `value`, or the older `contents` / nested `text`.
+                let value = e
+                    .get("value")
+                    .or_else(|| e.get("contents"))
+                    .or_else(|| e.get("text"));
+                if let Some(value) = value {
                     style.hover = Some(Box::new(to_text(value, &mut |s| Text::literal(s))));
                 }
             }
             Some("show_item") if e.get("id").is_some_and(Value::is_string) => {
                 style.hover_item = Some(Box::new(Value::Object(e.clone())));
+            }
+            Some("show_entity") if e.get("id").is_some_and(Value::is_string) => {
+                style.hover_entity = Some(Box::new(Value::Object(e.clone())));
             }
             _ => {}
         }
@@ -222,6 +305,35 @@ fn object_style(o: &serde_json::Map<String, Value>) -> Style {
         .and_then(Value::as_str)
         .map(str::to_owned);
     style
+}
+
+/// `TextColor.parseColor` for `#...`: `Integer.parseInt(rest, 16)` (so a sign
+/// and any digit count are accepted), kept only within `0..=0xFFFFFF`.
+pub(crate) fn hex_color(c: &str) -> Option<u32> {
+    let value = i64::from_str_radix(c.strip_prefix('#')?, 16).ok()?;
+    (0..=0xFF_FFFF).contains(&value).then_some(value as u32)
+}
+
+/// `Style.shadow_color`: a packed ARGB int or normalized RGBA array.
+pub(crate) fn shadow_color(value: &Value) -> Option<u32> {
+    if let Some(packed) = value.as_i64() {
+        return i32::try_from(packed).ok().map(|n| n as u32);
+    }
+    let rgba = value.as_array()?;
+    if rgba.len() != 4 {
+        return None;
+    }
+    let channels = rgba
+        .iter()
+        .map(|channel| {
+            // ExtraCodecs.ARGB_COLOR_CODEC reads floats; ARGB.as8BitChannel
+            // floors each normalized channel multiplied by 255.
+            let value = channel.as_f64()? as f32;
+            (value.is_finite() && (0.0..=1.0).contains(&value))
+                .then_some((value * 255.0_f32).floor() as u32)
+        })
+        .collect::<Option<Vec<_>>>()?;
+    Some(channels[3] << 24 | channels[0] << 16 | channels[1] << 8 | channels[2])
 }
 /// `ComponentSerialization.CODEC` decoding into text. `selector` components
 /// are resolved by `resolve` (ComponentUtils.updateForEntity).
@@ -263,6 +375,10 @@ pub fn to_text_with(
             let style = object_style(o);
             let content = if let Some(t) = contents(o) {
                 t
+            } else if let Some(object) = inline_object(o, resolve, contents) {
+                let mut text = Text::literal("\u{fffc}");
+                text.spans[0].style.inline_object = Some(object);
+                text
             } else if let Some(t) = o.get("text") {
                 match t {
                     Value::String(s) => Text::literal(s.clone()),
@@ -299,9 +415,71 @@ pub fn to_text_with(
             {
                 out.push(to_text_with(extra, resolve, contents).with_style(&style));
             }
-            out
+            if o.contains_key("object") || o.contains_key("player") || o.contains_key("sprite") {
+                out.with_component(Value::Object(o.clone()))
+            } else {
+                out
+            }
         }
         Value::Null => Text::empty(),
+    }
+}
+
+fn inline_object(
+    object: &serde_json::Map<String, Value>,
+    resolve: &mut dyn FnMut(&str) -> Text,
+    contents: &mut dyn FnMut(&serde_json::Map<String, Value>) -> Option<Text>,
+) -> Option<InlineObject> {
+    let kind = object.get("object").and_then(Value::as_str);
+    let fallback = object
+        .get("fallback")
+        .map(|value| to_text_with(value, resolve, contents).plain());
+    match kind {
+        Some("player") | None if object.contains_key("player") => {
+            let profile = object.get("player")?.clone();
+            // PlayerSprite.defaultFallback.
+            let fallback = fallback.unwrap_or_else(|| {
+                match profile
+                    .as_str()
+                    .or_else(|| profile.get("name").and_then(Value::as_str))
+                {
+                    Some(name) => format!("[{name} head]"),
+                    None => "[unknown player head]".to_owned(),
+                }
+            });
+            Some(InlineObject::Player {
+                profile,
+                hat: object.get("hat").and_then(Value::as_bool).unwrap_or(true),
+                fallback,
+            })
+        }
+        Some("atlas") | None if object.contains_key("sprite") => {
+            let atlas = object
+                .get("atlas")
+                .and_then(Value::as_str)
+                .unwrap_or("minecraft:blocks")
+                .to_owned();
+            let sprite = object.get("sprite")?.as_str()?.to_owned();
+            // AtlasSprite.defaultFallback: short names, the atlas unless blocks.
+            let fallback = fallback.unwrap_or_else(|| {
+                let short = |id: &str| match id.split_once(':') {
+                    Some(("minecraft", path)) => path.to_owned(),
+                    Some(_) => id.to_owned(),
+                    None => id.to_owned(),
+                };
+                if short(&atlas) == "blocks" {
+                    format!("[{}]", short(&sprite))
+                } else {
+                    format!("[{}@{}]", short(&sprite), short(&atlas))
+                }
+            });
+            Some(InlineObject::Atlas {
+                atlas,
+                sprite,
+                fallback,
+            })
+        }
+        _ => None,
     }
 }
 
@@ -319,6 +497,88 @@ mod tests {
     use super::*;
 
     #[test]
+    fn hex_color_follows_text_color_parse_color() {
+        for bad in [
+            "#1000000",
+            "#FFFFFFFF",
+            "#-FF",
+            "#",
+            "#zz",
+            "FFFFFF",
+            "#99999999999",
+        ] {
+            assert_eq!(hex_color(bad), None, "{bad}");
+        }
+        for (good, want) in [
+            ("#FFFFFF", 0xFFFFFF),
+            ("#000000", 0),
+            ("#F", 15),
+            ("#+FF", 255),
+            ("#-0", 0),
+        ] {
+            assert_eq!(hex_color(good), Some(want), "{good}");
+        }
+        let out = serde_json::json!({"text": "A", "color": "#1000000"});
+        let text = to_text(&out, &mut |_| Text::empty());
+        assert_eq!(text.spans[0].style.color, None);
+    }
+
+    #[test]
+    fn shadow_color_accepts_packed_and_rgba_styles() {
+        let packed = serde_json::json!({"text": "A", "shadow_color": -16711936});
+        let text = to_text(&packed, &mut |_| Text::empty());
+        assert_eq!(text.spans[0].style.shadow_color, Some(0xff00ff00));
+        assert_eq!(text.component()["shadow_color"], -16711936);
+        let rgba = serde_json::json!({"text": "A", "shadow_color": [1, 0, 0.5, 1]});
+        let text = to_text(&rgba, &mut |_| Text::empty());
+        assert_eq!(text.spans[0].style.shadow_color, Some(0xffff007f));
+        let translucent = serde_json::json!({"text": "A", "shadow_color": [1, 0, 0.5, 0.5]});
+        let text = to_text(&translucent, &mut |_| Text::empty());
+        assert_eq!(text.spans[0].style.shadow_color, Some(0x7fff007f));
+        let no_shadow = serde_json::json!({"text": "A", "shadow_color": 0});
+        let text = to_text(&no_shadow, &mut |_| Text::empty());
+        assert_eq!(text.spans[0].style.shadow_color, Some(0));
+    }
+
+    #[test]
+    fn player_object_survives_text_parsing_and_keeps_its_siblings() {
+        let component = serde_json::json!({
+            "text": "<",
+            "extra": [
+                {"object": "player", "player": {"name": "elyapluggin"}, "hat": false,
+                 "fallback": "[head]"},
+                {"text": " >", "color": "gold"}
+            ]
+        });
+        let text = to_text(&component, &mut |_| Text::empty());
+        assert_eq!(text.plain(), "<[head] >");
+        assert!(matches!(
+            &text.spans[1].style.inline_object,
+            Some(InlineObject::Player { hat: false, .. })
+        ));
+        assert!(text.spans[2].style.inline_object.is_none());
+        assert_eq!(text.component(), component);
+        let sprite = serde_json::json!({"object": "atlas", "sprite": "minecraft:item/porkchop"});
+        let text = to_text(&sprite, &mut |_| Text::empty());
+        assert!(matches!(
+            &text.spans[0].style.inline_object,
+            Some(InlineObject::Atlas { sprite, .. }) if sprite == "minecraft:item/porkchop"
+        ));
+        // ObjectContents.visit without a fallback: the sprite's defaultFallback.
+        assert_eq!(text.plain(), "[item/porkchop]");
+        let head = serde_json::json!({"object": "player", "player": {"name": "Steve"}});
+        assert_eq!(
+            to_text(&head, &mut |_| Text::empty()).plain(),
+            "[Steve head]"
+        );
+        let gui = serde_json::json!({"atlas": "gui", "sprite": "hud/heart/full"});
+        assert_eq!(
+            to_text(&gui, &mut |_| Text::empty()).plain(),
+            "[hud/heart/full@gui]"
+        );
+    }
+
+    #[test]
     fn snbt_and_json_components() {
         let input = "{text:'Hi ',color:red,extra:[{text:\"there\",bold:1b}]} rest";
         let (v, n) = parse_snbt(input).unwrap();
@@ -326,8 +586,98 @@ mod tests {
         let t = to_text(&v, &mut |_| Text::empty());
         assert_eq!(t.plain(), "Hi there");
         assert_eq!(t.spans[1].style.color, named_color("red"));
+        // SNBT `1b` is a number in JSON; style flags still take it as true.
+        assert_eq!(t.spans[1].style.bold, Some(true));
         let (v, _) = parse_snbt("[\"a\",{\"text\":\"b\"}]").unwrap();
         assert_eq!(to_text(&v, &mut |_| Text::empty()).plain(), "ab");
+    }
+
+    #[test]
+    fn legacy_click_event_open_url_uses_value_field() {
+        use crate::text::ClickEvent;
+        let modern = serde_json::json!({
+            "text": "site",
+            "click_event": {"action": "open_url", "url": "https://example.com"},
+            "underlined": true
+        });
+        let legacy = serde_json::json!({
+            "text": "site",
+            "clickEvent": {"action": "open_url", "value": "https://example.com"},
+            "underlined": 1
+        });
+        for component in [modern, legacy] {
+            let text = to_text(&component, &mut |_| Text::empty());
+            assert_eq!(
+                text.spans[0].style.click,
+                Some(ClickEvent::OpenUrl("https://example.com".into()))
+            );
+            assert_eq!(text.spans[0].style.underlined, Some(true));
+        }
+        let snbt = r#"{text:"site",underlined:1b,clickEvent:{action:open_url,value:"https://example.com"}}"#;
+        let (v, _) = parse_snbt(snbt).unwrap();
+        let text = to_text(&v, &mut |_| Text::empty());
+        assert_eq!(
+            text.spans[0].style.click,
+            Some(ClickEvent::OpenUrl("https://example.com".into()))
+        );
+        assert_eq!(text.spans[0].style.underlined, Some(true));
+    }
+
+    #[test]
+    fn custom_click_events_keep_payloads_and_inherit_to_inline_objects() {
+        use crate::text::ClickEvent;
+        use horizon_world::nbt::Tag;
+
+        for (payload, expected) in [
+            (None, None),
+            (Some(serde_json::Value::Null), None),
+            (Some(serde_json::json!(42)), Some(Tag::Int(42))),
+            (
+                Some(serde_json::json!({"shop": "potions", "amount": 3})),
+                Some(Tag::Compound(
+                    [
+                        ("amount".into(), Tag::Int(3)),
+                        ("shop".into(), Tag::String("potions".into())),
+                    ]
+                    .into_iter()
+                    .collect(),
+                )),
+            ),
+        ] {
+            let mut event = serde_json::json!({"action": "custom", "id": "test:shop"});
+            if let Some(payload) = payload {
+                event["payload"] = payload;
+            }
+            let component = serde_json::json!({
+                "text": "", "click_event": event,
+                "extra": [{"object": "atlas", "sprite": "minecraft:item/potion"}, "Shop"]
+            });
+            let text = to_text(&component, &mut |_| Text::empty());
+            for (_, style) in text.chars() {
+                assert_eq!(
+                    style.click,
+                    Some(ClickEvent::Custom {
+                        id: "test:shop".into(),
+                        payload: expected.clone(),
+                    })
+                );
+            }
+            let encoded = text.component();
+            let decoded = to_text(&encoded, &mut |_| Text::empty());
+            assert_eq!(decoded, text);
+            if expected.is_none() {
+                assert!(!encoded.to_string().contains("\"payload\""));
+            }
+        }
+        for id in ["Bad ID", "Uppercase:shop"] {
+            let text = to_text(
+                &serde_json::json!({
+                    "text": "Shop", "click_event": {"action": "custom", "id": id}
+                }),
+                &mut |_| Text::empty(),
+            );
+            assert_eq!(text.spans[0].style.click, None);
+        }
     }
 
     #[test]
@@ -350,5 +700,34 @@ mod tests {
         let (v, _) = parse_snbt(r#"{text:"a",font:"Bad Font"}"#).unwrap();
         let t = to_text(&v, &mut |_| Text::empty());
         assert_eq!(t.spans[0].style.font, None);
+    }
+
+    #[test]
+    fn snbt_nesting_is_bounded() {
+        let nest = |n: usize| format!("{}1{}", "[".repeat(n), "]".repeat(n));
+        assert!(parse_snbt(&nest(512)).is_ok());
+        assert!(parse_snbt(&nest(513)).is_err());
+        assert!(parse_snbt(&nest(100_000)).is_err());
+    }
+
+    #[test]
+    fn bare_words_that_look_numeric_stay_strings() {
+        let (v, _) = parse_snbt("{text:nan}").unwrap();
+        assert_eq!(v["text"], Value::String("nan".into()));
+        let (v, _) = parse_snbt("{text:Infinity}").unwrap();
+        assert_eq!(v["text"], Value::String("Infinity".into()));
+        let (v, _) = parse_snbt("{n:1.5}").unwrap();
+        assert_eq!(v["n"], Value::from(1.5));
+    }
+
+    #[test]
+    fn name_text_preserves_legacy_and_decodes_components() {
+        let legacy = Tag::String("§6Golden Name".into());
+        let text = name_text(&legacy);
+        assert_eq!(text.plain(), "Golden Name");
+
+        let comp = Tag::compound([("text", Tag::String("Custom Name".into()))]);
+        let text = name_text(&comp);
+        assert_eq!(text.plain(), "Custom Name");
     }
 }

@@ -3,6 +3,7 @@
 //! after its own decoration and its eight neighbours', and chunks that
 //! decoration wrote to are saved rather than generated again without those
 //! writes. Bastions lost whole chunks of pieces this way.
+extern crate horizon_client_lib as horizon_client;
 use horizon_client::{
     assets::Assets,
     biome::Biomes,
@@ -45,11 +46,14 @@ struct Recorder {
     chunks: Mutex<HashMap<(i32, i32), Chunk>>,
     /// Each column as it was when it was finished, once per finish.
     finished: Mutex<HashMap<(i32, i32), Vec<Recorded>>>,
+    /// The proto chunks a light job was given a view of, as they were.
+    viewed: Mutex<Vec<Recorded>>,
 }
 impl Recorder {
     fn save_chunk(&self, chunk: &Chunk) {
         let mut saved = chunk.clone();
         saved.fresh = false;
+        saved.generated = false;
         self.chunks
             .lock()
             .unwrap()
@@ -101,6 +105,11 @@ impl ChunkGenerator for Recorder {
     fn is_decorated(&self, proto: &Proto) -> bool {
         proto.downcast_ref::<Recorded>().unwrap().decorated
     }
+    fn light_view(&self, proto: &Proto) -> Option<Chunk> {
+        let proto = proto.downcast_ref::<Recorded>().unwrap();
+        self.viewed.lock().unwrap().push(proto.clone());
+        Some(Chunk::empty(proto.x, proto.z))
+    }
     fn save_protos(&self, protos: &[&Proto]) {
         let mut saved = self.protos.lock().unwrap();
         for proto in protos {
@@ -147,7 +156,7 @@ impl Session {
             let before = (self.streaming.generated_total, self.world.chunks.len());
             self.update();
             thread::sleep(Duration::from_millis(5));
-            let idle = self.streaming.pending() == 0
+            let idle = !self.streaming.busy()
                 && before == (self.streaming.generated_total, self.world.chunks.len());
             quiet = if idle { quiet + 1 } else { 0 };
         }
@@ -170,22 +179,50 @@ impl Session {
     }
 }
 
+fn worker_context(root: &Path) -> Arc<WorkerContext> {
+    let assets = Arc::new(Assets::load(root).unwrap());
+    let render = Arc::new(assets.reload(root).unwrap());
+    let facts = BlockFacts::load(root, assets.registry).unwrap();
+    let visibility = models::load_visibility(root, assets.registry).unwrap();
+    Arc::new(WorkerContext {
+        tables: Arc::new(MeshTables::new(&assets, &render, &facts, visibility).unwrap()),
+        light: Arc::new(LightTables::load(root, assets.registry, &facts).unwrap()),
+        biomes: Arc::new(Biomes::load(root).unwrap()),
+        assets,
+        render: render.clone(),
+    })
+}
+
+/// What native mods hear (`native_chunk_load`): a column just generated is
+/// new, one read back from the save isn't, and each arrival is told once.
+#[test]
+fn a_new_column_is_told_apart_from_a_saved_one() {
+    let Some(root) = resources() else {
+        return;
+    };
+    let context = worker_context(&root);
+    let generator = Arc::new(Recorder::default());
+    let mut session = Session::new(generator.clone(), context.clone());
+    session.settle_at((0, 0));
+    let first = std::mem::take(&mut session.world.loaded_chunks);
+    assert!(first.contains(&(0, 0, true)), "{first:?}");
+    assert!(first.iter().all(|c| c.2), "{first:?}");
+    let residents = session.world.chunks.len();
+    assert_eq!(first.len(), residents, "one arrival for each column");
+    session.save();
+    drop(session);
+    let mut session = Session::new(generator, context);
+    session.settle_at((0, 0));
+    let again = std::mem::take(&mut session.world.loaded_chunks);
+    assert!(again.contains(&(0, 0, false)), "{again:?}");
+}
+
 #[test]
 fn chunks_left_behind_keep_their_decoration() {
     let Some(root) = resources() else {
         return;
     };
-    let assets = Arc::new(Assets::load(&root).unwrap());
-    let render = Arc::new(assets.reload(&root).unwrap());
-    let facts = BlockFacts::load(&root, assets.registry).unwrap();
-    let visibility = models::load_visibility(&root, assets.registry).unwrap();
-    let context = Arc::new(WorkerContext {
-        tables: Arc::new(MeshTables::new(&assets, &render, &facts, visibility).unwrap()),
-        light: Arc::new(LightTables::load(&root, assets.registry, &facts).unwrap()),
-        biomes: Arc::new(Biomes::load(&root).unwrap()),
-        assets,
-        render: render.clone(),
-    });
+    let context = worker_context(&root);
     let generator = Arc::new(Recorder::default());
     let mut session = Session::new(generator.clone(), context.clone());
     // Generate an area, walk away from it in steps (its edge unloads a ring
@@ -237,6 +274,46 @@ fn chunks_left_behind_keep_their_decoration() {
     assert!(checked > 200, "only {checked} columns finished");
 }
 
+/// The columns at the edge light against their decorated neighbours past
+/// the area; each such proto chunk is turned into a view once while it stays
+/// as it is, however many columns it neighbours or light jobs wait on it.
+#[test]
+fn proto_chunks_are_viewed_once_per_state() {
+    let Some(root) = resources() else {
+        return;
+    };
+    let assets = Arc::new(Assets::load(&root).unwrap());
+    let render = Arc::new(assets.reload(&root).unwrap());
+    let facts = BlockFacts::load(&root, assets.registry).unwrap();
+    let visibility = models::load_visibility(&root, assets.registry).unwrap();
+    let context = Arc::new(WorkerContext {
+        tables: Arc::new(MeshTables::new(&assets, &render, &facts, visibility).unwrap()),
+        light: Arc::new(LightTables::load(&root, assets.registry, &facts).unwrap()),
+        biomes: Arc::new(Biomes::load(&root).unwrap()),
+        assets,
+        render: render.clone(),
+    });
+    let generator = Arc::new(Recorder::default());
+    let mut session = Session::new(generator.clone(), context);
+    for step in 0..=4 {
+        session.settle_at((step * 3, 0));
+    }
+    let viewed = generator.viewed.lock().unwrap();
+    let mut states: Vec<((i32, i32), Vec<(i32, i32)>)> = viewed
+        .iter()
+        .map(|p| ((p.x, p.z), p.writes.clone()))
+        .collect();
+    let total = states.len();
+    states.sort_unstable();
+    states.dedup();
+    assert!(total > 20, "only {total} proto chunks were viewed");
+    assert_eq!(
+        states.len(),
+        total,
+        "a proto chunk was viewed again unchanged"
+    );
+}
+
 /// A saved proto chunk comes back exactly: the bastion region of #249, its
 /// centre decorated (writing into all nine chunks), saved and restored onto
 /// chunks generated again finishes into the same columns.
@@ -261,7 +338,10 @@ fn saved_proto_chunks_restore_exactly() {
     .unwrap();
     let dir = std::env::temp_dir().join(format!("horizon-proto-saves-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
-    let save = Arc::new(SaveDir::new(dir.clone()));
+    let save = Arc::new(SaveDir::new(
+        dir.clone(),
+        horizon_client::save::LevelShape::OVERWORLD,
+    ));
     let generator = Persistent {
         inner: Arc::new(terrain),
         save: save.clone(),
@@ -341,7 +421,10 @@ fn saved_proto_block_entities_keep_their_id() {
     .unwrap();
     let dir = std::env::temp_dir().join(format!("horizon-proto-ids-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
-    let save = Arc::new(SaveDir::new(dir.clone()));
+    let save = Arc::new(SaveDir::new(
+        dir.clone(),
+        horizon_client::save::LevelShape::OVERWORLD,
+    ));
     let generator = Persistent {
         inner: Arc::new(terrain),
         save: save.clone(),
@@ -380,5 +463,57 @@ fn saved_proto_block_entities_keep_their_id() {
     assert!(suspicious > 0, "the ruin placed no suspicious blocks");
     drop(generator);
     drop(save);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// What the game's generator, `Persistent`, passes on of beside-final decoration: the block
+/// entities a decoration made in a chunk saved by an older version reach `World` only if
+/// `Persistent` forwards `final_block_entities` (the trait default is none).
+#[test]
+fn persistent_forwards_the_block_entities_decoration_made_in_a_final_chunk() {
+    use horizon_client::{
+        chunk::block_entity::BlockEntity,
+        save::{Persistent, SaveDir},
+    };
+    struct Marked;
+    impl ChunkGenerator for Marked {
+        type Worker = ();
+        fn worker(&self) {}
+        fn proto(&self, _: &mut (), _: i32, _: i32) -> Proto {
+            Box::new(())
+        }
+        fn finish(&self, _: Proto) -> Chunk {
+            Chunk::empty(0, 0)
+        }
+        fn final_block_entities(
+            &self,
+            _: &Proto,
+            writes: &[([i32; 3], u32)],
+        ) -> Vec<((i32, i32, i32), BlockEntity)> {
+            writes
+                .iter()
+                .map(|([x, y, z], _)| ((*x, *y, *z), BlockEntity::Chest(Vec::new())))
+                .collect()
+        }
+    }
+    let Some(root) = resources() else {
+        return;
+    };
+    let assets = Arc::new(Assets::load(&root).unwrap());
+    let biomes = Arc::new(Biomes::load(&root).unwrap());
+    let dir = std::env::temp_dir().join(format!("horizon-final-be-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let generator = Persistent {
+        inner: Arc::new(Marked),
+        save: Arc::new(SaveDir::new(
+            dir.clone(),
+            horizon_client::save::LevelShape::OVERWORLD,
+        )),
+        registry: assets,
+        biomes,
+    };
+    let made = generator.final_block_entities(&(Box::new(()) as Proto), &[([1, 64, 2], 5)]);
+    assert_eq!(made.len(), 1, "Persistent drops the block entities");
+    assert_eq!(made[0].0, (1, 64, 2));
     let _ = std::fs::remove_dir_all(&dir);
 }

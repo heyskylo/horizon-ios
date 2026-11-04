@@ -1,15 +1,34 @@
 //! Server text displays: metadata, interpolation, billboard transforms and world text.
 use super::Game;
+use horizon_assets::item_model::DisplayContext;
 use horizon_client::{
-    hud::{HudBatch, rgba},
+    gfx::TEXT_POLYGON_OFFSET_OVERLAY,
+    hud::HudBatch,
+    items::ItemStack,
     mesher::Vertex,
-    text::Text,
-    text_display::{Align, TextDisplayData},
+    text_display::{self, Lines, TextDisplayData},
 };
 use horizon_protocol::entity_data::Value;
+use horizon_world::registry::BlockStateId;
+
+/// What a display shows besides its transformation: its text (in `data`),
+/// a block state (`BlockDisplay`) or an item and how it is displayed
+/// (`ItemDisplay`).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Shows {
+    Text,
+    Block,
+    Item,
+}
 
 pub(super) struct RemoteTextDisplay {
     pub data: TextDisplayData,
+    shows: Shows,
+    /// `BlockDisplay.DATA_BLOCK_STATE_ID`.
+    block: Option<BlockStateId>,
+    /// `ItemDisplay.DATA_ITEM_STACK` and `DATA_ITEM_DISPLAY_ID`.
+    item: Option<ItemStack>,
+    item_display: u8,
     from: TextDisplayData,
     shown: TextDisplayData,
     position: glam::DVec3,
@@ -32,12 +51,9 @@ pub(super) struct RemoteTextDisplay {
     /// `TextDisplay.clientDisplayCache`: the split lines, until the render
     /// state changes.
     lines: Option<Lines>,
-}
-
-/// `TextDisplay.CachedInfo`: each line and its width, and the widest.
-struct Lines {
-    lines: Vec<(Text, f32)>,
-    width: f32,
+    /// `Entity.vehicle`: the mob it rides (`SetPassengers`), which places it
+    /// every tick (`positionRider`), as NPC plugins hang a name over a head.
+    pub(super) vehicle: Option<u32>,
 }
 
 /// `Display.RENDER_STATE_IDS` and `TextDisplay.TEXT_RENDER_STATE_IDS`: the
@@ -47,9 +63,13 @@ fn renders(id: u8) -> bool {
 }
 
 impl RemoteTextDisplay {
-    pub fn new(position: [f64; 3], yaw: f32) -> Self {
+    pub fn new(shows: Shows, position: [f64; 3], yaw: f32) -> Self {
         Self {
             data: Default::default(),
+            shows,
+            block: None,
+            item: None,
+            item_display: 0,
             from: Default::default(),
             shown: Default::default(),
             position: position.into(),
@@ -68,13 +88,59 @@ impl RemoteTextDisplay {
             initialized: false,
             last_progress: 0.0,
             lines: None,
+            vehicle: None,
         }
+    }
+    /// Where a passenger of this display sits, this tick and the last
+    /// (`Display`'s box is 0 by 0, so its passenger attachment is its feet).
+    pub(super) fn seat(&self) -> (glam::DVec3, glam::DVec3) {
+        (self.position, self.previous)
+    }
+    /// `Entity.positionRider` through `setPos`: where its vehicle seats it this
+    /// tick. The previous position stays the last tick's, so it moves smoothly
+    /// with the vehicle; a teleport's interpolation no longer applies.
+    pub(super) fn ride(&mut self, at: glam::DVec3) {
+        self.position = at;
+        self.target = at;
+        self.steps = 0;
+    }
+    pub(super) fn position(&self) -> glam::DVec3 {
+        self.position
     }
     fn progress(&self, partial: f32) -> f32 {
         if self.duration <= 0 {
             1.0
         } else {
             (((self.age - self.start) as f32 + partial) / self.duration as f32).clamp(0.0, 1.0)
+        }
+    }
+    /// The casters this display adds to the shadow pass: its interpolated
+    /// shadow radius and strength (`DisplayRenderer.getShadowRadius` and
+    /// `DisplayRenderer.getShadowStrength`), if it has any.
+    pub(super) fn shadow(&self, partial: f64) -> Option<(glam::DVec3, f32, f32)> {
+        horizon_client::shadows::display_caster(
+            self.previous.lerp(self.position, partial),
+            &self.from,
+            &self.shown,
+            self.progress(partial as f32),
+        )
+    }
+    /// The entries after `Display`'s: a block state, or an item with its
+    /// display context (the stack comes converted by the caller).
+    pub fn show(&mut self, values: &[(u8, i32, Value)], item: Option<Option<ItemStack>>) {
+        for (id, _, value) in values {
+            match (self.shows, id, value) {
+                (Shows::Block, 23, Value::Id(state)) => {
+                    self.block = Some(BlockStateId(u32::try_from(*state).unwrap_or(0)));
+                }
+                (Shows::Item, 24, Value::Byte(context)) => self.item_display = *context as u8,
+                _ => {}
+            }
+        }
+        if let Some(item) = item
+            && self.shows == Shows::Item
+        {
+            self.item = item;
         }
     }
     pub fn metadata(&mut self, values: &[(u8, i32, Value)]) {
@@ -149,6 +215,127 @@ impl Game<'_> {
             display.tick();
         }
     }
+    /// The camera's yaw and pitch as `DisplayRenderer` reads them (the
+    /// front view turns around).
+    fn display_camera_angles(&self) -> [f32; 2] {
+        if self.camera_type == super::perspective::CameraType::ThirdPersonFront {
+            [self.yaw + 180.0, -self.pitch]
+        } else {
+            [self.yaw, self.pitch]
+        }
+    }
+    /// `DisplayRenderer.getBlockLightLevel` and `getSkyLightLevel`: the
+    /// brightness override, else the light at the entity.
+    fn display_light(
+        world: &horizon_client::world::World,
+        d: &TextDisplayData,
+        position: glam::DVec3,
+    ) -> u32 {
+        if d.brightness == -1 {
+            let world_light = world.light(
+                position.x.floor() as i32,
+                position.y.floor() as i32,
+                position.z.floor() as i32,
+            );
+            horizon_client::block_entity_render::vertex_light(world_light)
+        } else {
+            ((d.brightness as u32 >> 20 & 15) * 16) | (((d.brightness as u32 >> 4 & 15) * 16) << 8)
+        }
+    }
+    /// `Display.shouldRenderAtSqrDistance` and, when width and height are set,
+    /// `EntityRenderer.shouldRender` with `Display.getInterpolatedBoundingBox`
+    /// inflated by 0.5. Width or height 0 is `noCulling`: distance only.
+    fn display_in_view(
+        &self,
+        camera: glam::DVec3,
+        origin: glam::DVec3,
+        data: &TextDisplayData,
+        view_scale: f64,
+    ) -> bool {
+        let range = f64::from(data.view_range) * 64.0 * view_scale;
+        if text_display::no_culling(data.width, data.height) {
+            return (origin - camera).length_squared() < range * range;
+        }
+        let (lo, hi) = text_display::culling_box(origin, data.width, data.height);
+        self.entity_in_view(camera, origin, range, lo, hi)
+    }
+
+    /// `DisplayRenderer.BlockDisplayRenderer` and `ItemDisplayRenderer`: the
+    /// block model or the item under the display's transformation, lit like
+    /// any entity and never tinted by a hurt overlay.
+    pub(super) fn block_item_display_geometry(
+        &mut self,
+        camera: glam::DVec3,
+        partial: f64,
+        out: &mut Vec<Vertex>,
+    ) {
+        let angles = self.display_camera_angles();
+        let scale = self.view_scale();
+        let mut displays = std::mem::take(&mut self.text_displays);
+        for shows in [Shows::Block, Shows::Item] {
+            let kind = if shows == Shows::Block {
+                "minecraft:block_display"
+            } else {
+                "minecraft:item_display"
+            };
+            self.mark_entity(out.len(), kind);
+            for (id, display) in displays.iter_mut().filter(|(_, d)| d.shows == shows) {
+                display.last_progress = display.progress(partial as f32);
+                let d = display.shown.blend(&display.from, display.last_progress);
+                let position = display.previous.lerp(display.position, partial);
+                if !self.display_in_view(camera, position, &d, scale) {
+                    continue;
+                }
+                let rotation = std::array::from_fn(|i| {
+                    display.old_rotation[i]
+                        + angle(display.rotation[i] - display.old_rotation[i]) * partial as f32
+                });
+                let matrix = glam::Mat4::from_translation((position - camera).as_vec3())
+                    * d.matrix(rotation, angles);
+                if !matrix.is_finite() {
+                    continue;
+                }
+                let light = Self::display_light(&self.world, &d, position);
+                if let Some(state) = display.block {
+                    // BlockModelResolver.update: model seed 42.
+                    self.block_model_vertices(state, 42, matrix, light, true, out);
+                    // CompositeBlockModel.update: the special model of a chest,
+                    // head, banner and the like comes on top of the block model.
+                    if self
+                        .res
+                        .facts()
+                        .get(state)
+                        .name
+                        .strip_prefix("minecraft:")
+                        .is_some_and(has_special_model)
+                    {
+                        let packed =
+                            ((((light & 0xFF) / 16) << 4) | (((light >> 8) & 0xFF) / 16)) as u8;
+                        self.special_block_model(state, matrix, packed, out);
+                    }
+                } else if let Some(stack) = &display.item {
+                    let context = match display.item_display {
+                        1 => DisplayContext::ThirdPersonLeftHand,
+                        2 => DisplayContext::ThirdPersonRightHand,
+                        3 => DisplayContext::FirstPersonLeftHand,
+                        4 => DisplayContext::FirstPersonRightHand,
+                        5 => DisplayContext::Head,
+                        6 => DisplayContext::Gui,
+                        7 => DisplayContext::Ground,
+                        8 => DisplayContext::Fixed,
+                        9 => DisplayContext::OnShelf,
+                        _ => DisplayContext::None,
+                    };
+                    // updateForNonLiving: seeded by the entity id.
+                    let state = self.resolve_item(stack, context, None, *id);
+                    let pose = matrix * glam::Mat4::from_rotation_y(std::f32::consts::PI);
+                    self.submit_item_world(&state, pose, light, out);
+                }
+            }
+        }
+        self.mark_entity(out.len(), "");
+        self.text_displays = displays;
+    }
     pub(super) fn text_display_geometry(
         &mut self,
         camera: glam::DVec3,
@@ -157,108 +344,43 @@ impl Game<'_> {
         see_through: &mut Vec<Vertex>,
     ) {
         self.text_display_vertices = 0;
-        let atlas = &self.gui.atlas;
-        let front = self.camera_type == super::perspective::CameraType::ThirdPersonFront;
-        let angles = if front {
-            [self.yaw + 180.0, -self.pitch]
-        } else {
-            [self.yaw, self.pitch]
-        };
+        self.mark_translucent_entity(normal.len(), "minecraft:text_display");
+        let angles = self.display_camera_angles();
         let scale = self.view_scale();
-        for display in self.text_displays.values_mut() {
+        let background = self.settings.text_background(0.25);
+        let mut displays = std::mem::take(&mut self.text_displays);
+        for display in displays.values_mut().filter(|d| d.shows == Shows::Text) {
             display.last_progress = display.progress(partial as f32);
             let d = display.shown.blend(&display.from, display.last_progress);
             let position = display.previous.lerp(display.position, partial);
-            let range = f64::from(d.view_range) * 64.0 * scale;
-            if position.distance_squared(camera) >= range * range || d.text.is_empty() {
+            if d.text.is_empty() || !self.display_in_view(camera, position, &d, scale) {
                 continue;
             }
             let rotation = std::array::from_fn(|i| {
                 display.old_rotation[i]
                     + angle(display.rotation[i] - display.old_rotation[i]) * partial as f32
             });
-            let mut matrix = glam::Mat4::from_translation((position - camera).as_vec3())
+            let lines = display
+                .lines
+                .get_or_insert_with(|| Lines::split(&self.gui.atlas.font, &d.text, d.line_width));
+            let matrix = glam::Mat4::from_translation((position - camera).as_vec3())
                 * d.matrix(rotation, angles)
-                * glam::Mat4::from_rotation_y(std::f32::consts::PI)
-                * glam::Mat4::from_scale(glam::Vec3::splat(-0.025));
+                * lines.pose();
             if !matrix.is_finite() {
                 continue;
             }
-            // TextDisplayRenderer.splitLines: Font.split, no indent on wrapped lines.
-            let Lines { lines, width } = display.lines.get_or_insert_with(|| {
-                let lines: Vec<_> = atlas
-                    .font
-                    .split(&d.text, d.line_width as f32)
-                    .into_iter()
-                    .map(|line| {
-                        let width = atlas.font.width_text(&line).ceil();
-                        (line, width)
-                    })
-                    .collect();
-                let width = lines.iter().map(|l| l.1).fold(0.0, f32::max);
-                Lines { lines, width }
-            });
-            let width = *width;
-            let height = lines.len() as f32 * 10.0 - 1.0;
-            matrix *=
-                glam::Mat4::from_translation(glam::Vec3::new(1.0 - width / 2.0, -height, 0.0));
             let mut batch = HudBatch::new([1, 1]);
-            let bg = if d.flags & 4 != 0 {
-                self.settings.text_background(0.25)
-            } else {
-                d.background as u32
-            };
-            if bg != 0 {
-                batch.fill(
-                    atlas,
-                    // submitTextBackground(-1, -1, width, height): corners, not a size.
-                    -1.0,
-                    -1.0,
-                    width + 1.0,
-                    height + 1.0,
-                    rgba(
-                        (bg >> 16) as u8,
-                        (bg >> 8) as u8,
-                        bg as u8,
-                        (bg >> 24) as u8,
-                    ),
-                );
-            }
-            let align = d.align();
-            for (i, (line, line_width)) in lines.iter().enumerate() {
-                let x = match align {
-                    Align::Left => 0.0,
-                    Align::Right => width - line_width,
-                    Align::Center => (width - line_width) / 2.0,
-                };
-                batch.text_styled(
-                    atlas,
-                    line,
-                    x,
-                    i as f32 * 10.0,
-                    rgba(255, 255, 255, d.opacity as u8),
-                    d.flags & 1 != 0,
-                );
-            }
-            let world_light = self.world.light(
-                position.x.floor() as i32,
-                position.y.floor() as i32,
-                position.z.floor() as i32,
-            );
-            let light = if d.brightness == -1 {
-                horizon_client::block_entity_render::vertex_light(world_light)
-            } else {
-                ((d.brightness as u32 >> 20 & 15) * 16)
-                    | (((d.brightness as u32 >> 4 & 15) * 16) << 8)
-            };
+            text_display::draw(&mut batch, &self.gui.atlas, &d, lines, background);
+            let light = Self::display_light(&self.world, &d, position);
+            // Font.DisplayMode: SEE_THROUGH over everything, else POLYGON_OFFSET.
             let through = d.flags & 2 != 0;
-            let out = if through {
-                &mut *see_through
+            let (out, layer) = if through {
+                (&mut *see_through, 2)
             } else {
-                &mut *normal
+                (&mut *normal, TEXT_POLYGON_OFFSET_OVERLAY)
             };
             for quad in batch.vertices.as_chunks::<6>().0 {
-                for i in [0, 1, 2, 5] {
+                for i in text_display::CORNERS {
                     let v = quad[i];
                     let point =
                         matrix.transform_point3(glam::Vec3::new(v.pos[0], v.pos[1], v.depth));
@@ -267,7 +389,7 @@ impl Game<'_> {
                         uv: v.uv,
                         color: v.color,
                         light,
-                        layer: if through { 2 } else { 0 },
+                        layer,
                         normal: [0; 4],
 
                         glint_uv: [0.0, 0.0],
@@ -277,7 +399,31 @@ impl Game<'_> {
             self.text_display_vertices += batch.vertices.len() / 6 * 4;
             self.map_patches.extend(batch.patches);
         }
+        self.text_displays = displays;
     }
+}
+
+/// Whether vanilla's built-in block models give this block a special model,
+/// drawn by its block-entity renderer.
+fn has_special_model(block: &str) -> bool {
+    matches!(
+        block,
+        "bell"
+            | "conduit"
+            | "decorated_pot"
+            | "enchanting_table"
+            | "end_gateway"
+            | "end_portal"
+            | "chest"
+            | "trapped_chest"
+            | "ender_chest"
+            | "shulker_box"
+    ) || block.ends_with("_banner")
+        || block.ends_with("_shulker_box")
+        || block.ends_with("_skull")
+        || (block.ends_with("_head") && block != "piston_head")
+        || block.contains("copper_chest")
+        || block.contains("copper_golem_statue")
 }
 
 #[cfg(test)]
@@ -285,7 +431,7 @@ mod tests {
     use super::*;
     #[test]
     fn metadata_and_position_interpolation_keep_their_separate_clocks() {
-        let mut d = RemoteTextDisplay::new([0.0; 3], 0.0);
+        let mut d = RemoteTextDisplay::new(Shows::Text, [0.0; 3], 0.0);
         d.tick();
         d.metadata(&[
             (8, 1, Value::Int(0)),
@@ -302,5 +448,23 @@ mod tests {
         d.tick();
         assert_eq!(d.position.x, 2.0);
         assert_eq!(d.shown.blend(&d.from, d.progress(0.0)).translation[0], 2.0);
+    }
+
+    /// A display riding a vehicle sits where the vehicle seats it each tick,
+    /// moving from the last tick's seat, and a teleport sent meanwhile does
+    /// not drag it off the seat.
+    #[test]
+    fn a_ridden_display_moves_from_seat_to_seat() {
+        let mut d = RemoteTextDisplay::new(Shows::Text, [0.0, 64.0, 0.0], 0.0);
+        d.metadata(&[(10, 1, Value::Int(3))]);
+        d.move_to([9.0, 64.0, 9.0], None);
+        let seat = glam::DVec3::new(0.0, 65.8, 0.0);
+        d.ride(seat);
+        assert_eq!(d.position, seat);
+        d.tick();
+        assert_eq!((d.previous, d.position), (seat, seat));
+        let next = glam::DVec3::new(1.0, 65.8, 0.0);
+        d.ride(next);
+        assert_eq!((d.previous, d.position), (seat, next));
     }
 }

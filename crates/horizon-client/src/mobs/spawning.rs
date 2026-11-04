@@ -12,6 +12,8 @@ pub struct BiomeFacts {
     /// Biome temperature at the position (strays in cold biomes, snow foxes).
     pub temperature: f32,
     pub snowy: bool,
+    /// `#minecraft:spawns_snow_foxes` (`Fox.Variant.byBiome`: snow, else red).
+    pub snow_fox: bool,
     pub swamp: bool,
     pub ocean: bool,
     pub mushroom: bool,
@@ -174,6 +176,13 @@ pub fn finalize(m: &mut Mob, biome: &BiomeFacts, difficulty: &LocalDifficulty) {
     if sounds > 0 {
         m.extra.sound_variant = Some(m.random.next_int_bound(sounds as i32).unwrap_or(0) as u8);
     }
+    // Mob.finalizeSpawn, reached through `super` by every mob but the cave
+    // spider (CaveSpider.finalizeSpawn returns without calling it).
+    if m.species() != S::CaveSpider {
+        let mut random = m.random.clone();
+        super::finalize::mob_spawn(m, &mut random);
+        m.random = random;
+    }
     match m.species() {
         // Warden.finalizeSpawn: a minute before it digs back down.
         S::Warden => super::warden::finalize(m, false, &mut Vec::new()),
@@ -207,24 +216,24 @@ pub fn finalize(m: &mut Mob, biome: &BiomeFacts, difficulty: &LocalDifficulty) {
             let weapon = if difficulty.hard { 0.05 } else { 0.01 };
             if m.species() != S::Drowned && m.random.next_float() < weapon {
                 let r = m.random.next_int_bound(6).unwrap_or(0);
-                m.extra.main_hand = Some(
+                m.extra.set_main_hand(Some(
                     match r {
                         0 => "minecraft:iron_sword",
                         1 => "minecraft:iron_spear",
                         _ => "minecraft:iron_shovel",
                     }
                     .into(),
-                );
+                ));
             }
             if m.species() == S::Drowned && m.random.next_float() > 0.9 {
-                m.extra.main_hand = Some(
+                m.extra.set_main_hand(Some(
                     if m.random.next_int_bound(16).unwrap_or(1) < 10 {
                         "minecraft:trident"
                     } else {
                         "minecraft:fishing_rod"
                     }
                     .into(),
-                );
+                ));
             }
             if m.species() == S::ZombieVillager {
                 m.extra.variant = villager_type(biome);
@@ -238,28 +247,30 @@ pub fn finalize(m: &mut Mob, biome: &BiomeFacts, difficulty: &LocalDifficulty) {
             let can_break_doors = m.random.next_float() < difficulty.special() * 0.1;
             super::doors::set_can_break_doors(m, can_break_doors);
             let spear = m.random.next_int_bound(20).unwrap_or(1) == 0;
-            m.extra.main_hand = Some(
+            m.extra.set_main_hand(Some(
                 if spear {
                     "minecraft:golden_spear"
                 } else {
                     "minecraft:golden_sword"
                 }
                 .into(),
-            );
+            ));
         }
         // AbstractSkeleton.populateDefaultEquipmentSlots: armour, then a bow.
         S::Skeleton | S::Stray | S::Bogged | S::Parched => {
             populate_armor(m, difficulty);
-            m.extra.main_hand = Some("minecraft:bow".into());
+            m.extra.set_main_hand(Some("minecraft:bow".into()));
             m.extra.pick_up_loot = m.random.next_float() < 0.55 * difficulty.special();
         }
-        // WitherSkeleton.populateDefaultEquipmentSlots: a stone sword only.
+        // WitherSkeleton.populateDefaultEquipmentSlots: a stone sword only;
+        // WitherSkeleton.finalizeSpawn then sets the attack damage base to 4.
         S::WitherSkeleton => {
-            m.extra.main_hand = Some("minecraft:stone_sword".into());
+            m.extra.set_main_hand(Some("minecraft:stone_sword".into()));
             m.extra.pick_up_loot = m.random.next_float() < 0.55 * difficulty.special();
+            super::finalize::set_base(m, super::finalize::Attr::AttackDamage, 4.0);
         }
         S::Pillager => {
-            m.extra.main_hand = Some("minecraft:crossbow".into());
+            m.extra.set_main_hand(Some("minecraft:crossbow".into()));
             m.extra.pick_up_loot = true;
         }
         S::Horse | S::Donkey | S::Mule | S::SkeletonHorse | S::ZombieHorse => {
@@ -286,26 +297,33 @@ pub fn finalize(m: &mut Mob, biome: &BiomeFacts, difficulty: &LocalDifficulty) {
                 }
             }
             let crossbow = m.random.next_float() < 0.5;
-            m.extra.main_hand = Some(
+            m.extra.set_main_hand(Some(
                 if crossbow {
                     "minecraft:crossbow"
                 } else {
                     "minecraft:golden_sword"
                 }
                 .into(),
-            );
+            ));
         }
         S::PiglinBrute => {
-            m.extra.main_hand = Some("minecraft:golden_axe".into());
+            m.extra.set_main_hand(Some("minecraft:golden_axe".into()));
             m.extra.pick_up_loot = true;
         }
         S::Illusioner => super::illusioner::finalize(m),
-        S::Vindicator => m.extra.main_hand = Some("minecraft:iron_axe".into()),
+        S::Vindicator => m.extra.set_main_hand(Some("minecraft:iron_axe".into())),
         S::Villager => {
             m.extra.variant = villager_type(biome);
             m.extra.pick_up_loot = true;
         }
-        S::Fox | S::Panda | S::Dolphin => m.extra.pick_up_loot = true,
+        // Fox.finalizeSpawn: the variant by biome, then the mouth's item.
+        S::Fox => {
+            m.extra.variant = u8::from(biome.snow_fox);
+            m.extra.pick_up_loot = true;
+            super::fox::populate_default_equipment(m);
+        }
+        S::Panda | S::Dolphin => m.extra.pick_up_loot = true,
+        S::Goat => super::finalize::goat_spawn(m),
         S::TropicalFish => super::aquatic::finalize(m),
         // Salmon.finalizeSpawn: a weighted size (small 30, medium 50, large 15).
         S::Salmon => {
@@ -334,6 +352,14 @@ pub fn finalize(m: &mut Mob, biome: &BiomeFacts, difficulty: &LocalDifficulty) {
         );
     }
 }
+/// A baby from `Animal.spawnChildFromBreeding`: `getBreedOffspring` creates
+/// it without `finalizeSpawn`, so it never ran `Mob.finalizeSpawn`. Undoes
+/// that part of `finalize`: no `random_spawn_bonus`, right-handed.
+pub fn bred_offspring(m: &mut Mob) {
+    use super::finalize::{Attr, remove_modifier};
+    remove_modifier(m, Attr::FollowRange, "minecraft:random_spawn_bonus");
+    m.extra.left_handed = false;
+}
 /// VillagerType.byBiome
 pub fn villager_type(b: &BiomeFacts) -> u8 {
     if b.desert {
@@ -350,5 +376,120 @@ pub fn villager_type(b: &BiomeFacts) -> u8 {
         6
     } else {
         0
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::mobs::finalize::{Attr, has_modifier, value};
+
+    fn types() -> Option<crate::mobs::MobTypes> {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        if !root.join("items.json").exists() {
+            return None;
+        }
+        Some(crate::mobs::MobTypes::load(&root).unwrap())
+    }
+    fn spawn(types: &crate::mobs::MobTypes, kind: &str, id: u32) -> Mob {
+        let kind = std::sync::Arc::new(types.types.get(kind).unwrap().clone());
+        let mut m = Mob::new(
+            id,
+            kind,
+            horizon_core::geometry::Vec3::new(0.5, 64.0, 0.5),
+            0.0,
+        );
+        let difficulty = LocalDifficulty::new(3, 0, 0, 1.0);
+        finalize(&mut m, &BiomeFacts::default(), &difficulty);
+        m
+    }
+    /// #2783: `/summon`, eggs, spawners and natural spawns run
+    /// `WitherSkeleton.finalizeSpawn`: attack damage base 4.0, not the
+    /// default 2.0.
+    #[test]
+    fn runtime_wither_skeletons_hit_for_four() {
+        let Some(types) = types() else { return };
+        let w = spawn(&types, "minecraft:wither_skeleton", 1);
+        assert_eq!(value(&w, Attr::AttackDamage), 4.0);
+        assert_eq!(w.attrs.attack_damage, 4.0);
+    }
+    /// #2783: runtime spawns run `Mob.finalizeSpawn`: the follow range
+    /// bonus and 5 percent left-handed mobs.
+    #[test]
+    fn runtime_spawns_run_the_mob_finalize_spawn() {
+        let Some(types) = types() else { return };
+        let mut left = 0;
+        for id in 1..=400 {
+            let m = spawn(&types, "minecraft:skeleton", id);
+            assert!(has_modifier(
+                &m,
+                Attr::FollowRange,
+                "minecraft:random_spawn_bonus"
+            ));
+            left += usize::from(m.extra.left_handed);
+        }
+        // 5 percent of 400 is 20.
+        assert!((5..=40).contains(&left), "{left} of 400 left-handed");
+        // A bred baby never ran it.
+        let mut cow = spawn(&types, "minecraft:cow", 1);
+        cow.extra.left_handed = true;
+        bred_offspring(&mut cow);
+        assert!(!has_modifier(
+            &cow,
+            Attr::FollowRange,
+            "minecraft:random_spawn_bonus"
+        ));
+        assert!(!cow.extra.left_handed);
+        assert_eq!(cow.attrs.follow_range, value(&cow, Attr::FollowRange));
+        // CaveSpider.finalizeSpawn does not call super.
+        let c = spawn(&types, "minecraft:cave_spider", 1);
+        assert!(!has_modifier(
+            &c,
+            Attr::FollowRange,
+            "minecraft:random_spawn_bonus"
+        ));
+    }
+    /// `Zombie` / `AbstractSkeleton` halloween garb: 25% of empty heads, never
+    /// on other mobs, and not when it is not Halloween.
+    #[test]
+    fn halloween_pumpkins_only_undead_on_halloween() {
+        let Some(types) = types() else { return };
+        let mut pumpkins = 0;
+        let mut lanterns = 0;
+        for id in 1..=400 {
+            let mut m = spawn(&types, "minecraft:skeleton", id);
+            m.extra.head = None;
+            let mut random = m.random.clone();
+            crate::mobs::finalize::halloween_head(&mut m, &mut random, true);
+            match m.extra.head.as_deref() {
+                Some("minecraft:jack_o_lantern") => {
+                    pumpkins += 1;
+                    lanterns += 1;
+                    assert_eq!(crate::mobs::finalize::stored_drop_chance(&m, 5), 0.0);
+                }
+                Some("minecraft:carved_pumpkin") => {
+                    pumpkins += 1;
+                    assert_eq!(crate::mobs::finalize::stored_drop_chance(&m, 5), 0.0);
+                }
+                Some(other) => panic!("unexpected head {other}"),
+                None => {}
+            }
+        }
+        assert!(
+            (70..=130).contains(&pumpkins),
+            "{pumpkins} of 400 skeletons"
+        );
+        assert!(lanterns < pumpkins / 2, "{lanterns} lanterns of {pumpkins}");
+        let mut m = spawn(&types, "minecraft:skeleton", 1);
+        m.extra.head = None;
+        let mut random = m.random.clone();
+        crate::mobs::finalize::halloween_head(&mut m, &mut random, false);
+        assert!(m.extra.head.is_none());
+        let mut cow = spawn(&types, "minecraft:cow", 1);
+        cow.extra.head = None;
+        let mut random = cow.random.clone();
+        crate::mobs::finalize::halloween_head(&mut cow, &mut random, true);
+        assert!(cow.extra.head.is_none());
     }
 }

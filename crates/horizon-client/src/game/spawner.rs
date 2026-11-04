@@ -96,6 +96,25 @@ impl Game<'_> {
         });
     }
     fn server_tick_spawner(&mut self, key: Pos, spawner: &mut Spawner) -> Result<()> {
+        self.server_tick_spawner_of(key, spawner, None)
+    }
+    /// `BaseSpawner.serverTick` at `key`: a spawner block's, or the spawner minecart
+    /// `cart` is at (its `broadcastEvent` is an entity event on the cart).
+    pub(super) fn server_tick_spawner_of(
+        &mut self,
+        key: Pos,
+        spawner: &mut Spawner,
+        cart: Option<u32>,
+    ) -> Result<()> {
+        // `BaseSpawner.serverTick` does nothing without an alive player in
+        // range (`isNearPlayer`) or with the rule off: no level to build for it.
+        let at = [key.0, key.1, key.2].map(|c| f64::from(c) + 0.5);
+        let range = f64::from(spawner.required_player_range);
+        if !self.alive_player_near(at[0], at[1], at[2], range)
+            || !self.ui.rules.bool("spawner_blocks_work")
+        {
+            return Ok(());
+        }
         let pos = [key.0, key.1, key.2];
         let mut random = std::mem::replace(
             &mut self.world.random,
@@ -112,7 +131,7 @@ impl Game<'_> {
         }
         self.world.random = random;
         let ids = self.add_planned(planned);
-        self.apply_spawner_events(key, events, &ids)
+        self.apply_spawner_events(key, events, &ids, cart)
     }
     /// Creates the mobs a spawner tick planned; their provisional ids
     /// (counting down from u32::MAX) map to the mobs' ids.
@@ -126,8 +145,10 @@ impl Game<'_> {
                     mob.id = self.next_entity;
                     let id = mob.id;
                     self.mobs.push(mob);
+                    self.native_mobs_joined(self.mobs.len() - 1, false);
                     self.enchant_spawn_equipment(id);
-                    self.spawn_jockeys(id, true);
+                    self.halloween_spawn_head(id);
+                    self.spawn_jockeys(id, false);
                     Some((id, equipment))
                 }
                 Planned::Loaded(tag, equipment) => {
@@ -201,8 +222,16 @@ impl Game<'_> {
             if r.trial {
                 tag.insert("PersistenceRequired".into(), Tag::Byte(1));
             }
-            let tag = Tag::Compound(tag);
-            let mob = horizon_client::entity_nbt::mob_from_nbt(&tag, self.res.mob_types(), 0)?;
+            let mut tag = Tag::Compound(tag);
+            // EntityType.loadEntityRecursive applies the spawner's placement
+            // callback to every passenger as well as the root.
+            super::commands::place_summoned(&mut tag, r.position);
+            let mob = horizon_client::entity_nbt::mob_from_nbt(
+                &tag,
+                self.res.mob_types(),
+                0,
+                Some(self.pack.assets.registry),
+            )?;
             let bounds = mob.bounds();
             planned.push(Planned::Loaded(tag, r.equipment.cloned()));
             bounds
@@ -221,11 +250,19 @@ impl Game<'_> {
         key: Pos,
         events: Vec<SpawnerEvent>,
         ids: &HashMap<u32, u32>,
+        cart: Option<u32>,
     ) -> Result<()> {
         let pos = [key.0, key.1, key.2];
         for event in events {
             match event {
+                // A cart has no block to update: `sendBlockUpdated` finds nothing to send.
+                SpawnerEvent::BlockUpdated if cart.is_some() => {}
                 SpawnerEvent::BlockUpdated => self.spawner_block_updated(key),
+                // `broadcastEvent`: `level.broadcastEntityEvent(cart, id)`.
+                SpawnerEvent::BlockEvent(id) if cart.is_some() => {
+                    let at = pos.map(|c| f64::from(c) + 0.5);
+                    self.lan_entity_event(cart.unwrap_or_default() as i32, id as i8, at);
+                }
                 SpawnerEvent::BlockEvent(id) => {
                     self.lan_block_event(pos, id, 0);
                     // The client copy's onEventTriggered.
@@ -369,9 +406,15 @@ impl Game<'_> {
         };
         self.res.mob_types().contains_key(&id).then_some(id)
     }
-    /// `SpawnEggItem.useOn` on a spawner: the egg sets its mob. None when the
-    /// clicked block has no spawner.
-    pub(super) fn use_spawn_egg_on_spawner(&mut self, pos: [i32; 3], kind: &str) -> Option<bool> {
+    /// `SpawnEggItem.useOn` on a spawner: the egg sets its mob, and an op's
+    /// egg its entity `data` too (`block_entity_item::spawn_egg_on_spawner`).
+    /// None when the clicked block has no spawner.
+    pub(super) fn use_spawn_egg_on_spawner(
+        &mut self,
+        pos: [i32; 3],
+        kind: &str,
+        data: Option<&horizon_world::nbt::Compound>,
+    ) -> Option<bool> {
         let key = (pos[0], pos[1], pos[2]);
         let trial = match self.world.block_entities.get(&key) {
             Some(BlockEntity::Spawner(_)) => false,
@@ -386,10 +429,13 @@ impl Game<'_> {
             return Some(false);
         }
         if trial {
-            // TrialSpawnerBlockEntity.setEntityId: overrideEntityToSpawn, which
-            // ends in setState(INACTIVE).
+            // TrialSpawnerBlockEntity.setEntityId and setEntityData:
+            // overrideEntityToSpawn, which ends in setState(INACTIVE).
             if let Some(BlockEntity::TrialSpawner(t)) = self.world.block_entities.get_mut(&key) {
-                t.override_entity(kind);
+                match data {
+                    Some(data) => t.override_entity_data(kind, data),
+                    None => t.override_entity(kind),
+                }
             }
             let ominous = self.trial_spawner_block(key).is_some_and(|(_, o)| o);
             let _ = self.set_trial_spawner_state(key, TrialState::Inactive, ominous);
@@ -400,15 +446,48 @@ impl Game<'_> {
                 horizon_core::random::LegacyRandom::new(0),
             );
             if let Some(BlockEntity::Spawner(s)) = self.world.block_entities.get_mut(&key) {
-                s.set_entity_id(kind, &mut random, &mut events);
+                match data {
+                    Some(data) => s.set_entity_data(kind, data, &mut random, &mut events),
+                    None => s.set_entity_id(kind, &mut random, &mut events),
+                }
             }
             self.world.random = random;
-            let _ = self.apply_spawner_events(key, events, &HashMap::new());
+            let _ = self.apply_spawner_events(key, events, &HashMap::new(), None);
         }
         // sendBlockUpdated(3) and the player's block_change game event.
         self.spawner_block_updated(key);
+        self.update_spawner_display(key);
         self.post_block_game_event("minecraft:block_change", pos, Some(Who::Player), None);
         Some(true)
+    }
+    /// `PlayerList.isOp` for the player acting now: a server's guest by their
+    /// own level, else the window's player.
+    pub(super) fn acting_player_is_op(&self) -> bool {
+        self.lan_acting_permission
+            .unwrap_or(self.ui.registries.permission)
+            > 0
+    }
+    /// Ticks spawners, trial spawners and vaults near the player on a remote
+    /// client (`tick_remote`).
+    pub(super) fn tick_remote_spawners(&mut self) {
+        let Some(p) = self.player.as_ref() else {
+            return;
+        };
+        let center = [
+            p.position.x.floor() as i32,
+            p.position.y.floor() as i32,
+            p.position.z.floor() as i32,
+        ];
+        let (keys, trial_keys, vault_keys) =
+            nearby_remote_spawner_keys(&self.world.block_entities, center);
+        self.client_tick_spawners(&keys);
+        for key in trial_keys {
+            self.client_tick_trial_spawner(key);
+        }
+        // VaultBlock.getTicker on the client: VaultBlockEntity.Client.tick.
+        for key in vault_keys {
+            self.client_tick_vault(key);
+        }
     }
     /// `SpawnerRenderer` and `TrialSpawnerRenderer`: the next mob of every
     /// spawner near the camera, small and turning.
@@ -465,5 +544,139 @@ impl Game<'_> {
                 out,
             );
         }
+    }
+}
+
+/// `SpawnerBlockEntity.clientTick` / `BaseSpawner.clientTick`: spawner, trial
+/// spawner and vault keys within 64 blocks (Chebyshev distance) of `center`
+/// among `entities`. Non-spawner block entities are ignored before distance
+/// calculation, and coordinate difference uses `abs_diff` to prevent overflow.
+pub(super) fn nearby_remote_spawner_keys<'a>(
+    entities: impl IntoIterator<Item = (&'a Pos, &'a BlockEntity)>,
+    center: [i32; 3],
+) -> (Vec<Pos>, Vec<Pos>, Vec<Pos>) {
+    let mut keys = Vec::new();
+    let mut trial_keys = Vec::new();
+    let mut vault_keys = Vec::new();
+    for (&pos, be) in entities {
+        let target = match be {
+            BlockEntity::Spawner(_) => &mut keys,
+            BlockEntity::TrialSpawner(_) => &mut trial_keys,
+            BlockEntity::Vault(_) => &mut vault_keys,
+            _ => continue,
+        };
+        let d = pos
+            .0
+            .abs_diff(center[0])
+            .max(pos.1.abs_diff(center[1]))
+            .max(pos.2.abs_diff(center[2]));
+        if d <= 64 {
+            target.push(pos);
+        }
+    }
+    (keys, trial_keys, vault_keys)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dummy_container_at_min_coordinate_does_not_panic_or_tick() {
+        let mut entities = HashMap::new();
+        // Client dummy container menu placed at (i32::MIN, 0, 0) when remote
+        // container lacks target block position (remote.rs:9393).
+        entities.insert((i32::MIN, 0, 0), BlockEntity::Chest(Vec::new()));
+        entities.insert(
+            (i32::MIN, i32::MIN, i32::MIN),
+            BlockEntity::Chest(Vec::new()),
+        );
+        entities.insert(
+            (i32::MAX, i32::MAX, i32::MAX),
+            BlockEntity::Chest(Vec::new()),
+        );
+
+        // Player at x = 1024: (pos.0 - center[0]) would be i32::MIN - 1024.
+        let (keys, trial_keys, vault_keys) = nearby_remote_spawner_keys(&entities, [1024, 64, -50]);
+        assert!(keys.is_empty());
+        assert!(trial_keys.is_empty());
+        assert!(vault_keys.is_empty());
+
+        // Player at x = 0: (pos.0 - center[0]) would be i32::MIN - 0, and i32::MIN.abs() panics.
+        let (keys, trial_keys, vault_keys) = nearby_remote_spawner_keys(&entities, [0, 0, 0]);
+        assert!(keys.is_empty());
+        assert!(trial_keys.is_empty());
+        assert!(vault_keys.is_empty());
+    }
+
+    #[test]
+    fn spawner_outside_64_block_chebyshev_range_is_not_ticked() {
+        let mut entities = HashMap::new();
+        entities.insert((65, 0, 0), BlockEntity::Spawner(Box::default()));
+        entities.insert((0, -65, 0), BlockEntity::TrialSpawner(Box::default()));
+        entities.insert((0, 0, 65), BlockEntity::Vault(Box::default()));
+        entities.insert((-65, 65, -65), BlockEntity::Spawner(Box::default()));
+
+        let (keys, trial_keys, vault_keys) = nearby_remote_spawner_keys(&entities, [0, 0, 0]);
+        assert!(
+            keys.is_empty(),
+            "spawners outside 64 blocks must not be ticked"
+        );
+        assert!(
+            trial_keys.is_empty(),
+            "trial spawners outside 64 blocks must not be ticked"
+        );
+        assert!(
+            vault_keys.is_empty(),
+            "vaults outside 64 blocks must not be ticked"
+        );
+    }
+
+    #[test]
+    fn spawners_within_64_block_chebyshev_range_are_ticked() {
+        let mut entities = HashMap::new();
+        let spawner_at_boundary = (164, 64, -200);
+        let spawner_near_player = (110, 69, -202);
+        let trial_at_boundary = (36, 128, -264); // Chebyshev dx=64, dy=64, dz=64
+        let vault_at_center = (100, 64, -200);
+
+        entities.insert(spawner_at_boundary, BlockEntity::Spawner(Box::default()));
+        entities.insert(spawner_near_player, BlockEntity::Spawner(Box::default()));
+        entities.insert(trial_at_boundary, BlockEntity::TrialSpawner(Box::default()));
+        entities.insert(vault_at_center, BlockEntity::Vault(Box::default()));
+
+        let (mut keys, trial_keys, vault_keys) =
+            nearby_remote_spawner_keys(&entities, [100, 64, -200]);
+        keys.sort_unstable();
+        let mut expected_spawners = vec![spawner_at_boundary, spawner_near_player];
+        expected_spawners.sort_unstable();
+
+        assert_eq!(keys, expected_spawners);
+        assert_eq!(trial_keys, vec![trial_at_boundary]);
+        assert_eq!(vault_keys, vec![vault_at_center]);
+    }
+
+    #[test]
+    fn extreme_coordinate_boundary_does_not_overflow() {
+        let mut entities = HashMap::new();
+        let max_pos = (i32::MAX, i32::MAX, i32::MAX);
+        let min_pos = (i32::MIN, i32::MIN, i32::MIN);
+        let in_range_max = (i32::MAX, 10, -5);
+
+        entities.insert(max_pos, BlockEntity::Spawner(Box::default()));
+        entities.insert(min_pos, BlockEntity::Spawner(Box::default()));
+        entities.insert(in_range_max, BlockEntity::Spawner(Box::default()));
+
+        // Player at i32::MIN: distance to i32::MAX would overflow signed 32-bit arithmetic.
+        let (keys, _, _) = nearby_remote_spawner_keys(&entities, [i32::MIN, i32::MIN, i32::MIN]);
+        assert_eq!(keys, vec![min_pos]);
+
+        // Player at i32::MAX: distance to i32::MIN would overflow signed 32-bit arithmetic.
+        let (keys, _, _) = nearby_remote_spawner_keys(&entities, [i32::MAX, i32::MAX, i32::MAX]);
+        assert_eq!(keys, vec![max_pos]);
+
+        // Player at i32::MAX - 64: in_range_max should be included.
+        let (keys, _, _) = nearby_remote_spawner_keys(&entities, [i32::MAX - 64, 10, -5]);
+        assert!(keys.contains(&in_range_max));
     }
 }

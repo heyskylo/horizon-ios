@@ -170,6 +170,8 @@ public final class VanillaMobAiOracle {
         /** The tick from which the player faces turnYaw (head and body), else 0. */
         int turnTick = Integer.MAX_VALUE;
         float turnYaw;
+        /** The player rides a boat that moves this far each tick (x, z), or null. */
+        double[] boat;
         /** What the player holds in its main hand (an item id), or null. */
         String hand;
         List<MobSpec> mobs = new ArrayList<>();
@@ -186,8 +188,8 @@ public final class VanillaMobAiOracle {
         boolean spawning;
         /** The player hits a mob for 1 at the start of a tick: {tick, mob index}. */
         List<int[]> hurts = new ArrayList<>();
-        /** The player feeds an animal at the start of a tick (Animal.mobInteract with the item in
-         *  its main hand): {tick, mob index, item id}. */
+        /** The player feeds an animal, or uses another item on it, at the start of a tick
+         *  (Animal.mobInteract with the item in its main hand): {tick, mob index, item id}. */
         List<Object[]> feeds = new ArrayList<>();
     }
 
@@ -226,7 +228,7 @@ public final class VanillaMobAiOracle {
                 }
                 case "heart" -> s.hearts.add(f);
                 case "hurt" -> s.hurts.add(new int[] {Integer.parseInt(f[1]), Integer.parseInt(f[2])});
-                case "feed" -> s.feeds.add(new Object[] {Integer.parseInt(f[1]), Integer.parseInt(f[2]), f[3]});
+                case "feed", "interact" -> s.feeds.add(new Object[] {Integer.parseInt(f[1]), Integer.parseInt(f[2]), f[3]});
                 case "player" -> {
                     s.player = new double[] {Double.parseDouble(f[1]), Double.parseDouble(f[2]), Double.parseDouble(f[3])};
                     for (int i = 4; i < f.length; i++) {
@@ -236,6 +238,10 @@ public final class VanillaMobAiOracle {
                             s.turnTick = Integer.parseInt(tv[0]);
                             s.turnYaw = Float.parseFloat(tv[1]);
                         } else if (f[i].startsWith("hand=")) s.hand = f[i].substring(5);
+                        else if (f[i].startsWith("boat=")) {
+                            String[] bv = f[i].substring(5).split(",");
+                            s.boat = new double[] {Double.parseDouble(bv[0]), Double.parseDouble(bv[1])};
+                        }
                         else throw new IllegalArgumentException(line);
                     }
                 }
@@ -497,6 +503,7 @@ public final class VanillaMobAiOracle {
         }
 
         void run(Scenario s, ServerLevel level) throws Exception {
+            net.minecraft.world.entity.vehicle.boat.Boat boat = null;
             this.setDifficulty(net.minecraft.world.Difficulty.byId(s.difficulty), true);
             out.println("== " + s.name);
             var clock = level.registryAccess().lookupOrThrow(Registries.WORLD_CLOCK).getOrThrow(WorldClocks.OVERWORLD);
@@ -531,6 +538,17 @@ public final class VanillaMobAiOracle {
                 // where it stands (isInWater), not the previous scenario's.
                 method(Entity.class, "updateFluidInteraction").invoke(player);
                 player.setDeltaMovement(Vec3.ZERO);
+                if (s.boat != null) {
+                    // A boat that does not tick (its physics are not under test): moved by the script, the
+                    // player rides it and has the speed it moves at (Entity.computeSpeed, as Entity.tick).
+                    boat = new net.minecraft.world.entity.vehicle.boat.Boat(EntityTypes.OAK_BOAT, level, () -> net.minecraft.world.item.Items.OAK_BOAT) {
+                        @Override public void tick() {}
+                    };
+                    boat.snapTo(s.player[0], s.player[1], s.player[2], 0.0F, 0.0F);
+                    level.addFreshEntity(boat);
+                    if (!player.startRiding(boat, true, false)) throw new IllegalStateException("Could not board the boat");
+                    method(Entity.class, "computeSpeed").invoke(player);
+                }
             } else if (player != null) {
                 player.snapTo(s.originX + 5000, -60, s.originZ, 0.0F, 0.0F);
             }
@@ -567,6 +585,7 @@ public final class VanillaMobAiOracle {
                             new net.minecraft.world.item.ItemStack(BuiltInRegistries.ITEM.getValue(
                                 net.minecraft.resources.Identifier.parse("minecraft:red_harness"))));
                         case "noai" -> mob.setNoAi(true);
+                        case "agelocked" -> method(AgeableMob.class, "setAgeLocked", boolean.class).invoke(mob, true);
                         case "profession" -> {
                             Villager villager = (Villager) mob;
                             villager.setVillagerData(villager.getVillagerData().withProfession(level.registryAccess(),
@@ -612,6 +631,12 @@ public final class VanillaMobAiOracle {
                         case "inlove" -> ((net.minecraft.world.entity.animal.Animal) mob).setInLoveTime(600);
                         case "nectar" -> method(net.minecraft.world.entity.animal.bee.Bee.class, "setHasNectar", boolean.class).invoke(mob, true);
                         case "tame" -> { if (mob instanceof net.minecraft.world.entity.animal.equine.AbstractHorse horse) horse.setTamed(true); }
+                        // TamableAnimal.tame without the player entity: tamed (with its side effects) by the scenario's player.
+                        case "owned" -> {
+                            net.minecraft.world.entity.TamableAnimal pet = (net.minecraft.world.entity.TamableAnimal) mob;
+                            pet.setTame(true, true);
+                            pet.setOwnerReference(net.minecraft.world.entity.EntityReference.of(PLAYER_UUID));
+                        }
                         case "strength" -> method(net.minecraft.world.entity.animal.equine.Llama.class, "setStrength", int.class)
                             .invoke(mob, Integer.parseInt(v));
                         case "dead" -> mob.setHealth(0.0F);
@@ -632,6 +657,13 @@ public final class VanillaMobAiOracle {
                 level.addFreshEntity(mob);
                 for (Runnable r : afterAdd) r.run();
                 mob.getRandom().setSeed(spec.seed);
+                if (mob instanceof net.minecraft.world.entity.animal.fish.AbstractSchoolingFish fish) {
+                    // The constructor's nextStartTick draw (FollowFlockLeaderGoal), made again with the seeded random.
+                    for (WrappedGoal g : ((GoalSelector) get(fish, "goalSelector")).getAvailableGoals()) {
+                        if (g.getGoal() instanceof net.minecraft.world.entity.ai.goal.FollowFlockLeaderGoal goal)
+                            field(goal.getClass(), "nextStartTick").setInt(goal, (200 + fish.getRandom().nextInt(200) % 20 + 1) / 2);
+                    }
+                }
                 Brain<?> brain = mob.getBrain();
                 if (mob instanceof net.minecraft.world.entity.animal.golem.CopperGolem) {
                     // The constructor's TRANSPORT_ITEMS_COOLDOWN_TICKS draw, made with the seeded
@@ -725,7 +757,15 @@ public final class VanillaMobAiOracle {
                     // The hurt cooldown (only ServerPlayer.tick counts it down).
                     field(LivingEntity.class, "damageCooldownTime").setInt(player, 0);
                     player.hurtTime = 0;
-                    player.snapTo(s.player[0], s.player[1], s.player[2], 0.0F, 0.0F);
+                    if (boat != null) {
+                        double bx = s.player[0] + s.boat[0] * t, bz = s.player[2] + s.boat[1] * t;
+                        // setPos, not snapTo: it forgets the position the speed is measured from.
+                        boat.setPos(bx, s.player[1], bz);
+                        player.setPos(bx, s.player[1], bz);
+                        method(Entity.class, "computeSpeed").invoke(player);
+                    } else {
+                        player.snapTo(s.player[0], s.player[1], s.player[2], 0.0F, 0.0F);
+                    }
                     player.setDeltaMovement(Vec3.ZERO);
                     if (t >= s.turnTick) {
                         // The view vector follows the head (LivingEntity.getViewYRot).
@@ -837,6 +877,10 @@ public final class VanillaMobAiOracle {
                 TRACE.clear();
             }
             for (Entity e : ENTS) e.discard();
+            if (boat != null) {
+                player.stopRiding();
+                boat.discard();
+            }
             for (BlockPos h : heartPositions) level.setBlock(h, net.minecraft.world.level.block.Blocks.AIR.defaultBlockState(), 2 | 16);
             factoryField.set(EntityTypes.CREAKING, creakingFactory);
             this.getGameRules().set(GameRules.SPAWN_MOBS, spawnMobs, this);
@@ -1066,11 +1110,17 @@ public final class VanillaMobAiOracle {
                 mem.sort(null);
                 sb.append("\tmem ").append(String.join(" ", mem));
             }
+            if (m instanceof AgeableMob ageable) sb.append("\tage ").append(ageable.getAge());
             if (m instanceof Villager villager) sb.append("\tvx ").append(villager(villager));
             if (m instanceof net.minecraft.world.entity.animal.golem.CopperGolem golem) {
                 Object opened = get(golem, "openedChestPos");
                 sb.append("\tcg ").append(golem.getState().ordinal()).append(' ').append(stack(golem.getMainHandItem())).append(' ')
                     .append(opened == null ? "-" : pos((BlockPos) opened));
+            }
+            if (m instanceof net.minecraft.world.entity.animal.wolf.Wolf wolf) {
+                // NeutralMob anger left (the angry texture), -1 when calm.
+                long end = wolf.getPersistentAngerEndTime();
+                sb.append("	wolf ").append(end > 0 ? end - wolf.level().getGameTime() : -1);
             }
             if (m instanceof net.minecraft.world.entity.animal.bee.Bee bee) {
                 // Flags (roll 2, stung 4, nectar 8), anger left, ticks without nectar, flower cooldown, flower.

@@ -4,7 +4,7 @@
 //! (SayCommand, EmoteCommands, MsgCommand), relayed by the hub as chat.
 use super::{Game, lan::LanHost};
 use horizon_client::{
-    command::{Arg, ArgType, NodeKind, ParseResults, vanilla},
+    command::{Arg, ParseResults, vanilla},
     lan::{
         data::component_nbt,
         hub::{HostEvent, chat::ChatMessage},
@@ -21,7 +21,8 @@ impl Game<'_> {
     /// CommandDispatcher.parse with the guest's permission level.
     fn parse_as(&mut self, permission: u8, command: &str) -> ParseResults {
         let level = std::mem::replace(&mut self.ui.registries.permission, permission);
-        let parse = vanilla::game_dispatcher().parse(command, &self.ui.registries);
+        let parse = vanilla::game_dispatcher_with_features(&self.level.enabled_features)
+            .parse(command, &self.ui.registries);
         self.ui.registries.permission = level;
         parse
     }
@@ -33,25 +34,38 @@ impl Game<'_> {
         permission: u8,
         command: &str,
     ) -> Vec<(String, String)> {
-        let parse = self.parse_as(permission, command);
-        let nodes = &vanilla::game_dispatcher().nodes;
-        let root = parse.context.root;
-        let mut out = Vec::new();
-        let mut context = Some(&parse.context);
-        while let Some(c) = context {
-            for &(node, (start, end)) in &c.nodes {
-                if let NodeKind::Argument {
-                    ty: ArgType::Message,
-                    name,
-                } = &nodes[node].kind
-                    && let Some(text) = command.get(start..end)
-                {
-                    out.push((name.clone(), text.to_owned()));
-                }
-            }
-            context = c.child.as_deref().filter(|child| child.root != root);
+        self.parse_as(permission, command).signable_arguments(
+            vanilla::game_dispatcher_with_features(&self.level.enabled_features),
+        )
+    }
+
+    /// ServerGamePacketListenerImpl.detectRateSpam: a chat message or command adds 20 to the
+    /// guest's throttler; over the threshold, a guest who is not an operator is kicked.
+    pub(super) fn detect_rate_spam(&mut self, host: &mut LanHost, conn: u32, command: bool) {
+        let Some(i) = host.hub.guests.iter().position(|g| g.conn == conn) else {
+            return;
+        };
+        let threshold = if command {
+            host.hub.command_spam_threshold
+        } else {
+            host.hub.chat_spam_threshold
+        };
+        let uuid = host.hub.guests[i].uuid;
+        let play = host.play.entry(conn).or_default();
+        let count = if command {
+            &mut play.command_spam
+        } else {
+            &mut play.chat_spam
+        };
+        *count = count.saturating_add(20);
+        // TickThrottler.isUnderThreshold: a threshold of 0 or less never kicks.
+        let under = threshold <= 0 || i64::from(*count) < i64::from(threshold);
+        if !under && !host.hub.ops.contains_key(&uuid) {
+            host.hub.kick(
+                conn,
+                horizon_protocol::text::translatable("disconnect.spam", &[]),
+            );
         }
-        out
     }
 
     /// handleChatCommand (performUnsignedChatCommand): refused when the
@@ -77,9 +91,13 @@ impl Game<'_> {
                 content: component_nbt(&failure.component()),
                 overlay: false,
             }));
+            self.detect_rate_spam(host, conn, true);
             return;
         }
-        self.guest_command(host, conn, command, None);
+        if self.chat_filter_command(host, i, command) {
+            self.guest_command(host, conn, command, None);
+        }
+        self.detect_rate_spam(host, conn, true);
     }
 
     /// handleSignedChatCommand: the acknowledgements, then each message
@@ -95,9 +113,11 @@ impl Game<'_> {
         };
         let mut events = Vec::new();
         let mut signed = None;
+        let mut ran = false;
         if let Some(last_seen) = host.hub.apply_last_seen(i, &p.last_seen, &mut events)
             && host.hub.try_handle_chat(i, &p.command, true)
         {
+            ran = true;
             let permission = host.hub.guests[i].permission;
             let parsed = self.signable_arguments(permission, &p.command);
             match host
@@ -111,8 +131,14 @@ impl Game<'_> {
         for event in events {
             self.lan_log_event(event);
         }
-        if let Some(signed) = signed {
+        if let Some(signed) = signed
+            && self.chat_filter_command(host, i, &p.command)
+        {
             self.guest_command(host, conn, &p.command, Some(signed));
+        }
+        // The lambda counts the command even when its arguments failed to decode.
+        if ran {
+            self.detect_rate_spam(host, conn, true);
         }
     }
 
@@ -162,9 +188,27 @@ impl Game<'_> {
             let targets: Vec<usize> = match (raw, &selector.player_name, selector.uuid) {
                 (Some("@s"), ..) => vec![i],
                 (Some("@a"), ..) => (0..guests.len()).filter(placed).collect(),
-                (_, Some(name), _) => (0..guests.len())
-                    .filter(|&k| placed(&k) && guests[k].name.eq_ignore_ascii_case(name))
-                    .collect(),
+                (_, Some(name), _) => {
+                    let named: Vec<usize> = (0..guests.len())
+                        .filter(|&k| placed(&k) && guests[k].name.eq_ignore_ascii_case(name))
+                        .collect();
+                    if named.is_empty() {
+                        // No player has that name: the one going by it as a nickname (`~` optional).
+                        let bare = |s: &str| s.strip_prefix('~').unwrap_or(s).to_ascii_lowercase();
+                        let wanted = bare(name);
+                        let nicknamed = |k: &usize| {
+                            host.hub
+                                .nicknames
+                                .get(&guests[*k].uuid)
+                                .is_some_and(|nick| bare(nick) == wanted)
+                        };
+                        (0..guests.len())
+                            .filter(|k| placed(k) && nicknamed(k))
+                            .collect()
+                    } else {
+                        named
+                    }
+                }
                 (_, None, Some(uuid)) => (0..guests.len())
                     .filter(|&k| placed(&k) && guests[k].uuid == uuid)
                     .collect(),

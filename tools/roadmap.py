@@ -47,15 +47,18 @@ STATUSES = {
 PLAIN_MAX = 240  # one post's worth, so a shipped item can be announced as written
 TITLE_MAX = 70
 FOCUS_RANGE = (3, 5)
+# A short list says what matters (issue #3859): Now items each have an owner and a tracking issue.
+STATUS_MAX = {"now": 8, "next": 12}
 STALE_DAYS = 14  # a Now item needs an open pull request, or one merged this recently
 LABEL_PREFIX = "roadmap:"
 # GitHub label colours by status, from the design system's palette.
 LABEL_COLOURS = {"now": "5b3fd6", "next": "9a86ff", "later": "c5c7d1", "help-wanted": "1d7a48", "shipped": "646875"}
 ITEM_KEYS = {"id", "title", "status", "area", "plain", "dev", "links", "focus", "ongoing", "shipped_in", "post",
-             "announce"}
+             "announce", "owner", "issue"}
 
 ISSUE = re.compile(r"#(\d+)$")
 ID = re.compile(r"[a-z0-9]+(-[a-z0-9]+)*$")
+LOGIN = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$")  # a GitHub login
 # An item is the anchor playhorizon.dev/hub#<id>: it can't take the name of a tab, a section or a heading.
 RESERVED = {"main", "overview", "roadmap", "board", "journal", "contribute", "report", "suggest", "contributors",
             "hub-data", *STATUSES}
@@ -147,6 +150,15 @@ def validate(data, root=ROOT):
             problems.append(f"{where}: only Now, Next and Later items are ongoing")
         if item.get("focus") and status != "now":
             problems.append(f"{where}: only Now items can be in focus")
+        owner, issue = item.get("owner"), item.get("issue")
+        if owner is not None and not (isinstance(owner, str) and LOGIN.match(owner)):
+            problems.append(f"{where}: owner is one GitHub login (a person, or the account an agent works as)")
+        if issue is not None and not (isinstance(issue, str) and ISSUE.match(issue)):
+            problems.append(f"{where}: issue is the tracking issue, \"#N\"")
+        if status == "now" and not (owner and issue):
+            problems.append(f"{where}: a Now item needs an owner and a tracking issue")
+        if status == "shipped" and (owner or issue):
+            problems.append(f"{where}: shipped items have no owner or tracking issue")
         links = item.get("links", [])
         if not isinstance(links, list):
             problems.append(f"{where}: links is a list")
@@ -159,6 +171,10 @@ def validate(data, root=ROOT):
             if link.startswith(("/", "http:")) or ".." in link or not (root / link).exists():
                 problems.append(f"{where}: link {link!r} is neither #N, https:// nor a path in the repository")
     problems += weeks()[1] if root == ROOT else []
+    for status, most in STATUS_MAX.items():
+        count = sum(1 for item in items if item.get("status") == status)
+        if count > most:
+            problems.append(f"{STATUSES[status]}: {count} items, at most {most}: move the rest to Later")
     focus = sum(1 for item in items if item.get("focus"))
     low, high = FOCUS_RANGE
     if not low <= focus <= high:
@@ -231,8 +247,12 @@ def render(data):
         for area, group in groups:
             out += ["", f"### {area}"]
             for item in group:
-                out += ["", f"#### {item['title']}", "", item["plain"].strip(), "",
-                        "<details><summary>Technical</summary>", "", linkify(item["dev"].strip(), item.get("links", []))]
+                out += ["", f"#### {item['title']}", "", item["plain"].strip()]
+                if item.get("owner") or item.get("issue"):
+                    out += ["", " · ".join(part for part in (
+                        item.get("owner") and f"Owner: [{item['owner']}](https://github.com/{item['owner']})",
+                        item.get("issue") and f"Tracking: {link_list([item['issue']])}") if part)]
+                out += ["", "<details><summary>Technical</summary>", "", linkify(item["dev"].strip(), item.get("links", []))]
                 more = [link for link in item.get("links", []) if not re.search(rf"{re.escape(link)}\b", item["dev"])]
                 if more:
                     out += ["", "More: " + link_list(more)]
@@ -245,7 +265,7 @@ def weeks(directory=JOURNAL):
     entries, problems = [], []
     for path in sorted(directory.glob("*.md"), reverse=True) if directory.exists() else []:
         name = WEEK.match(path.name)
-        text = path.read_text()
+        text = path.read_text(encoding="utf-8")
         parts = re.match(r"# (.+)\n\n(.+?)\n\n## Technical\n\n(.+)", text.strip() + "\n", re.S)
         if not name or not 1 <= int(name[2]) <= 53:
             problems.append(f"journal/{path.name}: name it by its ISO week, like 2026-43.md")
@@ -262,7 +282,7 @@ def weeks(directory=JOURNAL):
 def site_data(data):
     """roadmap/roadmap.json: the items as the hub and Kira read them, in the file's order."""
     keys = ("id", "title", "status", "area", "plain", "dev", "links", "focus", "ongoing", "shipped_in", "post",
-            "announce")
+            "announce", "owner", "issue")
     out = {
         "format": "horizon-roadmap",
         "version": 1,
@@ -294,9 +314,14 @@ def token():
         sys.exit("roadmap: reading GitHub needs GITHUB_TOKEN, GH_TOKEN or `gh auth login` (or use --offline)")
 
 
+def numbers_of(item):
+    """The issue and pull request numbers an item names: its links and its tracking issue."""
+    return [int(ISSUE.match(link)[1]) for link in item.get("links", []) + [item.get("issue") or ""]
+            if ISSUE.match(link)]
+
+
 def numbers_in(data):
-    return sorted({int(ISSUE.match(link)[1]) for item in data.get("item", [])
-                   for link in item.get("links", []) if ISSUE.match(link)})
+    return sorted({n for item in data.get("item", []) for n in numbers_of(item)})
 
 
 def github_states(numbers, auth):
@@ -336,8 +361,7 @@ def pull_requests(item, states):
 
 
 def open_issues(item, states):
-    return [n for n in (int(ISSUE.match(link)[1]) for link in item.get("links", []) if ISSUE.match(link))
-            if n in states and states[n]["kind"] == "Issue" and states[n]["state"] == "OPEN"]
+    return [n for n in numbers_of(item) if n in states and states[n]["kind"] == "Issue" and states[n]["state"] == "OPEN"]
 
 
 def online_problems(data, states, now):
@@ -351,6 +375,11 @@ def online_problems(data, states, now):
             match = ISSUE.match(link)
             if match and int(match[1]) not in states:
                 problems.append(f"{where}: {link} is neither an issue nor a pull request of {REPO}")
+        tracking = ISSUE.match(item.get("issue") or "")
+        if tracking:
+            state = states.get(int(tracking[1]))
+            if not state or state["kind"] != "Issue" or state["state"] != "OPEN":
+                problems.append(f"{where}: the tracking issue {item['issue']} is not an open issue of {REPO}")
         pulls = pull_requests(item, states)
         status = item.get("status")
         if status == "now":
@@ -425,7 +454,7 @@ def mark_shipped(text, ident, release):
     block = [line for line in lines[start:end] if not line.startswith("shipped_in")]
     block = [f'status = "shipped"\nshipped_in = "{release}"' if re.match(r"status\s*=", line) else line
              for line in block]
-    block = [line for line in block if not re.match(r"focus\s*=", line)]
+    block = [line for line in block if not re.match(r"(focus|owner|issue)\s*=", line)]
     rest = lines[:start] + lines[end:]
     # Drop the blank line the block leaves behind.
     if start < len(rest) and start > 0 and not rest[start - 1].strip() and not rest[start].strip():
@@ -525,12 +554,12 @@ def command_build(args):
         return report(problems)
     files = outputs(data)
     if args.check:
-        stale = [path for path, text in files.items() if not path.exists() or path.read_text() != text]
+        stale = [path for path, text in files.items() if not path.exists() or path.read_text(encoding="utf-8") != text]
         return report([f"{path.relative_to(ROOT)} is out of date: run `python3 tools/roadmap.py build`"
                        for path in stale])
     for path, text in files.items():
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(text)
+        path.write_text(text, encoding="utf-8")
         print(f"roadmap: wrote {path.relative_to(ROOT)}")
     return 0
 
@@ -555,17 +584,17 @@ def command_sync(args):
     if problems:
         return report(problems)
     subprocess.run(["git", "fetch", "--quiet", "--tags", "origin"], cwd=ROOT, check=False)
-    text, log = sync(data, SOURCE.read_text(), github_states(numbers_in(data), token()))
+    text, log = sync(data, SOURCE.read_text(encoding="utf-8"), github_states(numbers_in(data), token()))
     for line in log:
         print(f"roadmap: {line}")
-    if args.dry_run or text == SOURCE.read_text():
+    if args.dry_run or text == SOURCE.read_text(encoding="utf-8"):
         return 0
     new = tomllib.loads(text)
     if len(new.get("item", [])) != len(data.get("item", [])) or validate(new):
         return report(["sync produced an invalid file; nothing written"] + validate(new))
-    SOURCE.write_text(text)
+    SOURCE.write_text(text, encoding="utf-8")
     for path, content in outputs(new).items():
-        path.write_text(content)
+        path.write_text(content, encoding="utf-8")
     print("roadmap: wrote roadmap/roadmap.toml, ROADMAP.md and roadmap/roadmap.json")
     return 0
 

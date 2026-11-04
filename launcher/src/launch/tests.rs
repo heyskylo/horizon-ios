@@ -23,6 +23,68 @@ fn variables_are_read_and_written_back() {
 }
 
 #[test]
+fn the_memory_slider_has_no_lowest_value_and_ends_in_no_limit() {
+    assert_eq!(memory_at(1., 16384), None);
+    assert_eq!(memory_at(0., 16384), Some(1));
+    assert_eq!(memory_at(0.25, 16384), Some(4096));
+    assert_eq!(memory_at(0.5, 8000), Some(4032));
+    assert_eq!(memory_fraction(None, 16384), 1.);
+    assert_eq!(memory_fraction(Some(4096), 16384), 0.25);
+    // Saved on a computer with more memory.
+    assert_eq!(memory_fraction(Some(32768), 16384), 1.);
+}
+
+#[test]
+fn a_typed_memory_limit_is_read_in_mb_or_gb_with_no_lowest_value() {
+    assert_eq!(parse_memory("2048"), Ok(Some(2048)));
+    assert_eq!(parse_memory(" 512 MB "), Ok(Some(512)));
+    assert_eq!(parse_memory("4gb"), Ok(Some(4096)));
+    assert_eq!(parse_memory("2 G"), Ok(Some(2048)));
+    assert_eq!(parse_memory("1"), Ok(Some(1)));
+    assert_eq!(parse_memory(""), Ok(None));
+    assert_eq!(parse_memory("off"), Ok(None));
+    for bad in ["lots", "-5", "1.5gb", "4 tb", "99999999999", "9999999gb"] {
+        assert_eq!(parse_memory(bad), Err(NotMemory), "{bad}");
+    }
+}
+
+fn memory_variable(launch: &Launch) -> Option<String> {
+    let mut cmd = Command::new("game");
+    limit_memory(&mut cmd, launch);
+    wrap(cmd, launch)
+        .get_envs()
+        .find(|(k, _)| *k == "HORIZON_MEMORY_LIMIT_MB")
+        .and_then(|(_, v)| v.map(|v| v.to_string_lossy().into_owned()))
+}
+
+#[test]
+fn the_game_has_no_limit_until_the_player_chooses_one() {
+    let mut launch = Launch::default();
+    assert_eq!(launch.memory_limit(), None);
+    assert_eq!(memory_variable(&launch), None);
+
+    launch.set_memory_limit(Some(1024));
+    assert_eq!(memory_variable(&launch).as_deref(), Some("1024"));
+    let saved = serde_json::to_string(&launch).unwrap();
+    let loaded: Launch = serde_json::from_str(&saved).unwrap();
+    assert_eq!(loaded.memory_limit(), Some(1024));
+
+    launch.set_memory_limit(None);
+    assert_eq!(memory_variable(&launch), None);
+    let none: Launch = serde_json::from_str("{}").unwrap();
+    assert_eq!(none.memory_limit(), None);
+}
+
+#[test]
+fn the_players_own_memory_variable_wins() {
+    let own = Launch {
+        env: parse_env("HORIZON_MEMORY_LIMIT_MB=4096").unwrap(),
+        ..Launch::default()
+    };
+    assert_eq!(memory_variable(&own).as_deref(), Some("4096"));
+}
+
+#[test]
 fn a_summary_says_what_runs() {
     assert_eq!(Launch::default().summary(), None);
     let launch = Launch {
@@ -192,4 +254,50 @@ fn the_linux_switches_act_only_where_their_tools_are() {
     // Off switches aren't written.
     let text = serde_json::to_string(&Launch::default()).unwrap();
     assert_eq!(text, "{}");
+}
+
+#[test]
+fn the_post_exit_command_runs_with_the_instance_variables() {
+    let dir = std::env::temp_dir().join(format!("horizon-post-exit-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    assert!(after_exit(&Launch::default(), &dir, &[]).is_none());
+    let launch = Launch {
+        post_exit: if cfg!(windows) {
+            // The redirection first: `1> after.txt` would redirect stdout and drop the 1.
+            "> after.txt echo %INST_NAME% %INST_ID% %INST_JAVA% %MINE%".into()
+        } else {
+            "echo \"$INST_NAME $INST_ID $INST_JAVA $MINE\" > after.txt".into()
+        },
+        env: parse_env("MINE=1").unwrap(),
+        ..Launch::default()
+    };
+    assert_eq!(
+        launch.summary().unwrap(),
+        format!("runs {} after, with 1 variable", launch.post_exit)
+    );
+    let vars = instance_vars("My Pack", "my-pack", &dir, Some(OsStr::new("java")));
+    let names: Vec<&str> = vars.iter().map(|(k, _)| *k).collect();
+    assert_eq!(
+        names,
+        [
+            "INST_NAME",
+            "INST_ID",
+            "INST_DIR",
+            "INST_MC_DIR",
+            "INST_JAVA"
+        ]
+    );
+    assert!(after_exit(&launch, &dir, &vars)
+        .unwrap()
+        .status()
+        .unwrap()
+        .success());
+    let written = std::fs::read_to_string(dir.join("after.txt")).unwrap();
+    assert_eq!(written.trim(), "My Pack my-pack java 1");
+    // A Horizon instance has no Java.
+    assert!(!instance_vars("H", "horizon", &dir, None)
+        .iter()
+        .any(|(k, _)| *k == "INST_JAVA"));
+    let _ = std::fs::remove_dir_all(&dir);
 }

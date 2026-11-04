@@ -180,6 +180,16 @@ pub fn list_textures(root: &Path) -> Vec<String> {
     for ns in namespaces.flatten() {
         let namespace = ns.file_name().to_string_lossy().into_owned();
         let base = ns.path().join("textures");
+        // A prepared root's: from its data file, without listing the disk.
+        if let Some(files) = horizon_core::prepared_files::files_under(&base) {
+            out.extend(
+                files
+                    .iter()
+                    .filter_map(|file| file.strip_suffix(".png"))
+                    .map(|rel| format!("{namespace}:{rel}")),
+            );
+            continue;
+        }
         let mut stack = vec![base.clone()];
         while let Some(dir) = stack.pop() {
             let Ok(entries) = fs::read_dir(&dir) else {
@@ -208,10 +218,26 @@ pub fn list_textures(root: &Path) -> Vec<String> {
     out.sort();
     out
 }
-/// The file of a texture identifier.
+/// The file of a texture identifier. A Custom Item Textures id (`cit_assets`) names its
+/// resource path, wherever the folder: `directory` is not used for it. An id whose path would
+/// leave the root (a pack's model may write any) names a file that is never there.
 pub fn texture_path(root: &Path, texture: &str, directory: &str) -> PathBuf {
+    // No file can have a NUL in its name, so this one is never there.
+    const NOWHERE: &str = "assets/minecraft/textures/horizon/\0refused.png";
+    if texture.starts_with("horizon_cit:") {
+        return root.join(
+            crate::cit_assets::resource(texture, "png")
+                .as_deref()
+                .unwrap_or(NOWHERE),
+        );
+    }
     let (namespace, path) = texture.split_once(':').unwrap_or(("minecraft", texture));
-    root.join(format!("assets/{namespace}/{directory}/{path}.png"))
+    let rel = format!("assets/{namespace}/{directory}/{path}.png");
+    root.join(if horizon_optifine::paths::valid(&rel) {
+        &rel
+    } else {
+        NOWHERE
+    })
 }
 
 /// `SpriteSourceList.list`: every sprite id of the atlas and its origin.
@@ -353,14 +379,17 @@ pub fn generate(
             let (_, _, key) = load(palette_key, "textures/palettes")?;
             let (_, _, target) = load(palette, "textures/palettes")?;
             let mut mapped = argb(&pixels);
-            apply_palette(&mut mapped, &argb(&key), &argb(&target))?;
-            let out = mapped
+            let key = argb(&key);
+            let target = argb(&target);
+            apply_palette(&mut mapped, &key, &target)?;
+            let out: Vec<u8> = mapped
                 .iter()
                 .flat_map(|p| {
                     let [a, r, g, b] = p.to_be_bytes();
                     [r, g, b, a]
                 })
                 .collect();
+            drop(mapped);
             Some((w, h, out))
         }
     }

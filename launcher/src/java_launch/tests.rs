@@ -44,7 +44,9 @@ fn modern() -> Value {
                      "--userType", "${user_type}",
                      {"rules": [{"action": "allow", "features": {"is_demo_user": true}}], "value": "--demo"},
                      {"rules": [{"action": "allow", "features": {"has_custom_resolution": true}}],
-                      "value": ["--width", "${resolution_width}"]}],
+                      "value": ["--width", "${resolution_width}", "--height", "${resolution_height}"]},
+                     {"rules": [{"action": "allow", "features": {"is_quick_play_multiplayer": true}}],
+                      "value": ["--quickPlayMultiplayer", "${quickPlayMultiplayer}"]}],
             "jvm": [{"rules": [{"action": "allow", "os": {"name": "osx"}}], "value": ["-XstartOnFirstThread"]},
                     {"rules": [{"action": "allow", "os": {"name": "windows", "arch": "x86"}}], "value": "-Xss1M"},
                     "-Djava.library.path=${natives_directory}", "-Dminecraft.launcher.brand=${launcher_name}",
@@ -79,6 +81,8 @@ fn a_modern_version_gets_its_rules_placeholders_and_classpath() {
         jvm_args: &extra,
         player: &p,
         os,
+        window: None,
+        server: None,
     };
     let cmd = command(&modern(), &launch("osx")).unwrap();
     let a = args(&cmd);
@@ -179,6 +183,8 @@ fn an_old_version_gets_its_natives_and_assets_by_name() {
         jvm_args: &[],
         player: &p,
         os: "osx",
+        window: None,
+        server: None,
     };
     let a = args(&command(&version, &launch).unwrap());
     assert_eq!(fs::read(natives.join("liblwjgl.dylib")).unwrap(), b"lib");
@@ -209,4 +215,199 @@ fn placeholders_fill_in_place() {
     let vars = HashMap::from([("a", "1".to_string()), ("b", "two".to_string())]);
     assert_eq!(fill("x${a}y${b}z", &vars), "x1ytwoz");
     assert_eq!(fill("${c} ${a", &vars), "${c} ${a");
+}
+
+/// A loader's profile on its game version: its main class, its libraries first (one replacing
+/// the game's), its JVM argument after the game's, and the game's jar.
+#[test]
+fn a_loader_profile_plays_on_its_game_version() {
+    let dir = scratch("loader");
+    let mc = dir.join("mc");
+    let write = |id: &str, version: &Value| {
+        let file = mc.join(format!("versions/{id}/{id}.json"));
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(file, version.to_string()).unwrap();
+    };
+    write("1.21.4", &modern());
+    let profile = json!({
+        "id": "fabric-loader-0.16.9-1.21.4", "inheritsFrom": "1.21.4",
+        "mainClass": "net.fabricmc.loader.impl.launch.knot.KnotClient",
+        "arguments": {"game": [], "jvm": ["-DFabricMcEmu= net.minecraft.client.main.Main "]},
+        "libraries": [
+            {"name": "net.fabricmc:fabric-loader:0.16.9",
+             "downloads": {"artifact": {"path": "net/fabricmc/fabric-loader-0.16.9.jar"}}},
+            {"name": "a:common:2", "downloads": {"artifact": {"path": "a/common/2/common-2.jar"}}}
+        ]
+    });
+    let version = resolve(profile, &mc).unwrap();
+    assert_eq!(version["id"], "fabric-loader-0.16.9-1.21.4");
+    assert_eq!(version["assetIndex"]["id"], "19", "the game's fields stay");
+    let cp = classpath(&version, &mc, "linux").unwrap();
+    let lib = |p: &str| mc.join("libraries").join(p);
+    assert_eq!(
+        cp,
+        [
+            lib("net/fabricmc/fabric-loader-0.16.9.jar"),
+            lib("a/common/2/common-2.jar"),
+            lib("a/not-mac/1/not-mac-1.jar"),
+            under(&mc, "versions/1.21.4/1.21.4.jar"),
+        ]
+    );
+    let (game, natives, java, p) = (
+        dir.join("game"),
+        dir.join("natives"),
+        dir.join("java"),
+        player(),
+    );
+    let launch = Launch {
+        minecraft: &mc,
+        game_dir: &game,
+        natives: &natives,
+        java: &java,
+        memory_mb: 4096,
+        jvm_args: &[],
+        player: &p,
+        os: "linux",
+        window: None,
+        server: None,
+    };
+    let a = args(&command(&version, &launch).unwrap());
+    let at = |s: &str| a.iter().position(|x| x == s).unwrap();
+    assert!(at("-cp") < at("-DFabricMcEmu= net.minecraft.client.main.Main "));
+    assert!(
+        at("-DFabricMcEmu= net.minecraft.client.main.Main ")
+            < at("net.fabricmc.loader.impl.launch.knot.KnotClient")
+    );
+    assert_eq!(a[at("--version") + 1], "fabric-loader-0.16.9-1.21.4");
+
+    // On a version from before 1.13 the profile's JVM argument joins the old ones.
+    write(
+        "1.8.9",
+        &json!({"id": "1.8.9", "mainClass": "net.minecraft.client.main.Main",
+                "minecraftArguments": "--username ${auth_player_name}", "libraries": []}),
+    );
+    let old = resolve(
+        json!({"id": "fabric-loader-0.16.9-1.8.9", "inheritsFrom": "1.8.9",
+               "mainClass": "net.fabricmc.loader.impl.launch.knot.KnotClient",
+               "arguments": {"jvm": ["-Dfabric=1"]}, "libraries": []}),
+        &mc,
+    )
+    .unwrap();
+    let a = args(&command(&old, &launch).unwrap());
+    assert!(a.contains(&"-cp".into()) && a.contains(&"-Dfabric=1".into()));
+    assert_eq!(
+        a[a.iter().position(|x| x == "--username").unwrap() + 1],
+        "Notch"
+    );
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn a_version_that_inherits_from_itself_is_refused() {
+    let dir = scratch("loops");
+    let mc = dir.join("mc");
+    let write = |id: &str, parent: &str| {
+        let file = mc.join(format!("versions/{id}/{id}.json"));
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(file, json!({"id": id, "inheritsFrom": parent}).to_string()).unwrap();
+    };
+    write("self", "self");
+    write("a", "b");
+    write("b", "a");
+    let read = |id: &str| read(&mc.join(format!("versions/{id}/{id}.json"))).unwrap();
+    assert_eq!(
+        resolve(read("self"), &mc).unwrap_err(),
+        "self: inheritsFrom loops"
+    );
+    assert_eq!(
+        resolve(read("a"), &mc).unwrap_err(),
+        "b: inheritsFrom loops"
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_window_size_and_a_server_to_join() {
+    let dir = scratch("join");
+    let (mc, game, natives, java) = (
+        dir.join("mc"),
+        dir.join("game"),
+        dir.join("natives"),
+        dir.join("java"),
+    );
+    let p = player();
+    let launch = |window, server| Launch {
+        minecraft: &mc,
+        game_dir: &game,
+        natives: &natives,
+        java: &java,
+        memory_mb: 4096,
+        jvm_args: &[],
+        player: &p,
+        os: "linux",
+        window,
+        server,
+    };
+    let after = |a: &[String], flag: &str| {
+        a.iter()
+            .position(|x| x == flag)
+            .map(|i| a[i + 1..].iter().take(3).cloned().collect::<Vec<_>>())
+    };
+    // A modern version asks for both through its rules.
+    let a = args(
+        &command(
+            &modern(),
+            &launch(Some((1280, 720)), Some("play.example.net:25570")),
+        )
+        .unwrap(),
+    );
+    assert_eq!(
+        after(&a, "--width").unwrap()[..3],
+        ["1280", "--height", "720"]
+    );
+    assert_eq!(
+        after(&a, "--quickPlayMultiplayer").unwrap()[0],
+        "play.example.net:25570"
+    );
+    assert!(!a.contains(&"--server".into()) && !a.contains(&"--demo".into()));
+    // Off unless asked.
+    let a = args(&command(&modern(), &launch(None, None)).unwrap());
+    assert!(!a.contains(&"--width".into()) && !a.contains(&"--quickPlayMultiplayer".into()));
+
+    // Before 1.13: no rules, the arguments themselves; before 1.20 a server is --server/--port.
+    let old = json!({
+        "id": "1.12.2", "mainClass": "net.minecraft.client.main.Main", "assetIndex": {"id": "1.12"},
+        "minecraftArguments": "--username ${auth_player_name}", "libraries": []
+    });
+    let a = args(&command(&old, &launch(Some((1280, 720)), Some("mc.example.org"))).unwrap());
+    let tail: Vec<&str> = a[a.len() - 8..].iter().map(String::as_str).collect();
+    assert_eq!(
+        tail,
+        [
+            "--width",
+            "1280",
+            "--height",
+            "720",
+            "--server",
+            "mc.example.org",
+            "--port",
+            "25565"
+        ]
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn server_addresses_split_into_host_and_port() {
+    assert_eq!(host_and_port("mc.example.org"), ("mc.example.org", 25565));
+    assert_eq!(
+        host_and_port("mc.example.org:25570"),
+        ("mc.example.org", 25570)
+    );
+    assert_eq!(host_and_port("[2001:db8::1]:25570"), ("2001:db8::1", 25570));
+    assert_eq!(host_and_port("2001:db8::1"), ("2001:db8::1", 25565));
+    assert_eq!(
+        host_and_port("mc.example.org:x"),
+        ("mc.example.org:x", 25565)
+    );
 }

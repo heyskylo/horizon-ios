@@ -7,21 +7,28 @@ use crate::{
     items::{ItemStack, Items},
     providers::Providers,
 };
+use horizon_world::loot::PackOverlay;
 use serde_json::Value;
-use std::{collections::HashSet, fs, path::Path};
+use std::{collections::HashSet, path::Path};
 
 pub use horizon_client_core::potions::{
-    BASE_POTION_COLOR, Category, EFFECTS, EffectDef, POTIONS, PotionDef, effect, namespaced,
-    potion, potion_color,
+    BASE_POTION_COLOR, Category, EFFECTS, EffectDef, POTIONS, PotionDef, all_effects,
+    description_id, effect, is_mod_effect, mod_effects, namespaced, potion, potion_color,
+    register_mod_effects,
 };
-/// `MobEffectUtil.formatDuration` at 20 TPS: m:ss or h:mm:ss.
+/// `MobEffectUtil.formatDuration` at 20 TPS.
 pub fn format_duration(ticks: i32) -> String {
-    let secs = ticks / 20;
+    format_tick_duration(ticks, 20.0)
+}
+/// `StringUtil.formatTickDuration`: mm:ss, or hh:mm:ss from an hour up, every
+/// field two digits.
+pub fn format_tick_duration(ticks: i32, tick_rate: f32) -> String {
+    let secs = (ticks as f32 / tick_rate).floor() as i32;
     let (h, m, s) = (secs / 3600, secs / 60 % 60, secs % 60);
     if h > 0 {
-        format!("{h}:{m:02}:{s:02}")
+        format!("{h:02}:{m:02}:{s:02}")
     } else {
-        format!("{m}:{s:02}")
+        format!("{m:02}:{s:02}")
     }
 }
 /// `item.minecraft.potion.effect.<name>` style translation key for a potion item.
@@ -29,6 +36,22 @@ pub fn potion_name_key(item: &str, potion: Option<&str>) -> String {
     let prefix = item.trim_start_matches("minecraft:");
     let suffix = potion.and_then(self::potion).map_or("empty", |p| p.name);
     format!("item.minecraft.{prefix}.effect.{suffix}")
+}
+/// `PotionContents.getAllEffects`: the potion's effects, then the stack's
+/// `custom_effects` (id, duration, amplifier). Unknown effect ids are dropped.
+pub fn contents_effects(stack: &ItemStack) -> Vec<(&'static str, i32, i32)> {
+    let potion = stack.potion().and_then(self::potion);
+    let custom = stack.custom_potion_effects();
+    potion
+        .map_or(&[][..], |d| d.effects)
+        .iter()
+        .copied()
+        .chain(
+            custom
+                .iter()
+                .filter_map(|(id, duration, amp)| Some((effect(id)?.id, *duration, *amp))),
+        )
+        .collect()
 }
 /// Roman amplifier suffix (`potion.potency.N`) and duration lines of a potion.
 pub fn tooltip(
@@ -45,20 +68,29 @@ pub fn tooltip(
             Category::Neutral,
         )];
     }
-    def.effects
-        .iter()
+    effect_lines(def.effects.iter().copied(), scale, translate)
+}
+/// `PotionContents.addPotionTooltip`'s line per effect: its name, potency and
+/// scaled duration, for (effect id, duration, amplifier) entries.
+pub fn effect_lines<'a>(
+    effects: impl IntoIterator<Item = (&'a str, i32, i32)>,
+    scale: f32,
+    translate: &dyn Fn(&str) -> Option<String>,
+) -> Vec<(String, Category)> {
+    effects
+        .into_iter()
         .map(|(e, duration, amp)| {
-            let mut line =
-                translate(&format!("effect.minecraft.{e}")).unwrap_or_else(|| (*e).to_owned());
-            if *amp > 0 {
+            let e = e.trim_start_matches("minecraft:");
+            let mut line = translate(&description_id(e)).unwrap_or_else(|| e.to_owned());
+            if amp > 0 {
                 line.push(' ');
                 line.push_str(
                     &translate(&format!("potion.potency.{amp}"))
-                        .unwrap_or_else(|| crate::enchant::level_name(*amp as u32 + 1)),
+                        .unwrap_or_else(|| crate::enchant::level_name(amp as u32 + 1)),
                 );
             }
             let instant = effect(e).is_some_and(|d| d.instant);
-            let scaled = (*duration as f32 * scale) as i32;
+            let scaled = (duration as f32 * scale) as i32;
             if !instant && scaled > 20 {
                 line = format!("{line} ({})", format_duration(scaled));
             }
@@ -126,21 +158,65 @@ pub struct Brewing {
     /// Items accepted in the bottle slots (`PotionIngredient.isPotionInput`).
     pub inputs: HashSet<String>,
 }
+/// The files right in `recipe/brewing/`, parsed, by id: taken from the whole
+/// recipe folder's read when another table holds it (the start loads them
+/// together), else read alone. A file that doesn't parse is left out.
+fn brewing_sources(root: &Path) -> Vec<(String, Value)> {
+    let recipe = root.join("data/minecraft/recipe");
+    let (folder, prefix) = match crate::json_folder::held(&recipe) {
+        Some(folder) => (folder, "brewing/"),
+        None => match crate::json_folder::read(&recipe.join("brewing")) {
+            Ok(folder) => (folder, ""),
+            Err(_) => return Vec::new(),
+        },
+    };
+    folder
+        .files
+        .iter()
+        .filter_map(|f| {
+            let name = f.name.strip_prefix(prefix).filter(|n| !n.contains('/'))?;
+            let v = serde_json::from_slice::<Value>(f.bytes().ok()?).ok()?;
+            Some((format!("minecraft:brewing/{name}"), v))
+        })
+        .collect()
+}
 impl Brewing {
-    pub fn load(root: &Path, items: &Items) -> Self {
-        let mut files: Vec<_> = fs::read_dir(root.join("data/minecraft/recipe/brewing"))
-            .into_iter()
-            .flatten()
-            .flatten()
-            .map(|e| e.path())
-            .collect();
-        files.sort();
-        let mut recipes = Vec::new();
-        for p in files {
-            let Ok(bytes) = fs::read(&p) else { continue };
-            let Ok(v) = serde_json::from_slice::<Value>(&bytes) else {
+    pub fn load(root: &Path, items: &Items, overlay: &PackOverlay) -> Self {
+        // NeoForge's load conditions: a file whose don't hold is silently
+        // absent. Vanilla's brewing recipes carry none; a pack's can.
+        let mods: Vec<String> = {
+            let mut mods = horizon_items::content_namespaces::mod_ids(root);
+            if !mods.iter().any(|m| m == "minecraft") {
+                mods.push("minecraft".to_owned());
+            }
+            mods
+        };
+        let conditions_hold = |v: &Value| {
+            horizon_world::conditions::conditions_hold(v, &|id: &str| mods.iter().any(|m| m == id))
+        };
+        let mut sources: Vec<(String, Value)> = brewing_sources(root);
+        // The world's packs' brewing recipes over the game's own: the top
+        // pack's file for each id replaces it (`SimpleJsonResourceReloadListener`).
+        for (id, files) in overlay.kind("recipe") {
+            if !id.starts_with("minecraft:brewing/") {
+                continue;
+            }
+            let Ok(v) = serde_json::from_slice::<Value>(PackOverlay::top(files)) else {
                 continue;
             };
+            match sources.iter_mut().find(|(n, _)| n == id) {
+                Some(slot) => slot.1 = v,
+                None => sources.push((id.to_owned(), v)),
+            }
+        }
+        // The gate answers the merged file, as the crafting loader's does:
+        // a false-conditioned pack file leaves the lower one gone too.
+        // The data's recipe filters, over the final set.
+        let filters = horizon_items::recipe_filters::RecipeFilters::load(root, overlay);
+        sources.retain_mut(|(id, v)| conditions_hold(v) && filters.apply(id, v));
+        sources.sort_by(|a, b| a.0.cmp(&b.0));
+        let mut recipes = Vec::new();
+        for (id, v) in sources {
             if v["type"] != "minecraft:brewing" {
                 continue;
             }
@@ -154,10 +230,7 @@ impl Brewing {
                 output = output.with_potion(potion);
             }
             recipes.push(BrewingRecipe {
-                id: format!(
-                    "minecraft:brewing/{}",
-                    p.file_stem().and_then(|s| s.to_str()).unwrap_or("")
-                ),
+                id,
                 input: PotionIngredient::parse(&v["input"], items),
                 reagent: PotionIngredient::parse(&v["reagent"], items),
                 output,
@@ -317,10 +390,14 @@ mod tests {
             potion_name_key("minecraft:splash_potion", Some("minecraft:long_swiftness")),
             "item.minecraft.splash_potion.effect.swiftness"
         );
-        assert_eq!(format_duration(9600), "8:00");
-        assert_eq!(format_duration(450), "0:22");
+        assert_eq!(format_duration(9600), "08:00");
+        assert_eq!(format_duration(450), "00:22");
+        assert_eq!(format_duration(140), "00:07");
+        assert_eq!(format_duration(1800), "01:30");
+        assert_eq!(format_duration(72000), "01:00:00");
+        assert_eq!(format_tick_duration(9600, 40.0), "04:00");
         let t = tooltip(Some("minecraft:strong_poison"), 1.0, &|_| None);
-        assert_eq!(t[0].0, "poison II (0:21)");
+        assert_eq!(t[0].0, "poison II (00:21)");
         assert_eq!(POTIONS.len(), 46);
     }
 
@@ -376,5 +453,24 @@ mod tests {
         // No fuel left: nothing more brews.
         stand.tick(&brewing, &items, &providers);
         assert_eq!(stand.brew_time, 0);
+    }
+
+    /// #3312: `PotionContents.getPotionDescription` names the effects with
+    /// translatable components, so a Russian game reads them from ru_ru.json
+    /// (the prepared one; skipped without it), as the tooltip's other lines.
+    #[test]
+    fn effect_lines_read_the_selected_language() {
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        if !root.join("assets/minecraft/lang/ru_ru.json").exists() {
+            return;
+        }
+        let ru = crate::lang::Language::load(&[&root], "ru_ru");
+        let translate = |key: &str| ru.get(key).map(str::to_owned);
+        let lines = tooltip(Some("minecraft:turtle_master"), 0.125, &translate);
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].0.starts_with("Замедление IV ("), "{lines:?}");
+        assert!(lines[1].0.starts_with("Сопротивление III ("), "{lines:?}");
     }
 }

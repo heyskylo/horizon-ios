@@ -13,6 +13,10 @@ use crate::Preprocessed;
 /// colortex buffers (6.1.1).
 pub const BUFFERS: usize = 16;
 
+/// The shadowcolor buffers there are: two, and `shadowcolor2` to `shadowcolor7` for a pack that
+/// names the `HIGHER_SHADOWCOLOR` feature.
+pub const SHADOW_COLORS: usize = 8;
+
 /// A colour format of 6.7, as channels, bits per channel and kind. Packed formats are described
 /// by their widest channel: `RGB10_A2` is 4 × 10 bits, `R11F_G11F_B10F` 3 × 11 bits float.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -127,8 +131,13 @@ pub struct Shadow {
     pub distance: f32,
     /// `shadowDistanceRenderMul`: when > 0, geometry beyond `distance × mul` is not drawn.
     pub render_mul: f32,
+    /// `voxelDistance`: with `shadow.culling=reversed`, nothing within it is culled.
+    pub voxel_distance: f32,
     /// `shadowIntervalSize`: the shadow camera moves in steps of this many blocks (0: none).
     pub interval: f32,
+    /// Native packs: the snap's remainder is euclidean, so the centre is within half an interval
+    /// of the player at negative coordinates too. `shaders/` packs keep Iris's.
+    pub euclidean_snap: bool,
     /// `sunPathRotation`, degrees.
     pub sun_path_rotation: f32,
     /// `shadowMapFov`: a perspective projection of this many degrees instead of orthographic.
@@ -138,8 +147,9 @@ pub struct Shadow {
     pub far: f32,
     /// `shadowHardwareFiltering(0|1)`: shadowtex0/1 sampled with depth comparison.
     pub hardware_filtering: [bool; 2],
-    /// `shadowcolor0/1`: format, cleared every frame, clear colour (default white).
-    pub colors: [Buffer; 2],
+    /// `shadowcolor0` to `shadowcolor7`: format, cleared every frame, clear colour (default
+    /// white).
+    pub colors: [Buffer; SHADOW_COLORS],
 }
 
 impl Default for Shadow {
@@ -152,13 +162,15 @@ impl Default for Shadow {
             resolution: 1024,
             distance: 160.0,
             render_mul: -1.0,
+            voxel_distance: 160.0,
             interval: 2.0,
+            euclidean_snap: false,
             sun_path_rotation: 0.0,
             fov: None,
             near: 0.05,
             far: 256.0,
             hardware_filtering: [false; 2],
-            colors: [white.clone(), white],
+            colors: std::array::from_fn(|_| white.clone()),
         }
     }
 }
@@ -185,6 +197,16 @@ impl Default for Config {
             seen: Vec::new(),
             gdepth: false,
         }
+    }
+}
+
+/// The shadowcolor buffer a sampler or image name reads: `shadowcolor` and `shadowcolor0` to
+/// `shadowcolor7`.
+pub fn shadow_color(name: &str) -> Option<usize> {
+    match name.strip_prefix("shadowcolor")?.as_bytes() {
+        [] => Some(0),
+        &[d @ b'0'..=b'7'] => Some(usize::from(d - b'0')),
+        _ => None,
     }
 }
 
@@ -310,6 +332,7 @@ impl Config {
             }
             "shadowDistance" => float(&mut s.distance),
             "shadowDistanceRenderMul" => float(&mut s.render_mul),
+            "voxelDistance" => float(&mut s.voxel_distance),
             "shadowIntervalSize" => float(&mut s.interval),
             "sunPathRotation" => float(&mut s.sun_path_rotation),
             "shadowNearPlane" => float(&mut s.near),
@@ -326,13 +349,17 @@ impl Config {
                 }
             }
             _ => {
-                let color = ["shadowcolor0", "shadowcolor1", "shadowcolor"]
-                    .iter()
-                    .find_map(|b| Some((b, name.strip_prefix(b)?)));
+                // `shadowcolor` is shadowcolor0.
+                let color =
+                    name.strip_prefix("shadowcolor")
+                        .map(|rest| match rest.as_bytes().first() {
+                            Some(&d @ b'0'..=b'7') => (usize::from(d - b'0'), &rest[1..]),
+                            _ => (0, rest),
+                        });
                 let Some((buffer, setting)) = color else {
                     return false;
                 };
-                let b = &mut s.colors[usize::from(buffer.ends_with('1'))];
+                let b = &mut s.colors[buffer];
                 match (setting, ty) {
                     ("Format", "int") => {
                         if let Some(f) = Format::parse(value) {
@@ -358,7 +385,7 @@ impl Config {
 }
 
 /// The buffers a fragment shader writes, from the last `DRAWBUFFERS` or `RENDERTARGETS` comment
-/// of its live code, or `None` without one (then it writes buffers 0 to 7). 6.1.4.
+/// of its live code, or `None` without one (then the program loader decides). 6.1.4.
 pub fn draw_buffers(pp: &Preprocessed) -> Option<Vec<u32>> {
     let mut found = None;
     for (_, comment) in &pp.comments {

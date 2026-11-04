@@ -14,6 +14,48 @@ use std::{
     sync::Arc,
 };
 
+/// Block states by block name and by tag name ([`FeatureBlockBindings::bind_tags`]).
+pub type BoundBlockTags = (
+    Arc<BTreeMap<String, Arc<BTreeSet<BlockStateId>>>>,
+    Arc<BoundTags>,
+);
+
+/// Block tags' states by tag name, each bound the first time it is read: of
+/// vanilla's 300 block tags (406,779 states in all), world generation reads a
+/// few dozen. A tag's blocks are checked when it is made, so binding it later
+/// cannot fail; once bound, reading it takes no lock.
+pub struct BoundTags {
+    blocks: Arc<BTreeMap<String, Arc<BTreeSet<BlockStateId>>>>,
+    tags: BTreeMap<
+        String,
+        (
+            Vec<String>,
+            std::sync::OnceLock<Arc<BTreeSet<BlockStateId>>>,
+        ),
+    >,
+}
+impl BoundTags {
+    /// The states of the tag `name`, bound on first use.
+    pub fn get<Q: Ord + ?Sized>(&self, name: &Q) -> Option<&Arc<BTreeSet<BlockStateId>>>
+    where
+        String: std::borrow::Borrow<Q>,
+    {
+        let (blocks, states) = self.tags.get(name)?;
+        Some(states.get_or_init(|| {
+            Arc::new(
+                blocks
+                    .iter()
+                    .flat_map(|block| {
+                        self.blocks
+                            .get::<str>(block)
+                            .into_iter()
+                            .flat_map(|states| states.iter().copied())
+                    })
+                    .collect(),
+            )
+        }))
+    }
+}
 pub struct FeatureBlockBindings<'r> {
     registry: &'r BlockRegistry,
     pub(crate) simple_blocks: Option<(
@@ -27,8 +69,8 @@ pub struct FeatureBlockBindings<'r> {
     biomes: Option<Arc<super::biome_predicate::BiomePredicateBindings>>,
     pub(crate) fluids: super::fluid_predicate::FluidPredicateBindings,
     pub(crate) codec: BlockStateJsonCodec<'r>,
-    pub(crate) blocks: BTreeMap<String, Arc<BTreeSet<BlockStateId>>>,
-    pub(crate) tags: BTreeMap<String, Arc<BTreeSet<BlockStateId>>>,
+    pub(crate) blocks: Arc<BTreeMap<String, Arc<BTreeSet<BlockStateId>>>>,
+    pub(crate) tags: Arc<BoundTags>,
     pub(crate) air: [BlockStateId; 3],
     tree_blocks: std::sync::OnceLock<Arc<super::tree_blocks::TreeBlocks>>,
     pub(crate) structures: Option<Arc<super::structure::StructureResources>>,
@@ -126,8 +168,15 @@ impl<'r> FeatureBlockBindings<'r> {
         integers: BTreeSet<(String, String)>,
         tags: &BTreeMap<String, Vec<String>>,
     ) -> Result<Self, DecodeError> {
-        let codec = BlockStateJsonCodec::new(registry, integers)
-            .map_err(|e| DecodeError::Registry(e.to_string()))?;
+        let bound = Self::bind_tags(registry, tags)?;
+        Self::with_bound_tags(registry, integers, bound)
+    }
+    /// Every block's states and every tag's, by name: what `with_tags` binds,
+    /// to share between the bindings made over the same registry and tags.
+    pub fn bind_tags(
+        registry: &BlockRegistry,
+        tags: &BTreeMap<String, Vec<String>>,
+    ) -> Result<BoundBlockTags, DecodeError> {
         let mut blocks = BTreeMap::<String, BTreeSet<BlockStateId>>::new();
         for id in 0..registry.len() {
             let id = BlockStateId(id as u32);
@@ -138,21 +187,47 @@ impl<'r> FeatureBlockBindings<'r> {
         }
         let mut bound_tags = BTreeMap::new();
         for (name, entries) in tags {
-            let mut states = BTreeSet::new();
+            let mut tag_blocks = Vec::with_capacity(entries.len());
             for name in entries {
-                states.extend(
-                    blocks
-                        .get(&identifier(name)?)
-                        .ok_or_else(|| DecodeError::Registry(format!("unknown block {name}")))?,
-                );
+                let block = identifier(name)?;
+                if !blocks.contains_key(&block) {
+                    return Err(DecodeError::Registry(format!("unknown block {name}")));
+                }
+                tag_blocks.push(block);
             }
             if bound_tags
-                .insert(super::tags::identifier(name)?, Arc::new(states))
+                .insert(
+                    super::tags::identifier(name)?,
+                    (tag_blocks, std::sync::OnceLock::new()),
+                )
                 .is_some()
             {
                 return Err(DecodeError::Field("duplicate block tag"));
             }
         }
+        let blocks: Arc<BTreeMap<_, _>> = Arc::new(
+            blocks
+                .into_iter()
+                .map(|(name, states)| (name, Arc::new(states)))
+                .collect(),
+        );
+        Ok((
+            blocks.clone(),
+            Arc::new(BoundTags {
+                blocks,
+                tags: bound_tags,
+            }),
+        ))
+    }
+    /// [`FeatureBlockBindings::with_tags`] over tags already bound by
+    /// [`FeatureBlockBindings::bind_tags`].
+    pub fn with_bound_tags(
+        registry: &'r BlockRegistry,
+        integers: BTreeSet<(String, String)>,
+        (blocks, tags): BoundBlockTags,
+    ) -> Result<Self, DecodeError> {
+        let codec = BlockStateJsonCodec::new(registry, integers)
+            .map_err(|e| DecodeError::Registry(e.to_string()))?;
         let get = |name| {
             registry
                 .default_state(name)
@@ -167,11 +242,8 @@ impl<'r> FeatureBlockBindings<'r> {
             occlusion_faces: None,
             can_occlude: None,
             fluids: super::fluid_predicate::FluidPredicateBindings::new(registry)?,
-            blocks: blocks
-                .into_iter()
-                .map(|(name, states)| (name, Arc::new(states)))
-                .collect(),
-            tags: bound_tags,
+            blocks,
+            tags,
             tree_blocks: std::sync::OnceLock::new(),
             structures: None,
             air: [
@@ -382,4 +454,86 @@ pub(crate) fn decode_targets(
             ))
         })
         .collect::<Result<_, DecodeError>>()
+}
+
+#[cfg(test)]
+mod bound_tag_tests {
+    use super::*;
+    use crate::nbt::Tag;
+
+    fn registry() -> BlockRegistry {
+        let state = |id: &str| Tag::compound([("id", Tag::String(id.into()))]);
+        let log = |axis: &str| {
+            Tag::compound([
+                ("id", Tag::String("minecraft:oak_log".into())),
+                (
+                    "properties",
+                    Tag::compound([("axis", Tag::String(axis.into()))]),
+                ),
+            ])
+        };
+        BlockRegistry::from_nbt(&Tag::compound([
+            ("DataVersion", Tag::Int(crate::DATA_VERSION)),
+            (
+                "states",
+                Tag::List(vec![
+                    state("minecraft:air"),
+                    state("minecraft:stone"),
+                    log("x"),
+                    log("y"),
+                    state("minecraft:dirt"),
+                ]),
+            ),
+            (
+                "defaults",
+                Tag::compound([
+                    ("minecraft:air", Tag::Int(0)),
+                    ("minecraft:stone", Tag::Int(1)),
+                    ("minecraft:oak_log", Tag::Int(3)),
+                    ("minecraft:dirt", Tag::Int(4)),
+                ]),
+            ),
+        ]))
+        .unwrap()
+    }
+
+    fn tags(entries: &[(&str, &[&str])]) -> BTreeMap<String, Vec<String>> {
+        entries
+            .iter()
+            .map(|(name, blocks)| {
+                (
+                    name.to_string(),
+                    blocks.iter().map(|b| b.to_string()).collect(),
+                )
+            })
+            .collect()
+    }
+
+    /// A tag reads as every state of its blocks, whichever is read first; a
+    /// tag that names an unknown block still fails the binding itself.
+    #[test]
+    fn tags_read_as_their_blocks_states() {
+        let registry = registry();
+        let (blocks, bound) = FeatureBlockBindings::bind_tags(
+            &registry,
+            &tags(&[
+                ("minecraft:logs", &["minecraft:oak_log"]),
+                ("minecraft:base", &["stone", "minecraft:dirt", "oak_log"]),
+                ("minecraft:empty", &[]),
+            ]),
+        )
+        .unwrap();
+        let ids = |set: &BTreeSet<BlockStateId>| set.iter().map(|s| s.0).collect::<Vec<_>>();
+        assert_eq!(ids(&blocks["minecraft:oak_log"]), [2, 3]);
+        assert_eq!(ids(bound.get("minecraft:base").unwrap()), [1, 2, 3, 4]);
+        assert_eq!(ids(bound.get("minecraft:logs").unwrap()), [2, 3]);
+        assert_eq!(ids(bound.get("minecraft:base").unwrap()), [1, 2, 3, 4]);
+        assert!(bound.get("minecraft:empty").unwrap().is_empty());
+        assert!(bound.get("minecraft:leaves").is_none());
+        let unknown = FeatureBlockBindings::bind_tags(
+            &registry,
+            &tags(&[("minecraft:logs", &["minecraft:birch_log"])]),
+        );
+        assert!(matches!(unknown, Err(DecodeError::Registry(_))));
+    }
 }

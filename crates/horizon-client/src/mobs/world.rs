@@ -7,7 +7,7 @@ use crate::{
     collisions::SceneCollisions,
 };
 use horizon_core::{
-    geometry::{Aabb, Vec3, traverse_blocks},
+    geometry::{Aabb, Vec3, VoxelShape, block_floor_height, traverse_blocks},
     position::BlockPos,
 };
 use horizon_world::{
@@ -38,18 +38,36 @@ impl MobWorld<'_> {
     }
     /// `Heightmap.Types.MOTION_BLOCKING`: above the highest blocking block.
     pub fn motion_blocking_height(&self, x: i32, z: i32) -> i32 {
-        let top = crate::chunk::MIN_Y + crate::chunk::HEIGHT;
-        (crate::chunk::MIN_Y..top)
+        let top = self.world.top_y();
+        (self.world.bottom_y()..top)
             .rev()
             .find(|&y| {
                 let f = self.facts.get(self.world.block(x, y, z));
                 f.full_collision || f.fluid != crate::blocks::Fluid::None
             })
-            .map_or(crate::chunk::MIN_Y, |y| y + 1)
+            .map_or(self.world.bottom_y(), |y| y + 1)
     }
     /// BlockState.isSolid (the legacy solid flag).
     pub fn solid(&self, x: i32, y: i32, z: i32) -> bool {
         self.data.state(self.world.block(x, y, z)).flags & data::SOLID != 0
+    }
+    /// `BlockGetter.getBlockFloorHeight(pos)`: how high the block's collision
+    /// shape stands, or how far into it the block below reaches up, minus one
+    /// (negative infinity with neither).
+    pub fn block_floor_height(&self, x: i32, y: i32, z: i32) -> f64 {
+        let mut scene = SceneCollisions {
+            world: self.world,
+            binding: self.collision,
+            subject: None,
+        };
+        let mut shape = |y: i32| {
+            self.collision
+                .collision_shape(&mut scene, self.world.block(x, y, z), [x, y, z])
+                .unwrap_or_else(|_| VoxelShape::empty())
+        };
+        let here = shape(y);
+        let below = shape(y - 1);
+        block_floor_height(&here, || &below)
     }
     pub fn fluid(&self, x: i32, y: i32, z: i32) -> Fluid {
         self.facts.get(self.world.block(x, y, z)).fluid
@@ -181,12 +199,19 @@ impl MobWorld<'_> {
     }
     /// The bounds of the block's collision shape, relative to the block.
     pub fn collision_bounds(&self, p: [i32; 3]) -> Option<horizon_core::geometry::Aabb> {
+        self.collision_bounds_of(self.world.block(p[0], p[1], p[2]), p)
+    }
+    /// The same for `state` standing at `p` (a block that was there).
+    pub fn collision_bounds_of(
+        &self,
+        state: horizon_world::registry::BlockStateId,
+        p: [i32; 3],
+    ) -> Option<horizon_core::geometry::Aabb> {
         let mut scene = SceneCollisions {
             world: self.world,
             binding: self.collision,
             subject: None,
         };
-        let state = self.world.block(p[0], p[1], p[2]);
         self.collision
             .collision_shape(&mut scene, state, p)
             .ok()?
@@ -242,6 +267,11 @@ impl MobWorld<'_> {
         if self.daylight { 0 } else { 11 }
     }
     pub fn target_info(&self, who: Who) -> Option<TargetInfo> {
+        if let Some((id, target)) = self.dragon
+            && who == Who::Mob(id)
+        {
+            return Some(target);
+        }
         match who {
             Who::Player => self.player.as_ref().map(|p| TargetInfo {
                 position: p.position,
@@ -360,4 +390,152 @@ pub fn visual_clip<W: DynamicCollisionWorld>(
         shape.clip(from, to, p).map(|_| [p.x, p.y, p.z])
     });
     result.ok()
+}
+
+/// Runs `f` with an empty overworld (`others` its mobs) and the mob types,
+/// both from the extracted vanilla data; false, without running it, when
+/// that data is missing.
+#[cfg(test)]
+pub(crate) fn with_test_world(
+    others: &[Seen],
+    f: impl FnOnce(&MobWorld<'_>, &super::MobTypes),
+) -> bool {
+    with_built_test_world(others, |_, _| {}, f)
+}
+/// `with_test_world` with `build` placing blocks first.
+#[cfg(test)]
+pub(crate) fn with_built_test_world(
+    others: &[Seen],
+    build: impl FnOnce(&mut crate::world::World, &horizon_world::registry::BlockRegistry),
+    f: impl FnOnce(&MobWorld<'_>, &super::MobTypes),
+) -> bool {
+    with_built_test_world_rules(others, true, build, f)
+}
+/// `with_built_test_world` with the `mob_griefing` game rule the world reports.
+#[cfg(test)]
+pub(crate) fn with_built_test_world_rules(
+    others: &[Seen],
+    mob_griefing: bool,
+    build: impl FnOnce(&mut crate::world::World, &horizon_world::registry::BlockRegistry),
+    f: impl FnOnce(&MobWorld<'_>, &super::MobTypes),
+) -> bool {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../.local/horizon-client")
+        .join(horizon_core::VANILLA_VERSION);
+    with_resource_test_world(&root, others, mob_griefing, build, f)
+}
+/// The same mob world loaded from a content mod's resource root.
+#[cfg(test)]
+pub(crate) fn with_resource_test_world(
+    root: &std::path::Path,
+    others: &[Seen],
+    mob_griefing: bool,
+    build: impl FnOnce(&mut crate::world::World, &horizon_world::registry::BlockRegistry),
+    f: impl FnOnce(&MobWorld<'_>, &super::MobTypes),
+) -> bool {
+    if !root.join("entity-types.json").exists() || !root.join("movement-properties.nbt").exists() {
+        return false;
+    }
+    let assets = crate::assets::Assets::load(root).unwrap();
+    let registry = assets.registry;
+    let facts = BlockFacts::load(root, registry).unwrap();
+    let motion = crate::motion::MotionResources::load(root, &assets).unwrap();
+    let data = super::MobData::load(root, &facts);
+    let types = super::MobTypes::load(root).unwrap();
+    let biomes = crate::biome::Biomes::load(root).unwrap();
+    let items = crate::items::Items::load(
+        root,
+        registry,
+        &facts,
+        &horizon_world::loot::PackOverlay::NONE,
+    )
+    .unwrap();
+    let collision = crate::collisions::load(root, registry).unwrap();
+    let air = registry.default_state("minecraft:air").unwrap();
+    let mut world = crate::world::World::new(air, 0);
+    build(&mut world, registry);
+    let lid_openers = std::collections::HashMap::new();
+    let w = MobWorld {
+        teams: Default::default(),
+        world: &world,
+        registry,
+        facts: &facts,
+        fluid_tables: &motion.fluids,
+        movement: &motion.blocks,
+        collision: &collision,
+        data: &data,
+        player: None,
+        controlling_player_movement: None,
+        nearest_player: None,
+        others,
+        dragon: None,
+        leash_boats: &[],
+        others_grid: None,
+        others_index: None,
+        others_villagers: None,
+        daylight: true,
+        monsters_burn: false,
+        game_time: 1000,
+        day_time: 18000,
+        raining: false,
+        thundering: false,
+        nether: false,
+        block_tags: &items.block_tags,
+        landing: &motion.landing,
+        biomes: &biomes,
+        mob_griefing,
+        universal_anger: false,
+        mob_drops: true,
+        max_entity_cramming: 24,
+        difficulty: super::spawning::LocalDifficulty::new(2, 18000, 0, 0.0),
+        end: false,
+        world_seed: 0,
+        sea_level: 63,
+        items: Some(&items),
+        lid_openers: &lid_openers,
+        mod_effects: None,
+        border: None,
+    };
+    f(&w, &types);
+    true
+}
+/// A player standing at `position` in survival, as mobs see one.
+#[cfg(test)]
+pub(crate) fn test_player(position: Vec3) -> super::PlayerView {
+    super::PlayerView {
+        position,
+        bounds: Aabb::new(
+            Vec3::new(position.x - 0.3, position.y, position.z - 0.3),
+            Vec3::new(position.x + 0.3, position.y + 1.8, position.z + 0.3),
+        ),
+        eye: [position.x, position.y + 1.62, position.z],
+        alive: true,
+        creative: false,
+        sneaking: false,
+        swimming: false,
+        look: [0.0; 3],
+        main_hand: None,
+        off_hand: None,
+        head: None,
+        armor_cover: 0.0,
+        invisible: false,
+        spectator: false,
+        gold_armor: false,
+        hurt_by: None,
+        last_hurt: None,
+        velocity: Vec3::ZERO,
+        yaw: 0.0,
+        sprinting: false,
+        riding: false,
+        hero: false,
+        effects: Vec::new(),
+        uuid: [0; 4],
+        allies: Default::default(),
+        remote: false,
+        sleeping: false,
+        sleep_timer: 0,
+        passenger: false,
+        riding_vehicle: None,
+        vehicle: None,
+    }
 }

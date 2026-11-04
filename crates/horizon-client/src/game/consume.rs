@@ -49,7 +49,7 @@ impl Game<'_> {
     ) {
         self.emit_consume(consumable, stack, 16);
         // ServerPlayer: the used statistic and the consume_item trigger.
-        self.stats.add("used", &stack.item, 1);
+        self.award_stat("used", &stack.item, 1);
         self.trigger_item("minecraft:consume_item", stack);
         // FoodProperties.onConsume, the player's one ConsumableListener.
         if let Some((nutrition, saturation)) = info.food {
@@ -128,7 +128,7 @@ impl Game<'_> {
         if !self.world.loaded(pos.x, pos.z) {
             return false;
         }
-        while pos.y > self.dim.min_y() {
+        while pos.y > self.world.shape.min_y {
             pos.y -= 1;
             let state = self.world.block(pos.x, pos.y, pos.z);
             if self.state_in_tag("minecraft:entities_can_teleport_to", state) {
@@ -227,6 +227,8 @@ impl Game<'_> {
             self.dismount(i);
         } else if let Some(i) = self.carts.iter().position(|c| c.id == id) {
             self.dismount_cart(i);
+        } else if let Some(c) = self.cushions.iter().find(|c| c.id == id).cloned() {
+            self.get_up_from_cushion(&c);
         } else {
             self.dismount_mount();
         }
@@ -255,10 +257,19 @@ impl EmissionWorld for Emitter<'_, '_> {
     fn consume_sound(&mut self, _: ItemStack) -> Result<String, Infallible> {
         unreachable!("players play the consumable's own sound")
     }
-    /// `Entity.playSound`: at the player's position.
+    /// `Player.playSound`: at the player's position, for everyone but the
+    /// player, whose own client plays it (`level.playSound(player, ...)`):
+    /// a guest's server turn leaves the guest out.
     fn play_sound(&mut self, sound: String, volume: f32, pitch: f32) -> Result<(), Infallible> {
         let at = self.0.feet();
-        self.0.audio.play(&sound, at, volume, pitch);
+        if self.0.lan_acting.is_some() {
+            self.0.audio.play_unshared(&sound, at, volume, pitch);
+            if let Some(at) = at {
+                self.0.guest_player_sounds.push((sound, at, volume, pitch));
+            }
+        } else {
+            self.0.audio.play(&sound, at, volume, pitch);
+        }
         Ok(())
     }
 }
@@ -285,10 +296,10 @@ impl TeleportConsumeWorld for Teleporter<'_, '_> {
         &mut self.0.world.random
     }
     fn min_y(&mut self, level: Dim) -> Result<i32, Infallible> {
-        Ok(level.min_y())
+        Ok(self.0.level_shapes.get(level.id()).min_y)
     }
     fn logical_height(&mut self, level: Dim) -> Result<i32, Infallible> {
-        Ok(level.logical_height())
+        Ok(self.0.level_shapes.get(level.id()).logical_height)
     }
     fn is_passenger(&mut self) -> Result<bool, Infallible> {
         Ok(self.0.riding.is_some())
@@ -299,6 +310,33 @@ impl TeleportConsumeWorld for Teleporter<'_, '_> {
     }
     fn position(&mut self) -> Result<Vec3, Infallible> {
         Ok(self.at())
+    }
+    fn teleport_allowed(&mut self, target: &mut Vec3) -> Result<bool, Infallible> {
+        // EntityTeleportEvent.ChorusFruit: only a server's player is heard.
+        let (Some(uuid), Some(name)) = (self.0.lan_acting_uuid, self.0.lan_acting_name.clone())
+        else {
+            return Ok(true);
+        };
+        let from = self.at();
+        let mut to = [target.x, target.y, target.z];
+        let mut cancel = false;
+        self.0.native_chorus_fruit_teleport(
+            uuid,
+            &name,
+            [from.x, from.y, from.z],
+            &mut to,
+            &mut cancel,
+        );
+        // Keep the mod's spot inside the level as vanilla's own draw is (a
+        // huge y would walk down a long way); one that is not a number keeps
+        // the draw.
+        if to.iter().all(|v| v.is_finite()) {
+            let shape = self.0.level_shapes.get(self.0.dim.id());
+            let high = shape.min_y + shape.logical_height - 1;
+            let y = to[1].clamp(f64::from(shape.min_y), f64::from(high));
+            *target = Vec3::new(to[0], y, to[2]);
+        }
+        Ok(!cancel)
     }
     fn random_teleport(&mut self, target: Vec3) -> Result<bool, Infallible> {
         Ok(self

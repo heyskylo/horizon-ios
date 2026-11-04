@@ -54,6 +54,25 @@ impl MovingPiston {
     }
 }
 
+/// `MovingPistonBlock.getDrops`: a broken moving piston drops as the block its
+/// block entity is moving, and drops nothing when that block entity is gone
+/// (vanilla returns `Collections.emptyList()`). Every other block drops as
+/// itself.
+pub(crate) fn dropped_state(
+    b: &Behaviours,
+    moving: &[(BlockPos, MovingPiston)],
+    state: BlockStateId,
+    pos: BlockPos,
+) -> Option<BlockStateId> {
+    if !b.is_block(state, b.named.moving_piston) {
+        return Some(state);
+    }
+    moving
+        .iter()
+        .find(|(p, _)| *p == pos)
+        .map(|(_, piston)| piston.moved_state)
+}
+
 /// `BlockEventData`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BlockEventData {
@@ -132,6 +151,10 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
             // BellBlockEntity.triggerEvent handles event 1; the caller
             // reports handled events (`runBlockEvents` broadcasts them).
             a == 1
+        } else if data.is(super::classes::Class::PotentSulfur) {
+            // PotentSulfurBlock.triggerEvent: the block entity notes the
+            // eruption's game time (the caller's), and the event is handled.
+            true
         } else {
             false
         }
@@ -179,7 +202,8 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
             };
             self.set_block_and_update(pos, new);
             let block = b.block(new);
-            self.neighbor_changed_at(pos, block);
+            let orientation = self.initial_orientation(Some(piston.movement_direction()), None);
+            self.neighbor_changed_at_oriented(pos, block, orientation);
         }
     }
     /// `PistonMovingBlockEntity.tick`. A piston that is still moving reports
@@ -225,7 +249,9 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
                     }
                     self.set_block(pos, new, 67);
                     let block = b.block(new);
-                    self.neighbor_changed_at(pos, block);
+                    let orientation =
+                        self.initial_orientation(Some(piston.movement_direction()), None);
+                    self.neighbor_changed_at_oriented(pos, block, orientation);
                 }
             }
         } else {
@@ -338,6 +364,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
             return false;
         }
         !b.has_flag(state, super::data::state_flags::BLOCK_ENTITY)
+            && !self.level.has_mod_block_entity(pos)
     }
     fn is_slime_or_honey(&self, state: BlockStateId) -> bool {
         self.b.is_block(state, self.b.named.slime_block)
@@ -522,14 +549,15 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
             if sticky { "sticky" } else { "normal" },
         )
     }
-    /// `PistonBaseBlock.moveBlocks`.
+    /// `PistonBaseBlock.moveBlocks`: whether the blocks moved, or None when
+    /// the level refused the move (`LevelAccess::allow_piston_move`).
     fn piston_move_blocks(
         &mut self,
         piston_pos: BlockPos,
         direction: Direction,
         extending: bool,
         sticky: bool,
-    ) -> bool {
+    ) -> Option<bool> {
         let b = self.b;
         let arm = rel(piston_pos, direction);
         if !extending && b.is_block(self.state(arm), b.named.piston_head) {
@@ -538,8 +566,14 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         let Some((to_push, to_destroy, push_direction)) =
             self.piston_resolve(piston_pos, direction, extending)
         else {
-            return false;
+            return Some(false);
         };
+        if !self
+            .level
+            .allow_piston_move(piston_pos, push_direction, &to_push, &to_destroy)
+        {
+            return None;
+        }
         let mut delete_after: JavaHashMap<PosKey, BlockStateId> = JavaHashMap::default();
         let mut shapes = Vec::with_capacity(to_push.len());
         for pos in &to_push {
@@ -628,6 +662,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
             self.update_neighbour_shapes(air, *pos, 2, super::flags::UPDATE_LIMIT);
             self.update_indirect_neighbour_shapes(air, *pos, 2, super::flags::UPDATE_LIMIT);
         }
+        let orientation = self.initial_orientation(Some(push_direction), None);
         let mut index = 0;
         for pos in to_destroy.iter().rev() {
             let state = to_update[index];
@@ -635,18 +670,17 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
             self.affect_neighbors_after_removal(state, *pos, false);
             self.update_indirect_neighbour_shapes(state, *pos, 2, super::flags::UPDATE_LIMIT);
             let block = b.block(state);
-            self.update_neighbors_at(*pos, block);
+            self.update_neighbors_at_oriented(*pos, block, orientation);
         }
         for pos in to_push.iter().rev() {
             let block = b.block(to_update[index]);
             index += 1;
-            self.update_neighbors_at(*pos, block);
+            self.update_neighbors_at_oriented(*pos, block, orientation);
         }
         if extending {
-            self.update_neighbors_at(arm, b.named.piston_head);
+            self.update_neighbors_at_oriented(arm, b.named.piston_head, orientation);
         }
-        let _ = push_direction;
-        true
+        Some(true)
     }
     /// `PistonBaseBlock.triggerEvent`.
     fn piston_trigger_event(
@@ -661,6 +695,9 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         let direction = b.facing(state);
         let extended_state = b.table.set_bool(state, p.extended, true);
         let sticky = self.is_sticky_piston(state);
+        // A pull the level refused isn't sent: clients, who aren't asked,
+        // would replay it, so they get the blocks' changes instead.
+        let mut refused = false;
         // The signal re-check is server-only (`!level.isClientSide`): a
         // client trusts the event as sent.
         if !self.level.is_client_side() {
@@ -674,7 +711,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
             }
         }
         if a == 0 {
-            if !self.piston_move_blocks(pos, direction, true, sticky) {
+            if self.piston_move_blocks(pos, direction, true, sticky) != Some(true) {
                 return false;
             }
             self.set_block(pos, extended_state, 67);
@@ -739,7 +776,9 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
                     {
                         self.remove_block(rel(pos, direction), false);
                     } else {
-                        self.piston_move_blocks(pos, direction, false, sticky);
+                        refused = self
+                            .piston_move_blocks(pos, direction, false, sticky)
+                            .is_none();
                     }
                 }
             } else {
@@ -754,7 +793,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
             });
             self.game_event(pos, "minecraft:block_deactivate");
         }
-        true
+        !refused
     }
 
     // ---- PistonHeadBlock ----

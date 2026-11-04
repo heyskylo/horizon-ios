@@ -90,6 +90,19 @@ def game_env(base=None, **extra):
     return env
 
 
+def link_dir(target, link):
+    """Make `link` a link to the folder `target`: a symbolic link, or on Windows, where creating one needs
+    Developer Mode or an administrator (WinError 1314), a directory junction, which needs neither.
+    shutil.rmtree removes a junction without touching what it points to, as it does a symbolic link."""
+    try:
+        os.symlink(target, link, target_is_directory=True)
+    except OSError as error:
+        if sys.platform != "win32" or getattr(error, "winerror", None) != 1314:
+            raise
+        subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(Path(target).resolve())],
+                       check=True, capture_output=True)
+
+
 def write_json(path, data):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
@@ -100,11 +113,36 @@ def digest(path, algorithm):
         return hashlib.file_digest(stream, algorithm).hexdigest()
 
 
+_PORT_LOCKS = []  # open lock files, held until this process exits
+
+
 def free_port():
-    """A free local TCP port, for a server a harness starts."""
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+    """A free local TCP port, for a server a harness starts.
+
+    The OS hands out a port when we bind to 0, but we close it before the server binds it, and a harness running
+    beside this one (another worktree, the parallel job queue) can be handed the same number in that gap. So each port
+    is also claimed with a lock file in the temp dir, held until this process exits; a port another harness has
+    claimed is skipped. Windows has no flock (nor os.getuid): there the port is the OS's answer alone, as before."""
+    if sys.platform == "win32":
+        with socket.socket() as s:
+            s.bind(("127.0.0.1", 0))
+            return s.getsockname()[1]
+    import fcntl
+    locks = Path(tempfile.gettempdir()) / f"horizon-harness-ports-{os.getuid()}"
+    locks.mkdir(exist_ok=True)
+    for _ in range(100):
+        with socket.socket() as s:
+            s.bind(("127.0.0.1", 0))
+            port = s.getsockname()[1]
+        handle = open(locks / str(port), "w")
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            handle.close()
+            continue
+        _PORT_LOCKS.append(handle)
+        return port
+    raise RuntimeError("no free port: every port tried was claimed by another harness")
 
 
 def offline_uuid(name):

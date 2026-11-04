@@ -107,8 +107,14 @@ def mob_case(kind, weapon=SWORD, sprint=False, crit=False, air=False):
     return lines
 
 
+# A shield that blocks half of a melee hit: its own push (blockedByItem) comes before the hit's (hurtServer).
+SHIELD = 'minecraft:shield'
+HALF_SHIELD = ('minecraft:shield[blocks_attacks={block_delay_seconds:0.25,'
+               'damage_reductions:[{base:0,factor:0.5}]}]')
+
+
 def pvp_case(weapon=SWORD, sprint=False, crit=False, shield=False, armour=False, twice=False, mace=False,
-             cooldown=False):
+             cooldown=False, shield_item=SHIELD):
     lines = [f'cmd Alice item replace entity @s weapon.mainhand with {weapon}', 'cmd Bob clear @s',
              'cmd Bob effect give @s minecraft:resistance 1000 4 true',
              'cmd Bob effect give @s minecraft:instant_health 1 5 true', *stand('Alice', A, -90), *stand('Bob', V, 90)]
@@ -117,8 +123,9 @@ def pvp_case(weapon=SWORD, sprint=False, crit=False, shield=False, armour=False,
                   for slot, piece in (('head', 'helmet'), ('chest', 'chestplate'), ('legs', 'leggings'),
                                       ('feet', 'boots'))]
     if shield:
-        # A shield blocks from five ticks after it is raised.
-        lines += ['cmd Bob item replace entity @s weapon.mainhand with minecraft:shield', 'use Bob']
+        # A shield blocks from five ticks after it is raised. Two ticks first: a stack swapped in the tick of an earlier
+        # shield's use still counts as being used, and the server drops the `use`.
+        lines += [f'cmd Bob item replace entity @s weapon.mainhand with {shield_item}', 'ticks 2', 'use Bob']
     lines += ['ticks 30', *stand('Bob', V, 90, ticks=1)]
     if sprint:
         lines.append('sprint Alice on')
@@ -155,6 +162,37 @@ def mob_hits_case(kind):
             'cmd Alice kill @e[type=!player]', 'cmd Alice gamemode survival']
 
 
+def zombie_half_shield_case():
+    """A zombie in front of Bob, who holds a raised half-blocking shield, hits him once.
+
+    The zombie stands south-west of Bob, 45 degrees from his view whether it is the west of his position packets
+    (yaw 90) or the south the `use` packet turns him to (`handleUseItem`'s absSnapRotationTo(0, 0)): which of the two
+    counts at the tick of the hit is down to timing, and one block east (behind him, or at exactly 90 degrees) made the
+    shield block in some runs of vanilla and not in others (#8164)."""
+    mob = '@e[type=minecraft:zombie,limit=1]'
+    return ['cmd Bob clear @s', 'cmd Alice gamemode creative', *stand('Bob', V, 90),
+            f'cmd Bob item replace entity @s weapon.mainhand with {HALF_SHIELD}', 'ticks 2', 'use Bob', 'ticks 30',
+            *stand('Bob', V, 90, ticks=1), 'mark Bob',
+            f'cmd Alice summon minecraft:zombie {V[0] - 1} {V[1]} {V[2] + 1} {{Rotation:[-135f,0f]}}',
+            f'cmd Alice effect give {mob} minecraft:slowness 100000 127 true', 'await Bob', f'cmd Alice kill {mob}',
+            'ticks 20', *stand('Bob', V, 90), 'cmd Bob clear @s', 'cmd Alice kill @e[type=!player]',
+            'cmd Alice gamemode survival']
+
+
+def blast_case(blast, row):
+    """A blast two blocks east of Bob in creative, which hurts him not: an end crystal he hits himself, or primed TNT
+    about to go off. The push his client is sent (the explosion packet's playerKnockback, ServerExplosion.hitPlayers)
+    and his motion packet. Each case has a floor of its own (`row` blocks south), as a blast digs a crater."""
+    at, z = (V[0], V[1], V[2] + row), V[2] + row
+    summon = {'crystal': f'cmd Alice summon minecraft:end_crystal {at[0] + 2} {at[1]} {z} {{ShowBottom:0b}}',
+              'tnt': f'cmd Alice summon minecraft:tnt {at[0] + 2} {at[1]} {z} {{fuse:20s}}'}[blast]
+    lines = ['cmd Alice kill @e[type=!player]', 'cmd Bob gamemode creative',
+             f'cmd Alice tp Bob {at[0]} {at[1]} {at[2]} -90 0', *stand('Bob', at, -90), 'ticks 20', summon, 'ticks 5']
+    lines += ['attack Bob end_crystal', 'ticks 10'] if blast == 'crystal' else ['ticks 30']
+    return lines + [*stand('Bob', at, -90), 'cmd Bob gamemode survival', 'cmd Alice kill @e[type=!player]',
+                    f'cmd Alice tp Bob {V[0]} {V[1]} {V[2]} 90 0', *stand('Bob', V, 90)]
+
+
 CASES = {
     'cow-plain': mob_case('cow'),
     'cow-sprint': mob_case('cow', sprint=True),
@@ -171,12 +209,16 @@ CASES = {
     'pvp-knockback-2': pvp_case(weapon=KNOCKBACK_SWORD),
     'pvp-crit': pvp_case(crit=True),
     'pvp-shield': pvp_case(shield=True),
+    'pvp-shield-partial': pvp_case(shield=True, shield_item=HALF_SHIELD),
+    'zombie-shield-partial': zombie_half_shield_case(),
     'pvp-netherite': pvp_case(armour=True),
     'pvp-twice': pvp_case(twice=True),
     'pvp-sprint-twice': pvp_case(sprint=True, twice=True),
     'pvp-mace': pvp_case(weapon='minecraft:mace', mace=True),
     'pvp-cooldown': pvp_case(cooldown=True),
     'zombie-hits-bob': mob_hits_case('zombie'),
+    'crystal-creative': blast_case('crystal', 16),
+    'tnt-creative': blast_case('tnt', 32),
 }
 SETUP = ['cmd Alice gamerule spawn_mobs false', 'cmd Alice gamerule spawn_monsters false',
          'cmd Alice kill @e[type=!player]', 'cmd Alice gamerule advance_time false', 'cmd Alice time set midnight',
@@ -301,8 +343,8 @@ DATA = re.compile(r'^chat \S+ has the following entity data: \[(.*)\]$')
 
 
 def compared(lines):
-    """Per case, what is compared: the mob's Pos and Motion (to 1e-9), and each player's motion packets and
-    sprint flag."""
+    """Per case, what is compared: the mob's Pos and Motion (to 1e-9), and each player's motion packets, the push
+    each explosion packet carries for them and their sprint flag."""
     cases = {}
     for line in lines:
         who, step, text = line.split(' ', 2)
@@ -313,7 +355,7 @@ def compared(lines):
         data = DATA.match(text)
         if who == 'Alice' and data:
             kept.append('data ' + ' '.join(f'{float(v.rstrip("d")):.9f}' for v in data.group(1).split(', ')))
-        elif text.startswith('motion self') or text.startswith('sprinting'):
+        elif text.startswith(('motion self', 'sprinting', 'explode push')):
             kept.append(f'{who} {text}')
         elif text.startswith('error') or text.startswith('disconnected'):
             kept.append(f'{who} {text}')

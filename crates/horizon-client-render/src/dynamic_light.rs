@@ -13,6 +13,38 @@ use std::collections::HashMap;
 
 /// Lights the shaders read: `Globals.dynamic_lights` in gfx.rs, terrain.wgsl and entity.wgsl.
 pub const MAX: usize = 16;
+/// Camera-relative position and radius; RGB intensity in a second vec4. The shaders read it as a flat
+/// `array<vec4<f32>, 32>` (nested arrays need ARB_arrays_of_arrays, absent from GL below 4.3).
+pub type Colored = [[f32; 4]; 2];
+
+/// Nearest validated native visual lights; never enters gameplay lighting.
+pub fn select_colored(
+    sources: impl Iterator<Item = ([f64; 3], u32, f32, f32)>,
+    camera: DVec3,
+) -> Vec<Colored> {
+    let mut nearest: Vec<_> = sources.collect();
+    nearest.sort_by(|a, b| {
+        (DVec3::from(a.0) - camera)
+            .length_squared()
+            .total_cmp(&(DVec3::from(b.0) - camera).length_squared())
+    });
+    nearest
+        .into_iter()
+        .take(MAX)
+        .map(|(at, rgb, radius, intensity)| {
+            let at = (DVec3::from(at) - camera).as_vec3();
+            [
+                [at.x, at.y, at.z, radius],
+                [
+                    ((rgb >> 16) & 255) as f32 / 255.0,
+                    ((rgb >> 8) & 255) as f32 / 255.0,
+                    (rgb & 255) as f32 / 255.0,
+                    intensity,
+                ],
+            ]
+        })
+        .collect()
+}
 /// What an entity on fire gives off, as a lit campfire or fire block does.
 pub const BURNING: u8 = 15;
 /// Sources farther than this from the camera light nothing it can see well.
@@ -42,6 +74,12 @@ impl Luminance {
 
     pub fn of(&self, item: &str) -> u8 {
         self.0.get(item).copied().unwrap_or(0)
+    }
+
+    /// The HDR tier of an item that glows, as its block's (`mesher::hdr_tier`), 0 for the rest.
+    pub fn hdr_tier(&self, item: &str) -> u8 {
+        let name = item.strip_prefix("minecraft:").unwrap_or(item);
+        crate::mesher::hdr_tier(name, self.of(item)) & !crate::mesher::WHOLE
     }
 
     #[cfg(test)]
@@ -86,6 +124,34 @@ pub fn level_at(pos: [f32; 3], lights: &[[f32; 4]]) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn items_shine_as_their_blocks() {
+        use crate::mesher::{BRIGHT, INCANDESCENT};
+        let lum = Luminance::from_pairs(&[
+            ("minecraft:torch", 14),
+            ("minecraft:glowstone", 15),
+            ("minecraft:lava_bucket", 15),
+            ("minecraft:campfire", 15),
+        ]);
+        assert_eq!(lum.hdr_tier("minecraft:torch"), INCANDESCENT);
+        assert_eq!(lum.hdr_tier("minecraft:glowstone"), BRIGHT);
+        assert_eq!(lum.hdr_tier("minecraft:lava_bucket"), INCANDESCENT);
+        // Items carry no sprite thresholds: only the tier, not "all over".
+        assert_eq!(lum.hdr_tier("minecraft:campfire"), BRIGHT);
+        assert_eq!(lum.hdr_tier("minecraft:apple"), 0);
+    }
+
+    #[test]
+    fn colored_sources_are_camera_relative_and_bounded() {
+        let lights = select_colored(
+            (0..20).map(|x| ([x as f64, 64.0, 0.0], 0xff8040, 5.0, 0.5)),
+            DVec3::new(2.0, 64.0, 0.0),
+        );
+        assert_eq!(lights.len(), MAX);
+        assert_eq!(lights[0][0][0], 0.0);
+        assert_eq!(lights[0][1], [1.0, 128.0 / 255.0, 64.0 / 255.0, 0.5]);
+    }
 
     #[test]
     fn nearest_sources_win() {

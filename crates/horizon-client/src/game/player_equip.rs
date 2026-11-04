@@ -60,12 +60,13 @@ impl Game<'_> {
         if self.remote.is_some() || self.spectator() {
             return;
         }
+        self.native_on_equip(slot, new);
         let Some(at) = self.player.as_ref().map(|p| p.position) else {
             return;
         };
         let at = [at.x, at.y, at.z];
         let equippable = new
-            .and_then(|s| self.res.items().get(&s.item))
+            .and_then(|s| self.items().get(&s.item))
             .and_then(|info| {
                 let own = info.equip_slot.as_deref()?;
                 Some((own == slot, info.equip_sound.clone()))

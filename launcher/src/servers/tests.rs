@@ -25,6 +25,7 @@ fn create_asks_init_and_config_set() {
         },
         players: vec!["Alex".into(), "Steve".into()],
         eula: true,
+        check_accounts: false,
         ..NewServer::default()
     };
     assert_eq!(
@@ -34,7 +35,6 @@ fn create_asks_init_and_config_set() {
     );
     let open = NewServer {
         friends_only: false,
-        check_accounts: true,
         world: World::Copy("/saves/Old".into()),
         ..NewServer::default()
     };
@@ -276,4 +276,19 @@ fn deleting_refuses_an_unrecognized_folder_and_keeps_files_on_trash_failure() {
     );
     assert!(root.join("server.toml").exists());
     fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn the_game_mode_comes_from_server_toml() {
+    let dir = scratch("game-mode");
+    assert_eq!(game_mode(&dir), None);
+    fs::write(
+        dir.join("server.toml"),
+        "[server]\nport = 25565\n\n[world]\nname = \"world\"\ngame_mode = \"creative\"\n",
+    )
+    .unwrap();
+    assert_eq!(game_mode(&dir).as_deref(), Some("creative"));
+    fs::write(dir.join("server.toml"), "[server]\nport = 25565\n").unwrap();
+    assert_eq!(game_mode(&dir), None);
+    let _ = fs::remove_dir_all(&dir);
 }

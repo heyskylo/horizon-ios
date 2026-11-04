@@ -31,7 +31,43 @@ impl Default for SignText {
             lines: Default::default(),
             color: BLACK,
             glowing: false,
+            click: Default::default(),
         }
+    }
+}
+/// The click events `SignBlockEntity.executeClickCommandsIfPresent` acts on.
+#[derive(Debug, PartialEq)]
+pub enum ClickAction<'a> {
+    /// `ClickEvent.RunCommand`.
+    RunCommand(String),
+    /// `ClickEvent.ShowDialog`: a registry id or the dialog itself.
+    ShowDialog(&'a Tag),
+    /// `ClickEvent.Custom`.
+    Custom {
+        id: String,
+        payload: Option<&'a Tag>,
+    },
+}
+/// A saved `click_event` as its action: the three a sign acts on, read the
+/// way `ClickEvent.CODEC` does; any other action or a malformed one is None.
+pub fn click_action(event: &Tag) -> Option<ClickAction<'_>> {
+    let Some(Tag::String(action)) = event.get("action") else {
+        return None;
+    };
+    match action.to_string_lossy().as_str() {
+        "run_command" => match event.get("command") {
+            Some(Tag::String(command)) => Some(ClickAction::RunCommand(command.to_string_lossy())),
+            _ => None,
+        },
+        "show_dialog" => event.get("dialog").map(ClickAction::ShowDialog),
+        "custom" => match event.get("id") {
+            Some(Tag::String(id)) => Some(ClickAction::Custom {
+                id: id.to_string_lossy(),
+                payload: event.get("payload"),
+            }),
+            _ => None,
+        },
+        _ => None,
     }
 }
 impl SignText {
@@ -41,6 +77,14 @@ impl SignText {
     /// `DyeColor.getTextColor` of this side.
     pub fn text_color(&self) -> u32 {
         DYE_TEXT[usize::from(self.color.min(15))].1
+    }
+    /// `SignText.hasAnyClickCommands`: a line whose style has a `run_command`
+    /// click event.
+    pub fn has_any_click_commands(&self) -> bool {
+        self.click
+            .iter()
+            .flatten()
+            .any(|event| matches!(click_action(event), Some(ClickAction::RunCommand(_))))
     }
     /// `AbstractSignRenderer.getDarkColor`.
     pub fn dark_color(&self) -> u32 {
@@ -70,6 +114,13 @@ impl SignData {
     pub fn line_height(&self) -> f32 {
         if self.hanging { 9.0 } else { 10.0 }
     }
+    /// `SignBlockEntity.canExecuteClickCommands`: a waxed sign whose side
+    /// has a `run_command` click event. (Horizon keeps no filtered text, so
+    /// `Player.isTextFilteringEnabled` never selects it.)
+    pub fn can_execute_click_commands(&self, front: bool) -> bool {
+        let side = if front { &self.front } else { &self.back };
+        self.waxed && side.has_any_click_commands()
+    }
     /// NBT entries after the common block-entity header.
     pub fn encode(&self) -> Vec<(&'static str, Tag)> {
         let side = |t: &SignText| {
@@ -79,7 +130,18 @@ impl SignData {
                     Tag::List(
                         t.lines
                             .iter()
-                            .map(|l| Tag::String(l.as_str().into()))
+                            .zip(&t.click)
+                            .map(|(line, click)| {
+                                let text = Tag::String(line.as_str().into());
+                                match click {
+                                    // The line's style keeps its click event.
+                                    Some(event) => Tag::compound([
+                                        ("text", text),
+                                        ("click_event", event.clone()),
+                                    ]),
+                                    None => text,
+                                }
+                            })
                             .collect(),
                     ),
                 ),
@@ -90,19 +152,25 @@ impl SignData {
                 ("has_glowing_text", Tag::Byte(i8::from(t.glowing))),
             ])
         };
-        vec![
+        let mut out = Vec::new();
+        if self.allow_op_features {
+            out.push(("allow_op_features", Tag::Byte(1)));
+        }
+        out.extend([
             ("front_text", side(&self.front)),
             ("back_text", side(&self.back)),
             ("is_waxed", Tag::Byte(i8::from(self.waxed))),
-        ]
+        ]);
+        out
     }
     pub fn decode(&mut self, tag: &Tag) {
         let side = |t: Option<&Tag>| -> SignText {
             let mut out = SignText::default();
             let Some(t) = t else { return out };
             if let Some(Tag::List(messages)) = t.get("messages") {
-                for (line, m) in out.lines.iter_mut().zip(messages) {
+                for ((line, click), m) in out.lines.iter_mut().zip(&mut out.click).zip(messages) {
                     *line = component_text(m);
+                    *click = click_event(m);
                 }
             }
             if let Some(Tag::String(c)) = t.get("color") {
@@ -117,6 +185,21 @@ impl SignData {
         self.front = side(tag.get("front_text"));
         self.back = side(tag.get("back_text"));
         self.waxed = matches!(tag.get("is_waxed"), Some(Tag::Byte(b)) if *b != 0);
+        self.allow_op_features =
+            matches!(tag.get("allow_op_features"), Some(Tag::Byte(b)) if *b != 0);
+    }
+}
+/// The `click_event` in the style of a stored line: the one of a component
+/// object, or of the first component of a list (`createFromList` copies it
+/// and appends the rest as siblings).
+fn click_event(tag: &Tag) -> Option<Tag> {
+    let root = match tag {
+        Tag::List(list) => list.first()?,
+        other => other,
+    };
+    match root.get("click_event") {
+        Some(event @ Tag::Compound(_)) => Some(event.clone()),
+        _ => None,
     }
 }
 /// Plain text of a stored text component (string, `{text: ...}` or JSON string).
@@ -139,10 +222,14 @@ fn component_text(tag: &Tag) -> String {
         _ => String::new(),
     }
 }
-/// Whether a block name is a sign (standing, wall, hanging or wall hanging).
+/// Whether a vanilla block's name is a sign (standing, wall, hanging or wall
+/// hanging). A mod's sign goes by its template's class, whatever its name; a
+/// mod's `road_sign` of stone is no sign.
 pub fn sign_kind(name: &str) -> Option<bool> {
     let name = name.strip_prefix("minecraft:").unwrap_or(name);
-    if name == "hanging_sign" || name.ends_with("_hanging_sign") {
+    if name.contains(':') {
+        None
+    } else if name == "hanging_sign" || name.ends_with("_hanging_sign") {
         Some(true)
     } else if name == "sign" || name.ends_with("_sign") {
         Some(false)
@@ -150,15 +237,17 @@ pub fn sign_kind(name: &str) -> Option<bool> {
         None
     }
 }
-/// Wood type of a sign block (`SignBlock.getWoodType`), for the editor texture.
-pub fn wood_type(name: &str) -> &str {
-    let name = name.strip_prefix("minecraft:").unwrap_or(name);
-    for suffix in ["_wall_hanging_sign", "_hanging_sign", "_wall_sign", "_sign"] {
-        if let Some(wood) = name.strip_suffix(suffix) {
-            return wood;
+/// The sprite of a wood type's editor background, `folder` being `signs` or
+/// `hanging_signs`: `textures/gui/<folder>/<wood>.png` (`SignEditScreen`), in
+/// a mod's namespace when the wood names one.
+pub fn editor_sprite(folder: &str, wood: &str) -> String {
+    match wood.split_once(':') {
+        Some((namespace, path)) if namespace != "minecraft" => {
+            format!("{namespace}:gui/{folder}/{path}")
         }
+        Some((_, path)) => format!("gui/{folder}/{path}"),
+        None => format!("gui/{folder}/{wood}"),
     }
-    "oak"
 }
 
 #[cfg(test)]
@@ -179,12 +268,25 @@ mod tests {
         assert_eq!(decoded, data);
     }
     #[test]
+    fn a_mods_sign_like_name_does_not_make_it_a_sign() {
+        assert_eq!(sign_kind("ruby:road_sign"), None);
+        assert!(crate::containers::BlockEntity::for_block("ruby:road_sign").is_none());
+    }
+    #[test]
     fn names_and_colors() {
         assert_eq!(sign_kind("minecraft:oak_wall_hanging_sign"), Some(true));
         assert_eq!(sign_kind("minecraft:sign"), Some(false));
         assert_eq!(sign_kind("minecraft:spruce_wall_sign"), Some(false));
         assert_eq!(sign_kind("minecraft:stone"), None);
-        assert_eq!(wood_type("minecraft:dark_oak_wall_sign"), "dark_oak");
+        assert_eq!(editor_sprite("signs", "dark_oak"), "gui/signs/dark_oak");
+        assert_eq!(
+            editor_sprite("signs", "minecraft:cherry"),
+            "gui/signs/cherry"
+        );
+        assert_eq!(
+            editor_sprite("hanging_signs", "ruby:elm"),
+            "ruby:gui/hanging_signs/elm"
+        );
         assert_eq!(SignText::default().dark_color(), 0);
         let red = SignText {
             color: 14,

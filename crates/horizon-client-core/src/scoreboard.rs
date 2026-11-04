@@ -107,11 +107,9 @@ pub fn style_from_json(v: &Value) -> Style {
     let mut s = Style::default();
     let Some(o) = v.as_object() else { return s };
     if let Some(c) = o.get("color").and_then(Value::as_str) {
-        s.color = text::named_color(c).or_else(|| {
-            c.strip_prefix('#')
-                .and_then(|h| u32::from_str_radix(h, 16).ok())
-        });
+        s.color = text::named_color(c).or_else(|| component::hex_color(c));
     }
+    s.shadow_color = o.get("shadow_color").and_then(component::shadow_color);
     let flag = |k: &str| o.get(k).and_then(Value::as_bool);
     s.bold = flag("bold");
     s.italic = flag("italic");
@@ -662,10 +660,22 @@ pub fn name_shown(own: Option<&Team>, viewer: Option<&Team>, v: NameView) -> boo
     }
     !v.hud_hidden && !v.is_camera && visible && !v.is_vehicle
 }
-/// `ServerPlayer.die`: whether a player's death message reaches the player
-/// themselves (the team broadcasts leave out the dying player).
-pub fn own_death_message_shown(team: Option<&Team>) -> bool {
-    team.is_none_or(|t| t.death_message_visibility == Visibility::Always)
+/// `ServerPlayer.die`: whether `other` hears the death message of `dying`
+/// (`broadcastSystemMessage`, `broadcastSystemToTeam` or
+/// `broadcastSystemToAllExceptTeam`, by the team's death message visibility).
+pub fn death_message_reaches(board: &Scoreboard, dying: &str, other: &str) -> bool {
+    let Some(team) = board.players_team(dying) else {
+        return true;
+    };
+    let same_team = board
+        .players_team(other)
+        .is_some_and(|t| t.name == team.name);
+    match team.death_message_visibility {
+        Visibility::Always => true,
+        Visibility::Never => false,
+        Visibility::HideForOtherTeams => same_team && other != dying,
+        Visibility::HideForOwnTeam => !same_team,
+    }
 }
 
 // ---- objectives and scores ---------------------------------------------
@@ -1328,9 +1338,9 @@ fn decompose(c: &Comp) -> (serde_json::Map<String, Value>, Vec<Comp>) {
                     }
                     "color" => {
                         let color = v.as_str().map(|s| match s.strip_prefix('#') {
-                            Some(hex) => match u32::from_str_radix(hex, 16) {
-                                Ok(rgb) => format!("#{rgb:06X}"),
-                                Err(_) => s.to_owned(),
+                            Some(_) => match component::hex_color(s) {
+                                Some(rgb) => format!("#{rgb:06X}"),
+                                None => s.to_owned(),
                             },
                             None => s.to_owned(),
                         });
@@ -1549,5 +1559,51 @@ mod tests {
             NumberFormat::from_tag(&t),
             Some(NumberFormat::Styled(serde_json::json!({"color": "gold"})))
         );
+    }
+}
+
+/// `DamageSource.getLocalizedDeathMessage`: the cause's item with a custom
+/// name gets the `<id>.item` message, with the item's name as a third
+/// argument.
+pub fn death_message_args(
+    key: &str,
+    victim: &Text,
+    cause: &Text,
+    item: Option<&Text>,
+) -> (String, Vec<Text>) {
+    match item {
+        Some(item) => (
+            format!("{key}.item"),
+            vec![victim.clone(), cause.clone(), item.clone()],
+        ),
+        None => (key.to_owned(), vec![victim.clone(), cause.clone()]),
+    }
+}
+
+#[cfg(test)]
+mod death_message_tests {
+    use super::*;
+
+    #[test]
+    fn the_death_message_names_the_causes_item_when_it_has_a_custom_name() {
+        let victim = Text::literal("Steve");
+        let cause = Text::literal("Zombie");
+        // DamageSource.getLocalizedDeathMessage: the item variant, with the
+        // item's name as the third argument.
+        let (key, args) = death_message_args(
+            "death.attack.arrow",
+            &victim,
+            &cause,
+            Some(&Text::literal("My Sword")),
+        );
+        assert_eq!(key, "death.attack.arrow.item");
+        assert_eq!(args.len(), 3);
+        assert_eq!(args[0].plain(), "Steve");
+        assert_eq!(args[1].plain(), "Zombie");
+        assert_eq!(args[2].plain(), "My Sword");
+        // Without a custom name the message keeps its two arguments.
+        let (key, args) = death_message_args("death.attack.arrow", &victim, &cause, None);
+        assert_eq!(key, "death.attack.arrow");
+        assert_eq!(args.len(), 2);
     }
 }

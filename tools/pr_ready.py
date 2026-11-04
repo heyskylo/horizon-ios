@@ -22,6 +22,7 @@ Progress, and the end of a failed check's output, go to stderr (--verbose: all o
 """
 
 import argparse
+import datetime
 import hashlib
 import json
 import os
@@ -69,10 +70,13 @@ ln -sfn "$state/parity-runner" .local/parity-runner && ln -sfn "$state/parity-ta
 }
 ROOT_RUST = {"Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "rustfmt.toml", "clippy.toml"}
 LAUNCHER_FEATURES = """export features=""
-if [ "$(uname)" = Darwin ] && ! xcrun metal --version > /dev/null 2>&1; then features="--features gpui/runtime_shaders"; fi
+if [ "$(uname)" = Darwin ] && ! xcrun metal --version > /dev/null 2>&1; then features="--features gpui_platform/runtime_shaders"; fi
 in_shell() { if [ "$(uname)" = Linux ] && ! pkg-config --exists xkbcommon 2>/dev/null && command -v nix-shell > /dev/null; then
   nix-shell shell.nix --run "$1"; else bash -c "$1"; fi; }"""
 
+
+# Build-script inputs outside the crates: catalog-only edits still need to build and test their consumers.
+MOD_API_INPUTS = ("native-hooks.json", "tools/native-hook-fragments/")
 
 def is_doc(path):
     return path.endswith(".md")
@@ -80,7 +84,8 @@ def is_doc(path):
 
 def workspace_rust(path):
     """Whether a change to path is built by the main Cargo workspace."""
-    return not is_doc(path) and (path.startswith(("crates/", "xtask/", ".cargo/")) or path in ROOT_RUST)
+    return not is_doc(path) and (path.startswith(("crates/", "xtask/", ".cargo/", *MOD_API_INPUTS))
+                                 or path in ROOT_RUST)
 
 
 def launcher_rust(path):
@@ -95,6 +100,16 @@ def touched_crates(paths, packages):
     crates = set()
     for path in paths:
         if is_doc(path):
+            continue
+        if path.startswith(MOD_API_INPUTS):
+            crates.update({"horizon-client", "horizon-client-render", "horizon-mod-api-gen"})
+            continue
+        if "horizon-client-lib" in packages and path.startswith("crates/horizon-client/"):
+            relative = path.removeprefix("crates/horizon-client/")
+            gameplay = relative in {"Cargo.toml", "build.rs", "windows-segment-heap.manifest",
+                                    "src/lib.rs", "src/main.rs", "src/entry.rs", "src/game.rs", "tests/launch_api.rs"} \
+                or relative.startswith("src/game/")
+            crates.add("horizon-client" if gameplay else "horizon-client-lib")
             continue
         owners = [name for name, directory in packages.items() if path.startswith(directory.rstrip("/") + "/")]
         if owners:
@@ -269,32 +284,65 @@ def parity_summary(output):
     return text
 
 
-# CI's verify job (.github/workflows/ci.yml): clippy over the whole workspace with the game's code mods, and over the
-# server build (the game without sound or controllers); tests with code mods and mod packaging.
-CI_CLIPPY = "cargo clippy --workspace --all-targets --locked --features horizon-client/mods -- -D warnings"
+# CI's verify job (.github/workflows/ci.yml): clippy over the whole workspace, and over the server build (the game
+# without sound or controllers).
+CI_CLIPPY = "cargo clippy --workspace --all-targets --locked -- -D warnings"
 CI_CLIPPY_SERVER = "cargo clippy -p horizon-client --all-targets --locked --no-default-features -- -D warnings"
-CI_TEST_FEATURES = "horizon-client/mods,horizon-mods/pack"
+
+
+# CI installs the current stable each run (rustup toolchain install stable), and Rust ships one every six weeks
+# since 1.85.0 on 2025-02-20: so CI's version follows from the date, without the network.
+RUST_TRAIN = (85, datetime.date(2025, 2, 20))
+
+
+def ci_rust(today):
+    """The minor version of the stable Rust CI runs on this date."""
+    minor, released = RUST_TRAIN
+    return minor + (today - released).days // 42
+
+
+def rust_version():
+    """The rustc the checks here run with, as (major, minor, patch), or None."""
+    try:
+        output = subprocess.run(["rustc", "--version"], cwd=ROOT, capture_output=True, text=True, check=True).stdout
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    match = re.match(r"rustc (\d+)\.(\d+)\.(\d+)", output)
+    return tuple(int(part) for part in match.groups()) if match else None
+
+
+def old_rust(version, today):
+    """A warning when this Rust is older than CI's: an older clippy flags lints CI's no longer does."""
+    if version is None or version[:1] != (1,) or version[1] >= ci_rust(today):
+        return None
+    return (f"{'.'.join(map(str, version))} is older than CI's stable (1.{ci_rust(today)}): clippy may flag lints "
+            "CI doesn't, update with `rustup update`")
+
+
+def mark_old_rust(steps, warning):
+    """A ⚠️ Rust row above the first clippy that runs, and failed clippy rows point at it. Never fails the run."""
+    clippy = [step for step in steps if step.name.endswith("clippy") and step.skip is None]
+    if not warning or not clippy:
+        return
+    for step in clippy:
+        if step.status == "fail":
+            step.detail += "; likely the old Rust above"
+    rust = Step("Rust", where="git")
+    rust.status, rust.detail = "warn", warning
+    steps.insert(steps.index(clippy[0]), rust)
 
 
 def mod_features(crates):
-    """The features CI's workspace-wide test run gives these crates (code mods are off by default: docs/mods.md).
-    Cargo unifies features over the packages it builds, so a crate tested alone needs the ones the workspace would
-    have turned on for it: horizon-client's code mods, and horizon-mods' runtime, packaging and index."""
-    if crates is None:
-        return f" --features {CI_TEST_FEATURES}"
-    features = []
-    if "horizon-mods" in crates:
-        features += ["horizon-mods/runtime", "horizon-mods/pack", "horizon-mods/index"]
-    if "horizon-client" in crates:
-        features.append("horizon-client/mods")
-    return f" --features {','.join(features)}" if features else ""
+    """The features CI's workspace-wide test run gives these crates. Cargo unifies features over the packages it
+    builds, so a crate tested alone needs the ones the workspace would have turned on for it: horizon-mods' index."""
+    return " --features horizon-mods/index" if crates is not None and "horizon-mods" in crates else ""
 
 
 # What horizon-client's full content-root tests load (mod_content_tests.rs). They take minutes on prepared data, so
 # they are #[ignore]d and run here only when one of these changes.
 CONTENT_ROOT = ("crates/horizon-client/src/mod_content", "crates/horizon-client-render/src/assets.rs", "crates/horizon-items/",
                 "crates/horizon-mods/", "crates/horizon-assets/")
-CONTENT_ROOT_TESTS = "cargo test --locked -p horizon-client --features horizon-client/mods --lib mod_content::tests:: -- --ignored"
+CONTENT_ROOT_TESTS = "cargo test --locked -p horizon-client-lib --lib mod_content::tests:: -- --ignored"
 
 
 def plan(args, base, changed, crates_of, libraries, dependencies):
@@ -526,6 +574,10 @@ def main():
         p.endswith("Cargo.lock") for p in changed) else "changes with a Cargo.toml")
     run_script([step for step in steps if step.where == "here" and step.status is None], "local", args.verbose)
     run_script([step for step in steps if step.where == "host" and step.status is None], args.host, args.verbose)
+    warning = old_rust(rust_version(), datetime.date.today()) if args.host == "local" else None
+    if warning and any(step.name.endswith("clippy") and step.skip is None for step in steps):
+        print(f"pr_ready: Rust {warning}", file=sys.stderr)
+    mark_old_rust(steps, warning)
 
     label = suggested_label(changed, release_train.exporters())
     print(block(args, args.base, merge_base, sorted(changed), counts, steps, label,

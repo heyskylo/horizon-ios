@@ -103,6 +103,10 @@ pub struct Heightmap {
 }
 
 impl Heightmap {
+    /// The heap bytes of its packed heights.
+    pub fn heap_bytes(&self) -> usize {
+        self.data.heap_bytes()
+    }
     /// Bounded to the vanilla codec's positive, aligned vertical ranges.
     pub fn new(kind: HeightmapType, min_y: i32, height: i32) -> Result<Self, HeightmapError> {
         if !(-2032..=2031).contains(&min_y)
@@ -133,8 +137,35 @@ impl Heightmap {
         x.wrapping_add(z.wrapping_mul(16)) as usize
     }
 
+    /// Whether `update` at (`x`, `y`, `z`) returns at once, whatever the
+    /// state: the block is two or more below the first available one. `x`
+    /// and `z` are within 0..16. Most generation writes are (the surface
+    /// rule turns every stone under y 8 to deepslate), and this skips the
+    /// checks `update` does first.
+    #[inline]
+    pub fn below_update(&self, chunk: &impl HeightmapChunk, x: i32, y: i32, z: i32) -> bool {
+        debug_assert!((0..16).contains(&x) && (0..16).contains(&z));
+        let first = (self.data.read(Self::index(x, z)) as i32).wrapping_add(self.min_y);
+        y <= first.wrapping_sub(2) && self.check_chunk(chunk).is_ok()
+    }
+
     pub fn first_available(&self, x: i32, z: i32) -> Result<i32, HeightmapError> {
         Ok((self.data.get(Self::index(x, z))? as i32).wrapping_add(self.min_y))
+    }
+
+    /// Whether any column of the local square `x0..=x1` by `z0..=z1` (each
+    /// within 0..16) has its first available y at or above `y`.
+    pub fn any_first_available_at_least(
+        &self,
+        [x0, x1]: [i32; 2],
+        [z0, z1]: [i32; 2],
+        y: i32,
+    ) -> bool {
+        debug_assert!(0 <= x0 && x1 < 16 && 0 <= z0 && z1 < 16);
+        (z0..=z1).any(|z| {
+            (x0..=x1)
+                .any(|x| (self.data.read(Self::index(x, z)) as i32).wrapping_add(self.min_y) >= y)
+        })
     }
 
     pub fn highest_taken(&self, x: i32, z: i32) -> Result<i32, HeightmapError> {

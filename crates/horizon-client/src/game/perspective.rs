@@ -2,7 +2,7 @@
 //! in front, cycled by F5), the detached camera (`Camera.setup` with
 //! `getMaxZoom`), and the local player drawn as a model: in third person
 //! and in the inventory (`InventoryScreen.extractEntityInInventoryFollowsMouse`).
-use super::{Game, Screen};
+use super::{Game, Screen, native_mob_draw::NativePlayerRender, shoulders::shoulder_variants};
 use horizon_client::{
     blocks::BlockFacts,
     camera::{CameraEntity, LivingCamera},
@@ -11,6 +11,7 @@ use horizon_client::{
 use horizon_client::{
     hud::HudBatch,
     mobs::{Anim, Brain, Mob, MobType},
+    mouse::Rotation,
     pose::Pose,
 };
 use horizon_core::{
@@ -23,7 +24,11 @@ use horizon_world::{
     registry::BlockStateId,
     world_ray::{RayBlockMode, RayFluidMode, RayWorld, clip_world},
 };
-use std::{io, path::Path, sync::Arc};
+use std::{
+    io,
+    path::{Path, PathBuf},
+    sync::{Arc, Mutex},
+};
 
 /// `Level.clip` with `ClipContext.Block.VISUAL` and no fluids:
 /// `BlockBehaviour.getVisualShape` is the collision shape except for the
@@ -122,9 +127,41 @@ impl CameraType {
         }
     }
 }
-/// The player's model type (`PlayerModel` with the default skin).
+/// `Entity.isInvisible` for the window's player: shared flag 5 as its server
+/// sets it (`shared_flag`), with the Invisibility effect or by a plugin's
+/// `setInvisible` alone, as pose plugins hide the real body under the pose
+/// (#3788); a world in the frame has only the effect.
+fn own_invisible(effects: &horizon_client::effects::PlayerEffects, shared_flag: bool) -> bool {
+    shared_flag || effects.get("invisibility").is_some()
+}
+/// `LivingEntityRenderer.isBodyVisible` and `isInvisibleTo` for the player's
+/// own body, seen by itself: an invisible player (`own_invisible`) hides it
+/// unless its team sees friendly invisibles, where vanilla draws it
+/// translucent.
+fn body_visible(invisible: bool, team: Option<&horizon_client::scoreboard::Team>) -> bool {
+    !horizon_client::scoreboard::invisible_to(team, team, false, invisible)
+}
+/// The player's model type for each resources root it was asked for.
+static PLAYER_TYPES: Mutex<Vec<(PathBuf, Option<Arc<MobType>>)>> = Mutex::new(Vec::new());
+
+/// The player's model type (`PlayerModel` with the default skin), read once
+/// per resources root: `entity-models.json` doesn't change while the game
+/// runs, and parsing it again held every world join for about 100 ms. The
+/// world resources read it as the game starts (`load_world_rest`), so a join
+/// finds it; a resource pack change's new root is read once.
 pub(super) fn player_type(root: &Path) -> Option<Arc<MobType>> {
-    horizon_client::mobs::load_model(root, "minecraft:player#main").map(|model| {
+    let mut cache = PLAYER_TYPES.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((_, kind)) = cache.iter().find(|(cached, _)| cached == root) {
+        return kind.clone();
+    }
+    let kind = load_player_type(root);
+    cache.push((root.to_owned(), kind.clone()));
+    kind
+}
+/// `player_type` from the document: the model and its layers from one parse.
+fn load_player_type(root: &Path) -> Option<Arc<MobType>> {
+    let models = horizon_client::mobs::EntityModelDocument::load(root).ok()?;
+    models.model("minecraft:player#main").map(|model| {
         Arc::new(MobType {
             id: "minecraft:player".into(),
             // Players render as a humanoid; the species only drives local AI.
@@ -158,10 +195,14 @@ pub(super) fn player_type(root: &Path) -> Option<Arc<MobType>> {
             ambient_interval: 80,
             flags: Default::default(),
             model: Arc::new(model),
-            // PlayerModel's slim arms, for slim skins.
-            layers: horizon_client::mobs::load_model(root, "minecraft:player_slim#main")
-                .map(|slim| [("player_slim#main".to_owned(), Arc::new(slim))].into())
-                .unwrap_or_default(),
+            // PlayerModel's slim arms, for slim skins, and PlayerCapeModel.
+            layers: ["player_slim#main", "player#cape"]
+                .into_iter()
+                .filter_map(|key| {
+                    let model = models.model(&format!("minecraft:{key}"))?;
+                    Some((key.to_owned(), Arc::new(model)))
+                })
+                .collect(),
             texture: "entity/player/wide/steve".into(),
             brain: Brain::Passive,
             anim: Anim::Humanoid { zombie_arms: false },
@@ -189,13 +230,88 @@ fn wrap(d: f32) -> f32 {
 impl Game<'_> {
     /// `key.togglePerspective`.
     pub(super) fn cycle_camera(&mut self) {
+        let previous = self.camera_type;
         self.camera_type = self.camera_type.cycle();
+        // Minecraft.handleKeybinds: the chain follows the first-person view.
+        if previous.first_person() != self.camera_type.first_person() {
+            self.check_entity_post_effect(self.camera_type.first_person());
+        }
     }
     /// `Camera.update` (`alignWithEntity` and `getMaxZoom`): the
     /// interpolated eye, or a point up to the camera distance behind (or in
     /// front of) it, pulled in where visual shapes are in the way. Returns the
     /// position, yaw and pitch to render from.
     pub(super) fn camera_view(&mut self, partial: f32) -> Option<(glam::DVec3, f32, f32)> {
+        // Minecraft.cameraEntity: a server's spectator camera on a mob or
+        // another player.
+        let (entity, descending) = match self.camera_mob() {
+            Some(m) => (super::remote_camera::mob_camera_entity(m), false),
+            None => {
+                let mut entity = self.player_camera_entity()?;
+                if let Some(position) = self.remote_minecart_rider_position(partial) {
+                    // Already evaluated at partial: do not linearly interpolate
+                    // between tick endpoints across a corner a second time.
+                    entity.position = position;
+                    entity.previous = position;
+                }
+                (entity, self.player.as_ref()?.shift_key_down)
+            }
+        };
+        let mut view = self.view;
+        let kind = match self.camera_type {
+            CameraType::FirstPerson => horizon_client::camera::CameraType::FirstPerson,
+            CameraType::ThirdPersonBack => horizon_client::camera::CameraType::ThirdPersonBack,
+            CameraType::ThirdPersonFront => horizon_client::camera::CameraType::ThirdPersonFront,
+        };
+        let context = CollisionContext::for_entity(
+            CollisionEntity {
+                identity: EntityIdentity(0),
+                y: entity.position[1],
+                descending,
+                main_hand: Some(CollisionItem::EMPTY),
+            },
+            false,
+        );
+        let mut rays = VisualRays {
+            scene: SceneCollisions {
+                world: &self.world,
+                binding: self.collision,
+                subject: None,
+            },
+            facts: self.res.facts(),
+            context,
+        };
+        view.align_with_entity_distance(
+            &entity,
+            partial,
+            kind,
+            |distance| {
+                let mut distance = distance;
+                self.native_camera_distance(partial, kind.is_mirrored(), &entity, &mut distance);
+                distance
+            },
+            |from, to| {
+                let hit = clip_world(
+                    &mut rays,
+                    Vec3::new(from[0], from[1], from[2]),
+                    Vec3::new(to[0], to[1], to[2]),
+                    RayBlockMode::Visual,
+                    RayFluidMode::None,
+                    4096,
+                )
+                .ok()?;
+                (!hit.miss).then_some([hit.hit.location.x, hit.hit.location.y, hit.hit.location.z])
+            },
+        );
+        self.view = view;
+        Some((
+            glam::DVec3::from_array(view.position),
+            view.y_rot,
+            view.x_rot,
+        ))
+    }
+    /// The player as `Camera.alignWithEntity` sees it.
+    fn player_camera_entity(&mut self) -> Option<CameraEntity> {
         let (scale, distance) = {
             let p = self.player.as_mut()?;
             (
@@ -242,7 +358,14 @@ impl Game<'_> {
         let ride_turn = self
             .riding
             .and_then(|id| self.boats.iter().find(|b| b.id == id))
-            .map_or(0.0, |b| b.delta_rotation);
+            .map_or_else(
+                || {
+                    self.riding
+                        .and_then(|id| self.carts.iter().find(|c| c.id == id))
+                        .map_or(0.0, |c| c.passenger_yaw_delta)
+                },
+                |b| b.delta_rotation,
+            );
         let entity = CameraEntity {
             position: [p.position.x, p.position.y, p.position.z],
             previous: [
@@ -265,52 +388,16 @@ impl Game<'_> {
             }),
             mount,
         };
-        let mut view = self.view;
-        let kind = match self.camera_type {
-            CameraType::FirstPerson => horizon_client::camera::CameraType::FirstPerson,
-            CameraType::ThirdPersonBack => horizon_client::camera::CameraType::ThirdPersonBack,
-            CameraType::ThirdPersonFront => horizon_client::camera::CameraType::ThirdPersonFront,
-        };
-        let context = CollisionContext::for_entity(
-            CollisionEntity {
-                identity: EntityIdentity(0),
-                y: p.position.y,
-                descending: p.shift_key_down,
-                main_hand: Some(CollisionItem::EMPTY),
-            },
-            false,
-        );
-        let mut rays = VisualRays {
-            scene: SceneCollisions {
-                world: &self.world,
-                binding: self.collision,
-                subject: None,
-            },
-            facts: self.res.facts(),
-            context,
-        };
-        view.align_with_entity(&entity, partial, kind, |from, to| {
-            let hit = clip_world(
-                &mut rays,
-                Vec3::new(from[0], from[1], from[2]),
-                Vec3::new(to[0], to[1], to[2]),
-                RayBlockMode::Visual,
-                RayFluidMode::None,
-                4096,
-            )
-            .ok()?;
-            (!hit.miss).then_some([hit.hit.location.x, hit.hit.location.y, hit.hit.location.z])
-        });
-        self.view = view;
-        Some((
-            glam::DVec3::from_array(view.position),
-            view.y_rot,
-            view.x_rot,
-        ))
+        Some(entity)
     }
     /// Keep the player's model in step with the player (`LivingEntity.tick`
     /// body turning, `WalkAnimationState`, the swing and the pose).
     pub(super) fn tick_player_model(&mut self) {
+        let scale = self
+            .player
+            .as_mut()
+            .and_then(|p| p.attribute("minecraft:scale").ok())
+            .unwrap_or(1.0) as f32;
         let Some(p) = self.player.as_ref() else {
             self.player_model = None;
             return;
@@ -319,10 +406,13 @@ impl Game<'_> {
             let Some(kind) = self.res.player_type().clone() else {
                 return;
             };
-            self.player_model = Some(Mob::new(0, kind, p.position, self.yaw));
+            let mut m = Mob::new(0, kind, p.position, self.yaw);
+            m.head_pitch = self.pitch;
+            self.player_model = Some(m);
         }
-        let crouching = p.pose == Pose::Crouching;
-        let (position, flying) = (p.position, p.flying || p.fall_flying);
+        let pose = p.pose;
+        let crouching = pose == Pose::Crouching;
+        let position = p.position;
         let (fall_flying, fly_ticks, velocity) = (p.fall_flying, p.fall_fly_ticks, p.velocity);
         let spinning = p.auto_spin_attack_ticks > 0;
         let using = self.using.map(|(_, ticks)| ticks as i32 + 1).unwrap_or(0);
@@ -350,35 +440,31 @@ impl Game<'_> {
         let visually_swimming =
             p.pose == Pose::Swimming || (!p.fall_flying && p.pose == Pose::FallFlying);
         let in_water = p.fluids.was_touching_water;
+        let in_lava = p.is_in_lava();
         let (yaw, pitch) = (self.yaw, self.pitch);
-        let main = self.inventory[self.selected]
-            .as_ref()
-            .map(|s| s.item.clone());
+        let main = self.inventory[self.selected].clone();
         let off = self.offhand.as_ref().map(|s| s.item.clone());
+        let armor = self.armor.clone();
         let riding = self.riding.is_some();
         let hurt = p.health.hurt_animation_time;
+        let avatar = self.avatar;
+        let previous_position = self.previous_position;
         // LivingEntity.getBedOrientation: the model lies in the bed as
         // another player's does (`villager::sleep_pose`).
         let bed = self.sleeping.map_or(0, |head| self.bed_facing(head));
+        let spectator = self.spectator();
         let Some(m) = self.player_model.as_mut() else {
             return;
         };
         m.extra.ints[1] = bed;
-        let at = Vec3::new(
-            position.x,
-            position.y - if crouching { 0.125 } else { 0.0 },
-            position.z,
-        );
-        let (dx, dy, dz) = (
-            at.x - m.position.x,
-            at.y - m.position.y,
-            at.z - m.position.z,
-        );
-        m.previous = m.position;
+        m.extra.model_scale = scale;
+        // The crouch flag is still last tick's here.
+        let (from, at) =
+            player_model_positions(previous_position, position, m.extra.crouching, crouching);
+        m.previous = from;
         m.position = at;
-        if dx * dx + dy * dy + dz * dz > 100.0 {
-            m.previous = at;
-        }
+        let (dx, dz) = (at.x - m.previous.x, at.z - m.previous.z);
+        let walked = player_walk_distance(m.previous, at);
         m.previous_yaw = m.yaw;
         m.previous_body_yaw = m.body_yaw;
         m.previous_head_yaw = m.head_yaw;
@@ -408,22 +494,45 @@ impl Game<'_> {
             m.body_yaw += diff - diff.signum() * 50.0;
         }
         // WalkAnimationState.update(min(distance * 4, 1), 0.4).
-        let dist = (dx * dx + dz * dz + if flying { dy * dy } else { 0.0 }).sqrt() as f32;
         m.previous_limb_speed = m.limb_speed;
-        m.limb_speed += ((dist * 4.0).min(1.0) - m.limb_speed) * 0.4;
+        m.limb_speed += ((walked * 4.0).min(1.0) - m.limb_speed) * 0.4;
         m.limb_position += m.limb_speed;
         m.age = m.age.wrapping_add(1);
         m.anim.attack_anim_o = attack.0;
         m.anim.attack_anim = attack.1;
-        m.extra.main_hand = main;
+        m.extra.set_main_hand_stack(main);
         m.extra.off_hand = off;
+        m.extra.head = self.armor[0].as_ref().map(|s| s.item.clone());
+        m.extra.chest = self.armor[1].as_ref().map(|s| s.item.clone());
+        m.extra.legs = self.armor[2].as_ref().map(|s| s.item.clone());
+        m.extra.feet = self.armor[3].as_ref().map(|s| s.item.clone());
+        // The worn stacks, for the elytra's glint (`WingsLayer`).
+        m.extra.armor = armor;
         m.extra.crouching = crouching;
+        // Guests and server players take their pose from DATA_POSE, not here.
+        m.extra.avatar_pose = pose;
+        // What custom entity model animations read of the fluids (`is_in_water`, crawling).
+        m.fluids.in_water = in_water;
+        m.fluids.in_lava = in_lava;
         m.extra.passenger = riding;
+        m.extra.previous_velocity = m.velocity;
         m.velocity = velocity;
         m.extra.fall_flying = fall_flying;
         m.extra.fall_fly_ticks = fly_ticks;
         m.extra.auto_spin_attack = spinning;
+        // LivingEntity.DATA_ARROW_COUNT_ID and DATA_STINGER_COUNT_ID: as the
+        // server synced them, else the local body's own.
+        (m.extra.arrow_count, m.extra.stinger_count) = match &self.remote {
+            Some(r) => (r.own_arrows, r.own_stingers),
+            None => (self.combat.stuck.arrows, self.combat.stuck.stingers),
+        };
+        m.extra.shoulder_parrots = match &self.remote {
+            Some(r) => r.own_shoulders,
+            None => shoulder_variants(self.level.player_extra.as_ref()),
+        };
         m.extra.main_hand_left = self.settings.main_hand_left;
+        m.extra.hidden_model_parts = !self.settings.file.model_customisation() & 0x7F;
+        m.extra.spectator = spectator;
         m.extra.using_item = using;
         m.extra.using_off_hand = using_off_hand;
         m.extra.blocking = blocking;
@@ -431,24 +540,83 @@ impl Game<'_> {
         m.extra.ints[5] = charge_duration;
         m.extra.elytra.tick(fall_flying, crouching, velocity);
         m.extra.swim.tick(visually_swimming, in_water);
+        // The local player's ClientAvatarState, its cloak in the model's frame
+        // (the model stands 0.125 lower while crouching).
+        m.extra.avatar = avatar;
+        if crouching {
+            m.extra.avatar.cloak[1] -= 0.125;
+            m.extra.avatar.cloak_o[1] -= 0.125;
+        }
         m.extra.swing_right_arm = swing_right_arm;
+        m.extra.swing_stab = self.swing.current.is_some_and(|c| c.animation.kind == 2);
         m.hurt_time = hurt;
+    }
+    /// `Entity.turn` for the player, by the mouse, a pad, the arrow keys or an
+    /// agent's `turn`.
+    /// The model's old pitch is the player's `xRotO`, which the turn moves
+    /// with `xRot` (`turn_rotation`).
+    pub(super) fn turn_player(&mut self, xo: f64, yo: f64) {
+        let pitch_o = self.player_model.as_ref().map(|m| m.previous_head_pitch);
+        let rotation = turn_rotation(self.yaw, self.pitch, pitch_o, xo, yo);
+        self.yaw = rotation.y_rot;
+        self.pitch = rotation.x_rot;
+        if let Some(m) = self.player_model.as_mut() {
+            m.previous_head_pitch = rotation.x_rot_o;
+            m.head_pitch = rotation.x_rot;
+        }
+        // Entity.turn ends in AbstractBoat.onPassengerTurned: clampRotation
+        // keeps the view within 105 degrees of the boat at every turn, not
+        // only at the tick, so it never swings past and back.
+        if let Some(b) = self
+            .riding
+            .and_then(|id| self.boats.iter().find(|b| b.id == id))
+        {
+            let delta = (self.yaw - b.yaw + 180.0).rem_euclid(360.0) - 180.0;
+            self.yaw += delta.clamp(-105.0, 105.0) - delta;
+        }
+    }
+    /// `Entity.setOldRot` after a server sets the player's rotation
+    /// (`handleRotatePlayer`): the model's head snaps to it instead of easing
+    /// in over the next tick.
+    pub(super) fn snap_player_model_pitch(&mut self) {
+        let pitch = self.pitch;
+        if let Some(m) = self.player_model.as_mut() {
+            m.previous_head_pitch = pitch;
+            m.head_pitch = pitch;
+        }
     }
     /// `LevelExtractor`'s skip of the camera entity: the player's own body
     /// is drawn unless the camera is in first person, or while it sleeps.
     pub(super) fn own_body_in_view(&self) -> bool {
         !self.camera_type.first_person() || self.sleeping.is_some()
     }
-    /// Whether the player's own model shows in the world view.
+    /// Whether the player's own model shows in the world view (its body or,
+    /// while invisible, only its armour and held items).
     pub(super) fn player_model_shown(&self) -> bool {
         // A shader pack's shadow pass draws the player in first person too (shadowPlayer).
         (self.own_body_in_view() || self.pack_shadow_casters.1)
-            && !self.spectator()
-            && self.potions.effects.get("minecraft:invisibility").is_none()
             && self
                 .player
                 .as_ref()
                 .is_some_and(|p| !p.health.dead_or_dying())
+    }
+    /// The player's own team: a server's client is in it by its profile name.
+    fn own_team(&self) -> Option<&horizon_client::scoreboard::Team> {
+        match &self.remote {
+            Some(r) => self.score.board.players_team(&r.profile_name),
+            None => self.player_team(),
+        }
+    }
+    /// `Entity.isInvisible` for the player itself (`own_invisible`).
+    pub(super) fn own_invisible(&self) -> bool {
+        own_invisible(
+            &self.potions.effects,
+            self.remote.as_ref().is_some_and(|r| r.own_invisible),
+        )
+    }
+    /// Whether the player's own body is drawn (`body_visible`).
+    pub(super) fn own_body_visible(&self) -> bool {
+        body_visible(self.own_invisible(), self.own_team())
     }
     /// The player's model for the entity pass in third person.
     pub(super) fn player_model_geometry(
@@ -463,16 +631,38 @@ impl Game<'_> {
         let Some(m) = self.player_model.as_ref() else {
             return;
         };
-        let light = self.world.light(
-            m.position.x.floor() as i32,
-            (m.position.y + 1.62).floor() as i32,
-            m.position.z.floor() as i32,
-        );
+        let eye = self
+            .player
+            .as_ref()
+            .map_or_else(|| m.eye_height(), |p| f64::from(p.dimensions.eye_height));
+        let probe = entity_light_block(m.position, m.extra.crouching, eye);
+        let light = self.world.light(probe[0], probe[1], probe[2]);
         let packed = (u32::from(light >> 4) * 16) | ((u32::from(light & 15) * 16) << 8);
         let atlas = &self.gui.atlas;
         let lookup = |name: &str| atlas.sprites.get(name).map(|r| [r.u0, r.v0, r.u1, r.v1]);
         let start = out.len();
-        horizon_client::mobs::render::render_with(
+        let body = self.own_body_visible();
+        // `native_player_submit`: a native mod's own model for this player,
+        // in place of the vanilla one and its layers (an invisible player is
+        // not asked, as for the others).
+        let name = self.own_profile_name();
+        let who = NativePlayerRender {
+            name: &name,
+            local: true,
+        };
+        if body && self.mod_player_geometry(m, who, alpha as f32, camera, packed, out) {
+            return;
+        }
+        // A spectator still draws its own model in third person: the poses'
+        // visibility (set by player_model_visibility) hides body parts, and
+        // translucent_body marks the body OIT for the ghostly look. Only first
+        // person and dead players skip it.
+        let render = if body || self.spectator() {
+            horizon_client::mobs::render::render_with
+        } else {
+            horizon_client::mobs::render::render_layers
+        };
+        render(
             m,
             alpha as f32,
             camera,
@@ -482,24 +672,54 @@ impl Game<'_> {
             &self.player_armor_layers(),
             out,
         );
-        self.player_elytra_geometry(
-            m,
-            self.armor[1].as_ref().map(|s| &*s.item),
-            camera,
-            alpha as f32,
-            packed,
-            out,
-        );
-        self.spin_attack_geometry(m, camera, alpha as f32, packed, out);
-        self.held_item_geometry(m, camera, alpha, packed, true, out);
-        // LivingEntity.isCurrentlyGlowing: the Glowing effect. A server's client is
-        // in its team by its profile name.
+        // AvatarRenderer.shouldRenderLayers: a spectator draws no layers.
+        if horizon_client::mobs::render::layers_shown(m) {
+            let chest = self.armor[1].as_ref().map(|s| &*s.item);
+            // CapeLayer: no cape on an invisible player (`isInvisible`, whoever looks).
+            if !self.own_invisible() {
+                self.player_cape_geometry(m, chest, camera, alpha as f32, packed, out);
+            }
+            self.player_ears_geometry(
+                m,
+                &self.own_profile_name(),
+                camera,
+                alpha as f32,
+                packed,
+                out,
+            );
+            if horizon_cosmetics::enabled() {
+                let base = horizon_client::mobs::render::base_transform(m, alpha as f32, camera);
+                self.cosmetics_geometry(m, true, base, alpha as f32, packed, false, out);
+            }
+            self.player_elytra_geometry(m, chest, camera, alpha as f32, packed, out);
+            self.spin_attack_geometry(m, camera, alpha as f32, packed, out);
+            self.shoulder_parrots_geometry(m, camera, alpha as f32, packed, out);
+            self.stuck_in_body_geometry(m, self.own_entity_id(), camera, alpha as f32, packed, out);
+            self.held_item_geometry(m, camera, alpha, packed, true, None, out);
+            // CustomHeadLayer: a pumpkin, skull or other head item.
+            self.head_item_geometry(m, camera, alpha, packed, true, out);
+            // `native_mob_layer`: a native mod's layer, over the vanilla ones.
+            self.mod_mob_layer_geometry(m, Some(who), alpha as f32, camera, packed, out);
+        }
+        // LivingEntity.isCurrentlyGlowing: the Glowing effect.
         if self.potions.effects.get("glowing").is_some() {
-            let team = match &self.remote {
-                Some(r) => self.score.board.players_team(&r.profile_name),
-                None => self.player_team(),
-            };
-            self.mark_outline(&out[start..], super::glowing::team_color(team));
+            let color = super::glowing::team_color(self.own_team());
+            // LivingEntityRenderer.getRenderType: an invisible glowing body
+            // still draws its outline.
+            if !body {
+                let mut silhouette = Vec::new();
+                horizon_client::mobs::render::render(
+                    m,
+                    alpha as f32,
+                    camera,
+                    &lookup,
+                    packed,
+                    self.res.mob_data(),
+                    &mut silhouette,
+                );
+                self.mark_outline(&silhouette, color);
+            }
+            self.mark_outline(&out[start..], color);
         }
     }
     /// `extractEntityInInventoryFollowsMouse`: the player in the box
@@ -530,6 +750,9 @@ impl Game<'_> {
         let x_angle = ((cx - self.cursor.0) / 40.0).atan();
         let y_angle = ((cy - self.cursor.1) / 40.0).atan();
         let mut m = m.clone();
+        // `extractEntityInInventory` divides the size by the entity's scale: the
+        // preview is the same size whatever the player's scale.
+        m.extra.model_scale = 0.0;
         // The render state: still, facing out, the head toward the cursor.
         m.previous = m.position;
         m.body_yaw = 180.0 + x_angle * 20.0;
@@ -544,25 +767,51 @@ impl Game<'_> {
         let atlas = &self.gui.atlas;
         let lookup = |name: &str| atlas.sprites.get(name).map(|r| [r.u0, r.v0, r.u1, r.v1]);
         let mut verts = Vec::new();
-        horizon_client::mobs::render::render_with(
+        // A spectator preview still draws its own model: the poses'
+        // visibility hides body parts, leaving the head and its layers.
+        let render = if self.own_body_visible() || self.spectator() {
+            horizon_client::mobs::render::render_with
+        } else {
+            horizon_client::mobs::render::render_layers
+        };
+        // A screen preview: custom entity model animations see is_in_gui = 1.
+        horizon_client::mobs::cem_anim::in_gui(|| {
+            render(
+                &m,
+                1.0,
+                camera,
+                &lookup,
+                240 | 240 << 8,
+                self.res.mob_data(),
+                &self.player_armor_layers(),
+                &mut verts,
+            );
+        });
+        let chest = self.armor[1].as_ref().map(|s| &*s.item);
+        if !self.own_invisible() {
+            self.player_cape_geometry(&m, chest, camera, 1.0, 240 | 240 << 8, &mut verts);
+        }
+        self.player_ears_geometry(
             &m,
-            1.0,
+            &self.own_profile_name(),
             camera,
-            &lookup,
+            1.0,
             240 | 240 << 8,
-            self.res.mob_data(),
-            &self.player_armor_layers(),
             &mut verts,
         );
-        self.player_elytra_geometry(
-            &m,
-            self.armor[1].as_ref().map(|s| &*s.item),
-            camera,
-            1.0,
-            240 | 240 << 8,
-            &mut verts,
-        );
-        self.held_item_geometry(&m, camera, 1.0, 240 | 240 << 8, false, &mut verts);
+        if horizon_cosmetics::enabled() {
+            let base = horizon_client::mobs::render::base_transform(&m, 1.0, camera);
+            self.cosmetics_geometry(&m, true, base, 1.0, 240 | 240 << 8, false, &mut verts);
+        }
+        // `WingsLayer` draws through `RenderTypes.armorCutoutNoCull`: the
+        // wings' faces show from both sides (the elytra texture is empty on
+        // the face that looks at the body).
+        let wings_start = verts.len();
+        self.player_elytra_geometry(&m, chest, camera, 1.0, 240 | 240 << 8, &mut verts);
+        let wings = wings_start..verts.len();
+        self.shoulder_parrots_geometry(&m, camera, 1.0, 240 | 240 << 8, &mut verts);
+        self.held_item_geometry(&m, camera, 1.0, 240 | 240 << 8, false, None, &mut verts);
+        self.head_item_geometry(&m, camera, 1.0, 240 | 240 << 8, false, &mut verts);
         let height = if m.extra.crouching { 1.5 } else { 1.8 };
         // PictureInPictureRenderer: the box centre, (size, size, -size);
         // then the translation and Rz(pi) * Rx(y_angle * 20 degrees).
@@ -576,7 +825,7 @@ impl Game<'_> {
             .as_ref()
             .filter(|p| p.fire_ticks > 0 && !p.spectator)
             .map(|p| (p.dimensions.width, p.dimensions.height));
-        let quads = player_preview_quads(verts, gui, fire, &atlas.sprites);
+        let quads = player_preview_quads_no_cull(verts, gui, fire, &atlas.sprites, wings);
         let start = batch.vertices.len();
         for (_, p, uv, color) in quads {
             batch.quad_3d(p, uv, color);
@@ -610,44 +859,279 @@ impl Game<'_> {
         light: u32,
         out: &mut Vec<horizon_client::mesher::Vertex>,
     ) {
+        let stack = m.extra.armor[1]
+            .as_ref()
+            .filter(|s| chest == Some(&*s.item));
+        self.wings_geometry(
+            chest,
+            stack,
+            m.cape.as_deref(),
+            false,
+            horizon_client::mobs::render::base_transform(m, partial, camera),
+            m.extra.elytra.angles(partial),
+            m.extra.crouching,
+            light,
+            self.wings_overlay(stack),
+            out,
+        );
+    }
+    /// `WingsLayer` draws through `EquipmentLayerRenderer.renderLayers`: the
+    /// armour glint when the worn elytra `hasFoil()`.
+    pub(super) fn wings_overlay(&self, stack: Option<&horizon_client::items::ItemStack>) -> u32 {
+        let item_glint = |item: &str| {
+            let props = &self.res.items().enchantments.props;
+            props.get(item).is_some_and(|p| p.glint)
+        };
+        match stack {
+            Some(s) if s.has_foil(item_glint(&s.item)) => horizon_client::mobs::render::ARMOR_GLINT,
+            _ => 0,
+        }
+    }
+    /// `WingsLayer.submit` for any wearer: the wings of `chest`'s equipment
+    /// asset on `base` (the wearer's model transform), `baby` for the baby
+    /// elytra model. `cape` is a player's own cape texture, which has its
+    /// elytra (`WingsLayer.getPlayerElytraTexture`). `stack` is the worn
+    /// stack when known: an OptiFine CIT elytra rule for it replaces the
+    /// texture, the cape's too, as OptiFine's `LayerElytra` does.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn wings_geometry(
+        &self,
+        chest: Option<&str>,
+        stack: Option<&horizon_client::items::ItemStack>,
+        cape: Option<&str>,
+        baby: bool,
+        base: glam::Mat4,
+        angles: [f32; 3],
+        crouching: bool,
+        light: u32,
+        overlay: u32,
+        out: &mut Vec<horizon_client::mesher::Vertex>,
+    ) {
         let Some(asset) = chest
-            .and_then(|item| self.res.items().get(item))
+            .and_then(|item| self.items().get(item))
             .and_then(|i| i.equip_asset.as_ref())
         else {
             return;
         };
         let assets = &self.armor_stand_assets;
-        let Some((texture, _)) = assets.equipment.get(asset).and_then(|k| k.get("wings")) else {
+        let Some((texture, _)) = assets
+            .equipment
+            .get(asset)
+            .and_then(|k| k.get("wings"))
+            .and_then(|layers| layers.first())
+        else {
             return;
         };
+        let sprites = &self.gui.atlas.sprites;
+        let rule = stack.and_then(|s| self.cit_worn_rule(horizon_client::cit::Kind::Elytra, s));
+        let rect = horizon_client::cit_armor::wings(rule, cape, |s| sprites.get(s));
         let (Some(model), Some(rect)) = (
-            assets.player.get("elytra"),
-            self.gui.atlas.sprites.get(texture),
+            assets
+                .player
+                .get(if baby { "elytra_baby" } else { "elytra" }),
+            rect.or_else(|| sprites.get(texture)),
         ) else {
             return;
         };
-        let base = horizon_client::mobs::render::base_transform(m, partial, camera)
-            * glam::Mat4::from_translation(glam::Vec3::new(0.0, 0.0, 0.125));
-        let angles = m.extra.elytra.angles(partial);
+        let base = base * glam::Mat4::from_translation(glam::Vec3::new(0.0, 0.0, 0.125));
+        let pose = |part: &horizon_client::mobs::Part| {
+            let mut p = part.pose;
+            if part.name == "left_wing" || part.name == "right_wing" {
+                let invert = if part.name == "left_wing" { 1.0 } else { -1.0 };
+                p[1] = if crouching { 3.0 } else { 0.0 };
+                p[3] = angles[0];
+                p[4] = invert * angles[1];
+                p[5] = invert * angles[2];
+            }
+            p
+        };
         horizon_client::mobs::render_model(
             model,
             base,
-            &|part| {
-                let mut p = part.pose;
-                if part.name == "left_wing" || part.name == "right_wing" {
-                    let invert = if part.name == "left_wing" { 1.0 } else { -1.0 };
-                    p[1] = if m.extra.crouching { 3.0 } else { 0.0 };
-                    p[3] = angles[0];
-                    p[4] = invert * angles[1];
-                    p[5] = invert * angles[2];
-                }
-                p
-            },
+            &pose,
             [rect.u0, rect.v0, rect.u1, rect.v1],
             light,
-            0,
+            overlay,
             out,
         );
+        // The elytra texture's OptiFine emissive overlay (not a cape's), full bright.
+        let glow = cape
+            .and_then(|c| sprites.get(c))
+            .is_none()
+            .then(|| {
+                let emissive = self
+                    .res
+                    .mob_data()
+                    .emissive
+                    .read()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                emissive
+                    .overlay(texture)
+                    .and_then(|e| sprites.get(e))
+                    .copied()
+            })
+            .flatten();
+        if let Some(g) = glow {
+            horizon_client::mobs::render_model(
+                model,
+                base,
+                &pose,
+                [g.u0, g.v0, g.u1, g.v1],
+                horizon_client::mobs::render::FULL_BRIGHT,
+                0,
+                out,
+            );
+        }
+    }
+    /// `CapeLayer` for a player wearing `chest`: no cape under an elytra's
+    /// wings, and moved out over a chestplate.
+    pub(super) fn player_cape_geometry(
+        &self,
+        m: &Mob,
+        chest: Option<&str>,
+        camera: glam::DVec3,
+        partial: f32,
+        light: u32,
+        out: &mut Vec<horizon_client::mesher::Vertex>,
+    ) {
+        let Some(rect) = m
+            .cape
+            .as_deref()
+            .and_then(|c| self.gui.atlas.sprites.get(c))
+        else {
+            return;
+        };
+        if horizon_client::mobs::trader::is_invisible(m) {
+            return;
+        }
+        let layers = chest
+            .and_then(|item| self.res.items().get(item))
+            .and_then(|i| i.equip_asset.as_ref())
+            .and_then(|asset| self.armor_stand_assets.equipment.get(asset));
+        if layers.is_some_and(|k| k.contains_key("wings")) {
+            return;
+        }
+        let mut base = horizon_client::mobs::render::base_transform(m, partial, camera);
+        if layers.is_some_and(|k| k.contains_key("humanoid")) {
+            base *= glam::Mat4::from_translation(glam::Vec3::new(0.0, -0.053125, 0.06875));
+        }
+        horizon_client::mobs::render::cape(
+            m,
+            partial,
+            base,
+            [rect.u0, rect.v0, rect.u1, rect.v1],
+            light,
+            self.res.mob_data(),
+            out,
+        );
+    }
+    /// `Deadmau5EarsLayer` (`AbstractClientPlayer.showExtraEars`): the ears
+    /// of a player whose profile name is `deadmau5`, in the player's skin.
+    pub(super) fn player_ears_geometry(
+        &self,
+        m: &Mob,
+        name: &str,
+        camera: glam::DVec3,
+        partial: f32,
+        light: u32,
+        out: &mut Vec<horizon_client::mesher::Vertex>,
+    ) {
+        if name != "deadmau5" {
+            return;
+        }
+        let sprites = &self.gui.atlas.sprites;
+        // The body's own fallback: a skin with no sprite draws the default.
+        let Some(rect) = m
+            .skin
+            .as_deref()
+            .and_then(|s| sprites.get(s))
+            .or_else(|| sprites.get(&m.kind.texture))
+        else {
+            return;
+        };
+        horizon_client::mobs::render::ears(
+            m,
+            partial,
+            horizon_client::mobs::render::base_transform(m, partial, camera),
+            [rect.u0, rect.v0, rect.u1, rect.v1],
+            light,
+            self.res.mob_data(),
+            out,
+        );
+    }
+    /// The entity id the local player has on its server.
+    fn own_entity_id(&self) -> i32 {
+        self.remote.as_ref().map_or(0, |r| r.entity_id)
+    }
+    /// `ArrowLayer` and `BeeStingerLayer` (`StuckInBodyLayer`) for a player:
+    /// the arrows and bee stingers stuck in the body, placed from the entity
+    /// id `id`.
+    pub(super) fn stuck_in_body_geometry(
+        &self,
+        m: &Mob,
+        id: i32,
+        camera: glam::DVec3,
+        partial: f32,
+        light: u32,
+        out: &mut Vec<horizon_client::mesher::Vertex>,
+    ) {
+        let sprites = &self.gui.atlas.sprites;
+        let layers = [
+            (
+                m.extra.arrow_count,
+                false,
+                self.arrow_model.as_ref(),
+                "entity/projectiles/arrow",
+            ),
+            (
+                m.extra.stinger_count,
+                true,
+                self.bee_stinger_model.as_ref(),
+                "entity/bee/bee_stinger",
+            ),
+        ];
+        for (count, on_surface, model, texture) in layers {
+            let (true, Some(model), Some(rect)) = (count > 0, model, sprites.get(texture)) else {
+                continue;
+            };
+            horizon_client::mobs::render::stuck_in_body(
+                m,
+                id,
+                partial,
+                camera,
+                self.res.mob_data(),
+                count,
+                on_surface,
+                model,
+                [rect.u0, rect.v0, rect.u1, rect.v1],
+                light,
+                out,
+            );
+        }
+    }
+    /// `ParrotOnShoulderLayer`: the parrots the player keeps in its
+    /// `ShoulderEntityLeft` and `ShoulderEntityRight` (game/shoulders.rs).
+    pub(super) fn shoulder_parrots_geometry(
+        &self,
+        m: &Mob,
+        camera: glam::DVec3,
+        partial: f32,
+        light: u32,
+        out: &mut Vec<horizon_client::mesher::Vertex>,
+    ) {
+        let Some(parrot) = self.res.mob_types().get("minecraft:parrot") else {
+            return;
+        };
+        let atlas = &self.gui.atlas;
+        let lookup = |name: &str| atlas.sprites.get(name).map(|r| [r.u0, r.v0, r.u1, r.v1]);
+        let base = horizon_client::mobs::render::base_transform(m, partial, camera);
+        for left in [true, false] {
+            if let Some(variant) = m.extra.shoulder_parrots[usize::from(!left)] {
+                horizon_client::mobs::render::shoulder_parrot(
+                    m, parrot, variant, left, partial, base, &lookup, light, out,
+                );
+            }
+        }
     }
     /// `SpinAttackEffectLayer`: Riptide's two boxes turning around a spinning
     /// player (`SpinAttackEffectModel.setupAnim`).
@@ -692,11 +1176,36 @@ impl Game<'_> {
     }
 }
 
-fn player_preview_quads(
+/// `Lighting.Entry.ENTITY_IN_UI` through the entity shader's
+/// `minecraft_mix_light`: the two inventory lights, (0.2, -1, 1) and
+/// (-0.2, -1, 0), with the 0.6 light power and 0.4 ambient. `normal` is the
+/// face's outward normal in the preview's screen space (x right, y down, z
+/// towards the viewer), where a face that looks up has a negative y.
+fn entity_in_ui_shade(normal: glam::Vec3) -> f32 {
+    const LIGHT_0: glam::Vec3 = glam::Vec3::new(0.2, -1.0, 1.0);
+    const LIGHT_1: glam::Vec3 = glam::Vec3::new(-0.2, -1.0, 0.0);
+    let light = LIGHT_0.normalize().dot(normal).max(0.0) + LIGHT_1.normalize().dot(normal).max(0.0);
+    (light * 0.6 + 0.4).min(1.0)
+}
+
+pub(super) fn player_preview_quads(
+    verts: Vec<horizon_client::mesher::Vertex>,
+    gui: glam::Mat4,
+    fire: Option<(f32, f32)>,
+    sprites: &std::collections::HashMap<String, horizon_client::hud::Rect>,
+) -> Vec<(f32, [[f32; 3]; 4], [[f32; 2]; 4], u32)> {
+    player_preview_quads_no_cull(verts, gui, fire, sprites, 0..0)
+}
+
+/// `player_preview_quads` where the faces of the vertices in `no_cull` are
+/// kept when they look away (a `NoCull` render type); their light still comes
+/// from the face's own outward normal, as the vertex normal gives it.
+pub(super) fn player_preview_quads_no_cull(
     mut verts: Vec<horizon_client::mesher::Vertex>,
     gui: glam::Mat4,
     fire: Option<(f32, f32)>,
     sprites: &std::collections::HashMap<String, horizon_client::hud::Rect>,
+    no_cull: std::ops::Range<usize>,
 ) -> Vec<(f32, [[f32; 3]; 4], [[f32; 2]; 4], u32)> {
     let flame_start = verts.len();
     if let Some((width, height)) = fire {
@@ -717,35 +1226,163 @@ fn player_preview_quads(
             std::array::from_fn(|i| gui.transform_point3(glam::Vec3::from_array(q[i].pos)));
         let n = (p[1] - p[0]).cross(p[2] - p[0]);
         // The winding gives inward normals: faces with n.z >= 0 point away.
-        if n.z >= 0.0 {
+        let back = n.z >= 0.0;
+        if back && !no_cull.contains(&(index * 4)) {
             continue;
         }
         let n = n.normalize_or_zero();
-        // Lighting.Entry.ENTITY_IN_UI, roughly: lit from the front and above.
         let shade = if index * 4 >= flame_start {
             1.0
         } else {
-            (0.55 + 0.45 * -n.z - 0.15 * n.y).clamp(0.4, 1.0)
+            entity_in_ui_shade(-n)
         };
         let c = q[0].color;
         let ch = |s: u32| ((((c >> s) & 255) as f32 * shade) as u32) << s;
         let color = (c & 0xFF00_0000) | ch(0) | ch(8) | ch(16);
         let depth = p.iter().map(|v| v.z).sum::<f32>() / 4.0;
-        quads.push((
-            depth,
-            p.map(|v| v.to_array()),
-            std::array::from_fn(|i| q[i].uv),
-            color,
-        ));
+        let (mut pos, mut uv) = (p.map(|v| v.to_array()), std::array::from_fn(|i| q[i].uv));
+        if back {
+            // Seen from behind: the same quad in the opposite winding.
+            pos.reverse();
+            uv.reverse();
+        }
+        quads.push((depth, pos, uv, color));
     }
     // Keep far-to-near order for translucent faces; opaque overlap uses depth.
     quads.sort_by(|a, b| a.0.total_cmp(&b.0));
     quads
 }
 
+/// `Entity.turn` adds the turn to `xRotO` as well as to `xRot`, so the local
+/// player's `getXRot(partialTick)` follows the mouse every frame instead of
+/// easing in over a tick (#3844), while a change the tick made itself (the
+/// pitch a sleeper lies at) still eases in. `pitch_o` is the model's old
+/// pitch; without a model the old pitch is the pitch.
+fn turn_rotation(yaw: f32, pitch: f32, pitch_o: Option<f32>, xo: f64, yo: f64) -> Rotation {
+    let mut rotation = Rotation {
+        x_rot: pitch,
+        y_rot: yaw,
+        x_rot_o: pitch_o.unwrap_or(pitch),
+        y_rot_o: yaw,
+    };
+    rotation.turn(xo, yo);
+    rotation
+}
+
+/// `EntityRenderer.getPackedLightCoords` (`Entity.getLightProbePosition`):
+/// the block containing the entity's eye position, undoing
+/// `AvatarRenderer.getRenderOffset`'s 0.125 crouch drop on the model position.
+pub(super) fn entity_light_block(position: Vec3, crouching: bool, eye_height: f64) -> [i32; 3] {
+    let y = position.y + if crouching { 0.125 } else { 0.0 } + eye_height;
+    [
+        position.x.floor() as i32,
+        y.floor() as i32,
+        position.z.floor() as i32,
+    ]
+}
+
+/// The player's model's old and new positions for a tick: the player's old
+/// (`Entity.xo`, `yo`, `zo`) and new positions, each 0.125 lower while
+/// crouching. The model is the player itself in vanilla, so
+/// `EntityRenderer.extractRenderState` lerps it from the same old position
+/// `Camera.setup` does, however far it moved: at Levitation 255 (12.75 blocks
+/// a tick) the body keeps up with the camera. A teleport or respawn resets
+/// the old position, and the model jumps with it.
+fn player_model_positions(
+    previous_position: Vec3,
+    position: Vec3,
+    was_crouching: bool,
+    crouching: bool,
+) -> (Vec3, Vec3) {
+    let drop =
+        |p: Vec3, crouching: bool| Vec3::new(p.x, p.y - if crouching { 0.125 } else { 0.0 }, p.z);
+    (
+        drop(previous_position, was_crouching),
+        drop(position, crouching),
+    )
+}
+
+/// The distance `LivingEntity.calculateEntityAnimation` walks the player's
+/// model for a move from `from` to `to`. `omnidirectionalAirMover()` is false
+/// for every player (`Entity`'s, not overridden), so only the horizontal
+/// distance counts, flying and gliding included: rising or sinking straight
+/// up or down leaves the legs and arms still.
+fn player_walk_distance(from: Vec3, to: Vec3) -> f32 {
+    let (dx, dz) = (to.x - from.x, to.z - from.z);
+    (dx * dx + dz * dz).sqrt() as f32
+}
+
 #[cfg(test)]
 mod preview_tests {
     use super::*;
+    #[test]
+    fn the_player_model_rises_with_the_camera_at_levitation_255() {
+        // LivingEntity.travel at Levitation 255: 0.05 * 255 blocks a tick.
+        let from = Vec3::new(0.5, 80.0, 0.5);
+        let to = Vec3::new(0.5, 92.75, 0.5);
+        // The camera lerps from the old position: so does the body.
+        assert_eq!(
+            player_model_positions(from, to, false, false),
+            (from, to),
+            "the body jumps instead of rising (#3616)"
+        );
+        // Any distance, crouching on both ends.
+        let far = Vec3::new(40.5, 80.0, 0.5);
+        assert_eq!(
+            player_model_positions(from, far, true, true),
+            (Vec3::new(0.5, 79.875, 0.5), Vec3::new(40.5, 79.875, 0.5)),
+        );
+        // A teleport resets the old position to the new one: no sweep.
+        assert_eq!(player_model_positions(to, to, false, false), (to, to));
+    }
+    #[test]
+    fn flying_straight_up_does_not_walk_the_player_model() {
+        let from = Vec3::new(0.5, 80.0, 0.5);
+        // Creative flight straight up (#3302) and straight down.
+        assert_eq!(player_walk_distance(from, Vec3::new(0.5, 80.375, 0.5)), 0.0);
+        assert_eq!(player_walk_distance(from, Vec3::new(0.5, 78.5, 0.5)), 0.0);
+        // Moving sideways while rising walks only the horizontal part.
+        let d = player_walk_distance(from, Vec3::new(0.8, 81.0, 0.9));
+        assert!((d - 0.5).abs() < 1e-6, "{d}");
+    }
+    /// #3844: `getXRot(partialTick)` after `Entity.turn`, as the model's
+    /// renderer lerps it, with turns before and after the tick.
+    #[test]
+    fn own_head_pitch_follows_the_mouse_between_ticks() {
+        // (pitch, the model's previous head pitch, its head pitch), as
+        // `turn_player` and `tick_player_model` move them.
+        let turn = |(pitch, previous, _): (f32, f32, f32), degrees: f32| {
+            let r = turn_rotation(0.0, pitch, Some(previous), 0.0, f64::from(degrees / 0.15));
+            (r.x_rot, r.x_rot_o, r.x_rot)
+        };
+        let tick = |(pitch, _, head): (f32, f32, f32)| (pitch, head, pitch);
+        let x_rot =
+            |(_, previous, head): (f32, f32, f32), alpha: f32| previous + (head - previous) * alpha;
+        let at = |state, pitch: f32| {
+            for alpha in [0.0, 0.5, 1.0] {
+                let x = x_rot(state, alpha);
+                assert!((x - pitch).abs() < 1e-3, "partial tick {alpha}: {x}");
+            }
+        };
+        // The arrow keys turn before the frame's ticks: the tick then copies
+        // ends that are already in step.
+        let still = (10.0, 10.0, 10.0);
+        let state = tick(turn(still, 30.0));
+        at(state, 40.0);
+        // The mouse turns after the tick: the head is there at once.
+        let state = turn(state, -30.0);
+        at(state, 10.0);
+        // The tick laid the head down from 30 to 0: the turn moves both
+        // ends, and the tick's change still eases in.
+        let state = turn((0.0, 30.0, 0.0), 10.0);
+        assert!((x_rot(state, 0.5) - 25.0).abs() < 1e-3, "{state:?}");
+        // xRotO is clamped as xRot is.
+        let r = turn_rotation(0.0, 60.0, Some(80.0), 0.0, 200.0);
+        assert_eq!((r.x_rot_o, r.x_rot), (90.0, 90.0));
+        // Without a model the old pitch is the pitch.
+        let r = turn_rotation(0.0, 10.0, None, 0.0, 100.0);
+        assert_eq!(r.x_rot_o, r.x_rot);
+    }
     #[test]
     fn preview_keeps_crossing_faces_depth_and_clips_without_dropping_faces() {
         use horizon_client::{
@@ -786,6 +1423,50 @@ mod preview_tests {
     }
 
     #[test]
+    fn no_cull_faces_stay_in_the_preview_when_they_look_away() {
+        use horizon_client::mesher::Vertex;
+        // The wings' `armorCutoutNoCull`: a face turned from the viewer is
+        // dropped by the preview's culling unless its vertices are no-cull.
+        let face = |z: f32| {
+            [[-1.0, -1.0], [-1.0, 1.0], [1.0, 1.0], [1.0, -1.0]].map(|[x, y]| Vertex {
+                pos: [x, y, z],
+                uv: [x, y],
+                layer: 0,
+                color: u32::MAX,
+                light: 0,
+                normal: [0; 4],
+                glint_uv: [0.0, 0.0],
+            })
+        };
+        // Wound one way a face looks at the viewer, the other way it looks away.
+        let mut away = face(0.0);
+        away.reverse();
+        let verts: Vec<_> = face(0.0).into_iter().chain(away).collect();
+        let sprites = Default::default();
+        let gui = glam::Mat4::IDENTITY;
+        let culled = player_preview_quads(verts.clone(), gui, None, &sprites);
+        assert_eq!(culled.len(), 1);
+        let kept = player_preview_quads_no_cull(verts.clone(), gui, None, &sprites, 4..8);
+        assert_eq!(kept.len(), 2);
+        // The first face is outside the range and still culled when it looks away.
+        let first_away = player_preview_quads_no_cull(verts, gui, None, &sprites, 0..0);
+        assert_eq!(first_away.len(), 1);
+    }
+
+    #[test]
+    fn the_inventory_preview_is_lit_as_entity_in_ui() {
+        // A face looking at the viewer, up, down, to the right and to the left.
+        let shade = |x, y, z| entity_in_ui_shade(glam::Vec3::new(x, y, z));
+        assert!((shade(0.0, 0.0, 1.0) - 0.8195).abs() < 1e-3);
+        assert_eq!(shade(0.0, -1.0, 0.0), 1.0);
+        assert!((shade(0.0, 1.0, 0.0) - 0.4).abs() < 1e-6);
+        assert!((shade(1.0, 0.0, 0.0) - 0.4839).abs() < 1e-3);
+        assert!((shade(-1.0, 0.0, 0.0) - 0.5176).abs() < 1e-3);
+        // Away from the viewer: only the ambient light.
+        assert!((shade(0.0, 0.0, -1.0) - 0.4).abs() < 1e-6);
+    }
+
+    #[test]
     #[ignore = "requires prepared model data in HORIZON_TEST_RESOURCES"]
     fn player_render_transform_uses_vanilla_avatar_scale() {
         let root = std::path::PathBuf::from(
@@ -800,6 +1481,114 @@ mod preview_tests {
                 assert!((transform.transform_vector3(axis).length() - expected).abs() < 1e-6);
             }
         }
+    }
+
+    #[test]
+    fn an_invisible_player_hides_its_own_body() {
+        use horizon_client::{effects::EffectInstance, scoreboard::Scoreboard};
+        // The effect as a server's UpdateMobEffect or a drunk potion adds it.
+        let id = horizon_client::brewing::effect("minecraft:invisibility")
+            .unwrap()
+            .id;
+        let mut effects = horizon_client::effects::PlayerEffects::default();
+        assert!(body_visible(own_invisible(&effects, false), None));
+        effects.add(EffectInstance::new(id, 3600, 0));
+        let invisible = own_invisible(&effects, false);
+        assert!(
+            !body_visible(invisible, None),
+            "no team: the body is hidden"
+        );
+        // Entity.isInvisibleTo: a team that sees friendly invisibles sees it.
+        let mut board = Scoreboard::default();
+        let team = board.add_team("blue");
+        assert!(body_visible(invisible, Some(team)));
+        team.see_friendly_invisibles = false;
+        assert!(!body_visible(invisible, Some(team)));
+    }
+
+    /// #3788: a pose plugin's `Player.setInvisible(true)` sets only the
+    /// shared flag (no effect); `Entity.isInvisible` reads that flag, so the
+    /// real body under the pose is not drawn.
+    #[test]
+    fn the_servers_invisible_flag_hides_the_own_body_without_the_effect() {
+        let effects = horizon_client::effects::PlayerEffects::default();
+        assert!(own_invisible(&effects, true));
+        assert!(!body_visible(own_invisible(&effects, true), None));
+        let mut board = horizon_client::scoreboard::Scoreboard::default();
+        let team = board.add_team("blue");
+        assert!(body_visible(own_invisible(&effects, true), Some(team)));
+    }
+
+    /// LivingEntityRenderer.submit: an invisible body is not drawn, its
+    /// HumanoidArmorLayer is.
+    #[test]
+    fn an_invisible_body_keeps_its_armour() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client/26.3");
+        let Some(kind) = player_type(&root) else {
+            return;
+        };
+        let m = Mob::new(1, kind.clone(), Vec3::ZERO, 0.0);
+        let armour = [(&*kind.model, [0.5, 0.5, 0.75, 0.75], u32::MAX, 0, false)];
+        let atlas = |_: &str| Some([0.0, 0.0, 0.25, 0.25]);
+        let data = horizon_client::mobs::MobData {
+            states: Vec::new(),
+            placements: Default::default(),
+            heightmaps: Default::default(),
+            animations: Default::default(),
+            biome_tags: Default::default(),
+            entity_tags: Default::default(),
+            villager_hats: Default::default(),
+            cem: Default::default(),
+            random_textures: Default::default(),
+            emissive: Default::default(),
+            blinks: Default::default(),
+            pois: Default::default(),
+            species_placements: Default::default(),
+        };
+        let draw = |body: bool| {
+            let mut out = Vec::new();
+            let render = if body {
+                horizon_client::mobs::render::render_with
+            } else {
+                horizon_client::mobs::render::render_layers
+            };
+            render(
+                &m,
+                1.0,
+                glam::DVec3::ZERO,
+                &atlas,
+                0xF0F0,
+                &data,
+                &armour,
+                &mut out,
+            );
+            out
+        };
+        let (shown, hidden) = (draw(true), draw(false));
+        assert!(shown.iter().any(|v| v.uv[0] <= 0.25), "the body draws");
+        assert!(!hidden.is_empty(), "the armour still draws");
+        assert!(hidden.iter().all(|v| v.uv[0] >= 0.5), "only the armour");
+        assert_eq!(hidden.len() * 2, shown.len());
+        // AvatarRenderer.shouldRenderLayers: a spectator has no armour layer.
+        let mut ghost = m.clone();
+        ghost.extra.spectator = true;
+        assert!(!horizon_client::mobs::render::layers_shown(&ghost));
+        let mut with_armour = Vec::new();
+        let mut without = Vec::new();
+        for (armour, out) in [(&armour[..], &mut with_armour), (&[][..], &mut without)] {
+            horizon_client::mobs::render::render_layers(
+                &ghost,
+                1.0,
+                glam::DVec3::ZERO,
+                &atlas,
+                0xF0F0,
+                &data,
+                armour,
+                out,
+            );
+        }
+        assert!(without.is_empty() && with_armour.is_empty(), "no armour");
     }
 
     #[test]
@@ -831,5 +1620,37 @@ mod preview_tests {
             assert!(quads.iter().any(|q| q.2[0][0] >= 0.5));
             assert!(quads.windows(2).all(|q| q[0].0 <= q[1].0));
         }
+    }
+
+    #[test]
+    fn sleeping_player_light_probe_stays_below_a_two_block_ceiling() {
+        // In a 2-block-high room (bed at y = 64, air at 65, solid ceiling at 66),
+        // setPosToBed places the sleeper at y = 64 + 0.5625 + 0.125 = 64.6875.
+        let in_bed = Vec3::new(10.5, 64.0 + 0.5625 + 0.125, -4.5);
+        let sleeping_eye = f64::from(Pose::Sleeping.dimensions(1.0).eye_height);
+        assert_eq!(
+            entity_light_block(in_bed, false, sleeping_eye),
+            [10, 64, -5]
+        );
+        // Using the standing eye height (1.62) while in bed probed y = 66,
+        // inside the ceiling block where light is 0 (#5121).
+        let standing_eye = f64::from(Pose::Standing.dimensions(1.0).eye_height);
+        assert_eq!(
+            entity_light_block(in_bed, false, standing_eye),
+            [10, 66, -5]
+        );
+        // A crouching player on a 7-layer snow block (feet y = 65.75, model y
+        // dropped by 0.125, crouch eye 1.27) still probes at real y + eye = 67.02.
+        let (_, crouch_model) = player_model_positions(
+            Vec3::new(10.5, 65.75, -4.5),
+            Vec3::new(10.5, 65.75, -4.5),
+            true,
+            true,
+        );
+        let crouch_eye = f64::from(Pose::Crouching.dimensions(1.0).eye_height);
+        assert_eq!(
+            entity_light_block(crouch_model, true, crouch_eye),
+            [10, 67, -5]
+        );
     }
 }

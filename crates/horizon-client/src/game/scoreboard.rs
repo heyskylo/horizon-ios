@@ -10,7 +10,7 @@ use horizon_client::{
     },
     hud::HudBatch,
     hud_layout, hud_overlays,
-    lan::guest::Guest,
+    lan::{guest::Guest, playerdata::ints_uuid},
     save::{self, uuid_from_text, uuid_text},
     scoreboard::{self as sb, Comp, Scoreboard, literal},
     scoreboard_cmd::{self, Env, Holder},
@@ -18,7 +18,7 @@ use horizon_client::{
     text::Text,
 };
 use horizon_world::nbt::Tag;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 /// What `ServerPlayer` last recorded for the criteria that follow the player.
 #[derive(Default)]
@@ -30,6 +30,33 @@ pub(super) struct Recorded {
     armor: Option<i32>,
     xp: Option<i32>,
     level: Option<i32>,
+}
+impl Recorded {
+    /// The food, air, armor, xp and level criteria whose value differs from the last
+    /// recorded one, recorded as they are returned (`ServerPlayer.doTick`).
+    fn changed_scores(
+        &mut self,
+        food: i32,
+        air: i32,
+        armor: i32,
+        xp: i32,
+        level: i32,
+    ) -> Vec<(&'static str, i32)> {
+        let mut out = Vec::new();
+        for (criteria, last, value) in [
+            (sb::CRITERIA_FOOD, &mut self.food, food),
+            (sb::CRITERIA_AIR, &mut self.air, air),
+            (sb::CRITERIA_ARMOR, &mut self.armor, armor),
+            (sb::CRITERIA_XP, &mut self.xp, xp),
+            (sb::CRITERIA_LEVEL, &mut self.level, level),
+        ] {
+            if *last != Some(value) {
+                *last = Some(value);
+                out.push((criteria, value));
+            }
+        }
+        out
+    }
 }
 #[derive(Default)]
 pub(super) struct ScoreState {
@@ -43,6 +70,31 @@ pub(super) struct ScoreState {
 
 fn in_range(v: i32, (lo, hi): IntRange) -> bool {
     lo.is_none_or(|l| v >= l) && hi.is_none_or(|h| v <= h)
+}
+
+/// `TamableAnimal.getTeam`: a pet's own team, else, when it is tamed, its root
+/// owner's, else none. An untamed pet has no owner to take one from.
+fn pet_team<'a>(board: &'a Scoreboard, own: &str, owner: Option<&str>) -> Option<&'a sb::Team> {
+    board
+        .players_team(own)
+        .or_else(|| board.players_team(owner?))
+}
+/// A tamed pet's owner (`TamableAnimal.getOwnerReference` while `isTame`).
+fn tame_owner(m: &horizon_client::mobs::Mob) -> Option<[i32; 4]> {
+    m.extra.tame.then_some(m.extra.owner).flatten()
+}
+/// `TamableAnimal.getRootOwner`: the owner, or that owner's own root owner
+/// while it is a tamed pet itself. `pet_owner` is the owner of the tamed pet
+/// with a UUID, if it has one.
+fn root_owner(mut owner: [i32; 4], pet_owner: impl Fn([i32; 4]) -> Option<[i32; 4]>) -> [i32; 4] {
+    // shortcut: vanilla has no cycle check, this bound stops a hand-made loop.
+    for _ in 0..64 {
+        match pet_owner(owner) {
+            Some(next) => owner = next,
+            None => break,
+        }
+    }
+    owner
 }
 
 impl Game<'_> {
@@ -85,27 +137,31 @@ impl Game<'_> {
         }
         self.score.storage.save(&self.world_root);
         self.score.stopwatches.save(&self.world_root);
-        if self.border != horizon_client::worldborder::WorldBorder::default() {
-            let _ = save::write_dat(
+        if self.border != horizon_client::worldborder::WorldBorder::default()
+            && let Err(e) = save::write_dat(
                 &self.border_path(),
                 Tag::compound([
                     ("data", self.border.pack()),
                     ("DataVersion", Tag::Int(horizon_world::DATA_VERSION)),
                 ]),
-            );
+            )
+        {
+            log::warn!("the world border was not written: {e}");
         }
         let path = self.scoreboard_path();
         let board = &self.score.board;
         if board == &Scoreboard::default() && !path.exists() {
             return;
         }
-        let _ = save::write_dat(
+        if let Err(e) = save::write_dat(
             &path,
             Tag::compound([
                 ("data", board.pack()),
                 ("DataVersion", Tag::Int(horizon_world::DATA_VERSION)),
             ]),
-        );
+        ) {
+            log::warn!("the scoreboard was not written: {e}");
+        }
     }
     /// The names commands complete: objectives, teams and tracked holders.
     pub(super) fn sync_score_registries(&mut self) {
@@ -150,7 +206,19 @@ impl Game<'_> {
             | Target::Cart(id)
             | Target::Crystal(id)
             | Target::Dragon(id)
-            | Target::Other(id) => Some(uuid_text(self.uuid_for(id))),
+            | Target::Tnt(id)
+            | Target::Falling(id)
+            | Target::Rocket(id)
+            | Target::Trident(id)
+            | Target::Other(id)
+            | Target::Fangs(id)
+            | Target::Cloud(id) => Some(uuid_text(self.uuid_for(id))),
+            // It keeps its UUID with itself.
+            Target::Spawner(id) => self
+                .ominous_spawners
+                .iter()
+                .find(|s| s.id == id)
+                .map(|s| uuid_text(s.uuid)),
             // Orbs and projectiles have no UUID here.
             Target::Orb(_) | Target::Projectile(_) => None,
         }
@@ -170,22 +238,7 @@ impl Game<'_> {
             return Some(Target::Player);
         }
         let uuid = uuid_from_text(name).filter(|_| name.len() == 36)?;
-        if Some(uuid) == self.level.player_uuid {
-            return Some(Target::Player);
-        }
-        let id = self
-            .persist
-            .uuids
-            .iter()
-            .find(|(_, u)| **u == uuid)
-            .map(|(id, _)| *id)?;
-        if self.mobs.iter().any(|m| m.id == id) {
-            Some(Target::Mob(id))
-        } else if self.dropped.iter().any(|i| i.id == id) {
-            Some(Target::Item(id))
-        } else {
-            None
-        }
+        self.target_with_uuid(uuid)
     }
     /// `Entity.getTags` (the `Tags` list of the saved entity).
     pub(super) fn tags_of(&self, t: Target) -> Vec<String> {
@@ -197,13 +250,29 @@ impl Game<'_> {
             | Target::Painting(id)
             | Target::Boat(id)
             | Target::Cart(id)
-            | Target::Other(id) => self.persist.raw.get(&id),
+            | Target::Tnt(id)
+            | Target::Orb(id)
+            | Target::Projectile(id)
+            | Target::Crystal(id)
+            | Target::Dragon(id)
+            | Target::Rocket(id)
+            | Target::Trident(id)
+            | Target::Other(id)
+            | Target::Fangs(id)
+            | Target::Cloud(id) => self.persist.raw.get(&id),
             Target::Player => self.level.player_extra.as_ref(),
-            Target::Guest(_)
-            | Target::Orb(_)
-            | Target::Projectile(_)
-            | Target::Crystal(_)
-            | Target::Dragon(_) => None,
+            // A server's player: the saved compound the guest's file is written from.
+            Target::Guest(conn) => self.command_guest(conn).and_then(|g| g.saved.as_ref()),
+            Target::Spawner(id) => self
+                .ominous_spawners
+                .iter()
+                .find(|s| s.id == id)
+                .and_then(|s| s.raw.as_deref()),
+            Target::Falling(id) => self
+                .falling
+                .iter()
+                .find(|f| f.id == id)
+                .and_then(|f| f.saved.as_ref().map(|s| &s.1)),
         };
         match raw.and_then(|r| r.get("Tags")) {
             Some(Tag::List(l)) => l
@@ -285,12 +354,13 @@ impl Game<'_> {
                 let view = self.entity_view_of(t);
                 let origin = self.target_position(t).unwrap_or_default();
                 for (id, negated) in &s.predicates {
-                    let matches = self
-                        .fns
-                        .store
-                        .predicates
-                        .get(id)
-                        .is_some_and(|json| self.conditions_hold(json, Some(&view), origin));
+                    // EntitySelectorOptions rejects a missing registry entry
+                    // before applying the predicate's negation.
+                    let Some(json) = self.fns.store.predicates.get(id) else {
+                        ok = false;
+                        break;
+                    };
+                    let matches = self.conditions_hold(json, Some(&view), origin);
                     if matches == *negated {
                         ok = false;
                     }
@@ -369,64 +439,56 @@ impl Game<'_> {
         self.load_scoreboard();
         let events = std::mem::take(&mut self.stats.events);
         self.stat_criteria_changed(PLAYER_NAME, events);
-        let board = &mut self.score.board;
-        if !board.objectives.is_empty() {
-            let display = self.player_display_comp();
-            if let Some(p) = self.player.as_mut() {
-                let health_and_absorption = p.health.health() + p.health.absorption();
-                let food = p.health.food.food;
-                // getArmorValue: the armor attribute rounded down.
-                let armor = p
-                    .attribute("minecraft:armor")
-                    .or_else(|_| p.attribute("armor"))
-                    .unwrap_or(0.0)
-                    .floor() as i32;
-                let rec = &mut self.score.recorded;
-                let board = &mut self.score.board;
-                if rec.health_and_absorption != Some(health_and_absorption) {
-                    rec.health_and_absorption = Some(health_and_absorption);
-                    let value = health_and_absorption.ceil() as i32;
-                    board.for_all_objectives_with(
-                        sb::CRITERIA_HEALTH,
-                        PLAYER_NAME,
-                        Some(&display),
-                        |_| value,
-                    );
-                }
-                for (criteria, last, value) in [
-                    (sb::CRITERIA_FOOD, &mut rec.food, food),
-                    // The air supply is full unless the player is drowning.
-                    (sb::CRITERIA_AIR, &mut rec.air, 300),
-                    (sb::CRITERIA_ARMOR, &mut rec.armor, armor),
-                    (sb::CRITERIA_XP, &mut rec.xp, self.experience.total),
-                    (sb::CRITERIA_LEVEL, &mut rec.level, self.experience.level),
-                ] {
-                    if *last != Some(value) {
-                        *last = Some(value);
-                        board.for_all_objectives_with(
-                            criteria,
-                            PLAYER_NAME,
-                            Some(&display),
-                            |_| value,
-                        );
-                    }
-                }
-            }
-        }
+        let mut rec = std::mem::take(&mut self.score.recorded);
+        self.record_player_scores(&mut rec);
+        self.score.recorded = rec;
         if self.ticks.is_multiple_of(20) {
             self.sync_score_registries();
         }
     }
-    /// `ServerPlayer.die`: the death count.
+    /// `ServerPlayer.doTick`'s `updateScoreForCriteria` calls for the acting
+    /// player (the host's own, or a guest swapped in): the health, food, air,
+    /// armor, experience and level objectives follow what changed since `rec`.
+    pub(super) fn record_player_scores(&mut self, rec: &mut Recorded) {
+        self.load_scoreboard();
+        if self.score.board.objectives.is_empty() {
+            return;
+        }
+        let display = self.player_display_comp();
+        let name = self.acting_player_name().to_owned();
+        let Some(p) = self.player.as_mut() else {
+            return;
+        };
+        let health_and_absorption = p.health.health() + p.health.absorption();
+        let food = p.health.food.food;
+        let air = p.air;
+        // getArmorValue: the armor attribute rounded down.
+        let armor = p
+            .attribute("minecraft:armor")
+            .or_else(|_| p.attribute("armor"))
+            .unwrap_or(0.0)
+            .floor() as i32;
+        let board = &mut self.score.board;
+        if rec.health_and_absorption != Some(health_and_absorption) {
+            rec.health_and_absorption = Some(health_and_absorption);
+            let value = health_and_absorption.ceil() as i32;
+            board.for_all_objectives_with(sb::CRITERIA_HEALTH, &name, Some(&display), |_| value);
+        }
+        let (xp, level) = (self.experience.total, self.experience.level);
+        for (criteria, value) in rec.changed_scores(food, air, armor, xp, level) {
+            board.for_all_objectives_with(criteria, &name, Some(&display), |_| value);
+        }
+    }
+    /// `ServerPlayer.die`: the acting player's `deathCount` objectives go up by one.
     pub(super) fn score_player_died(&mut self) {
         let display = self.player_display_comp();
         let me = self.acting_player_name().to_owned();
-        let board = &mut self.score.board;
-        board.for_all_objectives_with(sb::CRITERIA_DEATH_COUNT, &me, Some(&display), |v| {
-            v.wrapping_add(1)
-        });
-        // A respawned player has everything to record again.
-        self.score.recorded = Recorded::default();
+        self.score.board.for_all_objectives_with(
+            sb::CRITERIA_DEATH_COUNT,
+            &me,
+            Some(&display),
+            |v| v.wrapping_add(1),
+        );
     }
     /// `ServerPlayer.awardKillScore`: total kills and the team kill counts.
     pub(super) fn score_player_killed(&mut self, victim: Target) {
@@ -462,27 +524,90 @@ impl Game<'_> {
 
     // ---- teams in gameplay -----------------------------------------------------
 
-    /// `Entity.getTeam` of a mob (a mob joins a team by its UUID).
+    /// `Entity.getScoreboardName`: another player's profile name
+    /// (`Player.getScoreboardName`), any other entity's UUID.
+    fn scoreboard_name(&self, id: u32, uuid: [i32; 4]) -> String {
+        self.remote_player_name(id)
+            .map_or_else(|| uuid_text(uuid), str::to_owned)
+    }
+    /// `TamableAnimal.getTeam` of a mob or another player: its own team, else,
+    /// when it is a tamed pet, its root owner's.
     pub(super) fn mob_team(&self, id: u32) -> Option<&sb::Team> {
-        let uuid = self.persist.uuids.get(&id)?;
-        self.score.board.players_team(&uuid_text(*uuid))
+        if self.score.board.teams.is_empty() {
+            return None;
+        }
+        // The mob is looked up only when its own name has no team: the
+        // owner's team is the fallback.
+        self.team_with_owner(id, || {
+            self.mobs.iter().find(|m| m.id == id).and_then(tame_owner)
+        })
+    }
+    /// [`mob_team`](Self::mob_team) of a mob at hand, without looking it up.
+    pub(super) fn mob_team_of(&self, m: &horizon_client::mobs::Mob) -> Option<&sb::Team> {
+        if self.score.board.teams.is_empty() {
+            return None;
+        }
+        self.team_with_owner(m.id, || tame_owner(m))
+    }
+    /// A mob's own team, else its tamed owner's (`owner` is asked only then).
+    fn team_with_owner(
+        &self,
+        id: u32,
+        owner: impl FnOnce() -> Option<[i32; 4]>,
+    ) -> Option<&sb::Team> {
+        let uuid = *self.persist.uuids.get(&id)?;
+        let own = self.scoreboard_name(id, uuid);
+        if let Some(team) = self.score.board.players_team(&own) {
+            return Some(team);
+        }
+        let owner = owner().and_then(|o| self.root_owner_name(o));
+        pet_team(&self.score.board, &own, owner.as_deref())
+    }
+    /// `TamableAnimal.getRootOwner().getScoreboardName`: a pet's owner, through
+    /// owners that are tamed pets themselves.
+    fn root_owner_name(&self, owner: [i32; 4]) -> Option<String> {
+        let pet_owner = |uuid: [i32; 4]| {
+            let Target::Mob(pet) = self.target_by_uuid(ints_uuid(uuid))? else {
+                return None;
+            };
+            self.mobs
+                .iter()
+                .find(|m| m.id == pet && m.extra.tame)?
+                .extra
+                .owner
+        };
+        let root = root_owner(owner, pet_owner);
+        Some(match self.target_by_uuid(ints_uuid(root))? {
+            Target::Player => self.acting_player_name().to_owned(),
+            Target::Guest(conn) => self.command_guest(conn)?.name.clone(),
+            Target::Mob(id) => self.scoreboard_name(id, root),
+            _ => uuid_text(root),
+        })
     }
     pub(super) fn player_team(&self) -> Option<&sb::Team> {
         self.score.board.players_team(self.acting_player_name())
     }
     /// The teams of the player and of the mobs on one (empty without teams).
     pub(super) fn mob_teams(&self) -> horizon_client::mobs::Teams<'_> {
-        let board = &self.score.board;
-        if board.teams.is_empty() {
+        if self.score.board.teams.is_empty() {
             return Default::default();
         }
+        // One pass over the mobs, not one per mob.
+        let tame_owners: HashMap<u32, [i32; 4]> = self
+            .mobs
+            .iter()
+            .filter_map(|m| Some((m.id, tame_owner(m)?)))
+            .collect();
         horizon_client::mobs::Teams {
             player: self.player_team(),
             mobs: self
                 .persist
                 .uuids
-                .iter()
-                .filter_map(|(id, uuid)| Some((*id, board.players_team(&uuid_text(*uuid))?)))
+                .keys()
+                .filter_map(|id| {
+                    let owner = || tame_owners.get(id).copied();
+                    Some((*id, self.team_with_owner(*id, owner)?))
+                })
                 .collect(),
         }
     }
@@ -494,7 +619,7 @@ impl Game<'_> {
         self.persist
             .uuids
             .iter()
-            .filter(|(_, uuid)| team.players.contains(&uuid_text(**uuid)))
+            .filter(|(id, uuid)| team.players.contains(&self.scoreboard_name(**id, **uuid)))
             .map(|(id, _)| *id)
             .collect()
     }
@@ -655,19 +780,30 @@ impl Game<'_> {
 }
 
 impl Game<'_> {
+    /// Advance the skin slots to a new frame with what the last one drew, and
+    /// store any finished skin downloads into the atlas.
+    pub(super) fn flush_skin_slots(&mut self) {
+        let (ready, drawn) = {
+            let mut downloads = self.skin_downloads.borrow_mut();
+            (downloads.take_ready(), downloads.take_drawn())
+        };
+        self.skin_slots.next_frame(drawn);
+        for (location, rgba) in ready {
+            self.store_skin(location, rgba);
+        }
+        self.cosmetics_frame();
+    }
     /// `Hud.extractTabList`: the player list while the player-list key is
     /// held. A local world shows it with a joined LAN guest or a `list`
     /// objective.
     pub(super) fn draw_tab_list(&mut self, batch: &mut HudBatch) {
         use horizon_client::tab_list::{self, TabInputs};
-        // Player heads and the player list both draw from the same skin slots.
-        let ready: Vec<_> = self.skin_downloads.borrow_mut().take_ready();
-        for (location, rgba) in ready {
-            self.store_skin(location, rgba);
-        }
+        // Player heads and the player list both draw from the same skin
+        // slots: a new frame, with what the last one drew.
+        self.flush_skin_slots();
         let key = self.screen == super::Screen::Playing
             && self.keys.contains(&winit::keyboard::KeyCode::Tab);
-        let (players, online_mode, upside_down) = match self.remote_tab_players() {
+        let (mut players, online_mode, upside_down) = match self.remote_tab_players() {
             Some(remote) => remote,
             None => {
                 // The integrated server: the local player, online mode, no ping.
@@ -688,18 +824,31 @@ impl Game<'_> {
                 (players, true, upside_down)
             }
         };
-        let board = &self.score.board;
-        let objective = board.display_objective(sb::SLOT_LIST);
+        let has_objective = self.score.board.display_objective(sb::SLOT_LIST).is_some();
         let shown = tab_list::visible(
             key,
             self.has_singleplayer_server(),
             players.len(),
-            objective.is_some(),
+            has_objective,
         );
-        self.tab_list.set_visible(shown);
+        if self.tab_list.set_visible(shown) {
+            // PlayerTabOverlay.setVisible: the names, said as the list comes up.
+            self.say_system_now(&tab_list::narration(&players, &self.score.board));
+        }
         if !shown {
             return;
         }
+        // The faces of the players the list shows.
+        let faces: std::collections::HashSet<u128> =
+            tab_list::sorted_players(&players, &self.score.board)
+                .iter()
+                .map(|p| p.uuid)
+                .collect();
+        for p in players.iter_mut().filter(|p| faces.contains(&p.uuid)) {
+            p.skin = self.face_skin(p.uuid, &p.skin);
+        }
+        let board = &self.score.board;
+        let objective = board.display_objective(sb::SLOT_LIST);
         let up = |id: u128| upside_down.contains(&id);
         let inputs = TabInputs {
             players: &players,
@@ -721,7 +870,7 @@ impl Game<'_> {
 }
 
 /// The host and guests that have entered the world, rebuilt from live state.
-fn local_tab_players(me: TabPlayer, guests: &[Guest]) -> Vec<TabPlayer> {
+pub(super) fn local_tab_players(me: TabPlayer, guests: &[Guest]) -> Vec<TabPlayer> {
     let mut players = vec![me];
     players.extend(guests.iter().filter(|g| g.placed).map(|g| {
         let mut player = TabPlayer::new(g.uuid, &g.name);
@@ -870,5 +1019,92 @@ mod tab_list_tests {
         assert_eq!(players.len(), 2);
         assert_eq!(players[1].game_mode, 1);
         assert_eq!(players[1].latency, 123);
+    }
+}
+
+#[cfg(test)]
+mod team_tests {
+    use super::*;
+
+    const WOLF: [i32; 4] = [1, 2, 3, 4];
+    const CAT: [i32; 4] = [5, 6, 7, 8];
+    const STEVE: [i32; 4] = [9, 10, 11, 12];
+
+    /// The player in place is on `red`, the cat on `blue`; nobody else is on a
+    /// team (`Game::mob_team` names the player by profile, a mob by UUID).
+    fn board() -> Scoreboard {
+        let mut board = Scoreboard::default();
+        board.add_team("red");
+        board.add_to_team("Steve", "red");
+        board.add_team("blue");
+        board.add_to_team(&uuid_text(CAT), "blue");
+        board
+    }
+
+    fn team_name(team: Option<&sb::Team>) -> Option<&str> {
+        team.map(|t| t.name.as_str())
+    }
+
+    #[test]
+    fn a_tamed_pet_with_no_team_answers_its_owners() {
+        let board = board();
+        let wolf = uuid_text(WOLF);
+        assert_eq!(
+            team_name(pet_team(&board, &wolf, Some("Steve"))),
+            Some("red")
+        );
+    }
+
+    #[test]
+    fn a_pet_with_its_own_team_answers_that_one() {
+        let board = board();
+        let cat = uuid_text(CAT);
+        assert_eq!(
+            team_name(pet_team(&board, &cat, Some("Steve"))),
+            Some("blue")
+        );
+    }
+
+    #[test]
+    fn an_untamed_pet_answers_no_team() {
+        let board = board();
+        let wolf = uuid_text(WOLF);
+        // `mob_team` names no owner for a pet that is not tamed.
+        assert_eq!(pet_team(&board, &wolf, None), None);
+    }
+
+    #[test]
+    fn a_pet_owned_by_a_pet_reaches_the_root_owner() {
+        let board = board();
+        // The wolf's owner is the cat, whose own owner is the player: the
+        // wolf answers the player's team, not the cat's.
+        let pet_owner = |pet: [i32; 4]| (pet == CAT).then_some(STEVE);
+        let root = root_owner(CAT, pet_owner);
+        assert_eq!(root, STEVE);
+        let root_name = if root == STEVE { "Steve" } else { "nobody" };
+        assert_eq!(
+            team_name(pet_team(&board, &uuid_text(WOLF), Some(root_name))),
+            Some("red")
+        );
+        // An owner loop (only `/data` can make one) stops instead of hanging.
+        let looped = |uuid: [i32; 4]| Some(if uuid == WOLF { CAT } else { WOLF });
+        let root = root_owner(WOLF, looped);
+        assert!(root == WOLF || root == CAT);
+    }
+
+    #[test]
+    fn air_score_follows_the_air_supply_and_updates_only_on_change() {
+        let mut rec = Recorded::default();
+        let first = rec.changed_scores(20, 120, 0, 0, 0);
+        assert!(first.contains(&(sb::CRITERIA_AIR, 120)));
+        assert!(rec.changed_scores(20, 120, 0, 0, 0).is_empty());
+        assert_eq!(
+            rec.changed_scores(20, 119, 0, 0, 0),
+            vec![(sb::CRITERIA_AIR, 119)]
+        );
+        assert_eq!(
+            rec.changed_scores(20, -5, 0, 0, 0),
+            vec![(sb::CRITERIA_AIR, -5)]
+        );
     }
 }

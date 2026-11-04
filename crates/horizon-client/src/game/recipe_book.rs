@@ -72,6 +72,8 @@ pub(super) struct RecipeUi {
     ghost: Vec<Ghost>,
     last_placed: Option<String>,
     overlay: Option<Overlay>,
+    /// A press landed in the search box, so a drag selects text in it.
+    search_drag: bool,
     view: View,
     view_key: u64,
     /// Squeeze animations of new recipes: ticks left per button index and tab.
@@ -82,6 +84,9 @@ pub(super) struct RecipeUi {
     client: ClientBook,
     client_known: Option<BTreeSet<String>>,
     client_version: u64,
+    /// The display a click last placed (`lastRecipe`), which Enter and Space
+    /// place again; slot clicks keep it.
+    last_clicked: Option<i32>,
 }
 
 impl RecipeUi {
@@ -97,6 +102,7 @@ impl RecipeUi {
             search.set_value("");
         }
         self.view_key = 0;
+        self.last_clicked = None;
     }
 }
 
@@ -113,7 +119,8 @@ impl Game<'_> {
         if self.screen != Screen::Inventory || self.station.is_some() {
             return None;
         }
-        if self.mount_active() {
+        // A mod's screen has no book.
+        if self.mount_active() || self.native_screen_height().is_some() {
             return None;
         }
         match self.container_kind() {
@@ -139,6 +146,12 @@ impl Game<'_> {
             Some(book) if self.book_open(book) && width >= NARROW => 77.0,
             _ => 0.0,
         }
+    }
+    /// `AbstractRecipeBookScreen.isHovering` is false while the book is
+    /// visible in a window narrower than `NARROW`: the book covers the menu,
+    /// so no slot is hovered or clicked.
+    pub(super) fn book_covers_menu(&self, width: f32) -> bool {
+        width < NARROW && self.active_book().is_some_and(|b| self.book_open(b))
     }
     /// Whether typed keys go to the search box.
     pub(super) fn recipe_search_focused(&self) -> bool {
@@ -180,6 +193,7 @@ impl Game<'_> {
         }
         let ctrl = self.has_control_down();
         let shift = self.has_shift_down();
+        let types_text = self.types_text();
         let Some(search) = self.recipe_ui.search.as_mut() else {
             return;
         };
@@ -188,7 +202,7 @@ impl Game<'_> {
             _ => false,
         };
         if !handled
-            && !ctrl
+            && types_text
             && let Some(text) = &event.text
         {
             let text: String = text.chars().filter(|c| !c.is_control()).collect();
@@ -205,7 +219,7 @@ impl Game<'_> {
             return;
         }
         self.ensure_book();
-        let index = &self.res.stations().recipe_index;
+        let index = &self.stations().recipe_index;
         let book = self.recipe_ui.book.as_ref();
         // SmithingTrimDemoSlotDisplay draws from a random of its own.
         let mut random = super::dispenser::entity_random();
@@ -224,8 +238,8 @@ impl Game<'_> {
                     })
                     .or_else(|| index.result(id).map(|r| ItemStack::new(r, 1)))
                     .or_else(|| {
-                        self.res.stations().recipes.trim_demo(
-                            &self.res.stations().enchantments,
+                        self.stations().recipes.trim_demo(
+                            &self.stations().enchantments,
                             id,
                             &mut |n| {
                                 horizon_core::random::RandomSource::next_int_bound(
@@ -275,15 +289,17 @@ impl Game<'_> {
                 Kind::Inventory
             });
             let env = Env {
-                items: self.res.items(),
-                recipes: self.res.recipes(),
-                brewing: &self.res.stations().brewing,
-                banners: &self.res.stations().banners,
-                station_recipes: &self.res.stations().recipes,
-                enchantments: &self.res.stations().enchantments,
+                items: self.items(),
+                recipes: self.recipes(),
+                brewing: &self.stations().brewing,
+                banners: &self.stations().banners,
+                station_recipes: &self.stations().recipes,
+                enchantments: &self.stations().enchantments,
                 names: &self.pack.names,
                 trade: None,
                 maps: None,
+                limited_crafting: self.limited_crafting(),
+                known_recipes: Some(&self.level.recipe_book),
             };
             for i in 0..36 {
                 menu.set_player_item(i, self.inventory[i].clone());
@@ -310,7 +326,7 @@ impl Game<'_> {
             return;
         }
         let known = &self.level.recipe_book.recipes;
-        let index = &self.res.stations().recipe_index;
+        let index = &world_stations!(self).recipe_index;
         let ui = &mut self.recipe_ui;
         match ui.client_known.as_ref() {
             Some(previous) if previous == known => return,
@@ -338,7 +354,7 @@ impl Game<'_> {
         ui.client_known = Some(known.clone());
         ui.client_version += 1;
     }
-    /// Every entry of the book, in its order (capability `recipes`).
+    /// Every entry of the book, in its order (`native_recipes`).
     pub(super) fn recipe_book_entries(&mut self) -> Vec<Entry> {
         self.ensure_book();
         self.recipe_ui
@@ -347,7 +363,7 @@ impl Game<'_> {
             .map_or_else(Vec::new, |b| b.entries.clone())
     }
     /// The display ids the player's book holds, and a number that changes
-    /// whenever they do (capability `recipes`).
+    /// whenever they do (`native_known_recipes`).
     pub(super) fn recipe_book_displays(&mut self) -> (u64, Vec<i32>) {
         self.sync_client_book();
         (
@@ -355,14 +371,21 @@ impl Game<'_> {
             self.recipe_ui.client.displays(),
         )
     }
+    /// The book's model is made again from `Game::recipes` when next needed:
+    /// the server's recipes arrived, or a new session began.
+    pub(super) fn forget_book(&mut self) {
+        self.recipe_ui.book = None;
+        self.recipe_tables.categories = None;
+    }
     fn ensure_book(&mut self) {
         if self.recipe_ui.book.is_none() {
-            let mut book = Book::build(self.res.recipes(), self.res.items());
-            book.set_display_ids(&self.res.stations().recipe_index);
+            let mut book = Book::build(self.recipes(), self.items());
+            book.set_display_ids(&self.stations().recipe_index);
             self.recipe_ui.book = Some(book);
         }
         if self.recipe_ui.search.is_none() {
             let mut search = EditBox::new(0.0, 0.0, 81.0, 14.0);
+            search.message = super::screen_info::tr("itemGroup.search", &[]);
             search.max_length = 50;
             search.focused = false;
             search.text_color = u32::MAX;
@@ -518,7 +541,7 @@ impl Game<'_> {
                 && !book.collection_matches(&c.entries, &query, &|stack| {
                     horizon_client::item_tooltip::lines(
                         stack,
-                        self.res.items().get(&stack.item),
+                        self.items().get(&stack.item),
                         &|k| self.pack.names.display_get(k),
                     )
                 })
@@ -615,8 +638,14 @@ impl Game<'_> {
                 .play("minecraft:ui.button.click", None, 0.25, 1.0);
             return true;
         }
-        if !self.book_open(book_type) || self.spectator() {
+        if !self.book_open(book_type) {
             return false;
+        }
+        // AbstractRecipeBookScreen.mouseClicked: in a narrow window the visible
+        // book takes every click, even one it does not use itself.
+        let narrow = batch.width < NARROW;
+        if self.spectator() {
+            return narrow;
         }
         self.refresh_book_view(book_type);
         let (xo, yo) = self.book_origin(&batch);
@@ -628,7 +657,10 @@ impl Game<'_> {
                 let y = overlay.y + 5.0 + 25.0 * (n / maxrow) as f32;
                 if !right && inside(cursor, x, y, 24.0, 24.0) {
                     let shift = self.shift_down();
-                    self.try_place(*entry, shift);
+                    if self.try_place(*entry, shift) {
+                        self.remember_click(*entry);
+                        self.close_narrow_book(book_type, &batch);
+                    }
                     return true;
                 }
             }
@@ -669,7 +701,10 @@ impl Game<'_> {
                 let step = self.swap_index();
                 let (entry, _) = button.entries[step % button.entries.len()];
                 let shift = self.shift_down();
-                self.try_place(entry, shift);
+                if self.try_place(entry, shift) {
+                    self.remember_click(entry);
+                    self.close_narrow_book(book_type, &batch);
+                }
             }
             return true;
         }
@@ -677,8 +712,11 @@ impl Game<'_> {
         if let Some(search) = self.recipe_ui.search.as_mut() {
             search.x = xo + 25.0;
             search.y = yo + 13.0;
-            let magnifier = inside(cursor, xo + 8.0, yo + 13.0, 17.0, 14.0);
+            // RecipeBookComponent's magnifierIconPlacement: from the book's
+            // left edge plus eight to the search box's own left edge.
+            let magnifier = inside(cursor, xo + 8.0, yo + 13.0, search.x - xo, 14.0);
             if magnifier || inside(cursor, search.x, search.y, search.width, search.height) {
+                self.recipe_ui.search_drag = true;
                 search.focused = true;
                 search.reset_blink();
                 if !magnifier {
@@ -712,7 +750,66 @@ impl Game<'_> {
                 return true;
             }
         }
-        false
+        narrow
+    }
+    /// `RecipeBookComponent.mouseClicked` after a placed recipe: it becomes
+    /// `lastRecipe`.
+    fn remember_click(&mut self, entry: usize) {
+        self.recipe_ui.last_clicked = self
+            .recipe_ui
+            .book
+            .as_ref()
+            .and_then(|b| b.entries.get(entry))
+            .map(|e| e.display_id);
+    }
+    /// `RecipeBookComponent.keyPressed`: Enter or Space (`isSelection`) places
+    /// the recipe clicked last again, key repeats included, as many as fit
+    /// with Shift. The focused search box takes the key first.
+    pub(super) fn recipe_book_key(&mut self, key: winit::keyboard::KeyCode) -> bool {
+        use winit::keyboard::KeyCode;
+        if !matches!(key, KeyCode::Enter | KeyCode::NumpadEnter | KeyCode::Space) {
+            return false;
+        }
+        let Some(book_type) = self.active_book() else {
+            return false;
+        };
+        if !self.book_open(book_type) || self.spectator() || self.recipe_search_focused() {
+            return false;
+        }
+        let Some(display) = self.recipe_ui.last_clicked else {
+            return false;
+        };
+        // The craft just taken changed what is craftable.
+        self.refresh_book_view(book_type);
+        let Some(entry) = self
+            .recipe_ui
+            .book
+            .as_ref()
+            .and_then(|b| b.entry_of_display(display))
+        else {
+            return false;
+        };
+        self.audio
+            .play("minecraft:ui.button.click", None, 0.25, 1.0);
+        let shift = self.shift_down();
+        self.try_place(entry, shift)
+    }
+    /// `RecipeBookComponent.mouseDragged`: while the search box is focused a
+    /// drag moves its selection end to the pointer (`EditBox.onDrag`).
+    pub(super) fn recipe_book_drag(&mut self) {
+        if !self.recipe_ui.search_drag || !self.active_book().is_some_and(|b| self.book_open(b)) {
+            return;
+        }
+        let x = self.cursor.0;
+        if let Some(search) = self.recipe_ui.search.as_mut()
+            && search.focused
+        {
+            search.drag_to(&self.gui.atlas, x);
+        }
+    }
+    /// A mouse button let go: a drag no longer selects in the search box.
+    pub(super) fn recipe_book_release(&mut self) {
+        self.recipe_ui.search_drag = false;
     }
     /// `RecipeBookComponent.sendUpdateSettings`: the server owns the saved book.
     fn send_book_settings(&self, book_type: BookType) {
@@ -833,10 +930,21 @@ impl Game<'_> {
 
     // ---- placing a recipe ----
 
-    /// `RecipeBookComponent.tryPlaceRecipe`.
-    fn try_place(&mut self, entry_index: usize, use_max: bool) {
-        let Some(book_type) = self.active_book() else {
+    /// What the book's click handler does once a recipe was placed: a book
+    /// that is not offset next to the menu (`!isOffsetNextToMainGUI`, a window
+    /// narrower than `NARROW`) closes with `setVisible(false)`.
+    fn close_narrow_book(&mut self, book_type: BookType, batch: &HudBatch) {
+        if batch.width >= NARROW {
             return;
+        }
+        self.level.recipe_book.open[book_type.index()] = false;
+        self.send_book_settings(book_type);
+        self.recipe_ui.overlay = None;
+    }
+    /// `RecipeBookComponent.tryPlaceRecipe`: false when the click is refused.
+    fn try_place(&mut self, entry_index: usize, use_max: bool) -> bool {
+        let Some(book_type) = self.active_book() else {
+            return false;
         };
         let Some(id) = self
             .recipe_ui
@@ -845,7 +953,7 @@ impl Game<'_> {
             .and_then(|b| b.entries.get(entry_index))
             .map(|e| e.id.clone())
         else {
-            return;
+            return false;
         };
         let button_craftable = self
             .recipe_ui
@@ -855,20 +963,21 @@ impl Game<'_> {
             .flat_map(|b| b.entries.iter())
             .any(|e| e.0 == entry_index && e.1);
         if !button_craftable && self.recipe_ui.last_placed.as_deref() == Some(id.as_str()) {
-            return;
+            return false;
         }
         self.recipe_ui.last_placed = Some(id);
         self.recipe_ui.ghost.clear();
         self.place_recipe(book_type, entry_index, use_max);
+        true
     }
-    /// Whether the open screen takes `recipes.place`: a crafting grid's
+    /// Whether the open screen takes `native_place_recipe`: a crafting grid's
     /// book (the inventory's or a crafting table's).
     pub(super) fn mod_recipe_screen(&self) -> bool {
         self.screen == Screen::Inventory
             && self.active_book() == Some(BookType::Crafting)
             && !self.spectator()
     }
-    /// `recipes.place`: the book's click on the recipe with this display
+    /// `native_place_recipe`: the book's click on the recipe with this display
     /// id, refused as `handlePlaceRecipe` refuses it (no crafting screen,
     /// not in the player's book; an impossible one in `place_recipe`).
     pub(super) fn mod_place_recipe(&mut self, display_id: i32, all: bool) {
@@ -960,7 +1069,7 @@ impl Game<'_> {
                 ui.client.highlight.insert(e.id);
             }
             if e.flags & 1 != 0
-                && let Some(id) = self.res.stations().recipe_index.recipe_of_display(e.id)
+                && let Some(id) = world_stations!(self).recipe_index.recipe_of_display(e.id)
                 && !toast.iter().any(|t| t == id)
             {
                 toast.push(id.to_owned());
@@ -1024,7 +1133,7 @@ impl Game<'_> {
             return;
         };
         let ghost = book
-            .ghost(entry, book_type, grid, fuel_empty, self.res.items())
+            .ghost(entry, book_type, grid, fuel_empty, self.items())
             .into_iter()
             .map(|g| Ghost {
                 slot: match (g.target, book_type) {
@@ -1067,11 +1176,106 @@ impl Game<'_> {
             by,
         );
         self.draw_ghost(batch, book_type);
-        if !self.book_open(book_type) {
+        if self.book_open(book_type) {
+            self.refresh_book_view(book_type);
+            self.draw_book_panel(batch, book_type);
+        }
+        self.narrate_recipe_book(batch, book_type, [bx, by, 20.0, 18.0]);
+    }
+    /// `AbstractRecipeBookScreen`'s narratables: the book button (an
+    /// `ImageButton` without a message) and the `RecipeBookComponent`, which
+    /// narrates its recipe buttons, search box, filter and tabs while open.
+    fn narrate_recipe_book(&self, batch: &HudBatch, book_type: BookType, button: [f32; 4]) {
+        use horizon_client::widgets::{self, Narratable, key_of};
+        if !widgets::narrating() {
             return;
         }
-        self.refresh_book_view(book_type);
-        self.draw_book_panel(batch, book_type);
+        // The button moves with the book: it keeps the focus a click gave it.
+        widgets::narratable(|| {
+            Narratable::button("", button, true).key(key_of(&"recipe_book/button"))
+        });
+        let open = self.book_open(book_type);
+        let (xo, yo) = self.book_origin(batch);
+        let group = key_of(&"recipe_book");
+        widgets::narratable(|| Narratable::group(open, [xo, yo, WIDTH, HEIGHT]).key(group));
+        if !open {
+            return;
+        }
+        let in_book = |n: Narratable, i: usize| n.key(key_of(&(group, i))).in_group(group);
+        let ui = &self.recipe_ui;
+        let first = ui.page * 20;
+        let shown = ui.view.buttons.iter().skip(first).take(20);
+        if let Some(book) = ui.book.as_ref() {
+            for (n, b) in shown.enumerate() {
+                widgets::narratable(|| {
+                    // RecipeButton: the result it shows now.
+                    let results: Vec<Vec<ItemStack>> = b
+                        .entries
+                        .iter()
+                        .map(|e| vec![book.entries[e.0].result.clone()])
+                        .collect();
+                    let stack = screen::display_stack(&results, self.swap_index());
+                    let names = |id: &str| self.pack.names.display_item(id);
+                    let item = horizon_client::stations::hover_name(&names, &stack);
+                    let (x, y) = Self::button_pos(xo, yo, n);
+                    in_book(
+                        Narratable::recipe(item, b.entries.len() > 1, [x, y, 25.0, 25.0]),
+                        n,
+                    )
+                });
+            }
+        }
+        let tr = |key: &str, args: &[&str]| horizon_client::screen_narrator::translate(key, args);
+        if let Some(search) = &ui.search {
+            widgets::narratable(|| {
+                Narratable::edit_box(
+                    tr("itemGroup.search", &[]),
+                    search.value.clone(),
+                    [xo + 25.0, yo + 13.0, 81.0, 14.0],
+                )
+                .focused(search.focused)
+                .key(key_of(&(group, "search")))
+                .in_group(group)
+            });
+        }
+        widgets::narratable(|| {
+            // A CycleButton of no name that hides its label: ": <value>",
+            // the value's tooltip.
+            let label = |filtering: bool| {
+                tr(
+                    if !filtering {
+                        "gui.recipebook.toggleRecipes.all"
+                    } else {
+                        match book_type {
+                            BookType::Crafting => "gui.recipebook.toggleRecipes.craftable",
+                            BookType::Furnace => "gui.recipebook.toggleRecipes.smeltable",
+                            BookType::BlastFurnace => "gui.recipebook.toggleRecipes.blastable",
+                            BookType::Smoker => "gui.recipebook.toggleRecipes.smokable",
+                        }
+                    },
+                    &[],
+                )
+            };
+            let filtering = self.book_filtering(book_type);
+            let full = |filtering| tr("options.generic_value", &["", &label(filtering)]);
+            Narratable::cycle(
+                full(filtering),
+                full(!filtering),
+                [xo + 110.0, yo + 12.0, 26.0, 16.0],
+                true,
+            )
+            .hint(label(filtering))
+            .key(key_of(&(group, "filter")))
+            .in_group(group)
+        });
+        for n in 0..ui.view.tabs.len() {
+            let (x, y) = self.tab_pos(xo, yo, n);
+            widgets::narratable(|| {
+                Narratable::button("", [x, y, 35.0, 27.0], true)
+                    .key(key_of(&(group, "tab", n)))
+                    .in_group(group)
+            });
+        }
     }
     fn shift_down_or_ctrl(&self) -> bool {
         self.has_control_down()
@@ -1099,6 +1303,20 @@ impl Game<'_> {
             .collect();
         let calls = screen::ghost(self.swap_index(), ox as i32, oy as i32, big_result, &ghosts);
         self.paint_book(batch, &calls);
+    }
+    /// `GhostSlots.extractTooltip`: the stack a ghost shows on menu slot
+    /// `slot` now, cycling like its draw; only while the open book is visible
+    /// (`RecipeBookComponent.extractTooltip`).
+    pub(super) fn ghost_stack(&self, slot: usize) -> Option<ItemStack> {
+        if !self.book_open(self.active_book()?) {
+            return None;
+        }
+        let ghost = self
+            .recipe_ui
+            .ghost
+            .iter()
+            .find(|g| g.slot == slot && !g.items.is_empty())?;
+        Some(ghost.items[self.swap_index() % ghost.items.len()].clone())
     }
     /// `RecipeBookComponent.extractRenderState` and `extractTooltip`, laid
     /// out by `horizon_client::recipe_book_screen`.

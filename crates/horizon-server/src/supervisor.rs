@@ -37,7 +37,7 @@ pub fn note(shared: &Shared, level: &str, message: &str) {
         chrono::Local::now().format("%H:%M:%S")
     );
     println!("{line}");
-    shared.log.lock().unwrap().push(line);
+    shared.log_line(line);
 }
 
 /// The folder's lock: one supervisor per server folder. Released when the process ends, even by a crash.
@@ -57,6 +57,22 @@ pub fn lock(dir: &Path) -> Result<File, String> {
         }
         Err(std::fs::TryLockError::Error(e)) => Err(e.to_string()),
     }
+}
+
+/// `attempt` (one that takes the folder's lock) retried for up to a second. A process another test
+/// spawns holds a copy of the lock's descriptor between its fork and exec: the lock comes back once that
+/// child has exec'd.
+#[cfg(test)]
+pub(crate) fn retried<T>(mut attempt: impl FnMut() -> Result<T, String>) -> Result<T, String> {
+    let mut result = attempt();
+    for _ in 0..50 {
+        if result.is_ok() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+        result = attempt();
+    }
+    result
 }
 
 enum Exit {
@@ -89,11 +105,22 @@ pub fn run(dir: &Path) -> Result<(), String> {
     let config = Config::load(dir)?;
     let program = engine::program(&config, dir)?;
     let resources = engine::resources(&config, dir, Some(&program))?;
+    // Half-copied game files would only crash the engine again at every restart: name what is missing.
+    engine::check_prepared(&resources)?;
     // A game the system can't load would only crash again at every restart: say why at once.
     engine::check_starts(&program)?;
     let _lock = lock(dir)?;
     let shared = Shared::new(dir);
     let _endpoint = api::start(shared.clone())?;
+    if let Some(address) = crate::management::start(shared.clone())? {
+        note(
+            &shared,
+            "INFO",
+            &format!("Json-RPC Management connection listening on {address}"),
+        );
+    }
+    crate::rcon::start(shared.clone())?;
+    crate::query::start(shared.clone())?;
     match config.panel.address() {
         Ok(Some(address)) => match crate::panel::start(shared.clone(), address) {
             Ok(()) => note(
@@ -113,6 +140,8 @@ pub fn run(dir: &Path) -> Result<(), String> {
         Err(e) => note(&shared, "WARN", &e),
     }
     sample(shared.clone());
+    crate::events::poll_game(shared.clone());
+    crate::discord::start(shared.clone(), config.discord.clone());
     schedule_backups(shared.clone());
     check_updates(shared.clone());
     let console = console_lines();
@@ -141,7 +170,7 @@ pub fn run(dir: &Path) -> Result<(), String> {
             ),
         );
         shared.set_phase(Phase::Starting);
-        let mut child = engine::spawn(&program, &resources, dir)
+        let mut child = engine::spawn(&program, &resources, dir, config.engine.low_memory)
             .map_err(|e| format!("{}: {e}", program.display()))?;
         {
             let mut state = shared.state.lock().unwrap();
@@ -183,20 +212,35 @@ pub fn run(dir: &Path) -> Result<(), String> {
                 Exit::Restart => "the game was restarted before it was up".into(),
             };
             roll_back(&shared, dir, &config, &w, &reason);
-            if matches!(exit, Exit::Stopped)
-                && shared.state.lock().unwrap().phase == Phase::Stopping
-            {
+            if matches!(exit, Exit::Stopped) && shared.shutdown.load(Ordering::SeqCst) {
                 return Ok(());
             }
             continue;
         }
         let status = match exit {
-            Exit::Stopped => return Ok(()),
+            Exit::Stopped => {
+                if shared.shutdown.load(Ordering::SeqCst) {
+                    return Ok(());
+                }
+                shared.set_phase(Phase::Stopped);
+                if wait_stopped(&shared, &console) {
+                    continue;
+                }
+                return Ok(());
+            }
             Exit::NotUp => continue,
             Exit::Restart => {
                 let restore = shared.restore.lock().unwrap().take();
-                if let Some(name) = restore {
-                    match backup::restore(dir, &config, &name) {
+                if let Some((name, dimension)) = restore {
+                    let done = match &dimension {
+                        Some(d) => backup::restore_dimension(dir, &config, &name, d),
+                        None => backup::restore(dir, &config, &name),
+                    };
+                    let name = match &dimension {
+                        Some(d) => format!("{name} ({d})"),
+                        None => name,
+                    };
+                    match done {
                         Ok(Some(old)) => note(
                             &shared,
                             "INFO",
@@ -459,13 +503,24 @@ fn pump(shared: &Arc<Shared>, from: impl Read + Send + 'static, to_stderr: bool)
                 } else {
                     println!("{line}");
                     if line.contains("/INFO]: Done (") {
-                        let mut state = shared.state.lock().unwrap();
-                        if state.phase == Phase::Starting {
-                            state.phase = Phase::Running;
+                        let up = {
+                            let mut state = shared.state.lock().unwrap();
+                            let starting = state.phase == Phase::Starting;
+                            if starting {
+                                state.phase = Phase::Running;
+                            }
+                            starting
+                        };
+                        if up {
+                            shared.emit("phase", serde_json::json!({ "phase": "running" }));
+                            crate::management::started(&shared);
                         }
+                    } else if line.contains("/INFO]: Stopping server") {
+                        // The game's own `stop` (a command in the game, not the supervisor's).
+                        crate::management::stopping(&shared);
                     }
                 }
-                shared.log.lock().unwrap().push(line);
+                shared.log_line(line);
             }
         });
 }
@@ -609,9 +664,16 @@ fn supervise(
         }
         while let Ok(line) = console.try_recv() {
             let command = line.trim().trim_start_matches('/');
+            // `stop` on the supervisor's own stdin (`run` in a terminal, a hosting panel's console) ends the
+            // supervisor too, as before: such hosts wait for the process to exit. A `stop` that reaches the game
+            // another way (in game, RCON, `horizon-server cmd`) leaves the supervisor and its API up.
+            if command == "stop" {
+                shared.shutdown.store(true, Ordering::SeqCst);
+            }
             if command == "stop" && stopping.is_none() {
                 stopping = Some(Instant::now());
                 shared.set_phase(Phase::Stopping);
+                crate::management::stopping(shared);
             }
             if let Some(input) = stdin.as_mut()
                 && writeln!(input, "{line}")
@@ -622,13 +684,18 @@ fn supervise(
             }
         }
         let requests = signals::requests();
-        let asked = requests > handled || shared.stop.swap(false, Ordering::SeqCst);
+        let signal = requests > handled;
+        let asked = signal || shared.stop.swap(false, Ordering::SeqCst);
         handled = requests;
+        if signal {
+            shared.shutdown.store(true, Ordering::SeqCst);
+        }
         if shared.restart.swap(false, Ordering::SeqCst) && stopping.is_none() {
             restart = true;
             note(shared, "INFO", "Restarting the server");
             stopping = Some(Instant::now());
             shared.set_phase(Phase::Restarting);
+            crate::management::stopping(shared);
             send_stop(&mut stdin);
         }
         if asked {
@@ -637,6 +704,7 @@ fn supervise(
                 note(shared, "INFO", "Stopping the server");
                 stopping = Some(Instant::now());
                 shared.set_phase(Phase::Stopping);
+                crate::management::stopping(shared);
                 send_stop(&mut stdin);
             } else {
                 note(shared, "WARN", "Stopping the game at once, without saving");
@@ -666,6 +734,35 @@ fn supervise(
                 return Exit::Stopped;
             }
         }
+    }
+}
+
+/// Keeps the supervisor and its API alive after the game stops, until a start/restart or shutdown arrives.
+/// The supervisor's stdin still answers: `stop` ends it, `start` starts the game again.
+fn wait_stopped(shared: &Arc<Shared>, console: &mpsc::Receiver<String>) -> bool {
+    loop {
+        while let Ok(line) = console.try_recv() {
+            match line.trim().trim_start_matches('/') {
+                "stop" => shared.shutdown.store(true, Ordering::SeqCst),
+                "start" => shared.restart.store(true, Ordering::SeqCst),
+                _ => note(
+                    shared,
+                    "INFO",
+                    "The game is stopped: type `start` to start it, `stop` to end the server",
+                ),
+            }
+        }
+        if shared.shutdown.load(Ordering::SeqCst) {
+            return false;
+        }
+        if signals::requests() > 0 {
+            shared.shutdown.store(true, Ordering::SeqCst);
+            return false;
+        }
+        if shared.restart.swap(false, Ordering::SeqCst) {
+            return true;
+        }
+        thread::sleep(Duration::from_millis(50));
     }
 }
 
@@ -844,23 +941,81 @@ mod tests {
         assert!(up(&shared));
     }
 
+    /// A stand-in for the game: a shell script, its stdin and output piped as the engine's are.
+    #[cfg(unix)]
+    fn game(script: &str) -> Child {
+        use std::process::{Command, Stdio};
+        Command::new("sh")
+            .args(["-c", script])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap()
+    }
+
+    #[cfg(unix)]
+    /// What the supervisor does once the game has stopped, on another thread: `false` when it ends, `true`
+    /// when it starts the game again; nothing comes while it waits.
+    fn after_stop(shared: &Arc<Shared>) -> mpsc::Receiver<bool> {
+        let (console, lines) = mpsc::channel::<String>();
+        let (done, ended) = mpsc::channel();
+        let shared = shared.clone();
+        thread::spawn(move || {
+            let _console = console;
+            let _ = done.send(wait_stopped(&shared, &lines));
+        });
+        ended
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_management_stop_ends_the_supervisor_and_a_stop_in_game_keeps_it() {
+        let dir = std::env::temp_dir().join(format!("horizon-server-stop-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (_console, console) = mpsc::channel();
+        let stop = |shared: &Shared| {
+            let answer =
+                crate::management_methods::call(shared, 1, "server/stop", &serde_json::Value::Null);
+            assert_eq!(answer.ok(), Some(json!(true)));
+        };
+
+        // vanilla's `server/stop`: the game saves and stops, then the process exits.
+        let shared = Shared::with_install(&dir, None);
+        let mut child = game("read line && [ \"$line\" = stop ]");
+        let asked = {
+            let shared = shared.clone();
+            thread::spawn(move || {
+                thread::sleep(Duration::from_millis(100));
+                stop(&shared);
+            })
+        };
+        let exit = supervise(&shared, &mut child, &console, &mut None);
+        asked.join().unwrap();
+        assert!(matches!(exit, Exit::Stopped));
+        let ended = after_stop(&shared);
+        assert_eq!(ended.recv_timeout(Duration::from_secs(5)), Ok(false));
+
+        // A game that stopped by itself (`stop` in game, through RCON) leaves the supervisor and its API up
+        // (#8245) until a stop or a start comes.
+        let shared = Shared::with_install(&dir, None);
+        let mut child = game("exit 0");
+        let exit = supervise(&shared, &mut child, &console, &mut None);
+        assert!(matches!(exit, Exit::Stopped));
+        let ended = after_stop(&shared);
+        assert!(ended.recv_timeout(Duration::from_millis(300)).is_err());
+        stop(&shared);
+        assert_eq!(ended.recv_timeout(Duration::from_secs(5)), Ok(false));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn one_supervisor_per_folder() {
         let dir = std::env::temp_dir().join(format!("horizon-server-lock-{}", std::process::id()));
         let first = lock(&dir).unwrap();
         assert!(lock(&dir).unwrap_err().contains("already running"));
         drop(first);
-        // A process another test spawns holds a copy of the lock's descriptor between its fork and exec:
-        // the lock comes back once that child has exec'd.
-        let mut again = lock(&dir);
-        for _ in 0..50 {
-            if again.is_ok() {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(20));
-            again = lock(&dir);
-        }
-        again.unwrap();
+        retried(|| lock(&dir)).unwrap();
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

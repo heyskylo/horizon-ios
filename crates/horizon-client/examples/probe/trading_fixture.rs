@@ -13,6 +13,7 @@ use horizon_client::{
     random_sequences::RandomSequences,
 };
 use horizon_core::random::{LegacyRandom, RandomSource};
+use horizon_world::loot::PackOverlay;
 use horizon_world::nbt::Tag;
 use std::{collections::HashMap, fmt::Write as _, fs, path::Path};
 
@@ -237,12 +238,12 @@ pub fn main() -> horizon_client::Result<()> {
     let root = Path::new(args.get(1).ok_or(usage)?);
     let input = fs::read_to_string(args.get(2).ok_or(usage)?)?;
     let vanilla = fs::read_to_string(args.get(3).ok_or(usage)?)?;
-    let items = Items::catalog(root)?;
+    let items = Items::catalog(root, &PackOverlay::NONE)?;
     let enchantments = Enchantments::load(root);
     let names = horizon_client::creative::Names::default();
-    let trades = Trades::load(root);
-    let recipes = horizon_client::crafting::Recipes::load(root, &items)?;
-    let brewing = horizon_client::brewing::Brewing::load(root, &items);
+    let trades = Trades::load(root, &PackOverlay::NONE);
+    let recipes = horizon_client::crafting::Recipes::load(root, &items, &PackOverlay::NONE)?;
+    let brewing = horizon_client::brewing::Brewing::load(root, &items, &PackOverlay::NONE);
     let banners = horizon_client::banner::Banners::load(root);
     let station_recipes = horizon_client::stations::StationRecipes::default();
     let types: HashMap<_, _> = horizon_client::mobs::MobTypes::load(root)?
@@ -352,8 +353,9 @@ pub fn main() -> horizon_client::Result<()> {
                 if let Tag::Compound(c) = &mut tag {
                     c.insert("id".into(), Tag::String(id.into()));
                 }
-                let mob = entity_nbt::mob_from_nbt(&tag, &types, 1).ok_or("unreadable villager")?;
-                let back = entity_nbt::mob_to_nbt(&mob, [0; 4], None);
+                let mob =
+                    entity_nbt::mob_from_nbt(&tag, &types, 1, None).ok_or("unreadable villager")?;
+                let back = entity_nbt::mob_to_nbt(&mob, [0; 4], None, None);
                 writeln!(out, "{name} snbt {text}")?;
                 let mut kept = horizon_world::nbt::Compound::new();
                 for key in [
@@ -385,6 +387,8 @@ pub fn main() -> horizon_client::Result<()> {
                     names: &names,
                     trade: Some(&env_trade),
                     maps: None,
+                    limited_crafting: false,
+                    known_recipes: None,
                 };
                 trade(&mut out, name, &kv, &mut world, &env, origin)?;
             }

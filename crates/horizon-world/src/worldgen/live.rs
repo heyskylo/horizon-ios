@@ -103,10 +103,10 @@ impl LiveFeatures {
                 .collect(),
             &data.biome_tags,
         )?);
-        let mut bindings =
-            FeatureBlockBindings::with_tags(registry, data.integers().clone(), &data.block_tags)?
-                .with_fluid_tags(&resources.fluid_tags)?
-                .with_biomes(biomes.clone());
+        let mut bindings = data
+            .feature_block_bindings()?
+            .with_fluid_tags(&resources.fluid_tags)?
+            .with_biomes(biomes.clone());
         if let Some(structures) = &data.structures {
             bindings = bindings.with_structures(structures.clone());
         }
@@ -216,6 +216,16 @@ impl LiveFeatures {
     pub fn data(&self) -> &Arc<GeneratorData> {
         &self.data
     }
+    /// The structure templates and processor lists of this bundle, for the
+    /// pieces a level places live (`/place structure`).
+    pub(crate) fn structures(&self) -> Option<&super::structure::StructureResources> {
+        self.bindings.structures.as_deref()
+    }
+    /// `BlockState.isSolidRender` facts, which legacy structure pieces ask of
+    /// the blocks around them.
+    pub(crate) fn tree_blocks(&self) -> Option<Arc<super::tree_blocks::TreeBlocks>> {
+        self.bindings.tree_blocks().ok()
+    }
     pub fn biome_id(&self, name: &str) -> Option<BiomeId> {
         self.data.biome_id(name)
     }
@@ -224,6 +234,10 @@ impl LiveFeatures {
     pub fn configured_json(&self, name: &str) -> Option<Value> {
         let resources = self.data.feature_resources.as_ref()?;
         serde_json::from_str(resources.features.get(name)?).ok()
+    }
+    /// The structure templates and processor lists features place from.
+    pub fn structure_resources(&self) -> Option<Arc<super::structure::StructureResources>> {
+        self.bindings.structures.clone()
     }
     pub fn configured(&self, name: &str) -> Option<Arc<FeatureDefinition>> {
         let mut cache = self.configured.lock().unwrap();

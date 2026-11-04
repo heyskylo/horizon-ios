@@ -21,6 +21,10 @@ const TICKS_SCALING: f32 = 50.0;
 const ROTATION_SPEED: f32 = 40.0;
 
 pub(super) struct OminousItemSpawner {
+    /// Its entity id: from the entity counter on the server, the server's on
+    /// a client.
+    pub(super) id: u32,
+    /// `DATA_ITEM`; `minecraft:air` stands for `ItemStack.EMPTY`.
     pub(super) item: ItemStack,
     pub(super) position: [f64; 3],
     pub(super) spawn_item_after: i64,
@@ -64,7 +68,9 @@ impl Game<'_> {
         position: [f64; 3],
         delay: i32,
     ) {
+        self.next_entity += 1;
         self.ominous_spawners.push(OminousItemSpawner {
+            id: self.next_entity,
             item,
             position,
             spawn_item_after: i64::from(delay),
@@ -81,13 +87,19 @@ impl Game<'_> {
         else {
             return;
         };
+        self.next_entity += 1;
+        let id = self.next_entity;
+        let saved = horizon_client::entity_nbt::uuid(&tag);
+        // Its saved UUID and the attachments saved under it (#7398).
+        self.remember_uuid(id, saved, &tag);
+        let uuid = self.uuid_for(id);
         self.ominous_spawners.push(OminousItemSpawner {
+            id,
             item,
             position: [at.x, at.y, at.z],
             spawn_item_after,
             tick_count: 0,
-            uuid: horizon_client::entity_nbt::uuid(&tag)
-                .unwrap_or_else(horizon_client::save::random_uuid),
+            uuid,
             raw: Some(Box::new(tag)),
         });
     }
@@ -121,9 +133,39 @@ impl Game<'_> {
         kept.append(&mut self.ominous_spawners);
         self.ominous_spawners = kept;
     }
+    /// `handleAddEntity` for a spawner a server sent: its item comes with the
+    /// entity data (`ItemStack.EMPTY` until then, which draws nothing).
+    pub(super) fn add_remote_ominous_item_spawner(&mut self, id: u32, position: [f64; 3]) {
+        self.ominous_spawners.push(OminousItemSpawner {
+            id,
+            item: ItemStack::new("minecraft:air", 1),
+            position,
+            spawn_item_after: 0,
+            tick_count: 0,
+            uuid: [0; 4],
+            raw: None,
+        });
+    }
+    /// `OminousItemSpawner.tick` on a client: `tickCount` and `tickClient`,
+    /// the particles every 5 game ticks; only the server spawns the item.
+    pub(super) fn tick_remote_ominous_item_spawners(&mut self) {
+        let at: Vec<[f64; 3]> = self.ominous_spawners.iter().map(|s| s.position).collect();
+        for s in &mut self.ominous_spawners {
+            s.tick_count += 1;
+        }
+        if self.world.game_time % 5 == 0 {
+            for position in at {
+                self.ominous_spawner_particles(position);
+            }
+        }
+    }
     /// `spawnItem`: a projectile shot down, or an item entity; level event
     /// 3021 and the entity_place game event.
     fn spawn_ominous_item(&mut self, s: &OminousItemSpawner) {
+        // An empty item spawns nothing, and no event marks it.
+        if &*s.item.item == "minecraft:air" {
+            return;
+        }
         let at = block(s.position);
         let p = s.position;
         match projectile(&s.item.item) {

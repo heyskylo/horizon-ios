@@ -18,6 +18,18 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         changed: BlockId,
         moved: bool,
     ) {
+        self.neighbor_changed_oriented(state, pos, changed, None, moved);
+    }
+    pub fn neighbor_changed_oriented(
+        &mut self,
+        state: BlockStateId,
+        pos: BlockPos,
+        changed: BlockId,
+        orientation: Option<super::orientation::Orientation>,
+        moved: bool,
+    ) {
+        self.level
+            .observe_neighbor_changed(pos, state, changed, moved);
         let b = self.b;
         let block = b.block(state);
         let chain = &b.data(state).chain;
@@ -44,6 +56,18 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
                         self.schedule_tick(pos, block, 1);
                     }
                 }
+                // StructureBlock.neighborChanged: the caller owns the block entity.
+                Class::Structure => self.emit(LevelEvent::BlockEvent {
+                    pos,
+                    state,
+                    kind: "structure_block",
+                }),
+                // TestBlock.neighborChanged: the caller owns the block entity.
+                Class::TestBlock => self.emit(LevelEvent::BlockEvent {
+                    pos,
+                    state,
+                    kind: "test_block",
+                }),
                 Class::CopperBulb => self.copper_bulb_check(pos, state),
                 Class::Crafter => self.crafter_neighbor_changed(pos, state),
                 Class::Diode => self.diode_neighbor_changed(pos, state),
@@ -62,16 +86,23 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
                 Class::Note => self.note_neighbor_changed(pos, state),
                 Class::PistonBase => self.piston_check_if_extend(pos, state),
                 Class::PistonHead => {
-                    if self.piston_head_can_survive(state, pos) {
+                    if self.can_survive(state, pos) {
                         let base = rel(pos, b.facing(state).opposite());
-                        self.neighbor_changed_at(base, changed);
+                        self.neighbor_changed_at_oriented(
+                            base,
+                            changed,
+                            orientation.map(|o| o.with_front(b.facing(state).opposite())),
+                        );
                     }
                 }
                 Class::RedstoneLamp => self.lamp_neighbor_changed(pos, state),
                 Class::RedstoneTorch => self.torch_neighbor_changed(pos, state),
                 Class::RedstoneWire => {
+                    if self.level.redstone_experiments() && changed == b.named.redstone_wire {
+                        return;
+                    }
                     if self.can_survive(state, pos) {
-                        self.wire_update_power(pos, state);
+                        self.wire_update_power(pos, state, orientation, false);
                     } else {
                         self.drop_resources(state, pos);
                         self.remove_block(pos, false);
@@ -165,6 +196,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
                         self.piston_check_if_extend(pos, state);
                     }
                 }
+                Class::PotentSulfur => self.potent_sulfur_on_place(pos, state),
                 Class::Observer => {
                     if !same
                         && b.table.bool(state, b.props.powered)
@@ -178,7 +210,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
                 Class::RedstoneTorch => self.torch_notify_neighbors(pos, state),
                 Class::RedstoneWire => {
                     if !same {
-                        self.wire_update_power(pos, state);
+                        self.wire_update_power(pos, state, None, true);
                         for direction in [Direction::Up, Direction::Down] {
                             self.update_neighbors_at(rel(pos, direction), block);
                         }
@@ -313,8 +345,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
                 }
                 Class::LightningRod => {
                     if b.table.bool(state, b.props.powered) {
-                        let facing = b.facing(state);
-                        self.update_neighbors_at(rel(pos, facing.opposite()), block);
+                        self.lightning_rod_update_neighbors(pos, state);
                     }
                 }
                 Class::PistonHead => {
@@ -326,7 +357,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
                 }
                 Class::Lectern => {
                     if b.table.bool(state, b.props.powered) {
-                        self.update_neighbors_at(below(pos), block);
+                        self.lectern_update_below(pos, state);
                     }
                 }
                 Class::Diode => {
@@ -351,7 +382,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
                         for direction in Direction::ALL {
                             self.update_neighbors_at(rel(pos, direction), block);
                         }
-                        self.wire_update_power(pos, state);
+                        self.wire_update_power(pos, state, None, false);
                         self.wire_update_neighbors_of_neighboring_wires(pos);
                     }
                 }
@@ -433,6 +464,15 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
                 self.level_event(2001, head_pos, head.0 as i32);
             }
         }
+        // PistonHeadBlock.playerWillDestroy: in creative, destroy the base piston
+        // without drops so removing the head does not drop a piston item.
+        if creative && data.is(Class::PistonHead) {
+            let base_pos = rel(pos, b.facing(state).opposite());
+            let base = self.state(base_pos);
+            if self.piston_head_fitting_base(state, base) {
+                self.destroy_block(base_pos, false, super::flags::UPDATE_LIMIT);
+            }
+        }
         // TntBlock.playerWillDestroy: unstable TNT primes unless instabuild.
         if !creative && data.is(Class::Tnt) && b.table.bool(state, p.unstable) {
             self.prime_tnt(pos);
@@ -444,7 +484,39 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
             self.level_event(2001, pos, state.0 as i32);
         }
         self.game_event(pos, "minecraft:block_destroy");
-        self.remove_block(pos, false)
+        let removed = self.remove_block(pos, false);
+        // MovingPistonBlock.destroy: a moving piston the player broke takes
+        // the extended base behind it with it. setBlock callers keep it.
+        if removed && b.is_block(state, b.named.moving_piston) {
+            self.destroy_moving_piston_base(pos, state);
+        }
+        removed
+    }
+    /// `TurtleEggBlock.playerDestroy` (after the drops): `decreaseEggs` plays the
+    /// break and puts back all but one egg of the mined stack. `destroyed` is the
+    /// state that was broken.
+    pub(crate) fn turtle_egg_destroyed_by_player(
+        &mut self,
+        pos: BlockPos,
+        destroyed: BlockStateId,
+    ) {
+        let b = self.b;
+        if !b.data(destroyed).is(Class::TurtleEgg) {
+            return;
+        }
+        let pitch = 0.9 + self.random().next_float() * 0.2;
+        self.sound(
+            pos,
+            &std::sync::Arc::from("minecraft:block.turtle_egg.break"),
+            0.7,
+            pitch,
+        );
+        let eggs = b.table.int(destroyed, b.props.eggs);
+        if eggs > 1 {
+            self.set_block(pos, b.table.set_int(destroyed, b.props.eggs, eggs - 1), 2);
+            self.game_event(pos, "minecraft:block_destroy");
+            self.level_event(2001, pos, destroyed.0 as i32);
+        }
     }
     /// `IceBlock.playerDestroy` (after the drops): mined ice turns into water
     /// when it sits over a solid block or a liquid, unless the tool prevents
@@ -498,6 +570,16 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         }
     }
 
+    /// `LilyPadBlock.entityInside` for a boat: the lily pad at `pos` is
+    /// destroyed with its drops (`Level.destroyBlock(pos, true, entity)`).
+    pub(crate) fn boat_inside(&mut self, pos: BlockPos) {
+        let b = self.b;
+        let state = self.state(pos);
+        if b.data(state).is(Class::LilyPad) {
+            self.destroy_block(pos, true, super::flags::UPDATE_LIMIT);
+        }
+    }
+
     // ---- misc helpers ----
 
     /// `BaseFireBlock.onPlace`: a fire inside an empty obsidian frame (in the
@@ -524,6 +606,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         if self.sponge_remove_water(start) {
             let b = self.b;
             self.set_block(start, b.default_of(b.named.wet_sponge), 2);
+            self.level.observe_sponge_absorb(start);
             self.emit(super::LevelEvent::Sound {
                 pos: start,
                 sound: "minecraft:block.sponge.absorb".into(),
@@ -548,7 +631,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
                 let state = self.state(pos);
                 if !b.is_water_fluid(self.fluid_at(pos).kind()) {
                     false
-                } else if self.pickup_block(pos, state) {
+                } else if self.pickup_block(pos, state, false) {
                     true
                 } else {
                     if b.instance_of(state, Class::Liquid) {
@@ -607,11 +690,18 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
     /// `IceBlock.melt`.
     pub(crate) fn ice_melt(&mut self, pos: BlockPos, state: BlockStateId) {
         let b = self.b;
+        let target = if self.level.dimension() == super::Dimension::Nether {
+            b.air()
+        } else {
+            b.default_of(b.named.water)
+        };
+        if !self.level.allow_block_fade(pos, state, target) {
+            return;
+        }
         if self.level.dimension() == super::Dimension::Nether {
             self.remove_block(pos, false);
         } else {
-            let water = b.default_of(b.named.water);
-            self.set_block_and_update(pos, water);
+            self.set_block_and_update(pos, target);
             self.neighbor_changed_at(pos, b.named.water);
             self.game_event_state(pos, "minecraft:block_destroy", state);
         }
@@ -638,6 +728,29 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         }
         self.set_block(pos, b.table.set_text(state, b.props.tilt, "unstable"), 2);
         self.schedule_tick(pos, b.block(state), 10);
+    }
+    /// `BigDripleafBlock.onProjectileHit`: FULL immediately, even while
+    /// powered; setTiltAndScheduleTick plays the down sound and resets in 100.
+    pub(crate) fn big_dripleaf_projectile_hit(&mut self, pos: BlockPos) -> bool {
+        let b = self.b;
+        let state = self.state(pos);
+        if !b.data(state).is(Class::BigDripleaf) {
+            return false;
+        }
+        let next = b.table.set_text(state, b.props.tilt, "full");
+        self.set_block(pos, next, 2);
+        if state != next {
+            self.game_event(pos, "minecraft:block_change");
+        }
+        let pitch = self.random().next_float() * 0.4 + 0.8;
+        self.emit(LevelEvent::Sound {
+            pos,
+            sound: "minecraft:block.big_dripleaf.tilt_down".into(),
+            volume: 1.0,
+            pitch,
+        });
+        self.schedule_tick(pos, b.block(state), 100);
+        true
     }
     /// `BigDripleafBlock.resetTilt`.
     pub(crate) fn big_dripleaf_reset_tilt(&mut self, pos: BlockPos, state: BlockStateId) {

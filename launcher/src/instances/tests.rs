@@ -334,3 +334,200 @@ fn a_java_instance_plays_one_minecraft_version_in_its_own_folder() {
     assert_eq!(edited.java.unwrap().memory_mb, Some(6144));
     fs::remove_dir_all(&root).unwrap();
 }
+
+/// Delete moves an instance's folder to the Trash and forgets it; one deleted outside the
+/// launcher is forgotten when the list is next read (#horizon-bugs: an instance that stayed).
+#[test]
+fn deleted_instances_go_to_the_trash_and_are_forgotten() {
+    let root = scratch("delete");
+    let (home, data, trash) = (root.join("home"), root.join("data"), root.join("trash"));
+    player_home(&home);
+    let to_trash = |p: &Path| crate::desktop_seams::to_folder(p, &trash);
+    let survival = create_in(&home, &data, "Survival", None, None).unwrap();
+    put(&survival.home.join("saves/Base/level.dat"), "base");
+    edit_in(&home, &data, "Survival", |m| m.group = Some("Mine".into())).unwrap();
+    let gone = delete_in(&home, &data, "Survival", &to_trash).unwrap();
+    assert_eq!(gone.id, "survival");
+    assert_eq!(
+        fs::read(trash.join("survival/saves/Base/level.dat")).unwrap(),
+        b"base"
+    );
+    assert!(find_in(&list_in(&home, &data), "Survival").is_err());
+    assert!(!Store::load(&data).instances.contains_key("survival"));
+    // The game's home stays; an imported pack goes like an instance.
+    assert!(delete_in(&home, &data, DEFAULT, &to_trash)
+        .unwrap_err()
+        .contains("can't be deleted"));
+    assert!(home.join("saves/World/level.dat").is_file());
+    delete_in(&home, &data, "small-pack", &to_trash).unwrap();
+    assert!(trash
+        .join("small-pack/home/saves/Modded/level.dat")
+        .is_file());
+    // A folder removed by hand: its choices are dropped, a new one of that name starts clean.
+    create_in(&home, &data, "Skyblock", None, None).unwrap();
+    edit_in(&home, &data, "Skyblock", |m| m.group = Some("Old".into())).unwrap();
+    fs::remove_dir_all(home.join(OWN).join("skyblock")).unwrap();
+    assert!(find_in(&list_in(&home, &data), "Skyblock").is_err());
+    assert!(!Store::load(&data).instances.contains_key("skyblock"));
+    let again = create_in(&home, &data, "Skyblock", None, None).unwrap();
+    assert_eq!(again.group, None);
+    fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn the_mod_browser_installs_for_the_instance_loader() {
+    let vanilla = JavaGame {
+        minecraft: "1.21.1".into(),
+        ..JavaGame::default()
+    };
+    assert_eq!(vanilla.target().loader, None);
+    let quilt = JavaGame {
+        loader: Some(crate::loaders::Loader {
+            kind: crate::loaders::Kind::Quilt,
+            version: "0.30.1".into(),
+        }),
+        ..vanilla
+    };
+    let target = quilt.target();
+    assert_eq!(
+        (target.minecraft.as_str(), target.loader.as_deref()),
+        ("1.21.1", Some("quilt"))
+    );
+    // A Quilt instance takes Fabric mods too.
+    assert!(target.accepts("fabric") && !target.accepts("neoforge"));
+}
+
+/// A chosen picture is kept scaled to 128 pixels in the instance's folder; removing it moves it
+/// to the trash; a file that isn't an image is refused.
+#[test]
+fn a_picture_is_kept_small_and_goes_to_the_trash() {
+    let root = scratch("picture");
+    let (home, trash) = (root.join("home"), root.join("trash"));
+    let mut photo = Vec::new();
+    image::RgbaImage::from_pixel(600, 400, image::Rgba([200, 90, 40, 255]))
+        .write_to(
+            &mut std::io::Cursor::new(&mut photo),
+            image::ImageFormat::Png,
+        )
+        .unwrap();
+    let png = picture(photo).unwrap();
+    let to_trash = |p: &Path| crate::desktop_seams::to_folder(p, &trash);
+    set_picture(&home, Some(&png), &to_trash).unwrap();
+    let kept = image::open(home.join(PICTURE)).unwrap();
+    assert_eq!((kept.width(), kept.height()), (128, 85));
+    set_picture(&home, None, &to_trash).unwrap();
+    assert!(!home.join(PICTURE).exists());
+    assert!(trash.join(PICTURE).is_file());
+    // Nothing to remove is fine.
+    set_picture(&home, None, &to_trash).unwrap();
+    assert!(picture(b"not an image".to_vec()).is_err());
+    fs::remove_dir_all(&root).unwrap();
+}
+
+/// Edit switches what an instance plays (Horizon, Vanilla, a loader, another Minecraft version):
+/// its folder, with its worlds, mods and options, stays byte for byte as it was, a Java
+/// instance's settings come back after a turn as Horizon, and what can't keep working is named
+/// first. The game's home plays what it was made with.
+#[test]
+fn switching_what_an_instance_plays_keeps_its_worlds_mods_and_settings() {
+    use crate::loaders::{Kind as L, Loader};
+    let root = scratch("switch");
+    let (home, data) = (root.join("horizon"), root.join("launcher"));
+    player_home(&home);
+    let made = create_in(&home, &data, "Mine", None, None).unwrap();
+    put(&made.home.join("saves/Base/level.dat"), "base");
+    put(&made.home.join("saves/Base/region/r.0.0.mca"), "region");
+    put(&made.home.join("mods/minimap.hmod"), "hmod");
+    put(&made.home.join("options.txt"), "fov:90");
+    edit_in(&home, &data, &made.id, |m| {
+        m.version = Some("nightly-2026-11-01-c9d474d".into())
+    })
+    .unwrap();
+    let before = files(&made.home);
+    let fabric = |v: &str| Plays::Java {
+        minecraft: v.into(),
+        loader: Some(Loader {
+            kind: L::Fabric,
+            version: "0.16.0".into(),
+        }),
+    };
+
+    // Horizon to Fabric: Horizon's mod stops loading; its world is opened by another version.
+    let now = find_in(&list_in(&home, &data), &made.id).unwrap();
+    assert_eq!(
+        unkept(&now, &fabric("1.21.1"), "26.3"),
+        [
+            Unkept::Mods {
+                count: 1,
+                made_for: "Horizon".into()
+            },
+            Unkept::Worlds {
+                count: 1,
+                from: "26.3".into(),
+                to: "1.21.1".into()
+            },
+        ]
+    );
+    let java = switch::switch_in(&home, &data, &made.id, fabric("1.21.1")).unwrap();
+    assert_eq!(java.java.as_ref().unwrap().minecraft, "1.21.1");
+    assert_eq!(java.version.as_deref(), Some("nightly-2026-11-01-c9d474d"));
+    edit_in(&home, &data, &made.id, |m| {
+        m.java.as_mut().unwrap().memory_mb = Some(6144);
+        m.java.as_mut().unwrap().jvm_args = "-XX:+UseZGC".into();
+    })
+    .unwrap();
+    put(&made.home.join("mods/sodium.jar"), "jar");
+    let with_jar = files(&made.home);
+
+    // Fabric to Quilt keeps Fabric's mods working; another Minecraft version may not.
+    let quilt = Plays::Java {
+        minecraft: "1.21.1".into(),
+        loader: Some(Loader {
+            kind: L::Quilt,
+            version: "0.27.0".into(),
+        }),
+    };
+    let java = find_in(&list_in(&home, &data), &made.id).unwrap();
+    assert_eq!(unkept(&java, &quilt, "26.3"), []);
+    assert_eq!(
+        unkept(&java, &fabric("1.20.1"), "26.3")[0],
+        Unkept::ModsVersion {
+            count: 1,
+            from: "1.21.1".into(),
+            to: "1.20.1".into()
+        }
+    );
+
+    // A turn as Horizon, then Vanilla: the Java settings come back, nothing on disk moved.
+    switch::switch_in(&home, &data, &made.id, Plays::Horizon).unwrap();
+    let horizon = find_in(&list_in(&home, &data), &made.id).unwrap();
+    assert_eq!(horizon.java, None);
+    let vanilla = Plays::Java {
+        minecraft: "1.21.4".into(),
+        loader: None,
+    };
+    let back = switch::switch_in(&home, &data, &made.id, vanilla).unwrap();
+    let back = back.java.unwrap();
+    assert_eq!(
+        (
+            back.minecraft.as_str(),
+            back.memory_mb,
+            back.jvm_args.as_str()
+        ),
+        ("1.21.4", Some(6144), "-XX:+UseZGC")
+    );
+    assert_eq!(back.loader, None);
+    assert_eq!(files(&made.home), with_jar);
+    assert_eq!(
+        with_jar.len(),
+        before.len() + 1,
+        "only the jar put there is new"
+    );
+
+    // The game's home can't switch, and is left as it was.
+    let home_files = files(&home.join("saves"));
+    let refused = switch::switch_in(&home, &data, DEFAULT, Plays::Horizon).unwrap_err();
+    assert!(refused.contains("plays what it was made with"), "{refused}");
+    assert_eq!(files(&home.join("saves")), home_files);
+    fs::remove_dir_all(&root).unwrap();
+}

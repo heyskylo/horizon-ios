@@ -13,7 +13,7 @@ reopened; labels never start it):
 
 | Job | Runs on | What | Time |
 | --- | --- | --- | --- |
-| `verify` | GitHub `ubuntu-latest` | Public-tree check, Python tests, rustfmt, clippy with warnings denied, Rust tests. Dependencies and the workspace build come from a cache saved by main's runs | ~4 min cold, less warm |
+| `verify` | Our checks runners (label `horizon-checks`, the desktop's) for the pull requests whose number ends in 0 or 1, forks included; GitHub `ubuntu-latest` for the others and main's pushes. `SELF_HOSTED_CI` moves them: `all` all to ours, `light` or `off` all to GitHub ([CI runners](ci-runners.md)) | Public-tree check, Python tests, rustfmt, clippy with warnings denied, Rust tests, one after another in one job. Dependencies and the workspace build come from a cache saved by main's runs (GitHub) or the runner's own build folder (ours) | ~8 min |
 | `parity / parity` | A runner with the label `horizon-game`: the Mac mini's and playhorizon's (below) | Only for a change to a harness, an oracle, a probe or the runner (or the `run-parity` label): the vanilla harnesses the change can affect (`tools/parity.py --changed <base>`). Other pull requests skip it: [parity-main](#parity-on-main) checks them on main | seconds when nothing is affected; minutes per affected harness |
 
 Pushes to main run `verify` only; the nightly audit covers main's harnesses.
@@ -21,7 +21,8 @@ Pushes to main run `verify` only; the nightly audit covers main's harnesses.
 `verify` is the check main requires, so it has no condition and runs in every run of `checks`: GitHub counts a
 *skipped* required check as passed, and labels used to start runs whose `verify` was skipped, which let
 auto-merge merge before the real `verify` finished. A pull request that changes no Rust (docs, tools) runs only its
-quick steps and finishes in seconds.
+quick steps and finishes in about a minute. A pull request's public-tree check reads only
+its own commits (`--range base..head`); main's pushes read every ref's history.
 
 ### The parity job
 
@@ -84,26 +85,21 @@ release's macOS build back. Each keeps its own checkout, `target/` and Rust inst
 `_work/horizon/shared-local` links to the first's, so they share the vanilla data, the preparations (one at a
 time, under a lock) and the parity passes and slots.
 
-**The desktop's runner (retired).** On 2026-10-26 the maintainer asked that CI stop using his desktop: its services are
-stopped and `ludodesktop-horizon` has no label a job asks for (only `self-hosted`, `Linux`, `X64`), so nothing waits for
-it. What follows describes it as it ran. It ran on the maintainer's Linux desktop while nobody used it: its
-screen locked, or untouched for 15 minutes (his rule, 2026-10-26). `tools/ci/linux-runner.sh install`, run there as
-him, registers it and installs two systemd user services: `horizon-runner` (the runner, in
-`~/.actions-runners/horizon`, nice 19, in `horizon-ci.slice` with CPU and I/O weight 20, half the threads (on all of
-them the CPU package reached 92–96 °C) and memory capped at two thirds of the RAM; `CARGO_BUILD_JOBS` and the harness slots at 8, after the machine froze under ~7 cold cargo
-builds on 2026-10-14; its own Rust install; the JDK, sccache and the build libraries from nixpkgs; its own
-`vscreen` so no game it starts reaches his screen) and `horizon-runner-pause` (`tools/ci/runner_pause.py`), the
-only thing that starts the runner. The watcher stops it at once on keyboard, mouse or gamepad input (read from
-`/dev/input`: only whether bytes came, never what), while an unlocked session has had input in the last 15 minutes,
-while the CPU package is at 90 °C or more, while a game runs (Steam, gamescope, Wine, Proton or Minecraft
-processes, fleet-load's own detection, or a process outside the CI slice using the GPU at 50 % or more), or while
-`~/.actions-runners/horizon/pause` exists, and starts it again 5 minutes after the last such sign. A job already
-under way is throttled to 2 threads at the lowest weight and the runner stops after it: freezing the job would make
-GitHub drop it as lost and the harnesses time out. Old pull requests' `runner-env.sh` know only the Mac: the
-runner's `.env` and `.path` give their jobs Python, the JDK and the vanilla data (`HORIZON_SHARED_SOURCE`) all the
-same. The nightly audit and parity-main stay on the Mac mini's runners: the audit compares with the previous night,
-so it stays on one platform, and a parity-main job slowed down on the desktop because he came back could time out,
-and its failures bisect and comment on merges.
+**The desktop's runner.** Since 2026-11-03 (the maintainer's decision) `ludodesktop-horizon` takes pull requests'
+parity jobs too, beside the Mac mini and playhorizon: labels `self-hosted`, `X64`, `horizon-game`, `ludodesktop`, and no
+`Linux`, so ci.yml's by-hand `[self-hosted, linux, horizon-game]` jobs stay on playhorizon. It is declared in the
+maintainer's NixOS configuration (`services.github-runners`, his private fleet repo), not installed by
+`tools/ci/linux-runner.sh`. A fork's job reaches it only through `run-parity`, so it runs as a system user, `gha`, with
+no sudo, SSH keys or logins; its service sees no `/home` and no device (no GPU: Vulkan is Mesa's lavapipe, on an Xvfb
+of its own), the system is read-only to it, and it runs in a slice at CPU and I/O weight 20, at most 16 of the 24
+threads, 20 GB of memory, nice 10 (`CARGO_BUILD_JOBS=16`, 8 harness slots). It runs only while the maintainer isn't at
+the machine: a timer stops it within a minute when he is at the screen (an unlocked session) and starts it 2 minutes
+after he leaves. A job it stops fails: rerun it, and it goes to whichever runner is free. Its vanilla data is his own
+copy, kept in the runner's folder; a clean-up before each start keeps its build folders under 40 GB and its 2 newest
+preparations. The nightly audit and parity-main stay on the Mac mini's runners: the audit compares with the previous
+night, so it stays on one platform, and a parity-main job stopped because he came back would bisect and comment on
+merges for nothing. The desktop is no parity host for `tools/parity.py --hosts` any more (its `tools/parity_hosts.json`
+entry points at the 10-26 setup, whose pause file stays set, so it refuses work).
 
 **playhorizon's runner.** `playhorizon-horizon` runs on a server a hosting partner lends the project (Ubuntu, 8
 AMD EPYC threads, 30 GB, in Detroit; reachable only through the maintainer's tailnet). Nobody sits at it, so the
@@ -115,8 +111,8 @@ Without Nix, `linux-runner.sh` takes the build libraries, the JDK, sccache, Xvfb
 (lavapipe; there is no GPU) from apt, and Python 3.13 from uv. The partner can reach the machine, so gh is not
 logged in there: the registration token comes from another machine (`RUNNER_TOKEN`), and no job with secrets may
 run there (parity has none). It is also a parity host (`playhorizon` in `tools/parity_hosts.json`, 3 jobs on CPUs 0-3). Since
-2026-10-26 it has the `horizon-game` label: pull requests' parity jobs run there or on the Mac mini, and `full-parity`
-ones only there.
+2026-10-26 it has the `horizon-game` label: pull requests' parity jobs run there, on the Mac mini or on the desktop, and
+`full-parity` ones only there.
 
 ## Merging
 
@@ -168,9 +164,10 @@ fork's pull request: the Team member decides whether to run it, and a skipped ru
 Most pull requests merge on `verify` alone and leave the vanilla harnesses to `.github/workflows/parity-main.yml`,
 which runs them on main a batch of merges at a time, on the Mac mini's runner:
 
-- It starts on every push to main, one run at a time (`concurrency: parity-main`). Merges that land while a run
-  goes on wait in one pending run: GitHub keeps only the newest and cancels the others, so the next run takes them
-  all.
+- It starts on every push to main, one run at a time (`concurrency: parity-main`). A run that started always
+  finishes; merges that land while it goes on wait in one pending run: GitHub keeps only the newest and cancels the
+  others, so the next run takes them all. The many `cancelled` runs in the list are those pending ones, plus runs
+  whose bisect outgrew the job's 240 minutes.
 - `tools/parity_main.py base` gives the newest commit main contains whose parity-main passed (else the last
   merge's parent), and the run is `tools/parity.py --changed <that commit>`: the union of the harnesses every merge
   since then can affect, once, with every earlier pass reused.
@@ -179,8 +176,11 @@ which runs them on main a batch of merges at a time, on the Mac mini's runner:
   (`🤖 Agent: parity-main found that this merge breaks ...`). Fix it with a pull request as usual; the next
   run checks from the last green commit again.
 - Nightlies build only on a commit both `checks` and `parity-main` passed on (`tools/release_train.py`,
-  `tools/ci/nightly.py`, see below), so a broken merge holds them instead of reaching players. `release.yml` also
-  starts when a parity-main run finishes. A forced run (`force=true`) doesn't wait for parity-main.
+  `tools/ci/nightly.py`, see below), so a broken merge holds them instead of reaching players. They take the
+  newest such commit even when a later batch failed: that failure is in merges the green commit doesn't contain, so
+  a broken or flaky harness holds only what landed after the last green run, never the whole Nightly (before
+  2026-11-03, any later failure held every Nightly until a run passed again: 30 h without one). `release.yml`
+  also starts when a parity-main run finishes. A forced run (`force=true`) doesn't wait for parity-main.
 
 A pull request still runs its own parity job when it changes a harness script, an oracle
 (`mods/horizon/src/test/`), a probe (`crates/*/examples/`, `game/*_fixture.rs`, `game/*_harness.rs`), the runner
@@ -230,8 +230,8 @@ commits) since the commit the published Nightly was built on:
 - One Nightly build at a time: while one runs or waits, the train starts none. At most 12 builds a UTC day (the
   reviewers' `/nightly` builds count): past that the train waits for the next day, except for `release-now` and
   `force=true`.
-- A scheduled run takes main's newest commit where `checks` and `parity-main` passed; after a run of either, the
-  commit it passed on, once both passed there.
+- A scheduled run takes main's newest commit where `checks` and `parity-main` passed (a later failed
+  parity-main batch doesn't change it); after a run of either, the commit it passed on, once both passed there.
 
 ### Nightly only
 
@@ -275,6 +275,7 @@ the notes.
 | `horizon-server-linux-x86_64.tar.gz` | the same Linux job, after the client archive: `horizon-server`, `horizon-prepare` and the game built with `--no-default-features` as `horizon-engine` (docs/server.md) | as above, and neither `libasound.so.2` nor `libudev.so.1` (`tools/check_imports.py --server`) |
 | `horizon-windows-x64.zip` | GitHub `windows-latest`, C runtime linked in | system DLLs only (`tools/check_imports.py`) |
 | `horizon-macos-arm64.zip` | The Mac mini's runner (`vars.MAC_RUNNER=macos-latest` sends it to GitHub) | system libraries only (`otool -L`); a 1500-frame offscreen run of a new world (about 12 s; 300 frames end before the world has loaded) with resources prepared from the runner's own Minecraft (`--offscreen --world smoke --frames 1500 --smoke-report`: frames drawn, chunks generated and meshed, a player, no error) |
+| `horizon-macos-x64.zip` | The same runner, cross-built for `x86_64-apple-darwin` (#1161) | as `horizon-macos-arm64.zip`, every program and the 1500-frame run under Rosetta 2; only the arm64 build's `smoke-test.json` is published |
 
 Each builds `horizon-client`, `horizon-ctl` and `horizon-prepare` in release mode, checks all three exist, starts
 each one (`--help`, `--version`), packages the folder with `cargo run -p xtask -- package` and archives it. The
@@ -391,13 +392,16 @@ and by hand; pushes to `launcher` and `launcher-*` branches only build.
   launcher's tests, checks its libraries, and installs the latest game release with the new launcher.
 - Published with `--latest=false`: the repository's latest release stays a game release. Notes list the pull
   requests under New and Fixed; Kira posts launcher releases without pinging.
+- Windows also publishes `horizon-launcher-setup.exe`, the launcher's binary under another name: with no
+  arguments it opens the per-user setup (`launcher/src/installer.rs`) instead of Home, and
+  `horizon-launcher.exe uninstall` removes it again. Both files are in the release's signed `SHA256SUMS`.
 
 Making a launcher release GitHub's latest instead would break servers: every `horizon-server` already installed,
 `install.sh` and `install.ps1` ask for `releases/latest` and expect the game's archives there, and a server that
 can't update can't fetch the fix either. So the game release stays the latest, and it sends people to the launcher
 (#1647): its notes open with a "Want to play? Download the Horizon launcher" block (`PLAYERS` in
 `tools/release_train.py`: raw HTML, which GitHub shows and launchers' notes skip; the site's Releases page leaves
-it out too), and its archives carry labels ("Game files the
+it out too), which `PLAYERS_FOOTER` repeats above the disclaimer at the end, and its archives carry labels ("Game files the
 launcher installs: Linux (…)") that GitHub shows in place of the file names. Everything that downloads matches
 the asset's name, which is unchanged.
 
@@ -416,10 +420,13 @@ launcher and the website read: both then look the newest launcher tags up one by
 (20:17 UTC) and when a trusted reviewer asks (#2681). It builds main's newest commit where
 `checks` and `parity-main` passed, as a release does (or the `base` input), plus the pull requests the trusted
 reviewers picked, merged in their order; with none picked, that commit alone (`tools/ci/nightly.py pick`). No green
-commit (main's newest `checks` or `parity-main` run failed) builds nothing. A night with nothing new publishes nothing. Since the Nightly is the version every player installs, a pull request goes in only with an
-approving review at the exact head that is built, from a trusted reviewer or from Ludovic's account (his own or his
-agents' review), never its author's (Ludovic, 2026-10-28). A push after the review needs a new one: until then the
-scheduled build keeps the approved head. `/nightly dry-run` needs no review: it publishes nothing.
+commit (main's newest `checks` or `parity-main` run failed) builds nothing. A night with nothing new publishes nothing. A pull request goes in without a review: a trusted
+reviewer or Ludovic can pick any open pull request to main, reviewed or not (Ludovic, 2026-10-30, at the Team's
+request, because they were often blocked on the launcher; from 2026-10-28 it needed an approving review at the
+head that is built). The guards stay: the pull request must be open and target main, it must leave the
+CODEOWNERS-guarded files alone, the sets and builds stay capped, `paused` stops the reviewers, Ludovic's `remove`
+sticks, and the build runs without secrets. Each pull request is built at the head it was picked at; a push after
+the pick waits until someone picks it again (`/nightly add`).
 
 Every Nightly ships its exact source. Its notes name the commit; `horizon-source.tar.gz` on the release is that
 commit's `git archive`, signed with the builds in `SHA256SUMS`; and `nightly.py keep-source` tags the commit
@@ -439,11 +446,13 @@ Online5277 since 2026-10-27, levzzz5154 since 2026-10-28) and for Ludovic, with 
 /reopen
 /label bug, good first issue    existing labels only; never creates one
 /unlabel bug
+/unclaim @login           releases someone else's claim on an issue (anyone can `/claim` and `/unclaim` their own)
 ```
 
 - **Where.** On the first line of a comment on the issue or pull request (`.github/workflows/triage-command.yml`,
   `tools/ci/triage_command.py`). The workflow answers with one comment, `🤖 Triage: <action>, on behalf of @login`,
-  linking the comment that asked; a refusal answers too.
+  linking the comment that asked; a refusal answers too. Claims are their own workflow
+  (`.github/workflows/claim-command.yml`, `tools/ci/claim_command.py`), open to everyone for their own claim.
 - **Refused.** Any label with `release` in its name (`release-now`, `release-blocker`, `skip-release`) and
   `full-parity`; anything on Ludovic's own issues and pull requests; a merged pull request; a locked thread; more
   than 60 actions per reviewer in 24 hours (counted from the workflow's own comments).
@@ -471,8 +480,8 @@ comment on any issue or pull request (`.github/workflows/nightly-command.yml`, `
 - **The answer.** The workflow answers in the thread with one comment starting `🤖 Nightly:`: the set, the build's
   run, and later the published Nightly (or why it failed).
 - **The set** is `set.json` on the `nightly-state` branch: who asked, when, and each pull request at the head it had
-  then. A head is taken again only when someone asks again or at the scheduled run, never silently in between. The
-  scheduled run takes every pull request's newest head and drops the merged and closed ones; the notes say so.
+  then. A head is taken again only when someone asks again, never silently in between. The
+  scheduled run builds every pull request at that head and drops the merged, closed and refused ones; the notes say so.
   `builds.jsonl` there records each build's set (for `nightly_stats.py`).
 - **Assembly.** `pick` (main's code) fetches each head and merges them onto main with `git merge-tree
   --write-tree`: git objects only, no working tree, so no file, hook or filter of theirs reaches the runner. The
@@ -514,7 +523,8 @@ comment on any issue or pull request (`.github/workflows/nightly-command.yml`, `
   hashes the archives with the runner's `sha256sum` and signs with its OpenSSL: it never runs what `build` made.
   `publish` runs main's `horizon-release-sign`, never the archives. Nothing a nightly's build leaves reaches a
   release either: `game-build.yml`'s `trusted` input is true only for `release.yml`. An untrusted build runs its
-  macOS jobs on the runner that runs pull requests' parity jobs (`horizon-game`), never the release runner
+  macOS jobs on the Mac mini's nightly runner (`horizon-nightly`, its own so a nightly never waits behind pull
+  requests' parity queue; same machine and trust as the `horizon-game` runner), never the release runner
   (`MAC_RUNNER`), and its Rust cache has its own key and is never saved. A trusted build doesn't use the machine's
   shared sccache, which pull requests' jobs write (`HORIZON_NO_SCCACHE`, `tools/ci/runner-env.sh`).
 - **Players.** Every launcher and `horizon-server update` install the `nightly` pre-release

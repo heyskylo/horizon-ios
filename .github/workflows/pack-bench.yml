@@ -1,0 +1,72 @@
+name: pack load bench
+# How long resource packs take to load: crates/horizon-client-render/examples/pack_load_bench.rs on generated packs
+# (no game files), on the branch and then on `base` with the branch's copy of the bench, on the same runner, so a pull
+# request can show its numbers next to main's. Started by hand, or by a push to a `pack-bench/*` branch (a fork can't
+# start a workflow its main lacks), against horizon-rust/horizon's main.
+on:
+  push:
+    branches: ['pack-bench/**']
+  workflow_dispatch:
+    inputs:
+      base:
+        description: Ref to compare against
+        default: main
+      scale:
+        description: How many times the default pack sizes
+        default: '1'
+permissions:
+  contents: read
+env:
+  HORIZON_TELEMETRY_URL: "off"
+  CARGO_TERM_COLOR: never
+
+jobs:
+  bench:
+    # Our checks runners (label horizon-checks, docs/ci-runners.md): the branch and the base on the same machine, as
+    # the comparison needs. SELF_HOSTED_CI=light or off: GitHub's.
+    runs-on: ${{ vars.SELF_HOSTED_CI != 'off' && vars.SELF_HOSTED_CI != 'light' && fromJSON('["self-hosted", "linux", "horizon-checks"]') || 'ubuntu-latest' }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install Rust and the ALSA and udev headers
+        env:
+          HOSTED: ${{ runner.environment == 'github-hosted' }}
+        run: |
+          if [ "$HOSTED" = true ]; then
+            sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev libudev-dev
+          fi
+          rustup toolchain install stable --profile minimal
+      - uses: Swatinem/rust-cache@v2
+        if: runner.environment == 'github-hosted'
+        with:
+          shared-key: pack-bench
+      - name: Bench the branch
+        env:
+          SCALE: ${{ inputs.scale || '1' }}
+        run: |
+          cargo run --profile fast -p horizon-client-render --example pack_load_bench -- --scale "$SCALE" > head.md
+      - name: Bench the base, with the branch's bench
+        env:
+          BASE: ${{ inputs.base || 'main' }}
+          SCALE: ${{ inputs.scale || '1' }}
+        run: |
+          git fetch https://github.com/horizon-rust/horizon.git "$BASE"
+          # Our runners keep the folder beside the checkout between jobs.
+          git worktree remove --force ../base 2> /dev/null || rm -rf ../base
+          git worktree prune
+          git worktree add ../base FETCH_HEAD
+          cp crates/horizon-client-render/examples/pack_load_bench.rs ../base/crates/horizon-client-render/examples/
+          # A bench row that times a function the base lacks keeps it from building there: then
+          # the branch's own rows compare the two ways.
+          target=${CARGO_TARGET_DIR:-$GITHUB_WORKSPACE/target}
+          (cd ../base && CARGO_TARGET_DIR="$target" cargo run --profile fast -p horizon-client-render \
+            --example pack_load_bench -- --scale "$SCALE") > base.md \
+            || echo "The bench does not build on the base." > base.md
+      - name: Summary
+        run: |
+          {
+            echo "### Branch ($(git rev-parse --short HEAD))"; cat head.md
+            echo; echo "### Base (${{ inputs.base || 'main' }})"; cat base.md
+          } | tee -a "$GITHUB_STEP_SUMMARY"

@@ -1,6 +1,8 @@
 //! What `horizon-server` asks the dedicated server on its control endpoint (`--control-socket`, docs/server.md
 //! section 2): `server-status` answers with the tick rate, the tick times `/tick query` reports, the players
-//! and the loaded chunks; `console <line>` runs a console command and answers with the lines it logged.
+//! (including their positions) and the loaded chunks; `console <line>` runs a console command and answers with the lines it logged;
+//! `server-events <since>` answers the typed events after that number (events.rs); `management <connection>
+//! <json>` edits the lists as vanilla's management protocol does (management.rs).
 use super::{ServerState, capture_log};
 use crate::game::Game;
 use serde_json::{Value, json};
@@ -41,9 +43,25 @@ impl Game<'_> {
         while let Some(request) = self.control.as_ref().and_then(|c| c.try_recv()) {
             let reply = match request.line.trim().split_once(' ') {
                 _ if request.line.trim() == "server-status" => self.server_status(state),
+                Some(("server-events", since)) => {
+                    super::events::since(since.trim().parse().unwrap_or(0))
+                }
+                Some(("management", rest)) => self.management(state, rest),
                 Some(("console", line)) => {
                     // Command feedback is logged as system chat; the reply carries the text alone.
                     let output: Vec<String> = capture_log(|| self.console_command(state, line))
+                        .into_iter()
+                        .map(|l| {
+                            l.strip_prefix("System chat: ")
+                                .map_or(l.clone(), str::to_owned)
+                        })
+                        .collect();
+                    json!({ "output": output })
+                }
+                // An RCON command: run as the console, with the `Rcon` source, whose feedback the
+                // operators are told of when `broadcast-rcon-to-ops` is on.
+                Some(("rcon", line)) => {
+                    let output: Vec<String> = capture_log(|| self.rcon_line(state, line))
                         .into_iter()
                         .map(|l| {
                             l.strip_prefix("System chat: ")
@@ -72,12 +90,13 @@ impl Game<'_> {
                 .guests
                 .iter()
                 .map(|g| {
-                    json!({
-                        "name": g.name,
-                        "uuid": horizon_protocol::crypto::uuid_string(g.uuid),
-                        "address": g.address.ip().to_string(),
-                        "ping_ms": g.latency.load(Ordering::Relaxed),
-                    })
+                    player_status(
+                        &g.name,
+                        g.uuid,
+                        &g.address.ip().to_string(),
+                        g.latency.load(Ordering::Relaxed),
+                        g.position,
+                    )
                 })
                 .collect();
             (players, h.hub.lan.shared.max_players())
@@ -96,5 +115,35 @@ impl Game<'_> {
             "chunks": self.world.chunks.len(),
             "paused": state.paused,
         })
+    }
+}
+
+fn player_status(name: &str, uuid: u128, address: &str, ping_ms: i32, position: [f64; 3]) -> Value {
+    json!({
+        "name": name,
+        "uuid": horizon_protocol::crypto::uuid_string(uuid),
+        "address": address,
+        "ping_ms": ping_ms,
+        "position": position,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::player_status;
+    use serde_json::json;
+
+    #[test]
+    fn player_status_includes_coordinates() {
+        assert_eq!(
+            player_status("Alex", 1, "203.0.113.7", 42, [1.5, 64.0, -2.25]),
+            json!({
+                "name": "Alex",
+                "uuid": "00000000-0000-0000-0000-000000000001",
+                "address": "203.0.113.7",
+                "ping_ms": 42,
+                "position": [1.5, 64.0, -2.25],
+            })
+        );
     }
 }

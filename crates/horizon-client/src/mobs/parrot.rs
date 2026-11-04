@@ -1,6 +1,9 @@
-//! What `Parrot.aiStep` adds: imitating the mobs around it (`imitateNearbyMobs`,
-//! the ambient sound of `getAmbient`) and dancing near a playing jukebox.
-use super::{Mob, MobEvent, MobWorld, Species};
+//! Parrots: flying (`FlyingMoveControl`, `FlyingPathNavigation`, the wander
+//! that heads for trees), flapping and gliding down (`calculateFlapping`),
+//! and what `Parrot.aiStep` adds: imitating the mobs around it
+//! (`imitateNearbyMobs`, the ambient sound of `getAmbient`) and dancing near
+//! a playing jukebox.
+use super::{Mob, MobEvent, MobWorld, Species, control::MoveKind, nav::NavKind, path::PathType};
 use horizon_core::{
     geometry::Vec3,
     random::{LegacyRandom, RandomSource},
@@ -124,6 +127,42 @@ fn imitate_nearby_mobs(
     }
 }
 
+/// The sound a parrot on a player's shoulder makes (`ServerPlayer.
+/// playShoulderEntityAmbientSound` after its one-in-200 draw): the voice of a
+/// random imitable mob in `nearby` (`Parrot.imitateNearbyMobs`, half the time,
+/// those with a `silent` flag excluded after being picked), else its own
+/// ambient sound or a rare imitation (`Parrot.getAmbient`). `random` is drawn
+/// from in vanilla's order. Returns the sound, its volume and its pitch; the
+/// happy ghast's imitation is silent (`""`).
+pub fn shoulder_sound(
+    random: &mut LegacyRandom,
+    player_alive: bool,
+    player_silent: bool,
+    peaceful: bool,
+    nearby: &[(Species, bool)],
+) -> Option<(&'static str, f32, f32)> {
+    if player_alive && !player_silent && random.next_int_bound(2).unwrap_or(1) == 0 {
+        let candidates: Vec<_> = nearby
+            .iter()
+            .filter(|(s, _)| imitation(*s).is_some())
+            .collect();
+        if !candidates.is_empty() {
+            let (species, silent) =
+                *candidates[random.next_int_bound(candidates.len() as i32).unwrap_or(0) as usize];
+            if !silent {
+                let sound = imitation(species).filter(|s| !s.is_empty())?;
+                return Some((sound, 0.7, pitch(random)));
+            }
+        }
+    }
+    let sound = if !peaceful && random.next_int_bound(1000).unwrap_or(1) == 0 {
+        IMITATIONS[random.next_int_bound(IMITATIONS.len() as i32).unwrap_or(0) as usize].1
+    } else {
+        "entity.parrot.ambient"
+    };
+    Some((sound, 1.0, pitch(random))).filter(|s| !s.0.is_empty())
+}
+
 /// `Parrot.getAmbient`: now and then (outside peaceful) the voice of a random
 /// imitable mob instead of the parrot's own.
 pub fn ambient(m: &mut Mob, w: &MobWorld) -> &'static str {
@@ -135,4 +174,269 @@ pub fn ambient(m: &mut Mob, w: &MobWorld) -> &'static str {
         return IMITATIONS[i as usize].1;
     }
     "entity.parrot.ambient"
+}
+
+/// `Parrot(EntityType, Level)` with `createNavigation` and `registerGoals`:
+/// a `FlyingMoveControl(10, false)` that lets gravity back on when it has
+/// nowhere to go, and a `FlyingPathNavigation` that floats and opens no doors.
+pub fn register(m: &mut Mob) {
+    m.ai.mov.kind = MoveKind::Flying {
+        max_turn: 10.0,
+        hovers: false,
+    };
+    m.ai.nav.kind = NavKind::Flying;
+    m.ai.nav.can_open_doors = false;
+    m.ai.nav.can_float = true;
+    m.set_malus(PathType::FireInNeighbor, -1.0);
+    m.set_malus(PathType::Fire, -1.0);
+    m.set_malus(PathType::Cocoa, -1.0);
+    super::tame::register_parrot(m);
+}
+
+/// The wings of `Parrot.calculateFlapping`: `flapSpeed` rises in the air and
+/// falls on the ground or a shoulder, `flapping` restarts at 1 in the air and
+/// decays, and `flap` turns by it. A client runs it for the parrots it only
+/// displays.
+pub fn flap(m: &mut Mob) {
+    let grounded = m.on_ground || m.extra.mount.is_some();
+    let a = &mut m.anim;
+    a.flap_o = a.flap;
+    a.flap_speed_o = a.flap_speed;
+    a.flap_speed = (a.flap_speed + if grounded { -1.0 } else { 4.0 } * 0.3).clamp(0.0, 1.0);
+    if !m.on_ground && a.flapping < 1.0 {
+        a.flapping = 1.0;
+    }
+    a.flapping *= 0.9;
+    a.flap += a.flapping * 2.0;
+}
+
+/// `Parrot.calculateFlapping`, after the rest of `aiStep`: the wings, and a
+/// parrot falling through the air glides down at 0.6 of the speed.
+pub fn calculate_flapping(m: &mut Mob) {
+    flap(m);
+    if !m.on_ground && m.velocity.y < 0.0 {
+        m.velocity.y *= 0.6;
+    }
+}
+
+/// `Parrot.isFlapping` and `Parrot.onFlap`: a wing beat each half
+/// `flapSpeed` flown. The caller emits the movement game event on a flap.
+pub fn process_flapping(m: &mut Mob, events: &mut Vec<MobEvent>) -> bool {
+    if m.ai.steps.fly_dist > m.ai.steps.next_flap {
+        if !m.silent {
+            let at = [m.position.x, m.position.y, m.position.z];
+            events.push(MobEvent::Sound("entity.parrot.fly", at, 0.15, 1.0));
+        }
+        m.ai.steps.next_flap = m.ai.steps.fly_dist + m.anim.flap_speed / 2.0;
+        true
+    } else {
+        false
+    }
+}
+
+/// `Parrot.ParrotWanderGoal.getPosition`: out of water onto land; otherwise
+/// (all but one time in a thousand) the top of a tree nearby; failing both,
+/// `WaterAvoidingRandomFlyingGoal.getPosition`.
+pub fn wander_pos(m: &mut Mob, w: &MobWorld) -> Option<[f64; 3]> {
+    let mut pos = None;
+    if m.fluids.in_water {
+        pos = m.land_random_pos(w, 15, 15);
+    }
+    // WaterAvoidingRandomStrollGoal.probability.
+    if m.random.next_float() >= 0.001 {
+        pos = tree_pos(m, w);
+    }
+    pos.or_else(|| m.flying_stroll_pos(w))
+}
+
+/// `Parrot.ParrotWanderGoal.getTreePos`: within 3 blocks across and 6 up or
+/// down (x fastest, then y, then z, as `BlockPos.betweenClosed` walks), the
+/// first empty block with an empty one above over leaves or a log.
+fn tree_pos(m: &Mob, w: &MobWorld) -> Option<[f64; 3]> {
+    let (x, y, z) = (m.position.x, m.position.y, m.position.z);
+    let at = [x.floor() as i32, y.floor() as i32, z.floor() as i32];
+    let air = |p: [i32; 3]| {
+        matches!(
+            w.block_name(p[0], p[1], p[2]),
+            "minecraft:air" | "minecraft:cave_air" | "minecraft:void_air"
+        )
+    };
+    for bz in (z - 3.0).floor() as i32..=(z + 3.0).floor() as i32 {
+        for by in (y - 6.0).floor() as i32..=(y + 6.0).floor() as i32 {
+            for bx in (x - 3.0).floor() as i32..=(x + 3.0).floor() as i32 {
+                let p = [bx, by, bz];
+                if p == at {
+                    continue;
+                }
+                let below = w.block_name(bx, by - 1, bz);
+                let tree = below.ends_with("_leaves") || w.has_tag("minecraft:logs", below);
+                if tree && air(p) && air([bx, by + 1, bz]) {
+                    return Some([f64::from(bx) + 0.5, f64::from(by), f64::from(bz) + 0.5]);
+                }
+            }
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::mobs::sensor_scan_tests::kind;
+    use std::sync::Arc;
+
+    fn parrot() -> Mob {
+        let mut k = (*kind()).clone();
+        k.id = "minecraft:parrot".into();
+        k.species = Species::Parrot;
+        k.flags.omnidirectional = true;
+        Mob::new(1, Arc::new(k), Vec3::ZERO, 0.0)
+    }
+
+    /// `Parrot()`: `FlyingMoveControl(this, 10, false)`, the path maluses,
+    /// and `createNavigation`'s `FlyingPathNavigation` (no doors, floats).
+    #[test]
+    fn a_parrot_flies_by_its_navigation_and_move_control() {
+        let m = parrot();
+        assert_eq!(
+            m.ai.mov.kind,
+            MoveKind::Flying {
+                max_turn: 10.0,
+                hovers: false
+            }
+        );
+        assert_eq!(m.ai.nav.kind, NavKind::Flying);
+        assert!(!m.ai.nav.can_open_doors);
+        assert!(m.ai.nav.can_float);
+        for t in [PathType::FireInNeighbor, PathType::Fire, PathType::Cocoa] {
+            assert_eq!(m.malus(t), -1.0);
+        }
+        assert!(m.ai.goals.has("ParrotWander"));
+    }
+
+    /// `Parrot.getVoicePitch` is `getPitch(random)`, the plain 1.0 ± 0.2, and
+    /// `getPitch` takes no age into account: a baby parrot does not get the
+    /// 1.5 that `LivingEntity.getVoicePitch` raises every other baby's voice
+    /// by. A baby chicken is the control.
+    #[test]
+    fn a_baby_parrot_keeps_the_plain_voice_pitch() {
+        let mut parrot = parrot();
+        parrot.extra.age = -24_000;
+        assert!(parrot.is_baby());
+        let mut baby = parrot.clone();
+        let pitches: Vec<f32> = (0..64).map(|_| baby.voice_pitch()).collect();
+        assert!(
+            pitches.iter().all(|p| (0.8..=1.2).contains(p)),
+            "{pitches:?}"
+        );
+        // It is not a constant: the two draws move it around 1.0.
+        assert!(pitches.iter().any(|&p| p != pitches[0]));
+        assert!((pitches.iter().sum::<f32>() / pitches.len() as f32 - 1.0).abs() < 0.1);
+
+        let mut k = (*kind()).clone();
+        k.id = "minecraft:chicken".into();
+        k.species = Species::Chicken;
+        let mut chicken = Mob::new(1, Arc::new(k), Vec3::ZERO, 0.0);
+        chicken.extra.age = -24_000;
+        let raised: Vec<f32> = (0..64).map(|_| chicken.voice_pitch()).collect();
+        assert!(raised.iter().all(|p| (1.3..=1.7).contains(p)), "{raised:?}");
+    }
+
+    /// `Parrot.calculateFlapping`: in the air the wings beat and a fall is
+    /// slowed to 0.6; on the ground or a shoulder they fold.
+    #[test]
+    fn a_falling_parrot_flaps_and_glides() {
+        let mut m = parrot();
+        m.on_ground = false;
+        m.velocity = Vec3::new(0.1, -0.5, 0.0);
+        calculate_flapping(&mut m);
+        assert!((m.velocity.y + 0.3).abs() < 1.0e-12);
+        assert_eq!(m.velocity.x, 0.1);
+        assert_eq!(m.anim.flap_speed, 1.0);
+        assert_eq!(m.anim.flapping, 0.9);
+        assert_eq!(m.anim.flap, 1.8);
+        // Rising is not slowed.
+        m.velocity = Vec3::new(0.0, 0.2, 0.0);
+        calculate_flapping(&mut m);
+        assert_eq!(m.velocity.y, 0.2);
+        assert_eq!(m.anim.flap_o, 1.8);
+        // On a shoulder (a passenger), flapSpeed falls by 0.3 a tick.
+        m.extra.mount = Some(7);
+        calculate_flapping(&mut m);
+        assert!((m.anim.flap_speed - 0.7).abs() < 1.0e-6);
+        m.extra.mount = None;
+        m.on_ground = true;
+        m.velocity = Vec3::new(0.0, -0.0784, 0.0);
+        calculate_flapping(&mut m);
+        assert!((m.anim.flap_speed - 0.4).abs() < 1.0e-6);
+        assert_eq!(m.velocity.y, -0.0784, "no glide on the ground");
+    }
+
+    /// `Parrot.onFlap`: a wing beat (`entity.parrot.fly`, 0.15) each half
+    /// `flapSpeed` flown.
+    #[test]
+    fn it_beats_its_wings_as_it_flies() {
+        let mut m = parrot();
+        m.anim.flap_speed = 1.0;
+        let mut events = Vec::new();
+        m.ai.steps.fly_dist = 0.5;
+        assert!(!process_flapping(&mut m, &mut events));
+        assert!(events.is_empty(), "nextFlap starts at 1");
+        m.ai.steps.fly_dist = 1.0;
+        assert!(!process_flapping(&mut m, &mut events), "strict threshold");
+        m.ai.steps.fly_dist = 1.2;
+        assert!(process_flapping(&mut m, &mut events));
+        assert!(matches!(
+            events.as_slice(),
+            [MobEvent::Sound("entity.parrot.fly", _, v, _)] if *v == 0.15
+        ));
+        assert!((m.ai.steps.next_flap - 1.7).abs() < 1.0e-6);
+        events.clear();
+        assert!(
+            !process_flapping(&mut m, &mut events),
+            "no second flap without moving"
+        );
+        m.silent = true;
+        m.ai.steps.fly_dist = 1.8;
+        assert!(process_flapping(&mut m, &mut events), "silent still flaps");
+        assert!(events.is_empty());
+        assert!((m.ai.steps.next_flap - 2.3).abs() < 1.0e-6);
+    }
+
+    /// `ServerPlayer.playShoulderEntityAmbientSound`: with a mob to imitate
+    /// and a coin flip won, the mob's voice at 0.7; otherwise the parrot's own.
+    #[test]
+    fn a_shoulder_parrot_imitates_or_chirps() {
+        let nearby = [(Species::Zombie, false)];
+        let mut imitated = 0;
+        let mut chirped = 0;
+        for n in 0..64_i64 {
+            let seed = n.wrapping_mul(0x9E37_79B9_7F4A_7C15_u64 as i64);
+            let mut probe = LegacyRandom::new(seed);
+            let flip = probe.next_int_bound(2).unwrap();
+            let mut random = LegacyRandom::new(seed);
+            let (sound, volume, _) =
+                shoulder_sound(&mut random, true, false, true, &nearby).unwrap();
+            if flip == 0 {
+                assert_eq!((sound, volume), ("entity.parrot.imitate.zombie", 0.7));
+                imitated += 1;
+            } else {
+                assert_eq!((sound, volume), ("entity.parrot.ambient", 1.0));
+                chirped += 1;
+            }
+        }
+        assert!(imitated > 0 && chirped > 0);
+        // A silent player (or a dead one) imitates nothing and only chirps.
+        let mut random = LegacyRandom::new(1);
+        let (sound, volume, _) = shoulder_sound(&mut random, true, true, true, &nearby).unwrap();
+        assert_eq!((sound, volume), ("entity.parrot.ambient", 1.0));
+        // The happy ghast's imitation is silent.
+        let ghast = [(Species::HappyGhast, false)];
+        let silent = (0..64_i64).filter(|&n| {
+            let seed = n.wrapping_mul(0x9E37_79B9_7F4A_7C15_u64 as i64);
+            let mut r = LegacyRandom::new(seed);
+            shoulder_sound(&mut r, true, false, true, &ghast).is_none()
+        });
+        assert!(silent.count() > 0);
+    }
 }

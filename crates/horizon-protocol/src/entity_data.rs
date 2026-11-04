@@ -4,6 +4,7 @@
 //! them are kept.
 use crate::{
     Result,
+    adapter::ids,
     buf::{Codec, Reader, Writer},
     item::{Slot, Stack, Template},
 };
@@ -161,7 +162,14 @@ pub enum ParticleData {
     GeyserBase(i32, f32),
     /// Vibration: where it travels to, then its arrival time in ticks.
     Vibration { source: PositionSource, ticks: i32 },
+    /// Horizon extension: a native mod's own particle type, by its namespaced
+    /// name (`mymod:spark`). Vanilla has no id for it; see `MOD_PARTICLE_ID`.
+    Mod(String),
 }
+/// Horizon extension for a native mod's particle type. Vanilla's
+/// `minecraft:particle_type` ids are registry ids and never negative, so this
+/// one cannot collide with a vanilla type.
+pub const MOD_PARTICLE_ID: i32 = -1;
 /// `PositionSource.STREAM_CODEC`: a `minecraft:position_source_type` id
 /// (block 0, entity 1), then that type's data.
 #[derive(Clone, Debug, PartialEq)]
@@ -172,9 +180,21 @@ pub enum PositionSource {
 impl Particle {
     pub fn read(r: &mut Reader) -> Result<Particle> {
         let id = r.varint()?;
+        let id = if id == MOD_PARTICLE_ID {
+            id
+        } else {
+            ids::particle(id)
+        };
+        // A native mod's type: the namespaced name follows the sentinel id.
+        if id == MOD_PARTICLE_ID {
+            return Ok(Particle {
+                id,
+                data: Some(ParticleData::Mod(r.string(32767)?)),
+            });
+        }
         // `minecraft:particle_type` registry order as of 26.3.
         let data = match id {
-            1 | 2 | 36 | 121 | 125 => Some(ParticleData::State(r.varint()?)),
+            1 | 2 | 36 | 121 | 125 => Some(ParticleData::State(ids::block_state(r.varint()?))),
             28 | 46 | 52 => Some(ParticleData::Color(r.i32()?)),
             21 => {
                 let color = r.i32()?;
@@ -248,6 +268,7 @@ impl Particle {
                 w.varint(*d);
             }
             ParticleData::Item(s) => Template::write(s, w),
+            ParticleData::Mod(name) => w.string(name),
             ParticleData::Vibration { source, ticks } => {
                 match source {
                     PositionSource::Block(pos) => {
@@ -340,9 +361,9 @@ fn read_value(kind: i32, r: &mut Reader) -> Result<Option<Value>> {
         // VarInt-encoded: direction, block states, optional ints, pose, the
         // holder-registry variants (cat to zombie nautilus, painting) and the
         // enum states (sniffer to weathering copper), arm, dye.
+        // Block states as an older server numbers them (the optional one sends air, 0, for none).
+        BLOCK_STATE | OPTIONAL_BLOCK_STATE => Value::Id(ids::block_state(r.varint()?)),
         DIRECTION
-        | BLOCK_STATE
-        | OPTIONAL_BLOCK_STATE
         | OPTIONAL_UNSIGNED_INT
         | POSE
         | CAT_VARIANT..=ZOMBIE_NAUTILUS_VARIANT
@@ -413,7 +434,7 @@ impl Codec<Vec<(u8, i32, Value)>> for EntityData {
             if index == 0xFF {
                 return Ok(out);
             }
-            let kind = r.varint()?;
+            let kind = ids::entity_data_serializer(r.varint()?);
             match read_value(kind, r)? {
                 Some(v) => out.push((index, kind, v)),
                 None => {
@@ -482,6 +503,36 @@ mod tests {
         );
     }
 
+    /// `EntityDataSerializers.VECTOR3` and `QUATERNION`
+    /// (`FriendlyByteBuf.writeVector3f`, `writeQuaternion`): three or four
+    /// big-endian floats.
+    #[test]
+    fn vectors_and_quaternions_are_big_endian_floats() {
+        use std::f32::consts::FRAC_1_SQRT_2;
+        let entries = vec![
+            (
+                11u8,
+                serializer::VECTOR3,
+                Value::Floats(vec![1.0, -2.0, 0.25]),
+            ),
+            (
+                13,
+                serializer::QUATERNION,
+                Value::Floats(vec![0.0, 0.0, FRAC_1_SQRT_2, FRAC_1_SQRT_2]),
+            ),
+        ];
+        let mut w = Writer::new();
+        EntityData::write(&entries, &mut w);
+        #[rustfmt::skip]
+        let bytes = [
+            11, 39, 0x3F, 0x80, 0, 0, 0xC0, 0, 0, 0, 0x3E, 0x80, 0, 0,
+            13, 40, 0, 0, 0, 0, 0, 0, 0, 0, 0x3F, 0x35, 0x04, 0xF3, 0x3F, 0x35, 0x04, 0xF3,
+            0xFF,
+        ];
+        assert_eq!(w.data, bytes);
+        assert_eq!(EntityData::read(&mut Reader::new(&bytes)).unwrap(), entries);
+    }
+
     /// Every particle data shape (26.3 codecs) round-trips, and a PARTICLES
     /// list is a VarInt count then each particle, so the entry after it
     /// still decodes.
@@ -505,6 +556,11 @@ mod tests {
                     removed: vec![7],
                     wire: Default::default(),
                 })),
+            ),
+            // A native mod's type: the sentinel id, then the namespaced name.
+            (
+                MOD_PARTICLE_ID,
+                Some(ParticleData::Mod("mymod:spark".to_owned())),
             ),
             (
                 58,

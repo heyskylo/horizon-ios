@@ -7,11 +7,13 @@ Every command `horizon-ctl` takes, its MCP tool in `horizon-ctl mcp` (the launch
 
 | Command | MCP tool | What it does | Arguments |
 | --- | --- | --- | --- |
-| `launch [--world NAME] [--seed N] [--creative] [--version TAG] [--game PATH] [--wait] [GAME ARGS...]` | `launch` | Start Horizon with the control socket and wait until it answers | `--world` (string): world folder to open or create<br>`--seed` (string): seed for a new world<br>`--creative` (boolean): creative mode for a new world<br>`--version` (string): an installed launcher version tag such as v2026.10.13<br>`--game` (string): path to a horizon-client binary<br>`--wait` (boolean): also wait until the world is ready (default in MCP)<br>`--offscreen` (boolean): render without showing a window (screenshots still work): locked or headless sessions |
+| `launch [--world NAME] [--seed N] [--creative] [--version TAG] [--game PATH] [--wait] [GAME ARGS...]` | `launch` | Start Horizon with the control socket and wait until it answers | `--world` (string): world folder to open or create<br>`--seed` (string): seed for a new world<br>`--creative` (boolean): creative mode for a new world<br>`--version` (string): an installed launcher version tag such as v2026.10.13<br>`--game` (string): path to a horizon-client binary<br>`--wait` (boolean): also wait until the world is ready (default in MCP)<br>`--offscreen` (boolean): render without showing a window (screenshots still work): locked or headless sessions<br>`--headless` (boolean): no display, window or GPU: a player that plays through these commands only (no screenshots) |
 | `wait-for screen NAME\|widget ID\|loaded\|chat TEXT\|event KIND [--timeout S] [--since SEQ]` | `wait_for` | Wait until the game reaches a state, then reply | `--timeout` (number): seconds (default 30)<br>`--since` (integer): chat and event: count from this event seq<br>`condition` (screen, widget, loaded, chat, event, required): what to wait for<br>`value` (text): the screen name, widget id, chat text or event kind |
 | `wait-ready [SECONDS]` | `wait_ready` | Wait until the player has spawned and no chunks are pending | `seconds` (number): how long to wait (default 120) |
 | `logs [--lines N] [--crash]` | `logs` | The end of the game's log, or its newest crash report | `--lines` (integer): how many lines of latest.log (default 100)<br>`--crash` (boolean): the newest crash report instead |
 | `status` | `status` | Game, renderer and streaming state (the scripting socket's original summary) | none |
+| `hello` | `hello` | The control protocol's version, the game's release and the command groups it serves | none |
+| `memory` | `memory` | What holds the game's memory: resident set, allocator, client and server columns by part, renderer, GPU memory by resource | none |
 | `worlds` | `worlds` | The saved worlds, newest first: folder, name, mode, last played, version | none |
 | `world-rename FOLDER NAME` | `world_rename` | Rename a world, as Edit World does (its folder stays) | `folder` (string, required): world folder from worlds<br>`name` (text, required): the new name |
 | `world-backup FOLDER` | `world_backup` | Zip a world into backups/, as Edit World's Make Backup does | `folder` (string, required): world folder from worlds |
@@ -26,6 +28,7 @@ Every command `horizon-ctl` takes, its MCP tool in `horizon-ctl mcp` (the launch
 | Command | MCP tool | What it does | Arguments |
 | --- | --- | --- | --- |
 | `events [--since SEQ]` | `events` | What happened since SEQ, oldest first: screens, chat, deaths, respawns, items gained or lost, dimensions, worlds | `--since` (integer): only events after this seq |
+| `input-log [--since SEQ] [--limit N] [--origin user\|agent\|game]` | `input_log` | Recent input and who caused it: a person, an agent or the game | `--since` (integer): only events after this seq<br>`--limit` (integer): newest N events<br>`--origin` (user, agent, game): user, agent or game |
 | `state` | `state` | Player, world, screen and crosshair target in one reply | none |
 | `looking-at` | `looking_at` | The block or entity under the crosshair | none |
 | `entities [RADIUS] [TYPE]` | `entities` | Mobs, dropped items and experience orbs near the player, nearest first | `radius` (number): search radius in blocks (default 32)<br>`type` (string): entity type filter |
@@ -37,6 +40,7 @@ Every command `horizon-ctl` takes, its MCP tool in `horizon-ctl mcp` (the launch
 | `screen` | `screen` | The open screen or title menu, its buttons and its slots | none |
 | `messages [N]` | `messages` | Recent chat and system messages, the title and the action bar | `n` (integer): how many chat lines (default 20) |
 | `menu` | CLI only | The open menu's slots and carried stack, with station details | none |
+| `narration` | `narration` | What the narrator was last asked to say, oldest first, and its status | none |
 
 ## Move and look
 
@@ -94,7 +98,7 @@ Every command `horizon-ctl` takes, its MCP tool in `horizon-ctl mcp` (the launch
 | `respawn` | `respawn` | Respawn from the death screen | none |
 | `pause` | `pause` | Open the pause menu | none |
 | `resume` | `resume` | Leave the pause menu | none |
-| `options [PAGE]` | `options` | Open the options screen, or one of its pages (Horizon's too) | `page` (main, video, sound, controls, keybinds, controller, controller-binds, mouse, chat, accessibility, language, font, packs, mods, shader-packs, graphics, graphics-advanced, extras, horizon, agent): the page (default: the main options) |
+| `options [PAGE]` | `options` | Open the options screen, or one of its pages (Horizon's too) | `page` (main, video, sound, controls, keybinds, controller, controller-binds, mouse, chat, accessibility, language, font, packs, mods, shader-packs, graphics, graphics-advanced, graphics-hdr, extras, horizon, agent): the page (default: the main options) |
 | `book [next\|back\|take\|done]` | `book` | The open book or lectern: its page text, or press one of its buttons | `action` (next, back, take, done): a button to press |
 | `signedit X Y Z [front\|back]` | `signedit` | Open the sign editor of the sign at X Y Z (then type and close) | `x` (integer, required): block X<br>`y` (integer, required): block Y<br>`z` (integer, required): block Z<br>`side` (front, back): which side |
 | `mount-menu` | `mount_menu` | Open the inventory of the horse, donkey, mule or llama being ridden | none |
@@ -125,7 +129,7 @@ Every command `horizon-ctl` takes, its MCP tool in `horizon-ctl mcp` (the launch
 | `potion ITEM POTION` | `potion` | Give a potion item | `item` (potion, splash_potion, lingering_potion, tipped_arrow, required): which item<br>`potion` (string, required): potion id |
 | `fill X1 Y1 Z1 X2 Y2 Z2 BLOCK` | `fill` (destructive) | Set a box of loaded blocks | `x1` (integer, required): corner X<br>`y1` (integer, required): corner Y<br>`z1` (integer, required): corner Z<br>`x2` (integer, required): opposite X<br>`y2` (integer, required): opposite Y<br>`z2` (integer, required): opposite Z<br>`block` (string, required): block state |
 | `container X Y Z [ITEM COUNT]` | `container` | List a container's items, or add items to it | `x` (integer, required): block X<br>`y` (integer, required): block Y<br>`z` (integer, required): block Z<br>`item` (string): item to add<br>`count` (integer): how many |
-| `render-distance N` | CLI only | Chunks, 2..64 | `chunks` (integer, required): render distance |
+| `render-distance N` | CLI only | Chunks, 2..128 | `chunks` (integer, required): render distance |
 | `wait TICKS` | `wait` | Wait until TICKS game ticks have passed (20 per second) | `ticks` (integer, required): game ticks |
 
 ## Scripting and benchmarks
@@ -136,5 +140,57 @@ Every command `horizon-ctl` takes, its MCP tool in `horizon-ctl mcp` (the launch
 | `sleep SECONDS` | CLI only | Wait (in scripts) | none |
 | `mcp` | CLI only | Serve the Model Context Protocol on stdin/stdout, one tool per command | none |
 | `bench SECONDS` | `bench` | Reset frame stats, wait, reply with the summary | `seconds` (number, required): how long to measure |
-| `stats [reset]` | `stats` | Frame-time summary since the last reset | `reset` (boolean): start counting again |
+| `stats [reset] [raw]` | `stats` | Frame-time summary since the last reset | `reset` (boolean): start counting again<br>`raw` (boolean): every frame time too (frame_ms, cpu_ms, gpu_ms) |
+| `gpu-passes [on\|off]` | CLI only | Time Horizon's own render passes on the GPU, shown in F3 and in stats and bench | `mode` (on, off): on or off; without it, only reports |
+| `render-capture on\|off\|DIR` | CLI only | Keep CPU copies of the meshes the renderer draws (on), or write the next frame's scene to DIR for the scene_replay example | none |
 | `fly X1 Y1 Z1 X2 Y2 Z2 SECONDS [PITCH [raw]]` | CLI only | Fly the camera along a line, then reply with the frame summary | none |
+| `record-start [NAME] [--no-world]` | `record_start` | Record input, state and the world for a bug repro | `name` (string): folder name after the timestamp (default session)<br>`--no-world` (boolean): do not copy the world (a server session) |
+| `record-stop [--export]` | `record_stop` | Stop the recording (and write the repro zip) | `--export` (boolean): write the repro bundle too |
+| `record-status` | `record_status` | The running recording and replay, if any | none |
+| `record-list` | `record_list` | The recordings and repro bundles on disk | none |
+| `record-replay NAME [--stop] [--in-place] [--keep-world] [--timeout S]` | `record_replay` | Replay a recording, best effort | `name` (string): recording from record-list<br>`--stop` (boolean): stop the running replay<br>`--in-place` (boolean): feed the open world instead of opening the copy<br>`--keep-world` (boolean): leave the copied world in saves/<br>`--timeout` (integer): give up after this many seconds (default 300) |
+| `repro-export [NAME] [PATH] [--no-world]` | `repro_export` | Zip a recording with the logs, crash report and status | `name` (string): recording from record-list (default the newest)<br>`path` (string): where to write the zip<br>`--no-world` (boolean): leave the world out |
+
+## Replies
+
+The reply fields of the commands described so far (more follow, a group at a time). Each reply is one JSON object; a type ending in `null` may be `null` when the field does not apply. A reader ignores keys it does not know: replies may gain fields within a protocol line. The MCP tool list declares the same fields as `outputSchema`.
+
+### `status`
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `screen` | string | the open screen (playing, inventory, paused...) |
+| `debug` | object | the F3 overlay flags: overlay, hitboxes, chunk_borders, pause_menu, advanced_tooltips, pause_on_lost_focus, clipboard |
+| `dimension` | string | the dimension the player is in |
+| `creative` | boolean | creative mode |
+| `player` | object, null | position, velocity (blocks), on_ground, health, max_health, food; null without a player |
+| `yaw` | number | view yaw, degrees |
+| `pitch` | number | view pitch, degrees |
+| `target` | object, null | the block under the crosshair as pos and block; null when none |
+| `selected` | integer | the selected hotbar slot, 1 to 9 |
+| `held` | object, null | the held stack as item and count; null when empty |
+| `offhand` | object, null | the offhand stack as item, count and damage; null when empty |
+| `keys` | array | the keys the game holds down, each a string |
+| `fps` | number | frames per second |
+| `frames` | integer | frames drawn so far |
+| `ticks` | integer | game ticks so far |
+| `day_time` | integer | the world's time of day, ticks |
+| `uptime_seconds` | number | seconds since the game started |
+| `render_distance` | integer | chunks |
+| `chunks` | integer | chunks loaded |
+| `mobs` | integer | mobs this side knows |
+| `block_entities` | integer | block entities loaded |
+| `pending_chunks` | integer | chunks still being generated, meshed, uploaded or received |
+| `streaming` | object | chunk streaming stages and their counts |
+| `lod` | object | far terrain: distances, tiles, quads and sampling progress |
+| `renderer` | object, null | GPU, driver, backend, size, draw counts and GPU memory; null without a renderer |
+| `display` | object, null | the monitor: width, height, scale, refresh_hz; null without a window |
+| `server` | object, null | the connected server's address, name and state; null when not connected |
+
+### `hello`
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `protocol` | string | the control protocol, MAJOR.MINOR.PATCH (docs/api/stability.md) |
+| `release` | string | the game's version (MCP serverInfo carries the same string) |
+| `features` | array | the command groups the game answers, each a string |

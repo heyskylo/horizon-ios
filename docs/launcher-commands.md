@@ -4,6 +4,16 @@
 
 Every command of `horizon-launcher`, and the tool `horizon-launcher mcp` offers for it. A tool's arguments are the command's, in snake_case. A tool runs the command with `--json` and returns what it printed. The tools that change the player's things for good need `confirm: true`. The tools that send something or reach other people say "only when the player asks". The game's own tools, `game_*`, are in [horizon-ctl-commands.md](horizon-ctl-commands.md). With No AI on, `mcp` and `agent-config` are hidden and refuse; every other command stays. See [agent-control.md](agent-control.md#no-ai).
 
+## `horizon-launcher completions`
+
+Write a shell completion script to stdout.
+
+    horizon-launcher completions <SHELL>
+
+- `SHELL` (bash, elvish, fish, powershell, zsh)
+
+MCP: none: the player's switch.
+
 ## `horizon-launcher versions`
 
 List Horizon releases, or the installed versions.
@@ -34,6 +44,17 @@ Remove an installed version.
 
 MCP: `remove`, needs `confirm: true`.
 
+## `horizon-launcher import-build`
+
+Install a game program you have, such as a horizon-client built on your fork's Actions, as its own version on an installed release or Nightly's game files, and select it. Nothing signed it: it runs with your rights, and updates never replace it.
+
+    horizon-launcher import-build <PATH>
+
+- `PATH`: The program (horizon-client, horizon-client.exe on Windows), or a zip holding it
+- `--trust-unsigned`: You picked this build yourself and trust it with full access to this computer
+
+MCP: none: the player's switch.
+
 ## `horizon-launcher prepare`
 
 Prepare a version's resources from your own Minecraft install, or from Mojang.
@@ -51,12 +72,13 @@ Start the client (needs a signed-in Microsoft account that owns Minecraft: Java 
 
     horizon-launcher play
 
-- `--instance`: The instance to play (its name or id; default: the selected one)
+- `--instance`: The instance to play (its name or id; default: the selected one). A Java instance starts its Minecraft: Java Edition, downloaded with its Java the first time
 - `--world`: Open or create this world (a folder under saves) at once
 - `--creative`: Creative mode for a new world
 - `--join`: Join a friend's world with its invite code
 - `--server`: Join this server at once: an address, or a server of the list by name or position
 - `--arg`: An extra argument for the game, passed through as-is (repeatable), for example --server-thread
+- `--account`: Play this launch as this signed-in account (its name or UUID), without changing the one `account select` picked: several games can play as several accounts at once
 
 MCP: `play`, then the `game_*` tools.
 
@@ -73,13 +95,17 @@ MCP: `server`, `server_command`, `server_log`, `server_stop`.
 
 ## `horizon-launcher native-build`
 
-Native mods (experimental, docs/native-mods.md): compile mixin bundles on the Horizon revision they pin, with the launcher's own Rust, as the version the "Native mods" instance plays. Not sandboxed: the mods' code runs with your rights.
+Native mods (docs/native-mods.md): compile mixin bundles on the Horizon revision they pin, else the one the instance plays, with the launcher's own Rust, as the version the instance then plays. Not sandboxed: the mods' code runs with your rights.
 
     horizon-launcher native-build [FOLDER]
 
 - `FOLDER`: A mod folder (horizon-mixin.toml, or an unpacked .hnmod), or a folder of them (default: the native mods installed and turned on in the instance)
-- `--instance`: The instance whose installed native mods to build, and which then plays the build (default: the selected one; the game's own home builds into the Native mods instance)
+- `--server-output`: Export mode: build a standalone dedicated-server engine into this folder instead of an instance's build. Needs a mod FOLDER; no instance is read or changed, and no launcher config is written
+- `--instance`: The instance whose installed native mods to build, and which then plays the build (default: the selected one)
+- `--update`: Move to the newest installed release or Nightly instead of the Horizon the instance plays (a full rebuild)
 - `--trust-native-code`: You read the mods' source and trust it with full access to this computer
+- `--allow-version-mismatch`: Build mods made for different Horizon versions together anyway, on the newest of them
+- `--profile` (performance, dev, release): The build profile: performance (the default: incremental, quick to rebuild), dev (quickest to rebuild a mod, slow game) or release (thin LTO: slowest to build, slightly faster game). Default: the native-profile setting
 
 MCP: none: the player's switch.
 
@@ -115,11 +141,33 @@ Sign in with a Microsoft account in your browser (device code). Play needs one t
 
     horizon-launcher account sign-in
 
+- `--for`: Sign this account (name or UUID) in again: another Microsoft account is refused and who plays stays the same
+
 MCP: `account_sign_in`.
+
+## `horizon-launcher account refresh`
+
+Renew an account's session now, even when its access token is still fresh.
+
+    horizon-launcher account refresh <WHO>
+
+- `WHO`
+
+MCP: `account_refresh`.
+
+## `horizon-launcher account session`
+
+Renew an account's session for a game already running: prints the read-once session file it hands over (`--json`: {"session_file"} or {"authentication"} when it can't).
+
+    horizon-launcher account session <WHO>
+
+- `WHO`
+
+MCP: none: the game's own session handoff.
 
 ## `horizon-launcher account sign-out`
 
-Sign out: the account's tokens leave the keychain.
+Sign out: the account's tokens leave the keychain (and the secrets file, where it kept them).
 
     horizon-launcher account sign-out <WHO>
 
@@ -174,11 +222,11 @@ MCP: `account_skin`.
 
 ## `horizon-launcher settings`
 
-Show the launcher's settings, or set one (the Settings page): selected-version TAG, minecraft-dir PATH, server-dir PATH ("default" resets a folder), install-new-versions on|off, prune-old-versions on|off (delete old versions after an install, keeping the selected one, the ones instances use and the newest few), keep-versions N (how many of the newest to keep; "default" is 2), opening-animation on|off, proxy http://host:port ("default" removes it), while-playing stay|minimize|hide (what the window does while the game runs), language system|en|fr|ru (the window's language; system follows the computer's), accent violet|blue|teal|green|amber|red|pink, background PATH (a picture behind Home; "default" shows Horizon's landscape).
+Show the launcher's settings, or set one (the Settings page): selected-version TAG, minecraft-dir PATH, server-dir PATH ("default" resets a folder), install-new-versions on|off, prune-old-versions on|off (delete old versions after an install, keeping the selected one, the ones instances use and the newest few), keep-versions N (how many of the newest to keep; "default" is 2), opening-animation on|off, proxy http://host:port ("default" removes it), while-playing stay|minimize|hide (what the window does while the game runs), language system|en|fr|ru|de|zh|es|uk|pl (the window's language; system follows the computer's), accent violet|blue|teal|green|amber|red|pink|#rrggbb|DEGREES (a named accent, any colour, or any hue), background PATH (a picture behind Home; "default" shows Horizon's landscape), native-profile performance|dev|release (the profile native mods build with: performance is incremental, dev rebuilds a mod quickest for a slow game, release is slowest to build and slightly faster to play).
 
     horizon-launcher settings [KEY] [VALUE]
 
-- `KEY` (selected-version, minecraft-dir, server-dir, install-new-versions, prune-old-versions, keep-versions, opening-animation, proxy, while-playing, language, accent, background)
+- `KEY` (selected-version, minecraft-dir, server-dir, install-new-versions, prune-old-versions, keep-versions, opening-animation, proxy, while-playing, language, accent, background, native-profile)
 - `VALUE`: The new value (with KEY)
 
 MCP: `settings`.
@@ -336,6 +384,8 @@ Make an instance: empty but for your options and name, or a copy of another one'
 - `NAME`
 - `--copy`: The instance to copy (its name or id)
 - `--minecraft`: Make a Minecraft: Java Edition instance of this version (1.21.4, latest or latest-snapshot) instead of a Horizon one
+- `--loader`: With this mod loader: fabric, quilt, forge or neoforge
+- `--loader-version`: The loader's version (default: its newest stable one)
 
 MCP: `instance_create`.
 
@@ -361,8 +411,21 @@ A Java instance's Java: its own Java home or the automatic pick, memory and JVM 
 - `--auto`: Go back to the Java the version needs, picked or downloaded by the launcher
 - `--memory`: The most memory the game may use, in MiB
 - `--args`: Extra JVM arguments (one string; "" clears them)
+- `--window`: The game window's size, as 1280x720; "default" goes back to the game's own
 
 MCP: `instance_java`.
+
+## `horizon-launcher instance loader`
+
+A Java instance's mod loader: fabric, quilt, forge or neoforge, or none. --list shows its versions.
+
+    horizon-launcher instance loader <INSTANCE> <LOADER>
+
+- `INSTANCE`
+- `LOADER`
+- `--list`: List the loader's versions for the instance's Minecraft instead
+
+MCP: `instance_loader`.
 
 ## `horizon-launcher instance rename`
 
@@ -374,6 +437,16 @@ Rename an instance (its folder stays).
 - `NAME`
 
 MCP: `instance_rename`.
+
+## `horizon-launcher instance delete`
+
+Delete an instance: its folder (worlds, options, packs) goes to the Trash, where you can get it back. Horizon's own instance stays.
+
+    horizon-launcher instance delete <INSTANCE>
+
+- `INSTANCE`
+
+MCP: `instance_delete`.
 
 ## `horizon-launcher instance icon`
 
@@ -432,13 +505,14 @@ MCP: `instance_export`.
 
 ## `horizon-launcher instance launch`
 
-Show or set what runs around an instance's game: a shell command before it (the game starts only if it succeeds), a wrapper it runs through (`nice -n 5`), and environment variables ("NAME=value NAME2=value"). An empty value clears one. On Linux, also GameMode, MangoHud and the dedicated graphics card, when the computer has them.
+Show or set what runs around an instance's game: a shell command before it (the game starts only if it succeeds), a wrapper it runs through (`nice -n 5`), environment variables ("NAME=value NAME2=value") and a shell command after it exits. An empty value clears one. The game and the commands also get INST_NAME, INST_ID, INST_DIR, INST_MC_DIR and, for a Java instance, INST_JAVA. On Linux, also GameMode, MangoHud and the dedicated graphics card, when the computer has them.
 
     horizon-launcher instance launch <INSTANCE>
 
 - `INSTANCE`
 - `--pre-launch`
 - `--wrapper`
+- `--post-exit`
 - `--env`
 - `--gamemode`: Linux: run it through GameMode (gamemoderun), on or off
 - `--mangohud`: Linux: MangoHud's overlay, on or off
@@ -467,6 +541,29 @@ Import what a file is, as dropping it on the window does: a shared instance (a .
 - `--instance`: The instance a pack goes into
 
 MCP: `instance_import`.
+
+## `horizon-launcher instance others`
+
+List the instances other launchers keep (Prism Launcher, MultiMC, the official launcher, the CurseForge app, the Modrinth App), read without changing anything there.
+
+    horizon-launcher instance others
+
+- `--folder`: Look in this folder instead: a launcher's folder, its instances/ or one instance
+
+MCP: `instance_others`.
+
+## `horizon-launcher instance copy-from`
+
+Copy another launcher's instance into a new Java instance: its Minecraft version and its game folder (worlds, mods, packs, options); the other launcher's copy stays as it is.
+
+    horizon-launcher instance copy-from <NAME>
+
+- `NAME`: Its name, as `instance others` lists it
+- `--folder`: Look in this folder instead: a launcher's folder, its instances/ or one instance
+- `--as`: The new instance's name (default: the same)
+- `--minecraft`: The Minecraft version it plays, when its launcher doesn't say (the CurseForge app, the Modrinth App)
+
+MCP: `instance_copy_from`.
 
 ## `horizon-launcher worlds list`
 
@@ -737,7 +834,7 @@ MCP: `mods_list`.
 
 ## `horizon-launcher mods search`
 
-Search for packs Horizon loads.
+Search for packs Horizon loads, or for what a Java instance runs (made for its Minecraft version and loader).
 
     horizon-launcher mods search [TEXT]...
 
@@ -745,6 +842,7 @@ Search for packs Horizon loads.
 - `--kind` (mod, resource, modpack, shader, datapack)
 - `--everything`: Also what was made for other versions or runs only partly, each marked
 - `--source` (modrinth, curseforge, horizon)
+- `--instance`: The instance (default: the selected one)
 
 MCP: `mods_search`.
 
@@ -762,7 +860,7 @@ MCP: `mods_check`.
 
 ## `horizon-launcher mods install`
 
-Install a pack and what it needs into an instance, by its id or slug (checksums checked); a Java mod is ported into horizon-mods and turned on; a modpack is imported as an instance of its own; a data pack goes into the world `--world` names.
+Install a pack and what it needs into an instance, by its id or slug (checksums checked); a Java mod is ported into horizon-mods and turned on (a Java instance gets the jar made for its version and loader in mods/); a modpack is imported as an instance of its own; a data pack goes into the world `--world` names.
 
     horizon-launcher mods install <PROJECT>
 
@@ -786,6 +884,33 @@ Update what the browser installed (or one pack).
 
 MCP: `mods_update`.
 
+## `horizon-launcher mods add-github`
+
+Install a native mod from a GitHub link (docs/native-mods.md, "Install from GitHub"): https://github.com/OWNER/REPO (its latest release, else its default branch), .../releases/tag/TAG, .../tree/REF or .../commit/SHA. Resolved to an exact release file or commit, checked like a registry mod. NOT reviewed by the Horizon registry.
+
+    horizon-launcher mods add-github <URL>
+
+- `URL`
+- `--mod`: The mod to install when the link holds several
+- `--all`: Install every mod the link holds
+- `--instance`: The instance (default: the selected one)
+- `--trust-native-code`: You read the mod's source (the link printed) and trust it with full access to this computer
+
+MCP: none: the player's switch.
+
+## `horizon-launcher mods update-github`
+
+Look for newer versions of the native mods installed from GitHub (the latest release, or the default branch's head for a mod installed from a commit), and install them.
+
+    horizon-launcher mods update-github [ID]
+
+- `ID`: One mod (default: all of them)
+- `--check`: Only say what is newer
+- `--instance`: The instance (default: the selected one)
+- `--trust-native-code`: You read the new source and trust it with full access to this computer
+
+MCP: none: the player's switch.
+
 ## `horizon-launcher mods remove`
 
 Remove a pack the browser installed.
@@ -799,7 +924,7 @@ MCP: `mods_remove`, needs `confirm: true`.
 
 ## `horizon-launcher mods enable`
 
-Turn on a mod the browser installed (horizon-mods.txt, as the game's Options > Mods does).
+Turn on a mod the browser installed (horizon-mods.txt, as the game's Options > Mods does; in a Java instance, its file loses `.disabled`).
 
     horizon-launcher mods enable <PROJECT>
 
@@ -810,7 +935,7 @@ MCP: `mods_enable`.
 
 ## `horizon-launcher mods disable`
 
-Turn off a mod the browser installed; it stays installed.
+Turn off a mod the browser installed; it stays installed (in a Java instance, as `<file>.disabled`).
 
     horizon-launcher mods disable <PROJECT>
 
@@ -864,7 +989,7 @@ Create a server; with no options it is a new world, survival, normal, 10 players
 - `--difficulty` (peaceful, easy, normal, hard)
 - `--max-players`
 - `--open`: Let anyone in (no whitelist)
-- `--check-accounts`: Check players' Minecraft accounts (they must sign in with Microsoft)
+- `--offline`: Do not check players' Minecraft accounts (offline mode: anyone can use any name)
 - `--player`: Who may join (repeatable); the first becomes an operator
 - `--accept-eula`: Agree to the Minecraft EULA (https://aka.ms/MinecraftEULA)
 

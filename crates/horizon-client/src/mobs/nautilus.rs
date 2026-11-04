@@ -206,6 +206,21 @@ pub fn ridden(m: &mut Mob) {
         }
     }
 }
+/// `AbstractNautilus.onPlayerJump` and the momentum `handleStartJump` starts:
+/// a saddled nautilus that is not in its dash cooldown keeps the released
+/// jump bar's scale on the rider, and its next `tickRidden` dashes with it
+/// (`executeRidersJump`). Returns whether the jump was taken.
+pub fn on_player_jump(m: &mut Mob, data: i32) -> bool {
+    // `if (isSaddled() && dashCooldown <= 0) playerJumpPendingScale = ...`
+    if !m.extra.saddled || m.extra.anim_ticks > 0 {
+        return false;
+    }
+    let Some(rider) = m.rider.as_mut() else {
+        return false;
+    };
+    rider.jump = super::equine::jump_pending_scale(data);
+    true
+}
 /// `executeRidersJump` (with `handleStartJump`'s sound): along the rider's
 /// look, 1.2 in water and 0.5 on land.
 fn dash(m: &mut Mob, amount: f32) {
@@ -228,10 +243,42 @@ fn dash(m: &mut Mob, amount: f32) {
     // The sound plays on its next tick.
     m.extra.scratch[1] = 1;
 }
+/// `AbstractNautilus.getNautilusRestrictionRadius`: 32 blocks, or 16 for a
+/// baby or a saddled one.
+fn restriction_radius(m: &Mob) -> i32 {
+    if !m.is_baby() && !m.extra.saddled {
+        32
+    } else {
+        16
+    }
+}
+/// `AbstractNautilus.checkRestriction`: a tame nautilus that is neither
+/// leashed nor ridden keeps its home where it is, within its radius.
+fn check_restriction(m: &mut Mob) {
+    if m.extra.leash.is_some() || m.rider.is_some() || !m.extra.tame {
+        return;
+    }
+    let radius = restriction_radius(m);
+    let at = [
+        m.position.x.floor() as i32,
+        m.position.y.floor() as i32,
+        m.position.z.floor() as i32,
+    ];
+    let kept = m.ai.home.is_some_and(|(c, r)| {
+        let d = [c[0] - at[0], c[1] - at[1], c[2] - at[2]];
+        let sq = f64::from(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+        sq < f64::from(radius + 8).powi(2) && r == radius
+    });
+    if !kept {
+        m.ai.home = Some((at, radius));
+    }
+}
 /// `AbstractNautilus.tick` and the brains' memories: the rider's breath, the
 /// dash clock, bubbles, and choosing whom to charge at
 /// (`NautilusAi.findNearestValidAttackTarget`).
 pub fn ai_step(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
+    // customServerAiStep: the home is kept before the rest of the step.
+    check_restriction(m);
     if m.extra.scratch[1] != 0 {
         m.extra.scratch[1] = 0;
         sound(m, dash_sound(m), events);
@@ -244,6 +291,8 @@ pub fn ai_step(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
                 effect: "minecraft:breath_of_the_nautilus",
                 ticks: 60,
                 amplifier: 0,
+                // AbstractNautilus.applyEffects: ambient, visible, showIcon.
+                ambient: true,
             });
         }
     } else {
@@ -317,6 +366,12 @@ pub fn client_tick(m: &mut Mob, events: &mut Vec<MobEvent>) {
 }
 fn in_water_at(w: &MobWorld, p: Vec3) -> bool {
     w.fluid(p.x.floor() as i32, p.y.floor() as i32, p.z.floor() as i32) == Fluid::Water
+}
+/// `AbstractNautilus.isAggravated`: the brain holds an `ANGRY_AT` or an
+/// `ATTACK_TARGET` memory. Horizon keeps those as the anger timer (whose
+/// target is `last_hurt_by`) and the current attack target.
+pub fn aggravated(m: &Mob) -> bool {
+    m.extra.anger > 0 || m.ai.target.is_some()
 }
 /// `NautilusAi.findNearestValidAttackTarget`: whoever it is angry at, else
 /// now and then (a coin flip every 2400 to 3600 ticks) the nearest pufferfish.
@@ -465,14 +520,16 @@ impl Goal for Charge {
         let factor = (self.speed as f32 * m.movement_speed() as f32).clamp(0.2, 2.0) + boost;
         let power = f64::from(factor * 2.0);
         if power > 0.0 {
-            let yaw = m.yaw.to_radians();
-            cx.events.push(MobEvent::Push {
+            // `causeExtraKnockback`: `LivingEntity.knockback` on the target, away
+            // from (sin(yaw), -cos(yaw)): its resistance, the halving of its own
+            // motion, the lift on the ground and the knockback hook all apply.
+            let yaw = f64::from(m.yaw * (std::f32::consts::PI / 180.0));
+            cx.events.push(MobEvent::Knockback {
                 target: who,
-                velocity: [
-                    -f64::from(yaw.sin()) * power,
-                    0.0,
-                    f64::from(yaw.cos()) * power,
-                ],
+                power,
+                x: f64::from(horizon_core::geometry::trig::sin(yaw)),
+                z: -f64::from(horizon_core::geometry::trig::cos(yaw)),
+                source: super::Damage::mob(m.id, from),
             });
             m.velocity = Vec3::new(m.velocity.x * 0.6, m.velocity.y, m.velocity.z * 0.6);
         }
@@ -521,7 +578,7 @@ pub fn anim(m: &Mob, s: &State, p: &mut Poses, animations: &HashMap<String, Anim
     if let Some(a) = animations.get("NautilusAnimation.SWIMMING") {
         a.apply_walk(s.pos + s.age / 5.0, s.speed + 0.2, 2.0, 3.0, p);
     }
-    if m.extra.head.is_some() {
+    if m.extra.body.is_some() {
         p.visible("corals", false);
     }
 }
@@ -535,11 +592,6 @@ pub fn to_nbt(m: &Mob, map: &mut horizon_world::nbt::Compound) {
         map.remove(&"Owner".into());
     }
     map.insert("Sitting".into(), Tag::Byte(0));
-    // AgeableMob and Animal (a water creature is not saved with them above).
-    map.insert("Age".into(), Tag::Int(m.extra.age));
-    map.insert("AgeLocked".into(), Tag::Byte(i8::from(m.extra.age_locked)));
-    map.insert("InLove".into(), Tag::Int(m.extra.in_love.max(0)));
-    map.entry("ForcedAge".into()).or_insert(Tag::Int(0));
     if zombie(m) {
         let v = VARIANTS[usize::from(m.extra.variant).min(1)];
         map.insert(
@@ -573,14 +625,6 @@ pub fn to_nbt(m: &Mob, map: &mut horizon_world::nbt::Compound) {
 }
 pub fn from_nbt(m: &mut Mob, tag: &horizon_world::nbt::Tag) {
     use horizon_world::nbt::Tag;
-    let int = |k: &str| match tag.get(k) {
-        Some(Tag::Int(v)) => Some(*v),
-        Some(Tag::Byte(v)) => Some(i32::from(*v)),
-        _ => None,
-    };
-    m.extra.age = int("Age").unwrap_or(0);
-    m.extra.age_locked = int("AgeLocked").unwrap_or(0) != 0;
-    m.extra.in_love = int("InLove").unwrap_or(0);
     m.extra.owner = crate::save::uuid_from_tag(tag.get("Owner"));
     m.extra.tame = m.extra.owner.is_some();
     if let Some(Tag::String(v)) = tag.get("variant") {
@@ -599,5 +643,110 @@ pub fn from_nbt(m: &mut Mob, tag: &horizon_world::nbt::Tag) {
         .and_then(|b| b.get("value"))
     {
         m.extra.counter = *v;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::mobs::world::with_test_world;
+    use std::sync::Arc;
+
+    /// `ChargeAttack.dealKnockBack` is `causeExtraKnockback`: `LivingEntity.knockback`
+    /// on the target, away from (sin(yaw), -cos(yaw)), not a raw push of its motion.
+    #[test]
+    fn a_charge_knocks_its_target_back_along_its_facing() {
+        let mut events = Vec::new();
+        let ran = with_test_world(&[], |w, types| {
+            let mut w = w.clone();
+            let at = Vec3::new(0.5, 64.0, 0.5);
+            w.player = Some(crate::mobs::world::test_player(at));
+            let mut m = Mob::new(
+                1,
+                Arc::new(types.types["minecraft:nautilus"].clone()),
+                Vec3::new(0.5, 64.0, 0.2),
+                0.0,
+            );
+            m.ai.target = Some(Who::Player);
+            let mut goal = Charge::new(0.5);
+            let mut lr = horizon_core::random::LegacyRandom::new(1);
+            let mut cx = Cx {
+                w: &w,
+                lr: &mut lr,
+                events: &mut events,
+            };
+            goal.tick(&mut m, &mut cx);
+        });
+        if !ran {
+            return;
+        }
+        let knock = events.iter().find_map(|e| match e {
+            MobEvent::Knockback {
+                target,
+                power,
+                x,
+                z,
+                ..
+            } => Some((*target, *power, *x, *z)),
+            _ => None,
+        });
+        let (target, power, x, z) = knock.expect("the charge knocks its target back");
+        assert_eq!(target, Who::Player);
+        assert!(power > 0.0);
+        // It turns to the target, which is straight ahead at +z (yaw 0): sin = 0, -cos = -1.
+        assert!(x.abs() < 1e-3 && (z + 1.0).abs() < 1e-3, "{x} {z}");
+        assert!(!events.iter().any(|e| matches!(e, MobEvent::Push { .. })));
+    }
+
+    /// A saddled nautilus with a rider looking south (`+z`), from the trip's
+    /// own `MobType`, so no prepared resources are needed.
+    fn ridden() -> Mob {
+        let mut kind = crate::mobs::sensor_scan_tests::kind();
+        let k = Arc::make_mut(&mut kind);
+        k.id = "minecraft:nautilus".into();
+        k.species = Species::Nautilus;
+        k.width = 0.9;
+        k.height = 0.9;
+        let mut m = Mob::new(7, kind, Vec3::new(1.5, 40.0, -2.5), 0.0);
+        m.set_saddle(Some(crate::items::ItemStack::new("minecraft:saddle", 1)));
+        m.rider = Some(super::super::equine::Rider {
+            yaw: 0.0,
+            pitch: 0.0,
+            ..Default::default()
+        });
+        m
+    }
+
+    /// `AbstractNautilus.onPlayerJump` keeps the released bar's scale (0.4 to
+    /// 1.0, none while the dash clock runs) and `tickRidden` spends it:
+    /// `executeRidersJump` pushes along the rider's look at 0.5 on land,
+    /// starts the 40-tick clock, raises DASH and queues the dash sound.
+    #[test]
+    fn the_dash_runs_off_the_scale_the_released_bar_left() {
+        let mut m = ridden();
+        assert!(on_player_jump(&mut m, 100));
+        assert_eq!(m.rider.expect("the rider stays on").jump, 1.0);
+        super::super::equine::ridden_step(&mut m);
+        assert_eq!(
+            m.rider.expect("the rider stays on").jump,
+            0.0,
+            "the scale is spent"
+        );
+        assert_eq!(m.extra.anim_ticks, DASH_COOLDOWN);
+        assert!(m.extra.flag2, "DASH");
+        assert_eq!(m.extra.scratch[1], 1, "the dash sound plays next tick");
+        let k = 0.5 * m.movement_speed();
+        assert!(
+            (m.velocity.z - k).abs() < 1.0e-9 && m.velocity.x.abs() < 1.0e-9,
+            "a dash along +z: {:?} against {k}",
+            m.velocity
+        );
+        // A dash still in its cooldown takes nothing (`dashCooldown > 0`), and
+        // neither does an unsaddled nautilus.
+        assert!(!on_player_jump(&mut m, 50));
+        m.extra.anim_ticks = 0;
+        m.extra.saddled = false;
+        assert!(!on_player_jump(&mut m, 50));
+        assert_eq!(m.rider.expect("the rider stays on").jump, 0.0);
     }
 }

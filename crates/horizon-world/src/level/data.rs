@@ -13,13 +13,7 @@ use crate::{
 };
 use horizon_core::geometry::{Aabb, Direction, ShapeOp, Vec3, VoxelShape};
 use serde_json::Value;
-use std::{
-    collections::HashMap,
-    fs::{self, File},
-    io,
-    path::Path,
-    sync::Arc,
-};
+use std::{collections::HashMap, fs, io, path::Path, sync::Arc};
 #[path = "data/cache.rs"]
 mod cache;
 pub(super) use cache::set_dir as set_cache_dir;
@@ -116,8 +110,9 @@ pub(crate) fn analyse_shape(shape: &VoxelShape) -> io::Result<ShapeInfo> {
     let err = |e: horizon_core::geometry::ShapeError| invalid(e.to_string());
     let mut info = ShapeInfo::default();
     let block = VoxelShape::block();
+    // The faces are not kept on the shape: only these facts are.
     for direction in Direction::ALL {
-        let face = shape.face_shape(direction).map_err(err)?;
+        let face = shape.face_shape_transient(direction).map_err(err)?;
         if !block.join_is_not_empty(&face, ShapeOp::XOR).map_err(err)? {
             info.full_faces |= 1 << direction as u8;
         }
@@ -125,7 +120,7 @@ pub(crate) fn analyse_shape(shape: &VoxelShape) -> io::Result<ShapeInfo> {
             info.nonempty_faces |= 1 << direction as u8;
         }
     }
-    let above = shape.face_shape(Direction::Down).map_err(err)?;
+    let above = shape.face_shape_transient(Direction::Down).map_err(err)?;
     let px = |v: f64| v / 16.0;
     let tests = [
         (7.0, 7.0, 9.0, 9.0),
@@ -201,6 +196,8 @@ pub struct BlockData {
     pub link: Option<BlockId>,
     /// Second block link: attached stem (stems) or stem (attached stems).
     pub link2: Option<BlockId>,
+    /// Support blocks (stems, plants); a content mod's connecting block's
+    /// `connects_to` (a `PipeBlock` alone in its chain).
     pub support_tag: Option<Arc<BlockSet>>,
     pub support_tag2: Option<Arc<BlockSet>>,
     pub feature: Option<Arc<str>>,
@@ -567,6 +564,7 @@ props! {
     creaking_heart_state = "creaking_heart_state",
     cracked = "cracked",
     has_book = "has_book",
+    has_record = "has_record",
     signal_fire = "signal_fire",
     orientation = "orientation",
     crafting = "crafting",
@@ -621,9 +619,21 @@ fn set_type(value: &Value, cache: &mut HashMap<String, Arc<str>>) -> Option<SetT
 }
 
 /// Build the block-state registry from the resources' `facts.json` (the
-/// same source the native client uses), streamed.
+/// same source the native client uses): the cache folder's snapshot when it
+/// matches the file and this build, the streamed JSON otherwise.
 pub fn load_registry(root: &Path) -> io::Result<BlockRegistry> {
-    BlockRegistry::from_facts_json(File::open(root.join("facts.json"))?)
+    Ok(load_registry_with_flags(root)?.0)
+}
+
+/// [`load_registry`] with each state's `(air, fluid)` columns.
+pub fn load_registry_with_flags(root: &Path) -> io::Result<(BlockRegistry, Vec<(bool, bool)>)> {
+    if let Some(cached) = cache::load_registry(root) {
+        return Ok(cached);
+    }
+    // Read whole, then parsed from the slice: see `BlockRegistry::from_facts_json_bytes`.
+    let loaded = BlockRegistry::from_facts_json_bytes(&fs::read(root.join("facts.json"))?)?;
+    cache::store_registry(root, &loaded.0, &loaded.1);
+    Ok(loaded)
 }
 
 pub(super) fn load(registry: &BlockRegistry, root: &Path) -> io::Result<Behaviours> {
@@ -954,7 +964,7 @@ fn build_with_gameplay<G: GameplayStateSource>(
             (state < table.state_count() as u64).then(|| table.block(BlockStateId(state as u32)))
         });
         let link2 = ["attachedStem", "stem"].into_iter().find_map(block_field);
-        let support_tag = ["stemSupportBlocks", "supportBlocks"]
+        let support_tag = ["stemSupportBlocks", "supportBlocks", "connectsTo"]
             .into_iter()
             .find_map(|k| field(k).and_then(Value::as_str))
             .and_then(tag);
@@ -1087,6 +1097,7 @@ fn build_with_gameplay<G: GameplayStateSource>(
         );
     }
 
+    let potted_by_content = potted_by_content(&blocks, &table);
     let liquid_blocks = FluidBlockBindings::new(registry)?;
     let mut dynamic = HashMap::new();
     for (id, fact) in facts.iter().enumerate() {
@@ -1111,11 +1122,29 @@ fn build_with_gameplay<G: GameplayStateSource>(
         fluid_tags,
         blocks,
         items,
+        potted_by_content,
         liquid_blocks,
         dynamic,
         occlusion_cache: Default::default(),
         growth: Default::default(),
     })
+}
+
+pub(super) fn potted_by_content(
+    blocks: &[BlockData],
+    table: &StateTable,
+) -> HashMap<BlockId, BlockId> {
+    let air = table.block_by_name("minecraft:air");
+    let mut map = HashMap::new();
+    for (index, block) in blocks.iter().enumerate() {
+        if block.is(Class::FlowerPot)
+            && let Some(potted) = block.link
+            && Some(potted) != air
+        {
+            map.insert(potted, BlockId(index as u16));
+        }
+    }
+    map
 }
 
 /// `NoteBlockInstrument` serialized names in declaration order.

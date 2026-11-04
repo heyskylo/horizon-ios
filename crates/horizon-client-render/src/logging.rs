@@ -8,11 +8,12 @@
 //! Messages go through the `log` facade. Horizon's own still print their plain text on stderr,
 //! as they did before the log existed; other crates' errors only reach the file (their
 //! warnings are mostly the Vulkan loader's startup chatter).
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, mpsc};
+use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Local, NaiveDate};
 
@@ -20,6 +21,11 @@ use chrono::{DateTime, Local, NaiveDate};
 pub const MAX_ARCHIVES_PER_DAY: u32 = 7;
 /// Formatted lines kept in memory for crash reports.
 const RECENT: usize = 50;
+/// Warnings and errors one line of code may log in a [`FLOOD_WINDOW`]; past that they are counted,
+/// not written, so a warning repeated every packet can't fill the disk. Vanilla has no such limit:
+/// below it the log is vanilla's, line for line.
+const FLOOD_LINES: u32 = 100;
+const FLOOD_WINDOW: Duration = Duration::from_secs(60);
 
 /// The platform data folder (what the `dirs` crate's data_dir gives).
 pub fn data_dir() -> PathBuf {
@@ -45,9 +51,69 @@ pub fn data_dir() -> PathBuf {
     std::env::temp_dir()
 }
 
-/// Where the launcher runs the game and keeps its saves: `HORIZON_HOME`, else `horizon` in the
-/// platform data folder (launcher/src/backend.rs `game_home`).
+/// `--home DIR`, set once at start; it wins over `HORIZON_HOME`.
+static HOME: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+/// Makes `game_home` return `home` for the rest of the run (`--home`).
+pub fn set_game_home(home: PathBuf) {
+    let _ = HOME.set(home);
+}
+
+/// `--player-dir DIR` (#4952), set once at start: one player's own files, when several games
+/// play in one game folder at the same time (the launcher's `play --account`).
+static PLAYER: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+/// Makes [`player_dir`] return `dir` for the rest of the run (`--player-dir`), creating it.
+/// What is a player's own goes there: `options.txt` and the settings files beside it,
+/// `logs/`, `crash-reports/`, `horizon-player.txt`, `servers.dat`, `hotbar.nbt` and
+/// `screenshots/`. What the game folder's players share stays in it: saves, resource and
+/// shader packs, mods and their config, caches.
+pub fn set_player_dir(dir: PathBuf) {
+    let _ = fs::create_dir_all(&dir);
+    let _ = PLAYER.set(dir);
+}
+
+/// The folder of this player's own files: `--player-dir`, else the game folder (the working
+/// directory, where the launcher runs the game).
+pub fn player_dir() -> PathBuf {
+    PLAYER
+        .get()
+        .cloned()
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_default())
+}
+
+/// `--player-dir`, if given.
+pub fn player_dir_override() -> Option<&'static Path> {
+    PLAYER.get().map(PathBuf::as_path)
+}
+
+/// Where the files all players share live, for settings kept beside `options.txt` in
+/// `options_dir` (the enabled mods): that folder, unless `--player-dir` moved `options.txt`
+/// out of the game folder.
+pub fn shared_dir(options_dir: &Path) -> PathBuf {
+    shared_dir_of(PLAYER.get().map(PathBuf::as_path), options_dir, || {
+        std::env::current_dir().unwrap_or_default()
+    })
+}
+
+/// [`shared_dir`] for a given `--player-dir` and game folder.
+fn shared_dir_of(
+    player: Option<&Path>,
+    options_dir: &Path,
+    game_dir: impl FnOnce() -> PathBuf,
+) -> PathBuf {
+    match player {
+        Some(player) if player == options_dir => game_dir(),
+        _ => options_dir.to_path_buf(),
+    }
+}
+
+/// Where the launcher runs the game and keeps its saves: `--home`, else `HORIZON_HOME`, else
+/// `horizon` in the platform data folder (launcher/src/backend.rs `game_home`).
 pub fn game_home() -> PathBuf {
+    if let Some(home) = HOME.get() {
+        return home.clone();
+    }
     match std::env::var_os("HORIZON_HOME").filter(|h| !h.is_empty()) {
         Some(h) => PathBuf::from(h),
         None => data_dir().join("horizon"),
@@ -272,6 +338,59 @@ struct Logger {
     /// What the main thread is called in the log: "Render thread", or "Server thread" for the
     /// dedicated server, as in vanilla.
     main_thread: &'static str,
+    floods: Mutex<Floods>,
+}
+
+/// What the flood limit does with one warning or error.
+#[derive(Debug, PartialEq, Eq)]
+enum Gate {
+    /// Write it, after saying how many lines like it were left out in the window before.
+    Write {
+        left_out: u32,
+    },
+    /// Write it, then say the next ones from this line of code wait for the next window.
+    Last,
+    Skip,
+}
+
+/// Warnings and errors per line of code, in windows of [`FLOOD_WINDOW`].
+#[derive(Default)]
+struct Floods {
+    sites: HashMap<(String, u32), Flood>,
+}
+
+struct Flood {
+    since: Instant,
+    written: u32,
+    left_out: u32,
+}
+
+impl Floods {
+    fn gate(&mut self, file: &str, line: u32, now: Instant) -> Gate {
+        let flood = self.sites.entry((file.to_owned(), line)).or_insert(Flood {
+            since: now,
+            written: 0,
+            left_out: 0,
+        });
+        let mut left_out = 0;
+        if now.duration_since(flood.since) >= FLOOD_WINDOW {
+            left_out = flood.left_out;
+            *flood = Flood {
+                since: now,
+                written: 0,
+                left_out: 0,
+            };
+        }
+        flood.written += 1;
+        match flood.written.cmp(&FLOOD_LINES) {
+            std::cmp::Ordering::Less => Gate::Write { left_out },
+            std::cmp::Ordering::Equal => Gate::Last,
+            std::cmp::Ordering::Greater => {
+                flood.left_out += 1;
+                Gate::Skip
+            }
+        }
+    }
 }
 
 static LOGGER: std::sync::OnceLock<Logger> = std::sync::OnceLock::new();
@@ -297,8 +416,37 @@ impl log::Log for Logger {
             Some(name) => name,
             None => "unnamed",
         };
+        let gate = if record.level() <= log::Level::Warn {
+            let mut floods = self.floods.lock().unwrap_or_else(|e| e.into_inner());
+            floods.gate(
+                record.file().unwrap_or(record.target()),
+                record.line().unwrap_or(0),
+                Instant::now(),
+            )
+        } else {
+            Gate::Write { left_out: 0 }
+        };
+        let level = record.level();
+        match gate {
+            Gate::Skip => return,
+            Gate::Write { left_out } if left_out > 0 => self.write(
+                thread,
+                level,
+                &format!(
+                    "{left_out} more lines like the next one were not logged in the last minute"
+                ),
+            ),
+            _ => {}
+        }
         let stderr = ours(record.target()).then(|| message.clone());
-        self.send(thread, record.level(), &message, stderr);
+        self.send(thread, level, &message, stderr);
+        if gate == Gate::Last {
+            self.write(
+                thread,
+                level,
+                &format!("{FLOOD_LINES} lines like this one in a minute: the next ones are counted, not logged"),
+            );
+        }
     }
 
     /// Waits (a second at most) until every line logged before is in the file.
@@ -392,6 +540,7 @@ pub fn init(home: &Path, main_thread: &'static str) {
             out,
             recent: Mutex::new(VecDeque::new()),
             main_thread,
+            floods: Mutex::new(Floods::default()),
         }
     });
     if log::set_logger(logger).is_ok() {
@@ -466,6 +615,49 @@ pub fn newest_crash_report(home: &Path) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_player_dir_keeps_the_shared_files_in_the_game_folder() {
+        let (game, player) = (Path::new("/games/shared"), Path::new("/games/players/alex"));
+        // options.txt moved to the player's folder: the enabled mods stay the game folder's.
+        assert_eq!(shared_dir_of(Some(player), player, || game.into()), game);
+        // No --player-dir, or a splitscreen profile's own folder: beside options.txt as before.
+        assert_eq!(shared_dir_of(None, game, || unreachable!()), game);
+        let profile = Path::new("/games/shared/splitscreen/profiles/P2");
+        assert_eq!(
+            shared_dir_of(Some(player), profile, || unreachable!()),
+            profile
+        );
+    }
+
+    #[test]
+    fn a_warning_repeated_every_packet_is_counted_past_a_hundred_a_minute() {
+        let (mut floods, start) = (Floods::default(), Instant::now());
+        let gates: Vec<Gate> = (0..140)
+            .map(|i| floods.gate("lan_vehicles.rs", 345, start + Duration::from_millis(i * 7)))
+            .collect();
+        assert!(
+            gates[..99]
+                .iter()
+                .all(|g| *g == Gate::Write { left_out: 0 })
+        );
+        assert_eq!(gates[99], Gate::Last);
+        assert!(gates[100..].iter().all(|g| *g == Gate::Skip));
+        // Another line of code has its own count.
+        assert_eq!(
+            floods.gate("lan_vehicles.rs", 330, start),
+            Gate::Write { left_out: 0 }
+        );
+        // The next minute writes again, and says how many were left out.
+        assert_eq!(
+            floods.gate("lan_vehicles.rs", 345, start + FLOOD_WINDOW),
+            Gate::Write { left_out: 40 }
+        );
+        assert_eq!(
+            floods.gate("lan_vehicles.rs", 345, start + FLOOD_WINDOW),
+            Gate::Write { left_out: 0 }
+        );
+    }
 
     fn day(d: u32) -> NaiveDate {
         NaiveDate::from_ymd_opt(2026, 10, d).unwrap()

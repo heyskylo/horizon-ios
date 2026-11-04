@@ -85,7 +85,10 @@ impl Game<'_> {
         let players = self.vault_players();
         let mut random = std::mem::replace(&mut self.world.random, LegacyRandom::new(0));
         let mut sequences = std::mem::take(&mut self.rand_sequences);
-        let loot = horizon_client::structure_blocks::loot_data(&self.options.resources);
+        let loot = horizon_client::structure_blocks::loot_data(
+            &self.options.resources,
+            &self.pack_files(),
+        );
         let seed = self.level.seed;
         let mut events = Vec::new();
         let out = {
@@ -164,7 +167,7 @@ impl Game<'_> {
         };
         if taken > 0 {
             // awardStat(ITEM_USED), then stackToInsert.consume(count, player).
-            self.stats.add("used", &stack.item, 1);
+            self.award_stat("used", &stack.item, 1);
             for _ in 0..taken {
                 self.consume_held();
             }
@@ -187,6 +190,7 @@ impl Game<'_> {
                 }
                 // Vec3.atBottomCenterOf(pos).relative(UP, 1.2), lowered by spawnItem.
                 VaultEvent::Eject(stack, v) => {
+                    self.native_vault_loot(pos, &stack.item);
                     self.spawn_item(stack, [center[0], center[1] + 0.7 - 0.125, center[2]], v, 0)
                 }
             }
@@ -203,7 +207,9 @@ impl Game<'_> {
             .properties
             .insert("vault_state".into(), state.name().into());
         let id = self.pack.assets.registry.resolve(&block)?;
-        self.level_set([key.0, key.1, key.2], id)
+        self.level_set([key.0, key.1, key.2], id)?;
+        self.native_vault_change_state(self.dim.id(), [key.0, key.1, key.2], state.name());
+        Ok(())
     }
     /// `VaultRenderer`: the display item of every vault near the camera that
     /// shows one, turning above its floor.

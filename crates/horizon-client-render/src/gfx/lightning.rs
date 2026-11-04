@@ -15,8 +15,17 @@ pub struct Bolt {
 #[derive(Default)]
 pub struct Input<'a> {
     pub bolts: &'a [Bolt],
-    /// Current atlas white texel; a changed rect invalidates retained vertices.
+    /// Current atlas white texel ([`white_uv`]); a changed rect invalidates
+    /// retained vertices.
     pub uv: [f32; 2],
+}
+
+/// The atlas point an untextured quad (`RenderTypes.lightning` has no
+/// texture) samples: the middle of the white sprite. Its corner (`u0`, `v0`)
+/// is on the sprite's border, where the atlas's nearest sampling picks the
+/// neighbouring, transparent texels for most fragments.
+pub fn white_uv(white: &crate::hud::Rect) -> [f32; 2] {
+    [(white.u0 + white.u1) / 2.0, (white.v0 + white.v1) / 2.0]
 }
 
 // Four layers, fourteen segments (eight trunk, two branches of three), four quads.
@@ -74,7 +83,8 @@ fn geometry(seed: i64, uv: [f32; 2]) -> Vec<Vertex> {
                             normal: [0; 4],
                             pos: c,
                             uv,
-                            layer: 2,
+                            // HDR output: the bolt shines like the sun (entity.wgsl fs_hdr_mark).
+                            layer: 2 | u32::from(crate::mesher::VERY_BRIGHT) << 16,
                             color,
                             light: 240 | 240 << 8,
 

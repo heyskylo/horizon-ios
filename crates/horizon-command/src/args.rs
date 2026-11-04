@@ -2,7 +2,9 @@
 //! the vanilla error messages and completion suggestions.
 use super::{CmdResult, CommandError, Context, Reader, SuggestionsBuilder};
 
-pub use horizon_client_core::registries::{Registries, RegistryIds};
+pub use horizon_client_core::registries::{
+    CustomCompletionAction, Registries, RegistryIds, modify_custom_completions,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Resource {
@@ -732,6 +734,7 @@ fn parse_coord_double(reader: &mut Reader, center: bool) -> CmdResult<Coord> {
     }
     Ok(Coord { relative, value })
 }
+/// LocalCoordinates.parse / readDouble.
 fn parse_local(reader: &mut Reader) -> CmdResult<Coordinates> {
     let start = reader.cursor;
     let mut v = [0.0; 3];
@@ -747,7 +750,14 @@ fn parse_local(reader: &mut Reader) -> CmdResult<Coordinates> {
             }
             reader.skip();
         }
-        if !reader.can_read() || reader.peek() != '^' {
+        if !reader.can_read() {
+            return Err(CommandError::tr_at(
+                "argument.pos.missing.double",
+                &[],
+                reader,
+            ));
+        }
+        if reader.peek() != '^' {
             reader.cursor = start;
             return Err(CommandError::tr_at("argument.pos.mixed", &[], reader));
         }
@@ -798,7 +808,9 @@ fn java_split(s: &str) -> Vec<&str> {
     parts
 }
 /// SharedSuggestionProvider.suggestCoordinates / suggest2DCoordinates: the
-/// candidates `ty` parses completely.
+/// candidates `ty` parses completely. `relevant` arguments (block and column
+/// positions) offer the targeted block (`getRelevantCoordinates`), the others
+/// (`Vec3`, `Vec2`) the exact hit point (`getAbsoluteCoordinates`).
 fn suggest_coordinates(
     builder: &mut SuggestionsBuilder,
     reg: &Registries,
@@ -811,6 +823,8 @@ fn suggest_coordinates(
         ["^".into(), "^".into(), "^".into()]
     } else if let (true, Some(t)) = (relevant, reg.target_block) {
         [t[0].to_string(), t[1].to_string(), t[2].to_string()]
+    } else if let (false, Some(p)) = (relevant, &reg.target_point) {
+        p.clone()
     } else {
         ["~".into(), "~".into(), "~".into()]
     };
@@ -1368,8 +1382,7 @@ impl ArgType {
                         reader,
                     ));
                 };
-                // Math.round(float): floor(x + 0.5).
-                let ticks = (v * m as f32 + 0.5).floor() as i32;
+                let ticks = horizon_core::jmath::round_f32(v * m as f32);
                 if ticks < *min {
                     return Err(CommandError::tr_at(
                         "argument.time.tick_count_too_low",
@@ -1662,10 +1675,15 @@ impl ArgType {
         let _ = context;
         match self {
             ArgType::Bool => builder.suggest_matching(["true", "false"]),
-            ArgType::Entity { .. } => {
-                let players = reg.players.clone();
+            ArgType::Entity { players, .. } => {
+                // EntityArgument.listSuggestions: the online player names,
+                // then (unless players only) getSelectedEntities.
+                let mut names = reg.players.clone();
+                if !players {
+                    names.extend(reg.selected_entities.iter().cloned());
+                }
                 super::selector::suggest(builder, reg, &|b| {
-                    b.suggest_matching(players.iter().map(String::as_str))
+                    b.suggest_matching(names.iter().map(String::as_str))
                 });
             }
             ArgType::BlockPos => suggest_coordinates(builder, reg, self, true),

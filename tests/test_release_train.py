@@ -155,6 +155,9 @@ class ReleaseTrainTests(unittest.TestCase):
                 if "--commit" in arguments:
                     sha = arguments[arguments.index("--commit") + 1]
                     return [{"status": s, "conclusion": c} for h, s, c in table if h == sha]
+                if "--status" in arguments:
+                    wanted = arguments[arguments.index("--status") + 1]
+                    table = [(h, s, c) for h, s, c in table if c == wanted]
                 return [{"headSha": h, "status": s, "conclusion": c} for h, s, c in table]
             return mock.patch.object(train, "gh_json", gh_json)
         checks = [("c", "in_progress", ""), ("b", "completed", "success"), ("a", "completed", "success")]
@@ -164,9 +167,18 @@ class ReleaseTrainTests(unittest.TestCase):
             self.assertTrue(train.passed_on("parity-main", "a"))
             self.assertFalse(train.passed_on("parity-main", "b"))
         with runs([("b", "completed", "failure"), ("a", "completed", "success")], checks):
-            self.assertIsNone(train.green_main_head(parity=True), "a failed batch holds releases until fixed")
+            self.assertEqual(train.green_main_head(parity=True), "a",
+                             "a later failed batch holds only its own merges, not the commit before it")
         with runs([("c", "completed", "success")], checks):
             self.assertIsNone(train.green_main_head(parity=True), "its checks must pass too")
+        with runs([("c", "completed", "success"), ("a", "completed", "success")], checks):
+            self.assertEqual(train.green_main_head(parity=True), "a", "the newest green commit whose checks passed")
+        with runs([("c", "completed", "failure"), ("b", "completed", "cancelled")], checks):
+            self.assertIsNone(train.green_main_head(parity=True), "nothing parity-main passed")
+        with runs([("c", "completed", "success")], [("c", "completed", "success")]):
+            self.assertEqual(train.green_main_head(), "c")
+        with runs([], [("c", "completed", "failure"), ("b", "completed", "success")]):
+            self.assertIsNone(train.green_main_head(), "checks alone: main's newest finished checks must pass")
 
     def test_a_release_is_published_only_after_its_smoke_test_and_with_no_blocker(self):
         drew = {"error": None, "frames": 12710, "chunks": 81, "meshed_sections": 550, "player": [160.5, 71.0, 156.5]}
@@ -198,7 +210,8 @@ class ReleaseTrainTests(unittest.TestCase):
         self.assertIn("### Known issues\n- Sound cuts out after an hour.", body)
         self.assertNotIn("#7", body)
         self.assertNotIn("#8", body)
-        self.assertIn("Thanks to @cosmic.", body)
+        self.assertIn("### Contributors\nThanks to @cosmic.", body)
+        self.assertTrue(body.endswith("---\n" + train.DISCLAIMER + "\n"), body)
         self.assertLess(body.index("### New"), body.index("### Fixed"))
         title, _ = train.notes("game", "v2026.10.15.2", [pr(9, "Horizon's mark", labels=["feature"]),
                                                          pr(10, "Game menus", labels=["feature"])], [])
@@ -225,15 +238,16 @@ class ReleaseTrainTests(unittest.TestCase):
         self.assertIn("### Fixed\n- Launcher: say the self-update succeeded (#3)", body)
         self.assertNotIn("Known issues", body)
         self.assertNotIn(train.PLAYERS, body)
+        self.assertNotIn(train.PLAYERS_FOOTER, body)
         self.assertIn("Your launcher updates itself.", body)
 
     def test_a_game_release_opens_with_the_way_to_the_launcher(self):
         # GitHub's latest is a game release: whoever lands on it is sent to the launcher first (#1647).
         _, body = train.notes("game", "v0.2.50", [pr(1)], ["- Sound cuts out after an hour."])
-        self.assertTrue(body.startswith('<h3>Want to play? Download the <a href="https://playhorizon.dev">Horizon launcher'))
-        self.assertIn('href="https://github.com/horizon-rust/horizon/releases?q=launcher&amp;expanded=true"', body)
+        self.assertTrue(body.startswith(train.PLAYERS + "\n\n"))
+        self.assertTrue(body.endswith("\n\n" + train.PLAYERS_FOOTER + "\n\n---\n" + train.DISCLAIMER + "\n"), body)
         self.assertNotIn("\n", train.PLAYERS, "one line: one HTML block, which ends at the blank line after it")
-        self.assertEqual(body.count("playhorizon.dev"), 1, "said once, at the top")
+        self.assertEqual(body.count("playhorizon.dev"), 2, "said at the top and the bottom")
         _, body = train.notes("game", "v0.2.51", [], [])
         self.assertTrue(body.startswith(train.PLAYERS + "\n\nRebuilt from the latest main."))
 

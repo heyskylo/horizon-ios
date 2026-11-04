@@ -101,6 +101,8 @@ enum Animate {
     DeadBush,
     /// `ShortDryGrassBlock` and `TallDryGrassBlock`.
     DryGrass,
+    /// A creaking heart that is not uprooted (`CreakingHeartBlock.animateTick`).
+    CreakingHeart,
 }
 fn step(facing: &str) -> [i32; 3] {
     match facing {
@@ -236,6 +238,9 @@ fn classify(name: &str, prop: &dyn Fn(&str) -> Option<String>) -> Animate {
         "firefly_bush" => Animate::FireflyBush,
         "open_eyeblossom" => Animate::OpenEyeblossom,
         "pale_hanging_moss" => Animate::PaleHangingMoss,
+        "creaking_heart" if prop("creaking_heart_state").as_deref() != Some("uprooted") => {
+            Animate::CreakingHeart
+        }
         "dead_bush" => Animate::DeadBush,
         "short_dry_grass" | "tall_dry_grass" => Animate::DryGrass,
         "sculk_sensor" | "calibrated_sculk_sensor"
@@ -296,7 +301,9 @@ fn candle_offsets(count: u8) -> &'static [[f64; 3]] {
     }
 }
 
-/// Per-state animate behaviour and the block tags it needs.
+/// Per-state animate behaviour and the block tags it needs. Empty by default
+/// (a dedicated server): every lookup finds nothing to animate.
+#[derive(Default)]
 pub struct AnimateTables {
     kinds: Vec<Animate>,
     impermeable: Vec<bool>,
@@ -442,6 +449,8 @@ pub struct AnimateContext<'a> {
     pub height_no_leaves: &'a dyn Fn([i32; 3]) -> i32,
     /// `EnvironmentAttributes.FIREFLY_BUSH_SOUNDS` (overworld day timeline).
     pub firefly_bush_sounds: bool,
+    /// `EnvironmentAttributes.CREAKING_ACTIVE` (overworld day timeline).
+    pub creaking_active: bool,
     /// `Level.getSkyDarken`, for `getMaxLocalRawBrightness`.
     pub sky_darken: i32,
     /// Creative main-hand marker block and a resolver for each placed state's sprite.
@@ -529,7 +538,7 @@ fn add_visible(engine: &mut ParticleEngine, ty: T, p: [f64; 3], v: [f64; 3]) {
     engine.add_with(&ParticleOptions::simple(ty), p, v, false, true);
 }
 fn sound(engine: &mut ParticleEngine, name: &'static str, p: [f64; 3], volume: f32, pitch: f32) {
-    engine.sounds.push((name, p, volume, pitch));
+    engine.sounds.push((name, p, volume, pitch, false));
 }
 fn redstone(engine: &mut ParticleEngine, p: [f64; 3]) {
     engine.add(&ParticleOptions::dust([1.0, 0.0, 0.0], 1.0), p, [0.0; 3]);
@@ -908,8 +917,11 @@ fn block_animate_tick(
             }
             let r = engine.random();
             if spawn_particles && next_int(r, 5) == 0 {
-                let count = next_int(r, 1) + 1;
-                for _ in 0..count {
+                // Vanilla's `for (int i = 0; i < random.nextInt(1) + 1; i++)`
+                // asks the bound again on every pass, so the check after the
+                // body is a second draw.
+                let mut i = 0;
+                while i < next_int(engine.random(), 1) + 1 {
                     let r = engine.random();
                     let v = [
                         f64::from(r.next_float() / 2.0),
@@ -917,6 +929,7 @@ fn block_animate_tick(
                         f64::from(r.next_float() / 2.0),
                     ];
                     add(engine, T::Lava, [fx + 0.5, fy + 0.5, fz + 0.5], v);
+                    i += 1;
                 }
             }
         }
@@ -1163,10 +1176,12 @@ fn block_animate_tick(
         Animate::CandleCake => candle(engine, [fx + 0.5, fy + 1.0, fz + 0.5]),
         Animate::BrewingStand => {
             let r = engine.random();
+            // `random.nextFloat() * 0.2` and `* 0.3` are double products; only
+            // the draw itself is single precision.
             let p = [
-                fx + 0.4 + f64::from(r.next_float() * 0.2),
-                fy + 0.7 + f64::from(r.next_float() * 0.3),
-                fz + 0.4 + f64::from(r.next_float() * 0.2),
+                fx + 0.4 + f64::from(r.next_float()) * 0.2,
+                fy + 0.7 + f64::from(r.next_float()) * 0.3,
+                fz + 0.4 + f64::from(r.next_float()) * 0.2,
             ];
             add(engine, T::Smoke, p, [0.0; 3]);
         }
@@ -1257,6 +1272,39 @@ fn block_animate_tick(
                     let name = "minecraft:block.pale_hanging_moss.idle";
                     sound(engine, name, [fx, fy, fz], 1.0, 1.0);
                 }
+            }
+        }
+        Animate::CreakingHeart => {
+            // CreakingHeartBlock.animateTick: the idle creak is drawn only while
+            // the attribute is on, then needs pale oak logs on all six sides
+            // (`CreakingHeartBlock.isSurroundedByLogs`).
+            if ctx.creaking_active
+                && next_int(engine.random(), 16) == 0
+                && [
+                    [-1, 0, 0],
+                    [1, 0, 0],
+                    [0, -1, 0],
+                    [0, 1, 0],
+                    [0, 0, -1],
+                    [0, 0, 1],
+                ]
+                .iter()
+                .all(|d| {
+                    let p = [pos[0] + d[0], pos[1] + d[1], pos[2] + d[2]];
+                    tables
+                        .pale_oak_logs
+                        .get(ctx.state(p).0 as usize)
+                        .copied()
+                        .unwrap_or(false)
+                })
+            {
+                sound(
+                    engine,
+                    "minecraft:block.creaking_heart.idle",
+                    [fx, fy, fz],
+                    1.0,
+                    1.0,
+                );
             }
         }
         Animate::DeadBush => {
@@ -1402,7 +1450,9 @@ fn block_animate_tick(
                 let flip_z = f64::from(next_int(r, 2) * 2 - 1);
                 let p = [
                     fx + 0.5 + 0.25 * flip_x,
-                    fy + f64::from(r.next_float()),
+                    // `pos.getY() + random.nextFloat()` adds an int to a float:
+                    // the sum rounds to single precision before it widens.
+                    f64::from(pos[1] as f32 + r.next_float()),
                     fz + 0.5 + 0.25 * flip_z,
                 ];
                 let v = [
@@ -1525,7 +1575,9 @@ fn block_animate_tick(
                     } else {
                         f64::from(step[2]) * 0.6
                     };
-                let ya = f64::from(r.next_float() * 0.04);
+                // `random.nextFloat() * 0.04`: the double literal keeps the
+                // product in double precision.
+                let ya = f64::from(r.next_float()) * 0.04;
                 engine.add(
                     &crate::particles::ParticleOptions::sculk_to_redstone(),
                     [x, fy + 0.25, z],
@@ -1550,7 +1602,9 @@ fn block_animate_tick(
                 fy + 1.0,
                 fz + 0.5 + (0.5 - r.next_double()),
             ];
-            let ya = f64::from(r.next_float() * 0.04);
+            // `random.nextFloat() * 0.04`: the double literal keeps the product
+            // in double precision.
+            let ya = f64::from(r.next_float()) * 0.04;
             add(engine, T::ReversePortal, p, [0.0, ya, 0.0]);
         }
         Animate::BubbleColumn { drag } => {
@@ -1853,9 +1907,17 @@ pub fn campfire_particles<'a>(
         };
         let r = engine.random();
         if r.next_float() < 0.11 {
-            let count = next_int(r, 2) + 2;
-            for _ in 0..count {
+            // `for (int i = 0; i < random.nextInt(2) + 2; i++)`: the iteration
+            // bound is drawn again on every pass, so the loop keeps asking the
+            // random whether to make one more puff.
+            let mut made = 0;
+            loop {
+                let count = next_int(engine.random(), 2) + 2;
+                if made >= count {
+                    break;
+                }
                 make_campfire_smoke(engine, pos, signal, false);
+                made += 1;
             }
         }
         // The smoke over each cooking item, at the slot's corner of the fire.

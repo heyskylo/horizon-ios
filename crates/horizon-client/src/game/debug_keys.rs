@@ -10,10 +10,11 @@ use horizon_client::{
     gizmos::Gizmos,
     hud::HudBatch,
     hud_layout, keybinds,
-    save::VERSION_NAME,
-    text::Text,
+    text::{ClickEvent, Style, Text},
 };
 use horizon_core::geometry::{Axis, Vec3};
+use horizon_protocol::packets::play::{BlockEntityTagQuery, EntityTagQuery, Serverbound};
+use horizon_world::nbt::Tag;
 use winit::keyboard::KeyCode;
 
 /// `ChatFormatting.YELLOW` and `RED`.
@@ -39,6 +40,7 @@ impl DebugHost for Host<'_, '_> {
         let g = &mut *self.game;
         if without_menu && g.screen == Screen::Playing {
             g.pause_menu = !g.has_singleplayer_server() || g.is_published();
+            g.pause_focus = None;
             g.screen = Screen::Paused;
             g.capture(false);
             g.mining = None;
@@ -65,6 +67,9 @@ impl Game<'_> {
     /// own handling. Returns true when it is used up (a debug combination,
     /// F3 itself, F3+Escape).
     pub(super) fn debug_key(&mut self, key: KeyCode, action: KeyAction) -> bool {
+        if self.title.is_some() {
+            return false;
+        }
         let Some(name) = keybinds::key_name(key) else {
             return false;
         };
@@ -88,7 +93,11 @@ impl Game<'_> {
         // releases still reach KeyboardHandler.
         let typing = matches!(
             self.screen,
-            Screen::Chat | Screen::Options | Screen::WorldOptions | Screen::CommandBlock
+            Screen::Chat
+                | Screen::Options
+                | Screen::WorldOptions
+                | Screen::CommandBlock
+                | Screen::BlockEditor
         ) || self.sign_edit.is_some()
             || self.book.is_some()
             || (self.screen == Screen::Creative && self.creative_screen.tab().search)
@@ -217,7 +226,7 @@ impl Game<'_> {
             self.debug_charts.log_packets([sent, received]);
         }
         if shown {
-            use horizon_protocol::packets::{play::Serverbound, status::Ping};
+            use horizon_protocol::packets::status::Ping;
             let time = self.debug_millis();
             self.send(Serverbound::PingRequest(Ping { time }));
         }
@@ -269,12 +278,23 @@ impl Game<'_> {
             format!("To edit: press {}", key("key.debug.debugOptions")),
         ]
     }
-    /// `DebugScreenOverlay.extractRenderState` with the default profile's
-    /// entries, over everything the frame drew (menus too), at the debug GUI
-    /// scale. F1 hides it unless a screen is open.
+    /// `Gui.extractRenderState`'s debug overlay, over everything the frame
+    /// drew (menus too); the debug options screen draws it under itself.
     pub(super) fn draw_debug_overlay(&self, batch: &mut HudBatch, size: [u32; 2]) {
-        let screen_open = self.title.is_some() || self.screen != Screen::Playing;
-        if !self.debug || (self.ui.hide_gui && !screen_open) {
+        if self.screen != Screen::DebugOptions {
+            self.draw_debug_overlay_under(batch, size);
+        }
+    }
+    /// `DebugScreenOverlay.extractRenderState`: the enabled entries' lines
+    /// (`debug-profile.json`), at the debug GUI scale, and the charts while
+    /// the overlay is open. F1 hides it unless a screen is open.
+    pub(super) fn draw_debug_overlay_under(&self, batch: &mut HudBatch, size: [u32; 2]) {
+        let screen_open = self.screen != Screen::Playing;
+        let reduced = self.reduced_debug_info();
+        if self.title.is_some()
+            || !self.debug_entries.any_enabled(self.debug, reduced)
+            || (self.ui.hide_gui && !screen_open)
+        {
             return;
         }
         let framebuffer = size.map(|v| v as i32);
@@ -286,7 +306,44 @@ impl Game<'_> {
             [batch.width as i32, batch.height as i32],
         );
         let mut d = debug_overlay::Displayer::default();
-        // fps: DebugEntryFps.
+        self.debug_entry_lines(&mut d, framebuffer);
+        // The chart keys and the charts only while the overlay is open.
+        let footer = if self.debug {
+            self.debug_chart_lines().to_vec()
+        } else {
+            Vec::new()
+        };
+        let (left, right) = d.columns(&footer);
+        let atlas = &self.gui.atlas;
+        let mut draws = debug_overlay::draw(&atlas.font, [&left, &right], scale, width);
+        if self.debug {
+            let charts = self.debug_charts.draw(
+                &atlas.font,
+                width,
+                height,
+                self.settings.max_fps,
+                1000.0 / self.clock.rate(),
+                !self.has_singleplayer_server(),
+            );
+            draws.push(hud_layout::GuiDraw::Push(vec![hud_layout::PoseOp::Scale(
+                scale, scale,
+            )]));
+            draws.extend(charts);
+            if self.debug_charts.lightmap
+                && let Some(r) = &self.renderer
+            {
+                draws.extend(horizon_client::debug_chart::lightmap(
+                    &r.lightmap_pixels,
+                    width,
+                    height,
+                ));
+            }
+            draws.push(hud_layout::GuiDraw::Pop);
+        }
+        hud_layout::paint(batch, atlas, &draws);
+    }
+    /// `DebugEntryFps`.
+    pub(super) fn debug_fps_line(&self, d: &mut debug_overlay::Displayer) {
         let limit = self.framerate_limit();
         let present = self
             .renderer
@@ -306,8 +363,19 @@ impl Game<'_> {
             .map_or("0".into(), |mhz| {
                 debug_overlay::refresh_rate_label(f64::from(mhz) / 1000.0)
             });
+        // Horizon: with frame generation running, the frames reaching the screen too.
+        let generated = self
+            .renderer
+            .as_ref()
+            .and_then(|r| r.frame_generation_share())
+            .map_or(String::new(), |share| {
+                format!(
+                    " ({} fps FSR 3.1)",
+                    (self.fps * (1.0 + share)).round() as i32
+                )
+            });
         d.priority(format!(
-            "{} fps T: {}{present} @{refresh}Hz",
+            "{} fps{generated} T: {}{present} @{refresh}Hz",
             self.fps.round() as i32,
             if limit == 260 {
                 "inf".into()
@@ -315,24 +383,9 @@ impl Game<'_> {
                 limit.to_string()
             },
         ));
-        // game_version: DebugEntryVersion (the launched version and brand).
-        d.priority(format!("Minecraft {VERSION_NAME} ({VERSION_NAME}/horizon)"));
-        // player_position, player_section_position.
-        if let Some(p) = self.player.as_ref() {
-            let mut lines = debug_overlay::position(
-                [p.position.x, p.position.y, p.position.z],
-                self.yaw,
-                self.pitch,
-                self.dim.id(),
-                self.streaming.forced.len(),
-            );
-            let section = lines.pop().unwrap_or_default();
-            if !self.reduced_debug_info() {
-                d.group("position", lines);
-            }
-            d.group("position", [section]);
-        }
-        // simple_performance_impactors.
+    }
+    /// `DebugEntrySimplePerformanceImpactors`.
+    pub(super) fn debug_performance_lines(&self, d: &mut debug_overlay::Displayer) {
         let s = &self.settings;
         d.line(format!(
             "{}{}B: {}",
@@ -357,7 +410,13 @@ impl Game<'_> {
                 "naive"
             }
         ));
-        // system_specs (no Java line: Horizon has no JVM).
+    }
+    /// `DebugEntrySystemSpecs` (no Java line: Horizon has no JVM).
+    pub(super) fn debug_system_lines(
+        &self,
+        d: &mut debug_overlay::Displayer,
+        framebuffer: [i32; 2],
+    ) {
         if let Some(r) = self.renderer.as_ref() {
             static CPU: std::sync::OnceLock<String> = std::sync::OnceLock::new();
             d.group(
@@ -416,14 +475,16 @@ impl Game<'_> {
                 ],
             );
         }
-        // Horizon's own: the shader pack's GPU time per pass (an empty group would move others).
-        let pass_lines = self.renderer.as_ref().map_or_else(Vec::new, |r| {
-            debug_overlay::shader_pass_lines(&r.shader_pass_times())
-        });
-        if !pass_lines.is_empty() {
-            d.group("shader pack", pass_lines);
+        // Horizon's own: HDR's output while the setting is on, under the GPU (a group of its
+        // own would move others to the other column).
+        if self.settings.horizon.hdr
+            && let Some(r) = self.renderer.as_ref()
+        {
+            d.group("system", [r.hdr_line()]);
         }
-        // tps: DebugEntryTps for local and remote connections.
+    }
+    /// `DebugEntryTps` for local and remote connections.
+    pub(super) fn debug_tps_line(&self, d: &mut debug_overlay::Displayer) {
         if self.player.is_some() {
             let [tx, rx] = self.debug_charts.packet_rates.map(|n| n.round() as i64);
             let (target, status) = if self.clock.sprinting() {
@@ -455,32 +516,6 @@ impl Game<'_> {
                 ));
             }
         }
-        let (left, right) = d.columns(&self.debug_chart_lines());
-        let atlas = &self.gui.atlas;
-        let mut draws = debug_overlay::draw(&atlas.font, [&left, &right], scale, width);
-        let charts = self.debug_charts.draw(
-            &atlas.font,
-            width,
-            height,
-            self.settings.max_fps,
-            1000.0 / self.clock.rate(),
-            !self.has_singleplayer_server(),
-        );
-        draws.push(hud_layout::GuiDraw::Push(vec![hud_layout::PoseOp::Scale(
-            scale, scale,
-        )]));
-        draws.extend(charts);
-        if self.debug_charts.lightmap
-            && let Some(r) = &self.renderer
-        {
-            draws.extend(horizon_client::debug_chart::lightmap(
-                &r.lightmap_pixels,
-                width,
-                height,
-            ));
-        }
-        draws.push(hud_layout::GuiDraw::Pop);
-        hud_layout::paint(batch, atlas, &draws);
     }
     /// `KeyMapping.getTranslatedKeyMessage`.
     fn key_text(&self, mapping: &str) -> Text {
@@ -492,12 +527,17 @@ impl Game<'_> {
         let prefix = Text::translate("debug.prefix", &[])
             .with_color(color)
             .bold();
-        self.system_message(
+        self.show_debug_chat(
             Text::empty()
                 .append(prefix)
                 .append(Text::literal(" "))
                 .append(message),
         );
+    }
+    /// `Minecraft.showDebugChat`: a client system message the narrator says.
+    fn show_debug_chat(&mut self, message: Text) {
+        self.say_system_queued(&message);
+        self.system_message(message);
     }
     fn debug_feedback(&mut self, message: Text) {
         self.debug_decorated(YELLOW, message);
@@ -509,13 +549,19 @@ impl Game<'_> {
         self.debug_feedback(Text::translate(key, &[]));
     }
     /// `LocalPlayer.isReducedDebugInfo`: the server's rule or the option.
-    fn reduced_debug_info(&self) -> bool {
-        self.settings.reduced_debug_info || self.ui.rules.bool("reduced_debug_info")
+    pub(super) fn reduced_debug_info(&self) -> bool {
+        self.settings.reduced_debug_info
+            || self.ui.rules.bool("reduced_debug_info")
+            || self.remote.as_ref().is_some_and(|r| r.reduced_debug_info)
     }
-    /// The default profile's `3d_crosshair` entry: on while the overlay is
-    /// open, unless debug info is reduced.
+    /// `DebugScreenEntryList.isCurrentlyEnabled` for an entry's path.
+    pub(super) fn debug_entry(&self, path: &str) -> bool {
+        self.debug_entries
+            .enabled(path, self.debug, self.reduced_debug_info())
+    }
+    /// The `3d_crosshair` entry.
     pub(super) fn debug_crosshair(&self) -> bool {
-        self.debug && !self.reduced_debug_info()
+        self.debug_entry("3d_crosshair")
     }
     /// `Permissions.COMMANDS_GAMEMASTER` (`GameModeCommand.PERMISSION_CHECK`).
     pub(super) fn gamemaster(&self) -> bool {
@@ -539,8 +585,10 @@ impl Game<'_> {
                 true
             }
             DebugAction::ShowHitboxes if player => {
-                self.show_hitboxes = !self.show_hitboxes;
-                self.debug_translated(if self.show_hitboxes {
+                let on = self
+                    .debug_entries
+                    .toggle_status("entity_hitboxes", self.debug);
+                self.debug_translated(if on {
                     "debug.show_hitboxes.on"
                 } else {
                     "debug.show_hitboxes.off"
@@ -553,8 +601,10 @@ impl Game<'_> {
                 true
             }
             DebugAction::ShowChunkBorders if player => {
-                self.show_chunk_borders = !self.show_chunk_borders;
-                self.debug_translated(if self.show_chunk_borders {
+                let on = self
+                    .debug_entries
+                    .toggle_status("chunk_borders", self.debug);
+                self.debug_translated(if on {
                     "debug.chunk_boundaries.on"
                 } else {
                     "debug.chunk_boundaries.off"
@@ -631,7 +681,7 @@ impl Game<'_> {
             DebugAction::DumpVersion => {
                 self.debug_translated("debug.version.header");
                 for line in self.version_lines() {
-                    self.system_message(line);
+                    self.show_debug_chat(line);
                 }
                 true
             }
@@ -658,13 +708,58 @@ impl Game<'_> {
                 self.debug_charts.toggle_lightmap(&mut self.debug);
                 true
             }
-            // Screens and overlays Horizon does not draw yet (the debug
-            // options screen, the profiler and its chart, the texture dump):
-            // the keys are used up as in vanilla.
-            DebugAction::DebugOptions
-            | DebugAction::DumpDynamicTextures
-            | DebugAction::Profiling
-            | DebugAction::ProfilingChart => true,
+            DebugAction::DebugOptions => {
+                self.toggle_debug_options();
+                true
+            }
+            // Horizon's own: a repro recording for a bug report (game/repro.rs).
+            // Off unless the AI Agent page enables the shortcuts.
+            DebugAction::RecordSession if !self.settings.extras.repro_keys => false,
+            DebugAction::ExportRepro if !self.settings.extras.repro_keys => false,
+            DebugAction::RecordSession => {
+                self.toggle_recording_key();
+                true
+            }
+            DebugAction::ExportRepro => {
+                self.export_repro_key();
+                true
+            }
+            DebugAction::DumpDynamicTextures => {
+                // `KeyboardHandler`: `TextureUtil.getDebugTexturePath` is the game
+                // folder's `screenshots/debug`; `TextureManager.dumpAllSheets` then
+                // writes every dumpable texture there and the chat names the folder.
+                let dir = horizon_client::logging::player_dir()
+                    .join("screenshots")
+                    .join("debug");
+                match self
+                    .gui
+                    .atlas
+                    .dump_contents(&dir, "minecraft_textures_atlas_gui")
+                {
+                    Ok(_) => {
+                        log::info!("Dumped dynamic textures to {}", dir.display());
+                        let link = Text::styled(
+                            "screenshots/debug",
+                            Style {
+                                underlined: Some(true),
+                                click: Some(ClickEvent::OpenFile(
+                                    dir.to_string_lossy().into_owned(),
+                                )),
+                                ..Style::default()
+                            },
+                        );
+                        self.debug_feedback(Text::translate(
+                            "debug.dump_dynamic_textures",
+                            &[link],
+                        ));
+                    }
+                    Err(e) => log::error!("Failed to dump dynamic textures: {e}"),
+                }
+                true
+            }
+            // Screens and overlays Horizon does not draw yet (the profiler and
+            // its chart): the keys are used up as in vanilla.
+            DebugAction::Profiling | DebugAction::ProfilingChart => true,
             DebugAction::ShowHitboxes
             | DebugAction::ShowChunkBorders
             | DebugAction::SwitchGameMode
@@ -675,7 +770,7 @@ impl Game<'_> {
     /// `GameModeCommand.setGameMode` with its feedback.
     pub(super) fn change_game_mode(&mut self, mode: GameMode) {
         if self.remote.is_some() {
-            use horizon_protocol::packets::play::{ChangeGameMode, Serverbound};
+            use horizon_protocol::packets::play::ChangeGameMode;
             let mode = match mode {
                 GameMode::Survival => 0,
                 GameMode::Creative => 1,
@@ -691,10 +786,11 @@ impl Game<'_> {
         }
     }
     /// `KeyboardHandler.copyRecreateCommand`: the targeted block or mob as a
-    /// `/setblock` or `/summon` command. In a single-player world the
-    /// server's data (no Shift) is the game's own.
+    /// `/setblock` or `/summon` command. The server's data (no Shift) comes
+    /// from the server the game is connected to, the integrated one included
+    /// (`DebugQueryHandler`); without one, the game's own data is the server's.
     fn copy_recreate_command(&mut self, add_nbt: bool, from_server: bool) {
-        use horizon_client::java_text::format_fixed2 as f2;
+        let query = add_nbt && from_server && self.remote.is_some();
         let side = if add_nbt && from_server {
             "server"
         } else {
@@ -703,45 +799,135 @@ impl Game<'_> {
         if self.entity_targeted()
             && let Some((index, _)) = self.mob_hit()
         {
-            let (id, pos, mob) = {
+            let (kind, position, id) = {
                 let m = &self.mobs[index];
                 (m.kind.id.clone(), m.position, m.id)
             };
-            let mut command = format!("/summon {id} {} {} {}", f2(pos.x), f2(pos.y), f2(pos.z));
-            if add_nbt && let Some(mut tag) = self.entity_nbt(super::commands::Target::Mob(mob)) {
-                if let horizon_world::nbt::Tag::Compound(c) = &mut tag {
-                    for key in ["id", "UUID", "Pos"] {
-                        c.remove(&key.into());
-                    }
+            if query {
+                // DebugQueryHandler.queryEntityTag: the answer copies it.
+                let reply = QueryReply::Entity { id, kind, position };
+                if let Some(transaction) = self.remote.as_mut().map(|r| r.debug_query.start(reply))
+                {
+                    self.send(Serverbound::EntityTagQuery(EntityTagQuery {
+                        transaction,
+                        entity: id as i32,
+                    }));
                 }
-                command.push(' ');
-                command.push_str(&horizon_client::snbt::pretty(&tag).plain());
+                return;
             }
-            self.set_clipboard(&command);
+            // Entity.saveWithoutId.
+            let tag = if add_nbt {
+                self.entity_nbt(super::commands::Target::Mob(id))
+                    .map(|mut tag| {
+                        if let Tag::Compound(c) = &mut tag {
+                            c.remove(&"id".into());
+                        }
+                        tag
+                    })
+            } else {
+                None
+            };
+            self.copy_create_entity_command(&kind, position, tag);
             self.debug_translated(&format!("debug.inspect.{side}.entity"));
             return;
         }
         let Some(hit) = self.pick() else {
             return;
         };
-        let p = hit.pos;
-        let mut description = self.state_string(self.world.block(p[0], p[1], p[2]));
-        if add_nbt && let Some(e) = self.world.block_entities.get(&(p[0], p[1], p[2])) {
-            // BlockEntity.saveWithoutMetadata: no id or position.
-            let name = self.data_block_name(p);
-            let mut tag = horizon_client::save::encode_block_entity((p[0], p[1], p[2]), e, &name);
-            if let horizon_world::nbt::Tag::Compound(c) = &mut tag {
-                for key in ["id", "x", "y", "z", "keepPacked"] {
-                    c.remove(&key.into());
-                }
+        let pos = hit.pos;
+        let state = self.state_string(self.world.block(pos[0], pos[1], pos[2]));
+        if query {
+            // DebugQueryHandler.queryBlockEntityTag: the answer copies it.
+            let reply = QueryReply::Block { pos, state };
+            if let Some(transaction) = self.remote.as_mut().map(|r| r.debug_query.start(reply)) {
+                self.send(Serverbound::BlockEntityTagQuery(BlockEntityTagQuery {
+                    transaction,
+                    pos,
+                }));
             }
-            description.push_str(&horizon_client::snbt::to_snbt(&tag));
+            return;
+        }
+        let tag = if add_nbt {
+            self.block_entity_tag(pos)
+        } else {
+            None
+        };
+        self.copy_create_block_command(pos, &state, tag.as_ref());
+        self.debug_translated(&format!("debug.inspect.{side}.block"));
+    }
+    /// `BlockEntity.saveWithoutMetadata` of the block entity at `pos`, if
+    /// there is one: its data without the id or the position.
+    pub(super) fn block_entity_tag(&self, pos: [i32; 3]) -> Option<Tag> {
+        let e = self.world.block_entities.get(&(pos[0], pos[1], pos[2]))?;
+        let name = self.data_block_name(pos);
+        let mut tag = horizon_client::save::encode_block_entity((pos[0], pos[1], pos[2]), e, &name);
+        if let Tag::Compound(c) = &mut tag {
+            for key in ["id", "x", "y", "z", "keepPacked"] {
+                c.remove(&key.into());
+            }
+        }
+        Some(tag)
+    }
+    /// `ClientPacketListener.handleTagQueryPacket`: the server's answer to
+    /// the last debug query (`DebugQueryHandler.handleResponse`) completes
+    /// it; an answer to an older query is ignored.
+    pub(super) fn answer_tag_query(&mut self, transaction: i32, tag: Tag) {
+        let Some(reply) = self
+            .remote
+            .as_mut()
+            .and_then(|r| r.debug_query.answer(transaction))
+        else {
+            return;
+        };
+        // FriendlyByteBuf.readNbt: an End tag is no compound.
+        let tag = match tag {
+            Tag::End => None,
+            tag => Some(tag),
+        };
+        match reply {
+            QueryReply::Block { pos, state } => {
+                self.copy_create_block_command(pos, &state, tag.as_ref());
+                self.debug_translated("debug.inspect.server.block");
+            }
+            QueryReply::Entity { id, kind, position } => {
+                // Entity.position() when the answer comes: where it is now,
+                // else where it was last.
+                let position = self
+                    .mobs
+                    .iter()
+                    .find(|m| m.id == id)
+                    .map_or(position, |m| m.position);
+                self.copy_create_entity_command(&kind, position, tag);
+                self.debug_translated("debug.inspect.server.entity");
+            }
+        }
+    }
+    /// `KeyboardHandler.copyCreateBlockCommand`.
+    fn copy_create_block_command(&mut self, pos: [i32; 3], state: &str, tag: Option<&Tag>) {
+        let mut description = state.to_owned();
+        if let Some(tag) = tag {
+            description.push_str(&horizon_client::snbt::to_snbt(tag));
         }
         self.set_clipboard(&format!(
             "/setblock {} {} {} {description}",
-            p[0], p[1], p[2]
+            pos[0], pos[1], pos[2]
         ));
-        self.debug_translated(&format!("debug.inspect.{side}.block"));
+    }
+    /// `KeyboardHandler.copyCreateEntityCommand`: the data without its UUID
+    /// or position.
+    fn copy_create_entity_command(&mut self, kind: &str, pos: Vec3, tag: Option<Tag>) {
+        use horizon_client::java_text::format_fixed2 as f2;
+        let mut command = format!("/summon {kind} {} {} {}", f2(pos.x), f2(pos.y), f2(pos.z));
+        if let Some(mut tag) = tag {
+            if let Tag::Compound(c) = &mut tag {
+                for key in ["UUID", "Pos"] {
+                    c.remove(&key.into());
+                }
+            }
+            command.push(' ');
+            command.push_str(&horizon_client::snbt::pretty(&tag).plain());
+        }
+        self.set_clipboard(&command);
     }
     /// `KeyboardHandler.setClipboard`.
     fn set_clipboard(&mut self, text: &str) {
@@ -749,9 +935,11 @@ impl Game<'_> {
         self.clipboard.set(text);
     }
     /// The debug renderers' gizmos for a frame (`DebugRenderer.emitGizmos`).
-    pub(super) fn debug_gizmos(&self, alpha: f32) -> Gizmos {
+    pub(super) fn debug_gizmos(&self, alpha: f32, camera: [f64; 3]) -> Gizmos {
         let mut g = Gizmos::default();
-        if self.show_chunk_borders
+        self.bounding_box_gizmos(camera, &mut g);
+        self.debug_renderer_gizmos(&mut g);
+        if self.debug_entry("chunk_borders")
             && let Some(p) = &self.player
         {
             let block = [
@@ -759,16 +947,15 @@ impl Game<'_> {
                 p.position.y.floor() as i32,
                 p.position.z.floor() as i32,
             ];
-            let min_y = horizon_client::chunk::MIN_Y;
-            g.chunk_borders(block, min_y, min_y + horizon_client::chunk::HEIGHT - 1);
+            let min_y = self.world.bottom_y();
+            g.chunk_borders(block, min_y, min_y + self.world.layout().height() - 1);
         }
-        if !self.show_hitboxes {
+        if !self.debug_entry("entity_hitboxes") {
             return g;
         }
         let lerp = |a: f64, b: f64| a + f64::from(alpha) * (b - a);
         let lerpf = |a: f32, b: f32| a + alpha * (b - a);
-        let guests = self.lan.iter().flat_map(|h| h.models.values());
-        for m in self.mobs.iter().chain(guests) {
+        for m in self.mobs.iter() {
             if m.removed || m.invisible || m.has_effect("minecraft:invisibility") {
                 continue;
             }
@@ -822,6 +1009,20 @@ impl Game<'_> {
             let p = c.position;
             g.entity_box(min, max, [p.x, p.y, p.z], 0.2125, false, (0.0, c.yaw));
         }
+        // Interaction: EntityDimensions.scalable(width, height), so its eyes
+        // are at 0.85 of the height. Its rotation is not kept here.
+        for i in self.interactions.values() {
+            let b = i.bounds();
+            let p = i.position;
+            g.entity_box(
+                [b.min(Axis::X), b.min(Axis::Y), b.min(Axis::Z)],
+                [b.max(Axis::X), b.max(Axis::Y), b.max(Axis::Z)],
+                [p.x, p.y, p.z],
+                i.height.max(0.0) * 0.85,
+                false,
+                (0.0, 0.0),
+            );
+        }
         for a in self.armor_stands.iter().filter(|a| !a.invisible) {
             // ArmorStand.getDimensions: a marker has none, a small one is
             // half scale with its eyes at 0.9875.
@@ -830,8 +1031,13 @@ impl Game<'_> {
                 (_, true) => ((0.25, 0.9875), 0.9875),
                 _ => ((0.5, 1.975), 1.7775),
             };
-            let p = a.position;
-            g.hitbox([p.x, p.y, p.z], size, eye, true, (0.0, a.yaw));
+            g.hitbox(
+                at(a.previous, a.position),
+                size,
+                eye,
+                true,
+                (0.0, a.render_yaw(alpha)),
+            );
         }
         for b in &self.boats {
             let h = super::boats::HEIGHT as f32;
@@ -891,9 +1097,13 @@ impl Game<'_> {
             use horizon_client::projectiles::ProjectileKind as K;
             let (size, eye) = match p.kind {
                 K::Arrow { .. } | K::Trident => (0.5, 0.13),
-                K::Snowball | K::Egg | K::EnderPearl | K::LlamaSpit | K::Potion { .. } => {
-                    (0.25, 0.2125)
-                }
+                K::Snowball
+                | K::Egg
+                | K::EnderPearl
+                | K::LlamaSpit
+                | K::Potion { .. }
+                | K::ExperienceBottle
+                | K::Thrown(_) => (0.25, 0.2125),
                 K::SmallFireball | K::ShulkerBullet { .. } | K::WitherSkull { .. } => {
                     (0.3125, 0.265_625)
                 }
@@ -915,6 +1125,17 @@ impl Game<'_> {
                 0.13,
                 false,
                 (t.pitch, t.yaw),
+            );
+        }
+        // EntityType.EYE_OF_ENDER: 0.25 by 0.25, never turned.
+        for (previous, now) in self.end.eye_motions() {
+            let v = |p: glam::DVec3| Vec3::new(p.x, p.y, p.z);
+            g.hitbox(
+                at(v(previous), v(now)),
+                (0.25, 0.25),
+                0.2125,
+                false,
+                (0.0, 0.0),
             );
         }
         for r in &self.rockets {
@@ -940,6 +1161,11 @@ impl Game<'_> {
         }
         for b in &self.bolts {
             g.hitbox(b.at, (0.0, 0.0), 0.0, false, (0.0, 0.0));
+        }
+        // AreaEffectCloud.getDimensions: diameter follows synced radius,
+        // height is 0.5; EntityDimensions.scalable gives eyes at 85% height.
+        for c in &self.potions.clouds {
+            g.hitbox(c.at, (c.radius * 2.0, 0.5), 0.425, false, (0.0, 0.0));
         }
         // The dragon: 16 by 8, a living entity; its parts follow.
         if let Some(d) = &self.dragon {
@@ -991,4 +1217,157 @@ fn step_view(step: [i32; 3]) -> (f32, f32) {
         (-y).asin().to_degrees() as f32,
         (-x.atan2(z)).to_degrees() as f32,
     )
+}
+
+/// `DebugQueryHandler`: the last debug NBT query (F3+I) sent to the server
+/// and what its answer completes. Only the newest query is answered.
+#[derive(Debug)]
+pub(super) struct DebugQuery {
+    transaction: i32,
+    pending: Option<QueryReply>,
+}
+impl Default for DebugQuery {
+    fn default() -> Self {
+        Self {
+            transaction: -1,
+            pending: None,
+        }
+    }
+}
+/// What a debug query's answer is copied into: the block command
+/// (`copyCreateBlockCommand`) or the entity's (`copyCreateEntityCommand`).
+#[derive(Clone, Debug, PartialEq)]
+pub(super) enum QueryReply {
+    Block {
+        pos: [i32; 3],
+        state: String,
+    },
+    Entity {
+        id: u32,
+        kind: String,
+        position: Vec3,
+    },
+}
+impl DebugQuery {
+    /// `DebugQueryHandler.startTransaction`: the next transaction id, which
+    /// replaces any query still waiting.
+    fn start(&mut self, reply: QueryReply) -> i32 {
+        self.pending = Some(reply);
+        self.transaction = self.transaction.wrapping_add(1);
+        self.transaction
+    }
+    /// `DebugQueryHandler.handleResponse`: what the answer to `transaction`
+    /// completes, once, when it answers the newest query.
+    fn answer(&mut self, transaction: i32) -> Option<QueryReply> {
+        if transaction == self.transaction {
+            self.pending.take()
+        } else {
+            None
+        }
+    }
+}
+
+/// `DebugEntryChunkGeneration`'s `lastPos` and `result`: F3's `Density` line is sampled again
+/// only when the feet block or the dimension changes. Vanilla adds the group only inside its
+/// server-level branch, so with no generator (a remote server, a LAN world joined, the server
+/// thread not there yet) nothing is drawn and nothing of the last world is kept.
+#[derive(Default)]
+pub(super) struct DensityCache(Option<(&'static str, [i32; 3], Option<String>)>);
+impl DensityCache {
+    /// The line to draw; `sample` is `None` without a generator.
+    pub(super) fn line(
+        &mut self,
+        dim: &'static str,
+        feet: [i32; 3],
+        sample: Option<impl FnOnce() -> Option<String>>,
+    ) -> Option<&str> {
+        let Some(sample) = sample else {
+            self.0 = None;
+            return None;
+        };
+        if !self
+            .0
+            .as_ref()
+            .is_some_and(|(d, f, _)| *d == dim && *f == feet)
+        {
+            self.0 = Some((dim, feet, sample()));
+        }
+        self.0.as_ref().and_then(|(_, _, line)| line.as_deref())
+    }
+    /// Another world: its generator, not the last one's line.
+    pub(super) fn clear(&mut self) {
+        self.0 = None;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn block(x: i32) -> QueryReply {
+        QueryReply::Block {
+            pos: [x, 64, 0],
+            state: "minecraft:chest[facing=north,type=single,waterlogged=false]".into(),
+        }
+    }
+
+    #[test]
+    fn a_debug_query_is_answered_once_and_only_the_newest() {
+        let mut q = DebugQuery::default();
+        // The first transaction is 0 (the handler starts at -1).
+        assert_eq!(q.start(block(1)), 0);
+        assert_eq!(q.answer(0), Some(block(1)));
+        assert_eq!(q.answer(0), None);
+        // A second press before the first answer: the older answer is ignored
+        // and the newer one copies the newer target.
+        assert_eq!(q.start(block(2)), 1);
+        assert_eq!(q.start(block(3)), 2);
+        assert_eq!(q.answer(1), None);
+        assert_eq!(q.answer(2), Some(block(3)));
+    }
+
+    #[test]
+    fn the_density_line_is_sampled_when_the_block_or_the_dimension_changes() {
+        let mut cache = DensityCache::default();
+        let samples = std::cell::Cell::new(0);
+        let at = |cache: &mut DensityCache, dim, feet, present: bool| {
+            let sample = || {
+                samples.set(samples.get() + 1);
+                Some(format!("Density {}", samples.get()))
+            };
+            cache
+                .line(dim, feet, if present { Some(sample) } else { None })
+                .map(str::to_owned)
+        };
+        // Standing still draws the first sample again and again.
+        assert_eq!(
+            at(&mut cache, "o", [0, 70, 0], true).as_deref(),
+            Some("Density 1")
+        );
+        assert_eq!(
+            at(&mut cache, "o", [0, 70, 0], true).as_deref(),
+            Some("Density 1")
+        );
+        // A new block, then a new dimension at the same block, sample again.
+        assert_eq!(
+            at(&mut cache, "o", [1, 70, 0], true).as_deref(),
+            Some("Density 2")
+        );
+        assert_eq!(
+            at(&mut cache, "n", [1, 70, 0], true).as_deref(),
+            Some("Density 3")
+        );
+        // No generator: nothing is drawn, nothing is kept, even on the same block.
+        assert_eq!(at(&mut cache, "n", [1, 70, 0], false), None);
+        assert_eq!(
+            at(&mut cache, "n", [1, 70, 0], true).as_deref(),
+            Some("Density 4")
+        );
+        // Another world clears it too.
+        cache.clear();
+        assert_eq!(
+            at(&mut cache, "n", [1, 70, 0], true).as_deref(),
+            Some("Density 5")
+        );
+    }
 }

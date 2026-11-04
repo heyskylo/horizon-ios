@@ -1,7 +1,7 @@
 # Horizon extras
 
-Optional conveniences built into the client: fullbright, dynamic lights, auto-reconnect,
-Mouse Tweaks-style inventory controls and inventory sorting. **Every one is off by default**: a fresh
+Optional conveniences built into the client: fullbright, dynamic lights, your own name tag, hiding block-break particles, auto-reconnect,
+Mouse Tweaks-style inventory controls, inventory sorting, a smooth chat and a music page. **Every one is off by default**: a fresh
 install looks and behaves exactly like vanilla 26.3, and turning an extra off
 again restores vanilla's behaviour completely.
 
@@ -10,14 +10,16 @@ again restores vanilla's behaviour completely.
 | Part | Code |
 |---|---|
 | Settings, parsing and saving | `crates/horizon-client-render/src/extras.rs` |
-| FPS and click counters (for mods) | `extras.rs` (pure logic, unit tested) |
+| FPS and click counters (for native mods) | `extras.rs` (pure logic, unit tested) |
 | Dynamic lights: item glow, nearest sources | `crates/horizon-client-render/src/dynamic_light.rs` (unit tested), `game/dynamic_lights.rs`, `terrain.wgsl` and `entity.wgsl` (`dynamic_block_light`) |
-| HUD drawing (a mod's minimap, corner stacking) | `crates/horizon-client/src/extras_hud.rs` |
-| Minimap colours, tiles and image (for `render.set-minimap`) | `crates/horizon-client-render/src/minimap.rs` |
+| HUD drawing (a native mod's minimap, corner stacking) | `crates/horizon-client/src/extras_hud.rs` |
+| Minimap colours, tiles and image (for the Minimap native mod) | `crates/horizon-client-render/src/minimap.rs` |
 | Reconnect policy and backoff | `crates/horizon-client/src/reconnect.rs` |
 | Game glue (input hooks, per-frame update) | `crates/horizon-client/src/game/extras.rs` |
 | Mouse Tweaks-style controls, sort buttons | `crates/horizon-client/src/game/tweaks.rs` |
 | Sort order and its clicks | `crates/horizon-client/src/inv_sort.rs` (pure, unit tested) |
+| The music page's rows, and the pools it filters | `options_ui.rs` (`Page::Music`), `crates/horizon-client/src/music.rs` (`track_groups`, `MusicManager::set_off`), `sound_events.rs` (`sound_except`) |
+| Cosmetics (show mine, show others'), off with their flag | `extras.rs`, `crates/horizon-client/src/game/cosmetics.rs` ([cosmetics.md](cosmetics.md)) |
 | The settings page | `options_ui.rs` (`Page::Extras`): **Options → Horizon Settings... → Extras...** |
 
 The settings are grouped by extra, under a header each, two buttons to a row as
@@ -60,18 +62,16 @@ in Controls, and adding one would put a non-vanilla mapping into `options.txt`.
 - Off: nothing is gathered and the shaders' loop runs zero times (the count is 0), so it costs
   nothing measurable (numbers in the pull request, #814).
 
-### Moved to the mod browser
+### Moved to native mods
 
-The **FPS counter**, **Keystrokes**, **Zoom** and the **Minimap** are official mods now (`mods/official/`, [mods.md](mods.md#horizons-official-mods)),
-with the same look and options. On the first start after the update, a player who had one on gets the mod installed
-from Horizon's registry and turned on, with their corner and options carried over (Zoom's key too, into
-`horizon-mods.txt`, when it wasn't Z), and reads one line in the chat ("Zoom moved to the mod browser: installed for
-you"). The install is checked like the launcher's (size,
-SHA-256, signature, manifest); if it fails (offline), the next start tries again. `horizon-extras.txt` keeps the old
-keys and lists what was done in `movedToMods`. Code: `crates/horizon-client/src/moved_extras.rs`,
-`game/moved_extras.rs`.
+The **FPS counter**, **Keystrokes**, **Zoom** and the **Minimap** are official native mods now (in
+horizon-rust/horizon-mods under `native/<name>/`, [mods.md](mods.md#horizons-official-mods)), with the same look and
+options. Players install them from the launcher's Mods page, and the launcher builds them into the game
+([native-mods.md](native-mods.md)). The game keeps
+the hook points they use (`crates/horizon-client/src/game/native_hooks.rs`), and `horizon-extras.txt` keeps the old
+keys and `movedToMods`.
 
-The game still draws the minimap, for the mod (`render.set-minimap`, [mods.md](mods.md)):
+The game still draws the minimap, for the native mod (`native_minimap` in `native_hooks.rs`, [mods.md](mods.md)):
 - a corner map (top right by default), square or round, small/medium/large, zoom 0.5 to 4 blocks per pixel, rotating
   with the player or north up, with the player arrow (vanilla's map decoration sprite);
 - vanilla's `MapColor` per block, as map items use, with the map item's height shading and water-depth dithering;
@@ -79,6 +79,23 @@ The game still draws the minimap, for the mod (`render.set-minimap`, [mods.md](m
 - one cached 16x16 tile per loaded chunk (packed map colour and height), filled nearest first and refreshed when
   blocks change within 0.3 ms a frame; the 128x128 image is recomposed only when the view moved or a tile changed, and
   uploaded into a dedicated atlas slot. With no mod showing a map, nothing runs.
+
+### Own name tag (`ownNameTag`, default off)
+- In third person (F5, either view), the player's own name shows above its head,
+  as other players see it: the profile name in its team's prefix, suffix and
+  colour, the below-name score under it within 10 blocks, faded and without the
+  see-through copy while crouching. Vanilla never names the camera entity
+  (`LivingEntityRenderer.shouldShowName`).
+- Hidden in first person, while sleeping, in spectator mode, while invisible, and
+  whenever the team's name tag visibility would hide it, exactly as the other
+  players' tags (`game/names.rs`, `own_name_tag`). Client-only: nothing is sent.
+
+### Hide block-break particles (`hideBlockParticles`, default off)
+- Hides the debris particles that burst from a block when it breaks
+  (`ClientLevel.addDestroyBlockEffect`) and the crumbs off the face you mine
+  (`addBreakingParticles`). Other particles (critical hits, smoke, rain...) are
+  unchanged, and the block still breaks and drops as usual. Client-only:
+  nothing is sent (`game.rs`, `destroy_particles` and `crack_particle`).
 
 ### Auto-reconnect (`autoReconnect`, default off)
 - On the "Connection lost" screen after a multiplayer connection drops, a
@@ -96,9 +113,24 @@ The game still draws the minimap, for the mod (`render.set-minimap`, [mods.md](m
   with, held in memory for the whole run (`auth::current()`); nothing is
   written to disk.
 
+### Keep channels for UI sounds (`uiSoundReserve`, default off)
+- Positional sounds (a block breaking, a mob, an explosion) start only while at
+  least 16 of the 247 static sound channels are free; sounds played to the
+  listener (`relative`, or no attenuation: UI clicks, toasts) may take those 16.
+  A flood of world sounds (a big explosion, `/fill … destroy`, a mod breaking
+  hundreds of blocks at once) then can't stop the pause menu's clicks.
+- Vanilla 26.3 gives all 247 to whatever starts first
+  (`Library.acquireChannel` returns null once the pool is full); with the
+  extra off Horizon does exactly that. Below 231 sounds at once nothing
+  changes either way. Streaming sounds (music, records) are untouched
+  (`sound_engine.rs`, `listener_reserve`). Client-only.
+
 ### Mouse Tweaks controls (`mouseTweaks`, default off; `mouseTweaksWheel`, default on)
-In the player inventory and chest-like containers (chests, barrels, ender
-chests, shulker boxes, hoppers, dispensers), in singleplayer and on servers:
+In the player inventory, chest-like containers (chests, barrels, ender chests,
+shulker boxes, hoppers, dispensers and droppers), furnaces (also blast furnaces
+and smokers) and crafting tables, in singleplayer and on servers. Anvils,
+enchanting tables, merchants, beacons, brewing stands, crafters and the other
+workstations keep vanilla's controls:
 - Right-drag holding a stack: one item goes into each slot entered, at once
   (slots holding another item, or full, are skipped).
 - Left-drag holding a stack: each slot entered that holds the same item is
@@ -108,9 +140,15 @@ chests, shulker boxes, hoppers, dispensers), in singleplayer and on servers:
 - Shift + left-drag: every slot entered is quick-moved (with a stack in hand,
   only the slots of its item).
 - The wheel over a slot, with an empty hand (`mouseTweaksWheel`): down moves
-  one item to the other side (container and inventory, or hotbar and main
-  inventory: to a stack of it with room, else the first empty slot, as
-  quick-move picks), up brings one of the same item back.
+  one item where a Shift click would send it (vanilla's `quickMoveStack`: fuel
+  to the fuel slot, a smeltable to the input, into the crafting grid, across a
+  container, between hotbar and main inventory, an armour piece onto the
+  player), up brings one of the same item from the other side.
+- Nothing goes into a result slot. The wheel down over one takes one craft, or a
+  furnace's whole output, to the inventory when it all fits (a result can't be
+  split or put back); the wheel up over one does nothing, and it isn't a source
+  for the wheel up elsewhere. A right-drag skips it, and a right press on it is
+  vanilla's.
 
 Every action is ordinary slot clicks (`ContainerClick` on a server), so a
 vanilla server sees nothing unusual. With the extra off, the hooks return at
@@ -128,6 +166,94 @@ and the container screen tests are unchanged).
 - Done with ordinary left clicks planned by `inv_sort::plan`, so a vanilla
   server accepts it; a unit test replays the planned clicks through the menu
   engine on random chests.
+
+### Smooth chat (`chatAnimation`, default off; `chatIndicator`, default on)
+- A new chat line slides in from the left while it fades in over a quarter of
+  a second (5 ticks, `INTRO_TICKS`/`INTRO_WIDTH` in `Chat::layout`), instead of
+  appearing whole on the tick it arrives. Its background and its indicator bar
+  move with it, and the fractional tick from `Game::clock` drives the motion, so
+  it moves every frame and not 20 times a second.
+- Only the unfocused chat (the HUD's) animates: with the chat screen open the
+  history is drawn as vanilla draws it, so clicking a line lands on its text.
+- `chatIndicator` off removes the coloured bar at the left of a line. It hides
+  the bar only, never the message.
+
+### Scroll wheel changes settings (`wheelCyclesSettings`, default on)
+- On, the wheel works as in vanilla: over a button in the settings it changes the button's value
+  (`CycleButton.mouseScrolled`), and a button focused with the keyboard or a pad steps on the
+  wheel wherever the cursor is.
+- Off, the wheel only scrolls the list under the cursor, on every settings page, Video's included
+  (`OptionsUi::wheel`, `GraphicsUi::wheel`). Scrolling through a long page then can't change an
+  option that passes under the cursor (#5455). Client-only.
+
+### Splitscreen (`splitscreen`, default off)
+
+**Options → Horizon Settings... → Splitscreen...** turns local joining on or off at once.
+In P1's single-player world, a controller P1 isn't using can press a button, then A to join
+(or Y to play as P1, while P1 has no controller). Each
+player picks an instance-local profile with its own options and saved progress. LB/RB on
+the profile page move the view between shared positions, a new window or another monitor.
+A joined player's **Splitscreen Settings** in the pause menu switches profiles in place;
+Cancel keeps the current one. The switch is disabled while another player is joined; once
+P1 is alone, turning it off restores the normal controller reader. Leaving it on while
+alone keeps watching for joins without a compositor.
+
+When Splitscreen is enabled, Play in the launcher also hands over its other signed-in
+Microsoft accounts. They appear first in the profile picker, marked **(Microsoft)**, and
+connect with their own sessions, skins and secure-chat keys. An account whose session is
+unavailable appears as **(Offline)**: sign in again in the launcher and restart the game to
+use it on an online-mode server. Launcher accounts cannot be forgotten from this page.
+
+`HORIZON_SPLIT=N` remains a testing shortcut to enable it and add N-1 players.
+The Setup map previews the monitors, windows and player views. Click a player (its name turns
+yellow) and choose a window or monitor, or drag its tile onto a window, a place among another
+window's players, or a monitor; then **Apply** to move the actual views. **Revert** and
+**Done** discard unapplied moves. An emptied window closes only on Apply. A player joining or
+leaving resets the draft so it cannot apply a move to the wrong seat. P1's pause-menu shortcut
+opens Setup; another player's shortcut opens their profiles.
+
+While a window has two or three players, a square at the bottom picks how they share it
+(two: Auto, side by side, top and bottom; three: one wide on top, one tall on the left, side
+by side); Apply saves it (`splitscreenTwo`, `splitscreenThree`). **Names** (top left,
+`splitscreenNames`, on by default) keeps each player's name in the corner of their view; off,
+it shows only for a moment when something changes. **Identify** makes every view say which
+window it is in.
+
+With a controller, A on a player's tile picks it up: left and right (or LB and RB) cycle where
+it goes, the map showing it there, A drops it, B puts it back. **Give Up Pad** (top, while P1
+has a controller in a world) frees P1's controller and offers it to join, for a friend to
+press A; if nobody joins, the offer runs out, or it's declined, it drives P1 again. A player
+whose controller disconnected shows "(no controller)" on its tile. Other players' pause menus
+say **Leave** for disconnecting. `HORIZON_SPLIT_STATS=1` logs every 5 s where a frame's time
+goes (each player's turn and render, the presents, the GPU wait) and each player's frame rate.
+On a server P1 joined on this computer or its local network (a dedicated server, another
+computer's LAN world: a loopback, private or link-local address, after the SRV redirect) the
+others join the same server, each as its own profile. Anywhere else (a public server, even in
+offline mode, or a friend's invite) an offline profile can't join: everyone who plays there owns
+the game, so each player needs its own signed-in account. A name already on the server can't be
+picked, and an online-mode server refuses offline profiles; both are said on the profile page
+before it tries. A player the server turns away as it comes in picks again, told why; one kicked later
+leaves; when P1 leaves the server, everyone does. The server's resource packs are asked once,
+of P1: the others follow P1's answer.
+
+### Music page (`musicPage`, default off; `musicOff`, none off by default)
+- An extra like the rest: off, Music & Sounds is exactly vanilla's page and every
+  pool plays as vanilla picks. On, it gains a **Music...** button.
+- The page lists every track the loaded `sounds.json` can play
+  (`SoundRegistry::tracks`): the built-in situations' own tracks first (menu,
+  overworld, creative, underwater, the End, boss, credits), then the tracks only a
+  biome's pool names, under **Overworld biomes** and **Nether biomes** (vanilla
+  shares those between several biomes, so no heading claims one). A track a few
+  pools share is listed once, from the first pool that names it, so every row has
+  a pool its "play now" can use.
+- **Left click** a track plays it now: it takes the music manager's slot (the track
+  already playing stops), and the situation's own music waits until it ends.
+- **On/Off** at the right of a row takes a track out of every pool it plays in, so
+  a situation with all its tracks off plays nothing. Every track is on by default,
+  so vanilla's random selection is unchanged; the off ones are `musicOff` in
+  `horizon-extras.txt`.
+- The pools are filtered where they are picked (`sound_except` in
+  `sound_events.rs`), the manager is `music.rs`, and the page is in `options_ui.rs`.
 
 ## Shared rules
 

@@ -2,7 +2,10 @@
 //! merchant menu as the host's (`horizon_client::menu`, `Kind::Merchant`),
 //! with vanilla's packets: OpenScreen (`minecraft:merchant`), MerchantOffers,
 //! the select trade packet, container clicks and the content sync after each.
-use super::{Game, lan::LanHost, stations::Kind as StationKind, trading::MerchantState};
+use super::{
+    Game, lan::LanHost, lan_actions::guest_within_entity_range, stations::Kind as StationKind,
+    trading::MerchantState,
+};
 use horizon_client::{
     items::ItemStack,
     menu::{Env, Input, Kind, Menu},
@@ -54,9 +57,12 @@ impl Game<'_> {
             state.session.update_special_prices();
         }
         let title = self.merchant_display_name(&state);
-        // The container or workstation the trading screen replaces is closed.
-        self.guest_container_closed(host, conn);
-        self.lan_station_closed(host, conn, None);
+        if !self.guest_may_open(host, conn, "minecraft:merchant", None) {
+            self.merchant_closed(&mut state);
+            return;
+        }
+        // ServerPlayer.openMenu closes the menu that was open.
+        self.guest_close_all(host, conn);
         let Some(window) = host.hub.open_merchant_window(conn, title) else {
             self.merchant_closed(&mut state);
             return;
@@ -229,20 +235,22 @@ impl Game<'_> {
             next_id: std::cell::Cell::new(next_map),
         };
         let trade_env = merchant::TradeEnv {
-            trades: &self.res.stations().trades,
-            enchantments: &self.res.stations().enchantments,
+            trades: &self.stations().trades,
+            enchantments: &self.stations().enchantments,
             maps: Some(&maps),
         };
         let env = Env {
-            items: self.res.items(),
-            recipes: self.res.recipes(),
-            brewing: &self.res.stations().brewing,
-            banners: &self.res.stations().banners,
-            station_recipes: &self.res.stations().recipes,
-            enchantments: &self.res.stations().enchantments,
+            items: self.items(),
+            recipes: self.recipes(),
+            brewing: &self.stations().brewing,
+            banners: &self.stations().banners,
+            station_recipes: &self.stations().recipes,
+            enchantments: &self.stations().enchantments,
             names: &self.pack.names,
             trade: Some(&trade_env),
             maps: None,
+            limited_crafting: host.hub.limited_crafting,
+            known_recipes: Some(&host.hub.guests[gi].recipe_book),
         };
         let mut menu = Menu::new(Kind::Merchant);
         {
@@ -281,6 +289,12 @@ impl Game<'_> {
         gm.merchant.session = session;
         if !traded.is_empty() {
             // The guest's own statistic and advancements.
+            if let Some(gi) = host.hub.guests.iter().position(|g| g.conn == conn) {
+                let g = &host.hub.guests[gi];
+                if let Some(entity_id) = gm.merchant.mob {
+                    self.native_player_trade(g.uuid, &g.name, entity_id);
+                }
+            }
             self.as_guest(host, conn, |g| g.merchant_traded(gm.merchant.mob, &traded));
         }
         self.drop_guest_items(host, gi, dropped);
@@ -315,9 +329,20 @@ impl Game<'_> {
         let Ok(index) = usize::try_from(index) else {
             return;
         };
-        self.lan_merchant_op(host, conn, None, |menu, env| {
+        let Some(guest) = host.hub.guests.iter().find(|g| g.conn == conn) else {
+            return;
+        };
+        let (uuid, name) = (guest.uuid, guest.name.clone());
+        if self.lan_merchant_op(host, conn, None, |menu, env| {
             menu.merchant_select(env, index)
-        });
+        }) {
+            let villager = host
+                .play
+                .get(&conn)
+                .and_then(|p| p.merchant.as_ref())
+                .and_then(|m| m.merchant.mob);
+            self.native_trade_select(uuid, &name, villager, index);
+        }
     }
     /// The guest closed the trading window (or it is closed for them):
     /// MerchantMenu.removed, then the villager gets its state back.
@@ -347,9 +372,45 @@ impl Game<'_> {
         self.merchant_closed(&mut gm.merchant);
         true
     }
+    /// `Merchant.stillValid` for a trader: it is alive and the guest is within
+    /// the entity interaction range plus 4 of its box.
+    pub(super) fn lan_merchant_valid(
+        &self,
+        g: &horizon_client::lan::guest::Guest,
+        id: u32,
+    ) -> bool {
+        self.mobs
+            .iter()
+            .find(|m| m.id == id)
+            .is_some_and(|m| m.alive() && guest_within_entity_range(g, &m.bounds(), 4.0))
+    }
     /// `Villager.customServerAiStep` for the guests' trading villagers: the
     /// TRADE reputation event, then the prices follow.
     pub(super) fn lan_merchant_tick(&mut self, host: &mut LanHost) {
+        // `AbstractVillager.stillValid`: the trade screen closes once the trader
+        // is gone or dead, or the guest is more than 4 blocks past its reach.
+        let far: Vec<(u32, i32)> = host
+            .play
+            .iter()
+            .filter_map(|(conn, p)| {
+                let gm = p.merchant.as_ref()?;
+                let id = gm.merchant.mob?;
+                let g = host
+                    .hub
+                    .guests
+                    .iter()
+                    .find(|g| g.conn == *conn && host.hub.here(g))?;
+                (!self.lan_merchant_valid(g, id)).then_some((*conn, gm.window))
+            })
+            .collect();
+        for (conn, window) in far {
+            if self.lan_merchant_closed(host, conn, Some(window)) {
+                host.hub.send_to(
+                    conn,
+                    &C::ContainerClose(play::ContainerClose { container: window }),
+                );
+            }
+        }
         let conns: Vec<u32> = host
             .play
             .iter()

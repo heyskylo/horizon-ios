@@ -57,7 +57,8 @@ fn reference(seed: i64, at: [f64; 3], camera: DVec3, uv: [f32; 2]) -> Vec<Vertex
                                 normal: [0; 4],
                                 pos: (o + glam::Vec3::from_array(c)).to_array(),
                                 uv,
-                                layer: 2,
+                                // The HDR tier lightning.rs adds; the geometry is vanilla's.
+                                layer: 2 | u32::from(crate::mesher::VERY_BRIGHT) << 16,
                                 color,
                                 light: 240 | 240 << 8,
 
@@ -216,7 +217,7 @@ fn long_flash_sequence_keeps_only_active_seeds() {
 #[ignore = "requires GPU; run separately with --ignored --exact"]
 fn retained_gpu_draw_matches_transient_additive_draw() {
     use bytemuck::Zeroable;
-    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+    let instance = crate::gfx::test_gpu::instance();
     let Ok(adapter) = pollster::block_on(instance.request_adapter(&Default::default())) else {
         eprintln!("no GPU adapter: skipped");
         return;
@@ -495,4 +496,254 @@ fn retained_gpu_draw_matches_transient_additive_draw() {
         assert!(pixels[0].iter().any(|&b| b != 0), "empty reference frame");
         assert_eq!(pixels[0], pixels[1], "frame {frame}: GPU output differs");
     }
+}
+
+/// `horizon/white` (4x4 texels) at (40, 12) of a 64x32 atlas.
+const ATLAS: (u32, u32) = (64, 32);
+fn white_sprite() -> crate::hud::Rect {
+    let (w, h) = (ATLAS.0 as f32, ATLAS.1 as f32);
+    crate::hud::Rect {
+        u0: 40.0 / w,
+        v0: 12.0 / h,
+        u1: 44.0 / w,
+        v1: 16.0 / h,
+        w: 4,
+        h: 4,
+    }
+}
+
+/// The white sprite's corner is on its border with the next atlas texels,
+/// which nearest sampling picks for most of a bolt's fragments (#3171): the
+/// point sampled is at least a texel inside the sprite.
+#[test]
+fn white_uv_is_inside_the_white_sprite() {
+    let [u, v] = white_uv(&white_sprite());
+    let (x, y) = (u * ATLAS.0 as f32, v * ATLAS.1 as f32);
+    assert!((41.0..=43.0).contains(&x), "u at texel {x}");
+    assert!((13.0..=15.0).contains(&y), "v at texel {y}");
+}
+
+/// A bolt seen from 14 blocks through the atlas as the game binds it (nearest
+/// sampling, only the white sprite opaque) draws the same pixels as through a
+/// texture that is white everywhere (#3171: the sprite's corner left a few
+/// scattered pixels). Run explicitly, like the test above.
+#[test]
+#[ignore = "requires GPU; run separately with --ignored --exact"]
+fn bolt_through_the_atlas_white_sprite_is_fully_drawn() {
+    let instance = crate::gfx::test_gpu::instance();
+    let Ok(adapter) = pollster::block_on(instance.request_adapter(&Default::default())) else {
+        eprintln!("no GPU adapter: skipped");
+        return;
+    };
+    let (device, queue) = pollster::block_on(adapter.request_device(&Default::default())).unwrap();
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: None,
+        source: wgpu::ShaderSource::Wgsl(crate::gfx::entity_shader().into()),
+    });
+    let attributes = wgpu::vertex_attr_array![0=>Float32x3,1=>Float32x2,2=>Uint32,3=>Unorm8x4,4=>Uint8x4,5=>Snorm8x4,6=>Float32x2];
+    let offsets = wgpu::vertex_attr_array![7=>Float32x3];
+    let buffers = [
+        Some(wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<Vertex>() as u64,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &attributes,
+        }),
+        Some(wgpu::VertexBufferLayout {
+            array_stride: 12,
+            step_mode: wgpu::VertexStepMode::Instance,
+            attributes: &offsets,
+        }),
+    ];
+    // The lightning pipeline (gfx.rs): additive, into RGBA8.
+    let additive = wgpu::BlendComponent {
+        src_factor: wgpu::BlendFactor::SrcAlpha,
+        dst_factor: wgpu::BlendFactor::One,
+        operation: wgpu::BlendOperation::Add,
+    };
+    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: None,
+        layout: None,
+        vertex: wgpu::VertexState {
+            module: &shader,
+            entry_point: Some("vs_lightning"),
+            compilation_options: Default::default(),
+            buffers: &buffers,
+        },
+        primitive: wgpu::PrimitiveState {
+            cull_mode: None,
+            ..Default::default()
+        },
+        depth_stencil: None,
+        multisample: Default::default(),
+        fragment: Some(wgpu::FragmentState {
+            module: &shader,
+            entry_point: Some("fs_celestial"),
+            compilation_options: Default::default(),
+            targets: &[Some(wgpu::ColorTargetState {
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                blend: Some(wgpu::BlendState {
+                    color: additive,
+                    alpha: additive,
+                }),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
+        multiview_mask: None,
+        cache: None,
+    });
+    // The game's camera: 70 degrees, reversed depth, the bolt 14 blocks ahead.
+    let globals = crate::gfx::Globals {
+        view_proj: (glam::Mat4::perspective_rh(70f32.to_radians(), 1.0, 400.0, 0.05)
+            * glam::Mat4::look_at_rh(glam::Vec3::ZERO, glam::Vec3::Z, glam::Vec3::Y))
+        .to_cols_array_2d(),
+        ..bytemuck::Zeroable::zeroed()
+    };
+    let globals = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: None,
+        contents: bytemuck::bytes_of(&globals),
+        usage: wgpu::BufferUsages::UNIFORM,
+    });
+    let texture = |(width, height): (u32, u32), data: &[u8]| {
+        device
+            .create_texture_with_data(
+                &queue,
+                &wgpu::TextureDescriptor {
+                    label: None,
+                    size: wgpu::Extent3d {
+                        width,
+                        height,
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: wgpu::TextureFormat::Rgba8Unorm,
+                    usage: wgpu::TextureUsages::TEXTURE_BINDING,
+                    view_formats: &[],
+                },
+                wgpu::util::TextureDataOrder::LayerMajor,
+                data,
+            )
+            .create_view(&Default::default())
+    };
+    let white = texture((1, 1), &[255; 4]);
+    // Transparent but for the white sprite.
+    let mut texels = vec![0u8; (ATLAS.0 * ATLAS.1 * 4) as usize];
+    for y in 12..16 {
+        for x in 40..44 {
+            let i = ((y * ATLAS.0 + x) * 4) as usize;
+            texels[i..i + 4].copy_from_slice(&[255; 4]);
+        }
+    }
+    let atlas = texture(ATLAS, &texels);
+    // The atlas sampler (gfx.rs): wgpu's default, nearest.
+    let sampler = device.create_sampler(&Default::default());
+    let indices = crate::gfx::Renderer::quad_indices(&device, QUADS);
+    let size = 256;
+    let extent = wgpu::Extent3d {
+        width: size,
+        height: size,
+        depth_or_array_layers: 1,
+    };
+    let draw = |view: &wgpu::TextureView, uv: [f32; 2]| -> Vec<u8> {
+        let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &pipeline.get_bind_group_layout(0),
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: globals.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(&sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::TextureView(&white),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: wgpu::BindingResource::Sampler(&sampler),
+                },
+            ],
+        });
+        let bolts = [Bolt {
+            seed: 123,
+            at: [0.0, -1.62, 14.0],
+        }];
+        let input = Input { bolts: &bolts, uv };
+        let mut renderer = Renderer::new();
+        let mut uploads = Uploads::new(&device);
+        let mut encoder = device.create_command_encoder(&Default::default());
+        renderer.prepare(&device, &mut uploads, &mut encoder, &input, DVec3::ZERO);
+        let color = device.create_texture(&wgpu::TextureDescriptor {
+            label: None,
+            size: extent,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        {
+            let target = color.create_view(&Default::default());
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: None,
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &target,
+                    resolve_target: None,
+                    depth_slice: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                ..Default::default()
+            });
+            pass.set_pipeline(&pipeline);
+            pass.set_bind_group(0, &group, &[]);
+            pass.set_index_buffer(indices.slice(..), wgpu::IndexFormat::Uint32);
+            renderer.draw(&mut pass, &input);
+        }
+        let read = device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: u64::from(size * size * 4),
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        encoder.copy_texture_to_buffer(
+            color.as_image_copy(),
+            wgpu::TexelCopyBufferInfo {
+                buffer: &read,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(size * 4),
+                    rows_per_image: None,
+                },
+            },
+            extent,
+        );
+        uploads.finish(&encoder);
+        queue.submit([encoder.finish()]);
+        read.slice(..)
+            .map_async(wgpu::MapMode::Read, |r| r.unwrap());
+        device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        read.slice(..).get_mapped_range().unwrap().to_vec()
+    };
+    let lit = |pixels: &[u8]| pixels.chunks(4).filter(|p| p[3] != 0).count();
+    let expected = draw(&white, [0.5; 2]);
+    let drawn = draw(&atlas, white_uv(&white_sprite()));
+    assert!(lit(&expected) > 1000, "{} pixels", lit(&expected));
+    assert_eq!(
+        lit(&drawn),
+        lit(&expected),
+        "pixels drawn through the atlas"
+    );
+    assert!(drawn == expected, "the bolt's colours through the atlas");
 }
