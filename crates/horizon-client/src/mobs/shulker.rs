@@ -349,12 +349,11 @@ pub fn look_yaw(m: &Mob, at: [f64; 3]) -> Option<f32> {
         f64::from(delta_forward),
     ))
 }
-/// `Shulker.tick` on a client that is not the server: a block change starts
-/// the teleport slide (`setPos`), the countdown runs, the lid eases to the
-/// peek it was sent, and the body stays square (`ShulkerBodyRotationControl`).
+/// `Shulker.tick` on a client that is not the server: the teleport slide
+/// counts down (`setPos` armed it when the move packet arrived), the lid
+/// eases to the peek it was sent, and the body stays square
+/// (`ShulkerBodyRotationControl`).
 pub fn client_tick(m: &mut Mob) {
-    note_client_teleport(m);
-    // The slide counts down after `setPos` has armed it, same tick.
     if m.extra.scratch[0] > 0 {
         m.extra.scratch[0] -= 1;
     }
@@ -362,27 +361,29 @@ pub fn client_tick(m: &mut Mob) {
     ease_peek(m);
     m.body_yaw = 0.0;
 }
-/// `Shulker.setPos` on the client: a block change that is not a ride, and
-/// not the block already remembered, starts a 6-tick slide. The old position
-/// is snapped to the new one so ordinary interpolation does not also run.
-fn note_client_teleport(m: &mut Mob) {
+/// `Shulker.setPos`. A shulker's interpolation handler is `NO_OP`, so a move
+/// packet lands here instead of being stepped. Not a passenger: the position
+/// snaps to the block centre. A block change after the first tick, other than
+/// the block the current slide remembers, starts the 6-tick slide from the
+/// block it was in before the packet and snaps `previous` so ordinary
+/// interpolation does not also run.
+pub fn client_set_pos(m: &mut Mob, x: f64, y: f64, z: f64) {
+    let old = block_pos(m);
     if m.extra.passenger {
+        m.position = Vec3::new(x, y, z);
         m.extra.scratch[0] = 0;
         return;
     }
-    // The first tick's `setPos` sees `tickCount == 0` and starts nothing.
-    if m.age <= 1 {
+    m.position = Vec3::new(x.floor() + 0.5, (y + 0.5).floor(), z.floor() + 0.5);
+    // `setPos` sees `tickCount == 0` and starts nothing.
+    if m.age == 0 {
         return;
     }
-    let old = [
-        m.previous.x.floor() as i32,
-        m.previous.y.floor() as i32,
-        m.previous.z.floor() as i32,
-    ];
     let pos = block_pos(m);
-    if old == pos {
+    if pos == old {
         return;
     }
+    m.extra.counter = 0;
     let remembered = [m.extra.scratch[1], m.extra.scratch[2], m.extra.scratch[3]];
     if m.extra.scratch[0] > 0 && pos == remembered {
         return;
@@ -694,6 +695,28 @@ mod tests {
         let mut m = Mob::new(1, kind, Vec3::ZERO, 0.0);
         m.extra.variant3 = 2;
         m
+    }
+
+    #[test]
+    fn a_move_packet_starts_the_teleport_slide() {
+        // Shulker.createInterpolationHandler is NO_OP, so the packet's end
+        // position is setPos. The slide is armed there, from the block before
+        // the packet, and client_tick only counts it down.
+        let mut m = shulker();
+        m.age = 10;
+        m.position = Vec3::new(0.5, 0.0, 0.5);
+        m.previous = m.position;
+        client_set_pos(&mut m, 3.2, 1.0, 0.4);
+        assert_eq!(m.position, Vec3::new(3.5, 1.0, 0.5));
+        assert_eq!(m.previous, m.position);
+        assert_eq!(m.extra.scratch[0], 6);
+        assert_eq!(render_offset(&m, 0.0), glam::DVec3::new(-3.0, -1.0, 0.0));
+        client_tick(&mut m);
+        assert_eq!(m.extra.scratch[0], 5);
+        // A tick with no new packet does not look at previous and re-arm.
+        m.previous = Vec3::new(80.0, 0.0, 0.0);
+        client_tick(&mut m);
+        assert_eq!(m.extra.scratch[0], 4);
     }
 
     #[test]

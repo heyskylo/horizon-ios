@@ -2623,6 +2623,26 @@ impl Game<'_> {
                 return;
             }
             if let Some(m) = mob {
+                // Shulker.createInterpolationHandler is NO_OP, so a move packet
+                // is setPos at once. The 6-tick slide starts from the block
+                // the shulker occupied before this packet.
+                if m.species() == horizon_client::mobs::Species::Shulker {
+                    r.stepped.remove(&id);
+                    if path.is_some() {
+                        horizon_client::mobs::shulker::client_set_pos(
+                            m,
+                            position[0],
+                            position[1],
+                            position[2],
+                        );
+                    }
+                    if let Some((yaw, pitch)) = rotation {
+                        m.yaw += wrap_degrees(yaw - m.yaw);
+                        m.head_pitch = (pitch % 360.0).clamp(-90.0, 90.0);
+                    }
+                    m.on_ground = on_ground;
+                    return;
+                }
                 // A living entity: LivingEntity.createInterpolationHandler's
                 // SteppedInterpolationHandler, over its type's update interval.
                 let entity = PosRot {
