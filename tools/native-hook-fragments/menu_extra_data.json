@@ -1,0 +1,29 @@
+{
+  "hooks": [
+    {
+      "name": "menu_extra_data",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_menu_extra_data",
+      "neoforge": "IPlayerExtension.openMenu(MenuProvider, Consumer<RegistryFriendlyByteBuf>)",
+      "side": "server",
+      "cancellable": false,
+      "mod_api": {
+        "contract": "replace",
+        "out": "data"
+      }
+    }
+  ],
+  "helpers": [
+    {
+      "name": "screen_pos",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_screen_pos",
+      "mod_api": {}
+    },
+    {
+      "name": "screen_extra_data",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_screen_extra_data",
+      "mod_api": {}
+    }
+  ],
+  "rust_summary": "a mod menu type's extra data (`native_menu_extra_data`), and the client helpers `native_screen_pos`,\n`native_screen_extra_data`.",
+  "doc_summary": "a mod menu type opened with extra data (NeoForge's `openMenu` with an extra-data writer). When a mod block opens its content mod's menu type for a player, `native_menu_extra_data(player, menu, block, pos, data)` asks on the server for bytes of the mod's own (up to 32 KiB; the first mod to set `data` wins). A Horizon client gets them with the block's position just before the menu opens; while the mod's screen is open, `native_screen_pos()` gives the block the server named (not the last clicked one) and `native_screen_extra_data()` the bytes, empty when the mod wrote none. Bundles need \"hooks\": @API:menu_extra_data@."
+}

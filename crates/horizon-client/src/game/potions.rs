@@ -27,6 +27,27 @@ use horizon_core::{
     geometry::{Aabb, Axis, Direction, Vec3},
     random::{LegacyRandom, RandomSource},
 };
+use horizon_world::nbt::Tag;
+
+/// Per-cloud settings; natural lingering clouds keep their creation defaults.
+pub(super) struct CloudSettings {
+    pub(super) wait_time: i32,
+    pub(super) reapplication_delay: i32,
+    pub(super) radius_on_use: f32,
+    pub(super) duration_on_use: i32,
+    pub(super) duration_scale: f32,
+}
+impl CloudSettings {
+    fn lingering() -> Self {
+        Self {
+            wait_time: LINGERING_WAIT,
+            reapplication_delay: REAPPLICATION_DELAY,
+            radius_on_use: -0.5,
+            duration_on_use: 0,
+            duration_scale: 0.25,
+        }
+    }
+}
 
 /// A thrown splash or lingering potion in flight.
 #[derive(Clone, Debug)]
@@ -91,17 +112,17 @@ enum Victim {
     Mob(u32),
     Player(FightWho),
 }
-/// What a lingering potion's `AreaEffectCloud` applies: the potion's effects
-/// (at the lingering item's 0.25 duration scale) and who it has affected.
+/// A potion-bearing `AreaEffectCloud`: its effects, settings and recent victims.
 pub(super) struct PotionCloud {
+    pub(super) settings: CloudSettings,
     effects: Vec<(&'static str, i32, i32)>,
     /// The effects above that were added hidden (`MobEffectInstance.isVisible` false: no
     /// particles); the instances the cloud applies are copies and keep that.
     hidden: Vec<&'static str>,
     /// The effects above that were ambient (`MobEffectInstance.isAmbient`).
     ambient: Vec<&'static str>,
-    /// `AreaEffectCloud.radiusPerTick`: `-radius / duration` when it was made.
-    radius_per_tick: f32,
+    /// `AreaEffectCloud.radiusPerTick`: natural clouds use `-radius / duration`.
+    pub(super) radius_per_tick: f32,
     /// The potion's colour (`PotionContents.getColor`).
     color: u32,
     /// Each victim and the tick it can be affected again.
@@ -1302,6 +1323,79 @@ impl Game<'_> {
             }
         }
     }
+    /// `AreaEffectCloud.readAdditionalSaveData`: loaded clouds join the same
+    /// simulation as lingering potions, with their own timing and potion data.
+    /// The caller retains their UUID and original compound for command queries.
+    pub(super) fn load_potion_cloud(&mut self, tag: &Tag) -> Option<u32> {
+        use horizon_client::save::{float, number, text};
+        let at = horizon_client::entity_nbt::position(tag)?;
+        let int = |key, default| number(tag.get(key)).map_or(default, |v| v as i32);
+        let real = |key, default| float(tag.get(key)).map_or(default, |v| v as f32);
+        let contents = tag.get("potion_contents");
+        let mut effects = contents
+            .and_then(|c| text(c.get("potion")))
+            .and_then(|id| brewing::potion(&id))
+            .map_or_else(Vec::new, |p| p.effects.to_vec());
+        let (mut hidden, mut ambient) = (Vec::new(), Vec::new());
+        if let Some(Tag::List(custom)) = contents.and_then(|c| c.get("custom_effects")) {
+            for effect in custom {
+                let Some(def) = text(effect.get("id")).and_then(|id| brewing::effect(&id)) else {
+                    continue;
+                };
+                let duration = number(effect.get("duration")).unwrap_or(0) as i32;
+                let amp = number(effect.get("amplifier")).unwrap_or(0).clamp(0, 255) as i32;
+                effects.push((def.id, duration, amp));
+                if number(effect.get("show_particles")) == Some(0) {
+                    hidden.push(def.id);
+                }
+                if number(effect.get("ambient")).unwrap_or(0) != 0 {
+                    ambient.push(def.id);
+                }
+            }
+        }
+        let color = contents
+            .and_then(|c| number(c.get("custom_color")))
+            .map_or_else(
+                || {
+                    horizon_client_core::potions::effects_color(
+                        effects
+                            .iter()
+                            .filter(|(id, ..)| !hidden.contains(id))
+                            .map(|(id, _, amp)| (*id, *amp)),
+                    )
+                },
+                |color| color as u32,
+            );
+        let id = self.take_entity_id();
+        self.breath_clouds.push(Breath {
+            id,
+            at: [at.x, at.y, at.z],
+            radius: real("Radius", 3.0).clamp(0.0, 32.0),
+            age: int("Age", 0),
+            duration: int("Duration", -1),
+            from_dragon: false,
+            victims: Vec::new(),
+            potion: Some(PotionCloud {
+                settings: CloudSettings {
+                    wait_time: int("WaitTime", 20),
+                    reapplication_delay: int("ReapplicationDelay", 20),
+                    radius_on_use: real("RadiusOnUse", 0.0),
+                    duration_on_use: int("DurationOnUse", 0),
+                    duration_scale: real("potion_duration_scale", 1.0),
+                },
+                effects,
+                hidden,
+                ambient,
+                radius_per_tick: real("RadiusPerTick", 0.0),
+                color,
+                victims: Vec::new(),
+                source: Text::translate("entity.minecraft.area_effect_cloud", &[]),
+                owner: None,
+                guest: None,
+            }),
+        });
+        Some(id)
+    }
     /// `AreaEffectCloud.tick` for the lingering potions' clouds: the client
     /// tick's particles, then the server tick.
     fn tick_potion_clouds(&mut self) {
@@ -1317,19 +1411,18 @@ impl Game<'_> {
         clouds.retain_mut(|c| c.potion.is_none() || self.tick_potion_cloud(c, &players));
         self.breath_clouds.append(&mut clouds);
     }
-    /// `AreaEffectCloud.serverTick` for a lingering potion's cloud: after its
-    /// wait it shrinks, and every 5 ticks it affects the living entities in
-    /// its box and radius that were not affected in the last 20 ticks, each
-    /// taking some of its radius. False once it is gone.
+    /// `AreaEffectCloud.serverTick`: configured lifetime/radius changes and
+    /// five-tick doses, with each victim's configured reapplication delay.
+    /// False once the cloud is gone.
     fn tick_potion_cloud(&mut self, c: &mut Breath, players: &[FightPlayer]) -> bool {
-        c.age += 1;
+        c.age = c.age.wrapping_add(1);
         let Some(potion) = c.potion.as_mut() else {
             return true;
         };
-        if c.age - LINGERING_WAIT >= c.duration {
+        if c.duration != -1 && c.age.wrapping_sub(potion.settings.wait_time) >= c.duration {
             return false;
         }
-        let waiting = c.age < LINGERING_WAIT;
+        let waiting = c.age < potion.settings.wait_time;
         cloud_client_tick(
             &mut self.particles,
             c.at,
@@ -1340,14 +1433,21 @@ impl Game<'_> {
         if waiting {
             return true;
         }
-        c.radius += potion.radius_per_tick;
-        if c.radius < 0.5 {
-            return false;
+        if potion.radius_per_tick != 0.0 {
+            c.radius += potion.radius_per_tick;
+            if c.radius < 0.5 {
+                return false;
+            }
+            c.radius = c.radius.clamp(0.0, 32.0);
         }
         if c.age % 5 != 0 {
             return true;
         }
         potion.victims.retain(|(_, until)| c.age < *until);
+        if potion.effects.is_empty() {
+            potion.victims.clear();
+            return true;
+        }
         let r = f64::from(c.radius);
         let area = Aabb::new(
             Vec3::new(c.at[0] - r, c.at[1], c.at[2] - r),
@@ -1378,19 +1478,34 @@ impl Game<'_> {
             {
                 continue;
             }
-            potion.victims.push((victim, c.age + REAPPLICATION_DELAY));
+            potion.victims.push((
+                victim,
+                c.age.wrapping_add(potion.settings.reapplication_delay),
+            ));
             self.cloud_affect(
                 victim,
                 &effects,
-                (&potion.hidden, &potion.ambient),
+                (
+                    &potion.hidden,
+                    &potion.ambient,
+                    potion.settings.duration_scale,
+                ),
                 c.at,
                 &potion.source,
                 (potion.owner, potion.guest),
             );
-            // setRadiusOnUse(-0.5).
-            c.radius -= 0.5;
-            if c.radius < 0.5 {
-                return false;
+            if potion.settings.radius_on_use != 0.0 {
+                c.radius += potion.settings.radius_on_use;
+                if c.radius < 0.5 {
+                    return false;
+                }
+                c.radius = c.radius.clamp(0.0, 32.0);
+            }
+            if potion.settings.duration_on_use != 0 && c.duration != -1 {
+                c.duration = c.duration.wrapping_add(potion.settings.duration_on_use);
+                if c.duration <= 0 {
+                    return false;
+                }
             }
         }
         true
@@ -1416,6 +1531,7 @@ impl Game<'_> {
             from_dragon: false,
             victims: Vec::new(),
             potion: Some(PotionCloud {
+                settings: CloudSettings::lingering(),
                 effects,
                 hidden,
                 ambient,
@@ -1429,13 +1545,13 @@ impl Game<'_> {
         });
     }
     /// What a cloud puts on one entity: instant effects at half strength
-    /// (`applyInstantaneousEffect` with 0.5), the others for their duration
-    /// at the lingering item's 0.25 scale (`PotionContents.forEachEffect`).
+    /// (`applyInstantaneousEffect` with 0.5), the others at the cloud's duration
+    /// scale (`PotionContents.forEachEffect`).
     fn cloud_affect(
         &mut self,
         victim: Victim,
         effects: &[(&'static str, i32, i32)],
-        (hidden, ambient): (&[&'static str], &[&'static str]),
+        (hidden, ambient, duration_scale): (&[&'static str], &[&'static str], f32),
         at: [f64; 3],
         source: &Text,
         (owner, guest): (Option<Who>, Option<u32>),
@@ -1448,13 +1564,7 @@ impl Game<'_> {
         };
         // MobEffectInstance.withScaledDuration: floor(duration * scale), at least 1; an infinite
         // effect stays infinite.
-        let scaled = |duration: i32| {
-            if duration == -1 {
-                -1
-            } else {
-                ((f64::from(duration) * 0.25) as i32).max(1)
-            }
-        };
+        let scaled = |duration| horizon_client::effects::scaled_duration(duration, duration_scale);
         match victim {
             Victim::Player(who) => self.as_fight_player(who, |g| {
                 for (id, duration, amp) in effects {
@@ -1490,8 +1600,10 @@ impl Game<'_> {
                     };
                     match *id {
                         "instant_damage" | "instant_health" => {
-                            let amount =
-                                |base: i32| (0.5 * f64::from(base << amp) + 0.5) as i32 as f32;
+                            let amount = |base: i32| {
+                                (0.5 * f64::from(base.wrapping_shl(*amp as u32)) + 0.5) as i32
+                                    as f32
+                            };
                             if (*id == "instant_damage") != inverted {
                                 // HealOrHarmMobEffect.applyInstantaneousEffect: indirectMagic(cloud, owner).
                                 let source = Damage::indirect_magic(owner, at);
@@ -1795,6 +1907,7 @@ impl Game<'_> {
                     from_dragon: false,
                     victims: Vec::new(),
                     potion: Some(PotionCloud {
+                        settings: CloudSettings::lingering(),
                         effects: def.effects.to_vec(),
                         hidden: Vec::new(),
                         ambient: Vec::new(),
@@ -2125,6 +2238,7 @@ mod tests {
             from_dragon: true,
             victims: Vec::new(),
             potion: Some(PotionCloud {
+                settings: CloudSettings::lingering(),
                 effects: Vec::new(),
                 hidden: Vec::new(),
                 ambient: Vec::new(),

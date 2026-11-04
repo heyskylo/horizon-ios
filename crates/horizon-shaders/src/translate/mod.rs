@@ -30,6 +30,7 @@ use crate::Preprocessed;
 mod anonymous_structs;
 mod array_constructors;
 mod atomic_vectors;
+mod buffer_bools;
 mod defaults;
 mod geometry;
 mod image_parameters;
@@ -270,11 +271,24 @@ fn translate(
     let (vertex_flat, fragment_flat) = (flat(vertex), flat(fragment));
     let vertex = vertex_flat.as_ref().unwrap_or(vertex);
     let fragment = fragment_flat.as_ref().unwrap_or(fragment);
+    // A `bool` member of a storage buffer travels as a `uint` (`buffer_bools`).
+    let ((vertex_bools, vertex_bool_errors), (fragment_bools, fragment_bool_errors)) = (
+        buffer_bools::rewrite(vertex),
+        buffer_bools::rewrite(fragment),
+    );
+    let vertex = vertex_bools.as_ref().unwrap_or(vertex);
+    let fragment = fragment_bools.as_ref().unwrap_or(fragment);
     let mut v = Stage::scan(vertex, ShaderStage::Vertex);
     let mut f = Stage::scan(fragment, ShaderStage::Fragment);
     v.gbuffers = gbuffers.is_some();
     f.gbuffers = gbuffers.is_some();
-    let mut errors: Vec<Error> = v.errors.drain(..).chain(f.errors.drain(..)).collect();
+    let mut errors: Vec<Error> = v
+        .errors
+        .drain(..)
+        .chain(f.errors.drain(..))
+        .chain(vertex_bool_errors)
+        .chain(fragment_bool_errors)
+        .collect();
 
     // One uniform block and one set of samplers for both stages.
     let mut uniforms: BTreeMap<String, String> = BTreeMap::new();
@@ -313,6 +327,16 @@ fn translate(
             if uniforms.get(name).is_some_and(|ty| ty == "mat4") {
                 uniforms.remove(name);
             }
+        }
+        // A compatibility-profile stage keeps reading the frame's `normalMatrix`.
+        let normal = "normalMatrix";
+        if uniforms.get(normal).is_some_and(|ty| ty == "mat3")
+            && [&v, &f].into_iter().all(|stage| {
+                stage.core_matrix(normal).is_some()
+                    || !stage.uniforms.iter().any(|(name, ..)| name == normal)
+            })
+        {
+            uniforms.remove(normal);
         }
     }
     // `alphaTestRef` is the program's alpha test reference: a constant of the program.
@@ -674,8 +698,11 @@ pub fn translate_compute(compute: &Preprocessed) -> Result<ComputeProgram, Vec<E
     let compute = named.as_ref().unwrap_or(compute);
     let split = atomic_vectors::rewrite(compute);
     let compute = split.as_ref().unwrap_or(compute);
+    let (bools, bool_errors) = buffer_bools::rewrite(compute);
+    let compute = bools.as_ref().unwrap_or(compute);
     let mut c = Stage::scan(compute, ShaderStage::Compute);
     let mut errors = std::mem::take(&mut c.errors);
+    errors.extend(bool_errors);
     let mut uniforms: BTreeMap<String, String> = BTreeMap::new();
     for (name, ty, _) in &c.uniforms {
         uniforms.insert(name.clone(), ty.clone());
@@ -1584,6 +1611,31 @@ mod tests {
         }
     }
 
+    /// `normalMatrix` follows the geometry's transform in a core-profile gbuffers stage and stays
+    /// a uniform of the frame (zero) in a compatibility-profile one, as our #9136 probe's Iris
+    /// 1.11.7 pictures show at these four `#version` lines.
+    #[test]
+    fn core_normal_matrix_uses_frame_state_in_the_core_profile_only() {
+        for (profile, core) in [
+            ("330 core", true),
+            ("330", true),
+            ("150", true),
+            ("330 compatibility", false),
+        ] {
+            let source = format!(
+                "#version {profile}\nuniform mat3 normalMatrix;\nin vec3 vaNormal;\nout vec3 n;\n\
+                 void main() {{ n = normalMatrix * vaNormal; gl_Position = vec4(n, 1.0); }}\n"
+            );
+            let p = core_matrix_program(&source, false).unwrap();
+            let uniform = p
+                .interface
+                .uniforms
+                .iter()
+                .any(|u| u.name == "normalMatrix");
+            assert_eq!(uniform, !core, "{profile}");
+        }
+    }
+
     #[test]
     fn core_matrix_aliases_preserve_authored_names_and_errors() {
         for declarations in [
@@ -1841,6 +1893,133 @@ mod tests {
             })
         });
         assert!(clamped, "sqrt's argument is clamped at zero");
+    }
+
+    /// #8175: a `bool` member of a `layout(std430)` buffer (GLSL: size and alignment 4) is
+    /// "not host-shareable" to naga. The shapes packs write: read in a condition, in an
+    /// expression, written from a comparison, an array of them, beside other members.
+    #[test]
+    fn bool_members_of_std430_buffers_translate() {
+        let mut failures = Vec::new();
+        for (block, body) in [
+            (
+                "layout(std430, binding = 4) buffer State { mat4 matrix; bool flag; };",
+                "if (flag) { gl_FragColor = vec4(1.0); } else { gl_FragColor = vec4(0.0); }",
+            ),
+            (
+                "layout(std430, binding = 4) buffer State { bool flag; };",
+                "gl_FragColor = vec4(float(flag), 0.0, 0.0, 1.0);",
+            ),
+            (
+                "layout(std430, binding = 4) buffer State { int count; bool flag; } state;",
+                "gl_FragColor = vec4(state.flag ? 1.0 : 0.0, float(state.count), 0.0, 1.0);",
+            ),
+            (
+                "layout(std430, binding = 4) buffer State { bool flags[4]; };",
+                "gl_FragColor = vec4(flags[2] && !flags[1] ? 1.0 : 0.0, 0.0, 0.0, 1.0);",
+            ),
+            (
+                "layout(std430, binding = 4) buffer State { vec2 size; bool flag; };",
+                "flag = size.x > 1.0;
+    gl_FragColor = vec4(size, flag ? 1.0 : 0.0, 1.0);",
+            ),
+        ] {
+            let fsh = format!(
+                "#version 430 compatibility
+{block}
+void main() {{
+    {body}
+}}
+"
+            );
+            if let Err(e) = program(
+                &[("composite.vsh", VSH_120), ("composite.fsh", &fsh)],
+                Target::Buffers,
+            ) {
+                failures.push(format!("`{block}` / `{body}`: {e:?}"));
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "{}",
+            failures.join(
+                "
+"
+            )
+        );
+    }
+
+    /// #8175: what the rewrite cannot make sure of is refused with the member's name and its
+    /// line, not left to naga's "Global variable [6] '' is invalid".
+    #[test]
+    fn bool_buffer_members_that_cannot_be_rewritten_are_named() {
+        for (block, body, wanted) in [
+            (
+                "layout(std430, binding = 4) buffer State { bool flag; };",
+                "flag |= true;",
+                "`flag`: `|=`",
+            ),
+            (
+                "layout(std430, binding = 4) buffer State { bool flag; };",
+                "bool other = (flag = true);",
+                "`flag` is assigned inside an expression",
+            ),
+            (
+                "layout(std430, binding = 4) buffer State { bool flag; };",
+                "bool flag = false;",
+                "`flag` is also declared as a local or parameter",
+            ),
+            (
+                "layout(std430, binding = 4) buffer State { bvec2 pair; };",
+                "",
+                "`pair`: a `bvec2` is not supported",
+            ),
+            (
+                "layout(std430, binding = 4) buffer State { bool flag; } states[2];",
+                "",
+                "an instance array",
+            ),
+        ] {
+            let fsh = format!(
+                "#version 430 compatibility
+{block}
+void main() {{
+    {body}
+    gl_FragColor = vec4(1.0);
+}}
+"
+            );
+            let errors = program(
+                &[("composite.vsh", VSH_120), ("composite.fsh", &fsh)],
+                Target::Buffers,
+            )
+            .err()
+            .unwrap_or_else(|| panic!("`{body}` translated"));
+            let error = errors
+                .iter()
+                .find(|e| e.message.contains(wanted))
+                .unwrap_or_else(|| panic!("`{wanted}` in {errors:?}"));
+            assert_eq!(error.file, "composite.fsh");
+            assert!(error.line >= 2, "{error:?}");
+            assert!(!error.message.contains("host-shareable"), "{error:?}");
+        }
+    }
+
+    /// #8175: a compute program reads and writes a `bool` of its buffer too.
+    #[test]
+    fn bool_members_of_std430_buffers_translate_in_compute_programs() {
+        let source = "#version 430
+layout(local_size_x = 1) in;
+                      layout(std430, binding = 3) buffer State { int count; bool flag; };
+                      void main() {
+    flag = count > 2;
+    if (flag) { count = 0; }
+}
+";
+        let pack = Pack::from_zip_bytes("P.zip", zip(&[("shaders/setup.csh", source)])).unwrap();
+        let stage = crate::preprocess(&pack, "setup.csh", &crate::Macros::standard());
+        let result = crate::translate_compute(&stage);
+        assert!(result.is_ok(), "{:?}", result.err());
     }
 
     #[test]
@@ -2774,6 +2953,69 @@ in VertexData {{ {member} }} vIn;
         .unwrap_or_else(|e| panic!("{e:?}"));
     }
 
+    /// Outputs with `component` qualifiers share one location (GLSL 4.60, 4.4.2): one target
+    /// at that location. The shapes glslangValidator rejects stay errors.
+    #[test]
+    fn outputs_sharing_a_location_by_component_are_one_target() {
+        let fsh = "#version 440\nlayout(location = 0, component = 0) out float r;\n\
+                   layout(location = 0, component = 1) out vec3 gba;\n\
+                   layout(location = 1, component = 1) out uvec3 words;\n\
+                   void main() { r = 0.0; gba = vec3(1.0, 0.0, 1.0); words = uvec3(1u); }\n";
+        let p = program(
+            &[("composite.vsh", VSH_120), ("composite.fsh", fsh)],
+            Target::Buffers,
+        )
+        .unwrap_or_else(|e| panic!("{e:?}"));
+        assert_eq!(p.interface.outputs, [0, 1]);
+        let result = p.fragment.entry_points[0].function.result.as_ref().unwrap();
+        let naga::TypeInner::Struct { members, .. } = &p.fragment.types[result.ty].inner else {
+            panic!("two outputs are a struct");
+        };
+        let targets: Vec<_> = members
+            .iter()
+            .map(|m| (m.binding.clone(), p.fragment.types[m.ty].inner.clone()))
+            .collect();
+        assert_eq!(targets.len(), 2, "{targets:?}");
+        for (location, scalar) in [(0, naga::Scalar::F32), (1, naga::Scalar::U32)] {
+            assert!(
+                targets.iter().any(|(binding, ty)| matches!(
+                    binding,
+                    Some(naga::Binding::Location { location: l, .. }) if *l == location
+                ) && *ty
+                    == naga::TypeInner::Vector {
+                        size: naga::VectorSize::Quad,
+                        scalar
+                    }),
+                "{targets:?}"
+            );
+        }
+        for (outputs, name) in [
+            (
+                "layout(location = 0) out vec2 a; layout(location = 0, component = 1) out float b;",
+                "b",
+            ),
+            (
+                "layout(location = 0) out uint a; layout(location = 0, component = 1) out vec3 b;",
+                "b",
+            ),
+            ("layout(location = 0, component = 2) out vec3 a;", "a"),
+        ] {
+            let fsh = format!("#version 440\n{outputs}\nvoid main() {{}}\n");
+            let errors = program(
+                &[("composite.vsh", VSH_120), ("composite.fsh", &fsh)],
+                Target::Buffers,
+            )
+            .err()
+            .unwrap_or_else(|| panic!("{outputs} translated"));
+            assert!(
+                errors
+                    .iter()
+                    .any(|e| e.message.contains(&format!("`{name}`"))),
+                "{outputs}: {errors:?}"
+            );
+        }
+    }
+
     #[test]
     fn narrow_outputs_widen_and_inverse_is_ours() {
         let fsh = "#version 400\nlayout(location = 0) out vec3 color;\nlayout(location = 1) out float depth;\n\
@@ -2926,6 +3168,70 @@ in VertexData {{ {member} }} vIn;
         let pack = Pack::from_zip_bytes("P.zip", zip(&[("shaders/deferred_a.csh", csh)])).unwrap();
         translate_compute(&preprocess(&pack, "deferred_a.csh", &Macros::standard()))
             .unwrap_or_else(|e| panic!("{e:?}"));
+    }
+
+    /// Atomic functions on a component of a shared vector, whatever its declaration: alone, in a
+    /// declaration of several names, a member of a shared struct (with whole-vector stores and
+    /// reads, or atomics only). The forms of #9085's probe; glslang accepts all of them.
+    #[test]
+    fn atomics_on_shared_vector_components_compile_in_lists_and_structs() {
+        let forms = [
+            (
+                "shared ivec3 mn;\nshared ivec3 mx;\n",
+                "atomicMin(mn.x, i);\n    atomicMax(mx.x, i);",
+            ),
+            (
+                "shared ivec3 mn, mx;\n",
+                "atomicMin(mn.x, i);\n    atomicMax(mx.x, i);",
+            ),
+            (
+                "shared struct { ivec3 mn; uint other; } sh;\n",
+                "if (i == 0) sh.mn = ivec3(1000);\n    barrier();\n    atomicMin(sh.mn.x, i);\n    \
+                 barrier();\n    ivec3 r = sh.mn;\n    sh.other = uint(r.x);",
+            ),
+            (
+                "shared struct { ivec3 mn; uint other; } sh;\n",
+                "atomicMin(sh.mn.x, i);",
+            ),
+        ];
+        for (decl, body) in forms {
+            let csh = format!(
+                "#version 460 core\nlayout(local_size_x = 8) in;\n{decl}void main() {{\n    \
+                 int i = int(gl_LocalInvocationIndex);\n    {body}\n}}\n"
+            );
+            let pack =
+                Pack::from_zip_bytes("P.zip", zip(&[("shaders/deferred_a.csh", &csh)])).unwrap();
+            let p = translate_compute(&preprocess(&pack, "deferred_a.csh", &Macros::standard()))
+                .unwrap_or_else(|e| panic!("{csh}\n{e:?}"));
+            // The struct keeps its other member; the vector's components are atomic.
+            if decl.contains("struct") {
+                let (_, sh) = p
+                    .module
+                    .global_variables
+                    .iter()
+                    .find(|(_, g)| g.space == naga::AddressSpace::WorkGroup)
+                    .expect("the shared struct");
+                let naga::TypeInner::Struct { members, .. } = &p.module.types[sh.ty].inner else {
+                    panic!("{:?}", p.module.types[sh.ty]);
+                };
+                let inner = |m: &naga::StructMember| p.module.types[m.ty].inner.clone();
+                let [mn, other] = &members[..] else {
+                    panic!("{members:?}")
+                };
+                let naga::TypeInner::Array { base, size, .. } = inner(mn) else {
+                    panic!("{mn:?}")
+                };
+                assert_eq!(size, naga::ArraySize::Constant(3.try_into().unwrap()));
+                assert!(matches!(
+                    p.module.types[base].inner,
+                    naga::TypeInner::Atomic(naga::Scalar::I32)
+                ));
+                assert!(matches!(
+                    inner(other),
+                    naga::TypeInner::Scalar(naga::Scalar::U32)
+                ));
+            }
+        }
     }
 
     /// A stage's `#version` may come from a header it includes: the program is that version

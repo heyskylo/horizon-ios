@@ -1075,6 +1075,37 @@ pub fn assemble_drawing(
     random: &mut impl RandomSource,
     position: [i32; 3],
 ) -> Option<([i32; 3], Vec<PoolPiece>)> {
+    let start = place_start(
+        draws, config, context, pools, resources, bindings, random, position,
+    )?;
+    Some(lay_out_children(
+        draws, start, config, context, pools, resources, bindings, random,
+    ))
+}
+
+/// A jigsaw's start piece in place ([`place_start`]), its children not laid out yet: vanilla's
+/// `Structure.GenerationStub`, whose position the structure's biome is checked at before
+/// `JigsawPlacement.addPieces` lays the rest out.
+pub struct PlacedStart {
+    /// The start position (`[centre x, start y, centre z]`).
+    pub position: [i32; 3],
+    center: PoolPiece,
+}
+
+/// The first half of [`assemble_drawing`]: the start piece drawn, rotated, projected to the
+/// heightmap and checked against the height limits. None when the start is invalid. The
+/// draws it makes come first in `random`, as in `assemble_drawing`.
+#[allow(clippy::too_many_arguments)]
+pub fn place_start(
+    draws: Draws,
+    config: &JigsawConfig<'_>,
+    context: &mut impl JigsawContext,
+    pools: &Pools,
+    resources: &StructureResources,
+    bindings: &FeatureBlockBindings<'_>,
+    random: &mut impl RandomSource,
+    position: [i32; 3],
+) -> Option<PlacedStart> {
     let alias = |name: &str| {
         config
             .aliases
@@ -1144,6 +1175,29 @@ pub fn assemble_drawing(
         return None;
     }
     let cy = bottom + local[1];
+    Some(PlacedStart {
+        position: [cx, cy, cz],
+        center,
+    })
+}
+
+/// The second half of [`assemble_drawing`]: the children of a [`place_start`]ed start laid out
+/// to `config.max_depth`, with the same `random`. Returns the start position and every piece.
+#[allow(clippy::too_many_arguments)]
+pub fn lay_out_children(
+    draws: Draws,
+    start: PlacedStart,
+    config: &JigsawConfig<'_>,
+    context: &mut impl JigsawContext,
+    pools: &Pools,
+    resources: &StructureResources,
+    bindings: &FeatureBlockBindings<'_>,
+    random: &mut impl RandomSource,
+) -> ([i32; 3], Vec<PoolPiece>) {
+    let PlacedStart {
+        position: [cx, cy, cz],
+        center,
+    } = start;
     let mut pieces = vec![center];
     if config.max_depth > 0 {
         let [h, v] = config.max_distance;
@@ -1164,7 +1218,7 @@ pub fn assemble_drawing(
             container,
         );
     }
-    Some(([cx, cy, cz], pieces))
+    ([cx, cy, cz], pieces)
 }
 
 /// The inner JigsawPlacement.addPieces: lays out the children of

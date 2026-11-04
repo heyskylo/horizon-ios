@@ -381,6 +381,7 @@ impl Launcher {
                 Some(b.appearance),
                 &t,
             ))
+            .child(self.launcher_theme_row(cx))
             .child(self.glass_accent_row(cx))
             .child(self.look_slider_row(themes_page::LookKnob::Glass, cx))
             .child(self.look_slider_row(themes_page::LookKnob::Blur, cx))
