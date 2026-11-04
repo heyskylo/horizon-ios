@@ -117,3 +117,11 @@ Overworld.
 
 They change how `chat::Chat` lays its lines out (`ChatQol`, `set_search`): the 100 messages it keeps are the same,
 so turning an option off shows them as before. Code: `chat.rs`, `game/chat.rs`.
+
+## PvP preset
+
+The **PvP preset** button (first on the PvP & HUD page and on Horizon Extras) turns on, in one click: the custom
+crosshair, the armour and effects widgets, vanilla's Toggle Sprint and Toggle Sneak (Controls), lower fire (40% unless
+already set), and the official FPS counter and keystrokes (with CPS) native mods when they are installed
+(`pvp::PRESET_MODS`). It only turns things on and keeps each option's own settings, so any of them can be turned
+back off by hand. Code: `pvp::apply_preset`.

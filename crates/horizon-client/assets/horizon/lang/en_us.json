@@ -695,5 +695,7 @@
   "horizon.pvp.chat_copy": "Copy on click",
   "horizon.pvp.chat_copy.tooltip": "Clicking a message in the open chat copies its text, unless the click does something else.",
   "horizon.pvp.chat_search": "Chat search",
-  "horizon.pvp.chat_search.tooltip": "Ctrl+F in the open chat: what you type shows only the messages holding it. Enter or Ctrl+F again stops."
+  "horizon.pvp.chat_search.tooltip": "Ctrl+F in the open chat: what you type shows only the messages holding it. Enter or Ctrl+F again stops.",
+  "horizon.pvp.preset": "PvP preset",
+  "horizon.pvp.preset.tooltip": "Turns on the custom crosshair, the armour and effects widgets, toggle sprint and sneak, lower fire, and the FPS counter and keystrokes mods if installed. Your settings for each stay."
 }
