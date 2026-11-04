@@ -459,10 +459,14 @@ impl Game<'_> {
         self.cushions.clear();
         self.item_frames.clear();
         self.paintings.clear();
+        // `orbs` is a `JoinList`. The respawn rule is on the `Vec` inside it:
+        // a dimension change drops every orb, and putting that `Vec` back
+        // keeps the list's storage (`JoinList`'s `From<Vec<_>>`).
         self.orbs = horizon_client::entities::orbs_after_client_respawn(
             true,
-            std::mem::take(&mut self.orbs),
-        );
+            std::mem::take(&mut self.orbs).into(),
+        )
+        .into();
     }
 
     pub(super) fn remove_remote_object(&mut self, id: u32) {
