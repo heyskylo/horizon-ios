@@ -126,6 +126,16 @@ impl Entry {
             .or_else(|| self.names.get("en_us"))
             .map_or(&self.id, String::as_str)
     }
+
+    /// Whether the id and hash are plain parts of a file name, by the game's rule
+    /// (`horizon_cosmetics::fetch`): the cache's paths are made of them.
+    fn plain(&self) -> bool {
+        [&self.id, &self.hash].into_iter().all(|t| {
+            !t.is_empty()
+                && t.len() <= 64
+                && t.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+        })
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
@@ -420,12 +430,16 @@ impl Service {
     }
 
     /// An item's file, from `cache` (`<id>-<hash>.json`, kept by hash: it never changes for one)
-    /// or the service, then kept there.
+    /// or the service, then kept there. An entry whose id or hash isn't `Entry::plain` is refused
+    /// before the disk or the service is touched.
     pub fn item_cached(
         &self,
         entry: &Entry,
         cache: &Path,
     ) -> Result<horizon_cosmetics::Item, Error> {
+        if !entry.plain() {
+            return Err(Error::Service(200));
+        }
         let path = cache.join(format!("{}-{}.json", entry.id, entry.hash));
         if let Some(item) = std::fs::read(&path)
             .ok()
