@@ -156,6 +156,63 @@ pub struct Me {
     #[serde(default = "shown")]
     pub visible: bool,
     pub claim: Claim,
+    /// What the account claimed or bought through Paddle, newest first (the purchase history
+    /// Mojang's guidelines ask for).
+    #[serde(default)]
+    pub purchases: Vec<Purchase>,
+    /// A checkout to open in the browser: the founder set's claim goes through a free (0 CHF)
+    /// Paddle checkout, and Paddle's webhook grants it. Only in `claim`'s answer; never kept.
+    #[serde(default, skip_serializing)]
+    pub checkout: Option<Checkout>,
+}
+
+/// One order, as the cosmetics service keeps it; Paddle is the merchant of record.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+pub struct Purchase {
+    /// Paddle's transaction id (`txn_…`): the order number on Paddle's receipt.
+    pub transaction_id: String,
+    /// An item id, or `founder_set`.
+    pub item: String,
+    /// Paid, tax included, in the lowest unit of `currency`.
+    pub amount: i64,
+    pub currency: String,
+    /// `paid`, `partly_refunded`, `refunded` or `charged_back`.
+    pub status: String,
+    /// Unix seconds.
+    pub at: i64,
+}
+
+impl Purchase {
+    /// The amount as people write it: `2.99 USD`; `None` for nothing paid.
+    pub fn price(&self) -> Option<String> {
+        (self.amount > 0).then(|| {
+            let (whole, cents) = (self.amount / 100, self.amount % 100);
+            format!("{whole}.{cents:02} {}", self.currency)
+        })
+    }
+}
+
+/// A Paddle checkout the service started for this account.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+pub struct Checkout {
+    pub transaction_id: String,
+    pub checkout_url: String,
+}
+
+/// Where a checkout may open: Horizon's own checkout page (Paddle's default payment link).
+pub const CHECKOUT_PAGES: [&str; 2] = [
+    "https://playhorizon.dev/shop/pay?",
+    "https://www.playhorizon.dev/shop/pay?",
+];
+
+impl Checkout {
+    /// The link to open, if it is Horizon's checkout page; anything else is never opened.
+    pub fn url(&self) -> Option<&str> {
+        let u = self.checkout_url.as_str();
+        let ok = CHECKOUT_PAGES.iter().any(|p| u.starts_with(p))
+            && u.bytes().all(|b| b.is_ascii_graphic());
+        ok.then_some(u)
+    }
 }
 
 fn shown() -> bool {
@@ -368,7 +425,8 @@ impl Service {
         parse(self.call("GET", "/v1/me", Some(session), None)?)
     }
 
-    /// Claim the founder set: the account owns its items from then on.
+    /// Claim the founder set: the account owns its items from then on, or, with `checkout` in
+    /// the answer, once that free Paddle checkout is done.
     pub fn claim(&self, session: &Session) -> Result<Me, Error> {
         parse(self.call("POST", "/v1/claim", Some(session), Some(json!({})))?)
     }

@@ -1098,7 +1098,6 @@
   "August": "Ọgọọst",
   "Back to the wardrobe": "Laghachi na uwe mkpuchi",
   "Bound to your Minecraft account, on every computer you sign in on.": "Ejikọtara ya na akaụntụ Minecraft gị, na kọmputa ọ bụla ị banyere na ya.",
-  "Bound to your Minecraft account. Nothing to pay, no card asked.": "Ejikọtara ya na akaụntụ Minecraft gị. Enweghị ihe ị ga-akwụ, a rịghị kaadị.",
   "Changes waiting to sync: {n}": "Mgbanwe na-eche mmekọrịta: {n}",
   "Claimed · Open the wardrobe": "Anabatara · Mepee uwe mkpuchi",
   "Claiming…": "Na-anata…",
@@ -1152,5 +1151,16 @@
   "{d} days {h} h": "ụbọchị {d} awa {h}",
   "{h} h {m} min": "awa {h} nkeji {m}",
   "{m} min": "nkeji {m}",
-  "{time} left to claim it": "{time} fọdụrụ iji nweta ya"
+  "{time} left to claim it": "{time} fọdụrụ iji nweta ya",
+  "Bound to your Minecraft account. Free: a 0 CHF checkout through Paddle records your claim.": "Ejikọtara ya na akaụntụ Minecraft gị. N'efu: ịkwụ ụgwọ 0 CHF site na Paddle na-edekọ ihe ị na-ariọ.",
+  "Finish the free checkout in your browser. The set lands here a moment later.": "Mechaa ịkwụ ụgwọ n'efu na browser gị. Ngwugwu ahụ ga-abịa ebe a obere oge mgbe ahụ gasịrị.",
+  "Open the checkout again": "Meghee ibe ịkwụ ụgwọ ọzọ",
+  "Waiting for the checkout…": "Na-eche ịkwụ ụgwọ…",
+  "Your purchases": "Ihe ị zụtara",
+  "Refunded": "E weghachiri ego",
+  "Partly refunded": "E weghachiri ego akụkụ",
+  "Charged back": "Ụlọ akụ weghaara ya",
+  "Paid": "Akwụọla",
+  "Order {id}": "Ahịrị {id}",
+  "The claim didn't go through: the checkout's address isn't Horizon's.": "Arịrịọ ahụ agaghị nke ọma: adreesị ibe ịkwụ ụgwọ abụghị nke Horizon."
 }

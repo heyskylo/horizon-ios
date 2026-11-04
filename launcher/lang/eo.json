@@ -1098,7 +1098,6 @@
   "August": "aŭgusto",
   "Back to the wardrobe": "Reen al la vestoŝranko",
   "Bound to your Minecraft account, on every computer you sign in on.": "Ligita al via Minecraft-konto, sur ĉiu komputilo, kie vi ensalutas.",
-  "Bound to your Minecraft account. Nothing to pay, no card asked.": "Ligita al via Minecraft-konto. Nenio pagenda, neniu karto petata.",
   "Changes waiting to sync: {n}": "Ŝanĝoj atendantaj sinkronigon: {n}",
   "Claimed · Open the wardrobe": "Postulita · Malfermi la vestoŝrankon",
   "Claiming…": "Postulante…",
@@ -1152,5 +1151,16 @@
   "{d} days {h} h": "{d} tagoj {h} h",
   "{h} h {m} min": "{h} h {m} min",
   "{m} min": "{m} min",
-  "{time} left to claim it": "restas {time} por postuli ĝin"
+  "{time} left to claim it": "restas {time} por postuli ĝin",
+  "Bound to your Minecraft account. Free: a 0 CHF checkout through Paddle records your claim.": "Ligita al via Minecraft-konto. Senpage: kaso de 0 CHF per Paddle registras vian postulon.",
+  "Finish the free checkout in your browser. The set lands here a moment later.": "Finu la senpagan pagon en via retumilo. La aro aperos ĉi tie post momento.",
+  "Open the checkout again": "Malfermi la pagon denove",
+  "Waiting for the checkout…": "Atendante la pagon…",
+  "Your purchases": "Viaj aĉetoj",
+  "Refunded": "Repagita",
+  "Partly refunded": "Parte repagita",
+  "Charged back": "Repreno de la banko",
+  "Paid": "Pagita",
+  "Order {id}": "Mendo {id}",
+  "The claim didn't go through: the checkout's address isn't Horizon's.": "La postulo ne sukcesis: la adreso de la pago ne estas tiu de Horizon."
 }

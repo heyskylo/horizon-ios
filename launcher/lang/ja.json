@@ -1135,7 +1135,6 @@
   "The founder set was free to claim until {date}.": "ファウンダーセットは{date}まで無料でした。",
   "The founder set isn't offered any more.": "ファウンダーセットの提供は終了しました。",
   "Bound to your Minecraft account, on every computer you sign in on.": "Minecraft アカウントに紐づき、サインインしたどのパソコンでも使えます。",
-  "Bound to your Minecraft account. Nothing to pay, no card asked.": "Minecraft アカウントに紐づきます。支払いもカード登録も不要です。",
   "Cosmetics show only to Horizon players. Nothing changes how the game plays.": "コスメは Horizon のプレイヤーにだけ見えます。ゲームの遊び方は何も変わりません。",
   "For the players who were here first. Free to claim from {date}; once claimed, it's yours to keep.": "最初からいたプレイヤーへ。{date}から無料で受け取れます。受け取ればずっとあなたのものです。",
   "For the players who were here first. Free to claim until {date}; once claimed, it's yours to keep.": "最初からいたプレイヤーへ。{date}まで無料で受け取れます。受け取ればずっとあなたのものです。",
@@ -1152,5 +1151,16 @@
   "For the players who were here first. Free to claim; once claimed, it's yours to keep.": "最初からいたプレイヤーへ。無料で受け取れます。受け取ればずっとあなたのものです。",
   "First Light": "ファーストライト",
   "Free for everyone. First Light paints the sky just before sunrise behind the light appearance, with a blue accent.": "全員に無料。ファーストライトは、日の出直前の空をライトの外観の背景に描き、ブルーのアクセントを添えます。",
-  "Shirt": "シャツ"
+  "Shirt": "シャツ",
+  "Bound to your Minecraft account. Free: a 0 CHF checkout through Paddle records your claim.": "Minecraft アカウントに紐づきます。無料: Paddle 経由の 0 CHF のチェックアウトで受け取りが記録されます。",
+  "Finish the free checkout in your browser. The set lands here a moment later.": "ブラウザで無料のチェックアウトを完了してください。しばらくするとセットがここに届きます。",
+  "Open the checkout again": "チェックアウトをもう一度開く",
+  "Waiting for the checkout…": "チェックアウトを待っています…",
+  "Your purchases": "購入履歴",
+  "Refunded": "返金済み",
+  "Partly refunded": "一部返金済み",
+  "Charged back": "チャージバック済み",
+  "Paid": "支払い済み",
+  "Order {id}": "注文 {id}",
+  "The claim didn't go through: the checkout's address isn't Horizon's.": "受け取りに失敗しました。チェックアウトのアドレスが Horizon のものではありません。"
 }
