@@ -682,6 +682,11 @@ pub fn tick(
         ai_step(m, w, level_random, events);
     }
     effects_from_blocks(m, w, level_random, events);
+    if m.species() == Species::SulfurCube && m.alive() {
+        // SulfurCube.doPush applies the body's contact damage even with NoAI.
+        // Player contact keeps its existing player_push route.
+        super::sulfur_cube::mob_contacts(m, w, events);
+    }
     if m.species() == Species::Rabbit {
         super::rabbit::post_tick(m);
     }

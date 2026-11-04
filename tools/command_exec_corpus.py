@@ -3780,6 +3780,55 @@ def mob_full_resistance_hits():
 
 
 
+def sulfur_cube_mob_contact():
+    """Actual mob ticks deliver hot-body contact damage, including NoAI (#9028)."""
+    ops = setup('/forceload add 0 0 15 15', '/fill 0 199 0 15 199 15 stone',
+                '/fill 0 200 0 15 206 15 air')
+    ops.append({'op': 'settle'})
+    ops.append(cmd('/execute if loaded 8 200 8', expect_result=1))
+    # Explicit cube size/health exclude the separate absent-Health loader issue.
+    cases = [(1, 2.5, 2.5, 'magma_block', 2.5),
+             (2, 10.5, 2.5, 'white_concrete_powder', 10.5),
+             (3, 2.5, 10.5, 'magma_block', 5.5),
+             (4, 10.5, 10.5, None, 10.5)]
+
+    def uuid(n):
+        return f'000000f4-0000-0000-0000-{n:012x}'
+
+    def guard(n, kind, x, z, health, body=None):
+        ops.append(cmd(f'/execute if entity {uuid(n)}', expect_result=1))
+        fields = (f'UUID:[I;244,0,0,{n}],Pos:[{x}d,200d,{z}d],Health:{health}f,'
+                  'NoAI:1b,Silent:1b,PersistenceRequired:1b,Tags:["sulfur_contact"]')
+        if body:
+            fields += f',equipment:{{body:{{id:"minecraft:{body}"}}}}'
+        ops.append(cmd(f'/execute if entity @e[type=minecraft:{kind},nbt={{{fields}}}]',
+                       expect_result=1))
+
+    for n, x, z, body, pig_x in cases:
+        equipment = f',equipment:{{body:{{id:"minecraft:{body}"}}}}' if body else ''
+        ops.extend(setup(f'/summon sulfur_cube {x} 200 {z} '
+                         f'{{UUID:[I;244,0,0,{n}],Tags:["sulfur_contact"],NoAI:1b,'
+                         f'Silent:1b,PersistenceRequired:1b,Size:1,Health:4f{equipment}}}',
+                         f'/summon pig {pig_x} 200 {z} '
+                         f'{{UUID:[I;244,0,0,{n + 10}],Tags:["sulfur_contact"],'
+                         'NoAI:1b,Silent:1b,PersistenceRequired:1b}'))
+        guard(n, 'sulfur_cube', x, z, 4, body)
+        guard(n + 10, 'pig', pig_x, z, 10)
+        ops.append(cmd(f'/data get entity {uuid(n + 10)} Health', expect_result=10))
+    ops.append({'op': 'tick', 'n': 3})
+    for n, x, z, body, pig_x in cases:
+        guard(n, 'sulfur_cube', x, z, 4, body)
+        # Guard identity/position independently of the observed health change.
+        ops.append(cmd(f'/execute if entity {uuid(n + 10)}', expect_result=1))
+        ops.append(cmd(f'/execute if entity @e[type=pig,nbt={{UUID:[I;244,0,0,{n + 10}],'
+                       f'Pos:[{pig_x}d,200d,{z}d],NoAI:1b,Tags:["sulfur_contact"]}}]',
+                       expect_result=1))
+        ops.append(cmd(f'/data get entity {uuid(n + 10)} Health',
+                       expect_result=9 if n == 1 else 10))
+    return ops + setup('/kill @e[tag=sulfur_contact]', '/forceload remove 0 0 15 15')
+
+
+
 def groups():
     return [
         ('setup', group_setup()),
@@ -3810,6 +3859,7 @@ def groups():
         ('mob armor damage', mob_armor_damage()),
         ('mob max health bounds', mob_max_health_bounds()),
         ('creeper custom fuse', creeper_custom_fuse()),
+        ('sulfur cube mob contact', sulfur_cube_mob_contact()),
         ('sulfur cube fuse ticks', sulfur_cube_fuse_ticks()),
         ('wither spawn', wither_spawn()),
         ('riding teleport', riding_teleport()),

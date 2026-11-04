@@ -106,7 +106,7 @@ SulfurCube.primeWhenOnPoweredPosition	port	crates/horizon-client/src/game/sulfur
 SulfurCube.customServerAiStep	port	crates/horizon-client/src/mobs/sulfur_cube.rs::ai_step	timers, buoyancy, facing, growing up and player push
 SulfurCube.collectEquipmentChanges	inline	crates/horizon-client/src/mobs/sulfur_cube.rs::ai_step	goals are disabled while a block is held; archetype effects are read on demand, not applied as modifiers
 SulfurCube.equipItem	port	crates/horizon-client/src/game/sulfur_cubes.rs::Game::interact_sulfur_cube	swallows the item; the old block is ejected
-SulfurCube.applyContactDamage	inline	crates/horizon-client/src/mobs/sulfur_cube.rs::player_push	gap: minor: contact damage reaches only the player, not other entities
+SulfurCube.applyContactDamage	inline	crates/horizon-client/src/mobs/sulfur_cube.rs::mob_contacts	gap: minor: ordinary mob targets plus existing player_push only; other entity kinds remain outside this adapter
 SulfurCube.isEquippableInSlot	port	crates/horizon-client/src/mobs/sulfur_cube.rs::swallowable	swallowable items only
 SulfurCube.canUseSlot	port	crates/horizon-client/src/game/dispenser.rs::mob_can_use_slot	body slot needs alive and adult
 SulfurCube.canHoldItem	port	crates/horizon-client/src/game/sulfur_cubes.rs::Game::sulfur_cube_pickups	empty body, adult and not on a pickup timer
@@ -149,3 +149,4 @@ HoglinAi.setAttackTarget	inline	crates/horizon-client/src/mobs/piglin.rs::regist
 HoglinAi.setAttackTargetIfCloserThanCurrent	inline	crates/horizon-client/src/mobs/piglin.rs::register_hoglin	NearestTarget keeps the closest target and skips pacified hoglins
 HoglinAi.getSoundForActivity	inline	crates/horizon-client/src/mobs/ai.rs::play_ambient	gap: player: the retreat grunt near repellents or while retreating is missing; the angry grunt while a target is set is ported
 Evoker.EvokerAttackSpellGoal.createSpellEntity	port	crates/horizon-client/src/mobs/illager.rs::fang_floor	gap: minor: the sturdy-face test is a full-collision test on the block below; the fang event comes from cast_fangs
+SulfurCube.doPush	inline	crates/horizon-client/src/mobs/sulfur_cube.rs::mob_contacts	mob contact stage only; ordinary AI push impulse remains in ai::push_entities
