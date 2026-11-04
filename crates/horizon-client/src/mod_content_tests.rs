@@ -1234,6 +1234,70 @@ fn a_superflat_world_runs_its_structure_sets_on_flat_ground() {
     );
 }
 
+/// `adjustGenerationSettings`: the Overworld preset decorates its plains with grass,
+/// flowers and trees even with no structure set (`structure_overrides: []`, or
+/// `generate_structures` off), and without `features` the same layers stay bare.
+#[test]
+#[ignore = "full content root: CI and pr_ready run it"]
+fn a_decorated_superflat_world_without_structures_grows_its_features() {
+    use crate::streaming::ChunkGenerator;
+    let Some(base) = prepared() else {
+        return;
+    };
+    let assets = Assets::load(&base).unwrap();
+    let biomes = crate::biome::Biomes::load(&base).unwrap();
+    // Blocks above the grass (the top layer is at the level's minimum Y + 63) in the
+    // chunk at 4, 4 once its 3×3 region is decorated.
+    let above_ground = |features| {
+        let flat = horizon_world::worldgen::generator::FlatSettings {
+            layers: vec![
+                ("minecraft:bedrock".into(), 1),
+                ("minecraft:stone".into(), 59),
+                ("minecraft:dirt".into(), 3),
+                ("minecraft:grass_block".into(), 1),
+            ],
+            biome: "minecraft:plains".into(),
+            structure_overrides: Some(vec![]),
+            features,
+            lakes: false,
+        };
+        let terrain = crate::vanillagen::VanillaTerrain::for_flat(
+            &base.join("worldgen"),
+            &Default::default(),
+            assets.registry,
+            &biomes,
+            1234,
+            &flat,
+            false,
+        )
+        .unwrap();
+        let mut worker = terrain.worker();
+        let mut region: [_; 9] =
+            std::array::from_fn(|i| terrain.proto(&mut worker, 3 + i as i32 % 3, 3 + i as i32 / 3));
+        terrain.decorate(&mut worker, &mut region);
+        let [_, _, _, _, center, ..] = region;
+        let chunk = terrain.finish(center);
+        let mut found = Vec::new();
+        for y in 0..16 {
+            for z in 64..80 {
+                for x in 64..80 {
+                    let name = &assets.registry.state(chunk.block(x, y, z)).unwrap().name;
+                    if name != "minecraft:air" {
+                        found.push(name.clone());
+                    }
+                }
+            }
+        }
+        found
+    };
+    let decorated = above_ground(true);
+    assert!(
+        decorated.iter().any(|n| n == "minecraft:short_grass"),
+        "{decorated:?}"
+    );
+    assert_eq!(above_ground(false), Vec::<String>::new());
+}
+
 /// `createForFlat` searches the stronghold rings with seed 0, so a superflat world's
 /// strongholds are in the same place on every seed; a layer that is not opaque to
 /// `MOTION_BLOCKING` is `null`, left out of `buildTerrain` for the fill after the structures.
