@@ -46,6 +46,10 @@ pub enum Attenuation {
 pub enum Ticking {
     /// Not tickable.
     No,
+    /// A compiled native owner updates this instance through `instance_mut`.
+    /// The ordinary engine applies gain, pitch and position each unpaused tick;
+    /// no vanilla entity behavior overwrites them. Stop and release when done.
+    Native,
     /// `BiomeAmbientSoundsHandler.LoopSoundInstance`.
     BiomeLoop { fade: i32, direction: i32 },
     /// `UnderLiquidAmbientSoundInstance`.
@@ -550,7 +554,7 @@ impl SoundInstance {
     /// `TickableSoundInstance.tick`.
     pub fn tick(&mut self, ctx: &TickContext) {
         match &mut self.ticking {
-            Ticking::No | Ticking::MusicLayer => {}
+            Ticking::No | Ticking::Native | Ticking::MusicLayer => {}
             Ticking::BiomeLoop { fade, direction } => {
                 let stop = *fade < 0;
                 *fade += *direction;
@@ -1464,6 +1468,8 @@ pub mod test_backend {
         next: ChannelId,
         pub stopped: HashMap<ChannelId, bool>,
         pub volume: HashMap<ChannelId, f32>,
+        pub pitch: HashMap<ChannelId, f32>,
+        pub position: HashMap<ChannelId, [f64; 3]>,
     }
     impl Backend for Null {
         fn create(&mut self, _streaming: bool) -> Option<ChannelId> {
@@ -1474,13 +1480,17 @@ pub mod test_backend {
         fn destroy(&mut self, c: ChannelId) {
             self.stopped.remove(&c);
         }
-        fn set_pitch(&mut self, _: ChannelId, _: f32) {}
+        fn set_pitch(&mut self, c: ChannelId, value: f32) {
+            self.pitch.insert(c, value);
+        }
         fn set_volume(&mut self, c: ChannelId, v: f32) {
             self.volume.insert(c, v);
         }
         fn set_attenuation(&mut self, _: ChannelId, _: Option<f32>) {}
         fn set_looping(&mut self, _: ChannelId, _: bool) {}
-        fn set_position(&mut self, _: ChannelId, _: [f64; 3]) {}
+        fn set_position(&mut self, c: ChannelId, value: [f64; 3]) {
+            self.position.insert(c, value);
+        }
         fn set_relative(&mut self, _: ChannelId, _: bool) {}
         fn start(&mut self, _: ChannelId, _: &Sound, _: bool) {}
         fn stop(&mut self, c: ChannelId) {
@@ -1497,6 +1507,59 @@ pub mod test_backend {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_owned_loop_applies_updates_and_stops_through_the_ordinary_engine() {
+        let mut registry = SoundRegistry::default();
+        registry.add_file(
+            "example",
+            br#"{"loop":{"sounds":["machine/loop"]}}"#,
+            &|_, _| true,
+        );
+        let mut engine = SoundEngine::new(registry);
+        let mut backend = test_backend::Null::default();
+        let mut instance = SoundInstance::new(
+            "example:loop",
+            4,
+            0.1,
+            0.5,
+            LegacyRandom::new(1),
+            true,
+            0,
+            Attenuation::None,
+            [0.0; 3],
+            true,
+        );
+        instance.ticking = Ticking::Native;
+        let (id, result) = engine.play_new(instance, true, &mut backend);
+        assert_eq!(result, PlayResult::Started);
+        let channel = engine.channel(id).unwrap();
+        assert_eq!(backend.volume[&channel], 0.1);
+        let owned = engine.instance_mut(id).unwrap();
+        owned.volume = 0.4;
+        owned.pitch = 1.25;
+        owned.position = [2.0, 3.0, 4.0];
+        engine.tick(true, &TickContext::default(), &mut backend);
+        assert_eq!(
+            backend.volume[&channel], 0.1,
+            "paused world sounds retain channel values"
+        );
+        engine.tick(false, &TickContext::default(), &mut backend);
+        assert_eq!(backend.volume[&channel], 0.4);
+        assert_eq!(backend.pitch[&channel], 1.25);
+        assert_eq!(backend.position[&channel], [2.0, 3.0, 4.0]);
+        let owned = engine.instance(id).unwrap();
+        assert_eq!((owned.pitch, owned.position), (1.25, [2.0, 3.0, 4.0]));
+        assert!(engine.is_active(id));
+        engine.instance_mut(id).unwrap().stop();
+        engine.tick(false, &TickContext::default(), &mut backend);
+        assert!(backend.stopped.get(&channel).copied().unwrap_or(true));
+        engine.release(id);
+        for _ in 0..20 {
+            engine.tick(false, &TickContext::default(), &mut backend);
+        }
+        assert!(engine.instance(id).is_none());
+    }
 
     #[test]
     fn happy_ghast_riding_sound_follows_the_ghast_speed() {
