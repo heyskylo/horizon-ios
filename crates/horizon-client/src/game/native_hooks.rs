@@ -8011,7 +8011,7 @@ impl GameLevel<'_> {
                 state,
                 at,
                 spread,
-                speed,
+                speed: [speed; 3],
                 count,
                 randomization: 0,
             });
@@ -8255,10 +8255,7 @@ impl Game<'_> {
     /// or a wind turbine reads. Both 0 in the Nether and the End, which have
     /// no weather (`Level.canHaveWeather`). API 97.
     pub(super) fn native_weather(&self) -> (f32, f32) {
-        if self.dim != super::Dim::Overworld {
-            return (0.0, 0.0);
-        }
-        self.world.weather.levels(1.0)
+        self.weather_levels(1.0)
     }
     /// The world's time of day in ticks (`Level.getOverworldClockTime`), the
     /// same as `native_clock`'s `day_time`; it keeps counting past 24000, so
@@ -10626,6 +10623,8 @@ mod tests {
         let hunger_hooks = free_hooks(include_str!("../hunger.rs"));
         let landing_hooks = free_hooks(include_str!("../landing.rs"));
         let motion_hooks = free_hooks(include_str!("../motion.rs"));
+        // The chat relay's (`horizon_client_lib::lan::hub::chat`).
+        let chat_hooks = free_hooks(include_str!("../lan/hub/chat.rs"));
         let declared: BTreeSet<_> = section
             .lines()
             .chain(level_section.lines())
@@ -10644,6 +10643,7 @@ mod tests {
             .chain(hunger_hooks.iter().copied())
             .chain(landing_hooks.iter().copied())
             .chain(motion_hooks.iter().copied())
+            .chain(chat_hooks.iter().copied())
             .collect();
         let mut names = BTreeSet::new();
         let mut contracts = BTreeSet::new();
@@ -10671,6 +10671,8 @@ mod tests {
                 format!("horizon_client_lib::landing::native_{name}")
             } else if motion_hooks.contains(name) {
                 format!("horizon_client_lib::motion::native_{name}")
+            } else if chat_hooks.contains(name) {
+                format!("horizon_client_lib::lan::hub::chat::native_{name}")
             } else if menu_hooks.contains(name) {
                 // menu.rs compiles into horizon-client-lib (#5446's
                 // split): horizon-mixins resolves the crate by its package.

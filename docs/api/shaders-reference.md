@@ -280,6 +280,20 @@ The frame, as `frame` in every stage. Positions and directions are in world axes
 | `shadow_resolution` | `f32` | 744 | The shadow map's side, in texels; 0 without a shadow map. |
 | `shadow_center_texel` | `f32` | 748 | The ground one shadow texel covers at the map's centre, in blocks (for a bias that scales with it); 0 without a shadow map. |
 
+## Anti-aliasing
+
+While a pack's `[[post]]` chain draws the frame, the player's anti-aliasing settings do not run: `taa`, `fxaa`
+and `upscaling` in `horizon-graphics.txt` have no effect, and the frame's projection is never jittered, because the
+last post pass draws the picture itself and Horizon's own resolve, which does TAA, FXAA and TAA upscaling, is the
+step it replaces. The world is still rendered at `resolutionScale` before the pack reads it.
+
+A pack that wants smooth edges draws them itself, in a post pass: a spatial filter (FXAA, SMAA and the like) works on
+`previous` as it is. A temporal pass cannot do what TAA does here, even though `history` and
+`frame.previous_view_projection` give it the last frame: nothing moves the camera by a fraction of a texel from one
+frame to the next, so a still camera gives it the same picture twice and there is no sub-pixel detail to gather.
+
+Without a pack the settings apply as the player set them.
+
 ## Options
 
 Each `[[options]]` entry sets the WGSL `override` of the same name when the pipelines are built:
@@ -293,7 +307,7 @@ Each `[[options]]` entry sets the WGSL `override` of the same name when the pipe
 
 ## Limits
 
-- 8 post passes, 64 options, `budget.gpu_ms` up to 16.
+- 12 post passes, 64 options, `budget.gpu_ms` up to 16.
 - 256 KiB per WGSL file, 8 MiB per pack.
 - Per stage: 20000 naga expressions over all its functions, 64 texture reads (samples,
   gathers and loads, the prelude's included).
