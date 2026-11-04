@@ -13,7 +13,7 @@ use crate::sculk::{self, Context, Info};
 use horizon_core::geometry::trig::Mth;
 use horizon_core::geometry::{Aabb, Vec3};
 
-// Allay state: `main_hand` the held item, `ints[1]` how many it carries,
+// Allay state: `main_hand` the held filter; `State::inventory` the fetched stack,
 // `tame` a liked player, `point` the wanted item (set by the game),
 // `State::noteblock` the liked note block with `ints[2]` its cooldown,
 // `ints[3]` the pickup cooldown, `flag` dancing with `ints[4]` the dance clock,
@@ -94,8 +94,52 @@ pub fn pickup_reach(bounds: Aabb) -> Aabb {
 /// `ints[2]`.
 #[derive(Clone, Debug, Default)]
 pub struct State {
+    /// Allay's separate one-slot SimpleContainer.
+    pub inventory: Option<ItemStack>,
     pub vibration: sculk::Data,
     pub noteblock: Option<GlobalPos>,
+}
+
+/// The pocket is independent of the main-hand filter.
+pub fn inventory(m: &Mob) -> Option<&ItemStack> {
+    m.extra.allay.as_ref()?.inventory.as_ref()
+}
+
+impl State {
+    /// SimpleContainer.canAddItem: merge only identical item components.
+    pub fn room(&self, stack: &ItemStack, max: u32) -> u32 {
+        let max = max.min(99);
+        match &self.inventory {
+            None => max,
+            Some(held) if held.same_item_same_components(stack) => max.saturating_sub(held.count),
+            Some(_) => 0,
+        }
+    }
+
+    /// SimpleContainer.addItem for the Allay's single slot; returns the count accepted.
+    pub fn add(&mut self, mut stack: ItemStack, max: u32) -> u32 {
+        let count = stack.count.min(self.room(&stack, max));
+        if count > 0 {
+            if let Some(held) = &mut self.inventory {
+                held.count += count;
+            } else {
+                stack.count = count;
+                self.inventory = Some(stack);
+            }
+        }
+        count
+    }
+
+    pub fn take(&mut self, count: u32) -> Option<ItemStack> {
+        let held = self.inventory.as_mut()?;
+        let mut taken = held.clone();
+        taken.count = count.min(held.count);
+        held.count -= taken.count;
+        if held.count == 0 {
+            self.inventory = None;
+        }
+        Some(taken)
+    }
 }
 
 pub fn register(m: &mut Mob) {
@@ -234,7 +278,7 @@ impl Goal for Deliver {
         MOVE
     }
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
-        m.extra.ints[1] > 0 && m.extra.point.is_none() && deposit(m, cx).is_some()
+        inventory(m).is_some() && m.extra.point.is_none() && deposit(m, cx).is_some()
     }
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         if let Some(p) = deposit(m, cx)
@@ -441,6 +485,41 @@ mod allay_parity_tests {
 
     fn potion(id: &str) -> ItemStack {
         ItemStack::new("minecraft:potion", 1).with_potion(id)
+    }
+
+    #[test]
+    fn pocket_merges_and_splits_full_stacks_without_changing_the_filter() {
+        let mut m = Mob::new(1, super::super::sensor_scan_tests::kind(), Vec3::ZERO, 0.0);
+        register(&mut m);
+        let filter = potion("minecraft:healing");
+        m.extra.set_main_hand_stack(Some(filter.clone()));
+        let pocket = potion("minecraft:swiftness");
+        let st = m.extra.allay.as_mut().unwrap();
+        assert_eq!(st.add(pocket.clone(), 16), 1);
+        assert_eq!(st.add(filter.clone(), 16), 0);
+        assert_eq!(
+            st.add(
+                ItemStack {
+                    count: 20,
+                    ..pocket.clone()
+                },
+                16
+            ),
+            15
+        );
+        let taken = st.take(1).unwrap();
+        assert!(taken.same_item_same_components(&pocket));
+        assert_eq!(taken.count, 1);
+        assert_eq!(st.inventory.as_ref().unwrap().count, 15);
+        assert_eq!(st.take(u32::MAX).unwrap().count, 15);
+        assert!(st.inventory.is_none());
+        assert!(
+            m.extra
+                .main_hand_stack()
+                .unwrap()
+                .same_item_same_components(&filter)
+        );
+        assert_eq!(m.extra.main_hand_stack().unwrap().count, 1);
     }
 
     #[test]
