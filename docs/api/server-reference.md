@@ -17,7 +17,7 @@ Usage: horizon-server [--dir DIR] <command>
               --offline --yes)
   run         Run the server in the foreground; type console commands, Ctrl-C stops it cleanly. It
               restarts the game if it crashes.
-  start       Run the server in the background (its output goes to logs/supervisor.log)
+  start       Run the server in the background, or resume a stopped supervisor (output goes to logs/supervisor.log)
   stop, restart
   status [--json]
               Up or not, TPS, MSPT, players, RAM and CPU
@@ -166,6 +166,7 @@ HTTP and JSON on 127.0.0.1. A running server writes its address and a random tok
 | `GET` | `/api/v1/events` | `?since=N` (or `Last-Event-ID`), `?types=join,leave,kick,chat,chat_filtered,death,log,phase` (all by default) | with `Accept: text/event-stream`, server-sent events as they happen (`id`, `event`: the type, `data`: JSON); otherwise `{"next": N, "events": [...]}` | Log lines, the supervisor's phase, and the game's joins, leaves, kicks, chat, messages the chat filter refused (`chat_filtered`, without their text) and deaths (the last 2000 kept) |
 | `POST` | `/api/v1/command` | `{"line": "<one command>"}` | the lines the command logged | Run a console command on the running game |
 | `POST` | `/api/v1/stop` | nothing | `{"ok": true}` | Stop the game and the supervisor |
+| `POST` | `/api/v1/start` | nothing | `{"ok": true}` | Start the game while keeping the supervisor and API running |
 | `POST` | `/api/v1/restart` | nothing | `{"ok": true}` | Restart the game |
 | `GET` | `/api/v1/backups` | nothing | `{"backups": [{"name", "bytes"}]}` | List the backups |
 | `POST` | `/api/v1/backups` | `{"name": "..."}` (optional) | `{"name": "<file>"}` | Back up now (a running game saves first and stays up) |

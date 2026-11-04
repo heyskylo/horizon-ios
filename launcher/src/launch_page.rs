@@ -427,7 +427,7 @@ impl Launcher {
                     .left(px(f * (TRACK - 16.)))
                     .size(px(16.))
                     .rounded_full()
-                    .bg(gpui::white()),
+                    .bg(crate::glass_ui::paper()),
             )
             .on_mouse_down(
                 MouseButton::Left,
@@ -457,14 +457,10 @@ impl Launcher {
                 &[("mb", &mb.to_string())],
             )),
             MemorySaved::Ok(None) => div().child(tr("Saved: no memory limit on the next Play.")),
-            MemorySaved::Invalid => div()
-                .text_color(ui::color(horizon_theme::glass::DANGER))
-                .child(tr(
-                    "Type a number of MB like 4096, or 4gb, or leave it empty for no limit.",
-                )),
-            MemorySaved::Error(e) => div()
-                .text_color(ui::color(horizon_theme::glass::DANGER))
-                .child(e.clone()),
+            MemorySaved::Invalid => div().text_color(ui::danger()).child(tr(
+                "Type a number of MB like 4096, or 4gb, or leave it empty for no limit.",
+            )),
+            MemorySaved::Error(e) => div().text_color(ui::danger()).child(e.clone()),
         });
         let note = div()
             .flex()
