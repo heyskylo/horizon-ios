@@ -71,6 +71,9 @@ file = "weather.wgsl"
 resolution = 2048          # its side in texels, 256 to 8192
 distance = 128.0           # half the side of the square it covers, in blocks, 32 to 512
 solid_materials = [10]     # optional: [[materials]] ids drawn into the map whole, cutouts ignored
+option = "shadows"         # optional: drawn while this option is not 0 (else always); off, there is no shadow pass
+resolution_option = "shadow_resolution"   # optional: an int, or a choice of numbers, whose value replaces resolution
+distance_option = "shadow_distance"       # optional: the same for distance
 
 [[post]]                   # full-screen passes, in the order they run (8 at most)
 file = "post/grade.wgsl"
@@ -169,6 +172,9 @@ and particles (the material stage covers terrain only).
 
 - 2026-11-03: API 0.1 (no change to packs): float and int `[[options]]` are sliders on the options page, on their
   `step`; the value is saved, and the pack rebuilt, when the slider is let go.
+- 2026-11-03: API 0.1 (additions): `[shadow] option`, `resolution_option` and `distance_option`: a pack's
+  options can turn its shadow map off (no map, no shadow pass, `has_shadow` 0) and pick its size, so
+  one pack offers its own quality levels. The options sizing the map need no `override`.
 - 2026-11-03: API 0.1 (additions): with `[shadow]`, `[displacement]`'s grid casts into the shadow map in
   the flat faces' place, so the relief shadows itself.
 - 2026-11-03: API 0.1 (additions): `[displacement]` draws: near the camera the faces with LabPBR relief are a

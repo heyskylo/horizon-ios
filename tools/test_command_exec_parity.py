@@ -39,8 +39,8 @@ except ImportError:
 SEED = 1
 
 
-def install_datapack_fixtures(world, predicates, functions, jar):
-    if not predicates and not functions:
+def install_datapack_fixtures(world, predicates, functions, jar, advancements=None):
+    if not predicates and not functions and not advancements:
         return
     with zipfile.ZipFile(jar) as archive:
         version = json.loads(archive.read('version.json'))['pack_version']
@@ -60,6 +60,12 @@ def install_datapack_fixtures(world, predicates, functions, jar):
         target = pack / 'data' / namespace / 'function' / (path + '.mcfunction')
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(contents, encoding='utf-8')
+
+    for identifier, advancement in (advancements or {}).items():
+        namespace, path = identifier.split(':', 1)
+        target = pack / 'data' / namespace / 'advancement' / (path + '.json')
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps(advancement), encoding='utf-8')
 
 
 def main():
@@ -122,12 +128,13 @@ def main():
                                             ensure_ascii=False) + '\n' for op in script), encoding='utf-8')
     predicates = corpus_module.predicate_selector_fixtures([name for name, _ in groups])
     functions = corpus_module.function_return_fixtures([name for name, _ in groups])
+    advancements = corpus_module.advancement_reward_fixtures([name for name, _ in groups])
 
     run(['javac', '--release', lock['minecraft']['java_major'], '-proc:none', '-cp', str(jars['server']) + os.pathsep + dependency_path, '-d', classes, oracle], 'compile-java')
     vanilla_dir = build / 'vanilla'
     shutil.rmtree(vanilla_dir, ignore_errors=True)
     vanilla_dir.mkdir()
-    install_datapack_fixtures(vanilla_dir / 'universe/harness', predicates, functions, jars['server'])
+    install_datapack_fixtures(vanilla_dir / 'universe/harness', predicates, functions, jars['server'], advancements)
     run(['java', '-Xmx3G', '-Duser.timezone=UTC', '-cp', os.pathsep.join([str(classes), str(jars['server']), dependency_path]),
          'dev.horizonlab.parity.VanillaCommandExecOracle', vanilla_dir / 'universe', script_path, build / 'vanilla.jsonl', SEED], 'java', cwd=vanilla_dir)
 
@@ -140,7 +147,7 @@ def main():
     rust_dir = build / 'rust'
     shutil.rmtree(rust_dir, ignore_errors=True)
     rust_dir.mkdir()
-    install_datapack_fixtures(rust_dir / 'saves/harness', predicates, functions, jars['server'])
+    install_datapack_fixtures(rust_dir / 'saves/harness', predicates, functions, jars['server'], advancements)
     # The oracle's Services resolve no profile (/fetchprofile fails on the next tick): the game gets no services
     # either, a discovery address that refuses at once, rather than Mojang's over the network.
     env = lab.game_env(HORIZON_PLAYER_NAME="Player", HORIZON_COMMAND_SCRIPT=script_path,

@@ -82,9 +82,7 @@ impl Launcher {
                     title
                 };
                 let day = glass_versions::published(&release.date, "");
-                // `gap-2.5`: the bottom margin `column` counts each row's gap in.
                 crate::glass::plate(radius::PANEL)
-                    .mb(px(10.))
                     .flex()
                     .flex_col()
                     .gap(px(12.))

@@ -1103,6 +1103,11 @@ pub fn mob_to_nbt(
                 string(crate::mobs::copper_golem::WEATHER[m.extra.variant.min(3) as usize]),
             );
         }
+        // Ghast.addAdditionalSaveData; Horizon's ghast fires power 1 whatever
+        // is saved, so a loaded value is kept as is.
+        "minecraft:ghast" => {
+            map.entry("ExplosionPower".into()).or_insert(Tag::Byte(1));
+        }
         _ => {}
     }
     // Zombie.addAdditionalSaveData: CanBreakDoors.
@@ -2134,7 +2139,7 @@ pub fn item_entity_to_nbt(e: &ItemEntity, uuid: [i32; 4], raw: Option<&Tag>) -> 
         uuid,
         position: e.position,
         motion: e.velocity,
-        rotation: [0.0, 0.0],
+        rotation: e.rotation,
         on_ground: e.on_ground,
         fall_distance: 0.0,
     };
@@ -2188,6 +2193,7 @@ pub fn tnt_to_nbt(
     fuse: i32,
     power: f32,
     block_state: Tag,
+    rotation: [f32; 2],
     uuid: [i32; 4],
     raw: Option<&Tag>,
 ) -> Tag {
@@ -2196,7 +2202,7 @@ pub fn tnt_to_nbt(
         uuid,
         position,
         motion,
-        rotation: [0.0, 0.0],
+        rotation,
         on_ground,
         fall_distance: 0.0,
     }
@@ -2240,6 +2246,7 @@ pub fn item_entity_from_nbt(tag: &Tag, id: u32, bob_offset: f32) -> Option<ItemE
     let stack = item_from_nbt(tag.get("Item")?)?;
     let position = position(tag)?;
     Some(ItemEntity {
+        rotation: rotation(tag),
         join: Default::default(),
         no_gravity: flag(tag, "NoGravity"),
         health: number(tag.get("Health")).unwrap_or(5) as i32,
@@ -2319,7 +2326,7 @@ pub fn orb_to_nbt(o: &ExperienceOrb, uuid: [i32; 4]) -> Tag {
         uuid,
         position: o.position,
         motion: o.velocity,
-        rotation: [0.0, 0.0],
+        rotation: o.rotation,
         on_ground: o.on_ground,
         fall_distance: 0.0,
     };
@@ -2345,6 +2352,7 @@ pub fn orbs_from_nbt(tag: &Tag) -> Vec<ExperienceOrb> {
     };
     let count = number(tag.get("Count")).unwrap_or(1).max(1) as u32;
     let orb = ExperienceOrb {
+        rotation: rotation(tag),
         join: Default::default(),
         no_gravity: flag(tag, "NoGravity"),
         id: 0,
@@ -2514,6 +2522,12 @@ pub fn fireball_to_nbt(
         Tag::Double(p.acceleration.to_bits()),
     );
     put_projectile(&mut tag, p, owner);
+    // AbstractHurtingProjectile.tick: shouldBurn is true for both fireballs, so
+    // once ticked they igniteForSeconds(1) every tick.
+    if p.age > 0 && !p.kind.ignores_blast() {
+        let fire = number(tag.get("Fire")).unwrap_or(0).max(20);
+        put(&mut tag, "Fire", Tag::Short(fire as i16));
+    }
     if let Some(power) = power {
         put(&mut tag, "ExplosionPower", Tag::Byte(power as i8));
     }
@@ -2792,6 +2806,7 @@ pub fn firework_rocket_from_nbt(tag: &Tag, player: Option<[i32; 4]>) -> Option<R
 /// What `FireworkRocketEntity.addAdditionalSaveData` writes, over `Projectile`'s
 /// Owner and LeftOwner.
 pub struct RocketSave<'a> {
+    pub rotation: [f32; 2],
     pub position: Vec3,
     pub motion: Vec3,
     pub life: i32,
@@ -2807,7 +2822,7 @@ pub fn firework_rocket_to_nbt(r: &RocketSave, uuid: [i32; 4], raw: Option<&Tag>)
         uuid,
         position: r.position,
         motion: r.motion,
-        rotation: [0.0, 0.0],
+        rotation: r.rotation,
         on_ground: false,
         fall_distance: 0.0,
     }
@@ -2856,6 +2871,11 @@ pub fn trident_to_nbt(t: &TridentSave, uuid: [i32; 4], raw: Option<&Tag>) -> Tag
         fall_distance: 0.0,
     }
     .tag(raw);
+    // Projectile.addAdditionalSaveData: LeftOwner once set. A trident keeps no
+    // owner, and an ownerless projectile has left it on its first tick.
+    if let Tag::Compound(map) = &mut tag {
+        map.entry("LeftOwner".into()).or_insert(Tag::Byte(1));
+    }
     for (key, value) in [
         ("life", Tag::Short(t.life as i16)),
         ("shake", Tag::Byte(t.shake as i8)),
@@ -2928,6 +2948,7 @@ pub fn falling_block_to_nbt(
     drop_item: bool,
     damage: crate::falling_block::Damage,
     fall_distance: f64,
+    rotation: [f32; 2],
     uuid: [i32; 4],
 ) -> Tag {
     let base = Base {
@@ -2935,7 +2956,7 @@ pub fn falling_block_to_nbt(
         uuid,
         position,
         motion,
-        rotation: [0.0, 0.0],
+        rotation,
         on_ground: false,
         fall_distance,
     };
@@ -3143,7 +3164,7 @@ pub fn armor_stand_to_nbt(a: &ArmorStand, uuid: [i32; 4], raw: Option<&Tag>) -> 
         uuid,
         position: a.position,
         motion: a.velocity,
-        rotation: [a.yaw, 0.0],
+        rotation: [a.yaw, a.pitch],
         on_ground: a.on_ground,
         fall_distance: 0.0,
     };
@@ -3286,7 +3307,7 @@ pub fn boat_to_nbt(
     id: &str,
     position: Vec3,
     motion: Vec3,
-    yaw: f32,
+    rotation: [f32; 2],
     uuid: [i32; 4],
     raw: Option<&Tag>,
     items: Option<&[Option<crate::items::ItemStack>]>,
@@ -3296,7 +3317,7 @@ pub fn boat_to_nbt(
         uuid,
         position,
         motion,
-        rotation: [yaw, 0.0],
+        rotation,
         on_ground: false,
         fall_distance: 0.0,
     }
@@ -3311,7 +3332,7 @@ pub fn vehicle_to_nbt(
     id: &str,
     position: Vec3,
     motion: Vec3,
-    yaw: f32,
+    rotation: [f32; 2],
     uuid: [i32; 4],
     raw: Option<&Tag>,
 ) -> Tag {
@@ -3320,7 +3341,7 @@ pub fn vehicle_to_nbt(
         uuid,
         position,
         motion,
-        rotation: [yaw, 0.0],
+        rotation,
         on_ground: false,
         fall_distance: 0.0,
     }
@@ -3549,6 +3570,7 @@ mod tnt_power_tests {
             20,
             10.0,
             string("minecraft:tnt"),
+            [0.0, 0.0],
             [1, 2, 3, 4],
             None,
         );
@@ -3560,6 +3582,7 @@ mod tnt_power_tests {
             20,
             4.0,
             string("minecraft:tnt"),
+            [0.0, 0.0],
             [1, 2, 3, 4],
             None,
         );
@@ -3895,6 +3918,7 @@ mod tests {
         let item = ItemStack::new("minecraft:firework_rocket", 1);
         let tag = firework_rocket_to_nbt(
             &RocketSave {
+                rotation: [0.0, 0.0],
                 position: Vec3::new(1.5, 70.0, -3.25),
                 motion: Vec3::new(0.0, 0.5, 0.0),
                 life: 7,
@@ -4049,6 +4073,7 @@ mod tests {
             false,
             damage,
             19.75,
+            [0.0, 0.0],
             [1, 2, 3, 4],
         );
         let (loaded_state, pos, motion, age, distance) = falling_block_from_nbt(&tag).unwrap();
@@ -4093,6 +4118,7 @@ mod tests {
                 false,
                 &fluids,
                 &[],
+                None,
                 None,
             )
         };
@@ -4162,6 +4188,7 @@ mod tests {
     #[test]
     fn item_entities_round_trip() {
         let e = ItemEntity {
+            rotation: [0.0, 0.0],
             join: Default::default(),
             no_gravity: false,
             health: 2,
@@ -4267,10 +4294,45 @@ mod tests {
         assert_eq!(number(tag.get("Health")), Some(5));
     }
     #[test]
+    fn saved_rotation_is_the_entitys_own() {
+        // `/tp <entity> x y z 90 10` sets the entity's yaw and pitch; the save
+        // (`/data get ... Rotation`) writes them, not [0, 0].
+        let tnt = tnt_to_nbt(
+            Vec3::ZERO,
+            Vec3::ZERO,
+            false,
+            20,
+            4.0,
+            string("minecraft:tnt"),
+            [90.0, 10.0],
+            [1; 4],
+            None,
+        );
+        assert_eq!(rotation(&tnt), [90.0, 10.0]);
+        let mut stand = ArmorStand::new(1, Vec3::ZERO, 0.0);
+        stand.yaw = 90.0;
+        stand.pitch = 10.0;
+        assert_eq!(
+            rotation(&armor_stand_to_nbt(&stand, [1; 4], None)),
+            [90.0, 10.0]
+        );
+        let cart = vehicle_to_nbt(
+            "minecraft:minecart",
+            Vec3::ZERO,
+            Vec3::ZERO,
+            [90.0, 10.0],
+            [1; 4],
+            None,
+        );
+        assert_eq!(rotation(&cart), [90.0, 10.0]);
+    }
+
+    #[test]
     fn entities_without_fire_save_zero_and_a_mob_saves_its_speed_instance() {
         // Entity.remainingFireTicks starts at 0; LivingEntity.removeFrost makes
         // the movement_speed instance AttributeMap.pack then saves.
         let orb = ExperienceOrb {
+            rotation: [0.0, 0.0],
             join: Default::default(),
             no_gravity: false,
             id: 0,
@@ -4308,8 +4370,32 @@ mod tests {
         assert_eq!(attributes(&armor_stand_from_nbt(&saved, 1).unwrap()), speed);
     }
     #[test]
+    fn ghast_and_trident_save_their_always_present_keys() {
+        let trident = ItemStack::new("minecraft:trident", 1);
+        let tag = trident_to_nbt(
+            &TridentSave {
+                position: Vec3::ZERO,
+                motion: Vec3::ZERO,
+                yaw: 0.0,
+                pitch: 0.0,
+                in_ground: false,
+                life: 0,
+                shake: 0,
+                dealt_damage: false,
+                creative_only: false,
+                no_gravity: false,
+                fire_ticks: 0,
+                item: &trident,
+            },
+            [0; 4],
+            None,
+        );
+        assert_eq!(tag.get("LeftOwner"), Some(&Tag::Byte(1)));
+    }
+    #[test]
     fn orbs_keep_their_count() {
         let o = ExperienceOrb {
+            rotation: [0.0, 0.0],
             join: Default::default(),
             no_gravity: false,
             id: 0,

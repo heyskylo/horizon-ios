@@ -1088,7 +1088,8 @@ pub fn base_transform(m: &Mob, alpha: f32, camera: glam::DVec3) -> glam::Mat4 {
         m.previous.y + (m.position.y - m.previous.y) * a,
         m.previous.z + (m.position.z - m.previous.z) * a,
     ) - camera
-        + enderman_render_offset(m, alpha);
+        + enderman_render_offset(m, alpha)
+        + super::shulker::render_offset(m, alpha);
     base_transform_at(m, alpha, glam::Mat4::from_translation(p.as_vec3()))
 }
 /// `EndermanRenderer.getRenderOffset`: a creepy (angry) enderman is moved by

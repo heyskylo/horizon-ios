@@ -60,6 +60,7 @@ struct Pipelines {
     luma_pyramid: wgpu::ComputePipeline,
     scd_histogram: wgpu::ComputePipeline,
     scd_divergence: wgpu::ComputePipeline,
+    scd_finalize: wgpu::ComputePipeline,
     search: wgpu::ComputePipeline,
     filter: wgpu::ComputePipeline,
     scale: wgpu::ComputePipeline,
@@ -84,6 +85,7 @@ pub struct OpticalFlow {
     frames: [Frame; 2],
     filter: [wgpu::BindGroup; LEVELS],
     scd_divergence: wgpu::BindGroup,
+    scd_finalize: wgpu::BindGroup,
     scd_histogram: wgpu::Buffer,
     scd_previous_histogram: wgpu::Buffer,
     scd_temp: wgpu::Buffer,
@@ -183,6 +185,7 @@ impl OpticalFlow {
             luma_pyramid: pipeline("luma_pyramid"),
             scd_histogram: pipeline("scd_histogram_pass"),
             scd_divergence: pipeline("scd_divergence_pass"),
+            scd_finalize: pipeline("scd_finalize_pass"),
             search: pipeline("search_pass"),
             filter: pipeline("filter_flow"),
             scale: pipeline("scale_pass"),
@@ -235,6 +238,7 @@ impl OpticalFlow {
             HISTOGRAM_WIDTH * 4,
         );
         let scd_temp = buffer(device, "Scene change temp", 12);
+        let scd_next_histogram = buffer(device, "Next scene change histogram", HISTOGRAM_WIDTH * 4);
         let scd_output = buffer(device, "Scene change detection", 12);
         let frame = |current: usize| {
             let (cur, prev) = (&luma[current], &luma[1 - current]);
@@ -302,7 +306,18 @@ impl OpticalFlow {
                 (7, whole(&scd_histogram)),
                 (8, whole(&scd_previous_histogram)),
                 (9, whole(&scd_temp)),
+                (11, whole(&scd_next_histogram)),
+            ],
+        );
+        let scd_finalize = bind(
+            device,
+            &pipelines.scd_finalize,
+            &[
+                (7, whole(&scd_histogram)),
+                (8, whole(&scd_previous_histogram)),
+                (9, whole(&scd_temp)),
                 (10, whole(&scd_output)),
+                (11, whole(&scd_next_histogram)),
             ],
         );
         Self {
@@ -312,6 +327,7 @@ impl OpticalFlow {
             frames,
             filter,
             scd_divergence,
+            scd_finalize,
             scd_histogram,
             scd_previous_histogram,
             scd_temp,
@@ -406,6 +422,7 @@ impl OpticalFlow {
             9,
         );
         run(&p.scd_divergence, &self.scd_divergence, 9, 3, 1);
+        run(&p.scd_finalize, &self.scd_finalize, 9, 1, 1);
         for level in (0..LEVELS).rev() {
             let luma = self.display.map(|v| (v >> level).max(1));
             run(
@@ -597,6 +614,22 @@ pub(super) mod tests {
             .collect()
     }
 
+    fn scd(device: &wgpu::Device, queue: &wgpu::Queue, flow: &OpticalFlow) -> u32 {
+        let mut encoder = device.create_command_encoder(&Default::default());
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: 12,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        encoder.copy_buffer_to_buffer(flow.scene_change(), 0, &buffer, 0, 12);
+        queue.submit([encoder.finish()]);
+        buffer.slice(..).map_async(wgpu::MapMode::Read, |_| {});
+        device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        let bytes = buffer.slice(..).get_mapped_range().unwrap().to_vec();
+        u32::from_le_bytes(bytes[4..8].try_into().unwrap())
+    }
+
     /// A frame moved right by 16 and down by 8: the blocks inside report where they were
     /// (-16, -8), and nothing reads as a scene change. A much darker frame then does.
     #[test]
@@ -630,24 +663,40 @@ pub(super) mod tests {
             inside.len(),
             &inside[..8]
         );
-        let scd = |device: &wgpu::Device, queue: &wgpu::Queue, flow: &OpticalFlow| {
-            let mut encoder = device.create_command_encoder(&Default::default());
-            let buffer = device.create_buffer(&wgpu::BufferDescriptor {
-                label: None,
-                size: 12,
-                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-                mapped_at_creation: false,
-            });
-            encoder.copy_buffer_to_buffer(flow.scene_change(), 0, &buffer, 0, 12);
-            queue.submit([encoder.finish()]);
-            buffer.slice(..).map_async(wgpu::MapMode::Read, |_| {});
-            device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
-            let bytes = buffer.slice(..).get_mapped_range().unwrap().to_vec();
-            u32::from_le_bytes(bytes[4..8].try_into().unwrap())
-        };
         assert_eq!(scd(&device, &queue, &flow) & 0xf, 0);
         run(&device, &queue, &mut flow, &other, false);
         assert_eq!(scd(&device, &queue, &flow) & 1, 1);
         assert!(vectors(&device, &queue, &flow).iter().all(|v| *v == [0, 0]));
+    }
+
+    #[test]
+    fn repeated_cuts_and_stable_frames_update_the_history() {
+        let Some((device, queue)) = device() else {
+            return;
+        };
+        let size = [384, 216];
+        let bright = upload(
+            &device,
+            &queue,
+            size,
+            &vec![255; (size[0] * size[1] * 4) as usize],
+        );
+        let dark_pixels: Vec<u8> = (0..size[0] * size[1])
+            .flat_map(|_| [0, 0, 0, 255])
+            .collect();
+        let dark = upload(&device, &queue, size, &dark_pixels);
+        let mut flow = OpticalFlow::new(&device, size);
+        run(&device, &queue, &mut flow, &bright, true);
+        for _ in 0..6 {
+            run(&device, &queue, &mut flow, &bright, false);
+        }
+        for frame in 0..16 {
+            let color = if frame % 2 == 0 { &dark } else { &bright };
+            run(&device, &queue, &mut flow, color, false);
+            assert_eq!(scd(&device, &queue, &flow) & 1, 1, "cut {frame}");
+            assert!(vectors(&device, &queue, &flow).iter().all(|v| *v == [0, 0]));
+            run(&device, &queue, &mut flow, color, false);
+            assert_eq!(scd(&device, &queue, &flow) & 1, 0, "stable frame {frame}");
+        }
     }
 }
