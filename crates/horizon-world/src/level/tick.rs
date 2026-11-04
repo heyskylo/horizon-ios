@@ -13,6 +13,7 @@ use horizon_core::{
     random::RandomSource,
     ticks::TickTypeId,
 };
+use std::rc::Rc;
 use std::sync::Arc;
 
 impl<L: LevelAccess + ?Sized> Sim<'_, L> {
@@ -1864,7 +1865,7 @@ impl Behaviours {
         level: &mut L,
         ticks: &mut Ticks,
         chunk: ChunkPos,
-        mut next_ticking: impl FnMut(&mut L, i32) -> Option<(i32, Option<Arc<RandomTickMask>>)>,
+        mut next_ticking: impl FnMut(&mut L, i32) -> Option<(i32, Option<Rc<RandomTickMask>>)>,
     ) {
         let speed = level.game_rules().random_tick_speed;
         if speed <= 0 {
@@ -1971,6 +1972,7 @@ impl RandomTickMask {
         }
         Self(bits)
     }
+    #[inline]
     pub fn may_tick(&self, pos: BlockPos) -> bool {
         let i = ((pos.y & 15) << 8 | (pos.z & 15) << 4 | (pos.x & 15)) as usize;
         self.0[i >> 6] >> (i & 63) & 1 != 0

@@ -39,7 +39,10 @@ pub use biomes::{
 };
 pub use block_ids::BlockIds;
 pub use condition::eval_condition;
-pub use config::{BUFFERS, Buffer, Config, Format, Kind, Shadow, buffer_index, draw_buffers};
+pub use config::{
+    BUFFERS, Buffer, Config, Format, Kind, SHADOW_COLORS, Shadow, buffer_index, draw_buffers,
+    shadow_color,
+};
 pub use core_shader::{BLOCKS, CoreProgram, Glue, SAMPLERS, translate_core};
 pub use custom::{Custom, Val};
 pub use discover::{Found, discover};

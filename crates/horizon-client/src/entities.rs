@@ -14,6 +14,7 @@ use crate::{
 use horizon_core::{
     geometry::{Aabb, Direction, Vec3, VoxelShape, border::BorderGeometry},
     position::BlockPos,
+    random::RandomSource,
 };
 use horizon_world::{
     block_collision::BlockCollisionRegistry,
@@ -119,6 +120,9 @@ pub struct ItemEntity {
     /// `Entity.stuckSpeedMultiplier`: set after a move by the cobweb or powder snow
     /// the item is in, scales (and stops) the next one.
     pub stuck: Vec3,
+    /// `Entity.wasTouchingWater`: the last fluid push. Entering water after
+    /// the first tick is what splashes.
+    pub was_touching_water: bool,
     /// `Entity.noGravity` (`NoGravity` in its save): `applyGravity` does nothing.
     pub no_gravity: bool,
     /// `Entity.verticalCollision`: the last move was stopped vertically.
@@ -127,6 +131,81 @@ pub struct ItemEntity {
     pub vertical_collision: bool,
     /// `Entity.horizontalCollision`: the last move was stopped on x or z.
     pub horizontal_collision: bool,
+}
+/// What `Entity.doWaterSplashEffect` asks the level to do for a dropped item.
+/// Particles are drawn on the client (`Level.addParticle` is empty on the
+/// server). The sound is `Entity.playSound`, which the server broadcasts;
+/// `ClientLevel.playSeededSound` ignores it when the except entity is null.
+#[derive(Clone, Copy, Debug)]
+pub enum ItemSplash {
+    Sound {
+        at: [f64; 3],
+        volume: f32,
+        pitch: f32,
+    },
+    Particle {
+        bubble: bool,
+        at: [f64; 3],
+        velocity: [f64; 3],
+    },
+}
+/// `Entity.doWaterSplashEffect` for a dropped item.
+struct ItemWater<'a, F> {
+    item: &'a mut ItemEntity,
+    random: &'a mut horizon_core::random::LegacyRandom,
+    splash: &'a mut F,
+}
+impl<F: FnMut(ItemSplash)> horizon_world::water_splash::WaterSplashWorld for ItemWater<'_, F> {
+    type Error = std::convert::Infallible;
+    type Entity = ();
+    type Sound = ();
+    fn this_entity(&self) {}
+    fn controlling_passenger(&mut self) -> Result<Option<()>, Self::Error> {
+        Ok(None)
+    }
+    fn velocity(&mut self, _: ()) -> Result<Vec3, Self::Error> {
+        Ok(self.item.velocity)
+    }
+    fn splash_sound(&mut self, _: bool) -> Result<(), Self::Error> {
+        Ok(())
+    }
+    fn random_float(&mut self) -> Result<f32, Self::Error> {
+        Ok(self.random.next_float())
+    }
+    fn random_double(&mut self) -> Result<f64, Self::Error> {
+        Ok(self.random.next_double())
+    }
+    fn play_sound(&mut self, _: (), volume: f32, pitch: f32) -> Result<(), Self::Error> {
+        let at = [
+            self.item.position.x,
+            self.item.position.y,
+            self.item.position.z,
+        ];
+        (self.splash)(ItemSplash::Sound { at, volume, pitch });
+        Ok(())
+    }
+    fn position(&self) -> Vec3 {
+        self.item.position
+    }
+    fn width(&self) -> f32 {
+        ItemEntity::WIDTH as f32
+    }
+    fn particle(
+        &mut self,
+        kind: horizon_world::water_splash::SplashParticle,
+        position: Vec3,
+        velocity: Vec3,
+    ) -> Result<(), Self::Error> {
+        (self.splash)(ItemSplash::Particle {
+            bubble: matches!(kind, horizon_world::water_splash::SplashParticle::Bubble),
+            at: [position.x, position.y, position.z],
+            velocity: [velocity.x, velocity.y, velocity.z],
+        });
+        Ok(())
+    }
+    fn splash_event(&mut self) -> Result<(), Self::Error> {
+        Ok(())
+    }
 }
 /// Environment results needed by the entity owner, including lethal lava damage.
 #[derive(Debug)]
@@ -197,13 +276,14 @@ impl ItemEntity {
         entity_boxes: &[Aabb],
         border: Option<&BorderGeometry>,
     ) -> bool {
-        let heights = self.update_fluids(world, fluids);
+        let (water, lava) = self.update_fluids(world, fluids);
+        self.water_entry(water > 0.0, self.ticks == 0, &mut |_| {});
         let step = self.tick_move(
             world,
             facts,
             collision,
             no_physics,
-            heights,
+            (water, lava),
             entity_boxes,
             border,
         );
@@ -216,7 +296,8 @@ impl ItemEntity {
             &mut self.velocity,
         );
         let alive = self.tick_settle(world, facts, no_physics, step);
-        self.update_fluids(world, fluids);
+        let (water, _) = self.update_fluids(world, fluids);
+        self.water_entry(water > 0.0, false, &mut |_| {});
         alive
     }
 }
@@ -318,6 +399,31 @@ impl ItemEntity {
         };
         let inner = self.bounds().deflate(Vec3::new(1.0e-7, 1.0e-7, 1.0e-7));
         !crate::collisions::no_collision_empty(&mut scene, inner)
+    }
+    /// `Entity.updateFluidInteraction`: entering water after the first tick
+    /// runs `doWaterSplashEffect`.
+    pub fn water_entry<F: FnMut(ItemSplash)>(
+        &mut self,
+        in_water: bool,
+        first_tick: bool,
+        splash: &mut F,
+    ) {
+        if in_water && !self.was_touching_water && !first_tick {
+            let mut random = horizon_core::random::LegacyRandom::new(
+                (self.id as i64)
+                    .wrapping_mul(0x5DEECE66D)
+                    .wrapping_add(self.ticks as i64),
+            );
+            let _ = horizon_world::water_splash::water_splash(
+                &mut ItemWater {
+                    item: self,
+                    random: &mut random,
+                    splash,
+                },
+                1_000_000,
+            );
+        }
+        self.was_touching_water = in_water;
     }
     /// `Entity.moveTowardsClosestSpace` from the middle of the item's box:
     /// towards the nearest side of its block (north, south, west, east or
@@ -1408,6 +1514,11 @@ pub struct ArmorStand {
     pub enchantment_equipment: [Option<ItemStack>; 6],
     /// `Entity.mainSupportingBlockPos` after the last move.
     pub support: horizon_world::ground_support::GroundState,
+    /// Its `AttributeMap` holds a `movement_speed` instance, which
+    /// `AttributeMap.pack` saves. `LivingEntity.aiStep`'s `removeFrost` makes it
+    /// (`getAttribute`) on the stand's first server tick, and a save that lists
+    /// it loads it back, so a stand summoned this tick has none yet.
+    pub speed_instance: bool,
 }
 /// The fluid a stand travels in (`LivingEntity.travelInFluid`: water first,
 /// then lava), from the heights `Entity::push_by_fluid` measured.
@@ -1579,6 +1690,7 @@ impl ArmorStand {
             enchantment_fall_distance: 0.0,
             enchantment_equipment: Default::default(),
             support: Default::default(),
+            speed_instance: false,
         }
     }
     /// `Entity.getOnPos(0.2)` (`getOnPosLegacy`): the supporting block's
@@ -1950,6 +2062,7 @@ mod fire_environment_tests {
             ticks: 0,
             needs_sync: false,
             stuck: Vec3::ZERO,
+            was_touching_water: false,
         };
         let mut wood = make("minecraft:oak_planks");
         let mut metal = make("minecraft:netherite_ingot");
@@ -2078,6 +2191,7 @@ mod destroyed_bundle_environment_tests {
             ticks: 0,
             needs_sync: false,
             stuck: Vec3::ZERO,
+            was_touching_water: false,
         };
         // 5 health against 4 a tick: the first tick leaves 1 and nothing out.
         let first = bundle.environment_tick(&world, &facts, assets.registry, &items);
@@ -2180,6 +2294,7 @@ mod merge_tests {
             ticks: age.max(0) as u32,
             needs_sync: false,
             stuck: Vec3::ZERO,
+            was_touching_water: false,
         }
     }
     fn max_stack(stack: &ItemStack) -> u32 {
@@ -2604,6 +2719,7 @@ mod honey_slide_tests {
             ticks: 10,
             needs_sync: false,
             stuck: Vec3::ZERO,
+            was_touching_water: false,
         }
     }
 
@@ -2753,6 +2869,7 @@ mod slime_bounce_tests {
             ticks: 10,
             needs_sync: false,
             stuck: Vec3::ZERO,
+            was_touching_water: false,
         }
     }
 
@@ -3454,6 +3571,7 @@ mod item_destroyed_tests {
             ticks: 0,
             needs_sync: false,
             stuck: Vec3::ZERO,
+            was_touching_water: false,
         }
     }
 
@@ -3551,18 +3669,12 @@ mod render_light_tests {
         // Sky 15, block 0 (daylight): sky stays 15, block goes to 7.
         assert_eq!(
             orb(64.0).render_light(light(15, 0)),
-            (15 * 16) | (7 * 16 << 8)
+            (15 * 16) | ((7 * 16) << 8)
         );
         // A dark cave: sky 0, block 0 -> block 7, and no invented sky light.
-        assert_eq!(
-            orb(20.0).render_light(light(0, 0)),
-            (0 * 16) | (7 * 16 << 8)
-        );
+        assert_eq!(orb(20.0).render_light(light(0, 0)), (7 * 16) << 8);
         // Torchlight 9 -> 15, the clamp, not 16.
-        assert_eq!(
-            orb(20.0).render_light(light(0, 9)),
-            (0 * 16) | (15 * 16 << 8)
-        );
+        assert_eq!(orb(20.0).render_light(light(0, 9)), (15 * 16) << 8);
         assert_eq!(
             orb(20.0).render_light(light(15, 15)),
             (15 * 16) | (15 * 16 << 8)
