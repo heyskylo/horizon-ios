@@ -137,6 +137,11 @@ impl Game<'_> {
             }
         }
     }
+    /// Once per frame: the options that live outside the game's state.
+    pub(super) fn pvp_frame(&mut self) {
+        let tweaks = self.settings.extras.pvp.tweaks;
+        horizon_client::enchant::set_numeric_levels(tweaks.numeric_enchants);
+    }
     /// This player attacked entity `id` (the combo counter waits for the server's report).
     pub(super) fn pvp_attacked(&mut self, id: i32) {
         let now = self.started.elapsed().as_secs_f64();

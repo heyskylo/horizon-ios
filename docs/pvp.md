@@ -70,3 +70,9 @@ box's quads. With nothing changing, a frame allocates nothing.
 - **Combo counter** (top left): your hits in a row, each counted when the server reports the entity you just
   attacked hurt (`ClientboundDamageEventPacket` within a second of the swing); back to 0 when you are hurt or
   3 seconds pass without a hit. It counts what the game already shows (the target's hurt flash).
+
+## Enchantment levels as numbers (`numericEnchants`, default off)
+
+`Enchantment.getFullname` with the level as a number ("Sharpness 5", also past vanilla's numerals: "Sharpness 255")
+wherever the client names an enchantment (tooltips, the enchanting table's hint). A one-level enchantment still has
+none ("Mending"). Code: `horizon_items::enchant::set_numeric_levels`, set each frame from the option.

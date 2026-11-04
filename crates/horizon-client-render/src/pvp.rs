@@ -505,12 +505,20 @@ fn corner_label(c: Corner) -> String {
     crate::lang::get_or(&format!("horizon.pvp.corner.{}", c.name()), c.label())
 }
 
+/// Smaller changes to what vanilla shows.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Tweaks {
+    /// Enchantment levels as numbers in tooltips ("Sharpness 5").
+    pub numeric_enchants: bool,
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Pvp {
     pub crosshair: Crosshair,
     pub outline: Outline,
     pub hit: Hit,
     pub hud: Hud,
+    pub tweaks: Tweaks,
 }
 fn flag(value: &str, d: bool) -> bool {
     match value {
@@ -527,6 +535,7 @@ impl Pvp {
     pub fn parse_line(&mut self, key: &str, value: &str) -> bool {
         let c = &mut self.crosshair;
         let (o, h, u) = (&mut self.outline, &mut self.hit, &mut self.hud);
+        let t = &mut self.tweaks;
         match key {
             "crosshair" => c.custom = flag(value, c.custom),
             "crosshairShape" => c.shape = Shape::parse(value).unwrap_or(c.shape),
@@ -571,6 +580,7 @@ impl Pvp {
             "hudServerCorner" => u.server_corner = Corner::parse(value, u.server_corner),
             "hudCombo" => u.combo = flag(value, u.combo),
             "hudComboCorner" => u.combo_corner = Corner::parse(value, u.combo_corner),
+            "numericEnchants" => t.numeric_enchants = flag(value, t.numeric_enchants),
             _ => return false,
         }
         true
@@ -630,6 +640,7 @@ impl Pvp {
             u.combo,
             u.combo_corner.name(),
         );
+        let _ = writeln!(out, "numericEnchants:{}", self.tweaks.numeric_enchants);
     }
 }
 
@@ -701,6 +712,8 @@ opts! {
         "Hits in a row the server confirmed, until you are hurt or 3 seconds pass without one.";
     HudComboCorner, "hud_combo_corner", "Combo corner", "Where the combo shows.";
     HudBackground, "hud_background", "Widget backgrounds", "A dark box behind each widget.";
+    NumericEnchants, "numeric_enchants", "Enchantment levels as numbers",
+        "Tooltips and the enchanting table show Sharpness 5 instead of Sharpness V.";
 }
 /// The PvP & HUD page: headers (language keys) and options.
 pub fn rows() -> Vec<Result<Opt, &'static str>> {
@@ -755,6 +768,8 @@ pub fn rows() -> Vec<Result<Opt, &'static str>> {
         ]
         .map(Ok),
     );
+    rows.push(Err("horizon.pvp.header.items"));
+    rows.push(Ok(NumericEnchants));
     rows
 }
 impl Opt {
@@ -766,7 +781,7 @@ impl Opt {
             OutlineColour | OutlineOpacity | OutlineThickness | OutlineFill => Some(Outline),
             HitColour | HitOpacity => Some(Hit),
             HudArmour | HudEffects | HudHeld | HudPing | HudCoords | HudServer | HudCombo
-            | HudBackground => None,
+            | HudBackground | NumericEnchants => None,
             HudPingCorner => Some(HudPing),
             HudCoordsCorner => Some(HudCoords),
             HudServerCorner => Some(HudServer),
@@ -794,6 +809,7 @@ impl Opt {
             Opt::HudCoords => p.hud.coords,
             Opt::HudServer => p.hud.server,
             Opt::HudCombo => p.hud.combo,
+            Opt::NumericEnchants => p.tweaks.numeric_enchants,
             _ => return None,
         })
     }
@@ -885,6 +901,7 @@ impl Opt {
             Opt::HudServerCorner => u.server_corner = corner(u.server_corner),
             Opt::HudCombo => u.combo = !u.combo,
             Opt::HudComboCorner => u.combo_corner = corner(u.combo_corner),
+            Opt::NumericEnchants => p.tweaks.numeric_enchants = !p.tweaks.numeric_enchants,
         }
     }
 }

@@ -653,5 +653,8 @@
   "horizon.pvp.hud.direction.north": "North",
   "horizon.pvp.hud.direction.south": "South",
   "horizon.pvp.hud.direction.east": "East",
-  "horizon.pvp.hud.direction.west": "West"
+  "horizon.pvp.hud.direction.west": "West",
+  "horizon.pvp.numeric_enchants": "Enchantment levels as numbers",
+  "horizon.pvp.numeric_enchants.tooltip": "Tooltips and the enchanting table show Sharpness 5 instead of Sharpness V.",
+  "horizon.pvp.header.items": "Items"
 }
