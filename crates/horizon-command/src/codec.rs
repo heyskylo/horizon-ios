@@ -122,6 +122,34 @@ fn element_or_list(t: &Tag, element: &dyn Fn(&Tag) -> Result<(), String>) -> Res
     Err(either(first, either(tag_ref, either(list, last))))
 }
 
+/// CompositeLootItemCondition.createCodec / InvertedLootItemCondition:
+/// required inline combinator children must decode before command execution.
+fn predicate_fields(id: &str, map: &Compound, t: &Tag, reg: &Registries) -> Result<(), String> {
+    match id.trim_start_matches("minecraft:") {
+        "all_of" | "any_of" => {
+            require(map, t, &["terms"])?;
+            let terms = get(map, "terms").expect("required field");
+            let Tag::List(terms) = terms else {
+                return Err(not_list(terms));
+            };
+            for term in terms {
+                decode("minecraft:predicate", term, reg)?;
+            }
+            Ok(())
+        }
+        "inverted" => {
+            require(map, t, &["term"])?;
+            decode(
+                "minecraft:predicate",
+                get(map, "term").expect("required field"),
+                reg,
+            )
+        }
+        // Other predicate families retain their existing codec/evaluator paths.
+        _ => Ok(()),
+    }
+}
+
 /// Decode an inline value of a ResourceOrIdArgument registry.
 pub fn decode(registry: &str, t: &Tag, reg: &Registries) -> Result<(), String> {
     match registry {
@@ -134,7 +162,9 @@ pub fn decode(registry: &str, t: &Tag, reg: &Registries) -> Result<(), String> {
             second.map_err(|e| either("Not a number".into(), e))
         }
         "minecraft:predicate" => {
-            dispatch(t, reg, "minecraft:loot_condition_type", &|_, _, _| Ok(()))
+            dispatch(t, reg, "minecraft:loot_condition_type", &|id, map, t| {
+                predicate_fields(id, map, t, reg)
+            })
         }
         "minecraft:item_modifier" => element_or_list(t, &|x| {
             dispatch(x, reg, "minecraft:loot_function_type", &|_, _, _| Ok(()))
@@ -202,4 +232,33 @@ pub fn resource_or_id(reader: &mut Reader, reg: &Registries, registry: &str) -> 
     let tag = super::snbt::parse_tag_argument(reader)?;
     decode(registry, &tag, reg)
         .map_err(|m| CommandError::tr_at("argument.resource_or_id.failed_to_parse", &[&m], reader))
+}
+
+#[cfg(test)]
+mod predicate_tests {
+    use super::*;
+
+    #[test]
+    fn inline_constant_combinators_require_decodable_children() {
+        let reg = Registries::default();
+        let decode_text = |text| {
+            let (tag, _) = horizon_world::nbt::parse_snbt(text).unwrap();
+            decode("minecraft:predicate", &tag, &reg)
+        };
+        assert!(decode_text(r#"{type:"minecraft:all_of",terms:[{type:"minecraft:inverted",term:{type:"minecraft:any_of",terms:[]}}]}"#).is_ok());
+        assert_eq!(
+            decode_text(r#"{type:"minecraft:all_of"}"#),
+            Err(r#"No key terms in MapLike[{type:"minecraft:all_of"}]"#.into())
+        );
+        assert_eq!(
+            decode_text(r#"{type:"minecraft:inverted"}"#),
+            Err(r#"No key term in MapLike[{type:"minecraft:inverted"}]"#.into())
+        );
+        for bad in [
+            r#"{type:"minecraft:all_of",terms:[{}]}"#,
+            r#"{type:"minecraft:inverted",term:{}}"#,
+        ] {
+            assert_eq!(decode_text(bad), Err("No key type in MapLike[{}]".into()));
+        }
+    }
 }

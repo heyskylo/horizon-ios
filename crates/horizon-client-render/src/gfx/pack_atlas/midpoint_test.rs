@@ -183,7 +183,7 @@ fn sample(
         }],
         vec![storage(0), storage(1)],
         vec![],
-        vec![storage(0), storage(1)],
+        vec![storage(0), storage(1), storage(2)],
     ];
     let layouts: Vec<_> = entries
         .iter()
@@ -268,11 +268,15 @@ fn sample(
         bytemuck::cast_slice(vertices),
         wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::VERTEX,
     );
+    let rects = buffer(
+        bytemuck::cast_slice(&atlas.rects_table()),
+        wgpu::BufferUsages::STORAGE,
+    );
     let bindings = [
         vec![(0, &uniform)],
         vec![(0, &slots), (1, &origin)],
         vec![],
-        vec![(0, &ids), (1, &data)],
+        vec![(0, &ids), (1, &data), (2, &rects)],
     ];
     let groups: Vec<_> = bindings
         .iter()
