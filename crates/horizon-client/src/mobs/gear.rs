@@ -190,8 +190,8 @@ pub fn protection(m: &Mob, kind: DamageKind) -> f32 {
     protection_points(g, kind).min(20.0)
 }
 pub fn protection_points(g: &Gear, kind: DamageKind) -> f32 {
-    // Protection's `damage_protection` skips only #bypasses_invulnerability;
-    // plain `generic` damage (the `/damage` default) is protected like any other.
+    // getDamageAfterMagicAbsorb returns before enchantments for #bypasses_effects;
+    // Protection itself skips #bypasses_invulnerability. Plain generic is protected.
     if kind.bypasses_invulnerability() || kind.bypasses_effects() {
         return 0.0;
     }
