@@ -81,12 +81,14 @@ start); the hedge places and its recipe crafts 4.
 
 ## The Mods page
 
-The launcher's **Mods** page has three tabs: **Mods** and **Shader packs** search Horizon's registry (a Java
-instance's Mods tab searches Modrinth for its version), **Resource packs** searches Modrinth. Modrinth's Java mods and
-data packs aren't usable yet, so the Mods tab has no source switch and Data packs has no tab; the CLI still reaches
-them (`mods search --kind ...`). The Modpacks tab shows only while the sidebar's modpacks or its + button have it
-open. Resource packs and Modpacks have a search field (Enter searches), **Show everything** and the source: Modrinth or
-Horizon, with **CurseForge (coming soon)** beside it, disabled. Each result is an index row: its summary, author,
+The launcher's **Mods** page has the five kinds as tabs: **Mods**, **Modpacks**, **Resource packs**, **Shader packs**
+and **Data packs**, each with a search field (Enter searches). Mods, Modpacks and Resource packs pick their source:
+Horizon's registry or Modrinth, with **CurseForge (coming soon)** beside them, disabled. Mods start on Horizon's
+registry; **Shader packs** search it only (Horizon's own `.hshader` packs), **Data packs** search Modrinth only and
+install into the world picked under the search. A Java instance's tabs always search Modrinth for its version and
+loader, with the version and loader filters. A Horizon instance searching Modrinth's Java mods sees them all, each
+marked **Works**, **Partly** or **Doesn't run in Horizon** once its jar is checked; **Show everything** adds what was
+made for other Minecraft versions. Each result is an index row: its summary, author,
 downloads, source and licence, how well it runs (and why), **Page** (the project's page on its source) and
 **Install** (**Import** for a modpack). The Modpacks tab lists the imported packs first, with their coverage
 report, **Port** and **Play** ([modpacks.md](modpacks.md)). Installed packs are listed above the results with their version, source,
@@ -125,9 +127,9 @@ browser installed from it, the URLs asked for in one request (`GET /projects?ids
 (`fabric.mod.json`/`quilt.mod.json` `icon`, `mods.toml` `logoFile`), read from the jar off the UI thread and scaled to
 the row; else a generic glyph. The tab builds only the rows near the view, so a pack of hundreds costs what a few do.
 
-**Vanilla Minecraft** is marked with a grass block drawn at run time from the player's own prepared game files
-(`assets/minecraft/textures/block/grass_block_*.png`, tinted with the plains grass colour): the game-version filter
-shows it. No Mojang file or logo is in the launcher or the repository.
+**Vanilla Minecraft** is marked with Horizon's own grass block (`launcher/assets/logos/grass-block.png`, drawn by
+`tools/launcher_grass_block.py` from our palette, not from Mojang's textures): the game-version filter, the Java Edition
+tab and plain Minecraft instances show it. No Mojang file or logo is in the launcher or the repository.
 
 **Source logos.** Modrinth's logo is not shown: Modrinth's own repository says its branding is all rights reserved and
 "the use of Modrinth branding elements, including but not limited to the wrench-in-labyrinth logo, ... is strictly

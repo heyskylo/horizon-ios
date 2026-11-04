@@ -194,7 +194,9 @@ impl Launcher {
                 };
                 let mut line = published(&release.date, &release.time);
                 let right = self.glass_release_action(&release, cx);
+                // `gap-2.5`: the bottom margin `column` counts each row's gap in.
                 self.glass_version_card(&release.tag, title, &mut line, i == 0, on_disk, right)
+                    .mb(px(10.))
             },
         );
         page.child(list)

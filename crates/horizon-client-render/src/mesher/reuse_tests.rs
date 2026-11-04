@@ -159,6 +159,60 @@ fn a_shader_pack_lights_the_faces_itself() {
     assert_eq!(colours(true).len(), 1);
 }
 
+/// Run explicitly with prepared assets. With a shader pack lighting the faces, every face of a
+/// block and of a lava source takes the dimension's up-face brightness, as Iris 1.11.7 gives our
+/// probe pack: 0.9 in the Nether (`CardinalLighting.NETHER`'s up, 229 of 255), 1.0 elsewhere.
+#[test]
+#[ignore = "requires prepared 26.3 resources (HORIZON_MESH_TEST_RESOURCES or .local/horizon-client/26.3)"]
+fn a_shader_pack_lights_every_nether_face_like_an_up_face() {
+    let root = std::env::var_os("HORIZON_MESH_TEST_RESOURCES")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../.local/horizon-client/26.3")
+        });
+    let assets = Assets::load(&root).unwrap();
+    let facts = BlockFacts::load(&root, assets.registry).unwrap();
+    let biomes = Biomes::load(&root).unwrap();
+    let render = assets.reload(&root).unwrap();
+    let visibility = crate::models::load_visibility(&root, assets.registry).unwrap();
+    let tables = MeshTables::new(&assets, &render, &facts, visibility.clone()).unwrap();
+    let state = |name| assets.registry.default_state(name).unwrap().0;
+    let mut chunk = Chunk::empty(0, 0);
+    chunk.set(4, MIN_Y + 8, 4, state("minecraft:netherrack"));
+    chunk.set(11, MIN_Y + 8, 11, state("minecraft:lava"));
+    let mut region = [[None; 3]; 3];
+    region[1][1] = Some(&chunk);
+    let colours = |nether_shading| {
+        let mut mesher = Mesher {
+            nether_shading,
+            shader_pack_lighting: true,
+            separate_ao: false,
+            assets: &assets,
+            render: &render,
+            tables: &tables,
+            biomes: &biomes,
+            visibility: visibility.clone(),
+            zoom: BiomeZoom::new(0),
+            blend_radius: 0,
+            smooth_lighting: false,
+            cutout_leaves: true,
+            translucent_layers: &[],
+            leaf_culling: LeafCullingMode::Off,
+        };
+        let mesh = mesher.mesh(&region, 0);
+        // Both blocks' six faces: 2 × 6 quads of 4 vertices.
+        let all: Vec<_> = mesh.solid.iter().chain(&mesh.translucent).collect();
+        assert!(all.len() >= 48, "{} vertices", all.len());
+        let mut colours: Vec<u32> = all.iter().map(|v| v.color & 0xFF_FFFF).collect();
+        colours.sort_unstable();
+        colours.dedup();
+        colours
+    };
+    assert_eq!(colours(true), [0xE5_E5E5]);
+    assert_eq!(colours(false), [0xFF_FFFF]);
+}
+
 #[test]
 #[ignore = "requires prepared 26.3 resources (HORIZON_MESH_TEST_RESOURCES or .local/horizon-client/26.3)"]
 fn separate_ao_passes_ao_in_alpha_without_darkening_rgb() {

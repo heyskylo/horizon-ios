@@ -2096,7 +2096,9 @@ impl Game<'_> {
                             let stack = g
                                 .with_hand(hand, |g| g.held().cloned())
                                 .unwrap_or_else(|| ItemStack::new("minecraft:air", 0));
-                            g.trigger_any_block_use(p.pos, &stack);
+                            horizon_client::spans::time("use_advancements", || {
+                                g.trigger_any_block_use(p.pos, &stack);
+                            });
                         }
                         g.forced_hit = None;
                         g.guest_use = None;
