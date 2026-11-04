@@ -167,6 +167,8 @@ and particles (the material stage covers terrain only).
 
 ## Changelog
 
+- 2026-11-03: API 0.1 (no change to packs): float and int `[[options]]` are sliders on the options page, on their
+  `step`; the value is saved, and the pack rebuilt, when the slider is let go.
 - 2026-11-03: API 0.1 (additions): with `[shadow]`, `[displacement]`'s grid casts into the shadow map in
   the flat faces' place, so the relief shadows itself.
 - 2026-11-03: API 0.1 (additions): `[displacement]` draws: near the camera the faces with LabPBR relief are a
