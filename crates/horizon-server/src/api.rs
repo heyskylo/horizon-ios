@@ -948,6 +948,128 @@ impl Client {
 mod tests {
     use super::*;
 
+    fn observability_reply(mut response: Response, dynamic: &[&str]) -> Value {
+        assert!(response.stream.is_none());
+        let mut body = serde_json::from_str::<Value>(&response.body)
+            .unwrap_or_else(|_| Value::String(response.body.clone()));
+        for field in dynamic {
+            if let Some(value) = body.get_mut(*field) {
+                *value = json!("<dynamic>");
+            }
+        }
+        if let Some(text) = body.as_str() {
+            let text = text
+                .lines()
+                .map(|line| {
+                    if line.starts_with("horizon_supervisor_uptime_seconds ") {
+                        "horizon_supervisor_uptime_seconds <dynamic>"
+                    } else {
+                        line
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            body = Value::String(if response.body.ends_with('\n') {
+                format!("{text}\n")
+            } else {
+                text
+            });
+        }
+        json!({
+            "status": response.status,
+            "content_type": response.content_type,
+            "headers": std::mem::take(&mut response.headers),
+            "body": body,
+        })
+    }
+
+    #[test]
+    fn observability_replies_match_api_v1_goldens() {
+        let golden: Value =
+            serde_json::from_str(include_str!("../testdata/api-v1-observability.json")).unwrap();
+        let dir = std::env::temp_dir().join(format!(
+            "horizon-server-api-observability-goldens-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let shared = Shared::with_install(&dir, None);
+        shared.set_phase(Phase::Stopped);
+        {
+            let mut state = shared.state.lock().unwrap();
+            state.crashes = 2;
+            state.last_crash = Some("exit status: 1".into());
+            state.sample = json!({
+                "t": 200,
+                "rss_bytes": 536_870_912u64,
+                "cpu_percent": 12.5,
+                "game": {
+                    "tps": 19.9,
+                    "target_tps": 20.0,
+                    "mspt": { "average": 8.25, "p50": 7.0, "p95": 12.5, "p99": 18.0 },
+                    "players": [{ "name": "Alex" }, { "name": "Steve" }],
+                    "max_players": 20,
+                    "chunks": 321,
+                },
+            });
+        }
+        shared.record(json!({ "t": 100, "game": { "tps": 20.0 } }));
+        shared.record(shared.state.lock().unwrap().sample.clone());
+        shared.log.lock().unwrap().push("first line".into());
+        shared.log.lock().unwrap().push("second line".into());
+
+        let call = |path: &str, query: &str, dynamic: &[&str]| {
+            observability_reply(
+                route(
+                    &shared,
+                    &Request {
+                        method: "GET".into(),
+                        path: path.into(),
+                        query: query.into(),
+                        headers: Vec::new(),
+                        body: Vec::new(),
+                    },
+                ),
+                dynamic,
+            )
+        };
+        let cases = [
+            (
+                "status_stopped",
+                "/api/v1/status",
+                "",
+                &["pid", "uptime_seconds"][..],
+            ),
+            ("logs_all", "/api/v1/logs", "", &[][..]),
+            ("logs_since", "/api/v1/logs", "since=1", &[][..]),
+            ("logs_invalid_since", "/api/v1/logs", "since=nope", &[][..]),
+            ("metrics_all", "/api/v1/metrics", "", &[][..]),
+            ("metrics_since", "/api/v1/metrics", "since=100", &[][..]),
+            (
+                "metrics_invalid_since",
+                "/api/v1/metrics",
+                "since=nope",
+                &[][..],
+            ),
+            (
+                "prometheus_stopped",
+                "/api/v1/metrics/prometheus",
+                "",
+                &[][..],
+            ),
+        ];
+        for (case, path, query, dynamic) in cases {
+            assert_eq!(call(path, query, dynamic), golden[case], "{case}");
+        }
+        shared.set_phase(Phase::Running);
+        assert_eq!(
+            call("/api/v1/metrics/prometheus", "", &[]),
+            golden["prometheus_running"],
+            "prometheus_running"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     #[test]
     fn log_keeps_the_last_lines_numbered() {
         let mut log = Log::default();
