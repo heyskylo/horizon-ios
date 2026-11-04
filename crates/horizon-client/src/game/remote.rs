@@ -509,6 +509,9 @@ pub(super) struct Remote {
     /// simulation-distance packet.
     pub(super) simulation_distance: i32,
     sequence: i32,
+    /// `BlockStatePredictionHandler.lastTeleportSequence`: the sequence of the last
+    /// teleport, so a prediction made before it keeps its block but not its snap.
+    last_teleport_sequence: i32,
     position_sender: horizon_client::player_sync::PositionSender,
     last_input: u8,
     was_sprinting: bool,
@@ -528,10 +531,10 @@ pub(super) struct Remote {
     /// again when a view distance, Chat, skin or Main Hand option changes).
     sent_info: horizon_protocol::packets::configuration::ClientInformation,
     /// BlockStatePredictionHandler: blocks changed ahead of the server (a predicted break),
-    /// with the sequence of the last action that changed them and the state the server
-    /// last said they have. Until the server acknowledges that sequence its block updates
-    /// only replace the remembered state; then the block takes it.
-    predictions: HashMap<[i32; 3], (i32, i32)>,
+    /// with what it remembers of each of them. Until the server acknowledges the
+    /// sequence its block updates only replace the remembered state; then the block
+    /// takes it.
+    predictions: HashMap<[i32; 3], Prediction>,
     /// Open container: (window id, menu name).
     pub(super) menu: Option<(i32, String)>,
     /// The crafting result slot of the open menu as the server last set it
@@ -1031,6 +1034,7 @@ impl Game<'_> {
             view_distance: self.settings.render_distance,
             simulation_distance: self.settings.simulation_distance,
             sequence: 0,
+            last_teleport_sequence: -1,
             position_sender: Default::default(),
             last_input: 0,
             was_sprinting: false,
@@ -2480,12 +2484,12 @@ impl Game<'_> {
     /// predicted state until the server acknowledges the action; the server's state is
     /// remembered for then.
     fn server_block(&mut self, pos: [i32; 3], state: i32) {
-        if let Some((_, known)) = self
+        if let Some(p) = self
             .remote
             .as_mut()
             .and_then(|r| r.predictions.get_mut(&pos))
         {
-            *known = state;
+            p.state = state;
             return;
         }
         self.set_block(pos, state);
@@ -2497,20 +2501,77 @@ impl Game<'_> {
         let Some(r) = self.remote.as_mut() else {
             return;
         };
+        let last_teleport = r.last_teleport_sequence;
         let settled: Vec<_> = r
             .predictions
             .iter()
-            .filter(|(_, (s, _))| *s <= sequence)
-            .map(|(&pos, &(_, state))| (pos, state))
+            .filter(|(_, p)| p.sequence <= sequence)
+            .map(|(&pos, &p)| (pos, p))
             .collect();
-        for (pos, state) in settled {
+        for (pos, prediction) in settled {
             if let Some(r) = self.remote.as_mut() {
                 r.predictions.remove(&pos);
             }
-            if self.world.block(pos[0], pos[1], pos[2]).0 as i32 != state {
-                self.set_block(pos, state);
+            if self.world.block(pos[0], pos[1], pos[2]).0 as i32 == prediction.state {
+                continue;
+            }
+            self.set_block(pos, prediction.state);
+            // ClientLevel.syncBlockState: the block that comes back may now hold
+            // the player, and then it goes to the position the prediction
+            // remembered.
+            let meets = self.block_meets_player(pos, prediction.state);
+            if let Some(at) = snap_target(prediction.player_pos, last_teleport, sequence, meets) {
+                self.snap_player_to(at);
             }
         }
+    }
+    /// The player's position, for `retainKnownServerState`'s `player.position()`.
+    fn player_position(&self) -> [f64; 3] {
+        let at = self.player.as_ref().map(|p| p.position).unwrap_or(Vec3::ZERO);
+        [at.x, at.y, at.z]
+    }
+    /// `Entity.isColliding(pos, state)` for the local player: the state's own
+    /// collision shape, at the player's pose, against the player's box.
+    fn block_meets_player(&self, pos: [i32; 3], state: i32) -> bool {
+        let Some(player) = self.player.as_ref() else {
+            return false;
+        };
+        let entity = player.bounds();
+        let context = horizon_world::collision_context::CollisionContext::for_entity(
+            horizon_world::collision_context::CollisionEntity {
+                identity: horizon_world::entity_obstruction::EntityIdentity(0),
+                y: player.position.y,
+                descending: player.shift_key_down,
+                main_hand: None,
+            },
+            false,
+        );
+        let mut scene = horizon_client::collisions::SceneCollisions {
+            world: &self.world,
+            binding: self.collision,
+            subject: None,
+        };
+        let at = horizon_core::position::BlockPos::new(pos[0], pos[1], pos[2]);
+        match self.collision.collision_shape_with_context(
+            &mut scene,
+            BlockStateId(state.max(0) as u32),
+            at,
+            &context,
+        ) {
+            Ok(shape) => shape_meets(&shape, pos, entity),
+            Err(_) => false,
+        }
+    }
+    /// `Entity.absSnapTo`: the remembered point, clamped to the level's edge.
+    /// The velocity is left alone, and the player has no separate previous
+    /// position to reset (its box is drawn from `position`).
+    fn snap_player_to(&mut self, at: [f64; 3]) {
+        let Some(player) = self.player.as_mut() else {
+            return;
+        };
+        let x = at[0].clamp(-3.0e7, 3.0e7);
+        let z = at[2].clamp(-3.0e7, 3.0e7);
+        player.position = Vec3::new(x, at[1], z);
     }
     fn set_block(&mut self, pos: [i32; 3], state: i32) {
         let state = BlockStateId(state.max(0) as u32);
@@ -5714,6 +5775,11 @@ impl Game<'_> {
             (yaw, pitch),
             p,
         );
+        // BlockStatePredictionHandler.onTeleport: a prediction made before this
+        // one keeps its block but not the player position it remembered.
+        if let Some(r) = self.remote.as_mut() {
+            r.last_teleport_sequence = r.sequence;
+        }
         match self.player.as_mut() {
             Some(player) => {
                 player.position = position;
@@ -7373,11 +7439,16 @@ impl Game<'_> {
     fn predict_break(&mut self, pos: [i32; 3], state: BlockStateId, sequence: i32) {
         self.tutorial_destroy(state, 1.0);
         // BlockStatePredictionHandler.retainKnownServerState.
+        let here = self.player_position();
         if let Some(r) = self.remote.as_mut() {
             r.predictions
                 .entry(pos)
-                .and_modify(|p| p.0 = sequence)
-                .or_insert((sequence, state.0 as i32));
+                .and_modify(|p| p.sequence = sequence)
+                .or_insert(Prediction {
+                    sequence,
+                    state: state.0 as i32,
+                    player_pos: here,
+                });
         }
         // Block.playerWillDestroy's destroy event (particles and the break
         // sound), which BaseFireBlock skips: the server's extinguish sound
@@ -8083,11 +8154,16 @@ impl Game<'_> {
         for &(p, state) in changes {
             let pos = [p.x, p.y, p.z];
             let before = self.world.block(p.x, p.y, p.z);
+            let here = self.player_position();
             if let Some(r) = self.remote.as_mut() {
                 r.predictions
                     .entry(pos)
-                    .and_modify(|e| e.0 = seq)
-                    .or_insert((seq, before.0 as i32));
+                    .and_modify(|e| e.sequence = seq)
+                    .or_insert(Prediction {
+                        sequence: seq,
+                        state: before.0 as i32,
+                        player_pos: here,
+                    });
             }
             self.set_block(pos, state.0 as i32);
         }
@@ -10631,9 +10707,51 @@ fn hold_server_fire(fire_ticks: i32, server_on_fire: bool) -> i32 {
     }
 }
 
+/// `BlockStatePredictionHandler.ServerVerifiedState`: the sequence of the action
+/// that last changed the block, the state the server last said it has, and where
+/// the player stood when this client first predicted a change there.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct Prediction {
+    pub sequence: i32,
+    pub state: i32,
+    pub player_pos: [f64; 3],
+}
+
+/// `Entity.isColliding`: whether the collision `shape` of a block at `pos`
+/// meets `entity`'s box. Shapes are block-local, so they move onto the block
+/// first (`VoxelShape.move`), and any box that overlaps is a collision
+/// (`Shapes.joinIsNotEmpty` with `BooleanOp.AND`).
+pub(super) fn shape_meets(
+    shape: &horizon_core::geometry::VoxelShape,
+    pos: [i32; 3],
+    entity: horizon_core::geometry::Aabb,
+) -> bool {
+    let at = Vec3::new(f64::from(pos[0]), f64::from(pos[1]), f64::from(pos[2]));
+    shape
+        .boxes()
+        .iter()
+        .any(|b| b.move_by(at).intersects(entity))
+}
+
+/// `ClientLevel.syncBlockState`'s snap: a restored block that meets the player
+/// sends it back to the position the prediction remembered, unless the player
+/// was teleported after that prediction was made
+/// (`lastTeleportSequence < sequence`: the remembered position is stale).
+pub(super) fn snap_target(
+    recorded: [f64; 3],
+    last_teleport_sequence: i32,
+    sequence: i32,
+    meets: bool,
+) -> Option<[f64; 3]> {
+    (meets && last_teleport_sequence < sequence).then_some(recorded)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{hold_server_fire, keep_client_state, remote_use_swings, synced_local_use};
+    use super::{
+        hold_server_fire, keep_client_state, remote_use_swings, shape_meets, snap_target,
+        synced_local_use,
+    };
     use horizon_client::{
         containers::{Beacon, BlockEntity},
         items::ItemStack,
