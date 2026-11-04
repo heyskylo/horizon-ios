@@ -493,7 +493,7 @@ impl Game<'_> {
             };
             let pos = [p.position.x, p.position.y, p.position.z];
             if in_viewer_box(at, pos) && !struck(pos) {
-                viewers.push(g.player_entity());
+                viewers.push(g.player_entity_for("minecraft:lightning_strike"));
             }
         });
         self.for_each_player(|g| {
@@ -547,6 +547,7 @@ impl Game<'_> {
             kind: DamageKind::Generic,
             attacker: None,
             from: Some(b.at),
+            attacker_species: None,
         };
         let mut struck = Vec::new();
         let mut events = Vec::new();

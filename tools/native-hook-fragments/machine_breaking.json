@@ -1,0 +1,12 @@
+{
+  "hooks": [],
+  "helpers": [
+    {"name": "destroy_block", "target": "horizon_client::game::native_machines::Game<'_>::native_machine_destroy_block"},
+    {"name": "set_break_progress", "target": "horizon_client::game::native_machines::Game<'_>::native_set_break_progress"}
+  ],
+  "rust_summary": "a mod's machine breaks blocks with a tool and keeps their drops (`native_machine_destroy_block`) and shows its crack (`native_set_break_progress`).",
+  "doc_summary": "`native_machine_destroy_block(pos, tool, collect)` is `Level.destroyBlock` with the loot rolled for `tool` and no player, the drops popped or, with `collect`, returned; `native_set_break_progress(breaker, pos, progress)` is `ServerLevel.destroyBlockProgress`. Bundles need \"hooks\": @API:machine_breaking@.",
+  "comments": [
+    "crates/horizon-client/src/game/native_machines.rs"
+  ]
+}

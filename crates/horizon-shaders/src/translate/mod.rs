@@ -338,6 +338,12 @@ fn translate(
         {
             uniforms.remove(normal);
         }
+        // The fragment stage's own `textureMatrix` keeps its frame slot (it reads zero).
+        if !f.uniforms.iter().any(|(n, _, _)| n == "textureMatrix")
+            && uniforms.get("textureMatrix").is_some_and(|ty| ty == "mat4")
+        {
+            uniforms.remove("textureMatrix");
+        }
     }
     // `alphaTestRef` is the program's alpha test reference: a constant of the program.
     let alpha_test_ref = gbuffers
@@ -1634,6 +1640,43 @@ mod tests {
                 .any(|u| u.name == "normalMatrix");
             assert_eq!(uniform, !core, "{profile}");
         }
+    }
+
+    /// `textureMatrix` in the vertex stage is the texture matrix state, not a frame uniform the
+    /// game has no value for; the fragment stage's own one keeps its slot (Iris 1.11.7 reads
+    /// zero there in our probe, #9080).
+    #[test]
+    fn vertex_texture_matrix_is_not_a_frame_uniform() {
+        let vertex = "#version 460 core\nuniform mat4 textureMatrix;\nin vec2 vaUV0;\nout vec2 uv;\n\
+                      void main() { uv = mat2(textureMatrix) * vaUV0 + textureMatrix[3].xy; gl_Position = vec4(1.0); }";
+        let p = core_matrix_program(vertex, false).unwrap();
+        assert!(
+            !p.interface
+                .uniforms
+                .iter()
+                .any(|u| u.name == "textureMatrix")
+        );
+        let fragment = "#version 460 core\nuniform mat4 textureMatrix;\nout vec4 color;\n\
+                        void main() { color = textureMatrix[0]; }";
+        let files = [
+            ("shaders/gbuffers_terrain.vsh", vertex),
+            ("shaders/gbuffers_terrain.fsh", fragment),
+        ];
+        let pack = Pack::from_zip_bytes("texture-matrix.zip", zip(&files)).unwrap();
+        let macros = Macros::standard();
+        let p = translate_gbuffers(
+            &preprocess(&pack, "gbuffers_terrain.vsh", &macros),
+            &preprocess(&pack, "gbuffers_terrain.fsh", &macros),
+            Target::Buffers,
+            &GbuffersInputs::default(),
+        )
+        .unwrap();
+        assert!(
+            p.interface
+                .uniforms
+                .iter()
+                .any(|u| u.name == "textureMatrix" && u.ty == "mat4")
+        );
     }
 
     #[test]

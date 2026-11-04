@@ -382,7 +382,7 @@ CHECKS = ['tab', 'self', 'armour', 'nametags', 'walls', 'chest', 'menu-transfer'
           'flow-push', 'bubble-column', 'arrows', 'projectile-vehicles', 'flame-arrows', 'kills', 'looting', 'leave', 'hurt', 'looks', 'leads', 'entity-tags', 'respawn', 'containers', 'names', 'feedback', 'titles', 'chat', 'styles',
           'commands', 'recipes', 'machines', 'brewing', 'loom', 'stonecutter', 'grindstone', 'anvil', 'smithing',
           'enchanting', 'beacon', 'crafter', 'lectern', 'cartography', 'trials', 'clicks', 'shift-double-click', 'recipe-shift', 'shift-drag', 'modifier-release', 'wheel', 'sleep', 'sleep-villager', 'bed-occupied', 'sleep-reload', 'predict', 'push',
-          'piston-push', 'piston-entities', 'piston-slime', 'eat', 'eat-on-block', 'cauldron', 'eating', 'xp', 'objects', 'projectiles', 'thrown', 'sparks', 'hud', 'sidebar', 'border', 'particles',
+          'piston-push', 'piston-entities', 'piston-slime', 'piston-slide', 'eat', 'eat-on-block', 'cauldron', 'eating', 'xp', 'objects', 'projectiles', 'thrown', 'sparks', 'hud', 'sidebar', 'border', 'particles',
           'worn', 'blast', 'blast-projectiles', 'barter', 'piglin_offspring', 'deflect', 'fireball', 'light', 'time', 'swings', 'cracks', 'plates', 'plate-projectiles', 'effects',
           'portals', 'distance', 'growth', 'doors', 'flight', 'ladder', 'boats', 'boat_ice_reboard', 'boat_shoved', 'minecarts', 'frames', 'hands',
           'lightning', 'riding', 'occupied_horse', 'mounts', 'worldspawn', 'beds', 'shield', 'deathmining', 'contacts', 'absorption',
@@ -4783,6 +4783,70 @@ def check_fireworks(host, guest, out):
     return {'flashes': flashes, 'red_burst': burst, 'red_trail_fade': trails, 'rockets': rockets}
 
 
+def check_piston_slide(host, guest, out):
+    """A piston's head reaches the clients after their own copy of it finished moving (#8430).
+
+    The block event makes each client move the blocks itself (PistonBaseBlock.moveBlocks), for three ticks of
+    PistonMovingBlockEntity.tick. ServerLevel.tick broadcasts the changed blocks before the block events and the
+    block entities, so what those change goes out at the start of the next tick: the landed head three ticks
+    after the block event, not two, and at a slow tick rate the client's head slides all the way instead of
+    jumping the rest. That broadcast comes before the tick's block events, with the blocks as they are then:
+    the tick after the retraction put the base back, a repeating command block puts a stone in the head's cell
+    and its chain powers the piston, and the client must have both the base and the stone (not the moving block
+    the push makes of it) to run that extension itself. The host reads its own copy of the head's cell once a
+    tick (each read follows the client tick that saw what arrived), at /tick rate 1, and whether the client
+    animates the move itself (`block`'s `moving`).
+    """
+    x, y, z = (int(v // 1) for v in pos_of(host))
+    y += 3
+    head = f'{x + 1} {y} {z}'
+    host('command', command=f'fill {x - 2} {y - 1} {z - 3} {x + 4} {y + 1} {z + 1} minecraft:air')
+    host('command', command=f'setblock {x} {y} {z} minecraft:piston[facing=east]')
+    host('command', command=f'setblock {head} minecraft:stone')
+    again = (f'execute if block {head} minecraft:air if block {x} {y} {z} minecraft:piston[extended=false] '
+             f'if block {x - 1} {y} {z} minecraft:air run setblock {head} minecraft:stone')
+    host('command', command=f'setblock {x} {y} {z - 2} minecraft:repeating_command_block[facing=up]'
+         f'{{Command:"{again}"}}')
+    host('command', command=f'setblock {x} {y + 1} {z - 2} minecraft:chain_command_block[facing=up,conditional=true]'
+         f'{{auto:1b,Command:"setblock {x - 1} {y} {z} minecraft:redstone_block"}}')
+    # Powered from below, two blocks from the piston: it runs every tick.
+    host('command', command=f'setblock {x} {y - 1} {z - 2} minecraft:redstone_block')
+    host.wait(5)
+    host('command', command='tick rate 1')
+    sample = ['wait 1', f'block {head}', 'status']
+    try:
+        replies = host.script([f'command setblock {x - 1} {y} {z} minecraft:redstone_block'] + sample * 6
+                              + [f'command setblock {x - 1} {y} {z} minecraft:air'] + sample * 9, every=True)
+    finally:
+        host('command', command='tick rate 20')
+        host('command', command=f'fill {x - 1} {y - 1} {z - 2} {x + 3} {y + 1} {z} minecraft:air')
+
+    def moves(replies):
+        seen = [(status['ticks'], block['block'].removeprefix('minecraft:'), 'moving' in block)
+                for block, status in zip(replies[1::3], replies[2::3])]
+        start = next((i for i, (_, name, _) in enumerate(seen) if name == 'moving_piston'), None)
+        # The head that lands after this move: one left from the last move (the second
+        # extension starts with it) comes before the moving block.
+        end = None if start is None else next(
+            (i for i in range(start, len(seen)) if seen[i][1] == 'piston_head'), None)
+        # The count is exact when the read before the first moving one, and the read before
+        # the landed one, are each one client tick earlier.
+        skipped = start is not None and any(
+            0 < i < len(seen) and seen[i][0] - seen[i - 1][0] != 1 for i in (start, end or start))
+        return {'seen': seen, 'own': start is not None and seen[start][2],
+                'ticks_moving': None if end is None else seen[end][0] - seen[start][0],
+                'skipped': skipped}
+
+    result = {'extend': moves(replies[1:19]), 'extend_again': moves(replies[20:])}
+    for label, move in result.items():
+        # A loaded machine can run two client ticks between reads: the count is then a guess.
+        assert not move['skipped'], f'{label}: a read skipped a client tick, rerun on a quieter machine: {result}'
+        assert move['own'], f'{label}: the client did not move the head itself: {result}'
+        assert move['ticks_moving'] == 3, (
+            f'{label}: the landed head came {move["ticks_moving"]} ticks after the move: {result}')
+    return result
+
+
 def check_rocket_walls(host, guest, out):
     """A rocket shot at an angle explodes on a block only with explosions (#4281).
 
@@ -6968,6 +7032,7 @@ CHECK_FNS = {'tab': check_tab, 'self': check_self, 'armour': check_armour,
              'border': check_border,
              'particles': check_particles, 'fireworks': check_fireworks,
              'rocket-walls': check_rocket_walls, 'rocket-ceilings': check_rocket_ceilings,
+             'piston-slide': check_piston_slide,
              'tag-query': check_tag_query}
 
 

@@ -505,6 +505,7 @@ fn mob_meta(
     let e = &m.extra;
     let id = |registry: &str, name: &str| hub.registry_id(registry, &format!("minecraft:{name}"));
     mob_variant_meta(m, hub, meta, defaults);
+    mob_raider_meta(m, meta, defaults);
     match kind {
         "minecraft:guardian" | "minecraft:elder_guardian" => {
             // Guardian.DATA_ID_MOVING and DATA_ID_ATTACK_TARGET.
@@ -1067,10 +1068,25 @@ fn unhappy_counter(
     defaults.push((18, serializer::INT, Value::Int(0)));
 }
 
+/// Raider.IS_CELEBRATING: also list false so tracking sends the end of a celebration.
+pub(super) fn mob_raider_meta(
+    m: &Mob,
+    meta: &mut Vec<(u8, i32, Value)>,
+    defaults: &mut Vec<(u8, i32, Value)>,
+) {
+    use horizon_client::mobs::raider;
+    if raider::is_raider(m.species()) {
+        if raider::state(m).is_some_and(|state| state.celebrating) {
+            meta.push((16, serializer::BOOLEAN, Value::Bool(true)));
+        }
+        defaults.push((16, serializer::BOOLEAN, Value::Bool(false)));
+    }
+}
+
 /// What a client shakes a mob by: Entity.DATA_TICKS_FROZEN (7), whose full
 /// count is `isFullyFrozen`, and Strider.DATA_SUFFOCATING (19, after
 /// AgeableMob's two and DATA_BOOST_TIME).
-fn mob_freeze_meta(
+pub(super) fn mob_freeze_meta(
     m: &Mob,
     meta: &mut Vec<(u8, i32, Value)>,
     defaults: &mut Vec<(u8, i32, Value)>,
@@ -1081,15 +1097,12 @@ fn mob_freeze_meta(
         meta.push((7, serializer::INT, Value::Int(m.ticks_frozen)));
     }
     defaults.push((7, serializer::INT, Value::Int(0)));
-    // Entity.DATA_AIR_SUPPLY_ID (1): only an axolotl ticks `Mob.air` (its
-    // default is its 6000 max air supply).
-    if m.species() == horizon_client::mobs::Species::Axolotl {
-        let max = horizon_client::mobs::axolotl::MAX_AIR;
-        if m.air != max {
-            meta.push((1, serializer::INT, Value::Int(m.air)));
-        }
-        defaults.push((1, serializer::INT, Value::Int(max)));
+    // Every Entity tracks air, including changes back to its species' default.
+    let max = m.max_air_supply();
+    if m.air != max {
+        meta.push((1, serializer::INT, Value::Int(m.air)));
     }
+    defaults.push((1, serializer::INT, Value::Int(max)));
     if m.kind.id == "minecraft:strider" {
         if m.extra.flag {
             meta.push((19, serializer::BOOLEAN, Value::Bool(true)));
@@ -2222,6 +2235,17 @@ impl Game<'_> {
     /// before the entities': what joined the level up to here (a falling
     /// block, a dispensed arrow, the last tick's late joins) is paired and
     /// first updated in this tick's pass (`Entities::synced`).
+    /// `ServerChunkCache.tick`'s broadcast, where ServerLevel.tick runs it:
+    /// after the scheduled and random ticks, before the block events, so the
+    /// players get the blocks as they are then. The block log's length after
+    /// it: what the tick writes from there on goes out with the next tick's.
+    pub(super) fn lan_broadcast_changes(&mut self) -> Option<usize> {
+        if let Some(host) = self.lan.as_mut() {
+            host.hub.broadcast_changes(&mut self.world);
+        }
+        self.world.block_log.as_ref().map(Vec::len)
+    }
+
     pub(super) fn lan_mark_synced(&mut self) {
         if let Some(next) = self.lan_ids_so_far()
             && let Some(host) = self.lan.as_mut()
@@ -2364,10 +2388,11 @@ impl Game<'_> {
                 self.clock.frozen(),
                 self.clock.step_state(),
             );
-            // `runBlockEvents`' broadcast precedes the tick's block changes
-            // (`ChunkHolder.broadcastChanges` in `tick_level` below): the
-            // guest re-runs a piston's `triggerEvent` while its level still
-            // has the blocks as they were before the move.
+            // `runBlockEvents`' broadcast precedes what the events change (held
+            // for the next tick, `tick_world`), and follows the blocks changed
+            // before them (`lan_broadcast_changes`): the guest re-runs a
+            // piston's `triggerEvent` on the blocks as they were before the
+            // move, a base the last tick restored included.
             for (pos, b0, b1, state) in std::mem::take(&mut self.lan_block_events) {
                 host.hub.block_event(pos, b0, b1, state);
             }
@@ -2649,6 +2674,7 @@ impl Game<'_> {
                     // passes null): the composter fill (1500), the egg's
                     // teleport, bone meal's growth, anvil result sounds, a
                     // finished brushing or an eye inserted in a portal frame,
+                    // a zombie's infection and a finished cure (1026, 1027),
                     // and the digger's own crack and hit sound (2019, 2020).
                     let except = level_event_except(
                         *id,
@@ -2683,6 +2709,10 @@ impl Game<'_> {
     pub(super) fn lan_entity_event(&mut self, id: i32, event: i8, at: [f64; 3]) {
         if self.audio.capture.is_some() {
             self.lan_entity_events.push((id, event, at));
+        }
+        // Event 16: zombie villagers play their cure sound on each client.
+        if event == 16 && self.options.execution_role.is_client() {
+            self.zombie_villager_cure_sound(id as u32);
         }
         // Event 63: a sniffer's digging sound loop starts (ClientPacketListener.handleEntityEvent 63).
         if event == 63 && self.options.execution_role.is_client() {
@@ -3092,7 +3122,20 @@ fn event_kind(event: &HostEvent) -> EventKind {
 fn level_event_except(id: i32, acting: Option<u32>, collateral_break: bool) -> Option<u32> {
     if matches!(
         id,
-        2015 | 1500 | 1501 | 1503 | 1505 | 1029 | 1030 | 1045 | 1052 | 2019 | 2020 | 3000 | 3008
+        2015 | 1500
+            | 1501
+            | 1503
+            | 1505
+            | 1026
+            | 1027
+            | 1029
+            | 1030
+            | 1045
+            | 1052
+            | 2019
+            | 2020
+            | 3000
+            | 3008
     ) || collateral_break
     {
         None
@@ -3195,7 +3238,7 @@ mod tests {
     }
 
     /// Entity.setTicksFrozen can go negative; index 7 must carry it. Index 1
-    /// (air supply) goes out for an axolotl only, against its 6000 default.
+    /// (air supply) goes out for every mob, with the species' own default.
     #[test]
     fn negative_frozen_ticks_and_axolotl_air_are_synced() {
         let Some(mut cow) = mob_of("minecraft:cow") else {
@@ -3205,7 +3248,11 @@ mod tests {
         let (meta, _) = freeze_meta(&cow);
         assert!(meta.contains(&(7, serializer::INT, Value::Int(-3))));
         cow.air = 100;
-        assert!(freeze_meta(&cow).0.iter().all(|e| e.0 != 1));
+        assert!(
+            freeze_meta(&cow)
+                .0
+                .contains(&(1, serializer::INT, Value::Int(100)))
+        );
 
         let Some(mut axolotl) = mob_of("minecraft:axolotl") else {
             return;
@@ -3216,6 +3263,60 @@ mod tests {
         assert!(defaults.contains(&(1, serializer::INT, Value::Int(6000))));
         axolotl.air = 6000;
         assert!(freeze_meta(&axolotl).0.iter().all(|e| e.0 != 1));
+    }
+
+    /// Raider.IS_CELEBRATING goes out through the tracker's own metadata
+    /// (`mob_meta`), not only through the helper: false is listed as a
+    /// default so the end of a celebration is sent, and true is sent while
+    /// the raider celebrates.
+    #[test]
+    fn a_celebrating_raider_is_sent_by_mob_meta() {
+        use horizon_client::lan::{Lan, NetConfig, chunks::ChunkEncoder, data, hub};
+        let Some(mut pillager) = mob_of("minecraft:pillager") else {
+            return;
+        };
+        let sync = std::sync::Arc::new(data::SyncData::empty());
+        let config = NetConfig {
+            announce: false,
+            ..NetConfig::lan(0, "RaiderMetaTest".into(), 2)
+        };
+        let lan = Lan::start_with(sync.clone(), config).unwrap();
+        let encoder = ChunkEncoder::new(
+            [] as [(std::sync::Arc<str>, bool); 0],
+            &horizon_protocol::registry::Builtin::default(),
+            &[],
+            &[],
+        );
+        let hub_config = hub::HubConfig {
+            default_game_mode: 0,
+            guest_commands: false,
+            force_game_mode: false,
+            hardcore: false,
+            view_distance: 10,
+            simulation_distance: 10,
+            dimension: "minecraft:overworld".into(),
+            allow_flight: false,
+            seed: 0,
+            max_players: 20,
+            integrated: false,
+            levels: Default::default(),
+        };
+        let hub = hub::Hub::new(lan, sync, encoder, hub_config);
+        let meta_of = |m: &Mob| {
+            let (mut meta, mut defaults) = (Vec::new(), Vec::new());
+            super::mob_meta(m, &hub, None, 0, &mut meta, &mut defaults);
+            (meta, defaults)
+        };
+
+        let (meta, defaults) = meta_of(&pillager);
+        assert!(defaults.contains(&(16, serializer::BOOLEAN, Value::Bool(false))));
+        assert!(meta.iter().all(|e| e.0 != 16), "{meta:?}");
+        horizon_client::mobs::raider::state_mut(&mut pillager).celebrating = true;
+        let (meta, _) = meta_of(&pillager);
+        assert!(
+            meta.contains(&(16, serializer::BOOLEAN, Value::Bool(true))),
+            "{meta:?}"
+        );
     }
 
     /// `LivingEntity.startUsingItem` sets flag 1 for the use and flag 2 for

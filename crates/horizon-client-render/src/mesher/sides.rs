@@ -103,6 +103,22 @@ impl Sides {
         }
     }
 
+    /// A sort with these parts' `ends` and `planes`, for tests.
+    #[cfg(test)]
+    pub(crate) fn from_parts(
+        ends: [u32; 14],
+        grouped: bool,
+        split: bool,
+        planes: [f32; 7],
+    ) -> Self {
+        Self {
+            ends,
+            grouped,
+            split,
+            planes,
+        }
+    }
+
     /// The number of solid quads the buckets hold.
     pub fn quads(&self) -> u32 {
         self.ends[13]
@@ -126,6 +142,26 @@ impl Sides {
             Bucket::Other => true,
         };
         self.runs(seen, part, draw);
+    }
+
+    /// For GPU culling's copy of `visible_from` with every part (`gfx::gpu_culling`),
+    /// which then only compares: where each bucket of a mesh sorted for one pass ends,
+    /// in `BUCKETS` order, and what `visible_from` compares the eye with for each. That
+    /// is the lowest plane less `MARGIN` for a bucket facing a positive direction, the
+    /// highest plus `MARGIN` for one facing a negative direction, and 0 for the other
+    /// bucket, which it never compares. `None` for a mesh sorted for two passes
+    /// (`group_parts`), whose buckets lie in two stretches each.
+    pub fn thresholds(&self) -> Option<([u32; 7], [f32; 7])> {
+        if self.grouped {
+            return None;
+        }
+        let t: [f32; 7] = std::array::from_fn(|i| match BUCKETS[i] {
+            Bucket::Side(_, true) => self.planes[i] - MARGIN,
+            Bucket::Side(_, false) => self.planes[i] + MARGIN,
+            Bucket::Other => 0.0,
+        });
+        // A bucket's cutout quads end it (`slot`).
+        Some((std::array::from_fn(|b| self.ends[b * 2 + 1]), t))
     }
 
     /// The runs of `part`'s quads facing every way.

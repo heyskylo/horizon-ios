@@ -1,5 +1,0 @@
-{
-  "hooks": [],
-  "rust_summary": "a dying player's inventory to `native_loot_drops` (`entity` the player, `minecraft:player`).",
-  "doc_summary": "a dying player's inventory to `native_loot_drops`: after vanishing-curse items are gone and before the rest is thrown, naming the player (`entity` the player's id and `minecraft:player`, no table). A mod that takes every stack out of `drops` keeps the inventory. Not heard with `keep_inventory`. Bundles that rely on it need `\"hooks\": @API:player_death_drops@`."
-}

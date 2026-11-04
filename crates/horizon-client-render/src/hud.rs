@@ -1115,7 +1115,7 @@ impl HudAtlas {
         }
         files.retain(|p| {
             let s = p.to_string_lossy();
-            !s.contains("title/background") && !s.contains("realms") && !s.contains("presets")
+            !s.contains("title/background") && !s.contains("presets")
         });
         // OptiFine random entity variants, under the names their scan gives them (those
         // outside `textures/` are `<ns>:optifine/random/...`).
