@@ -34,6 +34,7 @@ def snapshot_tests(build):
         "datapack_damage_world_open_replaces_preload_atomically",
         "datapack_damage_unrelated_packs_do_not_load_sync_data_at_open",
         "datapack_damage_lazy_wire_snapshot_survives_reload_before_first_hub",
+        "datapack_damage_lazy_wire_load_caches_after_all_packs_are_removed",
         "datapack_damage_registry_reload_keeps_wire_ids_and_reloads_tags_before_future_join",
     }
     assert expected <= {name.rsplit("::", 1)[-1] for name in passed}, output

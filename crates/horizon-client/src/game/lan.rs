@@ -118,17 +118,24 @@ pub(super) fn reload_cached_sync_data(
     root: &std::path::Path,
     overlay: &horizon_world::loot::PackOverlay,
 ) -> std::result::Result<(), String> {
-    let kept = SYNC
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .data
-        .as_ref()
-        .and_then(|(_, result)| result.as_ref().ok())
-        .cloned();
+    let kept = prepare_sync_reload(&mut SYNC.lock().unwrap_or_else(|e| e.into_inner()), overlay);
     if let Some(kept) = kept {
         reload_sync_data(root, overlay, &kept)?;
     }
     Ok(())
+}
+
+/// Keep lazy-cache admission aligned with the current packs even when no
+/// complete wire snapshot has been loaded yet. Damage definitions stay frozen.
+fn prepare_sync_reload(
+    sync: &mut SyncCache,
+    overlay: &horizon_world::loot::PackOverlay,
+) -> Option<Arc<SyncData>> {
+    sync.world_packs = !overlay.files.is_empty();
+    sync.data
+        .as_ref()
+        .and_then(|(_, result)| result.as_ref().ok())
+        .cloned()
 }
 
 /// `/reload` (MinecraftServer.reloadResources) under a running hub: the
@@ -3419,7 +3426,7 @@ mod tests {
     #[test]
     #[ignore = "requires prepared vanilla resources"]
     fn datapack_damage_lazy_wire_snapshot_survives_reload_before_first_hub() {
-        use super::{SyncCache, cached_sync_data, initialize_world_sync_data};
+        use super::{SyncCache, cached_sync_data, initialize_world_sync_data, prepare_sync_reload};
         use horizon_world::{damage_source::Catalog, loot::PackOverlay};
         use std::path::Path;
         let root = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -3459,6 +3466,7 @@ mod tests {
             ),
         ];
         let overlay = PackOverlay { files: &changed };
+        assert!(prepare_sync_reload(&mut cache, &overlay).is_none());
         let health = damage.reload_tags(&root, &overlay).unwrap();
         let wire = cached_sync_data(&mut cache, &root, &overlay).unwrap();
         assert!(wire.id("minecraft:damage_type", "demo:too_late").is_none());
@@ -3509,6 +3517,37 @@ mod tests {
                 .id("minecraft:damage_type", "demo:too_late")
                 .is_some()
         );
+    }
+
+    #[test]
+    #[ignore = "requires prepared vanilla resources"]
+    fn datapack_damage_lazy_wire_load_caches_after_all_packs_are_removed() {
+        use super::{SyncCache, cached_sync_data, initialize_world_sync_data, prepare_sync_reload};
+        use horizon_world::{damage_source::Catalog, loot::PackOverlay};
+        use std::{path::Path, sync::Arc};
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        let damage = Catalog::load(&root, &PackOverlay::NONE).unwrap();
+        let files = vec![(
+            "recipe/demo:unrelated".into(),
+            vec![br#"{"type":"minecraft:crafting_special_mapcloning"}"#.to_vec()],
+        )];
+        let mut cache = SyncCache::default();
+        initialize_world_sync_data(&mut cache, &root, &PackOverlay { files: &files }, &damage)
+            .unwrap();
+        assert!(cache.data.is_none());
+        assert!(prepare_sync_reload(&mut cache, &PackOverlay::NONE).is_none());
+        let opened = cached_sync_data(&mut cache, &root, &PackOverlay::NONE).unwrap();
+        // An accidental uncached load would fail on the next request rather
+        // than merely reconstructing an equal registry from the same files.
+        let reused = cached_sync_data(
+            &mut cache,
+            &root.join("no-such-resources"),
+            &PackOverlay::NONE,
+        )
+        .unwrap();
+        assert!(Arc::ptr_eq(&opened, &reused));
     }
 
     fn mob_of(kind: &str) -> Option<Mob> {
