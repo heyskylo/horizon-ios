@@ -286,8 +286,16 @@ themselves come from their download links, which that limit doesn't cover.
 
 It also updates itself from GitHub releases tagged `launcher@X.Y.Z` (the game's are `nightly`, and
 `vX.Y.Z` before 2026-10-28; neither is ever taken for the other). Before 0.2 they were `launcher-vX.Y.Z` and `vYYYY.MM.DD`:
-every 0.2 tag counts as newer than all of those (docs/versioning.md). It downloads the new build, replaces its
-own binary, and offers "Restart" in the footer. Development builds and
+every 0.2 tag counts as newer than all of those (docs/versioning.md). It downloads the new build, checks it
+against the release's signed `SHA256SUMS`, and says "A new version is available" in the sidebar with
+**Update**: the window closes, the launcher's own file runs again as the installer (`apply-update`,
+`src/update_handoff.rs`), which waits for the window's process to exit, puts the new launcher in place (the
+binary, the `.app` bundle or the AppImage) and starts it. Closing the window with an update downloaded installs
+it the same way, so the next start is the new launcher. When the installer can't put it in place, the old
+launcher starts again and says why. A copy that can't replace itself says so at once and offers **Download
+again** (the website's install page): one in a read-only folder (the disk image, or the read-only copy macOS
+runs a downloaded app from until it is moved to Applications), or Windows' temporary copy of a program opened
+inside a `.zip`. `horizon-launcher update` replaces it at once. Development builds and
 `HORIZON_LAUNCHER_NO_SELF_UPDATE=1` never replace themselves.
 
 On Linux the release also comes as an AppImage, `horizon-launcher-linux-x86_64.AppImage`: one file

@@ -162,7 +162,13 @@ impl Page {
 enum SelfUpdate {
     Idle,
     Downloading(String, f32),
+    /// Downloaded and checked: "A new version is available" and Update, which hands it to the
+    /// installer (`update_handoff`). Closing the window hands it over too.
     Ready(String),
+    /// A newer launcher can't go in here: this copy can't replace itself
+    /// (`backend::cannot_replace_itself`), or the installer said why (the error). The player
+    /// downloads the launcher again once.
+    Stuck(Option<String>),
     Failed(String),
 }
 
@@ -570,7 +576,9 @@ impl Launcher {
             updates: Updates::default(),
             checked: None,
             update_error: None,
-            self_update: SelfUpdate::Idle,
+            // The installer the last Update started could not put the new launcher in place.
+            self_update: horizon_launcher::update_handoff::take_failure()
+                .map_or(SelfUpdate::Idle, |e| SelfUpdate::Stuck(Some(e))),
             update_install: None,
             instance_install: None,
             install_next: None,
@@ -867,9 +875,13 @@ impl Launcher {
         if !backend::self_update_allowed()
             || matches!(
                 self.self_update,
-                SelfUpdate::Downloading(..) | SelfUpdate::Ready(_)
+                SelfUpdate::Downloading(..) | SelfUpdate::Ready(_) | SelfUpdate::Stuck(_)
             )
         {
+            return;
+        }
+        if backend::cannot_replace_itself() {
+            self.self_update = SelfUpdate::Stuck(None);
             return;
         }
         let version = backend::launcher_version(&release.tag)
@@ -881,10 +893,20 @@ impl Launcher {
             let progress = |p| {
                 let _ = tx.send(Msg::LauncherProgress(p));
             };
-            let _ = tx.send(Msg::LauncherUpdated(backend::self_update(
+            let _ = tx.send(Msg::LauncherUpdated(backend::stage_update(
                 &release, progress,
             )));
         });
+    }
+
+    /// Update: the window closes, the installer puts the new launcher in place and starts it.
+    /// When another launcher already put it there, this one only restarts.
+    fn apply_launcher_update(&mut self, cx: &mut App) {
+        match horizon_launcher::update_handoff::start_now() {
+            Ok(true) => shut_down(cx),
+            Ok(false) => self.self_update = SelfUpdate::Failed(backend::restart()),
+            Err(e) => self.self_update = SelfUpdate::Failed(e),
+        }
     }
 
     /// Installs the Horizon version the last check found, keeping the player's choice of
@@ -1327,7 +1349,10 @@ impl Launcher {
                         _ => String::new(),
                     };
                     self.self_update = match result {
-                        Ok(()) => SelfUpdate::Ready(version),
+                        Ok(staged) => {
+                            horizon_launcher::update_handoff::set_pending(staged);
+                            SelfUpdate::Ready(version)
+                        }
                         Err(e) => SelfUpdate::Failed(e),
                     };
                 }
@@ -2874,18 +2899,41 @@ impl Launcher {
             }
             SelfUpdate::Ready(version) => {
                 foot = foot.child(
-                    update(trf(
-                        "Launcher updated to {version}",
-                        &[("version", version)],
-                    ))
-                    .child(div().relative().flex().child(
-                        button("restart", "Restart", Kind::Primary, &t).on_click(cx.listener(
-                            |this, _: &ClickEvent, _, cx| {
-                                this.self_update = SelfUpdate::Failed(backend::restart());
-                                cx.notify();
-                            },
+                    update(tr("A new version is available").to_string())
+                        .child(
+                            shell::text(theme::night::UI, shell::c(n.ink_soft))
+                                .relative()
+                                .child(trf("Launcher {version}", &[("version", version)])),
+                        )
+                        .child(div().relative().flex().child(
+                            button("update-launcher", "Update", Kind::Primary, &t).on_click(
+                                cx.listener(|this, _: &ClickEvent, _, cx| {
+                                    this.apply_launcher_update(cx);
+                                    cx.notify();
+                                }),
+                            ),
                         )),
-                    )),
+                )
+            }
+            SelfUpdate::Stuck(error) => {
+                let why = match error {
+                    Some(e) => trf("the update failed: {error}", &[("error", e)]),
+                    None => tr("This copy of the launcher can't replace itself. Download it again once; it updates itself after that.").to_string(),
+                };
+                let url = backend::download_page(&self.links.website);
+                foot = foot.child(
+                    update(tr("A new version is available").to_string())
+                        .child(
+                            shell::text(theme::night::UI, shell::c(n.ink_soft))
+                                .relative()
+                                .child(why),
+                        )
+                        .child(
+                            div().relative().flex().child(
+                                button("download-launcher", "Download again", Kind::Primary, &t)
+                                    .on_click(move |_, _, cx| cx.open_url(&url)),
+                            ),
+                        ),
                 )
             }
             _ => {}
@@ -3647,9 +3695,20 @@ impl Launcher {
                 );
                 format!("{}  ·  {said}", backend::VERSION)
             }
-            SelfUpdate::Ready(v) => trf(
-                "Updated to {version}. Restart the launcher to use it.",
-                &[("version", v)],
+            SelfUpdate::Ready(v) => format!(
+                "{}  ·  {}",
+                backend::VERSION,
+                trf("{version} available", &[("version", v)])
+            ),
+            SelfUpdate::Stuck(Some(e)) => format!(
+                "{}  ·  {}",
+                backend::VERSION,
+                trf("the update failed: {error}", &[("error", e)])
+            ),
+            SelfUpdate::Stuck(None) => format!(
+                "{}  ·  {}",
+                backend::VERSION,
+                tr("This copy of the launcher can't replace itself. Download it again once; it updates itself after that.")
             ),
             SelfUpdate::Failed(e) => format!(
                 "{}  ·  {}",
@@ -3676,13 +3735,21 @@ impl Launcher {
         };
         let launcher_action = match &self.self_update {
             SelfUpdate::Ready(_) => Some(
-                button("restart-settings", "Restart", Kind::Secondary, &t)
+                button("update-settings", "Update", Kind::Secondary, &t)
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                        this.self_update = SelfUpdate::Failed(backend::restart());
+                        this.apply_launcher_update(cx);
                         cx.notify();
                     }))
                     .into_any_element(),
             ),
+            SelfUpdate::Stuck(_) => {
+                let url = backend::download_page(&self.links.website);
+                Some(
+                    button("download-settings", "Download again", Kind::Secondary, &t)
+                        .on_click(move |_, _, cx| cx.open_url(&url))
+                        .into_any_element(),
+                )
+            }
             SelfUpdate::Downloading(..) => None,
             _ => Some(
                 // The glass look's About tile has the mockup's filled button.
@@ -5391,6 +5458,8 @@ actions!(horizon_launcher, [Quit, CloseWindow]);
 fn shut_down(cx: &mut App) {
     servers_page::stop_on_quit();
     telemetry::send_before_exit();
+    // A staged launcher update goes in once this process has exited.
+    horizon_launcher::update_handoff::on_quit();
     cx.quit()
 }
 
@@ -5437,6 +5506,10 @@ fn main() {
     }
     perf::process_started();
     backend::exe_path();
+    // The launcher's own installer (`update_handoff`): no window, no CLI parser.
+    if let Some(code) = horizon_launcher::update_handoff::run() {
+        std::process::exit(code);
+    }
     #[cfg(windows)]
     backend::remove_replaced_binaries();
     backend::cleanup_launcher_updates();

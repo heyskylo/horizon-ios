@@ -386,15 +386,40 @@ impl Launcher {
             }
             SelfUpdate::Ready(version) => {
                 foot = foot.child(
-                    card(trf("Launcher {version}", &[("version", version)]), None).child(
-                        ui::solid("restart", tr("Restart to update"), 32., 13., &t)
+                    card(
+                        tr("A new version is available").to_string(),
+                        Some(version.clone()),
+                    )
+                    .child(
+                        ui::solid("update-launcher", tr("Update"), 32., 13., &t)
                             .mt(px(12.))
                             .w_full()
                             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                                this.self_update = SelfUpdate::Failed(backend::restart());
+                                this.apply_launcher_update(cx);
                                 cx.notify();
                             })),
                     ),
+                );
+            }
+            SelfUpdate::Stuck(error) => {
+                let why = match error {
+                    Some(e) => trf("the update failed: {error}", &[("error", e)]),
+                    None => tr("This copy of the launcher can't replace itself. Download it again once; it updates itself after that.").to_string(),
+                };
+                let url = backend::download_page(&self.links.website);
+                foot = foot.child(
+                    card(tr("A new version is available").to_string(), None)
+                        .child(
+                            ui::text(13., FontWeight::NORMAL, ink::NOTE)
+                                .mt(px(6.))
+                                .child(why),
+                        )
+                        .child(
+                            ui::solid("download-launcher", tr("Download again"), 32., 13., &t)
+                                .mt(px(12.))
+                                .w_full()
+                                .on_click(move |_, _, cx| cx.open_url(&url)),
+                        ),
                 );
             }
             _ => {}

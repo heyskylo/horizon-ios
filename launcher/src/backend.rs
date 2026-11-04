@@ -2943,10 +2943,35 @@ fn replace_bundle(_new: &Path, _app: &Path) -> Result<(), String> {
     Err("App bundles are a macOS thing.".into())
 }
 
+/// A launcher release downloaded and checked against its signed SHA256SUMS, waiting to take this
+/// launcher's place: the new AppImage, `.app` bundle or binary, inside [`update_work_dir`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Staged {
+    pub tag: String,
+    pub payload: PathBuf,
+}
+
+/// Where a launcher update is downloaded and unpacked before it takes this one's place.
+pub fn update_work_dir() -> PathBuf {
+    data_dir().join(".launcher-update")
+}
+
 /// Downloads a launcher release and puts it in place of this one. The running process keeps
 /// working; `restart` starts the new one. When the file there already is that release or
 /// a newer one (updated from the command line or another window), there is nothing to do.
 pub fn self_update(release: &Release, progress: impl Fn(f32)) -> Result<(), String> {
+    if let Some(staged) = stage_update(release, &progress)? {
+        place_staged(&staged)?;
+        let _ = fs::remove_dir_all(update_work_dir());
+    }
+    progress(1.0);
+    Ok(())
+}
+
+/// Downloads and unpacks a launcher release next to this one without putting it in place yet
+/// ([`place_staged`] does, in this process or in the installer `update_handoff` starts). None
+/// when the file there already is that release or a newer one.
+pub fn stage_update(release: &Release, progress: impl Fn(f32)) -> Result<Option<Staged>, String> {
     let (url, size) = release
         .asset
         .clone()
@@ -2955,62 +2980,114 @@ pub fn self_update(release: &Release, progress: impl Fn(f32)) -> Result<(), Stri
     if installed_launcher_version(&update_target())
         .is_some_and(|v| v != VERSION && compare_versions(&v, target).is_ge())
     {
-        progress(1.0);
-        return Ok(());
+        return Ok(None);
     }
     let sha256 = signed_digest(&release.tag, launcher_asset().unwrap_or_default())?;
-    let work = data_dir().join(".launcher-update");
+    let work = update_work_dir();
     let _ = fs::remove_dir_all(&work);
     fs::create_dir_all(&work).map_err(|e| e.to_string())?;
     let archive = work.join("download");
     download(&url, size, &sha256, &archive, &progress)?;
+    let staged = |payload| {
+        Ok(Some(Staged {
+            tag: release.tag.clone(),
+            payload,
+        }))
+    };
     // An AppImage is the whole program: the new one takes the place of the file `$APPIMAGE` names
     // (the running mount keeps its copy until `restart` starts it). Its archive is not a `.tar.gz`
     // to unpack, so this comes before the unpacking below.
-    if let Some(appimage) = appimage_path() {
+    if appimage_path().is_some() {
         if !url.ends_with(".AppImage") {
             return Err(format!(
                 "{} is not an AppImage, and this launcher runs from one. Install it from its release page instead.",
                 release.tag
             ));
         }
-        replace_binary(&archive, &appimage).map_err(|e| {
-            format!(
-                "Could not replace the AppImage at {}: {e}",
-                appimage.display()
-            )
-        })?;
-        let _ = fs::remove_dir_all(&work);
-        progress(1.0);
-        return Ok(());
+        return staged(archive);
     }
     let unpacked = work.join("unpacked");
     unpack(&archive, &url, &unpacked)?;
     // A launcher inside Horizon.app replaces the whole bundle (its Info.plist, icon and
     // signature belong with the binary); a bare binary, as older launchers are, only the binary,
     // which the macOS archive also holds (Horizon.app/Contents/MacOS/horizon-launcher).
-    if let Some(app) = app_bundle(exe_path()) {
+    if app_bundle(exe_path()).is_some() {
         if let Some(new) = find_app(&unpacked) {
-            replace_bundle(&new, app)?;
-            let _ = fs::remove_dir_all(&work);
-            progress(1.0);
-            return Ok(());
+            return staged(new);
         }
     }
     let binary =
         find_file(&unpacked, LAUNCHER_BINARY).ok_or("The download has no launcher binary.")?;
-    replace_binary(&binary, exe_path()).map_err(|e| {
-        format!(
-            "Could not replace the launcher at {}: {e}",
-            exe_path().display()
-        )
-    })?;
+    staged(binary)
+}
+
+/// Puts a [`stage_update`]d launcher where this one runs from: the AppImage, the `.app` bundle
+/// or the binary.
+pub fn place_staged(staged: &Staged) -> Result<(), String> {
+    let new = &staged.payload;
+    if let Some(appimage) = appimage_path() {
+        replace_binary(new, &appimage).map_err(|e| {
+            format!(
+                "Could not replace the AppImage at {}: {e}",
+                appimage.display()
+            )
+        })?;
+        return Ok(());
+    }
+    match app_bundle(exe_path()) {
+        Some(app) if new.extension().is_some_and(|e| e == "app") => replace_bundle(new, app)?,
+        _ => replace_binary(new, exe_path()).map_err(|e| {
+            format!(
+                "Could not replace the launcher at {}: {e}",
+                exe_path().display()
+            )
+        })?,
+    }
     // An installed launcher's Uninstall entry names the new version (installer.rs).
     #[cfg(windows)]
-    crate::installer::after_update(launcher_version(&release.tag).unwrap_or(VERSION));
-    let _ = fs::remove_dir_all(&work);
-    progress(1.0);
+    crate::installer::after_update(launcher_version(&staged.tag).unwrap_or(VERSION));
     Ok(())
+}
+
+/// The website's install page, where a launcher that can't update itself sends the player.
+pub fn download_page(website: &str) -> String {
+    format!("{}/docs/install", website.trim_end_matches('/'))
+}
+
+/// Whether this copy of the launcher can't put a new one in its place: its folder is read-only (a
+/// disk image, or the read-only copy macOS runs a downloaded app from until it is moved, its "App
+/// Translocation"), or it is the temporary copy Windows' Explorer runs from a `.zip` it was opened
+/// in (and deletes later). Such a copy is told to download the launcher again (#9287).
+pub fn cannot_replace_itself() -> bool {
+    let target = update_target();
+    let place = app_bundle(&target).unwrap_or(&target);
+    place
+        .parent()
+        .is_none_or(|dir| !writable(dir) || zip_preview(dir, &std::env::temp_dir()))
+}
+
+fn writable(dir: &Path) -> bool {
+    let probe = dir.join(format!(".horizon-write-check-{}", std::process::id()));
+    let made = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&probe)
+        .is_ok();
+    let _ = fs::remove_file(&probe);
+    made
+}
+
+/// `dir` is under the temporary folder, in one named like Explorer's `Temp1_<archive>.zip`.
+fn zip_preview(dir: &Path, temp: &Path) -> bool {
+    dir.strip_prefix(temp).is_ok_and(|inside| {
+        inside.components().any(|c| {
+            let name = c.as_os_str().to_string_lossy().to_ascii_lowercase();
+            name.strip_prefix("temp").is_some_and(|rest| {
+                let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
+                digits > 0 && rest[digits..].starts_with('_') && name.ends_with(".zip")
+            })
+        })
+    })
 }
 
 fn find_file(dir: &Path, name: &str) -> Option<PathBuf> {
@@ -3140,7 +3217,7 @@ pub enum Msg {
     /// Boxed: two releases, the largest message by far.
     Updates(Result<Box<Updates>, String>),
     LauncherProgress(f32),
-    LauncherUpdated(Result<(), String>),
+    LauncherUpdated(Result<Option<Staged>, String>),
     /// `reuse_prepared_everywhere` prepared these versions.
     Reused(Vec<(String, String)>),
     /// None when secrets are kept in the OS keychain, else what to say: they last only until
@@ -4300,6 +4377,47 @@ pub fn {f}("
             launcher_asset_running_from(true),
             Some("horizon-launcher-linux-x86_64.AppImage")
         );
+    }
+
+    /// Explorer runs a program opened inside a `.zip` from `%TEMP%\Temp<n>_<archive>.zip\` and
+    /// deletes that copy later: an update written there is lost, so such a copy is told to
+    /// download the launcher again (#9287). A folder of the same look elsewhere is a real install.
+    #[test]
+    fn a_launcher_run_from_inside_a_zip_is_a_temporary_copy() {
+        let temp = Path::new("/tmp/t");
+        let preview = |dir: &str| zip_preview(Path::new(dir), temp);
+        assert!(preview("/tmp/t/Temp1_horizon-launcher-windows-x64.zip"));
+        assert!(preview(
+            "/tmp/t/Temp12_horizon-launcher-windows-x64.zip/inner"
+        ));
+        assert!(preview("/tmp/t/TEMP3_HORIZON.ZIP"));
+        assert!(!preview("/tmp/t/horizon-launcher"));
+        assert!(!preview("/tmp/t/Templates.zip"));
+        assert!(!preview("/tmp/t/Temp_horizon.zip"));
+        assert!(!zip_preview(Path::new("/home/me/Temp1_horizon.zip"), temp));
+    }
+
+    /// A launcher whose folder takes no new file (a disk image, macOS's translocated copy of an
+    /// app it was not moved from) can't put the new one in place.
+    #[cfg(unix)]
+    #[test]
+    fn a_read_only_folder_takes_no_update() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("horizon-read-only-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        assert!(writable(&dir));
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o555)).unwrap();
+        // root writes anywhere.
+        if unsafe { libc::geteuid() } != 0 {
+            assert!(!writable(&dir));
+        }
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(
+            fs::read_dir(&dir).unwrap().count(),
+            0,
+            "the probe is removed"
+        );
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     /// `$APPIMAGE` names the file the runtime mounted; a path that is not there (moved or deleted
