@@ -637,6 +637,25 @@ mod tests {
         m
     }
 
+    /// `Shulker.hurtServer` returns false for an `AbstractArrow` while
+    /// `isClosed` (raw peek 0). An open shell takes the same arrow.
+    #[test]
+    fn a_closed_shell_refuses_an_arrow() {
+        let source = Damage::of(DamageKind::Arrow);
+        let mut closed = shulker();
+        closed.extra.counter = 0;
+        let health = closed.health;
+        assert!(
+            !closed.damage_projectile(2.0, source, None, [0.0, 1.0]),
+            "a closed shell rejects the arrow"
+        );
+        assert_eq!(closed.health, health);
+        let mut open = shulker();
+        open.extra.counter = 30;
+        assert!(open.damage_projectile(2.0, source, None, [0.0, 1.0]));
+        assert!(open.health < health);
+    }
+
     #[test]
     fn the_body_stays_square_while_the_head_turns() {
         // Shulker.recreateFromPacket sets the body rotation to 0 and

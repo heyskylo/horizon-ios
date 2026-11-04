@@ -7759,39 +7759,12 @@ mod shulker_arrow_tests {
     use horizon_client::arrows::{ArrowEvent, deflect_reverse};
     use horizon_core::random::LegacyRandom;
 
-    fn shulker(peek: i32) -> Mob {
-        let mut kind = (*horizon_client::mobs::sensor_scan_tests::kind()).clone();
-        kind.id = "minecraft:shulker".into();
-        kind.species = Species::Shulker;
-        let mut m = Mob::new(1, Arc::new(kind), Vec3::ZERO, 0.0);
-        // Shulker.isClosed: raw peek amount 0. A non-zero peek is open.
-        m.extra.counter = peek;
-        m
-    }
-
-    /// `Shulker.hurtServer` returns false for an `AbstractArrow` while the
-    /// shell is closed, and `AbstractArrow.onHitEntity` then
-    /// `deflect(REVERSE, …, 0.2)` with no hit sound.
+    /// `AbstractArrow.onHitEntity` after `hurtOrSimulate` fails and the target
+    /// still takes a projectile's side effects: `deflect(REVERSE, …, 0.2)`,
+    /// and no hit sound. A closed shulker's refusal is that miss
+    /// (`shulker::tests`). An enderman's teleport is `Dodged`, not this.
     #[test]
-    fn a_closed_shulker_turns_an_arrow_around() {
-        let source = Damage {
-            kind: DamageKind::Arrow,
-            attacker: Some(Who::Player),
-            from: Some([0.0, 0.0, 1.0]),
-        };
-        let mut closed = shulker(0);
-        let health = closed.health;
-        assert!(
-            !closed.damage_projectile(2.0, source, None, [0.0, 1.0]),
-            "a closed shell rejects the arrow"
-        );
-        assert_eq!(closed.health, health);
-        // An open shell takes the same arrow.
-        let mut open = shulker(30);
-        assert!(open.damage_projectile(2.0, source, None, [0.0, 1.0]));
-        assert!((open.health - (health - 2.0)).abs() < 1e-4);
-
-        // Not an enderman's dodge: the miss is a reverse, and the arrow stays.
+    fn a_refused_arrow_reverses_without_a_hit_sound() {
         assert_eq!(arrow_miss(false), EntityHit::Refused);
         assert_eq!(arrow_miss(true), EntityHit::Dodged);
 
