@@ -3463,6 +3463,56 @@ def projectile_saved_uuid():
 
 
 
+def sulfur_cube_loaded_health():
+    # Size is saved as physical size minus one. Babies age even with NoAI.
+    cases = [(0, None, -24000, 4), (1, None, 0, 8),
+             (3, None, -24000, 16), (0, 2.5, -24000, 2.5),
+             (1, 6, 0, 6), (3, 12, -24000, 12),
+             (None, None, 0, 4)]
+    lines = [cmd('/forceload add 0 0 31 31'), {'op': 'settle'}]
+    for x, z in [(0, 0), (16, 0), (0, 16), (16, 16)]:
+        lines.append(cmd(f'/execute if loaded {x} 200 {z}', expect_result=1))
+    lines.extend(setup('/fill 0 199 0 31 208 31 air'))
+    lines.append(cmd('/fill 0 199 0 31 199 31 stone', expect_result=1024))
+    for i, (size, saved_health, age, health) in enumerate(cases):
+        tag = f'cube_health_{i}'
+        uuid = f'00000000-0000-0000-0000-00e60000000{i + 1}'
+        x, z = 4.5 + 6 * (i % 4), 4.5 + 10 * (i // 4)
+        nbt = (f'UUID:[I;0,0,230,{i + 1}],Tags:["cube_loaded_health","{tag}"],NoAI:1b,'
+               f'NoGravity:1b,Silent:1b,PersistenceRequired:1b,Age:{age}')
+        if size is not None:
+            nbt += f',Size:{size}'
+        if saved_health is not None:
+            nbt += f',Health:{saved_health}f'
+        lines.append(cmd(f'/summon sulfur_cube {x} 200 {z} {{{nbt}}}', expect_result=1))
+        for tick in range(2):
+            if tick:
+                lines.append({'op': 'tick', 'n': 1})
+            lines.extend([
+                cmd(f'/execute if entity @e[type=sulfur_cube,tag={tag}]', expect_result=1),
+                cmd(f'/execute as {uuid} if entity @s[tag={tag},nbt={{NoAI:1b,NoGravity:1b,Silent:1b,PersistenceRequired:1b}}]', expect_result=1),
+                cmd(f'/data get entity {uuid} UUID', expect_result=4),
+                cmd(f'/data get entity {uuid} Pos', expect_result=3),
+                cmd(f'/data get entity {uuid} Size', expect_result=size or 0),
+                cmd(f'/data get entity {uuid} Health 100', expect_result=int(health * 100)),
+                cmd(f'/data get entity {uuid} Age', expect_result=age + (tick if age < 0 else 0)),
+            ])
+    # No NBT invokes spawn finalization: an adult starts at physical size 2.
+    selector = '@e[type=sulfur_cube,tag=!cube_loaded_health]'
+    lines.append(cmd('/summon sulfur_cube 26.5 200 26.5', expect_result=1))
+    for tick in range(2):
+        if tick:
+            lines.append({'op': 'tick', 'n': 1})
+        lines.extend([
+            cmd(f'/execute if entity {selector}', expect_result=1),
+            cmd(f'/data get entity {selector[:-1]},limit=1] Size', expect_result=1),
+            cmd(f'/data get entity {selector[:-1]},limit=1] Health 100', expect_result=800),
+        ])
+    lines.extend(setup('/kill @e[type=sulfur_cube]', '/forceload remove 0 0 31 31'))
+    return lines
+
+
+
 def groups():
     return [
         ('setup', group_setup()),
@@ -3530,6 +3580,7 @@ def groups():
         ('recipe special arguments', recipe_special_arguments()),
         ('progression', progression()),
         ('functions and packs', functions_and_packs()),
+        ('sulfur cube loaded health', sulfur_cube_loaded_health()),
         ('function return feedback', function_return_feedback()),
         ('ticking and random', ticking()),
         ('compute', compute()),

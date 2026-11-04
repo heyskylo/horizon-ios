@@ -1062,6 +1062,7 @@ pub fn to_nbt(m: &Mob, map: &mut horizon_world::nbt::Compound) {
     }
     map.entry("ForcedAge".into()).or_insert(Tag::Int(0));
 }
+/// `SulfurCube.readAdditionalSaveData`: size precedes the living health default.
 pub fn from_nbt(m: &mut Mob, tag: &horizon_world::nbt::Tag) {
     use horizon_world::nbt::Tag;
     let int = |k: &str| match tag.get(k) {
@@ -1073,7 +1074,11 @@ pub fn from_nbt(m: &mut Mob, tag: &horizon_world::nbt::Tag) {
     m.extra.age_locked = int("AgeLocked").unwrap_or(0) != 0;
     let health = m.health;
     set_size(m, int("Size").unwrap_or(0) + 1, false);
-    m.health = health;
+    m.health = if tag.get("Health").is_some() {
+        health
+    } else {
+        m.attrs.max_health
+    };
     m.extra.flag2 = int("wasOnGround").unwrap_or(0) != 0;
     m.extra.ints[3] = int("pickup_timer").unwrap_or(0);
     m.extra.scratch[3] = int("from_bucket").unwrap_or(0);
