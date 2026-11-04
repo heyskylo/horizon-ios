@@ -6,7 +6,7 @@
 use super::Game;
 use horizon_client::{
     first_person::Hand,
-    mobs::{Mob, Species, equine, llama, nautilus},
+    mobs::{Mob, Species, armadillo, equine, llama, nautilus},
 };
 
 impl Game<'_> {
@@ -29,6 +29,12 @@ impl Game<'_> {
             || item.strip_suffix("_spawn_egg") == Some(m.kind.id.as_str())
         {
             return true;
+        }
+        // Armadillo.mobInteract: a rolled-up armadillo fails before
+        // AgeableMob/Animal.mobInteract, so food and age lock are not taken.
+        // A brush still reaches brushOffScute below.
+        if m.species() == Species::Armadillo && armadillo::client_rejects_food(m, item) {
+            return false;
         }
         // AgeableMob.mobInteract: a golden dandelion on a baby that can be age
         // locked is SUCCESS on a client too (the server sets the lock).
@@ -104,7 +110,9 @@ impl Game<'_> {
                 item == "minecraft:water_bucket"
                     || !m.extra.age_locked && m.kind.food.iter().any(|f| f.as_str() == item)
             }
-            Species::Armadillo => item == "minecraft:brush",
+            // Armadillo.brushOffScute fails on a baby, so its brush falls
+            // through to FAIL (scared) or Mob.mobInteract's PASS.
+            Species::Armadillo => item == "minecraft:brush" && !baby,
             // ZombieVillager.mobInteract: CONSUME for a golden apple.
             Species::ZombieVillager => item == "minecraft:golden_apple",
             // Creeper.mobInteract: CREEPER_IGNITERS.
