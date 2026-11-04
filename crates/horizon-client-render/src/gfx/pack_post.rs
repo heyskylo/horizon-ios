@@ -1429,7 +1429,7 @@ fn build_pass(
     let features = device.features();
     // The frame's uniforms, then the pack's custom ones.
     let index = |name: &str| {
-        pack_uniforms::index(name).or_else(|| {
+        pack_uniforms::index_in(name, geometry.is_some()).or_else(|| {
             let k = custom.iter().position(|c| c == name)?;
             Some(pack_uniforms::NAMES.len() + k)
         })
@@ -4713,6 +4713,169 @@ mod tests {
             viewport([100, 100], [1.0, 0.5, 0.75]),
             [50.0, 75.0, 50.0, 25.0]
         );
+    }
+
+    /// `blend.<program>` of a composite program blends its output onto what the buffer's side
+    /// holds (Iris 1.11.7, probed: 0.25 over 0.75 with SRC_ALPHA ONE_MINUS_SRC_ALPHA ONE ZERO and
+    /// a source alpha of 0.25 reads 0.625).
+    #[test]
+    fn a_composite_program_blends_onto_its_buffer() {
+        let instance = crate::gfx::test_gpu::instance();
+        let Ok(adapter) = pollster::block_on(instance.request_adapter(&Default::default())) else {
+            return;
+        };
+        // A pass's pipeline layout has six bind group slots.
+        let desc = wgpu::DeviceDescriptor {
+            required_limits: adapter.limits(),
+            ..Default::default()
+        };
+        let Ok((device, queue)) = pollster::block_on(adapter.request_device(&desc)) else {
+            return;
+        };
+        let dir = std::env::temp_dir().join(format!("hz-composite-blend-{}", std::process::id()));
+        let shaders = dir.join("shaders");
+        std::fs::create_dir_all(&shaders).unwrap();
+        let file = |name: &str, text: &str| std::fs::write(shaders.join(name), text).unwrap();
+        file(
+            "composite.vsh",
+            "#version 120\nvoid main() { gl_Position = ftransform(); }\n",
+        );
+        file(
+            "composite.fsh",
+            "#version 120\n/* DRAWBUFFERS:3 */\n\
+             void main() { gl_FragData[0] = vec4(0.25, 0.25, 1.0, 0.25); }\n",
+        );
+        let pack = horizon_shaders::Pack::open(&dir).unwrap();
+        let properties = horizon_shaders::Properties::parse(
+            "blend.composite = SRC_ALPHA ONE_MINUS_SRC_ALPHA ONE ZERO\n",
+            &horizon_shaders::Macros::default(),
+        );
+        let mut post = horizon_shaders::load_post(
+            &pack,
+            "",
+            &properties,
+            &horizon_shaders::Macros::standard(),
+            &Default::default(),
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+        let program = post.programs.remove(0);
+        let buffers = pack_images::Buffers::new(
+            &device,
+            Default::default(),
+            Default::default(),
+            wgpu::ShaderStages::FRAGMENT,
+        );
+        let stand_ins = std::cell::RefCell::new(Vec::new());
+        let pack = Resources {
+            textures: &[],
+            images: &[],
+            left_out: &[],
+            buffers: &buffers,
+            indices: None,
+            gpu: Gpu::of(&adapter, device.features()),
+            storable: 0,
+            rgb: 0,
+            released: std::cell::Cell::new(("", 0)),
+            stand_ins: &stand_ins,
+        };
+        let draws = DrawUniforms::new(&device);
+        let mut notes = Vec::new();
+        let pass = build_pass(
+            &device,
+            program,
+            &[T::Rgba8Unorm; BUFFERS],
+            None,
+            T::Rgba8Unorm,
+            &mut notes,
+            None,
+            &[],
+            &draws.layout,
+            &pack,
+        )
+        .unwrap_or_else(|| panic!("the pass builds: {notes:?}"));
+        // colortex3 holds (0.75, 0.5, 0.25, 0.5) before the pass.
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: None,
+            size: wgpu::Extent3d {
+                width: 64,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: T::Rgba8Unorm,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&Default::default());
+        let head = [64.0f32, 1.0, 1.0 / 64.0, 1.0];
+        queue.write_buffer(&pass.ubo, 0, bytemuck::cast_slice(&head));
+        let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &pass.layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: pass.ubo.as_entire_binding(),
+            }],
+        });
+        let mut encoder = device.create_command_encoder(&Default::default());
+        let before = wgpu::Color {
+            r: 0.75,
+            g: 0.5,
+            b: 0.25,
+            a: 0.5,
+        };
+        encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            color_attachments: &[attach(
+                &view,
+                wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(before),
+                    store: wgpu::StoreOp::Store,
+                },
+            )],
+            ..Default::default()
+        });
+        {
+            // Loaded, as `PackPost::render` attaches a buffer a composite pass writes.
+            let load = wgpu::Operations {
+                load: wgpu::LoadOp::Load,
+                store: wgpu::StoreOp::Store,
+            };
+            let mut rp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                color_attachments: &[attach(&view, load)],
+                ..Default::default()
+            });
+            rp.set_pipeline(pass.render());
+            rp.set_bind_group(0, &group, &[]);
+            rp.draw(0..6, 0..1);
+        }
+        let read = device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: 256,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        encoder.copy_texture_to_buffer(
+            texture.as_image_copy(),
+            wgpu::TexelCopyBufferInfo {
+                buffer: &read,
+                layout: wgpu::TexelCopyBufferLayout::default(),
+            },
+            texture.size(),
+        );
+        queue.submit([encoder.finish()]);
+        read.slice(..).map_async(wgpu::MapMode::Read, |_| {});
+        device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        let texel: Vec<u8> = read.slice(..).get_mapped_range().unwrap()[..4].to_vec();
+        // rgb = 0.25 × src + 0.75 × dst, alpha = the source's.
+        let expected = [0.625, 0.4375, 0.4375, 0.25].map(|v: f32| v * 255.0);
+        for (got, want) in texel.iter().zip(expected) {
+            assert!(
+                (f32::from(*got) - want).abs() <= 1.0,
+                "{texel:?} vs {expected:?}"
+            );
+        }
     }
 
     #[test]

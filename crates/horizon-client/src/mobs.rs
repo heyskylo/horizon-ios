@@ -3504,8 +3504,38 @@ impl Mob {
             self.heal(heal);
         }
     }
+    /// `LivingEntity.canBeAffected`: whether an effect of this kind may be added at
+    /// all, asked by `addEffect` before it stores anything. Five classes narrow the
+    /// rule first — a spider (a cave spider with it) and a nautilus refuse poison, a
+    /// wither and a wither skeleton the wither effect, a parched weakness — and the
+    /// entity type tags answer for the rest: `immune_to_infested` keeps infested off
+    /// a silverfish, `immune_to_oozing` keeps oozing off a slime, and
+    /// `ignores_poison_and_regen` (which is `#minecraft:undead`) keeps poison and
+    /// regeneration off a zombie, a skeleton, a phantom, a wither and the rest.
+    pub fn can_be_affected(&self, effect: &'static str) -> bool {
+        let effect = horizon_client_core::potions::namespaced(effect);
+        let refused = match self.species() {
+            Species::Spider | Species::CaveSpider | Species::Nautilus | Species::ZombieNautilus => {
+                effect == "minecraft:poison"
+            }
+            Species::Wither | Species::WitherSkeleton => effect == "minecraft:wither",
+            Species::Parched => effect == "minecraft:weakness",
+            Species::Silverfish => effect == "minecraft:infested",
+            Species::Slime => effect == "minecraft:oozing",
+            _ => false,
+        };
+        if refused {
+            return false;
+        }
+        !(self.kind.flags.undead && matches!(effect, "minecraft:poison" | "minecraft:regeneration"))
+    }
     pub fn add_effect(&mut self, effect: &'static str, ticks: i32, amplifier: i32) {
         let effect = horizon_client_core::potions::namespaced(effect);
+        // LivingEntity.addEffect: an effect the mob refuses is never added, so it
+        // never joins the list the client draws or an effect tick reads.
+        if !self.can_be_affected(effect) {
+            return;
+        }
         // AbsorptionMobEffect.addAttributeModifiers: at least 4 hearts-halves per level.
         if effect == "minecraft:absorption"
             && self
@@ -3560,6 +3590,11 @@ impl Mob {
         // HappyGhast.getVoicePitch: always 1.0, babies and all.
         if self.species() == Species::HappyGhast {
             return 1.0;
+        }
+        // Parrot.getVoicePitch: `getPitch(random)`, the plain range, so a baby
+        // parrot does not take the 1.5 that AgeableMob raises a baby by.
+        if self.species() == Species::Parrot {
+            return (self.random.next_float() - self.random.next_float()) * 0.2 + 1.0;
         }
         // ZombieVillager.getVoicePitch: babies are 2.0, not 1.5.
         let baby = if self.species() == Species::ZombieVillager {
@@ -4880,6 +4915,94 @@ mod totem_tests {
             m.extra.main_hand.as_deref(),
             Some("minecraft:totem_of_undying"),
             "the totem is still in the mouth"
+        );
+    }
+}
+#[cfg(test)]
+mod effect_refusal_tests {
+    use super::*;
+
+    /// A mob of a real type, from the extracted data (`entity-types.json`), so the
+    /// `undead`, `MobCategory` and species facts are the ones the game has.
+    fn mob(types: &MobTypes, id: &str) -> Mob {
+        let kind = Arc::new(types.types.get(id).expect(id).clone());
+        Mob::new(1, kind, Vec3::new(0.0, 64.0, 0.0), 0.0)
+    }
+    /// `LivingEntity.addEffect` asks `canBeAffected` before it stores anything: an
+    /// effect the mob's type refuses never joins the list, so the cloud on its head,
+    /// the `/effect` reply and an effect tick never see it. The refused ones are the
+    /// `ignores_poison_and_regen` tag (which is `#minecraft:undead`), a silverfish's
+    /// infested and a slime's oozing, plus the five classes that override the rule.
+    #[test]
+    fn an_effect_the_mobs_type_refuses_is_never_added() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        if !root.join("entity-types.json").exists() {
+            return;
+        }
+        let types = MobTypes::load_for_server(&root).unwrap();
+        let refused = |id: &str, effect: &'static str| {
+            let mut m = mob(&types, id);
+            m.add_effect(effect, 200, 0);
+            let listed = m.has_effect(effect);
+            (listed, m.extra.effects.len())
+        };
+        // `#minecraft:undead` is the `ignores_poison_and_regen` tag: a zombie, a
+        // skeleton and a phantom turn both poison and regeneration away.
+        for undead in [
+            "minecraft:zombie",
+            "minecraft:skeleton",
+            "minecraft:phantom",
+            "minecraft:zombie_horse",
+            "minecraft:wither",
+        ] {
+            for effect in ["minecraft:poison", "minecraft:regeneration"] {
+                assert_eq!(refused(undead, effect), (false, 0), "{undead} {effect}");
+            }
+            // Every other effect still lands on it.
+            assert_eq!(refused(undead, "minecraft:strength"), (true, 1), "{undead}");
+        }
+        // The tag's other two effects, each refused by the one type in it.
+        assert_eq!(
+            refused("minecraft:silverfish", "minecraft:infested"),
+            (false, 0)
+        );
+        assert_eq!(
+            refused("minecraft:silverfish", "minecraft:poison"),
+            (true, 1)
+        );
+        assert_eq!(refused("minecraft:slime", "minecraft:oozing"), (false, 0));
+        // A magma cube is not in `immune_to_oozing`, so oozing takes.
+        assert_eq!(
+            refused("minecraft:magma_cube", "minecraft:oozing"),
+            (true, 1)
+        );
+        // Spider.canBeAffected and CaveSpider's inheritance: poison is refused, and a
+        // nautilus refuses it too (AbstractNautilus.canBeAffected), the zombie one
+        // through the same override, an ordinary mob not at all.
+        for spider in [
+            "minecraft:spider",
+            "minecraft:cave_spider",
+            "minecraft:nautilus",
+        ] {
+            assert_eq!(refused(spider, "minecraft:poison"), (false, 0), "{spider}");
+        }
+        assert_eq!(refused("minecraft:cow", "minecraft:poison"), (true, 1));
+        // WitherBoss.canBeAffected and WitherSkeleton.canBeAffected: the wither
+        // effect only, which a zombie takes.
+        for wither in ["minecraft:wither", "minecraft:wither_skeleton"] {
+            assert_eq!(refused(wither, "minecraft:wither"), (false, 0), "{wither}");
+        }
+        assert_eq!(refused("minecraft:zombie", "minecraft:wither"), (true, 1));
+        // Parched.canBeAffected: weakness only, slowness takes.
+        assert_eq!(
+            refused("minecraft:parched", "minecraft:weakness"),
+            (false, 0)
+        );
+        assert_eq!(
+            refused("minecraft:parched", "minecraft:slowness"),
+            (true, 1)
         );
     }
 }

@@ -217,7 +217,7 @@ pub struct PostProgram {
     pub buffers: Vec<u32>,
     /// `flip.<name>.<buffer>`: buffers forced to flip (true) or kept (false) after this program.
     pub flips: Vec<(u32, bool)>,
-    /// How a gbuffers program's output blends into its buffers; `None` writes them.
+    /// How the program's output blends into its buffers; `None` writes them.
     pub blend: Option<Blend>,
     /// Per-buffer blend overrides, keyed by colortex index (not output location).
     pub buffer_blends: Vec<(u32, Option<Blend>)>,
@@ -691,7 +691,14 @@ pub fn load_post(
             _ => Target::Buffers,
         };
         for name in names {
-            if let Some(p) = loader.load(name, group, |v, f| translate_composite(v, f, target)) {
+            if let Some(mut p) = loader.load(name, group, |v, f| translate_composite(v, f, target))
+            {
+                // `blend.<program>` blends every buffer the program writes. Iris 1.11.7, probed:
+                // it applies to begin, prepare, deferred and composite programs, and
+                // `blend.<program>.<buffer>` doesn't apply to deferred and composite ones; the
+                // other cases are assumed to match.
+                p.blend = blend(loader.properties, &p.name).flatten();
+                p.buffer_blends.clear();
                 loader.post.programs.push(p);
             }
         }
@@ -1751,6 +1758,64 @@ mod tests {
         assert_eq!(
             BufferSize::parse("100000 0").unwrap().resolve([1, 1]),
             [BufferSize::MAX, 1]
+        );
+    }
+
+    /// `blend.<program>` blends every buffer a composite-style program writes, while
+    /// `blend.<program>.<buffer>` does not apply to them (Iris 1.11.7, probed: a buffer's `off`
+    /// under a program blend still blends, and a buffer's factors alone do not).
+    #[test]
+    fn composite_programs_blend_as_their_program_says() {
+        let pack = Pack::from_zip_bytes(
+            "t",
+            zip(&[
+                ("shaders/deferred.vsh", VSH),
+                ("shaders/deferred.fsh", FSH),
+                ("shaders/composite.vsh", VSH),
+                ("shaders/composite.fsh", FSH),
+                ("shaders/composite1.vsh", VSH),
+                ("shaders/composite1.fsh", FSH),
+                ("shaders/composite2.vsh", VSH),
+                ("shaders/composite2.fsh", FSH),
+            ]),
+        )
+        .unwrap();
+        let properties = Properties::parse(
+            "blend.deferred = ONE ONE ZERO ONE
+blend.composite = SRC_ALPHA ONE_MINUS_SRC_ALPHA ONE ZERO
+\
+             blend.composite.colortex3 = off
+blend.composite1.colortex3 = ONE ONE ONE ONE
+\
+             blend.composite2 = off
+",
+            &Macros::default(),
+        );
+        let post = load_post(
+            &pack,
+            "",
+            &properties,
+            &Macros::standard(),
+            &GameInputs::default(),
+        );
+        use Factor::*;
+        let blends: Vec<(&str, Option<Blend>, usize)> = post
+            .programs
+            .iter()
+            .map(|p| (p.name.as_str(), p.blend, p.buffer_blends.len()))
+            .collect();
+        assert_eq!(
+            blends,
+            [
+                ("deferred", Some([One, One, Zero, One]), 0),
+                (
+                    "composite",
+                    Some([SrcAlpha, OneMinusSrcAlpha, One, Zero]),
+                    0
+                ),
+                ("composite1", None, 0),
+                ("composite2", None, 0),
+            ]
         );
     }
 

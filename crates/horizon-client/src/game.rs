@@ -252,6 +252,7 @@ mod pad;
 mod pad_menu;
 mod paintings;
 mod pandas;
+mod particle_culling;
 mod passengers;
 mod persist;
 mod perspective;
@@ -2936,6 +2937,7 @@ struct Game<'a> {
     entity_culler: Option<horizon_client::entity_culling::Culler>,
     async_entity_culler: Option<entity_culling::AsyncCuller>,
     async_entity_culling_failed: bool,
+    async_particle_culler: RefCell<particle_culling::ParticleAsyncState>,
     /// `Renderer::pack_shadow_casters` for this frame's entities: (keep what the culler hides,
     /// build the player's model in first person); (false, false) without a shader pack.
     pack_shadow_casters: (bool, bool),
@@ -10790,6 +10792,7 @@ impl Game<'_> {
         &mut self,
         camera: glam::DVec3,
         alpha: f64,
+        fov_degrees: f32,
         mut out: Vec<Vertex>,
     ) -> (
         Vec<Vertex>,
@@ -11325,14 +11328,43 @@ impl Game<'_> {
         // Particles (ParticleEngine.extract): camera-facing quads.
         self.mark_stage(out.len(), "PARTICLES");
         let world = &self.world;
-        self.particles.render(
-            camera,
-            self.yaw,
-            self.pitch,
-            alpha as f32,
-            &|b| world.light(b[0], b[1], b[2]),
-            &mut out,
-        );
+        let particle_mode = self.settings.horizon.particle_culling;
+        if particle_mode == horizon_client::graphics::ParticleCullingMode::Off {
+            self.particles.render(
+                camera,
+                self.yaw,
+                self.pitch,
+                alpha as f32,
+                &|b| world.light(b[0], b[1], b[2]),
+                &mut out,
+            );
+        } else {
+            let frustum = self.view_frustum;
+            let pixel_focal_length = self.renderer.as_ref().map_or(0.0, |renderer| {
+                let tangent = (f64::from(fov_degrees).to_radians() * 0.5).tan();
+                if tangent.is_finite() && tangent > 0.0 {
+                    (f64::from(renderer.config.height.max(1)) / (2.0 * tangent)) as f32
+                } else {
+                    0.0
+                }
+            });
+            {
+                let mut particle_culling = self.particle_occlusion_context(camera);
+                self.particles.render_culled(
+                    camera,
+                    self.yaw,
+                    self.pitch,
+                    alpha as f32,
+                    pixel_focal_length,
+                    true,
+                    frustum.as_ref(),
+                    &mut |min, max| particle_culling.hidden(min, max),
+                    &|b| world.light(b[0], b[1], b[2]),
+                    &mut out,
+                );
+            }
+            self.finish_async_particle_culling();
+        }
         laps.lap("eg_particles");
         // Breaking progress overlays (destroy_stage_0..9): ours and the other players'.
         self.mark_stage(out.len(), "DESTROY");
@@ -15804,7 +15836,7 @@ impl Game<'_> {
         if !title {
             let (built, static_sections, visible_static_sections, static_stats) =
                 spans::time("entity_geometry", || {
-                    self.entity_geometry(camera, alpha, entities)
+                    self.entity_geometry(camera, alpha, fov_degrees, entities)
                 });
             entities = built;
             static_block_entities = static_sections;
@@ -18404,7 +18436,6 @@ impl Game<'_> {
                         self.frame_stats.record_gpu(&r.gpu_times);
                         r.gpu_times.clear();
                     }
-                    horizon_client::ram_limit::frame();
                     self.limit_frame();
                     self.pause = self.pauses_game();
                     if let Some(server) = &self.integrated {
@@ -19055,6 +19086,7 @@ impl<'a> Game<'a> {
             entity_culler: None,
             async_entity_culler: None,
             async_entity_culling_failed: false,
+            async_particle_culler: RefCell::new(Default::default()),
             pack_shadow_casters: (false, false),
             pending_uploads: Vec::new(),
             frame_graph: Default::default(),
