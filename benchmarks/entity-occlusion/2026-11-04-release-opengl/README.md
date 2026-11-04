@@ -2,7 +2,7 @@
 
 This is the final local smoke benchmark for the entity-occlusion pipeline before opening the PR. It was run from the branch after the release build completed, with the OpenGL backend selected explicitly. The same process created each scene, switched the culling mode, flew the camera for two seconds, collected frame/CPU telemetry, and captured the screenshot after the scene settled.
 
-**Host:** Intel Core i7-3770S, Intel HD Graphics 4000, Mesa OpenGL 4.6
+**Host:** Intel Core i7-3770S, Intel HD Graphics 4000, Mesa OpenGL 4.2
 **Window:** 1280×720, offscreen, VSync disabled
 **World:** fresh temporary home, 32×32 platform at Y=300; wall scenes add a solid stone wall and an optional one-block slit
 **Entities:** 24 pigs in the normal scene, 192 pigs in wall scenes, 512 pigs in stress scenes
