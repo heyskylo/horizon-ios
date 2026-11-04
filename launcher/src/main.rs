@@ -298,14 +298,12 @@ struct Launcher {
     wardrobe: Option<wardrobe_page::Wardrobe>,
     /// Ask the service again on the next draw of the Wardrobe (set by each visit).
     wardrobe_reload: bool,
-    /// The cosmetics service's last word on the founder set's claim (`GET /v1/shop`): whether
+    /// The cosmetics service's last word on the founder set's window (`GET /v1/shop`): whether
     /// the top bar has the Wardrobe page with cosmetics off (`wardrobe_shown`).
     shop_status: Option<horizon_launcher::wardrobe::Claim>,
     /// The selected account's own answer on it from its last Wardrobe visit, kept on disk (a
     /// preview the service grants it, its claim).
     shop_kept: Option<horizon_launcher::wardrobe::Claim>,
-    /// The Wardrobe page's Shop tab (`wardrobe_page/shop.rs`).
-    shop: wardrobe_page::Shop,
     /// Work the look out again on the next frame (a launcher theme put on or taken off).
     restyle: bool,
     /// Why the last picture for Home's background was refused.
@@ -607,7 +605,6 @@ impl Launcher {
             wardrobe_reload: false,
             shop_status: None,
             shop_kept: None,
-            shop: Default::default(),
             // The first draw takes the launcher theme from Settings.
             restyle: true,
             background_error: None,
