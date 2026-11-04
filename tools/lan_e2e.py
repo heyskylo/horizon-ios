@@ -4790,10 +4790,11 @@ def check_piston_slide(host, guest, out):
     PistonMovingBlockEntity.tick. ServerLevel.tick broadcasts the changed blocks before the block events and the
     block entities, so what those change goes out at the start of the next tick: the landed head three ticks
     after the block event, not two, and at a slow tick rate the client's head slides all the way instead of
-    jumping the rest. That broadcast also comes before the next tick's block events: a repeating command block
-    powers the piston again the tick after its retraction put the base back, and the client must have the base
-    to run that extension itself. The host reads its own copy of the head's cell once a tick (each read follows
-    the client tick that saw what arrived), at /tick rate 1.
+    jumping the rest. That broadcast comes before the tick's block events, with the blocks as they are then:
+    the tick after the retraction put the base back, a repeating command block puts a stone in the head's cell
+    and its chain powers the piston, and the client must have both the base and the stone (not the moving block
+    the push makes of it) to run that extension itself. The host reads its own copy of the head's cell once a
+    tick (each read follows the client tick that saw what arrived), at /tick rate 1.
     """
     x, y, z = (int(v // 1) for v in pos_of(host))
     y += 3
@@ -4802,9 +4803,11 @@ def check_piston_slide(host, guest, out):
     host('command', command=f'setblock {x} {y} {z} minecraft:piston[facing=east]')
     host('command', command=f'setblock {head} minecraft:stone')
     again = (f'execute if block {head} minecraft:air if block {x} {y} {z} minecraft:piston[extended=false] '
-             f'if block {x - 1} {y} {z} minecraft:air run setblock {x - 1} {y} {z} minecraft:redstone_block')
+             f'if block {x - 1} {y} {z} minecraft:air run setblock {head} minecraft:stone')
     host('command', command=f'setblock {x} {y} {z - 2} minecraft:repeating_command_block[facing=up]'
          f'{{auto:1b,Command:"{again}"}}')
+    host('command', command=f'setblock {x} {y + 1} {z - 2} minecraft:chain_command_block[facing=up,conditional=true]'
+         f'{{auto:1b,Command:"setblock {x - 1} {y} {z} minecraft:redstone_block"}}')
     host.wait(5)
     host('command', command='tick rate 1')
     sample = ['wait 1', f'block {head}', 'status']
@@ -4813,7 +4816,7 @@ def check_piston_slide(host, guest, out):
                               + [f'command setblock {x - 1} {y} {z} minecraft:air'] + sample * 9, every=True)
     finally:
         host('command', command='tick rate 20')
-        host('command', command=f'fill {x - 1} {y} {z - 2} {x + 3} {y} {z} minecraft:air')
+        host('command', command=f'fill {x - 1} {y} {z - 2} {x + 3} {y + 1} {z} minecraft:air')
 
     def moves(replies):
         seen = [(status['ticks'], block['block'].removeprefix('minecraft:'))

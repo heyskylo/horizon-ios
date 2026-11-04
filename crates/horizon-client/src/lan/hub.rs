@@ -2271,8 +2271,8 @@ impl Hub {
 
     /// `ChunkHolder.broadcastChanges` where `ServerChunkCache.tick` runs it,
     /// before the block events: what changed since the last time (the last
-    /// tick's block events and block entities, this tick's scheduled and
-    /// random ticks) goes out ahead of the events that build on it.
+    /// tick's block events, entities and block entities, this tick's
+    /// scheduled and random ticks), as it is now.
     pub fn broadcast_changes(&mut self, world: &mut World) {
         if self.guests.iter().any(|g| self.here(g)) {
             self.broadcast_light_changes(world);
