@@ -2375,6 +2375,16 @@ impl Game<'_> {
             d.in_wall = in_wall;
         }
     }
+    /// `Entity.isSilent` of the dragon: its `Silent`, kept with the fields
+    /// Horizon models nowhere (`remember_tags`; `/summon`, a load, `/data`).
+    fn dragon_silent(&self) -> bool {
+        let raw = self
+            .dragon
+            .as_ref()
+            .filter(|d| d.id != 0)
+            .and_then(|d| self.persist.raw.get(&d.id));
+        saved_silent(raw)
+    }
     /// `tickDeath`: rising for 200 ticks, explosions, experience, then the
     /// exit portal, the egg and a gateway.
     fn tick_dragon_death(&mut self) {
@@ -2406,9 +2416,9 @@ impl Game<'_> {
         if t > 150 && t % 5 == 0 && drops {
             self.spawn_orbs([p.x, p.y, p.z], (xp as f32 * 0.08) as u32);
         }
-        if t == 1 {
+        if t == 1 && !self.dragon_silent() {
             // EnderDragon.tickDeath: global level event 1028, the death
-            // roar, heard everywhere.
+            // roar, heard everywhere, unless the dragon is silent.
             let at = [p.x, p.y, p.z].map(|v| v.floor() as i32);
             self.global_level_event(1028, at, 0);
         }
@@ -3200,6 +3210,11 @@ impl Game<'_> {
             self.fight.dirty = true;
         }
     }
+}
+/// `Entity.isSilent` from an entity's saved compound: `Silent`, written only
+/// when set.
+fn saved_silent(raw: Option<&Tag>) -> bool {
+    matches!(raw.and_then(|t| t.get("Silent")), Some(Tag::Byte(b)) if *b != 0)
 }
 /// Saving and loading the dragon and the crystals as chunk entities.
 impl Dragon {
@@ -4273,6 +4288,24 @@ mod tests {
             ),
             Vec3::new(feet[0], feet[1], feet[2]),
         )
+    }
+
+    /// `EnderDragon.tickDeath` roars (`globalLevelEvent(1028)`) only when
+    /// `!isSilent()`; `Silent` is saved only when set, as a byte.
+    #[test]
+    fn a_dragon_is_silent_only_with_a_set_silent_byte() {
+        use horizon_world::nbt::{Compound, Tag};
+        let with = |v: Option<i8>| {
+            let mut map = Compound::new();
+            if let Some(b) = v {
+                map.insert("Silent".into(), Tag::Byte(b));
+            }
+            Tag::Compound(map)
+        };
+        assert!(!super::saved_silent(None));
+        assert!(!super::saved_silent(Some(&with(None))));
+        assert!(!super::saved_silent(Some(&with(Some(0)))));
+        assert!(super::saved_silent(Some(&with(Some(1)))));
     }
 
     #[test]

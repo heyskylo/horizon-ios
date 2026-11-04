@@ -119,6 +119,8 @@ public final class VanillaProtocolClient {
     /** With {@code ride}: the entity mode, plus the order of what the player sees of a ride through a portal (RideTranscript). */
     private RideTranscript ride;
     private GoatVoiceTranscript goatVoices;
+    /** With {@code level-events}: the entity mode, plus the level events of a phased scene (LevelEventTranscript). */
+    private LevelEventTranscript levelEvents;
 
     public static void main(String[] args) throws Exception {
         ParityData.init();
@@ -135,6 +137,10 @@ public final class VanillaProtocolClient {
         if (args.length > 4 && args[4].equals("goat-voices")) {
             client.entities = new EntityTranscript();
             client.goatVoices = new GoatVoiceTranscript();
+        }
+        if (args.length > 4 && args[4].equals("level-events")) {
+            client.entities = new EntityTranscript();
+            client.levelEvents = new LevelEventTranscript();
         }
         try {
             client.status(host, port);
@@ -465,7 +471,7 @@ public final class VanillaProtocolClient {
         boolean loaded = false;
         PositionMoveRotation position = new PositionMoveRotation(Vec3.ZERO, Vec3.ZERO, 0, 0);
         long lastChunk = 0;
-        long deadline = System.currentTimeMillis() + (goatVoices == null ? 150_000 : 600_000);
+        long deadline = System.currentTimeMillis() + (goatVoices == null && levelEvents == null ? 150_000 : 600_000);
         int step = 0;
         long stepAt = 0;
         // The death the console deals and the respawn after it (PlayerList.respawn): from the
@@ -531,6 +537,7 @@ public final class VanillaProtocolClient {
                 }
                 if (ride != null) ride.self(packet);
                 if (goatVoices != null) goatVoices.accept(packet);
+                if (levelEvents != null) levelEvents.accept(packet);
                 if (r.type.equals("minecraft:chunk_batch_start")) ordered = false;
                 if (respawning && !respawned) {
                     String line = respawnLine(r, playerId);
@@ -692,20 +699,21 @@ public final class VanillaProtocolClient {
                 // Entity mode: the harness's console summons the scene once it reads this
                 // line; everything tracked from then on is recorded until the client leaves.
                 record("play-chunks", String.valueOf(chunks.size()));
-                send(new ServerboundChatPacket(goatVoices == null ? "summon the entities" : "summon the goats", Instant.now(), 0L, Optional.empty(),
+                send(new ServerboundChatPacket(goatVoices != null ? "summon the goats" : levelEvents != null ? "summon the scene" : "summon the entities", Instant.now(), 0L, Optional.empty(),
                     new LastSeenMessages.Update(0, new BitSet(), (byte) 0)));
                 step = ENTITIES;
                 stepAt = now;
             } else if (step == ENTITIES && ride != null && (ride.done() || now - stepAt > RIDE_WAIT)) {
                 for (String line : ride.lines()) record("play-ride", line);
                 return;
-            } else if (step == ENTITIES && ride == null && (goatVoices == null ? now - stepAt > ENTITY_WAIT : goatVoices.done())) {
-                if (goatVoices == null) for (String line : entities.lines()) record("play-entities", line);
-                else for (String line : goatVoices.lines()) record("play-goat-voice", line);
+            } else if (step == ENTITIES && ride == null && (goatVoices != null ? goatVoices.done() : levelEvents != null ? levelEvents.done() : now - stepAt > ENTITY_WAIT)) {
+                if (goatVoices != null) for (String line : goatVoices.lines()) record("play-goat-voice", line);
+                else if (levelEvents != null) for (String line : levelEvents.lines()) record("play-level-event", line);
+                else for (String line : entities.lines()) record("play-entities", line);
                 return;
             }
-            if (goatVoices != null) {
-                String ack = goatVoices.acknowledgement();
+            if (goatVoices != null || levelEvents != null) {
+                String ack = goatVoices != null ? goatVoices.acknowledgement() : levelEvents.acknowledgement();
                 if (ack != null) send(new ServerboundChatPacket(ack, Instant.now(), 0L, Optional.empty(),
                     new LastSeenMessages.Update(0, new BitSet(), (byte) 0)));
             }
