@@ -127,6 +127,8 @@ def main():
     recorded_ops = [op for op in script if op['op'] == 'falling' or
                     (op['op'] == 'cmd' and op.get('record', True)) or
                     (op['op'] == 'tick' and op.get('record'))]
+    if len(recorded_ops) != len(vanilla):
+        sys.exit(f'script record count differs: expected {len(recorded_ops)}, got {len(vanilla)}')
     for op, reference in zip(recorded_ops, vanilla):
         if 'expect_result' in op and reference.get('results') != [[True, op['expect_result']]]:
             sys.exit(f'Java fixture control failed: {op["cmd"]}: {reference.get("results")}')
@@ -140,7 +142,7 @@ def main():
     failed_positions = set()
     for position, (v, r) in enumerate(zip(vanilla, rust)):
         assert v['cmd'] == r['cmd'], (v['cmd'], r['cmd'])
-        kind = compare(v, r)
+        kind = compare(v, r, recorded_ops[position].get('comparison'))
         if kind:
             failed_positions.add(position)
             mismatches.append({'kind': kind, 'cmd': v['cmd'], 'vanilla': v, 'rust': r})
@@ -160,7 +162,14 @@ def main():
     print(f'total: {total - len(mismatches)}/{total} commands match', flush=True)
     report = {'schema': 1, 'minecraft': lock['minecraft']['version'], 'platform': platform.platform(), 'seed': SEED,
               'commands': total, 'mismatches': len(mismatches), 'groups': summary,
-              'scope': 'Feedback and failure messages (text and resolved style), chat lines, and CommandResultCallback results of commands run by the single-player owner of an integrated server; world, entity and item effects through probe commands.'}
+              'comparison_overrides': [
+                  {'cmd': op['cmd'], 'comparison': op['comparison'],
+                   'vanilla_results': v['results'], 'rust_results': r['results']}
+                  for op, v, r in zip(recorded_ops, vanilla, rust) if op.get('comparison')],
+              'scope': 'Feedback and failure messages (text and resolved style), chat lines, and CommandResultCallback results of commands run by the single-player owner of an integrated server; world, entity and item effects through probe commands. Explicit positive_result operations compare presence only; their unmodified raw counts remain in the records and comparison_overrides.'}
+    for override in report['comparison_overrides']:
+        print(f'{override["comparison"]}: {override["cmd"]}: '
+              f'Java {override["vanilla_results"]}, Horizon {override["rust_results"]}', flush=True)
     lab.write_json(report_path, report)
     if mismatches and not args.allow_gaps:
         sys.exit(f'{len(mismatches)} command execution mismatches; see {build}')
@@ -189,7 +198,26 @@ def masked(record):
     return text
 
 
-def compare(v, r):
+def positive_result(record):
+    """A counted operation's presence, retaining its unmodified raw record."""
+    results = record.get('results')
+    if not isinstance(results, list) or len(results) != 1 or not isinstance(results[0], list) or len(results[0]) != 2:
+        return None
+    accepted, count = results[0]
+    if type(accepted) is not bool or type(count) is not int or count < 0 or not accepted and count != 0:
+        return None
+    return count > 0
+
+
+def compare(v, r, comparison=None):
+    # Explicit per-operation scope for random counts (for example explosion
+    # fire). All raw feedback/results remain in the JSON and report; every
+    # other command still compares exact feedback, styles and results.
+    if comparison == 'positive_result':
+        left, right = positive_result(v), positive_result(r)
+        return None if left is not None and right is not None and left == right else 'positive_result'
+    if comparison is not None:
+        raise ValueError(f'unknown command comparison: {comparison}')
     if masked(v) != masked(r):
         return 'messages'
     if v['results'] != r['results']:
