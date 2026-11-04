@@ -456,7 +456,9 @@
   "runs {command} after": "corre {command} despois",
   "downloaded": "descargado",
   "24/7 online": "24/7 en liña",
-  "Updated to {version}. Restart the launcher to use it.": "Actualizado a {version}. Reinicie o iniciador para usalo.",
+  "A new version is available": "Hai unha nova versión dispoñible",
+  "Download again": "Descargar de novo",
+  "This copy of the launcher can't replace itself. Download it again once; it updates itself after that.": "Esta copia do lanzador non se pode substituír a si mesma. Descárgao de novo unha vez; despois actualízase só.",
   "Any MCP client": "Calquera cliente MCP",
   "{name}'s cape is kept.": "Gárdase a capa de {name}.",
   "Not reviewed by the Horizon registry": "Non revisado polo rexistro Horizon",
@@ -635,7 +637,6 @@
   "Copied": "Copiouse",
   "Couldn't load patch notes. {error}": "Non se puideron cargar as notas do parche. {error}",
   "Couldn't load releases. {error}": "Non se puideron cargar as versións. {error}",
-  "Launcher updated to {version}": "Lanzador actualizado a {version}",
   "Launcher {version}": "Lanzador {version}",
   "Launcher {version}  {percent}%": "Lanzador {version} {percent}%",
   "Manage versions": "Xestionar versións",
@@ -842,7 +843,6 @@
   "Something went wrong.": "Algo saíu mal.",
   "Instances": "Instancias",
   "Join the Discord": "Únete ao Discord",
-  "Restart to update": "Reinicia para actualizar",
   "Duplicate…": "Duplicar…",
   "Create a desktop shortcut": "Crea un atallo no escritorio",
   "Remove the desktop shortcut": "Elimina o atallo do escritorio",
@@ -1117,5 +1117,8 @@
   "Move…": "Move…",
   "The launcher closes while your data is copied and verified, then reopens. Old folders are kept and still use disk space until you verify the move and remove them yourself.": "The launcher closes while your data is copied and verified, then reopens. Old folders are kept and still use disk space until you verify the move and remove them yourself.",
   "Open the shop": "Abrir a tenda",
-  "You don't own any cosmetics yet.": "Aínda non tes ningún cosmético."
+  "You don't own any cosmetics yet.": "Aínda non tes ningún cosmético.",
+  "Claim for free": "Obter de balde",
+  "The shop's payment provider doesn't serve your country, so you can claim the Founder Set here for free.": "O provedor de pagos da tenda non opera no teu país, así que podes obter o Set fundador aquí de balde.",
+  "The Founder Set is yours.": "O Set fundador é teu."
 }

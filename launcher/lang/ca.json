@@ -456,7 +456,9 @@
   "runs {command} after": "corre {command} després",
   "downloaded": "descarregat",
   "24/7 online": "24/7 en línia",
-  "Updated to {version}. Restart the launcher to use it.": "S'ha actualitzat a {version}. Reinicieu el llançador per utilitzar-lo.",
+  "A new version is available": "Hi ha una versió nova disponible",
+  "Download again": "Torna a baixar-lo",
+  "This copy of the launcher can't replace itself. Download it again once; it updates itself after that.": "Aquesta còpia del llançador no es pot substituir a si mateixa. Torna a baixar-lo una vegada; després s'actualitza sol.",
   "Any MCP client": "Qualsevol client MCP",
   "{name}'s cape is kept.": "Es manté la capa de {name}.",
   "Not reviewed by the Horizon registry": "No revisat pel registre d'Horizon",
@@ -635,7 +637,6 @@
   "Copied": "Copiat",
   "Couldn't load patch notes. {error}": "No s'han pogut carregar les notes del pedaç. {error}",
   "Couldn't load releases. {error}": "No s'han pogut carregar les versions. {error}",
-  "Launcher updated to {version}": "El llançador s'ha actualitzat a {version}",
   "Launcher {version}": "Llançador {version}",
   "Launcher {version}  {percent}%": "Llançador {version} {percent}%",
   "Manage versions": "Gestionar versions",
@@ -842,7 +843,6 @@
   "Something went wrong.": "Alguna cosa va fallar.",
   "Instances": "Instàncies",
   "Join the Discord": "Uneix-te al Discord",
-  "Restart to update": "Reinicieu per actualitzar",
   "Duplicate…": "Duplicar…",
   "Create a desktop shortcut": "Creeu una drecera a l'escriptori",
   "Remove the desktop shortcut": "Elimina la drecera de l'escriptori",
@@ -1117,5 +1117,8 @@
   "Move…": "Move…",
   "The launcher closes while your data is copied and verified, then reopens. Old folders are kept and still use disk space until you verify the move and remove them yourself.": "The launcher closes while your data is copied and verified, then reopens. Old folders are kept and still use disk space until you verify the move and remove them yourself.",
   "Open the shop": "Obre la botiga",
-  "You don't own any cosmetics yet.": "Encara no tens cap cosmètic."
+  "You don't own any cosmetics yet.": "Encara no tens cap cosmètic.",
+  "Claim for free": "Aconsegueix-lo gratis",
+  "The shop's payment provider doesn't serve your country, so you can claim the Founder Set here for free.": "El proveïdor de pagaments de la botiga no dona servei al teu país, així que pots aconseguir el Conjunt del fundador aquí gratis.",
+  "The Founder Set is yours.": "El Conjunt del fundador és teu."
 }
