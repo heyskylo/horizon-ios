@@ -10149,6 +10149,14 @@ impl horizon_world::level::LevelAccess for DryLevel<'_> {
     fn is_loaded(&self, pos: horizon_core::position::BlockPos) -> bool {
         self.base.is_loaded(pos)
     }
+    /// A block this guess changed has no block entity left, so it reads as a
+    /// missing one; every other position asks the level it stands in for.
+    fn shulker_is_closed(&self, pos: horizon_core::position::BlockPos) -> Option<bool> {
+        if self.changed.contains_key(&pos) {
+            return None;
+        }
+        self.base.shulker_is_closed(pos)
+    }
     fn min_y(&self) -> i32 {
         self.base.min_y()
     }

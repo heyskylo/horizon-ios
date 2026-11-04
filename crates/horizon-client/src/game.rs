@@ -1810,6 +1810,14 @@ impl LevelAccess for GameLevel<'_> {
                 Some(BlockEntity::Mod(_))
             )
     }
+    /// `ShulkerBoxBlockEntity.isClosed`: the lid state the block-entity tick
+    /// copied from `be_anims` (`ShulkerBoxBlock.getBlockSupportShape`).
+    fn shulker_is_closed(&self, pos: BlockPos) -> Option<bool> {
+        self.world
+            .shulkers
+            .get(&[pos.x, pos.y, pos.z])
+            .map(|s| s.status == horizon_client::block_entity_anim::ShulkerStatus::Closed)
+    }
     fn remove_block_entity(&mut self, pos: BlockPos, old: BlockStateId, side_effects: bool) -> u8 {
         self.remove_entity(pos, old, side_effects)
     }

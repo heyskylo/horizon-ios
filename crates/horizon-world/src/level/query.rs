@@ -170,6 +170,27 @@ impl crate::block_collision::DynamicCollisionWorld for NoBlockEntities {
     }
 }
 
+/// Block-entity lookups for dynamic shapes, read from the level itself: a
+/// shulker box's lid state decides whether its support shape is the open plate
+/// or the closed full cube (`ShulkerBoxBlock.getBlockSupportShape`).
+struct LevelBlockEntities<'a, L: LevelAccess + ?Sized>(&'a L);
+impl<L: LevelAccess + ?Sized> crate::dynamic_support::DynamicSupportWorld
+    for LevelBlockEntities<'_, L>
+{
+    type Error = std::convert::Infallible;
+    fn shulker_is_closed(&mut self, position: [i32; 3]) -> Result<Option<bool>, Self::Error> {
+        Ok(self
+            .0
+            .shulker_is_closed(BlockPos::new(position[0], position[1], position[2])))
+    }
+    fn moving_piston_shape(
+        &mut self,
+        _position: [i32; 3],
+    ) -> Result<Option<VoxelShape>, Self::Error> {
+        Ok(None)
+    }
+}
+
 impl<L: LevelAccess + ?Sized> Sim<'_, L> {
     /// Shape queries over `getCollisionShape(level, pos)`, including the
     /// position-dependent shapes (bamboo, speleothems, shulker boxes).
@@ -249,8 +270,37 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         let shape = self.moving_block_shape(pos)?;
         Some(support.is_supporting(&shape, direction).unwrap_or(false))
     }
+    /// `ShulkerBoxBlock.getBlockSupportShape` at `pos`: vanilla asks the block
+    /// entity because a shulker box's shape is dynamic, so an open box gives
+    /// support only through its one-pixel plate opposite `facing`, where the
+    /// exported facts see a closed full cube. None for every other block.
+    fn shulker_support(
+        &self,
+        pos: BlockPos,
+        direction: Direction,
+        support: SupportType,
+    ) -> Option<bool> {
+        let state = self.state(pos);
+        if !self
+            .b
+            .tags
+            .shulker_boxes
+            .contains(self.b.table.block(state))
+        {
+            return None;
+        }
+        let mut world = LevelBlockEntities(&*self.level);
+        self.b
+            .dynamic
+            .get(&state)?
+            .is_face_sturdy(&mut world, [pos.x, pos.y, pos.z], direction, support)
+            .ok()
+    }
     pub fn sturdy(&self, pos: BlockPos, direction: Direction) -> bool {
         if let Some(sturdy) = self.moving_block_supports(pos, direction, SupportType::Full) {
+            return sturdy;
+        }
+        if let Some(sturdy) = self.shulker_support(pos, direction, SupportType::Full) {
             return sturdy;
         }
         self.b.is_face_sturdy(self.support_state(pos), direction)
@@ -258,6 +308,9 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
     /// `Block.canSupportRigidBlock(level, below)`.
     pub fn can_support_rigid_block(&self, pos: BlockPos) -> bool {
         if let Some(rigid) = self.moving_block_supports(pos, Direction::Up, SupportType::Rigid) {
+            return rigid;
+        }
+        if let Some(rigid) = self.shulker_support(pos, Direction::Up, SupportType::Rigid) {
             return rigid;
         }
         self.b
@@ -271,6 +324,9 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
             return false;
         }
         if let Some(center) = self.moving_block_supports(pos, direction, SupportType::Center) {
+            return center;
+        }
+        if let Some(center) = self.shulker_support(pos, direction, SupportType::Center) {
             return center;
         }
         self.b.is_face_sturdy_center(state, direction)

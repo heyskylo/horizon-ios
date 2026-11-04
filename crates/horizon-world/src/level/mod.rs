@@ -727,6 +727,12 @@ pub trait LevelAccess {
     fn has_mod_block_entity(&self, _pos: BlockPos) -> bool {
         false
     }
+    /// `ShulkerBoxBlockEntity.isClosed` at `pos`: whether the box's lid is
+    /// still shut. None when no shulker box block entity lives there, or the
+    /// level keeps none: vanilla then reads the box as closed, a full cube.
+    fn shulker_is_closed(&self, _pos: BlockPos) -> Option<bool> {
+        None
+    }
     /// Load saved block-entity data into the block entity of the block just
     /// placed at `pos` (`BlockEntity.loadWithComponents`): a bee nest a grown
     /// tree placed gets its bees. Levels without block entities drop it.
