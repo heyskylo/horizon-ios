@@ -303,11 +303,13 @@ impl Launcher {
                         Some(value) == shown,
                         &t,
                     )
-                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                        this.mods.browse.sort_menu = false;
-                        this.mods_filter(|f| f.sort = value);
-                        cx.notify();
-                    })),
+                    .on_click(cx.listener(
+                        move |this, _: &ClickEvent, _, cx| {
+                            this.mods.browse.sort_menu = false;
+                            this.mods_filter(|f| f.sort = value);
+                            cx.notify();
+                        },
+                    )),
                 );
             }
             wrap = wrap.child(
