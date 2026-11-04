@@ -5,12 +5,13 @@
 //! Gbuffers programs come later; until then the pack's composites read Horizon's picture.
 //!
 //! Every colortex buffer a program reads or writes has two textures, A and B. Programs read
-//! "main" and write "alt", and each buffer a program wrote flips afterwards (6.1.6). The
-//! mapping carries over to the next frame, so a buffer that is not cleared reads back what was
-//! written last (OQ-8). A cleared buffer has both textures cleared at the start of the frame:
-//! with an odd number of flips a frame, the texture a program writes was "main" the frame before
-//! and may still hold what was stored into it after that frame's clear (Iris 1.11.7 blends onto
-//! the clear value there, probed with a pack of our own).
+//! "main" and write "alt", and each buffer a program wrote flips afterwards (6.1.6). Every
+//! frame starts with A as "main". A cleared buffer has both textures cleared then (Iris 1.11.7
+//! reads and blends onto the clear value where a program leaves pixels, probed with a pack of our
+//! own). A buffer that is not cleared reads back what was written last (OQ-8): when the last
+//! frame ended on B, B is copied to A, and B keeps what was last written into it, which is what
+//! a write leaves alone or blends onto there (a model that fits Iris 1.11.7's values in probe
+//! packs of our own).
 //! Pack buffers store rows as GL does (row 0 at the bottom: the translator negates clip y), so
 //! the world is copied in upside down, and its reverse-Z depth becomes GL window depth.
 
@@ -33,6 +34,9 @@ mod world_target_tests;
 
 #[cfg(test)]
 mod higher_shadowcolor_tests;
+
+#[cfg(test)]
+mod forced_flip_tests;
 
 /// The texture behind a pack sampler name.
 #[derive(Clone, Copy, PartialEq)]
@@ -96,13 +100,7 @@ enum SamplerKind {
 impl SamplerKind {
     fn of(source: Source, filtering: bool) -> Self {
         match source {
-            Source::Color(_)
-            | Source::ShadowColor(_)
-            | Source::Dummy
-            | Source::Normals
-            | Source::Specular
-                if !filtering =>
-            {
+            Source::Color(_) | Source::ShadowColor(_) | Source::Dummy if !filtering => {
                 Self::Nearest
             }
             Source::Depth | Source::Depth1 | Source::Depth2 | Source::ShadowDepth(_, false) => {
@@ -111,7 +109,7 @@ impl SamplerKind {
             Source::Noise => Self::Repeat,
             Source::Shadow | Source::ShadowDepth(_, true) => Self::Comparison,
             // Blocks look as the game draws them: nearest texels.
-            Source::Atlas => Self::NearestRepeat,
+            Source::Atlas | Source::Normals | Source::Specular => Self::NearestRepeat,
             Source::Image(_) if filtering => Self::Linear,
             Source::Image(_) => Self::Nearest,
             Source::Custom { blur, clamp, .. } => match (blur && filtering, clamp) {
@@ -120,12 +118,9 @@ impl SamplerKind {
                 (true, false) => Self::Repeat,
                 (false, false) => Self::NearestRepeat,
             },
-            Source::Color(_)
-            | Source::ShadowColor(_)
-            | Source::Dummy
-            | Source::Normals
-            | Source::Specular
-            | Source::Lightmap => Self::Linear,
+            Source::Color(_) | Source::ShadowColor(_) | Source::Dummy | Source::Lightmap => {
+                Self::Linear
+            }
         }
     }
 
@@ -366,6 +361,7 @@ struct Pass {
     draw: bool,
     /// What `texture` reads instead of the block atlas.
     atlas: Option<wgpu::TextureView>,
+    material_maps: bool,
     /// Reads `mc_Entity`'s table (`PackPost::block_ids`).
     ids: bool,
     /// Bind groups by the sides read (bits 0–15), the buffers whose mip chain is current (bits
@@ -437,6 +433,7 @@ struct Targets {
 pub(super) struct World<'a> {
     /// The block atlas and its size.
     pub atlas: Option<(wgpu::TextureView, [u32; 2])>,
+    pub material_maps: Option<[wgpu::TextureView; 2]>,
     pub lightmap: wgpu::TextureView,
     /// Terrain's geometry, when the pack draws it.
     pub terrain: Option<Geometry<'a>>,
@@ -522,8 +519,9 @@ pub struct PackPost {
     lines: Option<Pass>,
     line_draw: Option<Lines>,
     cloud_draw: Option<Clouds>,
-    /// The pack has `gbuffers_clouds`, even one that writes nothing (a pack drawing its own
-    /// clouds discards vanilla's), or `clouds=off`: the game's clouds are not drawn.
+    /// The pack draws the clouds (`gbuffers_clouds` or its fallback), even with a program that
+    /// writes nothing (a pack drawing its own clouds discards vanilla's), or `clouds=off`: the
+    /// game's clouds are not drawn.
     hides_clouds: bool,
     /// The pack has a sky (`gbuffers_skybasic`) or sun and moon (`gbuffers_skytextured`)
     /// program: vanilla's stays hidden even when the program writes nothing.
@@ -573,6 +571,7 @@ pub struct PackPost {
     /// `shaders.properties`' custom uniforms, after the frame's in `uniforms.values`.
     custom: horizon_shaders::Custom,
     atlas: Option<wgpu::TextureView>,
+    material_maps: Option<[wgpu::TextureView; 2]>,
     lightmap: wgpu::TextureView,
     deferred_pre: u16,
     composite_pre: u16,
@@ -1060,6 +1059,8 @@ pub(super) struct Geometry<'a> {
     pub depth_write: bool,
     /// What `texture` reads instead of the block atlas.
     pub atlas: Option<wgpu::TextureView>,
+    /// This draw uses the block atlas's surface identities.
+    pub material_maps: bool,
     /// `mc_Entity`'s table at set 3 (flat terrain).
     pub ids: Option<&'a wgpu::BindGroupLayout>,
     /// Back faces are culled, as for the game's own terrain.
@@ -1531,11 +1532,12 @@ fn build_pass(
         .iter()
         .filter(|f| !f.1)
         .fold(0u16, |m, f| m | 1 << f.0);
-    // Gbuffers programs write in place (6.1.6).
+    // Gbuffers programs write in place (6.1.6). A forced flip of a buffer the program writes
+    // cancels the write's own flip, as in Iris 1.11.7 (probed with packs of our own).
     let flip = if final_pass || geometry.is_some() {
         0
     } else {
-        (written & !kept) | mask(&p.flips)
+        (written & !kept) ^ mask(&p.flips)
     };
     let created = checked(device, || {
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -1624,7 +1626,11 @@ fn build_pass(
         .map(|u| u.name.as_str())
         .collect();
     if !missing.is_empty() {
-        notes.push(format!("{}: zero for now: {}", p.name, missing.join(" ")));
+        notes.push(format!(
+            "{}: shader defaults or zero: {}",
+            p.name,
+            missing.join(" ")
+        ));
     }
     let image_copies = image_copies(&samplers, &images);
     Some(Pass {
@@ -1634,7 +1640,7 @@ fn build_pass(
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         }),
-        block: vec![0; interface.uniform_size as usize],
+        block: interface.initial_values.clone(),
         uniforms: interface
             .uniforms
             .iter()
@@ -1652,6 +1658,7 @@ fn build_pass(
         mipmaps: p.mipmaps,
         draw,
         atlas: geometry.and_then(|g| g.atlas.clone()),
+        material_maps: geometry.is_some_and(|g| g.material_maps),
         ids: geometry.is_some_and(|g| g.ids.is_some()),
         groups: HashMap::new(),
         portal_groups: HashMap::new(),
@@ -1762,7 +1769,7 @@ fn build_compute(
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         }),
-        block: vec![0; interface.uniform_size as usize],
+        block: interface.initial_values.clone(),
         uniforms: interface
             .uniforms
             .iter()
@@ -1787,6 +1794,7 @@ fn build_compute(
         mipmaps: 0,
         draw: false,
         atlas: None,
+        material_maps: false,
         ids: false,
         groups: HashMap::new(),
         portal_groups: HashMap::new(),
@@ -2032,6 +2040,7 @@ impl PackPost {
             table: g.table,
             depth_write: g.depth_write,
             atlas: g.atlas.clone(),
+            material_maps: g.material_maps,
             ids: block_ids.as_ref().map(|i| &i.0),
             cull: g.cull,
         });
@@ -2059,6 +2068,7 @@ impl PackPost {
                 table: Some(&geometry.layout),
                 depth_write: false,
                 atlas: None,
+                material_maps: false,
                 ids: None,
                 cull: false,
             };
@@ -2068,6 +2078,7 @@ impl PackPost {
                 table: None,
                 depth_write: false,
                 atlas: world.celestial.clone(),
+                material_maps: false,
                 ids: None,
                 cull: false,
             };
@@ -2106,6 +2117,7 @@ impl PackPost {
             table: Some(&e.table),
             depth_write: true,
             atlas: world.celestial.clone(),
+            material_maps: false,
             ids: None,
             cull: false,
         });
@@ -2117,6 +2129,7 @@ impl PackPost {
                         table: g.table,
                         depth_write: false,
                         atlas: g.atlas.clone(),
+                        material_maps: g.material_maps,
                         ids: g.ids,
                         cull: false,
                     };
@@ -2144,6 +2157,7 @@ impl PackPost {
             table: Some(layout),
             depth_write: true,
             atlas: world.celestial.clone(),
+            material_maps: false,
             ids: None,
             cull: false,
         });
@@ -2153,16 +2167,20 @@ impl PackPost {
             table: None,
             depth_write: true,
             atlas: None,
+            material_maps: false,
             ids: None,
             cull: false,
         });
-        let hand_geometry = world.hand.then(|| super::pack_hand::PackHand::new(device));
+        let hand_geometry = world
+            .hand
+            .then(|| super::pack_hand::PackHand::new(device, &draws.layout));
         let hand = post.hand.zip(hand_geometry).and_then(|(p, geometry)| {
             let g = Geometry {
                 buffers: &entity_buffers,
                 table: Some(&geometry.layout),
                 depth_write: true,
                 atlas: world.celestial.clone(),
+                material_maps: false,
                 ids: None,
                 cull: false,
             };
@@ -2187,6 +2205,7 @@ impl PackPost {
             table: None,
             depth_write: false,
             atlas: None,
+            material_maps: false,
             ids: None,
             cull: false,
         };
@@ -2513,6 +2532,7 @@ impl PackPost {
             center_depth: None,
             custom,
             atlas: world.atlas.as_ref().map(|a| a.0.clone()),
+            material_maps: world.material_maps,
             lightmap: world.lightmap,
             deferred_pre: mask(&post.deferred_pre),
             composite_pre: mask(&post.composite_pre),
@@ -2792,8 +2812,16 @@ impl PackPost {
                     Source::Dummy if s.dimension == wgpu::TextureViewDimension::D1 => {
                         &self.dummy_1d
                     }
-                    Source::Normals => &self.dummy_normal,
-                    Source::Specular => &self.dummy_black,
+                    Source::Normals => self
+                        .material_maps
+                        .as_ref()
+                        .filter(|_| pass.material_maps)
+                        .map_or(&self.dummy_normal, |maps| &maps[0]),
+                    Source::Specular => self
+                        .material_maps
+                        .as_ref()
+                        .filter(|_| pass.material_maps)
+                        .map_or(&self.dummy_black, |maps| &maps[1]),
                     Source::Dummy => &self.dummy,
                     Source::Image(k) if pass.image_copies & 1 << k != 0 => {
                         self.images[k].copy.as_ref().unwrap_or(&self.dummy)
@@ -3359,7 +3387,7 @@ impl PackPost {
             size[0] as f32 / size[1].max(1) as f32,
             frame.depth_far,
         ) * unspin;
-        geometry.prepare(device, queue, frame.hand, projection);
+        geometry.prepare(device, queue, frame.hand, frame.hand_items, projection);
         if geometry.quads > 0 {
             let group = self.bind(device, queue, encoder, &mut pass, size);
             {
@@ -3372,12 +3400,15 @@ impl PackPost {
                     rp.set_bind_group(4, g, &[]);
                 }
                 rp.set_bind_group(1, &geometry.group, &[]);
-                if pass.draw {
-                    self.draws.bind(&mut rp, "HAND_SOLID");
-                }
                 rp.set_vertex_buffer(0, geometry.vertices());
                 rp.set_index_buffer(geometry.indices.slice(..), wgpu::IndexFormat::Uint32);
-                rp.draw_indexed(0..geometry.quads * 6, 0, 0..1);
+                // The arm and each held item: their own `currentRenderedItemId`.
+                for &(first, quads, offset) in &geometry.runs {
+                    if pass.draw {
+                        rp.set_bind_group(2, &geometry.slot_group, &[offset]);
+                    }
+                    rp.draw_indexed(first * 6..(first + quads) * 6, 0, 0..1);
+                }
             }
             self.mips_valid &= !pass.written;
         }
@@ -3742,6 +3773,10 @@ impl PackPost {
                 }
                 if self.copied & 1 << i != 0 {
                     attachment |= wgpu::TextureUsages::COPY_SRC;
+                }
+                // A buffer that isn't cleared starts each frame with B copied back to A.
+                if i != 0 && self.clears[i].is_none() {
+                    attachment |= wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::COPY_DST;
                 }
                 let sides = [0, 1]
                     .map(|_| texture_sized(&label, self.formats[i], attachment, levels, sizes[i]));
@@ -4128,6 +4163,20 @@ impl PackPost {
             &mut self.zeros,
         );
         let Some(targets) = &self.targets else { return };
+        // Every frame starts on A. A buffer that isn't cleared and ended the last frame on B has B
+        // copied back to A, and B keeps what was last written into it: a model that fits Iris 1.11.7's
+        // values in probe packs of our own (#9009), not a documented Iris rule. colortex0's A is
+        // overwritten by the world below.
+        for b in (1..BUFFERS).filter(|&b| self.main & 1 << b != 0 && self.clears[b].is_none()) {
+            if let Some([a, b_side]) = &targets.color[b] {
+                encoder.copy_texture_to_texture(
+                    b_side.texture().as_image_copy(),
+                    a.texture().as_image_copy(),
+                    a.texture().size(),
+                );
+            }
+        }
+        self.main = 0;
         let main = |m: u16, i: usize| usize::from(m & 1 << i != 0);
         let view = |m: u16, i: usize, alt: bool| {
             targets.color[i]
@@ -4587,6 +4636,7 @@ mod tests {
         }];
         let interface = horizon_shaders::Interface {
             uniform_size: 48,
+            initial_values: vec![0; 48],
             uniforms: Vec::new(),
             samplers: vec![horizon_shaders::Sampler {
                 name: "colortex0".into(),
@@ -4665,6 +4715,7 @@ mod tests {
         };
         let interface = horizon_shaders::Interface {
             uniform_size: 48,
+            initial_values: vec![0; 48],
             uniforms: Vec::new(),
             samplers: Vec::new(),
             outputs: vec![0],
@@ -4997,4 +5048,11 @@ mod tests {
 mod destination_tests;
 
 #[cfg(test)]
+#[path = "pack_material_tests.rs"]
+mod material_tests;
+
+#[cfg(test)]
 mod rgb_alpha_tests;
+
+#[cfg(test)]
+mod trinary_tests;
