@@ -2377,6 +2377,93 @@ def creeper_custom_fuse():
     return ops + setup('/gamerule mob_griefing true')
 
 
+def axolotl_hunting_memory():
+    """Boolean memory value/presence and finite/permanent TTL (#8942), using typed predicates."""
+    key = 'minecraft:has_hunting_cooldown'
+    path = f'Brain.memories."{key}"'
+    ops = setup('/forceload add 0 0 15 15', '/fill 0 199 0 15 206 15 glass hollow',
+                '/fill 0 199 0 15 199 15 stone', '/fill 1 200 1 14 205 14 water')
+    ops += [{'op': 'settle'}, cmd('/execute if loaded 0 201 0', expect_result=1)]
+    serial = 0
+
+    def summon(tag, value, ttl, no_ai, x=14.5, z=14.5):
+        nonlocal serial
+        serial += 1
+        fields = [] if value is None else ['value:' + value]
+        if ttl is not None:
+            fields.append('ttl:' + ttl)
+        entry = '{' + ','.join(fields) + '}'
+        nbt = ('{NoGravity:1b,PersistenceRequired:1b,Health:14f,NoAI:' + str(no_ai) + 'b,'
+               + f'UUID:[I;0,0,218,{serial}],Tags:["{tag}"],'
+               + 'Brain:{memories:{"' + key + '":' + entry + '}}}')
+        return [cmd(f'/summon axolotl {x} 201 {z} {nbt}', expect_result=1)], serial
+
+    def probe(tag, uuid, no_ai, value, ttl):
+        target = f'@e[tag={tag},limit=1]'
+        # A missing entry is valid only while its subject exists; false is still a present value.
+        exists = f'/execute if entity @e[tag={tag},nbt={{UUID:[I;0,0,218,{uuid}]}}]'
+        ai = (f'/execute if entity @e[tag={tag},nbt={{NoAI:1b}}]' if no_ai else
+              f'/execute as {target} unless data entity @s NoAI')
+        if value is None:
+            memory = f'/execute as {target} unless data entity @s {path}'
+        else:
+            entry = '{value:' + str(int(value)) + 'b'
+            if ttl is not None:
+                entry += ',ttl:' + str(ttl) + 'L'
+            entry += '}'
+            nbt = '{Brain:{memories:{"' + key + '":' + entry + '}}}'
+            memory = f'/execute if entity @e[tag={tag},nbt={nbt}]'
+            if ttl is None:
+                memory += f' unless data entity {target} {path}.ttl'
+        return [cmd(exists, expect_result=1), cmd(ai, expect_result=1),
+                cmd(f'/execute if entity @e[tag={tag},nbt={{Health:14f}}]', expect_result=1),
+                cmd(f'/execute as {target} at @s anchored eyes positioned ^ ^ ^ '
+                    'if block ~ ~ ~ minecraft:water', expect_result=1),
+                cmd(memory, expect_result=1)]
+
+    # NbtOps boolean numbers use doubleValue()!=0, including fractions and integers over a byte.
+    codecs = [(v, '5L', b, 5) for v, b in [
+        ('2b', True), ('-1b', True), ('0s', False), ('1s', True), ('0', False),
+        ('256', True), ('257', True), ('0L', False), ('1L', True), ('0f', False),
+        ('0.5f', True), ('-0.5f', True), ('0d', False), ('0.5d', True),
+        ('"true"', None), ('{}', None), (None, None)]]
+    codecs += [('0b', t, False, expected) for t, expected in [
+        ('3', 3), ('3b', 3), ('3s', 3), ('3.5d', 3), ('"invalid"', None)]]
+    for i, (value, ttl, expected_value, expected_ttl) in enumerate(codecs):
+        tag = f'axhunt_codec_{i}'
+        added, uuid = summon(tag, value, ttl, 1)
+        ops += added + probe(tag, uuid, 1, expected_value, expected_ttl)
+    ops += setup('/kill @e[type=axolotl]')
+    ops += [{'op': 'tick', 'n': 25}]
+    subjects = []
+    for no_ai in (0, 1):
+        for value in (False, True):
+            for ttl in (None, 3, 0, -1, 9223372036854775807):
+                i = len(subjects)
+                tag = f'axhunt_life_{i}'
+                added, uuid = summon(tag, str(int(value)) + 'b',
+                                     None if ttl is None else str(ttl) + 'L', no_ai,
+                                     1.5 + (i % 5) * 3, 1.5 + (i // 5) * 3)
+                ops += added
+                subjects.append((tag, uuid, no_ai, value, ttl))
+    for elapsed in (0, 1, 3):
+        if elapsed:
+            ops += [{'op': 'tick', 'n': 1 if elapsed == 1 else 2}]
+        for tag, uuid, no_ai, value, ttl in subjects:
+            expected_value = value
+            if ttl in (None, 9223372036854775807):
+                expected_ttl = None
+            elif no_ai or elapsed == 0:
+                expected_ttl = ttl
+            elif ttl <= 0:
+                expected_value, expected_ttl = None, None
+            else:
+                expected_ttl = ttl - elapsed
+            ops += probe(tag, uuid, no_ai, expected_value, expected_ttl)
+    return ops + setup('/kill @e[type=axolotl]', '/fill 0 199 0 15 206 15 air',
+                       '/forceload remove 0 0')
+
+
 def groups():
     return [
         ('setup', group_setup()),
@@ -2389,6 +2476,7 @@ def groups():
         ('setblock destroy air', setblock_destroy_air()),
         ('forceload query order', forceload_query_order()),
         ('entities', entities()),
+        ('axolotl hunting memory', axolotl_hunting_memory()),
         ('aquatic FromBucket', aquatic_from_bucket()),
         ('villager command names', villager_command_names()),
         ('item lifetime counters', item_lifetime_counters()),
