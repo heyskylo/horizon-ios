@@ -34,6 +34,17 @@ fn infects(difficulty: Difficulty, coin: impl FnOnce() -> bool) -> bool {
 }
 
 impl Game<'_> {
+    /// `ZombieVillager.handleEntityEvent(16)`: only the client plays the cure sound.
+    pub(super) fn zombie_villager_cure_sound(&mut self, id: u32) {
+        if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id)
+            && let Some(horizon_client::mobs::MobEvent::Sound(name, at, volume, pitch)) =
+                zombie_villager::cure_sound(m)
+        {
+            self.audio
+                .play_unshared(&format!("minecraft:{name}"), Some(at), volume, pitch);
+        }
+    }
+
     /// `Zombie.killedEntity`: a villager killed by a zombie may rise as a
     /// zombie villager keeping its profession, trades and gossip.
     pub(super) fn zombie_killed(&mut self, killer: u32, victim: u32) {
@@ -72,14 +83,18 @@ impl Game<'_> {
             return;
         };
         convert_to_zombie_villager(&old, z);
-        let killer_at = self.mobs[k].position;
-        let pitch = (self.world.random.next_float() - self.world.random.next_float()) * 0.2 + 1.0;
-        self.audio.play(
-            "minecraft:entity.zombie.infect",
-            Some([killer_at.x, killer_at.y, killer_at.z]),
-            2.0,
-            pitch,
-        );
+        if !self.mobs[k].silent {
+            let at = self.mobs[k].position;
+            self.level_event_at(
+                1026,
+                [
+                    at.x.floor() as i32,
+                    at.y.floor() as i32,
+                    at.z.floor() as i32,
+                ],
+                0,
+            );
+        }
     }
 
     /// `ZombieVillager.mobInteract`: a golden apple on a weakened zombie
@@ -150,13 +165,17 @@ impl Game<'_> {
                 g.trigger_cured_zombie_villager(&zombie_view, &villager_view)
             });
         }
-        let pitch = (self.world.random.next_float() - self.world.random.next_float()) * 0.2 + 1.0;
-        self.audio.play(
-            "minecraft:entity.zombie_villager.converted",
-            Some(at),
-            2.0,
-            pitch,
-        );
+        if !old.silent {
+            self.level_event_at(
+                1027,
+                [
+                    old.position.x.floor() as i32,
+                    old.position.y.floor() as i32,
+                    old.position.z.floor() as i32,
+                ],
+                0,
+            );
+        }
     }
 
     /// `ServerLevel.getPlayerByUUID`: the player with `uuid` in this level.

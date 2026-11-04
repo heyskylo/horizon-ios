@@ -108,6 +108,7 @@ mod vehicle_container_fixture;
 mod weather_fixture;
 mod world_border_render_fixture;
 mod world_options_fixture;
+mod zombie_cure_sound_probe;
 
 probes! {
     ambient_fixture,
@@ -142,6 +143,7 @@ probes! {
     environment_fixture,
     finalize_spawn_fixture,
     fire_starter_sound_probe,
+    zombie_cure_sound_probe,
     firework_tooltip_fixture,
     first_person_probe,
     frame_limiter_probe,

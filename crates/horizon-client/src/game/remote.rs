@@ -4015,6 +4015,10 @@ impl Game<'_> {
                 if p.event == 21 {
                     self.start_guardian_sound(p.id as u32);
                 }
+                // ZombieVillager.handleEntityEvent 16: the cure starts.
+                if p.event == 16 {
+                    self.zombie_villager_cure_sound(p.id as u32);
+                }
                 // Witch.handleEntityEvent 15: the magic puffs over its hat.
                 if p.event == 15 {
                     self.witch_magic_particles(p.id as u32);
