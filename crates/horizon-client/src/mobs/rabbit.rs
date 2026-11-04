@@ -419,7 +419,6 @@ fn jump_power(m: &Mob, block_factor: f32) -> f32 {
     m.attrs.jump_strength as f32 * jump_scale(m) * block_factor + m.jump_boost_power()
 }
 
-pub use super::living::block_jump_factor;
 fn apply_jump(m: &mut Mob, power: f32) {
     if power > 1.0e-5 {
         m.velocity.y = f64::from(power).max(m.velocity.y);

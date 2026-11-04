@@ -1903,12 +1903,6 @@ impl RestitutionWorld for MobRestitution<'_, '_> {
     }
 }
 
-/// `Entity.getBlockJumpFactor`: the block the mob stands in, or the one
-/// below that affects movement when the current block has a neutral jump factor of 1.0.
-pub fn block_jump_factor(m: &Mob, w: &MobWorld) -> f32 {
-    m.block_jump_factor(w)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
