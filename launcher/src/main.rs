@@ -306,6 +306,8 @@ struct Launcher {
     skin: Option<skin_page::SkinPanel>,
     /// The Wardrobe page's account and outfit (`wardrobe_page.rs`).
     wardrobe: Option<wardrobe_page::Wardrobe>,
+    /// Name tag styles' marks; they outlive the account's `wardrobe`.
+    wardrobe_marks: wardrobe_page::Marks,
     /// Ask the service again on the next draw of the Wardrobe (set by each visit).
     wardrobe_reload: bool,
     /// The cosmetics service's last word on the founder set's window (`GET /v1/shop`): whether
@@ -617,6 +619,7 @@ impl Launcher {
             menu_closed_at: None,
             skin: None,
             wardrobe: None,
+            wardrobe_marks: Default::default(),
             wardrobe_reload: false,
             shop_status: None,
             shop_kept: None,
@@ -5078,6 +5081,7 @@ impl Render for Launcher {
             Page::Settings => self.settings_page(cx),
         };
         self.sky.free_replaced(window);
+        self.wardrobe_marks.free_replaced(window);
         // The new page fades in and rises a few pixels, as the website's tabs do (`hzl-pop`).
         let content = div()
             .relative()

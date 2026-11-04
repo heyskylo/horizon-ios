@@ -5433,6 +5433,8 @@ impl Game<'_> {
                         // LevelEvent.SOUND_ZOMBIE_WOODEN_DOOR (attack, break).
                         1019 => Some(("minecraft:entity.zombie.attack_wooden_door", 2.0)),
                         1021 => Some(("minecraft:entity.zombie.break_wooden_door", 2.0)),
+                        1026 => Some(("minecraft:entity.zombie.infect", 2.0)),
+                        1027 => Some(("minecraft:entity.zombie_villager.converted", 2.0)),
                         1030 => Some(("minecraft:block.anvil.use", 1.0)),
                         1029 => Some(("minecraft:block.anvil.destroy", 1.0)),
                         1031 => Some(("minecraft:block.anvil.land", 0.3)),
@@ -5463,6 +5465,10 @@ impl Game<'_> {
                             1029 | 1030 | 1042 | 1043 | 1044 | 1053 | 1054 => {
                                 self.world.random.next_float() * 0.1 + 0.9
                             }
+                            1026 | 1027 => {
+                                let r = self.particles.level_random();
+                                (r.next_float() - r.next_float()) * 0.2 + 1.0
+                            }
                             1019 | 1021 => {
                                 (self.world.random.next_float() - self.world.random.next_float())
                                     * 0.2
@@ -5472,7 +5478,17 @@ impl Game<'_> {
                         };
                         if matches!(
                             id,
-                            1019 | 1021 | 1029 | 1030 | 1045 | 1052 | 1053 | 1054 | 1501 | 1503
+                            1019 | 1021
+                                | 1026
+                                | 1027
+                                | 1029
+                                | 1030
+                                | 1045
+                                | 1052
+                                | 1053
+                                | 1054
+                                | 1501
+                                | 1503
                         ) {
                             // Clients play these sounds from their level events;
                             // capturing it also sends a duplicate sound packet.
