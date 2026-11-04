@@ -628,7 +628,11 @@ fn classic_navigation_buttons_sound_even_without_a_game_action() {
         (Action::None, false)
     );
     assert_eq!(f.click_with_sound("Minecraft Realms"), (Action::None, true));
-    assert_eq!(f.click_with_sound("Back"), (Action::None, true));
+    // The Realms screen's Back, as the loaded language names it.
+    assert_eq!(
+        f.click_with_sound(&crate::lang::get("gui.back")),
+        (Action::None, true)
+    );
     assert_eq!(f.click_with_sound("Singleplayer"), (Action::None, true));
     assert_eq!(
         f.click_with_sound("Play Selected World"),

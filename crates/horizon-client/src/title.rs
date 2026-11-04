@@ -442,6 +442,8 @@ pub struct Title {
     erase_check: Cell<[f32; 4]>,
     /// The folder to open next, once that backup has finished.
     open_request: Option<String>,
+    /// A Realm's checked address, once the Realms screen's join came back.
+    connect_request: Option<String>,
     /// EditWorldScreen's and WorldOpenFlows' `SystemToast` and its slide.
     toast: Option<(crate::toasts::Slide, WorldToast)>,
     icons: RefCell<std::collections::HashMap<PathBuf, (std::time::SystemTime, Option<Vec<u8>>)>>,
@@ -784,6 +786,7 @@ impl Title {
             optimize: None,
             erase_check: Cell::new([0.0; 4]),
             open_request: None,
+            connect_request: None,
             toast: None,
             icons: RefCell::new(std::collections::HashMap::new()),
             splash: choose_splash(&splashes, seed, (today.month(), today.day())),
@@ -1208,6 +1211,7 @@ impl Title {
     }
     /// Polling is done once per rendered frame so filesystem work never blocks drawing.
     pub fn poll_backup(&mut self) {
+        self.poll_realms();
         self.poll_onboarding(std::time::Instant::now());
         self.poll_account();
         self.poll_optimize();
@@ -1283,6 +1287,23 @@ impl Title {
         self.toast.is_some()
     }
     /// The world a finished backup made before its upgrade opens next.
+    /// The Realms screen's workers: a join that came back connects (`GetServerDetailsTask`
+    /// handing over to `ConnectScreen`).
+    fn poll_realms(&mut self) {
+        if let Mode::Realms(screen) = &mut self.mode
+            && let crate::realms::Outcome::Connect(address) = screen.poll()
+        {
+            self.connect_request = Some(address);
+        }
+    }
+    /// The server the Realms screen joins once its address came back.
+    pub fn take_connect_request(&mut self) -> Option<Action> {
+        let address = self.connect_request.take()?;
+        Some(Action::Connect {
+            address,
+            lan: false,
+        })
+    }
     pub fn take_open_request(&mut self) -> Option<String> {
         self.open_request.take()
     }
@@ -1742,7 +1763,9 @@ impl Title {
                         y + 48.0,
                         200.0,
                         &lang::get_or("menu.online", "Minecraft Realms"),
-                        true,
+                        // TitleScreen.createNormalMenuOptions: Realms is off when
+                        // multiplayer is.
+                        self.allows_multiplayer,
                         8,
                     ),
                     b(
@@ -3485,6 +3508,7 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
                     address,
                     lan: false,
                 },
+                crate::realms::Outcome::OpenUri(uri) => Action::OpenUri(uri),
                 crate::realms::Outcome::None => Action::None,
             },
             (Mode::MultiplayerWarning { .. }, Some(71)) => {

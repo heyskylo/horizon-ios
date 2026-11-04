@@ -1,19 +1,146 @@
-//! Minecraft Realms screen and logic.
-//! Directly ported from vanilla `com.mojang.realmsclient.RealmsMainScreen` and `RealmsHeader`.
+//! Minecraft Realms screens: `RealmsMainScreen` with its `RealmsHeader`, the join-code and
+//! pending-invite screens, the owner's open/close, `RealmsPopups.infoPopupScreen` for the
+//! questions, and `GetServerDetailsTask` under `RealmsLongRunningMcoTaskScreen` for Play.
+//! Layout from the vanilla screens' behaviour and the game's own sprites.
+//!
+//! Realms is used only with the signed-in player's own Microsoft account: the session the
+//! launcher hands over after its owner check (`auth::current`). Without one (offline play, an
+//! expired token) the screen says so and makes no request. Every request runs on a worker
+//! thread; the title polls the results once a frame (`poll`).
 pub mod client;
 
 use crate::hud::{HudAtlas, HudBatch, rgba};
-use client::{PendingInviteDto, RealmAddress, RealmServer, RealmsClient};
+use client::{PendingInviteDto, RealmAddress, RealmServer, RealmsClient, RealmsError};
+use horizon_client_render::auth::{self, AuthSession};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const HEADER_HEIGHT: f32 = 44.0;
 const CONTENT_WIDTH: f32 = 308.0;
 const ROW_WIDTH: f32 = 300.0;
 const ROW_HEIGHT: f32 = 36.0;
+/// `hud::rgba` packing (ABGR): 160 grey, vanilla's red and `RealmsPopups.COLOR_INFO`.
+const GREY: u32 = 0xFFA0_A0A0;
+const RED: u32 = 0xFF55_55FF;
+const INFO: u32 = 0xFFBE_887D;
 
 const REALMS_INVITE_CODE: crate::clipboard::FieldId = ("realms.invite_code", 0);
+
+/// `CommonLinks.BUY_REALMS`.
+const BUY_REALMS: &str = "https://aka.ms/BuyJavaRealms";
+/// `CommonLinks.EXTEND_REALMS_LINK`.
+const EXTEND_REALMS: &str = "https://aka.ms/ExtendJavaRealms";
+
+/// What a worker thread hands back.
+type Job<T> = Arc<Mutex<Option<T>>>;
+
+fn spawn<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> Job<T> {
+    let job = Arc::new(Mutex::new(None));
+    let out = Arc::clone(&job);
+    let started = thread::Builder::new().name("Realms".into()).spawn(move || {
+        let result = work();
+        if let Ok(mut slot) = out.lock() {
+            *slot = Some(result);
+        }
+    });
+    if let Err(e) = started {
+        log::warn!("Horizon: could not start a Realms worker: {e}");
+    }
+    job
+}
+
+fn take<T>(job: &Job<T>) -> Option<T> {
+    job.lock().ok()?.take()
+}
+
+/// The account Realms may use: the launcher's Microsoft session (it hands one over only for
+/// an account that owns the game) while its token is good.
+fn session() -> Option<Arc<AuthSession>> {
+    auth::current().filter(|s| !s.expired())
+}
+
+fn client() -> Option<RealmsClient> {
+    session().map(|s| RealmsClient::production(&s))
+}
+
+/// The address `/join/pc` gave, checked before it becomes `Action::Connect`: a host name,
+/// IPv4 or `[IPv6]` host, then `:` and a port number. A scheme, a path, credentials or a
+/// missing port are refused.
+pub fn connect_address(address: &str) -> Option<String> {
+    let address = address.trim();
+    let (host, port, host_ok): (&str, &str, fn(u8) -> bool) =
+        if let Some(rest) = address.strip_prefix('[') {
+            let (host, port) = rest.split_once("]:")?;
+            (host, port, |b| {
+                b.is_ascii_hexdigit() || b == b':' || b == b'.'
+            })
+        } else {
+            let (host, port) = address.rsplit_once(':')?;
+            (host, port, |b| {
+                b.is_ascii_alphanumeric() || b == b'-' || b == b'.' || b == b'_'
+            })
+        };
+    if host.is_empty() || !host.bytes().all(host_ok) {
+        return None;
+    }
+    if port.is_empty() || !port.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let port: u16 = port.parse().ok()?;
+    (port != 0).then(|| address.to_owned())
+}
+
+/// The world's resource pack the player agreed to download before joining
+/// (`GetServerDetailsTask.scheduleResourcePackDownload`): the next connection to `address`
+/// takes it as an allowed server pack.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RealmsPack {
+    pub address: String,
+    pub id: u128,
+    pub url: String,
+    pub hash: String,
+}
+
+static PENDING_PACK: Mutex<Option<RealmsPack>> = Mutex::new(None);
+
+/// The pack for the connection to `address`, if the Realms screen asked for one.
+pub fn take_pending_pack(address: &str) -> Option<RealmsPack> {
+    let pack = PENDING_PACK.lock().ok()?.take()?;
+    (pack.address == address).then_some(pack)
+}
+
+/// `UUID.nameUUIDFromBytes`.
+fn name_uuid(bytes: &[u8]) -> u128 {
+    let mut h = horizon_protocol::crypto::md5(bytes);
+    h[6] = (h[6] & 0x0f) | 0x30;
+    h[8] = (h[8] & 0x3f) | 0x80;
+    u128::from_be_bytes(h)
+}
+
+/// `GetServerDetailsTask.generatePackId`.
+pub fn pack_id(server: &RealmServer) -> u128 {
+    match &server.minigame_name {
+        Some(minigame) => name_uuid(format!("minigame:{minigame}").as_bytes()),
+        None => name_uuid(format!("realms:{}:{}", server.name, server.active_slot).as_bytes()),
+    }
+}
+
+/// `CommonLinks.extendRealms`.
+fn extend_link(server: &RealmServer, profile: u128) -> String {
+    match &server.remote_subscription_id {
+        None => EXTEND_REALMS.to_owned(),
+        Some(sub) => {
+            let reference = if server.expired_trial {
+                "expiredTrial"
+            } else {
+                "expiredRealm"
+            };
+            format!("{EXTEND_REALMS}?subscriptionId={sub}&profileId={profile:032x}&ref={reference}")
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum LayoutState {
@@ -24,10 +151,20 @@ pub enum LayoutState {
 
 #[derive(Clone, Debug)]
 pub enum FetchState {
+    /// No Microsoft session: nothing is asked of the service.
     Unauthenticated,
-    Loading,
+    Loading(Job<Result<Vec<RealmServer>, RealmsError>>),
     Loaded(Vec<RealmServer>),
-    Error(String),
+    Error(RealmsError),
+}
+
+/// A `RealmsPopups.infoPopupScreen`: Continue or Cancel.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Popup {
+    /// `RealmsMainScreen.leaveClicked`.
+    Leave(RealmServer),
+    /// `GetServerDetailsTask.resourcePackDownloadConfirmationScreen`.
+    ResourcePack { pack: RealmsPack },
 }
 
 #[derive(Clone, Debug)]
@@ -36,52 +173,46 @@ pub enum SubScreen {
     JoinCode {
         code: String,
         error: Option<String>,
-        validating: bool,
+        job: Option<Job<Result<(), RealmsError>>>,
     },
     PendingInvites {
-        invites: Arc<Mutex<Option<Result<Vec<PendingInviteDto>, String>>>>,
+        invites: Option<Result<Vec<PendingInviteDto>, RealmsError>>,
+        job: Option<Job<Result<Vec<PendingInviteDto>, RealmsError>>>,
     },
     Configure {
         server: RealmServer,
-        status_msg: Option<String>,
-        busy: bool,
+        error: Option<String>,
+        job: Option<Job<Result<(), RealmsError>>>,
     },
     AddRealm,
+    Popup(Popup),
+    /// `RealmsLongRunningMcoTaskScreen` running `GetServerDetailsTask`: the join request is on
+    /// a worker (`joining`); an error stays on screen with a Back button.
+    Connecting {
+        server: RealmServer,
+        error: Option<String>,
+    },
 }
+
+/// The join request on its worker, and its abort flag (`LongRunningTask.aborted`).
+type Joining = (Job<Result<RealmAddress, RealmsError>>, Arc<AtomicBool>);
 
 #[derive(Clone, Debug)]
 pub struct Screen {
-    pub state: Arc<Mutex<FetchState>>,
+    pub state: FetchState,
     pub subscreen: SubScreen,
     pub selected: Option<usize>,
-    pub joining: Arc<Mutex<Option<Result<RealmAddress, String>>>>,
+    pub joining: Option<Joining>,
+    /// Leaving a Realm (`RealmsMainScreen.leaveServer`): the list reloads when it's done.
+    leaving: Option<Job<Result<(), RealmsError>>>,
     pub last_click: Option<(usize, SystemTime)>,
-}
-
-fn open_link(url: &str) {
-    let program = if cfg!(target_os = "windows") {
-        "explorer"
-    } else if cfg!(target_os = "macos") {
-        "open"
-    } else {
-        "xdg-open"
-    };
-    if let Ok(mut child) = std::process::Command::new(program)
-        .arg(url)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-    {
-        std::thread::spawn(move || {
-            let _ = child.wait();
-        });
-    }
 }
 
 pub enum Outcome {
     None,
     Back,
     Connect(String),
+    OpenUri(String),
 }
 
 impl Default for Screen {
@@ -90,82 +221,204 @@ impl Default for Screen {
     }
 }
 
+/// `GetServerDetailsTask.fetchServerAddress`: up to 40 tries, waiting `Retry-After` between
+/// them; an abort stops it.
+fn fetch_address(
+    client: &RealmsClient,
+    realm_id: i64,
+    aborted: &AtomicBool,
+) -> Result<RealmAddress, RealmsError> {
+    for _ in 0..40 {
+        if aborted.load(Ordering::Relaxed) {
+            return Err(RealmsError::Timeout);
+        }
+        match client.join_world(realm_id) {
+            Err(RealmsError::Retry(seconds)) => {
+                let until = Instant::now() + Duration::from_secs(seconds.min(60));
+                while Instant::now() < until && !aborted.load(Ordering::Relaxed) {
+                    thread::sleep(Duration::from_millis(100));
+                }
+            }
+            other => return other,
+        }
+    }
+    Err(RealmsError::Timeout)
+}
+
+fn wrap_lines(text: &str, atlas: &HudAtlas, width: f32) -> Vec<String> {
+    crate::multiplayer::wrap(text, width, atlas)
+}
+
+fn centered(batch: &mut HudBatch, atlas: &HudAtlas, text: &str, cx: f32, y: f32, color: u32) {
+    let w = HudBatch::text_width(atlas, text);
+    batch.text(atlas, text, cx - (w / 2.0).floor(), y, color, true);
+}
+
 impl Screen {
     pub fn new() -> Self {
-        let state = Arc::new(Mutex::new(FetchState::Loading));
-        let joining = Arc::new(Mutex::new(None));
-
-        if let Some(session) = horizon_client_render::auth::current() {
-            let state_clone = Arc::clone(&state);
-            let name = session.name.clone();
-            let uuid = format!("{:032x}", session.uuid);
-            let token = session.access_token().to_owned();
-
-            thread::spawn(move || {
-                let client = RealmsClient::default_client(&name, &uuid, &token);
-                let result = match client.list_worlds() {
-                    Ok(worlds) => FetchState::Loaded(worlds),
-                    Err(e) => FetchState::Error(e),
-                };
-                if let Ok(mut lock) = state_clone.lock() {
-                    *lock = result;
-                }
-            });
-        } else if let Ok(mut lock) = state.lock() {
-            *lock = FetchState::Unauthenticated;
-        }
-
-        Self {
-            state,
+        let mut screen = Self {
+            state: FetchState::Unauthenticated,
             subscreen: SubScreen::Main,
             selected: None,
-            joining,
+            joining: None,
+            leaving: None,
             last_click: None,
-        }
+        };
+        screen.refresh();
+        screen
     }
 
     pub fn layout_state(&self) -> LayoutState {
-        if let Ok(lock) = self.state.lock() {
-            match &*lock {
-                FetchState::Loading => LayoutState::Loading,
-                FetchState::Loaded(servers) if !servers.is_empty() => LayoutState::List,
-                _ => LayoutState::NoRealms,
-            }
-        } else {
-            LayoutState::Loading
+        match &self.state {
+            FetchState::Loading(_) => LayoutState::Loading,
+            FetchState::Loaded(servers) if !servers.is_empty() => LayoutState::List,
+            _ => LayoutState::NoRealms,
         }
     }
 
+    fn servers(&self) -> &[RealmServer] {
+        match &self.state {
+            FetchState::Loaded(servers) => servers,
+            _ => &[],
+        }
+    }
+
+    fn selected_server(&self) -> Option<&RealmServer> {
+        self.servers().get(self.selected?)
+    }
+
+    /// `RealmsMainScreen.refreshServerList`.
     pub fn refresh(&mut self) {
         self.selected = None;
-        if let Some(session) = horizon_client_render::auth::current() {
-            if let Ok(mut lock) = self.state.lock() {
-                *lock = FetchState::Loading;
-            }
-            let state_clone = Arc::clone(&self.state);
-            let name = session.name.clone();
-            let uuid = format!("{:032x}", session.uuid);
-            let token = session.access_token().to_owned();
+        self.state = match client() {
+            Some(client) => FetchState::Loading(spawn(move || client.list_worlds())),
+            None => FetchState::Unauthenticated,
+        };
+    }
 
-            thread::spawn(move || {
-                let client = RealmsClient::default_client(&name, &uuid, &token);
-                let result = match client.list_worlds() {
-                    Ok(worlds) => FetchState::Loaded(worlds),
-                    Err(e) => FetchState::Error(e),
-                };
-                if let Ok(mut lock) = state_clone.lock() {
-                    *lock = result;
+    /// Picks up what the workers finished; called once a frame.
+    pub fn poll(&mut self) -> Outcome {
+        if let FetchState::Loading(job) = &self.state
+            && let Some(result) = take(job)
+        {
+            self.state = match result {
+                Ok(servers) => FetchState::Loaded(servers),
+                Err(e) => FetchState::Error(e),
+            };
+        }
+        if let Some(job) = &self.leaving
+            && let Some(result) = take(job)
+        {
+            self.leaving = None;
+            match result {
+                Ok(()) => self.refresh(),
+                Err(e) => self.state = FetchState::Error(e),
+            }
+        }
+        let mut refresh = false;
+        match &mut self.subscreen {
+            SubScreen::JoinCode { error, job, .. } => {
+                if let Some(result) = job.as_ref().and_then(take) {
+                    *job = None;
+                    match result {
+                        Ok(()) => {
+                            self.subscreen = SubScreen::Main;
+                            refresh = true;
+                        }
+                        Err(_) => {
+                            *error = Some(crate::lang::get("mco.selectServer.joinCode.invalid"));
+                        }
+                    }
                 }
-            });
+            }
+            SubScreen::PendingInvites { invites, job } => {
+                if let Some(result) = job.as_ref().and_then(take) {
+                    *job = None;
+                    *invites = Some(result);
+                }
+            }
+            SubScreen::Configure { server, error, job } => {
+                if let Some(result) = job.as_ref().and_then(take) {
+                    *job = None;
+                    match result {
+                        Ok(()) => {
+                            let open = server.is_open();
+                            server.state = if open { "CLOSED" } else { "OPEN" }.to_owned();
+                            refresh = true;
+                        }
+                        Err(e) => *error = Some(e.text()),
+                    }
+                }
+            }
+            SubScreen::Connecting { .. } => return self.poll_join(),
+            _ => {}
+        }
+        if refresh {
+            self.refresh();
+        }
+        Outcome::None
+    }
+
+    /// `GetServerDetailsTask.run` once the address came back.
+    fn poll_join(&mut self) -> Outcome {
+        let Some((job, _)) = &self.joining else {
+            return Outcome::None;
+        };
+        let Some(result) = take(job) else {
+            return Outcome::None;
+        };
+        self.joining = None;
+        let SubScreen::Connecting { server, error } = &mut self.subscreen else {
+            return Outcome::None;
+        };
+        let address = match result {
+            Ok(address) => address,
+            Err(e) => {
+                // 6006: the world is out of date; only its owner can reset it.
+                let owner = session().is_some_and(|s| server.owned_by(s.uuid));
+                *error = Some(if e.code() == 6006 && !owner {
+                    format!(
+                        "{} {}",
+                        crate::lang::get("mco.brokenworld.nonowner.title"),
+                        crate::lang::get("mco.brokenworld.nonowner.error")
+                    )
+                } else {
+                    e.text()
+                });
+                return Outcome::None;
+            }
+        };
+        let Some(target) = address.address.as_deref().and_then(connect_address) else {
+            log::warn!("Horizon: Realms gave no usable address to join");
+            *error = Some(crate::lang::get("mco.errorMessage.connectionFailure"));
+            return Outcome::None;
+        };
+        match (address.resource_pack_url, address.resource_pack_hash) {
+            // `new URL(..)` fails in scheduleResourcePackDownload: the pack can't download.
+            (Some(url), Some(_)) if !crate::server_packs::valid_url(&url) => {
+                *error = Some(crate::lang::get("mco.download.resourcePack.fail"));
+                Outcome::None
+            }
+            (Some(url), Some(hash)) => {
+                let pack = RealmsPack {
+                    address: target,
+                    id: pack_id(server),
+                    url,
+                    hash,
+                };
+                self.subscreen = SubScreen::Popup(Popup::ResourcePack { pack });
+                Outcome::None
+            }
+            _ => {
+                self.subscreen = SubScreen::Main;
+                Outcome::Connect(target)
+            }
         }
     }
 
     pub fn focused_box(&self, (w, _h): (f32, f32)) -> Option<[f32; 4]> {
-        if let SubScreen::JoinCode { .. } = self.subscreen {
-            Some([(w / 2.0).floor() - 100.0, 64.0, 200.0, 20.0])
-        } else {
-            None
-        }
+        matches!(self.subscreen, SubScreen::JoinCode { .. })
+            .then(|| [(w / 2.0).floor() - 100.0, 64.0, 200.0, 20.0])
     }
 
     pub fn focused_text(&mut self) -> Option<(crate::clipboard::FieldId, &mut String, usize)> {
@@ -178,43 +431,45 @@ impl Screen {
 
     pub fn tab(&mut self) {}
 
+    /// Escape: a sub-screen goes back to the list (cancelling a join); the list goes back to
+    /// the title (true).
     pub fn escape(&mut self) -> bool {
-        if !matches!(self.subscreen, SubScreen::Main) {
-            self.subscreen = SubScreen::Main;
-            false
-        } else {
-            true
+        if matches!(self.subscreen, SubScreen::Main) {
+            return true;
+        }
+        self.back_to_list();
+        false
+    }
+
+    fn back_to_list(&mut self) {
+        if let Some((_, aborted)) = self.joining.take() {
+            aborted.store(true, Ordering::Relaxed);
+        }
+        let reload = matches!(self.subscreen, SubScreen::PendingInvites { .. });
+        self.subscreen = SubScreen::Main;
+        if reload {
+            self.refresh();
         }
     }
 
+    /// Play: `RealmsMainScreen.play` → `GetServerDetailsTask` on a worker. The screen
+    /// shows "Connecting to the Realm..." and stays responsive.
     fn play_selected(&mut self) -> Outcome {
-        let target = if let Some(idx) = self.selected
-            && let Ok(lock) = self.state.lock()
-            && let FetchState::Loaded(servers) = &*lock
-            && let Some(server) = servers.get(idx)
-            && let Some(session) = horizon_client_render::auth::current()
-        {
-            Some((
-                server.id,
-                session.name.clone(),
-                format!("{:032x}", session.uuid),
-                session.access_token().to_owned(),
-            ))
-        } else {
-            None
+        let Some(server) = self.selected_server().filter(|s| s.is_open()).cloned() else {
+            return Outcome::None;
         };
-
-        if let Some((realm_id, name, uuid, token)) = target {
-            let client = RealmsClient::default_client(&name, &uuid, &token);
-            match client.join_world(realm_id) {
-                Ok(addr) => return Outcome::Connect(addr.address),
-                Err(e) => {
-                    if let Ok(mut lock) = self.state.lock() {
-                        *lock = FetchState::Error(e);
-                    }
-                }
-            }
-        }
+        let Some(client) = client() else {
+            return Outcome::None;
+        };
+        let aborted = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&aborted);
+        let id = server.id;
+        let job = spawn(move || fetch_address(&client, id, &flag));
+        self.joining = Some((job, aborted));
+        self.subscreen = SubScreen::Connecting {
+            server,
+            error: None,
+        };
         Outcome::None
     }
 
@@ -223,301 +478,173 @@ impl Screen {
             Some(1) => self.play_selected(),
             Some(2) => Outcome::Back,
             Some(10) => {
-                // Configure Realm: open in-game configure subscreen
-                if let Some(idx) = self.selected
-                    && let Ok(lock) = self.state.lock()
-                    && let FetchState::Loaded(ref list) = *lock
-                    && let Some(server) = list.get(idx)
-                {
+                if let Some(server) = self.selected_server().cloned() {
                     self.subscreen = SubScreen::Configure {
-                        server: server.clone(),
-                        status_msg: None,
-                        busy: false,
+                        server,
+                        error: None,
+                        job: None,
                     };
                 }
                 Outcome::None
             }
-            Some(11) => {
-                // Renew Realm
-                open_link("https://www.minecraft.net/realms");
-                Outcome::None
-            }
+            Some(11) => match (self.selected_server(), session()) {
+                // RealmsMainScreen.onRenew.
+                (Some(server), Some(s)) => Outcome::OpenUri(extend_link(server, s.uuid)),
+                _ => Outcome::None,
+            },
             Some(12) => {
-                // Leave Realm (uninvite myself)
-                if let Some(idx) = self.selected {
-                    let server_id = if let Ok(lock) = self.state.lock()
-                        && let FetchState::Loaded(ref list) = *lock
-                        && let Some(server) = list.get(idx)
-                    {
-                        Some(server.id)
-                    } else {
-                        None
-                    };
-
-                    if let Some(id) = server_id
-                        && let Some(session) = horizon_client_render::auth::current()
-                    {
-                        let name = session.name.clone();
-                        let uuid = format!("{:032x}", session.uuid);
-                        let token = session.access_token().to_owned();
-                        thread::spawn(move || {
-                            let client = RealmsClient::default_client(&name, &uuid, &token);
-                            let _ = client.uninvite_myself(id);
-                        });
-                        self.selected = None;
-                        self.refresh();
-                    }
-                }
+                self.leave_clicked(session().map(|s| s.uuid));
                 Outcome::None
             }
             Some(13) => {
-                // Add Realm: open in-game info & purchase subscreen
                 self.subscreen = SubScreen::AddRealm;
                 Outcome::None
             }
             Some(14) => {
-                // Join Realm with Code button in header
                 self.subscreen = SubScreen::JoinCode {
                     code: String::new(),
                     error: None,
-                    validating: false,
+                    job: None,
                 };
                 Outcome::None
             }
             Some(15) => {
-                // Pending invites header button
-                let invites_arc = Arc::new(Mutex::new(None));
-                let arc_clone = Arc::clone(&invites_arc);
-                if let Some(session) = horizon_client_render::auth::current() {
-                    let name = session.name.clone();
-                    let uuid = format!("{:032x}", session.uuid);
-                    let token = session.access_token().to_owned();
-                    thread::spawn(move || {
-                        let client = RealmsClient::default_client(&name, &uuid, &token);
-                        let res = client.pending_invites();
-                        if let Ok(mut lock) = arc_clone.lock() {
-                            *lock = Some(res);
-                        }
-                    });
-                }
-                self.subscreen = SubScreen::PendingInvites {
-                    invites: invites_arc,
-                };
-                Outcome::None
-            }
-            Some(16) => {
-                // Realms News header button
-                open_link("https://www.minecraft.net/realms");
+                let job = client().map(|c| spawn(move || c.pending_invites()));
+                self.subscreen = SubScreen::PendingInvites { invites: None, job };
                 Outcome::None
             }
             Some(17) => {
-                // Retry / Refresh
                 self.refresh();
                 Outcome::None
             }
             Some(20) => {
-                // Join button inside JoinCode subscreen
-                if let SubScreen::JoinCode {
-                    ref code,
-                    ref mut error,
-                    ref mut validating,
-                } = self.subscreen
+                if let SubScreen::JoinCode { code, error, job } = &mut self.subscreen
+                    && job.is_none()
+                    && !code.trim().is_empty()
                 {
-                    let trimmed = code.trim().to_string();
-                    if !trimmed.is_empty() {
-                        *validating = true;
-                        *error = None;
-                        if let Some(session) = horizon_client_render::auth::current() {
-                            let name = session.name.clone();
-                            let uuid = format!("{:032x}", session.uuid);
-                            let token = session.access_token().to_owned();
-                            let client = RealmsClient::default_client(&name, &uuid, &token);
-                            match client.redeem_invite_code(&trimmed) {
-                                Ok(()) => {
-                                    self.subscreen = SubScreen::Main;
-                                    self.refresh();
-                                    return Outcome::None;
-                                }
-                                Err(e) => {
-                                    *error = Some(e);
-                                    *validating = false;
-                                }
-                            }
-                        } else {
-                            *error = Some("Not signed in".to_string());
-                            *validating = false;
+                    match client() {
+                        Some(client) => {
+                            let code = code.trim().to_owned();
+                            *error = None;
+                            *job = Some(spawn(move || client.redeem_invite_code(&code)));
                         }
+                        None => *error = Some(crate::lang::get("horizon.realms.not_signed_in")),
                     }
                 }
                 Outcome::None
             }
-            Some(21) | Some(22) | Some(32) | Some(41) => {
-                // Cancel/Back or Done in subscreens
-                self.subscreen = SubScreen::Main;
+            Some(21) | Some(22) | Some(32) | Some(41) | Some(51) | Some(52) => {
+                self.back_to_list();
                 Outcome::None
             }
             Some(30) => {
-                // Toggle Realm open / close in Configure subscreen
-                let action_info = if let SubScreen::Configure {
-                    ref server, busy, ..
-                } = self.subscreen
+                if let SubScreen::Configure { server, error, job } = &mut self.subscreen
+                    && job.is_none()
+                    && let Some(client) = client()
                 {
-                    if !busy {
-                        Some((server.id, server.is_open()))
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                };
-
-                if let Some((s_id, is_open)) = action_info {
-                    if let SubScreen::Configure { ref mut busy, .. } = self.subscreen {
-                        *busy = true;
-                    }
-                    let res = if let Some(session) = horizon_client_render::auth::current() {
-                        let name = session.name.clone();
-                        let uuid = format!("{:032x}", session.uuid);
-                        let token = session.access_token().to_owned();
-                        let client = RealmsClient::default_client(&name, &uuid, &token);
-                        if is_open {
-                            client.close_realm(s_id)
+                    let (id, open) = (server.id, server.is_open());
+                    *error = None;
+                    *job = Some(spawn(move || {
+                        if open {
+                            client.close_realm(id)
                         } else {
-                            client.open_realm(s_id)
+                            client.open_realm(id)
                         }
-                    } else {
-                        Err("Not signed in".to_string())
-                    };
-
-                    match res {
-                        Ok(()) => {
-                            if let SubScreen::Configure {
-                                ref mut server,
-                                ref mut status_msg,
-                                ref mut busy,
-                            } = self.subscreen
-                            {
-                                server.state = if is_open {
-                                    "CLOSED".to_string()
-                                } else {
-                                    "OPEN".to_string()
-                                };
-                                *status_msg = Some(if is_open {
-                                    "Realm został pomyślnie zamknięty.".to_string()
-                                } else {
-                                    "Realm został pomyślnie otwarty.".to_string()
-                                });
-                                *busy = false;
-                            }
-                            self.refresh();
-                        }
-                        Err(e) => {
-                            if let SubScreen::Configure {
-                                ref mut status_msg,
-                                ref mut busy,
-                                ..
-                            } = self.subscreen
-                            {
-                                *status_msg = Some(format!("Błąd: {e}"));
-                                *busy = false;
-                            }
-                        }
-                    }
+                    }));
                 }
                 Outcome::None
             }
-            Some(31) | Some(40) => {
-                // Open Minecraft Realms web portal
-                open_link("https://www.minecraft.net/realms");
-                Outcome::None
-            }
+            Some(40) => Outcome::OpenUri(BUY_REALMS.to_owned()),
+            Some(50) => self.popup_continue(),
             Some(btn @ 100..=200) => {
-                // Accept or Reject in PendingInvites
-                let invites_arc = if let SubScreen::PendingInvites { ref invites } = self.subscreen
+                if let SubScreen::PendingInvites { invites, job } = &mut self.subscreen
+                    && job.is_none()
+                    && let Some(Ok(list)) = invites
+                    && let Some(invite) = list.get(usize::from((btn - 100) / 2))
+                    && let Some(client) = client()
                 {
-                    Some(Arc::clone(invites))
-                } else {
-                    None
-                };
-
-                if let Some(invites) = invites_arc {
-                    let idx = ((btn - 100) / 2) as usize;
-                    let is_accept = (btn - 100) % 2 == 0;
-                    let invite_id = if let Ok(lock) = invites.lock()
-                        && let Some(Ok(ref list)) = *lock
-                        && let Some(item) = list.get(idx)
-                    {
-                        Some(item.invitation_id.clone())
-                    } else {
-                        None
-                    };
-
-                    if let Some(inv_id) = invite_id
-                        && let Some(session) = horizon_client_render::auth::current()
-                    {
-                        let name = session.name.clone();
-                        let uuid = format!("{:032x}", session.uuid);
-                        let token = session.access_token().to_owned();
-                        let client = RealmsClient::default_client(&name, &uuid, &token);
-                        if is_accept {
-                            let _ = client.accept_invite(&inv_id);
-                            self.refresh();
+                    let accept = (btn - 100) % 2 == 0;
+                    let id = invite.invitation_id.clone();
+                    *job = Some(spawn(move || {
+                        let done = if accept {
+                            client.accept_invite(&id)
                         } else {
-                            let _ = client.reject_invite(&inv_id);
-                        }
-                        if let Ok(res) = client.pending_invites()
-                            && let Ok(mut lock) = invites.lock()
-                        {
-                            *lock = Some(Ok(res));
-                        }
-                    }
+                            client.reject_invite(&id)
+                        };
+                        done.and_then(|()| client.pending_invites())
+                    }));
                 }
                 Outcome::None
             }
-            _ => {
-                if !matches!(self.subscreen, SubScreen::Main) {
-                    return Outcome::None;
-                }
-                // Clicking in list area
-                let footer_h = if self.layout_state() == LayoutState::List {
-                    60.0
-                } else {
-                    48.0
-                };
-                let (top, bottom) = (HEADER_HEIGHT, h - footer_h);
-                if y >= top && y <= bottom {
-                    let rx = ((w - ROW_WIDTH) / 2.0).floor();
-                    if x >= rx && x <= rx + ROW_WIDTH {
-                        let row = ((y - top - 2.0) / ROW_HEIGHT).floor() as usize;
-                        let (is_valid_row, can_play) = if let Ok(lock) = self.state.lock()
-                            && let FetchState::Loaded(servers) = &*lock
-                            && row < servers.len()
-                        {
-                            (true, servers[row].is_open())
-                        } else {
-                            (false, false)
-                        };
+            _ => self.click_list(x, y, (w, h)),
+        }
+    }
 
-                        if is_valid_row {
-                            let now = SystemTime::now();
-                            let is_double_click = match self.last_click {
-                                Some((last_row, last_time)) if last_row == row => now
-                                    .duration_since(last_time)
-                                    .is_ok_and(|d| d.as_millis() < 350),
-                                _ => false,
-                            };
-                            self.selected = Some(row);
-                            self.last_click = Some((row, now));
+    /// `RealmsMainScreen.leaveClicked`: someone else's Realm only, and only the question:
+    /// nothing is sent until Continue.
+    fn leave_clicked(&mut self, me: Option<u128>) {
+        if let Some(server) = self.selected_server().cloned()
+            && let Some(me) = me
+            && !server.owned_by(me)
+        {
+            self.subscreen = SubScreen::Popup(Popup::Leave(server));
+        }
+    }
 
-                            if is_double_click && can_play {
-                                return self.play_selected();
-                            }
-                        }
-                    }
+    /// Continue in a popup.
+    fn popup_continue(&mut self) -> Outcome {
+        let SubScreen::Popup(popup) = &self.subscreen else {
+            return Outcome::None;
+        };
+        let popup = popup.clone();
+        self.subscreen = SubScreen::Main;
+        match popup {
+            Popup::Leave(server) => {
+                // leaveServer: on a thread, then the list reloads.
+                if let Some(client) = client() {
+                    let id = server.id;
+                    self.leaving = Some(spawn(move || client.uninvite_myself(id)));
+                    self.selected = None;
                 }
                 Outcome::None
+            }
+            Popup::ResourcePack { pack } => {
+                let address = pack.address.clone();
+                if let Ok(mut slot) = PENDING_PACK.lock() {
+                    *slot = Some(pack);
+                }
+                Outcome::Connect(address)
             }
         }
+    }
+
+    fn click_list(&mut self, x: f32, y: f32, (w, h): (f32, f32)) -> Outcome {
+        if !matches!(self.subscreen, SubScreen::Main) {
+            return Outcome::None;
+        }
+        let footer_h = if self.layout_state() == LayoutState::List {
+            60.0
+        } else {
+            48.0
+        };
+        let (top, bottom) = (HEADER_HEIGHT, h - footer_h);
+        let rx = ((w - ROW_WIDTH) / 2.0).floor();
+        if y < top || y > bottom || x < rx || x > rx + ROW_WIDTH {
+            return Outcome::None;
+        }
+        let row = ((y - top - 2.0) / ROW_HEIGHT).floor() as usize;
+        let Some(can_play) = self.servers().get(row).map(RealmServer::is_open) else {
+            return Outcome::None;
+        };
+        let now = SystemTime::now();
+        let double = matches!(self.last_click, Some((last, at)) if last == row
+            && now.duration_since(at).is_ok_and(|d| d.as_millis() < 350));
+        self.selected = Some(row);
+        self.last_click = Some((row, now));
+        if double && can_play {
+            return self.play_selected();
+        }
+        Outcome::None
     }
 
     pub fn buttons(
@@ -527,250 +654,206 @@ impl Screen {
     ) -> Vec<(f32, f32, f32, String, bool, u8, Option<(&'static str, f32)>)> {
         let cx = (w / 2.0).floor();
         let left = cx - (CONTENT_WIDTH / 2.0).floor();
+        let mid = (h / 2.0).floor();
+        let t = crate::lang::get;
         let mut buttons = Vec::new();
 
         match &self.subscreen {
-            SubScreen::JoinCode {
-                code, validating, ..
-            } => {
+            SubScreen::JoinCode { code, job, .. } => {
                 buttons.push((
                     cx - 100.0,
-                    (h / 2.0).floor() + 10.0,
+                    mid + 10.0,
                     200.0,
-                    crate::lang::get_or("mco.selectServer.joinCode.select", "Join"),
-                    !code.trim().is_empty() && !validating,
+                    t("mco.selectServer.joinCode.select"),
+                    !code.trim().is_empty() && job.is_none(),
                     20,
                     None,
                 ));
                 buttons.push((
                     cx - 100.0,
-                    (h / 2.0).floor() + 34.0,
+                    mid + 34.0,
                     200.0,
-                    crate::lang::get_or("gui.cancel", "Cancel"),
+                    t("gui.cancel"),
                     true,
                     21,
                     None,
                 ));
             }
-            SubScreen::PendingInvites { invites } => {
-                buttons.push((
-                    cx - 100.0,
-                    h - 36.0,
-                    200.0,
-                    crate::lang::get_or("gui.done", "Done"),
-                    true,
-                    22,
-                    None,
-                ));
-
-                if let Ok(lock) = invites.lock()
-                    && let Some(Ok(ref list)) = *lock
-                {
-                    let top = 36.0;
+            SubScreen::PendingInvites { invites, job } => {
+                buttons.push((cx - 100.0, h - 36.0, 200.0, t("gui.done"), true, 22, None));
+                if let Some(Ok(list)) = invites {
                     let rx = ((w - ROW_WIDTH) / 2.0).floor();
-                    for (i, _) in list.iter().enumerate() {
-                        let row_y = top + 2.0 + i as f32 * ROW_HEIGHT;
+                    for (i, _) in list.iter().enumerate().take(40) {
+                        let row_y = 36.0 + 2.0 + i as f32 * ROW_HEIGHT;
                         if row_y + ROW_HEIGHT > h - 48.0 {
                             break;
                         }
-                        if i < 40 {
-                            buttons.push((
-                                rx + ROW_WIDTH - 46.0,
-                                row_y + 8.0,
-                                20.0,
-                                String::new(),
-                                true,
-                                100 + i as u8 * 2,
-                                Some(("pending_invite/accept", 14.0)),
-                            ));
-                            buttons.push((
-                                rx + ROW_WIDTH - 22.0,
-                                row_y + 8.0,
-                                20.0,
-                                String::new(),
-                                true,
-                                101 + i as u8 * 2,
-                                Some(("pending_invite/reject", 14.0)),
-                            ));
-                        }
+                        let id = 100 + i as u8 * 2;
+                        buttons.push((
+                            rx + ROW_WIDTH - 46.0,
+                            row_y + 8.0,
+                            20.0,
+                            String::new(),
+                            job.is_none(),
+                            id,
+                            Some(("pending_invite/accept", 14.0)),
+                        ));
+                        buttons.push((
+                            rx + ROW_WIDTH - 22.0,
+                            row_y + 8.0,
+                            20.0,
+                            String::new(),
+                            job.is_none(),
+                            id + 1,
+                            Some(("pending_invite/reject", 14.0)),
+                        ));
                     }
                 }
             }
-            SubScreen::Configure { server, busy, .. } => {
-                let is_open = server.is_open();
-                let toggle_label = if is_open {
-                    crate::lang::get_or("mco.configure.world.buttons.close", "Zamknij Realm")
+            SubScreen::Configure { server, job, .. } => {
+                let label = if server.is_open() {
+                    t("mco.configure.world.buttons.close")
                 } else {
-                    crate::lang::get_or("mco.configure.world.buttons.open", "Otwórz Realm")
+                    t("mco.configure.world.buttons.open")
                 };
                 buttons.push((
                     cx - 100.0,
-                    (h / 2.0).floor() + 10.0,
+                    mid + 10.0,
                     200.0,
-                    toggle_label,
-                    !busy,
+                    label,
+                    job.is_none(),
                     30,
                     None,
                 ));
-                buttons.push((
-                    cx - 100.0,
-                    (h / 2.0).floor() + 34.0,
-                    200.0,
-                    "Zarządzaj w przeglądarce".to_string(),
-                    true,
-                    31,
-                    None,
-                ));
-                buttons.push((
-                    cx - 100.0,
-                    h - 36.0,
-                    200.0,
-                    crate::lang::get_or("gui.back", "Wstecz"),
-                    true,
-                    32,
-                    None,
-                ));
+                buttons.push((cx - 100.0, h - 36.0, 200.0, t("gui.back"), true, 32, None));
             }
             SubScreen::AddRealm => {
                 buttons.push((
-                    cx - 110.0,
-                    (h / 2.0).floor() + 20.0,
-                    220.0,
-                    "Kup Realm / Otwórz stronę".to_string(),
+                    cx - 100.0,
+                    mid + 30.0,
+                    200.0,
+                    t("mco.selectServer.buy"),
                     true,
                     40,
                     None,
                 ));
+                buttons.push((cx - 100.0, h - 36.0, 200.0, t("gui.back"), true, 41, None));
+            }
+            SubScreen::Popup(_) => {
                 buttons.push((
-                    cx - 100.0,
-                    h - 36.0,
-                    200.0,
-                    crate::lang::get_or("gui.back", "Wstecz"),
+                    cx - 102.0,
+                    mid + 30.0,
+                    100.0,
+                    t("gui.continue"),
                     true,
-                    41,
+                    50,
                     None,
                 ));
+                buttons.push((cx + 2.0, mid + 30.0, 100.0, t("gui.cancel"), true, 51, None));
+            }
+            SubScreen::Connecting { error, .. } => {
+                let label = if error.is_some() {
+                    t("gui.back")
+                } else {
+                    t("gui.cancel")
+                };
+                buttons.push((cx - 100.0, mid + 40.0, 200.0, label, true, 52, None));
             }
             SubScreen::Main => {
-                // RealmsHeader buttons:
-                // Left: Join Realm button (comfortably fits localized text)
-                let join_text = crate::lang::get_or("mco.selectServer.joinRealm", "Join Realm");
-                let join_w = 112.0;
-                let join_x = cx - 68.0 - join_w;
-                buttons.push((join_x, 12.0, join_w, join_text, true, 14, None));
-
-                // Right: Invites (20px) and News (20px) with icons!
+                let signed_in = session().is_some();
+                buttons.push((
+                    cx - 68.0 - 112.0,
+                    12.0,
+                    112.0,
+                    t("mco.selectServer.joinRealm"),
+                    signed_in,
+                    14,
+                    None,
+                ));
                 buttons.push((
                     left + CONTENT_WIDTH - 44.0,
                     12.0,
                     20.0,
                     String::new(),
-                    true,
+                    signed_in,
                     15,
                     Some(("icon/invite", 14.0)),
                 ));
+                // RealmsHeader's news button opens the news link the service sent; Horizon
+                // doesn't fetch the news, so it has none (vanilla's newsLink == null).
                 buttons.push((
                     left + CONTENT_WIDTH - 20.0,
                     12.0,
                     20.0,
                     String::new(),
-                    true,
+                    false,
                     16,
                     Some(("icon/news", 14.0)),
                 ));
 
-                // Footer buttons (vanilla RealmsMainScreen.createFooter):
                 match self.layout_state() {
                     LayoutState::List => {
-                        let selected_server = self.selected.and_then(|idx| {
-                            if let Ok(lock) = self.state.lock()
-                                && let FetchState::Loaded(ref list) = *lock
-                            {
-                                list.get(idx).cloned()
-                            } else {
-                                None
-                            }
-                        });
-
-                        let selected_can_join =
-                            selected_server.as_ref().is_some_and(|s| s.is_open());
-                        let is_self_owned = selected_server.as_ref().is_some_and(|s| {
-                            horizon_client_render::auth::current()
-                                .is_some_and(|u| s.owner.as_deref() == Some(&u.name))
-                        });
-                        let is_expired = selected_server.as_ref().is_some_and(|s| s.expired);
-
-                        // Row 1: Play (100) | Configure (100) | Renew (100)
+                        let server = self.selected_server();
+                        let uuid = session().map(|s| s.uuid);
+                        let owned = server.zip(uuid).is_some_and(|(s, u)| s.owned_by(u));
+                        let can_join = server.is_some_and(RealmServer::is_open);
+                        let expired = server.is_some_and(|s| s.expired);
+                        let row1 = h - 52.0;
+                        let row2 = h - 28.0;
                         buttons.push((
                             left,
-                            h - 52.0,
+                            row1,
                             100.0,
-                            crate::lang::get_or("mco.selectServer.play", "Play"),
-                            selected_can_join,
+                            t("mco.selectServer.play"),
+                            can_join,
                             1,
                             None,
                         ));
                         buttons.push((
                             left + 104.0,
-                            h - 52.0,
+                            row1,
                             100.0,
-                            crate::lang::get_or("mco.selectServer.configure", "Configure"),
-                            is_self_owned,
+                            t("mco.selectServer.configure"),
+                            owned,
                             10,
                             None,
                         ));
                         buttons.push((
                             left + 208.0,
-                            h - 52.0,
+                            row1,
                             100.0,
-                            crate::lang::get_or("mco.selectServer.expiredRenew", "Renew"),
-                            is_self_owned && is_expired,
+                            t("mco.selectServer.expiredRenew"),
+                            owned && expired,
                             11,
                             None,
                         ));
-
-                        // Row 2: Leave (100) | Add Realm (100) | Back (100)
                         buttons.push((
                             left,
-                            h - 28.0,
+                            row2,
                             100.0,
-                            crate::lang::get_or("mco.selectServer.leave", "Leave Realm"),
-                            selected_server.is_some() && !is_self_owned,
+                            t("mco.selectServer.leave"),
+                            server.is_some() && uuid.is_some() && !owned && self.leaving.is_none(),
                             12,
                             None,
                         ));
                         buttons.push((
                             left + 104.0,
-                            h - 28.0,
+                            row2,
                             100.0,
-                            crate::lang::get_or("mco.selectServer.purchase", "Add Realm"),
+                            t("mco.selectServer.purchase"),
                             true,
                             13,
                             None,
                         ));
-                        buttons.push((
-                            left + 208.0,
-                            h - 28.0,
-                            100.0,
-                            crate::lang::get_or("gui.back", "Back"),
-                            true,
-                            2,
-                            None,
-                        ));
+                        buttons.push((left + 208.0, row2, 100.0, t("gui.back"), true, 2, None));
                     }
                     LayoutState::NoRealms | LayoutState::Loading => {
-                        let has_error = if let Ok(lock) = self.state.lock() {
-                            matches!(&*lock, FetchState::Error(_))
-                        } else {
-                            false
-                        };
-
-                        if has_error {
+                        if matches!(self.state, FetchState::Error(_)) {
                             buttons.push((
                                 cx - 154.0,
                                 h - 36.0,
                                 100.0,
-                                crate::lang::get_or("mco.selectServer.retry", "Retry"),
+                                t("mco.errorMessage.retry"),
                                 true,
                                 17,
                                 None,
@@ -779,7 +862,7 @@ impl Screen {
                                 cx - 50.0,
                                 h - 36.0,
                                 100.0,
-                                crate::lang::get_or("mco.selectServer.purchase", "Add Realm"),
+                                t("mco.selectServer.purchase"),
                                 true,
                                 13,
                                 None,
@@ -788,7 +871,7 @@ impl Screen {
                                 cx + 54.0,
                                 h - 36.0,
                                 100.0,
-                                crate::lang::get_or("gui.back", "Back"),
+                                t("gui.back"),
                                 true,
                                 2,
                                 None,
@@ -798,29 +881,34 @@ impl Screen {
                                 cx - 102.0,
                                 h - 36.0,
                                 100.0,
-                                crate::lang::get_or("mco.selectServer.purchase", "Add Realm"),
+                                t("mco.selectServer.purchase"),
                                 true,
                                 13,
                                 None,
                             ));
-                            buttons.push((
-                                cx + 2.0,
-                                h - 36.0,
-                                100.0,
-                                crate::lang::get_or("gui.back", "Back"),
-                                true,
-                                2,
-                                None,
-                            ));
+                            buttons.push((cx + 2.0, h - 36.0, 100.0, t("gui.back"), true, 2, None));
                         }
                     }
                 }
             }
         }
-
         buttons
     }
 
+    /// `RealmsServer` expiry tooltip text (`RealmsMainScreen` status line).
+    fn expiry_text(server: &RealmServer) -> String {
+        if server.expired {
+            crate::lang::get("mco.selectServer.expired")
+        } else if server.days_left <= 0 {
+            crate::lang::get("mco.selectServer.expires.soon")
+        } else if server.days_left == 1 {
+            crate::lang::get("mco.selectServer.expires.day")
+        } else {
+            crate::lang::tr("mco.selectServer.expires.days", &[&server.days_left])
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
     pub fn draw(
         &self,
         batch: &mut HudBatch,
@@ -833,29 +921,28 @@ impl Screen {
     ) {
         let (w, h) = (w.ceil(), h.ceil());
         let cx = (w / 2.0).floor();
-        let _left = cx - (CONTENT_WIDTH / 2.0).floor();
+        let mid = (h / 2.0).floor();
+        let t = crate::lang::get;
+        crate::ui::menu_background(batch, atlas, 0.0, 0.0, w, h, false);
 
         match &self.subscreen {
-            SubScreen::JoinCode {
-                code,
-                error,
-                validating,
-            } => {
-                crate::ui::menu_background(batch, atlas, 0.0, 0.0, w, h, false);
-                let title = crate::lang::get_or("mco.selectServer.joinCode.title", "Join Realm");
-                let tw = HudBatch::text_width(atlas, &title);
-                batch.text(atlas, &title, cx - (tw / 2.0).floor(), 20.0, u32::MAX, true);
-
-                let label = crate::lang::get_or("mco.selectServer.joinCode", "Invite Code");
+            SubScreen::JoinCode { code, error, job } => {
+                centered(
+                    batch,
+                    atlas,
+                    &t("mco.selectServer.joinCode.title"),
+                    cx,
+                    20.0,
+                    u32::MAX,
+                );
                 batch.text(
                     atlas,
-                    &label,
+                    &t("mco.selectServer.joinCode"),
                     cx - 100.0,
                     50.0,
-                    rgba(160, 160, 160, 255),
+                    GREY,
                     true,
                 );
-
                 caret.draw(
                     batch,
                     atlas,
@@ -864,84 +951,34 @@ impl Screen {
                     true,
                     focused_at,
                 );
-
-                if *validating {
-                    let val_txt = crate::lang::get_or(
-                        "mco.selectServer.joinCode.validating",
-                        "Validating code...",
-                    );
-                    let vw = HudBatch::text_width(atlas, &val_txt);
-                    batch.text(
+                if job.is_some() {
+                    centered(
+                        batch,
                         atlas,
-                        &val_txt,
-                        cx - (vw / 2.0).floor(),
+                        &t("mco.selectServer.joinCode.validating"),
+                        cx,
                         88.0,
                         u32::MAX,
-                        true,
                     );
                 } else if let Some(err) = error {
-                    let ew = HudBatch::text_width(atlas, err);
-                    batch.text(
-                        atlas,
-                        err,
-                        cx - (ew / 2.0).floor(),
-                        88.0,
-                        rgba(255, 85, 85, 255),
-                        true,
-                    );
+                    centered(batch, atlas, err, cx, 88.0, RED);
                 }
             }
-            SubScreen::PendingInvites { invites } => {
-                crate::ui::menu_background(batch, atlas, 0.0, 0.0, w, h, false);
-                let title = crate::lang::get_or("mco.invites.title", "Pending Invites");
-                let tw = HudBatch::text_width(atlas, &title);
-                batch.text(atlas, &title, cx - (tw / 2.0).floor(), 14.0, u32::MAX, true);
-
+            SubScreen::PendingInvites { invites, .. } => {
+                centered(batch, atlas, &t("mco.invites.title"), cx, 14.0, u32::MAX);
                 let (top, bottom) = (36.0, h - 48.0);
                 crate::ui::list_background(batch, atlas, top, bottom, false);
-
-                let lock = invites.lock().ok();
-                match lock.as_deref() {
-                    None | Some(None) => {
-                        let msg = "Loading invites...";
-                        let mw = HudBatch::text_width(atlas, msg);
-                        batch.text(
-                            atlas,
-                            msg,
-                            cx - (mw / 2.0).floor(),
-                            (h / 2.0).floor(),
-                            rgba(160, 160, 160, 255),
-                            true,
-                        );
+                match invites {
+                    None => {}
+                    Some(Err(e)) => {
+                        for (i, line) in wrap_lines(&e.text(), atlas, w - 40.0).iter().enumerate() {
+                            centered(batch, atlas, line, cx, mid + i as f32 * 10.0, RED);
+                        }
                     }
-                    Some(Some(Err(e))) => {
-                        let msg = format!("Error: {e}");
-                        let mw = HudBatch::text_width(atlas, &msg);
-                        batch.text(
-                            atlas,
-                            &msg,
-                            cx - (mw / 2.0).floor(),
-                            (h / 2.0).floor(),
-                            rgba(255, 85, 85, 255),
-                            true,
-                        );
+                    Some(Ok(list)) if list.is_empty() => {
+                        centered(batch, atlas, &t("mco.invites.nopending"), cx, mid, GREY);
                     }
-                    Some(Some(Ok(list))) if list.is_empty() => {
-                        let msg = crate::lang::get_or(
-                            "mco.invites.nopending",
-                            "You have no pending invites",
-                        );
-                        let mw = HudBatch::text_width(atlas, &msg);
-                        batch.text(
-                            atlas,
-                            &msg,
-                            cx - (mw / 2.0).floor(),
-                            (h / 2.0).floor(),
-                            rgba(160, 160, 160, 255),
-                            true,
-                        );
-                    }
-                    Some(Some(Ok(list))) => {
+                    Some(Ok(list)) => {
                         let rx = ((w - ROW_WIDTH) / 2.0).floor();
                         for (i, invite) in list.iter().enumerate() {
                             let y = top + 2.0 + i as f32 * ROW_HEIGHT;
@@ -956,332 +993,235 @@ impl Screen {
                                 u32::MAX,
                                 true,
                             );
-                            let owner_txt = format!("Owner: {}", invite.world_owner_name);
                             batch.text(
                                 atlas,
-                                &owner_txt,
+                                &invite.world_owner_name,
                                 rx + 10.0,
                                 y + 16.0,
-                                rgba(160, 160, 160, 255),
+                                GREY,
                                 true,
                             );
                         }
                     }
                 }
             }
-            SubScreen::Configure {
-                server, status_msg, ..
-            } => {
-                crate::ui::menu_background(batch, atlas, 0.0, 0.0, w, h, false);
-                let title = format!("Konfiguracja: {}", server.name);
-                let tw = HudBatch::text_width(atlas, &title);
-                batch.text(atlas, &title, cx - (tw / 2.0).floor(), 20.0, u32::MAX, true);
-
-                let info_y = (h / 2.0).floor() - 60.0;
-                let motd = if server.motd.is_empty() {
-                    "Minecraft Realm"
-                } else {
-                    &server.motd
-                };
-                let motd_w = HudBatch::text_width(atlas, motd);
-                batch.text(
+            SubScreen::Configure { server, error, job } => {
+                let title = format!("{} {}", t("mco.configure.world.title"), server.name);
+                centered(batch, atlas, &title, cx, 20.0, u32::MAX);
+                let info_y = mid - 60.0;
+                centered(batch, atlas, &server.motd, cx, info_y, GREY);
+                centered(
+                    batch,
                     atlas,
-                    motd,
-                    cx - (motd_w / 2.0).floor(),
-                    info_y,
-                    rgba(160, 160, 160, 255),
-                    true,
-                );
-
-                let (state_text, state_col) = if server.is_open() {
-                    ("Stan: Otwarty", rgba(85, 255, 85, 255))
-                } else {
-                    ("Stan: Zamknięty", rgba(255, 85, 85, 255))
-                };
-                let st_w = HudBatch::text_width(atlas, state_text);
-                batch.text(
-                    atlas,
-                    state_text,
-                    cx - (st_w / 2.0).floor(),
+                    &Self::expiry_text(server),
+                    cx,
                     info_y + 14.0,
-                    state_col,
-                    true,
+                    GREY,
                 );
-
-                let days_txt = format!("Wygasa za: {} dni", server.days_left);
-                let days_w = HudBatch::text_width(atlas, &days_txt);
-                batch.text(
-                    atlas,
-                    &days_txt,
-                    cx - (days_w / 2.0).floor(),
-                    info_y + 28.0,
-                    rgba(160, 160, 160, 255),
-                    true,
-                );
-
-                if let Some(msg) = status_msg {
-                    let mw = HudBatch::text_width(atlas, msg);
-                    batch.text(
-                        atlas,
-                        msg,
-                        cx - (mw / 2.0).floor(),
-                        info_y + 46.0,
+                let status = if job.is_some() {
+                    Some((
+                        t(if server.is_open() {
+                            "mco.configure.world.closing"
+                        } else {
+                            "mco.configure.world.opening"
+                        }),
                         u32::MAX,
-                        true,
-                    );
+                    ))
+                } else {
+                    error.clone().map(|e| (e, RED))
+                };
+                if let Some((text, color)) = status {
+                    for (i, line) in wrap_lines(&text, atlas, w - 40.0).iter().enumerate() {
+                        centered(
+                            batch,
+                            atlas,
+                            line,
+                            cx,
+                            info_y + 32.0 + i as f32 * 10.0,
+                            color,
+                        );
+                    }
                 }
             }
             SubScreen::AddRealm => {
-                crate::ui::menu_background(batch, atlas, 0.0, 0.0, w, h, false);
-                let title = "Minecraft Realms";
-                let tw = HudBatch::text_width(atlas, title);
-                batch.text(atlas, title, cx - (tw / 2.0).floor(), 24.0, u32::MAX, true);
-
-                let info_y = (h / 2.0).floor() - 40.0;
-                let l1 = "Realms to Twój własny prywatny serwer Minecraft.";
-                let l2 = "Działa w bezpiecznej chmurze 24/7 dla Ciebie i przyjaciół.";
-                let l3 = "Możesz w każdej chwili zmienić minigrę lub wgrać własny świat.";
-                for (i, line) in [l1, l2, l3].into_iter().enumerate() {
-                    let lw = HudBatch::text_width(atlas, line);
-                    batch.text(
+                centered(batch, atlas, &t("mco.title"), cx, 24.0, u32::MAX);
+                let lines = wrap_lines(&t("mco.selectServer.popup"), atlas, CONTENT_WIDTH);
+                let top = mid - 10.0 * lines.len() as f32;
+                for (i, line) in lines.iter().enumerate() {
+                    centered(
+                        batch,
                         atlas,
                         line,
-                        cx - (lw / 2.0).floor(),
-                        info_y + i as f32 * 14.0,
+                        cx,
+                        top + i as f32 * 10.0,
                         rgba(180, 180, 180, 255),
-                        true,
                     );
                 }
             }
-            SubScreen::Main => {
-                // 1. Classic Minecraft tiled dirt menu background
-                crate::ui::menu_background(batch, atlas, 0.0, 0.0, w, h, false);
-
-                // 2. Official Realms Header:
-                // Center: Realms Logo texture (128 x 34 px from textures/gui/title/realms.png)
-                if atlas.sprites.contains_key("gui/title/realms") {
-                    batch.sprite_region(
-                        atlas,
-                        "gui/title/realms",
-                        [cx - 64.0, 5.0, 128.0, 34.0],
-                        128.0,
-                        64.0,
-                    );
-                } else {
-                    let title = crate::lang::get_or("mco.title", "Minecraft Realms");
-                    let tw = HudBatch::text_width(atlas, &title);
-                    batch.text(atlas, &title, cx - (tw / 2.0).floor(), 12.0, u32::MAX, true);
+            SubScreen::Popup(popup) => {
+                let message = match popup {
+                    Popup::Leave(_) => t("mco.configure.world.leave.question.line1"),
+                    Popup::ResourcePack { .. } => t("mco.configure.world.resourcepack.question"),
+                };
+                let lines = wrap_lines(&message, atlas, CONTENT_WIDTH);
+                let top = mid - 10.0 - 10.0 * lines.len() as f32;
+                centered(batch, atlas, &t("mco.info"), cx, top - 16.0, INFO);
+                for (i, line) in lines.iter().enumerate() {
+                    centered(batch, atlas, line, cx, top + i as f32 * 10.0, u32::MAX);
                 }
-
-                // 3. Selection list background with standard separators
-                let footer_h = if self.layout_state() == LayoutState::List {
-                    60.0
-                } else {
-                    48.0
-                };
-                let (top, bottom) = (HEADER_HEIGHT, h - footer_h);
-                crate::ui::list_background(batch, atlas, top, bottom, false);
-
-                let rx = ((w - ROW_WIDTH) / 2.0).floor();
-
-                let lock = match self.state.lock() {
-                    Ok(l) => l,
-                    Err(_) => return,
-                };
-
-                match &*lock {
-                    FetchState::Unauthenticated => {
-                        let msg = "Please sign in with a Microsoft account in Horizon Launcher to play Realms.";
-                        let mw = HudBatch::text_width(atlas, msg);
-                        batch.text(
-                            atlas,
-                            msg,
-                            cx - mw / 2.0,
-                            (h / 2.0).floor() - 10.0,
-                            rgba(160, 160, 160, 255),
-                            true,
-                        );
-                    }
-                    FetchState::Loading => {
-                        let msg =
-                            crate::lang::get_or("mco.selectServer.loading", "Loading Realms List");
-                        let mw = HudBatch::text_width(atlas, &msg);
-                        let mid_y = (h / 2.0).floor();
-                        batch.text(atlas, &msg, cx - mw / 2.0, mid_y - 12.0, u32::MAX, true);
-
-                        let millis = SystemTime::now()
-                            .duration_since(UNIX_EPOCH)
-                            .map_or(0, |d| d.as_millis());
-                        let dots =
-                            ["O o o", "o O o", "o o O", "o O o"][(millis / 300 % 4) as usize];
-                        let dw = HudBatch::text_width(atlas, dots);
-                        batch.text(
-                            atlas,
-                            dots,
-                            cx - dw / 2.0,
-                            mid_y + 4.0,
-                            rgba(128, 128, 128, 255),
-                            true,
-                        );
-                    }
-                    FetchState::Error(err) => {
-                        let msg = format!("Error: {err}");
-                        let mw = HudBatch::text_width(atlas, &msg);
-                        batch.text(
-                            atlas,
-                            &msg,
-                            cx - mw / 2.0,
-                            (h / 2.0).floor() - 10.0,
-                            rgba(255, 85, 85, 255),
-                            true,
-                        );
-                    }
-                    FetchState::Loaded(servers) => {
-                        if servers.is_empty() {
-                            let img_y = (h / 2.0).floor() - 54.0;
-                            if atlas.sprites.contains_key("gui/realms/no_realms") {
-                                batch.sprite_scaled(
-                                    atlas,
-                                    "gui/realms/no_realms",
-                                    cx - 65.0,
-                                    img_y,
-                                    130.0,
-                                    64.0,
-                                    u32::MAX,
-                                );
-                            }
-
-                            let line1 = "You don't seem to have a Realm.";
-                            let line2 = "Add a Realm to play together with your friends.";
-                            let w1 = HudBatch::text_width(atlas, line1);
-                            let w2 = HudBatch::text_width(atlas, line2);
-                            batch.text(
-                                atlas,
-                                line1,
-                                cx - (w1 / 2.0).floor(),
-                                img_y + 72.0,
-                                rgba(160, 160, 160, 255),
-                                true,
-                            );
-                            batch.text(
-                                atlas,
-                                line2,
-                                cx - (w2 / 2.0).floor(),
-                                img_y + 84.0,
-                                rgba(160, 160, 160, 255),
-                                true,
-                            );
-                        } else {
-                            for (i, server) in servers.iter().enumerate() {
-                                let y = top + 2.0 + i as f32 * ROW_HEIGHT;
-                                if y + ROW_HEIGHT > bottom {
-                                    break;
-                                }
-
-                                let is_selected = self.selected == Some(i);
-                                if is_selected {
-                                    batch.fill(
-                                        atlas,
-                                        rx - 2.0,
-                                        y - 2.0,
-                                        ROW_WIDTH,
-                                        ROW_HEIGHT,
-                                        u32::MAX,
-                                    );
-                                    batch.fill(
-                                        atlas,
-                                        rx - 1.0,
-                                        y - 1.0,
-                                        ROW_WIDTH - 2.0,
-                                        ROW_HEIGHT - 2.0,
-                                        rgba(0, 0, 0, 255),
-                                    );
-                                }
-
-                                batch.sprite_scaled(
-                                    atlas,
-                                    "misc/unknown_server",
-                                    rx + 2.0,
-                                    y + 2.0,
-                                    32.0,
-                                    32.0,
-                                    u32::MAX,
-                                );
-
-                                let name_color = if server.is_open() {
-                                    u32::MAX
-                                } else {
-                                    rgba(160, 160, 160, 255)
-                                };
-                                batch.text(
-                                    atlas,
-                                    &server.name,
-                                    rx + 38.0,
-                                    y + 1.0,
-                                    name_color,
-                                    true,
-                                );
-
-                                let motd = if !server.motd.is_empty() {
-                                    &server.motd
-                                } else {
-                                    "Minecraft Realm"
-                                };
-                                batch.text(
-                                    atlas,
-                                    motd,
-                                    rx + 38.0,
-                                    y + 12.0,
-                                    rgba(128, 128, 128, 255),
-                                    true,
-                                );
-
-                                let owner = server.owner.as_deref().unwrap_or("");
-                                batch.text(
-                                    atlas,
-                                    owner,
-                                    rx + 38.0,
-                                    y + 23.0,
-                                    rgba(160, 160, 160, 255),
-                                    true,
-                                );
-
-                                let light_x = rx + ROW_WIDTH - 17.0;
-                                let light_sprite = if server.expired {
-                                    "gui/sprites/realm_status/expired"
-                                } else if server.is_open() {
-                                    "gui/sprites/realm_status/open"
-                                } else {
-                                    "gui/sprites/realm_status/closed"
-                                };
-
-                                if atlas.sprites.contains_key(light_sprite) {
-                                    batch.sprite_scaled(
-                                        atlas,
-                                        light_sprite,
-                                        light_x,
-                                        y + 2.0,
-                                        10.0,
-                                        28.0,
-                                        u32::MAX,
-                                    );
-                                } else {
-                                    let (badge_text, badge_col) = if server.is_open() {
-                                        ("ONLINE", rgba(85, 255, 85, 255))
-                                    } else {
-                                        ("EXPIRED", rgba(255, 85, 85, 255))
-                                    };
-                                    batch.text(
-                                        atlas,
-                                        badge_text,
-                                        rx + ROW_WIDTH - 50.0,
-                                        y + 2.0,
-                                        badge_col,
-                                        true,
-                                    );
-                                }
-                            }
+            }
+            SubScreen::Connecting { error, .. } => {
+                centered(
+                    batch,
+                    atlas,
+                    &t("mco.connect.connecting"),
+                    cx,
+                    mid - 30.0,
+                    u32::MAX,
+                );
+                match error {
+                    Some(e) => {
+                        for (i, line) in wrap_lines(e, atlas, w - 40.0).iter().enumerate() {
+                            centered(batch, atlas, line, cx, mid - 10.0 + i as f32 * 10.0, RED);
                         }
+                    }
+                    None => centered(batch, atlas, loading_dots(), cx, mid - 10.0, GREY),
+                }
+            }
+            SubScreen::Main => self.draw_main(batch, atlas, w, h),
+        }
+    }
+
+    fn draw_main(&self, batch: &mut HudBatch, atlas: &HudAtlas, w: f32, h: f32) {
+        let cx = (w / 2.0).floor();
+        let mid = (h / 2.0).floor();
+        let t = crate::lang::get;
+        // RealmsHeader: the Realms logo.
+        if atlas.sprites.contains_key("gui/title/realms") {
+            batch.sprite_region(
+                atlas,
+                "gui/title/realms",
+                [cx - 64.0, 5.0, 128.0, 34.0],
+                128.0,
+                64.0,
+            );
+        } else {
+            centered(batch, atlas, &t("mco.title"), cx, 12.0, u32::MAX);
+        }
+        let footer_h = if self.layout_state() == LayoutState::List {
+            60.0
+        } else {
+            48.0
+        };
+        let (top, bottom) = (HEADER_HEIGHT, h - footer_h);
+        crate::ui::list_background(batch, atlas, top, bottom, false);
+        let rx = ((w - ROW_WIDTH) / 2.0).floor();
+        let paragraph = |batch: &mut HudBatch, text: &str, color: u32| {
+            for (i, line) in wrap_lines(text, atlas, CONTENT_WIDTH).iter().enumerate() {
+                centered(batch, atlas, line, cx, mid - 10.0 + i as f32 * 10.0, color);
+            }
+        };
+
+        match &self.state {
+            FetchState::Unauthenticated => {
+                paragraph(batch, &t("horizon.realms.not_signed_in"), GREY)
+            }
+            FetchState::Loading(_) => {
+                centered(
+                    batch,
+                    atlas,
+                    &t("mco.selectServer.loading"),
+                    cx,
+                    mid - 12.0,
+                    u32::MAX,
+                );
+                centered(
+                    batch,
+                    atlas,
+                    loading_dots(),
+                    cx,
+                    mid + 4.0,
+                    rgba(128, 128, 128, 255),
+                );
+            }
+            FetchState::Error(e) => paragraph(batch, &e.text(), RED),
+            FetchState::Loaded(servers) if servers.is_empty() => {
+                let img_y = mid - 54.0;
+                if atlas.sprites.contains_key("gui/realms/no_realms") {
+                    batch.sprite_scaled(
+                        atlas,
+                        "gui/realms/no_realms",
+                        cx - 65.0,
+                        img_y,
+                        130.0,
+                        64.0,
+                        u32::MAX,
+                    );
+                }
+                let lines = wrap_lines(&t("mco.selectServer.noRealms"), atlas, CONTENT_WIDTH);
+                for (i, line) in lines.iter().enumerate() {
+                    centered(batch, atlas, line, cx, img_y + 72.0 + i as f32 * 12.0, GREY);
+                }
+            }
+            FetchState::Loaded(servers) => {
+                for (i, server) in servers.iter().enumerate() {
+                    let y = top + 2.0 + i as f32 * ROW_HEIGHT;
+                    if y + ROW_HEIGHT > bottom {
+                        break;
+                    }
+                    if self.selected == Some(i) {
+                        batch.fill(atlas, rx - 2.0, y - 2.0, ROW_WIDTH, ROW_HEIGHT, u32::MAX);
+                        batch.fill(
+                            atlas,
+                            rx - 1.0,
+                            y - 1.0,
+                            ROW_WIDTH - 2.0,
+                            ROW_HEIGHT - 2.0,
+                            rgba(0, 0, 0, 255),
+                        );
+                    }
+                    batch.sprite_scaled(
+                        atlas,
+                        "misc/unknown_server",
+                        rx + 2.0,
+                        y + 2.0,
+                        32.0,
+                        32.0,
+                        u32::MAX,
+                    );
+                    let name_color = if server.is_open() { u32::MAX } else { GREY };
+                    batch.text(atlas, &server.name, rx + 38.0, y + 1.0, name_color, true);
+                    let second = if server.expired {
+                        (t("mco.selectServer.expiredList"), RED)
+                    } else {
+                        (server.motd.clone(), rgba(128, 128, 128, 255))
+                    };
+                    batch.text(atlas, &second.0, rx + 38.0, y + 12.0, second.1, true);
+                    batch.text(
+                        atlas,
+                        server.owner.as_deref().unwrap_or(""),
+                        rx + 38.0,
+                        y + 23.0,
+                        GREY,
+                        true,
+                    );
+                    let light = if server.expired {
+                        "gui/sprites/realm_status/expired"
+                    } else if server.is_open() {
+                        "gui/sprites/realm_status/open"
+                    } else {
+                        "gui/sprites/realm_status/closed"
+                    };
+                    if atlas.sprites.contains_key(light) {
+                        batch.sprite_scaled(
+                            atlas,
+                            light,
+                            rx + ROW_WIDTH - 17.0,
+                            y + 2.0,
+                            10.0,
+                            28.0,
+                            u32::MAX,
+                        );
                     }
                 }
             }
@@ -1289,53 +1229,229 @@ impl Screen {
     }
 }
 
+fn loading_dots() -> &'static str {
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis());
+    ["O o o", "o O o", "o o O", "o O o"][(millis / 300 % 4) as usize]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn server(id: i64, owner_uuid: Option<&str>) -> RealmServer {
+        RealmServer {
+            id,
+            name: "Friends".into(),
+            state: "OPEN".into(),
+            owner_uuid: owner_uuid.map(str::to_owned),
+            active_slot: 1,
+            ..Default::default()
+        }
+    }
+
+    fn listed(servers: Vec<RealmServer>) -> Screen {
+        Screen {
+            state: FetchState::Loaded(servers),
+            subscreen: SubScreen::Main,
+            selected: Some(0),
+            joining: None,
+            leaving: None,
+            last_click: None,
+        }
+    }
+
     #[test]
-    fn header_buttons_have_proper_icons() {
+    fn join_addresses_need_a_host_and_a_numeric_port() {
+        for good in [
+            "1.2.3.4:25565",
+            "eu-west.realms.example:30001",
+            "[2001:db8::1]:25565",
+            " a.b:1 ",
+        ] {
+            assert_eq!(
+                connect_address(good).as_deref(),
+                Some(good.trim()),
+                "{good}"
+            );
+        }
+        for bad in [
+            "",
+            ":25565",
+            "1.2.3.4",
+            "1.2.3.4:",
+            "1.2.3.4:http",
+            "1.2.3.4:65536",
+            "1.2.3.4:0",
+            "1.2.3.4:-1",
+            "https://1.2.3.4:25565",
+            "tcp://host:25565",
+            "user@host:25565",
+            "host/path:25565",
+            "2001:db8::1:25565",
+            "[]:25565",
+            "host name:25565",
+        ] {
+            assert_eq!(connect_address(bad), None, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn leave_asks_first_and_cancel_leaves_nothing() {
+        const ME: u128 = 0x0123_4567_89ab_cdef_0123_4567_89ab_cdef;
+        let theirs = server(7, Some("fedcba9876543210fedcba9876543210"));
+        // Our own Realm: no question, nothing to leave.
+        let mut screen = listed(vec![server(7, Some("0123456789abcdef0123456789abcdef"))]);
+        screen.leave_clicked(Some(ME));
+        assert!(matches!(screen.subscreen, SubScreen::Main));
+
+        // Someone else's: the first click only asks.
+        let mut screen = listed(vec![theirs.clone()]);
+        screen.leave_clicked(Some(ME));
+        assert!(matches!(&screen.subscreen, SubScreen::Popup(Popup::Leave(s)) if *s == theirs));
+        assert!(screen.leaving.is_none());
+        let ids: Vec<u8> = screen.buttons(800.0, 600.0).iter().map(|b| b.5).collect();
+        assert_eq!(ids, [50, 51]);
+
+        // Cancel goes back with nothing sent and the Realm still selected.
+        let _ = screen.click(Some(51), 0.0, 0.0, (800.0, 600.0));
+        assert!(matches!(screen.subscreen, SubScreen::Main));
+        assert!(screen.leaving.is_none());
+        assert_eq!(screen.selected, Some(0));
+
+        // Escape closes the question too.
+        screen.leave_clicked(Some(ME));
+        assert!(!screen.escape());
+        assert!(matches!(screen.subscreen, SubScreen::Main));
+        assert!(screen.leaving.is_none());
+
+        // Signed out: no question at all.
+        screen.leave_clicked(None);
+        assert!(matches!(screen.subscreen, SubScreen::Main));
+    }
+
+    #[test]
+    fn the_pack_question_connects_only_after_continue_with_the_pack_queued() {
+        let pack = RealmsPack {
+            address: "9.8.7.6:25565".into(),
+            id: 5,
+            url: "https://packs.test/p.zip".into(),
+            hash: "0".repeat(40),
+        };
+        let mut screen = listed(vec![]);
+        screen.subscreen = SubScreen::Popup(Popup::ResourcePack { pack: pack.clone() });
+        let _ = screen.click(Some(51), 0.0, 0.0, (800.0, 600.0));
+        assert!(matches!(screen.subscreen, SubScreen::Main));
+
+        screen.subscreen = SubScreen::Popup(Popup::ResourcePack { pack: pack.clone() });
+        let outcome = screen.click(Some(50), 0.0, 0.0, (800.0, 600.0));
+        assert!(matches!(outcome, Outcome::Connect(ref a) if a == "9.8.7.6:25565"));
+        assert_eq!(take_pending_pack("other:1"), None);
+        // A taken pack is gone, whatever the address.
+        assert_eq!(take_pending_pack("9.8.7.6:25565"), None);
+
+        screen.subscreen = SubScreen::Popup(Popup::ResourcePack { pack: pack.clone() });
+        let _ = screen.click(Some(50), 0.0, 0.0, (800.0, 600.0));
+        assert_eq!(take_pending_pack("9.8.7.6:25565"), Some(pack));
+    }
+
+    #[test]
+    fn a_join_answer_becomes_a_checked_connect_or_the_pack_question() {
+        let mut screen = listed(vec![server(7, None)]);
+        let answer = |address: &str, pack: bool| RealmAddress {
+            address: Some(address.into()),
+            resource_pack_url: pack.then(|| "https://packs.test/p.zip".into()),
+            resource_pack_hash: pack.then(|| "ab".repeat(20)),
+        };
+        let start = |screen: &mut Screen, result: Result<RealmAddress, RealmsError>| {
+            let job = Arc::new(Mutex::new(Some(result)));
+            screen.joining = Some((job, Arc::new(AtomicBool::new(false))));
+            screen.subscreen = SubScreen::Connecting {
+                server: server(7, None),
+                error: None,
+            };
+            screen.poll()
+        };
+        assert!(
+            matches!(start(&mut screen, Ok(answer("1.2.3.4:25565", false))), Outcome::Connect(a) if a == "1.2.3.4:25565")
+        );
+        assert!(matches!(screen.subscreen, SubScreen::Main));
+
+        assert!(matches!(
+            start(&mut screen, Ok(answer("http://evil:25565", false))),
+            Outcome::None
+        ));
+        assert!(matches!(
+            screen.subscreen,
+            SubScreen::Connecting { error: Some(_), .. }
+        ));
+
+        assert!(matches!(
+            start(&mut screen, Ok(answer("1.2.3.4:25565", true))),
+            Outcome::None
+        ));
+        match &screen.subscreen {
+            SubScreen::Popup(Popup::ResourcePack { pack }) => {
+                assert_eq!(pack.address, "1.2.3.4:25565");
+                assert_eq!(pack.id, pack_id(&server(7, None)));
+            }
+            other => panic!("{other:?}"),
+        }
+
+        assert!(matches!(
+            start(&mut screen, Err(RealmsError::Timeout)),
+            Outcome::None
+        ));
+        assert!(matches!(
+            screen.subscreen,
+            SubScreen::Connecting { error: Some(_), .. }
+        ));
+    }
+
+    #[test]
+    fn cancelling_a_join_aborts_its_worker() {
+        let mut screen = listed(vec![server(7, None)]);
+        let aborted = Arc::new(AtomicBool::new(false));
+        screen.joining = Some((Arc::new(Mutex::new(None)), Arc::clone(&aborted)));
+        screen.subscreen = SubScreen::Connecting {
+            server: server(7, None),
+            error: None,
+        };
+        let _ = screen.click(Some(52), 0.0, 0.0, (800.0, 600.0));
+        assert!(aborted.load(Ordering::Relaxed));
+        assert!(screen.joining.is_none());
+        assert!(matches!(screen.subscreen, SubScreen::Main));
+    }
+
+    #[test]
+    fn pack_ids_are_javas_name_uuids() {
+        // UUID.nameUUIDFromBytes("realms:Friends:1"): MD5 with the version-3 bits,
+        // computed outside Rust.
+        assert_eq!(
+            horizon_protocol::crypto::uuid_string(pack_id(&server(7, None))),
+            "9b833ced-6630-3283-b4a6-778948c32b5f"
+        );
+    }
+
+    #[test]
+    fn without_a_session_nothing_is_requested() {
         let screen = Screen::new();
-        let btns = screen.buttons(800.0, 600.0);
-
-        let invite_btn = btns
-            .iter()
-            .find(|b| b.5 == 15)
-            .expect("Invites button exists");
-        assert_eq!(invite_btn.6, Some(("icon/invite", 14.0)));
-
-        let news_btn = btns.iter().find(|b| b.5 == 16).expect("News button exists");
-        assert_eq!(news_btn.6, Some(("icon/news", 14.0)));
-
-        let join_btn = btns
-            .iter()
-            .find(|b| b.5 == 14)
-            .expect("Join Realm button exists");
-        assert_eq!(join_btn.6, None);
+        assert!(matches!(screen.state, FetchState::Unauthenticated));
+        let buttons = screen.buttons(800.0, 600.0);
+        let enabled = |id| buttons.iter().find(|b| b.5 == id).map(|b| b.4);
+        assert_eq!(enabled(14), Some(false), "Join Realm");
+        assert_eq!(enabled(15), Some(false), "invites");
     }
 
     #[test]
     fn join_realm_button_navigates_to_join_code_screen() {
-        let mut screen = Screen::new();
-        assert!(matches!(screen.subscreen, SubScreen::Main));
-
-        screen.click(Some(14), 0.0, 0.0, (800.0, 600.0));
+        let mut screen = listed(vec![]);
+        let _ = screen.click(Some(14), 0.0, 0.0, (800.0, 600.0));
         assert!(matches!(screen.subscreen, SubScreen::JoinCode { .. }));
-
         let btns = screen.buttons(800.0, 600.0);
         let join_btn = btns.iter().find(|b| b.5 == 20).expect("Join button exists");
-        assert!(
-            !join_btn.4,
-            "Join button should be disabled when code is empty"
-        );
-
-        let cancel_btn = btns
-            .iter()
-            .find(|b| b.5 == 21)
-            .expect("Cancel button exists");
-        assert!(cancel_btn.4);
-
-        // Escape key returns to Main
+        assert!(!join_btn.4, "Join is off while the code is empty");
         assert!(!screen.escape());
         assert!(matches!(screen.subscreen, SubScreen::Main));
     }

@@ -18853,6 +18853,14 @@ impl Game<'_> {
             event_loop.exit();
             return;
         }
+        // A Realm's address came back (GetServerDetailsTask hands over to ConnectScreen).
+        if let Some(action) = self.title.as_mut().and_then(|t| t.take_connect_request())
+            && let Err(error) = self.title_action(event_loop, action)
+        {
+            self.error = Some(error);
+            event_loop.exit();
+            return;
+        }
         horizon_client::spans::time("server_packs", || self.tick_server_packs());
         horizon_client::spans::time("control", || self.poll_control(event_loop));
         if self.pending_save.is_some() {
@@ -21384,6 +21392,7 @@ impl Loading {
             event_loop.exit();
             return;
         }
+        self.poll_menu_realms(event_loop);
         if let Some(w) = &self.window {
             if self.options.as_ref().is_some_and(|o| o.offscreen) {
                 self.draw();
