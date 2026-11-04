@@ -1046,7 +1046,7 @@ pub(super) fn village_sections(m: &Mob, w: &MobWorld) -> Vec<[i32; 3]> {
             }
         }
     }
-    for o in w.others {
+    let mut villager = |o: &super::Seen| {
         if o.alive && o.species == Species::Villager {
             for p in [o.job, o.bed, o.potential_job, o.meeting]
                 .into_iter()
@@ -1057,6 +1057,10 @@ pub(super) fn village_sections(m: &Mob, w: &MobWorld) -> Vec<[i32; 3]> {
                 }
             }
         }
+    };
+    match w.others_villagers {
+        Some(slots) => slots.iter().for_each(|&i| villager(&w.others[i as usize])),
+        None => w.others.iter().for_each(villager),
     }
     out
 }

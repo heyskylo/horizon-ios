@@ -36,6 +36,8 @@ pub struct Release {
     pub name: String,
     pub body: String,
     pub date: String,
+    /// When it was published, `HH:MM` UTC (empty if GitHub didn't say).
+    pub time: String,
     pub asset: Option<(String, u64)>,
     /// Listed and installed by hand, never as an update: a GitHub pre-release of the old Alpha
     /// channel (v0.2.1 on), or a Nightly older than the current one.
@@ -352,6 +354,11 @@ pub(crate) fn parse_releases(
                 .chars()
                 .take(10)
                 .collect(),
+            time: r["published_at"]
+                .as_str()
+                .and_then(|d| d.get(11..16))
+                .unwrap_or_default()
+                .into(),
             asset: found,
             prerelease: r["prerelease"].as_bool().unwrap_or(false),
             nightly: None,
@@ -836,6 +843,11 @@ pub(crate) fn install_as(
 
 pub fn remove(tag: &str) -> Result<(), String> {
     let dir = version_dir(tag);
+    remove_in(&dir)
+}
+
+fn remove_in(dir: &Path) -> Result<(), String> {
+    let installed = dir.join(COMPLETE).is_file();
     // The marker goes first: a version counted as installed until its folder is gone comes back
     // into `installed` when an overlapping removal re-reads the list mid-delete.
     let _ = fs::remove_file(dir.join(COMPLETE));
@@ -843,10 +855,18 @@ pub fn remove(tag: &str) -> Result<(), String> {
     // go of it, and remove_dir_all stops at the first one. Retry for a second; a folder that is
     // already gone is removed.
     for attempt in 1.. {
-        match fs::remove_dir_all(&dir) {
+        match fs::remove_dir_all(dir) {
             Ok(()) => break,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => break,
-            Err(e) if attempt == 5 => return Err(e.to_string()),
+            Err(e) if attempt == 5 => {
+                // A failed removal must remain discoverable and retryable. Files may
+                // already have gone, so this is recovery metadata, not a rollback.
+                if installed && dir.is_dir() {
+                    fs::write(dir.join(COMPLETE), "")
+                        .map_err(|restore| format!("{e}; {restore}"))?;
+                }
+                return Err(e.to_string());
+            }
             Err(_) => std::thread::sleep(std::time::Duration::from_millis(250)),
         }
     }
@@ -2244,11 +2264,30 @@ pub fn append_game_args(cmd: &mut Command) {
     cmd.args(game_args());
 }
 
+/// Renderer workarounds a player may have exported to start the launcher itself (a transparent
+/// window on old Mesa drivers): they belong to the launcher's own webview and must not reach the
+/// game, which picks its own backend. Inherited, they left the client on CPU rendering at 2-3 FPS
+/// (#7832).
+pub const LAUNCHER_RENDER_ENV: [&str; 4] = [
+    "LIBGL_ALWAYS_SOFTWARE",
+    "GALLIUM_DRIVER",
+    "WEBKIT_DISABLE_DMABUF_RENDERER",
+    "WEBKIT_DISABLE_COMPOSITING_MODE",
+];
+
+fn strip_launcher_render_env(cmd: &mut Command) {
+    for key in LAUNCHER_RENDER_ENV {
+        cmd.env_remove(key);
+    }
+}
+
 pub fn client_command(tag: &str) -> Command {
     let home = game_home();
     let _ = fs::create_dir_all(&home);
     let mut cmd = Command::new(client_program(tag));
+    strip_launcher_render_env(&mut cmd);
     cmd.current_dir(home).arg("--resources").arg(resources(tag));
+    cmd.env_remove("HORIZON_ACCOUNT_SESSIONS");
     // How the game asks for a renewed session (`account session`) while it runs.
     if let Ok(exe) = std::env::current_exe() {
         cmd.env("HORIZON_LAUNCHER_EXE", exe);
@@ -2440,19 +2479,23 @@ pub fn client(tag: &str) -> Result<Command, String> {
 
 /// [`client`], playing as `who` for this launch only (`play --account`).
 pub fn client_as(tag: &str, who: Option<&account::Player>) -> Result<Command, String> {
-    let (session, offline) = match who {
+    let session = match who {
         None => account::session_for_game(&game_home(), false).map_err(|e| e.to_string()),
         Some(who) => account::session_for_game_as(&game_home(), who),
     }
     .map_err(|refused| format!("{refused} Sign in with `horizon-launcher account sign-in`."))?;
-    need_prepared(tag)?;
+    if let Err(e) = need_prepared(tag) {
+        account::discard_unread_sessions();
+        return Err(e);
+    }
     complete_assets(tag);
     crate::browser::horizon::before_play(&game_home());
     let mut cmd = client_command(tag);
-    if let Some(file) = session {
+    if let Some(file) = session.file {
         cmd.arg("--session-file").arg(file);
     }
-    if let Some(e) = offline {
+    cmd.envs(session.env);
+    if let Some(e) = session.offline {
         eprintln!("Playing offline: {e}");
     }
     if let Some(e) = account::take_unsaved() {
@@ -3124,7 +3167,7 @@ pub enum Msg {
     AccountRemoved(String, u64, Result<bool, String>),
     /// The owner gate's answer for the game about to start: the selected account's session
     /// file (none = offline) and why it plays offline, if it does.
-    Session(Result<(Option<PathBuf>, Option<String>), crate::account::NoOwner>),
+    Session(Result<crate::account::GameSession, crate::account::NoOwner>),
     /// A modpack step's line (`modpacks`).
     PackLine(String),
     /// A modpack step ended: the pack as it now is.
@@ -3330,6 +3373,14 @@ pub struct Settings {
     /// The accent colour on top of the appearance (`themes::Accent`). Horizon's violet by default.
     #[serde(default)]
     pub accent: crate::themes::Accent,
+    /// How much white the glass look's plates take, in percent (the mockup's Glass, 0 to 16).
+    /// Unset is the mockup's 6.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub glass: Option<f32>,
+    /// How much the glass look's plates blur the scene behind them, in px (0 to 48). Unset is
+    /// the mockup's 24.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blur: Option<f32>,
     /// Home's background: a picture the player picked, kept in the data folder under this name
     /// (`themes::keep_background`). Unset shows Horizon's landscape.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -3383,6 +3434,12 @@ impl Settings {
             }) {
                 fields.remove("accent");
             }
+            // A glass or blur that isn't a number is the default, not a reason to lose the rest.
+            for key in ["glass", "blur"] {
+                if fields.get(key).is_some_and(|v| !v.is_number()) {
+                    fields.remove(key);
+                }
+            }
             // A language this launcher doesn't have yet follows the system's.
             if fields.get("language").is_some_and(|l| {
                 serde_json::from_value::<Option<crate::i18n::Language>>(l.clone()).is_err()
@@ -3407,6 +3464,18 @@ impl Settings {
     /// Whether old versions are deleted after an install.
     pub fn auto_prune(&self) -> bool {
         self.prune_old_versions.unwrap_or(true)
+    }
+    /// The plates' white as a fraction (0 to 0.16): [`glass`](Self::glass) in percent.
+    pub fn glass_tint(&self) -> f32 {
+        self.glass
+            .filter(|v| v.is_finite())
+            .map_or(horizon_theme::glass::TINT, |v| v.clamp(0., 16.) / 100.)
+    }
+    /// The plates' blur in px (0 to 48).
+    pub fn glass_blur(&self) -> f32 {
+        self.blur
+            .filter(|v| v.is_finite())
+            .map_or(horizon_theme::glass::BLUR, |v| v.clamp(0., 48.))
     }
     /// How many of the newest release versions pruning keeps: at least the newest.
     pub fn keep_newest(&self) -> usize {
@@ -3446,6 +3515,32 @@ mod java_tests;
 mod tests {
     use super::*;
     use std::cmp::Ordering::*;
+    use std::ffi::OsStr;
+
+    #[test]
+    #[cfg(windows)]
+    fn failed_removal_stays_listed_and_can_be_retried() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let versions =
+            std::env::temp_dir().join(format!("horizon-remove-locked-{}", std::process::id()));
+        let dir = versions.join("v0.2.0");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join(COMPLETE), "").unwrap();
+        fs::write(dir.join(CLIENT), "locked executable").unwrap();
+        // Refuse delete sharing, as a running Windows executable does.
+        let running = fs::File::options()
+            .read(true)
+            .share_mode(1)
+            .open(dir.join(CLIENT))
+            .unwrap();
+        assert!(remove_in(&dir).is_err());
+        assert_eq!(installed_in(&versions), ["v0.2.0"]);
+        drop(running);
+        remove_in(&dir).unwrap();
+        assert!(installed_in(&versions).is_empty());
+        assert!(!dir.exists());
+        fs::remove_dir_all(versions).unwrap();
+    }
 
     /// A canonical path loses Windows' verbatim prefix on a drive (horizon-mixins' output
     /// check stats `\\?\C:`, the volume itself, which Windows refuses, os error 1), and keeps
@@ -4025,10 +4120,30 @@ pub fn {f}("
         assert_eq!(Settings::parse("{}").language, None);
         let fr = Settings::parse(r#"{"language": "fr"}"#);
         assert_eq!(fr.language(), Language::French);
-        let future = Settings::parse(r#"{"language": "eo", "game_args": "--x"}"#);
+        let future = Settings::parse(r#"{"language": "tlh", "game_args": "--x"}"#);
         assert_eq!((future.language, future.game_args.as_str()), (None, "--x"));
         let saved = serde_json::to_value(Settings::default()).unwrap();
         assert!(saved.get("language").is_none(), "unset is left out");
+    }
+
+    #[test]
+    fn glass_and_blur_default_to_the_mockups_and_stay_in_range() {
+        let unset = Settings::parse("{}");
+        assert_eq!((unset.glass_tint(), unset.glass_blur()), (0.06, 24.));
+        let set = Settings::parse(r#"{"glass": 12, "blur": 8.5}"#);
+        assert_eq!((set.glass_tint(), set.glass_blur()), (0.12, 8.5));
+        let wild = Settings::parse(r#"{"glass": 90, "blur": -3}"#);
+        assert_eq!((wild.glass_tint(), wild.glass_blur()), (0.16, 0.));
+        // Not a number: the default, and the other settings survive.
+        let wrong = Settings::parse(r#"{"glass": "frosty", "blur": null, "game_args": "--x"}"#);
+        assert_eq!(
+            (
+                wrong.glass_tint(),
+                wrong.glass_blur(),
+                wrong.game_args.as_str()
+            ),
+            (0.06, 24., "--x")
+        );
     }
 
     #[test]
@@ -4100,6 +4215,7 @@ pub fn {f}("
             name: String::new(),
             body: String::new(),
             date: String::new(),
+            time: String::new(),
             asset: Some(("u".into(), 1)),
             prerelease: false,
             nightly: None,
@@ -4141,6 +4257,7 @@ pub fn {f}("
             name: String::new(),
             body: String::new(),
             date: String::new(),
+            time: String::new(),
             asset: Some(("u".into(), 1)),
             prerelease: false,
             nightly: None,
@@ -4363,6 +4480,7 @@ pub fn {f}("
             name: String::new(),
             body: String::new(),
             date: String::new(),
+            time: String::new(),
             asset: Some(("u".into(), 1)),
             prerelease: false,
             nightly: None,
@@ -5153,6 +5271,26 @@ pub fn {f}("
         assert_eq!(
             text,
             "Title\n\nSome words and a link (https://x.y).\n\n- one\n- two\n"
+        );
+    }
+
+    #[test]
+    fn the_game_does_not_inherit_the_launchers_renderer_workarounds() {
+        let mut cmd = Command::new("true");
+        cmd.env("GALLIUM_DRIVER", "llvmpipe")
+            .env("LIBGL_ALWAYS_SOFTWARE", "1")
+            .env("WEBKIT_DISABLE_DMABUF_RENDERER", "1")
+            .env("WEBKIT_DISABLE_COMPOSITING_MODE", "1")
+            .env("PIPEWIRE_PROPS", "kept");
+        strip_launcher_render_env(&mut cmd);
+        let envs = cmd.get_envs().collect::<std::collections::HashMap<_, _>>();
+        for key in LAUNCHER_RENDER_ENV {
+            assert_eq!(envs.get(OsStr::new(key)), Some(&None), "{key} is removed");
+        }
+        // Only the launcher's own workarounds go: the rest of the environment still reaches the game.
+        assert_eq!(
+            envs.get(OsStr::new("PIPEWIRE_PROPS")),
+            Some(&Some(OsStr::new("kept")))
         );
     }
 }

@@ -72,6 +72,12 @@ packet!(AddEntity {
 });
 packet!(Animate { id: i32 => VarInt, action: u8 => UByte });
 packet!(BlockChangedAck { sequence: i32 => VarInt });
+packet!(
+    /// ClientboundSelectAdvancementsTabPacket: the advancement tab the server keeps for the
+    /// player, or none. `ClientPacketListener.handleSelectAdvancementsTab` opens the screen on
+    /// that tab, and closes it for none.
+    SelectAdvancementsTab { tab: Option<String> => Opt<Ident> }
+);
 packet!(BlockDestruction { id: i32 => VarInt, pos: [i32; 3] => Pos, progress: u8 => UByte });
 packet!(BlockEntityData { pos: [i32; 3] => Pos, kind: i32 => VarInt, tag: Tag => Nbt });
 packet!(BlockUpdate { pos: [i32; 3] => Pos, state: i32 => VarInt });
@@ -883,6 +889,12 @@ packet!(
 packet!(SetPlayerInventory { slot: i32 => VarInt, item: Option<Stack> => Slot });
 packet!(
     /// ClockNetworkState for one world clock (registry id).
+    ///
+    /// `ClientboundSetTimePacket` keys its map by `Holder<WorldClock>`, but
+    /// `WorldClock.STREAM_CODEC` is `ByteBufCodecs.holderRegistry`, not
+    /// `holder`: the key is the plain registry id, with no inline form and no
+    /// off-by-one. The test below is a join packet captured from a vanilla
+    /// 26.3 server.
     ClockState { clock: i32 => VarInt, total_ticks: i64 => VarLong, partial_tick: f32 => Float, rate: f32 => Float }
 );
 packet!(SetTime { game_time: i64 => Long, clocks: Vec<ClockState> => List<ClockState> });
@@ -893,7 +905,7 @@ impl Codec<(i32, Option<(String, Option<f32>)>)> for SoundHolder {
     fn read(r: &mut Reader) -> Result<(i32, Option<(String, Option<f32>)>)> {
         let id = r.varint()?;
         if id != 0 {
-            return Ok((id - 1, None));
+            return Ok((crate::adapter::ids::sound_event(id - 1), None));
         }
         let location = r.string(32767)?;
         let range = if r.bool()? { Some(r.f32()?) } else { None };
@@ -2019,6 +2031,7 @@ packet_enum!(Clientbound, crate::ids::play::clientbound {
     // A common packet: the same `configuration::ServerLinks` the
     // configuration phase sends.
     ServerLinks(ServerLinks) = SERVER_LINKS,
+    SelectAdvancementsTab(SelectAdvancementsTab) = SELECT_ADVANCEMENTS_TAB,
     SwingAnimation(SwingAnimation) = SWING_ANIMATION,
     SystemChat(SystemChat) = SYSTEM_CHAT,
     TabList(TabList) = TAB_LIST,
@@ -2266,6 +2279,30 @@ packet!(
         carried: Option<Hashed> => HashedSlot,
     }
 );
+/// ServerboundSeenAdvancementsPacket: the tab the player opened (action 0, `OPENED_TAB`), or
+/// that its screen closed (1, `CLOSED_SCREEN`, which carries no tab).
+#[derive(Clone, Debug, PartialEq)]
+pub struct SeenAdvancements {
+    pub action: i32,
+    pub tab: Option<String>,
+}
+impl Codec<SeenAdvancements> for SeenAdvancements {
+    fn read(r: &mut Reader) -> Result<SeenAdvancements> {
+        let action = r.varint()?;
+        // The identifier is there for OPENED_TAB only (`readIdentifier` in the other branch).
+        let tab = match action {
+            0 => Some(r.string(32767)?),
+            _ => None,
+        };
+        Ok(SeenAdvancements { action, tab })
+    }
+    fn write(v: &SeenAdvancements, w: &mut Writer) {
+        w.varint(v.action);
+        if v.action == 0 {
+            w.string(v.tab.as_deref().unwrap_or_default());
+        }
+    }
+}
 packet!(SelectTrade { item: i32 => VarInt });
 packet!(
     /// ServerboundBlockEntityTagQueryPacket: an operator's F3+I asks for the
@@ -2622,6 +2659,7 @@ packet_enum!(Serverbound, crate::ids::play::serverbound {
     PlayerLoaded(Empty) = PLAYER_LOADED,
     Pong(Ping) = PONG,
     RenameItem(RenameItem) = RENAME_ITEM,
+    SeenAdvancements(SeenAdvancements) = SEEN_ADVANCEMENTS,
     ContainerSlotStateChanged(ContainerSlotStateChanged) = CONTAINER_SLOT_STATE_CHANGED,
     Punch(Empty) = PUNCH,
     JigsawGenerate(JigsawGenerate) = JIGSAW_GENERATE,
@@ -2793,13 +2831,62 @@ mod tests {
             )
             .is_err()
         );
-        // Without the variant the packet was `Unknown`, which the server's
-        // dispatch has no arm for; an id still without one reads that way.
-        assert!(matches!(
-            Serverbound::decode(crate::ids::play::serverbound::SEEN_ADVANCEMENTS, &payload)
-                .unwrap(),
-            Serverbound::Unknown(crate::ids::play::serverbound::SEEN_ADVANCEMENTS, _)
+    }
+
+    /// ServerboundSeenAdvancementsPacket: the action, then the tab only when the player opened
+    /// one — a closed screen is the action on its own.
+    #[test]
+    fn a_seen_advancements_packet_carries_its_tab_only_when_one_was_opened() {
+        let opened = SeenAdvancements {
+            action: 0,
+            tab: Some("minecraft:story/root".into()),
+        };
+        let mut w = crate::buf::Writer::new();
+        w.varint(0);
+        w.string("minecraft:story/root");
+        assert_eq!(
+            Serverbound::decode(crate::ids::play::serverbound::SEEN_ADVANCEMENTS, &w.data).unwrap(),
+            Serverbound::SeenAdvancements(opened.clone())
+        );
+        assert_eq!(
+            &Serverbound::SeenAdvancements(opened).encode()[1..],
+            &w.data[..]
+        );
+        // CLOSED_SCREEN: the action alone, with nothing after it.
+        let closed = [0x01];
+        assert_eq!(
+            Serverbound::decode(crate::ids::play::serverbound::SEEN_ADVANCEMENTS, &closed).unwrap(),
+            Serverbound::SeenAdvancements(SeenAdvancements {
+                action: 1,
+                tab: None,
+            })
+        );
+        // Both packets are typed now, so neither reads as an unknown opcode, and a packet too
+        // short for its tab is malformed rather than a tab-less open.
+        assert!(!matches!(
+            Serverbound::decode(crate::ids::play::serverbound::SEEN_ADVANCEMENTS, &closed).unwrap(),
+            Serverbound::Unknown(..)
         ));
+        assert!(
+            Serverbound::decode(crate::ids::play::serverbound::SEEN_ADVANCEMENTS, &[0x00]).is_err()
+        );
+        let tab = Clientbound::SelectAdvancementsTab(SelectAdvancementsTab {
+            tab: Some("minecraft:story/root".into()),
+        });
+        assert_eq!(
+            Clientbound::decode(
+                crate::ids::play::clientbound::SELECT_ADVANCEMENTS_TAB,
+                &tab.encode()[1..]
+            )
+            .unwrap(),
+            tab
+        );
+        let none = Clientbound::SelectAdvancementsTab(SelectAdvancementsTab { tab: None });
+        assert_eq!(
+            &none.encode()[1..],
+            &[0x00],
+            "no tab is the absence flag alone"
+        );
     }
 
     fn spawn() -> SpawnInfo {
@@ -3937,6 +4024,30 @@ mod tests {
             Serverbound::encode,
             Serverbound::decode,
         );
+    }
+
+    /// A `SetTime` packet captured from a vanilla 26.3 server at join, two
+    /// clocks: `Long 13071`, then `VarInt 2`, `(0, 66678, 0.0, 1.0)` and
+    /// `(1, 13071, 0.0, 1.0)`. Reading the clock as a holder id + 1 turns the
+    /// first key into an inline definition and the packet stops decoding.
+    #[test]
+    fn a_time_clock_is_a_plain_registry_id() {
+        let payload = [
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x33, 0x0f, // game_time 13071
+            0x02, // two clocks
+            0x00, 0xf6, 0x88, 0x04, 0x00, 0x00, 0x00, 0x00, 0x3f, 0x80, 0x00, 0x00, // clock 0
+            0x01, 0x8f, 0x66, 0x00, 0x00, 0x00, 0x00, 0x3f, 0x80, 0x00, 0x00, // clock 1
+        ];
+        let decoded =
+            Clientbound::decode(crate::ids::play::clientbound::SET_TIME, &payload).unwrap();
+        let Clientbound::SetTime(t) = decoded else {
+            panic!("expected SetTime")
+        };
+        assert_eq!(t.game_time, 13071);
+        assert_eq!(t.clocks.len(), 2);
+        assert_eq!((t.clocks[0].clock, t.clocks[0].total_ticks), (0, 66678));
+        assert_eq!((t.clocks[1].clock, t.clocks[1].total_ticks), (1, 13071));
+        assert_eq!(t.clocks[0].rate, 1.0);
     }
 
     #[test]
