@@ -253,7 +253,13 @@ impl Launcher {
                             // The ⋮ menu, from a right click anywhere on the row.
                             .on_mouse_down(
                                 gpui::MouseButton::Right,
-                                cx.listener(move |this, _: &gpui::MouseDownEvent, _, cx| {
+                                cx.listener(move |this, event: &gpui::MouseDownEvent, _, cx| {
+                                    // The open menu's mouse-down-out already closed it on this
+                                    // press: reopening here would make the toggle a no-op.
+                                    if this.menu_closed_at.take() == Some(event.position) {
+                                        cx.notify();
+                                        return;
+                                    }
                                     this.row_menu.open =
                                         row_menu_after_press(this.row_menu.open.take(), &right_id);
                                     cx.notify();
