@@ -325,6 +325,16 @@ impl Session {
             rec.record_packet(id, payload);
         }
     }
+    /// Record an encoded Clientbound packet into the active recording session at current elapsed time.
+    pub fn record_clientbound(&self, packet: &horizon_protocol::packets::play::Clientbound) {
+        if self.is_recording() {
+            let encoded = packet.encode();
+            let mut reader = horizon_protocol::buf::Reader::new(&encoded);
+            if let Ok(id) = reader.varint() {
+                self.record_packet(id, reader.rest());
+            }
+        }
+    }
     /// Send a play packet; silently dropped once the connection is gone,
     /// and while the server has the connection back in configuration (a
     /// proxy switching servers). Vanilla's `handleConfigurationStart` clears
@@ -2420,6 +2430,59 @@ mod tests {
         assert_eq!(packets.len(), 1);
         let decoded = play::Clientbound::decode(packets[0].id, &packets[0].payload).unwrap();
         assert_eq!(decoded, pos_pkt);
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn studio_session_record_local_player_animations() {
+        use crate::studio::Metadata;
+        use horizon_protocol::packets::play;
+        use horizon_protocol::entity_data::{serializer, Value};
+
+        let session = Session::replay("StudioTester");
+
+        let temp_dir =
+            std::env::temp_dir().join(format!("horizon-studio-anim-test-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&temp_dir);
+        let mcpr_path = temp_dir.join("test_anim.mcpr");
+
+        let meta = Metadata::new("local".into(), true, "26.3".into());
+        session.start_recording(&mcpr_path, meta).unwrap();
+        assert!(session.is_recording());
+
+        // 1. Arm swing animation
+        let swing_pkt = play::Clientbound::SwingAnimation(play::SwingAnimation {
+            id: 42,
+            hand: 0,
+            kind: 1,
+            duration: 6,
+        });
+        session.record_clientbound(&swing_pkt);
+
+        // 2. Crouch and sprint entity metadata
+        let data_pkt = play::Clientbound::SetEntityData(play::SetEntityData {
+            id: 42,
+            values: vec![
+                (0, serializer::BYTE, Value::Byte(0x02)),
+                (6, serializer::POSE, Value::Id(5)),
+            ],
+        });
+        session.record_clientbound(&data_pkt);
+
+        let saved_path = session.stop_recording().unwrap().unwrap();
+        assert_eq!(saved_path, mcpr_path);
+        assert!(!session.is_recording());
+
+        // Verify replay driver decodes both animation packets
+        let mut driver = crate::studio::ReplayDriver::open(&mcpr_path).unwrap();
+        assert_eq!(driver.packet_count(), 2);
+        let packets = driver.advance(Duration::from_secs(1)).unwrap();
+        assert_eq!(packets.len(), 2);
+        let decoded_swing = play::Clientbound::decode(packets[0].id, &packets[0].payload).unwrap();
+        assert_eq!(decoded_swing, swing_pkt);
+        let decoded_data = play::Clientbound::decode(packets[1].id, &packets[1].payload).unwrap();
+        assert_eq!(decoded_data, data_pkt);
 
         let _ = std::fs::remove_dir_all(&temp_dir);
     }

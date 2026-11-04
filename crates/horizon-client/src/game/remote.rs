@@ -557,6 +557,9 @@ pub(super) struct Remote {
     /// The slot the server last heard (`MultiPlayerGameMode.carriedIndex`): a cell, so `send` can
     /// send a new one first (`ensureHasSentCarriedItem`).
     carried: std::cell::Cell<Option<usize>>,
+    was_shared_flags: u8,
+    was_living_flags: u8,
+    last_recorded_pose: Option<crate::pose::Pose>,
     /// The last ClientboundPlayerAbilitiesPacket. Vanilla's LocalPlayer
     /// holds its abilities from the login on; here the player is made at
     /// the first teleport, which takes them then.
@@ -1125,6 +1128,9 @@ impl Game<'_> {
             last_input: 0,
             was_sprinting: false,
             carried: std::cell::Cell::new(None),
+            was_shared_flags: 0,
+            was_living_flags: 0,
+            last_recorded_pose: None,
             abilities: None,
             loaded_sent: false,
             heard_level: None,
@@ -1339,7 +1345,10 @@ impl Game<'_> {
             position_sender: Default::default(),
             last_input: 0,
             was_sprinting: false,
-            carried: None,
+            was_shared_flags: 0,
+            was_living_flags: 0,
+            last_recorded_pose: None,
+            carried: std::cell::Cell::new(None),
             abilities: None,
             loaded_sent: false,
             heard_level: None,
@@ -7692,10 +7701,48 @@ impl Game<'_> {
                     relatives: 0,
                 },
             );
-            let encoded = pkt.encode();
-            let mut reader = horizon_protocol::buf::Reader::new(&encoded);
-            if let Ok(id) = reader.varint() {
-                r.session.record_packet(id, reader.rest());
+            r.session.record_clientbound(&pkt);
+        }
+        if r.session.is_recording() {
+            let is_using = self.using.is_some();
+            let living_flags: u8 = if is_using {
+                1 | if self.hand == Hand::Off { 2 } else { 0 }
+            } else {
+                0
+            };
+            let crouching = p.local_crouching || matches!(p.pose, crate::pose::Pose::Crouching);
+            let mut shared: u8 = 0;
+            if crouching {
+                shared |= 0x02;
+            }
+            if sprinting {
+                shared |= 0x08;
+            }
+            if p.swimming {
+                shared |= 0x10;
+            }
+            if p.fall_flying {
+                shared |= 0x80;
+            }
+            if shared != r.was_shared_flags
+                || living_flags != r.was_living_flags
+                || r.last_recorded_pose != Some(p.pose)
+            {
+                r.was_shared_flags = shared;
+                r.was_living_flags = living_flags;
+                r.last_recorded_pose = Some(p.pose);
+                use horizon_protocol::entity_data::{serializer, Value};
+                let pkt = horizon_protocol::packets::play::Clientbound::SetEntityData(
+                    horizon_protocol::packets::play::SetEntityData {
+                        id: r.entity_id,
+                        values: vec![
+                            (0, serializer::BYTE, Value::Byte(shared as i8)),
+                            (6, serializer::POSE, Value::Id(p.pose.id())),
+                            (8, serializer::BYTE, Value::Byte(living_flags as i8)),
+                        ],
+                    },
+                );
+                r.session.record_clientbound(&pkt);
             }
         }
         // Creative inventory edits are sent slot by slot (SetCreativeModeSlot).
