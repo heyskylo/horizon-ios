@@ -676,9 +676,12 @@ impl Mob {
     }
     /// `canAttack` for the player: a golem a player built never attacks
     /// players (`IronGolem.canAttack`), and a pet never attacks its owner
-    /// (`TamableAnimal.canAttack`: `isOwnedBy`).
+    /// (`TamableAnimal.canAttack`: `isOwnedBy`). In Peaceful nothing attacks a
+    /// player (`LivingEntity.canAttack`, `TargetingConditions.test`: combat
+    /// conditions fail when the difficulty is PEACEFUL).
     pub fn spares_players(&self, w: &MobWorld) -> bool {
-        self.built_by_player()
+        (w.difficulty.base == 0 && w.player.is_some())
+            || self.built_by_player()
             || (self.is_tamable_animal()
                 && self.extra.tame
                 && w.player
@@ -2155,9 +2158,11 @@ impl Goal for Breed {
             return false;
         }
         let species = m.species();
-        // Wolf.canMate: both tame and standing.
+        // Wolf.canMate and Cat.canMate: both tame. The sitting pose sits on the
+        // partner side only, and only for a wolf (`wolf.isInSittingPose()`), so
+        // a tamed mob ordered to sit still walks off to breed.
         let tamable = matches!(species, Species::Wolf | Species::Cat);
-        if tamable && (!m.extra.tame || m.extra.sitting) {
+        if tamable && !m.extra.tame {
             return false;
         }
         // AbstractHorse.canMate is false and Mule keeps it: mules never breed.
@@ -2966,5 +2971,52 @@ mod built_by_player_tests {
         let mut zombie = mob(Species::Zombie);
         zombie.extra.player_created = true;
         assert!(!zombie.built_by_player());
+    }
+}
+
+#[cfg(test)]
+mod peaceful_targets_tests {
+    use super::*;
+    use crate::mobs::world::{test_player, with_test_world};
+
+    /// `LivingEntity.canAttack` / `TargetingConditions.test`: in Peaceful a
+    /// hurt wolf neither takes its attacker (a player) as target nor picks one
+    /// by sight, while at Normal it does.
+    #[test]
+    fn peaceful_mobs_never_target_the_player() {
+        with_test_world(&[], |w, types| {
+            let mut w = w.clone();
+            w.player = Some(test_player(Vec3::new(2.5, 64.0, 0.5)));
+            let kind = Arc::new(types.types["minecraft:wolf"].clone());
+            let mut wolf = Mob::new(1, kind, Vec3::new(0.5, 64.0, 0.5), 0.0);
+            wolf.ai.last_hurt_by = Some(Who::Player);
+            wolf.ai.last_hurt_by_time = 5;
+            let mut random = LegacyRandom::new(0);
+            let mut events = Vec::new();
+            let mut cx = Cx {
+                w: &w,
+                lr: &mut random,
+                events: &mut events,
+            };
+            assert!(
+                HurtByTarget::default().can_use(&mut wolf, &mut cx),
+                "normal"
+            );
+            assert!(wolf.can_target_player(&w, 16.0, false), "normal");
+
+            let mut peaceful = w.clone();
+            peaceful.difficulty = crate::mobs::spawning::LocalDifficulty::new(0, 18000, 0, 0.0);
+            let mut cx = Cx {
+                w: &peaceful,
+                lr: &mut random,
+                events: &mut events,
+            };
+            assert!(
+                !HurtByTarget::default().can_use(&mut wolf, &mut cx),
+                "peaceful"
+            );
+            assert!(!wolf.can_target_player(&peaceful, 16.0, false), "peaceful");
+            assert!(!wolf.can_keep_target_player(&peaceful, 16.0), "peaceful");
+        });
     }
 }

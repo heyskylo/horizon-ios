@@ -2,7 +2,10 @@
 //! `/particle`, `/attribute`, `/ride` and `/spreadplayers`.
 use super::{Arg, Context, Game, R, Target, err, wrap_degrees};
 use horizon_client::{
-    mobs::{Damage, DamageKind, Who},
+    mobs::{
+        Damage, DamageKind, Who,
+        finalize::{self, Attr},
+    },
     scoreboard_cmd::{Holder, Tracker},
     settings::SOUND_SOURCES,
     text::Text,
@@ -145,6 +148,7 @@ impl Game<'_> {
             _ => DamageKind::Generic,
         }
     }
+    /// `DamageCommand.damage`: apply its source and report an accepted hit.
     pub(super) fn cmd_damage(&mut self, ctx: &Context) -> R<i32> {
         let targets = self.entities(ctx, "target", false)?;
         let Some(target) = targets.first().copied() else {
@@ -198,7 +202,7 @@ impl Game<'_> {
             }
             Target::Mob(id) => {
                 let attacker = cause.or(by).and_then(|t| match t {
-                    Target::Player => Some(Who::Player),
+                    Target::Player | Target::Guest(_) => Some(Who::Player),
                     Target::Mob(i) => Some(Who::Mob(i)),
                     _ => None,
                 });
@@ -207,15 +211,30 @@ impl Game<'_> {
                     attacker,
                     from,
                 };
-                let hurt = self
-                    .mobs
-                    .iter_mut()
-                    .find(|m| m.id == id)
-                    .is_some_and(|m| m.damage(amount, damage));
-                if hurt {
-                    self.resolve_player_responsible(id, damage);
+                // DamageSource.getEntity is the causing player, even when
+                // another client issued the command or supplied the direct entity.
+                let guest = match cause.or(by) {
+                    Some(Target::Guest(conn)) if self.lan_acting != Some(conn) => Some(conn),
+                    _ => None,
+                };
+                if let Some(conn) = guest {
+                    if let Some(mut host) = self.lan.take() {
+                        let hurt = self
+                            .as_guest(&mut host, conn, |g| {
+                                g.command_damage_mob(id, amount, damage)
+                            })
+                            .unwrap_or(false);
+                        if hurt {
+                            host.mob_players.insert(id, conn);
+                        }
+                        self.lan = Some(host);
+                        hurt
+                    } else {
+                        false
+                    }
+                } else {
+                    self.command_damage_mob(id, amount, damage)
                 }
-                hurt
             }
             _ => false,
         };
@@ -231,6 +250,32 @@ impl Game<'_> {
             ],
         ));
         Ok(1)
+    }
+
+    /// Retain the mob hit's causing-player connection after the hit is accepted.
+    fn command_damage_mob(&mut self, id: u32, amount: f32, damage: Damage) -> bool {
+        let hurt = self
+            .mobs
+            .iter_mut()
+            .find(|m| m.id == id)
+            .is_some_and(|m| m.damage(amount, damage));
+        if hurt {
+            self.resolve_player_responsible(id, damage);
+            if damage.attacker == Some(Who::Player) {
+                self.last_hurt_by_player.insert(id, self.lan_acting);
+                if let Some(host) = self.lan.as_mut() {
+                    match self.lan_acting {
+                        Some(conn) => {
+                            host.mob_players.insert(id, conn);
+                        }
+                        None => {
+                            host.mob_players.remove(&id);
+                        }
+                    }
+                }
+            }
+        }
+        hurt
     }
 
     // ---- /rotate and /swing -----------------------------------------------------------
@@ -896,10 +941,7 @@ impl Game<'_> {
             }
             Target::Mob(_) | Target::Stand(_)
                 if !(matches!(target, Target::Mob(_))
-                    && matches!(
-                        short.as_str(),
-                        "max_health" | "movement_speed" | "attack_damage"
-                    )) =>
+                    && finalize::command_attr(short.as_str()).is_some()) =>
             {
                 let op = ctx
                     .literals
@@ -918,16 +960,28 @@ impl Game<'_> {
                 let Some(m) = self.mobs.iter_mut().find(|m| m.id == mob_id) else {
                     return Ok(0);
                 };
-                // Mobs keep three attributes as plain values.
-                let slot: Option<f64> = match short.as_str() {
-                    "max_health" => Some(f64::from(m.attrs.max_health)),
-                    "movement_speed" => Some(m.attrs.speed),
-                    "attack_damage" => Some(f64::from(m.attrs.attack_damage)),
-                    _ => None,
-                };
-                let Some(current) = slot else {
+                // The attributes the mob's gameplay reads live in `finalize`;
+                // the command edits that store, never a copy of it.
+                let Some(attr) = finalize::command_attr(short.as_str())
+                    .filter(|a| finalize::default_value(m, *a).is_some())
+                else {
                     return Err(no_attribute(&name, &description));
                 };
+                let current = if id == "attribute.base.get" {
+                    finalize::base_value(m, attr)
+                } else if attr == Attr::MovementSpeed {
+                    m.attrs.speed
+                } else {
+                    finalize::value(m, attr)
+                };
+                let no_modifier = text_error(
+                    "commands.attribute.failed.no_modifier",
+                    &[
+                        description.clone(),
+                        name.clone(),
+                        Text::literal(modifier_id.clone()),
+                    ],
+                );
                 match id {
                     "attribute.get" | "attribute.base.get" => {
                         let k = if id == "attribute.get" {
@@ -942,14 +996,9 @@ impl Game<'_> {
                         Ok((current * scale) as i32)
                     }
                     "attribute.base.set" => {
-                        match short.as_str() {
-                            "max_health" => {
-                                m.attrs.max_health = value_arg as f32;
-                                m.health = m.health.min(m.attrs.max_health);
-                            }
-                            "movement_speed" => m.attrs.speed = value_arg,
-                            _ => m.attrs.attack_damage = value_arg as f32,
-                        }
+                        // AttributeInstance keeps the raw base and clamps only the
+                        // effective value; Health is unchanged.
+                        finalize::set_base(m, attr, value_arg);
                         self.feedback(Text::translate(
                             "commands.attribute.base_value.set.success",
                             &[description, name, java_double_text(value_arg)],
@@ -957,30 +1006,60 @@ impl Game<'_> {
                         Ok(1)
                     }
                     "attribute.base.reset" => {
-                        match short.as_str() {
-                            "max_health" => m.attrs.max_health = m.kind.max_health,
-                            "movement_speed" => m.attrs.speed = m.kind.speed,
-                            _ => m.attrs.attack_damage = m.kind.attack_damage,
-                        }
-                        let v = match short.as_str() {
-                            "max_health" => f64::from(m.attrs.max_health),
-                            "movement_speed" => m.attrs.speed,
-                            _ => f64::from(m.attrs.attack_damage),
-                        };
+                        let default = finalize::default_value(m, attr).unwrap_or_default();
+                        finalize::set_base(m, attr, default);
+                        let v = finalize::base_value(m, attr);
                         self.feedback(Text::translate(
                             "commands.attribute.base_value.reset.success",
                             &[description, name, java_double_text(v)],
                         ));
                         Ok(1)
                     }
-                    _ => Err(text_error(
-                        "commands.attribute.failed.no_modifier",
-                        &[
-                            description.clone(),
-                            name.clone(),
-                            Text::literal(modifier_id.clone()),
-                        ],
-                    )),
+                    "attribute.modifier.add" => {
+                        if finalize::has_modifier(m, attr, &modifier_id) {
+                            return Err(text_error(
+                                "commands.attribute.failed.modifier_already_present",
+                                &[Text::literal(modifier_id.clone()), description, name],
+                            ));
+                        }
+                        let op = match ctx.literals.last().map(String::as_str) {
+                            Some("add_multiplied_base") => finalize::Op::AddMultipliedBase,
+                            Some("add_multiplied_total") => finalize::Op::AddMultipliedTotal,
+                            _ => finalize::Op::AddValue,
+                        };
+                        finalize::add_modifier(m, attr, modifier_id.clone(), value_arg, op);
+                        self.feedback(Text::translate(
+                            "commands.attribute.modifier.add.success",
+                            &[Text::literal(modifier_id.clone()), description, name],
+                        ));
+                        Ok(1)
+                    }
+                    "attribute.modifier.remove" => {
+                        if !finalize::has_modifier(m, attr, &modifier_id) {
+                            return Err(no_modifier);
+                        }
+                        finalize::remove_modifier(m, attr, &modifier_id);
+                        self.feedback(Text::translate(
+                            "commands.attribute.modifier.remove.success",
+                            &[Text::literal(modifier_id.clone()), description, name],
+                        ));
+                        Ok(1)
+                    }
+                    _ => {
+                        let Some(v) = finalize::modifier_amount(m, attr, &modifier_id) else {
+                            return Err(no_modifier);
+                        };
+                        self.feedback(Text::translate(
+                            "commands.attribute.modifier.value.get.success",
+                            &[
+                                Text::literal(modifier_id.clone()),
+                                description,
+                                name,
+                                java_double_text(v),
+                            ],
+                        ));
+                        Ok((v * scale) as i32)
+                    }
                 }
             }
             _ => Err(text_error(
@@ -995,7 +1074,18 @@ impl Game<'_> {
     pub(in crate::game) fn generic_attributes(
         &mut self,
         t: Target,
+        attribute: &str,
     ) -> Option<&mut horizon_world::attributes::entity::EntityAttributes> {
+        if let Target::Mob(id) = t
+            && matches!(attribute, "minecraft:armor" | "minecraft:armor_toughness")
+        {
+            let mob = self.mobs.iter_mut().find(|m| m.id == id)?;
+            if mob.extra.armor_attributes.is_none() {
+                mob.extra.armor_attributes =
+                    self.motion.attributes.create(&mob.kind.id).map(Box::new);
+            }
+            return mob.extra.armor_attributes.as_deref_mut();
+        }
         if !self.cmds.attributes.contains_key(&t) {
             let ty = self.target_type(t);
             let map = self.motion.attributes.create(&ty)?;
@@ -1031,7 +1121,9 @@ impl Game<'_> {
         };
         let catalog = self.motion.attributes.clone();
         let key = catalog.id(attribute).ok_or_else(no_attribute)?;
-        let map = self.generic_attributes(target).ok_or_else(no_attribute)?;
+        let map = self
+            .generic_attributes(target, attribute)
+            .ok_or_else(no_attribute)?;
         if !map.has(key) {
             return Err(no_attribute());
         }
