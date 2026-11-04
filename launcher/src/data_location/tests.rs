@@ -426,3 +426,41 @@ fn using_the_default_folder_keeps_the_pointer_beside_it() {
         assert!(root.is_dir(), "{} is not deleted", root.display());
     }
 }
+
+#[cfg(unix)]
+#[test]
+fn a_config_folder_behind_a_link_still_opens() {
+    // A dotfiles-managed ~/.config is a link: players who never moved their data must start
+    // without an error, and a pointer kept there must still resolve and lock.
+    let temp = Temp::new();
+    let real = temp.0.join("dotfiles/config");
+    fs::create_dir_all(&real).unwrap();
+    let config = temp.0.join("config");
+    std::os::unix::fs::symlink(&real, &config).unwrap();
+    let bootstrap = config.join("horizon-launcher-location/location.json");
+
+    assert_eq!(resolve_at(&bootstrap), Ok(None));
+    assert_eq!(startup_error_at(&bootstrap), None);
+    drop(acquire_lock_at(&bootstrap).unwrap());
+
+    let roots = Roots {
+        launcher: temp.0.join("data/launcher"),
+        game: temp.0.join("data/game"),
+        build: temp.0.join("data/build"),
+    };
+    for root in [&roots.launcher, &roots.game, &roots.build] {
+        fs::create_dir_all(root).unwrap();
+    }
+    let pointer = serde_json::to_vec(&Location {
+        version: 1,
+        roots: roots.clone(),
+    })
+    .unwrap();
+    fs::write(&bootstrap, pointer).unwrap();
+    assert_eq!(resolve_at(&bootstrap), Ok(Some(roots)));
+
+    // The lock behind the link is the one a worker takes through the real path.
+    let reader = acquire_lock_at(&bootstrap).unwrap();
+    assert!(lock_at(&real.join("horizon-launcher-location/location.json"), true).is_err());
+    drop(reader);
+}

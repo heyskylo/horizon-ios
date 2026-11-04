@@ -33,7 +33,7 @@ pub fn bootstrap_path() -> Result<PathBuf> {
     // Portable installs and tests can keep their location pointer separate from the user profile.
     if let Some(path) = std::env::var_os("HORIZON_LAUNCHER_LOCATION_FILE").filter(|p| !p.is_empty())
     {
-        return checked_path(Path::new(&path));
+        return pointer_path(Path::new(&path));
     }
     dirs::config_dir()
         .map(|p| p.join("horizon-launcher-location").join("location.json"))
@@ -178,7 +178,7 @@ fn use_default_at(bootstrap: &Path) -> Result<()> {
 
 /// Explicit paths make tests independent of the real user's bootstrap and environment.
 pub fn resolve_at(bootstrap: &Path) -> Result<Option<Roots>> {
-    checked_path(bootstrap)?;
+    pointer_path(bootstrap)?;
     let bytes = match fs::read(bootstrap) {
         Ok(bytes) => bytes,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -229,13 +229,12 @@ pub fn acquire_lock_at(bootstrap: &Path) -> Result<File> {
 }
 
 fn lock_at(bootstrap: &Path, exclusive: bool) -> Result<File> {
-    checked_path(bootstrap)?;
+    let bootstrap = &pointer_path(bootstrap)?;
     let parent = bootstrap
         .parent()
         .ok_or("Bootstrap needs a parent folder")?;
     fs::create_dir_all(parent).map_err(|e| problem(parent, e))?;
     let path = parent.join("migration.lock");
-    checked_path(&path)?;
     let file = OpenOptions::new()
         .read(true)
         .write(true)
@@ -328,7 +327,7 @@ fn migrate_locked(
         &source.launcher,
         &source.game,
         &source.build,
-        &checked_path(bootstrap)?,
+        &pointer_path(bootstrap)?,
     ] {
         if overlaps(root, &target) {
             return Err(format!(
@@ -471,13 +470,50 @@ fn checked_path(path: &Path) -> Result<PathBuf> {
             Err(e) => return Err(problem(&current, e)),
         }
     }
+    Ok(plain_drive(current))
+}
+
+/// `canonicalize`'s verbatim `\\?\C:\…` as the plain drive path the other roots use.
+fn plain_drive(path: PathBuf) -> PathBuf {
     #[cfg(windows)]
-    if let Some(rest) = current.to_str().and_then(|s| s.strip_prefix(r"\\?\")) {
+    if let Some(rest) = path.to_str().and_then(|s| s.strip_prefix(r"\\?\")) {
         if rest.as_bytes().get(1) == Some(&b':') {
-            return Ok(PathBuf::from(rest));
+            return PathBuf::from(rest);
         }
     }
-    Ok(current)
+    path
+}
+
+/// The pointer and its lock sit in the platform config folder, which may be a link (a
+/// dotfiles-managed `~/.config`, Silverblue's `/home`): unlike the data roots, they are never
+/// copied, so a link on the way is followed, not refused. Refusing it would report a broken
+/// data folder at every start to players who never moved their data.
+fn pointer_path(path: &Path) -> Result<PathBuf> {
+    if !path.is_absolute() || path.components().any(|c| matches!(c, Component::ParentDir)) {
+        return Err(format!(
+            "Use an absolute path without '..': {}",
+            path.display()
+        ));
+    }
+    let mut existing = path;
+    let mut rest = Vec::new();
+    loop {
+        match fs::canonicalize(existing) {
+            Ok(real) => {
+                let real = plain_drive(real);
+                return Ok(rest.iter().rev().fold(real, |path, part| path.join(part)));
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(problem(existing, e)),
+        }
+        match (existing.parent(), existing.file_name()) {
+            (Some(parent), Some(name)) => {
+                rest.push(name.to_os_string());
+                existing = parent;
+            }
+            _ => return Ok(path.to_path_buf()),
+        }
+    }
 }
 
 fn reject_link(path: &Path, meta: &fs::Metadata) -> Result<()> {
@@ -559,7 +595,7 @@ fn copy_tree(
             ];
             if controls
                 .iter()
-                .any(|p| checked_path(p).is_ok_and(|p| within(&path, &p) && within(&p, &path)))
+                .any(|p| pointer_path(p).is_ok_and(|p| within(&path, &p) && within(&p, &path)))
             {
                 continue;
             }
