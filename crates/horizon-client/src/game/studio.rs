@@ -175,6 +175,7 @@ impl Game<'_> {
                         if let Some(r) = self.studio_replay.as_mut() {
                             match r.seek(ms) {
                                 Ok(()) => {
+                                    self.reset_studio_playback_ticks();
                                     self.system_message(Text::literal(format!(
                                         "Studio Replay: Seek to {}ms ({:.1}s)",
                                         ms,
@@ -231,6 +232,20 @@ impl Game<'_> {
         true
     }
 
+    /// Reset playback tick accumulator and align positions on seek.
+    pub(super) fn reset_studio_playback_ticks(&mut self) {
+        self.studio_virtual_tick_ms = 0.0;
+        if let Some(player) = &self.player {
+            self.previous_position = player.position;
+            if let Some(m) = self.player_model.as_mut() {
+                m.previous = player.position;
+                m.position = player.position;
+                m.limb_speed = 0.0;
+                m.previous_limb_speed = 0.0;
+            }
+        }
+    }
+
     /// Advance active replay playback by elapsed frame time and dispatch ready packets.
     pub(super) fn advance_studio_replay(&mut self) -> Result<()> {
         let Some(driver) = self.studio_replay.as_mut() else {
@@ -281,44 +296,58 @@ impl Game<'_> {
         if self.player_model.is_none() {
             self.tick_player_model();
         }
-        if let Some(player) = &self.player {
-            let current_pos = player.position;
-            let (dx, dz) = (
-                current_pos.x - self.previous_position.x,
-                current_pos.z - self.previous_position.z,
-            );
-            let walked = (dx * dx + dz * dz).sqrt() as f32;
-            if let Some(m) = self.player_model.as_mut() {
-                m.previous_limb_speed = m.limb_speed;
-                let step_factor = (delta.as_secs_f32() * 20.0).clamp(0.1, 2.0);
-                if walked > 0.0001 {
-                    m.limb_speed += ((walked * 4.0).min(1.0) - m.limb_speed) * 0.4;
-                    m.limb_position += m.limb_speed * step_factor;
-                    let walk = (dz.atan2(dx) as f32).to_degrees() - 90.0;
-                    let facing = ((self.yaw - walk + 180.0).rem_euclid(360.0) - 180.0).abs();
-                    let target = if 95.0 < facing && facing < 265.0 {
-                        walk - 180.0
-                    } else {
-                        walk
-                    };
-                    let diff = (target - m.body_yaw + 180.0).rem_euclid(360.0) - 180.0;
-                    m.body_yaw += diff * 0.3;
-                } else if !paused {
-                    m.limb_speed = (m.limb_speed * 0.8).max(0.0);
-                    if m.limb_speed > 0.01 {
-                        m.limb_position += m.limb_speed * step_factor;
+        if !paused {
+            let speed = self.studio_replay.as_ref().map_or(1.0, |r| r.speed() as f32).max(0.1);
+            self.studio_virtual_tick_ms += delta.as_secs_f32() * 1000.0 * speed;
+            while self.studio_virtual_tick_ms >= 50.0 {
+                self.studio_virtual_tick_ms -= 50.0;
+                if let Some(player) = &self.player {
+                    let current_pos = player.position;
+                    let (dx, dz) = (
+                        current_pos.x - self.previous_position.x,
+                        current_pos.z - self.previous_position.z,
+                    );
+                    let walked = (dx * dx + dz * dz).sqrt() as f32;
+                    if let Some(m) = self.player_model.as_mut() {
+                        m.previous = self.previous_position;
+                        m.position = current_pos;
+                        m.previous_limb_speed = m.limb_speed;
+                        let target_speed = (walked * 4.0).min(1.0);
+                        m.limb_speed += (target_speed - m.limb_speed) * 0.4;
+                        if m.limb_speed < 0.001 {
+                            m.limb_speed = 0.0;
+                        }
+                        m.limb_position += m.limb_speed;
+                        m.previous_yaw = m.yaw;
+                        m.previous_head_yaw = m.head_yaw;
+                        m.previous_head_pitch = m.head_pitch;
+                        m.previous_body_yaw = m.body_yaw;
+                        m.yaw = self.yaw;
+                        m.head_yaw = self.yaw;
+                        m.head_pitch = self.pitch;
+                        let mut target = m.body_yaw;
+                        if dx * dx + dz * dz > 0.0025 {
+                            let walk = (dz.atan2(dx) as f32).to_degrees() - 90.0;
+                            let facing = ((self.yaw - walk + 180.0).rem_euclid(360.0) - 180.0).abs();
+                            target = if 95.0 < facing && facing < 265.0 {
+                                walk - 180.0
+                            } else {
+                                walk
+                            };
+                        }
+                        let diff = (target - m.body_yaw + 180.0).rem_euclid(360.0) - 180.0;
+                        m.body_yaw += diff * 0.3;
+                        let body_diff = (self.yaw - m.body_yaw + 180.0).rem_euclid(360.0) - 180.0;
+                        if body_diff.abs() > 50.0 {
+                            m.body_yaw += body_diff - body_diff.signum() * 50.0;
+                        }
+                        m.age = m.age.wrapping_add(1);
                     }
+                    self.previous_position = current_pos;
                 }
-                m.previous = self.previous_position;
-                m.position = current_pos;
-                m.previous_yaw = m.yaw;
-                m.previous_head_yaw = m.head_yaw;
-                m.previous_head_pitch = m.head_pitch;
-                m.yaw = self.yaw;
-                m.head_yaw = self.yaw;
-                m.head_pitch = self.pitch;
             }
-            self.previous_position = current_pos;
+        } else if let Some(m) = self.player_model.as_mut() {
+            m.previous_limb_speed = m.limb_speed;
         }
         Ok(())
     }
@@ -380,9 +409,15 @@ impl Game<'_> {
                 Some("seek") => {
                     let ms_str = words.get(3).ok_or("missing seek timestamp")?;
                     let ms: u32 = ms_str.parse().map_err(|_| "invalid timestamp")?;
-                    if let Some(r) = self.studio_replay.as_mut() {
+                    let pos = if let Some(r) = self.studio_replay.as_mut() {
                         r.seek(ms).map_err(|e| format!("{e}"))?;
-                        Ok(Some(json!({ "ok": true, "position_ms": r.position_ms() })))
+                        Some(r.position_ms())
+                    } else {
+                        None
+                    };
+                    if let Some(pos) = pos {
+                        self.reset_studio_playback_ticks();
+                        Ok(Some(json!({ "ok": true, "position_ms": pos })))
                     } else {
                         Ok(Some(json!({ "error": "no active replay" })))
                     }

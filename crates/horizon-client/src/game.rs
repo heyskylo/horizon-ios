@@ -3182,6 +3182,7 @@ struct Game<'a> {
     /// Active packet replay session (game/studio.rs).
     pub(super) studio_replay: Option<horizon_client::studio::ReplayDriver>,
     last_replay_tick: Option<Instant>,
+    pub(super) studio_virtual_tick_ms: f32,
     /// This world is open to the network (game/lan.rs).
     lan: Option<lan::LanHost>,
     /// Single player's server thread, which `remote` is connected to.
@@ -11582,15 +11583,22 @@ impl Game<'_> {
         self.mark_motion(out.len(), 0);
         laps.lap("eg_mobs");
         // In first person only a shader pack's shadow pass draws the player.
-        self.mark_player(out.len(), !self.own_body_in_view());
-        let player_start = out.len();
-        self.player_model_geometry(camera, self.clock.camera_fraction(), &mut out);
-        // A native pack has no per-entity draws to hide it with: its shadow pass alone gets
-        // the first-person model.
-        if self.pack_ids.is_none() && !self.own_body_in_view() {
-            self.shadow_only_vertices
-                .borrow_mut()
-                .extend(out.drain(player_start..));
+        if self.studio_visuals.settings.world_players {
+            self.mark_player(out.len(), !self.own_body_in_view());
+            let player_start = out.len();
+            let player_alpha = if self.studio_replay.is_some() {
+                (self.studio_virtual_tick_ms as f64 / 50.0).clamp(0.0, 1.0)
+            } else {
+                self.clock.camera_fraction()
+            };
+            self.player_model_geometry(camera, player_alpha, &mut out);
+            // A native pack has no per-entity draws to hide it with: its shadow pass alone gets
+            // the first-person model.
+            if self.pack_ids.is_none() && !self.own_body_in_view() {
+                self.shadow_only_vertices
+                    .borrow_mut()
+                    .extend(out.drain(player_start..));
+            }
         }
         // Companions in first person, trails and auras (game/cosmetics/fx.rs).
         self.cosmetics_fx_geometry(camera, alpha, &mut out);
@@ -20413,6 +20421,7 @@ impl<'a> Game<'a> {
             remote: None,
             studio_replay: None,
             last_replay_tick: None,
+            studio_virtual_tick_ms: 0.0,
             lan: None,
             integrated: None,
             level_shapes: Default::default(),
