@@ -61,13 +61,20 @@ fn planned(profile: &str, minecraft: &str) -> (PathBuf, Vec<Step>) {
         fs::read(root.join("scratch/data/client.lzma")).unwrap(),
         b"patch"
     );
-    let steps = steps(&profile, &data, &dir).unwrap();
+    let mut steps = steps(&profile, &data, &dir).unwrap();
+    // Java accepts either Windows path separator. Compare the complete
+    // arguments with one spelling so native and profile paths agree.
+    for step in &mut steps {
+        for argument in &mut step.args {
+            *argument = argument.replace('\\', "/");
+        }
+    }
     (root, steps)
 }
 
 #[test]
 fn real_install_profiles_plan_their_client_steps() {
-    let at = |root: &Path, rel: &str| root.join(rel).to_string_lossy().into_owned();
+    let at = |root: &Path, rel: &str| root.join(rel).to_string_lossy().replace('\\', "/");
 
     // NeoForge 26.3: one step, installertools patching the game's jar.
     let (root, steps) = planned(
