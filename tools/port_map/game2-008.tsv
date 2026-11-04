@@ -16,6 +16,7 @@ ResultSlot.checkTakeAchievements	port	crates/horizon-client/src/game.rs::Game::a
 ResultSlot.copyAllInputItems	inline	crates/horizon-client/src/crafting.rs::Recipes::remainders	gap: minor: vanilla copies every input when no recipe matches on the server; remainders returns none for an unmatched recipe
 ResultSlot.getRemainingItems	port	crates/horizon-client/src/crafting.rs::Recipes::remainders	container remainders and the special banner and book copies
 Slot.safeTake	port	crates/horizon-client/src/menu.rs::Menu::safe_take	
+Slot.allowModification	port	crates/horizon-client/src/menu.rs::Menu::allow_modification	mayPickup and mayPlace of the stack the slot holds; `lan::menu`'s bundle click asks the same pair of `View::may_pickup` and `View::may_place`, so a guest cannot take a bundle's contents out of a slot that withholds it
 Slot.mayPickup	inline	crates/horizon-client/src/lan/menu.rs::View::may_pickup	a binding curse keeps a survival player's armour on (ArmorSlot.mayPickup); the menu's own rules answer for every other slot, and every click that takes a stack asks it: pickup, quick move, swap (a number key or the off hand's F) and throw
 SlotRanges.create	inline	crates/horizon-command/src/args.rs::slot_ranges	a range is a name and size pair built in slot_ranges
 SlotRanges.addSlotRange	inline	crates/horizon-command/src/args.rs::slot_ranges	the range closure adds the numbered names and the wildcard

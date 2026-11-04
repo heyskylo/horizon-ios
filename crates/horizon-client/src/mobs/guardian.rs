@@ -334,12 +334,18 @@ pub fn look_at(m: &mut Mob, look: [f64; 3]) {
     let dot = view[0] * side[0] + view[1] * side[1];
     m.anim.v[EYE_X] = dot.abs().sqrt() * 2.0 * dot.signum();
 }
+/// The GUARDIAN_ELDER_EFFECT parameter of an elder's curse
+/// (`isSilent() ? 0.0F : 1.0F`); the client plays the curse sound only for 1.
+pub fn elder_curse_param(silent: bool) -> f32 {
+    if silent { 0.0 } else { 1.0 }
+}
 /// `ElderGuardian.customServerAiStep`: every minute, mining fatigue III for
 /// players within 50 blocks; a home within 16 blocks.
 pub fn elder_server_ai_step(m: &mut Mob, cx: &mut Cx) {
     if (m.age as i64 + i64::from(m.id)) % 1200 == 0 {
         cx.events.push(MobEvent::ElderCurse {
             at: [m.position.x, m.position.y, m.position.z],
+            silent: m.silent,
         });
     }
     if m.ai.home.is_none() {
@@ -393,6 +399,40 @@ mod elder_home_tests {
             );
             assert_eq!(kept.ai.home, Some(([100, 50, 100], 24)));
         });
+    }
+
+    /// `ElderGuardian.customServerAiStep`: on its minute (`(tickCount + getId()) % 1200 == 0`)
+    /// the curse goes out with `isSilent() ? 0.0F : 1.0F`, and
+    /// `ClientPacketListener.handleGameEvent` plays the curse sound only for 1.
+    #[test]
+    fn a_silent_elder_guardian_curses_without_the_sound() {
+        with_test_world(&[], |w, types| {
+            let kind = Arc::new(types.types["minecraft:elder_guardian"].clone());
+            let mut lr = LegacyRandom::new(0);
+            for silent in [false, true] {
+                let mut events = Vec::new();
+                let mut m = Mob::new(1200, kind.clone(), Vec3::new(0.5, 64.0, 0.5), 0.0);
+                m.silent = silent;
+                elder_server_ai_step(
+                    &mut m,
+                    &mut Cx {
+                        w,
+                        lr: &mut lr,
+                        events: &mut events,
+                    },
+                );
+                let curses: Vec<_> = events
+                    .iter()
+                    .filter_map(|e| match e {
+                        MobEvent::ElderCurse { silent, .. } => Some(*silent),
+                        _ => None,
+                    })
+                    .collect();
+                assert_eq!(curses, [silent]);
+            }
+        });
+        assert_eq!(elder_curse_param(false), 1.0);
+        assert_eq!(elder_curse_param(true), 0.0);
     }
 }
 /// Guardian.aiStep's visual attack clock, also used by server clients.

@@ -145,5 +145,5 @@ EntityArgument.Info.serializeToJson	skip:data		JSON of the argument template; Ho
 GameModeArgument.parse	port	crates/horizon-command/src/args.rs::ArgType::parse	game mode name
 GameModeArgument.listSuggestions	port	crates/horizon-command/src/args.rs::ArgType::suggest	game mode suggestions
 GameProfileArgument.listSuggestions	port	crates/horizon-command/src/args.rs::ArgType::suggest	player name suggestions
-GameProfileArgument.SelectorResult.getNames	missing		player: op, deop, ban and whitelist are not in Horizon's command tree (no such literal in horizon-command)
+GameProfileArgument.SelectorResult.getNames	port	crates/horizon-client/src/game/commands/profiles.rs::Game::game_profiles	the selector's players only, a playerless selector is `argument.entity.notfound.player`; op, deop, ban and pardon are in the tree, whitelist is not
 HeightmapTypeArgument.keptTypes	port	crates/horizon-command/src/network.rs::argument_type	heightmap type choices

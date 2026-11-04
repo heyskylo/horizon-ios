@@ -57,8 +57,8 @@ CreakingHeartBlockEntity.setCreakingInfo	inline	crates/horizon-client/src/mobs/c
 CreakingHeartBlockEntity.isProtector	port	crates/horizon-client/src/mobs/creaking_heart.rs::protector	
 CreakingHeartBlockEntity.loadAdditional	port	crates/horizon-client/src/save.rs::decode_block_entity	creaking uuid
 CreakingHeartBlockEntity.saveAdditional	port	crates/horizon-client/src/save.rs::encode_block_entity	creaking uuid
-DecoratedPotBlockEntity.saveAdditional	skip:other		no own code: the raw saved tag keeps sherds and item
-DecoratedPotBlockEntity.loadAdditional	skip:other		no own code: the raw saved tag keeps sherds and item
+DecoratedPotBlockEntity.saveAdditional	port	crates/horizon-client/src/game/decorated_pot.rs::Game::pot_data	Command NBT uses the existing canonical codec and authoritative saved tag without unpacking loot; gap: major: save/reopen, components and other entry points remain unverified.
+DecoratedPotBlockEntity.loadAdditional	port	crates/horizon-client/src/game/decorated_pot.rs::Game::set_pot_data	Command NBT uses the existing canonical codec and authoritative saved tag without unpacking loot; gap: major: save/reopen, components and other entry points remain unverified.
 DecoratedPotBlockEntity.collectImplicitComponents	port	crates/horizon-client/src/block_entity_item.rs::collect	sherds and item as components
 DecoratedPotBlockEntity.applyImplicitComponents	port	crates/horizon-client/src/block_entity_item.rs::place	sherds and item as components
 DecoratedPotBlockEntity.splitTheItem	missing		`decorated_pot.rs` has no split-count step for the pot's item
@@ -93,7 +93,7 @@ LecternBlockEntity.hasBook	inline	crates/horizon-client/src/game/books.rs::Game:
 LecternBlockEntity.onBookItemRemove	port	crates/horizon-client/src/game/books.rs::Game::lectern_menu_done	book gone: has_book off, container changed
 LecternBlockEntity.resolveBook	missing		`books.rs::view_pages` reads a written book's pages for the lectern's screen as they are: no selector, score or translatable resolution
 LecternBlockEntity.createCommandSourceStack	missing		only `resolveBook` builds it; a page's RunCommand goes through `click_command`, which has no lectern source, so a relative coordinate resolves at the player
-LecternBlockEntity.loadAdditional	port	crates/horizon-client/src/save.rs::decode_block_entity	Book and Page
+LecternBlockEntity.loadAdditional	port	crates/horizon-client/src/save.rs::decode_block_entity	Book and Page, the page clamped to the book's first and last page
 LecternBlockEntity.saveAdditional	port	crates/horizon-client/src/save.rs::encode_block_entity	Book and Page
 SculkCatalystBlockEntity.CatalystListener.tryAwardItSpreadsAdvancement	port	crates/horizon-client/src/game/creatures.rs::Game::mob_died	kill_mob_near_sculk_catalyst fires when the catalyst takes a mob's experience
 SculkShriekerBlockEntity.loadAdditional	port	crates/horizon-client/src/save.rs::decode_block_entity	shrieker state from the sculk arm
