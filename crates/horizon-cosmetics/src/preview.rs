@@ -111,17 +111,21 @@ pub struct Draw<'a> {
 }
 
 impl<'a> Draw<'a> {
-    /// `item` on the player model `body`, at `ticks` of its animations.
-    pub fn item(item: &'a Item, body: &Part, ticks: f32) -> Option<Self> {
-        let bone = rest_matrix(body, Mat4::IDENTITY, item.bone.part())?;
+    /// `item` on the player model `body`, at `ticks` of its animations: one draw per bone it
+    /// rides (a shirt's sleeves are on the arms).
+    pub fn item(item: &'a Item, body: &Part, ticks: f32) -> Vec<Self> {
         let mut poses = Vec::new();
         item.animate(ticks, |name, pose| poses.push((name.to_owned(), pose)));
-        Some(Self {
-            root: &item.root,
-            base: bone,
-            texture: &item.texture,
-            poses,
-        })
+        item.roots()
+            .filter_map(|(bone, root)| {
+                Some(Self {
+                    root,
+                    base: rest_matrix(body, Mat4::IDENTITY, bone.part())?,
+                    texture: &item.texture,
+                    poses: poses.clone(),
+                })
+            })
+            .collect()
     }
 }
 
@@ -323,7 +327,7 @@ mod tests {
             poses: Vec::new(),
         }];
         let bare = render(&draws, 100, 100, 0.0, 0.0);
-        draws.push(Draw::item(&item, &body, 0.0).unwrap());
+        draws.extend(Draw::item(&item, &body, 0.0));
         let worn = render(&draws, 100, 100, 0.0, 0.0);
         // The cap spans 8 to 12 model pixels above the head's pivot: rows 0 to 10, over the
         // head's top at row 10.

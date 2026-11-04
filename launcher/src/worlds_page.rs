@@ -21,6 +21,10 @@ pub(super) struct Worlds {
 }
 
 impl Worlds {
+    pub(super) fn location_busy(&self) -> bool {
+        self.busy.is_some()
+    }
+
     /// Read again on the next frame: the game may have saved, or an action changed the list.
     pub(super) fn stale(&mut self) {
         self.fresh = false;
