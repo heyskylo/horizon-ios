@@ -386,19 +386,22 @@ impl Launcher {
             }
             SelfUpdate::Ready(version) => {
                 foot = foot.child(
-                    card(
-                        tr("A new version is available").to_string(),
-                        Some(version.clone()),
-                    )
-                    .child(
-                        ui::solid("update-launcher", tr("Update"), 32., 13., &t)
-                            .mt(px(12.))
-                            .w_full()
-                            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                                this.apply_launcher_update(cx);
-                                cx.notify();
-                            })),
-                    ),
+                    // The version on a line of its own: the title fills the card's width.
+                    card(tr("A new version is available").to_string(), None)
+                        .child(
+                            ui::text(13., FontWeight::NORMAL, ink::NOTE)
+                                .mt(px(4.))
+                                .child(trf("Launcher {version}", &[("version", version)])),
+                        )
+                        .child(
+                            ui::solid("update-launcher", tr("Update"), 32., 13., &t)
+                                .mt(px(12.))
+                                .w_full()
+                                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                                    this.apply_launcher_update(cx);
+                                    cx.notify();
+                                })),
+                        ),
                 );
             }
             SelfUpdate::Stuck(error) => {

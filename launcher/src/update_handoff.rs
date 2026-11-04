@@ -139,6 +139,8 @@ pub fn run() -> Option<i32> {
     };
     wait_for_window(WAIT);
     let result = install(&request.staged);
+    // Gone either way: a failed update is downloaded again at the next try.
+    let _ = fs::remove_dir_all(backend::update_work_dir());
     if let Err(e) = &result {
         record_failure(e);
     }
@@ -170,9 +172,7 @@ fn install(staged: &Staged) -> Result<(), String> {
             staged.payload.display()
         ));
     }
-    backend::place_staged(staged)?;
-    let _ = fs::remove_dir_all(&work);
-    Ok(())
+    backend::place_staged(staged)
 }
 
 fn failure_file() -> PathBuf {
