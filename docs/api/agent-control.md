@@ -44,6 +44,8 @@ API offers; the other commands the game's socket answers are test hooks and expe
 
 - **Reply schemas.** Each command's reply described in the table (fields, types, units), so the reference documents
   replies as well as arguments and MCP tools declare an output schema.
+  `hello` and `status` are described (the reference's "Replies" section; MCP `outputSchema` with `structuredContent`);
+  the other groups follow one at a time.
 - **Events as a stream.** `events --since` polls today; a subscription that pushes events as they happen.
 - **Test hooks apart.** The hooks only harnesses use move under their own prefix, out of the agent's tool list.
 - **Compatibility tests.** A transcript per protocol version: commands and the reply keys each must keep.
