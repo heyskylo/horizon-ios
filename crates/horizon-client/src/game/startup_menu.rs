@@ -284,7 +284,8 @@ impl StartupMenu {
                 return title.confirm_key_size(viewport).0;
             }
             PhysicalKey::Code(KeyCode::Space)
-                if title.list_focused() || title.focused_button.is_some() =>
+                if !title.has_caret_field()
+                    && (title.list_focused() || title.focused_button.is_some()) =>
             {
                 return title.confirm_key_size(viewport).0;
             }

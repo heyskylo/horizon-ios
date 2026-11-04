@@ -215,16 +215,19 @@ fn pack(
         T::Rgba8Unorm,
         World {
             atlas: None,
+            material_maps: None,
             lightmap: lightmap.clone(),
             terrain: None,
             block_ids: &[],
+            sprite_rects: &[],
             celestial: None,
             gui_size: [1, 1],
             clouds: None,
             weather: false,
             hand: false,
         },
-    );
+    )
+    .expect("the pack runs");
     assert!(post.notes.is_empty(), "{:?}", post.notes);
     post
 }
@@ -351,6 +354,7 @@ fn frame(hud: &HudBatch) -> Frame<'_> {
         celestial: &[],
         stars: None,
         hand: &[],
+        hand_items: &[],
         hand_fov_degrees: 70.0,
         screen: &[],
         pack: Default::default(),

@@ -1342,7 +1342,18 @@ impl Menu {
     // ---- item helpers ----
 
     fn max_stack(env: &Env, stack: &ItemStack) -> u32 {
-        env.items.get(&stack.item).map_or(64, |i| i.max_stack)
+        // `ItemStack.getMaxStackSize`: the stack's component, else the item's.
+        // A removed component falls back to the item (`!minecraft:max_stack_size`).
+        let patched = stack.data().and_then(|d| {
+            if d.other("!minecraft:max_stack_size").is_some() {
+                return None;
+            }
+            match d.other("minecraft:max_stack_size") {
+                Some(horizon_world::nbt::Tag::Int(n)) if (1..=99).contains(n) => Some(*n as u32),
+                _ => None,
+            }
+        });
+        patched.unwrap_or_else(|| env.items.get(&stack.item).map_or(64, |i| i.max_stack))
     }
 
     fn damageable(env: &Env, stack: &ItemStack) -> bool {

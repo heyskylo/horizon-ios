@@ -69,9 +69,31 @@ fn thread_name(buf: &mut [u8; 64]) -> &[u8] {
     let len = buf.iter().position(|&b| b == 0).unwrap_or(0);
     if ok { &buf[..len] } else { &[] }
 }
+/// Where there is no `pthread_getname_np` -- Windows -- the name
+/// `std::thread::Builder::name` set is still in Rust's own thread handle, so
+/// read it from there. This returned nothing at all before, so on Windows
+/// every untagged allocation on every thread fell into one `unnamed thread`
+/// bucket: 580 MiB of a playing game's resident set, saying nothing about
+/// which thread held it.
+///
+/// `thread::current` can allocate the first time a thread asks for its
+/// handle, which lands back in this allocator. That is already handled: the
+/// `BUSY` guard in [`thread_tag`] answers the nested call `UNTAGGED` rather
+/// than recursing, as the module's note on naming allocations says.
 #[cfg(not(any(target_vendor = "apple", target_os = "linux")))]
-fn thread_name(_: &mut [u8; 64]) -> &[u8] {
-    &[]
+fn thread_name(buf: &mut [u8; 64]) -> &[u8] {
+    let current = std::thread::current();
+    let Some(name) = current.name() else {
+        return &[];
+    };
+    // Truncated to what `buf` holds, on a character boundary so the result is
+    // always valid UTF-8 for the caller.
+    let mut len = name.len().min(buf.len());
+    while len > 0 && !name.is_char_boundary(len) {
+        len -= 1;
+    }
+    buf[..len].copy_from_slice(&name.as_bytes()[..len]);
+    &buf[..len]
 }
 
 /// The calling thread's own tag: its name, looked up again for its first

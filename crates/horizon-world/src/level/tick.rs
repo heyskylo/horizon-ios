@@ -1972,6 +1972,7 @@ impl RandomTickMask {
         }
         Self(bits)
     }
+    #[inline]
     pub fn may_tick(&self, pos: BlockPos) -> bool {
         let i = ((pos.y & 15) << 8 | (pos.z & 15) << 4 | (pos.x & 15)) as usize;
         self.0[i >> 6] >> (i & 63) & 1 != 0

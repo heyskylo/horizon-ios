@@ -485,6 +485,7 @@ impl Scene {
         let f = &self.frame;
         Frame {
             weather: &[],
+            hand_items: &[],
             weather_time: crate::weather::Time::new(0, 0.0),
             camera: DVec3::from_array(f.camera),
             yaw: f.yaw,

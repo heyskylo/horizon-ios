@@ -69,6 +69,7 @@ mod tests {
     fn item_at(x: f64, y: f64, z: f64) -> ItemEntity {
         let p = Vec3::new(x, y, z);
         ItemEntity {
+            rotation: [0.0, 0.0],
             join: Default::default(),
             health: 5,
             fire_ticks: 0,
@@ -86,6 +87,7 @@ mod tests {
             ticks: 0,
             needs_sync: false,
             stuck: Vec3::ZERO,
+            was_touching_water: false,
             no_gravity: false,
             vertical_collision: false,
             horizontal_collision: false,

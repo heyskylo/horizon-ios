@@ -11,6 +11,10 @@
 //! `Weak` keeps no section alive, and a server edit to an offered section
 //! moves it (`Arc::make_mut`), which the window's `Weak` no longer reaches;
 //! once taken, a section either side edits is copied for that side alone.
+//!
+//! The server also hands its window the columns it changed in bulk (`World::edit_runs`) without sending them: ones
+//! the window doesn't hold, whose far terrain still draws them as the window last saw them (`changed`,
+//! `take_changed`).
 use crate::chunk::{Chunk, Section};
 use crate::fast_hash::FxHashMap;
 use std::sync::{Arc, Mutex, Weak};
@@ -25,6 +29,36 @@ struct Offer {
 }
 
 static OFFERED: Mutex<Option<FxHashMap<(i32, i32), Offer>>> = Mutex::new(None);
+
+/// Columns changed in bulk and not sent to the window, the latest of each, until the window takes them.
+static CHANGED: Mutex<Option<FxHashMap<(i32, i32), Arc<Chunk>>>> = Mutex::new(None);
+/// The most columns waiting for the window: past them the later changes are left out (a window that stopped
+/// taking them, as a server with no window of its own never does, holds no more than this).
+const CHANGED_MAX: usize = 1 << 13;
+
+/// The server changed `chunk` in bulk and didn't send it to the player on its memory connection: the window's far
+/// terrain is to summarize it again.
+pub fn changed(chunk: &Arc<Chunk>) {
+    let Ok(mut changed) = CHANGED.lock() else {
+        return;
+    };
+    let changed = changed.get_or_insert_with(Default::default);
+    let key = (chunk.x, chunk.z);
+    if changed.len() < CHANGED_MAX || changed.contains_key(&key) {
+        changed.insert(key, chunk.clone());
+    }
+}
+
+/// The columns changed in bulk since the window last asked (`changed`), each once, as it was last changed.
+pub fn take_changed() -> Vec<Arc<Chunk>> {
+    match CHANGED.lock() {
+        Ok(mut changed) => changed
+            .take()
+            .map(|c| c.into_values().collect())
+            .unwrap_or_default(),
+        Err(_) => Vec::new(),
+    }
+}
 
 /// The server sends `chunk` to a player on its memory connection.
 pub fn offer(chunk: &Chunk) {
@@ -128,5 +162,26 @@ mod tests {
         assert_eq!(taken, 1);
         assert_eq!(window.get(1, MIN_Y + 3, 2), 5);
         assert_eq!(window.get(4, 70, 4), 10);
+    }
+
+    #[test]
+    fn columns_changed_unsent_are_taken_once_as_last_changed() {
+        let first = Arc::new(column(903));
+        let mut again = column(903);
+        again.set(1, MIN_Y + 3, 2, 9);
+        let other = Arc::new(column(904));
+        changed(&first);
+        changed(&other);
+        changed(&Arc::new(again));
+        let mut taken = take_changed();
+        taken.sort_by_key(|c| (c.x, c.z));
+        assert_eq!(taken.len(), 2);
+        assert_eq!(
+            taken[0].get(1, MIN_Y + 3, 2),
+            9,
+            "the column as it was last changed"
+        );
+        assert!(Arc::ptr_eq(&taken[1], &other));
+        assert!(take_changed().is_empty(), "taken once");
     }
 }

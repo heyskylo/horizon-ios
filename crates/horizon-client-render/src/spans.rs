@@ -68,27 +68,48 @@ fn cpu_if_enabled() -> Option<Duration> {
 /// Run `f`, recording its duration under `name` when spans are enabled.
 #[inline]
 pub fn time<T>(name: &'static str, f: impl FnOnce() -> T) -> T {
+    let _span = guard(name);
+    f()
+}
+/// A span that ends where it is dropped: [`time`] for a step with several ways out (early
+/// returns). Nothing is read while spans are off.
+#[must_use = "the span ends when the guard is dropped"]
+pub struct Guard {
+    open: Option<(&'static str, Instant, Option<Duration>, u8)>,
+    _heap: Option<horizon_threads::heap_census::Tag>,
+}
+/// Start a span named `name` that ends when the returned [`Guard`] is dropped.
+#[inline]
+pub fn guard(name: &'static str) -> Guard {
     let _heap = horizon_threads::heap_tag(name);
     if !recording_here() {
-        return f();
+        return Guard { open: None, _heap };
     }
     let depth = DEPTH.with(|d| d.replace(d.get().saturating_add(1)));
-    let (started, cpu) = (Instant::now(), cpu_if_enabled());
-    let out = f();
-    let ms = started.elapsed().as_secs_f32() * 1000.0;
-    let cpu_ms = cpu
-        .and_then(|start| Some((thread_cpu()?, start)))
-        .map_or(ms, |(end, start)| (end - start).as_secs_f32() * 1000.0);
-    DEPTH.with(|d| d.set(depth));
-    SPANS.with(|s| {
-        s.borrow_mut().push(Span {
-            name,
-            ms,
-            cpu_ms,
-            depth,
-        })
-    });
-    out
+    Guard {
+        open: Some((name, Instant::now(), cpu_if_enabled(), depth)),
+        _heap,
+    }
+}
+impl Drop for Guard {
+    fn drop(&mut self) {
+        let Some((name, started, cpu, depth)) = self.open.take() else {
+            return;
+        };
+        let ms = started.elapsed().as_secs_f32() * 1000.0;
+        let cpu_ms = cpu
+            .and_then(|start| Some((thread_cpu()?, start)))
+            .map_or(ms, |(end, start)| (end - start).as_secs_f32() * 1000.0);
+        DEPTH.with(|d| d.set(depth));
+        SPANS.with(|s| {
+            s.borrow_mut().push(Span {
+                name,
+                ms,
+                cpu_ms,
+                depth,
+            })
+        });
+    }
 }
 /// Notes that one step inside a span took `ms` milliseconds doing `what` (one player's
 /// packets, say), when this thread records spans and the step took at least [`NOTE_MS`]: a
@@ -544,6 +565,42 @@ mod tests {
                     ("tick_items", 1),
                     ("tick", 0),
                     ("renderer", 0)
+                ]
+            );
+        })
+        .join()
+        .unwrap();
+    }
+
+    /// A guarded span ends on every way out of its step, an early return's too, and holds the
+    /// spans that ran inside it until then; the next span outside it is back at its depth.
+    #[test]
+    fn a_guarded_span_ends_where_its_step_returns() {
+        fn step(early: bool) -> u32 {
+            let _span = super::guard("use_block");
+            super::time("open_loot", || ());
+            if early {
+                return 1;
+            }
+            super::time("open_maps", || ());
+            2
+        }
+        std::thread::spawn(|| {
+            super::record_here(true);
+            assert_eq!(step(true), 1);
+            assert_eq!(step(false), 2);
+            super::time("use_item", || ());
+            let raw = super::take_raw();
+            let seen: Vec<_> = raw.iter().map(|s| (s.name, s.depth)).collect();
+            assert_eq!(
+                seen,
+                [
+                    ("open_loot", 1),
+                    ("use_block", 0),
+                    ("open_loot", 1),
+                    ("open_maps", 1),
+                    ("use_block", 0),
+                    ("use_item", 0)
                 ]
             );
         })

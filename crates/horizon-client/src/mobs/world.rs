@@ -450,7 +450,9 @@ pub(crate) fn with_resource_test_world(
         &horizon_world::loot::PackOverlay::NONE,
     )
     .unwrap();
-    let collision = crate::collisions::load(root, registry).unwrap();
+    let collision = std::sync::Arc::new(crate::collisions::load(root, registry).unwrap());
+    let suffocation =
+        crate::mobs::suffocation::bind(collision.clone(), &motion.causes_suffocation).unwrap();
     let air = registry.default_state("minecraft:air").unwrap();
     let mut world = crate::world::World::new(air, 0);
     build(&mut world, registry);
@@ -463,6 +465,7 @@ pub(crate) fn with_resource_test_world(
         fluid_tables: &motion.fluids,
         movement: &motion.blocks,
         collision: &collision,
+        suffocation: &suffocation,
         data: &data,
         player: None,
         controlling_player_movement: None,
