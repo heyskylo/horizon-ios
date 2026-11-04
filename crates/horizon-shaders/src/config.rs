@@ -147,6 +147,10 @@ pub struct Shadow {
     pub far: f32,
     /// `shadowHardwareFiltering(0|1)`: shadowtex0/1 sampled with depth comparison.
     pub hardware_filtering: [bool; 2],
+    /// `shadowtex0Nearest` (or `shadowtexNearest`, `shadow0MinMagNearest`) and
+    /// `shadowtex1Nearest` (or `shadow1MinMagNearest`): shadowtex0/1 read through a plain sampler
+    /// take the nearest texel. Otherwise Iris 1.11.7 filters them linearly (measured).
+    pub nearest: [bool; 2],
     /// `shadowcolor0` to `shadowcolor7`: format, cleared every frame, clear colour (default
     /// white).
     pub colors: [Buffer; SHADOW_COLORS],
@@ -170,6 +174,7 @@ impl Default for Shadow {
             near: 0.05,
             far: 256.0,
             hardware_filtering: [false; 2],
+            nearest: [false; 2],
             colors: std::array::from_fn(|_| white.clone()),
         }
     }
@@ -346,6 +351,16 @@ impl Config {
             "shadowHardwareFiltering0" | "shadowHardwareFiltering1" => {
                 if let Some(b) = boolean(value) {
                     s.hardware_filtering[usize::from(name.ends_with('1'))] = b;
+                }
+            }
+            "shadowtexNearest" | "shadowtex0Nearest" | "shadow0MinMagNearest" => {
+                if let Some(b) = boolean(value) {
+                    s.nearest[0] = b;
+                }
+            }
+            "shadowtex1Nearest" | "shadow1MinMagNearest" => {
+                if let Some(b) = boolean(value) {
+                    s.nearest[1] = b;
                 }
             }
             _ => {
@@ -563,6 +578,40 @@ mod tests {
         assert!(!s.colors[0].clear && s.colors[1].clear);
         assert_eq!(s.colors[1].format, Format::parse("RGBA16F").unwrap());
         assert_eq!(s.colors[1].clear_color, Some([1.0; 4]));
+        assert_eq!(s.nearest, [false; 2]);
+    }
+
+    #[test]
+    fn shadow_depth_filtering_settings() {
+        let nearest = |text: &str| {
+            let mut c = Config::default();
+            c.read(&stage(text));
+            c.finish().shadow.nearest
+        };
+        assert_eq!(
+            nearest("const bool shadowtex0Nearest = true;\n"),
+            [true, false]
+        );
+        assert_eq!(
+            nearest("const bool shadowtexNearest = true;\n"),
+            [true, false]
+        );
+        assert_eq!(
+            nearest("const bool shadow0MinMagNearest = true;\n"),
+            [true, false]
+        );
+        assert_eq!(
+            nearest("const bool shadowtex1Nearest = true;\n"),
+            [false, true]
+        );
+        assert_eq!(
+            nearest("const bool shadow1MinMagNearest = true;\n"),
+            [false, true]
+        );
+        assert_eq!(
+            nearest("const bool shadowtex0Nearest = false;\n"),
+            [false; 2]
+        );
     }
 
     #[test]

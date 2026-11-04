@@ -1407,7 +1407,8 @@ fn pack_coords(coords: u32) -> u16 {
 pub struct Mesher<'a> {
     /// CardinalLighting.NETHER: brighter up/down faces.
     pub nether_shading: bool,
-    /// A shader pack lights the faces (its `oldLighting` off): no face shading in the colours.
+    /// A shader pack lights the faces (its `oldLighting` off): no face shading in the colours,
+    /// only the dimension's up-face brightness (`lighting::pack_flat`).
     pub shader_pack_lighting: bool,
     /// OptiFine/Iris separate ambient occlusion: vertex RGB does not include AO, and AO factor is passed in vertex alpha.
     pub separate_ao: bool,
@@ -1662,8 +1663,10 @@ impl Mesher<'_> {
             None => ao,
         };
         let shade_face = q.shade_direction_override.unwrap_or(q.facing);
-        let directional = if self.shader_pack_lighting || !q.shade {
+        let directional = if !q.shade {
             1.0
+        } else if self.shader_pack_lighting {
+            lighting::pack_flat(self.nether_shading)
         } else {
             lighting::cardinal(self.nether_shading, shade_face)
         };

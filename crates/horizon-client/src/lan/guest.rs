@@ -398,7 +398,7 @@ impl Guest {
             entity_id,
             sender: j.sender,
             latency: j.latency,
-            view_distance: (i32::from(j.info.view_distance)).clamp(2, view_distance),
+            view_distance: i32::from(j.info.view_distance).max(2).min(view_distance),
             info: j.info,
             brand: j.brand,
             position,

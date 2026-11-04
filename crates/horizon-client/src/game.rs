@@ -5783,12 +5783,14 @@ impl Game<'_> {
             self.resolve_container_maps(key, centre);
             self.container = Some(key);
             let first = self.container_opener_event(key, true);
-            self.post_block_game_event(
-                "minecraft:container_open",
-                [key.0, key.1, key.2],
-                Some(horizon_client::mobs::Who::Player),
-                None,
-            );
+            if first {
+                self.post_block_game_event(
+                    "minecraft:container_open",
+                    [key.0, key.1, key.2],
+                    Some(horizon_client::mobs::Who::Player),
+                    None,
+                );
+            }
             let stat = match &*name {
                 "minecraft:chest" => "open_chest",
                 "minecraft:trapped_chest" => "trigger_trapped_chest",
@@ -9463,13 +9465,13 @@ impl Game<'_> {
             // A cart's or chest boat's items go back to it.
             self.close_cart_container(key);
             let last = self.container_opener_event(key, false);
-            self.post_block_game_event(
-                "minecraft:container_close",
-                [key.0, key.1, key.2],
-                Some(horizon_client::mobs::Who::Player),
-                None,
-            );
             if last {
+                self.post_block_game_event(
+                    "minecraft:container_close",
+                    [key.0, key.1, key.2],
+                    Some(horizon_client::mobs::Who::Player),
+                    None,
+                );
                 self.container_edge_sound(key, false);
             }
             self.world.modified.insert((key.0 >> 4, key.2 >> 4));
@@ -13991,9 +13993,12 @@ impl Game<'_> {
         horizon_client::mobs::render_model(arm, m, &pose, [r.u0, r.v0, r.u1, r.v1], light, 0, out);
     }
     /// FirstPersonHandsAndItemsRenderer: the right arm or the held items of
-    /// both hands in view space, converted to camera-relative world space.
-    fn hand_geometry(&mut self, alpha: f64) -> Vec<Vertex> {
+    /// both hands in view space, converted to camera-relative world space,
+    /// and where the arm and each item start, with the `currentRenderedItemId`
+    /// a shader pack reads for them.
+    fn hand_geometry(&mut self, alpha: f64) -> (Vec<Vertex>, Vec<(u32, i32)>) {
         let mut out = Vec::new();
+        let mut runs = Vec::new();
         // GameRenderer.renderItemInHand: F1 hides the hand with the HUD.
         if self.spectator()
             || self.ui.hide_gui
@@ -14005,7 +14010,7 @@ impl Game<'_> {
                 .is_none_or(|p| p.health.dead_or_dying())
             || self.screen == Screen::Dead
         {
-            return out;
+            return (out, runs);
         }
         let a = alpha as f32;
         // FirstPersonHandsAndItemsRenderer: the swing goes to the hand that
@@ -14097,20 +14102,24 @@ impl Game<'_> {
                 // renderPlayerArm
                 let m = to_world
                     * horizon_client::first_person::player_arm_pose(left, inverse_height, attack);
+                runs.push((out.len() as u32, 0));
                 self.first_person_arm(left, m, packed, &mut out);
                 continue;
             };
+            let item_id = self.rendered_item_id(&stack.item);
             if let Some(id) = maps::map_id(&stack) {
                 use horizon_client::first_person::{MapHold, map_arm_poses, one_handed_map_pose};
                 let hold = MapHold::of(hand, off_hand_empty);
                 // renderOneHandedMap and renderTwoHandedMap: the arms under
                 // the map, unless the player is invisible.
                 if !self.own_invisible() {
+                    runs.push((out.len() as u32, 0));
                     for (arm, pose) in map_arm_poses(hold, left, self.pitch, inverse_height, attack)
                     {
                         self.first_person_arm(arm, to_world * pose, packed, &mut out);
                     }
                 }
+                runs.push((out.len() as u32, item_id));
                 match hold {
                     MapHold::TwoHanded => self.two_handed_map_geometry(
                         to_world,
@@ -14221,6 +14230,7 @@ impl Game<'_> {
                 horizon_client::cit::Hand::Main
             };
             let state = self.resolve_item_in_hand(&stack, context, Some(&owner), seed, cit_hand);
+            runs.push((out.len() as u32, item_id));
             let light = self.world.light(
                 eye[0].floor() as i32,
                 eye[1].floor() as i32,
@@ -14239,7 +14249,7 @@ impl Game<'_> {
         for vertex in &mut out {
             vertex.layer &= !horizon_client::gfx::OIT_ENTITY;
         }
-        out
+        (out, runs)
     }
     /// The renderer for the window, with the current block sprites, GUI
     /// atlas and world border texture.
@@ -15963,8 +15973,8 @@ impl Game<'_> {
         } else {
             (Vec::new(), None)
         };
-        let mut hand = if title || self.scoping() {
-            Vec::new()
+        let (mut hand, hand_items) = if title || self.scoping() {
+            Default::default()
         } else {
             self.hand_geometry(camera_alpha)
         };
@@ -16121,6 +16131,7 @@ impl Game<'_> {
             },
             stars: stars.filter(|_| self.settings.horizon.sky || title),
             hand: &hand,
+            hand_items: &hand_items,
             hand_fov_degrees: self.hud_fov_degrees(camera_alpha as f32, camera.to_array()),
             screen: &screen,
             pack: pack_inputs,
@@ -20082,7 +20093,7 @@ fn load_resources(
     // server thread's (horizon_threads::jobs), sized before any world opens.
     horizon_threads::jobs::configure(threads);
     horizon_client::sprites::set_texture_budget(settings.horizon.texture_budget_mib);
-    horizon_client::sprites::set_labpbr_maps(shader_packs::picks_native_pack(settings));
+    horizon_client::sprites::set_labpbr_maps(shader_packs::picks_material_pack(settings));
     // Stage A: the menu bundle (atlas and panorama). With a loading screen it is
     // published at once so the title screen can appear while the world bundle
     // loads; the synchronous launch instead carries it in `Loaded`.
@@ -20731,6 +20742,7 @@ fn loading_frame(hud: &HudBatch) -> Frame<'_> {
         celestial: &[],
         stars: None,
         hand: &[],
+        hand_items: &[],
         hand_fov_degrees: 70.0,
         screen: &[],
         pack: Default::default(),
