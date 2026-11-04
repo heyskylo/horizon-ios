@@ -660,8 +660,9 @@ fn bundle_click(view: &mut View, i: usize, right: bool, rules: &dyn Rules) -> bo
     let Some(mut contents) = Contents::of(items, &bundle) else {
         return false;
     };
-    // Slot.allowModification: mayPickup and mayPlace of its item.
-    let allowed = view.may_place(i, &bundle, rules);
+    // `Slot.allowModification`: `mayPickup` and `mayPlace` of the stack it
+    // holds. A slot that withholds the bundle keeps what is inside it.
+    let allowed = view.may_pickup(i, rules) && view.may_place(i, &bundle, rules);
     match (view.guest.carried.take(), right) {
         (Some(mut carried), false) => {
             if allowed {
