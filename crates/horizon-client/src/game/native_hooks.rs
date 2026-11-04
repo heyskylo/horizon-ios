@@ -1028,6 +1028,7 @@ use horizon_client::{
 use horizon_core::{
     geometry::Direction,
     position::BlockPos,
+    random::LegacyRandom,
     ticks::{ScheduleResult, TickPriority},
 };
 use horizon_world::{
@@ -3143,6 +3144,36 @@ impl Game<'_> {
         tag: &mut Option<Compound>,
     ) {
         mod_api::dispatch_block_entity_update_tag(mod_api::mods(), pos, entity, tag);
+    }
+    /// May `stack` go into slot `slot` of the mod block entity at `pos`
+    /// (`entity`, read only), put in through `face` (none when no face is
+    /// asked)? NeoForge's `IItemHandler.isItemValid`, vanilla's
+    /// `Container.canPlaceItem`: a millstone takes only what it has a recipe
+    /// for, so a wrong item can't block it. Asked on the server for every
+    /// item a hopper, a dropper or `native_insert_item` would put in, once
+    /// the block's `ModContainer` lets that slot be filled through that face
+    /// (its `inputs` and `faces`). Set `cancel` to refuse the item there; the
+    /// mover tries the next slot. Not asked for a player's clicks in a menu
+    /// (`native_menu_slot_rules`). Bundles need "hooks": @API:container_accepts@.
+    pub(super) fn native_container_accepts(
+        &self,
+        pos: [i32; 3],
+        entity: &ModBlockEntity,
+        slot: usize,
+        stack: &ItemStack,
+        face: Option<Direction>,
+        cancel: &mut bool,
+    ) {
+        mod_api::dispatch_container_accepts(
+            self,
+            mod_api::mods(),
+            pos,
+            entity,
+            slot,
+            stack,
+            face,
+            cancel,
+        );
     }
     /// Draw the mod block entity at `pos`, of block `block`
     /// (`mymod:machine`), on this client: once a frame while it is in view
@@ -8521,10 +8552,7 @@ impl Game<'_> {
     /// `next_float`...). `None` on a client of a server, and for a level not
     /// open: the Nether and the End open when someone first goes there and
     /// close after 300 ticks with nobody in them (`close_idle_levels`). API 43.
-    pub(super) fn native_level_random(
-        &mut self,
-        dimension: &str,
-    ) -> Option<&mut horizon_core::random::LegacyRandom> {
+    pub(super) fn native_level_random(&mut self, dimension: &str) -> Option<&mut LegacyRandom> {
         if self.serving.is_none() && self.options.dedicated.is_none() {
             return None;
         }
@@ -10271,7 +10299,7 @@ fn finite(v: f32, lo: f32, hi: f32) -> f32 {
 /// Read by mods only.
 #[allow(dead_code)]
 #[derive(Clone, Debug)]
-pub(super) struct NativeItemEntity {
+pub struct NativeItemEntity {
     /// The entity's ID, for `native_set_item_entity`.
     pub id: u32,
     pub position: [f64; 3],

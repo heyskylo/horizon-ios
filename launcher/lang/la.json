@@ -456,7 +456,9 @@
   "runs {command} after": "fugit{command}post",
   "downloaded": "downloaded",
   "24/7 online": "24/7 online",
-  "Updated to {version}. Restart the launcher to use it.": "Updated to{version}. Launcher sileo ea uti.",
+  "A new version is available": "Nova versio praesto est",
+  "Download again": "Iterum depromere",
+  "This copy of the launcher can't replace itself. Download it again once; it updates itself after that.": "Hoc exemplar initiatoris se ipsum substituere non potest. Semel iterum deprome; postea se ipsum renovat.",
   "Any MCP client": "Quis MCP client",
   "{name}'s cape is kept.": "{name}promunturium.",
   "Not reviewed by the Horizon registry": "Non recognitaHorizonsubcriptio",
@@ -635,7 +637,6 @@
   "Copied": "Copied",
   "Couldn't load patch notes. {error}": "Non poterat load notas lacus.{error}",
   "Couldn't load releases. {error}": "Non solvo load.{error}",
-  "Launcher updated to {version}": "Launchere updated to{version}",
   "Launcher {version}": "Launchere{version}",
   "Launcher {version}  {percent}%": "Launchere{version}  {percent}%",
   "Manage versions": "Curo versiones",
@@ -842,7 +843,6 @@
   "Something went wrong.": "Aliquid abiit iniuriam.",
   "Instances": "Instantiae",
   "Join the Discord": "Iungere theDiscord",
-  "Restart to update": "Sileo ut update",
   "Duplicate…": "Duplicare…",
   "Create a desktop shortcut": "Creare desktop brevis",
   "Remove the desktop shortcut": "Remove desktop brevis",
@@ -1117,5 +1117,8 @@
   "Move…": "Move…",
   "The launcher closes while your data is copied and verified, then reopens. Old folders are kept and still use disk space until you verify the move and remove them yourself.": "The launcher closes while your data is copied and verified, then reopens. Old folders are kept and still use disk space until you verify the move and remove them yourself.",
   "Open the shop": "Tabernam aperi",
-  "You don't own any cosmetics yet.": "Nondum ullos fucos habes."
+  "You don't own any cosmetics yet.": "Nondum ullos fucos habes.",
+  "Claim for free": "Gratis accipe",
+  "The shop's payment provider doesn't serve your country, so you can claim the Founder Set here for free.": "Ministrator solutionum tabernae terram tuam non servit, itaque Conditor set hic gratis accipere potes.",
+  "The Founder Set is yours.": "Conditor set tuum est."
 }

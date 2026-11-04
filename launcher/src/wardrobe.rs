@@ -1,7 +1,9 @@
 //! The Wardrobe's link to Horizon's cosmetics service ([docs/cosmetics.md](../../docs/cosmetics.md)):
 //! the catalogue, the account's own items and purchase history, what each slot wears and whether
 //! others see it, and whether the Wardrobe has anything to show yet (`Service::shop`). Buying and
-//! claiming happen on the website ([`SHOP_URL`]), never here.
+//! claiming happen on the website ([`SHOP_URL`]), except the founder set's free claim for players
+//! in countries Paddle, the shop's payment provider, doesn't serve (`Claim::here`,
+//! `Service::claim`): the service decides who that is, by country.
 //!
 //! The last answers are kept on disk (`Saved`), so the Wardrobe shows the outfit offline and when
 //! the service fails, and a change made offline waits there until the service answers again.
@@ -88,6 +90,18 @@ pub struct Claim {
     /// Open only because the account is on the service's preview list.
     #[serde(default)]
     pub preview: bool,
+    /// The service grants the set to this player from the Wardrobe (`POST /v1/claim`): Paddle
+    /// doesn't sell where they are, so the site's checkout can't (in `me` only).
+    #[serde(default)]
+    pub one_click: bool,
+}
+
+impl Claim {
+    /// Whether the Wardrobe offers "Claim for free": open for this account, not claimed yet, and
+    /// the service says the checkout isn't for this player.
+    pub fn here(&self) -> bool {
+        self.open && self.one_click && self.claimed == Some(false)
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
@@ -399,6 +413,15 @@ impl Service {
 
     pub fn me(&self, session: &Session) -> Result<Me, Error> {
         parse(self.call("GET", "/v1/me", Some(session), None)?)
+    }
+
+    /// Claim the founder set here (only where `Claim::here`): the account's answer after it. One
+    /// the service already recorded is no failure.
+    pub fn claim(&self, session: &Session) -> Result<Me, Error> {
+        match self.call("POST", "/v1/claim", Some(session), Some(json!({}))) {
+            Err(Error::Service(409)) => self.me(session),
+            other => parse(other?),
+        }
     }
 
     /// Wear `item` in `slot`, or nothing there (`None`).

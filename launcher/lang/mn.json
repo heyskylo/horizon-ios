@@ -456,7 +456,9 @@
   "runs {command} after": "{command} дараа ажиллана",
   "downloaded": "татаж авсан",
   "24/7 online": "24/7 онлайн",
-  "Updated to {version}. Restart the launcher to use it.": "{version} болж шинэчлэгдсэн. Ашиглахын тулд эхлүүлэгчийг дахин эхлүүлнэ үү.",
+  "A new version is available": "Шинэ хувилбар гарсан",
+  "Download again": "Дахин татах",
+  "This copy of the launcher can't replace itself. Download it again once; it updates itself after that.": "Лаунчерийн энэ хуулбар өөрийгөө солих боломжгүй. Үүнийг нэг удаа дахин татаж аваарай; үүний дараа өөрөө шинэчлэгдэнэ.",
   "Any MCP client": "Аливаа MCP үйлчлүүлэгч",
   "{name}'s cape is kept.": "{name} нөмрөг хадгалагдаж байна.",
   "Not reviewed by the Horizon registry": "Horizon бүртгэлээс хянаагүй",
@@ -635,7 +637,6 @@
   "Copied": "Хуулсан",
   "Couldn't load patch notes. {error}": "Засварын тэмдэглэлийг ачаалж чадсангүй. {error}",
   "Couldn't load releases. {error}": "Хувилбаруудыг ачаалж чадсангүй. {error}",
-  "Launcher updated to {version}": "Эхлүүлэгчийг {version} болгож шинэчилсэн",
   "Launcher {version}": "Эхлүүлэгч {version}",
   "Launcher {version}  {percent}%": "Эхлүүлэгч {version} {percent}%",
   "Manage versions": "Хувилбаруудыг удирдах",
@@ -842,7 +843,6 @@
   "Something went wrong.": "Ямар нэг алдаа гарлаа.",
   "Instances": "Инстансууд",
   "Join the Discord": "Discord-д нэгдээрэй",
-  "Restart to update": "Шинэчлэхийн тулд дахин эхлүүлнэ үү",
   "Duplicate…": "Давхардсан…",
   "Create a desktop shortcut": "Create a desktop shortcut",
   "Remove the desktop shortcut": "Remove the desktop shortcut",
@@ -1117,5 +1117,8 @@
   "Move…": "Move…",
   "The launcher closes while your data is copied and verified, then reopens. Old folders are kept and still use disk space until you verify the move and remove them yourself.": "The launcher closes while your data is copied and verified, then reopens. Old folders are kept and still use disk space until you verify the move and remove them yourself.",
   "Open the shop": "Дэлгүүр нээх",
-  "You don't own any cosmetics yet.": "Танд одоогоор гоо сайхны бүтээгдэхүүн алга."
+  "You don't own any cosmetics yet.": "Танд одоогоор гоо сайхны бүтээгдэхүүн алга.",
+  "Claim for free": "Үнэгүй авах",
+  "The shop's payment provider doesn't serve your country, so you can claim the Founder Set here for free.": "Дэлгүүрийн төлбөрийн үйлчилгээ таны улсад ажилладаггүй тул Үүсгэн байгуулагчийн багцыг эндээс үнэгүй авч болно.",
+  "The Founder Set is yours.": "Үүсгэн байгуулагчийн багц таных боллоо."
 }

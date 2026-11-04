@@ -458,7 +458,9 @@
   "runs {command} after": "executa {command} depois",
   "downloaded": "descarregado",
   "24/7 online": "24/7 online",
-  "Updated to {version}. Restart the launcher to use it.": "Atualizado para {version}. Reinicia o launcher para o usar.",
+  "A new version is available": "Está disponível uma nova versão",
+  "Download again": "Transferir novamente",
+  "This copy of the launcher can't replace itself. Download it again once; it updates itself after that.": "Esta cópia do launcher não se consegue substituir a si própria. Transfira-o novamente uma vez; depois disso atualiza-se sozinho.",
   "Any MCP client": "Qualquer cliente MCP",
   "{name}'s cape is kept.": "A capa de {name} é guardada.",
   "Not reviewed by the Horizon registry": "Não revisto pelo registo do Horizon",
@@ -637,7 +639,6 @@
   "Copied": "Copiado",
   "Couldn't load patch notes. {error}": "Não foi possível carregar as notas de atualização. {error}",
   "Couldn't load releases. {error}": "Não foi possível carregar os lançamentos. {error}",
-  "Launcher updated to {version}": "Launcher atualizado para {version}",
   "Launcher {version}": "Launcher {version}",
   "Launcher {version}  {percent}%": "Launcher {version}  {percent}%",
   "Manage versions": "Gerir versões",
@@ -844,7 +845,6 @@
   "Something went wrong.": "Algo correu mal.",
   "Instances": "Instances",
   "Join the Discord": "Join the Discord",
-  "Restart to update": "Restart to update",
   "Duplicate…": "Duplicate…",
   "Create a desktop shortcut": "Create a desktop shortcut",
   "Remove the desktop shortcut": "Remove the desktop shortcut",
@@ -1117,5 +1117,8 @@
   "The launcher closes while your data is copied and verified, then reopens. Old folders are kept and still use disk space until you verify the move and remove them yourself.": "O launcher fecha enquanto os teus dados são copiados e verificados, e volta a abrir no fim. As pastas antigas são mantidas e continuam a ocupar espaço no disco até confirmares que a transferência foi bem-sucedida e as apagares manualmente.",
   "Could not open the data folder: {error}": "Could not open the data folder: {error}",
   "Open the shop": "Abrir a loja",
-  "You don't own any cosmetics yet.": "Ainda não tens nenhum cosmético."
+  "You don't own any cosmetics yet.": "Ainda não tens nenhum cosmético.",
+  "Claim for free": "Obter grátis",
+  "The shop's payment provider doesn't serve your country, so you can claim the Founder Set here for free.": "O fornecedor de pagamentos da loja não opera no seu país, por isso pode obter aqui o Conjunto de fundador gratuitamente.",
+  "The Founder Set is yours.": "O Conjunto de fundador é seu."
 }

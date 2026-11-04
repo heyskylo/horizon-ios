@@ -2957,6 +2957,10 @@ impl Game<'_> {
                 }
             }
         }
+        if matches!(self.world.block_entities.get(&pos), Some(BlockEntity::Brewing(b)) if b.idle())
+        {
+            self.world.block_entities.sleep(pos);
+        }
         Ok(())
     }
 }
