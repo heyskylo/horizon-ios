@@ -75,6 +75,7 @@ pub mod riders;
 pub mod seen_grid;
 pub mod shulker;
 pub mod skin;
+pub mod skin_layers;
 pub mod sniffer;
 pub mod spawn_rules;
 pub mod spawn_selection;
@@ -1272,6 +1273,9 @@ pub struct Mob {
     /// `LivingEntity.getAbsorptionAmount`: golden hearts that soak damage before health.
     pub absorption: f32,
     pub last_damage: Option<(Damage, i64)>,
+    /// `DamageSource.getDirectEntity` of `last_damage` when [`Damage`] cannot name it (a
+    /// thrown potion, an area effect cloud): its entity type.
+    pub last_direct: Option<&'static str>,
     /// `LivingEntity.combatTracker`: the hits taken lately.
     pub combat: combat::Tracker,
     /// Set by `remove`: the mob disappears without dying (conversion, despawn, pickup).
@@ -1291,6 +1295,9 @@ pub struct Mob {
     pub skin: Option<String>,
     /// `PlayerSkin.model` is `SLIM`: the player model with 3-pixel arms.
     pub slim: bool,
+    /// The 3D skin layers feature's model for this player: its outer layer
+    /// with every painted texel extruded (`skin_layers`, off by default).
+    pub skin_3d: Option<Arc<Part>>,
     /// `PlayerSkin.cape`: a player's cape texture, once every download of
     /// its skin is ready.
     pub cape: Option<String>,
@@ -1353,6 +1360,11 @@ pub enum MobEvent {
     Drown {
         mob: u32,
         at: [f64; 3],
+    },
+    /// PowderSnowBlock.entityInside's snowflake with vanilla's sampled velocity.
+    PowderSnowParticle {
+        at: [f64; 3],
+        velocity: [f64; 3],
     },
     /// `Mob.burnUndead` in daylight on a mob wearing something in its
     /// `sunProtectionSlot`: the item loses up to 1 durability (the game knows
@@ -1864,6 +1876,8 @@ pub enum MobEvent {
         effect: &'static str,
         ticks: i32,
         amplifier: i32,
+        /// `MobEffectInstance` ambient flag (the beacon-style translucent icon).
+        ambient: bool,
     },
     /// Set an entity on fire.
     Ignite {
@@ -2571,6 +2585,8 @@ pub struct PlayerView {
     pub sleep_timer: u32,
     /// `isPassenger`.
     pub passenger: bool,
+    /// The vehicle entity id, including mounts without a `Vehicle` follow view.
+    pub riding_vehicle: Option<u32>,
     /// The boat or nautilus the player rides and steers
     /// (`getControllingPassenger`).
     pub vehicle: Option<Vehicle>,
@@ -2611,6 +2627,8 @@ pub struct MobWorld<'a> {
     pub collision: &'a BlockCollisionRegistry<'a>,
     pub data: &'a MobData,
     pub player: Option<PlayerView>,
+    /// `getKnownMovement` of a mob's controlling player passenger, if any.
+    pub controlling_player_movement: Option<Vec3>,
     /// `getNearestPlayer(mob, -1)`: where the nearest non-spectator of every
     /// player in the level stands, alive or not (the despawn distance).
     pub nearest_player: Option<Vec3>,
@@ -2623,6 +2641,10 @@ pub struct MobWorld<'a> {
     pub others_grid: Option<&'a seen_grid::SeenGrid>,
     /// Where each id stands in `others`, when the caller keeps one.
     pub others_index: Option<&'a crate::fast_hash::FxHashMap<u32, u32>>,
+    /// The slots of `others` holding a villager, in order, when the caller
+    /// keeps them (the mob ticks: a slot keeps its mob, and its species, all
+    /// tick). Each zombie looking for a village read every slot.
+    pub others_villagers: Option<&'a [u32]>,
     pub daylight: bool,
     /// The `gameplay/monsters_burn` attribute: the overworld day timeline's
     /// step track, false in every other dimension.
@@ -2752,6 +2774,7 @@ impl Mob {
             last_hurt: 0.0,
             absorption: 0.0,
             last_damage: None,
+            last_direct: None,
             combat: combat::Tracker::default(),
             removed: false,
             custom_name: None,
@@ -2763,6 +2786,7 @@ impl Mob {
             outbox: Vec::new(),
             skin: None,
             slim: false,
+            skin_3d: None,
             cape: None,
             profile: None,
             random_textures: Default::default(),
@@ -2813,17 +2837,21 @@ impl Mob {
             _ => self.extra.pick_up_loot,
         }
     }
+    #[inline]
     pub fn bounds(&self) -> Aabb {
         self.bounds_at(self.position)
     }
     /// `Entity.makeBoundingBox(position)`.
     pub fn bounds_at(&self, position: Vec3) -> Aabb {
-        let w = f64::from(self.width()) / 2.0;
+        // `width()` and `height()` in one `dims()`: every box asked for (each
+        // collision, push and cart test) read the whole size twice.
+        let (width, height, _) = self.dims();
+        let w = f64::from(width as f32) / 2.0;
         Aabb::new(
             Vec3::new(position.x - w, position.y, position.z - w),
             Vec3::new(
                 position.x + w,
-                position.y + f64::from(self.height()),
+                position.y + f64::from(height as f32),
                 position.z + w,
             ),
         )
@@ -2839,12 +2867,14 @@ impl Mob {
         };
         self.combat.record(entry, self.age);
     }
+    #[inline]
     pub fn alive(&self) -> bool {
         self.health > 0.0
     }
     pub fn hostile(&self) -> bool {
         self.kind.category == "monster"
     }
+    #[inline]
     pub fn species(&self) -> Species {
         self.kind.species
     }
@@ -3109,6 +3139,7 @@ impl Mob {
             self.extra.in_love = 0;
         }
         self.last_damage = Some((source, i64::from(self.age)));
+        self.last_direct = None;
         if let Some(who) = source.attacker {
             self.ai.last_hurt_by = Some(who);
             self.ai.last_hurt_by_time = self.age as i32;
@@ -3180,19 +3211,22 @@ impl Mob {
         if equine::is_equine(self.species()) {
             equine::after_hurt_server(self);
         }
-        if self.species() == Species::GlowSquid {
+        // GlowSquid.hurtServer dims the squid only when Squid.hurtServer took the
+        // hit, which it reports only for a living entity's blow: environmental
+        // damage (suffocation, a campfire, drying out) leaves the glow alone.
+        if self.species() == Species::GlowSquid && self.ai.last_hurt_by.is_some() {
             aquatic::hurt_server(self);
         }
         true
     }
-    /// A splash or cloud's harming effect on this mob: the potion's
-    /// `indirect_magic` is in `#witch_resistant_to`, so a witch takes 15%.
-    pub fn potion_harm(&self, amount: f32) -> f32 {
-        if self.species() == Species::Witch {
-            amount * 0.15
-        } else {
-            amount
+    /// `damage` by a source whose direct entity is `direct` (an entity type id), which `source`
+    /// cannot carry: `DamageSources.indirectMagic(potion or cloud, owner)`.
+    pub fn damage_by(&mut self, amount: f32, source: Damage, direct: &'static str) -> bool {
+        let hurt = self.damage(amount, source);
+        if hurt {
+            self.last_direct = Some(direct);
         }
+        hurt
     }
     /// `Wolf.canArmorAbsorb`: it wears wolf armor and the damage type is not
     /// in `#bypasses_wolf_armor` (drowning, magic, thorns, in a wall, out of
@@ -3499,8 +3533,39 @@ impl Mob {
             self.heal(heal);
         }
     }
+    /// `LivingEntity.canBeAffected`: whether an effect of this kind may be added at
+    /// all, asked by `addEffect` before it stores anything. Five classes narrow the
+    /// rule first — a spider (a cave spider with it) and a nautilus refuse poison, a
+    /// wither and a wither skeleton the wither effect, a parched weakness — and the
+    /// entity type tags answer for the rest: `immune_to_infested` keeps infested off
+    /// a silverfish, `immune_to_oozing` keeps oozing off a slime, and
+    /// `ignores_poison_and_regen` (which is `#minecraft:undead`) keeps poison and
+    /// regeneration off a zombie, a skeleton, a phantom, a wither and the rest.
+    pub fn can_be_affected(&self, effect: &'static str) -> bool {
+        let effect = horizon_client_core::potions::namespaced(effect);
+        let refused = match self.species() {
+            Species::Spider | Species::CaveSpider | Species::Nautilus | Species::ZombieNautilus => {
+                effect == "minecraft:poison"
+            }
+            Species::Wither | Species::WitherSkeleton => effect == "minecraft:wither",
+            Species::Parched => effect == "minecraft:weakness",
+            Species::Silverfish => effect == "minecraft:infested",
+            Species::Slime => effect == "minecraft:oozing",
+            _ => false,
+        };
+        if refused {
+            return false;
+        }
+        !(self.kind.flags.undead && matches!(effect, "minecraft:poison" | "minecraft:regeneration"))
+    }
     pub fn add_effect(&mut self, effect: &'static str, ticks: i32, amplifier: i32) {
         let effect = horizon_client_core::potions::namespaced(effect);
+        // LivingEntity.addEffect: an effect the mob refuses is never added, so it
+        // never joins the list the client draws or an effect tick reads.
+        // WitherBoss.addEffect returns false for every effect.
+        if self.species() == Species::Wither || !self.can_be_affected(effect) {
+            return;
+        }
         // AbsorptionMobEffect.addAttributeModifiers: at least 4 hearts-halves per level.
         if effect == "minecraft:absorption"
             && self
@@ -3556,6 +3621,11 @@ impl Mob {
         if self.species() == Species::HappyGhast {
             return 1.0;
         }
+        // Parrot.getVoicePitch: `getPitch(random)`, the plain range, so a baby
+        // parrot does not take the 1.5 that AgeableMob raises a baby by.
+        if self.species() == Species::Parrot {
+            return (self.random.next_float() - self.random.next_float()) * 0.2 + 1.0;
+        }
         // ZombieVillager.getVoicePitch: babies are 2.0, not 1.5.
         let baby = if self.species() == Species::ZombieVillager {
             2.0
@@ -3573,7 +3643,13 @@ impl Mob {
     }
     /// Mob.playSound with LivingEntity.getVoicePitch.
     pub fn voice(&mut self, event: &'static str, events: &mut Vec<MobEvent>) {
+        // Java evaluates the arguments of `playSound(event, getSoundVolume(),
+        // getVoicePitch())` before the call, so the pitch is drawn even for a
+        // silent entity, whose `Entity.playSound` then plays nothing.
         let pitch = self.voice_pitch();
+        if self.silent {
+            return;
+        }
         // Entity.playSound: at the entity's feet.
         let at = [self.position.x, self.position.y, self.position.z];
         events.push(MobEvent::Sound(event, at, ai::sound_volume(self), pitch));
@@ -4641,6 +4717,41 @@ mod magic_absorb_tests {
         m.damage(20.0, own);
         assert_eq!(m.health, 10.0);
     }
+
+    /// `damage_by` with a thrown potion's `indirectMagic(potion, owner)`: the
+    /// hit keeps the potion as its direct entity and is the thrower's (a
+    /// player's sets `lastHurtByPlayer`, a dispenser's names nobody); the next
+    /// hit that names no direct entity forgets it.
+    #[test]
+    fn a_potion_hit_keeps_its_direct_entity_and_owner() {
+        let mut m = Mob::new(1, kind(), Vec3::ZERO, 0.0);
+        let thrown = Damage::indirect_magic(Some(Who::Player), [0.0, 1.0, 0.0]);
+        assert!(m.damage_by(1.0, thrown, "minecraft:splash_potion"));
+        assert_eq!(m.last_direct, Some("minecraft:splash_potion"));
+        let (last, _) = m.last_damage.unwrap();
+        assert_eq!(last.kind, DamageKind::IndirectMagic);
+        assert_eq!(last.attacker, Some(Who::Player));
+        assert_eq!(m.ai.last_hurt_by_player, 100);
+        m.invulnerable = 0;
+        assert!(m.damage(1.0, Damage::of(DamageKind::Generic)));
+        assert_eq!(m.last_direct, None);
+
+        let mut m = Mob::new(1, kind(), Vec3::ZERO, 0.0);
+        let dispensed = Damage::indirect_magic(None, [0.0, 1.0, 0.0]);
+        assert!(m.damage_by(1.0, dispensed, "minecraft:area_effect_cloud"));
+        assert_eq!(m.last_direct, Some("minecraft:area_effect_cloud"));
+        assert_eq!(m.ai.last_hurt_by_player, 0);
+    }
+
+    /// A harming potion's hit on a witch through `damage_by` is cut to 15%
+    /// once (`getDamageAfterMagicAbsorb`), not again by the potion code.
+    #[test]
+    fn a_witch_takes_15_percent_of_a_potion_hit() {
+        let mut m = witch();
+        let thrown = Damage::indirect_magic(Some(Who::Player), [0.0, 1.0, 0.0]);
+        assert!(m.damage_by(20.0, thrown, "minecraft:splash_potion"));
+        assert_eq!(m.health, 7.0);
+    }
 }
 
 #[cfg(test)]
@@ -4872,4 +4983,184 @@ mod totem_tests {
         );
     }
 }
+#[cfg(test)]
+mod effect_refusal_tests {
+    use super::*;
+
+    /// A mob of a real type, from the extracted data (`entity-types.json`), so the
+    /// `undead`, `MobCategory` and species facts are the ones the game has.
+    fn mob(types: &MobTypes, id: &str) -> Mob {
+        let kind = Arc::new(types.types.get(id).expect(id).clone());
+        Mob::new(1, kind, Vec3::new(0.0, 64.0, 0.0), 0.0)
+    }
+    /// `LivingEntity.addEffect` asks `canBeAffected` before it stores anything: an
+    /// effect the mob's type refuses never joins the list, so the cloud on its head,
+    /// the `/effect` reply and an effect tick never see it. The refused ones are the
+    /// `ignores_poison_and_regen` tag (which is `#minecraft:undead`), a silverfish's
+    /// infested and a slime's oozing, the classes that override the rule, and the
+    /// wither, whose `addEffect` refuses every effect.
+    #[test]
+    fn an_effect_the_mobs_type_refuses_is_never_added() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        if !root.join("entity-types.json").exists() {
+            return;
+        }
+        let types = MobTypes::load_for_server(&root).unwrap();
+        let refused = |id: &str, effect: &'static str| {
+            let mut m = mob(&types, id);
+            m.add_effect(effect, 200, 0);
+            let listed = m.has_effect(effect);
+            (listed, m.extra.effects.len())
+        };
+        // `#minecraft:undead` is the `ignores_poison_and_regen` tag: a zombie, a
+        // skeleton and a phantom turn both poison and regeneration away.
+        for undead in [
+            "minecraft:zombie",
+            "minecraft:skeleton",
+            "minecraft:phantom",
+            "minecraft:zombie_horse",
+        ] {
+            for effect in ["minecraft:poison", "minecraft:regeneration"] {
+                assert_eq!(refused(undead, effect), (false, 0), "{undead} {effect}");
+            }
+            // Every other effect still lands on it.
+            assert_eq!(refused(undead, "minecraft:strength"), (true, 1), "{undead}");
+        }
+        // The tag's other two effects, each refused by the one type in it.
+        assert_eq!(
+            refused("minecraft:silverfish", "minecraft:infested"),
+            (false, 0)
+        );
+        assert_eq!(
+            refused("minecraft:silverfish", "minecraft:poison"),
+            (true, 1)
+        );
+        assert_eq!(refused("minecraft:slime", "minecraft:oozing"), (false, 0));
+        // A magma cube is not in `immune_to_oozing`, so oozing takes.
+        assert_eq!(
+            refused("minecraft:magma_cube", "minecraft:oozing"),
+            (true, 1)
+        );
+        // Spider.canBeAffected and CaveSpider's inheritance: poison is refused, and a
+        // nautilus refuses it too (AbstractNautilus.canBeAffected), the zombie one
+        // through the same override, an ordinary mob not at all.
+        for spider in [
+            "minecraft:spider",
+            "minecraft:cave_spider",
+            "minecraft:nautilus",
+        ] {
+            assert_eq!(refused(spider, "minecraft:poison"), (false, 0), "{spider}");
+        }
+        assert_eq!(refused("minecraft:cow", "minecraft:poison"), (true, 1));
+        // WitherBoss.addEffect returns false: the boss takes no effect at all.
+        for effect in [
+            "minecraft:wither",
+            "minecraft:strength",
+            "minecraft:speed",
+            "minecraft:poison",
+        ] {
+            assert_eq!(
+                refused("minecraft:wither", effect),
+                (false, 0),
+                "wither {effect}"
+            );
+        }
+        // WitherSkeleton.canBeAffected refuses the wither effect only, which a
+        // zombie takes.
+        assert_eq!(
+            refused("minecraft:wither_skeleton", "minecraft:wither"),
+            (false, 0)
+        );
+        assert_eq!(
+            refused("minecraft:wither_skeleton", "minecraft:strength"),
+            (true, 1)
+        );
+        assert_eq!(refused("minecraft:zombie", "minecraft:wither"), (true, 1));
+        // Parched.canBeAffected: weakness only, slowness takes.
+        assert_eq!(
+            refused("minecraft:parched", "minecraft:weakness"),
+            (false, 0)
+        );
+        assert_eq!(
+            refused("minecraft:parched", "minecraft:slowness"),
+            (true, 1)
+        );
+    }
+
+    /// Squid.hurtServer reports a hit only when a living entity dealt it, so
+    /// environmental damage leaves a glow squid glowing; a mob's blow dims it.
+    #[test]
+    fn only_a_mobs_blow_dims_a_glow_squid() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        if !root.join("entity-types.json").exists() {
+            return;
+        }
+        let types = MobTypes::load_for_server(&root).unwrap();
+        let mut burned = mob(&types, "minecraft:glow_squid");
+        burned.health = 10.0;
+        assert!(burned.damage(1.0, Damage::of(DamageKind::Campfire)));
+        assert_eq!(aquatic::dark_ticks(&burned), 0);
+        let mut struck = mob(&types, "minecraft:glow_squid");
+        struck.health = 10.0;
+        assert!(struck.damage(1.0, Damage::mob(2, [0.0, 64.0, 0.0])));
+        assert_eq!(aquatic::dark_ticks(&struck), 100);
+    }
+}
 crate::impl_joined!(Mob);
+#[cfg(test)]
+mod silent_voice_tests {
+    use super::*;
+    use crate::mobs::world::with_test_world;
+
+    /// The sounds `Mob::voice` plays for `ambient_sound` of one mob, with
+    /// `silent` set on it, and the random state it leaves behind.
+    fn ambient(silent: bool) -> Option<(Vec<(&'static str, f32, f32)>, f32)> {
+        let mut out = None;
+        let ran = with_test_world(&[], |w, types| {
+            let mut m = Mob::new(
+                1,
+                Arc::new(types.types["minecraft:cow"].clone()),
+                Vec3::new(0.5, 64.0, 0.5),
+                0.0,
+            );
+            m.silent = silent;
+            let mut events = Vec::new();
+            crate::mobs::ai::ambient_sound(&mut m, w, &mut events);
+            let heard = events
+                .iter()
+                .filter_map(|e| match e {
+                    MobEvent::Sound(s, _, volume, pitch) => Some((*s, *volume, *pitch)),
+                    _ => None,
+                })
+                .collect();
+            out = Some((heard, m.random.next_float()));
+        });
+        ran.then_some(out).flatten()
+    }
+
+    /// `Mob.playAmbientSound` plays through `Entity.playSound`, which returns
+    /// early for a silent entity, so a mob summoned with `Silent:1b` makes no
+    /// ambient sound. The pitch is still drawn first, as Java evaluates the
+    /// arguments of `playSound(event, getSoundVolume(), getVoicePitch())`
+    /// before the call, so the random state is the same either way. Without
+    /// the check the silent cow plays `entity.cow.ambient` like the loud one,
+    /// and without drawing first its random state falls two draws behind.
+    #[test]
+    fn a_silent_mob_makes_no_ambient_sound() {
+        let Some((loud, loud_next)) = ambient(false) else {
+            return;
+        };
+        let (quiet, quiet_next) = ambient(true).expect("same data");
+        // Cow.getSoundVolume is 0.4 and the pitch is the voice pitch.
+        assert_eq!(loud.len(), 1);
+        assert_eq!(loud[0].0, "entity.cow.ambient");
+        assert_eq!(loud[0].1, 0.4);
+        assert!((0.8..=1.2).contains(&loud[0].2), "{}", loud[0].2);
+        assert!(quiet.is_empty(), "{quiet:?}");
+        assert_eq!(quiet_next, loud_next, "the pitch is drawn either way");
+    }
+}

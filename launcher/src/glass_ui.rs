@@ -1,16 +1,227 @@
 //! The glass look's controls ("Glass" in `docs/design-system.md`): the parts of the mockup's
 //! `components/launcher/launcher-ui.tsx` and its shell (`launcher-app.tsx`), at its sizes. White
 //! text and fills at a few opacities over [`glass`](crate::glass) plates; Geist throughout.
-use crate::{hover_fade, hover_is, keyboard, note_hover, theme::Theme, track_hover};
+use crate::{hover_fade, hover_is, keyboard, note_hover, theme::Theme, track_hover, Kind};
 use gpui::{
-    div, prelude::*, px, rgb, rgba, svg, App, Div, FontWeight, Hsla, SharedString, Stateful, Svg,
-    Window,
+    div, prelude::*, px, rgb, rgba, svg, App, ClickEvent, Div, FontWeight, Hsla, SharedString,
+    Stateful, Svg, Window,
 };
-use horizon_theme::glass::{fill, ink, radius};
+use horizon_theme::glass::{fill, ink, radius, Glass};
+use std::cell::Cell;
 
-/// White at `a`.
+thread_local! {
+    /// Whether this frame's pages draw the glass look (the dark appearance).
+    static ON: Cell<bool> = const { Cell::new(false) };
+    /// The look's colours for the player's accent.
+    static LOOK: Cell<Glass> = Cell::new(Glass::default_look());
+    /// Whether the rows being built go in a Settings card ([`flat_rows`]).
+    static FLAT: Cell<bool> = const { Cell::new(false) };
+    /// The light appearance: the glass look's white ink and fills turn to [`INK`].
+    static LIGHT: Cell<bool> = const { Cell::new(false) };
+}
+
+/// The light appearance's ink: the mockup's text on white (`#100a1f`), at the opacities the dark
+/// look gives white.
+const INK: u32 = horizon_theme::glass::ON_LIGHT;
+
+/// Set as each frame's pages start being built: whether the appearance is light.
+pub fn set_light(light: bool) {
+    LIGHT.set(light);
+}
+
+/// Whether the light appearance is drawn.
+pub fn light() -> bool {
+    LIGHT.get()
+}
+
+/// A solid control's fill (`SOLID`'s white, the sliders' knob): white, or the ink in light.
+pub fn paper() -> Hsla {
+    if light() {
+        color(INK)
+    } else {
+        gpui::white()
+    }
+}
+
+/// Text on [`paper`].
+pub fn on_paper() -> Hsla {
+    if light() {
+        gpui::white()
+    } else {
+        color(INK)
+    }
+}
+
+/// The look's green (`--live`): darker in light, to read on white plates.
+pub fn live() -> Hsla {
+    color(if light() {
+        0x15803d
+    } else {
+        horizon_theme::glass::LIVE
+    })
+}
+
+/// The look's amber (`--warn`).
+pub fn warn() -> Hsla {
+    color(if light() {
+        0xb45309
+    } else {
+        horizon_theme::glass::WARN
+    })
+}
+
+/// The look's red (`--danger`).
+pub fn danger() -> Hsla {
+    color(if light() {
+        0xdc2626
+    } else {
+        horizon_theme::glass::DANGER
+    })
+}
+
+/// Builds `f`'s rows as the mockup's `SettingRow`s, for a Settings card: `index_row` and
+/// `section_title` ask [`flat`].
+pub fn flat_rows<R>(f: impl FnOnce() -> R) -> R {
+    let was = FLAT.replace(true);
+    let built = f();
+    FLAT.set(was);
+    built
+}
+
+/// Whether rows are being built for a Settings card.
+pub fn flat() -> bool {
+    FLAT.get()
+}
+
+/// A Settings row (`SettingRow`): the name in 15 px semibold, its note in 13 px on 1.5 at 60 %,
+/// the control on the right, 40 px away; 16 px around, no fill.
+pub fn setting_row(
+    title: impl IntoElement,
+    note: Option<gpui::AnyElement>,
+    control: Option<gpui::AnyElement>,
+) -> Div {
+    div()
+        .flex()
+        .items_center()
+        .gap(px(40.))
+        .px(px(16.))
+        .py(px(16.))
+        .rounded(px(radius::LARGE))
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .flex_1()
+                .min_w_0()
+                .gap(px(4.))
+                .child(
+                    text(15., FontWeight::SEMIBOLD, ink::FULL)
+                        .line_height(px(21.))
+                        .child(title),
+                )
+                .children(note.map(|n| {
+                    text(13., FontWeight::NORMAL, 0.6)
+                        .line_height(px(19.5))
+                        .max_w(px(560.))
+                        .child(n)
+                })),
+        )
+        .children(control.map(|c| div().flex().flex_none().items_center().gap(px(8.)).child(c)))
+}
+
+/// A stacked Settings row (`SettingRow stacked`): the name and note, the control under them at
+/// full width.
+pub fn setting_row_stacked(
+    title: impl IntoElement,
+    note: Option<gpui::AnyElement>,
+    control: gpui::AnyElement,
+) -> Div {
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(16.))
+        .px(px(16.))
+        .py(px(16.))
+        .rounded(px(radius::LARGE))
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(4.))
+                .child(
+                    text(15., FontWeight::SEMIBOLD, ink::FULL)
+                        .line_height(px(21.))
+                        .child(title),
+                )
+                .children(note.map(|n| {
+                    text(13., FontWeight::NORMAL, 0.6)
+                        .line_height(px(19.5))
+                        .max_w(px(580.))
+                        .child(n)
+                })),
+        )
+        .child(div().w_full().child(control))
+}
+
+/// The mockup's `WIDE_FIELD` look on a field built for the old one: 44 px, up to 560 px wide,
+/// 12 px corners, white at 7 % (11 % while typed in), 14 px Geist.
+pub fn wide_field(field: Stateful<Div>, focused: bool) -> Stateful<Div> {
+    field
+        .w_full()
+        .max_w(px(560.))
+        .h(px(44.))
+        .px(px(16.))
+        .border_0()
+        .rounded(px(radius::ROW))
+        .bg(white(if focused { 0.11 } else { 0.07 }))
+        .font_family(horizon_theme::glass::FONT)
+        .text_size(px(14.))
+        .relative()
+        .when(focused, |d| d.child(focus_ring(radius::ROW)))
+}
+
+/// The mockup's focus ring (`.hzl :focus-visible`: 2 px of the accent's soft shade) over a
+/// focused field, inside its edge with the field's corners: GPUI has no outline, and a field
+/// clips what lies outside it. Put it in a `relative` field round at `radius`.
+pub fn focus_ring(radius: f32) -> Div {
+    div()
+        .absolute()
+        .top_0()
+        .left_0()
+        .size_full()
+        .rounded(px(radius))
+        .border_2()
+        .border_color(color(look().accent_soft))
+}
+
+/// Whether the pages being built draw the glass look: helpers with no theme at hand ask.
+pub fn on() -> bool {
+    ON.get()
+}
+
+/// Set as each frame's pages start being built.
+pub fn set_on(on: bool) {
+    ON.set(on);
+}
+
+/// Set as each frame's pages start being built: the colours for the player's accent.
+pub fn set_look(look: Glass) {
+    LOOK.set(look);
+}
+
+/// The look's colours.
+pub fn look() -> Glass {
+    LOOK.get()
+}
+
+/// White at `a`: the dark look's ink and fills. In light, the ink at `a`, so every part keeps
+/// its weight on the light plates.
 pub fn white(a: f32) -> Hsla {
-    gpui::white().opacity(a)
+    if light() {
+        color(INK).opacity(a)
+    } else {
+        gpui::white().opacity(a)
+    }
 }
 
 /// A colour of the look (`0xrrggbb`).
@@ -62,8 +273,8 @@ pub enum Tone {
 
 pub fn dot(tone: Tone) -> Div {
     let c = match tone {
-        Tone::Live => color(horizon_theme::glass::LIVE),
-        Tone::Busy | Tone::Warn => color(horizon_theme::glass::WARN),
+        Tone::Live => live(),
+        Tone::Busy | Tone::Warn => warn(),
         Tone::Accent(soft) => color(soft),
         Tone::Off => white(0.35),
     };
@@ -244,7 +455,7 @@ pub fn menu_row(
 ) -> Stateful<Div> {
     let id = id.into();
     let (fg, icon_color) = if danger {
-        let c = color(horizon_theme::glass::DANGER);
+        let c = self::danger();
         (c, c)
     } else {
         (white(ink::FULL), white(ink::NOTE))
@@ -278,13 +489,49 @@ pub fn menu_row(
     keyboard(track_hover(d, id), t)
 }
 
-/// A popover (`POPOVER`): a float plate round at 16 with 6 px around its rows.
+/// A popover (`POPOVER`): the cards' glass (the mockup's darker `hzl-float` read as a different
+/// material beside them), round at 16 with 6 px around its rows, a shadow setting it above the
+/// card under it.
 pub fn popover(width: f32) -> Div {
-    crate::glass::float(radius::POPOVER)
+    crate::glass::plate(radius::POPOVER)
+        .shadow_lg()
         .w(px(width))
         .p(px(6.))
         .flex()
         .flex_col()
+}
+
+/// What a dialog or the palette lays over the launcher (`bg-[#07050f]/50 backdrop-blur-xl`):
+/// GPUI can't blur what it drew, so the scene's blurred copy (a menu's, `hzl-float`) covers the
+/// page. The scrim goes over it.
+pub fn scrim_backdrop() -> impl IntoElement {
+    crate::glass::backdrop(crate::glass::Kind::Float, 0.)
+}
+
+/// The scrim over [`scrim_backdrop`]: 50 % in the dark look, 20 % in light, so the dimmed
+/// launcher stays day-lit.
+pub fn scrim() -> Hsla {
+    color(horizon_theme::glass::SCRIM).opacity(if light() { 0.2 } else { 0.5 })
+}
+
+/// A dialog's plate, round at `radius` (`hzl-glass` over the scrim): its piece of the scene
+/// under the scrim's dimming, then the plates' white. The content goes after it.
+pub fn dialog_plate(radius: f32) -> Div {
+    let layer = |c: Hsla| {
+        div()
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full()
+            .rounded(px(radius))
+            .bg(c)
+    };
+    crate::glass::plate(radius)
+        // Light plates are already day-lit: no dimming under them.
+        .child(layer(
+            color(horizon_theme::glass::SCRIM).opacity(if light() { 0. } else { 0.5 }),
+        ))
+        .child(layer(white(horizon_theme::glass::TINT)))
 }
 
 /// Text on a white button (`SOLID`): `#100a1f`, medium.
@@ -307,50 +554,16 @@ pub fn solid(
             .h(px(h))
             .px(px(16.))
             .rounded(px(radius::CONTROL))
-            .bg(gpui::white())
+            .bg(paper())
             .cursor_pointer()
             .hover(|s| s.opacity(0.9))
             .font_family(horizon_theme::glass::FONT)
             .text_size(px(size))
             .font_weight(FontWeight::MEDIUM)
-            .text_color(color(horizon_theme::glass::ON_LIGHT))
+            .text_color(on_paper())
             .child(label.into()),
         t,
     )
-}
-
-/// Horizon's mark on its dark tile (`MarkTile`): the mark 64 % of the tile, round at 26 %; the
-/// stems white, their reflection white at 40 %, the horizon in the accent's soft shade.
-pub fn mark_tile(size: f32, accent_soft: u32) -> Div {
-    let inner = size * 0.64;
-    let u = inner / 16.;
-    let bar = |x: f32, y: f32, w: f32, h: f32, c: Hsla| {
-        div()
-            .absolute()
-            .left(px(x * u))
-            .top(px(y * u))
-            .w(px(w * u))
-            .h(px(h * u))
-            .bg(c)
-    };
-    div()
-        .flex()
-        .flex_none()
-        .items_center()
-        .justify_center()
-        .size(px(size))
-        .rounded(px((size * 0.26).round()))
-        .bg(color(0x0c0818))
-        .child(
-            div()
-                .relative()
-                .size(px(inner))
-                .child(bar(4., 3., 2., 4., white(1.)))
-                .child(bar(10., 3., 2., 4., white(1.)))
-                .child(bar(4., 8., 2., 4., white(0.4)))
-                .child(bar(10., 8., 2., 4., white(0.4)))
-                .child(bar(1., 7., 14., 1., color(accent_soft))),
-        )
 }
 
 /// A big square button with one icon (`BIG_ICON`): 56 px, white at 8 %, 13 % under the pointer;
@@ -427,6 +640,39 @@ pub fn menu_item(
     if locked {
         return d.opacity(0.4);
     }
+    keyboard(track_hover(d, id), t)
+}
+
+/// A dropdown's choice: its name on one line, 36 tall, the accent's tick on the one `picked`.
+pub fn pick_row(
+    id: impl Into<SharedString>,
+    label: impl Into<SharedString>,
+    picked: bool,
+    t: &Theme,
+) -> Stateful<Div> {
+    let id = id.into();
+    let d = div()
+        .id(id.clone())
+        .relative()
+        .flex()
+        .items_center()
+        .justify_between()
+        .gap(px(12.))
+        .h(px(36.))
+        .w_full()
+        .px(px(12.))
+        .rounded(px(radius::CONTROL))
+        .cursor_pointer()
+        .child(hover_fade(&id, layer(radius::CONTROL), |d, a| {
+            d.bg(white(0.07 * a))
+        }))
+        .child(
+            text(14., FontWeight::NORMAL, ink::FULL)
+                .relative()
+                .truncate()
+                .child(label.into()),
+        )
+        .children(picked.then(|| icon("tick-02", 17., color(look().accent_soft)).relative()));
     keyboard(track_hover(d, id), t)
 }
 
@@ -581,6 +827,7 @@ pub fn field(focused: bool, invalid: bool) -> Div {
         })
     };
     div()
+        .relative()
         .flex()
         .items_center()
         .h(px(44.))
@@ -601,16 +848,17 @@ pub fn toggle(
     on_accent: u32,
     t: &Theme,
 ) -> Stateful<Div> {
+    let id = id.into();
     let knob = div()
         .absolute()
         .top(px(4.))
-        .left(px(if on { 20. } else { 4. }))
         .size(px(16.))
         .rounded_full()
         .bg(if on { color(on_accent) } else { white(0.7) });
+    let knob = crate::motion::knob(&id, on, knob, 4., 16.);
     keyboard(
         div()
-            .id(id.into())
+            .id(id)
             .relative()
             .flex_none()
             .w(px(40.))
@@ -625,4 +873,133 @@ pub fn toggle(
             .child(knob),
         t,
     )
+}
+
+/// The generic [`button`](crate::button) in the glass look, 36 px: `Primary` is the mockup's
+/// `PLAY` (the accent, semibold), `Secondary` its `QUIET` (white at 8 %, 14 % under the pointer),
+/// `Ghost` its text button (white at 70 %, white on 6 % under the pointer).
+pub fn button(id: SharedString, label: SharedString, kind: Kind, t: &Theme) -> Stateful<Div> {
+    let look = look();
+    let d = div()
+        .id(id.clone())
+        .relative()
+        .flex()
+        .flex_none()
+        .items_center()
+        .justify_center()
+        .gap(px(8.))
+        .h(px(36.))
+        .px(px(14.))
+        .rounded(px(radius::CONTROL))
+        .cursor_pointer()
+        .font_family(horizon_theme::glass::FONT)
+        .text_size(px(14.))
+        .line_height(px(20.))
+        .font_weight(FontWeight::MEDIUM);
+    let d = match kind {
+        Kind::Primary => d
+            .bg(color(look.accent))
+            .text_color(color(look.on_accent))
+            .font_weight(FontWeight::SEMIBOLD)
+            .hover(|s| s.opacity(0.92)),
+        Kind::Secondary => d
+            .bg(white(fill::BUTTON))
+            .text_color(white(ink::FULL))
+            .hover(|s| s.bg(white(fill::BUTTON_HOVER))),
+        Kind::Ghost => d
+            .text_color(white(ink::BODY))
+            .hover(|s| s.bg(white(0.06)).text_color(white(ink::FULL))),
+    };
+    keyboard(track_hover(d.child(label), id), t)
+}
+
+/// A segmented control in the glass look (the server dialog's difficulty): white at 4 % round
+/// at 14, 4 px around 32 px options round at 10; the chosen one white at 14 %, medium, the others
+/// white at 65 %, white under the pointer.
+pub fn segments<T: Copy + PartialEq + 'static>(
+    id: &'static str,
+    options: &[(T, &'static str)],
+    current: T,
+    t: &Theme,
+    on_pick: impl Fn(T, &mut Window, &mut App) + Clone + 'static,
+) -> Stateful<Div> {
+    div()
+        .id(id)
+        .flex()
+        .flex_none()
+        .gap(px(4.))
+        .p(px(4.))
+        .rounded(px(radius::LARGE))
+        .bg(white(0.04))
+        .children(options.iter().map(|&(value, label)| {
+            let active = current == value;
+            let pick = on_pick.clone();
+            let d = div()
+                .id(SharedString::from(format!("{id}-{label}")))
+                .flex()
+                .items_center()
+                .h(px(32.))
+                .px(px(14.))
+                .rounded(px(radius::CONTROL))
+                .cursor_pointer()
+                .font_family(horizon_theme::glass::FONT)
+                .text_size(px(14.))
+                .line_height(px(20.))
+                .when(active, |d| {
+                    d.bg(white(fill::BUTTON_HOVER))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(white(ink::FULL))
+                })
+                .when(!active, |d| {
+                    d.text_color(white(ink::MUTED))
+                        .hover(|s| s.text_color(white(ink::FULL)))
+                })
+                .child(crate::tr(label))
+                .on_click(move |_: &ClickEvent, window, cx| pick(value, window, cx));
+            keyboard(d, t)
+        }))
+}
+
+/// A page's head (`PageHead`): its title in Bricolage, 46 px at this width
+/// (`clamp(2.25rem, 3.6vw, 3rem)`), its note under it at 15 px on 1.55, white at 70 %, at most
+/// 62 characters wide; 40 px above, 28 below.
+pub fn page_head(title: impl Into<SharedString>, note: impl Into<SharedString>) -> Div {
+    let note: SharedString = note.into();
+    div()
+        .flex()
+        .flex_col()
+        .pt(px(40. - crate::glass::CONTENT_INSET))
+        .mb(px(28.))
+        .child(
+            div()
+                .font_family(horizon_theme::glass::DISPLAY_FONT)
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_size(px(46.))
+                .line_height(px(46.))
+                .text_color(white(ink::FULL))
+                .child(title.into()),
+        )
+        .when(!note.is_empty(), |d| {
+            d.child(
+                text(15., FontWeight::NORMAL, ink::BODY)
+                    .mt(px(12.))
+                    .max_w(px(615.))
+                    .line_height(px(23.25))
+                    .child(note),
+            )
+        })
+}
+
+/// A small heading in a card (`h3`): 13 px, medium, white at 70 %.
+pub fn card_heading(label: impl Into<SharedString>) -> Div {
+    text(13., FontWeight::MEDIUM, ink::BODY)
+        .line_height(px(19.5))
+        .child(label.into())
+}
+
+/// A card's note: 13 px on 1.5, white at 55 %.
+pub fn card_note(label: impl Into<SharedString>) -> Div {
+    text(13., FontWeight::NORMAL, ink::QUIET)
+        .line_height(px(19.5))
+        .child(label.into())
 }

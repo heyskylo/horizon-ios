@@ -35,6 +35,18 @@ pub struct Entry {
     pub dir: PathBuf,
 }
 
+/// The game mode a server's `server.toml` sets (`[world] game_mode`), read from the file
+/// without asking `horizon-server`: the Servers page's list says it for each stopped server.
+pub fn game_mode(dir: &Path) -> Option<String> {
+    let text = fs::read_to_string(dir.join("server.toml")).ok()?;
+    let config: toml::Value = toml::from_str(&text).ok()?;
+    config
+        .get("world")?
+        .get("game_mode")?
+        .as_str()
+        .map(str::to_string)
+}
+
 fn list_file() -> PathBuf {
     backend::data_dir().join("servers.json")
 }
