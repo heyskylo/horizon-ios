@@ -10575,7 +10575,9 @@ fn client_has_level(logged_in: bool, reconfiguring: Option<u64>) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{client_has_level, hold_server_fire, keep_client_state, remote_use_swings, synced_local_use};
+    use super::{
+        client_has_level, hold_server_fire, keep_client_state, remote_use_swings, synced_local_use,
+    };
     use horizon_client::{
         containers::{Beacon, BlockEntity},
         items::ItemStack,
