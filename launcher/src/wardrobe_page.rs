@@ -183,12 +183,18 @@ fn title_case(id: &str) -> String {
         .join(" ")
 }
 
-/// The service answered: what it keeps for Show my cosmetics is what the game's switch shows and
-/// what the game knows is confirmed, unless a newer wish still waits to be sent.
+/// The service answered: the game learns whether the account owns a cosmetic, and what it keeps
+/// for Show my cosmetics is what the game's switch shows and what the game knows is confirmed,
+/// unless a newer wish still waits to be sent.
 fn tell_the_game(uuid: &str, saved: &Saved) {
     let Some(me) = &saved.me else {
         return;
     };
+    let home = backend::game_home();
+    // Whether it owns a cosmetic: the game shows others' to an owner who chose nothing.
+    if let Err(e) = prefs::set_owned(&home, uuid, !me.owned.is_empty()) {
+        eprintln!("Horizon: the cosmetics ownership is not saved: {e}");
+    }
     if saved
         .pending
         .iter()
@@ -196,7 +202,6 @@ fn tell_the_game(uuid: &str, saved: &Saved) {
     {
         return;
     }
-    let home = backend::game_home();
     if let Err(e) = prefs::set_confirmed(&home, uuid, me.visible) {
         eprintln!("Horizon: the cosmetics confirmation is not saved: {e}");
     }
@@ -949,7 +954,7 @@ impl Launcher {
                     .child(player)
                     .child(owned),
             )
-            .child(self.wardrobe_switches(me.visible, cx))
+            .child(self.wardrobe_switches(me.visible, !me.owned.is_empty(), cx))
             .children(self.purchase_history(w.saved.catalogue.as_ref(), &me));
         let toast = w
             .toast
@@ -1047,8 +1052,9 @@ impl Launcher {
     }
 
     /// Show my cosmetics (the account's, on the service), and the game's two switches about
-    /// other players.
-    fn wardrobe_switches(&self, visible: bool, cx: &mut Context<Self>) -> Div {
+    /// other players. Others' cosmetics not chosen yet show as the game shows them: hidden unless
+    /// the account `owns` a cosmetic.
+    fn wardrobe_switches(&self, visible: bool, owns: bool, cx: &mut Context<Self>) -> Div {
         let t = self.theme;
         let home = backend::game_home();
         let prefs = Prefs::load(&home);
@@ -1078,7 +1084,7 @@ impl Launcher {
                 cx.refresh_windows();
             }
         };
-        let hidden = prefs.others == Others::Hidden;
+        let hidden = Others::effective(prefs.others, owns) == Others::Hidden;
         glass::plate(radius::PANEL)
             .flex()
             .flex_wrap()
@@ -1104,11 +1110,11 @@ impl Launcher {
                     "Others look like plain players to you. Also in the game's Horizon settings.",
                 )
                 .on_click(save(Prefs {
-                    others: if hidden {
+                    others: Some(if hidden {
                         Others::Shown
                     } else {
                         Others::Hidden
-                    },
+                    }),
                     ..prefs
                 })),
             )

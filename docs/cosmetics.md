@@ -2,8 +2,10 @@
 
 Small items Horizon players wear: a hat, something on the back, a shirt, a pet on the shoulder, a
 style for their name tag. They are drawn by Horizon clients only and change nothing in the game.
-**On by default** (Ludovic, 2026-11-04: on when the shop opens), other players' and your own shown;
-the settings below hide them.
+**On by default** (Ludovic, 2026-11-04: on when the shop opens), your own shown. Other players'
+show by default only if your account owns a cosmetic: a player who owns none sees a vanilla game,
+and the game asks the service nothing about other players (CONTRIBUTING.md: Horizon-only features
+that change the look are off by default). The settings below change both.
 
 ## Rules
 
@@ -109,7 +111,18 @@ does the asking.
     notes what the service confirmed in `cosmetics-visible.txt`; offline it tries again after 15 s,
     doubling to 10 minutes, until the service takes it. An unchanged switch sends nothing.
   - *Other players' cosmetics: Shown → Name tags only → Hidden*. Hidden, the game asks for nothing
-    about them; name tags only, their name tag styles show and nothing on their bodies.
+    about them; name tags only, their name tag styles show and nothing on their bodies. Until the
+    player presses it there is no `cosmeticsOthers` line, and it follows ownership
+    (`prefs::Others::effective`): *Shown* if the signed-in account owns a cosmetic, else *Hidden*.
+    The button shows that value; pressing it writes the line, which then wins.
+  - **Ownership** (`horizon_cosmetics::account::owns`): once a run, in a world, the game signs in
+    as for *My cosmetics* and reads `GET /v1/me`; an account whose `owned` list has anything owns
+    one. The answer is kept per account in `cosmetics-owned.txt` (beside `cosmetics-visible.txt`;
+    the launcher's Wardrobe writes it too) and used at the next start until the service answers.
+    Not known yet, failed (retried after 15 s, doubling to 10 minutes) or offline: not owning. An
+    answer that says owns shows others' at once, without a restart. Only one of the two sign-ins
+    runs at a time (Mojang keeps one joined server id per account). `HORIZON_COSMETICS_LOCAL`
+    counts as owning.
   - *Others' auras and trails*, off by default (no item of that kind exists yet).
 - **Name tag styles** (`game/names.rs`): the mark, 8 text pixels square, before the name and a
   one-pixel line in the style's colour under the name's background, in the name tag's own pass
@@ -180,7 +193,9 @@ page stays hidden.
   without them), *Hide other players' cosmetics* and *Show other players' auras and trails* (off by
   default). The last two are lines of the game's `horizon-extras.txt` (`horizon_cosmetics::prefs`:
   `cosmeticsOthers` = `shown`, `name_tags` or `hidden`, `cosmeticsAuras`), the same ones the
-  game's settings change.
+  game's settings change. With no `cosmeticsOthers` line, *Hide other players' cosmetics* shows
+  what the game does: on unless the account owns something. Each answer of the service also
+  notes the account's ownership in the game's `cosmetics-owned.txt`.
 - **States**: offline, the page keeps working from what's kept on disk and says how many changes
   wait to sync; a service failure says what you wear still shows in the game, with *Try again* and
   *Copy details* (host, status, time).
