@@ -857,12 +857,17 @@ impl Mob {
                 && (self.on_ground || climbable)
                 && !self.fluids_swimming();
             if produced {
+                // `getMovementEmission().emitsSounds()`: the footfall is played
+                // only for a type whose emission is `ALL`, while the step game
+                // event below is sent by `EVENTS` types too.
+                let heard = super::ai::movement_sounds(self);
                 if super::equine::hoof_steps(self.species()) {
-                    if !self.silent {
+                    if heard && !self.silent {
                         super::equine::play_step(self, w, legacy, legacy_state, events);
                     }
                 } else if let Some((sound, volume, pitch)) =
                     super::ai::step_sound(self, w, legacy, legacy_state)
+                    && heard
                     && !self.silent
                 {
                     let at = [self.position.x, self.position.y, self.position.z];
@@ -1909,12 +1914,14 @@ mod tests {
                 collision: &collision,
                 data: &data,
                 player: None,
+                controlling_player_movement: None,
                 nearest_player: None,
                 others: &[],
                 dragon: None,
                 leash_boats: &[],
                 others_grid: None,
                 others_index: None,
+                others_villagers: None,
                 daylight: true,
                 monsters_burn: false,
                 game_time: 1000,
@@ -2021,12 +2028,14 @@ mod tests {
             collision: &collision,
             data: &data,
             player: None,
+            controlling_player_movement: None,
             nearest_player: None,
             others: &[],
             dragon: None,
             leash_boats: &[],
             others_grid: None,
             others_index: None,
+            others_villagers: None,
             daylight: true,
             monsters_burn: false,
             game_time: 1000,
@@ -2506,6 +2515,70 @@ mod tests {
                 m.extra.fall_flying = true;
                 assert_eq!(m.on_climbable(w), gliding_holds, "{block}: while gliding");
             }
+        });
+    }
+    /// `Entity.applyMovementEmissionAndPlaySound` asks `getMovementEmission`:
+    /// a squid, a glow squid and a bat answer `EVENTS`, so a beached squid
+    /// flopping across stone sends the `minecraft:step` game event and no
+    /// sound, where a sheep walking the same block is heard at the block's
+    /// step volume times 0.15. A silverfish's own `playStepSound` names
+    /// `entity.silverfish.step` and is never heard either, and a shulker, whose
+    /// emission is `NONE`, sends nothing at all.
+    #[test]
+    fn a_squid_and_a_bat_step_without_a_sound() {
+        let build = |world: &mut crate::world::World,
+                     registry: &horizon_world::registry::BlockRegistry| {
+            world.chunks.insert(
+                (0, 0),
+                std::sync::Arc::new(crate::chunk::Chunk::empty(0, 0)),
+            );
+            let id = registry.default_state("minecraft:stone").unwrap();
+            for x in 0..=8 {
+                for z in 0..=8 {
+                    world.set(x, 0, z, id).unwrap();
+                }
+            }
+        };
+        crate::mobs::world::with_built_test_world(&[], build, |w, types| {
+            // One step's worth of walking: 2 blocks times the 0.6 factor, over
+            // the 1.0 the first step waits for.
+            let walk = |id: &str| {
+                let kind = std::sync::Arc::new(types.types[id].clone());
+                let mut m = Mob::new(1, kind, Vec3::new(0.5, 1.0, 0.5), 0.0);
+                m.on_ground = true;
+                m.supporting = Some([0, 0, 0]);
+                let mut events = Vec::new();
+                m.movement_emission(w, Vec3::new(2.0, 0.0, 0.0), &mut events);
+                events
+            };
+            let heard = |events: &[MobEvent]| {
+                events.iter().find_map(|e| match e {
+                    MobEvent::Sound(sound, _, volume, pitch) => Some((*sound, *volume, *pitch)),
+                    _ => None,
+                })
+            };
+            let stepped = |events: &[MobEvent]| {
+                events
+                    .iter()
+                    .any(|e| matches!(e, MobEvent::GameEvent { event, .. } if *event == "minecraft:step"))
+            };
+            for quiet in ["minecraft:squid", "minecraft:glow_squid", "minecraft:bat"] {
+                let events = walk(quiet);
+                assert_eq!(heard(&events), None, "{quiet} is silent");
+                assert!(stepped(&events), "{quiet} still sends the step event");
+            }
+            // A silverfish asks for its own step sound and its type's emission
+            // never plays it.
+            let events = walk("minecraft:silverfish");
+            assert_eq!(heard(&events), None);
+            assert!(stepped(&events));
+            // The same walk from a type whose emission is ALL is heard.
+            let events = walk("minecraft:sheep");
+            assert_eq!(heard(&events), Some(("entity.sheep.step", 0.15, 1.0)));
+            // Shulker.getMovementEmission is NONE: not even the event.
+            let events = walk("minecraft:shulker");
+            assert_eq!(heard(&events), None);
+            assert!(!stepped(&events), "a shulker emits nothing");
         });
     }
 }

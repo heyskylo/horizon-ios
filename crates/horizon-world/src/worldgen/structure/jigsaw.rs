@@ -21,9 +21,9 @@ use horizon_core::{
 use serde_json::Value;
 use std::{
     cell::RefCell,
-    collections::{BTreeMap, HashMap, VecDeque},
+    collections::{BTreeMap, BTreeSet, HashMap, VecDeque},
     rc::Rc,
-    sync::{Arc, OnceLock, RwLock},
+    sync::{Arc, Mutex, OnceLock, RwLock},
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -552,8 +552,12 @@ impl Pools {
                     match PoolElement::decode(&entry["element"], resources, bindings, None) {
                         Ok(element) => Arc::new(element),
                         Err(error) => {
-                            if std::env::var_os("HORIZON_JIGSAW_DEBUG").is_some() {
-                                eprintln!("pool {name}: {error}");
+                            // Vanilla refuses the data pack; here every structure using the
+                            // pool stops generating, so the reason is the only clue a mod author gets.
+                            // Once per pool: each worker decodes its own copy.
+                            static WARNED: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
+                            if WARNED.lock().unwrap().insert(name.to_owned()) {
+                                log::warn!("Horizon: template pool {name} is left out: {error}");
                             }
                             return None;
                         }

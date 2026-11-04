@@ -535,28 +535,40 @@ impl Game<'_> {
     /// collision, which sets a TNT minecart off.
     fn cart_entity_collisions(&self, c: &Minecart) -> Vec<Aabb> {
         let near = c.bounds().inflate(Vec3::new(2.0, 2.0, 2.0));
+        // Every cart asks about every entity of the level each tick, and the box
+        // turns nearly all of them away: it is tested first, before a mob's
+        // pushable state, and only the boxes kept are collected.
+        let close = |b: &Aabb| b.intersects(near);
         let mut boxes: Vec<Aabb> = self
             .carts
             .iter()
             .filter(|o| o.id != c.id)
             .map(Minecart::bounds)
-            .chain(self.boats.iter().map(super::boats::Boat::bounds))
+            .filter(close)
+            .chain(
+                self.boats
+                    .iter()
+                    .map(super::boats::Boat::bounds)
+                    .filter(close),
+            )
             .chain(
                 self.mobs
                     .iter()
-                    .filter(|m| {
-                        !m.removed
-                            && m.extra.mount != Some(c.id)
+                    .filter(|m| !m.removed && m.extra.mount != Some(c.id))
+                    .map(|m| (m, m.bounds()))
+                    .filter(|(m, b)| {
+                        close(b)
                             && (m.pushable()
                                 || m.species() == horizon_client::mobs::Species::Shulker
                                     && m.alive())
                     })
-                    .map(|m| m.bounds()),
+                    .map(|(_, b)| b),
             )
             .collect();
         if self.riding != Some(c.id)
             && let Some(p) = self.player.as_ref()
             && !self.spectator()
+            && close(&p.bounds())
         {
             boxes.push(p.bounds());
         }
@@ -572,10 +584,10 @@ impl Game<'_> {
                             && !g.spectator()
                             && g.vehicle != Some(c.id)
                     })
-                    .map(|g| g.bounds()),
+                    .map(|g| g.bounds())
+                    .filter(close),
             );
         }
-        boxes.retain(|b| b.intersects(near));
         boxes
     }
     /// Entity.move for a cart: collisions zero the blocked components, the world border's walls
@@ -586,7 +598,14 @@ impl Game<'_> {
             binding: self.collision,
             subject: None,
         };
-        let entities = self.cart_entity_collisions(c);
+        // A zero move stays zero whatever surrounds it (`Entity.collide`, and the
+        // step-up needs a blocked horizontal move): a cart standing on its rails,
+        // as most do, gathers no entity boxes.
+        let entities = if delta.length_squared() == 0.0 {
+            Vec::new()
+        } else {
+            self.cart_entity_collisions(c)
+        };
         let mut scene = horizon_client::collisions::EntityCollisions {
             blocks: scene,
             entities: &entities,
@@ -1203,8 +1222,8 @@ impl Game<'_> {
             );
         }
     }
-    /// `applyEffectsFromBlocks` for a cart: a bubble column lifts or drags it,
-    /// and `onInsideBubbleColumn` resets the fall distance.
+    /// `applyEffectsFromBlocks` for a cart: a bubble column lifts or drags it
+    /// and resets the fall distance.
     fn cart_block_effects(&self, c: &mut Minecart) {
         if c.push_by_bubble_column(
             &self.world,
@@ -1290,6 +1309,10 @@ impl Game<'_> {
         if c.in_water {
             c.fall_distance = 0.0;
         }
+        // Entity.checkInsideBlocks runs once after the cart tick, sweeping every
+        // movement through powder snow. PowderSnowBlock uses getKnownMovement,
+        // which is getDeltaMovement for a minecart.
+        self.entity_powder_snow_particles(c.previous, c.position, c.bounds(), c.velocity, false);
         if self.minecart_improvements() {
             // MinecartTNT.tick reads the final delta after AbstractMinecart.tick,
             // including the pushes and fluid interaction after the track steps.
@@ -1604,13 +1627,11 @@ impl Game<'_> {
         let candidates: Vec<u32> = (0..self.mobs.len())
             .filter(|&j| {
                 let m = &self.mobs[j];
-                if m.removed || !m.pushable() || m.extra.mount == Some(id) {
+                // The box first: it turns away nearly every mob of the level.
+                if m.removed || m.extra.mount == Some(id) || !hitbox.intersects(m.bounds()) {
                     return false;
                 }
-                if !hitbox.intersects(m.bounds()) {
-                    return false;
-                }
-                pushable_by(None, teams.of(Who::Mob(m.id)), true)
+                m.pushable() && pushable_by(None, teams.of(Who::Mob(m.id)), true)
             })
             .map(|j| self.mobs[j].id)
             .collect();
@@ -2233,7 +2254,9 @@ impl Game<'_> {
             c.hurt_dir = -c.hurt_dir;
             c.hurt_time = 10;
             c.damage += damage * 10.0;
-            creative || c.damage > 40.0
+            // MinecartTNT.shouldSourceDestroy: fire and explosions destroy
+            // (so ignite) a TNT cart whatever damage it has taken.
+            cart_is_destroyed(creative, c.damage, fire && c.kind == CartKind::Tnt)
         };
         if destroyed {
             let speed = self.carts[i].velocity.x * self.carts[i].velocity.x
@@ -2746,6 +2769,13 @@ impl Minecart {
     }
 }
 
+/// `VehicleEntity.hurtServer`'s destroy test: a creative player, damage past
+/// 40, or (`MinecartTNT.shouldSourceDestroy`) fire or an explosion hitting a
+/// TNT cart.
+fn cart_is_destroyed(creative: bool, damage: f32, ignites_tnt: bool) -> bool {
+    creative || damage > 40.0 || ignites_tnt
+}
+
 /// `MinecartTNT.tick`'s collision detonation: a cart still moving at a tenth
 /// of a block a tick or more when a block stops it blows up.
 fn tnt_ignites_by_collision(horizontal_collision: bool, speed_sqr: f64) -> bool {
@@ -2767,6 +2797,15 @@ mod tests {
             super::cart_push_from(Vec3::new(0.13, 0.0, 0.0), Vec3::new(0.5, 0.0, 0.0)).unwrap();
         assert!((xa + 0.05).abs() < 1e-6 && za == 0.0, "{xa} {za}");
         assert!(super::cart_push_from(Vec3::ZERO, Vec3::ZERO).is_none());
+    }
+    /// Issue #6431: a blast too weak to push a cart past 40 damage still
+    /// primes a TNT cart.
+    #[test]
+    fn a_blast_ignites_a_tnt_cart_however_little_damage_it_does() {
+        assert!(cart_is_destroyed(false, 10.0, true));
+        assert!(!cart_is_destroyed(false, 10.0, false));
+        assert!(cart_is_destroyed(false, 40.5, false));
+        assert!(!cart_is_destroyed(false, 40.0, false));
     }
     /// The collision detonation of a TNT minecart needs both the collision and
     /// a cart that was still moving: a nudge below a tenth of a block a tick
