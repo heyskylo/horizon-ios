@@ -457,7 +457,9 @@ impl Game<'_> {
         motion.flying_speed = g.flying_speed;
         // FireworkRocketItem.use boosts only a gliding player.
         motion.fall_flying = g.fall_flying;
-        motion.invulnerable = motion.may_fly;
+        // A player frozen for a hand-over takes no damage (`Abilities.invulnerable`, which the
+        // void and `/kill` still pass), so its record stays true until the release.
+        motion.invulnerable = motion.may_fly || g.handover.is_some();
         // `ServerPlayer.isInvulnerableTo`'s connection term, as of now.
         motion.client_loaded = g.client_loaded();
         let _ = motion.set_health(g.health, false);
@@ -3929,9 +3931,13 @@ impl Game<'_> {
             self.lan_map_updates(host, conn);
             host.hub.flush_progress(conn);
             self.guest_dig_feedback(host, conn);
-            self.guest_pickups(host, gi);
-            self.guest_arrows(host, gi);
-            self.guest_orbs(host, gi);
+            // A player frozen for a hand-over picks nothing up: what it took would be
+            // missing from its record, and lost when the release saves nothing.
+            if host.hub.guests[gi].handover.is_none() {
+                self.guest_pickups(host, gi);
+                self.guest_arrows(host, gi);
+                self.guest_orbs(host, gi);
+            }
             self.guest_die(host, gi, conn);
         }
     }

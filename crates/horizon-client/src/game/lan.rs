@@ -1536,7 +1536,9 @@ impl Game<'_> {
         guest: &mut horizon_client::lan::guest::Guest,
     ) {
         self.guest_attachments_into(guest);
-        if guest.placed {
+        // A player a proxy moved to another server (`player-release moved`) is saved
+        // there now, not here.
+        if guest.placed && !guest.released {
             let _ = self.finish_player_autosaves(true);
             if host.owner.as_ref().is_some_and(|o| o.uuid == guest.uuid) {
                 playerdata::save_owner(guest, &mut self.level, &self.world_root);
@@ -1686,7 +1688,7 @@ impl Game<'_> {
         host: &LanHost,
         guest: &horizon_client::lan::guest::Guest,
     ) {
-        if !guest.placed || self.adv.tree.list.is_empty() {
+        if !guest.placed || guest.released || self.adv.tree.list.is_empty() {
             return;
         }
         let Some(uuid) = self.records_uuid(host, guest.uuid) else {
@@ -2111,11 +2113,15 @@ impl Game<'_> {
                             "INFO",
                             &format!("{} lost connection: {}", guest.name, guest.left_reason),
                         );
-                        super::dedicated::log(
-                            "INFO",
-                            &format!("System chat: {} left the game", guest.name),
-                        );
-                    } else if self.player.is_some() && guest.placed {
+                        // A player moved to another server without `announce` was not
+                        // announced as leaving, so the line is not logged either.
+                        if !guest.quiet_leave {
+                            super::dedicated::log(
+                                "INFO",
+                                &format!("System chat: {} left the game", guest.name),
+                            );
+                        }
+                    } else if self.player.is_some() && guest.placed && !guest.quiet_leave {
                         // ServerGamePacketListenerImpl.removePlayerFromWorld.
                         let who = self.player_text(&guest.name, guest.uuid);
                         self.system_message(
