@@ -456,7 +456,9 @@
   "runs {command} after": "tmur {command} wara",
   "downloaded": "jitniżżel",
   "24/7 online": "24/7 onlajn",
-  "Updated to {version}. Restart the launcher to use it.": "Aġġornata għal {version}. Ibda mill-ġdid il-lanċjar biex tużah.",
+  "A new version is available": "Hemm verżjoni ġdida disponibbli",
+  "Download again": "Erġa' niżżel",
+  "This copy of the launcher can't replace itself. Download it again once; it updates itself after that.": "Din il-kopja tal-launcher ma tistax tissostitwixxi lilha nfisha. Erġa' niżżilha darba; wara dan taġġorna lilha nfisha.",
   "Any MCP client": "Kwalunkwe klijent MCP",
   "{name}'s cape is kept.": "Il-kappa ta’ {name} tinżamm.",
   "Not reviewed by the Horizon registry": "Mhux rivedut mir-reġistru Horizon",
@@ -635,7 +637,6 @@
   "Copied": "Ikkopjati",
   "Couldn't load patch notes. {error}": "Ma setgħetx tagħbija noti tal-garża. {error}",
   "Couldn't load releases. {error}": "Ma setgħetx tagħbija rilaxxi. {error}",
-  "Launcher updated to {version}": "Llanċjar aġġornat għal {version}",
   "Launcher {version}": "Llanċjar {version}",
   "Launcher {version}  {percent}%": "Llanċjar {version} {percent}%",
   "Manage versions": "Immaniġġja l-verżjonijiet",
@@ -842,7 +843,6 @@
   "Something went wrong.": "Xi ħaġa marret ħażin.",
   "Instances": "Istanzi",
   "Join the Discord": "Ingħaqad mal-Discord",
-  "Restart to update": "Erġa' ibda biex taġġorna",
   "Duplicate…": "Idduplika...",
   "Create a desktop shortcut": "Oħloq shortcut tad-desktop",
   "Remove the desktop shortcut": "Neħħi l-shortcut tad-desktop",
@@ -1117,5 +1117,8 @@
   "Move…": "Move…",
   "The launcher closes while your data is copied and verified, then reopens. Old folders are kept and still use disk space until you verify the move and remove them yourself.": "The launcher closes while your data is copied and verified, then reopens. Old folders are kept and still use disk space until you verify the move and remove them yourself.",
   "Open the shop": "Iftaħ il-ħanut",
-  "You don't own any cosmetics yet.": "Għad m'għandekx kożmetiċi."
+  "You don't own any cosmetics yet.": "Għad m'għandekx kożmetiċi.",
+  "Claim for free": "Ħudu b'xejn",
+  "The shop's payment provider doesn't serve your country, so you can claim the Founder Set here for free.": "Il-fornitur tal-ħlas tal-ħanut ma jaqdix lil pajjiżek, għalhekk tista' tieħu s-Sett tal-fundatur hawn b'xejn.",
+  "The Founder Set is yours.": "Is-Sett tal-fundatur huwa tiegħek."
 }

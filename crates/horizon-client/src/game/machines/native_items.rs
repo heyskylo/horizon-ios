@@ -65,7 +65,7 @@ impl Game<'_> {
         let mut rest = Some(one);
         for &slot in slots {
             let Some(one) = rest.take() else { break };
-            rest = self.move_in_item(None, view, one, slot).0;
+            rest = self.move_in_item(None, view, one, slot, Some(face)).0;
         }
         rest
     }

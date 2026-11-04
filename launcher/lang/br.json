@@ -456,7 +456,9 @@
   "runs {command} after": "redek {command} goude",
   "downloaded": "pellgarget",
   "24/7 online": "24/7 enlinenn",
-  "Updated to {version}. Restart the launcher to use it.": "Hizivaet da {version}. Adloc'hit al lañser evit e arverañ.",
+  "A new version is available": "Ur stumm nevez a zo",
+  "Download again": "Pellgargañ en-dro",
+  "This copy of the launcher can't replace itself. Download it again once; it updates itself after that.": "N'hall ket an eilad-mañ eus al loc'her en em erlec'hiañ. Pellgargit anezhañ en-dro ur wech; goude-se en em hiziva e-unan.",
   "Any MCP client": "Ne vern peseurt kliant MCP",
   "{name}'s cape is kept.": "{name} a zo miret.",
   "Not reviewed by the Horizon registry": "N'eo ket bet adwelet gant ar marilh Horizon",
@@ -635,7 +637,6 @@
   "Copied": "Eilet",
   "Couldn't load patch notes. {error}": "N'haller ket kargañ notennoù ar patch. {error}",
   "Couldn't load releases. {error}": "N'haller ket kargañ an embannadurioù. {error}",
-  "Launcher updated to {version}": "Hizivaet eo bet al lañser da {version}",
   "Launcher {version}": "Lañser {version}",
   "Launcher {version}  {percent}%": "Lañser {version} {percent}%",
   "Manage versions": "Merañ ar stummoù",
@@ -842,7 +843,6 @@
   "Something went wrong.": "Un dra bennak a zo aet fall.",
   "Instances": "Staliadurioù",
   "Join the Discord": "Kemer perzh er Discord",
-  "Restart to update": "Adloc'hañ evit hizivaat",
   "Duplicate…": "Eilañ...",
   "Create a desktop shortcut": "Krouiñ ur berradenn evit ar burev",
   "Remove the desktop shortcut": "Dilemel ar berradenn burev",
@@ -1117,5 +1117,8 @@
   "Move…": "Move…",
   "The launcher closes while your data is copied and verified, then reopens. Old folders are kept and still use disk space until you verify the move and remove them yourself.": "The launcher closes while your data is copied and verified, then reopens. Old folders are kept and still use disk space until you verify the move and remove them yourself.",
   "Open the shop": "Digeriñ ar stal",
-  "You don't own any cosmetics yet.": "N'ho peus kosmetik ebet c'hoazh."
+  "You don't own any cosmetics yet.": "N'ho peus kosmetik ebet c'hoazh.",
+  "Claim for free": "Kaout evit netra",
+  "The shop's payment provider doesn't serve your country, so you can claim the Founder Set here for free.": "Pourchaser paeañ ar stal ne servij ket ho pro, setu e c'hallit kaout Lakaet ar grouerien amañ evit netra.",
+  "The Founder Set is yours.": "Lakaet ar grouerien a zo deoc'h."
 }

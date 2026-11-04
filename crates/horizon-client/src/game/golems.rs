@@ -103,7 +103,7 @@ impl Game<'_> {
         else {
             return;
         };
-        let me = self.player_entity();
+        let me = self.player_entity_for("minecraft:summoned_entity");
         let half = f64::from(built.width()) / 2.0;
         let height = f64::from(built.height());
         let [x, y, z] = me.position;

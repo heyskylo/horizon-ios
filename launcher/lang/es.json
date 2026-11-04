@@ -458,7 +458,9 @@
   "runs {command} after": "ejecuta después {command}",
   "downloaded": "descargados",
   "24/7 online": "en línea 24/7",
-  "Updated to {version}. Restart the launcher to use it.": "Actualizado a {version}. Reinicia el lanzador para usarlo.",
+  "A new version is available": "Hay una nueva versión disponible",
+  "Download again": "Descargar de nuevo",
+  "This copy of the launcher can't replace itself. Download it again once; it updates itself after that.": "Esta copia del launcher no puede reemplazarse a sí misma. Descárgalo de nuevo una vez; después se actualiza solo.",
   "Any MCP client": "Cualquier cliente MCP",
   "{name}'s cape is kept.": "Se conserva la capa de {name}.",
   "Not reviewed by the Horizon registry": "No revisado por el registro de Horizon",
@@ -637,7 +639,6 @@
   "Copied": "Copiado",
   "Couldn't load patch notes. {error}": "Couldn't load patch notes. {error}",
   "Couldn't load releases. {error}": "Couldn't load releases. {error}",
-  "Launcher updated to {version}": "Launcher updated to {version}",
   "Launcher {version}": "Launcher {version}",
   "Launcher {version}  {percent}%": "Launcher {version}  {percent}%",
   "Manage versions": "Administrar versiones",
@@ -844,7 +845,6 @@
   "Something went wrong.": "Algo salió mal.",
   "Instances": "Instancias",
   "Join the Discord": "Únete al Discord",
-  "Restart to update": "Reiniciar para actualizar",
   "Duplicate…": "Duplicar…",
   "Create a desktop shortcut": "Crear un acceso directo en el escritorio",
   "Remove the desktop shortcut": "Quitar el acceso directo del escritorio",
@@ -1117,5 +1117,8 @@
   "Move and restart": "Mover y reiniciar",
   "Could not open the data folder: {error}": "Could not open the data folder: {error}",
   "Open the shop": "Abrir la tienda",
-  "You don't own any cosmetics yet.": "Aún no tienes ningún cosmético."
+  "You don't own any cosmetics yet.": "Aún no tienes ningún cosmético.",
+  "Claim for free": "Conseguir gratis",
+  "The shop's payment provider doesn't serve your country, so you can claim the Founder Set here for free.": "El proveedor de pagos de la tienda no opera en tu país, así que puedes conseguir el Set fundador aquí gratis.",
+  "The Founder Set is yours.": "El Set fundador es tuyo."
 }
