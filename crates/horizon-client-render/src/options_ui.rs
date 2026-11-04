@@ -272,13 +272,16 @@ impl Opt {
             Opt::PadAdaptiveTriggers => "horizon.options.adaptive_triggers",
             Opt::PadLightbar => "horizon.options.lightbar",
             Opt::PadLookSensitivity => "horizon.options.look_sensitivity",
+            Opt::PadPointerSpeed => "horizon.options.pointer_speed",
+            Opt::PadScrollSpeed => "horizon.options.scroll_speed",
+            Opt::PadRepeatDelay => "horizon.options.repeat_delay",
+            Opt::PadRepeatInterval => "horizon.options.repeat_interval",
             Opt::PadInvertX => "horizon.options.invert_x",
             Opt::PadInvertY => "horizon.options.invert_y",
             Opt::PadToggleSneak => "horizon.options.sneak_button",
             Opt::PadMoveDeadzone => "horizon.options.move_deadzone",
             Opt::PadLookDeadzone => "horizon.options.look_deadzone",
             Opt::PadGlyphs => "horizon.options.button_glyphs",
-            Opt::PadMenuNav => "horizon.options.menu_navigation",
             Opt::PadKeyboard => "horizon.options.on_screen_keyboard",
             Opt::ModelPart(i) => [
                 "options.modelPart.cape",
@@ -352,6 +355,10 @@ impl Opt {
             Opt::ChatHeightUnfocused => Kind::Slider(s.chat_height_unfocused),
             Opt::ChatLineSpacing => Kind::Slider(s.chat_line_spacing),
             Opt::PadLookSensitivity => Kind::Slider(s.controller.look_sensitivity),
+            Opt::PadPointerSpeed => unit(s.controller.pointer_speed, 0.25, 3.0),
+            Opt::PadScrollSpeed => unit(s.controller.scroll_speed, 1.0, 36.0),
+            Opt::PadRepeatDelay => unit(s.controller.repeat_delay, 0.1, 1.0),
+            Opt::PadRepeatInterval => unit(s.controller.repeat_interval, 0.03, 0.3),
             Opt::PadMoveDeadzone => unit(s.controller.move_deadzone, 0.0, 0.5),
             Opt::PadLookDeadzone => unit(s.controller.look_deadzone, 0.0, 0.5),
             Opt::SprintWindow => unit(s.sprint_window as f32, 0.0, 10.0),
@@ -610,6 +617,23 @@ impl Opt {
                 ),
             ),
             Opt::PadLookSensitivity => percent(c, 2.0 * s.controller.look_sensitivity),
+            Opt::PadPointerSpeed => percent(c, s.controller.pointer_speed),
+            Opt::PadScrollSpeed => percent(c, s.controller.scroll_speed / 12.0),
+            Opt::PadRepeatDelay | Opt::PadRepeatInterval => generic(
+                c,
+                Text::tr(
+                    "horizon.options.milliseconds",
+                    &[&format!(
+                        "{:.0}",
+                        1000.0
+                            * if self == Opt::PadRepeatDelay {
+                                s.controller.repeat_delay
+                            } else {
+                                s.controller.repeat_interval
+                            }
+                    )],
+                ),
+            ),
             Opt::PadMoveDeadzone | Opt::PadLookDeadzone => {
                 let v = if self == Opt::PadMoveDeadzone {
                     s.controller.move_deadzone
@@ -796,10 +820,6 @@ impl Opt {
                 GlyphStyle::PlayStation => "horizon.options.glyphs.playstation",
                 GlyphStyle::Nintendo => "horizon.options.glyphs.nintendo",
             }),
-            Opt::PadMenuNav => tr(match s.controller.menu_nav {
-                gamepad::MenuNav::Focus => "horizon.options.menu_focus",
-                gamepad::MenuNav::Pointer => "horizon.options.menu_pointer",
-            }),
             Opt::PadKeyboard => tr(match s.controller.keyboard {
                 gamepad::TextKeyboard::Auto => "horizon.options.keyboard.auto",
                 gamepad::TextKeyboard::Horizon => "horizon.options.keyboard.horizon",
@@ -871,6 +891,10 @@ impl Opt {
             Opt::ChatHeightUnfocused => s.chat_height_unfocused = v,
             Opt::ChatLineSpacing => s.chat_line_spacing = v,
             Opt::PadLookSensitivity => s.controller.look_sensitivity = v,
+            Opt::PadPointerSpeed => s.controller.pointer_speed = step(25.0, 300.0) / 100.0,
+            Opt::PadScrollSpeed => s.controller.scroll_speed = step(1.0, 36.0),
+            Opt::PadRepeatDelay => s.controller.repeat_delay = step(100.0, 1000.0) / 1000.0,
+            Opt::PadRepeatInterval => s.controller.repeat_interval = step(30.0, 300.0) / 1000.0,
             Opt::PadMoveDeadzone => s.controller.move_deadzone = step(0.0, 50.0) / 100.0,
             Opt::PadLookDeadzone => s.controller.look_deadzone = step(0.0, 50.0) / 100.0,
             Opt::SprintWindow => s.sprint_window = step(0.0, 10.0) as i32,
@@ -1093,12 +1117,6 @@ impl Opt {
                     .position(|g| *g == s.controller.glyphs)
                     .unwrap_or(0) as u8;
                 s.controller.glyphs = GlyphStyle::ALL[usize::from(next(i, 4))];
-            }
-            Opt::PadMenuNav => {
-                s.controller.menu_nav = match s.controller.menu_nav {
-                    gamepad::MenuNav::Focus => gamepad::MenuNav::Pointer,
-                    gamepad::MenuNav::Pointer => gamepad::MenuNav::Focus,
-                }
             }
             Opt::PadKeyboard => {
                 let all = gamepad::TextKeyboard::ALL;
@@ -2080,6 +2098,13 @@ fn pairs(opts: &[Opt]) -> Vec<Row> {
         .collect()
 }
 impl OptionsUi {
+    /// No widget keeps the highlight a click gave it; a focus the keyboard
+    /// moved stays.
+    pub fn clear_click_focus(&mut self) {
+        if !self.focus_from_keyboard {
+            self.focus = None;
+        }
+    }
     /// A switch of `horizon-extras.txt` as the Extras page draws it: "Caption: On".
     fn extra_button(&self, s: &Settings, item: crate::extras::Item) -> Widget {
         let label = Text::option_name_value(
@@ -2738,8 +2763,11 @@ impl OptionsUi {
                     Opt::PadMoveDeadzone,
                     Opt::PadLookDeadzone,
                     Opt::PadGlyphs,
-                    Opt::PadMenuNav,
                     Opt::PadKeyboard,
+                    Opt::PadPointerSpeed,
+                    Opt::PadScrollSpeed,
+                    Opt::PadRepeatDelay,
+                    Opt::PadRepeatInterval,
                 ]));
                 rows
             }

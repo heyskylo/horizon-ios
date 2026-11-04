@@ -1274,6 +1274,12 @@ impl HudAtlas {
             edition.3 = pixels;
         }
         images.push(("horizon/white".into(), 4, 4, vec![255; 64]));
+        images.push((
+            crate::pad_cursor::SPRITE.into(),
+            crate::pad_cursor::SIZE,
+            crate::pad_cursor::SIZE,
+            crate::pad_cursor::pixels(),
+        ));
         if full {
             Self::slots(&mut images, crate::trims::slot_size(root), mod_image);
             // MissingTextureAtlasSprite.generateMissingImage: 16x16, magenta
