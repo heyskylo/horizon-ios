@@ -786,3 +786,57 @@ fn the_chat_search_keeps_the_matching_messages() {
         ["gamma", "ALPHABET soup", "beta", "Alpha one"]
     );
 }
+
+/// Search and copy read a message as the chat shows it: legacy `§` codes format it, they
+/// aren't text.
+#[test]
+fn the_chat_search_and_copy_skip_legacy_codes() {
+    let font = font();
+    let mut chat = Chat::default();
+    for text in ["He§cllo", "§aplain"] {
+        chat.add_message(
+            &font,
+            Text::literal(text),
+            None,
+            ChatSource::Server,
+            0,
+            false,
+        );
+    }
+    assert_eq!(&*chat.lines[1].message, "Hello");
+    chat.set_search_with(&font, Some("hello"));
+    assert_eq!(chat.lines.len(), 1);
+    // `c` and `a` are codes here, not letters of either message.
+    chat.set_search_with(&font, Some("c"));
+    assert_eq!(chat.lines.len(), 0);
+}
+
+/// A repeat merged by compact chat leaves a reader scrolled up where they were.
+#[test]
+fn a_compact_repeat_keeps_the_scrolled_view_still() {
+    let font = font();
+    let mut chat = Chat::default();
+    chat.qol.compact = true;
+    let says = |chat: &mut Chat, text: &str| {
+        chat.add_message(
+            &font,
+            Text::literal(text),
+            None,
+            ChatSource::Server,
+            0,
+            true,
+        );
+    };
+    for i in 0..60 {
+        says(&mut chat, &format!("line {i}"));
+    }
+    says(&mut chat, "gg");
+    chat.scroll_by(5, true);
+    assert_eq!(chat.scroll, 5);
+    says(&mut chat, "gg");
+    assert_eq!(chat.lines[0].content.plain(), "gg (x2)");
+    assert_eq!(chat.scroll, 5);
+    // A new message still pushes the view up by its line.
+    says(&mut chat, "new");
+    assert_eq!(chat.scroll, 6);
+}

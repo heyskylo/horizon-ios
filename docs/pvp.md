@@ -8,6 +8,9 @@ off by default: a fresh install looks exactly like vanilla 26.3, and turning one
 Nothing here tells the player more than vanilla does or plays for them, so the game stays fine on servers
 that ban unfair clients. That rules out, on purpose: a reach display, entities on the minimap, freelook,
 auto-clicking or any other automatic action, seeing through walls, and hitboxes beyond vanilla's F3+B.
+Three options do see further than vanilla would at that moment, and some strict servers ban fog or light
+changes: clear water and clear lava (below), and a fixed time of day, whose sky light brightens a night.
+They are off by default; check a server's rules before turning them on there.
 Each feature is built from what it visibly does, never from another client's or mod's code.
 
 ## Where it lives
@@ -94,7 +97,9 @@ so it costs nothing. Resource packs' core shaders and OptiFine CIT glints keep t
 | Clear water | `clearWater` | Water fog as vanilla's after 30 seconds under water (water vision 1), from the first tick. |
 | Clear lava | `clearLava` | Lava fog as vanilla's with Fire Resistance (0 to 5 blocks), without the effect. |
 
-Both fog options stop at the clearest view vanilla itself gives, so they show nothing a vanilla player can't see.
+Both fog options stop at the clearest view vanilla itself gives, but they give it at once: 96 blocks of water
+on entering instead of 24, and 5 blocks of lava without the effect instead of 1. That is an edge in a fight
+(see Fair play).
 There is no "no hurt camera" option: vanilla's Accessibility → Damage Tilt already sets the shake from 0 to 100%.
 
 ## Your view: time of day and weather (`viewTime`, `viewWeather`, default the world's)
