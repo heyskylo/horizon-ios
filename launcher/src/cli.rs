@@ -1150,7 +1150,13 @@ pub fn run() -> Option<i32> {
     let result = match command {
         Cmd::Mcp | Cmd::AgentConfig { .. } if no_ai => Err(horizon_core::no_ai::REFUSAL.into()),
         Cmd::Mcp => crate::mcp::serve(),
-        command => execute(command, cli.json),
+        command => {
+            let result = execute(command, cli.json);
+            // A game it started has ended (attached) or none did (an error): a session file it
+            // didn't read goes now.
+            account::discard_unread_sessions();
+            result
+        }
     };
     Some(match result {
         Ok(()) => 0,

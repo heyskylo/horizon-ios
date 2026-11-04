@@ -312,7 +312,7 @@ impl Launcher {
     /// patterns. Dark appearance only.
     pub(super) fn glass_console(&mut self, cx: &mut Context<Self>) -> Option<Div> {
         use crate::glass_ui::{self as ui, white};
-        use horizon_theme::glass::{ink, radius, DANGER, WARN};
+        use horizon_theme::glass::{ink, radius};
         let t = self.theme;
         if self.prepare_log.is_empty() && self.client.is_none() {
             return None;
@@ -488,7 +488,7 @@ impl Launcher {
                 Some(Err(e)) => Some(
                     div().px(px(12.)).pb(px(8.)).child(
                         ui::text(13., FontWeight::NORMAL, ink::FULL)
-                            .text_color(ui::color(DANGER))
+                            .text_color(ui::danger())
                             .child(e.clone()),
                     ),
                 ),
@@ -508,9 +508,9 @@ impl Launcher {
             .line_height(px(21.))
             .children(lines.into_iter().skip(shown).map(|line| {
                 let color = if line.contains("/ERROR]") || line.contains("ERROR:") {
-                    ui::color(DANGER)
+                    ui::danger()
                 } else if line.contains("/WARN]") {
-                    ui::color(WARN)
+                    ui::warn()
                 } else {
                     white(0.75)
                 };

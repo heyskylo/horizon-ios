@@ -182,6 +182,10 @@ const ENTITIES_TRANSLUCENT: [&str; 5] = [
     "gbuffers_basic",
 ];
 
+/// `gbuffers_beaconbeam` and its fallbacks (the shaders.properties reference): beacon and End
+/// gateway beams.
+const BEACON_BEAM: [&str; 3] = ["gbuffers_beaconbeam", "gbuffers_textured", "gbuffers_basic"];
+
 /// `gbuffers_particles` and its fallbacks (2.3).
 const PARTICLES: [&str; 4] = [
     "gbuffers_particles",
@@ -217,7 +221,7 @@ pub struct PostProgram {
     pub buffers: Vec<u32>,
     /// `flip.<name>.<buffer>`: buffers forced to flip (true) or kept (false) after this program.
     pub flips: Vec<(u32, bool)>,
-    /// How a gbuffers program's output blends into its buffers; `None` writes them.
+    /// How the program's output blends into its buffers; `None` writes them.
     pub blend: Option<Blend>,
     /// Per-buffer blend overrides, keyed by colortex index (not output location).
     pub buffer_blends: Vec<(u32, Option<Blend>)>,
@@ -325,6 +329,8 @@ pub enum ImageSize {
     Absolute([u32; 2]),
     /// Three sizes: a 3D image, whatever its depth.
     Volume([u32; 3]),
+    /// One size in pixels: a 1D image (a lookup table by index).
+    Line(u32),
 }
 
 impl CustomImage {
@@ -335,6 +341,7 @@ impl CustomImage {
         };
         let size = match (*relative, rest) {
             ("true", [x, y, ..]) => ImageSize::Relative([x.parse().ok()?, y.parse().ok()?]),
+            ("false", [x]) => ImageSize::Line(x.parse().ok()?),
             ("false", [x, y]) => ImageSize::Absolute([x.parse().ok()?, y.parse().ok()?]),
             ("false", [x, y, z]) => {
                 ImageSize::Volume([x.parse().ok()?, y.parse().ok()?, z.parse().ok()?])
@@ -360,7 +367,13 @@ impl CustomImage {
             }
             ImageSize::Absolute([w, h]) => [w.max(1), h.max(1), 1],
             ImageSize::Volume(s) => s.map(|n| n.max(1)),
+            ImageSize::Line(w) => [w.max(1), 1, 1],
         }
+    }
+
+    /// A 1D image (`image1D`), not a 2D one.
+    pub fn is_1d(&self) -> bool {
+        matches!(self.size, ImageSize::Line(_))
     }
 
     /// A 3D image (`image3D`), not a 2D one.
@@ -399,6 +412,8 @@ pub struct Post {
     pub entities_translucent: Option<PostProgram>,
     /// What draws particles.
     pub particles: Option<PostProgram>,
+    /// What draws beacon and End gateway beams (after deferred, blended).
+    pub beacon_beam: Option<PostProgram>,
     pub damaged_block: Option<PostProgram>,
     /// What draws the game's clouds.
     pub clouds: Option<PostProgram>,
@@ -596,6 +611,7 @@ pub fn load_post(
         block: None,
         entities_translucent: None,
         particles: None,
+        beacon_beam: None,
         damaged_block: None,
         clouds: None,
         lines: None,
@@ -682,7 +698,14 @@ pub fn load_post(
             _ => Target::Buffers,
         };
         for name in names {
-            if let Some(p) = loader.load(name, group, |v, f| translate_composite(v, f, target)) {
+            if let Some(mut p) = loader.load(name, group, |v, f| translate_composite(v, f, target))
+            {
+                // `blend.<program>` blends every buffer the program writes. Iris 1.11.7, probed:
+                // it applies to begin, prepare, deferred and composite programs, and
+                // `blend.<program>.<buffer>` doesn't apply to deferred and composite ones; the
+                // other cases are assumed to match.
+                p.blend = blend(loader.properties, &p.name).flatten();
+                p.buffer_blends.clear();
                 loader.post.programs.push(p);
             }
         }
@@ -764,6 +787,7 @@ pub fn load_post(
     let mut gbuffers_dyn = |names: &[&str], i: &GbuffersInputs| gbuffers(names, Group::Gbuffers, i);
     let entities_translucent = translucent(&ENTITIES_TRANSLUCENT, 0.0, &mut gbuffers_dyn);
     let particles = translucent(&PARTICLES, 0.1, &mut gbuffers_dyn);
+    let beacon_beam = translucent(&BEACON_BEAM, 0.0, &mut gbuffers_dyn);
     // Clouds blend, as vanilla's do (OQ-23).
     let clouds = inputs
         .clouds
@@ -826,6 +850,7 @@ pub fn load_post(
     loader.post.block = block;
     loader.post.entities_translucent = entities_translucent;
     loader.post.particles = particles;
+    loader.post.beacon_beam = beacon_beam;
     loader.post.damaged_block = damaged_block;
     loader.post.clouds_off = properties.get("clouds").is_some_and(|v| v.trim() == "off");
     loader.post.clouds = clouds.filter(|_| !loader.post.clouds_off);
@@ -872,6 +897,7 @@ fn load_shadow(
         &post.block,
         &post.entities_translucent,
         &post.particles,
+        &post.beacon_beam,
         &post.damaged_block,
         &post.clouds,
         &post.weather,
@@ -1154,9 +1180,11 @@ impl Loader<'_> {
                     Some(i)
                         if words.contains(&"uniform")
                             && !qualified
-                            && words
-                                .iter()
-                                .any(|w| w.ends_with("image2D") || w.ends_with("image3D")) =>
+                            && words.iter().any(|w| {
+                                ["image1D", "image2D", "image3D"]
+                                    .iter()
+                                    .any(|d| w.ends_with(d))
+                            }) =>
                     {
                         format!("layout({}) {line}", i.qualifier)
                     }
@@ -1633,6 +1661,63 @@ mod tests {
                 .unwrap()
                 .is_3d()
         );
+        // One size: a 1D image, a table read by index through its sampler.
+        let table = CustomImage::parse(
+            "imgTable",
+            "texTable RED_INTEGER R32UI UNSIGNED_INT false false 4096",
+        )
+        .unwrap();
+        assert_eq!(table.sampler.as_deref(), Some("texTable"));
+        assert_eq!(table.size, ImageSize::Line(4096));
+        assert!(table.is_1d() && !table.is_3d());
+        assert_eq!(table.extent([1920, 1080]), [4096, 1, 1]);
+        assert!(!flat.is_1d());
+        // A relative size needs both.
+        assert!(CustomImage::parse("r", "none RGBA RGBA8 BYTE false true 0.5").is_none());
+    }
+
+    /// A pack's 1D image and its sampler: the image is loaded, its `uimage1D` declaration
+    /// gets the image's format, and the program reading both translates.
+    #[test]
+    fn a_1d_image_and_its_sampler_load() {
+        let properties =
+            "image.imgTable = texTable RED_INTEGER R32UI UNSIGNED_INT false false 64\n";
+        let csh = "#version 430\nlayout(local_size_x = 64) in;\nwriteonly uniform uimage1D imgTable;\n\
+                   void main() { imageStore(imgTable, int(gl_GlobalInvocationID.x), uvec4(gl_GlobalInvocationID.x)); }\n";
+        let fsh = "#version 430\nuniform usampler1D texTable;\nuniform int blockId;\n\
+                   /* RENDERTARGETS: 0 */\nlayout(location = 0) out vec4 color;\n\
+                   void main() { color = vec4(texelFetch(texTable, blockId % 64, 0).r); }\n";
+        let vsh = "#version 430\nout vec2 uv;\nvoid main() { uv = vec2(0.0); gl_Position = ftransform(); }\n";
+        let pack = Pack::from_zip_bytes(
+            "table.zip",
+            crate::pack::tests::zip(&[
+                ("shaders/shaders.properties", properties),
+                ("shaders/setup.csh", csh),
+                ("shaders/composite.vsh", vsh),
+                ("shaders/composite.fsh", fsh),
+            ]),
+        )
+        .unwrap();
+        let mut macros = Macros::standard();
+        let (properties, notes) = crate::read_properties(&pack, &mut macros);
+        assert!(notes.is_empty(), "{notes:?}");
+        let post = load_post(&pack, "", &properties, &macros, &GameInputs::default());
+        assert!(post.notes.is_empty(), "{:?}", post.notes);
+        assert_eq!(post.images.len(), 1);
+        assert!(post.images[0].is_1d());
+        let composite = post
+            .programs
+            .iter()
+            .find(|p| p.name == "composite")
+            .unwrap();
+        let program = composite.program.as_ref().unwrap();
+        let sampler = program
+            .interface
+            .samplers
+            .iter()
+            .find(|s| s.name == "texTable")
+            .unwrap();
+        assert_eq!(sampler.ty, "usampler1D");
     }
 
     /// A storage buffer declared smaller than the block a stage binds it as: the block's size
@@ -1683,6 +1768,64 @@ mod tests {
         assert_eq!(
             BufferSize::parse("100000 0").unwrap().resolve([1, 1]),
             [BufferSize::MAX, 1]
+        );
+    }
+
+    /// `blend.<program>` blends every buffer a composite-style program writes, while
+    /// `blend.<program>.<buffer>` does not apply to them (Iris 1.11.7, probed: a buffer's `off`
+    /// under a program blend still blends, and a buffer's factors alone do not).
+    #[test]
+    fn composite_programs_blend_as_their_program_says() {
+        let pack = Pack::from_zip_bytes(
+            "t",
+            zip(&[
+                ("shaders/deferred.vsh", VSH),
+                ("shaders/deferred.fsh", FSH),
+                ("shaders/composite.vsh", VSH),
+                ("shaders/composite.fsh", FSH),
+                ("shaders/composite1.vsh", VSH),
+                ("shaders/composite1.fsh", FSH),
+                ("shaders/composite2.vsh", VSH),
+                ("shaders/composite2.fsh", FSH),
+            ]),
+        )
+        .unwrap();
+        let properties = Properties::parse(
+            "blend.deferred = ONE ONE ZERO ONE
+blend.composite = SRC_ALPHA ONE_MINUS_SRC_ALPHA ONE ZERO
+\
+             blend.composite.colortex3 = off
+blend.composite1.colortex3 = ONE ONE ONE ONE
+\
+             blend.composite2 = off
+",
+            &Macros::default(),
+        );
+        let post = load_post(
+            &pack,
+            "",
+            &properties,
+            &Macros::standard(),
+            &GameInputs::default(),
+        );
+        use Factor::*;
+        let blends: Vec<(&str, Option<Blend>, usize)> = post
+            .programs
+            .iter()
+            .map(|p| (p.name.as_str(), p.blend, p.buffer_blends.len()))
+            .collect();
+        assert_eq!(
+            blends,
+            [
+                ("deferred", Some([One, One, Zero, One]), 0),
+                (
+                    "composite",
+                    Some([SrcAlpha, OneMinusSrcAlpha, One, Zero]),
+                    0
+                ),
+                ("composite1", None, 0),
+                ("composite2", None, 0),
+            ]
         );
     }
 
