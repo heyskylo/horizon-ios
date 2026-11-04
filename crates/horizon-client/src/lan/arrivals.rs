@@ -154,9 +154,22 @@ impl Expectations {
     /// the login that starts takes it, and a second login of the same player
     /// finds none.
     pub fn take(&mut self, uuid: u128, now: Instant) -> bool {
-        match self.until.remove(&uuid) {
-            Some(deadline) => now < deadline,
-            None => false,
+        self.take_until(uuid, now).is_some()
+    }
+
+    /// [`Self::take`], giving the deadline of the expectation used up, for
+    /// [`Self::put_back`].
+    pub fn take_until(&mut self, uuid: u128, now: Instant) -> Option<Instant> {
+        self.until.remove(&uuid).filter(|deadline| now < *deadline)
+    }
+
+    /// Gives back an expectation a login used up and that did not reach play (it
+    /// failed in configuration), with its own deadline: the proxy's next attempt
+    /// within that time is still expected. Nothing is put back once its time has
+    /// passed, over a newer expectation of the same player, or into a full table.
+    pub fn put_back(&mut self, uuid: u128, deadline: Instant, now: Instant) {
+        if now < deadline && !self.until.contains_key(&uuid) && self.until.len() < self.max {
+            self.until.insert(uuid, deadline);
         }
     }
 
@@ -319,6 +332,27 @@ pub fn export_record(
         });
     }
     Ok(record)
+}
+
+/// The reply to an export: the record and, while the player is frozen, the ticks left
+/// before its hand-over ends by itself (`freeze_ticks_left`), so that a proxy does not
+/// commit on the target so late that its `moved` would come after the end. The count is
+/// beside the record, which stays the same bytes from one export to the next.
+pub fn export_reply(hub: &Hub, i: usize, record: serde_json::Value) -> serde_json::Value {
+    let left = hub.guests[i]
+        .handover
+        .as_ref()
+        .zip(hub.transfers.as_ref())
+        .map(|(h, t)| {
+            t.settings
+                .max_freeze_ticks
+                .saturating_sub(hub.ticks.saturating_sub(h.since))
+        });
+    let mut reply = serde_json::json!({ "ok": true, "record": record });
+    if let Some(left) = left {
+        reply["freeze_ticks_left"] = left.into();
+    }
+    reply
 }
 
 /// A unique id as text, with or without dashes.
@@ -494,6 +528,26 @@ mod tests {
         e.expect(A, secs(1), t0).unwrap();
         e.expect(B, secs(1), t0).unwrap();
         assert_eq!(e.expect(3, secs(1), t0), Err(ExpectError::Full));
+    }
+
+    /// A login that does not reach play gives its expectation back, with its
+    /// own deadline, so the proxy's next attempt is still expected.
+    #[test]
+    fn an_expectation_a_failed_login_used_is_put_back_with_its_deadline() {
+        let t0 = Instant::now();
+        let mut e = Expectations::default();
+        e.expect(A, secs(10), t0).unwrap();
+        let deadline = e.take_until(A, t0 + secs(2)).unwrap();
+        assert!(e.is_empty());
+        e.put_back(A, deadline, t0 + secs(4));
+        assert!(e.take(A, t0 + secs(9)), "the same deadline, not a new one");
+        // Not once its time has passed.
+        e.put_back(A, deadline, t0 + secs(10));
+        assert!(e.is_empty());
+        // Not over a newer expectation of the same player.
+        e.expect(A, secs(30), t0 + secs(5)).unwrap();
+        e.put_back(A, deadline, t0 + secs(6));
+        assert!(e.take(A, t0 + secs(20)), "the newer deadline stands");
     }
 
     #[test]
@@ -999,6 +1053,10 @@ mod hub_tests {
             );
         }
         assert_eq!(hub.guests[i].handover.as_ref().unwrap().since, since);
+        // The reply says how long the freeze still lasts: 50 ticks have gone.
+        let reply = super::export_reply(&hub, i, first.clone());
+        assert_eq!(reply["freeze_ticks_left"], 550);
+        assert_eq!(reply["record"], first);
         // Once it is over, a new freeze is a new hand-over.
         hub.guests[i].handover = None;
         let next = super::export_record(&mut hub, i, true, Default::default()).unwrap();
@@ -1024,8 +1082,9 @@ mod hub_tests {
         assert!(hub.guests[i].left_reason.is_empty(), "not kicked");
     }
 
-    /// A frozen player's chat acknowledgements are still taken, and its chat
-    /// message is dropped without a kick.
+    /// A frozen player's chat acknowledgements are still taken, in order with
+    /// its chat message's last-seen update, and the message is dropped without
+    /// a kick.
     #[test]
     fn a_frozen_player_keeps_acknowledging_chat() {
         use horizon_protocol::packets::play::{Chat, ChatAck, LastSeenUpdate, Serverbound};
@@ -1050,12 +1109,9 @@ mod hub_tests {
             .push_back((Serverbound::ChatAck(ChatAck { offset: 0 }), 2));
         g.inbox_bytes = 12;
         hub.keep_acknowledgements(i, &mut Vec::new());
-        let kept: Vec<_> = hub.guests[i].inbox.iter().map(|(p, _)| p.clone()).collect();
-        assert!(
-            matches!(kept.as_slice(), [Serverbound::ChatAck(_)]),
-            "{kept:?}"
-        );
-        assert_eq!(hub.guests[i].inbox_bytes, 2);
+        // Both were handled here, in the order they came; nothing is left for the inbox.
+        assert!(hub.guests[i].inbox.is_empty());
+        assert_eq!(hub.guests[i].inbox_bytes, 0);
         assert!(hub.guests[i].left_reason.is_empty(), "not kicked");
     }
 }

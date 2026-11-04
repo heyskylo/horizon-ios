@@ -183,14 +183,16 @@ dashes in an answer (`123e4567-e89b-12d3-a456-426614174000`). A hand-over id is 
 asking again for the same player renews the time and says `"renewed": true`. It is refused for a missing or
 malformed id, a time that is not a whole number of seconds above zero, a player already connected, and a full
 table. The player's next login uses the expectation up as it starts, once the bans, the whitelist and the player
-limit let it in, so a login still in configuration when the time runs out (a resource pack prompt) keeps it. An
-expectation no login used is reported in the log when its time runs out. For now that is all an expectation does:
+limit let it in, so a login still in configuration when the time runs out (a resource pack prompt) keeps it. A
+login that then fails before it reaches play (its connection drops in configuration, or the client refuses a
+required pack) gives the expectation back with its own deadline, so the proxy's next attempt within that time is
+still expected. An expectation no login used is reported in the log when its time runs out. For now that is all an expectation does:
 the player still logs in as any other.
 
 `player-export <uuid> [freeze]` reads a connected player out of the source server. It first closes the player's open
-menu as vanilla does when a menu closes, in the player's own level (the cursor stack and the crafting grids go back
-into the inventory, a trade back to its villager; the client is told to close it and is sent its inventory), then
-answers:
+menu as vanilla does when a menu closes, in the player's own level (the cursor stack, a crafting table's grid and
+the inventory's own 2x2 grid go back into the inventory, a trade back to its villager; the client is told to close
+it and is sent its inventory), then answers:
 
 ```json
 {"ok": true, "record": {
@@ -215,7 +217,9 @@ writes to `players/data/<uuid>.dat` before it gzips it, taken from the connected
 values mods attached to the player. `advancements` and `stats` are the JSON the server writes to
 `players/advancements/<uuid>.json` and `players/stats/<uuid>.json`, or null on a server that keeps none.
 `version` is the version of this record (1); `data_version` is the world data version of the server that made it
-(5023 for 26.3). The other fields are a few of the compound's values, for a proxy that does not read NBT.
+(5023 for 26.3). The other fields are a few of the compound's values, for a proxy that does not read NBT. While the
+player is frozen, the reply also gives `"freeze_ticks_left"` beside the record: the ticks before the hand-over ends
+by itself, so that a proxy does not commit on the target too late for its release to come in time.
 
 How a server reads a record (the target's `player-import`):
 - A record of another `version`, or of another `data_version` than the server's own, is refused.
@@ -225,7 +229,7 @@ How a server reads a record (the target's `player-import`):
 **The hand-over.** `freeze` starts one: the record gets a `handover` id, which the later requests name, and the
 player's own inputs (moves, clicks, chat, commands) stop being acted on, while what answers the server (teleport
 confirmations, chunk batch acknowledgements, keep-alives, pings, tick ends, client information and chat
-acknowledgements, with the messages a chat packet says the client has seen) still is. A frozen player is not
+acknowledgements, and the messages a chat packet says the client has seen, in the order they came) still is. A frozen player is not
 kicked for floating. Every later export of that player, with or without `freeze`, answers with the same record,
 byte for byte, and does not restart the freeze: a proxy that lost the reply asks again. The hand-over ends after
 `max_freeze_seconds` (counted in ticks, 600 by default) with a warning in the log, and the id is then forgotten.

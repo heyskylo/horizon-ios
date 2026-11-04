@@ -62,7 +62,7 @@ impl Game<'_> {
         };
         // A repeat while the hand-over lasts: the same record, and nothing touched.
         if let Some(h) = &host.hub.guests[i].handover {
-            return json!({ "ok": true, "record": h.record });
+            return arrivals::export_reply(&host.hub, i, h.record.clone());
         }
         let conn = host.hub.guests[i].conn;
         let window = host.hub.guests[i].menu.as_ref().map(|m| m.window);
@@ -75,6 +75,10 @@ impl Game<'_> {
         }
         // Nothing is sent to the client by this: it is for a player who is leaving.
         self.guest_close_all(host, conn);
+        // The inventory's own 2x2 grid too (`InventoryMenu.removed`): `guest_close_all` empties it
+        // only with a real `ContainerClose(0)`, and a frozen client's is dropped. Its items are
+        // not in the player compound, so they would be lost with `player-release moved`.
+        self.lan_crafting_closed(host, conn, Some(0));
         if let Err(e) = self.enter_level(Some(host), back) {
             log::error!("could not reopen {}: {e}", back.id());
         }
@@ -106,7 +110,7 @@ impl Game<'_> {
             stats,
         };
         match arrivals::export_record(&mut host.hub, i, freeze, records) {
-            Ok(record) => json!({ "ok": true, "record": record }),
+            Ok(record) => arrivals::export_reply(&host.hub, i, record),
             Err(e) => json!({ "error": e }),
         }
     }

@@ -775,23 +775,36 @@ fn serve_login(
     // here, as the login starts: one that ran out while the player was still in
     // configuration (a resource pack prompt) would otherwise make it an ordinary
     // login from this server's own file.
-    let expected = shared.config.arrivals.as_ref().is_some_and(|table| {
+    let expected = shared.config.arrivals.as_ref().and_then(|table| {
         table
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .take(uuid, std::time::Instant::now())
+            .take_until(uuid, std::time::Instant::now())
     });
+    // A login that does not reach play (it failed in configuration) gives the
+    // expectation back, so the proxy's next attempt is still expected.
+    let put_back = || {
+        if let (Some(deadline), Some(table)) = (expected, shared.config.arrivals.as_ref()) {
+            table.lock().unwrap_or_else(|e| e.into_inner()).put_back(
+                uuid,
+                deadline,
+                std::time::Instant::now(),
+            );
+        }
+    };
     let result = login_and_configure(&mut c, shared, uuid, &name, properties);
     match result {
         Ok(Some(parts)) => {
-            play(c, shared, parts, address, counted, expected);
+            play(c, shared, parts, address, counted, expected.is_some());
             Ok(())
         }
         Ok(None) => {
+            put_back();
             shared.release(uuid);
             Ok(())
         }
         Err(err) => {
+            put_back();
             shared.release(uuid);
             // ServerConfigurationPacketListenerImpl.onDisconnect.
             let profile = format!("{name} ({})", uuid_string(uuid));
