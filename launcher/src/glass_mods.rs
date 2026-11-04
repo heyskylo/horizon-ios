@@ -40,8 +40,10 @@ impl Launcher {
                 &[("count", &m.results.len().to_string())],
             )
             .into()
-        } else if m.source == SourceId::Modrinth {
-            tr("Search, then Enter").into()
+        } else if m.source == SourceId::Modrinth
+            && matches!(m.kind, PackKind::ResourcePack | PackKind::Modpack)
+        {
+            tr("Search resource packs and modpacks").into()
         } else {
             tr("Search, then Enter").into()
         }
