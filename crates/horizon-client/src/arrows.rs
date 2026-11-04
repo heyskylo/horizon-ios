@@ -186,6 +186,8 @@ pub struct ArrowState {
     pub pierced: Vec<Who>,
     /// `Entity.remainingFireTicks`.
     pub fire_ticks: i32,
+    /// The server's shared fire flag, independent of the client-local fire timer.
+    pub synced_fire: bool,
     pub fall_distance: f64,
     pub fluids: EntityFluidInteraction,
     pub was_touching_water: bool,
@@ -214,6 +216,7 @@ impl fmt::Debug for ArrowState {
             .field("in_ground", &self.in_ground)
             .field("life", &self.life)
             .field("fire_ticks", &self.fire_ticks)
+            .field("synced_fire", &self.synced_fire)
             .finish_non_exhaustive()
     }
 }
@@ -223,6 +226,7 @@ impl PartialEq for ArrowState {
             && self.life == other.life
             && self.last_state == other.last_state
             && self.fire_ticks == other.fire_ticks
+            && self.synced_fire == other.synced_fire
     }
 }
 impl ArrowState {
@@ -243,6 +247,7 @@ impl ArrowState {
             pierce: 0,
             pierced: Vec::new(),
             fire_ticks: 0,
+            synced_fire: false,
             fall_distance: 0.0,
             fluids: EntityFluidInteraction::new([WATER, LAVA]),
             was_touching_water: false,
@@ -297,7 +302,7 @@ impl ArrowState {
     }
     /// `Entity.isOnFire` (arrows are not fire immune).
     pub fn on_fire(&self) -> bool {
-        self.fire_ticks > 0
+        self.fire_ticks > 0 || self.synced_fire
     }
     /// `Entity.clearFire`.
     pub fn clear_fire(&mut self) {
@@ -534,7 +539,7 @@ fn signum(v: f64) -> f64 {
 /// entity stops there and is not kept: the game hands it to
 /// `finish_entity_hit` once it has hurt the entity.
 pub fn tick(p: &mut Projectile, scene: &ArrowScene, targets: &[(Who, Aabb)]) -> (bool, Hit) {
-    tick_with(p, scene, targets, true)
+    tick_with(p, scene, targets, true, false)
 }
 /// One arrow tick whose hit is canceled (`ProjectileImpactEvent`): the arrow
 /// flies through its full movement: not stuck, nothing hurt, no hit.
@@ -543,13 +548,19 @@ pub fn tick_through(
     scene: &ArrowScene,
     targets: &[(Who, Aabb)],
 ) -> (bool, Hit) {
-    tick_with(p, scene, targets, false)
+    tick_with(p, scene, targets, false, false)
+}
+/// Simulate a remote arrow without server-only despawn or block reactions.
+/// Entity hits remain authoritative on the server.
+pub fn tick_client(p: &mut Projectile, scene: &ArrowScene) -> (bool, Hit) {
+    tick_with(p, scene, &[], true, true)
 }
 fn tick_with(
     p: &mut Projectile,
     scene: &ArrowScene,
     targets: &[(Who, Aabb)],
     impact: bool,
+    client: bool,
 ) -> (bool, Hit) {
     let Some(mut st) = p.arrow.take() else {
         return (false, Hit::None);
@@ -562,6 +573,7 @@ fn tick_with(
         p,
         st: &mut st,
         scene,
+        client,
     }
     .tick(targets, impact);
     p.stuck = st.in_ground;
@@ -593,6 +605,7 @@ pub fn finish_entity_hit(p: &mut Projectile, scene: &ArrowScene, outcome: Entity
         p,
         st: &mut st,
         scene,
+        client: false,
     };
     match outcome {
         EntityHit::Hurt | EntityHit::Refused if trident => ticker.trident_bounce(),
@@ -623,6 +636,7 @@ struct Ticker<'p, 's, 'a, 'r> {
     p: &'p mut Projectile,
     st: &'s mut ArrowState,
     scene: &'s ArrowScene<'a, 'r>,
+    client: bool,
 }
 impl Ticker<'_, '_, '_, '_> {
     fn position(&self) -> Vec3 {
@@ -676,13 +690,15 @@ impl Ticker<'_, '_, '_, '_> {
             self.st.clear_fire();
         }
         if self.st.in_ground && physics {
-            if self.st.last_state != Some(state) && self.should_fall() {
-                self.start_falling();
-            } else {
-                // AbstractArrow.tickDespawn.
-                self.st.life += 1;
-                if self.st.life >= 1200 {
-                    self.st.removed = true;
+            if !self.client {
+                if self.st.last_state != Some(state) && self.should_fall() {
+                    self.start_falling();
+                } else {
+                    // AbstractArrow.tickDespawn.
+                    self.st.life += 1;
+                    if self.st.life >= 1200 {
+                        self.st.removed = true;
+                    }
                 }
             }
             self.st.in_ground_time += 1;
@@ -694,7 +710,8 @@ impl Ticker<'_, '_, '_, '_> {
             // entity event 0 (the clients' burst of particles in its colour,
             // `handleEntityEvent`) and turns into a plain arrow. The flight
             // and ground particles are the clients' own (`Level.isClientSide`).
-            if self.st.in_ground_time >= 600
+            if !self.client
+                && self.st.in_ground_time >= 600
                 && let Some(color) = self.st.potion_color()
             {
                 self.st.events.push(ArrowEvent::PotionPuff {
@@ -781,14 +798,18 @@ impl Ticker<'_, '_, '_, '_> {
         }
         // Projectile.tick, then Entity.baseTick's fluid and fire phases.
         if !self.st.has_been_shot {
-            self.st.events.push(ArrowEvent::ShootEvent);
+            if !self.client {
+                self.st.events.push(ArrowEvent::ShootEvent);
+            }
             self.st.has_been_shot = true;
         }
         self.st.was_eye_in_water = self.st.fluids.is_eye_in_fluid(&Tags, WATER);
         let mut fluids = std::mem::take(&mut self.st.fluids);
         let _ = entity_fluid_tick::update(&mut fluids, self, WATER, LAVA, 1_000_000);
         self.st.fluids = fluids;
-        if self.st.fire_ticks > 0 {
+        if self.client {
+            self.st.clear_fire();
+        } else if self.st.fire_ticks > 0 {
             self.st.fire_ticks -= 1;
         }
         if !self.st.first_tick && self.st.fluids.is_in_fluid(&Tags, LAVA) {
@@ -1001,7 +1022,8 @@ impl Ticker<'_, '_, '_, '_> {
         // BlockState.onProjectileHit still sees the deltaMovement it hit at.
         self.st.hit_speed = self.p.velocity.length();
         // Projectile.onHitBlock: BlockState.onProjectileHit.
-        if self.st.on_fire()
+        if !self.client
+            && self.st.on_fire()
             && let Some(reaction) = self.block_reaction(state)
         {
             self.st.events.push(ArrowEvent::Block {
@@ -1545,7 +1567,13 @@ impl WaterSplashWorld for Ticker<'_, '_, '_, '_> {
         Ok(())
     }
     fn splash_event(&mut self) -> Result<(), Error> {
-        self.st.events.push(ArrowEvent::SplashEvent);
+        if !self.client {
+            self.st.events.push(ArrowEvent::SplashEvent);
+        }
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "arrows_client_tests.rs"]
+mod client_tests;
