@@ -27,7 +27,7 @@ pub use crate::gfx::native_render::{
     wgpu,
 };
 pub use crate::hud::HudBatch;
-pub use crate::hud_layout::{GuiDraw, HealthInputs};
+pub use crate::hud_layout::{GuiDraw, HealthHud, HealthInputs};
 pub use crate::items::ItemStack;
 pub use crate::merchant::MerchantOffer;
 pub use crate::mesher::TintSource;

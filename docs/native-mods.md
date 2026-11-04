@@ -2723,6 +2723,23 @@ it moves only what the player sees, not where they are or aim.
   moved-too-quickly check, which can send them back, as vanilla's does. It answers false for a player not on this server,
   on a client, and inside a player's hook (call it from a tick hook).
 
+### Health HUD rows a mod draws
+
+A mod that answers `native_health_hud` (API 27) draws the health, armor, food and air rows itself. Two client helpers
+give it what Horizon's own rows use, without reading `Game`'s fields:
+
+- `native_health_hud_state()` is Horizon's `HealthHud`. Its `left_height` and `right_height`, as they stand when the hook
+  returns, place the selected item's name and the action bar above the rows, as vanilla's `Hud.leftHeight` and
+  `rightHeight` do: set them when your rows take more or less room than vanilla's. They keep last frame's values until
+  something sets them. To keep some of Horizon's rows (food and air, say), call its `layout(inputs, wi, hi)` with the
+  hook's arguments and keep the draws you want; it also sets both heights. `layout` advances the rows' frame state (the
+  hearts' blink, the air bubbles' pop sound, which the game plays after the hook), so call it at most once a frame.
+- `native_local_attribute(name)` is the current value, base plus modifiers, of an attribute of this client's player
+  (`minecraft:armor_toughness`, which vanilla doesn't draw), as `LivingEntity.getAttributeValue`. None with no player
+  or for an id the player has no attribute for.
+
+Bundles need `"hooks": @API:health_hud_state@`.
+
 ### Values for a mod's shader pack
 
 `native_shader_params(partial, params)` (client) asks every frame, while a Horizon shader pack is on, for eight
