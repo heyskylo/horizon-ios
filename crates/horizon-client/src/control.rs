@@ -114,22 +114,12 @@ pub fn connect(path: &Path) -> io::Result<Stream> {
     Ok(Stream::Tcp(stream))
 }
 
-/// 128 random bits as hex, from the standard library's OS-seeded hasher keys.
+/// 128 random bits from the OS's random generator, as 32 hex digits: the TCP endpoint's token, which
+/// gates full control of the running game.
 fn random_token() -> String {
-    use std::hash::{BuildHasher, Hasher};
-    (0..2)
-        .map(|i| {
-            let mut h = std::collections::hash_map::RandomState::new().build_hasher();
-            h.write_u64(i);
-            h.write_u128(
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map_or(0, |d| d.as_nanos()),
-            );
-            h.write_u32(std::process::id());
-            format!("{:016x}", h.finish())
-        })
-        .collect()
+    let mut bytes = [0u8; 16];
+    getrandom::fill(&mut bytes).expect("OS random generator");
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// Write the endpoint file so that only this user can read it.
