@@ -55,6 +55,46 @@ def group_setup():
     ]
 
 
+def projectile_saved_uuid():
+    """Direct identity guards are separate from repeated saved UUID views."""
+    from uuid import UUID
+    ops = setup('/scoreboard objectives add h240 dummy',
+                '/execute store result score before h240 run time query gametime')
+    ops.append(cmd('/execute if loaded 2 200 2', expect_result=1))
+    kinds = ['arrow', 'spectral_arrow', 'fireball', 'small_fireball',
+             'wind_charge', 'breeze_wind_charge', 'snowball', 'egg',
+             'ender_pearl', 'splash_potion', 'lingering_potion',
+             'experience_bottle',
+             'minecart', 'evoker_fangs', 'marker']
+    for n, kind in enumerate(kinds, 1):
+        target = str(UUID(int=(240 << 96) | (0xffffffff << 64) | (n << 32) | 0x80000000))
+        array = f'[I;240,-1,{n},-2147483648]'
+        tag = f'h240_{n}'
+        x, z = 2.5 + (n % 4) * 3, 2.5 + (n // 4) * 3
+        ops += setup(f'/summon minecraft:{kind} {x} 200 {z} {{UUID:{array},Tags:["{tag}"],NoGravity:1b,HasBeenShot:1b}}')
+        guard = f'/execute as {target} if entity @s[tag={tag}]'
+        ops.append(cmd(guard, expect_result=1))
+        for _ in range(2):
+            if kind == 'spectral_arrow':
+                # Its separate display-name gap must not mask the UUID value.
+                ops += setup('/data remove storage h240:reads current',
+                             f'/data modify storage h240:reads current set from entity {target} UUID')
+                ops.append(cmd('/data get storage h240:reads current', expect_result=4))
+            else:
+                ops.append(cmd(f'/data get entity {target} UUID', expect_result=4))
+            ops.append(cmd(f'/execute as {target} if entity @s[nbt={{UUID:{array}}}]', expect_result=1))
+        ops.append(cmd(guard, expect_result=1))
+    ops += setup('/execute store result score after h240 run time query gametime')
+    ops.append(cmd('/execute if score after h240 = before h240', expect_result=1))
+    ops += setup('/kill @e[tag=h240_1]')
+    # Only our fixed, tagged subjects are removed, without advancing the world.
+    for n in range(2, len(kinds) + 1):
+        ops += setup(f'/kill @e[tag=h240_{n}]')
+    ops += setup('/data remove storage h240:reads current',
+                 '/scoreboard objectives remove h240')
+    return ops
+
+
 def client_commands():
     return [
         cmd('/version'),
@@ -2419,6 +2459,7 @@ def groups():
         ('levels', levels()),
         ('end portal entities', end_portal_entities()),
         ('items and loot', items_and_loot()),
+        ('projectile saved UUID', projectile_saved_uuid()),
         ('summoned fangs lifetime', summoned_fangs_lifetime()),
         ('summoned fangs edits', summoned_fangs_edits()),
         ('summoned fangs levels', summoned_fangs_levels()),
