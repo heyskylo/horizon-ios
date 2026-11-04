@@ -364,7 +364,7 @@ mod burning_arrow_tests {
     }
 }
 /// Client copy of `tickFuse`: count the fuse down for the renderer. The
-/// server alone explodes (`ai_step`); a guest never fires `Explode` here.
+/// server alone explodes (`tick_fuse`); a guest never fires `Explode` here.
 pub fn client_tick(m: &mut Mob) {
     if m.extra.counter2 > 1 {
         m.extra.counter2 -= 1;
@@ -791,22 +791,9 @@ pub fn knockback(
     m.needs_sync = true;
     true
 }
-/// `SulfurCube.tick` and `customServerAiStep` additions after the cube's
-/// own: the fuse, the timers, a swallowed block's stillness, buoyancy and
-/// facing, growing up, and players pushing it.
-pub fn ai_step(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
-    // primeTime's sound, then knockback's: a burning arrow plays both.
-    let pending = m.extra.scratch[1];
-    if pending & 1 != 0 {
-        events.push(MobEvent::Sound("entity.tnt.primed", m.center(), 1.0, 1.0));
-    }
-    if pending & 2 != 0
-        && let Some(a) = archetype(m)
-    {
-        events.push(MobEvent::Sound(a.hit_sound, m.center(), 1.0, 1.0));
-    }
-    m.extra.scratch[1] = 0;
-    // tickFuse.
+/// `SulfurCube.tickFuse`: count down and discard at zero before the living
+/// tick, including NoAI cubes. Pickup and push cooldowns belong to AI instead.
+pub fn tick_fuse(m: &mut Mob, events: &mut Vec<MobEvent>) {
     if m.extra.counter2 > 1 {
         m.extra.counter2 -= 1;
     }
@@ -834,8 +821,24 @@ pub fn ai_step(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
             ));
         }
         m.removed = true;
-        return;
     }
+}
+
+/// `SulfurCube.customServerAiStep` and the remaining cube additions:
+/// the timers, a swallowed block's stillness, buoyancy and
+/// facing, growing up, and players pushing it.
+pub fn ai_step(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
+    // primeTime's sound, then knockback's: a burning arrow plays both.
+    let pending = m.extra.scratch[1];
+    if pending & 1 != 0 {
+        events.push(MobEvent::Sound("entity.tnt.primed", m.center(), 1.0, 1.0));
+    }
+    if pending & 2 != 0
+        && let Some(a) = archetype(m)
+    {
+        events.push(MobEvent::Sound(a.hit_sound, m.center(), 1.0, 1.0));
+    }
+    m.extra.scratch[1] = 0;
     if m.extra.ints[3] > 0 {
         m.extra.ints[3] -= 1;
     }
@@ -1108,6 +1111,46 @@ mod tnt_rule_tests {
     }
 
     #[test]
+    fn mob_tick_counts_the_fuse_but_keeps_noai_cooldowns_still() {
+        crate::mobs::world::with_test_world(&[], |w, _| {
+            for no_ai in [true, false] {
+                let mut m = tnt_cube();
+                m.no_ai = no_ai;
+                m.no_gravity = true;
+                m.persistent = true;
+                m.extra.counter2 = 4; // loaded fuse 3
+                m.extra.ints[3] = 100;
+                m.extra.scratch[2] = 10;
+                let mut random = horizon_core::random::LegacyRandom::new(0);
+                let mut events = Vec::new();
+                for remaining in [2, 1] {
+                    assert!(m.tick(w, &mut random, &mut events));
+                    assert_eq!(fuse(&m), remaining);
+                    assert_eq!(m.extra.ints[3], if no_ai { 100 } else { 97 + remaining });
+                    assert_eq!(m.extra.scratch[2], if no_ai { 10 } else { 7 + remaining });
+                }
+                assert!(!m.tick(w, &mut random, &mut events));
+                assert!(m.removed);
+                assert_eq!(
+                    events
+                        .iter()
+                        .filter(|e| matches!(e, MobEvent::Explode(..)))
+                        .count(),
+                    1
+                );
+                assert!(!m.tick(w, &mut random, &mut events));
+                assert_eq!(
+                    events
+                        .iter()
+                        .filter(|e| matches!(e, MobEvent::Explode(..)))
+                        .count(),
+                    1
+                );
+            }
+        });
+    }
+
+    #[test]
     fn no_fuse_is_lit_while_tnt_does_not_explode() {
         // primeTime checks the tnt_explodes rule: no fuse, no invulnerability,
         // and no draw for the short fuse.
@@ -1129,12 +1172,12 @@ mod tnt_rule_tests {
         // tickFuse: the blast (and its source) only with tnt_explodes, the
         // discard either way.
         let mut events = Vec::new();
-        let ran = crate::mobs::world::with_test_world(&[], |w, _| {
+        let ran = crate::mobs::world::with_test_world(&[], |_, _| {
             let mut m = tnt_cube();
             assert!(prime(&mut m, false));
             m.extra.counter2 = 2; // fuse 1, 0 after this tick
             set_tnt_explodes(false);
-            ai_step(&mut m, w, &mut events);
+            tick_fuse(&mut m, &mut events);
             set_tnt_explodes(true);
             assert!(m.removed);
         });

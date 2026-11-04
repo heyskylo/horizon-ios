@@ -70,6 +70,8 @@ def main():
     parser.add_argument('--only', help='run only corpus groups whose name contains this')
     parser.add_argument('--array-storage-diagnostic', action='store_true',
                         help='run all numeric-array edit cases, including the known wildcard/string storage side effects')
+    parser.add_argument('--sulfur-power-load-diagnostic', action='store_true',
+                        help='retain the immediate-load powered sulfur cube H249 diagnostic')
     parser.add_argument('--binary', type=Path, help='use an already built Horizon game instead of building it')
     args = parser.parse_args()
     build = lab.LOCAL / 'command-exec-parity'
@@ -92,10 +94,14 @@ def main():
             tail = (build / (name + '.log')).read_text(errors='replace')[-3000:]
             sys.exit(f'{name} failed ({result.returncode}):\n{tail}')
 
-    groups = ([('setup', corpus_module.group_setup()),
-               ('numeric array edits with storage side effects',
-                corpus_module.numeric_array_edits(include_storage_side_effects=True))]
-              if args.array_storage_diagnostic else corpus_module.groups())
+    groups = corpus_module.groups()
+    if args.array_storage_diagnostic:
+        groups = [('setup', corpus_module.group_setup()),
+                  ('numeric array edits with storage side effects',
+                   corpus_module.numeric_array_edits(include_storage_side_effects=True))]
+    if args.sulfur_power_load_diagnostic:
+        groups = [('setup', corpus_module.group_setup()),
+                  ('sulfur powered-load diagnostic', corpus_module.sulfur_cube_fuse_ticks(True))]
     if args.only:
         groups = [g for g in groups if args.only in g[0] or g[0] == 'setup']
     script = []

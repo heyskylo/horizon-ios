@@ -3583,6 +3583,107 @@ def numeric_array_edits(include_storage_side_effects=False):
 
 
 
+def sulfur_cube_fuse_ticks(immediate_power=False):
+    """SulfurCube.tickFuse runs with NoAI; customServerAiStep timers do not (#9018)."""
+    ops = setup('/forceload add 0 0 79 15',
+                '/fill 0 199 0 79 199 15 stone', '/fill 0 200 0 79 206 15 air',
+                '/gamerule tnt_explodes false')
+    ops.append({'op': 'settle'})
+    ops.append(cmd('/execute if loaded 68 200 4', expect_result=1))
+
+    def target(n):
+        return f'000000f3-0000-0000-0000-{n:012x}'
+
+    def summon(n, x, ai, body, extra=''):
+        # Explicit Health isolates the separate absent-Health load issue (#8983).
+        ops.extend(setup(f'/summon sulfur_cube {x}.5 200 4.5 '
+                         f'{{UUID:[I;243,0,0,{n}],Tags:["sulfur_fuse"],Size:1,Health:4f,'
+                         f'NoAI:{ai}b,NoGravity:1b,Silent:1b,PersistenceRequired:1b,'
+                         f'equipment:{{body:{{id:"minecraft:{body}"}}}}{extra}}}'))
+        ops.append(cmd(f'/execute if entity {target(n)}', expect_result=1))
+        if immediate_power:
+            # Keep the original 76-observation H249 diagnostic byte-for-byte.
+            ops.append(cmd(f'/execute if entity @e[nbt={{UUID:[I;243,0,0,{n}],Health:4f,'
+                           f'NoGravity:1b,Size:1,Tags:["sulfur_fuse"]}}]', expect_result=1))
+        else:
+            ops.append(cmd(f'/execute if entity @e[nbt={{UUID:[I;243,0,0,{n}],Health:4f,'
+                           f'NoGravity:1b,Silent:1b,PersistenceRequired:1b,Size:1,'
+                           f'equipment:{{body:{{id:"minecraft:{body}"}}}},Tags:["sulfur_fuse"]}}]',
+                           expect_result=1))
+            mode = 'if' if ai else 'unless'
+            ops.append(cmd(f'/execute {mode} entity @e[nbt={{UUID:[I;243,0,0,{n}],NoAI:1b}}]',
+                           expect_result=1))
+
+    # Loaded short fuses pin both AI modes, including exact expiry, without a blast.
+    # The default short-fuse/cooldown actors share the observer's loaded chunk.
+    # The diagnostic retains its original distant positions and readiness guards.
+    summon(1, 4 if immediate_power else 2, 1, 'tnt', ',fuse:3')
+    summon(2, 16 if immediate_power else 5, 0, 'tnt', ',fuse:3')
+    summon(3, 28 if immediate_power else 8, 1, 'tnt')
+    summon(4, 40 if immediate_power else 11, 1, 'white_wool', ',pickup_timer:100')
+    summon(5, 52 if immediate_power else 14, 0, 'white_wool', ',pickup_timer:100')
+    for n in (1, 2, 3):
+        ops.append(cmd(f'/data get entity {target(n)} fuse'))
+    for tick in (1, 2, 3):
+        ops.append({'op': 'tick', 'n': 1})
+        for n in (1, 2):
+            ops.append(cmd(f'/execute if entity {target(n)}',
+                           expect_result=1 if tick < 3 else None))
+            if tick < 3:
+                ops.append(cmd(f'/data get entity {target(n)} fuse', expect_result=3 - tick))
+        ops.append(cmd(f'/data get entity {target(3)} fuse'))
+        for n in (4, 5):
+            ops.append(cmd(f'/execute if entity {target(n)}', expect_result=1))
+            ops.append(cmd(f'/data get entity {target(n)} pickup_timer',
+                           expect_result=100 if n == 4 else 100 - tick))
+    ops.extend(setup('/kill @e[tag=sulfur_fuse]', '/gamerule tnt_explodes true',
+                     '/gamerule mob_griefing true'))
+    if immediate_power:
+        ops.extend(setup('/setblock 28 199 4 redstone_block'))
+    ops.extend(setup('/setblock 6 200 4 dirt'))
+    # Actual damage/power priming, a nonexplosive body, and an idle TNT control.
+    summon(6, 4, 1, 'tnt')
+    summon(7, 16, 1, 'tnt')
+    summon(8, 28, 1, 'tnt')
+    summon(9, 52, 1, 'tnt')
+    summon(10, 68, 1, 'oak_planks')
+    if not immediate_power:
+        ops.append(cmd(f'/data get entity {target(8)} fuse', expect_result=-1))
+    ops.append({'op': 'tick', 'n': 2})
+    # Let the loaded body initialize before applying power: first-load equipment
+    # collection vs priming order is a separate diagnostic from fuse dispatch.
+    if not immediate_power:
+        ops.append(cmd(f'/execute if entity {target(8)}', expect_result=1))
+        ops.append(cmd(f'/data get entity {target(8)} fuse', expect_result=-1))
+        ops.extend(setup('/setblock 28 199 4 redstone_block'))
+        ops.append({'op': 'tick', 'n': 1})
+        ops.append(cmd(f'/data get entity {target(8)} fuse', expect_result=120))
+    ops.append(cmd(f'/damage {target(6)} 1 in_fire'))
+    ops.append(cmd(f'/damage {target(7)} 1 explosion', expect_result=1))
+    ops.append(cmd(f'/damage {target(10)} 1 in_fire', expect_result=1))
+    ops.append({'op': 'tick', 'n': 1})
+    for n in (6, 7, 8, 9, 10):
+        ops.append(cmd(f'/execute if entity {target(n)}', expect_result=1))
+        ops.append(cmd(f'/data get entity {target(n)} Health'))
+    for n in (6, 8, 9, 10):
+        ops.append(cmd(f'/data get entity {target(n)} fuse'))
+    # The explosion primes a random short fuse; assert the independent boundary only.
+    ops.append(cmd(f'/execute if entity @e[nbt={{UUID:[I;243,0,0,7],Invulnerable:1b}}]',
+                   expect_result=1))
+    ops.append({'op': 'tick', 'n': 118})
+    ops.append(cmd(f'/execute if entity {target(6)}', expect_result=1))
+    ops.append(cmd(f'/data get entity {target(6)} fuse', expect_result=1))
+    ops.append(cmd('/execute if block 6 200 4 dirt', expect_result=1))
+    ops.append({'op': 'tick', 'n': 2})
+    ops.append(cmd(f'/execute if entity {target(6)}'))
+    ops.append(cmd('/execute if block 6 200 4 air', expect_result=1))
+    for n in (9, 10):
+        ops.append(cmd(f'/execute if entity {target(n)}', expect_result=1))
+        ops.append(cmd(f'/data get entity {target(n)} fuse'))
+    return ops + setup('/kill @e[tag=sulfur_fuse]', '/forceload remove 0 0 79 15')
+
+
+
 def groups():
     return [
         ('setup', group_setup()),
@@ -3613,6 +3714,7 @@ def groups():
         ('mob armor damage', mob_armor_damage()),
         ('mob max health bounds', mob_max_health_bounds()),
         ('creeper custom fuse', creeper_custom_fuse()),
+        ('sulfur cube fuse ticks', sulfur_cube_fuse_ticks()),
         ('wither spawn', wither_spawn()),
         ('riding teleport', riding_teleport()),
         ('mob riding', mob_riding()),
