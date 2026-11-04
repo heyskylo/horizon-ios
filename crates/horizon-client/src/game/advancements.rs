@@ -1012,23 +1012,7 @@ impl Game<'_> {
         let target = target.clone();
         let blow = blow.cloned();
         self.trigger(name, move |c, w| {
-            let pctx = adv::Entities {
-                this: Some(&me),
-                origin: me.position,
-                tool: None,
-                block_pos: None,
-            };
-            let ectx = adv::Entities {
-                this: Some(&target),
-                ..pctx
-            };
-            let blow_ok = c["killing_blow"].is_null()
-                || blow
-                    .as_ref()
-                    .is_some_and(|d| adv::damage_source(&c["killing_blow"], d, w, me.position));
-            adv::conditions(&c["player"], &pctx, w)
-                && adv::conditions(&c["entity"], &ectx, w)
-                && blow_ok
+            adv::killed(c, &me, &target, blow.as_ref(), w)
         });
     }
     /// `KilledByArrowTrigger`: what the arrow killed and the weapon it came from.
