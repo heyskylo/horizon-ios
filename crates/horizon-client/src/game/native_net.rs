@@ -5,12 +5,14 @@
 //! reaches `native_net_from_client` once the hub is back, and what a mod sends
 //! a player leaves at the tick's end, from whichever hook sent it.
 use super::{Game, lan::LanHost};
+use horizon_client::mod_api::ServerboundPlayPacket;
 use horizon_protocol::{
     mod_net::{self, Message},
     packets::{
         configuration::CustomPayload,
         play::{Clientbound as C, Serverbound as S},
     },
+    quiet,
 };
 use std::collections::HashMap;
 
@@ -161,5 +163,98 @@ impl Game<'_> {
             data: payload,
         }));
         Ok(())
+    }
+
+    /// Sends `packet` to the server as it is, to any server, a vanilla one
+    /// included: a plugin channel's payload (`ServerboundCustomPayloadPacket`)
+    /// or any other play packet. Nothing counts it, and the game doesn't apply
+    /// it on its side: a packet that needs a sequence number, a signature or
+    /// the client's own state is the mod's to get right. An error when the
+    /// player isn't in a server's play state, and for a custom payload past
+    /// `ServerboundCustomPayloadPacket.MAX_PAYLOAD_SIZE`, which a server
+    /// disconnects for. API @API:send_packet@.
+    pub(super) fn native_send_packet(
+        &mut self,
+        packet: ServerboundPlayPacket,
+    ) -> Result<(), String> {
+        let Some(remote) = self.remote.as_ref() else {
+            return Err("not connected to a server".into());
+        };
+        // A server that reconfigures the player has them out of the play state.
+        if !remote.joined || remote.reconfiguring.is_some() {
+            return Err("the player has not joined yet".into());
+        }
+        if let S::CustomPayload(payload) = &packet
+            && payload.data.len() > quiet::MAX_PAYLOAD
+        {
+            return Err(format!("the payload is past {} bytes", quiet::MAX_PAYLOAD));
+        }
+        self.send(packet);
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::{
+        Audio, Game, Options, Progress, Settings, execution_role::ExecutionRole, load_resources,
+    };
+    use super::{CustomPayload, S, quiet};
+    use horizon_protocol::{connection::Pipe, packets::configuration::Ping};
+
+    /// A mod's packet goes out only from a joined player, and a custom
+    /// payload only within vanilla's size limit.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn mod_packets_need_a_joined_player_and_a_payload_within_the_limit() {
+        let root = std::path::PathBuf::from(
+            std::env::var_os("HORIZON_TEST_RESOURCES")
+                .expect("set HORIZON_TEST_RESOURCES to prepared resources"),
+        );
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!("no menu handoff"),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.execution_role = ExecutionRole::Client;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        let payload = |len| {
+            S::CustomPayload(CustomPayload {
+                channel: "voicechat:request_secret".into(),
+                data: vec![0; len],
+            })
+        };
+
+        assert!(game.native_send_packet(payload(4)).is_err());
+        let (client, _server) = Pipe::pair();
+        game.connect_local(client, "PacketTest").unwrap();
+        assert!(game.native_send_packet(payload(4)).is_err());
+        game.remote.as_mut().unwrap().joined = true;
+        assert!(game.native_send_packet(payload(4)).is_ok());
+        assert!(game.native_send_packet(payload(quiet::MAX_PAYLOAD)).is_ok());
+        assert!(
+            game.native_send_packet(payload(quiet::MAX_PAYLOAD + 1))
+                .is_err()
+        );
+        assert!(game.native_send_packet(S::Pong(Ping { id: 7 })).is_ok());
     }
 }

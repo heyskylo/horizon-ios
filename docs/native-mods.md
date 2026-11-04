@@ -2697,6 +2697,18 @@ one custom payload channel `horizon:mod_net`. A vanilla client never gets them, 
 - A player's message reaches the server's hook in the tick after it arrives, when the helpers can reach every player;
   a message to a player leaves at the end of the tick, from any server hook.
 
+### Packets a client mod sends
+
+API @API:send_packet@, `crates/horizon-client/src/game/native_net.rs`: `native_send_packet(packet)` sends one
+serverbound play packet (`mod_api::ServerboundPlayPacket`, Horizon's `play::Serverbound`) to any server, a vanilla one
+included. The usual one is a plugin channel's `ServerboundPlayPacket::CustomPayload`, for a server plugin or a Java mod
+that listens on that channel; its data is at most 32767 bytes (`ServerboundCustomPayloadPacket.MAX_PAYLOAD_SIZE`), past
+which a server disconnects. The packet goes out as it is: nothing counts it, and the game doesn't apply it on its side,
+so a packet that needs a sequence number, a signature or the client's own state (a block placed, a slot clicked, signed
+chat) is the mod's to get right. It is an error when the player isn't in a server's play state (not connected, not
+joined yet or being reconfigured), and for a custom payload over the limit. Mod messages between the halves of one
+Horizon mod stay with `native_net_send_to_server`. Bundles need `"hooks": @API:send_packet@`.
+
 ### Server menus
 
 API 10, `crates/horizon-client/src/game/native_menus.rs`: menus a server mod builds from ordinary items, which a
