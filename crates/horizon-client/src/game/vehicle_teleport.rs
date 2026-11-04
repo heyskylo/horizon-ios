@@ -27,26 +27,16 @@ pub(super) fn absolute_pitch(pitch: f32) -> Option<f32> {
     (!clamped.is_nan()).then(|| (clamped % 360.0).clamp(-90.0, 90.0))
 }
 
-/// `Entity.calculatePassengerTransition` for the angles: a rider keeps its
-/// angle to the vehicle, `passenger.getYRot() - getYRot()` on top of the
-/// vehicle's own, and takes the vehicle's angle on an axis the command set
-/// relatively (`relatives has Y_ROT`, `X_ROT`: vanilla adds 0 there). The
-/// pitch goes through the same clamp as the vehicle's (`Entity.setXRot`), and
-/// an axis the command did not set leaves the rider's own.
-pub(super) fn passenger_rotation(
-    before: [f32; 2],
-    after: [f32; 2],
-    rider: [f32; 2],
-    relatives: [bool; 2],
-) -> [f32; 2] {
+/// `Entity.calculatePassengerTransition` for the angles: a rider turns by what
+/// the vehicle turned, keeping `passenger.getYRot() - getYRot()`. An absolute
+/// angle adds that offset to the vehicle's new one; a relative one (`~`) is a
+/// delta the rider adds to its own: the same sum. `after` is the angle before
+/// the vehicle's pitch clamp; the rider's pitch is clamped on its own
+/// (`Entity.setXRot`), and an axis the command did not set leaves the rider's.
+pub(super) fn passenger_rotation(before: [f32; 2], after: [f32; 2], rider: [f32; 2]) -> [f32; 2] {
     let axis = |i: usize| {
         if after[i].is_finite() {
-            after[i]
-                + if relatives[i] {
-                    0.0
-                } else {
-                    rider[i] - before[i]
-                }
+            after[i] + (rider[i] - before[i])
         } else {
             rider[i]
         }
@@ -54,14 +44,12 @@ pub(super) fn passenger_rotation(
     [axis(0), absolute_pitch(axis(1)).unwrap_or(rider[1])]
 }
 
-/// The angles a command placed a vehicle at, with the angles it had before and
-/// the axes it set relatively (`Relative.Y_ROT`, `Relative.X_ROT`): what
-/// `Entity.calculatePassengerTransition` needs for the riders.
+/// The angles a command turned a vehicle to, with the angles it had before:
+/// what `Entity.calculatePassengerTransition` needs for the riders.
 #[derive(Clone, Copy)]
 pub(super) struct PlacedRotation {
     pub before: [f32; 2],
     pub after: [f32; 2],
-    pub relatives: [bool; 2],
 }
 
 /// The entity id a vehicle's riders point at, for the targets that carry some.
@@ -116,12 +104,8 @@ impl Game<'_> {
                 // vehicle, then Entity.teleportSetPosition keeps the old angles
                 // for the interpolation.
                 if let Some(placed) = rotation {
-                    let [yaw, pitch] = passenger_rotation(
-                        placed.before,
-                        placed.after,
-                        [m.yaw, m.head_pitch],
-                        placed.relatives,
-                    );
+                    let [yaw, pitch] =
+                        passenger_rotation(placed.before, placed.after, [m.yaw, m.head_pitch]);
                     m.yaw = yaw;
                     m.body_yaw = yaw;
                     m.head_yaw = yaw;
@@ -141,12 +125,8 @@ impl Game<'_> {
         if let Some(placed) = rotation
             && self.riding == Some(vehicle)
         {
-            let [yaw, pitch] = passenger_rotation(
-                placed.before,
-                placed.after,
-                [self.yaw, self.pitch],
-                placed.relatives,
-            );
+            let [yaw, pitch] =
+                passenger_rotation(placed.before, placed.after, [self.yaw, self.pitch]);
             if yaw.is_finite() {
                 self.yaw = yaw;
             }
@@ -174,12 +154,8 @@ impl Game<'_> {
                 }));
                 if let Some(placed) = rotation {
                     let g = &mut host.hub.guests[i];
-                    let [yaw, pitch] = passenger_rotation(
-                        placed.before,
-                        placed.after,
-                        [g.yaw, g.pitch],
-                        placed.relatives,
-                    );
+                    let [yaw, pitch] =
+                        passenger_rotation(placed.before, placed.after, [g.yaw, g.pitch]);
                     g.yaw = yaw;
                     g.head_yaw = yaw;
                     g.pitch = pitch;
@@ -308,37 +284,28 @@ mod tests {
         // A rider 30 degrees off a vehicle that turns from 0 to 90 ends at
         // 120: it keeps the 30 degrees it had on it.
         assert_eq!(
-            passenger_rotation([0.0, 0.0], [90.0, 0.0], [30.0, 0.0], [false; 2]),
+            passenger_rotation([0.0, 0.0], [90.0, 0.0], [30.0, 0.0]),
             [120.0, 0.0]
         );
         // The pitch keeps its offset the same way, through Entity.setXRot's
         // clamp: 40 - 10 = 30 degrees off a vehicle placed at 70 would be 100.
         assert_eq!(
-            passenger_rotation([10.0, 10.0], [0.0, 70.0], [0.0, 40.0], [false; 2]),
+            passenger_rotation([10.0, 10.0], [0.0, 70.0], [0.0, 40.0]),
             [-10.0, 90.0]
         );
     }
     #[test]
-    fn a_relative_axis_takes_the_vehicles_own_angle() {
-        // `~` yaw adds 0 in vanilla, so the rider ends where the vehicle is,
-        // not turned by what it turned.
+    fn a_rider_turns_from_the_vehicles_unclamped_pitch() {
+        // `~ ~100` on a level vehicle: the vehicle stops at 90, a rider 50
+        // below it adds the whole 100 (calculatePassengerTransition) and ends at 50.
         assert_eq!(
-            passenger_rotation([0.0, 0.0], [90.0, 0.0], [30.0, 0.0], [true, false]),
-            [90.0, 0.0]
-        );
-        // The axes are independent: a relative yaw with an absolute pitch.
-        assert_eq!(
-            passenger_rotation([10.0, 10.0], [190.0, 70.0], [170.0, 40.0], [true, false]),
-            [190.0, 90.0]
+            passenger_rotation([0.0, 0.0], [0.0, 100.0], [0.0, -50.0]),
+            [0.0, 50.0]
         );
     }
     #[test]
     fn an_axis_the_command_did_not_set_leaves_the_riders_own() {
-        assert!(
-            passenger_rotation([0.0, 0.0], [f32::NAN, 0.0], [30.0, 0.0], [false; 2])[0] == 30.0
-        );
-        assert!(
-            passenger_rotation([0.0, 0.0], [0.0, f32::NAN], [0.0, 40.0], [false; 2])[1] == 40.0
-        );
+        assert!(passenger_rotation([0.0, 0.0], [f32::NAN, 0.0], [30.0, 0.0])[0] == 30.0);
+        assert!(passenger_rotation([0.0, 0.0], [0.0, f32::NAN], [0.0, 40.0])[1] == 40.0);
     }
 }

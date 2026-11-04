@@ -1511,17 +1511,17 @@ impl Game<'_> {
         t: Target,
         pos: [f64; 3],
         rotation: Option<[f32; 2]>,
-        relatives: [bool; 2],
+        turn_riders: bool,
     ) {
         // An entity in another level is teleported in the level that holds it.
-        let _ = self.in_target_level(t, |g| g.teleport_to_in_level(t, pos, rotation, relatives));
+        let _ = self.in_target_level(t, |g| g.teleport_to_in_level(t, pos, rotation, turn_riders));
     }
     fn teleport_to_in_level(
         &mut self,
         t: Target,
         pos: [f64; 3],
         rotation: Option<[f32; 2]>,
-        relatives: [bool; 2],
+        turn_riders: bool,
     ) {
         use super::entity::Entity;
         let from = self.target_position(t);
@@ -1530,12 +1530,15 @@ impl Game<'_> {
         // beside its position.
         let from_rotation = self.target_rotation(t);
         let v = Vec3::new(pos[0], pos[1], pos[2]);
+        // The riders turn from the unclamped angles (calculatePassengerTransition
+        // adds their offset to the transition's, each rider's own setXRot clamps).
+        let requested = rotation;
         // PositionMoveRotation.calculateAbsolute clamps pitch before setXRot.
         let rotation = rotation.map(|[yaw, pitch]| [yaw, pitch.clamp(-90.0, 90.0)]);
         match t {
             Target::Guest(_) => {
                 self.for_player(t, |g| {
-                    g.teleport_to(Target::Player, pos, rotation, relatives)
+                    g.teleport_to(Target::Player, pos, rotation, turn_riders)
                 });
             }
             Target::Player => {
@@ -1749,12 +1752,13 @@ impl Game<'_> {
             Target::Frame(_) | Target::Painting(_) => {}
         }
         // Entity.teleportSameDimension: the riders go with their vehicle at
-        // once, by the offset it took and the angles it was placed at.
+        // once, by the offset it took and the turn it was given.
         if let (Some(from), Some(to)) = (from, self.target_position(t)) {
-            let placed = rotation.map(|after| super::vehicle_teleport::PlacedRotation {
-                before: from_rotation,
-                after,
-                relatives,
+            let placed = requested.filter(|_| turn_riders).map(|after| {
+                super::vehicle_teleport::PlacedRotation {
+                    before: from_rotation,
+                    after,
+                }
             });
             self.teleport_passengers(t, from, to, placed);
         }
@@ -1857,9 +1861,9 @@ impl Game<'_> {
             let rotation = Some(self.target_rotation(dest).map(wrap_degrees));
             for &t in &targets {
                 if !self.teleport_across(t, level, pos, rotation) {
-                    // TeleportCommand.teleportToEntity's transition carries no
-                    // relatives: the destination's own angles are absolute.
-                    self.teleport_to(t, pos, rotation, [false; 2]);
+                    // TeleportCommand.teleportToEntity: the destination's angles,
+                    // which the riders turn to as well.
+                    self.teleport_to(t, pos, rotation, true);
                 }
             }
             let message = if targets.len() == 1 {
@@ -1937,12 +1941,12 @@ impl Game<'_> {
             None => self.dim,
         };
         for &t in &targets {
-            // Relative.Y_ROT and Relative.X_ROT, for the riders a relative
-            // turn takes to the vehicle's own angle (Entity.calculatePassengerTransition).
-            let mut relatives = [false; 2];
-            let rotation = look_at(self, t).or_else(|| {
+            // `facing` teleports with the rotation unchanged (Relative.ROTATION,
+            // no turn for the riders), then LookAt.perform turns the target alone.
+            let looked = look_at(self, t);
+            let turn_riders = looked.is_none();
+            let rotation = looked.or_else(|| {
                 let (angles, relative) = rotation?;
-                relatives = relative;
                 let current = self.target_rotation(t);
                 // performTeleport wraps relative deltas before calculateAbsolute
                 // adds them back; wrapping the resolved pitch changes its clamp.
@@ -1957,7 +1961,7 @@ impl Game<'_> {
             if self.teleport_across(t, source_level, pos, rotation) {
                 continue;
             }
-            self.teleport_to(t, pos, rotation, relatives);
+            self.teleport_to(t, pos, rotation, turn_riders);
             // LookAt.perform after a successful teleportTo.
             if let Some(f) = facing {
                 self.send_player_look_at(t, anchored_eyes, f, facing_entity);
@@ -4126,11 +4130,11 @@ mod teleport_pitch_tests {
         ] {
             game.yaw = 10.0;
             game.pitch = 20.0;
-            game.teleport_to_in_level(Target::Player, [0.0; 3], Some(rotation), [false; 2]);
+            game.teleport_to_in_level(Target::Player, [0.0; 3], Some(rotation), true);
             assert_eq!([game.yaw, game.pitch], expected);
             game.mobs[0].yaw = 10.0;
             game.mobs[0].head_pitch = 20.0;
-            game.teleport_to_in_level(Target::Mob(42), [0.0; 3], Some(rotation), [false; 2]);
+            game.teleport_to_in_level(Target::Mob(42), [0.0; 3], Some(rotation), true);
             assert_eq!([game.mobs[0].yaw, game.mobs[0].head_pitch], expected);
         }
         game.build_registries();
@@ -4339,12 +4343,7 @@ mod teleport_rider_tests {
         game.mobs.push(rider);
         // Entity.teleportPassengers: the rider keeps its offset from the
         // vehicle and turns by what the vehicle turned.
-        game.teleport_to_in_level(
-            Target::Mob(42),
-            [10.0, 70.0, -4.0],
-            Some([90.0, 0.0]),
-            [false; 2],
-        );
+        game.teleport_to_in_level(Target::Mob(42), [10.0, 70.0, -4.0], Some([90.0, 0.0]), true);
         let vehicle = game.mobs.iter().find(|m| m.id == 42).unwrap();
         assert_eq!(vehicle.position, Vec3::new(10.0, 70.0, -4.0));
         let rider = game.mobs.iter().find(|m| m.id == 43).unwrap();
@@ -4355,19 +4354,26 @@ mod teleport_rider_tests {
             Some(42),
             "a teleported vehicle keeps its riders"
         );
-        // A relative yaw (`~`): vanilla adds 0 to it for a rider, so the rider
-        // ends at the vehicle's own angle instead of keeping its 30 degrees.
+        // A relative yaw (`~90`) is the same turn: the transition carries the
+        // 90-degree delta and the rider adds it to its own angle.
         game.teleport_to_in_level(
             Target::Mob(42),
             [10.0, 70.0, -4.0],
             Some([180.0, 0.0]),
-            [true, false],
+            true,
         );
         let rider = game.mobs.iter().find(|m| m.id == 43).unwrap();
-        assert_eq!(rider.yaw, 180.0, "a relative yaw is the vehicle's own");
+        assert_eq!(rider.yaw, 210.0, "the rider turns by the vehicle's turn");
+        // `facing` keeps the transition's rotation: the vehicle looks, the rider does not turn.
+        game.teleport_to_in_level(Target::Mob(42), [10.0, 70.0, -4.0], Some([0.0, 0.0]), false);
+        let rider = game.mobs.iter().find(|m| m.id == 43).unwrap();
+        assert_eq!(
+            rider.yaw, 210.0,
+            "a vehicle turned by `facing` leaves its rider"
+        );
         // Entity.teleport's stopRiding(): a target that is itself a passenger
         // leaves its vehicle, or the next sync seats it where it was.
-        game.teleport_to_in_level(Target::Mob(43), [0.0, 64.0, 0.0], None, [false; 2]);
+        game.teleport_to_in_level(Target::Mob(43), [0.0, 64.0, 0.0], None, false);
         let rider = game.mobs.iter().find(|m| m.id == 43).unwrap();
         assert_eq!(rider.extra.mount, None, "the teleported rider dismounted");
         assert_eq!(rider.position, Vec3::new(0.0, 64.0, 0.0));

@@ -1740,7 +1740,7 @@ impl Game<'_> {
                 t,
                 [p[0].floor() + 0.5, f64::from(y), p[1].floor() + 0.5],
                 None,
-                [false; 2],
+                false,
             );
             let closest = points
                 .iter()
