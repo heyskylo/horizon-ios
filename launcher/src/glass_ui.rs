@@ -1002,7 +1002,7 @@ pub fn page_head(title: impl Into<SharedString>, note: impl Into<SharedString>) 
     div()
         .flex()
         .flex_col()
-        .pt(px(40.))
+        .pt(px(40. - crate::glass::CONTENT_INSET))
         .mb(px(28.))
         .child(
             div()

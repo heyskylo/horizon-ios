@@ -66,7 +66,7 @@ impl Launcher {
             .flex()
             .flex_col()
             .min_w_0()
-            .pt(px(64.))
+            .pt(px(64. - crate::glass::CONTENT_INSET))
             .child(self.edition_tabs(java.is_some(), cx))
             .child(self.home_title())
             .child(self.played_text(cx))
