@@ -4226,6 +4226,7 @@ mod tests {
                 dealt_damage: false,
                 creative_only: false,
                 no_gravity: false,
+                fire_ticks: 0,
                 item: &trident,
             },
             [0; 4],
