@@ -2377,6 +2377,30 @@ def creeper_custom_fuse():
     return ops + setup('/gamerule mob_griefing true')
 
 
+def parrot_saved_age():
+    """Parrot saved Age is absent even when supplied; pigs retain modeled Age (#8842)."""
+    ops = setup('/fill 3 219 3 6 219 6 stone')
+    flags = 'NoAI:1b,NoGravity:1b,PersistenceRequired:1b'
+    modes = [('plain', ''), ('absent', '{' + flags + '}'),
+             ('zero', '{' + flags + ',Age:0}'),
+             ('negative', '{' + flags + ',Age:-100}'),
+             ('positive', '{' + flags + ',Age:100}')]
+    for species in ('parrot', 'pig'):
+        for mode, nbt in modes:
+            tag = f'saved_age_{species}_{mode}'
+            target = f'@e[tag={tag},limit=1]'
+            ops += setup(f'/tag @e[type={species}] add h198_seen',
+                         f'/kill @e[type={species}]',
+                         f'/summon {species} 4.5 220 4.5 {nbt}'.rstrip(),
+                         f'/tag @e[type={species},tag=!h198_seen,limit=1] add {tag}',
+                         f'/tag {target} add h198_seen')
+            for tick in (0, 1):
+                if tick:
+                    ops.append({'op': 'tick', 'n': 1})
+                ops += [cmd(f'/execute if entity {target}', expect_result=1),
+                        cmd(f'/data get entity {target} Age')]
+            ops += setup(f'/kill {target}')
+    return ops
 def animal_noai_love():
     """Animal.aiStep love clocks run with NoAI; parrot Age inputs are ignored (#8825)."""
     ops = setup('/fill 3 219 3 6 219 6 stone')
@@ -2507,6 +2531,7 @@ def groups():
         ('setblock destroy air', setblock_destroy_air()),
         ('forceload query order', forceload_query_order()),
         ('entities', entities()),
+        ('parrot saved Age', parrot_saved_age()),
         ('animal NoAI love', animal_noai_love()),
         ('turtle summon home', turtle_summon_home()),
         ('command minecart loaded success', command_minecart_loaded_success()),

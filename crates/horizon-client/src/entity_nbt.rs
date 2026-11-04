@@ -534,6 +534,9 @@ pub fn mob_to_nbt(
         if species != crate::mobs::Species::Tadpole {
             map.insert("ForcedAge".into(), Tag::Int(m.extra.forced_age));
         }
+    } else if species == crate::mobs::Species::Parrot {
+        // Parrot.canBeABaby is false: a raw input Age must not leak into the save.
+        map.remove(&"Age".into());
     }
     // Animal.addAdditionalSaveData: the love ticks left, whatever the save had.
     if is_animal(id) {
@@ -5107,6 +5110,43 @@ mod sheep_nbt_tests {
                 registry.names,
                 "{species:?}"
             );
+        }
+    }
+
+    #[test]
+    fn parrots_omit_raw_age_and_pigs_keep_modeled_age() {
+        use crate::mobs::Species;
+        for species in [Species::Parrot, Species::Pig] {
+            let mut kind = crate::mobs::sensor_scan_tests::kind();
+            let ty = Arc::make_mut(&mut kind);
+            ty.species = species;
+            ty.id = if species == Species::Parrot {
+                "minecraft:parrot"
+            } else {
+                "minecraft:pig"
+            }
+            .into();
+            let mut mob = Mob::new(1, kind, Vec3::ZERO, 0.0);
+            let expected = if species == Species::Pig {
+                mob.extra.age = -37;
+                Some(Tag::Int(-37))
+            } else {
+                None
+            };
+            for raw in [
+                None,
+                Some(Tag::Compound(Default::default())),
+                Some(Tag::compound([("Age", Tag::Int(0))])),
+                Some(Tag::compound([("Age", Tag::Int(-100))])),
+                Some(Tag::compound([("Age", Tag::Int(100))])),
+            ] {
+                let saved = mob_to_nbt(&mob, [0; 4], raw.as_ref(), None);
+                assert_eq!(
+                    saved.get("Age"),
+                    expected.as_ref(),
+                    "{species:?}, raw={raw:?}"
+                );
+            }
         }
     }
 
