@@ -1056,4 +1056,73 @@ mod tests {
         let mut claimed = false;
         dispatch_use_item_on(&mut host, &mods, &stick(), [0; 3], [0, 1, 0], &mut claimed);
     }
+
+    struct ItemMobReply {
+        answer: Option<bool>,
+        calls: Arc<Mutex<Vec<Option<bool>>>>,
+    }
+    impl Hooks for ItemMobReply {
+        fn item_interact_mob(
+            &self,
+            _: &mut dyn Host,
+            event: &mut ItemInteractMobEvent<'_>,
+        ) -> Option<bool> {
+            assert_eq!(event.entity, 17);
+            assert_eq!(event.kind, "minecraft:zombie");
+            assert_eq!(event.stack, Some(&stick()));
+            self.calls.lock().unwrap().push(self.answer);
+            self.answer
+        }
+    }
+
+    #[test]
+    fn item_interact_mob_first_response_controls_swing() {
+        for (answers, expected, expected_calls) in [
+            ([None, Some(false), Some(true)], Some(false), 2),
+            ([None, Some(true), Some(false)], Some(true), 2),
+            ([None, None, None], None, 3),
+        ] {
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            let mods: Vec<Box<dyn Hooks>> = answers
+                .into_iter()
+                .map(|answer| {
+                    Box::new(ItemMobReply {
+                        answer,
+                        calls: calls.clone(),
+                    }) as Box<dyn Hooks>
+                })
+                .collect();
+            let mut host = Reader {
+                block: "minecraft:air",
+                lines: Vec::new(),
+            };
+            let mut swing = None;
+            dispatch_item_interact_mob(
+                &mut host,
+                &mods,
+                17,
+                "minecraft:zombie",
+                Some(&stick()),
+                &mut swing,
+            );
+            assert_eq!(swing, expected);
+            assert_eq!(calls.lock().unwrap().len(), expected_calls);
+            calls.lock().unwrap().clear();
+            swing = Some(false);
+            dispatch_item_interact_mob(
+                &mut host,
+                &mods,
+                17,
+                "minecraft:zombie",
+                Some(&stick()),
+                &mut swing,
+            );
+            assert_eq!(
+                swing,
+                Some(false),
+                "an earlier mixin already owned the result"
+            );
+            assert!(calls.lock().unwrap().is_empty());
+        }
+    }
 }
