@@ -1195,9 +1195,18 @@ fn bindings(
         let released = pack.released.get();
         let custom = pack_textures::find(textures, group, &s.ty, &s.name).filter(|&i| {
             let t = &textures[i];
-            t.stage != pack_textures::stage(group)
-                || released.0 != t.stage
-                || horizon_shaders::buffer_index(&t.name).is_none_or(|b| released.1 & 1 << b == 0)
+            // A PNG under `texture.<stage>.<name>` whose name is no sampler of the game's
+            // isn't bound: the sampler reads as if it had no texture. Iris 1.11.7 with a probe
+            // pack of ours (#9064) bound it over `gaux2` and `noisetex` but not over names of its
+            // own, where a raw texture was bound; this rule is a fit to those cases.
+            let unbound = t.png
+                && t.stage != horizon_shaders::EVERY_STAGE
+                && source(&s.name, false, true, false) == Source::Dummy;
+            !unbound
+                && (t.stage != pack_textures::stage(group)
+                    || released.0 != t.stage
+                    || horizon_shaders::buffer_index(&t.name)
+                        .is_none_or(|b| released.1 & 1 << b == 0))
         });
         let image = pack
             .images
@@ -4779,6 +4788,7 @@ mod tests {
             sample_type: wgpu::TextureSampleType::Float { filterable: true },
             blur: false,
             clamp: false,
+            png: false,
             image: pack_textures::Image::Atlas,
         }];
         let interface = horizon_shaders::Interface {
@@ -4838,6 +4848,102 @@ mod tests {
         pack.released.set(("composite", 1));
         assert!(reads(Group::Composite) == Source::Color(0));
         assert!(reads(Group::Final) == Source::Color(0));
+    }
+
+    /// Iris 1.11.7 (a probe pack of ours, #9064) didn't bind a PNG under
+    /// `texture.<stage>.<name>` when `name` was a name of the pack's own, no sampler of the
+    /// game's; a raw texture there, a PNG over `gaux2` or `noisetex`, and a `customTexture` PNG
+    /// were bound.
+    #[test]
+    fn a_png_under_a_name_of_its_own_is_not_bound() {
+        let instance = crate::gfx::test_gpu::instance();
+        let Ok(adapter) = pollster::block_on(instance.request_adapter(&Default::default())) else {
+            return;
+        };
+        let Ok((device, _queue)) = pollster::block_on(adapter.request_device(&Default::default()))
+        else {
+            return;
+        };
+        let texture = |stage: &str, name: &str, png: bool| pack_textures::PackTexture {
+            stage: stage.into(),
+            name: name.into(),
+            dimension: wgpu::TextureViewDimension::D2,
+            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+            blur: !png,
+            clamp: !png,
+            png,
+            image: pack_textures::Image::Atlas,
+        };
+        let textures = [
+            texture("composite", "tp", true),
+            texture("composite", "tr", false),
+            texture("composite", "gaux2", true),
+            texture("composite", "noisetex", true),
+            texture(horizon_shaders::EVERY_STAGE, "cp", true),
+        ];
+        let names = ["tp", "tr", "gaux2", "noisetex", "cp"];
+        let interface = horizon_shaders::Interface {
+            uniform_size: 48,
+            uniforms: Vec::new(),
+            samplers: names
+                .iter()
+                .zip(1..)
+                .map(|(name, k)| horizon_shaders::Sampler {
+                    name: (*name).into(),
+                    ty: "sampler2D".into(),
+                    binding: 2 * k - 1,
+                })
+                .collect(),
+            outputs: vec![0],
+            draw: false,
+            images: Vec::new(),
+            buffers: Vec::new(),
+            initial_values: vec![0; 48],
+        };
+        let buffers = pack_images::Buffers::new(
+            &device,
+            Default::default(),
+            Default::default(),
+            wgpu::ShaderStages::FRAGMENT,
+        );
+        let stand_ins = std::cell::RefCell::new(Vec::new());
+        let pack = Resources {
+            textures: &textures,
+            images: &[],
+            left_out: &[],
+            buffers: &buffers,
+            indices: None,
+            gpu: Gpu::of(&adapter, device.features()),
+            storable: 0,
+            rgb: 0,
+            released: std::cell::Cell::new(("", 0)),
+            stand_ins: &stand_ins,
+            shadow_linear: 0,
+            packed: [None; BUFFERS],
+        };
+        let (_, samplers, ..) = bindings(
+            device.features(),
+            &interface,
+            "final",
+            Group::Final,
+            &[0],
+            None,
+            &[T::Rgba8Unorm; BUFFERS],
+            None,
+            &mut Vec::new(),
+            &pack,
+        )
+        .expect("the pass is kept");
+        let read: Vec<Source> = samplers.iter().map(|b| b.source).collect();
+        assert!(
+            read == [
+                Source::Dummy,
+                Source::Atlas,
+                Source::Atlas,
+                Source::Atlas,
+                Source::Atlas
+            ]
+        );
     }
 
     /// Iris 1.11.7 runs a program whose image no `image.*` gives, and its loads read zero
