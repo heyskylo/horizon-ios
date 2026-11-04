@@ -359,8 +359,13 @@ impl Macros {
                 continue;
             } else if paste {
                 if let Some(mut left) = joined.pop() {
-                    left.text.push_str(&token.text);
-                    left.hidden.retain(|h| token.hidden.contains(h));
+                    // An empty operand leaves the other token, including its hiding, intact.
+                    if left.text.is_empty() {
+                        left = token;
+                    } else if !token.text.is_empty() {
+                        left.text.push_str(&token.text);
+                        left.hidden.retain(|h| token.hidden.contains(h));
+                    }
                     joined.push(left);
                 } else {
                     joined.push(token);

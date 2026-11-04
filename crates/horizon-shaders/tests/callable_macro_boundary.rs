@@ -68,6 +68,17 @@ fn recursive_tokens_stay_hidden_without_disabling_independent_source_calls() {
 }
 
 #[test]
+fn empty_paste_operands_preserve_an_arguments_recursive_hiding() {
+    let mut macros = macros();
+    macros.define_function("SPIN", vec![], "SPIN");
+    macros.define_function("KEEP_LEFT", vec!["x".into()], "CAT(x, )");
+    macros.define_function("KEEP_RIGHT", vec!["x".into()], "CAT(, x)");
+    for source in ["KEEP_LEFT(SPIN())()", "KEEP_RIGHT(SPIN())()"] {
+        assert_eq!(macros.expand(source), "SPIN()", "{source}");
+    }
+}
+
+#[test]
 fn only_a_following_source_parenthesis_forms_a_call() {
     let mut macros = macros();
     macros.define("OPEN", "(");
