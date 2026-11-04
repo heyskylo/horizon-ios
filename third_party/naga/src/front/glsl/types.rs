@@ -332,6 +332,38 @@ impl Context<'_> {
             })
     }
 
+    /// [`lift_up_const_expression`](Self::lift_up_const_expression), with each constant
+    /// replaced by its value: for the initializer of a new constant, since the constant
+    /// evaluator takes constants' initializers to be fully evaluated.
+    pub(crate) fn lift_up_const_value(
+        &mut self,
+        expr: Handle<Expression>,
+    ) -> Result<Handle<Expression>> {
+        let meta = self.expressions.get_span(expr);
+        let h = match self.expressions[expr] {
+            Expression::Constant(c) => return Ok(self.module.constants[c].init),
+            Expression::Compose { ty, ref components } => {
+                let mut components = components.clone();
+                for component in &mut components {
+                    *component = self.lift_up_const_value(*component)?;
+                }
+                self.module
+                    .global_expressions
+                    .append(Expression::Compose { ty, components }, meta)
+            }
+            Expression::Splat { size, value } => {
+                let value = self.lift_up_const_value(value)?;
+                self.module
+                    .global_expressions
+                    .append(Expression::Splat { size, value }, meta)
+            }
+            _ => return self.lift_up_const_expression(expr),
+        };
+        self.global_expression_kind_tracker
+            .insert(h, crate::proc::ExpressionKind::Const);
+        Ok(h)
+    }
+
     pub(crate) fn lift_up_const_expression(
         &mut self,
         expr: Handle<Expression>,

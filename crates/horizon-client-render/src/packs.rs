@@ -170,8 +170,17 @@ fn last_pre_minor(current: Format) -> i64 {
 /// `PackFormat.fullCodec(default_minor)`: an int, or a list of 1 to 256
 /// non-negative ints whose second is the minor. None: it does not parse.
 fn format_codec(v: &serde_json::Value, default_minor: i64) -> Option<Format> {
-    let non_negative =
-        |v: &serde_json::Value| v.as_i64().filter(|n| *n >= 0 && *n <= i64::from(i32::MAX));
+    // `Codec.INT` reads any JSON number through `Number.intValue`: a decimal such as `97.1`
+    // counts as its whole part (97), as it does for the game.
+    let non_negative = |v: &serde_json::Value| {
+        v.as_i64()
+            .or_else(|| {
+                v.as_f64()
+                    .filter(|f| f.is_finite())
+                    .map(|f| f.trunc() as i64)
+            })
+            .filter(|n| *n >= 0 && *n <= i64::from(i32::MAX))
+    };
     match v {
         serde_json::Value::Array(a) if (1..=256).contains(&a.len()) => {
             let list: Option<Vec<i64>> = a.iter().map(non_negative).collect();
@@ -636,7 +645,7 @@ fn build_overlay_uncached(
     }
     // FallbackResourceManager: a file's `.mcmeta` counts only from the pack that
     // supplies the file or one above it; vanilla's own sits below every pack.
-    let hidden: BTreeSet<String> = files
+    let mut hidden: BTreeSet<String> = files
         .iter()
         .filter(|(name, _)| !name.ends_with(".mcmeta"))
         .filter_map(|(name, (owner, _))| {
@@ -647,6 +656,25 @@ fn build_overlay_uncached(
             }
         })
         .collect();
+    // A companion from below the winning colour would describe another surface.
+    // A map-only pack above it is intentional and remains valid.
+    for (name, (owner, _)) in &files {
+        let Some(stem) = name.strip_suffix(".png") else {
+            continue;
+        };
+        if stem.ends_with("_n") || stem.ends_with("_s") {
+            continue;
+        }
+        for suffix in ["_n.png", "_s.png"] {
+            let map = format!("{stem}{suffix}");
+            if files
+                .get(&map)
+                .is_none_or(|(map_owner, _)| map_owner < owner)
+            {
+                hidden.insert(map);
+            }
+        }
+    }
     for name in &hidden {
         files.remove(name);
     }
@@ -1257,6 +1285,16 @@ mod tests {
                 .unwrap_err()
                 .contains("deprecated")
         );
+        // A decimal reads as its whole part, in a list or alone: `[97.1]` is format 97 (a pack
+        // that meant `[97, 1]` still loads and counts as compatible).
+        assert_eq!(
+            check(r#"{"min_format":[97.1],"max_format":[97.1]}"#),
+            Ok(((97, 0), (97, i64::from(i32::MAX))))
+        );
+        assert_eq!(
+            check(r#"{"min_format":97.9,"max_format":98.5}"#),
+            Ok(((97, 0), (98, i64::from(i32::MAX))))
+        );
         assert_eq!(
             check(r#"{"min_format":97,"max_format":98}"#),
             Ok(((97, 0), (98, i64::from(i32::MAX))))
@@ -1467,6 +1505,61 @@ mod tests {
             Some(Merge::Atlas)
         );
         assert_eq!(merge_kind("assets/minecraft/models/block/stone.json"), None);
+    }
+    #[test]
+    fn companion_maps_follow_the_winning_colour_or_a_higher_map_only_pack() {
+        let root =
+            std::env::temp_dir().join(format!("horizon-material-owner-{}", std::process::id()));
+        let vanilla = root.join("vanilla");
+        let relative = "assets/minecraft/textures/block";
+        fs::create_dir_all(vanilla.join(relative)).unwrap();
+        let names = ["stone.png", "stone_n.png", "stone_s.png"];
+        for name in names {
+            fs::write(vanilla.join(relative).join(name), b"base").unwrap();
+        }
+        for (pack, files) in [
+            ("low", vec!["stone_n.png", "stone_s.png"]),
+            ("colour", vec!["stone.png"]),
+            ("maps", vec!["stone_n.png"]),
+        ] {
+            let dir = root.join("packs").join(pack);
+            fs::create_dir_all(dir.join(relative)).unwrap();
+            fs::write(
+                dir.join("pack.mcmeta"),
+                br#"{"pack":{"description":"fixture","pack_format":97}}"#,
+            )
+            .unwrap();
+            for name in files {
+                fs::write(dir.join(relative).join(name), pack.as_bytes()).unwrap();
+            }
+        }
+        let all = discover(&vanilla, &root.join("packs"));
+        let order = |names: &[&str]| {
+            names
+                .iter()
+                .map(|name| {
+                    all.iter()
+                        .find(|p| p.id == format!("file/{name}"))
+                        .unwrap()
+                        .clone()
+                })
+                .collect::<Vec<_>>()
+        };
+        let out = root.join("out");
+        build_overlay(&vanilla, &order(&["low", "colour"]), &out).unwrap();
+        assert_eq!(
+            fs::read(out.join(relative).join("stone.png")).unwrap(),
+            b"colour"
+        );
+        assert!(!out.join(relative).join("stone_n.png").exists());
+        assert!(!out.join(relative).join("stone_s.png").exists());
+        build_overlay(&vanilla, &order(&["low", "colour", "maps"]), &out).unwrap();
+        assert_eq!(
+            fs::read(out.join(relative).join("stone_n.png")).unwrap(),
+            b"maps"
+        );
+        assert!(!out.join(relative).join("stone_s.png").exists());
+        fs::remove_dir_all(root).unwrap();
     }
     #[test]
     fn overlay_layers_packs_over_vanilla() {
