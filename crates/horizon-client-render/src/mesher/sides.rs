@@ -621,7 +621,12 @@ mod tests {
             let mut solid = cube([3.0, 4.0, 5.0], 0);
             for (i, vertex) in solid.iter_mut().enumerate() {
                 let id = (i / 4) as u16;
-                vertex.layer = id | if id % 2 == 0 { OPAQUE_LAYER } else { 0 };
+                vertex.layer = id
+                    | if id.is_multiple_of(2) {
+                        OPAQUE_LAYER
+                    } else {
+                        0
+                    };
             }
             let mut states: Vec<_> = (0..6).map(test_state).collect();
             let mut tints: Vec<_> = (0..6).map(|id| 0xffabc000 + id).collect();
@@ -633,7 +638,7 @@ mod tests {
                 &mut SortScratch::default(),
             );
             assert_eq!((solid.len(), states.len(), tints.len()), (24, 6, 6));
-            for (i, quad) in solid.chunks_exact(4).enumerate() {
+            for (i, quad) in solid.as_chunks::<4>().0.iter().enumerate() {
                 let id = u32::from(quad[0].layer & !OPAQUE_LAYER);
                 assert_eq!(states[i], test_state(id));
                 assert_eq!(tints[i], 0xffabc000 + id);

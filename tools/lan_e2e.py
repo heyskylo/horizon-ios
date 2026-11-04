@@ -13036,13 +13036,17 @@ def check_vehicle_containers(host, guest, out):
         player.raw('look-at', at[0], at[1] + 0.3, at[2])
         lab.write_json(out / (kind + '-target.json'), player('state'))
         player.raw('mouse', 'right', 'click')
-        if boat:
-            player.raw('key', 'shift', 'up')
         try:
+            # MouseHandler queues a KeyMapping click; handleKeybinds uses it
+            # on a later client tick, and interact samples secondary use then.
+            # Hold Shift until that interaction actually opens its screen.
             player.raw('wait-for', 'screen', 'container', '--timeout', 10)
         except Failed:
             lab.write_json(out / (kind + '-failure.json'), player('status'))
             raise
+        finally:
+            if boat:
+                player.raw('key', 'shift', 'up')
         player.wait(15)
 
     def deposit(player):

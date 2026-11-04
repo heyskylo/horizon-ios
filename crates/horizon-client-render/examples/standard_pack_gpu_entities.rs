@@ -323,7 +323,6 @@ fn main() {
 
 fn fixture_frame(hud: &HudBatch) -> Frame<'_> {
     Frame {
-        hand_items: &[],
         weather: &[],
         weather_time: client::weather::Time::new(0, 0.0),
         camera: glam::DVec3::new(0.5, 100.0, 0.5),

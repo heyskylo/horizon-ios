@@ -177,9 +177,11 @@ mod tests {
         // Water-only geometry stays raw even when compact packing is enabled.
         // Use the same representation selector as Renderer::upload_mesh and
         // read the actual GPU sidecar below, after page growth and compaction.
-        let mut raw = crate::mesher::SectionMesh::default();
-        raw.translucent = vec![crate::mesher::TerrainVertex::new([0.0; 3], [0.0; 2], 0, 0, 0); 4];
-        raw.translucent_states = vec![second];
+        let raw = crate::mesher::SectionMesh {
+            translucent: vec![crate::mesher::TerrainVertex::new([0.0; 3], [0.0; 2], 0, 0, 0); 4],
+            translucent_states: vec![second],
+            ..Default::default()
+        };
         let states = raw
             .upload_states(true, false)
             .expect("raw water has metadata in packed mode");

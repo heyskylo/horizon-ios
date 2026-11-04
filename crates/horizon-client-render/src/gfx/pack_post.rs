@@ -5041,6 +5041,18 @@ mod tests {
     #[test]
     #[ignore = "requires HORIZON_TEST_SHADER_PACKS with private archives"]
     fn real_packs_build_or_report_unsupported_inputs_on_metal() {
+        // Real source translation and pipeline construction run on the same
+        // large-stack worker as production, rather than libtest's 2 MiB stack.
+        std::thread::Builder::new()
+            .name("Real shader pack test".into())
+            .stack_size(super::super::pack_loader::STACK)
+            .spawn(real_pack_pipelines)
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    fn real_pack_pipelines() {
         use horizon_shaders::{GameInputs, Macros, Pack, Properties, dimension_folder, load_post};
         let directory =
             std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_SHADER_PACKS").unwrap());
