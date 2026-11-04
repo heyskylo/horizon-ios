@@ -10637,6 +10637,64 @@ mod tests {
     };
     use horizon_world::nbt::Tag;
 
+    /// A mod's chat goes out only from a joined player, and only what the
+    /// Chat option allows.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn mod_chat_needs_a_joined_player_and_what_the_chat_option_allows() {
+        use super::super::{
+            Audio, Game, Options, Progress, Settings, execution_role::ExecutionRole, load_resources,
+        };
+        use horizon_protocol::connection::Pipe;
+
+        let root = std::path::PathBuf::from(
+            std::env::var_os("HORIZON_TEST_RESOURCES")
+                .expect("set HORIZON_TEST_RESOURCES to prepared resources"),
+        );
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!("no menu handoff"),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.execution_role = ExecutionRole::Client;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+
+        assert!(game.native_send_chat("/warp spawn").is_err());
+        let (client, _server) = Pipe::pair();
+        game.connect_local(client, "ChatTest").unwrap();
+        assert!(game.native_send_chat("/warp spawn").is_err());
+        game.remote.as_mut().unwrap().joined = true;
+        assert!(game.native_send_chat("  ").is_err());
+        // Full, then Commands Only, then Hidden.
+        game.settings.chat_visibility = 0;
+        assert!(game.native_send_chat("hello").is_ok());
+        assert!(game.native_send_chat("/warp spawn").is_ok());
+        game.settings.chat_visibility = 1;
+        assert!(game.native_send_chat("hello").is_err());
+        assert!(game.native_send_chat("/warp spawn").is_ok());
+        game.settings.chat_visibility = 2;
+        assert!(game.native_send_chat("/warp spawn").is_err());
+    }
+
     /// `MultiPlayerGameMode.useItem`'s `shouldSwing`: the SUCCESS answers
     /// swing, CONSUME's do not (#6425).
     #[test]
