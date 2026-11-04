@@ -303,7 +303,9 @@ not this server's, its `uuid` is not the request's, it has no `handover` id (an 
 compound is not valid base64 NBT, a part's name is unknown, or the player is not held or is leaving. It is refused
 too when its values are ones no player can have: a position, rotation, motion, health, absorption, saturation,
 experience progress or fall that is not a number, a position farther than 30,000,512 blocks from the origin (20,000,000
-up or down), which vanilla's `Entity.load` would clamp, or a health of zero or less. A record whose position is in
+up or down), which vanilla's `Entity.load` would clamp, a health of zero or less, a health over 1,024 or an absorption
+over 2,048 (the bounds of `max_health` and `max_absorption`), a food exhaustion over 40 (`FoodData.addExhaustion`'s)
+or an effect amplifier outside 0 to 255. A stack's count out of vanilla's 1 to 99 is read as 1, as for any item. A record whose position is in
 another dimension than the held player's world is refused when `position` is among the parts: the client is in one
 dimension and only a login changes it.
 
@@ -313,15 +315,27 @@ retry), one of another hand-over is refused, and `player-confirm` and `player-dr
 **The commit point.** On success the player is sent what the import changed the way a join sends it (game mode,
 abilities, held slot, a new position to confirm, the effects, with those it had from this server's own file removed,
 inventory, recipe book and the player list as it now is). Then, unless `"place": false`, it is placed as
-`player-confirm` places it: its player file, advancements and statistics are written to disk first, synchronously,
-then it is placed: simulated, shown to the others and taking part from the next tick, when its first tick sends its
+`player-confirm` places it: its player file, advancements and statistics are written to disk first, each to a new
+file that is synced and then renamed into place (on Linux and macOS the folder is synced too), then it is placed: simulated, shown to the others and taking part from the next tick, when its first tick sends its
 health, experience and advancements as a new player's does. Everyone gets its player-list entry, since everyone will
 be shown its entity; with `announce` true they also get the join line. The log says `<name> placed: it has arrived
 from another server`, and the join line when it is announced. The reply is `{"ok": true, "handover": "...", "parts":
 [...], "placed": true, "announced": true}` only once the file is written, so a proxy sends `player-release moved` to
-the source after this reply: from then on a crash of the target leaves the player's file there as it arrived. When the
-file cannot be written, the reply is an error and the player stays held and imported, to be confirmed again or
-dropped.
+the source after this reply: from then on a crash of the target, or a power loss, leaves the player's three files there
+as it arrived. When one cannot be written, the reply is an error and the player stays held and imported, to be
+confirmed again or dropped.
+
+**A lost reply after the commit.** A `player-import` or `player-confirm` that names the hand-over of a player already
+placed from it is answered `{"ok": true, "placed": true, ..., "retried": true}`, with nothing done again: a proxy that
+lost the reply asks again and learns the commit happened.
+
+**A refused `moved` after the commit.** The target then has the player placed and on disk, and nothing undoes that:
+`player-drop` takes only a held player. It happens when the freeze ran out between the confirm and the release (the
+proxy was late), or when an operator's `/kill` killed the frozen player (nothing else hurts it, and it does not
+move). The proxy keeps its client on the target and disconnects the source's connection; the source then saves its
+copy of the player as it is, so the two servers' files differ from that moment. To keep clear of the first case, the
+proxy confirms only while the export's `freeze_ticks_left` leaves it time to release, and otherwise drops the arrival
+and aborts.
 
 **Importing in two steps, so that a hand-over can be cancelled.** With `"place": false` the record is applied and the
 player's client is sent everything the import changed, but the player stays held: not placed, not simulated, not

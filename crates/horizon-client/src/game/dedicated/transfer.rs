@@ -87,6 +87,23 @@ impl Game<'_> {
         let Some(mut host) = self.lan.take() else {
             return json!({ "error": "the server is not open to players" });
         };
+        // A retry after the commit, whose reply was lost: the player is placed from this
+        // hand-over already, and the answer is the same.
+        let retried = request["record"]["handover"]
+            .as_str()
+            .and_then(arrivals::parse_handover)
+            .and_then(|id| host.hub.placed_arrival(uuid, id).map(|g| (id, g)));
+        if let Some((id, i)) = retried {
+            let reply = json!({
+                "ok": true,
+                "handover": arrivals::handover_text(id),
+                "placed": true,
+                "announced": host.hub.guests[i].arrival_announce,
+                "retried": true,
+            });
+            self.lan = Some(host);
+            return reply;
+        }
         let result = horizon_client::lan::import::import_player(&mut host.hub, uuid, &request);
         let reply = match result {
             Ok(done) => {
@@ -152,6 +169,16 @@ impl Game<'_> {
             return json!({ "error": "the server is not open to players" });
         };
         let reply = match arrivals::confirm_args(&host.hub, args) {
+            // A retry after the commit, whose reply was lost: the same answer.
+            Ok((uuid, id)) if host.hub.placed_arrival(uuid, id).is_some() => {
+                let i = host.hub.placed_arrival(uuid, id).unwrap_or_default();
+                json!({
+                    "ok": true,
+                    "placed": true,
+                    "announced": host.hub.guests[i].arrival_announce,
+                    "retried": true,
+                })
+            }
             Ok((uuid, id)) => match self.place_arrival(&mut host, uuid, id) {
                 Ok(_) => {
                     let announced = host
@@ -181,10 +208,8 @@ impl Game<'_> {
         self.guest_attachments_into(&mut g);
         // An autosave of this player still in flight must not land after this write.
         let _ = self.finish_player_autosaves(true);
-        let written = horizon_client::lan::playerdata::save_now(&g, &self.world_root);
-        if written.is_ok() {
-            self.write_guest_records(host, &g);
-        }
+        let written = horizon_client::lan::playerdata::save_now(&g, &self.world_root)
+            .and_then(|()| self.write_arrival_records(host, &g));
         let name = g.name.clone();
         host.hub.guests.insert(i, g);
         written?;

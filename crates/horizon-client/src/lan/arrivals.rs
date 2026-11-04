@@ -503,7 +503,9 @@ pub fn confirm_args(hub: &Hub, args: &str) -> Result<(u128, u128), String> {
     if parts.next().is_some() {
         return Err("player-confirm takes a unique id and a hand-over id".into());
     }
-    hub.imported_arrival(uuid, id)?;
+    if hub.placed_arrival(uuid, id).is_none() {
+        hub.imported_arrival(uuid, id)?;
+    }
     Ok((uuid, id))
 }
 
@@ -2513,7 +2515,7 @@ mod hub_tests {
     /// Values no player can have are refused before the held player is touched.
     #[test]
     fn a_record_with_impossible_values_is_refused() {
-        let cases: [(&str, fn(&mut crate::lan::guest::Guest)); 5] = [
+        let cases: [(&str, fn(&mut crate::lan::guest::Guest)); 7] = [
             ("dead", |g| g.health = 0.0),
             ("health not a number", |g| g.health = f32::NAN),
             ("out of the world", |g| g.position = [4.0e7, 64.0, 0.0]),
@@ -2521,6 +2523,18 @@ mod hub_tests {
                 g.position = [0.0, 3.0e7, 0.0]
             }),
             ("rotation not a number", |g| g.yaw = f32::INFINITY),
+            ("health past max_health's 1024", |g| g.health = 2000.0),
+            ("food exhaustion past 40", |g| {
+                g.loaded_body = Some(crate::lan::guest::SavedBody {
+                    fire_ticks: -20,
+                    air: 300,
+                    fall_distance: 0.0,
+                    velocity: [0.0; 3],
+                    food_exhaustion: 41.0,
+                    food_tick_timer: 0,
+                    ticks_frozen: 0,
+                });
+            }),
         ];
         for (what, spoil) in cases {
             let (mut source, i) = exported_guest();
@@ -2631,5 +2645,21 @@ mod hub_tests {
         let (_hub, _seen, mine) = import_without_placing(serde_json::json!({}));
         let sent = ids(&mine);
         assert!(sent.contains(&id::RECIPE_BOOK_SETTINGS), "{sent:?}");
+    }
+
+    /// After the commit, a retry of the confirm (or of the import) whose reply was lost finds the
+    /// player placed from that same hand-over, and the game answers it the same; another
+    /// hand-over's id is still refused.
+    #[test]
+    fn a_retry_after_the_commit_finds_the_player_placed_from_that_hand_over() {
+        let (mut hub, _seen, _mine) = import_without_placing(serde_json::json!({}));
+        let id = hub.guests[1].arrival_handover.unwrap();
+        let args = format!("{UUID} {}", super::handover_text(id));
+        assert_eq!(confirm(&mut hub, &args)["placed"], true);
+        assert_eq!(hub.placed_arrival(UUID_N, id), Some(1));
+        assert_eq!(super::confirm_args(&hub, &args), Ok((UUID_N, id)));
+        assert_eq!(hub.placed_arrival(UUID_N, id ^ 1), None);
+        let other = format!("{UUID} {}", super::handover_text(id ^ 1));
+        assert!(super::confirm_args(&hub, &other).is_err());
     }
 }

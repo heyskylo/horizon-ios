@@ -1688,19 +1688,7 @@ impl Game<'_> {
         host: &LanHost,
         guest: &horizon_client::lan::guest::Guest,
     ) {
-        if !guest.placed || guest.released {
-            return;
-        }
-        self.write_guest_records(host, guest);
-    }
-    /// The advancements and statistics files of `guest`, whatever its state: a held arrival is
-    /// written before it is placed (`player-confirm`).
-    pub(super) fn write_guest_records(
-        &self,
-        host: &LanHost,
-        guest: &horizon_client::lan::guest::Guest,
-    ) {
-        if self.adv.tree.list.is_empty() {
+        if !guest.placed || guest.released || self.adv.tree.list.is_empty() {
             return;
         }
         let Some(uuid) = self.records_uuid(host, guest.uuid) else {
@@ -1720,6 +1708,37 @@ impl Game<'_> {
             play.stats
                 .write(&super::stats::player_json(&self.world_root, "stats", uuid));
         }
+    }
+    /// The advancements and statistics files of a held arrival, before it is placed
+    /// (`player-confirm`): each through a new file, synced and renamed into place
+    /// (`save::write_durable`), so the reply's `ok` means both are on the disk whole.
+    pub(super) fn write_arrival_records(
+        &self,
+        host: &LanHost,
+        guest: &horizon_client::lan::guest::Guest,
+    ) -> std::result::Result<(), String> {
+        if self.adv.tree.list.is_empty() {
+            return Ok(());
+        }
+        let Some(uuid) = self.records_uuid(host, guest.uuid) else {
+            return Ok(());
+        };
+        let write = |dir: &str, json: &serde_json::Value| {
+            let path = super::stats::player_json(&self.world_root, dir, uuid);
+            let text = serde_json::to_string_pretty(json).map_err(|e| e.to_string())?;
+            horizon_client::save::write_durable(&path, text.as_bytes())
+                .map_err(|e| format!("{} is not saved: {e}", path.display()))
+        };
+        write(
+            "advancements",
+            &guest
+                .advancements
+                .to_json(&self.adv.tree, horizon_world::DATA_VERSION),
+        )?;
+        if let Some(play) = host.play.get(&guest.conn) {
+            write("stats", &play.stats.to_json())?;
+        }
+        Ok(())
     }
     /// `PlayerAdvancements.load` and `ServerStatsCounter.parseLocal` of a
     /// network player who joined; every statistic goes out on the first

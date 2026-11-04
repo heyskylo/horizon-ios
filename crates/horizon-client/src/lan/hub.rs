@@ -1516,6 +1516,14 @@ impl Hub {
         }
     }
 
+    /// The guest index of the player `uuid` placed from the hand-over `id` (its import or
+    /// confirmation committed): a retry of either, whose reply was lost, is answered the same.
+    pub fn placed_arrival(&self, uuid: u128, id: u128) -> Option<usize> {
+        self.guests
+            .iter()
+            .position(|g| g.uuid == uuid && g.placed && g.arrival_handover == Some(id))
+    }
+
     /// The guest index of the held player `uuid` whose record of the hand-over `id` was
     /// imported, and that has not been dropped or kicked meanwhile.
     pub fn imported_arrival(&self, uuid: u128, id: u128) -> Result<usize, &'static str> {

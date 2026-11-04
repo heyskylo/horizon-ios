@@ -197,6 +197,24 @@ fn check_values(level: &Level) -> Result<(), String> {
     if level.health <= 0.0 {
         return Err("the record's player is dead".into());
     }
+    // The bounds vanilla's own data keeps (26.3's bytecode): `max_health` is at most 1024
+    // (`Attributes.MAX_HEALTH`) and absorption at most 2048 (`MAX_ABSORPTION`), an effect's
+    // amplifier is 0 to 255 (`MobEffectInstance` clamps it), and food exhaustion is at most 40
+    // (`FoodData.addExhaustion`). A stack's count needs nothing here: `item_from_nbt` takes one out of
+    // `ItemStack`'s `intRange(1, 99)` as 1.
+    if level.health > 1024.0 || !(0.0..=2048.0).contains(&level.absorption) {
+        return Err("the record's health is past what a player can have".into());
+    }
+    if !(0.0..=40.0).contains(&level.food_exhaustion) {
+        return Err("the record's food exhaustion is past what a player can have".into());
+    }
+    if level
+        .active_effects
+        .iter()
+        .any(|(_, _, amplifier, _, _)| !(0..=255).contains(amplifier))
+    {
+        return Err("the record holds an effect no player can have".into());
+    }
     Ok(())
 }
 
