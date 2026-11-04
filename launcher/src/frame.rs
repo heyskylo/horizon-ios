@@ -47,7 +47,7 @@ impl Launcher {
     /// chosen), as `ColorTile` draws it.
     pub(super) fn glass_instance_icon(&mut self, i: &Instance, size: f32) -> AnyElement {
         if i.kind == InstanceKind::Default && i.icon.is_none() {
-            return ui::mark_tile(size, self.look.accent_soft).into_any_element();
+            return self.horizon_mark(size);
         }
         if let Some(picture) = self.instance_picture(i, size) {
             return instance_icons::centred(picture, size, self.scale).into_any_element();

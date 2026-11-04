@@ -204,11 +204,21 @@ fn play(m: &Mob, events: &mut Vec<MobEvent>, sound: &'static str) {
         events.push(MobEvent::Sound(sound, at, 1.0, 1.0));
     }
 }
+/// `Entity.gameEvent(GameEvent.ENTITY_ACTION)` at the armadillo, silent or not.
+fn entity_action(m: &Mob, events: &mut Vec<MobEvent>) {
+    events.push(MobEvent::GameEvent {
+        event: "minecraft:entity_action",
+        at: [m.position.x, m.position.y, m.position.z],
+        source: m.id,
+        state: horizon_world::registry::BlockStateId(0),
+    });
+}
 /// `Armadillo.rollUp`.
 fn roll_up(m: &mut Mob, events: &mut Vec<MobEvent>) {
     if !scared(m) {
         super::creaking::stop_in_place(m);
         m.extra.in_love = 0;
+        entity_action(m, events);
         if !m.silent {
             m.voice("entity.armadillo.roll", events);
         }
@@ -218,6 +228,7 @@ fn roll_up(m: &mut Mob, events: &mut Vec<MobEvent>) {
 /// `Armadillo.rollOut`.
 fn roll_out(m: &mut Mob, events: &mut Vec<MobEvent>) {
     if scared(m) {
+        entity_action(m, events);
         if !m.silent {
             m.voice("entity.armadillo.unroll_finish", events);
         }
@@ -621,6 +632,32 @@ mod tests {
             tick(&mut m);
         }
         assert!(hiding_in_shell(&m), "the model shows the shell");
+    }
+
+    /// Armadillo.rollUp and rollOut post `GameEvent.ENTITY_ACTION` (#8714),
+    /// silent or not, for the sculk sensors and wardens nearby.
+    #[test]
+    fn rolling_up_and_out_posts_entity_action() {
+        let action = |events: &[MobEvent]| {
+            events.iter().any(|e| {
+                matches!(e, MobEvent::GameEvent { event, source: 1, .. }
+                    if *event == "minecraft:entity_action")
+            })
+        };
+        let mut m = armadillo();
+        m.silent = true;
+        let mut events = Vec::new();
+        roll_up(&mut m, &mut events);
+        assert_eq!(state(&m), ROLLING);
+        assert!(action(&events), "rolling up posts entity_action");
+        let mut events = Vec::new();
+        roll_out(&mut m, &mut events);
+        assert_eq!(state(&m), IDLE);
+        assert!(action(&events), "rolling out posts entity_action");
+        // Neither posts anything when it doesn't change state.
+        let mut events = Vec::new();
+        roll_out(&mut m, &mut events);
+        assert!(!action(&events));
     }
 
     /// Runs the goals of `m` for `ticks` ticks; the events.

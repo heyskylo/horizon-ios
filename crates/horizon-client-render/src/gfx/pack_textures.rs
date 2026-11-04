@@ -17,6 +17,8 @@ pub(super) struct PackTexture {
     pub(super) sample_type: wgpu::TextureSampleType,
     pub(super) blur: bool,
     pub(super) clamp: bool,
+    /// Decoded from a PNG, the pack's or the game's (not a raw dump, not a generated texture).
+    pub(super) png: bool,
     pub(super) image: Image,
 }
 
@@ -30,7 +32,7 @@ pub(super) fn upload(
     let features = device.features();
     let mut out = Vec::new();
     for t in textures {
-        let (image, dimension, sample_type, blur, clamp) = match t.source {
+        let (image, dimension, sample_type, blur, clamp, png) = match t.source {
             TextureSource::Image(texture) => {
                 let (view, sample_type) = match create(device, queue, &texture, features) {
                     Ok(created) => created,
@@ -50,6 +52,7 @@ pub(super) fn upload(
                     sample_type,
                     texture.blur,
                     texture.clamp,
+                    !texture.raw,
                 )
             }
             TextureSource::Resource(location) => {
@@ -66,7 +69,14 @@ pub(super) fn upload(
                     continue;
                 };
                 let float = wgpu::TextureSampleType::Float { filterable: true };
-                (image, wgpu::TextureViewDimension::D2, float, true, true)
+                (
+                    image,
+                    wgpu::TextureViewDimension::D2,
+                    float,
+                    true,
+                    true,
+                    false,
+                )
             }
         };
         out.push(PackTexture {
@@ -76,6 +86,7 @@ pub(super) fn upload(
             sample_type,
             blur,
             clamp,
+            png,
             image,
         });
     }
@@ -285,6 +296,7 @@ mod tests {
             sample_type: wgpu::TextureSampleType::Float { filterable: true },
             blur: false,
             clamp: false,
+            png: false,
             image: Image::Lightmap,
         }
     }
@@ -297,6 +309,7 @@ mod tests {
             texels,
             blur: false,
             clamp: false,
+            raw: true,
         }
     }
 
