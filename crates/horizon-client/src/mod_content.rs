@@ -668,6 +668,7 @@ struct NewItem {
     crafting_remainder: Option<String>,
     /// `StandingAndWallBlockItem.wallBlock`, when its block declares it.
     wall_block: Option<String>,
+    place_block: Option<String>,
 }
 
 struct Plan<'a> {
@@ -1191,11 +1192,18 @@ impl<'a> Plan<'a> {
                     components: component_patch(&b.decl.id, &b.decl.components)?,
                     crafting_remainder: None,
                     wall_block: b.decl.wall_block.clone(),
+                    place_block: None,
                 });
             }
         }
         for m in &sorted {
             for i in &m.content.items {
+                if let Some(target) = &i.place_block
+                    && !defaults.contains_key(target)
+                    && !blocks.iter().any(|b| &b.decl.id == target)
+                {
+                    return Err(format!("{}: place_block {target:?} is not a block", i.id).into());
+                }
                 items.push(NewItem {
                     rename: Rename::new(&i.template, &i.id),
                     max_stack_size: i.max_stack_size,
@@ -1203,6 +1211,7 @@ impl<'a> Plan<'a> {
                     components: component_patch(&i.id, &i.components)?,
                     crafting_remainder: i.crafting_remainder.clone(),
                     wall_block: None,
+                    place_block: i.place_block.clone(),
                 });
             }
         }
@@ -1382,6 +1391,22 @@ impl<'a> Plan<'a> {
             BTreeSet::new()
         };
         for i in &self.items {
+            if !components && let Some(block) = &i.place_block {
+                map.set(
+                    &i.rename.to,
+                    J::Obj(vec![
+                        (
+                            "class".into(),
+                            J::Arr(vec![J::Str("BlockItem".into()), J::Str("Item".into())]),
+                        ),
+                        (
+                            "fields".into(),
+                            J::Obj(vec![("block".into(), J::Str(block.clone()))]),
+                        ),
+                    ]),
+                );
+                continue;
+            }
             let Some(v) = map.get(&i.rename.from) else {
                 continue;
             };

@@ -735,6 +735,40 @@ impl Items {
                     .or_insert(BlockStateId(i as u32));
             }
         }
+        // Block.getItem is not an inverse of BlockItem.getBlock: several items
+        // may place the same block. Read their normal compiled bindings too.
+        #[derive(Default, serde::Deserialize)]
+        struct Bindings {
+            #[serde(default)]
+            items: HashMap<String, Binding>,
+        }
+        #[derive(serde::Deserialize)]
+        struct Binding {
+            #[serde(default)]
+            class: Vec<String>,
+            #[serde(default)]
+            fields: Fields,
+        }
+        #[derive(Default, serde::Deserialize)]
+        struct Fields {
+            block: Option<String>,
+        }
+        let bindings = match fs::read(root.join("block-behaviours.json")) {
+            Ok(bytes) => serde_json::from_slice::<Bindings>(&bytes)?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Bindings::default(),
+            Err(error) => return Err(error.into()),
+        };
+        for (item, binding) in &bindings.items {
+            if binding.class.iter().any(|name| name == "BlockItem")
+                && let Some(state) = binding
+                    .fields
+                    .block
+                    .as_deref()
+                    .and_then(|block| registry.default_state(block))
+            {
+                block_for_item.entry(item).or_insert(state);
+            }
+        }
         Self::load_with(root, &block_for_item, overlay)
     }
     /// Every item's default components and the tags, without the block <->
