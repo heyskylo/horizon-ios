@@ -24,12 +24,31 @@ def setup(*commands):
     return [cmd(c, False) for c in commands]
 
 
+def inline_predicate_constants():
+    always = {'type': 'minecraft:all_of', 'terms': []}
+    never = {'type': 'minecraft:inverted', 'term': always}
+    empty_any = {'type': 'minecraft:any_of', 'terms': []}
+    return [
+        ('always', always, True), ('never', never, False),
+        ('empty_any', empty_any, False),
+        ('nested_all', {'type': 'minecraft:all_of', 'terms': [
+            always, {'type': 'minecraft:inverted', 'term': empty_any}]}, True),
+        ('nested_any', {'type': 'minecraft:any_of', 'terms': [never, always]}, True),
+        ('nested_inverted', {'type': 'minecraft:inverted', 'term': {
+            'type': 'minecraft:any_of', 'terms': [always]}}, False),
+    ]
+
+
 def predicate_selector_fixtures(group_names):
-    if 'selector missing predicates' not in group_names:
-        return {}
-    sheep = {'type': 'minecraft:entity_properties', 'entity': 'this',
-             'predicate': {'minecraft:entity_type': 'minecraft:sheep'}}
-    return {'h124_selector:sheep': sheep, 'minecraft:h124_selector_sheep': sheep}
+    fixtures = {}
+    if 'selector missing predicates' in group_names:
+        sheep = {'type': 'minecraft:entity_properties', 'entity': 'this',
+                 'predicate': {'minecraft:entity_type': 'minecraft:sheep'}}
+        fixtures.update({'h124_selector:sheep': sheep, 'minecraft:h124_selector_sheep': sheep})
+    if 'inline execute predicates' in group_names:
+        fixtures.update({f'h286_inline:{name}': value
+                         for name, value, _ in inline_predicate_constants()})
+    return fixtures
 
 
 BASE = (0, 200, 0)
@@ -1603,6 +1622,49 @@ def test_command():
     ]
 
 
+def inline_execute_predicates():
+    """ResourceOrId command admission, using only already-supported constant conditions."""
+    import json
+    ops = setup('/forceload add 0 0 15 15',
+                '/scoreboard objectives add inline_pred dummy',
+                '/execute store result score before inline_pred run time query gametime')
+    ops += [cmd('/execute if loaded 4 200 4', expect_result=1),
+            cmd('/execute if predicate h286_inline:always', expect_result=1),
+            cmd('/execute unless predicate h286_inline:never', expect_result=1)]
+    cases = []
+    for name, value, truth in inline_predicate_constants():
+        for argument in (f'h286_inline:{name}', json.dumps(value, separators=(',', ':'))):
+            for sign in ('if', 'unless'):
+                cases.append((f'execute {sign} predicate {argument}', int(truth == (sign == 'if'))))
+    for value in ('h286_inline:missing', '{}', '{type:"minecraft:all_of"}',
+                  '{type:"minecraft:inverted"}', '{type:"h286_inline:missing"}',
+                  '{type:"minecraft:all_of",terms:[{}]}',
+                  '{type:"minecraft:inverted",term:{}}'):
+        for sign in ('if', 'unless'):
+            # Observe parse failure stores independently; do not assume callbacks fire.
+            cases.append((f'execute {sign} predicate {value}', -99))
+    for command, expected in cases:
+        ops += setup('/scoreboard players set result inline_pred -99',
+                     '/scoreboard players set success inline_pred -99')
+        ops += [cmd('/scoreboard players get result inline_pred', expect_result=-99),
+                cmd('/scoreboard players get success inline_pred', expect_result=-99),
+                cmd('/execute store result score result inline_pred '
+                    f'store success score success inline_pred run {command}'),
+                cmd('/scoreboard players get result inline_pred', expect_result=expected),
+                cmd('/scoreboard players get success inline_pred', expect_result=expected)]
+    # Functional conditional execution, beyond the terminal Test passed/failed reply.
+    ops += setup('/scoreboard players set hits inline_pred 0')
+    for value, sign in (('always', 'if'), ('never', 'if'), ('always', 'unless'), ('never', 'unless')):
+        predicate = next(v for name, v, _ in inline_predicate_constants() if name == value)
+        ops.append(cmd(f'/execute {sign} predicate {json.dumps(predicate, separators=(",", ":"))} '
+                       'run scoreboard players add hits inline_pred 1'))
+    ops.append(cmd('/scoreboard players get hits inline_pred', expect_result=2))
+    ops += setup('/execute store result score elapsed inline_pred run time query gametime',
+                 '/scoreboard players operation elapsed inline_pred -= before inline_pred')
+    return ops + [cmd('/scoreboard players get elapsed inline_pred', expect_result=0)] + setup(
+        '/scoreboard objectives remove inline_pred')
+
+
 def server_clock():
     """Only explicit tick operations advance the script's authoritative clock."""
     return [
@@ -2406,6 +2468,7 @@ def groups():
     return [
         ('setup', group_setup()),
         ('server clock', server_clock()),
+        ('inline execute predicates', inline_execute_predicates()),
         ('client commands', client_commands()),
         ('game state', game_state()),
         ('player state', player_state()),
