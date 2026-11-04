@@ -16,7 +16,7 @@ use horizon_client::{
 use horizon_core::{
     geometry::{Aabb, Vec3, traverse_blocks, trig},
     position::BlockPos,
-    random::RandomSource,
+    random::{LegacyRandom, RandomSource},
 };
 use horizon_protocol::entity_data::{Value, serializer};
 use std::{collections::HashMap, sync::Arc};
@@ -135,17 +135,24 @@ impl Hook {
     pub(super) fn applies_block_effects(&self) -> bool {
         !matches!(self.state, State::Hooked(_))
     }
-    /// `FishingHook.catchingFish`: nibble timer and initial downward plunge impulse
-    /// (`-0.4F * Mth.nextFloat(syncronizedRandom, 0.6F, 1.0F)`).
-    pub(super) fn trigger_bite(&mut self, r: &mut impl RandomSource) {
+    /// `FishingHook.catchingFish`: the nibble timer, and DATA_BITING's plunge
+    /// (`onSyncedDataUpdated` runs on the server too).
+    pub(super) fn trigger_bite(&mut self, r: &mut impl RandomSource, game_time: i64) {
         self.nibble = 20 + r.next_int_bound(21).unwrap_or(0);
-        self.velocity.y = bite_impulse(r);
+        self.velocity.y = bite_impulse(&mut self.synchronized_random(game_time));
+    }
+    /// `FishingHook.syncronizedRandom`, reseeded every tick from the hook's UUID and the game
+    /// time so the server and its clients draw alike. Horizon's hook has no UUID: its entity
+    /// id stands in. Kept off the level's random, whose draws must stay in vanilla's order.
+    fn synchronized_random(&self, game_time: i64) -> LegacyRandom {
+        LegacyRandom::new(i64::from(self.id) ^ game_time)
     }
 }
-/// `FishingHook.onSyncedDataUpdated` on DATA_BITING: initial downward plunge impulse
-/// `-0.4F * Mth.nextFloat(syncronizedRandom, 0.6F, 1.0F)`.
+/// `FishingHook.onSyncedDataUpdated` on DATA_BITING: the downward plunge,
+/// `-0.4F * Mth.nextFloat(syncronizedRandom, 0.6F, 1.0F)`, in float as vanilla.
 fn bite_impulse(r: &mut impl RandomSource) -> f64 {
-    -0.4 * (0.6 + f64::from(r.next_float()) * 0.4)
+    // Mth.nextFloat(random, min, max): `random.nextFloat() * (max - min) + min`.
+    f64::from(-0.4f32 * (r.next_float() * (1.0f32 - 0.6f32) + 0.6f32))
 }
 /// RandomSource.triangle(mode, deviation).
 fn triangle(r: &mut impl RandomSource, mode: f64, deviation: f64) -> f64 {
@@ -549,7 +556,7 @@ impl Game<'_> {
                 for kind in [ParticleType::Bubble, ParticleType::Fishing] {
                     self.send_particles(kind, at, spread, f64::from(0.2f32), count);
                 }
-                h.trigger_bite(&mut self.world.random);
+                h.trigger_bite(&mut self.world.random, self.world.game_time);
             }
         } else if h.time_until_lured > 0 {
             h.time_until_lured -= speed;
@@ -1262,6 +1269,7 @@ impl Game<'_> {
     pub(super) fn remote_hook_data(&mut self, id: u32, values: &[(u8, i32, Value)]) {
         // DATA_HOOKED_ENTITY (the hooked id plus one, 0 for none): a hook on a
         // client follows what it hooked (`FishingHook.onSyncedDataUpdated`).
+        let time = self.world.game_time;
         let hooked = |value: &Value| match value {
             Value::Int(v) if *v > 0 => State::Hooked(*v as u32 - 1),
             _ => State::Flying,
@@ -1276,7 +1284,7 @@ impl Game<'_> {
                     (9, Value::Bool(biting)) => {
                         h.nibble = i32::from(*biting);
                         if *biting {
-                            h.velocity.y = bite_impulse(&mut self.world.random);
+                            h.velocity.y = bite_impulse(&mut h.synchronized_random(time));
                         }
                     }
                     (8, value) => h.state = hooked(value),
@@ -1288,7 +1296,7 @@ impl Game<'_> {
                 match (index, value) {
                     (9, Value::Bool(biting)) => {
                         if *biting {
-                            h.velocity.y = bite_impulse(&mut self.world.random);
+                            h.velocity.y = bite_impulse(&mut h.synchronized_random(time));
                         }
                     }
                     (8, value) => h.state = hooked(value),
@@ -1624,7 +1632,7 @@ mod tests {
         for _ in 0..100 {
             let mut hook = Hook::remote(1, Vec3::ZERO);
             assert_eq!(hook.velocity.y, 0.0);
-            hook.trigger_bite(&mut rng);
+            hook.trigger_bite(&mut rng, 0);
             assert!(
                 hook.velocity.y < 0.0,
                 "vertical velocity should be negative on bite, got {}",
