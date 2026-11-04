@@ -948,6 +948,71 @@ impl Client {
 mod tests {
     use super::*;
 
+    const LIFECYCLE_GOLDENS: &str = include_str!("../testdata/api-v1-lifecycle.json");
+
+    fn golden_phase(name: &str) -> Phase {
+        match name {
+            "starting" => Phase::Starting,
+            "running" => Phase::Running,
+            "stopped" => Phase::Stopped,
+            "stopping" => Phase::Stopping,
+            "restarting" => Phase::Restarting,
+            _ => panic!("unknown golden phase {name:?}"),
+        }
+    }
+
+    fn normalize_lifecycle_reply(path: &str, body: &mut Value) {
+        if path == "/api/v1/status" {
+            assert!(body["version"].is_string());
+            assert!(body["pid"].is_u64());
+            assert!(body["uptime_seconds"].is_u64());
+            assert!(body["engine_uptime_seconds"].is_u64());
+            body["version"] = json!("$VERSION");
+            body["pid"] = json!("$PID");
+            body["uptime_seconds"] = json!("$TIME");
+            body["engine_uptime_seconds"] = json!("$TIME");
+        }
+    }
+
+    #[test]
+    fn lifecycle_replies_match_api_v1_goldens() {
+        let cases: Value = serde_json::from_str(LIFECYCLE_GOLDENS).unwrap();
+        for case in cases.as_array().unwrap() {
+            let shared = Shared::with_install(Path::new("unused"), None);
+            let sample = json!({ "t": 200, "tps": 20, "players": 2 });
+            {
+                let mut state = shared.state.lock().unwrap();
+                state.phase = golden_phase(case["phase"].as_str().unwrap());
+                state.engine_pid = Some(4242);
+                state.engine_started = Some(Instant::now());
+                state.crashes = 2;
+                state.last_crash = Some("exit status: 1".into());
+                state.sample = sample.clone();
+            }
+            shared.record(json!({ "t": 100, "tps": 19, "players": 1 }));
+            shared.record(sample);
+            shared.log.lock().unwrap().push("first".into());
+            shared.log.lock().unwrap().push("second".into());
+
+            let raw_path = case["path"].as_str().unwrap();
+            let (path, query) = raw_path.split_once('?').unwrap_or((raw_path, ""));
+            let response = route(
+                &shared,
+                &Request {
+                    method: case["method"].as_str().unwrap().into(),
+                    path: path.into(),
+                    query: query.into(),
+                    headers: Vec::new(),
+                    body: Vec::new(),
+                },
+            );
+            let mut body: Value = serde_json::from_str(&response.body).unwrap();
+            normalize_lifecycle_reply(path, &mut body);
+            assert_eq!(response.status, case["status"], "{}", case["name"]);
+            assert_eq!(body, case["body"], "{}", case["name"]);
+        }
+    }
+
     #[test]
     fn log_keeps_the_last_lines_numbered() {
         let mut log = Log::default();
