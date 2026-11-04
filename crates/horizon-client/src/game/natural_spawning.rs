@@ -311,6 +311,10 @@ pub(super) struct GameLevel<'g, 'a> {
     /// holds the game); the first ones scan, as the build costs a few scans.
     pub(super) boxes: std::cell::OnceCell<MobBoxes>,
     pub(super) box_queries: std::cell::Cell<u32>,
+    /// The entity types some biome of the level gives a spawn cost (the
+    /// nether's few): for any other the cost is none wherever it stands, and
+    /// spawning asks for one for every loaded mob each tick.
+    pub(super) costed: Vec<&'g str>,
 }
 const SCANNED_QUERIES: u32 = 8;
 /// A mob not removed: its index in `Game::mobs`, box, alive, and whether
@@ -490,6 +494,9 @@ impl NaturalLevel for GameLevel<'_, '_> {
         self.zoomed_biome(x, y, z).map(|b| &b.spawns)
     }
     fn spawn_cost(&self, entity: &str, x: i32, y: i32, z: i32) -> Option<SpawnCost> {
+        if !self.costed.contains(&entity) {
+            return None;
+        }
         self.zoomed_biome(x, y, z)?.spawn_costs.get(entity).copied()
     }
     fn creature_probability(&self, x: i32, y: i32, z: i32) -> f32 {
@@ -613,6 +620,16 @@ impl horizon_client::mobs::spawner::SpawnerLevel for GameLevel<'_, '_> {
         mobs + pending
     }
 }
+/// Every entity type with a spawn cost in some biome, each once.
+fn spawn_cost_types(biomes: &horizon_client::biome::Biomes) -> Vec<&str> {
+    let mut types: Vec<&str> = Vec::new();
+    for t in biomes.list.iter().flat_map(|b| b.spawn_costs.keys()) {
+        if !types.contains(&t.as_str()) {
+            types.push(t);
+        }
+    }
+    types
+}
 impl<'a> Game<'a> {
     pub(super) fn natural_level(&self) -> GameLevel<'_, 'a> {
         let players = self.level_players();
@@ -630,6 +647,7 @@ impl<'a> Game<'a> {
             pending_ids: Default::default(),
             boxes: Default::default(),
             box_queries: Default::default(),
+            costed: spawn_cost_types(world_biomes!(self)),
         }
     }
     /// Creates a mob the spawner accepted, finalized the game's way; the
