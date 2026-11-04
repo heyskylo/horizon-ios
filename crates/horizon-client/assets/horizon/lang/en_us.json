@@ -552,5 +552,9 @@
   "horizon.options.scroll_speed": "Menu Scroll Speed",
   "horizon.options.repeat_delay": "Navigation Repeat Delay",
   "horizon.options.repeat_interval": "Navigation Repeat Interval",
-  "horizon.options.milliseconds": "%s ms"
+  "horizon.options.milliseconds": "%s ms",
+  "horizon.extras.horizon_marks": "Horizon logos",
+  "horizon.extras.horizon_marks.tooltip": "Show the Horizon logo next to Horizon players: a small logo before the names of other players who use Horizon, above their heads and in the player list. Only Horizon players see it: servers receive nothing.",
+  "horizon.extras.horizon_me": "Show me as Horizon",
+  "horizon.extras.horizon_me.tooltip": "Show me as a Horizon player: other Horizon players see the logo by your name. Off, Horizon's cosmetics service never reports you as a Horizon player."
 }

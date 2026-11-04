@@ -328,6 +328,8 @@ pub struct TabInputs<'a> {
     /// The player is in the level with an upside-down name
     /// (`AvatarRenderer.isPlayerUpsideDown`).
     pub upside_down: &'a dyn Fn(u128) -> bool,
+    /// The player plays Horizon: Horizon's mark after their head (`horizon_cosmetics::mark`).
+    pub horizon: &'a dyn Fn(u128) -> bool,
 }
 
 /// `PlayerTabOverlay`: the header, footer, visibility and heart states.
@@ -425,6 +427,10 @@ impl TabList {
         };
         let sw = i.screen_width;
         let head = if show_head { 9 } else { 0 };
+        // Horizon: a column for the mark once anyone listed has it, so the names stay aligned.
+        let marked: Vec<bool> = players.iter().map(|p| (i.horizon)(p.uuid)).collect();
+        let mark = if marked.contains(&true) { 9 } else { 0 };
+        let head = head + mark;
         let slot_width = (cols * (head + max_name + width_for_score + 13)).min(sw - 50) / cols;
         let xxo = sw / 2 - (slot_width * cols + (cols - 1) * 5) / 2;
         let mut yyo = 10;
@@ -491,6 +497,20 @@ impl TabList {
                 );
                 xo += 9;
             }
+            if marked[n as usize] {
+                for (mx, my, w, h, color) in horizon_cosmetics::mark::MARK {
+                    let (x, y) = (xo + i32::from(mx), yo + i32::from(my));
+                    let (x1, y1) = (x + i32::from(w), y + i32::from(h));
+                    out.push(GuiDraw::Fill {
+                        x0: x,
+                        y0: y,
+                        x1,
+                        y1,
+                        color,
+                    });
+                }
+            }
+            xo += mark;
             let spectator = p.game_mode == SPECTATOR;
             out.push(GuiDraw::Text {
                 text: entry.name.clone(),

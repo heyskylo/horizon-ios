@@ -217,7 +217,7 @@ impl Game<'_> {
                         lines: vec![(text, 0.0)],
                         light: l,
                         discrete,
-                        style: None,
+                        marks: Marks::default(),
                     });
                 }
                 continue;
@@ -261,18 +261,18 @@ impl Game<'_> {
                 (m.position.y + f64::from(m.height())).floor() as i32,
                 m.position.z.floor() as i32,
             );
-            // A Horizon player's name tag style (cosmetics), beside the name.
-            let style = if player && horizon_cosmetics::enabled() {
-                self.cosmetics_tag(m, Some(m.id) == own)
+            // Horizon's mark before a Horizon player's name and their name tag style (cosmetics).
+            let marks = if player || self.cosmetics_local() {
+                self.cosmetics_marks(m, Some(m.id) == own)
             } else {
-                None
+                Marks::default()
             };
             tags.push(NameTag {
                 at: p,
                 lines,
                 light: l,
                 discrete,
-                style,
+                marks,
             });
         }
         drop(player_ids);
@@ -354,7 +354,7 @@ impl Game<'_> {
                 lines,
                 light: l,
                 discrete: false,
-                style: None,
+                marks: Marks::default(),
             });
         }
         // ItemFrameRenderer.shouldShowName/getNameTag: only the targeted
@@ -417,7 +417,7 @@ impl Game<'_> {
                         center.z.floor() as i32,
                     ),
                     discrete: false,
-                    style: None,
+                    marks: Marks::default(),
                 });
             }
         }
@@ -453,7 +453,7 @@ impl Game<'_> {
                     light,
                     NAME_TAG_UNIT,
                     out,
-                    tag.style,
+                    tag.marks,
                 ));
                 continue;
             }
@@ -470,7 +470,7 @@ impl Game<'_> {
                 light,
                 NAME_TAG_UNIT,
                 out,
-                tag.style,
+                tag.marks,
             ));
             // RenderPipelines.TEXT_SEE_THROUGH: no depth test, no lightmap.
             patches.extend(self.styled_name_tag_quads(
@@ -482,7 +482,7 @@ impl Game<'_> {
                 0,
                 NAME_TAG_UNIT,
                 see_through,
-                tag.style,
+                tag.marks,
             ));
         }
         self.map_patches.extend(patches);
@@ -504,12 +504,21 @@ impl Game<'_> {
         out: &mut Vec<Vertex>,
     ) -> Vec<horizon_client::font::Patch> {
         self.styled_name_tag_quads(
-            o, lines, text_alpha, background, text_layer, light, unit, out, None,
+            o,
+            lines,
+            text_alpha,
+            background,
+            text_layer,
+            light,
+            unit,
+            out,
+            Marks::default(),
         )
     }
 
-    /// [`Self::name_tag_quads`], with a cosmetic style on the last line (the name): its mark
-    /// before the text and its line under the background.
+    /// [`Self::name_tag_quads`], with Horizon's marks on the last line (the name): the Horizon
+    /// player's mark before the text, a name tag style's badge after it and its line under the
+    /// background.
     #[allow(clippy::too_many_arguments)]
     fn styled_name_tag_quads(
         &self,
@@ -521,7 +530,7 @@ impl Game<'_> {
         light: u32,
         unit: f32,
         out: &mut Vec<Vertex>,
-        style: Option<TagStyle>,
+        marks: Marks,
     ) -> Vec<horizon_client::font::Patch> {
         // Options.getBackgroundOpacity(0.25) black, as ARGB.color.
         const BACKGROUND: u32 = 0x3F00_0000;
@@ -559,20 +568,36 @@ impl Game<'_> {
                 text_alpha << 24 | 0xFF_FFFF,
                 if background { BACKGROUND } else { 0 },
             );
-            if let Some(style) = style.filter(|_| n == last) {
-                let x = -self.gui.atlas.font.width_text(text) / 2.0;
-                let alpha = text_alpha << 24;
-                // The mark, 8 text pixels square, a pixel left of the background.
-                batch.rect_uv(x - 10.0, y0, 8.0, 8.0, style.mark, alpha | 0xFF_FFFF);
-                // The line, a pixel tall, under the background (which runs from -1 to 9).
+            if n == last && marks.horizon {
+                let x = -self.gui.atlas.font.width_text(text) / 2.0 - 10.0;
+                // 8 text pixels square, a pixel left of the background.
+                for (mx, my, w, h, argb) in horizon_cosmetics::mark::MARK {
+                    let a = text_alpha * (argb >> 24) / 255;
+                    batch.fill(
+                        &self.gui.atlas,
+                        x + f32::from(mx),
+                        y0 + f32::from(my),
+                        f32::from(w),
+                        f32::from(h),
+                        horizon_client::hud_layout::abgr(a << 24 | argb & 0xFF_FFFF),
+                    );
+                }
+            }
+            if let Some(style) = marks.style.filter(|_| n == last) {
                 let width = self.gui.atlas.font.width_text(text);
+                let x = -width / 2.0;
+                let alpha = text_alpha << 24;
+                // The badge, 8 text pixels square, a pixel right of the background.
+                batch.rect_uv(x + width + 2.0, y0, 8.0, 8.0, style.mark, alpha | 0xFF_FFFF);
+                // The line, a pixel tall, under the background (which runs from -1 to 9).
                 batch.fill(
                     &self.gui.atlas,
                     x - 1.0,
                     y0 + 9.0,
                     width + 1.0,
                     1.0,
-                    alpha | style.line,
+                    // The batch takes RGBA: the line as ARGB, swapped.
+                    horizon_client::hud_layout::abgr(alpha | style.line),
                 );
             }
             for (i, quad) in batch.vertices.as_chunks::<6>().0.iter().enumerate() {
@@ -637,10 +662,17 @@ struct NameTag {
     lines: Vec<(Text, f64)>,
     light: u8,
     discrete: bool,
-    style: Option<TagStyle>,
+    marks: Marks,
 }
 
-/// A cosmetic name tag style: a mark before the name and a line under it.
+/// What Horizon draws by a player's name: its mark (they play Horizon) and their name tag style.
+#[derive(Clone, Copy, Default)]
+pub(super) struct Marks {
+    pub horizon: bool,
+    pub style: Option<TagStyle>,
+}
+
+/// A cosmetic name tag style: a badge after the name and a line under it.
 #[derive(Clone, Copy)]
 pub(super) struct TagStyle {
     /// The mark's place in the GUI atlas.

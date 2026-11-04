@@ -369,5 +369,9 @@
   "horizon.tempban.usage": "/tempban <Spieler> <Dauer> [Grund]",
   "horizon.tempban.invalid_duration": "%s ist keine Zeitdauer: 30m, 12h, 7d",
   "horizon.tempban.dedicated_required": "Temporäre Sperren benötigen einen dedizierten Server",
-  "horizon.tempban.success": "%1$s für %2$s, bis %3$s"
+  "horizon.tempban.success": "%1$s für %2$s, bis %3$s",
+  "horizon.extras.horizon_marks": "Horizon-Logos",
+  "horizon.extras.horizon_marks.tooltip": "Das Horizon-Logo neben Horizon-Spielern zeigen: ein kleines Logo vor den Namen anderer Spieler, die Horizon nutzen, über ihren Köpfen und in der Spielerliste. Nur Horizon-Spieler sehen es: Server erhalten nichts.",
+  "horizon.extras.horizon_me": "Mich als Horizon zeigen",
+  "horizon.extras.horizon_me.tooltip": "Mich als Horizon-Spieler zeigen: andere Horizon-Spieler sehen das Logo neben deinem Namen. Aus, meldet dich Horizons Kosmetik-Dienst nie als Horizon-Spieler."
 }
