@@ -1385,6 +1385,7 @@ mod initial_history_tests {
             lightning: Default::default(),
             additive: &[],
             see_through: &[],
+            world_primitives: Default::default(),
             celestial: &[],
             stars: None,
             hand: &[],
