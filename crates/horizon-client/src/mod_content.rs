@@ -18,7 +18,7 @@ use crate::{Result, blocks::MAP_COLORS};
 use horizon_core::geometry::{Aabb, Axis, ShapeOp, Vec3, VoxelShape};
 use horizon_mods::content::{
     Block, BlockShapes, Content, CreativeTab, EntityType, MenuType, MobEffect, Rarity,
-    StateProperty,
+    StateProperty, StateValues,
 };
 use horizon_world::nbt::{self, Compound, JavaString, Limits, Tag};
 use serde::{Deserialize, Serialize, de};
@@ -575,17 +575,17 @@ fn encode_shape(shape: &VoxelShape) -> Tag {
     Tag::Compound(c)
 }
 
-fn resolve_shapes<'a>(
-    spec: &BlockShapes,
+fn resolve_state_values<'a, 's, T>(
+    spec: &'s StateValues<T>,
     block: &str,
     states: &Range<u32>,
     order: &[(u32, u32)],
     combos: &[Vec<(String, String)>],
     properties: impl Fn(u32) -> Option<&'a J>,
-) -> Result<Vec<VoxelShape>> {
+) -> Result<Vec<&'s T>> {
     let names = spec.property_names();
     let mut used = BTreeSet::new();
-    let mut shapes = Vec::with_capacity(order.len());
+    let mut selected = Vec::with_capacity(order.len());
     for &(state, combo) in order {
         let values = names
             .iter()
@@ -600,34 +600,50 @@ fn resolve_shapes<'a>(
                             _ => None,
                         }
                     })
-                    .ok_or_else(|| format!("{block}: state lacks shape property {name}"))
+                    .ok_or_else(|| format!("{block}: state lacks property {name}"))
             })
             .collect::<std::result::Result<Vec<_>, _>>()?;
         let key = values.join(",");
-        let boxes = if let Some(boxes) = spec.values.get(&key) {
+        let value = if let Some(value) = spec.values.get(&key) {
             used.insert(key);
-            boxes
+            value
         } else {
             spec.default
                 .as_ref()
-                .ok_or_else(|| format!("{block}: no shape for {key}"))?
+                .ok_or_else(|| format!("{block}: no state value for {key}"))?
         };
-        let mut shape = VoxelShape::empty();
-        for bounds in boxes {
-            let part = VoxelShape::from_box(Aabb::new(
-                Vec3::new(bounds[0], bounds[1], bounds[2]),
-                Vec3::new(bounds[3], bounds[4], bounds[5]),
-            ))?;
-            shape = shape.join_unoptimized(&part, ShapeOp::OR)?;
-        }
-        shapes.push(shape);
+        selected.push(value);
     }
     if used.len() != spec.values.len() {
         return Err(
-            format!("{block}: shape values include an unknown property value tuple").into(),
+            format!("{block}: state values include an unknown property value tuple").into(),
         );
     }
-    Ok(shapes)
+    Ok(selected)
+}
+
+fn resolve_shapes<'a>(
+    spec: &BlockShapes,
+    block: &str,
+    states: &Range<u32>,
+    order: &[(u32, u32)],
+    combos: &[Vec<(String, String)>],
+    properties: impl Fn(u32) -> Option<&'a J>,
+) -> Result<Vec<VoxelShape>> {
+    resolve_state_values(spec, block, states, order, combos, properties)?
+        .into_iter()
+        .map(|boxes| {
+            let mut shape = VoxelShape::empty();
+            for bounds in boxes {
+                let part = VoxelShape::from_box(Aabb::new(
+                    Vec3::new(bounds[0], bounds[1], bounds[2]),
+                    Vec3::new(bounds[3], bounds[4], bounds[5]),
+                ))?;
+                shape = shape.join_unoptimized(&part, ShapeOp::OR)?;
+            }
+            Ok(shape)
+        })
+        .collect()
 }
 
 /// A block being added: its declaration and where its states go.
@@ -638,6 +654,7 @@ struct NewBlock<'a> {
     item: Option<String>,
     shapes: Option<Vec<VoxelShape>>,
     collision_shapes: Option<Vec<VoxelShape>>,
+    state_light: Option<Vec<u8>>,
     default: u32,
     /// The declared state properties' combinations, every property at its
     /// default first (one empty combination when the block declares none):
@@ -1104,6 +1121,14 @@ impl<'a> Plan<'a> {
                     })
                 };
                 let collision_shapes = decl.collision_shapes.as_ref().map(resolve).transpose()?;
+                let state_light = decl
+                    .state_light
+                    .as_ref()
+                    .map(|spec| {
+                        resolve_state_values(spec, &decl.id, &states, &order, &combos, properties)
+                            .map(|values| values.into_iter().copied().collect())
+                    })
+                    .transpose()?;
                 // The lookup from (template state, combination) to the state's row.
                 let mut rows = vec![0; order.len()];
                 for (position, &(state, combo)) in order.iter().enumerate() {
@@ -1129,6 +1154,7 @@ impl<'a> Plan<'a> {
                     item: None,
                     shapes,
                     collision_shapes,
+                    state_light,
                     default,
                     combos,
                     order,
@@ -1276,7 +1302,7 @@ impl<'a> Plan<'a> {
                     if !b.decl.item && b.wall_of.is_none() {
                         row.set("item", J::Str("minecraft:air".into()));
                     }
-                    self.override_gameplay(b, combo, &mut row);
+                    self.override_gameplay(b, state_index, combo, &mut row);
                     if let Some(shapes) = &b.shapes {
                         let shape = &shapes[state_index];
                         let boxes = shape
@@ -1316,7 +1342,13 @@ impl<'a> Plan<'a> {
     }
 
     /// The declared properties, on a gameplay row.
-    fn override_gameplay(&self, b: &NewBlock, combo: &[(String, String)], row: &mut J) {
+    fn override_gameplay(
+        &self,
+        b: &NewBlock,
+        state_index: usize,
+        combo: &[(String, String)],
+        row: &mut J,
+    ) {
         let p = &b.decl.properties;
         if let Some(ticks) = &p.random_ticks {
             row.set("random_ticks", J::Bool(ticks.applies(combo)));
@@ -1344,6 +1376,9 @@ impl<'a> Plan<'a> {
         }
         if let Some(v) = p.light {
             row.set("emission", J::Num(v.into()));
+        }
+        if let Some(values) = &b.state_light {
+            row.set("emission", J::Num(values[state_index].into()));
         }
         if let Some(v) = p.requires_tool {
             row.set("requires_tool", J::Bool(v));
