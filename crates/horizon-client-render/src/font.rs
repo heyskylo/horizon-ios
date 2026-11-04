@@ -946,6 +946,10 @@ impl Font {
     /// the glyphs already in the atlas (the bitmap sheets there and spaces),
     /// or for a font without any (Force Unicode Font, a TrueType font) its
     /// glyphs below U+0250.
+    /// Starts the random `random_glyph` draws on over from `seed`.
+    pub fn reseed(&self, seed: i64) {
+        self.cache.borrow_mut().random = horizon_core::random::LegacyRandom::new(seed);
+    }
     pub fn random_glyph(&self, style: &Style, advance: f32) -> Glyph {
         use horizon_core::random::RandomSource;
         let id = style.font.as_deref().unwrap_or(DEFAULT);

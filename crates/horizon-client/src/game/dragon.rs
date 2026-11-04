@@ -3108,7 +3108,7 @@ impl Game<'_> {
         if let Some(c) = d.nearest_crystal.and_then(|i| self.crystals.get(i)) {
             let bob = f64::from(horizon_client::end_crystal::y(c.time as f32 + a));
             let to = glam::DVec3::new(c.position.x, c.position.y + bob, c.position.z);
-            self.crystal_beam(pos, to - pos, self.ticks as f32 + a, camera, out);
+            self.crystal_beam(pos, to - pos, self.visual_ticks() as f32 + a, camera, out);
         }
     }
     /// `EnderDragonRenderer.submitRays`: untextured, additive death rays.

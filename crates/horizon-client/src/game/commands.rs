@@ -3968,7 +3968,7 @@ impl Game<'_> {
             line,
             None,
             horizon_client::chat::ChatSource::Player,
-            self.ticks,
+            self.visual_ticks(),
             focused,
         );
         Ok(1)

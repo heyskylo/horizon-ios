@@ -498,7 +498,10 @@ impl Game<'_> {
         m.previous_limb_speed = m.limb_speed;
         m.limb_speed += ((walked * 4.0).min(1.0) - m.limb_speed) * 0.4;
         m.limb_position += m.limb_speed;
-        m.age = m.age.wrapping_add(1);
+        // Its idle swing holds with the world under `HORIZON_STILL`.
+        if self.clock.runs_normally() || !self.clock.still() {
+            m.age = m.age.wrapping_add(1);
+        }
         m.anim.attack_anim_o = attack.0;
         m.anim.attack_anim = attack.1;
         m.extra.set_main_hand_stack(main);

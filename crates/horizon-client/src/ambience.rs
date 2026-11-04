@@ -164,6 +164,10 @@ impl Default for Ambience {
     }
 }
 impl Ambience {
+    /// Starts its random over from `seed`.
+    pub fn reseed(&mut self, seed: i64) {
+        self.random = LegacyRandom::new(seed);
+    }
     pub fn new(seed: i64) -> Self {
         Self {
             random: LegacyRandom::new(seed),

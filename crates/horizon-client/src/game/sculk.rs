@@ -1295,8 +1295,9 @@ impl Game<'_> {
     pub(super) fn darkness_lighting(&self, partial: f32) -> (f32, f32) {
         let scale = self.settings.file.double("darknessEffectScale") as f32;
         let modifier = self.darkness_blend(partial) * scale;
-        let pulse =
-            ((self.ticks as f32 - partial) * std::f32::consts::PI * 0.025).cos() * 0.45 * modifier;
+        let pulse = ((self.visual_ticks() as f32 - partial) * std::f32::consts::PI * 0.025).cos()
+            * 0.45
+            * modifier;
         (modifier, pulse.max(0.0) * scale)
     }
 
