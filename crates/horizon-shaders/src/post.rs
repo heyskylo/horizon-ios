@@ -416,12 +416,13 @@ pub struct Post {
     /// The flips of the virtual `deferred_pre` and `composite_pre` (6.1.6).
     pub deferred_pre: Vec<(u32, bool)>,
     pub composite_pre: Vec<(u32, bool)>,
-    /// What draws solid and cutout terrain, when the game asked for it and one loads; with
-    /// `terrain_cutout`, solid terrain only.
+    /// What draws solid and cutout terrain, when the game asked for it and one loads; when
+    /// terrain draws in two parts, solid terrain only.
     pub terrain: Option<PostProgram>,
     /// What draws cutout terrain when the pack has `gbuffers_terrain_solid` or
     /// `gbuffers_terrain_cutout` and the game draws terrain in two parts
-    /// (`GameInputs::terrain_parts`); `terrain` then draws the solid part.
+    /// (`GameInputs::terrain_parts`); `terrain` then draws the solid part. A pack with no
+    /// program for one part has only the other.
     pub terrain_cutout: Option<PostProgram>,
     /// What draws translucent terrain (water, stained glass) after deferred.
     pub water: Option<PostProgram>,
@@ -498,6 +499,7 @@ impl Post {
     fn every_program(&self) -> impl Iterator<Item = &PostProgram> {
         let draws = [
             &self.terrain,
+            &self.terrain_cutout,
             &self.water,
             &self.sky,
             &self.sky_textured,
@@ -742,6 +744,9 @@ pub fn load_post(
     let split_terrain = ["gbuffers_terrain_solid", "gbuffers_terrain_cutout"]
         .iter()
         .any(|n| loader.has(n));
+    // Whether the pack has a program for each part, loaded or not.
+    let [has_solid, has_cutout] =
+        [&TERRAIN_SOLID, &TERRAIN_CUTOUT].map(|chain| chain.iter().any(|n| loader.has(n)));
     let mut gbuffers = |names: &[&str], group, inputs: &GbuffersInputs| {
         names.iter().find_map(|name| {
             // `alphaTest.<program>` replaces the geometry's default test (OQ-23).
@@ -873,15 +878,45 @@ pub fn load_post(
         // program (lower alphas not probed).
         // Otherwise solid and cutout terrain draw together, with the cutout test.
         let parts = inputs.terrain_parts.as_ref().filter(|_| split_terrain);
+        let mut lone = None;
         let (solid, terrain_cutout) = match parts {
-            Some([solid, cut]) => (
-                gbuffers(&TERRAIN_SOLID, Group::Gbuffers, solid),
-                gbuffers(&TERRAIN_CUTOUT, Group::Gbuffers, &cutout(cut)),
-            ),
+            Some([solid, cut]) => {
+                let solid = gbuffers(&TERRAIN_SOLID, Group::Gbuffers, solid);
+                let cut = gbuffers(&TERRAIN_CUTOUT, Group::Gbuffers, &cutout(cut));
+                // One part loaded: its name, the other part, and whether the pack has a
+                // program for that one.
+                let one = match (&solid, &cut) {
+                    (Some(p), None) => Some((p.name.clone(), "cutout", has_cutout)),
+                    (None, Some(p)) => Some((p.name.clone(), "solid", has_solid)),
+                    _ => None,
+                };
+                match one {
+                    // No program in the other part's chain: that part draws nothing, and this
+                    // one draws alone. Iris 1.11.7 left the other part's terrain undrawn with
+                    // our probes having only gbuffers_terrain_solid, or only _cutout.
+                    Some((name, other, false)) => {
+                        lone = Some(format!(
+                            "{name}: no program for {other} terrain; nothing draws it"
+                        ));
+                        (solid, cut)
+                    }
+                    // The other part's program didn't load: this one doesn't draw alone, which
+                    // would leave that part's terrain undrawn. The game draws all terrain, as
+                    // when an unsplit pack's terrain program doesn't load.
+                    Some((name, other, true)) => {
+                        lone = Some(format!(
+                            "{name}: {other} terrain's program didn't load; the game draws all terrain"
+                        ));
+                        (None, None)
+                    }
+                    None => (solid, cut),
+                }
+            }
             None => (gbuffers(&TERRAIN, Group::Gbuffers, &cutout(terrain)), None),
         };
         // gbuffers_water falls back to gbuffers_terrain's chain (2.3).
         let water = gbuffers(&WATER, Group::Translucent, terrain);
+        loader.post.notes.extend(lone);
         loader.post.terrain = solid;
         loader.post.water = water.map(|mut p| {
             p.blend = blend(properties, &p.name).unwrap_or(Some(TRANSLUCENT_BLEND));
@@ -1071,12 +1106,19 @@ struct Loader<'a> {
 }
 
 impl Loader<'_> {
-    /// The pack has both stages of the program `name` in this folder.
+    /// The pack has both stages of the program `name` in this folder, and doesn't turn it off
+    /// (`program.<name>.enabled`), as `load` reads them.
     fn has(&self, name: &str) -> bool {
         ["vsh", "fsh"].iter().all(|ext| match self.folder {
             "" => self.pack.exists(&format!("{name}.{ext}")),
             f => self.pack.exists(&format!("{f}/{name}.{ext}")),
-        })
+        }) && enabled(
+            self.properties,
+            self.folder,
+            name,
+            &self.options,
+            &self.switches,
+        )
     }
 
     /// The program `name` translated by `translate`, or `None` when it is missing, disabled or
@@ -2519,61 +2561,153 @@ blend.composite1.colortex3 = ONE ONE ONE ONE
         assert_eq!(clouds(&["gbuffers_terrain", "composite"]), None);
     }
 
+    const TERRAIN_VSH: &str = "#version 120\nvoid main() { gl_Position = ftransform(); }\n";
+    const TERRAIN_FSH: &str = "#version 120\nvoid main() { gl_FragData[0] = vec4(1.0); }\n";
+
+    /// The pack of `files` (under `shaders/`), with `properties`, loaded with the game's terrain
+    /// inputs and, with `parts`, its two parts.
+    fn terrain_files(files: &[(String, &str)], properties: &str, parts: bool) -> Post {
+        let files: Vec<_> = (files.iter())
+            .map(|(name, source)| (format!("shaders/{name}"), *source))
+            .collect();
+        let files: Vec<_> = files.iter().map(|(n, s)| (n.as_str(), *s)).collect();
+        let pack = Pack::from_zip_bytes("terrain-parts", crate::pack::tests::zip(&files)).unwrap();
+        let inputs = crate::GbuffersInputs {
+            declarations: "layout(location = 0) in vec3 hz_v_pos;".into(),
+            body: "    hz_Vertex = vec4(hz_v_pos, 1.0);\n    hz_Color = vec4(1.0);\n".into(),
+            ..Default::default()
+        };
+        let inputs = GameInputs {
+            terrain_parts: parts.then(|| [inputs.clone(), inputs.clone()]),
+            terrain: Some(inputs),
+            ..Default::default()
+        };
+        let macros = Macros::standard();
+        let properties = Properties::parse(properties, &macros);
+        load_post(&pack, "", &properties, &macros, &inputs)
+    }
+
+    /// `terrain_files` with `programs`, each writing white.
+    fn terrain_pack(programs: &[&str], properties: &str, parts: bool) -> Post {
+        let files: Vec<_> = (programs.iter())
+            .flat_map(|p| {
+                [
+                    (format!("{p}.vsh"), TERRAIN_VSH),
+                    (format!("{p}.fsh"), TERRAIN_FSH),
+                ]
+            })
+            .collect();
+        terrain_files(&files, properties, parts)
+    }
+
+    /// What draws solid (or all) terrain and what draws cutout terrain.
+    fn terrain_names(programs: &[&str], properties: &str, parts: bool) -> [Option<String>; 2] {
+        let post = terrain_pack(programs, properties, parts);
+        [post.terrain, post.terrain_cutout].map(|p| p.map(|p| p.name))
+    }
+
+    const TERRAIN_PROGRAMS: [&str; 3] = [
+        "gbuffers_terrain",
+        "gbuffers_terrain_solid",
+        "gbuffers_terrain_cutout",
+    ];
+
     /// Iris 1.11.7 with our probe packs (#9137): `gbuffers_terrain_solid` draws solid terrain
     /// and `gbuffers_terrain_cutout` cutout terrain, each falling back to `gbuffers_terrain`.
     #[test]
     fn terrain_solid_and_cutout_fall_back_to_terrain() {
-        let names = |programs: &[&str], parts: bool| {
-            let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
-            for name in programs {
-                for ext in ["vsh", "fsh"] {
-                    let options = zip::write::SimpleFileOptions::default();
-                    zip.start_file(format!("shaders/{name}.{ext}"), options)
-                        .unwrap();
-                    let source = "#version 120\nvoid main() { gl_Position = ftransform(); }\n";
-                    let source = match ext {
-                        "vsh" => source,
-                        _ => "#version 120\nvoid main() { gl_FragData[0] = vec4(1.0); }\n",
-                    };
-                    std::io::Write::write_all(&mut zip, source.as_bytes()).unwrap();
-                }
-            }
-            let pack = Pack::from_zip_bytes("terrain-parts", zip.finish().unwrap().into_inner());
-            let inputs = crate::GbuffersInputs {
-                declarations: "layout(location = 0) in vec3 hz_v_pos;".into(),
-                body: "    hz_Vertex = vec4(hz_v_pos, 1.0);\n    hz_Color = vec4(1.0);\n".into(),
-                ..Default::default()
-            };
-            let inputs = GameInputs {
-                terrain_parts: parts.then(|| [inputs.clone(), inputs.clone()]),
-                terrain: Some(inputs),
-                ..Default::default()
-            };
-            let macros = Macros::standard();
-            let post = load_post(&pack.unwrap(), "", &Properties::default(), &macros, &inputs);
-            let name = |p: Option<PostProgram>| p.map(|p| p.name);
-            (name(post.terrain), name(post.terrain_cutout))
-        };
+        let names = |programs: &[&str], parts: bool| terrain_names(programs, "", parts);
         let some = |name: &str| Some(name.to_owned());
-        let (terrain, solid, cutout) = (
-            "gbuffers_terrain",
-            "gbuffers_terrain_solid",
-            "gbuffers_terrain_cutout",
-        );
+        let [terrain, solid, cutout] = TERRAIN_PROGRAMS;
         assert_eq!(
             names(&[terrain, solid, cutout], true),
-            (some(solid), some(cutout))
+            [some(solid), some(cutout)]
         );
-        assert_eq!(names(&[terrain, solid], true), (some(solid), some(terrain)));
+        assert_eq!(names(&[terrain, solid], true), [some(solid), some(terrain)]);
         assert_eq!(
             names(&[terrain, cutout], true),
-            (some(terrain), some(cutout))
+            [some(terrain), some(cutout)]
         );
-        assert_eq!(names(&[terrain], true), (some(terrain), None));
+        assert_eq!(names(&[terrain], true), [some(terrain), None]);
         // Without the game's two parts, terrain draws whole.
         assert_eq!(
             names(&[terrain, solid, cutout], false),
-            (some(terrain), None)
+            [some(terrain), None]
+        );
+    }
+
+    /// A pack whose only terrain program is `gbuffers_terrain_solid` (or `_cutout`) has nothing
+    /// for the other part: that part draws alone, and nothing draws the other, as Iris 1.11.7
+    /// did with our probes `tsc-solidonly` and `tsc-cutoutonly`.
+    #[test]
+    fn a_lone_split_program_draws_only_its_part() {
+        let [_, solid, cutout] = TERRAIN_PROGRAMS;
+        let some = |name: &str| Some(name.to_owned());
+        assert_eq!(terrain_names(&[solid], "", true), [some(solid), None]);
+        assert_eq!(terrain_names(&[cutout], "", true), [None, some(cutout)]);
+        let post = terrain_pack(&[solid], "", true);
+        let note = "gbuffers_terrain_solid: no program for cutout terrain; nothing draws it";
+        assert!(post.notes.iter().any(|n| n == note), "{:?}", post.notes);
+    }
+
+    /// When the other part has a program that fails to load, the part that loaded doesn't draw
+    /// alone: the game draws all terrain (#9176's review).
+    #[test]
+    fn a_split_part_that_fails_to_load_takes_the_other_with_it() {
+        let [_, solid, cutout] = TERRAIN_PROGRAMS;
+        // `cutout` with a stage that doesn't translate.
+        let files = [
+            (format!("{solid}.vsh"), TERRAIN_VSH),
+            (format!("{solid}.fsh"), TERRAIN_FSH),
+            (format!("{cutout}.vsh"), TERRAIN_VSH),
+            (
+                format!("{cutout}.fsh"),
+                "void main() { gl_FragData[0] = vec4(1.0) }\n",
+            ),
+        ];
+        let post = terrain_files(&files, "", true);
+        assert!(post.terrain.is_none() && post.terrain_cutout.is_none());
+        let note = "gbuffers_terrain_solid: cutout terrain's program didn't load; the game draws all terrain";
+        assert!(post.notes.iter().any(|n| n == note), "{:?}", post.notes);
+    }
+
+    /// `program.<name>.enabled` turning off the only split program leaves terrain whole, through
+    /// `gbuffers_terrain`, as for a pack without it: Iris 1.11.7 drew all terrain with
+    /// `gbuffers_terrain` for our probe `tsc-disabled-false`.
+    #[test]
+    fn a_disabled_split_program_leaves_terrain_whole() {
+        let [terrain, solid, _] = TERRAIN_PROGRAMS;
+        let off = "program.gbuffers_terrain_solid.enabled = false\n";
+        let some = |name: &str| Some(name.to_owned());
+        assert_eq!(
+            terrain_names(&[terrain, solid], off, true),
+            [some(terrain), None]
+        );
+        let on = "program.gbuffers_terrain_solid.enabled = true\n";
+        assert_eq!(
+            terrain_names(&[terrain, solid], on, true),
+            [some(solid), some(terrain)]
+        );
+    }
+
+    /// The cutout part's storage blocks count towards the buffers' sizes, like every other
+    /// program's.
+    #[test]
+    fn the_cutout_parts_storage_blocks_size_their_buffers() {
+        let fsh = "#version 430\nlayout(std430, binding = 0) buffer Sums { vec4 a[4]; } sums;\n\
+                   void main() {\n/* DRAWBUFFERS:0 */\ngl_FragData[0] = sums.a[3];\n}\n";
+        let files = [
+            ("gbuffers_terrain.vsh".into(), TERRAIN_VSH),
+            ("gbuffers_terrain.fsh".into(), TERRAIN_FSH),
+            ("gbuffers_terrain_cutout.vsh".into(), TERRAIN_VSH),
+            ("gbuffers_terrain_cutout.fsh".into(), fsh),
+        ];
+        let post = terrain_files(&files, "bufferObject.0 = 16\n", true);
+        let cutout = post.terrain_cutout.as_ref().map(|p| p.name.as_str());
+        assert_eq!(cutout, Some("gbuffers_terrain_cutout"), "{:?}", post.notes);
+        assert_eq!(
+            post.buffer_minimums(),
+            std::collections::BTreeMap::from([(0, 64)])
         );
     }
 

@@ -514,10 +514,12 @@ pub struct PackPost {
     /// Shadow cache for temporal reprojection.
     shadow_cache: ShadowCache,
     /// What draws terrain (`gbuffers_terrain` or its fallback), between `prepare` and `deferred`;
-    /// with `terrain_cutout`, solid terrain only (`gbuffers_terrain_solid` or its fallback).
+    /// when the pack draws terrain in two parts, solid terrain only (`gbuffers_terrain_solid` or
+    /// its fallback).
     terrain: Option<Pass>,
     /// What draws cutout terrain (`gbuffers_terrain_cutout` or its fallback), after `terrain`,
-    /// when the pack draws terrain in two parts.
+    /// when the pack draws terrain in two parts. A pack with no program for one part has only
+    /// the other.
     terrain_cutout: Option<Pass>,
     /// What draws translucent terrain (`gbuffers_water` or its fallback), after `deferred`.
     water: Option<Pass>,
@@ -2103,7 +2105,8 @@ impl PackPost {
             ids: block_ids.as_ref().map(|i| &i.0),
             cull: g.cull,
         });
-        let terrain = post
+        let split = post.terrain.is_some() && post.terrain_cutout.is_some();
+        let mut terrain = post
             .terrain
             .zip(terrain_geometry.as_ref())
             .and_then(|(p, g)| build(p, Some(g)));
@@ -2288,6 +2291,18 @@ impl PackPost {
             .filter_map(|p| build(p, None))
             .collect();
         let stand_ins = pack_images::stand_ins(device, stand_ins.take());
+        // Terrain in two parts draws both or neither: one alone would leave the other part's
+        // terrain undrawn. Without either, the game draws all terrain, as when the terrain
+        // program of a pack that doesn't split can't draw.
+        if split
+            && terrain.is_some() != terrain_cutout.is_some()
+            && let Some(p) = terrain.take().or(terrain_cutout.take())
+        {
+            notes.push(format!(
+                "{}: the other part of terrain can't draw; the game draws all terrain",
+                p.name
+            ));
+        }
         match (&terrain, &mut terrain_cutout) {
             (Some(t), None) => notes.push(format!("terrain draws with {}", t.name)),
             (t, Some(c)) => {

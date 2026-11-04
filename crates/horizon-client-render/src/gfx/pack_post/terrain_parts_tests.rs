@@ -48,6 +48,21 @@ fn strips_with_alphas(
     programs: &[(&str, [u8; 3], f32)],
     alphas: [u8; 4],
 ) -> Option<[Option<[u8; 3]>; 3]> {
+    let files = programs
+        .iter()
+        .flat_map(|&(name, rgb, alpha)| program(name, rgb, alpha))
+        .collect();
+    let (strips, _) = strips_of(files, alphas)?;
+    Some(strips)
+}
+
+/// `strips_with_alphas` with the pack's terrain programs' `files`, and the built pack's notes
+/// when it draws no terrain itself (`None` when it does).
+#[allow(clippy::type_complexity)]
+fn strips_of(
+    programs: Vec<(String, String)>,
+    alphas: [u8; 4],
+) -> Option<([Option<[u8; 3]>; 3], Option<Vec<String>>)> {
     let Some(gpu) = Gpu::new() else {
         eprintln!("TERRAIN_PARTS_NO_ADAPTER");
         return None;
@@ -62,9 +77,7 @@ fn strips_with_alphas(
                 .to_owned(),
         ),
     ];
-    for &(name, rgb, alpha) in programs {
-        files.extend(program(name, rgb, alpha));
-    }
+    files.extend(programs);
     // The game's terrain inputs as far as the parts read them: the sprite layer and the colour.
     let terrain = horizon_shaders::GbuffersInputs {
         declarations: "layout(location=0)in vec3 fixture_position;\n\
@@ -139,6 +152,7 @@ fn strips_with_alphas(
             contents: bytemuck::cast_slice(&vertices),
             usage: wgpu::BufferUsages::VERTEX,
         });
+    let undrawn = (!post.has_terrain()).then(|| post.notes.clone());
     let hud = HudBatch::new(SIZE);
     let frame = fixture_frame(&hud);
     let pixels = gpu.render(&mut post, &color, &depth, &frame, &mut |rp, list, _, _| {
@@ -152,7 +166,7 @@ fn strips_with_alphas(
         let [r, g, b, _] = pixels[y * SIZE[0] as usize + x];
         Some([r, g, b]).filter(|&c| c != [0, 0, 0])
     };
-    Some([0..5, 6..10, 11..16].map(|columns| {
+    let strips = [0..5, 6..10, 11..16].map(|columns| {
         let first = colour(columns.start, 0);
         for x in columns.clone() {
             for y in 0..SIZE[1] as usize {
@@ -160,7 +174,8 @@ fn strips_with_alphas(
             }
         }
         first
-    }))
+    });
+    Some((strips, undrawn))
 }
 
 #[test]
@@ -235,4 +250,46 @@ fn a_pack_with_neither_draws_all_terrain_with_gbuffers_terrain() {
         return;
     };
     assert_eq!(got, [Some(RED); 3]);
+}
+
+/// A pack whose only terrain program is `gbuffers_terrain_solid` (or `_cutout`) draws that part,
+/// and nothing draws the other: Iris 1.11.7 left it undrawn with our probes `tsc-solidonly` and
+/// `tsc-cutoutonly`.
+#[test]
+fn a_lone_split_program_draws_only_its_own_terrain() {
+    let solid = strips(&[("gbuffers_terrain_solid", GREEN, 1.0)]);
+    let Some(solid) = solid else { return };
+    assert_eq!(solid, [Some(GREEN), None, Some(GREEN)]);
+    let cutout = strips(&[("gbuffers_terrain_cutout", BLUE, 1.0)]);
+    assert_eq!(cutout, Some([None, Some(BLUE), None]));
+}
+
+/// When one part's pipeline can't be built (here a cutout program writing no buffer, which
+/// Horizon skips), the other part doesn't draw alone either: the game draws all terrain.
+#[test]
+fn a_part_that_fails_to_build_takes_the_other_with_it() {
+    let mut files: Vec<(String, String)> = [
+        program("gbuffers_terrain", RED, 1.0),
+        program("gbuffers_terrain_solid", GREEN, 1.0),
+    ]
+    .concat();
+    files.push((
+        "gbuffers_terrain_cutout.vsh".into(),
+        "#version 120\nvoid main(){gl_Position=vec4(gl_Vertex.xy,0.0,1.0);}".into(),
+    ));
+    files.push((
+        "gbuffers_terrain_cutout.fsh".into(),
+        "#version 120\nvoid main(){}".into(),
+    ));
+    let Some((got, undrawn)) = strips_of(files, [255; 4]) else {
+        return;
+    };
+    assert_eq!(got, [None; 3]);
+    let notes = undrawn.expect("the game draws terrain");
+    for note in [
+        "gbuffers_terrain_cutout: writes no buffer; skipped",
+        "gbuffers_terrain_solid: the other part of terrain can't draw",
+    ] {
+        assert!(notes.iter().any(|n| n.starts_with(note)), "{notes:?}");
+    }
 }
