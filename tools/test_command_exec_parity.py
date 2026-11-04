@@ -143,7 +143,9 @@ def main():
                                             ensure_ascii=False) + '\n' for op in script), encoding='utf-8')
     predicates = corpus_module.predicate_selector_fixtures([name for name, _ in groups])
     functions = corpus_module.function_return_fixtures([name for name, _ in groups])
-    advancements, loot_tables = corpus_module.advancement_loot_fixtures([name for name, _ in groups])
+    advancements = corpus_module.advancement_reward_fixtures([name for name, _ in groups])
+    loot_advancements, loot_tables = corpus_module.advancement_loot_fixtures([name for name, _ in groups])
+    advancements.update(loot_advancements)
 
     run(['javac', '--release', lock['minecraft']['java_major'], '-proc:none', '-cp', str(jars['server']) + os.pathsep + dependency_path, '-d', classes, oracle], 'compile-java')
     vanilla_dir = build / 'vanilla'
