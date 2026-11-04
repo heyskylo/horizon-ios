@@ -179,6 +179,8 @@ impl Game<'_> {
             Some(Arg::Coords(_)) => self.position_arg(ctx, "location"),
             _ => by.and_then(|t| self.target_position(t)),
         };
+        // A lethal item hit discards it before the success message is built.
+        let item_name = matches!(target, Target::Item(_)).then(|| self.target_name(target));
         let hurt = match target {
             // The causing mob is the one the hit is credited to and thorns
             // answer; the source position gives the knockback its direction.
@@ -241,12 +243,13 @@ impl Game<'_> {
                     self.command_damage_mob(id, amount, damage)
                 }
             }
+            Target::Item(id) => self.command_damage_item(id, amount, &ty, cause.or(by)),
             _ => false,
         };
         if !hurt {
             return Err(err("commands.damage.invulnerable", &[]));
         }
-        let name = self.target_name(target);
+        let name = item_name.unwrap_or_else(|| self.target_name(target));
         self.feedback(Text::translate(
             "commands.damage.success",
             &[
@@ -255,6 +258,103 @@ impl Game<'_> {
             ],
         ));
         Ok(1)
+    }
+
+    /// `ItemEntity.hurtServer`: the item branch reached by `DamageCommand.damage`.
+    fn command_damage_item(
+        &mut self,
+        id: u32,
+        amount: f32,
+        damage_type: &str,
+        causing: Option<Target>,
+    ) -> bool {
+        let Some(index) = self.dropped.iter().position(|item| item.id == id) else {
+            return false;
+        };
+        let registry = &self.motion.health.damage;
+        let Some(kind) = registry.id(damage_type) else {
+            return false;
+        };
+        let creative = match causing {
+            Some(Target::Player) => self.creative,
+            Some(Target::Guest(conn)) => self.command_guest(conn).is_some_and(|g| g.creative()),
+            _ => false,
+        };
+        let invulnerable = self
+            .persist
+            .raw
+            .get(&id)
+            .is_some_and(|tag| horizon_client::entity_nbt::flag(tag, "Invulnerable"));
+        if invulnerable && !creative && !registry.in_tag(kind, "minecraft:bypasses_invulnerability")
+            || !self.ui.rules.bool("mob_griefing") && matches!(causing, Some(Target::Mob(_)))
+            || registry.in_tag(kind, "minecraft:is_fall")
+                && self.entity_tag_matches("minecraft:fall_damage_immune", "minecraft:item")
+        {
+            return false;
+        }
+        // Use the same defaults and stack patch as the component resolver,
+        // including defaults changed by native mods and removed components.
+        let components =
+            self.pack
+                .item_renderer
+                .models
+                .components(&horizon_client::item_render::stack_view(
+                    &self.dropped[index].stack,
+                ));
+        let resistant = |source: &str| {
+            let matches = |value: &str| {
+                let (tag, value) = value
+                    .strip_prefix('#')
+                    .map_or((false, value), |v| (true, v));
+                let name = if value.contains(':') {
+                    value.to_owned()
+                } else {
+                    format!("minecraft:{value}")
+                };
+                if tag {
+                    registry
+                        .id(source)
+                        .is_some_and(|id| registry.in_tag(id, &name))
+                } else {
+                    source == name
+                }
+            };
+            match components
+                .get("minecraft:damage_resistant")
+                .and_then(|v| v.get("types"))
+            {
+                Some(serde_json::Value::String(value)) => matches(value),
+                Some(serde_json::Value::Array(values)) => {
+                    values.iter().any(|v| v.as_str().is_some_and(matches))
+                }
+                _ => false,
+            }
+        };
+        if resistant(damage_type)
+            || registry.in_tag(kind, "minecraft:is_fire") && resistant("minecraft:in_fire")
+        {
+            return false;
+        }
+        let item = &mut self.dropped[index];
+        // Java subtracts in float before truncating to int, including fractions
+        // and accepted zero-damage hits.
+        item.health = (item.health as f32 - amount) as i32;
+        item.needs_sync = true;
+        let at = item.position;
+        self.sculk_prepare();
+        let who = match causing {
+            Some(Target::Player) => Some(Who::Player),
+            Some(Target::Mob(id)) => Some(Who::Mob(id)),
+            _ => None,
+        };
+        let context = self.who_context(who, None);
+        self.post_game_event("minecraft:entity_damage", [at.x, at.y, at.z], context);
+        if self.dropped[index].health <= 0 {
+            let contents = self.dropped[index].hurt(0).unwrap_or_default();
+            self.dropped.remove(index);
+            self.spawn_destroyed_contents(contents.into_iter().map(|stack| (stack, at)).collect());
+        }
+        true
     }
 
     /// Retain the mob hit's causing-player connection after the hit is accepted.
