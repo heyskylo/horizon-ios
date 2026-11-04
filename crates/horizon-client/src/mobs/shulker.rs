@@ -363,18 +363,17 @@ pub fn client_tick(m: &mut Mob) {
 }
 /// `Shulker.setPos`. A shulker's interpolation handler is `NO_OP`, so a move
 /// packet lands here instead of being stepped. Not a passenger: the position
-/// snaps to the block centre. A block change after the first tick, other than
-/// the block the current slide remembers, starts the 6-tick slide from the
-/// block it was in before the packet and snaps `previous` so ordinary
-/// interpolation does not also run.
+/// snaps to the block centre. A block change after the first tick closes the
+/// lid, and, off a vehicle and other than toward the block the current slide
+/// remembers, starts the 6-tick slide from the block it was in before the
+/// packet and snaps `previous` so ordinary interpolation does not also run.
 pub fn client_set_pos(m: &mut Mob, x: f64, y: f64, z: f64) {
     let old = block_pos(m);
-    if m.extra.passenger {
-        m.position = Vec3::new(x, y, z);
-        m.extra.scratch[0] = 0;
-        return;
-    }
-    m.position = Vec3::new(x.floor() + 0.5, (y + 0.5).floor(), z.floor() + 0.5);
+    m.position = if m.extra.passenger {
+        Vec3::new(x, y, z)
+    } else {
+        Vec3::new(x.floor() + 0.5, (y + 0.5).floor(), z.floor() + 0.5)
+    };
     // `setPos` sees `tickCount == 0` and starts nothing.
     if m.age == 0 {
         return;
@@ -384,6 +383,9 @@ pub fn client_set_pos(m: &mut Mob, x: f64, y: f64, z: f64) {
         return;
     }
     m.extra.counter = 0;
+    if m.extra.passenger {
+        return;
+    }
     let remembered = [m.extra.scratch[1], m.extra.scratch[2], m.extra.scratch[3]];
     if m.extra.scratch[0] > 0 && pos == remembered {
         return;
@@ -717,6 +719,22 @@ mod tests {
         m.previous = Vec3::new(80.0, 0.0, 0.0);
         client_tick(&mut m);
         assert_eq!(m.extra.scratch[0], 4);
+    }
+
+    #[test]
+    fn a_riding_shulker_closes_its_lid_but_does_not_slide() {
+        // Shulker.setPos on a passenger: the exact position, the peek set to
+        // 0 on a block change, and no clientSideTeleportInterpolation.
+        let mut m = shulker();
+        m.age = 10;
+        m.extra.passenger = true;
+        m.extra.counter = 30;
+        m.position = Vec3::new(0.5, 0.0, 0.5);
+        client_set_pos(&mut m, 2.25, 0.4, 0.5);
+        assert_eq!(m.position, Vec3::new(2.25, 0.4, 0.5));
+        assert_eq!(m.extra.counter, 0);
+        assert_eq!(m.extra.scratch[0], 0);
+        assert_eq!(render_offset(&m, 0.0), glam::DVec3::ZERO);
     }
 
     #[test]
