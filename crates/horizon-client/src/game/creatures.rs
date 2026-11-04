@@ -1489,15 +1489,10 @@ impl Game<'_> {
     pub(super) fn damage_view(&self, d: Damage) -> horizon_client::advancements::DamageView {
         let source = match d.attacker {
             // Its callers are KilledTrigger's: the source as their killing_blow sees it.
-            Some(Who::Player) => Some(
-                self.player_entity_looking(
-                    self.adv.tree.may_look("minecraft:player_killed_entity")
-                        || self
-                            .adv
-                            .tree
-                            .may_look("minecraft:kill_mob_near_sculk_catalyst"),
-                ),
-            ),
+            Some(Who::Player) => Some(self.player_entity_for_any(&[
+                "minecraft:player_killed_entity",
+                "minecraft:kill_mob_near_sculk_catalyst",
+            ])),
             Some(Who::Mob(id)) => self
                 .mobs
                 .iter()
