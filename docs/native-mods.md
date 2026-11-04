@@ -2657,9 +2657,37 @@ a dimension.
   do (merging works on mobs, dropped items, armor stands and item frames; never on players, as in vanilla);
   `tags`, `add_tag`, `remove_tag` work as `/tag` does, and `name` is its name as plain text.
 - An `EntityRef` holds the world's open (`NativeWorldEpoch`) and the entity's id, which no other entity of that open
-  gets. A handle of an earlier open, of an entity that is gone or moved to another level (it gets a new id there, as in
-  vanilla), or used on a client reads as `None`.
+  gets. A handle of an earlier open, or of an entity that is gone or moved to another level (it gets a new id there, as
+  in vanilla), reads as `None`.
 - The entities are those of the level in place (the one a hook runs in) and the server's players, whatever their level.
+
+On a client (API @API:client_entity_refs@), `host.entity(id)` and these reads work against the entities the server shows
+the window: the window's own player (its id is the login's, once the server's first teleport made the player), other
+players, mobs, armor stands and the rest the server added. A handle belongs to one client level: after a login or a
+change of dimension (a respawn in the same level keeps it, as vanilla keeps its `ClientLevel`), the old one reads as
+`None`, as does a server-side handle used on the client and the other way round. A client knows only what the server synced, so:
+
+| Read on a client | What it gives |
+|---|---|
+| `position`, `block_position` | Where the window shows the entity (it eases toward the server's moves); for the own player, where it is. |
+| `rotation` | Yaw and pitch as synced; the own player's view. |
+| `kind`, `uuid` | The type and UUID the server added the entity with; a player's UUID is its profile's. |
+| `level` | The client's level. `LevelRef` reads stay server-only and return `None`. |
+| `name` | The custom name the server synced (`Entity.DATA_CUSTOM_NAME`: an armor stand's or a mob's), a player's profile name, else the type's name. |
+| `velocity` | The motion the server last sent (`Entity.lerpMotion`); the own player's own velocity. |
+| `on_ground`, `bounding_box`, `eye_height`, `eye_position`, `view_vector`, `distance_to_sqr` | From the client's copy, as on a server. |
+| `living.equipment`, `hand_item` | What `ClientboundSetEquipmentPacket` sent (an armor stand's six slots, a mob's or another player's), the own player's own inventory. A mob's off hand and body slot keep the item only. |
+| `nbt`, `tags` | `None`: the server sends neither saved data nor tags. |
+| `set_velocity`, `merge_nbt`, `add_tag`, `remove_tag`, `living.set_equipment` | Refused (`false`): a client's copy changes only when the server says so. |
+
+An entity the client tracks without a list of its own (a display, an interaction, a marker, a leash knot) has a handle
+too, but reads only its `kind`, `uuid`, `level` and `position` (where the server last put it).
+
+`host.menu_stacks()` (client, API @API:client_entity_refs@) gives the stacks of the menu the server opened for the window,
+with their components, by the server's slot number (the numbers `ContainerSetSlot` and `ContainerClick` carry): a
+chest's own slots, then the player's inventory, then the hotbar; an empty slot is `None`. Where `NativeScreenView.slots`
+counts the slots, this lists them. It is `None` on a server, while no server-opened menu is up (the window's own
+inventory, creative) and for a menu whose slots the client doesn't lay out (a lectern).
 
 Each read is a `Host` method too (`host.entity_position(entity)`): a helper whose catalog entry names a `receiver`
 (`entity`, `level`) also becomes a method of that handle.
