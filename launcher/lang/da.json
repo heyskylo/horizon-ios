@@ -1,4 +1,6 @@
 {
+  "Performance mode": "Performance mode",
+  "Smoother on older computers: a lower-resolution sky, a cheaper blur, window resizes baked in the background and no frame per mouse move.": "Smoother on older computers: a lower-resolution sky, a cheaper blur, window resizes baked in the background and no frame per mouse move.",
   "A native build or cache cleanup is running. Try again when it finishes.": "En kompilering af native kode eller oprydning af cachen er i gang. Prøv igen, når den er færdig.",
   "Cleared {bytes} bytes of native build cache. The next changed build will compile from scratch.": "Ryddede {bytes} byte i cachen til kompilering af native kode. Næste kompilering med ændringer starter fra bunden.",
   "Could not access the native build cache: {error}": "Kunne ikke få adgang til cachen til kompilering af native kode: {error}",

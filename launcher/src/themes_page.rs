@@ -340,6 +340,32 @@ impl Launcher {
         )
     }
 
+    /// The Performance mode row: the cheaper scene for older computers (a quarter-resolution
+    /// sky, a box blur, resizes baked in the background, no frame per mouse move).
+    pub(super) fn performance_row(&mut self, cx: &mut Context<Self>) -> Div {
+        let t = self.theme;
+        let on = self.settings.performance();
+        ui::setting_row(
+            tr("Performance mode"),
+            Some(
+                div()
+                    .child(tr(
+                        "Smoother on older computers: a lower-resolution sky, a cheaper blur, window resizes baked in the background and no frame per mouse move.",
+                    ))
+                    .into_any_element(),
+            ),
+            Some(
+                crate::switch("performance", on, &t)
+                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                        this.settings.performance = Some(!this.settings.performance());
+                        this.save_settings();
+                        cx.notify();
+                    }))
+                    .into_any_element(),
+            ),
+        )
+    }
+
     /// The value under the pointer, in whole steps, as the look; saved when the drag ends.
     fn pick_look(&mut self, knob: LookKnob, at: Point<Pixels>, cx: &mut Context<Self>) {
         let Some(area) = self.look_sliders.areas[knob as usize].get() else {
@@ -526,7 +552,7 @@ impl Launcher {
     }
 
     /// The hue under the pointer, as the accent. Saving waits until the mouse comes up, so a drag
-    /// writes `settings.json` once.
+    /// writes `settings.json` once. A move that stays on the same degree changes nothing.
     fn pick_hue(&mut self, at: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
         let Some(area) = self.hue_area.get() else {
             return;
@@ -536,8 +562,12 @@ impl Launcher {
             return;
         }
         let across: f32 = (at.x - area.origin.x).into();
-        self.settings.accent = Accent::custom((across / width).clamp(0., 1.) * 360.);
+        let accent = Accent::custom(((across / width).clamp(0., 1.) * 360.).round());
         self.hue_dragging = true;
+        if accent == self.settings.accent {
+            return;
+        }
+        self.settings.accent = accent;
         self.theme = self.settings_theme(window);
         cx.notify();
     }

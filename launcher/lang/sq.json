@@ -1,4 +1,6 @@
 {
+  "Performance mode": "Performance mode",
+  "Smoother on older computers: a lower-resolution sky, a cheaper blur, window resizes baked in the background and no frame per mouse move.": "Smoother on older computers: a lower-resolution sky, a cheaper blur, window resizes baked in the background and no frame per mouse move.",
   "A native build or cache cleanup is running. Try again when it finishes.": "Po kryhet një ndërtim vendas ose pastrim i memories cache. Provoni përsëri kur të mbarojë.",
   "Cleared {bytes} bytes of native build cache. The next changed build will compile from scratch.": "U pastruan {bytes} bajte nga cache e ndërtimit vendas. Ndërtimi i ardhshëm i ndryshuar do të kompilohet nga e para.",
   "Could not access the native build cache: {error}": "Nuk u arrit qasja në cache e ndërtimit vendas: {error}",

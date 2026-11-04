@@ -1,4 +1,6 @@
 {
+  "Performance mode": "Performance mode",
+  "Smoother on older computers: a lower-resolution sky, a cheaper blur, window resizes baked in the background and no frame per mouse move.": "Smoother on older computers: a lower-resolution sky, a cheaper blur, window resizes baked in the background and no frame per mouse move.",
   "A native build or cache cleanup is running. Try again when it finishes.": "يجري بناء أصلي أو تنظيف لذاكرة التخزين المؤقت. أعد المحاولة بعد الانتهاء.",
   "Cleared {bytes} bytes of native build cache. The next changed build will compile from scratch.": "تم تحرير {bytes} بايت من ذاكرة التخزين المؤقت للبناء الأصلي. سيُجمّع البناء التالي الذي يتضمن تغييرات من البداية.",
   "Could not access the native build cache: {error}": "تعذّر الوصول إلى ذاكرة التخزين المؤقت للبناء الأصلي: {error}",
