@@ -55,6 +55,58 @@ def group_setup():
     ]
 
 
+def allay_pocket_inventory():
+    """The one-slot pocket stores full stacks independently of the held filter."""
+    stone = '{id:"minecraft:stone",count:2}'
+    diamond = '{id:"minecraft:diamond",count:1}'
+    named = '{id:"minecraft:stone",count:2,components:{"minecraft:custom_name":"Pocket"}}'
+    cases = [
+        ('bare', [stone], None, stone),
+        ('different', [stone], diamond, stone),
+        ('filter_only', [], diamond, None),
+        ('same', [stone], '{id:"minecraft:stone",count:1}', stone),
+        ('merge', [stone, '{id:"minecraft:stone",count:3}'], None,
+         '{id:"minecraft:stone",count:5}'),
+        ('occupied', [stone, diamond], None, stone),
+        ('empty', [], None, None),
+        ('components', [named], '{id:"minecraft:stone",count:1,components:{"minecraft:custom_name":"Filter"}}', named),
+        ('distinct', [named, stone], None, named),
+        ('component_merge', [named, named], None,
+         '{id:"minecraft:stone",count:4,components:{"minecraft:custom_name":"Pocket"}}'),
+        ('stack_limit', ['{id:"minecraft:stone",count:99}'], None,
+         '{id:"minecraft:stone",count:64}'),
+        ('tool_limit', ['{id:"minecraft:diamond_sword",count:99}'], None,
+         '{id:"minecraft:diamond_sword",count:1}'),
+        ('invalid_count', ['{id:"minecraft:stone",count:100}'], None,
+         '{id:"minecraft:stone",count:1}'),
+        ('override', ['{id:"minecraft:stone",count:12,components:{"minecraft:max_stack_size":10}}'], None,
+         '{id:"minecraft:stone",count:10,components:{"minecraft:max_stack_size":10}}'),
+    ]
+    ops = setup('/fill 0 199 0 15 199 15 stone')
+    for i, (name, pocket, hand, expected) in enumerate(cases):
+        uuid = f'[I;139,0,0,{i + 1}]'
+        fields = f'UUID:{uuid},Tags:["h139_{name}"],NoAI:1b,NoGravity:1b,PersistenceRequired:1b,Health:14f,Inventory:[{",".join(pocket)}]'
+        if hand:
+            fields += f',equipment:{{mainhand:{hand}}}'
+        ops += setup(f'/summon allay 10.5 200 10.5 {{{fields}}}')
+    for tick in range(2):
+        if tick:
+            ops.append({'op': 'tick', 'n': 1})
+        for i, (name, pocket, hand, expected) in enumerate(cases):
+            target = f'@e[tag=h139_{name},limit=1]'
+            guard = f'@e[tag=h139_{name},nbt={{UUID:[I;139,0,0,{i + 1}],Health:14f,NoAI:1b}},limit=1]'
+            ops.append(cmd(f'/execute if entity {guard}', expect_result=1))
+            inv = f'[{expected}]' if expected else '[]'
+            # The full getter also detects extra slots: list predicates alone do not.
+            ops.append(cmd(f'/data get entity {target} Inventory'))
+            ops.append(cmd(f'/execute if entity @e[tag=h139_{name},nbt={{Inventory:{inv}}},limit=1]', expect_result=1))
+            if hand:
+                ops.append(cmd(f'/execute if entity @e[tag=h139_{name},nbt={{equipment:{{mainhand:{hand}}}}},limit=1]', expect_result=1))
+            else:
+                ops.append(cmd(f'/execute unless data entity {target} equipment.mainhand', expect_result=1))
+    return ops
+
+
 def client_commands():
     return [
         cmd('/version'),
@@ -2419,6 +2471,7 @@ def groups():
         ('levels', levels()),
         ('end portal entities', end_portal_entities()),
         ('items and loot', items_and_loot()),
+        ('allay pocket inventory', allay_pocket_inventory()),
         ('summoned fangs lifetime', summoned_fangs_lifetime()),
         ('summoned fangs edits', summoned_fangs_edits()),
         ('summoned fangs levels', summoned_fangs_levels()),

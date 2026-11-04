@@ -893,15 +893,10 @@ pub fn mob_to_nbt(
         }
         "minecraft:allay" => {
             // InventoryCarrier: the fetched stack; the liked player memory.
-            let mut inv = Vec::new();
-            if let (Some(item), n) = (&m.extra.main_hand, m.extra.ints[1])
-                && n > 0
-            {
-                inv.push(Tag::compound([
-                    ("id", Tag::String(item.as_ref().into())),
-                    ("count", Tag::Int(n)),
-                ]));
-            }
+            let inv = crate::mobs::allay::inventory(m)
+                .map(item_to_nbt)
+                .into_iter()
+                .collect();
             map.insert("Inventory".into(), Tag::List(inv));
             if let Some(st) = &m.extra.allay {
                 map.insert("listener".into(), st.vibration.to_nbt());
@@ -1871,10 +1866,13 @@ pub fn mob_from_nbt(
     m.fire_ticks = number(tag.get("Fire")).unwrap_or(0) as i32;
     m.air = number(tag.get("Air")).unwrap_or(300) as i32;
     if m.species() == crate::mobs::Species::Allay {
-        if let Some(Tag::List(inv)) = tag.get("Inventory")
-            && let Some(first) = inv.first()
-        {
-            m.extra.ints[1] = number(first.get("count")).unwrap_or(1) as i32;
+        if let Some(Tag::List(inv)) = tag.get("Inventory") {
+            for stack in inv.iter().filter_map(item_from_nbt) {
+                let max = m.kind.inventory_stack_limit(&stack);
+                if let Some(st) = m.extra.allay.as_mut() {
+                    st.add(stack, max);
+                }
+            }
         }
         m.extra.egg_time = number(tag.get("DuplicationCooldown")).unwrap_or(0) as i32;
         if let (Some(st), Some(listener)) = (m.extra.allay.as_mut(), tag.get("listener")) {
