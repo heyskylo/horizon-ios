@@ -319,6 +319,12 @@ impl Session {
             rec.record_packet_at(timestamp_ms, id, payload);
         }
     }
+    /// Record a packet into the active recording session at current elapsed time.
+    pub fn record_packet(&self, id: i32, payload: &[u8]) {
+        if let Some(rec) = self.recorder.lock().unwrap().as_ref() {
+            rec.record_packet(id, payload);
+        }
+    }
     /// Send a play packet; silently dropped once the connection is gone,
     /// and while the server has the connection back in configuration (a
     /// proxy switching servers). Vanilla's `handleConfigurationStart` clears
@@ -2372,4 +2378,50 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&temp_dir);
     }
+
+    #[test]
+    fn studio_session_record_local_player_motion() {
+        use crate::studio::Metadata;
+        use horizon_protocol::packets::play;
+
+        let session = Session::replay("StudioTester");
+
+        let temp_dir =
+            std::env::temp_dir().join(format!("horizon-studio-motion-test-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&temp_dir);
+        let mcpr_path = temp_dir.join("test_motion.mcpr");
+
+        let meta = Metadata::new("local".into(), true, "26.3".into());
+        session.start_recording(&mcpr_path, meta).unwrap();
+        assert!(session.is_recording());
+
+        // Simulate local player movement packet recorded during recording session
+        let pos_pkt = play::Clientbound::PlayerPosition(play::PlayerPosition {
+            teleport: 0,
+            position: [12.5, 64.0, -88.5],
+            delta: [0.0; 3],
+            yaw: 90.0,
+            pitch: 15.0,
+            relatives: 0,
+        });
+        let encoded = pos_pkt.encode();
+        let mut reader = horizon_protocol::buf::Reader::new(&encoded);
+        let id = reader.varint().unwrap();
+        session.record_packet(id, reader.rest());
+
+        let saved_path = session.stop_recording().unwrap().unwrap();
+        assert_eq!(saved_path, mcpr_path);
+        assert!(!session.is_recording());
+
+        // Verify replay driver decodes the motion packet
+        let mut driver = crate::studio::ReplayDriver::open(&mcpr_path).unwrap();
+        assert_eq!(driver.packet_count(), 1);
+        let packets = driver.advance(Duration::from_secs(1)).unwrap();
+        assert_eq!(packets.len(), 1);
+        let decoded = play::Clientbound::decode(packets[0].id, &packets[0].payload).unwrap();
+        assert_eq!(decoded, pos_pkt);
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
 }
+

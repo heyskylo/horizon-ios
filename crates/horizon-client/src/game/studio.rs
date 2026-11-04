@@ -506,7 +506,7 @@ impl Game<'_> {
         // 1. C::Login packet baseline
         let login = horizon_protocol::packets::play::Clientbound::Login(
             horizon_protocol::packets::play::Login {
-                player_id: 1,
+                player_id: r.entity_id,
                 hardcore: self.level.hardcore,
                 levels: vec!["minecraft:overworld".into()],
                 max_players: 20,

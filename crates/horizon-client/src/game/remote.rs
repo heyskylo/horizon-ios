@@ -6284,7 +6284,9 @@ impl Game<'_> {
                 self.apply_remote_abilities();
             }
         }
-        self.previous_position = position;
+        if self.studio_replay.is_none() {
+            self.previous_position = position;
+        }
         self.yaw = yaw;
         self.pitch = pitch;
         // setValuesFromPositionPacket: setOldPosAndRot gives xRotO the same
@@ -7652,6 +7654,7 @@ impl Game<'_> {
                 }));
             }
         };
+        let mut moved_or_rotated = false;
         if riding {
             // LocalPlayer.sendChanges: a passenger sends its look, then the
             // vehicle it controls and, only then, its sprint.
@@ -7664,18 +7667,36 @@ impl Game<'_> {
                 out.extend(vehicle);
                 sprint(r, &mut out);
             }
+            moved_or_rotated = true;
         } else {
             sprint(r, &mut out);
-        }
-        if !riding
-            && controls_camera
             // LocalPlayer.sendPosition: no move while the view is another
             // entity's (the server keeps the player on it).
-            && let Some(packet) =
-                r.position_sender
-                    .update(pos, (yaw, pitch), on_ground, collision)
-        {
-            out.push(packet);
+            if controls_camera
+                && let Some(packet) =
+                    r.position_sender
+                        .update(pos, (yaw, pitch), on_ground, collision)
+            {
+                out.push(packet);
+                moved_or_rotated = true;
+            }
+        }
+        if moved_or_rotated && r.session.is_recording() {
+            let pkt = horizon_protocol::packets::play::Clientbound::PlayerPosition(
+                horizon_protocol::packets::play::PlayerPosition {
+                    teleport: 0,
+                    position: pos,
+                    delta: [0.0, 0.0, 0.0],
+                    yaw,
+                    pitch,
+                    relatives: 0,
+                },
+            );
+            let encoded = pkt.encode();
+            let mut reader = horizon_protocol::buf::Reader::new(&encoded);
+            if let Ok(id) = reader.varint() {
+                r.session.record_packet(id, reader.rest());
+            }
         }
         // Creative inventory edits are sent slot by slot (SetCreativeModeSlot).
         let mut creative_slots = Vec::new();
