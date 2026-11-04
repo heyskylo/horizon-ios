@@ -19,9 +19,13 @@ pub fn item_to_nbt(stack: &crate::items::ItemStack) -> Tag {
     Tag::compound(encode_item(stack))
 }
 /// ItemStack.CODEC's count range is independent of the item's stack limit;
-/// an out-of-range count uses the field's default of one.
+/// an out-of-range count uses the field's default of one. The id is read as an
+/// `Identifier`: `stone` is `minecraft:stone` (a summoned display's or a
+/// command's NBT often leaves the namespace out), and an id that is no valid
+/// identifier makes no stack.
 pub fn item_from_nbt(tag: &Tag) -> Option<crate::items::ItemStack> {
-    let id = text(tag.get("id"))?;
+    let (namespace, path) = horizon_world::datafix::identifier(&text(tag.get("id"))?)?;
+    let id = format!("{namespace}:{path}");
     if id == "minecraft:air" {
         return None;
     }
@@ -98,6 +102,24 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// `/summon item_display ~ ~ ~ {item:{id:"stone"}}` shows stone in vanilla:
+    /// the id reads as an Identifier, with the default namespace (#8570).
+    #[test]
+    fn an_id_without_a_namespace_is_a_minecraft_item() {
+        let read = |id: &str| item_from_nbt(&Tag::compound([("id", string(id))]));
+        assert_eq!(
+            read("stone").map(|s| s.item),
+            Some("minecraft:stone".into())
+        );
+        assert_eq!(
+            read(":diamond").map(|s| s.item),
+            Some("minecraft:diamond".into())
+        );
+        assert_eq!(read("nexo:ruby").map(|s| s.item), Some("nexo:ruby".into()));
+        assert!(read("air").is_none());
+        assert!(read("Stone").is_none(), "not a valid identifier");
     }
 
     #[test]

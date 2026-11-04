@@ -7,7 +7,7 @@
 use crate::{
     graphics::{
         EntityCullingMode, FarDetail, FrameGeneration, GraphicsApi, LeafCullingMode, Overlay,
-        Pacing, PresentMode, Preset, Upscaling,
+        Pacing, ParticleCullingMode, PresentMode, Preset, Upscaling,
     },
     graphics_style::{self as style, Cost},
     hud::{HudAtlas, HudBatch},
@@ -66,6 +66,7 @@ pub enum H {
     BlueMapRadius,
     CaveCulling,
     EntityCulling,
+    ParticleCulling,
     LeafCulling,
     CacheShulkerBoxes,
     CacheSigns,
@@ -104,6 +105,7 @@ pub enum H {
     ShadowCache,
     GraphicsApi,
     TranslucentBatching,
+    HdrSmoothGradients,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -381,6 +383,11 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
                             "Hides entities behind opaque blocks.",
                         ),
                         h(
+                            H::ParticleCulling,
+                            None,
+                            "Skips offscreen, subpixel and terrain-hidden particles.",
+                        ),
+                        h(
                             H::LeafCulling,
                             Saves,
                             "Draws or drops leaf faces inside canopies. Off keeps vanilla's fancy leaves.",
@@ -490,6 +497,11 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
                             H::Hdr,
                             None,
                             "Lava, fire and sunlight shine brighter than white. Needs an HDR display.",
+                        ),
+                        h(
+                            H::HdrSmoothGradients,
+                            Low,
+                            "16-bit frame: dark skies and shadows don't band. A bit more VRAM. Next start.",
                         ),
                         h(
                             H::HdrCalibrate,
@@ -626,6 +638,9 @@ fn description(item: Item, s: &Settings, text: &'static str) -> &'static str {
         },
         (Item::Horizon(H::LeafCulling), _) => match s.horizon.leaf_culling {
             LeafCullingMode::Off => "Every leaf face. Vanilla's fancy leaves.",
+            LeafCullingMode::Hidden => {
+                "Drops leaf faces behind two leaf layers: faster, same crowns."
+            }
             LeafCullingMode::Solid => {
                 "Leaves fully inside a canopy draw solid: fewer see-through layers."
             }
@@ -633,6 +648,15 @@ fn description(item: Item, s: &Settings, text: &'static str) -> &'static str {
                 "Leaves with one open side draw solid too: faster, chunkier edges."
             }
             LeafCullingMode::Hollow => "Drops faces between leaves: faster, but gaps look through.",
+        },
+        (Item::Horizon(H::ParticleCulling), _) => match s.horizon.particle_culling {
+            ParticleCullingMode::Off => "Draws every particle.",
+            ParticleCullingMode::Synchronous => {
+                "Skips offscreen, subpixel and terrain-hidden particles."
+            }
+            ParticleCullingMode::Asynchronous => {
+                "Skips offscreen, subpixel and terrain-hidden particles with less render-thread work."
+            }
         },
         _ => text,
     }
@@ -725,6 +749,7 @@ impl H {
             ),
             H::CaveCulling => labelled("Cave Culling", on_off(g.cave_culling)),
             H::EntityCulling => labelled("Entity Culling", g.entity_culling.label()),
+            H::ParticleCulling => labelled("Particle Culling", g.particle_culling.label()),
             H::LeafCulling => labelled("Leaf Culling", g.leaf_culling.label()),
             H::CacheShulkerBoxes => labelled("Shulker Boxes", on_off(g.cache_shulker_boxes)),
             H::CacheSigns => labelled("Signs", on_off(g.cache_signs)),
@@ -812,11 +837,15 @@ impl H {
             H::BatteryMode => labelled("Battery Mode", on_off(g.battery)),
             H::ShadowCache => labelled("Shadow Cache", on_off(g.shadow_cache)),
             H::GraphicsApi => labelled("Graphics API", g.api.label()),
-            // Greyed out where the device can't (`Item::blocked`): Off, as it is there,
-            // while the saved value waits for a device that can.
+            // These two are greyed out where the device can't (`Item::blocked`): Off, as
+            // they are there, while the saved value waits for a device that can.
             H::TranslucentBatching => labelled(
                 "Translucent Batching",
                 on_off(g.translucent_batching && crate::graphics::translucent_batching_offered()),
+            ),
+            H::HdrSmoothGradients => labelled(
+                "Smooth Gradients",
+                on_off(g.hdr_smooth_gradients && crate::graphics::smooth_gradients_offered()),
             ),
             H::Overlay => labelled(
                 "Performance Overlay",
@@ -878,6 +907,9 @@ impl H {
             H::EntityCulling => {
                 g.entity_culling = step(&EntityCullingMode::ALL, g.entity_culling, back)
             }
+            H::ParticleCulling => {
+                g.particle_culling = step(&ParticleCullingMode::ALL, g.particle_culling, back)
+            }
             H::LeafCulling => {
                 g.leaf_culling = step(&LeafCullingMode::ALL, g.leaf_culling, back);
             }
@@ -928,6 +960,7 @@ impl H {
             H::ShadowCache => g.shadow_cache = !g.shadow_cache,
             H::GraphicsApi => g.api = step(GraphicsApi::choices(), g.api, back),
             H::TranslucentBatching => g.translucent_batching = !g.translucent_batching,
+            H::HdrSmoothGradients => g.hdr_smooth_gradients = !g.hdr_smooth_gradients,
             H::Pacing => {
                 g.pacing = match g.pacing {
                     Pacing::Efficient => Pacing::Precise,
@@ -959,7 +992,8 @@ impl Item {
     /// folder, a display swapped for an SDR one: the renderer leaves HDR off there, and
     /// the saved values wait for an HDR display), and its sliders do something only
     /// while it is on; Translucent Batching switches only where the device can batch
-    /// (`graphics::translucent_batching_offered`), its saved value waiting for one that can.
+    /// (`graphics::translucent_batching_offered`), its saved value waiting for one that can,
+    /// and Smooth Gradients only where it can draw the 16-bit frame, the same way.
     fn blocked(self, s: &Settings) -> Option<&'static str> {
         if !self.available() {
             return Some("This feature is not yet available in Horizon.");
@@ -972,9 +1006,15 @@ impl Item {
                 | H::HdrPeak
                 | H::HdrPaperWhite
                 | H::HdrUiBrightness
-                | H::HdrLighting,
+                | H::HdrLighting
+                | H::HdrSmoothGradients,
             ) if !crate::graphics::hdr_offered() => {
                 Some("Your display or system doesn't offer HDR output.")
+            }
+            Item::Horizon(H::HdrSmoothGradients)
+                if !crate::graphics::smooth_gradients_offered() =>
+            {
+                Some("Your GPU or graphics API doesn't support it.")
             }
             Item::Horizon(
                 H::HdrCalibrate
@@ -982,7 +1022,8 @@ impl Item {
                 | H::HdrPeak
                 | H::HdrPaperWhite
                 | H::HdrUiBrightness
-                | H::HdrLighting,
+                | H::HdrLighting
+                | H::HdrSmoothGradients,
             ) if !s.horizon.hdr => Some("Turn HDR on to use it."),
             Item::Horizon(H::TranslucentBatching)
                 if !crate::graphics::translucent_batching_offered() =>
@@ -1021,6 +1062,9 @@ impl Item {
             Item::Horizon(H::BatteryMode) => g.battery,
             Item::Horizon(H::ShadowCache) => g.shadow_cache,
             Item::Horizon(H::TranslucentBatching) => g.translucent_batching,
+            Item::Horizon(H::HdrSmoothGradients) => {
+                g.hdr_smooth_gradients && crate::graphics::smooth_gradients_offered()
+            }
             Item::Vanilla(Opt::ViewBobbing) => s.view_bobbing,
             Item::Vanilla(Opt::Vsync) => s.vsync,
             Item::Vanilla(Opt::Fullscreen) => s.fullscreen,
@@ -1087,6 +1131,7 @@ impl Item {
                     | H::ShadowCache
                     | H::GraphicsApi
                     | H::TranslucentBatching
+                    | H::HdrSmoothGradients
             ) | Item::Vanilla(
                 Opt::GuiScale
                     | Opt::Fullscreen
@@ -2603,6 +2648,31 @@ mod tests {
     }
 
     #[test]
+    fn smooth_gradients_wait_for_a_device_that_draws_the_16_bit_frame() {
+        let _offer = HDR_OFFER.lock().unwrap_or_else(|e| e.into_inner());
+        crate::graphics::offer_hdr(true);
+        let mut s = Settings::default();
+        s.horizon.hdr = true;
+        let item = Item::Horizon(H::HdrSmoothGradients);
+        // Where the device can't, the saved On reads Off.
+        crate::graphics::offer_smooth_gradients(false);
+        assert_eq!(
+            item.blocked(&s),
+            Some("Your GPU or graphics API doesn't support it.")
+        );
+        assert_eq!(item.label(&s).plain(), "Smooth Gradients: Off");
+        assert_eq!(item.switch(&s), Some(false));
+        assert!(s.horizon.hdr_smooth_gradients);
+        // Where it can, it waits only for HDR, like the rest of the page.
+        crate::graphics::offer_smooth_gradients(true);
+        assert_eq!(item.blocked(&s), None);
+        assert_eq!(item.label(&s).plain(), "Smooth Gradients: On");
+        assert_eq!(item.switch(&s), Some(true));
+        s.horizon.hdr = false;
+        assert_eq!(item.blocked(&s), Some("Turn HDR on to use it."));
+    }
+
+    #[test]
     fn hdr_waits_for_a_display_that_offers_it_and_its_sliders_for_the_switch() {
         let _offer = HDR_OFFER.lock().unwrap_or_else(|e| e.into_inner());
         let mut s = Settings::default();
@@ -3003,6 +3073,42 @@ mod tests {
     }
 
     #[test]
+    fn particle_culling_modes_are_opt_in_and_cycle_from_its_row() {
+        let mut s = Settings::default();
+        let item = Item::Horizon(H::ParticleCulling);
+        assert_eq!(s.horizon.particle_culling, ParticleCullingMode::Off);
+        assert_eq!(item.label(&s).plain(), "Particle Culling: Off");
+        for mode in ParticleCullingMode::ALL {
+            s.horizon.particle_culling = mode;
+            for preset in Preset::ALL {
+                crate::graphics::apply_preset(preset, &mut s);
+                assert_eq!(s.horizon.particle_culling, mode);
+            }
+            assert_eq!(
+                crate::graphics::Graphics::parse(&s.horizon.serialize()).particle_culling,
+                mode
+            );
+        }
+        s.horizon.particle_culling = ParticleCullingMode::Off;
+        let mut ui = GraphicsUi::default();
+        let r = row(&mut ui, &s, item);
+        for (mode, label) in [
+            (ParticleCullingMode::Synchronous, "Synchronous"),
+            (ParticleCullingMode::Asynchronous, "Asynchronous"),
+            (ParticleCullingMode::Off, "Off"),
+        ] {
+            s.horizon.preset = Preset::Balanced;
+            assert_eq!(
+                press(&mut ui, &mut s, (r[0] + 4.0, r[1] + 4.0)),
+                [Action::ButtonClick, Action::Changed]
+            );
+            assert_eq!(s.horizon.particle_culling, mode);
+            assert_eq!(s.horizon.preset, Preset::Custom);
+            assert_eq!(item.label(&s).plain(), format!("Particle Culling: {label}"));
+        }
+    }
+
+    #[test]
     fn graphics_cycle_button_cycles_forward_and_shift_click_cycles_backward_with_wrapping() {
         let mut s = Settings::default();
         let item = Item::Horizon(H::EntityCulling);
@@ -3109,7 +3215,7 @@ mod tests {
         let item = Item::Horizon(H::LeafCulling);
         assert_eq!(item.switch(&s), None);
         assert_eq!(item.label(&s).plain(), "Leaf Culling: Off");
-        for label in ["Solid", "Solid Aggressive", "Hollow", "Off"] {
+        for label in ["Hidden Faces", "Solid", "Solid Aggressive", "Hollow", "Off"] {
             item.cycle(&mut s, false, FB);
             assert_eq!(item.label(&s).plain(), format!("Leaf Culling: {label}"));
             assert_eq!(
@@ -3128,7 +3234,12 @@ mod tests {
             .unwrap();
         assert_eq!(culling.0, Page::Performance);
         let block: Vec<Item> = culling.1.iter().map(|r| r.item).collect();
-        for h in [H::CaveCulling, H::EntityCulling, H::LeafCulling] {
+        for h in [
+            H::CaveCulling,
+            H::EntityCulling,
+            H::ParticleCulling,
+            H::LeafCulling,
+        ] {
             assert!(block.contains(&Item::Horizon(h)), "{h:?}");
         }
         // The block-entity caches are the group after it, in this order.
@@ -3179,7 +3290,7 @@ mod tests {
             press(&mut ui, &mut s, (r[0] + 4.0, r[1] + 4.0)),
             [Action::ButtonClick, Action::Changed]
         );
-        assert_eq!(s.horizon.leaf_culling, LeafCullingMode::Solid);
+        assert_eq!(s.horizon.leaf_culling, LeafCullingMode::Hidden);
         assert_eq!(s.horizon.preset, Preset::Custom);
     }
 
@@ -3344,36 +3455,47 @@ mod tests {
         let mut s = Settings::default();
         s.horizon.leaf_culling = LeafCullingMode::Hollow;
         s.horizon.entity_culling = EntityCullingMode::Asynchronous;
-        for (code, leaf, entity, leaf_text) in [
+        s.horizon.particle_culling = ParticleCullingMode::Asynchronous;
+        for (code, leaf, entity, leaf_text, particle, particle_text) in [
             (
                 "de_de",
                 "Laub-Culling: Hohl",
                 "Objekt-Culling: Asynchron",
                 "Lässt Flächen zwischen Blättern weg: schneller, aber Lücken sind durchsichtig.",
+                "Partikel-Culling: Asynchron",
+                "Überspringt Partikel außerhalb des Bildes, unterhalb eines Pixels oder hinter Terrain und entlastet den Render-Thread.",
             ),
             (
                 "pl_pl",
                 "Pomijanie liści: Puste",
                 "Pomijanie bytów: Asynchroniczne",
                 "Pomija ściany między liśćmi: szybciej, ale luki są przezroczyste.",
+                "Pomijanie cząsteczek: Asynchroniczne",
+                "Pomija cząsteczki poza ekranem, mniejsze niż piksel i zasłonięte przez teren, odciążając wątek renderowania.",
             ),
             (
                 "uk_ua",
                 "Відсікання листя: Порожнє",
                 "Відсік. сутностей: Асинхронно",
                 "Прибирає грані між листям: швидше, але прогалини прозорі.",
+                "Відсікання частинок: Асинхронно",
+                "Пропускає частинки поза екраном, менші за піксель і закриті місцевістю, зменшуючи роботу потоку рендерингу.",
             ),
             (
                 "zh_cn",
                 "树叶剔除: 镂空",
                 "实体剔除: 异步",
                 "省略树叶之间的面：更快，但缝隙会透视。",
+                "粒子剔除: 异步",
+                "跳过屏幕外、小于一个像素和被地形遮挡的粒子，减少渲染线程的工作量。",
             ),
             (
                 "fr_fr",
                 "Occlusion feuillage: Creux",
                 "Occlusion des entités: Asynchrone",
                 "Supprime les faces entre feuilles : plus rapide, mais on voit à travers les trous.",
+                "Occlusion des particules: Asynchrone",
+                "Ignore les particules hors écran, trop petites ou masquées par le terrain avec moins de travail sur le thread de rendu.",
             ),
         ] {
             let (shown, _) = lang::scoped(lang::Language::load(&[], code), || {
@@ -3382,11 +3504,19 @@ mod tests {
                     item(H::LeafCulling).label(&s).plain(),
                     item(H::EntityCulling).label(&s).plain(),
                     lang::get(description(item(H::LeafCulling), &s, "")),
+                    item(H::ParticleCulling).label(&s).plain(),
+                    lang::get(description(item(H::ParticleCulling), &s, "")),
                 )
             });
             assert_eq!(
                 shown,
-                (leaf.into(), entity.into(), leaf_text.into()),
+                (
+                    leaf.into(),
+                    entity.into(),
+                    leaf_text.into(),
+                    particle.into(),
+                    particle_text.into(),
+                ),
                 "{code}"
             );
         }

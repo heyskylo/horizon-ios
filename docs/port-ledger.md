@@ -1,7 +1,7 @@
 # Port ledger
 
-`tools/port_ledger.py` lists every vanilla method next to the Horizon functions that port it, both ways, and
-points at the places where a port exists but isn't wired like vanilla. It answers the questions every parity
+`tools/port_ledger.py` lists every vanilla method beside the Horizon function that ports it, in both
+directions, and points at ports that exist but aren't wired like vanilla. It answers the questions every parity
 fix starts with, without searching:
 
 - where is vanilla's `Class.method` in Horizon (`where`), and which vanilla method does this Rust function

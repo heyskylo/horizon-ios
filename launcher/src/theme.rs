@@ -75,6 +75,16 @@ pub struct Theme {
     /// The night look's own tokens (the sky, plates with their opacity), for rebuilt screens.
     pub night: Night,
     pub dark: bool,
+    /// Whether the pages draw the redesign's glass look: both appearances do (light with ink
+    /// for white and light plates, `glass_ui::light`).
+    pub glass: bool,
+}
+
+/// The light appearance's look: the soft accent (links, ticks, the sliders) is the accent
+/// itself, which reads on white where the dark look's half-white mix would not.
+fn light_look(mut look: tokens::glass::Glass) -> tokens::glass::Glass {
+    look.accent_soft = look.accent;
+    look
 }
 
 fn c(hex: u32) -> Hsla {
@@ -109,6 +119,9 @@ impl Theme {
     /// (px).
     pub fn with_glass(mut self, tint: f32, blur: f32) -> Self {
         self.look = tokens::glass::Glass::new(self.look.accent, tint, blur);
+        if !self.dark {
+            self.look = light_look(self.look);
+        }
         self
     }
 
@@ -119,12 +132,7 @@ impl Theme {
         );
         let dark = pinned_dark(choice).unwrap_or(system_dark);
         let night = if dark { night::NIGHT } else { night::DAWN };
-        let theme = Self::from(accent.apply(night.blocks()), night);
-        if dark {
-            theme.glass(accent)
-        } else {
-            theme
-        }
+        Self::from(accent.apply(night.blocks()), night).glass(accent)
     }
 
     /// The dark appearance draws the glass look ("Glass" in `docs/design-system.md`): what the
@@ -132,9 +140,18 @@ impl Theme {
     /// white text and fills at a few opacities, no borders, no bevels.
     fn glass(self, accent: Accent) -> Self {
         use horizon_theme::glass::{fill, ink, Glass, BLUR, DANGER, LIVE, TINT, WARN};
-        let white = |a: f32| gpui::white().opacity(a);
+        let dark = self.dark;
+        // Light: the ink where dark has white, as `glass_ui::white` does.
+        let white = |a: f32| {
+            if dark {
+                gpui::white().opacity(a)
+            } else {
+                c(horizon_theme::glass::ON_LIGHT).opacity(a)
+            }
+        };
         let none = gpui::transparent_black();
         let look = Glass::new(accent.rgb(), TINT, BLUR);
+        let look = if dark { look } else { light_look(look) };
         Self {
             plate_soft: white(fill::ROW_HOVER),
             plate: white(fill::BUTTON),
@@ -144,9 +161,10 @@ impl Theme {
             muted: white(ink::QUIET),
             accent: c(look.accent_soft),
             on_accent: c(look.on_accent),
-            danger: c(DANGER),
-            success: c(LIVE),
-            warn: c(WARN),
+            // Light: `glass_ui::danger`, `live` and `warn`'s darker shades.
+            danger: c(if dark { DANGER } else { 0xdc2626 }),
+            success: c(if dark { LIVE } else { 0x15803d }),
+            warn: c(if dark { WARN } else { 0xb45309 }),
             panel: white(0.04),
             raised: white(fill::ROW_HOVER),
             button: white(fill::BUTTON),
@@ -160,6 +178,7 @@ impl Theme {
             face_lip: none,
             on_face: c(look.on_accent),
             look,
+            glass: true,
             ..self
         }
     }
@@ -195,6 +214,7 @@ impl Theme {
             on_face: c(p.on_face),
             night,
             dark: p.dark,
+            glass: false,
         }
     }
 }

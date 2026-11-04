@@ -1,8 +1,10 @@
 //! HDR output (Horizon setting, off by default): the frame renders exactly as
-//! without it, into an 8-bit target in vanilla's gamma space, and one pass
-//! (`hdr.wgsl`) writes it to an HDR10 or scRGB swapchain at the player's paper
-//! white, expanding the world's highlights towards their peak brightness. The
-//! world is copied aside before the hand and HUD so only it is expanded.
+//! without it, in vanilla's gamma space, into a 16-bit target when HDR output
+//! was on when the renderer was made, else an 8-bit one
+//! (`Renderer::frame_format`), and one pass (`hdr.wgsl`) writes it to an HDR10
+//! or scRGB swapchain at the player's paper white, expanding the world's
+//! highlights towards their peak brightness. The world is copied aside before
+//! the hand and HUD so only it is expanded.
 
 /// The swapchain HDR output presents to.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -305,7 +307,7 @@ impl Hdr {
         }
     }
 
-    /// The 8-bit frame every pass draws into this frame, sized like the window.
+    /// The frame every pass draws into this frame, sized like the window.
     pub fn frame(&mut self, device: &wgpu::Device, size: [u32; 2]) -> wgpu::Texture {
         if self.targets.as_ref().is_none_or(|t| t.size != size) {
             let texture = |label, usage| {

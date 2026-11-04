@@ -103,6 +103,7 @@ PoiSection.Packed.unpack	skip:other		POI files are not loaded into sections
 PoiTypes.registerBlockStates	inline	crates/horizon-client/src/save.rs::poi_type	state to POI type and max tickets in one match
 PoiTypes.bootstrap	port	crates/horizon-client/src/save.rs::poi_type	every POI type with its tickets (bed heads of the sixteen colours only, cauldrons, bell 32); villagers use villager_brain::state_poi for jobs, beds and bell
 Bat.isFlapping	port	crates/horizon-client/src/game/sculk.rs::flaps	an awake bat flaps every tenth tick, and the movement pass posts minecraft:flap when the block below is air (a bee, every other tick in the air, shares the same fn)
+Bat.getMovementEmission	port	crates/horizon-client/src/mobs/ai.rs::movement_sounds	EVENTS
 Bat.getAmbientSound	inline	crates/horizon-client/src/mobs/ai.rs::play_ambient	Species::Bat arm: a resting bat is silent three times in four
 Bat.isResting	port	crates/horizon-client/src/mobs/bat.rs::resting	
 Bat.addAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::mob_to_nbt	BatFlags byte, bit 0 resting
