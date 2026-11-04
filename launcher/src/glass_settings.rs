@@ -190,17 +190,21 @@ impl Launcher {
             )
     }
 
-    /// The section the list marks, from where the pane's sections are now ([`spy`]).
+    /// The section the list marks, from where the pane's sections are now ([`spy`]). A section's
+    /// bounds are where layout put it, before the scroll (`ScrollHandle` keeps the offset apart):
+    /// the scroll is taken off them here. Reading them as they were left the list on the first
+    /// section until the pane hit its end.
     fn settings_section(&self, count: usize) -> usize {
         let pane = self.settings_pane.bounds();
+        let scrolled = -self.settings_pane.offset().y;
         let tops: Vec<f32> = (0..count)
             .map_while(|i| self.settings_pane.bounds_for_item(i))
-            .map(|b| f32::from(b.top() - pane.top()))
+            .map(|b| f32::from(b.top() - pane.top() - scrolled))
             .collect();
         spy(
             &tops,
             f32::from(pane.size.height),
-            f32::from(-self.settings_pane.offset().y),
+            f32::from(scrolled),
             f32::from(self.settings_pane.max_offset().y),
         )
     }
