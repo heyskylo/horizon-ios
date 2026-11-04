@@ -7,11 +7,13 @@ use std::sync::OnceLock;
 pub struct NativeClientHooks {
     pub menu_slot_rules: fn(&str, usize, &ItemStack, &mut bool, &mut u32),
     pub living_heal: fn(u32, &mut f32, &mut bool),
+    pub player_chat: fn(u128, &str, &str, &mut Vec<horizon_client_core::text::Text>, &mut bool),
     pub living_breathe: fn(u32, &str, &mut bool, &mut i32, &mut i32),
     pub living_drown: fn(u32, &str, &mut bool, &mut f32, i32, &mut bool),
     pub living_fall: fn(u32, &str, &mut f64, &mut f32, &mut bool),
     pub living_jump: fn(u32, &str),
     pub ingredient: fn(&str, &Map<String, Value>, &mut Vec<String>),
+    pub ingredient_test: fn(&str, &Map<String, Value>, &ItemStack, &mut bool),
 }
 
 static HOOKS: OnceLock<NativeClientHooks> = OnceLock::new();
@@ -30,6 +32,18 @@ pub(crate) fn menu_slot_rules(
 ) {
     if let Some(hooks) = HOOKS.get() {
         (hooks.menu_slot_rules)(menu, slot, stack, may_place, max_stack);
+    }
+}
+
+pub(crate) fn player_chat(
+    player: u128,
+    name: &str,
+    message: &str,
+    replies: &mut Vec<horizon_client_core::text::Text>,
+    cancel: &mut bool,
+) {
+    if let Some(hooks) = HOOKS.get() {
+        (hooks.player_chat)(player, name, message, replies, cancel);
     }
 }
 
@@ -92,5 +106,16 @@ pub(crate) fn living_jump(entity: u32, kind: &str) {
 pub(crate) fn ingredient(kind: &str, data: &Map<String, Value>, items: &mut Vec<String>) {
     if let Some(hooks) = HOOKS.get() {
         (hooks.ingredient)(kind, data, items);
+    }
+}
+
+pub(crate) fn ingredient_test(
+    kind: &str,
+    data: &Map<String, Value>,
+    stack: &ItemStack,
+    accept: &mut bool,
+) {
+    if let Some(hooks) = HOOKS.get() {
+        (hooks.ingredient_test)(kind, data, stack, accept);
     }
 }

@@ -235,7 +235,7 @@ enum InstanceCmd {
         /// latest-snapshot) instead of a Horizon one
         #[arg(long, conflicts_with = "copy")]
         minecraft: Option<String>,
-        /// With this mod loader: fabric or quilt
+        /// With this mod loader: fabric, quilt, forge or neoforge
         #[arg(long, requires = "minecraft")]
         loader: Option<String>,
         /// The loader's version (default: its newest stable one)
@@ -270,7 +270,7 @@ enum InstanceCmd {
         #[arg(long)]
         window: Option<String>,
     },
-    /// A Java instance's mod loader: fabric or quilt, or none. --list shows its versions
+    /// A Java instance's mod loader: fabric, quilt, forge or neoforge, or none. --list shows its versions
     Loader {
         instance: String,
         loader: String,
@@ -835,7 +835,8 @@ enum Cmd {
     /// newest to keep; "default" is 2), opening-animation on|off, proxy http://host:port
     /// ("default" removes it), while-playing stay|minimize|hide (what the window does while the game runs), language
     /// system|en|fr|ru|de|zh|es|uk|pl (the window's language; system follows the computer's), accent
-    /// violet|blue|teal|green|amber|red|pink, background PATH (a picture behind Home; "default"
+    /// violet|blue|teal|green|amber|red|pink|#rrggbb|DEGREES (a named accent, any colour, or any
+    /// hue), background PATH (a picture behind Home; "default"
     /// shows Horizon's landscape), native-profile performance|dev|release (the profile native
     /// mods build with: performance is incremental, dev rebuilds a mod quickest for a slow game,
     /// release is slowest to build and slightly faster to play)
@@ -1039,7 +1040,7 @@ fn set_setting(s: &mut backend::Settings, key: &str, value: &str) -> Result<(), 
             s.accent = Accent::parse(value).ok_or_else(|| {
                 let names: Vec<_> = Accent::ALL.iter().map(|a| a.name()).collect();
                 format!(
-                    "{value}: say {} or a hue in degrees (0 to 360)",
+                    "{value}: say {}, a colour like #2563eb or a hue in degrees (0 to 360)",
                     names.join(", ")
                 )
             })?
@@ -1125,7 +1126,13 @@ pub fn run() -> Option<i32> {
     let result = match command {
         Cmd::Mcp | Cmd::AgentConfig { .. } if no_ai => Err(horizon_core::no_ai::REFUSAL.into()),
         Cmd::Mcp => crate::mcp::serve(),
-        command => execute(command, cli.json),
+        command => {
+            let result = execute(command, cli.json);
+            // A game it started has ended (attached) or none did (an error): a session file it
+            // didn't read goes now.
+            account::discard_unread_sessions();
+            result
+        }
     };
     Some(match result {
         Ok(()) => 0,
@@ -1599,7 +1606,7 @@ fn execute(command: Cmd, as_json: bool) -> Result<(), String> {
             if let Some(key) = key {
                 let value = value.ok_or("settings KEY VALUE: the value is missing")?;
                 set_setting(&mut settings, &key, &value)?;
-                settings.save();
+                settings.save()?;
                 horizon_launcher::proxy::announce(settings.proxy.clone());
             }
             let all = settings_json(&settings);
@@ -1615,7 +1622,7 @@ fn execute(command: Cmd, as_json: bool) -> Result<(), String> {
             let mut settings = backend::Settings::load();
             if let Some(line) = args {
                 settings.game_args = line;
-                settings.save();
+                settings.save()?;
             }
             let line = settings.game_args;
             if as_json {
@@ -1677,7 +1684,7 @@ fn execute(command: Cmd, as_json: bool) -> Result<(), String> {
         Cmd::DesktopEntry { remove } => {
             let mut settings = backend::Settings::load();
             settings.desktop_entry = Some(!remove);
-            settings.save();
+            settings.save()?;
             if remove {
                 horizon_launcher::desktop::remove()?;
                 println!("Removed Horizon from the applications menu.");
@@ -2273,7 +2280,15 @@ fn github_native(
             .collect::<Result<Vec<_>, _>>()
     });
     github_mods::discard(found);
-    for o in done? {
+    let done = done?;
+    // The window's trust notice, once. Nothing is turned on: native mods are always on.
+    let mut settings = backend::Settings::load();
+    if !settings.native_mods_noticed {
+        eprintln!("{}", native_status::NOTICE);
+        settings.native_mods_noticed = true;
+        settings.save()?;
+    }
+    for o in done {
         println!(
             "Installed {} {} from GitHub ({}), sha256 {}.",
             o.id,
@@ -2281,13 +2296,6 @@ fn github_native(
             o.label(),
             o.sha256
         );
-    }
-    // The window's trust notice, once. Nothing is turned on: native mods are always on.
-    let mut settings = backend::Settings::load();
-    if !settings.native_mods_noticed {
-        eprintln!("{}", native_status::NOTICE);
-        settings.native_mods_noticed = true;
-        settings.save();
     }
     println!("Build it next: horizon-launcher native-build --trust-native-code");
     println!(
@@ -2575,6 +2583,14 @@ fn mods(action: ModsCmd, as_json: bool) -> Result<(), String> {
                 Some(target) => java_instance::install(&*source, target, &p, &home, &line)?,
                 None => installed::install(&*source, &p, everything, &home, &line)?,
             };
+            // The first native mod: the window's trust notice, once.
+            let mut settings = backend::Settings::load();
+            let native = done.iter().any(|e| native_status::is_native_file(&e.file));
+            if native && !settings.native_mods_noticed {
+                eprintln!("{}", native_status::NOTICE);
+                settings.native_mods_noticed = true;
+                settings.save()?;
+            }
             if as_json {
                 json(done.iter().map(entry_json).collect());
             }
@@ -2583,14 +2599,6 @@ fn mods(action: ModsCmd, as_json: bool) -> Result<(), String> {
                 for s in &e.skipped {
                     println!("  not ported: {s}");
                 }
-            }
-            // The first native mod: the window's trust notice, once.
-            let mut settings = backend::Settings::load();
-            let native = done.iter().any(|e| native_status::is_native_file(&e.file));
-            if native && !settings.native_mods_noticed {
-                eprintln!("{}", native_status::NOTICE);
-                settings.native_mods_noticed = true;
-                settings.save();
             }
         }
         ModsCmd::Update { project, check, .. } => {

@@ -18,7 +18,7 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// The keychain service name every secret is stored under.
 pub const SERVICE: &str = "dev.playhorizon.launcher";
@@ -1868,6 +1868,12 @@ pub fn write_session_file(
     secrets: &Secrets,
 ) -> Result<PathBuf, String> {
     std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    // The folder too is this user's only (the files already are).
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
+    }
     // Leftovers of games that never started (refused by the game after two minutes anyway).
     if let Ok(entries) = std::fs::read_dir(dir) {
         for e in entries.flatten() {
@@ -1900,6 +1906,72 @@ pub fn write_session_file(
     });
     std::io::Write::write_all(&mut file, body.to_string().as_bytes()).map_err(|e| e.to_string())?;
     Ok(path)
+}
+
+/// How long a game takes a session file: it refuses one older than this (the game's
+/// `MAX_SESSION_FILE_AGE`), so the launcher deletes it then if it is still there.
+const SESSION_FILE_LIFE: Duration = Duration::from_secs(120);
+
+/// The session files this launcher wrote for games it starts, until they are gone: a game
+/// deletes each as it reads it; the rest go when the game would refuse them anyway
+/// ([`SESSION_FILE_LIFE`], a game that never started or crashed first) or when the launch failed
+/// ([`discard_unread_sessions`]). Nothing with a token stays on disk.
+static UNREAD: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+
+/// [`write_session_file`] for a game this launcher is about to start (see [`UNREAD`]).
+fn write_launch_session_file(
+    dir: &Path,
+    account: &Account,
+    secrets: &Secrets,
+) -> Result<PathBuf, String> {
+    let path = write_session_file(dir, account, secrets)?;
+    let Ok(mut unread) = UNREAD.lock() else {
+        return Ok(path);
+    };
+    if unread.is_empty() {
+        // One reaper while files wait; it ends with the list (under its lock, so a file added
+        // as it ends starts the next).
+        let _ = std::thread::Builder::new()
+            .name("Session files".into())
+            .spawn(|| loop {
+                std::thread::sleep(Duration::from_secs(5));
+                let Ok(mut unread) = UNREAD.lock() else {
+                    return;
+                };
+                reap(&mut unread, SESSION_FILE_LIFE);
+                if unread.is_empty() {
+                    return;
+                }
+            });
+    }
+    unread.push(path.clone());
+    Ok(path)
+}
+
+/// Deletes the files of `unread` older than `life` (the game would refuse them) and forgets
+/// those gone (read).
+fn reap(unread: &mut Vec<PathBuf>, life: Duration) {
+    unread.retain(|path| {
+        let waiting = std::fs::metadata(path)
+            .and_then(|m| m.modified())
+            .is_ok_and(|m| m.elapsed().is_ok_and(|age| age <= life));
+        if !waiting {
+            let _ = std::fs::remove_file(path);
+        }
+        waiting
+    });
+}
+
+/// Deletes the session files written for a launch whose game didn't start, or has ended: any it
+/// didn't read is left over (a game deletes those it reads).
+pub fn discard_unread_sessions() {
+    let files = UNREAD
+        .lock()
+        .map(|mut unread| std::mem::take(&mut *unread))
+        .unwrap_or_default();
+    for path in files {
+        let _ = std::fs::remove_file(path);
+    }
 }
 
 /// Called under the account-operation lock, after the final profile is known. Rejected or
@@ -2009,13 +2081,24 @@ impl SignIn {
     }
 }
 
+/// What the game about to start gets from the accounts.
+#[derive(Debug, Default)]
+pub struct GameSession {
+    /// The playing account's session (`--session-file`); none: offline.
+    pub file: Option<PathBuf>,
+    /// Why the account plays offline this time, if it does.
+    pub offline: Option<String>,
+    /// The other accounts' sessions, for splitscreen players (`account_sessions`).
+    pub env: Vec<(&'static str, String)>,
+}
+
 /// The owner gate for the game about to start, then the selected account's session in a file
-/// for it: the file (none: offline) and why the account plays offline this time, if it does.
-/// `offline_without_owner`: see [`launch_for_game`].
+/// for it, and the other accounts' for its splitscreen players. `offline_without_owner`: see
+/// [`launch_for_game`].
 pub fn session_for_game(
     game_home: &Path,
     offline_without_owner: bool,
-) -> Result<(Option<PathBuf>, Option<String>), NoOwner> {
+) -> Result<GameSession, NoOwner> {
     let mut accounts = Accounts::load();
     let pass = launch_for_game(
         &Endpoints::live(),
@@ -2024,20 +2107,22 @@ pub fn session_for_game(
         &mut accounts,
         offline_without_owner,
     )?;
+    let env = split_sessions(
+        game_home,
+        &mut accounts,
+        pass.session.as_ref().map(|(a, _)| a.uuid.as_str()),
+    );
     if let Err(e) = accounts.save() {
         eprintln!("Horizon: the accounts are not saved: {e}");
     }
-    Ok(session_file(game_home, pass))
+    Ok(session_file(game_home, pass, env))
 }
 
 /// [`session_for_game`] for one launch as `who` (`play --account`, a signed-in account): who
 /// plays changes for this launch only, so several games can play as several accounts at once
 /// (#4952). What the services renewed (tokens, names, skins) is still kept; which account
 /// `account select` picked is not touched.
-pub fn session_for_game_as(
-    game_home: &Path,
-    who: &Player,
-) -> Result<(Option<PathBuf>, Option<String>), String> {
+pub fn session_for_game_as(game_home: &Path, who: &Player) -> Result<GameSession, String> {
     let mut accounts = Accounts::load();
     let pass = launch_as(
         &Endpoints::live(),
@@ -2049,7 +2134,16 @@ pub fn session_for_game_as(
     if let Err(e) = accounts.save() {
         eprintln!("Horizon: the accounts are not saved: {e}");
     }
-    Ok(session_file(game_home, pass?))
+    let pass = pass?;
+    let env = split_sessions(
+        game_home,
+        &mut accounts,
+        pass.session.as_ref().map(|(a, _)| a.uuid.as_str()),
+    );
+    if let Err(e) = accounts.save() {
+        eprintln!("Horizon: the accounts are not saved: {e}");
+    }
+    Ok(session_file(game_home, pass, env))
 }
 
 /// The owner gate as `who`, on `accounts`, which keeps its choice of player.
@@ -2076,15 +2170,161 @@ fn launch_as(
     pass
 }
 
-/// The game's session file for a launch that passed the gate, or why it plays offline.
-fn session_file(game_home: &Path, pass: Launch) -> (Option<PathBuf>, Option<String>) {
-    let Some((account, secrets)) = pass.session else {
-        return (None, pass.offline);
+/// The game's session files for a launch that passed the gate.
+fn session_file(game_home: &Path, pass: Launch, env: Vec<(&'static str, String)>) -> GameSession {
+    let mut out = GameSession {
+        env,
+        offline: pass.offline,
+        ..GameSession::default()
     };
-    match write_session_file(&game_home.join("sessions"), &account, &secrets) {
-        Ok(file) => (Some(file), None),
-        Err(e) => (None, Some(e)),
+    if let Some((account, secrets)) = pass.session {
+        match write_launch_session_file(&game_home.join("sessions"), &account, &secrets) {
+            Ok(file) => out.file = Some(file),
+            Err(e) => out.offline = Some(e),
+        }
     }
+    out
+}
+
+fn split_sessions(
+    game_home: &Path,
+    accounts: &mut Accounts,
+    playing: Option<&str>,
+) -> Vec<(&'static str, String)> {
+    if splitscreen_on(game_home) {
+        // The launch may override the saved player, or play with an offline name.
+        let selected = std::mem::replace(&mut accounts.selected, playing.map(str::to_owned));
+        let env = account_sessions(
+            &Endpoints::live(),
+            client_id().as_deref(),
+            store(),
+            &game_home.join("sessions"),
+            accounts,
+        );
+        accounts.selected = selected;
+        env
+    } else {
+        Vec::new()
+    }
+}
+
+/// Whether the game's Splitscreen setting is on (`horizon-extras.txt`, `splitscreen:true`): only
+/// then do the other accounts' sessions go to it.
+fn splitscreen_on(game_home: &Path) -> bool {
+    std::fs::read_to_string(game_home.join("horizon-extras.txt"))
+        .is_ok_and(|text| text.lines().any(|l| l.trim() == "splitscreen:true"))
+}
+
+/// The signed-in accounts but the one that plays, each its session in a file of its own, for
+/// the game's splitscreen players to sign in with (`HORIZON_ACCOUNT_SESSIONS`: name, uuid and
+/// file each). A token known to own the game and not due goes as it is; otherwise it is renewed
+/// and asked about (`check`), and an account that can't be renewed, doesn't own the game or
+/// whose token names another profile is left out: the game starts all the same. Nothing with one
+/// account.
+/// How long Play spends renewing the other accounts' sessions, in all: past it, the rest are
+/// offered only with a token that still holds (no request starts; one under way finishes).
+const OTHERS_WAIT: Duration = Duration::from_secs(10);
+
+fn account_sessions(
+    ep: &Endpoints,
+    client_id: Option<&str>,
+    store: &dyn SecretStore,
+    dir: &Path,
+    accounts: &mut Accounts,
+) -> Vec<(&'static str, String)> {
+    account_sessions_until(
+        ep,
+        client_id,
+        store,
+        dir,
+        accounts,
+        Instant::now() + OTHERS_WAIT,
+    )
+}
+
+fn account_sessions_until(
+    ep: &Endpoints,
+    client_id: Option<&str>,
+    store: &dyn SecretStore,
+    dir: &Path,
+    accounts: &mut Accounts,
+    deadline: Instant,
+) -> Vec<(&'static str, String)> {
+    let others: Vec<Account> = accounts
+        .accounts
+        .iter()
+        .filter(|a| Some(&a.uuid) != accounts.selected.as_ref())
+        .cloned()
+        .collect();
+    let mut list = Vec::new();
+    for account in others {
+        let skipped =
+            |reason: &str| json!({ "name": account.name, "uuid": account.uuid, "skipped": reason });
+        // Under the account lock, as every renewal is: a refresh token Microsoft rotates here is
+        // not lost to another launcher renewing the same account at once. Still busy at the
+        // deadline: no request, the token while it holds.
+        let operation = session::lock_within(
+            store,
+            Some(deadline.saturating_duration_since(Instant::now())),
+        );
+        let Some(secrets) = secrets_in(store, &account.uuid) else {
+            list.push(skipped("Sign in again in the launcher."));
+            continue;
+        };
+        let fallback = skipped("Sign in again in the launcher.");
+        let before = serde_json::to_string(&secrets).ok();
+        let uuid = account.uuid.clone();
+        // An account the services sent back to sign-in (a refused refresh, a token now for
+        // another profile) is never handed over, whatever its token's time says.
+        let holds = |s: &Secrets, margin: u64| {
+            s.owns && !s.sign_in_required && s.minecraft_expires_at > now() + margin
+        };
+        let known = holds(&secrets, RENEW_BEFORE);
+        let late = operation.is_err() || Instant::now() >= deadline;
+        let (account, secrets) = match known {
+            true => (Some(account), secrets),
+            // Out of time: its token while it holds, else Sign in again.
+            false if late => (holds(&secrets, 60).then_some(account), secrets),
+            false => match check(ep, client_id, &account, secrets) {
+                Check::Owns(renewed, secrets) => {
+                    accounts.update(renewed.clone());
+                    (Some(renewed), secrets)
+                }
+                Check::DoesNot(secrets) => (None, secrets),
+                Check::NoAnswer(e, secrets) => {
+                    eprintln!("{}'s session for splitscreen: {e}", account.name);
+                    // Its token may still hold (no network): offered only while it does. A token
+                    // for another profile is marked sign-in required, so it never is.
+                    (holds(&secrets, 60).then_some(account), secrets)
+                }
+            },
+        };
+        // A renewed token, or the services' answer, kept for the next launch.
+        let after = serde_json::to_string(&secrets).ok();
+        if let (true, Some(text)) = (after != before, after) {
+            let _ = store.set(&uuid, &text);
+        }
+        drop(operation);
+        let Some(account) = account else {
+            list.push(if secrets.owns { fallback } else {
+                json!({ "name": fallback["name"], "uuid": uuid, "skipped": "This account needs Minecraft: Java Edition ownership confirmed in the launcher." })
+            });
+            continue;
+        };
+        match write_launch_session_file(dir, &account, &secrets) {
+            Ok(file) => {
+                list.push(json!({ "name": account.name, "uuid": account.uuid, "file": file }))
+            }
+            Err(_) => list.push(fallback),
+        }
+    }
+    if list.is_empty() {
+        return Vec::new();
+    }
+    vec![(
+        "HORIZON_ACCOUNT_SESSIONS",
+        serde_json::Value::from(list).to_string(),
+    )]
 }
 
 /// Who plays the real Minecraft: Java Edition (a Java instance), past the owner gate itself
