@@ -20,6 +20,8 @@ struct Mock {
     down: bool,
     /// "Show my cosmetics", as the service keeps it.
     visible: bool,
+    /// The file every `?hash=` request answers, whatever its path says.
+    item: Option<Value>,
 }
 
 fn me(claim: &str, owned: Value, equipped: Value) -> Value {
@@ -81,6 +83,7 @@ fn route(m: &mut Mock, method: &str, path: &str, auth: &str, body: &str) -> (u16
             json!({"open": m.claim == "open", "state": m.claim, "preview": false,
                    "starts_at": 100, "ends_at": 200, "now": 150, "items": ["hat"]}),
         ),
+        ("GET", p) if p.contains("?hash=") && m.item.is_some() => (200, m.item.clone().unwrap()),
         _ => (404, json!({"error": "not_found"})),
     }
 }
@@ -293,19 +296,8 @@ fn changes_made_offline_wait_on_disk_and_go_out_in_order() {
 #[test]
 fn an_item_file_is_kept_by_its_hash() {
     let dir = scratch("items");
-    let entry = Entry {
-        id: "hat".into(),
-        hash: "ab12".into(),
-        slot: "head".into(),
-        names: BTreeMap::new(),
-        theme: None,
-        lines: BTreeMap::new(),
-    };
-    let file = format!(
-        r#"{{"format": 1, "id": "hat", "slot": "head", "bone": "head", "texture": {{"png": "{}"}}, "parts": []}}"#,
-        png_8x8()
-    );
-    std::fs::write(dir.join("hat-ab12.json"), &file).unwrap();
+    let entry = entry("hat", "ab12");
+    std::fs::write(dir.join("hat-ab12.json"), item_file("hat")).unwrap();
     // Offline, the kept file is read; another hash would need the service.
     let offline = Service::at("http://127.0.0.1:9");
     assert_eq!(offline.item_cached(&entry, &dir).unwrap().id, "hat");
@@ -317,6 +309,78 @@ fn an_item_file_is_kept_by_its_hash() {
         offline.item_cached(&newer, &dir).unwrap_err(),
         Error::Offline
     );
+}
+
+#[test]
+fn a_real_catalogue_entry_is_fetched_kept_and_read_back() {
+    let dir = scratch("real");
+    let (_, service) = serve(|m| m.item = serde_json::from_str(&item_file("founder_visor")).ok());
+    // An id and hash as the live catalogue has them.
+    let entry = entry("founder_visor", "66e9e963f1958c22");
+    let item = service.item_cached(&entry, &dir).unwrap();
+    assert_eq!(item.id, "founder_visor");
+    assert!(dir.join("founder_visor-66e9e963f1958c22.json").is_file());
+    let offline = Service::at("http://127.0.0.1:9");
+    let item = offline.item_cached(&entry, &dir).unwrap();
+    assert_eq!(item.id, "founder_visor");
+}
+
+#[test]
+fn an_entry_that_could_leave_the_cache_is_refused() {
+    let root = scratch("traversal");
+    let cache = root.join("items");
+    // A file a traversal could read, and a service that would send one to write.
+    std::fs::write(root.join("kept-ab12.json"), item_file("hat")).unwrap();
+    let (m, service) = serve(|m| m.item = serde_json::from_str(&item_file("hat")).ok());
+    let absolute = root.join("absolute").display().to_string();
+    for (id, hash) in [
+        ("../kept", "ab12"),
+        ("../escape", "ab12"),
+        ("..\\escape", "ab12"),
+        ("hat", "x/../../escape"),
+        ("hat", "x\\..\\..\\escape"),
+        (absolute.as_str(), "ab12"),
+        ("..", "ab12"),
+        ("hat", ".."),
+        ("hat:x", "ab12"),
+        ("hat", "c:"),
+        ("hat\0", "ab12"),
+        ("hat", "ab12\0"),
+        ("", "ab12"),
+        ("hat", ""),
+    ] {
+        assert_eq!(
+            service.item_cached(&entry(id, hash), &cache).unwrap_err(),
+            Error::Service(200),
+            "{id:?} {hash:?}"
+        );
+    }
+    assert!(m.lock().unwrap().log.is_empty());
+    let beside_the_cache: Vec<String> = std::fs::read_dir(&root)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .filter(|name| name != "items")
+        .collect();
+    assert_eq!(beside_the_cache, ["kept-ab12.json"]);
+}
+
+fn entry(id: &str, hash: &str) -> Entry {
+    Entry {
+        id: id.into(),
+        hash: hash.into(),
+        slot: "head".into(),
+        names: BTreeMap::new(),
+        theme: None,
+        lines: BTreeMap::new(),
+    }
+}
+
+/// A valid item file, as the service sends it.
+fn item_file(id: &str) -> String {
+    format!(
+        r#"{{"format": 1, "id": "{id}", "slot": "head", "bone": "head", "texture": {{"png": "{}"}}, "parts": []}}"#,
+        png_8x8()
+    )
 }
 
 /// An 8×8 transparent PNG, base64.
