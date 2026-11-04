@@ -206,13 +206,16 @@ impl<'w, 'r> BlockSpace<'w, 'r> {
         ) else {
             return false;
         };
-        let full = shape
-            .face_shape(Direction::ALL[open as usize])
-            .is_ok_and(|face| {
-                VoxelShape::block()
-                    .join_is_not_empty(&face, ShapeOp::XOR)
-                    .is_ok_and(|differs| !differs)
-            });
+        // Block.isFaceFull. A full cube, what shulkers cling to almost always
+        // (canStayAt runs every tick), is full on every face: skip the shape ops.
+        let full = shape.is_block()
+            || shape
+                .face_shape(Direction::ALL[open as usize])
+                .is_ok_and(|face| {
+                    VoxelShape::block()
+                        .join_is_not_empty(&face, ShapeOp::XOR)
+                        .is_ok_and(|differs| !differs)
+                });
         full && self.no_collision(m, attachment_box(p, face))
     }
 }
