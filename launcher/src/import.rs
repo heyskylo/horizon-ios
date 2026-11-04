@@ -100,7 +100,7 @@ pub fn what(file: &Path) -> Result<Dropped, String> {
         _ if is_build(file) => return Ok(Dropped::Build),
         _ => {
             return Err(format!(
-                "{name} can't be imported: drop a .mrpack, a .zip, a .hshader or a Horizon                  game build."
+                "{name} can't be imported: drop a .mrpack, a .zip, a .hshader or a Horizon game build."
             ))
         }
     }
@@ -135,7 +135,7 @@ pub fn what(file: &Path) -> Result<Dropped, String> {
         return Ok(Dropped::Build);
     }
     Err(format!(
-        "{name} is neither a pack, a shared instance nor a game build: nothing in it that          Horizon reads."
+        "{name} is neither a pack, a shared instance nor a game build: nothing in it that Horizon reads."
     ))
 }
 
