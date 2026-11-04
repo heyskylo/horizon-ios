@@ -692,6 +692,52 @@ def selector_missing_predicates():
     return ops + setup('/kill @e[tag=h124]', '/tick unfreeze')
 
 
+
+def item_command_damage():
+    """DamageCommand -> live ItemEntity health, resistance and destruction."""
+    ops = setup('/forceload add 0 0 31 31', '/scoreboard objectives add item_hurt dummy')
+    ops += [{'op': 'settle'}]
+    ops += [cmd(f'/execute if loaded {x} 100 {z}', expect_result=1)
+            for x, z in ((0, 0), (16, 0), (0, 16), (16, 16))]
+    ops += setup('/tick freeze', '/fill 12 99 0 15 103 4 air')
+    witness = '@e[tag=item_hurt_witness,limit=1]'
+    ops += setup('/summon item 14.5 100 3.5 {Tags:["item_hurt_actor","item_hurt_witness"],Item:{id:"minecraft:stone",count:1},CustomName:"witness",PickupDelay:32767,NoGravity:1b,Motion:[0d,0d,0d]}')
+    ops += [cmd(f'/execute if entity {witness}', expect_result=1)]
+    cases = (
+        ('ordinary', 'stone', '', ((3, '', 2, True), (1, 'in_fire', 1, True), (1, '', None, True))),
+        ('zero', 'stone', '', ((0, '', 5, True),)),
+        ('fractional', 'stone', '', ((0.25, '', 4, True),)),
+        ('netherite', 'netherite_ingot', '', ((3, 'lava', 5, False), (1, '', 4, True))),
+        ('star', 'nether_star', '', ((3, 'explosion', 5, False), (1, '', 4, True))),
+        ('component', 'stone', ',components:{"minecraft:damage_resistant":{types:"#minecraft:is_fire"}}',
+         ((3, 'in_fire', 5, False), (1, '', 4, True))),
+    )
+    for label, item, components, hits in cases:
+        target = f'@e[tag=item_hurt_{label},limit=1]'
+        ops += setup(f'/summon item 14.5 100 0.5 {{Tags:["item_hurt_actor","item_hurt_{label}"],Item:{{id:"minecraft:{item}",count:1{components}}},CustomName:"hit_{label}",PickupDelay:32767,NoGravity:1b,Motion:[0d,0d,0d]}}')
+        ops += [cmd(f'/execute if entity {target}', expect_result=1),
+                cmd(f'/data get entity {target} Health', expect_result=5)]
+        for amount, source, health, accepted in hits:
+            damage_type = f' minecraft:{source}' if source else ''
+            ops += setup('/scoreboard players set #result item_hurt -1', '/scoreboard players set #success item_hurt -1')
+            ops += [cmd(f'/execute store result score #result item_hurt store success score #success item_hurt run damage {target} {amount}{damage_type}'),
+                    cmd('/scoreboard players get #result item_hurt', expect_result=int(accepted)),
+                    cmd('/scoreboard players get #success item_hurt', expect_result=int(accepted))]
+            if health is None:
+                ops += [cmd(f'/execute unless entity {target}', expect_result=1),
+                        cmd(f'/data get entity {witness} Health', expect_result=5)]
+            else:
+                ops += [cmd(f'/execute if entity {target}', expect_result=1),
+                        cmd(f'/data get entity {target} Health', expect_result=health)]
+    mob = '@e[tag=item_hurt_mob,limit=1]'
+    ops += setup('/summon pig 12.5 100 0.5 {Tags:["item_hurt_actor","item_hurt_mob"],NoAI:1b,NoGravity:1b,CustomName:"mob_control"}')
+    ops += [cmd(f'/execute if entity {mob}', expect_result=1),
+            cmd(f'/data get entity {mob} Health', expect_result=10),
+            cmd(f'/damage {mob} 3', expect_result=1),
+            cmd(f'/data get entity {mob} Health', expect_result=7)]
+    return ops + setup('/kill @e[tag=item_hurt_actor]', '/scoreboard objectives remove item_hurt', '/tick unfreeze')
+
+
 def execute():
     return [
         *setup('/scoreboard objectives add exec dummy', '/scoreboard players set @s exec 4', '/scoreboard players set fake exec 9'),
@@ -816,6 +862,39 @@ def execute():
         cmd('/data get entity @s Pos'),
         *setup('/gamemode creative'),
     ]
+
+
+
+def projectile_origin():
+    """TraceableEntity.getOwner resolves any loaded entity, not only a mob."""
+    ops = setup('/forceload add 0 0 31 31', '/scoreboard objectives add origin_probe dummy')
+    ops += [{'op': 'settle'}]
+    ops += [cmd(f'/execute if loaded {x} 100 {z}', expect_result=1)
+            for x, z in ((0, 0), (16, 0), (0, 16), (16, 16))]
+    ops += setup('/tick freeze', '/fill 2 99 2 10 103 10 air',
+                 '/summon armor_stand 3.5 100 4.5 {Tags:["origin_actor","origin_stand"],CustomName:"owner_stand",UUID:[I;208,1,2,3],NoGravity:1b}',
+                 '/summon pig 4 100 4 {Tags:["origin_actor","origin_pig"],CustomName:"owner_pig",UUID:[I;208,11,12,13],NoAI:1b,NoGravity:1b}')
+    for tag, words in (('origin_stand', '208,1,2,3'), ('origin_pig', '208,11,12,13')):
+        target = f'@e[tag={tag},limit=1]'
+        ops += [cmd(f'/execute if entity @e[tag={tag},nbt={{UUID:[I;{words}]}}]', expect_result=1),
+                cmd(f'/data get entity {target} UUID'),
+                cmd(f'/data get entity {target} CustomName')]
+    for name, owner, count in (('stand', '208,1,2,3', 1), ('pig', '208,11,12,13', 1),
+                               ('unknown', '208,15,16,17', 0), ('absent', None, 0)):
+        tag = f'origin_arrow_{name}'
+        target = f'@e[tag={tag},limit=1]'
+        owner_nbt = f',Owner:[I;{owner}]' if owner else ''
+        ops += setup(f'/summon arrow 8 100 8 {{Tags:["origin_actor","{tag}"],NoGravity:1b{owner_nbt}}}')
+        ops += [cmd(f'/execute if entity {target}', expect_result=1)]
+        # Saved Owner reads are a separate command-getter regression; the
+        # input UUID is retained by arrow_from_nbt independently of Who.
+        if owner is None:
+            ops += [cmd(f'/execute unless data entity {target} Owner', expect_result=1)]
+        ops += [cmd(f'/execute as {target} on origin run data get entity @s CustomName')]
+        ops += setup('/scoreboard players set #origin origin_probe 0')
+        ops += [cmd(f'/execute as {target} on origin run scoreboard players add #origin origin_probe 1'),
+                cmd('/scoreboard players get #origin origin_probe', expect_result=count)]
+    return ops + setup('/kill @e[tag=origin_actor]', '/scoreboard objectives remove origin_probe', '/tick unfreeze')
 
 
 def levels():
@@ -1089,6 +1168,60 @@ def summoned_fangs_levels():
         cmd(f'/execute in minecraft:overworld if entity @e[tag=fang_overworld,{box}]'),
         *setup('/kill @e[type=evoker_fangs]'),
     ]
+
+
+def entity_landing_sensors():
+    """Entity.checkFallDamage -> real Game dispatch -> a fresh sculk listener."""
+    ops = setup('/gamerule random_tick_speed 0', '/gamerule entity_drops false',
+                '/tp @s 6.5 200 7.5', '/forceload add 0 0 31 31',
+                '/scoreboard objectives add landing_probe dummy')
+    ops += [{'op': 'settle'}]
+    ops += [cmd(f'/execute if loaded {x} 200 {z}', expect_result=1)
+            for x, z in ((0, 0), (16, 0), (0, 16), (16, 16))]
+    ops += setup('/tick freeze')
+    for kind, landing_tick in (('item', 13), ('armor_stand', 10)):
+        for no_gravity in (0, 1):
+            tag = f'landing_{kind}_{no_gravity}'
+            target = f'@e[tag={tag},limit=1]'
+            ops += setup('/setblock 9 200 10 air strict', '/kill @e[tag=landing_actor]',
+                         '/tick step 25')
+            ops += [{'op': 'tick', 'n': 25}]
+            ops += setup('/fill 0 200 0 31 206 31 air',
+                         '/fill 0 199 0 31 199 31 stone',
+                         '/tp @s 6.5 200 7.5',
+                         '/setblock 9 200 10 sculk_sensor strict', '/tick step 2')
+            ops += [{'op': 'tick', 'n': 2}]
+            ops += [cmd('/execute if block 9 200 10 sculk_sensor[sculk_sensor_phase=inactive,power=0]', expect_result=1),
+                    cmd('/data get block 9 200 10 last_vibration_frequency', expect_result=0),
+                    cmd('/execute unless data block 9 200 10 listener.event', expect_result=1),
+                    cmd('/execute unless data block 9 200 10 listener.selector.event', expect_result=1),
+                    cmd('/execute if entity @s[nbt={Pos:[6.5d,200d,7.5d]}]', expect_result=1)]
+            item = ',Item:{id:"minecraft:stone",count:1},PickupDelay:32767' if kind == 'item' else ''
+            ops += setup(f'/summon {kind} 6.5 203 10.5 '
+                         f'{{Tags:["landing_actor","{tag}"],NoGravity:{no_gravity}b{item}}}')
+            ops += [cmd(f'/execute if entity {target}', expect_result=1),
+                    cmd(f'/data get entity {target} Pos'),
+                    cmd(f'/execute unless entity {target[:-1]},nbt={{OnGround:1b}}]', expect_result=1)]
+            for tick in range(1, 21):
+                ground = not no_gravity and tick >= landing_tick
+                active = not no_gravity and tick >= landing_tick + 3
+                phase, power = ('active', 10) if active else ('inactive', 0)
+                sign = 'if' if ground else 'unless'
+                ops += setup('/tick step 1')
+                ops += [{'op': 'tick', 'n': 1}]
+                # Flight height at milliblock precision: landing timing and
+                # final coordinates are exact controls; float-drag parity is separate.
+                ops += setup(f'/execute store result score landing_y landing_probe run data get entity {target} Pos[1] 1000')
+                ops += [cmd(f'/execute if entity {target}', expect_result=1),
+                        cmd('/scoreboard players get landing_y landing_probe'),
+                        cmd(f'/execute {sign} entity {target[:-1]},nbt={{OnGround:1b}}]', expect_result=1),
+                        cmd(f'/execute if block 9 200 10 sculk_sensor[sculk_sensor_phase={phase},power={power}]', expect_result=1)]
+            y = 203 if no_gravity else 200
+            ops += [cmd(f'/execute if entity {target[:-1]},nbt={{Pos:[6.5d,{y}d,10.5d]}}]', expect_result=1),
+                    cmd('/data get block 9 200 10 last_vibration_frequency', expect_result=0 if no_gravity else 2)]
+    return ops + setup('/setblock 9 200 10 air strict', '/kill @e[tag=landing_actor]',
+                       '/scoreboard objectives remove landing_probe',
+                       '/tick unfreeze', '/gamerule random_tick_speed 3')
 
 
 def bird_flap_sensors():
@@ -2429,6 +2562,456 @@ def creeper_custom_fuse():
     return ops + setup('/gamerule mob_griefing true')
 
 
+def marker_data_mutation():
+    """Marker data write-back preserves identity and modeled-entity controls (#8929)."""
+    marker = '00000000-0000-0000-0000-000000000001'
+    pig = '00000000-0000-0000-0000-000000000002'
+    objective = 'marker_result'
+    ops = setup('/forceload add 0 0 15 15', f'/scoreboard objectives add {objective} dummy')
+    ops += [cmd('/execute if loaded 0 200 0', expect_result=1),
+            cmd('/summon marker 4.5 200 4.5 {UUID:[I;0,0,0,1]}', expect_result=1),
+            cmd(f'/execute if entity {marker}', expect_result=1),
+            cmd(f'/data get entity {marker} Pos', expect_result=3),
+            cmd(f'/data get entity {marker} UUID', expect_result=4)]
+
+    def stored(command, result, success=True):
+        return setup(f'/scoreboard players set result {objective} -99',
+                     f'/scoreboard players set success {objective} -99') + [
+            cmd(f'/execute store result score result {objective} '
+                f'store success score success {objective} run {command}'),
+            cmd(f'/scoreboard players get result {objective}', expect_result=result),
+            cmd(f'/scoreboard players get success {objective}', expect_result=int(success))]
+
+    def names(target):
+        return (stored(f'data modify entity {target} CustomName set value "original"', 1)
+                + stored(f'data modify entity {target} CustomName set value "hello"', 1)
+                + stored(f'data get entity {target} CustomName', 5)
+                + stored(f'data modify entity {target} CustomName set value "hello"', 0, False)
+                + stored(f'data remove entity {target} CustomName', 1)
+                + stored(f'data get entity {target} CustomName', 0, False)
+                + [cmd(f'/execute if entity {target}', expect_result=1)])
+
+    ops += names(marker)
+    ops += stored(f'data modify entity {marker} Pos set value [6.25d,202d,7.75d]', 1)
+    ops += stored(f'data get entity {marker} Pos', 3)
+    ops += [cmd('/execute positioned 6.25 202 7.75 if entity '
+                '@e[type=marker,nbt={UUID:[I;0,0,0,1]},distance=..0.01]', expect_result=1)]
+    ops += stored(f'data modify entity {marker} Rotation set value [45f,-30f]', 1)
+    ops += stored(f'data get entity {marker} Rotation', 2)
+    ops += [cmd('/execute if entity @e[type=marker,nbt={UUID:[I;0,0,0,1]},'
+                'y_rotation=45,x_rotation=-30]', expect_result=1)]
+    ops += stored(f'data merge entity {marker} {{data:{{value:7,label:"plain"}}}}', 1)
+    ops += stored(f'data get entity {marker} data', 2)
+    ops += stored(f'data modify entity {marker} data.value set value 9', 1)
+    ops += stored(f'data get entity {marker} data.value', 9)
+    ops += stored(f'data remove entity {marker} data.label', 1)
+    ops += stored(f'data get entity {marker} data', 1)
+    # /tag already has a working raw-storage path; /data must join it.
+    ops += [cmd(f'/tag {marker} add control', expect_result=1)]
+    ops += stored(f'data modify entity {marker} Tags append value "mutated"', 1)
+    ops += [cmd('/execute if entity @e[type=marker,tag=mutated]', expect_result=1),
+            cmd(f'/tag {marker} list', expect_result=2)]
+    ops += stored(f'data modify entity {marker} UUID set value [I;0,0,0,99]', 1)
+    ops += stored(f'data get entity {marker} UUID', 4)
+    ops += [cmd(f'/execute if entity {marker}', expect_result=1)]
+    ops += stored('execute if entity @e[nbt={UUID:[I;0,0,0,99]}]', 0, False)
+    ops += stored(f'data modify entity {marker} id set value "minecraft:pig"', 1)
+    ops += [cmd('/execute if entity @e[type=marker,nbt={UUID:[I;0,0,0,1]}]', expect_result=1)]
+    ops += [cmd('/summon pig 10.5 200 10.5 {UUID:[I;0,0,0,2],NoAI:1b,NoGravity:1b}', expect_result=1)]
+    ops += names(pig)
+    ops += stored(f'data modify entity {pig} Pos set value [10.25d,201d,11.75d]', 1)
+    ops += stored(f'data get entity {pig} Pos', 3)
+    ops += [cmd('/execute if entity @e[type=pig]', expect_result=1),
+            cmd(f'/kill {marker}', expect_result=1), cmd(f'/kill {pig}', expect_result=1)]
+    return ops + setup(f'/scoreboard objectives remove {objective}', '/forceload remove 0 0')
+def recipe_special_arguments():
+    """Recipe commands reject specials before book mutation; displays still count (#8883)."""
+    objective = 'recipe_result'
+    ops = setup(f'/scoreboard objectives add {objective} dummy', '/recipe take @s *')
+    ops.append(cmd('/execute if entity @s[type=player]', expect_result=1))
+
+    def recipe(verb, recipe_id, expected):
+        return setup(f'/scoreboard players set result {objective} -99',
+                     f'/scoreboard players set success {objective} -99') + [
+            cmd(f'/execute store result score result {objective} '
+                f'store success score success {objective} run recipe {verb} @s {recipe_id}'),
+            cmd(f'/scoreboard players get result {objective}', expect_result=expected),
+            cmd(f'/scoreboard players get success {objective}', expect_result=int(expected > 0))]
+
+    for recipe_id, displays in [('minecraft:crafting_table', 1),
+                                ('minecraft:leather_helmet_dyed', 1),
+                                ('minecraft:tipped_arrow', 1), ('minecraft:map_cloning', 8)]:
+        for verb, expected in [('give', displays), ('give', 0), ('take', displays), ('take', 0)]:
+            ops += recipe(verb, recipe_id, expected)
+    special = ['black_banner_duplicate', 'book_cloning', 'decorated_pot',
+               'firework_rocket', 'repair_item', 'shield_decoration']
+    invalid = special + ['h206_no_such_recipe', 'lingering_potion_awkward_blaze_powder']
+    for recipe_id in invalid:
+        for verb in ('give', 'take'):
+            ops += recipe(verb, 'minecraft:' + recipe_id, 0)
+    ops += recipe('give', '*', 1746)
+    ops += recipe('give', '*', 0)
+    # Explicit argument rejection is independent of whether the book is empty or full.
+    for recipe_id in invalid:
+        for verb in ('give', 'take'):
+            ops += recipe(verb, 'minecraft:' + recipe_id, 0)
+    ops += recipe('take', '*', 1746)
+    ops += recipe('take', '*', 0)
+    return ops + setup(f'/scoreboard objectives remove {objective}')
+def mob_effect_update_result():
+    """EffectCommands counts active/visibility updates, without advancing effect clocks (#8862)."""
+    objective = 'effect_changed'
+    ops = setup(f'/scoreboard objectives add {objective} dummy')
+    pairs = [('equal_short', '10', 1, '5', 1, 'true', 0),
+             ('equal_long', '5', 1, '10', 1, 'true', 1),
+             ('weaker_short', '10', 2, '5', 0, 'true', 0),
+             ('weaker_long', '5', 2, '10', 0, 'true', 0),
+             ('stronger_short', '10', 0, '2', 2, 'true', 1),
+             ('stronger_long', '2', 0, '10', 2, 'true', 1),
+             ('infinite_finite', 'infinite', 1, '10', 1, 'true', 0),
+             ('finite_infinite', '10', 1, 'infinite', 1, 'true', 1),
+             ('equal_visible', '10', 1, '5', 1, 'false', 1),
+             ('weaker_visible', '10', 2, '5', 0, 'false', 1)]
+
+    def apply(target, seconds, amplifier, hide, expected):
+        return setup(f'/scoreboard players set result {objective} -99',
+                     f'/scoreboard players set success {objective} -99') + [
+            cmd(f'/execute store result score result {objective} '
+                f'store success score success {objective} run effect give '
+                f'{target} speed {seconds} {amplifier} {hide}'),
+            cmd(f'/scoreboard players get result {objective}', expect_result=expected),
+            cmd(f'/scoreboard players get success {objective}', expect_result=int(expected > 0))]
+
+    def fields(target):
+        return [cmd(f'/data get entity {target} '
+                    f'active_effects[{{id:"minecraft:speed"}}].{field}')
+                for field in ('duration', 'amplifier', 'show_particles', 'show_icon')]
+
+    for name, first, amp, second, second_amp, hide, changed in pairs:
+        tag = f'effect_update_{name}'
+        target = f'@e[tag={tag},limit=1]'
+        ops += setup('/summon pig 4.5 220 4.5 '
+                     f'{{Tags:["{tag}"],NoAI:1b,NoGravity:1b,PersistenceRequired:1b}}',
+                     f'/effect clear {target}')
+        ops += [cmd(f'/execute if entity {target}', expect_result=1),
+                cmd(f'/execute if entity @e[tag={tag},nbt={{NoAI:1b}}]', expect_result=1),
+                cmd(f'/execute unless entity @e[tag={tag},nbt={{active_effects:[{{id:"minecraft:speed"}}]}}]',
+                    expect_result=1)]
+        ops += apply(target, first, amp, 'true', 1)
+        ops += apply(target, second, second_amp, hide, changed)
+        ops += fields(target) + setup(f'/kill {target}')
+
+    group = '@e[tag=effect_update_mixed]'
+    for name in ('long', 'short', 'new'):
+        ops += setup('/summon pig 4.5 220 4.5 '
+                     f'{{Tags:["effect_update_mixed","effect_mix_{name}"],'
+                     'NoAI:1b,NoGravity:1b,PersistenceRequired:1b}')
+    ops += [cmd(f'/execute if entity {group}', expect_result=3),
+            cmd('/execute if entity @e[tag=effect_update_mixed,nbt={NoAI:1b}]', expect_result=3),
+            cmd('/execute unless entity @e[tag=effect_update_mixed,nbt={active_effects:[{id:"minecraft:speed"}]}]',
+                expect_result=1)]
+    ops += setup('/effect give @e[tag=effect_mix_long,limit=1] speed 10 1 true',
+                 '/effect give @e[tag=effect_mix_short,limit=1] speed 2 1 true')
+    ops += apply(group, '5', 1, 'true', 2)  # Two change among three selected mobs.
+    ops += apply(group, '5', 1, 'true', 0)  # All three are now unchanged.
+    for name in ('long', 'short', 'new'):
+        ops += fields(f'@e[tag=effect_mix_{name},limit=1]')
+    return ops + setup(f'/kill {group}', f'/scoreboard objectives remove {objective}')
+def axolotl_integer_memory_ttl():
+    """Loaded integer-memory TTL survives NoAI; behavior writes reset it (#8852)."""
+    keys = ('play_dead_ticks', 'temptation_cooldown_ticks')
+    ops = setup('/fill 0 217 0 15 217 15 stone', '/fill 0 218 0 15 225 15 water')
+
+    def summon(tag, key, value, ttl, no_ai, x=8.5, z=12.5):
+        lifetime = '' if ttl is None else f',ttl:{ttl}'
+        return setup(f'/summon axolotl {x} 220 {z} '
+                     f'{{Tags:["{tag}"],NoAI:{no_ai}b,NoGravity:1b,PersistenceRequired:1b,'
+                     f'Brain:{{memories:{{"minecraft:{key}":{{value:{value}{lifetime}}}}}}}}}')
+
+    def observe(tag, key, value, ttl):
+        target = f'@e[tag={tag},limit=1]'
+        path = f'Brain.memories."minecraft:{key}"'
+        if value is None:
+            memory = f'/execute unless data entity {target} {path}'
+        else:
+            # Typed predicates check the serialized tags without depending on SNBT styling.
+            entry = '{value:' + str(value)
+            if ttl is not None:
+                entry += ',ttl:' + str(ttl) + 'L'
+            entry += '}'
+            nbt = '{Brain:{memories:{"minecraft:' + key + '":' + entry + '}}}'
+            memory = f'/execute if entity @e[tag={tag},limit=1,nbt={nbt}]'
+            if ttl is None:
+                memory += f' unless data entity {target} {path}.ttl'
+        return [cmd(f'/execute if entity {target}', expect_result=1),
+                cmd(f'/execute if entity @e[tag={tag},limit=1,nbt={{NoAI:1b}}]'),
+                cmd(f'/execute as {target} at @s anchored eyes positioned ^ ^ ^ '
+                    'if block ~ ~ ~ minecraft:water', expect_result=1),
+                cmd(memory, expect_result=1)]
+
+    codecs = [(v, None, 7, None) for v in ('7', '7L', '7b', '7s', '7.5f', '7.5d')]
+    codecs += [('"invalid"', '5L', None, None)]
+    codecs += [('7', ttl, 7, 5) for ttl in ('5L', '5', '5b', '5s', '5.5d')]
+    codecs += [('7', '"invalid"', 7, None), ('7', '0L', 7, 0), ('7', '-1L', 7, -1)]
+    for key in keys:
+        for case, (value, ttl, expected_value, expected_ttl) in enumerate(codecs):
+            tag = f'axmem_codec_{key}_{case}'
+            ops += summon(tag, key, value, ttl, 1)
+            ops += observe(tag, key, expected_value, expected_ttl)
+            ops += setup(f'/kill @e[tag={tag}]')
+    # Clear dead numeric-control subjects before the shared tank's six actual ticks.
+    ops.append({'op': 'tick', 'n': 25})
+    cases = []
+    for no_ai in (0, 1):
+        for key in keys:
+            for name, ttl in [('absent', None), ('zero', '0L'), ('one', '1L'),
+                              ('five', '5L'), ('negative', '-1L'), ('max', '9223372036854775807L')]:
+                tag = f'axmem_{no_ai}_{key}_{name}'
+                i = len(cases)
+                ops += summon(tag, key, '100', ttl, no_ai, 2.5 + (i % 6) * 2, 2.5 + (i // 6) * 2)
+                cases.append((tag, key, no_ai, name))
+    elapsed = 0
+    for tick in (0, 1, 3, 6):
+        if tick != elapsed:
+            ops.append({'op': 'tick', 'n': tick - elapsed})
+        elapsed = tick
+        for tag, key, no_ai, name in cases:
+            value = None if not no_ai and tick > 0 and name in ('zero', 'negative') else (
+                100 if no_ai else 100 - tick)
+            ttl = {'zero': 0, 'one': 1, 'five': 5, 'negative': -1}.get(name)
+            if not no_ai and tick > 0:
+                ttl = None  # The behavior's ordinary setMemory resets expiry.
+            ops += observe(tag, key, value, ttl)
+    return ops + setup('/kill @e[type=axolotl]', '/fill 0 218 0 15 225 15 air')
+def parrot_saved_age():
+    """Parrot saved Age is absent even when supplied; pigs retain modeled Age (#8842)."""
+    ops = setup('/fill 3 219 3 6 219 6 stone')
+    flags = 'NoAI:1b,NoGravity:1b,PersistenceRequired:1b'
+    modes = [('plain', ''), ('absent', '{' + flags + '}'),
+             ('zero', '{' + flags + ',Age:0}'),
+             ('negative', '{' + flags + ',Age:-100}'),
+             ('positive', '{' + flags + ',Age:100}')]
+    for species in ('parrot', 'pig'):
+        for mode, nbt in modes:
+            tag = f'saved_age_{species}_{mode}'
+            target = f'@e[tag={tag},limit=1]'
+            ops += setup(f'/tag @e[type={species}] add h198_seen',
+                         f'/kill @e[type={species}]',
+                         f'/summon {species} 4.5 220 4.5 {nbt}'.rstrip(),
+                         f'/tag @e[type={species},tag=!h198_seen,limit=1] add {tag}',
+                         f'/tag {target} add h198_seen')
+            for tick in (0, 1):
+                if tick:
+                    ops.append({'op': 'tick', 'n': 1})
+                ops += [cmd(f'/execute if entity {target}', expect_result=1),
+                        cmd(f'/data get entity {target} Age')]
+            ops += setup(f'/kill {target}')
+    return ops
+def animal_noai_love():
+    """Animal.aiStep love clocks run with NoAI; parrot Age inputs are ignored (#8825)."""
+    ops = setup('/fill 3 219 3 6 219 6 stone')
+    cases = [('adult', 0, 40), ('negative_age', -100, 40),
+             ('positive_age', 100, 40), ('zero', 0, 0), ('negative', 0, -2)]
+    for species in ('pig', 'parrot'):
+        for no_ai in (0, 1):
+            for name, age, love in cases:
+                tag = f'love_{species}_{no_ai}_{name}'
+                target = f'@e[tag={tag},limit=1]'
+                variant = ',Variant:3' if species == 'parrot' else ''
+                ops += setup(f'/summon {species} 4.5 220 4.5 '
+                             f'{{Tags:["{tag}"],NoAI:{no_ai}b,NoGravity:1b,'
+                             f'PersistenceRequired:1b,Age:{age},InLove:{love}{variant}}}')
+                elapsed = 0
+                for tick in (0, 1, 3):
+                    if tick != elapsed:
+                        ops.append({'op': 'tick', 'n': tick - elapsed})
+                    elapsed = tick
+                    ops.append(cmd(f'/execute if entity {target}', expect_result=1))
+                    # Raw parrot Age omission is a separate save-field discrepancy.
+                    fields = ('Age', 'InLove') if species == 'pig' else ('InLove',)
+                    for field in fields:
+                        ops.append(cmd(f'/data get entity {target} {field}'))
+                    if species == 'parrot':
+                        ops.append(cmd(f'/data get entity {target} Variant'))
+                ops += setup(f'/kill {target}')
+    for name, variant in [('absent', ''), ('high', ',Variant:9'), ('negative', ',Variant:-2')]:
+        tag = f'love_parrot_variant_{name}'
+        target = f'@e[tag={tag},limit=1]'
+        ops += setup('/summon parrot 4.5 220 4.5 '
+                     f'{{Tags:["{tag}"],NoAI:1b,NoGravity:1b,PersistenceRequired:1b{variant}}}')
+        for tick in (0, 1):
+            if tick:
+                ops.append({'op': 'tick', 'n': 1})
+            ops += [cmd(f'/execute if entity {target}', expect_result=1),
+                    cmd(f'/data get entity {target} Variant')]
+        ops += setup(f'/kill {target}')
+    return ops
+def turtle_summon_home():
+    """Turtle load defaults precede summon placement; plain summons finalize (#8804)."""
+    ops = setup('/forceload add -32 -32 31 31',
+                '/fill 9 199 9 11 199 11 stone',
+                '/fill -12 200 -14 -9 200 -11 stone')
+    flags = 'NoAI:1b,NoGravity:1b,PersistenceRequired:1b'
+    modes = [('plain', ''), ('empty', '{}'), ('controlled', '{' + flags + '}'),
+             ('home', '{' + flags + ',home_pos:[I;4,5,6]}'),
+             ('invalid', '{' + flags + ',home_pos:[I;4,5]}'),
+             ('pos', '{' + flags + ',Pos:[-20.5d,210d,-20.5d]}')]
+    for site, pos in [('positive', '10.5 200 10.5'), ('negative', '-10.25 201 -12.75')]:
+        for mode, nbt in modes:
+            tag = f'turtle_home_{site}_{mode}'
+            target = f'@e[tag={tag},limit=1]'
+            ops += setup('/kill @e[type=turtle]',
+                         f'/summon turtle {pos} {nbt}'.rstrip(),
+                         f'/tag @e[type=turtle,tag=!h187_seen,limit=1] add {tag}',
+                         f'/tag {target} add h187_seen')
+            for tick in (0, 1):
+                if tick:
+                    ops.append({'op': 'tick', 'n': 1})
+                ops.append(cmd(f'/execute if entity {target}', expect_result=1))
+                if tick and mode in ('plain', 'empty'):
+                    # Check a finite position without pinning motion.
+                    ops.append(cmd(f'/execute as {target} at @s if entity @s[distance=..0.0001]',
+                                   expect_result=1))
+                else:
+                    ops.append(cmd(f'/data get entity {target} Pos'))
+                ops.append(cmd(f'/data get entity {target} home_pos'))
+                ops.append(cmd(f'/data get entity {target} has_egg'))
+            if mode == 'controlled':
+                ops += [cmd(f'/data remove entity {target} home_pos'),
+                        cmd(f'/data get entity {target} home_pos'),
+                        cmd(f'/data get entity {target} Pos')]
+    return ops + setup('/kill @e[type=turtle]')
+def command_minecart_loaded_success():
+    """Loaded nonempty commands trigger the synced-data count reset (#8772)."""
+    ops = setup('/fill 9 219 9 11 219 11 stone')
+    for name, command in [('absent', ''), ('empty', ',Command:""'),
+                          ('nonempty', ',Command:"say hi"')]:
+        for count in (2, -3, 0):
+            tag = f'cart_load_{name}_{str(count).replace("-", "n")}'
+            target = f'@e[tag={tag},limit=1]'
+            ops += setup('/summon command_block_minecart 10.5 220 10.5 '
+                         f'{{Tags:["{tag}"],NoGravity:1b,TrackOutput:0b,'
+                         f'SuccessCount:{count}{command}}}')
+            for tick in (0, 1):
+                if tick:
+                    ops.append({'op': 'tick', 'n': 1})
+                ops.append(cmd(f'/execute if entity {target}'))
+                for field in ('Command', 'SuccessCount', 'TrackOutput', 'UpdateLastExecution'):
+                    ops.append(cmd(f'/data get entity {target} {field}'))
+            ops += setup(f'/kill {target}')
+    return ops
+def ravager_noai_counters():
+    ops = setup('/difficulty normal', '/gamerule spawn_mobs false',
+                '/gamerule mob_griefing false', '/forceload add 0 0 31 31',
+                '/fill 0 199 0 15 199 15 stone', '/fill 0 200 0 15 206 15 air')
+    case = 0
+    for no_ai in (0, 1):
+        for attack, stun, roar in ((20, 30, 5), (0, 0, 0), (-2, -3, -4), (2, 2, 0)):
+            case += 1
+            tag = f'h179_{case}'
+            target = f'@e[type=minecraft:ravager,tag={tag},limit=1]'
+            ops += setup('/summon ravager 10.5 200 10.5 '
+                         f'{{Tags:["{tag}"],NoAI:{no_ai}b,NoGravity:1b,Silent:1b,'
+                         f'PersistenceRequired:1b,AttackTick:{attack},StunTick:{stun},RoarTick:{roar}}}')
+            elapsed = 0
+            for tick in (0, 1, 2, 3, 10, 12, 22):
+                if tick > elapsed:
+                    ops.append({'op': 'tick', 'n': tick - elapsed})
+                ops.append(cmd(f'/execute if entity {target}'))
+                for field in ('AttackTick', 'StunTick', 'RoarTick'):
+                    ops.append(cmd(f'/data get entity {target} {field}'))
+                elapsed = tick
+            ops += setup(f'/kill {target}')
+    return ops + setup('/gamerule mob_griefing true', '/forceload remove 0 0 31 31')
+
+
+def axolotl_hunting_memory():
+    """Boolean memory value/presence and finite/permanent TTL (#8942), using typed predicates."""
+    key = 'minecraft:has_hunting_cooldown'
+    path = f'Brain.memories."{key}"'
+    ops = setup('/forceload add 0 0 15 15', '/fill 0 199 0 15 206 15 glass hollow',
+                '/fill 0 199 0 15 199 15 stone', '/fill 1 200 1 14 205 14 water')
+    ops += [{'op': 'settle'}, cmd('/execute if loaded 0 201 0', expect_result=1)]
+    serial = 0
+
+    def summon(tag, value, ttl, no_ai, x=14.5, z=14.5):
+        nonlocal serial
+        serial += 1
+        fields = [] if value is None else ['value:' + value]
+        if ttl is not None:
+            fields.append('ttl:' + ttl)
+        entry = '{' + ','.join(fields) + '}'
+        nbt = ('{NoGravity:1b,PersistenceRequired:1b,Health:14f,NoAI:' + str(no_ai) + 'b,'
+               + f'UUID:[I;0,0,218,{serial}],Tags:["{tag}"],'
+               + 'Brain:{memories:{"' + key + '":' + entry + '}}}')
+        return [cmd(f'/summon axolotl {x} 201 {z} {nbt}', expect_result=1)], serial
+
+    def probe(tag, uuid, no_ai, value, ttl):
+        target = f'@e[tag={tag},limit=1]'
+        # A missing entry is valid only while its subject exists; false is still a present value.
+        exists = f'/execute if entity @e[tag={tag},nbt={{UUID:[I;0,0,218,{uuid}]}}]'
+        ai = (f'/execute if entity @e[tag={tag},nbt={{NoAI:1b}}]' if no_ai else
+              f'/execute as {target} unless data entity @s NoAI')
+        if value is None:
+            memory = f'/execute as {target} unless data entity @s {path}'
+        else:
+            entry = '{value:' + str(int(value)) + 'b'
+            if ttl is not None:
+                entry += ',ttl:' + str(ttl) + 'L'
+            entry += '}'
+            nbt = '{Brain:{memories:{"' + key + '":' + entry + '}}}'
+            memory = f'/execute if entity @e[tag={tag},nbt={nbt}]'
+            if ttl is None:
+                memory += f' unless data entity {target} {path}.ttl'
+        return [cmd(exists, expect_result=1), cmd(ai, expect_result=1),
+                cmd(f'/execute if entity @e[tag={tag},nbt={{Health:14f}}]', expect_result=1),
+                cmd(f'/execute as {target} at @s anchored eyes positioned ^ ^ ^ '
+                    'if block ~ ~ ~ minecraft:water', expect_result=1),
+                cmd(memory, expect_result=1)]
+
+    # NbtOps boolean numbers use doubleValue()!=0, including fractions and integers over a byte.
+    codecs = [(v, '5L', b, 5) for v, b in [
+        ('2b', True), ('-1b', True), ('0s', False), ('1s', True), ('0', False),
+        ('256', True), ('257', True), ('0L', False), ('1L', True), ('0f', False),
+        ('0.5f', True), ('-0.5f', True), ('0d', False), ('0.5d', True),
+        ('"true"', None), ('{}', None), (None, None)]]
+    codecs += [('0b', t, False, expected) for t, expected in [
+        ('3', 3), ('3b', 3), ('3s', 3), ('3.5d', 3), ('"invalid"', None)]]
+    for i, (value, ttl, expected_value, expected_ttl) in enumerate(codecs):
+        tag = f'axhunt_codec_{i}'
+        added, uuid = summon(tag, value, ttl, 1)
+        ops += added + probe(tag, uuid, 1, expected_value, expected_ttl)
+    ops += setup('/kill @e[type=axolotl]')
+    ops += [{'op': 'tick', 'n': 25}]
+    subjects = []
+    for no_ai in (0, 1):
+        for value in (False, True):
+            for ttl in (None, 3, 0, -1, 9223372036854775807):
+                i = len(subjects)
+                tag = f'axhunt_life_{i}'
+                added, uuid = summon(tag, str(int(value)) + 'b',
+                                     None if ttl is None else str(ttl) + 'L', no_ai,
+                                     1.5 + (i % 5) * 3, 1.5 + (i // 5) * 3)
+                ops += added
+                subjects.append((tag, uuid, no_ai, value, ttl))
+    for elapsed in (0, 1, 3):
+        if elapsed:
+            ops += [{'op': 'tick', 'n': 1 if elapsed == 1 else 2}]
+        for tag, uuid, no_ai, value, ttl in subjects:
+            expected_value = value
+            if ttl in (None, 9223372036854775807):
+                expected_ttl = None
+            elif no_ai or elapsed == 0:
+                expected_ttl = ttl
+            elif ttl <= 0:
+                expected_value, expected_ttl = None, None
+            else:
+                expected_ttl = ttl - elapsed
+            ops += probe(tag, uuid, no_ai, expected_value, expected_ttl)
+    return ops + setup('/kill @e[type=axolotl]', '/fill 0 199 0 15 206 15 air',
+                       '/forceload remove 0 0')
+
+
 def groups():
     return [
         ('setup', group_setup()),
@@ -2441,6 +3024,15 @@ def groups():
         ('setblock destroy air', setblock_destroy_air()),
         ('forceload query order', forceload_query_order()),
         ('entities', entities()),
+        ('axolotl hunting memory', axolotl_hunting_memory()),
+        ('marker data mutation', marker_data_mutation()),
+        ('mob effect update result', mob_effect_update_result()),
+        ('axolotl integer memory TTL', axolotl_integer_memory_ttl()),
+        ('parrot saved Age', parrot_saved_age()),
+        ('animal NoAI love', animal_noai_love()),
+        ('turtle summon home', turtle_summon_home()),
+        ('command minecart loaded success', command_minecart_loaded_success()),
+        ('ravager NoAI counters', ravager_noai_counters()),
         ('aquatic FromBucket', aquatic_from_bucket()),
         ('villager command names', villager_command_names()),
         ('item lifetime counters', item_lifetime_counters()),
@@ -2466,7 +3058,9 @@ def groups():
         ('camel riders', camel_riders()),
         ('scores, teams and bossbars', scores()),
         ('bossbar list order', bossbar_list_order()),
+        ('item command damage', item_command_damage()),
         ('execute', execute()),
+        ('projectile origin', projectile_origin()),
         ('selector missing predicates', selector_missing_predicates()),
         ('levels', levels()),
         ('end portal entities', end_portal_entities()),
@@ -2476,6 +3070,7 @@ def groups():
         ('summoned fangs edits', summoned_fangs_edits()),
         ('summoned fangs levels', summoned_fangs_levels()),
         ('bird flap sensors', bird_flap_sensors()),
+        ('entity landing sensors', entity_landing_sensors()),
 
         ('loot set damage', loot_set_damage()),
 
@@ -2484,6 +3079,7 @@ def groups():
         ('item NBT count bounds', item_nbt_count_bounds()),
 
         ('world', world_misc()),
+        ('recipe special arguments', recipe_special_arguments()),
         ('progression', progression()),
         ('functions and packs', functions_and_packs()),
         ('ticking and random', ticking()),
