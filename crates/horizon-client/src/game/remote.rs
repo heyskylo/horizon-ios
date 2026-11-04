@@ -537,6 +537,9 @@ pub(super) struct Remote {
     pub(super) menu_title: Option<horizon_client::text::Text>,
     state_id: i32,
     use_target: Option<[i32; 3]>,
+    /// A mod menu's extra data, kept for the `OpenScreen` of its window that
+    /// follows (`horizon:menu_extra`).
+    menu_extra: Option<horizon_protocol::menu_extra::Message>,
     entities: HashMap<i32, Tracked>,
     lerps: HashMap<i32, Lerp>,
     /// The minecarts the server moves with `ClientboundMoveMinecartPacket`
@@ -1039,6 +1042,7 @@ impl Game<'_> {
             menu_title: None,
             state_id: 0,
             use_target: None,
+            menu_extra: None,
             entities: HashMap::new(),
             lerps: HashMap::new(),
             cart_lerps: HashMap::new(),
@@ -3050,6 +3054,18 @@ impl Game<'_> {
             // The synced attachments of a holder the server shows the window.
             C::CustomPayload(p) if p.channel == horizon_protocol::attachment_sync::CHANNEL => {
                 self.remote_attachment_sync(&p.data);
+            }
+            // A mod menu type's block and its mod's bytes, just before the
+            // menu's `OpenScreen`.
+            C::CustomPayload(p) if p.channel == horizon_protocol::menu_extra::CHANNEL => {
+                match horizon_protocol::menu_extra::decode(&p.data) {
+                    Ok(extra) => {
+                        if let Some(r) = self.remote.as_mut() {
+                            r.menu_extra = Some(extra);
+                        }
+                    }
+                    Err(e) => log::debug!("Horizon: a bad menu extra payload: {e}"),
+                }
             }
             // The server's recipes its native mods asked to send.
             C::CustomPayload(p) if p.channel == horizon_client::lan::recipes::CONTENT_CHANNEL => {
@@ -9438,6 +9454,18 @@ impl Game<'_> {
             .as_mut()
             .and_then(|r| r.use_target.take())
             .map(|t| (t[0], t[1], t[2]));
+        // The server names a mod menu's block itself: it, not the last
+        // clicked block, is the one the menu is of. Only for this window:
+        // any other's is stale.
+        let extra = self
+            .remote
+            .as_mut()
+            .and_then(|r| r.menu_extra.take())
+            .filter(|e| e.window == p.container);
+        let target = extra
+            .as_ref()
+            .map(|e| (e.pos[0], e.pos[1], e.pos[2]))
+            .or(target);
         if menu == "minecraft:lectern" {
             // LecternScreen: the book and page come in the menu's content and data.
             if let Some(r) = self.remote.as_mut() {
@@ -9545,7 +9573,7 @@ impl Game<'_> {
             let key = target.filter(holds).unwrap_or((i32::MIN, 0, 0));
             self.world.block_entities.insert(key, entity);
             self.container = Some(key);
-            self.open_native_screen(key, target, p.container, &menu);
+            self.open_native_screen(key, target, p.container, &menu, extra);
             // A mod menu type shows through its mod's screen only: without one
             // (`MenuScreens.create` finds no screen) the window closes again.
             if self.mod_screen.is_none() && mod_type.is_some() {

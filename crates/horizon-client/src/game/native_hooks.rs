@@ -1912,17 +1912,28 @@ fn shake_pose(shake: NativeShake) -> glam::Mat4 {
 }
 
 /// The mod screen open on this client: the block it is for, the key its
-/// slots are under, the window id of its menu, and the menu's data slots as
-/// the server sent them.
+/// slots are under, the window id of its menu, the menu's data slots as
+/// the server sent them, and what the server sent before the menu opened
+/// (`horizon:menu_extra`), when it did.
 pub(super) struct OpenNativeScreen {
     key: Pos,
     window: i32,
     block: String,
     screen: NativeScreen,
     data: Vec<i32>,
+    extra: Option<horizon_protocol::menu_extra::Message>,
 }
 
 impl OpenNativeScreen {
+    /// The block the menu is of: where the server said, else the clicked
+    /// block its slots are under (a server without `horizon:menu_extra`).
+    fn pos(&self) -> Option<[i32; 3]> {
+        match &self.extra {
+            Some(extra) => Some(extra.pos),
+            None if self.key.0 != i32::MIN => Some([self.key.0, self.key.1, self.key.2]),
+            None => None,
+        }
+    }
     /// Data slot `id` of window `window`'s menu: false for another window's
     /// (an old or replaced one), which this screen leaves alone.
     fn set_data(&mut self, window: i32, id: i16, value: i16) -> bool {
@@ -4749,6 +4760,23 @@ impl Game<'_> {
         cancel: &mut bool,
     ) {
         mod_api::dispatch_inventory_block_start(self, mod_api::mods(), player, name, pos, cancel);
+    }
+    /// Block `block` at `pos` opens its mod menu type `menu` for server
+    /// player `player`: set `data` to hand the menu's screen bytes of your
+    /// own (a machine's tier, mode or recipes), up to 32 KiB, which the
+    /// client reads with `native_screen_extra_data` while the screen is open
+    /// (NeoForge's `openMenu` with an extra-data writer). The first mod to
+    /// set it wins, so answer only for your blocks. The player's state is not
+    /// swapped in. @API:menu_extra_data@.
+    pub(super) fn native_menu_extra_data(
+        &mut self,
+        player: u128,
+        menu: &str,
+        block: &str,
+        pos: [i32; 3],
+        data: &mut Option<Vec<u8>>,
+    ) {
+        mod_api::dispatch_menu_extra_data(self, mod_api::mods(), player, menu, block, pos, data);
     }
 
     /// A sculk catalyst at `pos` has begun blooming after taking experience.
@@ -8831,6 +8859,19 @@ impl Game<'_> {
     pub(super) fn native_screen_title(&self) -> Option<String> {
         self.remote_menu_title().map(|t| t.plain())
     }
+    /// The block of the mod screen that is open (`native_screen`), as the
+    /// server named it when the block opened its menu type; None when no mod
+    /// screen is open. @API:menu_extra_data@.
+    pub(super) fn native_screen_pos(&self) -> Option<[i32; 3]> {
+        self.shown_native_screen()?.pos()
+    }
+    /// What the block's mod wrote for the mod screen that is open
+    /// (`native_menu_extra_data` on the server), empty when it wrote nothing;
+    /// None when no mod screen is open. @API:menu_extra_data@.
+    pub(super) fn native_screen_extra_data(&self) -> Option<&[u8]> {
+        let screen = self.shown_native_screen()?;
+        Some(screen.extra.as_ref().map_or(&[], |e| e.data.as_slice()))
+    }
     /// A data file of the game's resources, content mods' included
     /// (`data/mymod/machines.json`), when there is one: what a mod's content
     /// says, read at runtime. Only relative paths of plain names. API 20.
@@ -9548,12 +9589,14 @@ impl Game<'_> {
     }
     /// A menu opened on this client with its slots under `key`, on block
     /// `target`: a mod block's is laid out by its mod (`native_screen`).
+    /// `extra` is what the server sent for this window first.
     pub(super) fn open_native_screen(
         &mut self,
         key: Pos,
         target: Option<Pos>,
         window: i32,
         menu: &str,
+        extra: Option<horizon_protocol::menu_extra::Message>,
     ) {
         self.mod_screen = None;
         let Some(t) = target else {
@@ -9587,6 +9630,7 @@ impl Game<'_> {
                 block,
                 screen,
                 data: Vec::new(),
+                extra,
             });
         }
     }
@@ -10527,6 +10571,7 @@ mod tests {
             block: "gtmod:machine".into(),
             screen: super::NativeScreen::default(),
             data: Vec::new(),
+            extra: None,
         };
         assert!(s.set_data(4, 1, 7));
         assert!(!s.set_data(3, 1, 99));

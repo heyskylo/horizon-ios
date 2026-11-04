@@ -2858,6 +2858,24 @@ as the terrain samples them. API 380.
 
 Look blocks up once and keep what you need (a few words a block for your own shader), not every frame.
 
+### Menu extra data
+
+A content mod's menu type opened by its block can carry bytes of the mod's own to the screen, as NeoForge's
+`openMenu(provider, extraDataWriter)` does for a menu type made with `IMenuTypeExtension.create`: a machine's tier,
+mode, owner, or the recipes it can run. On the server, `native_menu_extra_data(player, menu, block, pos, data)` is
+asked when block `block` at `pos` opens menu type `menu` for `player`, after `native_inventory_block_start` let it
+open. Set `data` to your bytes, only for your own blocks: the first mod to set it wins. Up to 32 KiB; more is dropped
+with a warning in the log, and the menu opens without it.
+
+A Horizon client gets the block's position and the bytes in a `horizon:menu_extra` payload just before the menu's
+`OpenScreen`, so its screen is the block the server opened, not the block the player clicked last. While the mod's
+screen is open (`native_screen_draw`, `native_screen_click`, `native_screen_tooltip`), `native_screen_pos()` gives that
+block and `native_screen_extra_data()` the bytes (empty when the mod wrote none); both are None with no mod screen
+open, and inside `native_screen` itself, whose slot layout the server asks for too and so can't depend on them. The
+data slots still carry what changes while the menu is open; the extra data is sent once, when it opens. Works the same
+on single player's server thread, for LAN guests and on a dedicated server. Bundles need "hooks":
+@API:menu_extra_data@.
+
 ### Menu slot rules
 
 `crates/horizon-client/src/menu.rs`: `native_menu_slot_rules(menu, slot, stack, may_place, max_stack)`, a free function
