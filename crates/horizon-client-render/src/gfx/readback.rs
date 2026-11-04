@@ -67,6 +67,17 @@ impl Readback {
         let Some(texture) = self.texture.clone() else {
             return;
         };
+        self.draw_onto(device, encoder, &texture, surface);
+    }
+
+    /// Draws `frame` onto the swapchain image (or offscreen target) `surface`.
+    pub fn draw_onto(
+        &mut self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        frame: &wgpu::Texture,
+        surface: &wgpu::Texture,
+    ) {
         // The frame's passes write the swapchain through its non-sRGB view
         // (`view_formats`), so the copy goes there unconverted too.
         let format = surface.format().remove_srgb_suffix();
@@ -74,7 +85,7 @@ impl Readback {
             format: Some(format),
             ..Default::default()
         });
-        self.blit(device, encoder, &texture, &target, format);
+        self.blit(device, encoder, frame, &target, format);
     }
 
     /// `frame` (a 16-bit frame) in an 8-bit texture of `format`, clamped to 0..1
