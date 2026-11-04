@@ -134,6 +134,9 @@ pub fn stop_sleeping(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
         pos: p,
         occupied: false,
     });
+    // Keep the existing stand-up search and fallback position.
+    let mut stand = m.position;
+    stand.y = f64::from(p[1]) + 0.5625 + 0.125;
     for (dx, dz) in [
         (1, 0),
         (-1, 0),
@@ -147,16 +150,36 @@ pub fn stop_sleeping(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
         let (x, y, z) = (p[0] + dx, p[1], p[2] + dz);
         let free = |y| w.data.state(w.world.block(x, y, z)).top <= 0.0;
         if free(y) && free(y + 1) && w.solid(x, y - 1, z) {
-            m.position = horizon_core::geometry::Vec3::new(
+            stand = horizon_core::geometry::Vec3::new(
                 f64::from(x) + 0.5,
                 f64::from(y),
                 f64::from(z) + 0.5,
             );
-            return;
+            break;
         }
     }
-    // The bed's top (getSleepHeight) and 0.125 above it.
-    m.position.y = f64::from(p[1]) + 0.5625 + 0.125;
+    set_wake_pose(m, p, stand);
+}
+/// Rotation part of `LivingEntity.stopSleeping`, after choosing where to stand.
+fn set_wake_pose(m: &mut Mob, bed: [i32; 3], stand: horizon_core::geometry::Vec3) {
+    use horizon_core::geometry::{Vec3, trig};
+    let d = Vec3::new(
+        f64::from(bed[0]) + 0.5,
+        f64::from(bed[1]),
+        f64::from(bed[2]) + 0.5,
+    )
+    .subtract(stand)
+    .normalize();
+    let mut yaw = (trig::atan2(d.z, d.x) * f64::from(trig::RAD_TO_DEG) - 90.0) % 360.0;
+    if yaw >= 180.0 {
+        yaw -= 360.0;
+    }
+    if yaw < -180.0 {
+        yaw += 360.0;
+    }
+    m.position = stand;
+    m.yaw = yaw as f32;
+    m.head_pitch = 0.0;
 }
 /// `LivingEntity.getSleepingPos`: the bed head a sleeper lies in.
 pub fn sleeping_pos(m: &Mob) -> Option<[i32; 3]> {
@@ -925,6 +948,18 @@ mod tests {
             tempt: Arc::default(),
         });
         Mob::new(1, kind, horizon_core::geometry::Vec3::ZERO, 0.0)
+    }
+    #[test]
+    fn waking_faces_the_bed_and_resets_pitch_without_moving_the_chosen_position() {
+        let mut m = villager();
+        m.yaw = -25.0;
+        m.head_pitch = 23.0;
+        let stand = horizon_core::geometry::Vec3::new(3.5, 200.0, 6.5);
+        set_wake_pose(&mut m, [2, 200, 6], stand);
+        // Fresh official 26.3 occupied-bed interaction.
+        assert_eq!(m.yaw, 89.99999);
+        assert_eq!(m.head_pitch, 0.0);
+        assert_eq!(m.position, stand);
     }
     /// A sleeper's box is 0.2 high, but `LivingEntityRenderer` moves it
     /// toward the foot of the bed by its standing eye height, so its head
