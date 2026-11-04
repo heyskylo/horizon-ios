@@ -6506,7 +6506,12 @@ impl Renderer {
             if let Some(atlases) = &self.pack_material_atlases {
                 for kind in 0..2 {
                     let arrays: Vec<_> = arrays.iter().map(|pair| pair[kind].clone()).collect();
-                    atlases[kind].copy(encoder, &arrays, self.animations.changed().iter().copied());
+                    atlases[kind].copy(
+                        &self.device,
+                        encoder,
+                        &arrays,
+                        self.animations.changed().iter().copied(),
+                    );
                 }
             }
         }
