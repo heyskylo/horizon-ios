@@ -128,6 +128,13 @@ pub fn teleport_to(
     m.previous = m.position;
     m.velocity = Vec3::ZERO;
     m.ai.nav.stop();
+    // `LivingEntity.randomTeleport(..., true)` broadcasts entity event 46
+    // before the trail and the teleport sounds.
+    events.push(MobEvent::EntityEvent {
+        mob: m.id,
+        event: 46,
+        at: [m.position.x, m.position.y, m.position.z],
+    });
     if !m.silent {
         // Level event 2018: the portal trail, from the old block to the new
         // one, packed as `BlockUtil.clampedPackDifferenceInPosition` does.
@@ -570,7 +577,12 @@ mod tests {
             let mut events = Vec::new();
             let mut free = enderman();
             assert!((0..64).any(|_| teleport_random(&mut free, w, &mut events)));
-            assert!(!events.is_empty());
+            assert!(
+                events
+                    .iter()
+                    .any(|e| matches!(e, MobEvent::EntityEvent { event: 46, .. })),
+                "entity event 46: {events:?}"
+            );
 
             let mut seated = enderman();
             seated.extra.passenger = true;

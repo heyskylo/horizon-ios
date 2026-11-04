@@ -89,14 +89,22 @@ impl Launcher {
             .child(head.min_w_0())
             .child(tabs);
 
+        // Installation can pause for consent in either view. Keep the notice before
+        // the project or results, rather than below a potentially long detail card.
+        let notice = self.native_notice(cx).map(|notice| notice.mb(px(20.)));
         // A project's own page replaces the two cards, as before.
         if let Some(project) = self.mods_project_page(cx) {
-            return div().flex().flex_col().child(header).child(
-                crate::glass::plate(radius::PANEL)
-                    .p(px(20.))
-                    .children(self.mods_busy_plate())
-                    .child(project),
-            );
+            return div()
+                .flex()
+                .flex_col()
+                .child(header)
+                .children(notice)
+                .child(
+                    crate::glass::plate(radius::PANEL)
+                        .p(px(20.))
+                        .children(self.mods_busy_plate())
+                        .child(project),
+                );
         }
 
         let java = self.mods.java_for(self.mods.kind).is_some();
@@ -174,7 +182,6 @@ impl Launcher {
         // What the mockup doesn't have, as cards under the two.
         let card = |inner: Div| crate::glass::plate(radius::PANEL).p(px(20.)).child(inner);
         let mut more: Vec<Div> = Vec::new();
-        more.extend(self.native_notice(cx).map(card));
         more.extend(self.mods_busy_plate().into_iter().map(card));
         if self.mods.kind == PackKind::Modpack {
             more.push(card(self.imported_packs(cx)));
@@ -183,14 +190,20 @@ impl Launcher {
             more.push(card(self.github_panel(cx)));
         }
         more.extend(self.mods_installed_list(cx).map(card));
-        div().flex().flex_col().child(header).child(cards).child(
-            div()
-                .flex()
-                .flex_col()
-                .gap(px(10.))
-                .mt(px(10.))
-                .children(more),
-        )
+        div()
+            .flex()
+            .flex_col()
+            .child(header)
+            .children(notice)
+            .child(cards)
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(10.))
+                    .mt(px(10.))
+                    .children(more),
+            )
     }
 
     /// The source switch (`switches`): Horizon's registry or Modrinth as small tabs, CurseForge

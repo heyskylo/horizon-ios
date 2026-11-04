@@ -935,6 +935,17 @@ def levels():
         cmd('/execute if dimension minecraft:the_nether run say through the portal'),
         cmd('/data get entity @e[tag=remote_cow,limit=1] Pos'),
         cmd('/data get entity @e[tag=remote_cow,distance=..128,limit=1] Pos'),
+        # The unbounded selector reaches the Overworld cow while the player is
+        # in the Nether: /attribute acts on the entity in its own level, as
+        # AttributeCommand does on the entity it was given.
+        cmd('/attribute @e[tag=remote_cow,limit=1] minecraft:max_health get'),
+        cmd('/attribute @e[tag=remote_cow,limit=1] minecraft:follow_range base set 21'),
+        cmd('/attribute @e[tag=remote_cow,limit=1] minecraft:follow_range base get'),
+        cmd('/attribute @e[tag=remote_cow,limit=1] minecraft:follow_range base reset'),
+        cmd('/attribute @e[tag=remote_cow,limit=1] minecraft:scale modifier add harness:xdim 0.5 add_value'),
+        cmd('/attribute @e[tag=remote_cow,limit=1] minecraft:scale get'),
+        cmd('/attribute @e[tag=remote_cow,limit=1] minecraft:scale modifier remove harness:xdim'),
+        cmd('/attribute @e[tag=remote_cow,limit=1] minecraft:scale get'),
         {'op': 'portal'},
         {'op': 'settle'},
         cmd('/execute if dimension minecraft:overworld run say back through the portal'),

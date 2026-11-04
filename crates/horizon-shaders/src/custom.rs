@@ -15,6 +15,10 @@
 //!   uniforms can't see (an unknown name, or one of [`HIDDEN`]) reads 0 as a whole, even when
 //!   the name is in an `if` branch not taken, and so does every expression using its uniform or
 //!   variable. Only the names of [`NOT_GIVEN_YET`] read 0 alone.
+//! - Types, as in Iris 1.11.7 (#9086, #9126): an expression without its declared type (an
+//!   `int` given a float, a `float` given a vector or a bool...), joining a vector and a scalar,
+//!   or calling a function Iris's custom uniforms don't have, reads 0 as a whole, and so does
+//!   everything using it. The rules ([`Ty`]) are a fit to our probe packs.
 
 use std::collections::{HashMap, HashSet};
 
@@ -74,11 +78,13 @@ impl Val {
 
 /// Built-in names Iris 1.11.7's custom uniforms can't see, though the game may give them (most
 /// are frame uniforms here). Our probe packs (#8995) read 0 from `(<name>) * 0.0 + 2.0` for
-/// these, and 2 for 29 others (`skyColor.x`, `entityColor.x`, `blockEntityId`, `frameTime`...).
-const HIDDEN: [&str; 12] = [
+/// these, and 2 for 29 others (`skyColor.x`, `entityColor.x`, `blockEntityId`, `frameTime`...);
+/// for `centerDepthSmooth`, Iris warns `Unknown variable` (#9126's probe).
+const HIDDEN: [&str; 13] = [
     "alphaTestRef",
     "atlasSize",
     "blendFunc",
+    "centerDepthSmooth",
     "dimension",
     "entityId",
     "fogColor",
@@ -94,9 +100,66 @@ const HIDDEN: [&str; 12] = [
 /// such a name alone reads 0, and the expression keeps the rest.
 const NOT_GIVEN_YET: [&str; 2] = ["currentRenderedItemId", "lightningBoltPosition"];
 
+/// The `int` built-ins of Iris 1.11.7's custom uniforms (an int vector for `eyeBrightness`,
+/// `eyeBrightnessSmooth` and the `...PositionInt`s). Our probe packs of #9126 wrote each name
+/// alone into an `int`, a `float` and a `bool` uniform: Iris kept these in `int` and `float`.
+const INT_NAMES: [&str; 21] = [
+    "bedrockLevel",
+    "biome",
+    "biome_category",
+    "biome_precipitation",
+    "blockEntityId",
+    "cameraPositionInt",
+    "currentRenderedItemId",
+    "eyeBrightness",
+    "eyeBrightnessSmooth",
+    "frameCounter",
+    "heightLimit",
+    "heldBlockLightValue",
+    "heldBlockLightValue2",
+    "heldItemId",
+    "heldItemId2",
+    "isEyeInWater",
+    "logicalHeightLimit",
+    "moonPhase",
+    "previousCameraPositionInt",
+    "worldDay",
+    "worldTime",
+];
+
+/// The `bool` built-ins (the same probes: Iris kept these only in `bool`). Every other built-in
+/// is a float there, kept only in `float`.
+const BOOL_NAMES: [&str; 16] = [
+    "feetInWater",
+    "firstPersonCamera",
+    "hasCeiling",
+    "hasSkylight",
+    "hideGUI",
+    "inSwimmingAnimation",
+    "isElytraFlying",
+    "isRiding",
+    "isRightHanded",
+    "isSpectator",
+    "is_burning",
+    "is_hurt",
+    "is_invisible",
+    "is_on_ground",
+    "is_sneaking",
+    "is_sprinting",
+];
+
+/// The functions of Iris 1.11.7's custom uniforms that give a float whatever numbers they take
+/// (our probe: into an `int` uniform, Iris refused each with numbers alone).
+const FLOAT_FUNCTIONS: [&str; 25] = [
+    "acos", "asin", "atan", "atan2", "cos", "degrees", "exp", "exp10", "exp2", "frac", "log",
+    "log10", "log2", "mix", "pow", "radians", "random", "sign", "signum", "sin", "smooth", "sqrt",
+    "tan", "todeg", "torad",
+];
+
 #[derive(Clone, Debug)]
 enum Expr {
-    Num(f64),
+    /// A number, and whether it is written as a float (`2.0`, not `2`).
+    Num(f64, bool),
     /// A name and its component (`x`, `2`, `2.1` as column 2, row 1).
     Name(String, Option<(usize, Option<usize>)>),
     Call(String, Vec<Expr>, usize),
@@ -236,7 +299,7 @@ impl Custom {
     fn resolve(&mut self, builtin: &dyn Fn(&str) -> Option<Val>) -> Vec<bool> {
         let items: HashSet<&str> = self.items.iter().map(|i| i.name.as_str()).collect();
         let known = |n: &str| {
-            matches!(n, "pi" | "true" | "false")
+            n == "pi"
                 || n.starts_with("BIOME_")
                 || self.constants.contains_key(n)
                 || NOT_GIVEN_YET.contains(&n)
@@ -252,6 +315,9 @@ impl Custom {
                     "`{}` reads 0: `{n}` is unknown to custom uniforms",
                     item.name
                 ));
+                broken[i] = true;
+            } else if let Err(why) = self.typed(item, builtin) {
+                self.notes.push(format!("`{}` reads 0: {why}", item.name));
                 broken[i] = true;
             }
             uses.push(names.into_iter().filter(|n| items.contains(n)).collect());
@@ -278,6 +344,34 @@ impl Custom {
         }
     }
 
+    /// Whether `item`'s expression has its declared type, by the rules of [`Ty`].
+    fn typed(&self, item: &Item, builtin: &dyn Fn(&str) -> Option<Val>) -> Result<(), String> {
+        let name_ty = |n: &str| {
+            if let Some(other) = self.items.iter().find(|i| i.name == n) {
+                return Ty::declared(&other.ty);
+            }
+            let int = INT_NAMES.contains(&n);
+            match builtin(n) {
+                _ if n == "pi" => Ty::Float,
+                _ if self.constants.contains_key(n) || n.starts_with("BIOME_") => Ty::Int,
+                // The game doesn't give `lightningBoltPosition` yet: its size is unknown.
+                None if n == "lightningBoltPosition" => Ty::Any,
+                None | Some(Val { n: 1, .. }) if int => Ty::Int,
+                None | Some(Val { n: 1, .. }) if BOOL_NAMES.contains(&n) => Ty::Bool,
+                None | Some(Val { n: 1, .. }) => Ty::Float,
+                Some(Val { n: c @ 2..=4, .. }) => Ty::Vector(c, int),
+                Some(_) => Ty::Matrix,
+            }
+        };
+        let got = ty(&item.expr, &name_ty)?;
+        let want = Ty::declared(&item.ty);
+        if got.fits(want) {
+            Ok(())
+        } else {
+            Err(format!("it gives {got} where `{}` is declared", item.ty))
+        }
+    }
+
     fn random(&mut self) -> f64 {
         self.seed ^= self.seed << 13;
         self.seed ^= self.seed >> 7;
@@ -294,12 +388,10 @@ impl Custom {
     ) -> Val {
         let ev = |e: &Expr, s: &mut Self| s.value(e, dt, vars, builtin);
         match e {
-            Expr::Num(x) => Val::scalar(*x),
+            Expr::Num(x, _) => Val::scalar(*x),
             Expr::Name(name, component) => {
                 let v = match name.as_str() {
                     "pi" => Some(Val::scalar(std::f64::consts::PI)),
-                    "true" => Some(Val::scalar(1.0)),
-                    "false" => Some(Val::scalar(0.0)),
                     n => vars
                         .get(n)
                         .copied()
@@ -387,11 +479,9 @@ impl Custom {
                     "log2" => one(f64::log2),
                     "log10" => one(f64::log10),
                     "sqrt" => one(f64::sqrt),
-                    "round" => one(f64::round),
                     "signum" | "sign" => one(|v| if v == 0.0 { 0.0 } else { v.signum() }),
                     "pow" => arg(0).zip(arg(1), f64::powf),
                     "fmod" => arg(0).zip(arg(1), |p, q| p - q * (p / q).floor()),
-                    "lerp" => arg(1).zip(arg(2), |p, q| p + (q - p) * x),
                     "mix" => arg(0).zip(arg(1), |p, q| p + (q - p) * arg(2).x()),
                     "edge" => Val::scalar(if arg(1).x() < x { 0.0 } else { 1.0 }),
                     "random" if a.len() == 2 => Val::scalar(x + (arg(1).x() - x) * self.random()),
@@ -400,7 +490,7 @@ impl Custom {
                         Val::scalar((x + (arg(1).x() - x) * self.random()).floor())
                     }
                     "randomInt" => Val::scalar((self.random() * f64::from(i32::MAX)).floor()),
-                    "if" | "ifb" => {
+                    "if" => {
                         let mut i = 0;
                         while i + 1 < a.len() {
                             if a[i].truth() {
@@ -413,7 +503,7 @@ impl Custom {
                     "smooth" => {
                         // A first argument written as a number names the call when more
                         // follow (`smooth(1, x, 2)`); any other is the value (`smooth(x, 2)`).
-                        let named = a.len() > 1 && matches!(args[0], Expr::Num(_));
+                        let named = a.len() > 1 && matches!(args[0], Expr::Num(..));
                         let rest = &a[usize::from(named)..];
                         let at = |i: usize| rest.get(i).map(Val::x);
                         let val = at(0).unwrap_or(0.0);
@@ -428,7 +518,6 @@ impl Custom {
                         }
                         Val::scalar(*state)
                     }
-                    "print" => arg(2),
                     "between" => {
                         Val::scalar(f64::from(u8::from(x >= arg(1).x() && x <= arg(2).x())))
                     }
@@ -579,7 +668,7 @@ impl<'a> Parser<'a> {
             return t
                 .trim_end_matches(['f', 'F'])
                 .parse()
-                .map(Expr::Num)
+                .map(|x| Expr::Num(x, t.contains(['.', 'e', 'E', 'f', 'F'])))
                 .map_err(|_| format!("bad number `{t}`"));
         }
         if !is_name(&t) {
@@ -632,7 +721,7 @@ impl<'a> Parser<'a> {
 /// `smooth(val, fadeIn, fadeOut)`, and the same with a number written first as the call's id
 /// (`smooth(1, val, fadeIn, fadeOut)`). It drops a uniform with any other, which then reads 0.
 fn smooth_arguments(args: &[Expr]) -> Result<(), String> {
-    let named = args.len() > 1 && matches!(args[0], Expr::Num(_));
+    let named = args.len() > 1 && matches!(args[0], Expr::Num(..));
     if (1..=3).contains(&(args.len() - usize::from(named))) {
         Ok(())
     } else {
@@ -648,10 +737,215 @@ fn smooth_arguments(args: &[Expr]) -> Result<(), String> {
     }
 }
 
+/// The type of an expression, for the check Iris 1.11.7 makes before it keeps a custom uniform
+/// or variable (#9086, #9126). The rules are a fit to our probe packs' values and warnings in
+/// Iris, not a rule Iris documents:
+/// - A number is an `int` (`2`) or a `float` (`2.0`). `pi` is a float, `BIOME_*`, `CAT_*` and
+///   `PPT_*` are ints, and the built-ins have the types of [`INT_NAMES`] and [`BOOL_NAMES`].
+///   `true` and `false` aren't names there at all.
+/// - The only conversion is an `int` taken as a `float`: `float = 2` and `sin(0)` work, while
+///   `int = 2.0`, `float = 1 > 0`, `bool = 1` and `vec2 = eyeBrightness` (an int vector) read 0.
+/// - `+ - * %` of two ints give an int, with a float a float; `/` always gives a float
+///   (`int = 7 / 2` reads 0). They take no bool. A vector meets only the same vector type:
+///   `vec3 * 2.0`, `vec3 + vec2` and `eyeBrightness + vec2(...)` read 0. Unary minus keeps the
+///   type and takes no bool.
+/// - `< <= > >=` take numbers, `== !=` two numbers or two bools, `&& || !` bools; all give a
+///   bool.
+/// - `vecN(...)` takes exactly N numbers. `floor` and `ceil` give an int, and so does
+///   `randomInt`, which takes ints only; `abs`, `min`, `max`, `clamp`, `fmod` and `edge` the
+///   type of their numbers; [`FLOAT_FUNCTIONS`] a
+///   float; `between`, `equals` and `in` a bool; `if` takes bool conditions and values of one
+///   type (an int and a float give a float). `abs`, `floor`, `ceil`, `min`/`max` of two,
+///   `clamp` and three-argument `if` also take vectors of one type; every other function only
+///   scalars. `round`, `ifb`, `lerp` and `print` are no functions there (Iris warns "No such
+///   function"), nor is any other name.
+/// - A matrix counts only through a component (`m.0.1`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Ty {
+    /// A name whose type we don't know (`lightningBoltPosition`): it fits anything.
+    Any,
+    Int,
+    Float,
+    Bool,
+    /// A vector of N components, of ints when `true` (`eyeBrightness`).
+    Vector(usize, bool),
+    Matrix,
+}
+
+impl Ty {
+    fn declared(ty: &str) -> Self {
+        match ty {
+            "int" => Ty::Int,
+            "bool" => Ty::Bool,
+            "vec2" | "vec3" | "vec4" => Ty::Vector((ty.as_bytes()[3] - b'0') as usize, false),
+            _ => Ty::Float,
+        }
+    }
+    /// Whether a value of this type may stand where `want` is expected.
+    fn fits(self, want: Ty) -> bool {
+        self == want || self == Ty::Any || want == Ty::Any || (self, want) == (Ty::Int, Ty::Float)
+    }
+    fn vector(self) -> bool {
+        matches!(self, Ty::Vector(..))
+    }
+    /// The type `types` share, `Any` aside, for vectors and bools.
+    fn same(types: &[Ty]) -> Option<Ty> {
+        let mut out = Ty::Any;
+        for &t in types {
+            if t != Ty::Any && out != Ty::Any && t != out {
+                return None;
+            }
+            if t != Ty::Any {
+                out = t;
+            }
+        }
+        Some(out)
+    }
+}
+
+impl std::fmt::Display for Ty {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Ty::Any => write!(f, "unknown"),
+            Ty::Int => write!(f, "an int"),
+            Ty::Float => write!(f, "a float"),
+            Ty::Bool => write!(f, "a bool"),
+            Ty::Vector(n, false) => write!(f, "a vec{n}"),
+            Ty::Vector(n, true) => write!(f, "an ivec{n}"),
+            Ty::Matrix => write!(f, "a matrix"),
+        }
+    }
+}
+
+/// Numbers only: a float when one of `types` is, else an int.
+fn numbers(types: &[Ty], what: &str) -> Result<Ty, String> {
+    let mut out = Ty::Any;
+    for &t in types {
+        match t {
+            Ty::Any => {}
+            Ty::Int if out != Ty::Float => out = Ty::Int,
+            Ty::Int => {}
+            Ty::Float => out = Ty::Float,
+            _ => return Err(format!("{what} is given {t}")),
+        }
+    }
+    Ok(out)
+}
+
+fn boolean(t: Ty, what: &str) -> Result<Ty, String> {
+    if t.fits(Ty::Bool) {
+        Ok(Ty::Bool)
+    } else {
+        Err(format!("{what} is given {t}"))
+    }
+}
+
+/// The type of `e` (rules on [`Ty`]), or why it has none.
+fn ty(e: &Expr, name: &dyn Fn(&str) -> Ty) -> Result<Ty, String> {
+    match e {
+        Expr::Num(_, float) => Ok(if *float { Ty::Float } else { Ty::Int }),
+        Expr::Name(n, Some(_)) => Ok(match name(n) {
+            Ty::Vector(_, true) => Ty::Int,
+            Ty::Vector(_, false) | Ty::Matrix => Ty::Float,
+            t => t,
+        }),
+        Expr::Name(n, None) => match name(n) {
+            Ty::Matrix => Err(format!("the matrix `{n}` is used without a component")),
+            t => Ok(t),
+        },
+        Expr::Neg(a) => match ty(a, name)? {
+            Ty::Bool => Err("`-` is given a bool".into()),
+            t => Ok(t),
+        },
+        Expr::Not(a) => boolean(ty(a, name)?, "`!`"),
+        Expr::Bin(op, a, b) => {
+            let (a, b) = (ty(a, name)?, ty(b, name)?);
+            let what = format!("`{op}`");
+            match *op {
+                "+" | "-" | "*" | "/" | "%" if a.vector() || b.vector() => {
+                    Ty::same(&[a, b]).ok_or_else(|| format!("`{op}` joins {a} and {b}"))
+                }
+                "+" | "-" | "*" | "%" => numbers(&[a, b], &what),
+                "/" => numbers(&[a, b], &what).map(|_| Ty::Float),
+                "&&" | "||" => boolean(a, &what).and(boolean(b, &what)),
+                "==" | "!=" if a.fits(Ty::Bool) && b.fits(Ty::Bool) => Ok(Ty::Bool),
+                _ => numbers(&[a, b], &what).map(|_| Ty::Bool),
+            }
+        }
+        Expr::Call(f, args, _) => {
+            let a = args
+                .iter()
+                .map(|e| ty(e, name))
+                .collect::<Result<Vec<_>, _>>()?;
+            let what = format!("`{f}`");
+            let same = || Ty::same(&a).ok_or_else(|| format!("`{f}` mixes types"));
+            let scalars = !a.iter().any(|t| t.vector());
+            const OTHERS: [&str; 15] = [
+                "vec2",
+                "vec3",
+                "vec4",
+                "abs",
+                "floor",
+                "ceil",
+                "min",
+                "max",
+                "clamp",
+                "fmod",
+                "edge",
+                "randomInt",
+                "between",
+                "equals",
+                "in",
+            ];
+            if !(OTHERS.contains(&f.as_str()) || f == "if" || FLOAT_FUNCTIONS.contains(&f.as_str()))
+            {
+                return Err(format!("`{f}()` is no function of custom uniforms"));
+            }
+            match f.as_str() {
+                "vec2" | "vec3" | "vec4" => {
+                    let n = (f.as_bytes()[3] - b'0') as usize;
+                    match numbers(&a, &what) {
+                        Ok(_) if a.len() == n => Ok(Ty::Vector(n, false)),
+                        _ => Err(format!("`{f}` takes {n} numbers")),
+                    }
+                }
+                "abs" | "floor" | "ceil" if a.len() == 1 && !scalars => Ok(a[0]),
+                "min" | "max" if a.len() == 2 && !scalars => same(),
+                "clamp" if a.len() == 3 && !scalars => same(),
+                "if" if a.len() == 3 && !scalars => {
+                    boolean(a[0], "the condition of `if`")?;
+                    Ty::same(&a[1..]).ok_or_else(|| format!("`{f}` mixes types"))
+                }
+                _ if !scalars => Err(format!("`{f}` takes scalars only")),
+                "floor" | "ceil" => numbers(&a, &what).map(|_| Ty::Int),
+                "abs" | "min" | "max" | "clamp" | "fmod" | "edge" => numbers(&a, &what),
+                "randomInt" if a.iter().all(|t| t.fits(Ty::Int)) => Ok(Ty::Int),
+                "randomInt" => Err("`randomInt` takes ints only".into()),
+                "between" | "equals" | "in" => numbers(&a, &what).map(|_| Ty::Bool),
+                "if" => {
+                    let mut values = Vec::new();
+                    for (i, &t) in a.iter().enumerate() {
+                        if i % 2 == 0 && i + 1 < a.len() {
+                            boolean(t, "a condition of `if`")?;
+                        } else {
+                            values.push(t);
+                        }
+                    }
+                    match Ty::same(&values) {
+                        Some(Ty::Bool) => Ok(Ty::Bool),
+                        _ => numbers(&values, &what),
+                    }
+                }
+                _ => numbers(&a, &what).map(|_| Ty::Float),
+            }
+        }
+    }
+}
+
 /// The names `e` reads, calls left out, in order.
 fn names_in<'e>(e: &'e Expr, out: &mut Vec<&'e str>) {
     match e {
-        Expr::Num(_) => {}
+        Expr::Num(..) => {}
         Expr::Name(n, _) => out.push(n),
         Expr::Call(_, args, _) => args.iter().for_each(|a| names_in(a, out)),
         Expr::Neg(a) | Expr::Not(a) => names_in(a, out),
@@ -709,7 +1003,7 @@ mod tests {
              uniform.float.f = if(a < 0, 1, a < 7, 2, 3) + clamp(fmod(-1, 4), 0, 2.5) + min(4, 2, 3)\n\
              uniform.float.g = gbufferModelView.0.1 + frac(sunAngle - 0.25) + pi * 0\n\
              uniform.float.h = unknownThing + in(biome, 3, BIOME_DESERT)\n\
-             uniform.int.i = biome == BIOME_PALE_GARDEN || biome == BIOME_OLD\n\
+             uniform.bool.i = biome == BIOME_PALE_GARDEN || biome == BIOME_OLD\n\
              uniform.int.j = CAT_OCEAN + PPT_RAIN\n",
         );
         c.set_biomes(&["minecraft:beach", "minecraft:desert"]);
@@ -735,9 +1029,9 @@ mod tests {
             x,
             [
                 3.0,
-                1.0,
-                -3.0,
-                12.0,
+                0.0,
+                0.0,
+                0.0,
                 2.0 + 2.5 + 2.0,
                 9.0 + 0.875,
                 0.0,
@@ -745,10 +1039,15 @@ mod tests {
                 12.0
             ]
         );
-        assert_eq!(&v[3].v[..3], &[12.0, 128.0, 4.0]);
+        // Iris 1.11.7 doesn't take `false` (#9126), `int = -7 / 2` (`/` gives a float, #9126) or
+        // `vec3 * 2` (a vector and a scalar, #9086).
+        assert_eq!(&v[3].v[..3], &[0.0, 0.0, 0.0]);
         assert_eq!(
             c.notes,
             [
+                "`c` reads 0: `false` is unknown to custom uniforms",
+                "`d` reads 0: it gives a float where `int` is declared",
+                "`e` reads 0: `*` joins a vec3 and an int",
                 "`h` reads 0: `unknownThing` is unknown to custom uniforms",
                 "`BIOME_PALE_GARDEN` names no biome; it reads -1",
                 "`BIOME_OLD` names no biome; it reads -1"
@@ -891,14 +1190,250 @@ mod tests {
             _ => Some(Val::scalar(1.0)),
         };
         let x: Vec<f64> = c.eval(0.016, &builtin).iter().map(|v| v.v[0]).collect();
+        // `w` reads 0 as well: `vec3 * 0.0` joins a vector and a scalar (#9086).
         assert_eq!(
             x,
-            [2.0, 0.0, 0.0, 0.0, 0.0, 3.0, 0.0, 0.0, 6.0, 2.0, 2.0, 2.0]
+            [2.0, 0.0, 0.0, 0.0, 0.0, 3.0, 0.0, 0.0, 6.0, 2.0, 0.0, 2.0]
         );
-        assert_eq!(c.notes.len(), 9, "{:?}", c.notes);
+        assert_eq!(c.notes.len(), 10, "{:?}", c.notes);
         // The same on later frames, with no new notes.
         let again: Vec<f64> = c.eval(0.016, &builtin).iter().map(|v| v.v[0]).collect();
         assert_eq!(again, x);
-        assert_eq!(c.notes.len(), 9, "{:?}", c.notes);
+        assert_eq!(c.notes.len(), 10, "{:?}", c.notes);
+    }
+
+    /// Iris 1.11.7, with our probe packs of #9086 (`final` drew each uniform, a vector's `.y`):
+    /// an expression without its declared shape, or joining a vector and a scalar, reads 0, and
+    /// so does a uniform using such a variable. Each row: the probe's line, then what Iris read
+    /// (`k5` reads our `skyColor.y` here; Iris read its own sky, 0.64). A variable isn't drawn:
+    /// its number follows Iris's warnings (`vbad` failed) and the uniforms reading it.
+    #[test]
+    fn an_expression_without_its_declared_shape_reads_zero() {
+        const ROWS: &str = "\
+            uniform.float.k0 = 2.0 | 2
+            uniform.float.k1 = skyColor * 0.0 + 2.0 | 0
+            uniform.vec3.k2 = skyColor * 0.0 + 2.0 | 0
+            uniform.float.k3 = skyColor.y * 0.0 + 2.0 | 2
+            uniform.vec3.k4 = vec3(skyColor.x * 0.0 + 2.0, skyColor.y * 0.0 + 2.0, skyColor.z * 0.0 + 2.0) | 2
+            uniform.vec3.k5 = skyColor | 0.5
+            uniform.float.k6 = skyColor | 0
+            uniform.vec3.k7 = vec3(2.0, 2.0, 2.0) * 1.0 | 0
+            uniform.vec3.k8 = vec3(2.0, 2.0, 2.0) + 0.0 | 0
+            uniform.vec3.k9 = skyColor * vec3(0.0, 0.0, 0.0) + vec3(2.0, 2.0, 2.0) | 2
+            uniform.float.k10 = vec3(2.0, 2.0, 2.0) | 0
+            uniform.vec2.k11 = vec3(2.0, 2.0, 2.0) | 0
+            uniform.vec3.w0 = 2.0 * vec3(1.0, 1.0, 1.0) | 0
+            uniform.vec3.w1 = vec3(4.0, 4.0, 4.0) / 2.0 | 0
+            uniform.vec3.w19 = vec3(2.0, 2.0, 2.0) % 3.0 | 0
+            uniform.vec3.w2 = -vec3(-2.0, -2.0, -2.0) | 2
+            uniform.vec3.z11 = vec3(4.0, 4.0, 4.0) / vec3(2.0, 2.0, 2.0) | 2
+            uniform.vec3.x0 = vec3(2.0, 2.0, 2.0) + vec2(0.0, 0.0) | 0
+            uniform.vec3.x17 = -skyColor + skyColor + vec3(2.0, 2.0, 2.0) | 2
+            uniform.bool.z0 = !vec3(0.0, 0.0, 0.0) | 0
+            uniform.bool.z2 = vec3(1.0, 1.0, 1.0) < vec3(2.0, 2.0, 2.0) | 0
+            uniform.vec3.w5 = 2.0 | 0
+            uniform.vec3.w6 = vec3(2.0) | 0
+            uniform.vec3.z10 = vec3(2.0, 2.0) | 0
+            uniform.vec3.w7 = vec3(vec2(2.0, 2.0), 2.0) | 0
+            uniform.vec3.x6 = vec3(vec3(2.0, 2.0, 2.0)) | 0
+            uniform.vec2.x8 = vec2(frameCounter * 0 + 2, 2) | 2
+            uniform.vec4.w4 = vec4(2.0, 2.0, 2.0, 2.0) | 2
+            uniform.vec3.w11 = abs(vec3(-2.0, -2.0, -2.0)) | 2
+            uniform.vec2.z5 = floor(vec3(2.5, 2.5, 2.5)) | 0
+            uniform.float.z6 = abs(skyColor) | 0
+            uniform.vec3.w10 = max(vec3(2.0, 2.0, 2.0), vec3(0.0, 0.0, 0.0)) | 2
+            uniform.vec3.w9 = max(vec3(2.0, 2.0, 2.0), 0.0) | 0
+            uniform.vec3.x12 = min(vec3(2.0, 2.0, 2.0), vec3(3.0, 3.0, 3.0), vec3(4.0, 4.0, 4.0)) | 0
+            uniform.vec3.y3 = clamp(vec3(2.0, 2.0, 2.0), vec3(0.0, 0.0, 0.0), vec3(3.0, 3.0, 3.0)) | 2
+            uniform.vec3.w12 = clamp(vec3(2.0, 2.0, 2.0), 0.0, 3.0) | 0
+            uniform.vec3.y9 = sqrt(vec3(4.0, 4.0, 4.0)) | 0
+            uniform.vec3.x3 = pow(vec3(2.0, 2.0, 2.0), 1.0) | 0
+            uniform.vec3.x11 = smooth(vec3(2.0, 2.0, 2.0), 0.0001, 0.0001) | 0
+            uniform.vec3.w8 = if(1.0 > 0.0, vec3(2.0, 2.0, 2.0), vec3(0.0, 0.0, 0.0)) | 2
+            uniform.vec3.x19 = if(1.0 > 0.0, vec3(2.0, 2.0, 2.0), 0.0) | 0
+            uniform.float.x9 = if(vec3(1.0, 1.0, 1.0), 2.0, 0.0) | 0
+            uniform.vec3.z12 = if(1.0 < 0.0, vec3(0.0, 0.0, 0.0), 1.0 > 0.0, vec3(2.0, 2.0, 2.0), vec3(0.0, 0.0, 0.0)) | 0
+            uniform.vec3.z9 = ifb(1.0 > 0.0, vec3(2.0, 2.0, 2.0), vec3(0.0, 0.0, 0.0)) | 0
+            uniform.float.x15 = gbufferModelView * 0.0 + 2.0 | 0
+            uniform.float.x16 = gbufferModelView.0.0 * 0.0 + 2.0 | 2
+            variable.vec3.vbad = vec3(2.0, 2.0, 2.0) * 1.0 | 0
+            uniform.float.w13 = vbad.y | 0
+            variable.vec3.vgood = vec3(2.0, 2.0, 2.0) | 2
+            uniform.float.w14 = vgood.y | 2
+            uniform.vec3.w16 = vgood * vgood * vec3(0.5, 0.5, 0.5) | 2";
+        let rows: Vec<(&str, f64)> = (ROWS.lines())
+            .map(|l| l.trim().split_once(" | ").unwrap())
+            .map(|(line, x)| (line, x.parse().unwrap()))
+            .collect();
+        let mut c = custom(
+            &rows
+                .iter()
+                .map(|r| format!("{}\n", r.0))
+                .collect::<String>(),
+        );
+        assert!(c.notes.is_empty(), "{:?}", c.notes);
+        let builtin = |n: &str| match n {
+            "skyColor" => Some(Val::vector(&[0.25, 0.5, 0.75])),
+            "gbufferModelView" => Some(Val::vector(&[0.0; 16])),
+            "frameCounter" => Some(Val::scalar(7.0)),
+            _ => None,
+        };
+        let got = c.eval(0.016, &builtin);
+        let uniforms = rows.iter().filter(|r| r.0.starts_with("uniform."));
+        assert_eq!(got.len(), uniforms.clone().count());
+        for (v, (line, x)) in got.iter().zip(uniforms) {
+            // A vector shows its `.y`, as the probe drew it; one reading 0 is 0 throughout.
+            let shown = v.v[usize::from(v.n > 1)];
+            assert!((shown - x).abs() < 1e-9, "{line}: {shown}, Iris {x}");
+            assert!(*x != 0.0 || v.v[..v.n].iter().all(|&c| c == 0.0), "{line}");
+        }
+        let zeros = rows.iter().filter(|r| r.1 == 0.0).count();
+        assert_eq!(c.notes.len(), zeros, "{:?}", c.notes);
+    }
+
+    /// Iris 1.11.7, with our probe packs of #9126 (`final` drew each uniform, a vector's `.y`):
+    /// an expression whose type isn't the declared one (an `int` given a float, a `float` given a
+    /// bool...), or that names `true`, `false` or a function Iris doesn't have, reads 0. Each row:
+    /// the probe's line, what Iris read (`-` where it depends on the world: the built-ins), and
+    /// `w` where Iris warned `Failed to resolve uniform`. Values are read from stripes, to 0.02.
+    #[test]
+    fn an_expression_without_its_declared_scalar_type_reads_zero() {
+        const ROWS: &str = "\
+            uniform.int.s0 = 2 | 2
+            uniform.int.s1 = 2.0 | 0 | w
+            uniform.float.s2 = 2 | 2
+            uniform.int.s3 = 7 / 2 | 0 | w
+            uniform.bool.s4 = 1 > 0 | 1
+            uniform.float.s5 = 1 > 0 | 0 | w
+            uniform.int.s6 = 1 > 0 | 0 | w
+            uniform.bool.s7 = 2.0 | 0 | w
+            uniform.float.s10 = frameCounter * 0 + 2 | 2
+            uniform.int.t2 = 2 * 1.0 | 0 | w
+            uniform.float.t4 = 7 / 2 | 3.5
+            uniform.bool.t6 = 1 | 0 | w
+            uniform.bool.t7 = true | 0 | w
+            uniform.int.t8 = true | 0 | w
+            uniform.float.t9 = true | 0 | w
+            uniform.bool.t12 = !1 | 0 | w
+            uniform.int.t17 = if(1 > 0, 2, 0) | 2
+            uniform.int.t18 = round(2.4) | 0 | w
+            uniform.bool.t21 = between(2.0, 1.0, 3.0) | 1
+            uniform.float.t22 = between(2.0, 1.0, 3.0) | 0 | w
+            uniform.int.t25 = max(2, 1.0) | 0 | w
+            uniform.float.t26 = if(1 > 0, 2, 0) | 2
+            uniform.float.q0 = if(1 < 0, 1.0, 1 > 0, 2.0, 0.0) | 2
+            uniform.int.q1 = if(1 < 0, 1, 1 > 0, 2, 0) | 2
+            uniform.float.q2 = randomInt(2.0, 2.0) | 0 | w
+            uniform.bool.q4 = 1 > 0 || 1 | 0 | w
+            uniform.bool.q11 = in(2.0, 1, 2) | 1
+            uniform.vec2.v0 = eyeBrightness + vec2(0.0, 0.0) | 0 | w
+            uniform.vec2.v1 = vec2(0.0, 0.0) + eyeBrightness | 0 | w
+            uniform.vec2.v4 = eyeBrightness - eyeBrightness + vec2(2.0, 2.0) | 0 | w
+            uniform.float.v5 = eyeBrightness.y / 100 | 2.4
+            uniform.vec2.v6 = max(eyeBrightness, vec2(0.0, 0.0)) | 0 | w
+            uniform.vec2.v7 = if(1 > 0, eyeBrightness, vec2(0.0, 0.0)) | 0 | w
+            uniform.bool.v8 = (1 > 0) == 1 | 0 | w
+            uniform.bool.v9 = 1 > (1 > 0) | 0 | w
+            uniform.vec2.v14 = abs(eyeBrightness) | 0 | w
+            uniform.int.v19 = fmod(5.0, 3) | 0 | w
+            uniform.int.v20 = edge(1.5, 2.5) | 0 | w
+            uniform.int.v21 = randomInt(2.0, 3.0) | 0 | w
+            uniform.float.v25 = sin(1 > 0) | 0 | w
+            uniform.float.v26 = between(1 > 0, 0, 2) * 0 + 2 | 0 | w
+            uniform.int.o0 = (1 > 0) + 1 | 0 | w
+            uniform.bool.o1 = (1 > 0) && 1 | 0 | w
+            uniform.int.o5 = -(1 > 0) | 0 | w
+            uniform.int.o6 = 5 % 3.0 | 0 | w
+            uniform.int.o8 = if(1, 2, 0) | 0 | w
+            uniform.float.o9 = if(1.0, 2.0, 0.0) | 0 | w
+            uniform.int.o10 = if(1 > 0, 2, 1.0) | 0 | w
+            uniform.float.o11 = if(1 > 0, 2, 1.0) | 2
+            uniform.int.o14 = smooth(2, 0.0001) | 0 | w
+            uniform.int.o16 = false | 0 | w
+            uniform.bool.o17 = false | 0 | w
+            uniform.vec2.o19 = eyeBrightness | 0 | w
+            uniform.vec3.o20 = cameraPositionInt | 0 | w
+            uniform.vec2.o21 = vec2(eyeBrightness.x, 2) | 2
+            uniform.vec3.o22 = vec3(1 > 0, 2, 2) | 0 | w
+            uniform.float.o24 = sin(0) + 2 | 2
+            uniform.int.o25 = abs(-2.0) | 0 | w
+            uniform.int.o27 = clamp(2, 0, 3.0) | 0 | w
+            uniform.int.o30 = 2 + 0 * frameTimeCounter | 0 | w
+            uniform.int.f0i = sin(1.5707963) | 0 | w
+            uniform.int.f8i = torad(114.59156) | 0 | w
+            uniform.float.f8f = torad(114.59156) | 2
+            uniform.int.f16i = floor(2.5) | 2
+            uniform.int.f17i = ceil(1.5) | 2
+            uniform.int.f29i = pow(2, 1) | 0 | w
+            uniform.int.f30i = fmod(5, 3) | 2
+            uniform.int.f31i = lerp(0.5, 0, 4) | 0 | w
+            uniform.float.f31f = lerp(0.5, 0, 4) | 0 | w
+            uniform.int.f32i = mix(0, 4, 0.5) | 0 | w
+            uniform.int.f33i = edge(1, 2) | 1
+            uniform.bool.g0b = ifb(1 > 0, 1 > 0, 2 > 3) | 0 | w
+            uniform.bool.g1b = ifb(1 > 0, 2, 3) | 0 | w
+            uniform.bool.g2b = edge(1, 2) | 0 | w
+            uniform.bool.g3b = between(2, 1, 3) | 1
+            uniform.int.p0i = pi | 0 | w
+            uniform.float.p0f = pi | 3.14
+            uniform.bool.p0b = pi | 0 | w
+            uniform.bool.p1b = BIOME_PLAINS | 0 | w
+            uniform.int.p4i = notAFunction(2.0) | 0 | w
+            uniform.int.b0i = frameCounter | -
+            uniform.bool.b0b = frameCounter | 0 | w
+            uniform.int.b4i = hideGUI | 0 | w
+            uniform.bool.b4b = hideGUI | -
+            uniform.int.b7i = frameTimeCounter | 0 | w
+            uniform.bool.b7b = frameTimeCounter | 0 | w
+            uniform.int.b19i = eyeBrightness.x | -
+            uniform.bool.b19b = eyeBrightness.x | 0 | w
+            uniform.int.b3_22i = centerDepthSmooth | 0 | w
+            uniform.float.b3_22f = centerDepthSmooth | 0 | w
+            uniform.bool.b3_22b = centerDepthSmooth | 0 | w
+            uniform.int.b3_31i = currentRenderedItemId | -
+            uniform.bool.b3_31b = currentRenderedItemId | 0 | w
+            uniform.bool.b3_33b = worldTime | 0 | w";
+        let rows: Vec<(&str, Option<f64>, bool)> = (ROWS.lines())
+            .map(|l| {
+                let mut p = l.trim().split(" | ");
+                let line = p.next().unwrap();
+                let x = p.next().unwrap().parse().ok();
+                (line, x, p.next() == Some("w"))
+            })
+            .collect();
+        let mut c = custom(
+            &rows
+                .iter()
+                .map(|r| format!("{}\n", r.0))
+                .collect::<String>(),
+        );
+        assert!(c.notes.is_empty(), "{:?}", c.notes);
+        let builtin = |n: &str| match n {
+            "frameCounter" | "worldTime" | "frameTimeCounter" => Some(Val::scalar(2.0)),
+            "hideGUI" => Some(Val::scalar(1.0)),
+            "sunAngle" => Some(Val::scalar(0.25)),
+            "centerDepthSmooth" => Some(Val::scalar(0.5)),
+            "eyeBrightness" => Some(Val::vector(&[0.0, 240.0])),
+            "cameraPositionInt" => Some(Val::vector(&[1.0, 2.0, 3.0])),
+            "cameraPosition" => Some(Val::vector(&[1.0, 64.0, 2.0])),
+            _ => None,
+        };
+        let got = c.eval(0.016, &builtin);
+        assert_eq!(got.len(), rows.len());
+        for (v, (line, x, _)) in got.iter().zip(&rows) {
+            let shown = v.v[usize::from(v.n > 1)];
+            if let Some(x) = x {
+                assert!((shown - x).abs() <= 0.02, "{line}: {shown}, Iris {x}");
+            }
+        }
+        // Exactly the uniforms Iris warned about read 0, each with a note.
+        let warned: Vec<&str> = (rows.iter().filter(|r| r.2))
+            .map(|r| r.0.split(" = ").next().unwrap().rsplit('.').next().unwrap())
+            .collect();
+        let noted: Vec<&str> = (c.notes.iter())
+            .filter(|n| n.contains("` reads 0: "))
+            .map(|n| n[1..].split('`').next().unwrap())
+            .collect();
+        assert_eq!(noted, warned);
     }
 }
