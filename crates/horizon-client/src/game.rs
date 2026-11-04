@@ -19725,7 +19725,10 @@ fn named_scope<'scope, T: Send + 'scope>(
     f: impl FnOnce() -> T + Send + 'scope,
 ) -> std::thread::ScopedJoinHandle<'scope, T> {
     std::thread::Builder::new()
-        .name(format!("horizon-load-{name}"))
+        // Linux keeps 15 bytes of a thread name: a short prefix keeps them apart
+        // ("horizon-load-core" and "horizon-load-collision" would both read
+        // "horizon-load-co").
+        .name(format!("load-{name}"))
         .spawn_scoped(scope, f)
         // `Scope::spawn`, which this replaces, panics when the OS refuses a
         // thread. Keeping that: a resource load cannot go on without it.
