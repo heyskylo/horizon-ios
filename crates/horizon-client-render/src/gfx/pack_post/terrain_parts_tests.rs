@@ -92,6 +92,7 @@ fn strips(programs: &[(&str, [u8; 3], f32)]) -> Option<[Option<[u8; 3]>; 3]> {
                 cull: false,
             }),
             block_ids: &[],
+            sprite_rects: &[],
             celestial: None,
             gui_size: SIZE,
             clouds: None,
