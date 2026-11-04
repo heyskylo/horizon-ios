@@ -111,6 +111,8 @@
   "Peak Brightness": "Peak Brightness",
   "Black Level": "Black Level",
   "UI Brightness": "UI Brightness",
+  "HDR Lighting": "HDR Lighting",
+  "Light sources, the sun and sunlight shine past white. Off: just as SDR.": "Light sources, the sun and sunlight shine past white. Off: just as SDR.",
   "Smooth Gradients": "Smooth Gradients",
   "16-bit frame: dark skies and shadows don't band. A bit more VRAM. Next start.": "16-bit frame: dark skies and shadows don't band. A bit more VRAM. Next start.",
   "Battery Mode": "Battery Mode",
