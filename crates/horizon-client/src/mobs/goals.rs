@@ -2724,6 +2724,14 @@ impl Goal for TryFindWater {
         m.nav_move_to(cx.w, self.wanted, 1.0);
     }
 }
+/// The block a mob stands in (`blockPosition`).
+fn block_of(m: &Mob) -> [i32; 3] {
+    [
+        m.position.x.floor() as i32,
+        m.position.y.floor() as i32,
+        m.position.z.floor() as i32,
+    ]
+}
 /// `MoveToBlockGoal`'s shared state: search, walk to and stay at a block.
 #[derive(Clone, Debug, Default)]
 pub struct MoveToBlock {
@@ -2768,11 +2776,16 @@ impl MoveToBlock {
         w: &MobWorld,
         valid: impl Fn(&MobWorld, [i32; 3]) -> bool,
     ) -> bool {
-        let base = [
-            m.position.x.floor() as i32,
-            m.position.y.floor() as i32,
-            m.position.z.floor() as i32,
-        ];
+        match self.walk(block_of(m), |p| valid(w, p)) {
+            Some(p) => {
+                self.block = p;
+                true
+            }
+            None => false,
+        }
+    }
+    /// `findNearestBlock`'s walk out from `base`: the first cell `valid` takes.
+    fn walk(&self, base: [i32; 3], mut valid: impl FnMut([i32; 3]) -> bool) -> Option<[i32; 3]> {
         let next = |v: i32| if v > 0 { -v } else { 1 - v };
         let mut y = self.vertical_start;
         while y <= self.vertical_range {
@@ -2782,9 +2795,8 @@ impl MoveToBlock {
                     let mut z = if x < r && x > -r { r } else { 0 };
                     while z <= r {
                         let p = [base[0] + x, base[1] + y - 1, base[2] + z];
-                        if valid(w, p) {
-                            self.block = p;
-                            return true;
+                        if valid(p) {
+                            return Some(p);
                         }
                         z = next(z);
                     }
@@ -2793,7 +2805,46 @@ impl MoveToBlock {
             }
             y = next(y);
         }
-        false
+        None
+    }
+    /// The cells [`Self::walk`] can reach from `base`, as a box (inclusive), or
+    /// `None` when it walks none.
+    fn walk_bounds(&self, base: [i32; 3]) -> Option<([i32; 3], [i32; 3])> {
+        if self.range <= 0 || self.vertical_start > self.vertical_range {
+            return None;
+        }
+        // The heights go out from `vertical_start` both ways, past neither it
+        // nor `vertical_range` by more than one, a block below.
+        let reach = self.range - 1;
+        let height = self
+            .vertical_start
+            .saturating_abs()
+            .max(self.vertical_range.saturating_abs())
+            .saturating_add(1);
+        Some((
+            [
+                base[0].saturating_sub(reach),
+                base[1].saturating_sub(height).saturating_sub(1),
+                base[2].saturating_sub(reach),
+            ],
+            [
+                base[0].saturating_add(reach),
+                base[1].saturating_add(height),
+                base[2].saturating_add(reach),
+            ],
+        ))
+    }
+    /// Whether [`Self::find_nearest`] may find a block whose state `matches`
+    /// (its `valid` needs one): false when no section of the cells it walks
+    /// holds such a state in its palette, so the walk would find nothing.
+    pub fn may_find(
+        &self,
+        m: &Mob,
+        w: &MobWorld,
+        matches: impl FnMut(horizon_world::registry::BlockStateId) -> bool,
+    ) -> bool {
+        self.walk_bounds(block_of(m))
+            .is_some_and(|(lo, hi)| w.world.may_hold(lo, hi, matches))
     }
     pub fn can_continue(&self, w: &MobWorld, valid: impl Fn(&MobWorld, [i32; 3]) -> bool) -> bool {
         self.try_ticks >= -self.max_stay && self.try_ticks <= 1200 && valid(w, self.block)
@@ -3018,5 +3069,46 @@ mod peaceful_targets_tests {
             assert!(!wolf.can_target_player(&peaceful, 16.0, false), "peaceful");
             assert!(!wolf.can_keep_target_player(&peaceful, 16.0), "peaceful");
         });
+    }
+}
+#[cfg(test)]
+mod move_to_block_tests {
+    use super::MoveToBlock;
+
+    /// Every cell the walk tries lies in the box `may_find` asks the
+    /// palettes about, for the ranges the goals use and odd ones; and the
+    /// walk stops at the first cell it is given.
+    #[test]
+    fn the_walk_stays_in_its_bounds() {
+        for range in [-1, 0, 1, 2, 8, 24] {
+            for vertical_range in [-2, 0, 1, 2, 3, 6] {
+                for vertical_start in [-3, -1, 0, 1, 2] {
+                    let goal = MoveToBlock {
+                        range,
+                        vertical_range,
+                        vertical_start,
+                        ..Default::default()
+                    };
+                    for base in [[0, 64, 0], [-17, -60, 31], [100, 319, -100]] {
+                        let bounds = goal.walk_bounds(base);
+                        let mut walked = 0;
+                        let found = goal.walk(base, |p| {
+                            walked += 1;
+                            let (lo, hi) = bounds.expect("a walk with no bounds");
+                            assert!((0..3).all(|a| lo[a] <= p[a] && p[a] <= hi[a]), "{p:?}");
+                            false
+                        });
+                        assert_eq!(found, None);
+                        assert_eq!(
+                            walked > 0,
+                            bounds.is_some(),
+                            "{range} {vertical_range} {vertical_start}"
+                        );
+                    }
+                }
+            }
+        }
+        let goal = MoveToBlock::new(1.0, 24, 2);
+        assert_eq!(goal.walk([5, 64, 5], |_| true), Some([5, 63, 5]));
     }
 }
