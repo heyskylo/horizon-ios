@@ -4,6 +4,9 @@ set -eu
 
 apk add --no-cache build-base pkgconf alsa-lib-dev eudev-dev python3 git
 git config --global --add safe.directory /work
+# Match the stable channel used by the other release jobs, not the image's bundled Rust.
+rustup update stable --no-self-update
+export RUSTUP_TOOLCHAIN=stable
 rustup component add llvm-tools
 
 # Static musl cannot dlopen the graphics/window libraries. Keep audio and controllers,

@@ -83,7 +83,7 @@ jobs:
   build:
     needs: exporters
     name: build ${{ matrix.name }}
-    # Windows ARM64 and musl are new: its failure never holds the other platforms' release (the signing job
+    # Windows ARM64 and musl are new: a failure never holds the other platforms' release (the signing job
     # needs this job, and a failed entry of it would fail it). The release steps leave the missing
     # optional archives out with a warning.
     continue-on-error: ${{ matrix.name == 'windows-arm64' || matrix.name == 'linux-musl' }}

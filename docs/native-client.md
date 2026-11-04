@@ -12,6 +12,47 @@ in vanilla's Anvil format.
 in the README scores each subsystem against vanilla and lists what is still
 missing; [Rust rewrite status](rust-parity.md) has the details.
 
+## musl Linux: manual installation
+
+On x86-64 musl distributions, download `horizon-linux-musl-x86_64.tar.gz` from the
+[Nightly release](https://github.com/horizon-rust/horizon/releases/tag/nightly), when available. This optional
+build is omitted if its build fails. The launcher does not install or update it. Its desktop gameplay and
+vanilla parity are still unverified; see the [musl build limitations](release-flow.md#builds).
+
+You need a working X11 or Wayland desktop, musl, libgcc, ALSA and libudev. For Vulkan, install both the loader
+(`libvulkan.so.1`) and your GPU's driver. On Alpine, the common runtime packages are:
+
+```sh
+sudo apk add musl libgcc alsa-lib eudev-libs vulkan-loader
+```
+
+Install the appropriate Mesa/Vulkan driver and window-system libraries for your desktop separately; OpenGL
+also needs a working musl-compatible OpenGL/EGL stack. NVIDIA's proprietary userspace drivers require glibc
+and cannot be loaded by this build; see [Alpine's GPU requirements](https://wiki.alpinelinux.org/wiki/Requirements).
+
+Resource preparation needs a **musl-compatible system JDK 25** (including `java` and `javac`). Mojang's bundled
+Linux Java runtime needs glibc. Install JDK 25 from your distribution or another musl-compatible provider,
+set `JAVA_HOME` to that JDK, and check `"$JAVA_HOME/bin/java" -version`. You also need your own Minecraft Java
+Edition 26.3 installation and its server jar. Download the server jar yourself from the `downloads.server.url`
+in that version's launcher JSON. Horizon's preparer does not download it.
+
+Extract the archive and, inside its folder, run the following with your actual paths:
+
+```sh
+./horizon-prepare --prepare --minecraft-dir /path/to/minecraft --server-jar /path/to/server.jar
+./horizon-prepare sounds --minecraft-dir /path/to/minecraft
+./horizon-client --resources "$PWD/.local/horizon-client/26.3"
+```
+
+The sounds command copies the sounds from your Minecraft installation's asset store. If that store is
+incomplete, obtain the missing assets through your Minecraft launcher first. Preparation details and alternative
+layouts are described below.
+
+Updates are manual: download and extract the next musl archive, prepare its resources, and use that version's
+programs. Keep your saves in a separate `HORIZON_HOME` and point each version at it. Back up saves before
+updating. The bundled `horizon-server` also refuses automatic updates because the server update archives use
+glibc. An absent musl archive is not a reason to install the glibc archive on a musl system.
+
 ## Run from a checkout
 
 Use current stable Rust (1.90+) and JDK 25 (Python 3.10+ only for the development
