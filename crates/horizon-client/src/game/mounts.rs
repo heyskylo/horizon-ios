@@ -192,8 +192,7 @@ impl Game<'_> {
         if !self.may_board() || !self.native_may_board(id) {
             return true;
         }
-        self.riding = Some(id);
-        self.trigger_player("minecraft:started_riding");
+        self.start_riding(id);
         true
     }
     /// `FoodOnAStickItem.use` while riding: boost the mount, wear the stick.
@@ -357,10 +356,9 @@ impl Game<'_> {
         m.extra.flag = false;
         m.extra.counter = 0;
         self.yaw = m.yaw;
-        self.riding = Some(m.id);
         self.mount.jump_ticks = 0;
         self.mount.jump_scale = 0.0;
-        self.trigger_player("minecraft:started_riding");
+        self.start_riding(id);
         true
     }
     /// `AbstractHorse.handleEating`.

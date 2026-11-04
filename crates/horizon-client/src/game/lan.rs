@@ -2346,6 +2346,14 @@ impl Game<'_> {
             let ridden: Vec<u32> = host.hub.guests.iter().filter_map(|g| g.vehicle).collect();
             self.find_ridden_vehicle_portals(&ridden);
         }
+        // A guest's mount fired its `started_riding` with that guest alone in
+        // place (the hub held by its action): now every player on the vehicle
+        // hears it (`Entity.startRiding`).
+        if !self.started_riding.is_empty() {
+            self.lan = Some(host);
+            self.flush_started_riding();
+            host = self.lan.take().expect("the hub is back after the triggers");
+        }
         {
             let has_guests = !host.hub.guests.is_empty();
             let mut states = std::mem::take(&mut host.states);

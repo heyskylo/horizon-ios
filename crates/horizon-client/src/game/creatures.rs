@@ -2968,7 +2968,10 @@ impl Game<'_> {
                     }
                 }
                 MobEvent::StartRiding { rider, vehicle } => {
-                    horizon_client::mobs::riders::start_riding(&mut self.mobs, rider, vehicle);
+                    if horizon_client::mobs::riders::start_riding(&mut self.mobs, rider, vehicle) {
+                        // sendEventAndTriggers: the server players already on it.
+                        self.note_started_riding(vehicle);
+                    }
                 }
                 // Applied after the fish's tick (`apply_brain_events`).
                 MobEvent::StartFollowing { .. } | MobEvent::SchoolSize { .. } => {}
