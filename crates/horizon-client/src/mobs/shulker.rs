@@ -21,19 +21,22 @@ use std::f32::consts::PI;
 
 // Shulker state: `variant3` the attach face (3D data value), `counter` the
 // raw peek (0..100), `color` the shell colour (16 none). AnimState slot 0
-// the current peek amount.
+// the current peek amount. On the client, `scratch[0]` is
+// `clientSideTeleportInterpolation` and `scratch[1..3]` is
+// `clientOldAttachPosition`.
 pub const PEEK: usize = 0;
 pub const NO_COLOR: u8 = 16;
 /// `Direction.DOWN`'s 3D data value.
 const DOWN: u8 = 0;
 
 /// `Shulker.startRiding`: a shulker that boards a vehicle puts its attach face
-/// back to `DOWN`, so it rides lid up whatever block face it was stuck to. The
-/// client half (clearing the teleport interpolation) has no counterpart here:
-/// the face itself is the whole of the synced change.
+/// back to `DOWN`, so it rides lid up whatever block face it was stuck to.
+/// The client half clears the teleport slide (`clientOldAttachPosition` and
+/// `clientSideTeleportInterpolation`).
 pub fn on_start_riding(m: &mut Mob) {
     if m.species() == Species::Shulker {
         m.extra.variant3 = DOWN;
+        m.extra.scratch[0] = 0;
     }
 }
 
@@ -346,12 +349,68 @@ pub fn look_yaw(m: &Mob, at: [f64; 3]) -> Option<f32> {
         f64::from(delta_forward),
     ))
 }
-/// `Shulker.tick` on a client that is not the server: the lid eases to the
-/// peek it was sent, and its body stays square (`ShulkerBodyRotationControl`).
+/// `Shulker.tick` on a client that is not the server: a block change starts
+/// the teleport slide (`setPos`), the countdown runs, the lid eases to the
+/// peek it was sent, and the body stays square (`ShulkerBodyRotationControl`).
 pub fn client_tick(m: &mut Mob) {
+    note_client_teleport(m);
+    // The slide counts down after `setPos` has armed it, same tick.
+    if m.extra.scratch[0] > 0 {
+        m.extra.scratch[0] -= 1;
+    }
     m.anim.vo = m.anim.v;
     ease_peek(m);
     m.body_yaw = 0.0;
+}
+/// `Shulker.setPos` on the client: a block change that is not a ride, and
+/// not the block already remembered, starts a 6-tick slide. The old position
+/// is snapped to the new one so ordinary interpolation does not also run.
+fn note_client_teleport(m: &mut Mob) {
+    if m.extra.passenger {
+        m.extra.scratch[0] = 0;
+        return;
+    }
+    // The first tick's `setPos` sees `tickCount == 0` and starts nothing.
+    if m.age <= 1 {
+        return;
+    }
+    let old = [
+        m.previous.x.floor() as i32,
+        m.previous.y.floor() as i32,
+        m.previous.z.floor() as i32,
+    ];
+    let pos = block_pos(m);
+    if old == pos {
+        return;
+    }
+    let remembered = [m.extra.scratch[1], m.extra.scratch[2], m.extra.scratch[3]];
+    if m.extra.scratch[0] > 0 && pos == remembered {
+        return;
+    }
+    m.extra.scratch[1] = old[0];
+    m.extra.scratch[2] = old[1];
+    m.extra.scratch[3] = old[2];
+    m.extra.scratch[0] = 6;
+    m.previous = m.position;
+}
+/// `Shulker.getRenderPosition`: while the slide has ticks left, the model is
+/// pulled back toward the block it left by `((ticks - partial) / 6)^2`,
+/// times `getScale`. Vanilla's `null` is no offset.
+pub fn render_offset(m: &Mob, alpha: f32) -> glam::DVec3 {
+    let ticks = m.extra.scratch[0];
+    if m.species() != Species::Shulker || ticks <= 0 {
+        return glam::DVec3::ZERO;
+    }
+    let mut scale = (f64::from(ticks) - f64::from(alpha)) / 6.0;
+    scale *= scale;
+    scale *= f64::from(m.model_scale());
+    let current = block_pos(m);
+    let old = [m.extra.scratch[1], m.extra.scratch[2], m.extra.scratch[3]];
+    glam::DVec3::new(
+        -f64::from(current[0] - old[0]) * scale,
+        -f64::from(current[1] - old[1]) * scale,
+        -f64::from(current[2] - old[2]) * scale,
+    )
 }
 /// `Shulker.hurtServer` before the damage: arrows bounce off a closed shell.
 pub fn accepts(m: &Mob, source: &Damage) -> bool {
