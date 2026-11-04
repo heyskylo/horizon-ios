@@ -341,12 +341,31 @@ impl Game<'_> {
                     *slot = new;
                 }
             }
+            Target::Other(id) => {
+                let uuid = self.uuid_for(id);
+                let marker = self
+                    .others
+                    .iter_mut()
+                    .find(|o| {
+                        o.id == id && matches!(o.kind.as_str(), "minecraft:marker" | "marker")
+                    })
+                    .ok_or_else(stale)?;
+                let position = entity_nbt::position(&tag).ok_or_else(stale)?;
+                let [yaw, pitch] = entity_nbt::rotation(&tag);
+                marker.position = position;
+                marker.yaw = yaw;
+                marker.pitch = pitch;
+                // Keep the existing marker identity even when the input edits UUID or id.
+                set_key(&mut tag, "UUID", Tag::IntArray(uuid.to_vec()));
+                set_key(&mut tag, "id", Tag::String(marker.kind.as_str().into()));
+            }
             _ => return Err(stale()),
         }
         if let Target::Mob(id)
         | Target::Item(id)
         | Target::Stand(id)
         | Target::Frame(id)
+        | Target::Other(id)
         | Target::Fangs(id) = t
         {
             self.persist.raw.insert(id, tag);
@@ -956,6 +975,16 @@ impl Game<'_> {
             return Err(err("argument.nbt.expected.compound", &[]));
         }
         set_key(&mut tag, "id", Tag::String(kind.into()));
+        // Turtle.readAdditionalSaveData chooses its home before SummonCommand's snapTo.
+        // Preserve that load-stage default while the shared loader receives the final Pos.
+        if kind == "minecraft:turtle"
+            && !matches!(tag.get("home_pos"), Some(Tag::IntArray(home)) if home.len() == 3)
+        {
+            let home = entity_nbt::position(&tag).map_or([0; 3], |p| {
+                [p.x.floor() as i32, p.y.floor() as i32, p.z.floor() as i32]
+            });
+            set_key(&mut tag, "home_pos", Tag::IntArray(home.to_vec()));
+        }
         place_summoned(&mut tag, pos);
         let from = self.mobs.len();
         let canceled = self.persist.joins_canceled;
