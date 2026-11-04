@@ -400,10 +400,10 @@ impl Launcher {
             _ => {}
         }
 
-        // Sculk's card (not in the mockup, kept: a sponsor), where the old sidebar had it: above
-        // the links on every page but Servers, which shows the wide banner. Tall where the
-        // sidebar has the height for it besides its rows, compact otherwise.
-        if self.page != Page::Servers && !self.settings.partner_hidden {
+        // Sculk's card (not in the mockup, kept: a sponsor), where the old sidebar had it: at
+        // the sidebar's foot above the links, on every page (Servers shows the wide banner too).
+        // Tall where the sidebar has the height for it besides its rows, compact otherwise.
+        if !self.settings.partner_hidden {
             let rows = self.instances.list.len() + servers.len();
             let free = f32::from(window.viewport_size().height)
                 - 2. * MARGIN
@@ -559,7 +559,7 @@ impl Launcher {
         let (name, how) = self.who_plays();
         let face = match self.accounts.player() {
             Player::Microsoft(_) => self.accounts.selected().map(|a| a.uuid.clone()),
-            _ => None,
+            _ => Some(profile_heads::offline_key(&name)),
         };
         let open = self.account_menu;
         let chip =
@@ -754,15 +754,18 @@ impl Launcher {
                                 .size(px(30.))
                                 .rounded(px(8.))
                                 .overflow_hidden()
-                                .child(self.profile_heads.draw(
-                                    match &who {
-                                        Player::Microsoft(uuid) => Some(uuid),
-                                        _ => None,
-                                    },
-                                    30.,
-                                    self.scale,
-                                    &t,
-                                )),
+                                .child(
+                                    self.profile_heads.draw(
+                                        match &who {
+                                            Player::Microsoft(uuid) => Some(uuid.clone()),
+                                            _ => Some(profile_heads::offline_key(&name)),
+                                        }
+                                        .as_deref(),
+                                        30.,
+                                        self.scale,
+                                        &t,
+                                    ),
+                                ),
                         )
                         .child(
                             div()

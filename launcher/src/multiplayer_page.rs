@@ -6,6 +6,7 @@ use super::*;
 use gpui::{Image, ImageFormat};
 use horizon_launcher::server_list::{self, Server};
 use servers_page::Field;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -18,6 +19,16 @@ pub(super) struct Multiplayer {
     pub(super) adding: bool,
     pub(super) confirm_remove: Option<usize>,
     pub(super) error: Option<String>,
+    /// What each address answered to the status ping, asked once per list.
+    pub(super) reach: HashMap<String, Reach>,
+}
+
+/// A saved server as its status ping found it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) enum Reach {
+    Asking,
+    Online { players: u64, max: u64 },
+    Offline,
 }
 
 impl Multiplayer {
@@ -28,6 +39,40 @@ impl Multiplayer {
 }
 
 impl Launcher {
+    /// Asks each listed server for its players once, as the game's Multiplayer list does when it
+    /// opens; the rows show the answer (the mockup's dot and "3 of 10" or "Offline").
+    pub(super) fn ping_servers(&mut self, cx: &mut Context<Self>) {
+        let asks: Vec<String> = self
+            .multiplayer
+            .list
+            .iter()
+            .map(|(s, _)| s.ip.clone())
+            .filter(|ip| !self.multiplayer.reach.contains_key(ip))
+            .collect();
+        for ip in asks {
+            self.multiplayer.reach.insert(ip.clone(), Reach::Asking);
+            let address = ip.clone();
+            let task = cx
+                .background_executor()
+                .spawn(async move { horizon_launcher::telemetry::server_players(&address) });
+            cx.spawn(async move |this, cx| {
+                let answer = task.await;
+                let _ = this.update(cx, |this, cx| {
+                    let reach = match answer {
+                        Some(p) => Reach::Online {
+                            players: p.online,
+                            max: p.max,
+                        },
+                        None => Reach::Offline,
+                    };
+                    this.multiplayer.reach.insert(ip, reach);
+                    cx.notify();
+                });
+            })
+            .detach();
+        }
+    }
+
     pub(super) fn load_servers(&mut self, home: PathBuf) {
         if self.multiplayer.home.as_ref() != Some(&home) {
             self.multiplayer = Multiplayer {
