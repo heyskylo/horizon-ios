@@ -1117,5 +1117,8 @@
   "Move…": "Move…",
   "The launcher closes while your data is copied and verified, then reopens. Old folders are kept and still use disk space until you verify the move and remove them yourself.": "The launcher closes while your data is copied and verified, then reopens. Old folders are kept and still use disk space until you verify the move and remove them yourself.",
   "Open the shop": "Բացել խանութը",
-  "You don't own any cosmetics yet.": "Դուք դեռ կոսմետիկա չունեք։"
+  "You don't own any cosmetics yet.": "Դուք դեռ կոսմետիկա չունեք։",
+  "Claim for free": "Ստանալ անվճար",
+  "The shop's payment provider doesn't serve your country, so you can claim the Founder Set here for free.": "Խանութի վճարային ծառայությունը ձեր երկրում չի գործում, ուստի Հիմնադիր հավաքածուն կարող եք ստանալ այստեղ անվճար։",
+  "The Founder Set is yours.": "Հիմնադիր հավաքածուն ձերն է։"
 }

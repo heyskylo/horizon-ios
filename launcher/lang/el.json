@@ -1117,5 +1117,8 @@
   "Move…": "Move…",
   "The launcher closes while your data is copied and verified, then reopens. Old folders are kept and still use disk space until you verify the move and remove them yourself.": "The launcher closes while your data is copied and verified, then reopens. Old folders are kept and still use disk space until you verify the move and remove them yourself.",
   "Open the shop": "Άνοιγμα καταστήματος",
-  "You don't own any cosmetics yet.": "Δεν έχετε ακόμα καλλυντικά."
+  "You don't own any cosmetics yet.": "Δεν έχετε ακόμα καλλυντικά.",
+  "Claim for free": "Απόκτησέ το δωρεάν",
+  "The shop's payment provider doesn't serve your country, so you can claim the Founder Set here for free.": "Ο πάροχος πληρωμών του καταστήματος δεν εξυπηρετεί τη χώρα σου, οπότε μπορείς να αποκτήσεις το Ιδρυτικό σύνολο εδώ δωρεάν.",
+  "The Founder Set is yours.": "Το Ιδρυτικό σύνολο είναι δικό σου."
 }

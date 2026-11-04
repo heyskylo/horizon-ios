@@ -1117,5 +1117,8 @@
   "Move and restart": "Перенести и перезапустить",
   "Could not open the data folder: {error}": "Could not open the data folder: {error}",
   "Open the shop": "Открыть магазин",
-  "You don't own any cosmetics yet.": "У вас пока нет косметики."
+  "You don't own any cosmetics yet.": "У вас пока нет косметики.",
+  "Claim for free": "Получить бесплатно",
+  "The shop's payment provider doesn't serve your country, so you can claim the Founder Set here for free.": "Платёжный сервис магазина не работает в вашей стране, поэтому Набор основателя можно получить здесь бесплатно.",
+  "The Founder Set is yours.": "Набор основателя теперь ваш."
 }
