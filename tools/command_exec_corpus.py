@@ -11,12 +11,14 @@ depend on world generation.
 """
 
 
-def cmd(command, record=True, expect_result=None):
+def cmd(command, record=True, expect_result=None, comparison=None):
     op = {'op': 'cmd', 'cmd': command}
     if not record:
         op['record'] = False
     if expect_result is not None:
         op['expect_result'] = expect_result
+    if comparison is not None:
+        op['comparison'] = comparison
     return op
 
 
@@ -3145,6 +3147,62 @@ def allay_invalid_brain_retention():
     return ops
 
 
+def large_fireball_fire():
+    """LargeFireball.onHit fire eligibility, not random fire count/positions."""
+    ops = setup('/gamerule random_tick_speed 0', '/gamerule fire_spread_radius_around_player 0',
+                '/gamemode spectator', '/tp @s 40.5 230 16.5', '/forceload add 0 0 95 31',
+                '/scoreboard objectives add fire_probe dummy')
+    # Two bounded entity-ticking settle windows cover all six chunk columns;
+    # no fixed startup sleeps. Return to the middle and verify all twelve.
+    ops += setup('/tp @s 24.5 230 16.5')
+    ops += [{'op': 'settle'}]
+    ops += setup('/tp @s 72.5 230 16.5')
+    ops += [{'op': 'settle'}]
+    ops += setup('/tp @s 40.5 230 16.5')
+    ops += [{'op': 'settle'}]
+    ops += [cmd(f'/execute if loaded {x} 200 {z}', expect_result=1)
+            for x in range(0, 96, 16) for z in (0, 16)]
+    ops += setup('/tick freeze', '/fill 0 196 0 95 199 31 stone',
+                 '/fill 0 200 0 95 208 31 air')
+    for index, (label, x, griefing, tnt) in enumerate((('enabled', 40, True, False),
+                                                     ('disabled', 60, False, False),
+                                                     ('tnt', 80, True, True))):
+        tag = f'fireball_fire_{label}'
+        uuid = f'0,0,223,{index + 1}'
+        kind = 'tnt' if tnt else 'fireball'
+        y = '200' if tnt else '201.5'
+        data = 'fuse:1s' if tnt else 'ExplosionPower:3,Motion:[0d,-0.5d,0d],acceleration_power:0.1d'
+        target = f'@e[tag={tag},limit=1]'
+        ops += setup(f'/gamerule mob_griefing {str(griefing).lower()}',
+                     f'/summon {kind} {x + 0.5} {y} 16.5 {{UUID:[I;{uuid}],Tags:["fireball_fire_actor","{tag}"],{data}}}')
+        # Projectile UUID serialization is a separate view defect. Resolve
+        # the actual fixed UUID and require its unique tag, without that getter.
+        identity = (f'/execute if entity @e[tag={tag},nbt={{UUID:[I;{uuid}]}}]' if tnt else
+                    f'/execute as 00000000-0000-0000-0000-00df{index + 1:08x} if entity @s[tag={tag}]')
+        ops += [cmd(f'/execute if entity {target}', expect_result=1),
+                cmd(identity, expect_result=1),
+                cmd(f'/data get entity {target} Pos', expect_result=3),
+                cmd(f'/execute if block {x} 199 16 stone', expect_result=1)]
+        ticks = 10 if tnt else 40
+        ops += setup(f'/tick step {ticks}')
+        ops += [{'op': 'tick', 'n': ticks}]
+        ops += [cmd(f'/execute unless entity {target}', expect_result=1),
+                cmd(f'/execute if loaded {x - 8} 200 8', expect_result=1),
+                cmd(f'/execute if loaded {x + 8} 200 24', expect_result=1)]
+        sign = 'unless' if griefing or tnt else 'if'
+        ops += [cmd(f'/execute {sign} block {x} 199 16 stone', expect_result=1)]
+        ops += setup('/scoreboard players set #fire fire_probe 0')
+        # Preserve unmodified counts in both raw records and the report, but
+        # compare only presence: explosion random streams/geometry are separate.
+        ops += [cmd(f'/execute store result score #fire fire_probe run fill {x - 8} 197 8 {x + 8} 206 24 air replace fire',
+                    comparison='positive_result'),
+                cmd(f'/execute if score #fire fire_probe matches {"1.." if griefing and not tnt else "0"}', expect_result=1)]
+    return ops + setup('/kill @e[tag=fireball_fire_actor]', '/scoreboard objectives remove fire_probe',
+                       '/gamerule mob_griefing true', '/gamerule fire_spread_radius_around_player 128',
+                       '/gamerule random_tick_speed 3', '/tick unfreeze',
+                       '/gamemode creative', '/tp @s 8.5 230 8.5')
+
+
 def groups():
     return [
         ('setup', group_setup()),
@@ -3169,19 +3227,10 @@ def groups():
         ('aquatic FromBucket', aquatic_from_bucket()),
         ('villager command names', villager_command_names()),
         ('item lifetime counters', item_lifetime_counters()),
-
-
-
         ('animal signed InLove', animal_signed_in_love()),
         ('mob fire resistance damage', mob_fire_resistance_damage()),
-
-
         ('armor stand climbing', armor_stand_climbing()),
-
-
-
         ('mob armor damage', mob_armor_damage()),
-
         ('mob max health bounds', mob_max_health_bounds()),
         ('creeper custom fuse', creeper_custom_fuse()),
         ('wither spawn', wither_spawn()),
@@ -3191,6 +3240,7 @@ def groups():
         ('camel riders', camel_riders()),
         ('scores, teams and bossbars', scores()),
         ('bossbar list order', bossbar_list_order()),
+        ('large fireball fire', large_fireball_fire()),
         ('mannequin pose anchors', mannequin_pose_anchors()),
         ('item command damage', item_command_damage()),
         ('execute', execute()),
@@ -3208,13 +3258,8 @@ def groups():
         ('summoned fangs levels', summoned_fangs_levels()),
         ('bird flap sensors', bird_flap_sensors()),
         ('entity landing sensors', entity_landing_sensors()),
-
         ('loot set damage', loot_set_damage()),
-
-
-
         ('item NBT count bounds', item_nbt_count_bounds()),
-
         ('world', world_misc()),
         ('recipe special arguments', recipe_special_arguments()),
         ('progression', progression()),

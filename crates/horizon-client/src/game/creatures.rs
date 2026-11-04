@@ -5147,7 +5147,10 @@ impl Game<'_> {
                 // The blast's source names the owner, so a dragon it kills
                 // remembers the player who shot it.
                 self.set_blast_by_player(p.owner == Some(Who::Player));
-                let result = self.explode(atp, *power as f32);
+                // LargeFireball.onHit: both fire and MOB block destruction
+                // follow mob_griefing; other mob explosions keep their default.
+                let fire = self.ui.rules.bool("mob_griefing");
+                let result = self.explode_mob(atp, *power as f32, fire);
                 self.set_blast_by_player(false);
                 self.combat.explosion_owner = None;
                 self.combat.explosion_in_water = false;
