@@ -530,4 +530,3 @@ pub fn attack_scale(m: &Mob) -> f32 {
         0.0
     }
 }
-
