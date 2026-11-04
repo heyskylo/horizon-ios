@@ -1152,5 +1152,10 @@
   "{d} days {h} h": "{d} tagoj {h} h",
   "{h} h {m} min": "{h} h {m} min",
   "{m} min": "{m} min",
-  "{time} left to claim it": "restas {time} por postuli ĝin"
+  "{time} left to claim it": "restas {time} por postuli ĝin",
+  "A native build or cache cleanup is running. Try again when it finishes.": "Denaska konstruo aŭ kaŝmemora purigado okazas. Reprovu kiam ĝi finiĝos.",
+  "Cleared {bytes} bytes of native build cache. The next changed build will compile from scratch.": "Forigis {bytes} bajtojn de la denaska konstrua kaŝmemoro. La sekva ŝanĝita konstruo kompiliĝos de nulo.",
+  "Could not access the native build cache: {error}": "Ne eblis aliri la denaskan konstruan kaŝmemoron: {error}",
+  "Enter a cache limit in GiB; 0 disables automatic cleanup.": "Enigu kaŝmemoran limon en GiB; 0 malŝaltas aŭtomatan purigadon.",
+  "Refusing native cache cleanup at an unexpected file or link: {path}": "Rifuzas purigi la denaskan kaŝmemoron ĉe neatendita dosiero aŭ ligilo: {path}"
 }

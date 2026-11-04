@@ -1152,5 +1152,10 @@
   "{d} days {h} h": "{d} araw {h} h",
   "{h} h {m} min": "{h} h {m} min",
   "{m} min": "{m} min",
-  "{time} left to claim it": "{time} na lang para i-claim ito"
+  "{time} left to claim it": "{time} na lang para i-claim ito",
+  "A native build or cache cleanup is running. Try again when it finishes.": "May tumatakbong native build o paglilinis ng cache. Subukang muli kapag tapos na ito.",
+  "Cleared {bytes} bytes of native build cache. The next changed build will compile from scratch.": "Nalinis ang {bytes} bytes ng native build cache. Ang susunod na binagong build ay magko-compile mula sa simula.",
+  "Could not access the native build cache: {error}": "Hindi ma-access ang native build cache: {error}",
+  "Enter a cache limit in GiB; 0 disables automatic cleanup.": "Maglagay ng limitasyon ng cache sa GiB; ang 0 ay nag-o-off ng awtomatikong paglilinis.",
+  "Refusing native cache cleanup at an unexpected file or link: {path}": "Tinatanggihan ang paglilinis ng native cache sa hindi inaasahang file o link: {path}"
 }

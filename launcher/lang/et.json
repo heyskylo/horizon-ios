@@ -1152,5 +1152,10 @@
   "{d} days {h} h": "{d} päeva {h} h",
   "{h} h {m} min": "{h} h {m} min",
   "{m} min": "{m} min",
-  "{time} left to claim it": "väljavõtmiseks jäänud {time}"
+  "{time} left to claim it": "väljavõtmiseks jäänud {time}",
+  "A native build or cache cleanup is running. Try again when it finishes.": "Natiivne ehitus või vahemälu puhastus on käimas. Proovi uuesti, kui see lõpeb.",
+  "Cleared {bytes} bytes of native build cache. The next changed build will compile from scratch.": "Natiivse ehituse vahemälust puhastati {bytes} baiti. Järgmine muudetud ehitus kompileeritakse algusest.",
+  "Could not access the native build cache: {error}": "Natiivse ehituse vahemälule ei pääsenud ligi: {error}",
+  "Enter a cache limit in GiB; 0 disables automatic cleanup.": "Sisesta vahemälu piirang GiB-des; 0 lülitab automaatse puhastuse välja.",
+  "Refusing native cache cleanup at an unexpected file or link: {path}": "Natiivse vahemälu puhastamisest keeldutakse ootamatu faili või lingi tõttu: {path}"
 }

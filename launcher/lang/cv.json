@@ -1152,5 +1152,10 @@
   "{d} days {h} h": "{d} кун {h} сех",
   "{h} h {m} min": "{h} сех {m} мин",
   "{m} min": "{m} мин",
-  "{time} left to claim it": "илме {time} юлнӑ"
+  "{time} left to claim it": "илме {time} юлнӑ",
+  "A native build or cache cleanup is running. Try again when it finishes.": "Тӑван пухӑм е кэша тасатни пырать. Вӗҫленсен тепӗр хут тӑрӑшса пӑхӑр.",
+  "Cleared {bytes} bytes of native build cache. The next changed build will compile from scratch.": "Тӑван пухӑм кэшӗнчен {bytes} байт тасатнӑ. Тепӗр улшӑннӑ пухӑм пуҫламӑшран компиляциленӗ.",
+  "Could not access the native build cache: {error}": "Тӑван пухӑм кэшне кӗме май килмерӗ: {error}",
+  "Enter a cache limit in GiB; 0 disables automatic cleanup.": "Кэш чиккине GiB-па кӗртӗр; 0 хӑй тасатассине сӳнтерет.",
+  "Refusing native cache cleanup at an unexpected file or link: {path}": "Кӗтмен файлпа е каçӑпа тӑван кэша тасатасран хирӗҫленет: {path}"
 }

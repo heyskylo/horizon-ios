@@ -1152,5 +1152,10 @@
   "{d} days {h} h": "{d} dagen {h} oere",
   "{h} h {m} min": "{h} oere {m} min",
   "{m} min": "{m} min",
-  "{time} left to claim it": "noch {time} om it op te easkjen"
+  "{time} left to claim it": "noch {time} om it op te easkjen",
+  "A native build or cache cleanup is running. Try again when it finishes.": "Der rint in native bou of it skjinmeitsjen fan de cache. Besykje it opnij as it klear is.",
+  "Cleared {bytes} bytes of native build cache. The next changed build will compile from scratch.": "{bytes} bytes fan de native bou-cache skjinmakke. De folgjende wizige bou wurdt fan it begjin ôf kompilearre.",
+  "Could not access the native build cache: {error}": "Koe de native bou-cache net berikke: {error}",
+  "Enter a cache limit in GiB; 0 disables automatic cleanup.": "Fier in cachelimyt yn GiB yn; 0 skeakelet automatysk skjinmeitsjen út.",
+  "Refusing native cache cleanup at an unexpected file or link: {path}": "It skjinmeitsjen fan de native cache wurdt wegere by in ûnferwachte triem of keppeling: {path}"
 }

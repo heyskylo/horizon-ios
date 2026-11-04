@@ -1152,5 +1152,10 @@
   "{d} days {h} h": "{d} ditë {h} orë",
   "{h} h {m} min": "{h} orë {m} min",
   "{m} min": "{m} min",
-  "{time} left to claim it": "edhe {time} për ta marrë"
+  "{time} left to claim it": "edhe {time} për ta marrë",
+  "A native build or cache cleanup is running. Try again when it finishes.": "Po kryhet një ndërtim vendas ose pastrim i memories cache. Provoni përsëri kur të mbarojë.",
+  "Cleared {bytes} bytes of native build cache. The next changed build will compile from scratch.": "U pastruan {bytes} bajte nga cache e ndërtimit vendas. Ndërtimi i ardhshëm i ndryshuar do të kompilohet nga e para.",
+  "Could not access the native build cache: {error}": "Nuk u arrit qasja në cache e ndërtimit vendas: {error}",
+  "Enter a cache limit in GiB; 0 disables automatic cleanup.": "Vendosni një kufi për cache në GiB; 0 çaktivizon pastrimin automatik.",
+  "Refusing native cache cleanup at an unexpected file or link: {path}": "Refuzohet pastrimi i cache vendase te një skedar ose lidhje e papritur: {path}"
 }

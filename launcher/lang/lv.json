@@ -1152,5 +1152,10 @@
   "{d} days {h} h": "{d} dienas {h} st.",
   "{h} h {m} min": "{h} st. {m} min.",
   "{m} min": "{m} min.",
-  "{time} left to claim it": "Atlicis {time}, lai to saņemtu"
+  "{time} left to claim it": "Atlicis {time}, lai to saņemtu",
+  "A native build or cache cleanup is running. Try again when it finishes.": "Notiek vietējā būvēšana vai kešatmiņas tīrīšana. Mēģiniet vēlreiz, kad tā beigsies.",
+  "Cleared {bytes} bytes of native build cache. The next changed build will compile from scratch.": "Notīrīti {bytes} baiti vietējās būvēšanas kešatmiņas. Nākamā mainītā būvēšana tiks kompilēta no sākuma.",
+  "Could not access the native build cache: {error}": "Neizdevās piekļūt vietējās būvēšanas kešatmiņai: {error}",
+  "Enter a cache limit in GiB; 0 disables automatic cleanup.": "Ievadiet kešatmiņas ierobežojumu GiB; 0 izslēdz automātisko tīrīšanu.",
+  "Refusing native cache cleanup at an unexpected file or link: {path}": "Atteikta vietējās kešatmiņas tīrīšana pie negaidīta faila vai saites: {path}"
 }

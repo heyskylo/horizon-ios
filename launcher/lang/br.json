@@ -1152,5 +1152,10 @@
   "{d} days {h} h": "{d} devezh {h} e",
   "{h} h {m} min": "{h} e {m} min",
   "{m} min": "{m} min",
-  "{time} left to claim it": "{time} da c’hortoz evit e c’houlenn"
+  "{time} left to claim it": "{time} da c’hortoz evit e c’houlenn",
+  "A native build or cache cleanup is running. Try again when it finishes.": "Ur sevel genidik pe ur skarzhañ krubuilh a zo o vont en-dro. Klaskit en-dro pa vo echu.",
+  "Cleared {bytes} bytes of native build cache. The next changed build will compile from scratch.": "Skarzhet ez eus bet {bytes} eizhbit eus krubuilh ar sevel genidik. Ar sevel kemmet da-heul a vo kempunet adalek an deroù.",
+  "Could not access the native build cache: {error}": "N'haller ket tizhout krubuilh ar sevel genidik: {error}",
+  "Enter a cache limit in GiB; 0 disables automatic cleanup.": "Roit ur vevenn krubuilh e GiB; 0 a ziweredek ar skarzhañ emgefreek.",
+  "Refusing native cache cleanup at an unexpected file or link: {path}": "Nac'het eo skarzhañ ar grubuilh genidik war ur restr pe ul liamm dic'hortoz: {path}"
 }

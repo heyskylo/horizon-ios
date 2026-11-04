@@ -1152,5 +1152,10 @@
   "{d} days {h} h": "{d} jorns {h} h",
   "{h} h {m} min": "{h} h {m} min",
   "{m} min": "{m} min",
-  "{time} left to claim it": "{time} per lo reivindicar"
+  "{time} left to claim it": "{time} per lo reivindicar",
+  "A native build or cache cleanup is running. Try again when it finishes.": "Una compilacion nativa o un netejatge de la memòria cache es en cors. Tornatz ensajar quand serà acabat.",
+  "Cleared {bytes} bytes of native build cache. The next changed build will compile from scratch.": "{bytes} octets de la memòria cache de compilacion nativa son estats escafats. La compilacion modificada seguenta serà compilada de zèro.",
+  "Could not access the native build cache: {error}": "Impossible d'accedir a la memòria cache de compilacion nativa : {error}",
+  "Enter a cache limit in GiB; 0 disables automatic cleanup.": "Picatz un limit de memòria cache en GiB ; 0 desactiva lo netejatge automatic.",
+  "Refusing native cache cleanup at an unexpected file or link: {path}": "Refús del netejatge de la memòria cache nativa sus un fichièr o ligam inesperat : {path}"
 }

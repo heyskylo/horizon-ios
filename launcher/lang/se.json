@@ -1152,5 +1152,10 @@
   "{d} days {h} h": "{d} beaivvi {h} t",
   "{h} h {m} min": "{h} t {m} min",
   "{m} min": "{m} min",
-  "{time} left to claim it": "{time} báhcá váldit"
+  "{time} left to claim it": "{time} báhcá váldit",
+  "A native build or cache cleanup is running. Try again when it finishes.": "Ruovttuvuođa huksen dahje gaskarájusa buhtisteapmi lea jođus. Geahččal ođđasit go dat lea gearggus.",
+  "Cleared {bytes} bytes of native build cache. The next changed build will compile from scratch.": "{bytes} byte ruovttuvuođa huksema gaskarájusas leat buhtistuvvon. Boahtte rievdaduvvon huksen čohkkejuvvo álggu rájes.",
+  "Could not access the native build cache: {error}": "Ii sáhttán beassat ruovttuvuođa huksema gaskarádjosii: {error}",
+  "Enter a cache limit in GiB; 0 disables automatic cleanup.": "Čális gaskarájusa ráji GiB:in; 0 jáddada automáhtalaš buhtisteami.",
+  "Refusing native cache cleanup at an unexpected file or link: {path}": "Hilgo ruovttuvuođa gaskarájusa buhtisteami vurdemeahttun fiilla dahje liŋkka dihte: {path}"
 }

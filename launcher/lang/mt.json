@@ -1152,5 +1152,10 @@
   "{d} days {h} h": "{d} ijiem {h} sa",
   "{h} h {m} min": "{h} sa {m} min",
   "{m} min": "{m} min",
-  "{time} left to claim it": "{time} fadal biex titlobha"
+  "{time} left to claim it": "{time} fadal biex titlobha",
+  "A native build or cache cleanup is running. Try again when it finishes.": "Għaddej bini nattiv jew tindif tal-cache. Erġa' pprova meta jispiċċa.",
+  "Cleared {bytes} bytes of native build cache. The next changed build will compile from scratch.": "Tneħħew {bytes} bytes mill-cache tal-bini nattiv. Il-bini mibdul li jmiss se jiġi kkompilat mill-bidu.",
+  "Could not access the native build cache: {error}": "Ma setax jiġi aċċessat il-cache tal-bini nattiv: {error}",
+  "Enter a cache limit in GiB; 0 disables automatic cleanup.": "Daħħal limitu tal-cache f'GiB; 0 jitfi t-tindif awtomatiku.",
+  "Refusing native cache cleanup at an unexpected file or link: {path}": "Qed jiġi rrifjutat it-tindif tal-cache nattiv f'fajl jew link mhux mistenni: {path}"
 }

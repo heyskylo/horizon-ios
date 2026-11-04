@@ -1152,5 +1152,10 @@
   "{d} days {h} h": "{d} lá {h} u",
   "{h} h {m} min": "{h} u {m} nóim",
   "{m} min": "{m} nóim",
-  "{time} left to claim it": "{time} fágtha chun é a éileamh"
+  "{time} left to claim it": "{time} fágtha chun é a éileamh",
+  "A native build or cache cleanup is running. Try again when it finishes.": "Tá tógáil dhúchasach nó glanadh taisce ar siúl. Bain triail eile as nuair a bheidh sé críochnaithe.",
+  "Cleared {bytes} bytes of native build cache. The next changed build will compile from scratch.": "Glanadh {bytes} beart den taisce tógála dúchasaí. Tiomsófar an chéad tógáil athraithe eile ón tús.",
+  "Could not access the native build cache: {error}": "Níorbh fhéidir rochtain a fháil ar an taisce tógála dúchasaí: {error}",
+  "Enter a cache limit in GiB; 0 disables automatic cleanup.": "Cuir isteach teorainn taisce i GiB; múchann 0 an glanadh uathoibríoch.",
+  "Refusing native cache cleanup at an unexpected file or link: {path}": "Diúltaítear glanadh na taisce dúchasaí ag comhad nó nasc gan choinne: {path}"
 }

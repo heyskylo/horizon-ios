@@ -1152,5 +1152,10 @@
   "{d} days {h} h": "{d} maalmood {h} saac",
   "{h} h {m} min": "{h} saac {m} daq",
   "{m} min": "{m} daq",
-  "{time} left to claim it": "{time} ayaa harsan oo la qaadan karo"
+  "{time} left to claim it": "{time} ayaa harsan oo la qaadan karo",
+  "A native build or cache cleanup is running. Try again when it finishes.": "Dhis asal ah ama nadiifinta kaydka ayaa socota. Isku day mar kale marka ay dhammaato.",
+  "Cleared {bytes} bytes of native build cache. The next changed build will compile from scratch.": "Waxaa la nadiifiyay {bytes} baytka kaydka dhismaha asalka ah. Dhismaha xiga ee la beddelay wuxuu ka bilaabmi doonaa eber.",
+  "Could not access the native build cache: {error}": "Lama gali karo kaydka dhismaha asalka ah: {error}",
+  "Enter a cache limit in GiB; 0 disables automatic cleanup.": "Geli xadka kaydka ee GiB; 0 waxay damisaa nadiifinta tooska ah.",
+  "Refusing native cache cleanup at an unexpected file or link: {path}": "Waa la diiday nadiifinta kaydka asalka ah ee fayl ama xiriir aan la filayn: {path}"
 }

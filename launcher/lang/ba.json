@@ -1152,5 +1152,10 @@
   "{d} days {h} h": "{d} көн {h} с",
   "{h} h {m} min": "{h} с {m} мин",
   "{m} min": "{m} мин",
-  "{time} left to claim it": "алыуға {time} ҡалды"
+  "{time} left to claim it": "алыуға {time} ҡалды",
+  "A native build or cache cleanup is running. Try again when it finishes.": "Туған йыйыу йәки кэш таҙартыу бара. Тамамланғас яңынан тырышып ҡарағыҙ.",
+  "Cleared {bytes} bytes of native build cache. The next changed build will compile from scratch.": "Туған йыйыу кэшынан {bytes} байт таҙартылды. Киләһе үҙгәргән йыйыу башынан компиляцияланасаҡ.",
+  "Could not access the native build cache: {error}": "Туған йыйыу кэшына инеп булманы: {error}",
+  "Enter a cache limit in GiB; 0 disables automatic cleanup.": "Кэш сиген GiB менән индерегеҙ; 0 автоматик таҙартыуҙы һүндерә.",
+  "Refusing native cache cleanup at an unexpected file or link: {path}": "Көтөлмәгән файл йәки һылтанмала туған кэшты таҙартыуҙан баш тартыла: {path}"
 }

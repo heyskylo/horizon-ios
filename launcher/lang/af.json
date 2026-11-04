@@ -1152,5 +1152,10 @@
   "{d} days {h} h": "{d} dae {h} u",
   "{h} h {m} min": "{h} u {m} min",
   "{m} min": "{m} min",
-  "{time} left to claim it": "{time} oor om dit op te eis"
+  "{time} left to claim it": "{time} oor om dit op te eis",
+  "A native build or cache cleanup is running. Try again when it finishes.": "'n Inheemse bou of kasskoonmaak loop. Probeer weer wanneer dit klaar is.",
+  "Cleared {bytes} bytes of native build cache. The next changed build will compile from scratch.": "{bytes} grepe van die inheemse bou-kas is skoongemaak. Die volgende veranderde bou sal van voor af saamstel.",
+  "Could not access the native build cache: {error}": "Kon nie by die inheemse bou-kas uitkom nie: {error}",
+  "Enter a cache limit in GiB; 0 disables automatic cleanup.": "Voer 'n kaslimiet in GiB in; 0 skakel outomatiese skoonmaak af.",
+  "Refusing native cache cleanup at an unexpected file or link: {path}": "Weier om die inheemse kas skoon te maak by 'n onverwagte lêer of skakel: {path}"
 }

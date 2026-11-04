@@ -1152,5 +1152,10 @@
   "{d} days {h} h": "{d} өдөр {h} цаг",
   "{h} h {m} min": "{h} цаг {m} мин",
   "{m} min": "{m} мин",
-  "{time} left to claim it": "Авахад {time} үлдлээ"
+  "{time} left to claim it": "Авахад {time} үлдлээ",
+  "A native build or cache cleanup is running. Try again when it finishes.": "Уугуул бүтээлт эсвэл кэш цэвэрлэгээ явагдаж байна. Дуусахад дахин оролдоно уу.",
+  "Cleared {bytes} bytes of native build cache. The next changed build will compile from scratch.": "Уугуул бүтээлтийн кэшээс {bytes} байт цэвэрлэлээ. Дараагийн өөрчлөгдсөн бүтээлт эхнээсээ хөрвүүлэгдэнэ.",
+  "Could not access the native build cache: {error}": "Уугуул бүтээлтийн кэшэд хандаж чадсангүй: {error}",
+  "Enter a cache limit in GiB; 0 disables automatic cleanup.": "Кэшийн хязгаарыг GiB-ээр оруулна уу; 0 автомат цэвэрлэгээг унтраана.",
+  "Refusing native cache cleanup at an unexpected file or link: {path}": "Гэнэтийн файл эсвэл холбоос дээр уугуул кэшийг цэвэрлэхээс татгалзаж байна: {path}"
 }

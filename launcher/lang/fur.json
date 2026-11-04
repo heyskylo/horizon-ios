@@ -1152,5 +1152,10 @@
   "{d} days {h} h": "{d} dîs {h} o",
   "{h} h {m} min": "{h} o {m} min",
   "{m} min": "{m} min",
-  "{time} left to claim it": "a restin {time} par reclamâlu"
+  "{time} left to claim it": "a restin {time} par reclamâlu",
+  "A native build or cache cleanup is running. Try again when it finishes.": "Une compilazion native o une netisie de cache e je in vore. Torne a provâ cuant che e finìs.",
+  "Cleared {bytes} bytes of native build cache. The next changed build will compile from scratch.": "A son stâts netâts {bytes} byte de cache de compilazion native. La prossime compilazion cambiade e vignarà compilade di zero.",
+  "Could not access the native build cache: {error}": "Impussibil acedi ae cache de compilazion native: {error}",
+  "Enter a cache limit in GiB; 0 disables automatic cleanup.": "Inserìs un limit de cache in GiB; 0 al disative la netisie automatiche.",
+  "Refusing native cache cleanup at an unexpected file or link: {path}": "Si refude la netisie de cache native suntun file o colegament inspietât: {path}"
 }

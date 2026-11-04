@@ -1152,5 +1152,10 @@
   "{d} days {h} h": "{d} დღე {h} სთ",
   "{h} h {m} min": "{h} სთ {m} წთ",
   "{m} min": "{m} წთ",
-  "{time} left to claim it": "მისაღებად დარჩა {time}"
+  "{time} left to claim it": "მისაღებად დარჩა {time}",
+  "A native build or cache cleanup is running. Try again when it finishes.": "მიმდინარეობს ნატიური აწყობა ან ქეშის გასუფთავება. სცადეთ ხელახლა, როცა დასრულდება.",
+  "Cleared {bytes} bytes of native build cache. The next changed build will compile from scratch.": "ნატიური აწყობის ქეშიდან წაიშალა {bytes} ბაიტი. შემდეგი შეცვლილი აწყობა თავიდან დაკომპილირდება.",
+  "Could not access the native build cache: {error}": "ნატიური აწყობის ქეშზე წვდომა ვერ მოხერხდა: {error}",
+  "Enter a cache limit in GiB; 0 disables automatic cleanup.": "შეიყვანეთ ქეშის ლიმიტი GiB-ში; 0 თიშავს ავტომატურ გასუფთავებას.",
+  "Refusing native cache cleanup at an unexpected file or link: {path}": "უარი ნატიური ქეშის გასუფთავებაზე მოულოდნელი ფაილის ან ბმულის გამო: {path}"
 }

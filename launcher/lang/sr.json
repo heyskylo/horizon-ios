@@ -1152,5 +1152,10 @@
   "{d} days {h} h": "{d} дана {h} ч",
   "{h} h {m} min": "{h} ч {m} мин",
   "{m} min": "{m} мин",
-  "{time} left to claim it": "остало је {time} за преузимање"
+  "{time} left to claim it": "остало је {time} за преузимање",
+  "A native build or cache cleanup is running. Try again when it finishes.": "У току је нативна изградња или чишћење кеша. Покушајте поново када се заврши.",
+  "Cleared {bytes} bytes of native build cache. The next changed build will compile from scratch.": "Очишћено је {bytes} бајтова кеша нативне изградње. Следећа измењена изградња ће се компајлирати од почетка.",
+  "Could not access the native build cache: {error}": "Није могуће приступити кешу нативне изградње: {error}",
+  "Enter a cache limit in GiB; 0 disables automatic cleanup.": "Унесите ограничење кеша у GiB; 0 искључује аутоматско чишћење.",
+  "Refusing native cache cleanup at an unexpected file or link: {path}": "Одбија се чишћење нативног кеша код неочекиване датотеке или везе: {path}"
 }

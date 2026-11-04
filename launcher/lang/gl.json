@@ -1152,5 +1152,10 @@
   "{d} days {h} h": "{d} días {h} h",
   "{h} h {m} min": "{h} h {m} min",
   "{m} min": "{m} min",
-  "{time} left to claim it": "Quedan {time} para reclamalo"
+  "{time} left to claim it": "Quedan {time} para reclamalo",
+  "A native build or cache cleanup is running. Try again when it finishes.": "Hai unha compilación nativa ou unha limpeza da caché en curso. Téntao de novo cando remate.",
+  "Cleared {bytes} bytes of native build cache. The next changed build will compile from scratch.": "Borráronse {bytes} bytes da caché de compilación nativa. A seguinte compilación con cambios compilarase desde cero.",
+  "Could not access the native build cache: {error}": "Non se puido acceder á caché de compilación nativa: {error}",
+  "Enter a cache limit in GiB; 0 disables automatic cleanup.": "Introduce un límite de caché en GiB; 0 desactiva a limpeza automática.",
+  "Refusing native cache cleanup at an unexpected file or link: {path}": "Rexéitase a limpeza da caché nativa nun ficheiro ou ligazón inesperados: {path}"
 }

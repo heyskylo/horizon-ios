@@ -403,8 +403,20 @@ pub fn append_log(message: &str) -> Result<(), String> {
 
 /// Records the whole attempt, including selection or export after compilation.
 fn logged<T>(build: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
-    let cache = crate::native_cache::Cache::acquire(&backend::build_dir()).map_err(cache_error)?;
+    // Another build or a cleanup holds the lease on the same target/: refuse. Any other
+    // failure (a filesystem without file locks, a `native` folder linked to another drive)
+    // only stops the cleanup: the build goes ahead without the lease, as it did before.
+    let (cache, unavailable) = match crate::native_cache::Cache::acquire(&backend::build_dir()) {
+        Ok(cache) => (Some(cache), None),
+        Err(crate::native_cache::Error::Busy) => {
+            return Err(cache_error(crate::native_cache::Error::Busy));
+        }
+        Err(error) => (None, Some(cache_error(error))),
+    };
     clear_log()?;
+    if let Some(warning) = &unavailable {
+        log_warning(warning);
+    }
     let result = build();
     match &result {
         Ok(_) => {
@@ -416,6 +428,9 @@ fn logged<T>(build: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
     }
     // The installed binary and post-build programs have left target/ before trimming. Keep
     // this lease through installation/export, including failed builds, and never wait on Cargo.
+    let Some(cache) = cache else {
+        return result;
+    };
     let limit = backend::Settings::load()
         .native_cache_gib
         .unwrap_or(DEFAULT_CACHE_GIB);

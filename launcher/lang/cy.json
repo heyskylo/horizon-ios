@@ -1152,5 +1152,10 @@
   "{d} days {h} h": "{d} diwrnod {h} awr",
   "{h} h {m} min": "{h} awr {m} munud",
   "{m} min": "{m} munud",
-  "{time} left to claim it": "{time} ar ôl i’w hawlio"
+  "{time} left to claim it": "{time} ar ôl i’w hawlio",
+  "A native build or cache cleanup is running. Try again when it finishes.": "Mae adeiladu brodorol neu lanhau'r storfa ar waith. Rhowch gynnig arall arni pan fydd wedi gorffen.",
+  "Cleared {bytes} bytes of native build cache. The next changed build will compile from scratch.": "Wedi clirio {bytes} beit o storfa'r adeiladu brodorol. Bydd yr adeiladu nesaf sydd wedi newid yn crynhoi o'r dechrau.",
+  "Could not access the native build cache: {error}": "Methu cyrchu storfa'r adeiladu brodorol: {error}",
+  "Enter a cache limit in GiB; 0 disables automatic cleanup.": "Rhowch derfyn storfa mewn GiB; mae 0 yn diffodd glanhau awtomatig.",
+  "Refusing native cache cleanup at an unexpected file or link: {path}": "Gwrthod glanhau'r storfa frodorol wrth ffeil neu ddolen annisgwyl: {path}"
 }
