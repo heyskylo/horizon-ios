@@ -1632,14 +1632,16 @@ mod tests {
             .encode(),
         )
         .unwrap();
-        c.send(
+        // A server that does not accept transfers turns one away at the handshake and closes
+        // (ServerHandshakePacketListenerImpl.handleIntention), so the hello may find the connection
+        // gone: its disconnect is still there to read.
+        let _ = c.send(
             &login::Serverbound::Hello(login::ServerHello {
                 name: name.into(),
                 uuid: offline_uuid(name),
             })
             .encode(),
-        )
-        .unwrap();
+        );
         loop {
             let (id, payload) = c.recv().unwrap();
             match login::Clientbound::decode(id, &payload).unwrap() {
