@@ -21744,10 +21744,12 @@ pub fn run_with() -> Result<()> {
     // horizon-ctl drives: those start in a source checkout and wrote the list there.
     if !options.offscreen && !synchronous_startup(&options) {
         horizon_client::heartbeat::start();
-        if let Err(e) =
-            horizon_client::multiplayer::add_official_server(&horizon_client::logging::player_dir())
-        {
+        let player_dir = horizon_client::logging::player_dir();
+        if let Err(e) = horizon_client::multiplayer::add_official_server(&player_dir) {
             log::warn!("could not add the official server to servers.dat: {e}");
+        }
+        if let Err(e) = horizon_client::multiplayer::add_partner_servers(&player_dir) {
+            log::warn!("could not add the partner servers to servers.dat: {e}");
         }
     }
     mods::register_components(&vanilla_root)?;
