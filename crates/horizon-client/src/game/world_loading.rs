@@ -712,13 +712,18 @@ pub(super) fn make_streaming(
     // even when automatic structure starts are disabled.
     let automatic_structures =
         horizon_client::save::WorldGen::read(world_root).is_none_or(|w| w.structures);
-    let flat_structures = (dim == Dim::Overworld)
+    let flat_settings = (dim == Dim::Overworld)
         .then(|| horizon_client::save::world_gen_settings(world_root))
         .flatten()
-        .and_then(|s| horizon_client::flatgen::FlatTerrain::structure_settings(&s));
+        .and_then(|s| horizon_client::flatgen::FlatTerrain::pipeline_settings(&s));
+    // `adjustGenerationSettings`: a superflat world with features or lakes is decorated
+    // whether or not its structures generate.
+    let flat_decorates = flat_settings
+        .as_ref()
+        .is_some_and(|s| s.features || s.lakes);
     // A generator that cannot be built (a layer block the registry lacks, a level shorter
     // than the noise) leaves the world on its flat ground, as it was before.
-    let flat_vanilla = flat_structures.and_then(|settings| {
+    let flat_vanilla = flat_settings.and_then(|settings| {
         let overrides =
             world_worldgen_overrides(world_root, &options.resources, &biomes, enabled_features);
         match VanillaTerrain::for_flat(
@@ -735,7 +740,7 @@ pub(super) fn make_streaming(
                 Some(Arc::new(terrain))
             }
             Err(e) => {
-                log::warn!("Horizon: the superflat structures are unavailable: {e}");
+                log::warn!("Horizon: the superflat structures and features are unavailable: {e}");
                 None
             }
         }
@@ -753,10 +758,12 @@ pub(super) fn make_streaming(
         )
     } else if let Some(inner) = flat_vanilla
         .as_ref()
-        .filter(|_| automatic_structures)
+        .filter(|_| automatic_structures || flat_decorates)
         .cloned()
     {
-        inner.search_rings_behind();
+        if automatic_structures {
+            inner.search_rings_behind();
+        }
         inner.set_reference_file(world_root.join("data").join(format!(
             "horizon_structure_references_{}.json",
             dim.id().replace(':', "_")
@@ -779,8 +786,8 @@ pub(super) fn make_streaming(
             res.threads(),
         )
     } else if let Some(inner) = flat {
-        // Keep the existing flat terrain/decorations path when automatic
-        // structures are off; only manual commands use the locator.
+        // A superflat world that neither decorates nor generates structures: its
+        // layers alone. Only manual commands use the locator.
         locator = flat_vanilla;
         Streaming::new(
             Arc::new(Persistent {
