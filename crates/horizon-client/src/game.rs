@@ -148,6 +148,7 @@ mod input_trace;
 mod integrated;
 mod interaction_shapes;
 mod interactions;
+mod item_areas;
 mod item_draw;
 mod item_particles;
 mod item_use;
