@@ -497,6 +497,7 @@ impl Game<'_> {
 
     // ---- commands ------------------------------------------------------------------
 
+    /// `FunctionCommand.decorateOutputIfNeeded`: report returned values even for failure.
     pub(super) fn cmd_function(&mut self, ctx: &Context) -> R<i32> {
         let Some(Arg::Resource(name)) = ctx.get("name").cloned() else {
             return Ok(0);
@@ -569,6 +570,10 @@ impl Game<'_> {
                 Outcome::Fail => {
                     any = true;
                     failed = true;
+                    self.feedback(Text::translate(
+                        "commands.function.result",
+                        &[Text::literal(f.id.clone()), Text::literal("0")],
+                    ));
                 }
             }
         }
