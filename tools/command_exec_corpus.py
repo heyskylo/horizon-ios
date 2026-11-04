@@ -207,6 +207,9 @@ def player_state():
         cmd('/clear @s minecraft:stone 0'),
         cmd('/item replace entity @s armor.head with minecraft:iron_helmet'),
         cmd('/item replace entity @s armor.feet with minecraft:iron_boots'),
+        cmd('/item replace entity @s armor.chest with minecraft:stone'),
+        cmd('/item replace entity @s armor.legs with minecraft:iron_boots'),
+        cmd('/item replace entity @s armor.feet with minecraft:stone'),
         cmd('/clear @s * 1'),
         cmd('/clear @s minecraft:iron_boots 0'),
         cmd('/clear @s minecraft:iron_helmet 0'),
@@ -249,15 +252,23 @@ def world_blocks():
         cmd('/item replace block 3 206 3 container.0 with minecraft:apple 5'),
         cmd('/data get block 3 206 3 Items[0].count'),
         cmd('/data merge block 3 206 3 {CustomName:"Box"}'),
+        cmd('/data get block 3 206 3 CustomName'),
+        cmd('/data merge block 3 206 3 {Items:[]}'),
+        cmd('/data get block 3 206 3 CustomName'),
         cmd('/clone 0 205 0 4 207 4 6 205 6'),
         cmd('/clone 0 205 0 4 207 4 6 205 6 masked'),
         cmd('/execute if blocks 0 205 0 4 207 4 6 205 6 all'),
+        cmd('/data get block 9 206 9 CustomName'),
         cmd('/setblock 3 206 3 minecraft:air'),
         # A container keeps its loot table and seed until its items change
         # (RandomizableContainer.tryLoadLootTable / trySaveLootTable).
         cmd('/setblock 7 206 7 minecraft:chest{LootTable:"minecraft:chests/simple_dungeon",LootTableSeed:42L}'),
         cmd('/data get block 7 206 7'),
         cmd('/data get block 7 206 7 LootTableSeed'),
+        cmd('/setblock 7 206 7 minecraft:air'),
+        # BaseContainerBlockEntity.loadAdditional reads the tag's CustomName.
+        cmd('/setblock 7 206 7 minecraft:barrel{CustomName:"Loot"}'),
+        cmd('/data get block 7 206 7 CustomName'),
         cmd('/setblock 7 206 7 minecraft:air'),
         # A hopper placed into power turns `enabled=false` and keeps its block entity.
         cmd('/setblock 5 205 5 minecraft:redstone_block'),
@@ -310,6 +321,33 @@ def entities():
         cmd('/effect clear @e[tag=h,type=minecraft:pig,limit=1] minecraft:speed'),
         cmd('/attribute @e[tag=h,type=minecraft:pig,limit=1] minecraft:movement_speed base reset'),
         cmd('/attribute @e[tag=h,type=minecraft:pig,limit=1] minecraft:movement_speed base get'),
+        cmd('/attribute @e[tag=h,type=minecraft:pig,limit=1] minecraft:movement_speed base set 0.5'),
+        cmd('/attribute @e[tag=h,type=minecraft:pig,limit=1] minecraft:movement_speed modifier add harness:m 0.5 add_value'),
+        cmd('/attribute @e[tag=h,type=minecraft:pig,limit=1] minecraft:movement_speed modifier add harness:m 0.5 add_value'),
+        cmd('/attribute @e[tag=h,type=minecraft:pig,limit=1] minecraft:movement_speed modifier value get harness:m'),
+        cmd('/attribute @e[tag=h,type=minecraft:pig,limit=1] minecraft:movement_speed get'),
+        cmd('/attribute @e[tag=h,type=minecraft:pig,limit=1] minecraft:movement_speed modifier remove harness:m'),
+        cmd('/attribute @e[tag=h,type=minecraft:pig,limit=1] minecraft:movement_speed modifier remove harness:m'),
+        cmd('/attribute @e[tag=h,type=minecraft:pig,limit=1] minecraft:movement_speed get'),
+        cmd('/attribute @e[tag=h,type=minecraft:pig,limit=1] minecraft:movement_speed base reset'),
+        cmd('/attribute @e[tag=h,type=minecraft:pig,limit=1] minecraft:follow_range base set 16'),
+        cmd('/attribute @e[tag=h,type=minecraft:pig,limit=1] minecraft:follow_range modifier add harness:m 8 add_value'),
+        cmd('/attribute @e[tag=h,type=minecraft:pig,limit=1] minecraft:follow_range modifier add harness:m 8 add_value'),
+        cmd('/attribute @e[tag=h,type=minecraft:pig,limit=1] minecraft:follow_range modifier value get harness:m'),
+        cmd('/attribute @e[tag=h,type=minecraft:pig,limit=1] minecraft:follow_range get'),
+        cmd('/attribute @e[tag=h,type=minecraft:pig,limit=1] minecraft:follow_range modifier remove harness:m'),
+        cmd('/attribute @e[tag=h,type=minecraft:pig,limit=1] minecraft:follow_range modifier remove harness:m'),
+        cmd('/attribute @e[tag=h,type=minecraft:pig,limit=1] minecraft:follow_range get'),
+        cmd('/attribute @e[tag=h,type=minecraft:pig,limit=1] minecraft:follow_range base reset'),
+        cmd('/attribute @e[tag=h,type=minecraft:pig,limit=1] minecraft:knockback_resistance base set 0.25'),
+        cmd('/attribute @e[tag=h,type=minecraft:pig,limit=1] minecraft:knockback_resistance modifier add harness:m 0.25 add_value'),
+        cmd('/attribute @e[tag=h,type=minecraft:pig,limit=1] minecraft:knockback_resistance modifier add harness:m 0.25 add_value'),
+        cmd('/attribute @e[tag=h,type=minecraft:pig,limit=1] minecraft:knockback_resistance modifier value get harness:m'),
+        cmd('/attribute @e[tag=h,type=minecraft:pig,limit=1] minecraft:knockback_resistance get'),
+        cmd('/attribute @e[tag=h,type=minecraft:pig,limit=1] minecraft:knockback_resistance modifier remove harness:m'),
+        cmd('/attribute @e[tag=h,type=minecraft:pig,limit=1] minecraft:knockback_resistance modifier remove harness:m'),
+        cmd('/attribute @e[tag=h,type=minecraft:pig,limit=1] minecraft:knockback_resistance get'),
+        cmd('/attribute @e[tag=h,type=minecraft:pig,limit=1] minecraft:knockback_resistance base reset'),
         cmd('/effect give @e[tag=h] minecraft:glowing 10'),
         cmd('/damage @e[tag=h,type=minecraft:cow,limit=1] 1'),
         cmd('/ride @s mount @e[tag=h,type=minecraft:pig,limit=1]'),
@@ -2339,6 +2377,31 @@ def creeper_custom_fuse():
     return ops + setup('/gamerule mob_griefing true')
 
 
+def ravager_noai_counters():
+    ops = setup('/difficulty normal', '/gamerule spawn_mobs false',
+                '/gamerule mob_griefing false', '/forceload add 0 0 31 31',
+                '/fill 0 199 0 15 199 15 stone', '/fill 0 200 0 15 206 15 air')
+    case = 0
+    for no_ai in (0, 1):
+        for attack, stun, roar in ((20, 30, 5), (0, 0, 0), (-2, -3, -4), (2, 2, 0)):
+            case += 1
+            tag = f'h179_{case}'
+            target = f'@e[type=minecraft:ravager,tag={tag},limit=1]'
+            ops += setup('/summon ravager 10.5 200 10.5 '
+                         f'{{Tags:["{tag}"],NoAI:{no_ai}b,NoGravity:1b,Silent:1b,'
+                         f'PersistenceRequired:1b,AttackTick:{attack},StunTick:{stun},RoarTick:{roar}}}')
+            elapsed = 0
+            for tick in (0, 1, 2, 3, 10, 12, 22):
+                if tick > elapsed:
+                    ops.append({'op': 'tick', 'n': tick - elapsed})
+                ops.append(cmd(f'/execute if entity {target}'))
+                for field in ('AttackTick', 'StunTick', 'RoarTick'):
+                    ops.append(cmd(f'/data get entity {target} {field}'))
+                elapsed = tick
+            ops += setup(f'/kill {target}')
+    return ops + setup('/gamerule mob_griefing true', '/forceload remove 0 0 31 31')
+
+
 def groups():
     return [
         ('setup', group_setup()),
@@ -2351,6 +2414,7 @@ def groups():
         ('setblock destroy air', setblock_destroy_air()),
         ('forceload query order', forceload_query_order()),
         ('entities', entities()),
+        ('ravager NoAI counters', ravager_noai_counters()),
         ('aquatic FromBucket', aquatic_from_bucket()),
         ('villager command names', villager_command_names()),
         ('item lifetime counters', item_lifetime_counters()),

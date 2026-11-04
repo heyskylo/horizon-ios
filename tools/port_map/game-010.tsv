@@ -102,7 +102,8 @@ PoiSection.refresh	inline	crates/horizon-client-render/src/poi_sections.rs::PoiS
 PoiSection.Packed.unpack	skip:other		POI files are not loaded into sections
 PoiTypes.registerBlockStates	inline	crates/horizon-client/src/save.rs::poi_type	state to POI type and max tickets in one match
 PoiTypes.bootstrap	port	crates/horizon-client/src/save.rs::poi_type	every POI type with its tickets (bed heads of the sixteen colours only, cauldrons, bell 32); villagers use villager_brain::state_poi for jobs, beds and bell
-Bat.isFlapping	missing		a flying bat's wing beat (every 10 ticks) sends no minecraft:flap vibration, so sculk sensors do not hear it; mobs/living.rs posts that event for a bee every other tick and for a parrot, and nothing else
+Bat.isFlapping	port	crates/horizon-client/src/game/sculk.rs::flaps	an awake bat flaps every tenth tick, and the movement pass posts minecraft:flap when the block below is air (a bee, every other tick in the air, shares the same fn)
+Bat.getMovementEmission	port	crates/horizon-client/src/mobs/ai.rs::movement_sounds	EVENTS
 Bat.getAmbientSound	inline	crates/horizon-client/src/mobs/ai.rs::play_ambient	Species::Bat arm: a resting bat is silent three times in four
 Bat.isResting	port	crates/horizon-client/src/mobs/bat.rs::resting	
 Bat.addAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::mob_to_nbt	BatFlags byte, bit 0 resting
@@ -114,6 +115,7 @@ Dolphin.readAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::mob
 Dolphin.registerGoals	port	crates/horizon-client/src/mobs/aquatic.rs::register	gap: player: no MoveToItemGoal and PlayWithItemsGoal (dolphins ignore items thrown in the water), no FollowPlayerRiddenEntityGoal for boats or nautiluses, no AvoidEntity of guardians, and HurtByTarget does not skip guardians
 Dolphin.createAttributes	skip:data		attributes come from the entity tables
 Dolphin.canAttack	port	crates/horizon-client/src/mobs/goals.rs::spares_target	a baby dolphin takes nobody as its target
+Dolphin.playAttackSound	port	crates/horizon-client/src/mobs/ai.rs::do_hurt_target	the dolphin arm: DOLPHIN_ATTACK at 1.0/1.0 after the blow lands, skipped for a silent mob
 Dolphin.pickUpItem	port	crates/horizon-client/src/game/foxes.rs::Game::tick_dolphins	the game finds the first allowed item in the water within 8 blocks and takes it
 Dolphin.handleEntityEvent	port	crates/horizon-client-render/src/particles.rs::entity_event_burst	event 38: seven happy villager particles about the dolphin
 Dolphin.closeToNextPos	inline	crates/horizon-client/src/mobs/dolphin.rs::SwimToTreasure::tick	nav target within 12 blocks (144 squared) of the dolphin
