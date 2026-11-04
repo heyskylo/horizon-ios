@@ -985,9 +985,6 @@ impl Game<'_> {
         };
         self.level.set_difficulty(self.ui.difficulty);
         self.sync_rules();
-        if self.ui.difficulty == 0 {
-            self.mobs.retain(|m| !m.hostile());
-        }
         // DedicatedServer.initServer: a legacy `announce-player-achievements`
         // sets the show_advancement_messages rule once, as the file is read.
         if let Some(announce) = props.announce_player_achievements {

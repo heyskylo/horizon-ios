@@ -3250,10 +3250,6 @@ impl Game<'_> {
         // reopen, so it follows the command.
         self.level.set_difficulty(i);
         self.sync_rules();
-        if i == 0 {
-            // Peaceful removes hostile mobs.
-            self.mobs.retain(|m| !m.hostile());
-        }
         // MinecraftServer.setDifficulty: every player, guests included, is
         // sent the new difficulty.
         if let Some(host) = self.lan.as_ref() {

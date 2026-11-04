@@ -2470,9 +2470,6 @@ impl Game<'_> {
                     // survives the reopen, so it follows the change.
                     self.level.set_difficulty(self.ui.difficulty);
                     self.sync_rules();
-                    if self.ui.difficulty == 0 {
-                        self.mobs.retain(|m| !m.hostile());
-                    }
                     host.hub
                         .broadcast(&C::ChangeDifficulty(play::ChangeDifficulty {
                             difficulty: i32::from(self.ui.difficulty),
