@@ -166,7 +166,7 @@ pub(super) struct GuestSwap {
     /// The host's command permission, swapped for the guest's for its turn.
     permission: u8,
     xp: Experience,
-    host_keys: std::collections::HashSet<KeyCode>,
+    host_keys: horizon_client::held::HeldKeys,
     screen: Screen,
     host_sign: Option<super::sign_edit::SignEditor>,
     host_book: Option<super::books::BookScreen>,
@@ -3953,7 +3953,7 @@ impl Game<'_> {
             // the `deaths` statistic and the two timers it resets.
             self.as_guest(host, conn, |game| {
                 if let Some(eyes) = drops {
-                    game.drop_inventory(eyes);
+                    game.drop_inventory(eyes, (uuid, id));
                 }
                 game.score_player_died();
                 game.award_custom_stat("deaths", 1);

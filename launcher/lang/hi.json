@@ -1162,5 +1162,7 @@
   "Charged back": "चार्जबैक हुआ",
   "Paid": "भुगतान हो गया",
   "Order {id}": "ऑर्डर {id}",
-  "The claim didn't go through: the checkout's address isn't Horizon's.": "दावा पूरा नहीं हो सका: चेकआउट का पता Horizon का नहीं है।"
+  "The claim didn't go through: the checkout's address isn't Horizon's.": "दावा पूरा नहीं हो सका: चेकआउट का पता Horizon का नहीं है।",
+  "Paste a friend's invite code": "किसी दोस्त का आमंत्रण कोड पेस्ट करें",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "{build} खेलता है, Horizon {commit} पर निर्मित, जो {mods} द्वारा पिन किया गया कमिट है, {version} पर नहीं।"
 }

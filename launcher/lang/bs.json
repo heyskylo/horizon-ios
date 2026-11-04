@@ -1162,5 +1162,7 @@
   "Charged back": "Banka poništila uplatu",
   "Paid": "Plaćeno",
   "Order {id}": "Narudžba {id}",
-  "The claim didn't go through: the checkout's address isn't Horizon's.": "Zahtjev nije prošao: adresa plaćanja nije Horizonova."
+  "The claim didn't go through: the checkout's address isn't Horizon's.": "Zahtjev nije prošao: adresa plaćanja nije Horizonova.",
+  "Paste a friend's invite code": "Zalijepite prijateljev pozivni kod",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Igra {build}, izgrađeno na Horizon {commit}, commitu koji je prikvačio {mods}, a ne na {version}."
 }

@@ -1162,5 +1162,7 @@
   "Charged back": "Stornà da la banca",
   "Paid": "Pagà",
   "Order {id}": "Ordine {id}",
-  "The claim didn't go through: the checkout's address isn't Horizon's.": "La richiesta no la xe ndà a bon fin: l'indirizzo del pagamento no 'l xe quel de Horizon."
+  "The claim didn't go through: the checkout's address isn't Horizon's.": "La richiesta no la xe ndà a bon fin: l'indirizzo del pagamento no 'l xe quel de Horizon.",
+  "Paste a friend's invite code": "Incoła el còdexe de invito de un amigo",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Gioca {build}, costruito su Horizon {commit}, el commit fisà da {mods}, no su {version}."
 }

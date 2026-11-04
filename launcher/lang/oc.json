@@ -1162,5 +1162,7 @@
   "Charged back": "Retrofacturat",
   "Paid": "Pagat",
   "Order {id}": "Comanda {id}",
-  "The claim didn't go through: the checkout's address isn't Horizon's.": "La demanda a pas capitat : l'adreça del pagament es pas la de Horizon."
+  "The claim didn't go through: the checkout's address isn't Horizon's.": "La demanda a pas capitat : l'adreça del pagament es pas la de Horizon.",
+  "Paste a friend's invite code": "Pegatz lo còde d'invitacion d'un amic",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Jòga {build}, bastit sus Horizon {commit}, lo commit fixat per {mods}, pas sus {version}."
 }

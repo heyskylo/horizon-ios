@@ -1162,5 +1162,7 @@
   "Charged back": "Retornat pel banc",
   "Paid": "Pagat",
   "Order {id}": "Comanda {id}",
-  "The claim didn't go through: the checkout's address isn't Horizon's.": "La reclamació no s'ha completat: l'adreça del pagament no és la de Horizon."
+  "The claim didn't go through: the checkout's address isn't Horizon's.": "La reclamació no s'ha completat: l'adreça del pagament no és la de Horizon.",
+  "Paste a friend's invite code": "Enganxeu el codi d'invitació d'un amic",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Juga {build}, construït sobre Horizon {commit}, el commit fixat per {mods}, no sobre {version}."
 }

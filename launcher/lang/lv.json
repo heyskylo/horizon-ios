@@ -1162,5 +1162,7 @@
   "Charged back": "Banka atcēla maksājumu",
   "Paid": "Samaksāts",
   "Order {id}": "Pasūtījums {id}",
-  "The claim didn't go through: the checkout's address isn't Horizon's.": "Pieprasījums neizdevās: norēķina adrese nepieder Horizon."
+  "The claim didn't go through: the checkout's address isn't Horizon's.": "Pieprasījums neizdevās: norēķina adrese nepieder Horizon.",
+  "Paste a friend's invite code": "Ielīmējiet drauga uzaicinājuma kodu",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Spēlē {build}, kas veidota uz Horizon {commit} – {mods} piespraustā commit, nevis uz {version}."
 }

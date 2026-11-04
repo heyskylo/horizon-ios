@@ -1162,5 +1162,7 @@
   "Charged back": "Αναίρεση πληρωμής από την τράπεζα",
   "Paid": "Πληρώθηκε",
   "Order {id}": "Παραγγελία {id}",
-  "The claim didn't go through: the checkout's address isn't Horizon's.": "Η διεκδίκηση δεν ολοκληρώθηκε: η διεύθυνση της πληρωμής δεν ανήκει στο Horizon."
+  "The claim didn't go through: the checkout's address isn't Horizon's.": "Η διεκδίκηση δεν ολοκληρώθηκε: η διεύθυνση της πληρωμής δεν ανήκει στο Horizon.",
+  "Paste a friend's invite code": "Επικολλήστε τον κωδικό πρόσκλησης ενός φίλου",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Παίζει {build}, χτισμένο στο Horizon {commit}, το commit που καρφιτσώνει το {mods}, όχι στο {version}."
 }

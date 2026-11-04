@@ -1162,5 +1162,7 @@
   "Charged back": "Банк қайтарып алды",
   "Paid": "Төленді",
   "Order {id}": "Тапсырыс {id}",
-  "The claim didn't go through: the checkout's address isn't Horizon's.": "Сұрау өтпеді: төлем мекенжайы Horizon-ның мекенжайы емес."
+  "The claim didn't go through: the checkout's address isn't Horizon's.": "Сұрау өтпеді: төлем мекенжайы Horizon-ның мекенжайы емес.",
+  "Paste a friend's invite code": "Достың шақыру кодын қойыңыз",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "{build} ойнайды: {version} емес, {mods} бекіткен Horizon {commit} коммиті негізінде салынған."
 }

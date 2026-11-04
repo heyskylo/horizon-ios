@@ -1162,5 +1162,7 @@
   "Charged back": "ბანკმა გადახდა გააუქმა",
   "Paid": "გადახდილია",
   "Order {id}": "შეკვეთა {id}",
-  "The claim didn't go through: the checkout's address isn't Horizon's.": "მოთხოვნა ვერ შესრულდა: გადახდის მისამართი Horizon-ის არ არის."
+  "The claim didn't go through: the checkout's address isn't Horizon's.": "მოთხოვნა ვერ შესრულდა: გადახდის მისამართი Horizon-ის არ არის.",
+  "Paste a friend's invite code": "ჩასვით მეგობრის მოწვევის კოდი",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "უკრავს {build}, აგებულია Horizon {commit}-ზე, {mods}-ის მიერ მიმაგრებულ commit-ზე და არა {version}-ზე."
 }

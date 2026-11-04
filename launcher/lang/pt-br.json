@@ -1162,5 +1162,7 @@
   "Charged back": "Estornado",
   "Paid": "Pago",
   "Order {id}": "Pedido {id}",
-  "The claim didn't go through: the checkout's address isn't Horizon's.": "O resgate não foi concluído: o endereço do checkout não é o da Horizon."
+  "The claim didn't go through: the checkout's address isn't Horizon's.": "O resgate não foi concluído: o endereço do checkout não é o da Horizon.",
+  "Paste a friend's invite code": "Cole o código de convite de um amigo",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Roda {build}, compilado no Horizon {commit}, o commit fixado por {mods}, não no {version}."
 }

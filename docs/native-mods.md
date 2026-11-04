@@ -104,7 +104,10 @@ mod pins which and the commit the build would use, the newest of them, and build
 **Build anyway** (`native-build --allow-version-mismatch`): such mods often still apply and compile. A failed build
 then says the mods were made for other versions. Their horizon-mixins pins may differ too: the build uses the
 newest of them and the launcher's own, never one older than a mod was made with. A bundle with no pin builds on
-the commit of the installed version the build starts from.
+the commit of the installed version the build starts from. A pin chooses the commit even when the player picked another
+version: the Mods page then says which mods pinned the commit the build compiled, and **Rebuild on Horizon**
+(`native-build --ignore-pins`) builds every mod on the picked version's own commit, where a pinned mod may not
+apply or compile. Its later rebuilds keep doing so.
 
 ### Mods on the hook points
 
@@ -1477,6 +1480,8 @@ API 309 adds a shift-click in a mod container's menu routed by the mod, `Abstrac
 
 API 310 adds a server player's trade with a villager or a wandering trader, as NeoForge's `TradeWithVillagerEvent`: `native_trade_with_villager(merchant, kind, offer)` is heard once per trade made, after its statistic and `villager_trade` trigger, with the trader's entity id and type and the `MerchantOffer` as it is after the trade. Listen only; the player's state is swapped in. Bundles need "hooks": 310.
 
+API @API:merchant_offer_traded@ adds `native_merchant_offer_traded(merchant, kind, offer)`, asked once per trade made with the live `MerchantOffer` in the state the trade left it in. A mod may change `uses`, `max_uses`, `demand`, `special_price_diff`, `price_multiplier` and `xp` (Bukkit's `PlayerTradeEvent#getTrade`, `Merchant` recipes): the next click and the offers sent to the player see the change, so a mod can keep a trade from running out or from getting dearer. The unchanged `trade_with_villager` still hears the offer as the trade left it. A shift-click's trades are asked for after the click. Bundles need "hooks": @API:merchant_offer_traded@.
+
 API 311 adds a server player's `teleport_randomly` consume effect (chorus fruit) is about to try a spot: `native_chorus_fruit_teleport(player, name, from, target, cancel)`, once per attempt (up to 16). A mod may move `target`; the game still looks down from it for ground to land on. `cancel` ends the effect with no teleport and no more attempts. Foxes are not heard. Bundles need "hooks": 311.
 
 API 312 adds a server player's ender pearl landed: `native_ender_pearl_teleport(player, name, pearl, from, target, damage, cancel)` runs before the endermite roll and the teleport. A mod may move `target` or change the fall `damage` (5; 0 or less is none); `cancel` keeps the player where they are, without the endermite roll, damage or sound, and the pearl is used up either way. Bundles need "hooks": 312.
@@ -2553,6 +2558,9 @@ Changing loot a mod didn't make, as NeoForge's `LootTableLoadEvent` and global l
   frame's entity, no table). A dispenser's shears and an explosion's frames aren't told. Leads: untying one or cutting it with
   shears is a use (the leashed mob, no table), and a mob a player killed while leashed drops its lead on its next tick as a call
   of its own, naming the killer (`used` false, no table). A lead that snaps or loses its holder names no player and isn't told.
+  A dying player's inventory is a call of its own: after vanishing-curse items are gone and before the rest is thrown from
+  the player's eyes, with `entity` the player's id and `minecraft:player`, `player` them, no table and `used` false (take every
+  stack out of `drops` to keep the inventory for a grave or a soulbound rule). It is not heard with `keep_inventory` on.
 
 ### A block's items
 

@@ -39,8 +39,8 @@ except ImportError:
 SEED = 1
 
 
-def install_predicate_fixtures(world, predicates, jar):
-    if not predicates:
+def install_datapack_fixtures(world, predicates, functions, jar):
+    if not predicates and not functions:
         return
     with zipfile.ZipFile(jar) as archive:
         version = json.loads(archive.read('version.json'))['pack_version']
@@ -48,22 +48,35 @@ def install_predicate_fixtures(world, predicates, jar):
     pack = world / 'datapacks' / 'command-selector-fixture'
     pack.mkdir(parents=True, exist_ok=True)
     (pack / 'pack.mcmeta').write_text(json.dumps({'pack': {
-        'description': 'Command selector predicate fixtures', 'pack_format': fmt[0],
+        'description': 'Command execution fixtures', 'pack_format': fmt[0],
         'min_format': fmt, 'max_format': fmt}}), encoding='utf-8')
     for identifier, predicate in predicates.items():
         namespace, path = identifier.split(':', 1)
         target = pack / 'data' / namespace / 'predicate' / (path + '.json')
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(json.dumps(predicate), encoding='utf-8')
+    for identifier, contents in functions.items():
+        namespace, path = identifier.split(':', 1)
+        target = pack / 'data' / namespace / 'function' / (path + '.mcfunction')
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(contents, encoding='utf-8')
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--prepare', action='store_true')
+    parser.add_argument('--pot-string-sherd-diagnostic', action='store_true',
+                        help='use string sherd input in the pot data group (known separate codec gap)')
     parser.add_argument('--limit', type=int, default=40, help='print at most this many mismatches')
     parser.add_argument('--allow-gaps', action='store_true', help='report mismatches without failing')
     parser.add_argument('--only', help='run only corpus groups whose name contains this')
+    parser.add_argument('--array-storage-diagnostic', action='store_true',
+                        help='run all numeric-array edit cases, including the known wildcard/string storage side effects')
+    parser.add_argument('--sulfur-power-load-diagnostic', action='store_true',
+                        help='retain the immediate-load powered sulfur cube H249 diagnostic')
     parser.add_argument('--binary', type=Path, help='use an already built Horizon game instead of building it')
+    parser.add_argument('--slot-codec-diagnostic', action='store_true',
+                        help='retain the separate invalid inline slot-range codec diagnostic')
     args = parser.parse_args()
     build = lab.LOCAL / 'command-exec-parity'
     build.mkdir(parents=True, exist_ok=True)
@@ -86,8 +99,21 @@ def main():
             sys.exit(f'{name} failed ({result.returncode}):\n{tail}')
 
     groups = corpus_module.groups()
+    if args.pot_string_sherd_diagnostic:
+        groups = [(name, corpus_module.decorated_pot_data(string_sherd=True)
+                   if name == 'decorated pot data' else ops) for name, ops in groups]
+    if args.array_storage_diagnostic:
+        groups = [('setup', corpus_module.group_setup()),
+                  ('numeric array edits with storage side effects',
+                   corpus_module.numeric_array_edits(include_storage_side_effects=True))]
+    if args.sulfur_power_load_diagnostic:
+        groups = [('setup', corpus_module.group_setup()),
+                  ('sulfur powered-load diagnostic', corpus_module.sulfur_cube_fuse_ticks(True))]
     if args.only:
         groups = [g for g in groups if args.only in g[0] or g[0] == 'setup']
+    if args.slot_codec_diagnostic:
+        groups.append(('slot source codec diagnostic', [corpus_module.cmd(
+            '/item fill block 4 200 4 {type:"minecraft:slot_range",slots:"container.99"} with diamond')]))
     script = []
     for _, lines in groups:
         script.extend(lines)
@@ -95,12 +121,13 @@ def main():
     script_path.write_text(''.join(json.dumps({k: v for k, v in op.items() if k != 'expect_result'},
                                             ensure_ascii=False) + '\n' for op in script), encoding='utf-8')
     predicates = corpus_module.predicate_selector_fixtures([name for name, _ in groups])
+    functions = corpus_module.function_return_fixtures([name for name, _ in groups])
 
     run(['javac', '--release', lock['minecraft']['java_major'], '-proc:none', '-cp', str(jars['server']) + os.pathsep + dependency_path, '-d', classes, oracle], 'compile-java')
     vanilla_dir = build / 'vanilla'
     shutil.rmtree(vanilla_dir, ignore_errors=True)
     vanilla_dir.mkdir()
-    install_predicate_fixtures(vanilla_dir / 'universe/harness', predicates, jars['server'])
+    install_datapack_fixtures(vanilla_dir / 'universe/harness', predicates, functions, jars['server'])
     run(['java', '-Xmx3G', '-Duser.timezone=UTC', '-cp', os.pathsep.join([str(classes), str(jars['server']), dependency_path]),
          'dev.horizonlab.parity.VanillaCommandExecOracle', vanilla_dir / 'universe', script_path, build / 'vanilla.jsonl', SEED], 'java', cwd=vanilla_dir)
 
@@ -113,7 +140,7 @@ def main():
     rust_dir = build / 'rust'
     shutil.rmtree(rust_dir, ignore_errors=True)
     rust_dir.mkdir()
-    install_predicate_fixtures(rust_dir / 'saves/harness', predicates, jars['server'])
+    install_datapack_fixtures(rust_dir / 'saves/harness', predicates, functions, jars['server'])
     # The oracle's Services resolve no profile (/fetchprofile fails on the next tick): the game gets no services
     # either, a discovery address that refuses at once, rather than Mojang's over the network.
     env = lab.game_env(HORIZON_PLAYER_NAME="Player", HORIZON_COMMAND_SCRIPT=script_path,
@@ -124,9 +151,11 @@ def main():
     rust = [json.loads(l) for l in (build / 'rust.jsonl').open(encoding='utf-8')]
     if len(vanilla) != len(rust):
         sys.exit(f'record count differs: vanilla {len(vanilla)} rust {len(rust)}')
-    recorded_ops = [op for op in script if op['op'] in ('falling', 'weather_state') or
+    recorded_ops = [op for op in script if op['op'] in ('falling', 'destroy_progress', 'weather_state') or
                     (op['op'] == 'cmd' and op.get('record', True)) or
                     (op['op'] == 'tick' and op.get('record'))]
+    if len(recorded_ops) != len(vanilla):
+        sys.exit(f'script record count differs: expected {len(recorded_ops)}, got {len(vanilla)}')
     for op, reference in zip(recorded_ops, vanilla):
         if 'expect_result' in op and reference.get('results') != [[True, op['expect_result']]]:
             sys.exit(f'Java fixture control failed: {op["cmd"]}: {reference.get("results")}')
@@ -135,14 +164,14 @@ def main():
     commands_by_group = []
     index = 0
     for name, lines in groups:
-        n = sum(1 for op in lines if op['op'] in ('falling', 'weather_state') or (op['op'] == 'cmd' and op.get('record', True)) or (op['op'] == 'tick' and op.get('record')))
+        n = sum(1 for op in lines if op['op'] in ('falling', 'destroy_progress', 'weather_state') or (op['op'] == 'cmd' and op.get('record', True)) or (op['op'] == 'tick' and op.get('record')))
         commands_by_group.append((name, index, index + n))
         index += n
     mismatches = []
     failed_positions = set()
     for position, (v, r) in enumerate(zip(vanilla, rust)):
         assert v['cmd'] == r['cmd'], (v['cmd'], r['cmd'])
-        kind = compare(v, r)
+        kind = compare(v, r, recorded_ops[position].get('comparison'))
         if kind:
             failed_positions.add(position)
             mismatches.append({'kind': kind, 'cmd': v['cmd'], 'vanilla': v, 'rust': r})
@@ -162,7 +191,14 @@ def main():
     print(f'total: {total - len(mismatches)}/{total} commands match', flush=True)
     report = {'schema': 1, 'minecraft': lock['minecraft']['version'], 'platform': platform.platform(), 'seed': SEED,
               'commands': total, 'mismatches': len(mismatches), 'groups': summary,
-              'scope': 'Feedback and failure messages (text and resolved style), chat lines, and CommandResultCallback results of commands run by the single-player owner of an integrated server; world, entity and item effects through probe commands.'}
+              'comparison_overrides': [
+                  {'cmd': op['cmd'], 'comparison': op['comparison'],
+                   'vanilla_results': v['results'], 'rust_results': r['results']}
+                  for op, v, r in zip(recorded_ops, vanilla, rust) if op.get('comparison')],
+              'scope': 'Feedback and failure messages (text and resolved style), chat lines, and CommandResultCallback results of commands run by the single-player owner of an integrated server; world, entity and item effects through probe commands. Explicit positive_result operations compare presence only; their unmodified raw counts remain in the records and comparison_overrides.'}
+    for override in report['comparison_overrides']:
+        print(f'{override["comparison"]}: {override["cmd"]}: '
+              f'Java {override["vanilla_results"]}, Horizon {override["rust_results"]}', flush=True)
     lab.write_json(report_path, report)
     if mismatches and not args.allow_gaps:
         sys.exit(f'{len(mismatches)} command execution mismatches; see {build}')
@@ -191,7 +227,26 @@ def masked(record):
     return text
 
 
-def compare(v, r):
+def positive_result(record):
+    """A counted operation's presence, retaining its unmodified raw record."""
+    results = record.get('results')
+    if not isinstance(results, list) or len(results) != 1 or not isinstance(results[0], list) or len(results[0]) != 2:
+        return None
+    accepted, count = results[0]
+    if type(accepted) is not bool or type(count) is not int or count < 0 or not accepted and count != 0:
+        return None
+    return count > 0
+
+
+def compare(v, r, comparison=None):
+    # Explicit per-operation scope for random counts (for example explosion
+    # fire). All raw feedback/results remain in the JSON and report; every
+    # other command still compares exact feedback, styles and results.
+    if comparison == 'positive_result':
+        left, right = positive_result(v), positive_result(r)
+        return None if left is not None and right is not None and left == right else 'positive_result'
+    if comparison is not None:
+        raise ValueError(f'unknown command comparison: {comparison}')
     if masked(v) != masked(r):
         return 'messages'
     if v['results'] != r['results']:

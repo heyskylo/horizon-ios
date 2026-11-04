@@ -1162,5 +1162,7 @@
   "Charged back": "ธนาคารเรียกเงินคืน",
   "Paid": "ชำระแล้ว",
   "Order {id}": "คำสั่งซื้อ {id}",
-  "The claim didn't go through: the checkout's address isn't Horizon's.": "รับสิทธิ์ไม่สำเร็จ: ที่อยู่ของหน้าชำระเงินไม่ใช่ของ Horizon"
+  "The claim didn't go through: the checkout's address isn't Horizon's.": "รับสิทธิ์ไม่สำเร็จ: ที่อยู่ของหน้าชำระเงินไม่ใช่ของ Horizon",
+  "Paste a friend's invite code": "วางรหัสเชิญของเพื่อน",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "เล่น {build} สร้างบน Horizon {commit} ซึ่งเป็นคอมมิตที่ {mods} ตรึงไว้ ไม่ใช่บน {version}"
 }

@@ -1162,5 +1162,7 @@
   "Charged back": "Bangiga ayaa dib u qaaday",
   "Paid": "La bixiyay",
   "Order {id}": "Dalab {id}",
-  "The claim didn't go through: the checkout's address isn't Horizon's.": "Codsigu ma dhicin: ciwaanka bixintu ma aha kan Horizon."
+  "The claim didn't go through: the checkout's address isn't Horizon's.": "Codsigu ma dhicin: ciwaanka bixintu ma aha kan Horizon.",
+  "Paste a friend's invite code": "Ku dheji koodka martiqaadka saaxiib",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Ciyaarta {build}, oo lagu dhisay Horizon {commit}, commit-ka uu {mods} xiray, ee aan ahayn {version}."
 }
