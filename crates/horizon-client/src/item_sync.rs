@@ -375,6 +375,12 @@ fn components_tag(s: &Stack, builtin: &Builtin, synced: &Dynamic) -> Option<Tag>
     let mut out = Tag::compound(entries);
     if let Tag::Compound(map) = &mut out {
         for id in &s.removed {
+            if *id == component::MAX_STACK_SIZE {
+                map.insert(
+                    "!minecraft:max_stack_size".into(),
+                    Tag::Compound(Default::default()),
+                );
+            }
             if synced.custom_components
                 && let Some(name) = horizon_protocol::item::custom::name(*id)
             {
@@ -1233,5 +1239,80 @@ mod tests {
             Some(&Tag::String("epic".into()))
         );
         assert_eq!(crate::item_tooltip::rarity(&back, "common"), "epic");
+    }
+
+    /// A cobblestone stack of 20 whose own limit is 16, plus a custom-data
+    /// marker, comes back with the same count, limit and marker. Removing the
+    /// component is a `!minecraft:max_stack_size` patch.
+    #[test]
+    fn a_stack_keeps_its_max_stack_size_across_the_wire() {
+        use horizon_protocol::buf::{Reader, Writer};
+        use horizon_protocol::item::Slot;
+        let mut components = vec![String::new(); 2];
+        components[component::CUSTOM_DATA as usize] = "minecraft:custom_data".into();
+        components[component::MAX_STACK_SIZE as usize] = "minecraft:max_stack_size".into();
+        let builtin = Builtin {
+            registries: [
+                (
+                    "minecraft:item".into(),
+                    Ids::from_names(vec!["minecraft:air".into(), "minecraft:cobblestone".into()]),
+                ),
+                (
+                    "minecraft:data_component_type".into(),
+                    Ids::from_names(components),
+                ),
+            ]
+            .into(),
+        };
+        let dynamic = Dynamic::default();
+        let marker = Tag::compound([("marker", Tag::Byte(1))]);
+        let mut item = ItemStack::new("minecraft:cobblestone", 20);
+        item.data_mut()
+            .set_other("minecraft:max_stack_size", Some(Tag::Int(16)));
+        item.data_mut()
+            .set_other("minecraft:custom_data", Some(marker.clone()));
+        let wire = crate::lan::guest::stack_to_network(
+            |name| builtin.get("minecraft:item").unwrap().id(name).unwrap(),
+            |_, _| None,
+            &Some(item),
+        )
+        .unwrap();
+        let mut w = Writer::new();
+        Slot::write(&Some(wire), &mut w);
+        let received = Slot::read(&mut Reader::new(&w.data)).unwrap().unwrap();
+        assert_eq!(received.count, 20);
+        assert_eq!(
+            received.component(component::MAX_STACK_SIZE),
+            Some(&Component::Int(16))
+        );
+        let back = from_network(&received, &builtin, &dynamic);
+        assert_eq!(back.count, 20);
+        assert_eq!(
+            back.data()
+                .and_then(|d| d.other("minecraft:max_stack_size")),
+            Some(&Tag::Int(16))
+        );
+        assert_eq!(
+            back.data().and_then(|d| d.other("minecraft:custom_data")),
+            Some(&marker)
+        );
+
+        let mut cleared = ItemStack::new("minecraft:cobblestone", 1);
+        cleared.data_mut().set_other(
+            "!minecraft:max_stack_size",
+            Some(Tag::Compound(Default::default())),
+        );
+        let wire = crate::lan::guest::stack_to_network(
+            |name| builtin.get("minecraft:item").unwrap().id(name).unwrap(),
+            |_, _| None,
+            &Some(cleared),
+        )
+        .unwrap();
+        assert!(wire.removed.contains(&component::MAX_STACK_SIZE));
+        let back = from_network(&wire, &builtin, &dynamic);
+        assert!(
+            back.data()
+                .is_some_and(|d| d.other("!minecraft:max_stack_size").is_some())
+        );
     }
 }

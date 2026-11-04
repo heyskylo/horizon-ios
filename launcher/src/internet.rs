@@ -44,6 +44,10 @@ pub(super) struct Internet {
 }
 
 impl Internet {
+    pub(super) fn location_busy(&self) -> bool {
+        self.busy
+    }
+
     pub(super) fn new() -> Self {
         let (tx, rx) = channel();
         Self {

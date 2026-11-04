@@ -22,14 +22,18 @@ pub use item::{
 };
 pub use pose::{Pose, pose_matrix};
 
-/// Cosmetics stay off until this is true: no request, no drawing, no settings.
-pub const ON_BY_DEFAULT: bool = false;
+/// Cosmetics run by default (Ludovic, 2026-11-04: on when the shop opens): the settings entry and
+/// your own are there for everyone. Other players' show by default only to an account that owns a
+/// cosmetic (`prefs::Others::effective`, the same day: a player who owns none sees a vanilla game
+/// and the game asks nothing about other players, as CONTRIBUTING.md asks), until the player
+/// chooses. `HORIZON_COSMETICS=0` turns everything off.
+pub const ON_BY_DEFAULT: bool = true;
 
 /// The cosmetics service (`HORIZON_COSMETICS_API` overrides it).
 pub const API: &str = "https://cosmetics.playhorizon.dev";
 
-/// Whether cosmetics run: `ON_BY_DEFAULT`, or `HORIZON_COSMETICS=1` for one run (development,
-/// the bench). `HORIZON_COSMETICS=0` keeps them off.
+/// Whether cosmetics run: `ON_BY_DEFAULT`, or `HORIZON_COSMETICS=1` / `0` for one run
+/// (development, the bench).
 pub fn enabled() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| match std::env::var("HORIZON_COSMETICS").as_deref() {
@@ -37,4 +41,10 @@ pub fn enabled() -> bool {
         Ok("0") => false,
         _ => ON_BY_DEFAULT,
     })
+}
+
+/// `HORIZON_COSMETICS=1` asked for this run: the launcher shows its Wardrobe even while the
+/// cosmetics service has no Shop to show (development, screenshots).
+pub fn forced() -> bool {
+    std::env::var("HORIZON_COSMETICS").as_deref() == Ok("1")
 }

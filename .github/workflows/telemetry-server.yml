@@ -27,7 +27,7 @@ jobs:
       run:
         working-directory: crates/horizon-telemetry-server
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: rustup toolchain install stable --profile minimal --component rustfmt --component clippy
       # Ours keep their build folder between jobs.
       - uses: Swatinem/rust-cache@v2

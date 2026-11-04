@@ -2,6 +2,10 @@
 //! clients draw them, off unless `horizon_cosmetics::enabled()`. What another player wears comes
 //! from the cosmetics service by UUID (`horizon_cosmetics::Cosmetics`, its own thread); this file
 //! puts the items on the avatar's bones, on the GPU skin path when the renderer takes it.
+//!
+//! Other players' cosmetics show by default only to an account that owns one (asked of the
+//! service once a run, `OwnerCheck`): anyone else sees a vanilla game and the game asks nothing
+//! about other players, until the player chooses otherwise in the settings.
 
 use super::Game;
 use horizon_client::fast_hash::FxHashMap;
@@ -17,11 +21,26 @@ use std::time::{Duration, Instant};
 /// An item as the renderer takes it.
 struct Baked {
     item: Arc<Item>,
-    model: Arc<Part>,
+    /// A model per bone it rides (a shirt's sleeves are on the arms).
+    models: Vec<(horizon_cosmetics::Bone, Arc<Part>)>,
     /// Its texture's sprite (a 64×64 skin slot of the atlas).
     location: String,
     /// The frame it was last marked drawn in (its slot is kept).
     marked: Cell<u32>,
+}
+
+impl Baked {
+    fn new(item: &Arc<Item>, frame: u32) -> Self {
+        Self {
+            item: item.clone(),
+            models: item
+                .roots()
+                .map(|(bone, root)| (bone, Arc::new(part(root))))
+                .collect(),
+            location: format!("cosmetics/{:x}", Arc::as_ptr(item) as usize),
+            marked: Cell::new(frame.wrapping_sub(1)),
+        }
+    }
 }
 
 #[derive(Default)]
@@ -38,6 +57,61 @@ pub(super) struct Cosmetics {
     local: bool,
     /// Show my cosmetics on its way to the service.
     mine: MineSync,
+    /// Whether the signed-in account owns a cosmetic.
+    owner: OwnerCheck,
+}
+
+/// Whether the signed-in account owns a cosmetic: the answer kept from the last run first
+/// (`prefs::owned`), then the service's, asked once a run and retried after a failure like Show my
+/// cosmetics. Not known yet, or no session: not owning.
+#[derive(Default)]
+struct OwnerCheck {
+    started: bool,
+    owns: bool,
+    /// The service answered this run.
+    known: bool,
+    asking: Option<Receiver<Result<bool, String>>>,
+    retry: Option<(Instant, Duration)>,
+}
+
+/// The wait after another failure: 15 s, doubling to 10 minutes.
+fn backoff(last: Option<(Instant, Duration)>) -> Option<(Instant, Duration)> {
+    let wait = last.map_or(Duration::from_secs(15), |(_, w)| {
+        (w * 2).min(Duration::from_secs(600))
+    });
+    Some((Instant::now() + wait, wait))
+}
+
+/// The signed-in account's UUID as the service writes it, and the game folder.
+fn account() -> Option<(
+    Arc<horizon_client::auth::AuthSession>,
+    String,
+    std::path::PathBuf,
+)> {
+    let session = horizon_client::auth::current()?;
+    let uuid = format!("{:032x}", session.uuid);
+    Some((session, uuid, std::env::current_dir().ok()?))
+}
+
+/// Asks the service whether the signed-in account owns a cosmetic and keeps the answer in the
+/// game folder. An offline account owns none and asks nothing.
+fn check_owner() -> Result<bool, String> {
+    let Some((session, uuid, home)) = account() else {
+        return Ok(false);
+    };
+    let owns = horizon_cosmetics::account::owns(&http(), &session.name, |id| {
+        horizon_client::auth::join_server(&session, id).map_err(|e| format!("{e:?}"))
+    })?;
+    if let Err(e) = prefs::set_owned(&home, &uuid, owns) {
+        log::warn!("Cosmetics: the ownership answer is not saved: {e}");
+    }
+    Ok(owns)
+}
+
+fn http() -> horizon_cosmetics::Http {
+    let api =
+        std::env::var("HORIZON_COSMETICS_API").unwrap_or_else(|_| horizon_cosmetics::API.into());
+    horizon_cosmetics::Http::new(&api, &format!("Horizon/{}", env!("CARGO_PKG_VERSION")))
 }
 
 /// Sending Show my cosmetics: the wish it last looked at, the request on its way, and when to try
@@ -52,20 +126,14 @@ struct MineSync {
 /// Makes the service keep `wish` for the signed-in account, unless it already confirmed it
 /// (`prefs::confirmed`, in the game folder). An offline account has nothing to send.
 fn send_mine(wish: bool) -> Result<(), String> {
-    let Some(session) = horizon_client::auth::current() else {
+    let Some((session, uuid, home)) = account() else {
         return Ok(());
     };
-    let home = std::env::current_dir().map_err(|e| e.to_string())?;
-    let uuid = format!("{:032x}", session.uuid);
     if prefs::confirmed(&home, &uuid).unwrap_or(true) == wish {
         return Ok(());
     }
-    let api =
-        std::env::var("HORIZON_COSMETICS_API").unwrap_or_else(|_| horizon_cosmetics::API.into());
-    let http =
-        horizon_cosmetics::Http::new(&api, &format!("Horizon/{}", env!("CARGO_PKG_VERSION")));
     let kept = horizon_cosmetics::account::set_visible(
-        &http,
+        &http(),
         &session.name,
         |id| horizon_client::auth::join_server(&session, id).map_err(|e| format!("{e:?}")),
         wish,
@@ -89,6 +157,26 @@ impl Cosmetics {
         let http = horizon_cosmetics::Http::new(&api, &agent);
         (horizon_cosmetics::Cosmetics::new(http, Some(cache)), false)
     }
+}
+
+/// What the player whose UUID `uuid` gives wears, if the game shows it: the player's own model
+/// (`own`) while Show my cosmetics is on, another player unless others' cosmetics are hidden (by
+/// choice, or by owning none). Hidden, the service is never asked about them.
+fn worn_of(
+    client: &horizon_cosmetics::Cosmetics,
+    extras: &horizon_client::extras::Extras,
+    own: bool,
+    uuid: impl FnOnce() -> Option<u128>,
+) -> Option<horizon_cosmetics::Worn> {
+    let shown = if own {
+        extras.cosmetics_mine
+    } else {
+        extras.effective_others() != Others::Hidden
+    };
+    if !shown {
+        return None;
+    }
+    client.frame().worn(uuid()?)
 }
 
 /// The game's model of an item's part.
@@ -127,6 +215,12 @@ fn covered(m: &Mob, slot: Slot) -> bool {
         Slot::Head => m.extra.head.is_some(),
         Slot::Back => m.cape.is_some() || m.extra.chest.as_deref() == Some("minecraft:elytra"),
         Slot::Shoulder => false,
+        // A chestplate, not an elytra.
+        Slot::Torso => m
+            .extra
+            .chest
+            .as_deref()
+            .is_some_and(|c| c != "minecraft:elytra"),
         Slot::NameTag => true,
     }
 }
@@ -145,6 +239,39 @@ impl Game<'_> {
             c.local = local;
         }
         c.frame.set(c.frame.get().wrapping_add(1));
+        // Item files from a folder (the art, the bench): shown as to an owner, nothing asked.
+        if c.local {
+            c.owner.owns = true;
+        } else {
+            // Whether the account owns a cosmetic: what the last run learnt, then the service.
+            let o = &mut c.owner;
+            if !o.started {
+                o.started = true;
+                o.owns = account()
+                    .is_some_and(|(_, uuid, home)| prefs::owned(&home, &uuid).unwrap_or(false));
+            }
+            if let Some(done) = o.asking.as_ref().and_then(|rx| rx.try_recv().ok()) {
+                o.asking = None;
+                match done {
+                    Ok(owns) => (o.owns, o.known, o.retry) = (owns, true, None),
+                    Err(_) => o.retry = backoff(o.retry),
+                }
+            }
+            // One sign-in at a time: Mojang keeps one joined server id per account.
+            let due = !o.known && o.retry.is_none_or(|(at, _)| Instant::now() >= at);
+            if due && o.asking.is_none() && c.mine.sending.is_none() {
+                let (tx, rx) = channel();
+                o.asking = Some(rx);
+                std::thread::Builder::new()
+                    .name("Cosmetics account".into())
+                    .spawn(move || {
+                        let _ = tx.send(check_owner());
+                    })
+                    .ok();
+            }
+        }
+        // Read every frame: the settings button shows it, and it is never saved.
+        self.settings.extras.cosmetics_owner = c.owner.owns;
         // Show my cosmetics: sent once per change of the wish, then retried until confirmed.
         if !c.local {
             let wish = self.settings.extras.cosmetics_mine;
@@ -153,16 +280,11 @@ impl Game<'_> {
                 m.sending = None;
                 m.retry = match done {
                     Ok(()) => None,
-                    Err(_) => {
-                        let wait = m.retry.map_or(Duration::from_secs(15), |(_, w)| {
-                            (w * 2).min(Duration::from_secs(600))
-                        });
-                        Some((Instant::now() + wait, wait))
-                    }
+                    Err(_) => backoff(m.retry),
                 };
             }
             let due = m.wish != Some(wish) || m.retry.is_some_and(|(at, _)| Instant::now() >= at);
-            if due && m.sending.is_none() {
+            if due && m.sending.is_none() && c.owner.asking.is_none() {
                 m.wish = Some(wish);
                 let (tx, rx) = channel();
                 m.sending = Some(rx);
@@ -198,12 +320,7 @@ impl Game<'_> {
         let mut baked = self.cosmetics.baked.borrow_mut();
         let entry = baked
             .entry(Arc::as_ptr(item) as usize)
-            .or_insert_with(|| Baked {
-                item: item.clone(),
-                model: Arc::new(part(&item.root)),
-                location: format!("cosmetics/{:x}", Arc::as_ptr(item) as usize),
-                marked: Cell::new(frame.wrapping_sub(1)),
-            });
+            .or_insert_with(|| Baked::new(item, frame));
         let Some(slot) = self.gui.atlas.sprites.get(&entry.location) else {
             self.cosmetics.uploads.borrow_mut().push(item.clone());
             return None;
@@ -224,24 +341,17 @@ impl Game<'_> {
     /// What `m` wears, if cosmetics are shown for it: `own` for the player's own model.
     fn worn(&self, m: &Mob, own: bool) -> Option<horizon_cosmetics::Worn> {
         let client = self.cosmetics.client.as_ref()?;
-        let extras = &self.settings.extras;
-        if if own {
-            !extras.cosmetics_mine
-        } else {
-            extras.cosmetics_others == Others::Hidden
-        } {
-            return None;
-        }
-        let uuid = if own {
-            self.remote.as_ref().map(|r| r.profile())?
-        } else if &*m.kind.id == "minecraft:player" {
-            self.remote_player_uuid(m.id)?
-        } else if self.cosmetics.local && &*m.kind.id == "minecraft:mannequin" {
-            u128::from(m.id)
-        } else {
-            return None;
-        };
-        client.frame().worn(uuid)
+        worn_of(client, &self.settings.extras, own, || {
+            if own {
+                self.remote.as_ref().map(|r| r.profile())
+            } else if &*m.kind.id == "minecraft:player" {
+                self.remote_player_uuid(m.id)
+            } else if self.cosmetics.local && &*m.kind.id == "minecraft:mannequin" {
+                Some(u128::from(m.id))
+            } else {
+                None
+            }
+        })
     }
 
     /// The cosmetics `m` wears, on its bones. `gpu`: posed on the GPU (the mob pass's skin
@@ -274,10 +384,11 @@ impl Game<'_> {
         let ticks = m.age as f32 + alpha;
         let frame = self.cosmetics.frame.get();
         let mut bounds = None;
-        // Items on one bone (a back item and a shoulder pet both ride the body) share its matrix.
-        let mut bones: [Option<(horizon_cosmetics::Bone, glam::Mat4)>; 3] = [None; 3];
+        // Items on one bone (a back item, a shoulder pet and a shirt ride the body) share its
+        // matrix: the head, the body and the two arms at most.
+        let mut bones: [Option<(horizon_cosmetics::Bone, glam::Mat4)>; 4] = [None; 4];
         // "Name tags only": other players' styles beside their names, nothing on their bodies.
-        let bodies = own || self.settings.extras.cosmetics_others == Others::Shown;
+        let bodies = own || self.settings.extras.effective_others() == Others::Shown;
         for item in worn.iter() {
             if !bodies || covered(m, item.slot) {
                 continue;
@@ -285,12 +396,7 @@ impl Game<'_> {
             let mut baked = self.cosmetics.baked.borrow_mut();
             let b = baked
                 .entry(Arc::as_ptr(item) as usize)
-                .or_insert_with(|| Baked {
-                    item: item.clone(),
-                    model: Arc::new(part(&item.root)),
-                    location: format!("cosmetics/{:x}", Arc::as_ptr(item) as usize),
-                    marked: Cell::new(frame.wrapping_sub(1)),
-                });
+                .or_insert_with(|| Baked::new(item, frame));
             let Some(rect) = self.gui.atlas.sprites.get(&b.location) else {
                 self.cosmetics.uploads.borrow_mut().push(item.clone());
                 continue;
@@ -298,21 +404,6 @@ impl Game<'_> {
             if b.marked.replace(frame) != frame {
                 self.skin_downloads.borrow_mut().drawn(&b.location);
             }
-            let known = bones.iter().flatten().find(|(b, _)| *b == item.bone);
-            let bone = match known {
-                Some(&(_, matrix)) => matrix,
-                None => {
-                    let Some(matrix) =
-                        render::part_matrix(body, base, body_poses, item.bone.part(), 0.0)
-                    else {
-                        continue;
-                    };
-                    if let Some(free) = bones.iter_mut().find(|b| b.is_none()) {
-                        *free = Some((item.bone, matrix));
-                    }
-                    matrix
-                }
-            };
             // The texture fills the top-left of its 64×64 slot.
             let (w, h) = (
                 item.texture.width as f32 / 64.0,
@@ -324,35 +415,150 @@ impl Game<'_> {
                 rect.u0 + (rect.u1 - rect.u0) * w,
                 rect.v0 + (rect.v1 - rect.v0) * h,
             ];
-            poses.reset(&b.model);
-            item.animate(ticks, |name, pose| *poses.get(name) = pose);
-            if gpu {
-                let mut models = self.skin_models.borrow_mut();
-                let mut frame = self.skin_frame.borrow_mut();
-                let mut skin = horizon_client::mobs::skin::Skin::new(&mut models, &mut frame);
-                skin.bounds = bounds;
-                let paint = horizon_client::mobs::skin::Paint {
-                    uv,
-                    scroll: 0.0,
-                    color: 0xFFFF_FFFF,
-                    light,
-                    overlay: 0,
+            for (bone_of, model) in &b.models {
+                let known = bones.iter().flatten().find(|(b, _)| b == bone_of);
+                let bone = match known {
+                    Some(&(_, matrix)) => matrix,
+                    None => {
+                        let Some(matrix) =
+                            render::part_matrix(body, base, body_poses, bone_of.part(), 0.0)
+                        else {
+                            continue;
+                        };
+                        if let Some(free) = bones.iter_mut().find(|b| b.is_none()) {
+                            *free = Some((*bone_of, matrix));
+                        }
+                        matrix
+                    }
                 };
-                if skin.draw(&b.model, bone, poses, paint) {
-                    bounds = skin.bounds;
-                    continue;
+                poses.reset(model);
+                item.animate(ticks, |name, pose| *poses.get(name) = pose);
+                if gpu {
+                    let mut models = self.skin_models.borrow_mut();
+                    let mut frame = self.skin_frame.borrow_mut();
+                    let mut skin = horizon_client::mobs::skin::Skin::new(&mut models, &mut frame);
+                    skin.bounds = bounds;
+                    let paint = horizon_client::mobs::skin::Paint {
+                        uv,
+                        scroll: 0.0,
+                        color: 0xFFFF_FFFF,
+                        light,
+                        overlay: 0,
+                    };
+                    if skin.draw(model, bone, poses, paint) {
+                        bounds = skin.bounds;
+                        continue;
+                    }
                 }
+                horizon_client::mobs::render_model(
+                    model,
+                    bone,
+                    &|p: &Part| poses.pose(p),
+                    uv,
+                    light,
+                    0,
+                    out,
+                );
             }
-            horizon_client::mobs::render_model(
-                &b.model,
-                bone,
-                &|p: &Part| poses.pose(p),
-                uv,
-                light,
-                0,
-                out,
-            );
         }
         bounds
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use horizon_client::extras::Extras;
+    use std::sync::Mutex;
+
+    /// A name tag style with a 1×1 mark.
+    const TAG: &str = r##"{"format": 1, "id": "tag", "slot": "name_tag", "parts": [],
+        "texture": {"png": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="},
+        "tag": {"line": "#a98fff"}}"##;
+
+    /// The service: every player asked about wears `TAG`; each request is logged.
+    #[derive(Clone, Default)]
+    struct Service(Arc<Mutex<Vec<String>>>);
+
+    impl horizon_cosmetics::Transport for Service {
+        fn post(&self, path: &str, body: &[u8]) -> Result<Vec<u8>, String> {
+            let body: serde_json::Value = serde_json::from_slice(body).unwrap();
+            self.0.lock().unwrap().push(format!("POST {path} {body}"));
+            let players: serde_json::Map<_, _> = body["players"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|p| {
+                    let p = p.as_str().unwrap().to_owned();
+                    (p, serde_json::json!([{"id": "tag", "hash": "h"}]))
+                })
+                .collect();
+            Ok(serde_json::json!({"ttl": 60, "players": players})
+                .to_string()
+                .into_bytes())
+        }
+
+        fn get(&self, path: &str) -> Result<Vec<u8>, String> {
+            self.0.lock().unwrap().push(format!("GET {path}"));
+            Ok(TAG.as_bytes().to_vec())
+        }
+    }
+
+    const OTHER: u128 = 0x1234;
+
+    /// What another player wears as `extras` shows it, drawn frame after frame for up to
+    /// `patience` (the service answers on its own thread), and what was asked of the service.
+    fn other_player(
+        extras: &Extras,
+        patience: Duration,
+    ) -> (Option<horizon_cosmetics::Worn>, Vec<String>) {
+        let service = Service::default();
+        let client = horizon_cosmetics::Cosmetics::new(service.clone(), None);
+        let deadline = Instant::now() + patience;
+        let worn = loop {
+            let worn = worn_of(&client, extras, false, || Some(OTHER));
+            if worn.is_some() || Instant::now() >= deadline {
+                break worn;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        let asked = service.0.lock().unwrap().clone();
+        (worn, asked)
+    }
+
+    #[test]
+    fn a_player_who_owns_none_sees_and_asks_nothing_until_they_choose() {
+        use horizon_cosmetics::prefs::Others;
+        // No line, owns nothing: a vanilla game, and no request about the other player.
+        let (short, long) = (Duration::from_millis(300), Duration::from_secs(10));
+        let (worn, asked) = other_player(&Extras::default(), short);
+        assert!(worn.is_none());
+        assert_eq!(asked, Vec::<String>::new());
+        // The service says this account owns a cosmetic: the other player's style shows.
+        let owner = Extras {
+            cosmetics_owner: true,
+            ..Extras::default()
+        };
+        let (worn, asked) = other_player(&owner, long);
+        assert_eq!(
+            worn.map(|w| w.iter().map(|i| i.id.clone()).collect::<Vec<_>>()),
+            Some(vec!["tag".to_owned()])
+        );
+        assert_eq!(
+            asked[0],
+            format!("POST /v1/worn {{\"players\":[\"{OTHER:032x}\"]}}")
+        );
+        // A choice wins over ownership both ways.
+        let chose = Extras {
+            cosmetics_others: Some(Others::Shown),
+            ..Extras::default()
+        };
+        assert!(other_player(&chose, long).0.is_some());
+        let hid = Extras {
+            cosmetics_others: Some(Others::Hidden),
+            ..owner
+        };
+        let (worn, asked) = other_player(&hid, short);
+        assert!(worn.is_none() && asked.is_empty());
     }
 }

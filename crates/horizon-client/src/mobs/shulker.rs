@@ -14,26 +14,29 @@ use super::{
 use crate::projectiles::{Projectile, ProjectileWorld, STEPS};
 use horizon_core::geometry::trig::Mth;
 use horizon_core::{
-    geometry::{Aabb, Vec3},
+    geometry::{Aabb, Direction, ShapeOp, Vec3, VoxelShape},
     random::{LegacyRandom, RandomSource},
 };
 use std::f32::consts::PI;
 
 // Shulker state: `variant3` the attach face (3D data value), `counter` the
 // raw peek (0..100), `color` the shell colour (16 none). AnimState slot 0
-// the current peek amount.
+// the current peek amount. On the client, `scratch[0]` is
+// `clientSideTeleportInterpolation` and `scratch[1..3]` is
+// `clientOldAttachPosition`.
 pub const PEEK: usize = 0;
 pub const NO_COLOR: u8 = 16;
 /// `Direction.DOWN`'s 3D data value.
 const DOWN: u8 = 0;
 
 /// `Shulker.startRiding`: a shulker that boards a vehicle puts its attach face
-/// back to `DOWN`, so it rides lid up whatever block face it was stuck to. The
-/// client half (clearing the teleport interpolation) has no counterpart here:
-/// the face itself is the whole of the synced change.
+/// back to `DOWN`, so it rides lid up whatever block face it was stuck to.
+/// The client half clears the teleport slide (`clientOldAttachPosition` and
+/// `clientSideTeleportInterpolation`).
 pub fn on_start_riding(m: &mut Mob) {
     if m.species() == Species::Shulker {
         m.extra.variant3 = DOWN;
+        m.extra.scratch[0] = 0;
     }
 }
 
@@ -110,19 +113,124 @@ fn progress_aabb(direction: u8, from: f64, to: f64, pos: Vec3) -> Aabb {
         ))
         .move_by(pos)
 }
-/// `Level.noCollision(shulker, aabb)`: no block collision under the empty
-/// context, and none of the entities a shulker collides with overlaps
-/// (`canBeCollidedWith`: living shulkers and adult happy ghasts; players
-/// and other mobs never block it).
-fn no_collision(m: &Mob, w: &MobWorld, bounds: Aabb) -> bool {
-    let mut scene = crate::collisions::SceneCollisions {
-        world: w.world,
-        binding: w.collision,
-        subject: None,
-    };
-    if !crate::collisions::no_collision_empty(&mut scene, bounds) {
-        return false;
+/// Block queries shared by attachment and teleport candidates. Entity overlap
+/// is checked separately, using the nearby-entity index from MobWorld.
+struct BlockSpace<'w, 'r> {
+    world: &'w crate::world::World,
+    registry: &'r horizon_world::registry::BlockRegistry,
+    facts: &'w crate::blocks::BlockFacts,
+    binding: &'w horizon_world::block_collision::BlockCollisionRegistry<'r>,
+    powder_walkable: bool,
+}
+impl<'w, 'r> BlockSpace<'w, 'r> {
+    fn context(m: &Mob) -> horizon_world::collision_context::CollisionContext<'_> {
+        use horizon_world::{
+            collision_context::{CollisionContext, CollisionEntity, CollisionItem},
+            entity_obstruction::EntityIdentity,
+        };
+        CollisionContext::for_entity(
+            CollisionEntity {
+                identity: EntityIdentity(u64::from(m.id)),
+                // A teleport candidate is queried before setPos changes the entity.
+                y: m.position.y,
+                descending: false,
+                main_hand: Some(CollisionItem {
+                    item: m.extra.main_hand.as_deref().unwrap_or("minecraft:air"),
+                    count: m
+                        .extra
+                        .main_hand_stack()
+                        .map_or(i32::from(m.extra.main_hand.is_some()), |s| {
+                            s.count.min(i32::MAX as u32) as i32
+                        }),
+                }),
+            },
+            false,
+        )
     }
+    fn scene(&self, m: &Mob) -> crate::collisions::SceneCollisions<'_, 'r> {
+        crate::collisions::SceneCollisions {
+            world: self.world,
+            binding: self.binding,
+            subject: Some(crate::collisions::PowderSnowSubject {
+                fall_distance: m.fall_distance,
+                leather_boots: m.extra.feet.as_deref() == Some("minecraft:leather_boots")
+                    && m.extra.armor[3].as_ref().is_none_or(|s| s.count > 0),
+                walkable_type: self.powder_walkable,
+                ..Default::default()
+            }),
+        }
+    }
+    fn no_collision(&self, m: &Mob, bounds: Aabb) -> bool {
+        use horizon_world::{
+            entity_obstruction::EntityIdentity,
+            world_movement::{CollisionCheckRequest, no_world_collision},
+        };
+        no_world_collision(
+            &mut self.scene(m),
+            CollisionCheckRequest {
+                entity: EntityIdentity(u64::from(m.id)),
+                context: Self::context(m),
+                bounds,
+                candidate_budget: 1_000_000,
+            },
+        )
+        .unwrap_or(false)
+    }
+    fn can_stay_at(&self, m: &Mob, p: [i32; 3], face: u8) -> bool {
+        // isPositionBlocked: anything but air blocks, except a moving piston
+        // being driven through the shulker's own cell.
+        if !self.facts.is_air(self.world.block(p[0], p[1], p[2]))
+            && (p != block_pos(m)
+                || self
+                    .registry
+                    .state(self.world.block(p[0], p[1], p[2]))
+                    .map_or("", |s| s.name.as_str())
+                    != "minecraft:moving_piston")
+        {
+            return false;
+        }
+        // loadedAndEntityCanStandOnFace uses the entity-context collision shape,
+        // not the block's generic support shape (notably different on soul sand).
+        let s = face_step(face);
+        let support_pos =
+            horizon_core::position::BlockPos::new(p[0] + s[0], p[1] + s[1], p[2] + s[2]);
+        let support = self
+            .world
+            .block(support_pos.x, support_pos.y, support_pos.z);
+        let open = opposite(face);
+        let Ok(shape) = self.binding.collision_shape_with_context(
+            &mut self.scene(m),
+            support,
+            support_pos,
+            &Self::context(m),
+        ) else {
+            return false;
+        };
+        // Block.isFaceFull. A full cube, what shulkers cling to almost always
+        // (canStayAt runs every tick), is full on every face: skip the shape ops.
+        let full = shape.is_block()
+            || shape
+                .face_shape(Direction::ALL[open as usize])
+                .is_ok_and(|face| {
+                    VoxelShape::block()
+                        .join_is_not_empty(&face, ShapeOp::XOR)
+                        .is_ok_and(|differs| !differs)
+                });
+        full && self.no_collision(m, attachment_box(p, face))
+    }
+}
+fn block_space<'w, 'r>(m: &Mob, w: &'w MobWorld<'r>) -> BlockSpace<'w, 'r> {
+    BlockSpace {
+        world: w.world,
+        registry: w.registry,
+        facts: w.facts,
+        binding: w.collision,
+        powder_walkable: w
+            .data
+            .entity_has("minecraft:powder_snow_walkable_mobs", &m.kind.id),
+    }
+}
+fn entities_clear(m: &Mob, w: &MobWorld, bounds: Aabb) -> bool {
     let grown = bounds.inflate(Vec3::new(1.0e-7, 1.0e-7, 1.0e-7));
     !w.others_near(grown).any(|s| {
         s.id != m.id
@@ -131,27 +239,12 @@ fn no_collision(m: &Mob, w: &MobWorld, bounds: Aabb) -> bool {
             && s.bounds.intersects(grown)
     })
 }
-/// `Shulker.canStayAt`: an empty spot against a sturdy face, with room
-/// for the fully opened shell (`canStayAt`).
-fn can_stay_at(m: &Mob, w: &MobWorld, p: [i32; 3], face: u8) -> bool {
-    // isPositionBlocked: anything but air blocks, except a moving piston
-    // being driven through the shulker's own cell.
-    if !w.facts.is_air(w.world.block(p[0], p[1], p[2]))
-        && (p != block_pos(m) || w.block_name(p[0], p[1], p[2]) != "minecraft:moving_piston")
-    {
-        return false;
-    }
-    // loadedAndEntityCanStandOnFace: the supporting block's face toward
-    // the shell is sturdy.
-    let s = face_step(face);
-    let support = w.world.block(p[0] + s[0], p[1] + s[1], p[2] + s[2]);
-    let open = opposite(face);
-    if w.facts.get(support).sturdy_full & (1 << open) == 0 {
-        return false;
-    }
-    // The fully opened shell's box, shrunk by the skin vanilla uses.
-    let opened = progress_aabb(
-        open,
+fn no_collision(m: &Mob, w: &MobWorld, bounds: Aabb) -> bool {
+    block_space(m, w).no_collision(m, bounds) && entities_clear(m, w, bounds)
+}
+fn attachment_box(p: [i32; 3], face: u8) -> Aabb {
+    progress_aabb(
+        opposite(face),
         -1.0,
         1.0,
         Vec3::new(
@@ -160,8 +253,11 @@ fn can_stay_at(m: &Mob, w: &MobWorld, p: [i32; 3], face: u8) -> bool {
             f64::from(p[2]) + 0.5,
         ),
     )
-    .deflate(Vec3::new(1.0e-6, 1.0e-6, 1.0e-6));
-    no_collision(m, w, opened)
+    .deflate(Vec3::new(1.0e-6, 1.0e-6, 1.0e-6))
+}
+/// Shulker.canStayAt, including its separately indexed collidable entities.
+fn can_stay_at(m: &Mob, w: &MobWorld, p: [i32; 3], face: u8) -> bool {
+    block_space(m, w).can_stay_at(m, p, face) && entities_clear(m, w, attachment_box(p, face))
 }
 /// `findAttachableSurface`: the first face (down, up, north, south, west,
 /// east) to cling to.
@@ -346,12 +442,71 @@ pub fn look_yaw(m: &Mob, at: [f64; 3]) -> Option<f32> {
         f64::from(delta_forward),
     ))
 }
-/// `Shulker.tick` on a client that is not the server: the lid eases to the
-/// peek it was sent, and its body stays square (`ShulkerBodyRotationControl`).
+/// `Shulker.tick` on a client that is not the server: the teleport slide
+/// counts down (`setPos` armed it when the move packet arrived), the lid
+/// eases to the peek it was sent, and the body stays square
+/// (`ShulkerBodyRotationControl`).
 pub fn client_tick(m: &mut Mob) {
+    if m.extra.scratch[0] > 0 {
+        m.extra.scratch[0] -= 1;
+    }
     m.anim.vo = m.anim.v;
     ease_peek(m);
     m.body_yaw = 0.0;
+}
+/// `Shulker.setPos`. A shulker's interpolation handler is `NO_OP`, so a move
+/// packet lands here instead of being stepped. Not a passenger: the position
+/// snaps to the block centre. A block change after the first tick closes the
+/// lid, and, off a vehicle and other than toward the block the current slide
+/// remembers, starts the 6-tick slide from the block it was in before the
+/// packet and snaps `previous` so ordinary interpolation does not also run.
+pub fn client_set_pos(m: &mut Mob, x: f64, y: f64, z: f64) {
+    let old = block_pos(m);
+    m.position = if m.extra.passenger {
+        Vec3::new(x, y, z)
+    } else {
+        Vec3::new(x.floor() + 0.5, (y + 0.5).floor(), z.floor() + 0.5)
+    };
+    // `setPos` sees `tickCount == 0` and starts nothing.
+    if m.age == 0 {
+        return;
+    }
+    let pos = block_pos(m);
+    if pos == old {
+        return;
+    }
+    m.extra.counter = 0;
+    if m.extra.passenger {
+        return;
+    }
+    let remembered = [m.extra.scratch[1], m.extra.scratch[2], m.extra.scratch[3]];
+    if m.extra.scratch[0] > 0 && pos == remembered {
+        return;
+    }
+    m.extra.scratch[1] = old[0];
+    m.extra.scratch[2] = old[1];
+    m.extra.scratch[3] = old[2];
+    m.extra.scratch[0] = 6;
+    m.previous = m.position;
+}
+/// `Shulker.getRenderPosition`: while the slide has ticks left, the model is
+/// pulled back toward the block it left by `((ticks - partial) / 6)^2`,
+/// times `getScale`. Vanilla's `null` is no offset.
+pub fn render_offset(m: &Mob, alpha: f32) -> glam::DVec3 {
+    let ticks = m.extra.scratch[0];
+    if m.species() != Species::Shulker || ticks <= 0 {
+        return glam::DVec3::ZERO;
+    }
+    let mut scale = (f64::from(ticks) - f64::from(alpha)) / 6.0;
+    scale *= scale;
+    scale *= f64::from(m.model_scale());
+    let current = block_pos(m);
+    let old = [m.extra.scratch[1], m.extra.scratch[2], m.extra.scratch[3]];
+    glam::DVec3::new(
+        -f64::from(current[0] - old[0]) * scale,
+        -f64::from(current[1] - old[1]) * scale,
+        -f64::from(current[2] - old[2]) * scale,
+    )
 }
 /// `Shulker.hurtServer` before the damage: arrows bounce off a closed shell.
 pub fn accepts(m: &Mob, source: &Damage) -> bool {
@@ -616,13 +771,17 @@ pub fn anim(m: &Mob, s: &State, p: &mut Poses) {
 }
 
 #[cfg(test)]
+#[path = "shulker_space_tests.rs"]
+mod space_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::mobs::sensor_scan_tests::kind;
     use std::sync::Arc;
 
     /// A shulker fixed to a block face.
-    fn shulker() -> Mob {
+    pub(super) fn shulker() -> Mob {
         let mut kind = kind();
         let k = Arc::make_mut(&mut kind);
         k.id = "minecraft:shulker".into();
@@ -635,6 +794,63 @@ mod tests {
         let mut m = Mob::new(1, kind, Vec3::ZERO, 0.0);
         m.extra.variant3 = 2;
         m
+    }
+
+    /// `Shulker.hurtServer` returns false for an `AbstractArrow` while
+    /// `isClosed` (raw peek 0). An open shell takes the same arrow.
+    #[test]
+    fn a_closed_shell_refuses_an_arrow() {
+        let source = Damage::of(DamageKind::Arrow);
+        let mut closed = shulker();
+        closed.extra.counter = 0;
+        let health = closed.health;
+        assert!(
+            !closed.damage_projectile(2.0, source, None, [0.0, 1.0]),
+            "a closed shell rejects the arrow"
+        );
+        assert_eq!(closed.health, health);
+        let mut open = shulker();
+        open.extra.counter = 30;
+        assert!(open.damage_projectile(2.0, source, None, [0.0, 1.0]));
+        assert!(open.health < health);
+    }
+
+    #[test]
+    fn a_move_packet_starts_the_teleport_slide() {
+        // Shulker.createInterpolationHandler is NO_OP, so the packet's end
+        // position is setPos. The slide is armed there, from the block before
+        // the packet, and client_tick only counts it down.
+        let mut m = shulker();
+        m.age = 10;
+        m.position = Vec3::new(0.5, 0.0, 0.5);
+        m.previous = m.position;
+        client_set_pos(&mut m, 3.2, 1.0, 0.4);
+        assert_eq!(m.position, Vec3::new(3.5, 1.0, 0.5));
+        assert_eq!(m.previous, m.position);
+        assert_eq!(m.extra.scratch[0], 6);
+        assert_eq!(render_offset(&m, 0.0), glam::DVec3::new(-3.0, -1.0, 0.0));
+        client_tick(&mut m);
+        assert_eq!(m.extra.scratch[0], 5);
+        // A tick with no new packet does not look at previous and re-arm.
+        m.previous = Vec3::new(80.0, 0.0, 0.0);
+        client_tick(&mut m);
+        assert_eq!(m.extra.scratch[0], 4);
+    }
+
+    #[test]
+    fn a_riding_shulker_closes_its_lid_but_does_not_slide() {
+        // Shulker.setPos on a passenger: the exact position, the peek set to
+        // 0 on a block change, and no clientSideTeleportInterpolation.
+        let mut m = shulker();
+        m.age = 10;
+        m.extra.passenger = true;
+        m.extra.counter = 30;
+        m.position = Vec3::new(0.5, 0.0, 0.5);
+        client_set_pos(&mut m, 2.25, 0.4, 0.5);
+        assert_eq!(m.position, Vec3::new(2.25, 0.4, 0.5));
+        assert_eq!(m.extra.counter, 0);
+        assert_eq!(m.extra.scratch[0], 0);
+        assert_eq!(render_offset(&m, 0.0), glam::DVec3::ZERO);
     }
 
     #[test]

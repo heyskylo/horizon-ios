@@ -476,6 +476,10 @@ impl Split<'_> {
             host.settings.horizon.wide_frame(),
             // The pack its own game loads, from its profile.
             crate::game::shader_packs::picked_pack_draws_flat(&guest.settings),
+            (
+                guest.settings.file.int("textureFiltering"),
+                guest.settings.file.int("maxAnisotropyBit"),
+            ),
         )?);
         guest.window = Some(window);
         guest.world_renderer_ready = true;

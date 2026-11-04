@@ -66,7 +66,7 @@ impl Launcher {
             .flex()
             .flex_col()
             .min_w_0()
-            .pt(px(64.))
+            .pt(px(64. - crate::glass::CONTENT_INSET))
             .child(self.edition_tabs(java.is_some(), cx))
             .child(self.home_title())
             .child(self.played_text(cx))
@@ -77,11 +77,8 @@ impl Launcher {
     /// chosen when it is made, so the other tab goes to an instance of that edition
     /// ([`Self::switch_edition`]).
     fn edition_tabs(&mut self, java: bool, cx: &mut Context<Self>) -> Div {
-        let grass = self.vanilla_icon().and_then(|path| {
-            self.icon_image("mark:grass".into(), 18., false, move || {
-                std::fs::read(&path).ok()
-            })
-        });
+        let grass = self.grass_mark(18.);
+        let horizon = self.horizon_mark(18.);
         let tab = |label: &'static str, icon: AnyElement, open: bool| {
             let d = div()
                 .id(SharedString::from(format!("edition-{label}")))
@@ -123,11 +120,7 @@ impl Launcher {
             .flex()
             .items_center()
             .gap(px(4.))
-            .child(tab(
-                "Rust Edition",
-                ui::mark_tile(18., self.look.accent_soft).into_any_element(),
-                !java,
-            ))
+            .child(tab("Rust Edition", horizon, !java))
             .child(tab("Java Edition", java_icon, java))
     }
 
@@ -279,8 +272,17 @@ impl Launcher {
             _ => None,
         };
         let open = self.home_menu == HomeMenu::Play;
+        // What is drawn on the accent takes its own ink (white on the default violet), in the
+        // light look too, where `white` is the page's dark ink; Stop sits on a quiet fill.
+        let on_accent = ui::color(self.look.on_accent);
+        let glyph = if running && busy.is_none() {
+            white(ink::FULL)
+        } else {
+            on_accent
+        };
         let more = div()
             .id("play-more")
+            .occlude()
             .absolute()
             .right(px(8.))
             .flex()
@@ -291,8 +293,9 @@ impl Launcher {
             .cursor_pointer()
             .when(open, |d| d.bg(gpui::black().opacity(0.2)))
             .hover(|s| s.bg(gpui::black().opacity(0.2)))
-            .child(ui::icon("more-horizontal", 20., white(ink::FULL)))
+            .child(ui::icon("more-horizontal", 20., glyph))
             .on_click(cx.listener(|this, event: &ClickEvent, _, cx| {
+                cx.stop_propagation();
                 if !this.closed_by_this_press(event) {
                     this.home_menu = match this.home_menu {
                         HomeMenu::Play => HomeMenu::None,
@@ -326,7 +329,7 @@ impl Launcher {
                 .font_family(horizon_theme::glass::FONT)
                 .text_size(px(18.))
                 .font_weight(FontWeight::SEMIBOLD)
-                .child(ui::icon(icon, 20., white(ink::FULL)))
+                .child(ui::icon(icon, 20., glyph))
                 .child(label)
         };
         let group = match busy {
@@ -348,6 +351,7 @@ impl Launcher {
                         .flex_1()
                         .justify_center()
                         .pr(px(40.))
+                        .text_color(on_accent)
                         .font_family(horizon_theme::glass::FONT)
                         .text_size(px(16.))
                         .font_weight(FontWeight::SEMIBOLD)
@@ -397,7 +401,7 @@ impl Launcher {
                     (None, PlayPress::Nothing) => main.opacity(0.5).cursor_default(),
                 };
                 base.bg(accent)
-                    .text_color(ui::color(self.look.on_accent))
+                    .text_color(on_accent)
                     .hover(|s| s.opacity(0.92))
                     .child(main)
             }
