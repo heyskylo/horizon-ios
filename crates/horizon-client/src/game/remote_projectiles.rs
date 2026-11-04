@@ -111,7 +111,11 @@ fn projectile_kind(kind: &str) -> Option<ProjectileKind> {
 
 /// `AbstractArrow.tick` on a client: water drag before the move, air drag
 /// after it, then gravity; a block it reaches holds it (`inGround`).
-fn remote_arrow_tick(p: &mut Projectile, w: &impl ProjectileWorld) {
+/// Returns the tick's bubble and critical particles (`Projectile::arrow_trail`).
+fn remote_arrow_tick(
+    p: &mut Projectile,
+    w: &impl ProjectileWorld,
+) -> Vec<(ParticleType, [f64; 3], [f64; 3])> {
     p.set_old_pos_and_rot();
     p.age += 1;
     // AbstractArrow.tick: the shake timer runs down, and `inGroundTime` counts
@@ -121,9 +125,11 @@ fn remote_arrow_tick(p: &mut Projectile, w: &impl ProjectileWorld) {
         a.in_ground_time = if p.stuck { a.in_ground_time + 1 } else { 0 };
     }
     if p.stuck {
-        return;
+        return Vec::new();
     }
     let water = w.in_water(p.bounds());
+    // The trail is taken from the position before the move and the drag.
+    let trail = p.arrow_trail(water);
     if water {
         p.velocity = p.velocity.scale(0.6);
     }
@@ -144,13 +150,14 @@ fn remote_arrow_tick(p: &mut Projectile, w: &impl ProjectileWorld) {
         {
             a.shake = 7;
         }
-        return;
+        return trail;
     }
     p.position = to;
     if !water {
         p.velocity = p.velocity.scale(0.99);
     }
     p.velocity.y -= 0.05;
+    trail
 }
 /// A server's client ticks a projectile itself: it flies on between the
 /// tracker's updates (10 to 20 ticks apart) with its own gravity and drag,
@@ -170,6 +177,18 @@ fn shulker_bullet_trail_at(at: Vec3, random: &mut impl RandomSource) -> [f64; 3]
         at.y + SIZE * random.next_double(),
         at.z + SIZE * (2.0 * random.next_double() - 1.0) * 0.5,
     ]
+}
+
+/// `ClientPacketListener.handleSetEntityData`'s `Fireball.DATA_ITEM_STACK`:
+/// the item the guest draws the fireball as, through `Fireball.setItem`;
+/// a kind that is no `Fireball` has none.
+pub(super) fn remote_projectile_item(projectiles: &mut [Projectile], id: u32, stack: ItemStack) {
+    if let Some(p) = projectiles
+        .iter_mut()
+        .find(|p| p.id == id && p.kind.is_item_fireball())
+    {
+        p.set_item(stack);
+    }
 }
 
 /// `ClientPacketListener.handleProjectilePowerPacket`: the power a hurting
@@ -498,6 +517,17 @@ impl Game<'_> {
             }
             return;
         }
+        // Fireball.DATA_ITEM_STACK: the item a fireball is drawn as.
+        if let Some(stack) = values
+            .iter()
+            .find_map(|(index, _, value)| match (index, value) {
+                (8, Value::Item(stack)) => Some(stack),
+                _ => None,
+            })
+            && let Some(stack) = self.to_stack(stack)
+        {
+            remote_projectile_item(&mut self.creatures.projectiles, id, stack);
+        }
         for (index, _, value) in values {
             if let Some(t) = self.tnts.iter_mut().find(|t| t.id == id) {
                 // PrimedTnt.DATA_FUSE_ID.
@@ -520,6 +550,8 @@ impl Game<'_> {
                 // AbstractArrow.ID_FLAGS (no physics) and IN_GROUND, and
                 // ThrownTrident.ID_LOYALTY.
                 match (index, value) {
+                    // Clients retain the server's fire flag until the next update.
+                    (0, Value::Byte(flags)) => t.fire_ticks = i32::from(flags & 1),
                     (8, Value::Byte(flags)) => t.no_physics = flags & 2 != 0,
                     (10, Value::Bool(in_ground)) => t.in_ground = *in_ground,
                     (11, Value::Byte(loyalty)) => t.loyalty = u32::from(*loyalty as u8),
@@ -645,6 +677,14 @@ impl Game<'_> {
             let _ = t.tick(world, collision, assets, facts, fluids, border);
             t.fuse > 0
         });
+        // PrimedTnt.tick: while the fuse is still lit, a client adds one SMOKE
+        // particle at (x, y + 0.5, z). The server's Level.addParticle never
+        // reaches this window.
+        let smoking: Vec<Vec3> = self.tnts.iter().map(|t| t.position).collect();
+        let smoke = ParticleOptions::simple(ParticleType::Smoke);
+        for p in smoking {
+            self.particles.add(&smoke, [p.x, p.y + 0.5, p.z], [0.0; 3]);
+        }
         // FallingBlockEntity.tick runs on a client too: the block falls by
         // itself between the server's updates (every 20 ticks), then waits
         // where it lands for the server to place it and remove it.
@@ -665,6 +705,7 @@ impl Game<'_> {
             .filter_map(Projectile::water_bubbles)
             .collect();
         let mut tridents = std::mem::take(&mut self.tridents);
+        let mut arrow_trails = Vec::new();
         {
             let w = self.mob_world_base(&[]);
             let world = super::creatures::ProjWorld {
@@ -674,7 +715,9 @@ impl Game<'_> {
             };
             for p in &mut projectiles {
                 match p.kind {
-                    ProjectileKind::Arrow { .. } => remote_arrow_tick(p, &world),
+                    ProjectileKind::Arrow { .. } => {
+                        arrow_trails.extend(remote_arrow_tick(p, &world));
+                    }
                     // ShulkerBullet.tick: only the server steers it.
                     ProjectileKind::ShulkerBullet { .. } => {
                         p.set_old_pos_and_rot();
@@ -690,6 +733,10 @@ impl Game<'_> {
         }
         self.creatures.projectiles = projectiles;
         self.tridents = tridents;
+        for (kind, at, speed) in arrow_trails {
+            self.particles
+                .add(&ParticleOptions::simple(kind), at, speed);
+        }
         self.arrow_effect_particles();
         let trails: Vec<Vec3> = self
             .creatures
@@ -825,7 +872,7 @@ impl Game<'_> {
             out.push(json!({"id": c.id, "kind": "minecraft:end_crystal", "position": at(c.position), "show_bottom": c.show_bottom}));
         }
         for t in &self.tridents {
-            out.push(json!({"id": t.id, "kind": "minecraft:trident", "position": at(t.position), "velocity": at(t.velocity)}));
+            out.push(json!({"id": t.id, "kind": "minecraft:trident", "position": at(t.position), "velocity": at(t.velocity), "on_fire": t.fire_ticks > 0}));
         }
         for r in &self.rockets {
             out.push(json!({"id": r.id, "kind": "minecraft:firework_rocket", "position": at(r.position), "velocity": at(r.velocity)}));
@@ -865,6 +912,75 @@ mod tests {
         fn targets(&self) -> &[(Who, Aabb)] {
             &[]
         }
+    }
+
+    struct Wet;
+    impl ProjectileWorld for Wet {
+        fn clip(&self, _: Vec3, _: Vec3) -> Option<(Vec3, [i32; 3], [i32; 3])> {
+            None
+        }
+        fn in_water(&self, _: Aabb) -> bool {
+            true
+        }
+        fn targets(&self) -> &[(Who, Aabb)] {
+            &[]
+        }
+    }
+
+    fn arrow_at(critical: bool, velocity: Vec3) -> Projectile {
+        let mut p = Projectile::new(
+            ProjectileKind::Arrow {
+                base_damage: 2.0,
+                critical,
+                effect: None,
+            },
+            Vec3::new(10.0, 50.0, -3.0),
+            None,
+        );
+        p.velocity = velocity;
+        p
+    }
+
+    /// `AbstractArrow.tick`: in water, four BUBBLE at `pos - motion * 0.25`
+    /// with the drag-0.6 motion; a crit arrow adds four CRIT along the move.
+    #[test]
+    fn a_remote_arrow_in_water_leaves_bubbles_and_crit_streaks() {
+        let v = Vec3::new(1.0, 0.5, -2.0);
+        let trail = remote_arrow_tick(&mut arrow_at(true, v), &Wet);
+        let bubbles: Vec<_> = trail
+            .iter()
+            .filter(|t| t.0 == ParticleType::Bubble)
+            .collect();
+        assert_eq!(bubbles.len(), 4);
+        let m = [0.6f32 as f64, 0.3, -1.2];
+        for b in bubbles {
+            for k in 0..3 {
+                assert!((b.2[k] - m[k]).abs() < 1e-6, "{b:?}");
+            }
+            assert!((b.1[0] - (10.0 - 0.15)).abs() < 1e-6, "{b:?}");
+            assert!((b.1[1] - (50.0 - 0.075)).abs() < 1e-6, "{b:?}");
+            assert!((b.1[2] - (-3.0 + 0.3)).abs() < 1e-6, "{b:?}");
+        }
+        let crits: Vec<_> = trail.iter().filter(|t| t.0 == ParticleType::Crit).collect();
+        assert_eq!(crits.len(), 4);
+        for (i, c) in crits.iter().enumerate() {
+            let f = i as f64 / 4.0;
+            assert!((c.1[0] - (10.0 + f)).abs() < 1e-6, "{c:?}");
+            assert!((c.1[2] - (-3.0 - 2.0 * f)).abs() < 1e-6, "{c:?}");
+            assert!((c.2[1] - (-0.5 + 0.2)).abs() < 1e-6, "{c:?}");
+        }
+    }
+
+    #[test]
+    fn a_remote_arrow_in_air_or_stuck_leaves_no_bubbles() {
+        let v = Vec3::new(1.0, 0.0, 0.0);
+        assert!(remote_arrow_tick(&mut arrow_at(false, v), &Empty).is_empty());
+        let mut stuck = arrow_at(true, v);
+        stuck.stuck = true;
+        assert!(remote_arrow_tick(&mut stuck, &Wet).is_empty());
+        let air = remote_arrow_tick(&mut arrow_at(true, v), &Empty);
+        assert!(air.iter().all(|t| t.0 == ParticleType::Crit));
+        assert_eq!(air.len(), 4);
     }
 
     /// A thrown item, as a server's client tracks it: the spawn position and
@@ -1002,5 +1118,32 @@ mod tests {
             list.iter().map(|p| p.acceleration).collect::<Vec<_>>(),
             [0.1; 3]
         );
+    }
+
+    #[test]
+    fn a_guest_draws_a_fireball_as_the_item_the_server_sends() {
+        // `ClientPacketListener.handleSetEntityData` of
+        // Fireball.DATA_ITEM_STACK: the item `Fireball.getItem` returns, which
+        // is the fire charge the default was until the server says otherwise.
+        let mut list = vec![
+            tracked(ProjectileKind::LargeFireball { power: 1 }, 12),
+            tracked(ProjectileKind::SmallFireball, 13),
+            tracked(ProjectileKind::Snowball, 14),
+        ];
+        remote_projectile_item(&mut list, 12, ItemStack::new("minecraft:diamond", 4));
+        assert_eq!(
+            list[0].item.as_ref().map(|i| (&*i.item, i.count)),
+            Some(("minecraft:diamond", 1)),
+            "one of it, as `setItem` keeps"
+        );
+        // The default fire charge goes back when the server sends an empty
+        // stack, and a snowball is no `Fireball`: it has no item to set.
+        remote_projectile_item(&mut list, 13, ItemStack::new("minecraft:air", 1));
+        assert_eq!(
+            list[1].item.as_ref().map(|i| (&*i.item, i.count)),
+            Some(("minecraft:fire_charge", 1))
+        );
+        remote_projectile_item(&mut list, 14, ItemStack::new("minecraft:diamond", 1));
+        assert_eq!(list[2].item, None);
     }
 }

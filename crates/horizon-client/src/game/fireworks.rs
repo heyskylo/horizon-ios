@@ -415,6 +415,13 @@ impl Game<'_> {
                 };
                 r.free_flight(&mut scene);
             }
+            self.entity_powder_snow_particles(
+                r.previous,
+                r.position,
+                r.bounds(),
+                r.velocity,
+                false,
+            );
             // hitTargetOrDeflectSelf on an entity: a breeze turns it back
             // (ProjectileDeflection.REVERSE), anything else sets it off.
             // onHitBlock: only a rocket with explosions (hasExplosion) goes

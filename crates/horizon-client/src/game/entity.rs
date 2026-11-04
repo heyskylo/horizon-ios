@@ -161,8 +161,9 @@ pub(super) trait Entity: EntityRules {
         let b = self.explosion_box();
         f64::from((b.max_position().y - b.min_position().y) as f32 * 0.85f32)
     }
-    /// Whether this kind ticks after the projectiles do (orbs, falling blocks,
-    /// primed TNT), where vanilla ticks every entity in the order it joined.
+    /// Whether this kind can still be waiting for its tick when a projectile
+    /// ticks, though it joined before it (orbs, falling blocks, primed TNT: they
+    /// tick between the batches, `game/ordered_tick.rs`).
     fn ticks_after_projectiles(&self) -> bool {
         false
     }
@@ -311,20 +312,26 @@ pub(super) fn tick_item(
     no_physics: bool,
     entity_boxes: &[Aabb],
     border: Option<&horizon_core::geometry::border::BorderGeometry>,
+    splash: &mut impl FnMut(horizon_client::entities::ItemSplash),
 ) -> bool {
-    let heights = item.push_by_fluid(world, fluids);
+    let (water, _lava) = item.push_by_fluid(world, fluids);
+    // `Entity.baseTick` splashes before the item moves. The first tick does not.
+    item.water_entry(water > 0.0, item.ticks == 0, splash);
     let step = item.tick_move(
         world,
         facts,
         collision,
         no_physics,
-        heights,
+        (water, _lava),
         entity_boxes,
         border,
     );
     item.push_by_bubble_column(world, registry, facts, collision);
     let alive = item.tick_settle(world, facts, no_physics, step);
-    item.push_by_fluid(world, fluids);
+    // `ItemEntity.tick` refreshes immersion after moving and splashes if that
+    // move is what entered the water.
+    let (water, _) = item.push_by_fluid(world, fluids);
+    item.water_entry(water > 0.0, false, splash);
     alive
 }
 
@@ -690,6 +697,9 @@ impl Entity for Mob {
         [self.yaw, self.head_pitch]
     }
     fn set_rotation(&mut self, [yaw, pitch]: [f32; 2]) {
+        let previous = self.rotation();
+        let yaw = if yaw.is_finite() { yaw } else { previous[0] };
+        let pitch = if pitch.is_nan() { previous[1] } else { pitch };
         self.yaw = yaw;
         self.body_yaw = yaw;
         self.head_yaw = yaw;
@@ -799,6 +809,9 @@ impl Entity for ItemEntity {
         self.rotation
     }
     fn set_rotation(&mut self, [yaw, pitch]: [f32; 2]) {
+        let previous = self.rotation();
+        let yaw = if yaw.is_finite() { yaw } else { previous[0] };
+        let pitch = if pitch.is_nan() { previous[1] } else { pitch };
         self.rotation = [yaw, pitch.clamp(-90.0, 90.0)];
     }
     fn fluid_eye_y(&self) -> f64 {
@@ -866,6 +879,9 @@ impl Entity for ExperienceOrb {
         self.rotation
     }
     fn set_rotation(&mut self, [yaw, pitch]: [f32; 2]) {
+        let previous = self.rotation();
+        let yaw = if yaw.is_finite() { yaw } else { previous[0] };
+        let pitch = if pitch.is_nan() { previous[1] } else { pitch };
         self.rotation = [yaw, pitch.clamp(-90.0, 90.0)];
     }
     fn ticks_after_projectiles(&self) -> bool {
@@ -930,6 +946,9 @@ impl Entity for Boat {
         [self.yaw, self.pitch]
     }
     fn set_rotation(&mut self, [yaw, pitch]: [f32; 2]) {
+        let previous = self.rotation();
+        let yaw = if yaw.is_finite() { yaw } else { previous[0] };
+        let pitch = if pitch.is_nan() { previous[1] } else { pitch };
         self.yaw = yaw;
         self.pitch = pitch.clamp(-90.0, 90.0);
     }
@@ -998,6 +1017,9 @@ impl Entity for Minecart {
         [self.yaw, self.pitch]
     }
     fn set_rotation(&mut self, [yaw, pitch]: [f32; 2]) {
+        let previous = self.rotation();
+        let yaw = if yaw.is_finite() { yaw } else { previous[0] };
+        let pitch = if pitch.is_nan() { previous[1] } else { pitch };
         self.yaw = yaw;
         self.pitch = pitch.clamp(-90.0, 90.0);
     }
@@ -1074,6 +1096,9 @@ impl Entity for ArmorStand {
         [self.yaw, self.pitch]
     }
     fn set_rotation(&mut self, [yaw, pitch]: [f32; 2]) {
+        let previous = self.rotation();
+        let yaw = if yaw.is_finite() { yaw } else { previous[0] };
+        let pitch = if pitch.is_nan() { previous[1] } else { pitch };
         self.yaw = yaw;
         self.previous_yaw = yaw;
         self.pitch = pitch.clamp(-90.0, 90.0);
@@ -1173,6 +1198,9 @@ impl Entity for PrimedTnt {
         self.rotation
     }
     fn set_rotation(&mut self, [yaw, pitch]: [f32; 2]) {
+        let previous = self.rotation();
+        let yaw = if yaw.is_finite() { yaw } else { previous[0] };
+        let pitch = if pitch.is_nan() { previous[1] } else { pitch };
         self.rotation = [yaw, pitch.clamp(-90.0, 90.0)];
     }
     fn ticks_after_projectiles(&self) -> bool {
@@ -1239,6 +1267,9 @@ impl Entity for FallingBlock {
         self.rotation
     }
     fn set_rotation(&mut self, [yaw, pitch]: [f32; 2]) {
+        let previous = self.rotation();
+        let yaw = if yaw.is_finite() { yaw } else { previous[0] };
+        let pitch = if pitch.is_nan() { previous[1] } else { pitch };
         self.rotation = [yaw, pitch.clamp(-90.0, 90.0)];
     }
     fn ticks_after_projectiles(&self) -> bool {
@@ -1281,6 +1312,9 @@ impl Entity for Projectile {
         [self.yaw, self.pitch]
     }
     fn set_rotation(&mut self, [yaw, pitch]: [f32; 2]) {
+        let previous = self.rotation();
+        let yaw = if yaw.is_finite() { yaw } else { previous[0] };
+        let pitch = if pitch.is_nan() { previous[1] } else { pitch };
         self.yaw = yaw;
         self.pitch = pitch.clamp(-90.0, 90.0);
         self.previous_yaw = self.yaw;
@@ -1378,6 +1412,9 @@ impl Entity for Rocket {
         self.rotation
     }
     fn set_rotation(&mut self, [yaw, pitch]: [f32; 2]) {
+        let previous = self.rotation();
+        let yaw = if yaw.is_finite() { yaw } else { previous[0] };
+        let pitch = if pitch.is_nan() { previous[1] } else { pitch };
         self.rotation = [yaw, pitch.clamp(-90.0, 90.0)];
     }
     fn native_type(&self) -> Cow<'static, str> {
@@ -1432,6 +1469,9 @@ impl Entity for ThrownTrident {
         [self.yaw, self.pitch]
     }
     fn set_rotation(&mut self, [yaw, pitch]: [f32; 2]) {
+        let previous = self.rotation();
+        let yaw = if yaw.is_finite() { yaw } else { previous[0] };
+        let pitch = if pitch.is_nan() { previous[1] } else { pitch };
         self.yaw = yaw;
         self.pitch = pitch.clamp(-90.0, 90.0);
     }

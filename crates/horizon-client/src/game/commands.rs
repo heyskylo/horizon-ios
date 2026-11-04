@@ -78,6 +78,11 @@ pub(super) enum Target {
     /// A simulated lingering, creeper or dragon area-effect cloud.
     Cloud(u32),
 }
+/// `Entity.setXRot`: reduce the angle before clamping the pitch.
+fn entity_pitch(pitch: f32) -> f32 {
+    (pitch % 360.0).clamp(-90.0, 90.0)
+}
+
 /// An entity of a type Horizon does not simulate: its compound lives in the
 /// entity memory (`persist.raw`), its position and rotation here.
 #[derive(Clone, Debug)]
@@ -1509,6 +1514,8 @@ impl Game<'_> {
         use super::entity::Entity;
         let from = self.target_position(t);
         let v = Vec3::new(pos[0], pos[1], pos[2]);
+        // PositionMoveRotation.calculateAbsolute clamps pitch before setXRot.
+        let rotation = rotation.map(|[yaw, pitch]| [yaw, pitch.clamp(-90.0, 90.0)]);
         match t {
             Target::Guest(_) => {
                 self.for_player(t, |g| g.teleport_to(Target::Player, pos, rotation));
@@ -1534,8 +1541,12 @@ impl Game<'_> {
                 }
                 self.previous_position = v;
                 if let Some([yaw, pitch]) = rotation {
-                    self.yaw = yaw;
-                    self.pitch = pitch.clamp(-90.0, 90.0);
+                    if yaw.is_finite() {
+                        self.yaw = yaw;
+                    }
+                    if !pitch.is_nan() {
+                        self.pitch = entity_pitch(pitch);
+                    }
                 }
                 // A server player's teleport is told to the mods once their
                 // move is in the hub (`leave_guest`).
@@ -1560,9 +1571,19 @@ impl Game<'_> {
                 if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
                     m.position = v;
                     m.previous = v;
-                    // Entity.teleportSetPosition: setYRot, setXRot, setOldRot.
-                    if let Some(r) = rotation {
-                        Entity::set_rotation(m, r);
+                    // Entity.teleportSetPosition: setYRot, setYHeadRot, setXRot
+                    // (clamped to -90..90), then setOldRot.
+                    if let Some([yaw, pitch]) = rotation {
+                        if yaw.is_finite() {
+                            m.yaw = yaw;
+                            m.body_yaw = yaw;
+                            m.head_yaw = yaw;
+                        }
+                        if !pitch.is_nan() {
+                            m.head_pitch = entity_pitch(pitch);
+                        }
+                        m.previous_yaw = m.yaw;
+                        m.previous_head_pitch = m.head_pitch;
                     }
                 }
             }
@@ -1623,7 +1644,7 @@ impl Game<'_> {
             Target::Fangs(id) => {
                 if let Some(f) = self.fangs.list.iter_mut().find(|f| f.id == id) {
                     f.pos = [v.x, v.y, v.z];
-                    if let Some([yaw, _]) = rotation {
+                    if let Some([yaw, _]) = rotation.filter(|r| r[0].is_finite()) {
                         f.yaw = yaw;
                     }
                 }
@@ -1632,8 +1653,12 @@ impl Game<'_> {
                 if let Some(o) = self.others.iter_mut().find(|o| o.id == id) {
                     o.position = v;
                     if let Some([yaw, pitch]) = rotation {
-                        o.yaw = yaw;
-                        o.pitch = pitch;
+                        if yaw.is_finite() {
+                            o.yaw = yaw;
+                        }
+                        if !pitch.is_nan() {
+                            o.pitch = entity_pitch(pitch);
+                        }
                     }
                 }
             }
@@ -1793,7 +1818,7 @@ impl Game<'_> {
             // Into the destination's level.
             let level = self.target_level(dest);
             // TeleportCommand.teleportToEntity: the destination's rotation too.
-            let rotation = Some(self.target_rotation(dest));
+            let rotation = Some(self.target_rotation(dest).map(wrap_degrees));
             for &t in &targets {
                 if !self.teleport_across(t, level, pos, rotation) {
                     self.teleport_to(t, pos, rotation);
@@ -1826,7 +1851,10 @@ impl Game<'_> {
             return Err(err("commands.teleport.invalidPosition", &[]));
         }
         let rotation = match ctx.get("rotation") {
-            Some(Arg::Coords(c)) => Some(c.rotation(self.source_rotation())),
+            Some(Arg::Coords(c @ Coordinates::World(axes))) => Some((
+                c.rotation(self.source_rotation()),
+                [axes[0].relative, axes[1].relative],
+            )),
             _ => None,
         };
         // facing: look from the new position at a location or entity.
@@ -1871,7 +1899,19 @@ impl Game<'_> {
             None => self.dim,
         };
         for &t in &targets {
-            let rotation = look_at(self, t).or(rotation);
+            let rotation = look_at(self, t).or_else(|| {
+                let (angles, relative) = rotation?;
+                let current = self.target_rotation(t);
+                // performTeleport wraps relative deltas before calculateAbsolute
+                // adds them back; wrapping the resolved pitch changes its clamp.
+                Some(std::array::from_fn(|axis| {
+                    if relative[axis] {
+                        current[axis] + wrap_degrees(angles[axis] - current[axis])
+                    } else {
+                        wrap_degrees(angles[axis])
+                    }
+                }))
+            });
             if self.teleport_across(t, source_level, pos, rotation) {
                 continue;
             }
@@ -2585,7 +2625,9 @@ impl Game<'_> {
         // The lock is outside the model: a tag that only changes it still
         // changes the block entity.
         let lock_changed = self.world.block_lock(key) != tag.get("lock");
-        if after == before && !rolled && !lock_changed {
+        // So is the custom name.
+        let name_changed = self.load_block_name(key, &new, &tag);
+        if after == before && !rolled && !lock_changed && !name_changed {
             return false;
         }
         self.world.block_entities.insert(key, new);
@@ -2862,12 +2904,13 @@ impl Game<'_> {
                         ],
                         s,
                         self.world.block_entities.get(&(x, y, z)).cloned(),
+                        self.world.block_names.get(&(x, y, z)).cloned(),
                     ));
                 }
             }
         }
         if moving {
-            for (from, _, _, _) in &copies {
+            for (from, ..) in &copies {
                 self.place_state(*from, air, true)?;
             }
         }
@@ -2876,13 +2919,19 @@ impl Game<'_> {
         // each copied state but a barrier counts as placed.
         let barrier = self.pack.assets.registry.default_state("minecraft:barrier");
         let mut count = 0;
-        for (_, to, s, entity) in copies {
+        for (_, to, s, entity, name) in copies {
             self.place_state(to, s, strict)?;
             if Some(s) != barrier {
                 count += 1;
             }
             if let Some(e) = entity {
-                self.world.block_entities.insert((to[0], to[1], to[2]), e);
+                let key = (to[0], to[1], to[2]);
+                self.world.block_entities.insert(key, e);
+                // The copied tag carries the custom name.
+                match name {
+                    Some(name) => self.world.block_names.insert(key, name),
+                    None => self.world.block_names.remove(&key),
+                };
             }
         }
         if count == 0 {
@@ -3939,6 +3988,141 @@ fn difficulty_names(from: u8, to: u8) -> (&'static str, &'static str) {
         DIFFICULTIES[usize::from(from) & 3],
         DIFFICULTIES[usize::from(to) & 3],
     )
+}
+
+#[cfg(test)]
+mod teleport_pitch_tests {
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn teleport_and_rotate_resolve_pitch_at_their_own_boundary() {
+        use super::Target;
+        use crate::game::{Audio, Game, Options, Progress, Settings, load_resources};
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        let kind = game
+            .res
+            .mob_types()
+            .get("minecraft:zombie")
+            .unwrap()
+            .clone();
+        game.mobs.push(horizon_client::mobs::Mob::new(
+            42,
+            kind,
+            horizon_core::geometry::Vec3::new(0.0, 0.0, 0.0),
+            0.0,
+        ));
+        for (rotation, expected) in [
+            ([40.0, f32::NAN], [40.0, 20.0]),
+            ([f32::INFINITY, 30.0], [10.0, 30.0]),
+            ([40.0, f32::INFINITY], [40.0, 90.0]),
+            ([40.0, f32::NEG_INFINITY], [40.0, -90.0]),
+        ] {
+            game.yaw = 10.0;
+            game.pitch = 20.0;
+            game.teleport_to_in_level(Target::Player, [0.0; 3], Some(rotation));
+            assert_eq!([game.yaw, game.pitch], expected);
+            game.mobs[0].yaw = 10.0;
+            game.mobs[0].head_pitch = 20.0;
+            game.teleport_to_in_level(Target::Mob(42), [0.0; 3], Some(rotation));
+            assert_eq!([game.mobs[0].yaw, game.mobs[0].head_pitch], expected);
+        }
+        game.build_registries();
+        game.set_allow_commands(true);
+        for (command, expected) in [
+            ("rotate @e[type=minecraft:zombie,limit=1] 0 360", 90.0),
+            ("tp @e[type=minecraft:zombie,limit=1] 0 0 0 0 360", 0.0),
+            ("tp @e[type=minecraft:zombie,limit=1] 0 0 0 0 270", -90.0),
+        ] {
+            assert!(game.run_command(command), "{command}");
+            assert_eq!(game.mobs[0].head_pitch, expected, "{command}");
+        }
+        for (source, target, angle, expected) in [
+            (90.0, 90.0, "~100", 90.0),
+            (-90.0, -90.0, "~-100", -90.0),
+            (0.0, -90.0, "~100", -90.0),
+            (0.0, 90.0, "~-100", 90.0),
+        ] {
+            game.pitch = source;
+            game.mobs[0].head_pitch = target;
+            assert!(game.run_command(&format!(
+                "tp @e[type=minecraft:zombie,limit=1] 0 0 0 0 {angle}"
+            )));
+            assert_eq!(game.mobs[0].head_pitch, expected);
+        }
+        game.yaw = 190.0;
+        game.mobs[0].yaw = 170.0;
+        assert!(game.run_command("tp @e[type=minecraft:zombie,limit=1] 0 0 0 ~ ~"));
+        assert_eq!(game.mobs[0].yaw, 190.0, "relative yaw wraps the delta");
+
+        game.mobs[0].head_pitch = 360.0;
+        assert!(
+            game.run_command(
+                "tp @e[type=minecraft:zombie,limit=1] @e[type=minecraft:zombie,limit=1]"
+            )
+        );
+        assert_eq!(
+            game.mobs[0].head_pitch, 0.0,
+            "destination rotation wraps too"
+        );
+
+        let overflow = "9".repeat(400);
+        for (pitch, expected) in [(overflow.clone(), 90.0), (format!("-{overflow}"), -90.0)] {
+            assert!(game.run_command(&format!(
+                "rotate @e[type=minecraft:zombie,limit=1] 0 {pitch}"
+            )));
+            assert_eq!(game.mobs[0].head_pitch, expected);
+        }
+        for (yaw, pitch, expected) in [
+            ("40", overflow.as_str(), [40.0, 20.0]),
+            (overflow.as_str(), "30", [10.0, 30.0]),
+        ] {
+            game.mobs[0].yaw = 10.0;
+            game.mobs[0].head_pitch = 20.0;
+            assert!(game.run_command(&format!(
+                "tp @e[type=minecraft:zombie,limit=1] 0 0 0 {yaw} {pitch}"
+            )));
+            assert_eq!([game.mobs[0].yaw, game.mobs[0].head_pitch], expected);
+        }
+    }
+
+    #[test]
+    fn pitch_wraps_before_clamping() {
+        assert_eq!(super::entity_pitch(360.0), 0.0);
+        assert_eq!(super::entity_pitch(450.0), 90.0);
+        assert_eq!(super::entity_pitch(-360.0), 0.0);
+        assert_eq!(super::entity_pitch(-450.0), -90.0);
+        assert_eq!(super::entity_pitch(super::wrap_degrees(270.0)), -90.0);
+        assert_eq!(super::entity_pitch(super::wrap_degrees(-270.0)), 90.0);
+        assert_eq!(super::entity_pitch(super::wrap_degrees(360.0)), 0.0);
+        assert_eq!(super::entity_pitch(super::wrap_degrees(450.0)), 90.0);
+        assert_eq!(super::wrap_degrees(190.0), -170.0);
+        assert_eq!(super::wrap_degrees(540.0), -180.0);
+    }
 }
 
 #[cfg(test)]
