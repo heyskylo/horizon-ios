@@ -1,7 +1,7 @@
 //! The Wardrobe's link to Horizon's cosmetics service ([docs/cosmetics.md](../../docs/cosmetics.md)):
-//! the catalogue, the account's own items, claiming the founder set while it is open, what each
-//! slot wears and whether others see it, and whether there is a founder set to show at all
-//! (`Service::shop`).
+//! the catalogue, the account's own items and purchase history, what each slot wears and whether
+//! others see it, and whether the Wardrobe has anything to show yet (`Service::shop`). Buying and
+//! claiming happen on the website ([`SHOP_URL`]), never here.
 //!
 //! The last answers are kept on disk (`Saved`), so the Wardrobe shows the outfit offline and when
 //! the service fails, and a change made offline waits there until the service answers again.
@@ -17,6 +17,9 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+/// Where cosmetics are bought and the founder set is claimed: the website's shop.
+pub const SHOP_URL: &str = "https://playhorizon.dev/shop";
+
 /// Why a request to the service failed, in words for the player.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {
@@ -26,8 +29,6 @@ pub enum Error {
     Account(String),
     /// The service's session ended: sign in to it again.
     SignedOut,
-    /// The free set can't be claimed now (not open yet, or over).
-    ClaimClosed,
     /// An item the account doesn't own, or one for another slot.
     NotYours,
     /// Anything else the service answered.
@@ -43,7 +44,6 @@ impl Error {
             }
             Self::Account(e) => tr(e).into(),
             Self::SignedOut => tr("Your Wardrobe session ended. Open the Wardrobe again.").into(),
-            Self::ClaimClosed => tr("The founder set can't be claimed right now.").into(),
             Self::NotYours => tr("That item isn't in your Wardrobe.").into(),
             Self::Service(_) => {
                 tr("Horizon's cosmetics service had a problem. Try again later.").into()
@@ -97,9 +97,6 @@ pub struct Entry {
     /// A launcher theme's colours (`slot` is `theme`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub theme: Option<Theme>,
-    /// One line on the item per game language code, for the Shop (optional).
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub lines: BTreeMap<String, String>,
 }
 
 /// A launcher theme: the sky's six stops, top to bottom (`#rrggbb`), and the accent's hue.
@@ -130,14 +127,6 @@ impl Entry {
             .map_or(&self.id, String::as_str)
     }
 
-    /// Its line in `lang`, else in English; None if the service gave none.
-    pub fn line(&self, lang: &str) -> Option<&str> {
-        self.lines
-            .get(lang)
-            .or_else(|| self.lines.get("en_us"))
-            .map(String::as_str)
-    }
-
     /// Whether the id and hash are plain parts of a file name, by the game's rule
     /// (`horizon_cosmetics::fetch`): the cache's paths are made of them.
     fn plain(&self) -> bool {
@@ -166,6 +155,36 @@ pub struct Me {
     #[serde(default = "shown")]
     pub visible: bool,
     pub claim: Claim,
+    /// What the account claimed or bought through Paddle, newest first (the purchase history
+    /// Mojang's guidelines ask for).
+    #[serde(default)]
+    pub purchases: Vec<Purchase>,
+}
+
+/// One order, as the cosmetics service keeps it; Paddle is the merchant of record.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+pub struct Purchase {
+    /// Paddle's transaction id (`txn_…`): the order number on Paddle's receipt.
+    pub transaction_id: String,
+    /// An item id, or `founder_set`.
+    pub item: String,
+    /// Paid, tax included, in the lowest unit of `currency`.
+    pub amount: i64,
+    pub currency: String,
+    /// `paid`, `partly_refunded`, `refunded` or `charged_back`.
+    pub status: String,
+    /// Unix seconds.
+    pub at: i64,
+}
+
+impl Purchase {
+    /// The amount as people write it: `2.99 USD`; `None` for nothing paid.
+    pub fn price(&self) -> Option<String> {
+        (self.amount > 0).then(|| {
+            let (whole, cents) = (self.amount / 100, self.amount % 100);
+            format!("{whole}.{cents:02} {}", self.currency)
+        })
+    }
 }
 
 fn shown() -> bool {
@@ -305,7 +324,7 @@ impl Service {
     }
 
     /// Where the founder set's claim stands for everyone (`GET /v1/shop`, no session): whether
-    /// there is a Shop to show. An account on the service's preview list learns it from its own
+    /// the Wardrobe has anything to show yet. An account on the service's preview list learns it from its own
     /// answer (`Me::claim`), with its session.
     pub fn shop(&self) -> Result<Claim, Error> {
         parse(self.call("GET", "/v1/shop", None, None)?)
@@ -376,11 +395,6 @@ impl Service {
 
     pub fn me(&self, session: &Session) -> Result<Me, Error> {
         parse(self.call("GET", "/v1/me", Some(session), None)?)
-    }
-
-    /// Claim the founder set: the account owns its items from then on.
-    pub fn claim(&self, session: &Session) -> Result<Me, Error> {
-        parse(self.call("POST", "/v1/claim", Some(session), Some(json!({})))?)
     }
 
     /// Wear `item` in `slot`, or nothing there (`None`).
@@ -468,7 +482,6 @@ impl Service {
                 let code: Value = r.into_json().unwrap_or(Value::Null);
                 return Err(match (status, code["error"].as_str().unwrap_or("")) {
                     (401, _) => Error::SignedOut,
-                    (403, "claim_not_open" | "claim_closed") => Error::ClaimClosed,
                     (403, "not_owned") | (400, "wrong_slot") | (404, "item") => Error::NotYours,
                     (status, _) => Error::Service(status),
                 });

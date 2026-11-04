@@ -57,7 +57,7 @@ fn route(m: &mut Mock, method: &str, path: &str, auth: &str, body: &str) -> (u16
                 json!({"session": "svc-session", "uuid": UUID, "name": v["name"], "expires_in": m.expires_in}),
             )
         }
-        (_, "/v1/me" | "/v1/claim" | "/v1/equipped" | "/v1/visible") if !signed_in => {
+        (_, "/v1/me" | "/v1/equipped" | "/v1/visible") if !signed_in => {
             (401, json!({"error": "no_session"}))
         }
         ("PUT", "/v1/equipped" | "/v1/visible") if m.down => (503, json!({"error": "down"})),
@@ -69,8 +69,6 @@ fn route(m: &mut Mock, method: &str, path: &str, auth: &str, body: &str) -> (u16
             (200, me)
         }
         ("GET", "/v1/me") => (200, me(m.claim, json!([]), json!({}))),
-        ("POST", "/v1/claim") if m.claim != "open" => (403, json!({"error": "claim_closed"})),
-        ("POST", "/v1/claim") => (200, me("open", json!(["hat", "owl"]), json!({}))),
         ("PUT", "/v1/equipped") => {
             let v: Value = serde_json::from_str(body).unwrap();
             match v["item"].as_str() {
@@ -201,18 +199,13 @@ fn signing_in_goes_through_mojang_and_sends_the_service_no_token() {
 }
 
 #[test]
-fn claiming_and_equipping_follow_the_window_and_ownership() {
+fn equipping_follows_ownership() {
     let (m, service) = serve(|m| m.claim = "not_yet");
     let catalogue = service.catalogue().unwrap();
     assert_eq!(catalogue.claim.state, ClaimState::NotYet);
     assert_eq!(catalogue.items[0].name("fr_fr"), "Chapeau");
     assert_eq!(catalogue.items[0].name("ja_jp"), "Hat");
     let session = sign_in(&m, &service);
-    assert_eq!(service.claim(&session).unwrap_err(), Error::ClaimClosed);
-    m.lock().unwrap().claim = "open";
-    let me = service.claim(&session).unwrap();
-    assert_eq!(me.owned, ["hat", "owl"]);
-    assert_eq!(me.claim.claimed, Some(true));
     let me = service.equip(&session, "head", Some("hat")).unwrap();
     assert_eq!(me.equipped.get("head").map(String::as_str), Some("hat"));
     assert_eq!(
@@ -371,7 +364,6 @@ fn entry(id: &str, hash: &str) -> Entry {
         slot: "head".into(),
         names: BTreeMap::new(),
         theme: None,
-        lines: BTreeMap::new(),
     }
 }
 
@@ -417,4 +409,29 @@ fn the_shop_status_is_asked_without_a_session() {
         (method.as_str(), path.as_str(), auth.as_str()),
         ("GET", "/v1/shop", "")
     );
+}
+
+#[test]
+fn the_history_keeps_its_orders_and_an_old_answer_still_reads() {
+    let answer = json!({
+        "uuid": "u", "name": "Notch", "owned": [], "equipped": {}, "visible": true,
+        "claim": {"state": "open", "items": ["hat"], "starts_at": 1, "ends_at": 2, "claimed": false, "open": true},
+        "purchases": [
+            {"transaction_id": "txn_b", "item": "top_hat", "amount": 330, "currency": "EUR", "status": "refunded", "at": 9},
+            {"transaction_id": "txn_a", "item": "founder_set", "amount": 0, "currency": "CHF", "status": "paid", "at": 5}
+        ]
+    });
+    let me: Me = serde_json::from_value(answer).unwrap();
+    assert_eq!(me.purchases[0].price().as_deref(), Some("3.30 EUR"));
+    assert_eq!(me.purchases[1].price(), None);
+    // What is kept on disk reads back the same.
+    let kept: Me = serde_json::from_str(&serde_json::to_string(&me).unwrap()).unwrap();
+    assert_eq!(kept.purchases, me.purchases);
+    // An answer from before sales still reads.
+    let old: Me = serde_json::from_value(json!({
+        "uuid": "u", "name": "Notch", "owned": [], "equipped": {},
+        "claim": {"state": "not_yet", "items": [], "starts_at": null, "ends_at": null}
+    }))
+    .unwrap();
+    assert!(old.purchases.is_empty());
 }

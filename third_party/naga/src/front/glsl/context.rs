@@ -594,7 +594,17 @@ impl<'a> Context<'a> {
                 pointer
             }
             HirExprKind::Select { base, ref field } => {
-                let base = self.lower_expect_inner(stmt, frontend, base, pos)?.0;
+                // A member read loads the member through a pointer, as an array element does,
+                // instead of taking it out of a loaded copy of the whole value: a member an
+                // atomic function uses becomes atomic (`atomic_upgrade`), and only a load of it
+                // gives its value. A constant expression keeps its value form: it has no memory.
+                let base_pos = match pos {
+                    ExprPos::Rhs if !self.is_const => ExprPos::AccessBase {
+                        constant_index: true,
+                    },
+                    other => other,
+                };
+                let base = self.lower_expect_inner(stmt, frontend, base, base_pos)?.0;
 
                 frontend.field_selection(self, pos, base, field, meta)?
             }

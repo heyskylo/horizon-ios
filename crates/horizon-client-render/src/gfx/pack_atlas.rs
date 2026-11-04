@@ -1,7 +1,14 @@
 //! The block atlas of shader packs (spec 5.1, `atlasSize` in 5.2): packs sample one 2D atlas
 //! with atlas coordinates, Horizon keeps block sprites in texture arrays. With a pack, every
-//! layer is copied into a grid, row by row from the top left, and an animated layer again
-//! whenever its frame changes.
+//! layer is copied into the atlas, and an animated layer again whenever its frame changes.
+//!
+//! Flat draws, which read a table per sprite layer, get the game's own layout
+//! ([`PackAtlas::stitched`]): every sprite at its own size, placed by vanilla's `Stitcher` with its
+//! padding; this gives the `atlasSize` and spans our probes read in Iris 1.11.7 (the padding stays
+//! empty for now). Other draws get a grid of array-sized cells ([`PackAtlas::new`]).
+
+#[path = "pack_atlas/stitch.rs"]
+mod stitch;
 
 pub(super) struct PackAtlas {
     texture: wgpu::Texture,
@@ -14,6 +21,40 @@ pub(super) struct PackAtlas {
     split: u32,
     /// OptiFine/Iris separate ambient occlusion: pass vertex alpha to hz_Color.a.
     pub separate_ao: bool,
+    /// The stitched layout, when the atlas has one.
+    stitched: Option<Stitched>,
+}
+
+/// A stitched atlas: where each layer's sprite is.
+struct Stitched {
+    /// Each layer's sprite at the first level: its top left corner and its side.
+    rects: Vec<[u32; 3]>,
+}
+
+/// The side a layer of `sprite`-wide arrays has in a stitched atlas: its own, when the arrays
+/// hold it scaled up by a power of two (else the array's).
+fn atlas_side(native: u32, sprite: u32) -> u32 {
+    if native == 0
+        || native > sprite
+        || !sprite.is_multiple_of(native)
+        || !(sprite / native).is_power_of_two()
+    {
+        sprite
+    } else {
+        native
+    }
+}
+
+/// `SpriteLoader.stitch`'s mip level: the option, lowered to fit the smallest sprite.
+fn stitch_mip_level(sides: &[u32], option: u32) -> u32 {
+    let mut lowest = 1u32 << option.min(16);
+    let mut smallest = u32::MAX;
+    for &side in sides {
+        smallest = smallest.min(side);
+        lowest = lowest.min(side & side.wrapping_neg());
+    }
+    let level = smallest.min(lowest).max(1).ilog2();
+    level.min(option)
 }
 
 impl PackAtlas {
@@ -91,9 +132,100 @@ impl PackAtlas {
             sprite,
             split,
             separate_ao: false,
+            stitched: None,
         };
         atlas.copy(encoder, arrays, 0..layers);
         Some(atlas)
+    }
+
+    /// Every layer of `arrays` at its own size (`native`, its side before the arrays scaled it up
+    /// to `sprite`), placed as vanilla's `Stitcher` places them with the padding of the Mipmap
+    /// Levels option and the anisotropy bit; `None` when they don't fit the device.
+    #[allow(clippy::too_many_arguments)]
+    pub fn stitched(
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        arrays: &[wgpu::Texture],
+        split: u32,
+        sprite: u32,
+        native: &[u32],
+        mip_option: u32,
+        anisotropy_bit: u32,
+    ) -> Option<Self> {
+        let sides: Vec<u32> = if native.is_empty() {
+            vec![sprite]
+        } else {
+            native.iter().map(|&n| atlas_side(n, sprite)).collect()
+        };
+        // A level of the atlas comes from the arrays' level as many halvings further down.
+        let array_levels = arrays[0].mip_level_count();
+        let deepest = sides
+            .iter()
+            .map(|&s| (sprite / s).ilog2())
+            .max()
+            .unwrap_or(0);
+        let mip =
+            stitch_mip_level(&sides, mip_option).min(array_levels.saturating_sub(deepest + 1));
+        let max = device.limits().max_texture_dimension_2d;
+        let layout = stitch::stitch(&sides, mip, anisotropy_bit, max)?;
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Shader pack block atlas"),
+            size: wgpu::Extent3d {
+                width: layout.width.max(1),
+                height: layout.height.max(1),
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: mip + 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_DST
+                | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&Default::default());
+        let rects = layout
+            .holders
+            .iter()
+            .zip(&sides)
+            .map(|(&[x, y], &side)| [x + layout.padding, y + layout.padding, side])
+            .collect::<Vec<_>>();
+        let layers = rects.len() as u32;
+        let atlas = Self {
+            texture,
+            view,
+            columns: 1,
+            sprite,
+            split,
+            separate_ao: false,
+            stitched: Some(Stitched { rects }),
+        };
+        atlas.copy(encoder, arrays, 0..layers);
+        Some(atlas)
+    }
+
+    /// Whether the sprites keep their own sizes ([`PackAtlas::stitched`]).
+    pub fn is_stitched(&self) -> bool {
+        self.stitched.is_some()
+    }
+
+    /// The table flat terrain reads (`hz_sprite_rects`): per layer, its sprite's top left corner
+    /// (x | y << 16) and side, in atlas pixels.
+    pub fn rects_table(&self) -> Vec<u32> {
+        if let Some(stitched) = &self.stitched {
+            return stitched
+                .rects
+                .iter()
+                .flat_map(|&[x, y, side]| [x | (y << 16), side])
+                .collect();
+        }
+        (0..self.columns * self.texture.height() / self.sprite)
+            .flat_map(|layer| {
+                let (x, y) = (layer % self.columns, layer / self.columns);
+                [(x * self.sprite) | ((y * self.sprite) << 16), self.sprite]
+            })
+            .collect()
     }
 
     /// The atlas's size in pixels (`atlasSize`).
@@ -112,13 +244,26 @@ impl PackAtlas {
             let Some(array) = arrays.get((layer / self.split) as usize) else {
                 continue;
             };
-            let (column, row) = (layer % self.columns, layer / self.columns);
+            // Where the sprite goes, and from which array level: a stitched sprite keeps its own
+            // side, which the arrays hold that many halvings down.
+            let [x, y, side] = match &self.stitched {
+                Some(s) => match s.rects.get(layer as usize) {
+                    Some(&rect) => rect,
+                    None => continue,
+                },
+                None => [
+                    layer % self.columns * self.sprite,
+                    layer / self.columns * self.sprite,
+                    self.sprite,
+                ],
+            };
+            let from = (self.sprite / side).ilog2();
             for level in 0..self.texture.mip_level_count() {
-                let edge = self.sprite >> level;
+                let edge = side >> level;
                 encoder.copy_texture_to_texture(
                     wgpu::TexelCopyTextureInfo {
                         texture: array,
-                        mip_level: level,
+                        mip_level: from + level,
                         origin: wgpu::Origin3d {
                             x: 0,
                             y: 0,
@@ -130,8 +275,8 @@ impl PackAtlas {
                         texture: &self.texture,
                         mip_level: level,
                         origin: wgpu::Origin3d {
-                            x: column * edge,
-                            y: row * edge,
+                            x: x >> level,
+                            y: y >> level,
                             z: 0,
                         },
                         aspect: wgpu::TextureAspect::All,
@@ -204,7 +349,8 @@ impl PackAtlas {
             // vertices (`TerrainVertex`, six words each).
             declarations.push_str(
                 "layout(set = 3, binding = 0) readonly buffer HzBlockIds { int hz_block_ids[]; };\n\
-                 layout(set = 3, binding = 1) readonly buffer HzVertices { uint hz_vertices[]; };\n",
+                 layout(set = 3, binding = 1) readonly buffer HzVertices { uint hz_vertices[]; };\n\
+                 layout(set = 3, binding = 2) readonly buffer HzSpriteRects { uvec2 hz_sprite_rects[]; };\n",
             );
             "hz_slot_origins[hz_block_slots[uint(gl_VertexIndex) >> 8u]]"
         } else {
@@ -212,11 +358,29 @@ impl PackAtlas {
             "hz_v_origin"
         };
         let [width, height] = self.size();
-        let scale = [
-            self.sprite as f32 / width as f32,
-            self.sprite as f32 / height as f32,
-        ];
+        // A sprite's cell in its own sides, and the share of the atlas a side is: from the table
+        // in flat draws (`rects_table`), from the grid in others.
         let columns = self.columns;
+        let (cell, side, scale) = if flat {
+            (
+                "uvec2 hz_rect = hz_sprite_rects[hz_layer];\n    \
+                 hz_cell = vec2(float(hz_rect.x & 65535u), float(hz_rect.x >> 16u)) / float(hz_rect.y);\n    "
+                    .to_owned(),
+                "float(hz_rect.y)",
+                [1.0 / width as f32, 1.0 / height as f32],
+            )
+        } else {
+            (
+                format!(
+                    "hz_cell = vec2(float(hz_layer % {columns}u), float(hz_layer / {columns}u));\n    "
+                ),
+                "1.0",
+                [
+                    self.sprite as f32 / width as f32,
+                    self.sprite as f32 / height as f32,
+                ],
+            )
+        };
         // UVs past a sprite (models up to 2, distant tiles) cannot repeat in an atlas: clamped.
         // The colour's alpha holds HDR's emission level (`mesher::EMISSION_BITS`): packs get 1 unless separate_ao.
         let color_a = if self.separate_ao {
@@ -227,8 +391,8 @@ impl PackAtlas {
         let body = format!(
             "    vec4 hz_origin = {origin};\n    \
              uint hz_layer = hz_v_layer & 32767u;\n    \
-             hz_cell = vec2(float(hz_layer % {columns}u), float(hz_layer / {columns}u));\n    \
-             hz_scale = vec2({:?}, {:?});\n    \
+             {cell}\
+             hz_scale = vec2({:?}, {:?}) * {side};\n    \
              hz_Vertex = vec4(hz_v_pos + hz_origin.xyz, 1.0);\n    \
              hz_uv_scale = hz_origin.w > 0.0 ? uintBitsToFloat(floatBitsToUint(hz_origin.w) & 0xff800000u) : fract(abs(hz_origin.w));\n    \
              hz_mid = vec2(0.5);\n    \
@@ -369,6 +533,119 @@ mod tests {
         assert_eq!([red(1, 3), red(3, 2), red(5, 2)], [120, 160, 0]);
     }
 
+    /// An array of `sprite`-pixel layers (`sprite` the largest of `native`), as the game builds
+    /// them: each layer scaled up by whole pixels at level 0, its own pixels from the level where
+    /// it has its own size. Every pixel of a layer's own image differs: (layer, x, y, 255).
+    pub(super) fn upscaled_array(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        native: &[u32],
+    ) -> wgpu::Texture {
+        let sprite = native.iter().copied().max().unwrap();
+        let levels = sprite.ilog2() + 1;
+        let mut data = Vec::new();
+        for (layer, &side) in native.iter().enumerate() {
+            for level in 0..levels {
+                let edge = sprite >> level;
+                // Above its own size a level repeats each pixel; below, it shrinks to the first.
+                let scale = (edge / side).max(1);
+                for y in 0..edge {
+                    for x in 0..edge {
+                        let (x, y) = if edge >= side {
+                            (x / scale, y / scale)
+                        } else {
+                            (0, 0)
+                        };
+                        data.extend([layer as u8 * 50, x as u8 * 16, y as u8 * 16, 255]);
+                    }
+                }
+            }
+        }
+        wgpu::util::DeviceExt::create_texture_with_data(
+            device,
+            queue,
+            &wgpu::TextureDescriptor {
+                label: None,
+                size: wgpu::Extent3d {
+                    width: sprite,
+                    height: sprite,
+                    depth_or_array_layers: native.len() as u32,
+                },
+                mip_level_count: levels,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC,
+                view_formats: &[],
+            },
+            wgpu::util::TextureDataOrder::LayerMajor,
+            &data,
+        )
+    }
+
+    /// Sprites of 2, 4 and 1 px in a 4 px array, no mipmaps (one pixel of padding). Worked through
+    /// vanilla's `Stitcher` by hand: holders of 6, 4 and 3 px at (0, 0), (8, 0) and (8, 4) in a 16
+    /// by 8 atlas, each sprite with its own pixels.
+    #[test]
+    fn stitched_sprites_keep_their_own_size() {
+        let instance = crate::gfx::test_gpu::instance();
+        let Ok(adapter) = pollster::block_on(instance.request_adapter(&Default::default())) else {
+            return;
+        };
+        let (device, queue) =
+            pollster::block_on(adapter.request_device(&Default::default())).unwrap();
+        let array = upscaled_array(&device, &queue, &[2, 4, 1]);
+        let mut encoder = device.create_command_encoder(&Default::default());
+        let atlas =
+            PackAtlas::stitched(&device, &mut encoder, &[array], 3, 4, &[2, 4, 1], 0, 0).unwrap();
+        assert_eq!(atlas.size(), [16, 8]);
+        assert_eq!(
+            atlas.rects_table(),
+            [9 | 1 << 16, 2, 1 | 1 << 16, 4, 9 | 5 << 16, 1]
+        );
+        let read = device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: 256 * 8,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        encoder.copy_texture_to_buffer(
+            atlas.texture.as_image_copy(),
+            wgpu::TexelCopyBufferInfo {
+                buffer: &read,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(256),
+                    rows_per_image: None,
+                },
+            },
+            wgpu::Extent3d {
+                width: 16,
+                height: 8,
+                depth_or_array_layers: 1,
+            },
+        );
+        queue.submit([encoder.finish()]);
+        read.slice(..).map_async(wgpu::MapMode::Read, |_| {});
+        device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        let data = read.slice(..).get_mapped_range().unwrap();
+        let at = |x: usize, y: usize| {
+            let i = y * 256 + x * 4;
+            [data[i], data[i + 1], data[i + 2], data[i + 3]]
+        };
+        // Layer 0's own 2 px: (layer 0, x, y); its padding is empty.
+        assert_eq!(
+            [at(9, 1), at(10, 1), at(10, 2)],
+            [[0, 0, 0, 255], [0, 16, 0, 255], [0, 16, 16, 255]]
+        );
+        assert_eq!([at(8, 0), at(11, 3), at(11, 1)], [[0; 4]; 3]);
+        // Layer 1 fills its 4 px; layer 2 is one pixel.
+        assert_eq!(
+            [at(1, 1), at(4, 4), at(9, 5), at(10, 6)],
+            [[50, 0, 0, 255], [50, 48, 48, 255], [100, 0, 0, 255], [0; 4]]
+        );
+    }
+
     #[test]
     fn terrain_inputs_respects_separate_ao() {
         let instance = crate::gfx::test_gpu::instance();
@@ -398,6 +675,7 @@ mod tests {
             sprite: 16,
             split: 1,
             separate_ao: false,
+            stitched: None,
         };
         let inputs_default = atlas.terrain_inputs(false);
         assert!(
