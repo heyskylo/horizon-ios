@@ -13,6 +13,7 @@ use crate::{
 use horizon_core::{
     geometry::{Aabb, Direction, Vec3, VoxelShape},
     position::BlockPos,
+    random::RandomSource,
 };
 use horizon_world::{
     block_collision::BlockCollisionRegistry,
@@ -89,8 +90,91 @@ pub struct ItemEntity {
     /// `Entity.stuckSpeedMultiplier`: set after a move by the cobweb or powder snow
     /// the item is in, scales (and stops) the next one.
     pub stuck: Vec3,
+    /// `Entity.wasTouchingWater`: the last `updateFluidInteraction`. Entering
+    /// water after the first tick is what splashes.
+    pub was_touching_water: bool,
     /// `Entity.noGravity` (`NoGravity` in its save): `applyGravity` does nothing.
     pub no_gravity: bool,
+}
+/// What `Entity.doWaterSplashEffect` asks the level to do for a dropped item.
+/// Particles are drawn on the client (`Level.addParticle` is empty on the
+/// server). The sound is `Entity.playSound`, which the server broadcasts;
+/// `ClientLevel.playSeededSound` ignores it when the except entity is null.
+#[derive(Clone, Copy, Debug)]
+pub enum ItemSplash {
+    Sound {
+        at: [f64; 3],
+        volume: f32,
+        pitch: f32,
+    },
+    Particle {
+        bubble: bool,
+        at: [f64; 3],
+        velocity: [f64; 3],
+    },
+}
+/// `Entity.doWaterSplashEffect` for a dropped item: its own random, the
+/// generic splash sound, and bubble and splash particles. An item has no
+/// controlling passenger. The SPLASH game event is not posted here (the mob
+/// path records it and the handler drops it).
+struct ItemWater<'a, F> {
+    item: &'a mut ItemEntity,
+    random: &'a mut horizon_core::random::LegacyRandom,
+    splash: &'a mut F,
+}
+impl<F: FnMut(ItemSplash)> horizon_world::water_splash::WaterSplashWorld for ItemWater<'_, F> {
+    type Error = std::convert::Infallible;
+    type Entity = ();
+    type Sound = ();
+    fn this_entity(&self) {}
+    fn controlling_passenger(&mut self) -> Result<Option<()>, Self::Error> {
+        Ok(None)
+    }
+    fn velocity(&mut self, _: ()) -> Result<Vec3, Self::Error> {
+        Ok(self.item.velocity)
+    }
+    /// `Entity.getSwimSplashSound` and `getSwimHighSpeedSplashSound`: both
+    /// `entity.generic.splash` for an item.
+    fn splash_sound(&mut self, _: bool) -> Result<(), Self::Error> {
+        Ok(())
+    }
+    fn random_float(&mut self) -> Result<f32, Self::Error> {
+        Ok(self.random.next_float())
+    }
+    fn random_double(&mut self) -> Result<f64, Self::Error> {
+        Ok(self.random.next_double())
+    }
+    fn play_sound(&mut self, _: (), volume: f32, pitch: f32) -> Result<(), Self::Error> {
+        let at = [
+            self.item.position.x,
+            self.item.position.y,
+            self.item.position.z,
+        ];
+        (self.splash)(ItemSplash::Sound { at, volume, pitch });
+        Ok(())
+    }
+    fn position(&self) -> Vec3 {
+        self.item.position
+    }
+    fn width(&self) -> f32 {
+        ItemEntity::WIDTH as f32
+    }
+    fn particle(
+        &mut self,
+        kind: horizon_world::water_splash::SplashParticle,
+        position: Vec3,
+        velocity: Vec3,
+    ) -> Result<(), Self::Error> {
+        (self.splash)(ItemSplash::Particle {
+            bubble: matches!(kind, horizon_world::water_splash::SplashParticle::Bubble),
+            at: [position.x, position.y, position.z],
+            velocity: [velocity.x, velocity.y, velocity.z],
+        });
+        Ok(())
+    }
+    fn splash_event(&mut self) -> Result<(), Self::Error> {
+        Ok(())
+    }
 }
 /// Environment results needed by the entity owner, including lethal lava damage.
 #[derive(Debug)]
@@ -199,7 +283,7 @@ impl ItemEntity {
     }
     /// Returns false when the item should be removed. `no_physics`: the item
     /// moves through blocks this tick ([`ItemEntity::inside_block`]).
-    pub fn tick(
+    pub fn tick<F: FnMut(ItemSplash)>(
         &mut self,
         world: &World,
         registry: &horizon_world::registry::BlockRegistry,
@@ -208,13 +292,19 @@ impl ItemEntity {
         no_physics: bool,
         fluids: &crate::motion::FluidResources,
         entity_boxes: &[Aabb],
+        splash: &mut F,
     ) -> bool {
         self.ticks += 1;
+        // `Entity.firstTick` is set through `baseTick`, which runs before the
+        // move, and cleared before `ItemEntity.tick`'s second fluid update.
+        let spawned = self.ticks == 1;
         self.previous = self.position;
         if self.pickup_delay > 0 && self.pickup_delay != u32::MAX {
             self.pickup_delay -= 1;
         }
         let (water_height, lava_height) = self.update_fluids(world, fluids);
+        // `Entity.baseTick` -> `updateFluidInteraction` -> `doWaterSplashEffect`.
+        self.water_entry(water_height > 0.0, spawned, splash);
         let old_velocity = self.velocity;
         let in_water = water_height > f64::from(0.1f32);
         if in_water {
@@ -368,9 +458,36 @@ impl ItemEntity {
             self.needs_sync = true;
         }
         self.age += 1;
-        // ItemEntity.tick refreshes immersion after moving.
-        self.update_fluids(world, fluids);
+        // ItemEntity.tick refreshes immersion after moving, and splashes if
+        // that move is what entered the water (`firstTick` is already clear).
+        let (water_height, _) = self.update_fluids(world, fluids);
+        self.water_entry(water_height > 0.0, false, splash);
         self.age < 6000 && self.position.y > -128.0
+    }
+    /// `Entity.updateFluidInteraction`: entering water after the first tick
+    /// runs `doWaterSplashEffect`.
+    fn water_entry<F: FnMut(ItemSplash)>(
+        &mut self,
+        in_water: bool,
+        first_tick: bool,
+        splash: &mut F,
+    ) {
+        if in_water && !self.was_touching_water && !first_tick {
+            let mut random = horizon_core::random::LegacyRandom::new(
+                (self.id as i64)
+                    .wrapping_mul(0x5DEECE66D)
+                    .wrapping_add(self.ticks as i64),
+            );
+            let _ = horizon_world::water_splash::water_splash(
+                &mut ItemWater {
+                    item: self,
+                    random: &mut random,
+                    splash,
+                },
+                1_000_000,
+            );
+        }
+        self.was_touching_water = in_water;
     }
     /// `Entity.makeStuckInBlock` as `WebBlock.entityInside` and
     /// `PowderSnowBlock.entityInside` call it for an item (which, unlike a
@@ -1510,6 +1627,7 @@ mod fire_environment_tests {
             ticks: 0,
             needs_sync: false,
             stuck: Vec3::ZERO,
+            was_touching_water: false,
         };
         let mut wood = make("minecraft:oak_planks");
         let mut metal = make("minecraft:netherite_ingot");
@@ -1657,6 +1775,7 @@ mod merge_tests {
             ticks: age,
             needs_sync: false,
             stuck: Vec3::ZERO,
+            was_touching_water: false,
         }
     }
     fn max_stack(stack: &ItemStack) -> u32 {
@@ -1850,6 +1969,7 @@ mod honey_slide_tests {
                 false,
                 &fluids,
                 &[],
+                &mut |_| {},
             );
             ys.push(item.velocity.y);
         }
@@ -1914,6 +2034,7 @@ mod honey_slide_tests {
                 false,
                 &fluids,
                 &[],
+                &mut |_| {},
             );
         }
         assert!(
@@ -1996,6 +2117,7 @@ mod honey_slide_tests {
             ticks: 10,
             needs_sync: false,
             stuck: Vec3::ZERO,
+            was_touching_water: false,
         }
     }
 
@@ -2126,6 +2248,7 @@ mod slime_bounce_tests {
             ticks: 10,
             needs_sync: false,
             stuck: Vec3::ZERO,
+            was_touching_water: false,
         }
     }
 
@@ -2301,6 +2424,7 @@ mod entity_collision_tests {
                     false,
                     &fluids,
                     boxes,
+                    &mut |_| {},
                 );
             }
             item.position.y
@@ -2349,6 +2473,7 @@ mod entity_collision_tests {
                     false,
                     &fluids,
                     &[],
+                    &mut |_| {},
                 );
             }
             item.position.x

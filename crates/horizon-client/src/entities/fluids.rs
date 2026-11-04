@@ -251,6 +251,7 @@ mod tests {
             ticks: 0,
             needs_sync: false,
             stuck: Vec3::ZERO,
+            was_touching_water: false,
         };
         let mut still = item.clone();
         assert!(still.tick(
@@ -260,7 +261,8 @@ mod tests {
             &collision,
             false,
             &fluids,
-            &[]
+            &[],
+            &mut |_| {},
         ));
         assert_eq!(still.position.x, at.x);
         assert_eq!(still.velocity.x, 0.0);
@@ -273,7 +275,8 @@ mod tests {
             &collision,
             false,
             &fluids,
-            &[]
+            &[],
+            &mut |_| {},
         ));
         // First push is damped by buoyancy before motion, second follows drag.
         assert!((carried.position.x - at.x - 0.014 * 0.99).abs() < 1e-12);
@@ -287,6 +290,7 @@ mod tests {
                 false,
                 &fluids,
                 &[],
+                &mut |_| {},
             );
         }
         assert!(carried.position.x > at.x + 0.5);

@@ -5210,6 +5210,7 @@ impl Game<'_> {
             ticks: 0,
             needs_sync: false,
             stuck: Vec3::ZERO,
+            was_touching_water: false,
         });
     }
     /// `Entity.lerpMotion` (and `recreateFromPacket`'s motion) for the
@@ -6032,9 +6033,21 @@ impl Game<'_> {
                 .collect();
             (fluids, rain, w.thundering)
         };
+        // The window's own player already splashes from its motion tick.
+        let own = self.remote.as_ref().map(|r| r.entity_id);
+        let mut water_fx = Vec::new();
         for (m, fluids) in self.mobs.iter_mut().zip(fluids) {
             if let Some(fluids) = fluids {
+                let was = m.fluids.in_water;
+                let first = m.first_tick;
                 m.fluids = fluids;
+                // Entity.doWaterSplashEffect on the client copy. Particles
+                // only: ClientLevel draws addParticle, and playSeededSound
+                // drops Entity.playSound (the server broadcasts that).
+                if m.fluids.in_water && !was && !first && Some(m.id as i32) != own {
+                    horizon_client::mobs::living::client_water_splash(m, &mut water_fx);
+                }
+                m.first_tick = false;
             }
         }
         let game_time = self.world.game_time;
@@ -6143,7 +6156,7 @@ impl Game<'_> {
         let players = &r.level_players;
         let tab_players = &r.tab_players;
         let mut using = Vec::new();
-        let mut mob_fx = Vec::new();
+        let mut mob_fx = water_fx;
         for (m, rain) in self.mobs.iter_mut().zip(rain) {
             let player = players.contains_key(&(m.id as i32));
             if player {
@@ -6412,6 +6425,7 @@ impl Game<'_> {
             self.res.facts(),
             self.collision,
         );
+        let mut entered = Vec::new();
         for d in self.dropped.iter_mut().filter(|_| running) {
             d.tick(
                 world,
@@ -6422,7 +6436,14 @@ impl Game<'_> {
                 &self.res.motion().fluids,
                 // The server decides what an item rests on; this copy only moves between updates.
                 &[],
+                &mut |splash| entered.push(splash),
             );
+        }
+        // Entity.doWaterSplashEffect on this window: Level.addParticle draws
+        // the bubbles and splashes. ClientLevel.playSeededSound drops
+        // Entity.playSound, so the sound stays the server's.
+        for splash in entered {
+            self.apply_item_splash(splash);
         }
         head_lerps.retain(|_, (_, steps)| *steps > 0);
         let _ = self.handle_mob_events(mob_fx);
