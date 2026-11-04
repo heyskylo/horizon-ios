@@ -90,11 +90,6 @@ fn occlusion_culling_requested(info: &wgpu::AdapterInfo, env: Option<&str>) -> b
     env != Some("0") && (env.is_some() || info.device_type != wgpu::DeviceType::Cpu)
 }
 
-/// Whether Translucent Batching is offered (`graphics::offer_translucent_batching`): where
-/// indirect multi-draws (`multi_draw`) take its batches, but not OpenGL's, which loop over
-/// their entries on the CPU (and without them every section is a call of its own anyway).
-/// Frames drawn flat (Metal, Intel Gen11/Gen12's Vulkan driver) take it too: their
-/// translucent calls then come one per page of its arena rather than about one per section.
 /// `DrawableGizmoPrimitives.getGroup`: a line whose ARGB alpha is 255 joins the
 /// opaque group, drawn with `RenderTypes.lines` (depth written); the rest
 /// with `RenderTypes.linesTranslucentNoDepthWrite`.
@@ -109,6 +104,11 @@ fn debug_lines_opaque_first(lines: &[[f32; 8]]) -> impl Iterator<Item = &[f32; 8
     opaque.chain(lines.iter().filter(|l| !debug_line_opaque(l)))
 }
 
+/// Whether Translucent Batching is offered (`graphics::offer_translucent_batching`): where
+/// indirect multi-draws (`multi_draw`) take its batches, but not OpenGL's, which loop over
+/// their entries on the CPU (and without them every section is a call of its own anyway).
+/// Frames drawn flat (Metal, Intel Gen11/Gen12's Vulkan driver) take it too: their
+/// translucent calls then come one per page of its arena rather than about one per section.
 fn translucent_batchable(info: &wgpu::AdapterInfo, multi_draw: bool) -> bool {
     multi_draw && info.backend != wgpu::Backend::Gl
 }
