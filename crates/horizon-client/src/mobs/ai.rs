@@ -2742,6 +2742,12 @@ fn tick_effects(m: &mut Mob, mods: Option<&dyn super::ModEffectTicks>) {
         // MobEffectInstance.tickServer: an infinite (-1) effect times its
         // ticks by the mob's tickCount and never counts down.
         let infinite = m.extra.effects[i].1 == -1;
+        // MobEffectInstance.tickServer: hasRemainingDuration is false at 0, so the
+        // instance ticks nothing; LivingEntity.tickEffects drops it below.
+        if !infinite && m.extra.effects[i].1 == 0 {
+            i += 1;
+            continue;
+        }
         let count = if infinite {
             m.age as i32
         } else {
@@ -3183,6 +3189,28 @@ mod poison_effect_tests {
                 .any(|e| matches!(e, MobEvent::Infested { .. })),
             "a hurt while infested pushes Infested"
         );
+    }
+
+    /// `MobEffectInstance.hasRemainingDuration` is false at 0 ticks, so an effect
+    /// loaded with `duration: 0` is over on its first tick instead of counting
+    /// down to -1, the value that means infinite.
+    #[test]
+    fn a_zero_duration_effect_is_dropped_not_made_infinite() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        if !root.join("entity-types.json").exists() {
+            return;
+        }
+        let data = MobTypes::load(&root).unwrap();
+        let pig_kind = Arc::new(data.types.get("minecraft:pig").unwrap().clone());
+        let mut pig = Mob::new(1, pig_kind, Vec3::new(0.0, 4.0, 0.0), 0.0);
+        pig.health = 20.0;
+        pig.extra.effects.push(("minecraft:poison", 0, 0));
+        tick_effects(&mut pig, None);
+        assert!(pig.extra.effects.is_empty());
+        // A poison with no remaining duration does not get its first tick either.
+        assert_eq!(pig.health, 20.0);
     }
 
     /// `checkTotemDeathProtection` inside a tick's damage adds the totem's
