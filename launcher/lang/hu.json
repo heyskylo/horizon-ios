@@ -1,4 +1,9 @@
 {
+  "A native build or cache cleanup is running. Try again when it finishes.": "Natív fordítás vagy a gyorsítótár törlése folyamatban van. Próbálja újra, miután befejeződött.",
+  "Cleared {bytes} bytes of native build cache. The next changed build will compile from scratch.": "A natív fordítási gyorsítótárból {bytes} bájt törölve. A következő, változtatásokat tartalmazó fordítás elölről indul.",
+  "Could not access the native build cache: {error}": "Nem sikerült elérni a natív fordítási gyorsítótárat: {error}",
+  "Enter a cache limit in GiB; 0 disables automatic cleanup.": "Adja meg a gyorsítótár korlátját GiB egységben; a 0 kikapcsolja az automatikus törlést.",
+  "Refusing native cache cleanup at an unexpected file or link: {path}": "A natív gyorsítótár törlése megtagadva egy váratlan fájl vagy hivatkozás miatt: {path}",
   "Building {name}'s post-build step": "A(z) {name} felépítése utáni lépés",
   "In use": "Használatban",
   "Prepare": "Készülj fel",

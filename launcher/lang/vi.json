@@ -1,4 +1,9 @@
 {
+  "A native build or cache cleanup is running. Try again when it finishes.": "Đang biên dịch mã gốc hoặc dọn bộ nhớ đệm. Hãy thử lại khi hoàn tất.",
+  "Cleared {bytes} bytes of native build cache. The next changed build will compile from scratch.": "Đã xóa {bytes} byte khỏi bộ nhớ đệm biên dịch mã gốc. Lần biên dịch tiếp theo có thay đổi sẽ bắt đầu lại từ đầu.",
+  "Could not access the native build cache: {error}": "Không thể truy cập bộ nhớ đệm biên dịch mã gốc: {error}",
+  "Enter a cache limit in GiB; 0 disables automatic cleanup.": "Nhập giới hạn bộ nhớ đệm theo GiB; 0 tắt tính năng dọn tự động.",
+  "Refusing native cache cleanup at an unexpected file or link: {path}": "Từ chối dọn bộ nhớ đệm mã gốc tại tệp hoặc liên kết không mong đợi: {path}",
   "Building {name}'s post-build step": "Bước sau xây dựng của {name}",
   "In use": "Đang sử dụng",
   "Prepare": "chuẩn bị",

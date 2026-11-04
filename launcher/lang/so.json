@@ -1,4 +1,9 @@
 {
+  "A native build or cache cleanup is running. Try again when it finishes.": "Dhis asal ah ama nadiifinta kaydka ayaa socota. Isku day mar kale marka ay dhammaato.",
+  "Cleared {bytes} bytes of native build cache. The next changed build will compile from scratch.": "Waxaa la nadiifiyay {bytes} baytka kaydka dhismaha asalka ah. Dhismaha xiga ee la beddelay wuxuu ka bilaabmi doonaa eber.",
+  "Could not access the native build cache: {error}": "Lama gali karo kaydka dhismaha asalka ah: {error}",
+  "Enter a cache limit in GiB; 0 disables automatic cleanup.": "Geli xadka kaydka ee GiB; 0 waxay damisaa nadiifinta tooska ah.",
+  "Refusing native cache cleanup at an unexpected file or link: {path}": "Waa la diiday nadiifinta kaydka asalka ah ee fayl ama xiriir aan la filayn: {path}",
   "Building {name}'s post-build step": "Dhisida {name} tallabada dhisitaanka kadib",
   "In use": "La isticmaalo",
   "Prepare": "Diyaarso",

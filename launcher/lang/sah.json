@@ -1,4 +1,9 @@
 {
+  "A native build or cache cleanup is running. Try again when it finishes.": "Төрүт тутуу эбэтэр кэһи ыраастааһын барар. Бүттэҕинэ хос боруобалааҥ.",
+  "Cleared {bytes} bytes of native build cache. The next changed build will compile from scratch.": "Төрүт тутуу кэһиттэн {bytes} байт ыраастанна. Аныгыскы уларыйбыт тутуу саҥаттан компиляцияланыа.",
+  "Could not access the native build cache: {error}": "Төрүт тутуу кэһигэр киирэр кыах суох буолла: {error}",
+  "Enter a cache limit in GiB; 0 disables automatic cleanup.": "Кэш кыраныыссатын GiB-нан киллэриҥ; 0 аптамаат ыраастааһыны араарар.",
+  "Refusing native cache cleanup at an unexpected file or link: {path}": "Күүтүллүбэтэх билэҕэ эбэтэр сигэҕэ төрүт кэһи ыраастааһынтан аккаастанар: {path}",
   "Building {name}'s post-build step": "Тутуу {name} тутуу кэнниттэн хардыыта",
   "In use": "Туһаныллар",
   "Prepare": "Бэлэмнэн",

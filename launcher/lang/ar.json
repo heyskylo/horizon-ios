@@ -1,4 +1,9 @@
 {
+  "A native build or cache cleanup is running. Try again when it finishes.": "يجري بناء أصلي أو تنظيف لذاكرة التخزين المؤقت. أعد المحاولة بعد الانتهاء.",
+  "Cleared {bytes} bytes of native build cache. The next changed build will compile from scratch.": "تم تحرير {bytes} بايت من ذاكرة التخزين المؤقت للبناء الأصلي. سيُجمّع البناء التالي الذي يتضمن تغييرات من البداية.",
+  "Could not access the native build cache: {error}": "تعذّر الوصول إلى ذاكرة التخزين المؤقت للبناء الأصلي: {error}",
+  "Enter a cache limit in GiB; 0 disables automatic cleanup.": "أدخل حد ذاكرة التخزين المؤقت بوحدة GiB؛ يعطّل 0 التنظيف التلقائي.",
+  "Refusing native cache cleanup at an unexpected file or link: {path}": "رُفض تنظيف ذاكرة التخزين المؤقت الأصلية بسبب ملف أو رابط غير متوقع: {path}",
   "Building {name}'s post-build step": "خطوة ما بعد البناء لـ {name}",
   "In use": "قيد الاستخدام",
   "Prepare": "تحضير",

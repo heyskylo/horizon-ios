@@ -1,4 +1,9 @@
 {
+  "A native build or cache cleanup is running. Try again when it finishes.": "È in corso una compilazione nativa o la pulizia della cache. Riprova al termine.",
+  "Cleared {bytes} bytes of native build cache. The next changed build will compile from scratch.": "Eliminati {bytes} byte dalla cache di compilazione nativa. La prossima compilazione con modifiche partirà da zero.",
+  "Could not access the native build cache: {error}": "Impossibile accedere alla cache di compilazione nativa: {error}",
+  "Enter a cache limit in GiB; 0 disables automatic cleanup.": "Inserisci un limite per la cache in GiB; 0 disattiva la pulizia automatica.",
+  "Refusing native cache cleanup at an unexpected file or link: {path}": "Pulizia della cache nativa rifiutata per un file o collegamento imprevisto: {path}",
   "Building {name}'s post-build step": "Fase post-costruzione di {name}",
   "In use": "In uso",
   "Prepare": "Preparati",

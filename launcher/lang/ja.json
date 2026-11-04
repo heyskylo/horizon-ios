@@ -1,4 +1,9 @@
 {
+  "A native build or cache cleanup is running. Try again when it finishes.": "ネイティブビルドまたはキャッシュの削除が進行中です。完了後に再試行してください。",
+  "Cleared {bytes} bytes of native build cache. The next changed build will compile from scratch.": "ネイティブビルドキャッシュから {bytes} バイトを解放しました。次回変更を含むビルドは最初からコンパイルされます。",
+  "Could not access the native build cache: {error}": "ネイティブビルドキャッシュにアクセスできませんでした: {error}",
+  "Enter a cache limit in GiB; 0 disables automatic cleanup.": "キャッシュの上限を GiB 単位で入力してください。0 は自動削除を無効にします。",
+  "Refusing native cache cleanup at an unexpected file or link: {path}": "予期しないファイルまたはリンクがあるため、ネイティブキャッシュの削除を拒否しました: {path}",
   "Home": "ホーム",
   "Mods": "Mods",
   "Servers": "サーバー",

@@ -1,4 +1,9 @@
 {
+  "A native build or cache cleanup is running. Try again when it finishes.": "L'è dree a 'ndà ona compilazion nativa o ona netezza de la cache. Preuva anmò quand l'ha finii.",
+  "Cleared {bytes} bytes of native build cache. The next changed build will compile from scratch.": "Hinn staa netaa {bytes} byte de la cache de compilazion nativa. La pròssima compilazion cambiada la sarà compilada de zero.",
+  "Could not access the native build cache: {error}": "L'è minga staa possibil vedè la cache de compilazion nativa: {error}",
+  "Enter a cache limit in GiB; 0 disables automatic cleanup.": "Mett on limit de cache in GiB; 0 el desmorza la netezza automatega.",
+  "Refusing native cache cleanup at an unexpected file or link: {path}": "Se refuda la netezza de la cache nativa in sù on file o colegament minga spetaa: {path}",
   "Building {name}'s post-build step": "Costruir el pas dopu la costruziun de {name}",
   "In use": "En üs",
   "Prepare": "Preparar",

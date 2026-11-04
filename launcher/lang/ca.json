@@ -1,4 +1,9 @@
 {
+  "A native build or cache cleanup is running. Try again when it finishes.": "S'està executant una compilació nativa o una neteja de la memòria cau. Torna-ho a provar quan acabi.",
+  "Cleared {bytes} bytes of native build cache. The next changed build will compile from scratch.": "S'han esborrat {bytes} bytes de la memòria cau de compilació nativa. La propera compilació amb canvis començarà de zero.",
+  "Could not access the native build cache: {error}": "No s'ha pogut accedir a la memòria cau de compilació nativa: {error}",
+  "Enter a cache limit in GiB; 0 disables automatic cleanup.": "Introdueix un límit de memòria cau en GiB; 0 desactiva la neteja automàtica.",
+  "Refusing native cache cleanup at an unexpected file or link: {path}": "Es rebutja la neteja de la memòria cau nativa en un fitxer o enllaç inesperat: {path}",
   "Building {name}'s post-build step": "Creació del pas posterior a la creació de {name}",
   "In use": "En ús",
   "Prepare": "Prepara't",
