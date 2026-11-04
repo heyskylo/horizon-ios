@@ -128,7 +128,10 @@ fn time_left_reads_in_its_two_largest_units() {
     assert_eq!(span(0, D + 4 * H + 5 * M), "1 day 4 h");
     assert_eq!(span(0, 2 * D + 5 * H), "2 days 5 h");
     assert_eq!(span(0, 2 * D), "2 days");
-    assert_eq!(span(0, 12 * D + 23 * H), "12 days");
+    assert_eq!(span(0, 12 * D + 11 * H), "12 days");
+    // From three days up, whole days to the nearest: a seven-day window a minute after it opened.
+    assert_eq!(span(0, 7 * D - M), "7 days");
+    assert_eq!(span(0, 3 * D + 13 * H), "4 days");
     // Past the end: nothing left, never a negative count.
     assert_eq!(span(500, 100), "less than a minute");
 }

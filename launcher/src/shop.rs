@@ -63,8 +63,9 @@ pub fn owns_set(me: &Me) -> bool {
         || (!me.claim.items.is_empty() && me.claim.items.iter().all(|i| me.owned.contains(i)))
 }
 
-/// The time from `now` to `to`, the largest two units: "12 days", "1 day 4 h", "3 h 20 min",
-/// "8 min"; under a minute: "less than a minute".
+/// The time from `now` to `to`, the largest two units: "1 day 4 h", "3 h 20 min", "8 min"; under a
+/// minute: "less than a minute". From three days up, whole days to the nearest one, so a window that
+/// just opened for seven days reads "7 days", not "6 days".
 pub fn span(now: i64, to: i64) -> String {
     let secs = (to - now).max(0);
     let (days, hours, mins) = (secs / 86_400, secs % 86_400 / 3600, secs % 3600 / 60);
@@ -75,7 +76,7 @@ pub fn span(now: i64, to: i64) -> String {
         (0, h, m) => trf("{h} h {m} min", &[("h", &n(h)), ("m", &n(m))]),
         (1, 0, _) => tr("1 day").into(),
         (1, h, _) => trf("1 day {h} h", &[("h", &n(h))]),
-        (d, _, _) if d >= 3 => trf("{d} days", &[("d", &n(d))]),
+        (d, _, _) if d >= 3 => trf("{d} days", &[("d", &n((secs + 43_200) / 86_400))]),
         (d, 0, _) => trf("{d} days", &[("d", &n(d))]),
         (d, h, _) => trf("{d} days {h} h", &[("d", &n(d)), ("h", &n(h))]),
     }
