@@ -77,11 +77,8 @@ impl Launcher {
     /// chosen when it is made, so the other tab goes to an instance of that edition
     /// ([`Self::switch_edition`]).
     fn edition_tabs(&mut self, java: bool, cx: &mut Context<Self>) -> Div {
-        let grass = self.vanilla_icon().and_then(|path| {
-            self.icon_image("mark:grass".into(), 18., false, move || {
-                std::fs::read(&path).ok()
-            })
-        });
+        let grass = self.grass_mark(18.);
+        let horizon = self.horizon_mark(18.);
         let tab = |label: &'static str, icon: AnyElement, open: bool| {
             let d = div()
                 .id(SharedString::from(format!("edition-{label}")))
@@ -123,11 +120,7 @@ impl Launcher {
             .flex()
             .items_center()
             .gap(px(4.))
-            .child(tab(
-                "Rust Edition",
-                ui::mark_tile(18., self.look.accent_soft).into_any_element(),
-                !java,
-            ))
+            .child(tab("Rust Edition", horizon, !java))
             .child(tab("Java Edition", java_icon, java))
     }
 
