@@ -693,17 +693,27 @@ fn open_device(
 ) -> Result<(cpal::Stream, cpal::SupportedStreamConfig)> {
     use cpal::SampleFormat as F;
     let config = device.default_output_config()?;
-    let stream = match config.sample_format() {
-        F::F32 => build_stream::<f32>(device, &config, mixer.clone()),
-        F::F64 => build_stream::<f64>(device, &config, mixer.clone()),
-        F::I16 => build_stream::<i16>(device, &config, mixer.clone()),
-        F::I32 => build_stream::<i32>(device, &config, mixer.clone()),
-        F::I8 => build_stream::<i8>(device, &config, mixer.clone()),
-        F::U16 => build_stream::<u16>(device, &config, mixer.clone()),
-        F::U32 => build_stream::<u32>(device, &config, mixer.clone()),
-        F::U8 => build_stream::<u8>(device, &config, mixer.clone()),
+    let build = |stream_config: &cpal::StreamConfig| match config.sample_format() {
+        F::F32 => build_stream::<f32>(device, &config, stream_config, mixer.clone()),
+        F::F64 => build_stream::<f64>(device, &config, stream_config, mixer.clone()),
+        F::I16 => build_stream::<i16>(device, &config, stream_config, mixer.clone()),
+        F::I32 => build_stream::<i32>(device, &config, stream_config, mixer.clone()),
+        F::I8 => build_stream::<i8>(device, &config, stream_config, mixer.clone()),
+        F::U16 => build_stream::<u16>(device, &config, stream_config, mixer.clone()),
+        F::U32 => build_stream::<u32>(device, &config, stream_config, mixer.clone()),
+        F::U8 => build_stream::<u8>(device, &config, stream_config, mixer.clone()),
         other => Err(format!("unsupported sample format {other}").into()),
-    }?;
+    };
+    let short = audio_stream_config(&config);
+    let stream = match build(&short) {
+        Ok(stream) => stream,
+        // A device that refuses the short fixed buffer still plays with cpal's default one.
+        Err(e) if short != config.config() => {
+            log::info!("Horizon: audio output refused a short buffer ({e}); using the default");
+            build(&config.config())?
+        }
+        Err(e) => return Err(e),
+    };
     stream.play()?;
     if let Ok(mut m) = mixer.lock() {
         m.device_name = device.name().unwrap_or_default();
@@ -784,6 +794,7 @@ fn cards_changed(seen: Option<&str>, cards: Option<&str>) -> bool {
         _ => true,
     }
 }
+
 /// The cpal `StreamConfig` to open an output stream with. On Linux the ALSA
 /// backend's `BufferSize::Default` means a ~100 ms buffer, so sound effects
 /// come out about 100 ms late: request a short fixed buffer there. Other
@@ -811,19 +822,15 @@ fn audio_stream_config(config: &cpal::SupportedStreamConfig) -> cpal::StreamConf
 fn build_stream<T: cpal::SizedSample + cpal::FromSample<f32>>(
     device: &cpal::Device,
     config: &cpal::SupportedStreamConfig,
+    stream_config: &cpal::StreamConfig,
     mixer: Arc<Mutex<Mixer>>,
 ) -> Result<cpal::Stream> {
     let rate = config.sample_rate().0;
     let channels = config.channels() as usize;
     let mut scratch = Vec::new();
     let on_error = mixer.clone();
-    // On Linux cpal's default ALSA stream uses a ~100 ms (25 ms period,
-    // 100 ms buffer) configuration, which delays sound effects by about that
-    // much. Request a short fixed buffer instead so playback starts promptly.
-    // Keep the default behaviour elsewhere.
-    let stream_config = audio_stream_config(config);
     let stream = device.build_output_stream(
-        &stream_config,
+        stream_config,
         move |data: &mut [T], _| {
             scratch.resize(data.len(), 0.0f32);
             if let Ok(mut m) = mixer.lock() {
