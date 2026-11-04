@@ -4,7 +4,7 @@
 //! needs it; the game itself comes with the first Play, for an account that owns it.
 use super::*;
 use crate::plate::alpha;
-use crate::shell::{Action, c};
+use crate::shell::{c, Action};
 use horizon_launcher::loaders::{self, Kind as Loader};
 use horizon_launcher::minecraft_versions::{Kind as VersionKind, Versions};
 use servers_page::Field;
