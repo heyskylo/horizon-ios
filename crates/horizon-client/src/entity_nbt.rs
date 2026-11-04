@@ -535,6 +535,13 @@ pub fn mob_to_nbt(
             map.insert("ForcedAge".into(), Tag::Int(m.extra.forced_age));
         }
     }
+    if matches!(
+        species,
+        crate::mobs::Species::Slime | crate::mobs::Species::MagmaCube
+    ) {
+        // Slime/MagmaCube.canBeABaby is false: supplied raw Age is not saved.
+        map.remove(&"Age".into());
+    }
     // Animal.addAdditionalSaveData: the love ticks left, whatever the save had.
     if is_animal(id) {
         map.insert("InLove".into(), Tag::Int(m.extra.in_love));
@@ -3525,6 +3532,41 @@ mod tnt_power_tests {
 mod tests {
     use super::*;
     use crate::items::ItemStack;
+
+    #[test]
+    fn cubes_omit_supplied_age_and_pigs_keep_modeled_age() {
+        use crate::mobs::Species;
+        for (species, id) in [
+            (Species::Slime, "minecraft:slime"),
+            (Species::MagmaCube, "minecraft:magma_cube"),
+            (Species::Pig, "minecraft:pig"),
+        ] {
+            let mut kind = crate::mobs::sensor_scan_tests::kind();
+            let ty = Arc::make_mut(&mut kind);
+            ty.species = species;
+            ty.id = id.into();
+            let mut mob = Mob::new(1, kind, Vec3::ZERO, 0.0);
+            mob.extra.age = -37;
+            let expected = (species == Species::Pig).then_some(Tag::Int(-37));
+            for age in [None, Some(0), Some(-24000), Some(37)] {
+                let mut raw = Tag::compound([("h228_control", Tag::Int(42))]);
+                if let Some(age) = age
+                    && let Tag::Compound(map) = &mut raw
+                {
+                    map.insert("Age".into(), Tag::Int(age));
+                }
+                let saved = mob_to_nbt(&mob, [0; 4], Some(&raw), None);
+                assert_eq!(saved.get("Age"), expected.as_ref(), "{species:?}, {age:?}");
+                assert_eq!(saved.get("h228_control"), Some(&Tag::Int(42)));
+            }
+            let saved = mob_to_nbt(&mob, [0; 4], None, None);
+            assert_eq!(
+                saved.get("Age"),
+                expected.as_ref(),
+                "{species:?}, no raw tag"
+            );
+        }
+    }
 
     /// A mount keeps its body armour and a helmet (say
     /// `/item replace entity <horse> armor.head with minecraft:iron_helmet`)
