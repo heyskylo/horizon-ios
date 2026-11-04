@@ -2507,13 +2507,17 @@ impl Game<'_> {
             .map(|p| p.bounds)
             .collect();
         // The mobs too: they stop it, and DragonFireball.onHit snaps to any
-        // living entity (the players first here).
-        let mobs: Vec<(Aabb, Vec3)> = self
-            .mobs
-            .iter()
-            .filter(|m| m.alive())
-            .map(|m| (m.bounds(), m.position))
-            .collect();
+        // living entity (the players first here). Gathered only while a
+        // fireball flies: this runs every tick in the End, among its endermen.
+        let mobs: Vec<(Aabb, Vec3)> = if balls.is_empty() {
+            Vec::new()
+        } else {
+            self.mobs
+                .iter()
+                .filter(|m| m.alive())
+                .map(|m| (m.bounds(), m.position))
+                .collect()
+        };
         let snap_targets: Vec<(Aabb, Vec3)> = self
             .fight_players()
             .iter()
@@ -2599,14 +2603,19 @@ impl Game<'_> {
             .filter(|p| p.alive && !p.creative && !p.spectator)
             .collect();
         // AreaEffectCloud.serverTick: every living entity, the mobs that
-        // instant damage can affect (`canBeAffected`) too.
-        let tags = &self.stations().enchantments.entity_tags;
-        let mobs: Vec<(u32, Aabb, Vec3)> = self
-            .mobs
-            .iter()
-            .filter(|m| m.alive() && mob_can_be_affected(tags, &m.kind.id, "instant_damage"))
-            .map(|m| (m.id, m.bounds(), m.position))
-            .collect();
+        // instant damage can affect (`canBeAffected`) too; only while a
+        // breath cloud is there (lingering potions' clouds tick elsewhere).
+        let no_breath = self.breath_clouds.iter().all(|c| c.potion.is_some());
+        let mobs: Vec<(u32, Aabb, Vec3)> = if no_breath {
+            Vec::new()
+        } else {
+            let tags = &self.stations().enchantments.entity_tags;
+            self.mobs
+                .iter()
+                .filter(|m| m.alive() && mob_can_be_affected(tags, &m.kind.id, "instant_damage"))
+                .map(|m| (m.id, m.bounds(), m.position))
+                .collect()
+        };
         let mut harmed: Vec<(FightWho, f32)> = Vec::new();
         let mut harmed_mobs: Vec<(u32, i32, [f64; 3])> = Vec::new();
         // DragonSittingFlamingPhase.end discards the flame cloud.
