@@ -22,7 +22,18 @@ impl From<io::Error> for Error {
 
 pub(crate) struct Cache {
     root: PathBuf,
-    _lease: File,
+    _lease: Locked,
+}
+
+/// A held lock that is released before its file closes. A child process spawned at that moment
+/// (Cargo, git) holds a copy of the descriptor until its exec, and closing ours alone would leave
+/// the lock taken through that copy: the next lease or cleanup would read Busy.
+struct Locked(File);
+
+impl Drop for Locked {
+    fn drop(&mut self) {
+        let _ = self.0.unlock();
+    }
 }
 
 fn linked(metadata: &Metadata) -> bool {
@@ -56,7 +67,7 @@ fn checked(path: &Path, directory: bool) -> Result<Option<Metadata>, Error> {
     }
 }
 
-fn lock(path: &Path) -> Result<File, Error> {
+fn lock(path: &Path) -> Result<Locked, Error> {
     checked(path, false)?;
     let file = File::options()
         .read(true)
@@ -68,7 +79,7 @@ fn lock(path: &Path) -> Result<File, Error> {
         fs::TryLockError::WouldBlock => Error::Busy,
         fs::TryLockError::Error(error) => Error::Io(error),
     })?;
-    Ok(file)
+    Ok(Locked(file))
 }
 
 fn size(path: &Path) -> Result<u64, Error> {

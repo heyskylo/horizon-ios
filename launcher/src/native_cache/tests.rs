@@ -96,6 +96,18 @@ fn clears_only_disposable_outputs_and_keeps_installed_games_and_player_data() {
 }
 
 #[test]
+fn a_released_lock_is_free_while_a_spawned_child_still_holds_its_descriptor() {
+    let dir = Temp::new();
+    let path = dir.put("native/.build.lock", b"");
+    let held = lock(&path).unwrap();
+    // What a child spawned at this moment holds until its exec: a copy of the same descriptor.
+    let inherited = held.0.try_clone().unwrap();
+    drop(held);
+    assert!(lock(&path).is_ok());
+    drop(inherited);
+}
+
+#[test]
 fn limit_keeps_warm_cache_until_exceeded_and_zero_disables_automatic_cleanup() {
     let dir = Temp::new();
     let artifact = dir.put("native/target/fast/compiled", b"12345");
