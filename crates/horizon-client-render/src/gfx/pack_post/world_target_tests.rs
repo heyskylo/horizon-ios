@@ -219,13 +219,15 @@ fn pack(
             lightmap: lightmap.clone(),
             terrain: None,
             block_ids: &[],
+            sprite_rects: &[],
             celestial: None,
             gui_size: [1, 1],
             clouds: None,
             weather: false,
             hand: false,
         },
-    );
+    )
+    .expect("the pack runs");
     assert!(post.notes.is_empty(), "{:?}", post.notes);
     post
 }

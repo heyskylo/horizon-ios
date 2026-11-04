@@ -1,0 +1,326 @@
+{
+ "_comment_": [
+  "Please do not automate the download and installation of Forge.",
+  "Our efforts are supported by ads from the download page.",
+  "If you MUST automate this, please consider supporting the project through https://www.patreon.com/LexManos/"
+ ],
+ "spec": 1,
+ "profile": "forge",
+ "version": "1.20.1-forge-47.4.0",
+ "path": null,
+ "minecraft": "1.20.1",
+ "serverJarPath": "{LIBRARY_DIR}/net/minecraft/server/{MINECRAFT_VERSION}/server-{MINECRAFT_VERSION}.jar",
+ "data": {
+  "MAPPINGS": {
+   "client": "[de.oceanlabs.mcp:mcp_config:1.20.1-20230612.114412:mappings@txt]",
+   "server": "[de.oceanlabs.mcp:mcp_config:1.20.1-20230612.114412:mappings@txt]"
+  },
+  "MOJMAPS": {
+   "client": "[net.minecraft:client:1.20.1-20230612.114412:mappings@txt]",
+   "server": "[net.minecraft:server:1.20.1-20230612.114412:mappings@txt]"
+  },
+  "MERGED_MAPPINGS": {
+   "client": "[de.oceanlabs.mcp:mcp_config:1.20.1-20230612.114412:mappings-merged@txt]",
+   "server": "[de.oceanlabs.mcp:mcp_config:1.20.1-20230612.114412:mappings-merged@txt]"
+  },
+  "BINPATCH": {
+   "client": "/data/client.lzma",
+   "server": "/data/server.lzma"
+  },
+  "MC_UNPACKED": {
+   "client": "[net.minecraft:client:1.20.1-20230612.114412:unpacked]",
+   "server": "[net.minecraft:server:1.20.1-20230612.114412:unpacked]"
+  },
+  "MC_SLIM": {
+   "client": "[net.minecraft:client:1.20.1-20230612.114412:slim]",
+   "server": "[net.minecraft:server:1.20.1-20230612.114412:slim]"
+  },
+  "MC_SLIM_SHA": {
+   "client": "'de86b035d2da0f78940796bb95c39a932ed84834'",
+   "server": "'9e06bdd77ca6d95b2cced0bf372245f753eeb16a'"
+  },
+  "MC_EXTRA": {
+   "client": "[net.minecraft:client:1.20.1-20230612.114412:extra]",
+   "server": "[net.minecraft:server:1.20.1-20230612.114412:extra]"
+  },
+  "MC_EXTRA_SHA": {
+   "client": "'8c5a95cbce940cfdb304376ae9fea47968d02587'",
+   "server": "'13522e3278befd103064d91a199451df4cd2633f'"
+  },
+  "MC_SRG": {
+   "client": "[net.minecraft:client:1.20.1-20230612.114412:srg]",
+   "server": "[net.minecraft:server:1.20.1-20230612.114412:srg]"
+  },
+  "PATCHED": {
+   "client": "[net.minecraftforge:forge:1.20.1-47.4.0:client]",
+   "server": "[net.minecraftforge:forge:1.20.1-47.4.0:server]"
+  },
+  "PATCHED_SHA": {
+   "client": "'b268fd6fb2c4829a72e8d0d6c75b7fefbec8479c'",
+   "server": "'62f6102e4b5d61a10281410cf5957a876a127e6b'"
+  },
+  "MCP_VERSION": {
+   "client": "'20230612.114412'",
+   "server": "'20230612.114412'"
+  }
+ },
+ "processors": [
+  {
+   "sides": [
+    "server"
+   ],
+   "jar": "net.minecraftforge:installertools:1.4.1",
+   "classpath": [
+    "net.sf.jopt-simple:jopt-simple:6.0-alpha-3",
+    "com.google.code.gson:gson:2.10.1",
+    "de.siegmar:fastcsv:2.2.2",
+    "net.minecraftforge:srgutils:0.5.6",
+    "org.ow2.asm:asm-commons:9.6",
+    "org.ow2.asm:asm-tree:9.6",
+    "org.ow2.asm:asm:9.6"
+   ],
+   "args": [
+    "--task",
+    "EXTRACT_FILES",
+    "--archive",
+    "{INSTALLER}",
+    "--from",
+    "data/run.sh",
+    "--to",
+    "{ROOT}/run.sh",
+    "--exec",
+    "{ROOT}/run.sh",
+    "--from",
+    "data/run.bat",
+    "--to",
+    "{ROOT}/run.bat",
+    "--from",
+    "data/user_jvm_args.txt",
+    "--to",
+    "{ROOT}/user_jvm_args.txt",
+    "--optional",
+    "{ROOT}/user_jvm_args.txt",
+    "--from",
+    "data/win_args.txt",
+    "--to",
+    "{ROOT}/libraries/net/minecraftforge/forge/1.20.1-47.4.0/win_args.txt",
+    "--from",
+    "data/unix_args.txt",
+    "--to",
+    "{ROOT}/libraries/net/minecraftforge/forge/1.20.1-47.4.0/unix_args.txt"
+   ]
+  },
+  {
+   "sides": [
+    "server"
+   ],
+   "jar": "net.minecraftforge:installertools:1.4.1",
+   "classpath": [
+    "net.sf.jopt-simple:jopt-simple:6.0-alpha-3",
+    "com.google.code.gson:gson:2.10.1",
+    "de.siegmar:fastcsv:2.2.2",
+    "net.minecraftforge:srgutils:0.5.6",
+    "org.ow2.asm:asm-commons:9.6",
+    "org.ow2.asm:asm-tree:9.6",
+    "org.ow2.asm:asm:9.6"
+   ],
+   "args": [
+    "--task",
+    "BUNDLER_EXTRACT",
+    "--input",
+    "{MINECRAFT_JAR}",
+    "--output",
+    "{ROOT}/libraries/",
+    "--libraries"
+   ]
+  },
+  {
+   "sides": [
+    "server"
+   ],
+   "jar": "net.minecraftforge:installertools:1.4.1",
+   "classpath": [
+    "net.sf.jopt-simple:jopt-simple:6.0-alpha-3",
+    "com.google.code.gson:gson:2.10.1",
+    "de.siegmar:fastcsv:2.2.2",
+    "net.minecraftforge:srgutils:0.5.6",
+    "org.ow2.asm:asm-commons:9.6",
+    "org.ow2.asm:asm-tree:9.6",
+    "org.ow2.asm:asm:9.6"
+   ],
+   "args": [
+    "--task",
+    "BUNDLER_EXTRACT",
+    "--input",
+    "{MINECRAFT_JAR}",
+    "--output",
+    "{MC_UNPACKED}",
+    "--jar-only"
+   ]
+  },
+  {
+   "jar": "net.minecraftforge:installertools:1.4.1",
+   "classpath": [
+    "net.sf.jopt-simple:jopt-simple:6.0-alpha-3",
+    "com.google.code.gson:gson:2.10.1",
+    "de.siegmar:fastcsv:2.2.2",
+    "net.minecraftforge:srgutils:0.5.6",
+    "org.ow2.asm:asm-commons:9.6",
+    "org.ow2.asm:asm-tree:9.6",
+    "org.ow2.asm:asm:9.6"
+   ],
+   "args": [
+    "--task",
+    "MCP_DATA",
+    "--input",
+    "[de.oceanlabs.mcp:mcp_config:1.20.1-20230612.114412@zip]",
+    "--output",
+    "{MAPPINGS}",
+    "--key",
+    "mappings"
+   ]
+  },
+  {
+   "jar": "net.minecraftforge:installertools:1.4.1",
+   "classpath": [
+    "net.sf.jopt-simple:jopt-simple:6.0-alpha-3",
+    "com.google.code.gson:gson:2.10.1",
+    "de.siegmar:fastcsv:2.2.2",
+    "net.minecraftforge:srgutils:0.5.6",
+    "org.ow2.asm:asm-commons:9.6",
+    "org.ow2.asm:asm-tree:9.6",
+    "org.ow2.asm:asm:9.6"
+   ],
+   "args": [
+    "--task",
+    "DOWNLOAD_MOJMAPS",
+    "--version",
+    "1.20.1",
+    "--side",
+    "{SIDE}",
+    "--output",
+    "{MOJMAPS}"
+   ]
+  },
+  {
+   "jar": "net.minecraftforge:installertools:1.4.1",
+   "classpath": [
+    "net.sf.jopt-simple:jopt-simple:6.0-alpha-3",
+    "com.google.code.gson:gson:2.10.1",
+    "de.siegmar:fastcsv:2.2.2",
+    "net.minecraftforge:srgutils:0.5.6",
+    "org.ow2.asm:asm-commons:9.6",
+    "org.ow2.asm:asm-tree:9.6",
+    "org.ow2.asm:asm:9.6"
+   ],
+   "args": [
+    "--task",
+    "MERGE_MAPPING",
+    "--left",
+    "{MAPPINGS}",
+    "--right",
+    "{MOJMAPS}",
+    "--output",
+    "{MERGED_MAPPINGS}",
+    "--classes",
+    "--reverse-right"
+   ]
+  },
+  {
+   "sides": [
+    "client"
+   ],
+   "jar": "net.minecraftforge:jarsplitter:1.1.4",
+   "classpath": [
+    "net.sf.jopt-simple:jopt-simple:5.0.4",
+    "net.minecraftforge:srgutils:0.4.3"
+   ],
+   "args": [
+    "--input",
+    "{MINECRAFT_JAR}",
+    "--slim",
+    "{MC_SLIM}",
+    "--extra",
+    "{MC_EXTRA}",
+    "--srg",
+    "{MERGED_MAPPINGS}"
+   ],
+   "outputs": {
+    "{MC_SLIM}": "{MC_SLIM_SHA}",
+    "{MC_EXTRA}": "{MC_EXTRA_SHA}"
+   }
+  },
+  {
+   "sides": [
+    "server"
+   ],
+   "jar": "net.minecraftforge:jarsplitter:1.1.4",
+   "classpath": [
+    "net.sf.jopt-simple:jopt-simple:5.0.4",
+    "net.minecraftforge:srgutils:0.4.3"
+   ],
+   "args": [
+    "--input",
+    "{MC_UNPACKED}",
+    "--slim",
+    "{MC_SLIM}",
+    "--extra",
+    "{MC_EXTRA}",
+    "--srg",
+    "{MERGED_MAPPINGS}"
+   ],
+   "outputs": {
+    "{MC_SLIM}": "{MC_SLIM_SHA}",
+    "{MC_EXTRA}": "{MC_EXTRA_SHA}"
+   }
+  },
+  {
+   "jar": "net.minecraftforge:ForgeAutoRenamingTool:0.1.22:all",
+   "classpath": [
+    "net.sf.jopt-simple:jopt-simple:6.0-alpha-3",
+    "org.ow2.asm:asm-commons:9.2",
+    "org.ow2.asm:asm-analysis:9.2",
+    "org.ow2.asm:asm-tree:9.2",
+    "org.ow2.asm:asm:9.2",
+    "net.minecraftforge:srgutils:0.4.9"
+   ],
+   "args": [
+    "--input",
+    "{MC_SLIM}",
+    "--output",
+    "{MC_SRG}",
+    "--names",
+    "{MERGED_MAPPINGS}",
+    "--ann-fix",
+    "--ids-fix",
+    "--src-fix",
+    "--record-fix"
+   ]
+  },
+  {
+   "jar": "net.minecraftforge:binarypatcher:1.1.1",
+   "classpath": [
+    "commons-io:commons-io:2.4",
+    "com.google.guava:guava:25.1-jre",
+    "net.sf.jopt-simple:jopt-simple:5.0.4",
+    "com.github.jponge:lzma-java:1.3",
+    "com.nothome:javaxdelta:2.0.1",
+    "com.google.code.findbugs:jsr305:3.0.2",
+    "org.checkerframework:checker-qual:2.0.0",
+    "com.google.errorprone:error_prone_annotations:2.1.3",
+    "com.google.j2objc:j2objc-annotations:1.1",
+    "org.codehaus.mojo:animal-sniffer-annotations:1.14",
+    "trove:trove:1.0.2"
+   ],
+   "args": [
+    "--clean",
+    "{MC_SRG}",
+    "--output",
+    "{PATCHED}",
+    "--apply",
+    "{BINPATCH}"
+   ]
+  }
+ ],
+ "json": "/version.json"
+}

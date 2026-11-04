@@ -92,8 +92,112 @@ fn slime_at(world: &World, facts: &BlockFacts, x: i32, y: i32, z: i32) -> bool {
 mod fluids;
 pub use fluids::update_entity_fluids;
 
+#[cfg(test)]
+mod drop_motion_tests {
+    use super::drop_motion;
+    use horizon_core::random::{LegacyRandom, RandomSource};
+
+    /// Vanilla's own `Mth` and `LegacyRandomSource(7)` running
+    /// `createItemStackToDrop`'s arithmetic: three throws along the view,
+    /// then two scattered drops, bit for bit, then the random's next int.
+    #[test]
+    fn drops_match_vanillas_motion_bit_for_bit() {
+        let mut r = LegacyRandom::new(7);
+        let bits = |v: [f64; 3]| v.map(|c| c.to_bits() as i64);
+        let thrown = [
+            (
+                0.0,
+                0.0,
+                [
+                    -4658604453255681268,
+                    4595435376155295744,
+                    4598847571894135436,
+                ],
+            ),
+            (
+                37.5,
+                -21.25,
+                [
+                    -4627867408251048793,
+                    4597245257657090048,
+                    4597448471913462163,
+                ],
+            ),
+            (
+                -123.4,
+                60.0,
+                [
+                    4593476083220988603,
+                    -4626282285467959296,
+                    -4631965182103987462,
+                ],
+            ),
+        ];
+        for (yaw, pitch, want) in thrown {
+            assert_eq!(
+                bits(drop_motion(&mut r, yaw, pitch, false)),
+                want,
+                "{yaw} {pitch}"
+            );
+        }
+        let scattered = [
+            [
+                -4634512480041697280,
+                4596373779801702400,
+                -4661085178024689664,
+            ],
+            [
+                4600899508711194624,
+                4596373779801702400,
+                -4629159495333838848,
+            ],
+        ];
+        for want in scattered {
+            assert_eq!(bits(drop_motion(&mut r, 0.0, 0.0, true)), want);
+        }
+        assert_eq!(r.next_int(), 357425922);
+    }
+}
+
+/// `LivingEntity.createItemStackToDrop`'s motion for a stack thrown by an
+/// entity facing `yaw` and `pitch` (degrees), from that entity's random:
+/// `randomly` scatters it in any direction (a death's drops), else it goes
+/// along the view (the drop key).
+pub fn drop_motion(
+    r: &mut impl horizon_core::random::RandomSource,
+    yaw: f32,
+    pitch: f32,
+    randomly: bool,
+) -> [f64; 3] {
+    use horizon_core::{
+        geometry::trig::{DEG_TO_RAD, cos, sin},
+        jmath,
+    };
+    let tau = std::f32::consts::TAU;
+    if randomly {
+        let pow = r.next_float() * 0.5;
+        let dir = f64::from(r.next_float() * tau);
+        return [
+            f64::from(-sin(dir) * pow),
+            f64::from(0.2f32),
+            f64::from(cos(dir) * pow),
+        ];
+    }
+    let (x, y) = (f64::from(pitch * DEG_TO_RAD), f64::from(yaw * DEG_TO_RAD));
+    let (sin_x, cos_x, sin_y, cos_y) = (sin(x), cos(x), sin(y), cos(y));
+    let dir = f64::from(r.next_float() * tau);
+    let pow = f64::from(0.02 * r.next_float());
+    [
+        f64::from(-sin_y * cos_x * 0.3) + jmath::cos(dir) * pow,
+        f64::from(-sin_x * 0.3 + 0.1 + (r.next_float() - r.next_float()) * 0.1),
+        f64::from(cos_y * cos_x * 0.3) + jmath::sin(dir) * pow,
+    ]
+}
+
 #[derive(Clone, Debug)]
 pub struct ItemEntity {
+    /// `Entity.yRot` and `xRot` (`/tp`, `/data get ... Rotation`).
+    pub rotation: [f32; 2],
     /// When it joined its list ([`crate::join_seq`]); set by the list, not by the spawn site.
     pub join: crate::join_seq::JoinSeq,
     pub health: i32,
@@ -275,6 +379,7 @@ impl ItemEntity {
         fluids: &crate::motion::FluidResources,
         entity_boxes: &[Aabb],
         border: Option<&BorderGeometry>,
+        blocks: Option<&horizon_world::movement_properties::BoundMovementProperties>,
     ) -> bool {
         let (water, lava) = self.update_fluids(world, fluids);
         self.water_entry(water > 0.0, self.ticks == 0, &mut |_| {});
@@ -286,6 +391,7 @@ impl ItemEntity {
             (water, lava),
             entity_boxes,
             border,
+            blocks,
         );
         crate::motion::bubble_column_push(
             world,
@@ -453,6 +559,7 @@ impl ItemEntity {
         (water_height, lava_height): (f64, f64),
         entity_boxes: &[Aabb],
         border: Option<&BorderGeometry>,
+        blocks: Option<&horizon_world::movement_properties::BoundMovementProperties>,
     ) -> ItemStep {
         self.ticks += 1;
         self.previous = self.position;
@@ -549,6 +656,15 @@ impl ItemEntity {
                     wanted.y < 0.0,
                     slime,
                 );
+            }
+            // Entity.move's last step: soul sand and honey slow the item's
+            // horizontal speed. A move through blocks (noPhysics) returns
+            // before it. `blocks` is None only for the isolated unit tests.
+            if !no_physics && let Some(blocks) = blocks {
+                let factor =
+                    crate::motion::block_speed_factor_at(world, blocks, self.position, None);
+                self.velocity =
+                    horizon_world::entity_move::scale_by_block_speed(self.velocity, factor);
             }
             // Entity.move -> applyEffectsFromBlocks: honey then bubble columns
             // (before air drag), matching ItemEntity.tick.
@@ -951,6 +1067,8 @@ pub const ORB_QUAD_SCALE: f32 = 0.3;
 /// ExperienceOrb: gravity 0.03, homing towards the player within 8 blocks.
 #[derive(Clone, Debug)]
 pub struct ExperienceOrb {
+    /// `Entity.yRot` and `xRot` (`/tp`, `/data get ... Rotation`).
+    pub rotation: [f32; 2],
     /// When it joined its list ([`crate::join_seq`]); set by the list, not by the spawn site.
     pub join: crate::join_seq::JoinSeq,
     /// The entity id servers track it by.
@@ -1210,6 +1328,7 @@ impl ExperienceOrb {
         );
     }
 }
+
 /// `Entity.moveTowardsClosestSpace` from the middle of an entity's box
 /// (`bounds`, its feet at `position`): the velocity pushed towards the
 /// nearest side of its block (north, south, west, east or up) without a full
@@ -1464,6 +1583,8 @@ impl ItemFrame {
 /// An armor stand (`ArmorStand`).
 #[derive(Clone, Debug)]
 pub struct ArmorStand {
+    /// `Entity.xRot`: kept for `/tp` and `Rotation`; the kind turns only in yaw.
+    pub pitch: f32,
     /// When it joined its list ([`crate::join_seq`]); set by the list, not by the spawn site.
     pub join: crate::join_seq::JoinSeq,
     pub fire_ticks: i32,
@@ -1663,6 +1784,7 @@ impl ArmorStand {
     }
     pub fn new(id: u32, position: Vec3, yaw: f32) -> Self {
         Self {
+            pitch: 0.0,
             join: Default::default(),
             fire_ticks: 0,
             health: 20.0,
@@ -2037,6 +2159,7 @@ mod fire_environment_tests {
             )
             .unwrap();
         let make = |id: &str| ItemEntity {
+            rotation: [0.0, 0.0],
             join: Default::default(),
             no_gravity: false,
             id: 1,
@@ -2171,6 +2294,7 @@ mod destroyed_bundle_environment_tests {
             ItemStack::new("minecraft:diamond", 1),
         ];
         let mut bundle = ItemEntity {
+            rotation: [0.0, 0.0],
             join: Default::default(),
             no_gravity: false,
             id: 1,
@@ -2269,6 +2393,7 @@ mod merge_tests {
     fn item(id: &str, count: u32, x: f64, age: i32) -> ItemEntity {
         let at = Vec3::new(x, 64.0, 0.5);
         ItemEntity {
+            rotation: [0.0, 0.0],
             join: Default::default(),
             no_gravity: false,
             id: 0,
@@ -2453,6 +2578,64 @@ mod merge_tests {
 mod world_border_tests {
     use super::*;
 
+    /// `Entity.move`'s last step, `getBlockSpeedFactor`: a dropped item sliding
+    /// over soul sand or honey keeps 40% of the horizontal speed it keeps over
+    /// stone, in the same tick. Skips quietly without the vanilla data (CI has none).
+    #[test]
+    fn a_dropped_item_on_soul_sand_or_honey_is_slowed_by_the_move() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        if !root.join("movement-properties.nbt").exists() {
+            return;
+        }
+        let assets = crate::assets::Assets::load(&root).unwrap();
+        let render = assets.reload(&root).unwrap();
+        let facts = crate::blocks::BlockFacts::load(&root, assets.registry).unwrap();
+        let fluids = crate::motion::FluidResources::new(&assets, &facts).unwrap();
+        let collision = crate::collisions::load(&root, assets.registry).unwrap();
+        let motion = crate::motion::MotionResources::load(&root, &assets).unwrap();
+        let mut after = Vec::new();
+        // The tops of the blocks: stone 1, soul sand 7/8, honey 15/16.
+        for (block, top) in [
+            ("minecraft:stone", 4.0),
+            ("minecraft:soul_sand", 3.875),
+            ("minecraft:honey_block", 3.9375),
+        ] {
+            let mut world = World::test_scene(&assets, &render, 3).unwrap();
+            let id = assets.registry.default_state(block).unwrap();
+            for x in 18..=23 {
+                for z in 19..=21 {
+                    world.set(x, 3, z, id).unwrap();
+                }
+            }
+            let mut item = super::honey_slide_tests::falling_item(19.5, top, 20.5, 0.2, 0.0, 0.0);
+            item.on_ground = true;
+            item.tick(
+                &world,
+                assets.registry,
+                &facts,
+                &collision,
+                false,
+                &fluids,
+                &[],
+                None,
+                Some(&motion.blocks),
+            );
+            after.push(item.velocity.x);
+        }
+        let (stone, soul, honey) = (after[0], after[1], after[2]);
+        assert!(stone > 0.0);
+        assert!(
+            (soul - stone * f64::from(0.4_f32)).abs() < 1.0e-9,
+            "soul sand {soul} vs stone {stone}"
+        );
+        assert!(
+            (honey - stone * f64::from(0.4_f32)).abs() < 1.0e-9,
+            "honey {honey} vs stone {stone}"
+        );
+    }
+
     /// `Entity.collectColliders` (#7080): the world border's wall stops an
     /// item and an experience orb as it stops the player. A border of size
     /// 10 around (20, 20) has its east wall at x = 25; each body starts at
@@ -2484,8 +2667,10 @@ mod world_border_tests {
                 &fluids,
                 &[],
                 border,
+                None,
             );
             let mut orb = ExperienceOrb {
+                rotation: [0.0, 0.0],
                 join: Default::default(),
                 no_gravity: false,
                 id: 2,
@@ -2569,6 +2754,7 @@ mod honey_slide_tests {
                 &fluids,
                 &[],
                 None,
+                None,
             );
             ys.push(item.velocity.y);
         }
@@ -2634,6 +2820,7 @@ mod honey_slide_tests {
                 &fluids,
                 &[],
                 None,
+                None,
             );
         }
         assert!(
@@ -2694,6 +2881,7 @@ mod honey_slide_tests {
     pub(super) fn falling_item(x: f64, y: f64, z: f64, vx: f64, vy: f64, vz: f64) -> ItemEntity {
         let at = Vec3::new(x, y, z);
         ItemEntity {
+            rotation: [0.0, 0.0],
             join: Default::default(),
             no_gravity: false,
             id: 1,
@@ -2844,6 +3032,7 @@ mod slime_bounce_tests {
     fn grounded_item() -> ItemEntity {
         let at = Vec3::new(0.5, 2.0, 0.5);
         ItemEntity {
+            rotation: [0.0, 0.0],
             join: Default::default(),
             no_gravity: false,
             id: 1,
@@ -2935,6 +3124,7 @@ mod slime_bounce_tests {
             &fluids,
             &[],
             None,
+            None,
         );
         assert_eq!(falling.position.y, 4.0);
         assert!(falling.velocity.y > 0.0);
@@ -2953,6 +3143,7 @@ mod slime_bounce_tests {
             false,
             &fluids,
             &[],
+            None,
             None,
         );
         assert!(!falling.needs_sync);
@@ -3047,6 +3238,7 @@ mod entity_collision_tests {
                     &fluids,
                     boxes,
                     None,
+                    None,
                 );
             }
             item.position.y
@@ -3095,6 +3287,7 @@ mod entity_collision_tests {
                     false,
                     &fluids,
                     &[],
+                    None,
                     None,
                 );
             }
@@ -3551,6 +3744,7 @@ mod item_destroyed_tests {
             .map(|(id, count)| ItemStack::new(id, *count))
             .collect();
         ItemEntity {
+            rotation: [0.0, 0.0],
             join: Default::default(),
             no_gravity: false,
             id: 1,
@@ -3644,6 +3838,7 @@ mod render_light_tests {
 
     fn orb(y: f64) -> ExperienceOrb {
         ExperienceOrb {
+            rotation: [0.0, 0.0],
             join: Default::default(),
             no_gravity: false,
             id: 1,

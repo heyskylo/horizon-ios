@@ -2,8 +2,10 @@
 
 Small items Horizon players wear: a hat, something on the back, a shirt, a pet on the shoulder, a
 style for their name tag. They are drawn by Horizon clients only and change nothing in the game.
-**On by default** (Ludovic, 2026-11-04: on when the shop opens), other players' and your own shown;
-the settings below hide them.
+**On by default** (Ludovic, 2026-11-04: on when the shop opens), your own shown. Other players'
+show by default only if your account owns a cosmetic: a player who owns none sees a vanilla game,
+and the game asks the service nothing about other players (CONTRIBUTING.md: Horizon-only features
+that change the look are off by default). The settings below change both.
 
 ## Rules
 
@@ -109,7 +111,18 @@ does the asking.
     notes what the service confirmed in `cosmetics-visible.txt`; offline it tries again after 15 s,
     doubling to 10 minutes, until the service takes it. An unchanged switch sends nothing.
   - *Other players' cosmetics: Shown → Name tags only → Hidden*. Hidden, the game asks for nothing
-    about them; name tags only, their name tag styles show and nothing on their bodies.
+    about them; name tags only, their name tag styles show and nothing on their bodies. Until the
+    player presses it there is no `cosmeticsOthers` line, and it follows ownership
+    (`prefs::Others::effective`): *Shown* if the signed-in account owns a cosmetic, else *Hidden*.
+    The button shows that value; pressing it writes the line, which then wins.
+  - **Ownership** (`horizon_cosmetics::account::owns`): once a run, in a world, the game signs in
+    as for *My cosmetics* and reads `GET /v1/me`; an account whose `owned` list has anything owns
+    one. The answer is kept per account in `cosmetics-owned.txt` (beside `cosmetics-visible.txt`;
+    the launcher's Wardrobe writes it too) and used at the next start until the service answers.
+    Not known yet, failed (retried after 15 s, doubling to 10 minutes) or offline: not owning. An
+    answer that says owns shows others' at once, without a restart. Only one of the two sign-ins
+    runs at a time (Mojang keeps one joined server id per account). `HORIZON_COSMETICS_LOCAL`
+    counts as owning.
   - *Others' auras and trails*, off by default (no item of that kind exists yet).
 - **Name tag styles** (`game/names.rs`): the mark, 8 text pixels square, before the name and a
   one-pixel line in the style's colour under the name's background, in the name tag's own pass
@@ -133,21 +146,22 @@ from any angle.
 ## The Wardrobe's account check (`launcher/src/wardrobe.rs`)
 
 The launcher talks to the same service for the player's own items: the catalogue, what the account
-owns, claiming the founder set while its window is open, what each slot wears and whether other
-players see it.
+owns, its purchase history, what each slot wears and whether other players see it. Buying and
+claiming the founder set happen on the website's shop (https://playhorizon.dev/shop), never in the
+launcher.
 
 - **Who the player is**: the service hands out a one-time server id (`POST /v1/auth/start`), the
   launcher tells Mojang's session server that the account joins it
   (`account::session::join_server`, the call a client makes before joining an online-mode server),
   and the service asks Mojang (`hasJoined`) before it answers `POST /v1/auth/finish` with a
   session of its own. The Minecraft token goes to Mojang only; the service never sees it.
-- **Then**: `GET /v1/me`, `POST /v1/claim`, `PUT /v1/equipped {"slot", "item"}` and
+- **Then**: `GET /v1/me`, `PUT /v1/equipped {"slot", "item"}` and
   `PUT /v1/visible {"visible"}` ("Show my cosmetics": off, `/v1/worn` leaves the player out) with
   that session (`Authorization: Bearer`), kept in memory for the time the service gave, less a
   minute.
 - **The founder set** (Founder Visor, Founder Tee, Founder Backpack, Founder Tag) is free and can
-  be claimed only between the window's start and end; after that it is retired for good and never
-  offered again. Players who claimed it keep it.
+  be claimed on the website only between the window's start and end; after that it is retired for
+  good and never offered again. Players who claimed it keep it, and it shows in the Wardrobe.
 - **Launcher themes** are never claimed or sold: they are free for everyone in Settings ›
   Appearance (*Launcher theme*: Horizon or First Light, `horizon_launcher::themes::THEMES`). A
   catalogue entry with `"slot": "theme"` is ignored.
@@ -163,24 +177,28 @@ A top-bar page between Servers and Versions, for the selected Microsoft account 
 you to sign in). It shows only when the service has a founder set to show (or with
 `HORIZON_COSMETICS=1`, for development), whatever cosmetics in the game do (`horizon_launcher::shop`): the launcher asks `GET /v1/shop` at start and every
 half hour, with no session and nothing about the player. The page shows when the set can be claimed
-now (`open`), when the public window has dates (to say when it opens, or that it is over), or when the
-selected account's own answer, kept from its last visit, does (a claim, or a preview the service grants
-that account). With no window set, the page stays hidden.
+now (`open`), when the public window has dates, or when the selected account's own answer, kept from
+its last visit, does (a claim, or a preview the service grants that account). With no window set, the
+page stays hidden.
 
 - **A row per slot** (head, back, shirt, shoulder pet, name tag) with what it wears,
   "Nothing equipped" or "None owned yet"; **your player** in the middle, on your own skin, wearing
   it, with your name tag style over the head (`horizon_cosmetics::preview`); **what you own for the
   chosen slot**, "Nothing" first. Equipping shows at once.
-- **The founder set**: a line to claim it while its window is open, and once the window is closed,
-  that it was free until that day and isn't offered any more.
+- **The shop is on the website**: an *Open the shop* button by the page's title opens
+  `https://playhorizon.dev/shop` in the browser (browsing, prices, the founder claim, purchases through
+  Paddle). An account that owns nothing yet sees "You don't own any cosmetics yet." with that button
+  instead. **Your purchases** lists the account's orders (date, item, price, state, order number).
 - **Three switches**: *Show my cosmetics* (the account's, on the service: off, everyone sees you
   without them), *Hide other players' cosmetics* and *Show other players' auras and trails* (off by
   default). The last two are lines of the game's `horizon-extras.txt` (`horizon_cosmetics::prefs`:
   `cosmeticsOthers` = `shown`, `name_tags` or `hidden`, `cosmeticsAuras`), the same ones the
-  game's settings change.
+  game's settings change. With no `cosmeticsOthers` line, *Hide other players' cosmetics* shows
+  what the game does: on unless the account owns something. Each answer of the service also
+  notes the account's ownership in the game's `cosmetics-owned.txt`.
 - **States**: offline, the page keeps working from what's kept on disk and says how many changes
   wait to sync; a service failure says what you wear still shows in the game, with *Try again* and
   *Copy details* (host, status, time).
 - `HORIZON_LAUNCHER_PAGE=wardrobe` in a development build shows the page for a made-up account
-  wearing `HORIZON_COSMETICS_LOCAL`'s items; `HORIZON_WARDROBE_STATE=offline|failed|closed|empty`
+  wearing `HORIZON_COSMETICS_LOCAL`'s items; `HORIZON_WARDROBE_STATE=offline|failed|empty`
   shows that state.

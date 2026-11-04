@@ -44,6 +44,7 @@ mod internet;
 mod language_page;
 mod launch_page;
 mod line_edit;
+mod location_page;
 mod markdown;
 mod mcp;
 mod microsoft;
@@ -123,7 +124,7 @@ impl Page {
     /// made-up code, `owner_page::sign_in_preview`; `new-instance`: Home with the New instance
     /// dialog open on Modded; `edit-instance`: the selected one's Edit dialog; `worlds`, `packs`...: Home on that tab, `HomeTab::from_env`).
     fn from_env() -> Page {
-        match std::env::var("HORIZON_LAUNCHER_PAGE").as_deref() {
+        let page = match std::env::var("HORIZON_LAUNCHER_PAGE").as_deref() {
             Ok("mods" | "modpacks" | "resourcepacks" | "shaders" | "datapacks") => Page::Mods,
             Ok("servers") => Page::Servers,
             Ok("wardrobe") if horizon_cosmetics::forced() => Page::Wardrobe,
@@ -131,7 +132,13 @@ impl Page {
             Ok("notes") => Page::Notes,
             Ok("settings") => Page::Settings,
             _ => Page::Play,
-        }
+        };
+        // The data folder did not open: start on Settings, where the message and the two
+        // recoveries are (an explicit HORIZON_LAUNCHER_PAGE still wins, for screenshots).
+        page_after_startup(
+            page,
+            horizon_launcher::data_location::startup_error().is_some(),
+        )
     }
 
     /// Every page, with its name and icon: the top bar shows all but Settings, which has its
@@ -261,6 +268,9 @@ struct Launcher {
     /// The newer Horizon the open warning's build moves to (Update), else None: a build stays
     /// on the Horizon the instance plays.
     native_update: Option<String>,
+    /// The build waiting for the trust warning builds every mod on its Horizon's own commit,
+    /// pinned or not (`native_mods::build`'s `on_base`): Rebuild on Horizon's.
+    native_on_base: bool,
     /// What each installed native build was made from, by version. A build's version names its
     /// contents, so an entry never goes stale.
     native_builds:
@@ -298,18 +308,20 @@ struct Launcher {
     wardrobe: Option<wardrobe_page::Wardrobe>,
     /// Ask the service again on the next draw of the Wardrobe (set by each visit).
     wardrobe_reload: bool,
-    /// The cosmetics service's last word on the founder set's claim (`GET /v1/shop`): whether
+    /// The cosmetics service's last word on the founder set's window (`GET /v1/shop`): whether
     /// the top bar has the Wardrobe page with cosmetics off (`wardrobe_shown`).
     shop_status: Option<horizon_launcher::wardrobe::Claim>,
     /// The selected account's own answer on it from its last Wardrobe visit, kept on disk (a
     /// preview the service grants it, its claim).
     shop_kept: Option<horizon_launcher::wardrobe::Claim>,
-    /// The Wardrobe page's Shop tab (`wardrobe_page/shop.rs`).
-    shop: wardrobe_page::Shop,
     /// Work the look out again on the next frame (a launcher theme put on or taken off).
     restyle: bool,
     /// Why the last picture for Home's background was refused.
     background_error: Option<String>,
+    /// Settings' data relocation confirmation and the worker's last result.
+    location_target: Option<std::path::PathBuf>,
+    location_error: Option<String>,
+    location_note: Option<String>,
     settings: Settings,
     /// The last failed settings write, kept across page changes until a save succeeds.
     settings_save_error: Option<String>,
@@ -588,6 +600,7 @@ impl Launcher {
             native_confirm: None,
             native_for: None,
             native_update: None,
+            native_on_base: false,
             native_builds: Default::default(),
             native_mismatch: None,
             native_log: Default::default(),
@@ -607,10 +620,12 @@ impl Launcher {
             wardrobe_reload: false,
             shop_status: None,
             shop_kept: None,
-            shop: Default::default(),
             // The first draw takes the launcher theme from Settings.
             restyle: true,
             background_error: None,
+            location_target: None,
+            location_error: location_page::startup_error(),
+            location_note: location_page::startup_note(),
             args_input: line_edit::LineEdit::new(settings.game_args.clone(), 1024, 38),
             args_focused: false,
             args_focus: cx.focus_handle(),
@@ -717,6 +732,9 @@ impl Launcher {
             sky_wake: None,
             scale: window.scale_factor(),
         };
+        if this.location_error.is_some() || this.location_note.is_some() {
+            this.page = Page::Settings;
+        }
         this.reload_instances();
         if this.bench.is_some() {
             this.perf.keep_local_log(false);
@@ -937,6 +955,7 @@ impl Launcher {
         let instance = instances::selected();
         self.native_for = Some(instance.id.clone());
         let plays = self.version_of(&instance).cloned();
+        let on_base = std::mem::take(&mut self.native_on_base);
         let base = match self.native_update.take() {
             Some(newer) => Some(newer),
             None => native_mods::base_for(plays.as_deref(), &self.installed, false),
@@ -961,9 +980,17 @@ impl Launcher {
         let profile = native_mods::Profile::chosen(&self.settings);
         let tx = self.tx.clone();
         std::thread::spawn(move || {
-            let result = native_mods::build(&base, &folder, &instance, anyway, profile, |step| {
-                let _ = tx.send(Msg::NativeProgress(step.label()));
-            });
+            let result = native_mods::build(
+                &base,
+                &folder,
+                &instance,
+                anyway,
+                on_base,
+                profile,
+                |step| {
+                    let _ = tx.send(Msg::NativeProgress(step.label()));
+                },
+            );
             let _ = tx.send(Msg::Native(result));
         });
     }
@@ -1562,8 +1589,7 @@ impl Launcher {
     /// Asks for a game program (or a zip holding one) and installs it as its own version on a
     /// thread: a version is thousands of files. `Msg::Imported` ends it.
     fn import_build(&mut self, cx: &mut Context<Self>) {
-        // A removal still running could take the folder of the same program imported again.
-        if self.importing_build || !self.removing.is_empty() {
+        if !self.can_import_build() {
             return;
         }
         let paths = cx.prompt_for_paths(PathPromptOptions {
@@ -1581,19 +1607,31 @@ impl Launcher {
             };
             let _ = this.update(cx, |this, cx| {
                 // Another picker's import, or a removal, may have started meanwhile.
-                if this.importing_build || !this.removing.is_empty() {
-                    return;
-                }
-                this.importing_build = true;
-                this.import_error = None;
-                let tx = this.tx.clone();
-                std::thread::spawn(move || {
-                    let _ = tx.send(Msg::Imported(build_import::import(&path, None)));
-                });
-                cx.notify();
+                this.start_build_import(path, cx);
             });
         })
         .detach();
+    }
+    /// Whether a build may be imported now. A removal still running could take
+    /// the folder of the same program imported again.
+    fn can_import_build(&self) -> bool {
+        !self.importing_build && self.removing.is_empty()
+    }
+    /// Starts importing the build at `path` on a thread, as the picker does.
+    /// Separate from [`Self::import_build`] so a file dropped on the window can
+    /// start the same import (`import_dropped`) without a picker. Does nothing
+    /// when one is already running. `Msg::Imported` ends it.
+    fn start_build_import(&mut self, path: std::path::PathBuf, cx: &mut Context<Self>) {
+        if !self.can_import_build() {
+            return;
+        }
+        self.importing_build = true;
+        self.import_error = None;
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(Msg::Imported(build_import::import(&path, None)));
+        });
+        cx.notify();
     }
 
     /// Prepares the selected version, its Minecraft files from the player's install or, for an
@@ -2396,6 +2434,15 @@ fn selection_after_removal(installed: &[String], saved: Option<String>) -> Optio
     saved
         .filter(|s| installed.contains(s))
         .or_else(|| installed.first().cloned())
+}
+
+/// The row menu a press on a sidebar row leaves open: that row's, or none when it was already
+/// that row's (the ⋮ and a right click on the row toggle the same way).
+fn row_menu_after_press(open: Option<(String, bool)>, id: &str) -> Option<(String, bool)> {
+    if open.as_ref().is_some_and(|(current, _)| current == id) {
+        return None;
+    }
+    Some((id.to_owned(), false))
 }
 
 fn disabled(b: Stateful<Div>) -> Stateful<Div> {
@@ -3809,13 +3856,7 @@ impl Launcher {
                         launcher_action,
                         &t,
                     ))
-                    .child(index_row(
-                        n + 9,
-                        tr("Data folder"),
-                        Some(mono(short(&backend::data_dir()))),
-                        None,
-                        &t,
-                    ))
+                    .child(self.location_row(n + 9, cx))
                     .child(index_row(
                         n + 10,
                         tr("Logs"),
@@ -3907,6 +3948,7 @@ impl Launcher {
                 |this, _: &ClickEvent, _, cx| {
                     this.native_confirm = None;
                     this.native_update = None;
+                    this.native_on_base = false;
                     cx.notify();
                 },
             )),
@@ -4764,7 +4806,6 @@ impl Launcher {
                     .gap(px(10.))
                     .py(px(14.))
                     .px(px(16.))
-                    .mb(px(8.))
                     .bg(t.panel)
                     .border_2()
                     .border_color(t.outline)
@@ -4900,7 +4941,6 @@ impl Launcher {
                     .relative()
                     .gap(px(16.))
                     .p(px(20.))
-                    .mb(px(10.))
                     .bg(t.panel)
                     .border_2()
                     .border_color(t.outline)
@@ -5394,6 +5434,16 @@ fn key_bindings() -> Vec<KeyBinding> {
     Vec::new()
 }
 
+/// A data folder that did not open starts on Settings, where the message, Retry and
+/// "Use the default folder" are; an explicit page still wins.
+fn page_after_startup(page: Page, data_folder_failed: bool) -> Page {
+    if page == Page::Play && data_folder_failed {
+        Page::Settings
+    } else {
+        page
+    }
+}
+
 /// The menu bar on macOS, where "Quit" belongs to the app menu.
 fn menus() -> Vec<Menu> {
     vec![
@@ -5421,6 +5471,13 @@ fn main() {
     if let Some(code) = horizon_launcher::installer::run_quiet() {
         std::process::exit(code);
     }
+    if let Some(code) = horizon_launcher::relocation::run_worker() {
+        std::process::exit(code);
+    }
+    // A broken location must still open a window: startup() falls back to the default
+    // folders and records the error, which Settings shows with Retry and Use the default folder.
+    // It keeps the migration lease for the life of the process.
+    let _location_error = horizon_launcher::data_location::startup();
     perf::process_started();
     backend::exe_path();
     #[cfg(windows)]
@@ -5504,6 +5561,17 @@ fn closed_by_press(closed_at: Option<Point<Pixels>>, event: &ClickEvent) -> bool
 #[cfg(test)]
 mod tests {
     #[test]
+    fn an_unopenable_data_folder_starts_on_settings_instead_of_exiting() {
+        use super::{page_after_startup, Page};
+        assert!(matches!(
+            page_after_startup(Page::Play, true),
+            Page::Settings
+        ));
+        assert!(matches!(page_after_startup(Page::Play, false), Page::Play));
+        assert!(matches!(page_after_startup(Page::Mods, true), Page::Mods));
+    }
+
+    #[test]
     fn a_menu_button_stays_closed_after_the_press_that_closed_its_menu() {
         use super::closed_by_press;
         use gpui::{point, px, ClickEvent, KeyboardClickEvent, MouseClickEvent, MouseDownEvent};
@@ -5552,6 +5620,28 @@ mod tests {
             "v0.2.76"
         ));
         assert!(!super::removable(&installed, None, &[], "v0.2.85"));
+    }
+
+    #[test]
+    fn a_press_on_a_sidebar_row_opens_its_menu_or_closes_it() {
+        let open = |id: &str| Some((id.to_string(), false));
+        assert_eq!(
+            super::row_menu_after_press(None, "Horizon"),
+            open("Horizon")
+        );
+        assert_eq!(
+            super::row_menu_after_press(open("Other"), "Horizon"),
+            open("Horizon")
+        );
+        assert_eq!(
+            super::row_menu_after_press(open("Horizon"), "Horizon"),
+            None
+        );
+        // A Delete… already pressed on another row does not carry over.
+        assert_eq!(
+            super::row_menu_after_press(Some(("Other".into(), true)), "Horizon"),
+            open("Horizon")
+        );
     }
 
     #[test]

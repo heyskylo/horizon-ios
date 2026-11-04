@@ -166,6 +166,11 @@ pub fn shadow(
                 if below.render_shape == crate::blocks::RenderShape::Invisible {
                     continue;
                 }
+                // extractShadowPiece: only a block whose collision shape is a full
+                // block takes a shadow (hoppers, cauldrons, slabs, farmland... take none).
+                if !below.full_collision {
+                    continue;
+                }
                 let Some(bounds) = collision_bounds(state) else {
                     continue;
                 };
@@ -291,33 +296,47 @@ mod tests {
             (v1 - v0).cross(v2 - v0).y > 0.0,
             "shadow quad winds upward (+Y) so back-face culling hides it from below"
         );
-        let farmland = registry.default_state("minecraft:farmland").unwrap();
-        world.set(8, 63, 8, farmland).unwrap();
-        out.clear();
-        let pos = DVec3::new(8.5, 63.9375, 8.5);
-        shadow(
-            &world,
-            &facts,
-            &|state| {
-                (state == farmland).then(|| {
-                    horizon_core::geometry::Aabb::new(
+        // Blocks whose collision top is not a flat full block take no shadow
+        // (vanilla's isCollisionShapeFullBlock gate), even when their collision
+        // bounds reach y=1 like a hopper's rim.
+        for name in [
+            "minecraft:hopper",
+            "minecraft:cauldron",
+            "minecraft:composter",
+            "minecraft:farmland",
+            "minecraft:oak_slab",
+            "minecraft:soul_sand",
+            "minecraft:snow",
+            "minecraft:chest",
+            "minecraft:oak_fence",
+            "minecraft:oak_stairs",
+        ] {
+            let state = registry.default_state(name).unwrap();
+            assert!(!facts.get(state).full_collision, "{name}");
+            world.set(8, 63, 8, state).unwrap();
+            out.clear();
+            shadow(
+                &world,
+                &facts,
+                &|_| {
+                    Some(horizon_core::geometry::Aabb::new(
                         horizon_core::geometry::Vec3::ZERO,
-                        horizon_core::geometry::Vec3::new(1.0, 0.9375, 1.0),
-                    )
-                })
-            },
-            sprite,
-            camera,
-            pos,
-            0.3,
-            1.0,
-            0.0,
-            0,
-            &mut out,
-        );
-        assert_eq!(out.len(), 4);
-        assert!(out.iter().all(|v| v.pos[1] == (pos.y - camera.y) as f32));
+                        horizon_core::geometry::Vec3::new(1.0, 1.0, 1.0),
+                    ))
+                },
+                sprite,
+                camera,
+                DVec3::new(8.5, 64.0, 8.5),
+                0.3,
+                1.0,
+                0.0,
+                0,
+                &mut out,
+            );
+            assert!(out.is_empty(), "{name} took a shadow");
+        }
     }
+
     #[test]
     fn invisible_mobs_cast_no_shadow() {
         use horizon_core::geometry::Vec3;
