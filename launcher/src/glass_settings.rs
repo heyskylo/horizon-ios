@@ -463,15 +463,26 @@ mod tests {
     #[test]
     fn the_list_follows_the_section_read_at_30_percent() {
         assert_eq!(at(0.), 0);
-        assert_eq!(at(300.), 1, "Updates' top is 120 px down: in the upper 30 %");
+        assert_eq!(
+            at(300.),
+            1,
+            "Updates' top is 120 px down: in the upper 30 %"
+        );
         assert_eq!(at(600.), 2);
-        assert_eq!(at(1000.), 3, "Network's top at the pane's top, Game's 300 px down");
+        assert_eq!(
+            at(1000.),
+            3,
+            "Network's top at the pane's top, Game's 300 px down"
+        );
         assert_eq!(at(1150.), 4, "Game's top 150 px down: in the upper 30 %");
     }
 
     #[test]
     fn near_the_end_each_short_section_comes_in_turn() {
-        let seen: Vec<usize> = (0..=MAX as usize).step_by(10).map(|s| at(s as f32)).collect();
+        let seen: Vec<usize> = (0..=MAX as usize)
+            .step_by(10)
+            .map(|s| at(s as f32))
+            .collect();
         // Every section is marked on the way down, in order, never skipped.
         let mut order = seen.clone();
         order.dedup();
