@@ -7403,18 +7403,53 @@ impl Game<'_> {
             // CONSUME otherwise: both end the click (nothing behind the box
             // is used), but only SUCCESS swings; the packet carries the hand.
             let response = self.interactions.get(&hit.id).map(|i| i.response);
-            // A cart whose interact passes (a TNT minecart) leaves each hand's
-            // turn to its item: a crossbow aimed at it shoots.
-            let passes = self
+            // Objects whose interact passes (paintings, empty/fixed item frames,
+            // occupied/sneaking boats without chests, non-interactive carts)
+            // leave each hand's turn to its item: a crossbow aimed at it shoots.
+            let is_painting = self.paintings.iter().any(|p| p.id as i32 == hit.id);
+            let held = self.with_hand(hand, |g| g.held().cloned());
+            let frame_passes = self
+                .item_frames
+                .iter()
+                .find(|f| f.id as i32 == hit.id)
+                .is_some_and(|f| {
+                    item_frame_interact_passes(f.fixed, f.item.is_some(), held.is_some())
+                });
+            let (boat_passes, is_boarding_boat) = self
+                .boats
+                .iter()
+                .enumerate()
+                .find(|(_, b)| b.id as i32 == hit.id)
+                .map(|(i, b)| {
+                    let riding = self.riding.is_some() || self.ridden_by_guest(b.id);
+                    let has_room = self.boat_has_room(i);
+                    let passes = boat_interact_passes(
+                        b.chest,
+                        sneaking,
+                        b.out_of_control >= 60.0,
+                        riding,
+                        has_room,
+                    );
+                    let is_boarding =
+                        !(b.chest && (sneaking || self.riding.is_some() || !has_room));
+                    (passes, is_boarding)
+                })
+                .unwrap_or((false, false));
+            let (cart_passes, is_rideable_cart) = self
                 .carts
                 .iter()
                 .find(|c| c.id as i32 == hit.id)
-                .is_some_and(|c| {
+                .map(|c| {
                     let ridden = self.riding == Some(c.id)
                         || self.mobs.iter().any(|m| m.extra.mount == Some(c.id));
-                    c.kind
-                        .interact_passes(sneaking, ridden, self.can_use_game_master_blocks())
-                });
+                    (
+                        c.kind
+                            .interact_passes(sneaking, ridden, self.can_use_game_master_blocks()),
+                        c.kind == super::minecarts::CartKind::Rideable,
+                    )
+                })
+                .unwrap_or((false, false));
+            let passes = is_painting || frame_passes || boat_passes || cart_passes;
             // Otherwise the main hand's turn takes it; there is no off hand turn.
             if response.is_none() && hand == Hand::Off && !passes {
                 return false;
@@ -7444,8 +7479,10 @@ impl Game<'_> {
             }) {
                 self.open_cart_command_block(hit.id as u32);
             }
-            if response.unwrap_or(true) {
-                self.swing_arm();
+            // AbstractBoat.interact and Minecart.interact board the vehicle and
+            // answer CONSUME on the client, which ends the click without an arm swing.
+            if remote_object_swings(response, is_boarding_boat || is_rideable_cart) {
+                self.with_hand(hand, Game::swing_arm);
             }
             return true;
         }
@@ -10221,6 +10258,34 @@ fn remote_use_swings(held: &ItemStack, consumable: bool) -> bool {
         && horizon_client::spear::Kinetic::of(id).is_none()
 }
 
+/// Whether an object interaction on the client predicts a hand swing (`InteractionResult.SUCCESS`).
+/// Boarding a vehicle (`Minecart`, `Boat`) answers CONSUME and does not swing.
+fn remote_object_swings(response: Option<bool>, is_boarding: bool) -> bool {
+    response.unwrap_or(!is_boarding)
+}
+
+/// Whether right-clicking an item frame passes (`InteractionResult.PASS`).
+/// A fixed frame or an empty frame when clicking with an empty hand passes.
+fn item_frame_interact_passes(fixed: bool, frame_has_item: bool, hand_has_item: bool) -> bool {
+    fixed || (!frame_has_item && !hand_has_item)
+}
+
+/// Whether right-clicking a boat passes (`InteractionResult.PASS`).
+/// Sneaking without a chest, out of control, already riding, or a full boat passes.
+fn boat_interact_passes(
+    chest: bool,
+    sneaking: bool,
+    out_of_control: bool,
+    riding: bool,
+    has_room: bool,
+) -> bool {
+    if chest && (sneaking || riding || !has_room) {
+        false
+    } else {
+        sneaking || out_of_control || riding || !has_room
+    }
+}
+
 /// Whether `Item.use` usually acts on this item (eats, drinks, equips, raises,
 /// throws, shoots, fills or places), which ends `Minecraft.startUseItem` at
 /// its hand. Tools and materials pass, and the off hand gets its turn. The
@@ -10557,12 +10622,51 @@ fn hold_server_fire(fire_ticks: i32, server_on_fire: bool) -> i32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{hold_server_fire, keep_client_state, remote_use_swings, synced_local_use};
+    use super::{
+        boat_interact_passes, hold_server_fire, item_frame_interact_passes, keep_client_state,
+        remote_object_swings, remote_use_swings, synced_local_use,
+    };
     use horizon_client::{
         containers::{Beacon, BlockEntity},
         items::ItemStack,
     };
     use horizon_world::nbt::Tag;
+
+    /// `ItemFrame.interact`, `AbstractBoat.interact`, and `Minecart.interact`:
+    /// interactions that pass leave the click to the held item without swinging;
+    /// vehicle boarding answers CONSUME and ends the click without a predicted swing (#9120).
+    #[test]
+    fn object_interactions_pass_and_swing_vanilla() {
+        // ItemFrame: fixed frame or empty frame + empty hand passes.
+        assert!(item_frame_interact_passes(true, true, true));
+        assert!(item_frame_interact_passes(true, false, false));
+        assert!(item_frame_interact_passes(false, false, false));
+        // ItemFrame: inserting or rotating item does not pass.
+        assert!(!item_frame_interact_passes(false, true, false)); // rotates
+        assert!(!item_frame_interact_passes(false, false, true)); // inserts
+        assert!(!item_frame_interact_passes(false, true, true)); // rotates
+
+        // Boat: sneaking without chest, full boat, out of control, or riding passes.
+        assert!(boat_interact_passes(false, true, false, false, true)); // sneaking
+        assert!(boat_interact_passes(false, false, true, false, true)); // out of control
+        assert!(boat_interact_passes(false, false, false, true, true)); // already riding
+        assert!(boat_interact_passes(false, false, false, false, false)); // full / no room
+        // Boat: boarding does not pass.
+        assert!(!boat_interact_passes(false, false, false, false, true)); // can board
+
+        // Chest boat: sneaking or full opens chest container (does not pass).
+        assert!(!boat_interact_passes(true, true, false, false, true)); // opens chest
+        assert!(!boat_interact_passes(true, false, false, false, false)); // opens chest
+        assert!(!boat_interact_passes(true, false, false, false, true)); // boards
+
+        // Swings: boarding boat or rideable cart answers CONSUME (no swing).
+        assert!(!remote_object_swings(None, true)); // boarding vehicle
+        // Swings: non-boarding object interaction answers SUCCESS (swings).
+        assert!(remote_object_swings(None, false)); // rotating frame, chest cart, etc.
+        // Interaction entities honor response.
+        assert!(remote_object_swings(Some(true), false));
+        assert!(!remote_object_swings(Some(false), false));
+    }
 
     /// `MultiPlayerGameMode.useItem`'s `shouldSwing`: the SUCCESS answers
     /// swing, CONSUME's do not (#6425).
