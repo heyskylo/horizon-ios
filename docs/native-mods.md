@@ -3189,16 +3189,31 @@ receiver and documentation; a helper without `self` (`config_dir`) takes
 A helper's `receiver` also exposes it on that handle. Receivers come from public
 `*Ref` structs in `mod_api.rs`: for example, a public `BlockEntityRef` struct registers
 `block_entity`. Adding a handle requires no separate generator registration.
+
+Some helpers reach `Host` in another form, because their own signatures can't
+go through `dyn Host` (`native_host_bridge.rs`):
+
+| `Host` method | For | What it does |
+|---|---|---|
+| `mod_block_entity(pos)`, `change_mod_block_entity(pos, &mut change)` | `with_mod_block_entity` | Reads or changes a neighbouring mod block entity. On a client, `mod_block_entity` returns what the server sent (`native_block_entity_update_tag`), so a client mod can read another block's data. |
+| `trigger_criterion(uuid, trigger, &test)` | `trigger_criterion` | The same call, with the test as `&dyn Fn`. |
+| `play_sound`, `send_particles` | `LevelWriteHost`'s methods | Work in the level in place, from any server hook, such as a block entity's tick. |
+| `block_name_in_tag(block, tag)` | `server_block_in_tag` | Takes a block name instead of a state. |
+
+`equipment(slot)` is the player's own equipment on a client and the acting player's on a server.
+`sneaking()` is `isSecondaryUseActive` in a use hook. `draw_model`, `item_entities`, `level_random`,
+`server_item_in_tag`, `component`, `set_component` and `remove_component` are the helpers themselves.
+
 The following documented `Game` helpers are not in the trait yet:
 
 - `spawn_mob`, `mob`, `mobs`, `block_in_tag`, `item_in_tag`,
-  `server_block_in_tag`, `server_item_in_tag`, `server_block`,
+  `server_block_in_tag`, `server_block`,
   `set_display`, `sidebar`, `experience_orbs`,
-  `item_entities`, `player`, `panel_recipes`, `recipes`, `component`,
-  `set_component`, `remove_component`, `spawn_falling_block`, `explode`,
+  `player`, `panel_recipes`, `recipes`, `spawn_falling_block`, `explode`,
   `fluid_tanks` and `container_slots` use gameplay-private types.
 - `with_mod_block_entity` and `trigger_criterion` are generic or take
-  `impl Trait`, so their signatures cannot be called through `dyn Host`.
+  `impl Trait`, so their signatures cannot be called through `dyn Host`;
+  the forms above stand in for them.
 
 The following catalog hooks are not in the trait yet:
 

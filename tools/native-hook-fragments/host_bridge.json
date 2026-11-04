@@ -1,0 +1,27 @@
+{
+  "hooks": [],
+  "helpers": [
+    {"name": "draw_model", "target": "horizon_client::game::native_block_entity_draw::Game<'_>::native_draw_model"},
+    {"name": "mod_block_entity", "target": "horizon_client::game::native_host_bridge::Game<'_>::native_mod_block_entity"},
+    {"name": "change_mod_block_entity", "target": "horizon_client::game::native_host_bridge::Game<'_>::native_change_mod_block_entity"},
+    {"name": "item_entities", "target": "horizon_client::game::native_hooks::Game<'_>::native_item_entities"},
+    {"name": "level_random", "target": "horizon_client::game::native_hooks::Game<'_>::native_level_random"},
+    {"name": "play_sound", "target": "horizon_client::game::native_host_bridge::Game<'_>::native_level_play_sound"},
+    {"name": "send_particles", "target": "horizon_client::game::native_host_bridge::Game<'_>::native_level_send_particles"},
+    {"name": "block_name_in_tag", "target": "horizon_client::game::native_world_read::Game<'_>::native_block_name_in_tag"},
+    {"name": "server_item_in_tag", "target": "horizon_client::game::native_world_read::Game<'_>::native_server_item_in_tag"},
+    {"name": "component", "target": "horizon_client::game::native_components::Game<'_>::native_component"},
+    {"name": "set_component", "target": "horizon_client::game::native_components::Game<'_>::native_set_component"},
+    {"name": "remove_component", "target": "horizon_client::game::native_components::Game<'_>::native_remove_component"},
+    {"name": "trigger_criterion", "target": "horizon_client::game::native_criteria::Game<'_>::native_trigger_mod_criterion"},
+    {"name": "equipment", "target": "horizon_client::game::native_host_bridge::Game<'_>::native_equipment"},
+    {"name": "sneaking", "target": "horizon_client::game::native_host_bridge::Game<'_>::native_sneaking"}
+  ],
+  "rust_summary": "trait mods reach helpers `dyn Host` couldn't carry: `draw_model`, `mod_block_entity` and `change_mod_block_entity` (a neighbour's mod block entity), `item_entities`, `level_random`, `play_sound` and `send_particles` outside level hooks, `block_name_in_tag`, `server_item_in_tag`, item components, `trigger_criterion`, and the player's `equipment` and `sneaking`.",
+  "doc_summary": "`Host` gains `draw_model` (standalone models in `block_entity_submit`), `mod_block_entity(pos)` (a copy; on a client what the server sent) and `change_mod_block_entity(pos, change)`, `item_entities`, `level_random(dimension)`, `play_sound` and `send_particles` for the level in place, `block_name_in_tag` and `server_item_in_tag`, `component`, `set_component` and `remove_component`, `trigger_criterion` with a `&dyn Fn` test, `equipment(slot)` (on a client the player's own) and `sneaking()` (`isSecondaryUseActive` in a use hook). Bundles need \"hooks\": @API:host_bridge@.",
+  "comments": [
+    "crates/horizon-client/src/game/native_host_bridge.rs",
+    "crates/horizon-client/src/game/native_world_read.rs",
+    "crates/horizon-client/src/game/native_criteria.rs"
+  ]
+}

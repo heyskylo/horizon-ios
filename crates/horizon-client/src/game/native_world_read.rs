@@ -10,7 +10,7 @@ use horizon_world::{chunk::BlockState, registry::BlockRegistry};
 /// Why a server block or tag cannot be read.
 #[allow(dead_code)]
 #[derive(Debug, PartialEq, Eq)]
-pub(super) enum NativeBlockReadError {
+pub enum NativeBlockReadError {
     /// The context is stale or the call is outside its server tick hook.
     InactiveContext,
     /// Tag queries require an authoritative server.
@@ -88,6 +88,20 @@ impl Game<'_> {
             &stack.item
         };
         Ok(items.item_in_tag(tag, item))
+    }
+
+    /// Whether block `block` (`minecraft:oak_log`, as `Host::block` names
+    /// one) is in block tag `tag` (`minecraft:logs`, or a mod's
+    /// `create:fan_transparent`) of the server's merged tags, as
+    /// `BlockState.is(TagKey)`: what `native_server_block_in_tag` answers for
+    /// a state of that block, from any server hook. API @API:host_bridge@.
+    #[allow(dead_code)]
+    pub(super) fn native_block_name_in_tag(
+        &self,
+        block: &str,
+        tag: &str,
+    ) -> Result<bool, NativeBlockReadError> {
+        Ok(self.native_tag_items()?.block_in_tag(tag, block))
     }
 
     /// Read a loaded block in a server tick hook, without loading a chunk.
