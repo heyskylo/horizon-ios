@@ -148,11 +148,16 @@ fn slot_well(_t: &Theme) -> Div {
         .w_full()
         .overflow_hidden()
         .rounded(px(radius::ROW))
-        // Light: a soft violet grey, so the cream and violet items keep their edges.
+        // The founder set is navy and charcoal: light, a soft violet grey; dark, a lit violet grey,
+        // lighter at the top like a showcase, so the dark items keep their edges on both.
         .bg(if glass_ui::light() {
-            Hsla::from(gpui::rgb(0xdcd8ea))
+            Hsla::from(gpui::rgb(0xdcd8ea)).into()
         } else {
-            gpui::rgba(0x080614b3).into()
+            gpui::linear_gradient(
+                180.,
+                gpui::linear_color_stop(Hsla::from(gpui::rgb(0x5d5688)), 0.),
+                gpui::linear_color_stop(Hsla::from(gpui::rgb(0x3a3459)), 1.),
+            )
         })
 }
 
