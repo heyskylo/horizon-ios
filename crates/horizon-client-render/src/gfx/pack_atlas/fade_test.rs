@@ -58,6 +58,17 @@ fn terrain_fade_reaches_pack_pixels_through_real_instances() {
         gl_Position = vec4(0.0, 0.0, 0.0, 1.0);\n}";
     let fragment = "#version 330\nin vec4 observation;\nlayout(location = 0) out uvec4 pixel;\n\
         void main() { pixel = floatBitsToUint(observation); }";
+    let geometry_vertex = vertex
+        .replace("float first = mc_chunkFade;", "")
+        .replace("mc_chunkFade, first,", "mc_chunkFade, mc_chunkFade,")
+        .replace("observation", "vertex_observation");
+    let geometry_shader = "#version 330\nlayout(triangles) in;\n\
+        layout(triangle_strip, max_vertices=3) out;\nin vec4 vertex_observation[];\n\
+        out vec4 observation;\nconst float mc_chunkFade = 0.8125;\nvoid main() {\n\
+        for (int k=0; k<3; ++k) {\nobservation = vertex_observation[k];\n\
+        observation.y = mc_chunkFade;\n\
+        gl_Position = vec4(k == 1 ? 3.0 : -1.0, k == 2 ? 3.0 : -1.0, 0.0, 1.0);\n\
+        EmitVertex();\n}\nEndPrimitive();\n}";
     for name in ["gbuffers_terrain", "gbuffers_water", "shadow"] {
         for (extension, code) in [("vsh", vertex), ("fsh", fragment)] {
             std::fs::write(folder.0.join(format!("shaders/{name}.{extension}")), code).unwrap();
@@ -89,55 +100,86 @@ fn terrain_fade_reaches_pack_pixels_through_real_instances() {
         let (properties, notes) = horizon_shaders::read_properties(&pack, &mut macros);
         assert!(notes.is_empty(), "{notes:?}");
         for flat in [false, true] {
-            let post = horizon_shaders::load_post(
-                &pack,
-                "",
-                &properties,
-                &macros,
-                &horizon_shaders::GameInputs {
-                    terrain: Some(atlas.terrain_inputs(flat)),
-                    ..Default::default()
-                },
-            );
-            for (name, program) in [
-                ("terrain", &post.terrain),
-                ("water", &post.water),
-                ("shadow", &post.shadow),
-            ] {
-                let program = program
-                    .as_ref()
-                    .unwrap_or_else(|| panic!("{name}: {:?}", post.notes));
-                for &(case, timestamp, elapsed, fade_ms, handover, expected) in &cases {
-                    let visibility = section_visibility(
-                        timestamp,
-                        fade_ms,
-                        uploaded + Duration::from_millis(elapsed),
-                    );
-                    let origin = section_instance([48.0, 0.0, -16.0], handover, visibility);
-                    let pixel = sample(
-                        &device,
-                        &queue,
-                        &atlas,
-                        program.program.as_ref().unwrap(),
-                        flat,
-                        origin,
-                    );
-                    let fade = if requested { expected } else { 1.0 };
-                    let expected = [fade, fade, 128.0 / 255.0, 0.25];
-                    assert!(
-                        pixel
-                            .iter()
-                            .zip(expected)
-                            .all(|(a, b)| a.is_finite() && (a - b).abs() < 2e-7),
-                        "{name} {case} flat={flat} requested={requested}: {pixel:?} != {expected:?}"
-                    );
-                    count += 1;
+            for geometry in [false, true].into_iter().filter(|g| !*g || flat) {
+                let geometry_path = folder.0.join("shaders/shadow.gsh");
+                if geometry {
+                    std::fs::write(&geometry_path, geometry_shader).unwrap();
+                } else if geometry_path.exists() {
+                    std::fs::remove_file(&geometry_path).unwrap();
+                }
+                std::fs::write(
+                    folder.0.join("shaders/shadow.vsh"),
+                    if geometry {
+                        geometry_vertex.as_str()
+                    } else {
+                        vertex
+                    },
+                )
+                .unwrap();
+                let post = horizon_shaders::load_post(
+                    &pack,
+                    "",
+                    &properties,
+                    &macros,
+                    &horizon_shaders::GameInputs {
+                        terrain: Some(atlas.terrain_inputs(flat)),
+                        terrain_geometry: geometry.then(|| horizon_shaders::GeometryInputs {
+                            inputs: atlas.terrain_inputs(true),
+                            pull: super::PULL.to_owned(),
+                            index: "@".to_owned(),
+                        }),
+                        ..Default::default()
+                    },
+                );
+                for (name, program) in [
+                    ("terrain", &post.terrain),
+                    ("water", &post.water),
+                    ("shadow", &post.shadow),
+                ] {
+                    if geometry && name != "shadow" {
+                        continue;
+                    }
+                    let program = program
+                        .as_ref()
+                        .unwrap_or_else(|| panic!("{name}: {:?}", post.notes));
+                    for &(case, timestamp, elapsed, fade_ms, handover, expected) in &cases {
+                        let visibility = section_visibility(
+                            timestamp,
+                            fade_ms,
+                            uploaded + Duration::from_millis(elapsed),
+                        );
+                        let origin = section_instance([48.0, 0.0, -16.0], handover, visibility);
+                        let pixel = sample(
+                            &device,
+                            &queue,
+                            &atlas,
+                            program.program.as_ref().unwrap(),
+                            flat,
+                            geometry,
+                            origin,
+                        );
+                        let fade = if requested { expected } else { 1.0 };
+                        let expected = [
+                            fade,
+                            if geometry { 0.8125 } else { fade },
+                            128.0 / 255.0,
+                            0.25,
+                        ];
+                        assert!(
+                            pixel
+                                .iter()
+                                .zip(expected)
+                                .all(|(a, b)| a.is_finite() && (a - b).abs() < 2e-7),
+                            "{name} {case} flat={flat} geometry={geometry} requested={requested}: {pixel:?} != {expected:?}"
+                        );
+                        count += 1;
+                    }
                 }
             }
         }
     }
     eprintln!("terrain fade pack-to-pixel cases executed: {count}");
-    assert_eq!(count, 84);
+    assert_eq!(count, 98);
 }
 
 fn sample(
@@ -146,6 +188,7 @@ fn sample(
     atlas: &PackAtlas,
     program: &horizon_shaders::Program,
     flat: bool,
+    geometry: bool,
     origin: [f32; 4],
 ) -> [f32; 4] {
     let buffer = |bytes: &[u8], usage| {
@@ -280,7 +323,11 @@ fn sample(
             buffers: &vertices[..if flat { 1 } else { 2 }],
         },
         primitive: wgpu::PrimitiveState {
-            topology: wgpu::PrimitiveTopology::PointList,
+            topology: if geometry {
+                wgpu::PrimitiveTopology::TriangleList
+            } else {
+                wgpu::PrimitiveTopology::PointList
+            },
             ..Default::default()
         },
         depth_stencil: None,
@@ -342,7 +389,7 @@ fn sample(
         if !flat {
             pass.set_vertex_buffer(1, origins.slice(..));
         }
-        pass.draw(0..1, 0..1);
+        pass.draw(0..if geometry { 3 } else { 1 }, 0..1);
     }
     encoder.copy_texture_to_buffer(
         output.as_image_copy(),
