@@ -619,7 +619,9 @@ pub struct PackPost {
     nearest: wgpu::Sampler,
     repeat: wgpu::Sampler,
     nearest_repeat: wgpu::Sampler,
-    blit: (wgpu::RenderPipeline, wgpu::BindGroupLayout),
+    /// None when it would write nothing: colortex0 holds integers and there is no depth to copy
+    /// nor buffer to clear.
+    blit: Option<(wgpu::RenderPipeline, wgpu::BindGroupLayout)>,
     /// The blit also writes depthtex0 (some program reads it) and clears these buffers.
     blit_depth: bool,
     blit_clears: Vec<usize>,
@@ -939,6 +941,14 @@ fn blend_state(b: horizon_shaders::Blend) -> wgpu::BlendState {
         color: component(b[0], b[1]),
         alpha: component(b[2], b[3]),
     }
+}
+
+/// A buffer whose texels are floats (normalized or not), not integers.
+fn holds_floats(format: wgpu::TextureFormat) -> bool {
+    matches!(
+        format.sample_type(None, None),
+        Some(wgpu::TextureSampleType::Float { .. })
+    )
 }
 
 fn target(format: wgpu::TextureFormat) -> Option<wgpu::ColorTargetState> {
@@ -2431,7 +2441,13 @@ impl PackPost {
             }
         });
         let float = wgpu::TextureSampleType::Float { filterable: true };
-        let mut world_target = target(formats[0]);
+        // The world's colour is floats: an integer colortex0 (`RGBA32UI`...) gets only what the
+        // pack writes, and is cleared in a pass of its own.
+        let world_color = holds_floats(formats[0]);
+        if !world_color {
+            other_clears.push(0);
+        }
+        let mut world_target = world_color.then(|| target(formats[0])).flatten();
         if rgb & 1 != 0
             && let Some(t) = &mut world_target
         {
@@ -2448,28 +2464,30 @@ impl PackPost {
                 })
             }))
             .collect();
-        let blit = helper(
-            device,
-            "vs_full",
-            if blit_depth {
-                "fs_blit"
-            } else {
-                "fs_blit_color"
-            },
-            &[
-                texture_entry(0, float),
-                texture_entry(1, wgpu::TextureSampleType::Depth),
-            ],
-            &blit_targets,
-            // GL's window depth, written for depthtex0 and the terrain's depth test.
-            blit_depth.then_some(wgpu::DepthStencilState {
-                format: wgpu::TextureFormat::Depth32Float,
-                depth_write_enabled: Some(true),
-                depth_compare: Some(wgpu::CompareFunction::Always),
-                stencil: Default::default(),
-                bias: Default::default(),
-            }),
-        );
+        let blit = (world_color || blit_depth || !cleared.is_empty()).then(|| {
+            helper(
+                device,
+                "vs_full",
+                if blit_depth {
+                    "fs_blit"
+                } else {
+                    "fs_blit_color"
+                },
+                &[
+                    texture_entry(0, float),
+                    texture_entry(1, wgpu::TextureSampleType::Depth),
+                ],
+                &blit_targets,
+                // GL's window depth, written for depthtex0 and the terrain's depth test.
+                blit_depth.then_some(wgpu::DepthStencilState {
+                    format: wgpu::TextureFormat::Depth32Float,
+                    depth_write_enabled: Some(true),
+                    depth_compare: Some(wgpu::CompareFunction::Always),
+                    stencil: Default::default(),
+                    bias: Default::default(),
+                }),
+            )
+        });
         let copy = helper(
             device,
             "vs_uv",
@@ -4345,14 +4363,15 @@ impl PackPost {
         }
 
         // The world into colortex0 and depthtex0, flipped to GL's rows, and the clears.
-        if self
-            .blit_group
-            .as_ref()
-            .is_none_or(|g| g.0[0] != *world || g.0[1] != *world_depth)
+        if let Some(blit) = &self.blit
+            && self
+                .blit_group
+                .as_ref()
+                .is_none_or(|g| g.0[0] != *world || g.0[1] != *world_depth)
         {
             let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("Shader pack world"),
-                layout: &self.blit.1,
+                layout: &blit.1,
                 entries: &[
                     wgpu::BindGroupEntry {
                         binding: 0,
@@ -4366,7 +4385,7 @@ impl PackPost {
             });
             self.blit_group = Some(([world.clone(), world_depth.clone()], group));
         }
-        {
+        if let Some(blit) = &self.blit {
             // The blit leaves a three-channel colortex0's alpha at the 1 it starts with.
             let world_ops = if self.rgb & 1 != 0 {
                 wgpu::Operations {
@@ -4376,10 +4395,11 @@ impl PackPost {
             } else {
                 overwrite
             };
-            let mut attachments = vec![attach(
-                view(self.main, 0, false).expect("colortex0"),
-                world_ops,
-            )];
+            let mut attachments = vec![if holds_floats(self.formats[0]) {
+                attach(view(self.main, 0, false).expect("colortex0"), world_ops)
+            } else {
+                None
+            }];
             for &b in &self.blit_clears {
                 attachments.push(attach(
                     view(self.main, b, false).expect("used buffer"),
@@ -4402,7 +4422,7 @@ impl PackPost {
                 ),
                 ..Default::default()
             });
-            pass.set_pipeline(&self.blit.0);
+            pass.set_pipeline(&blit.0);
             pass.set_bind_group(0, self.blit_group.as_ref().map(|g| &g.1), &[]);
             pass.draw(0..3, 0..1);
         }
@@ -4551,7 +4571,14 @@ impl PackPost {
                 .as_ref()
                 .map(|t| &t[main(m, i) ^ usize::from(alt)])
         };
-        if !shown {
+        // An integer colortex0 has no colour to show: the screen is only cleared.
+        if !shown && !holds_floats(self.formats[0]) {
+            encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Shader pack colortex0"),
+                color_attachments: &[attach(screen, overwrite)],
+                ..Default::default()
+            });
+        } else if !shown {
             let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("Shader pack colortex0"),
                 layout: &self.copy.1,
@@ -5129,3 +5156,6 @@ mod trinary_tests;
 
 #[cfg(test)]
 mod const_offset_tests;
+
+#[cfg(test)]
+mod integer_colortex0_tests;
