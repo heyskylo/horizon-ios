@@ -458,7 +458,9 @@
   "runs {command} after": "veikia {command} po",
   "downloaded": "atsisiųstas",
   "24/7 online": "24/7 internete",
-  "Updated to {version}. Restart the launcher to use it.": "Atnaujinta į {version}. Iš naujo paleiskite paleidimo priemonę, kad ją naudotumėte.",
+  "A new version is available": "Yra nauja versija",
+  "Download again": "Atsisiųsti iš naujo",
+  "This copy of the launcher can't replace itself. Download it again once; it updates itself after that.": "Ši paleidyklės kopija negali pati savęs pakeisti. Vieną kartą atsisiųskite ją iš naujo; po to ji atsinaujina pati.",
   "Any MCP client": "Bet kuris MCP klientas",
   "{name}'s cape is kept.": "{name} pelerina saugoma.",
   "Not reviewed by the Horizon registry": "Neperžiūrėjo Horizon registras",
@@ -637,7 +639,6 @@
   "Copied": "Nukopijuota",
   "Couldn't load patch notes. {error}": "Nepavyko įkelti pataisų užrašų. {error}",
   "Couldn't load releases. {error}": "Nepavyko įkelti leidimų. {error}",
-  "Launcher updated to {version}": "Paleidimo priemonė atnaujinta į {version}",
   "Launcher {version}": "Paleidimo priemonė {version}",
   "Launcher {version}  {percent}%": "Paleidimo priemonė {version} {percent}%",
   "Manage versions": "Tvarkyti versijas",
@@ -844,7 +845,6 @@
   "Something went wrong.": "Kažkas nutiko.",
   "Instances": "Atvejai",
   "Join the Discord": "Join the Discord",
-  "Restart to update": "Paleiskite iš naujo, kad atnaujintumėte",
   "Duplicate…": "Pasikartoti…",
   "Create a desktop shortcut": "Sukurkite darbalaukio nuorodą",
   "Remove the desktop shortcut": "Pašalinkite darbalaukio nuorodą",
@@ -1117,5 +1117,8 @@
   "Move…": "Move…",
   "The launcher closes while your data is copied and verified, then reopens. Old folders are kept and still use disk space until you verify the move and remove them yourself.": "The launcher closes while your data is copied and verified, then reopens. Old folders are kept and still use disk space until you verify the move and remove them yourself.",
   "Open the shop": "Atidaryti parduotuvę",
-  "You don't own any cosmetics yet.": "Dar neturite kosmetikos."
+  "You don't own any cosmetics yet.": "Dar neturite kosmetikos.",
+  "Claim for free": "Gauti nemokamai",
+  "The shop's payment provider doesn't serve your country, so you can claim the Founder Set here for free.": "Parduotuvės mokėjimų paslaugos jūsų šalyje neveikia, todėl Steigėjų rinkinį čia galite gauti nemokamai.",
+  "The Founder Set is yours.": "Steigėjų rinkinys jūsų."
 }

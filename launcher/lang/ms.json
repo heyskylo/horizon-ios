@@ -456,7 +456,9 @@
   "runs {command} after": "berjalan {command} selepas",
   "downloaded": "dimuat turun",
   "24/7 online": "24/7 dalam talian",
-  "Updated to {version}. Restart the launcher to use it.": "Dikemas kini kepada {version}. Mulakan semula pelancar untuk menggunakannya.",
+  "A new version is available": "Versi baharu tersedia",
+  "Download again": "Muat turun semula",
+  "This copy of the launcher can't replace itself. Download it again once; it updates itself after that.": "Salinan pelancar ini tidak dapat menggantikan dirinya sendiri. Muat turun semula sekali; selepas itu ia mengemas kini dirinya sendiri.",
   "Any MCP client": "Mana-mana pelanggan MCP",
   "{name}'s cape is kept.": "Jubah {name} disimpan.",
   "Not reviewed by the Horizon registry": "Tidak disemak oleh pendaftaran Horizon",
@@ -635,7 +637,6 @@
   "Copied": "disalin",
   "Couldn't load patch notes. {error}": "Tidak dapat memuatkan nota tampalan. {error}",
   "Couldn't load releases. {error}": "Tidak dapat memuatkan keluaran. {error}",
-  "Launcher updated to {version}": "Pelancar dikemas kini kepada {version}",
   "Launcher {version}": "Pelancar {version}",
   "Launcher {version}  {percent}%": "Pelancar {version} {percent}%",
   "Manage versions": "Urus versi",
@@ -842,7 +843,6 @@
   "Something went wrong.": "Sesuatu telah berlaku.",
   "Instances": "Instans",
   "Join the Discord": "Sertai Discord",
-  "Restart to update": "Mulakan semula untuk mengemas kini",
   "Duplicate…": "Pendua…",
   "Create a desktop shortcut": "Buat pintasan desktop",
   "Remove the desktop shortcut": "Alih keluar pintasan desktop",
@@ -1117,5 +1117,8 @@
   "Move…": "Move…",
   "The launcher closes while your data is copied and verified, then reopens. Old folders are kept and still use disk space until you verify the move and remove them yourself.": "The launcher closes while your data is copied and verified, then reopens. Old folders are kept and still use disk space until you verify the move and remove them yourself.",
   "Open the shop": "Buka kedai",
-  "You don't own any cosmetics yet.": "Anda belum memiliki sebarang kosmetik."
+  "You don't own any cosmetics yet.": "Anda belum memiliki sebarang kosmetik.",
+  "Claim for free": "Tuntut percuma",
+  "The shop's payment provider doesn't serve your country, so you can claim the Founder Set here for free.": "Penyedia pembayaran kedai tidak berkhidmat di negara anda, jadi anda boleh menuntut Set pengasas di sini secara percuma.",
+  "The Founder Set is yours.": "Set pengasas kini milik anda."
 }

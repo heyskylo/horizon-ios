@@ -215,6 +215,13 @@ impl Campfire {
         }
         changed
     }
+    pub fn idle(&self, lit: bool) -> bool {
+        if lit {
+            self.items.iter().all(Option::is_none)
+        } else {
+            self.progress.iter().all(|&p| p <= 0)
+        }
+    }
 }
 impl Skull {
     pub fn new(
@@ -727,6 +734,19 @@ mod tests {
         assert!(!menu_reaches("vanilla", "ruby:press"));
         assert!(!menu_reaches("fabric", "ruby:press"));
         assert!(menu_reaches("vanilla", "minecraft:generic_9x3"));
+    }
+
+    #[test]
+    fn a_campfire_is_idle_only_while_its_tick_changes_nothing() {
+        let mut c = Campfire::default();
+        assert!(c.idle(true) && c.idle(false));
+        assert!(c.place_food(&mut ItemStack::new("minecraft:beef", 1), 600));
+        assert!(!c.idle(true));
+        assert!(c.idle(false));
+        c.cook_tick();
+        assert!(!c.idle(false));
+        c.cooldown_tick();
+        assert!(c.idle(false));
     }
 
     #[test]

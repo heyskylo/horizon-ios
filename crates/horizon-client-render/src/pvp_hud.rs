@@ -184,12 +184,18 @@ impl Combo {
     pub fn attacked(&mut self, id: i32, now: f64) {
         self.target = Some((id, now));
     }
-    /// The server reports entity `id` hurt.
-    pub fn hurt(&mut self, id: i32, now: f64) {
-        if self
-            .target
-            .is_some_and(|(t, at)| t == id && now - at <= Self::CONFIRM)
-        {
+    /// The server reports entity `id` hurt. `by_me`: whether this player is
+    /// the damage's direct entity, when the report names one (melee and
+    /// spear hits do; Horizon's LAN hub names none for player victims). A
+    /// report that names nobody counts only as the answer to the last swing.
+    pub fn hurt(&mut self, id: i32, by_me: Option<bool>, now: f64) {
+        let confirmed = match by_me {
+            Some(mine) => mine,
+            None => self
+                .target
+                .is_some_and(|(t, at)| t == id && now - at <= Self::CONFIRM),
+        };
+        if confirmed {
             self.target = None;
             self.count += 1;
             self.last_hit = now;
@@ -263,26 +269,32 @@ mod tests {
     fn combos_count_confirmed_hits_until_this_player_is_hurt() {
         let mut c = Combo::default();
         c.attacked(7, 0.0);
-        c.hurt(7, 0.1);
+        c.hurt(7, None, 0.1);
         c.attacked(7, 0.6);
-        c.hurt(7, 0.7);
+        c.hurt(7, None, 0.7);
         assert_eq!(c.count(0.8), 2);
         // Another entity hurt, or a report too late after the swing, adds nothing.
         c.attacked(7, 1.0);
-        c.hurt(9, 1.1);
-        c.hurt(7, 2.5);
+        c.hurt(9, None, 1.1);
+        c.hurt(7, None, 2.5);
         assert_eq!(c.count(2.5), 2);
         // One report per swing: a second one (thorns, fire) for the same attack doesn't count.
         c.attacked(7, 3.0);
-        c.hurt(7, 3.1);
-        c.hurt(7, 3.2);
+        c.hurt(7, None, 3.1);
+        c.hurt(7, None, 3.2);
         assert_eq!(c.count(3.2), 3);
         c.broken();
         assert_eq!(c.count(3.3), 0);
         c.attacked(7, 4.0);
-        c.hurt(7, 4.1);
+        c.hurt(7, None, 4.1);
         assert_eq!(c.count(7.0), 1);
         assert_eq!(c.count(7.2), 0, "more than 3 s since the last hit");
+        // A report that names who hit decides alone: a spear jab (no swing
+        // remembered) counts, a teammate's hit right after a swing doesn't.
+        c.hurt(7, Some(true), 8.0);
+        c.attacked(7, 8.5);
+        c.hurt(7, Some(false), 8.6);
+        assert_eq!(c.count(8.7), 1);
     }
 
     #[test]

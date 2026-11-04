@@ -458,7 +458,9 @@
   "runs {command} after": "loopt {command} na",
   "downloaded": "gedownload",
   "24/7 online": "24/7 online",
-  "Updated to {version}. Restart the launcher to use it.": "Bijgewerkt naar {version}. Start het opstartprogramma opnieuw om het te gebruiken.",
+  "A new version is available": "Er is een nieuwe versie beschikbaar",
+  "Download again": "Opnieuw downloaden",
+  "This copy of the launcher can't replace itself. Download it again once; it updates itself after that.": "Deze kopie van de launcher kan zichzelf niet vervangen. Download hem één keer opnieuw; daarna werkt hij zichzelf bij.",
   "Any MCP client": "Elke MCP-client",
   "{name}'s cape is kept.": "De cape van {name} wordt bewaard.",
   "Not reviewed by the Horizon registry": "Niet beoordeeld door het Horizon-register",
@@ -637,7 +639,6 @@
   "Copied": "Gekopieerd",
   "Couldn't load patch notes. {error}": "Kan patchopmerkingen niet laden. {error}",
   "Couldn't load releases. {error}": "Kan releases niet laden. {error}",
-  "Launcher updated to {version}": "Launcher bijgewerkt naar {version}",
   "Launcher {version}": "Lanceerprogramma {version}",
   "Launcher {version}  {percent}%": "Launcher {version} {percent}%",
   "Manage versions": "Beheer versies",
@@ -844,7 +845,6 @@
   "Something went wrong.": "Er is iets misgegaan.",
   "Instances": "Instanties",
   "Join the Discord": "Sluit je aan bij de onenigheid",
-  "Restart to update": "Start opnieuw op om te updaten",
   "Duplicate…": "Dupliceren…",
   "Create a desktop shortcut": "Maak een snelkoppeling op het bureaublad",
   "Remove the desktop shortcut": "Verwijder de snelkoppeling op het bureaublad",
@@ -1117,5 +1117,8 @@
   "Move…": "Move…",
   "The launcher closes while your data is copied and verified, then reopens. Old folders are kept and still use disk space until you verify the move and remove them yourself.": "The launcher closes while your data is copied and verified, then reopens. Old folders are kept and still use disk space until you verify the move and remove them yourself.",
   "Open the shop": "Open de winkel",
-  "You don't own any cosmetics yet.": "Je hebt nog geen cosmetica."
+  "You don't own any cosmetics yet.": "Je hebt nog geen cosmetica.",
+  "Claim for free": "Gratis ophalen",
+  "The shop's payment provider doesn't serve your country, so you can claim the Founder Set here for free.": "De betaalprovider van de winkel is niet actief in jouw land, dus je kunt de Oprichtersset hier gratis ophalen.",
+  "The Founder Set is yours.": "De Oprichtersset is van jou."
 }

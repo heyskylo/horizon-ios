@@ -458,7 +458,9 @@
   "runs {command} after": "يشغل {command} بعد ذلك",
   "downloaded": "تم التنزيل",
   "24/7 online": "متصل على مدار الساعة",
-  "Updated to {version}. Restart the launcher to use it.": "تم التحديث إلى {version}. أعد تشغيل المشغل لاستخدامه.",
+  "A new version is available": "يتوفر إصدار جديد",
+  "Download again": "نزّله مرة أخرى",
+  "This copy of the launcher can't replace itself. Download it again once; it updates itself after that.": "لا تستطيع هذه النسخة من المشغّل استبدال نفسها. نزّله مرة أخرى مرة واحدة؛ بعد ذلك يحدّث نفسه بنفسه.",
   "Any MCP client": "أي عميل MCP",
   "{name}'s cape is kept.": "تم الاحتفاظ برداء {name}.",
   "Not reviewed by the Horizon registry": "لم يتم مراجعته من قِبل سجل هورايزون",
@@ -637,7 +639,6 @@
   "Copied": "تم النسخ",
   "Couldn't load patch notes. {error}": "تعذر تحميل ملاحظات التحديث. {error}",
   "Couldn't load releases. {error}": "تعذر تحميل الإصدارات. {error}",
-  "Launcher updated to {version}": "تم تحديث المشغل إلى {version}",
   "Launcher {version}": "المشغل {version}",
   "Launcher {version}  {percent}%": "المشغل {version}  {percent}%",
   "Manage versions": "إدارة الإصدارات",
@@ -844,7 +845,6 @@
   "Something went wrong.": "حدث خطأ ما.",
   "Instances": "Instances",
   "Join the Discord": "Join the Discord",
-  "Restart to update": "Restart to update",
   "Duplicate…": "Duplicate…",
   "Create a desktop shortcut": "Create a desktop shortcut",
   "Remove the desktop shortcut": "Remove the desktop shortcut",
@@ -1117,5 +1117,8 @@
   "The launcher closes while your data is copied and verified, then reopens. Old folders are kept and still use disk space until you verify the move and remove them yourself.": "يُغلق المشغل أثناء نسخ بياناتك والتحقق منها، ثم يُفتح مجددًا. يُحتفظ بالمجلدات القديمة وتظل تشغل مساحة على القرص حتى تتحقق من نجاح النقل وتحذفها بنفسك.",
   "Could not open the data folder: {error}": "Could not open the data folder: {error}",
   "Open the shop": "فتح المتجر",
-  "You don't own any cosmetics yet.": "لا تملك أي مظاهر بعد."
+  "You don't own any cosmetics yet.": "لا تملك أي مظاهر بعد.",
+  "Claim for free": "احصل عليه مجانًا",
+  "The shop's payment provider doesn't serve your country, so you can claim the Founder Set here for free.": "مزوّد الدفع في المتجر لا يخدم بلدك، لذا يمكنك الحصول على طقم المؤسسين هنا مجانًا.",
+  "The Founder Set is yours.": "طقم المؤسسين أصبح لك."
 }

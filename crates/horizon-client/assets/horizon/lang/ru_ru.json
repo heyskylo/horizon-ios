@@ -186,6 +186,7 @@
   "Frame rate and frame times over the game, with a graph.": "Частота кадров и их время поверх игры, с графиком.",
   "horizon.multiplayer.finding_friend": "Ищем мир друга…",
   "horizon.multiplayer.not_signed_in": "Этот сервер работает в онлайн-режиме. Войдите с помощью аккаунта Microsoft в лаунчере Horizon, чтобы присоединиться.",
+  "horizon.realms.not_signed_in": "Войдите в лаунчере Horizon с учётной записью Microsoft, чтобы играть в Realms.",
   "horizon.multiplayer.invalid_address": "Недействительный адрес сервера: %s",
   "horizon.multiplayer.connected_friend_direct": "Установлено прямое соединение с другом…",
   "horizon.multiplayer.connected_friend_relay": "Соединение с другом через релей…",
