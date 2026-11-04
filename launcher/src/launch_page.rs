@@ -20,10 +20,8 @@ pub(super) struct LaunchPanel {
 /// What saving the memory slider did, kept to show under the slider in the active language.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum MemorySaved {
-    /// Saved to the instance: the limit in MB, or None for no limit.
-    Ok(Option<u32>),
-    /// What was typed was not a valid memory limit.
-    Invalid,
+    /// Saved Java heap size in MB.
+    Ok(u32),
     /// Saving failed on disk.
     Error(String),
 }
@@ -34,8 +32,8 @@ pub(super) struct MemorySlider {
     /// The computer's memory in MiB, read once: the slider's top.
     total: Option<u32>,
     area: std::rc::Rc<std::cell::Cell<Option<Bounds<Pixels>>>>,
-    /// The value being dragged to; inside, none is no limit.
-    dragging: Option<Option<u32>>,
+    /// The Java heap size being dragged to.
+    dragging: Option<u32>,
     /// What the last change did, or why not.
     saved: Option<MemorySaved>,
     /// The instance whose value is being typed: saved to it when the box loses the keyboard, even
@@ -130,8 +128,7 @@ impl Launcher {
         self.reload_instances();
     }
 
-    /// The instance the memory row sets: the one being edited while its dialog is open, else the
-    /// selected one.
+    /// The Java instance being edited, or the selected Java instance on Home.
     fn memory_instance(&self) -> Option<instances::Instance> {
         match self
             .instances
@@ -142,11 +139,12 @@ impl Launcher {
             Some(id) => self.instances.list.iter().find(|i| &i.id == id).cloned(),
             None => self.selected_instance().cloned(),
         }
+        .filter(|i| i.java.is_some())
     }
 
     /// The value under the pointer. Saving waits until the mouse comes up.
     fn pick_memory(&mut self, at: Point<Pixels>, cx: &mut Context<Self>) {
-        let Some(instance) = self.memory_instance() else {
+        let Some(_) = self.memory_instance() else {
             return;
         };
         let slider = &mut self.memory_slider;
@@ -161,10 +159,7 @@ impl Launcher {
         let total = slider.total();
         let picked = launch::memory_at((across / width).clamp(0., 1.), total);
         slider.saved = None;
-        slider.dragging = Some(match instance.java {
-            Some(_) => picked.or(Some(total)),
-            None => picked,
-        });
+        slider.dragging = Some(picked);
         cx.notify();
     }
 
@@ -180,10 +175,11 @@ impl Launcher {
         cx.notify();
     }
 
-    fn save_memory(&mut self, id: &str, memory: Option<u32>) {
-        let saved = instances::edit(id, |m| match &mut m.java {
-            Some(java) => java.memory_mb = memory,
-            None => m.launch.set_memory_limit(memory),
+    fn save_memory(&mut self, id: &str, memory: u32) {
+        let saved = instances::edit(id, |m| {
+            if let Some(java) = &mut m.java {
+                java.memory_mb = Some(memory);
+            }
         });
         self.memory_slider.saved = Some(match saved {
             Ok(_) => MemorySaved::Ok(memory),
@@ -194,23 +190,26 @@ impl Launcher {
 
     /// The instance's saved value, as the row shows it.
     fn saved_memory(instance: &instances::Instance) -> Option<u32> {
-        match &instance.java {
-            Some(java) => Some(java.memory_mb.unwrap_or(instances::DEFAULT_MEMORY_MB)),
-            None => instance.launch.memory_limit(),
-        }
+        instance
+            .java
+            .as_ref()
+            .map(|java| java.memory_mb.unwrap_or(instances::DEFAULT_MEMORY_MB))
     }
 
     /// Saves what's in the box to `id`, if it's a value and a new one.
     fn save_typed_memory(&mut self, id: &str) {
         let typed = self.servers.value(Field::MemoryLimit).to_owned();
         let Ok(memory) = launch::parse_memory(&typed) else {
-            self.memory_slider.saved = Some(MemorySaved::Invalid);
+            self.memory_slider.saved = None;
+            self.servers.set_field_invalid(Field::MemoryLimit, true);
             return;
         };
+        let memory = memory.unwrap_or(instances::DEFAULT_MEMORY_MB);
+        self.servers.set_field_invalid(Field::MemoryLimit, false);
         let same = instances::list()
             .iter()
             .find(|i| i.id == id)
-            .is_some_and(|i| Self::saved_memory(i) == memory);
+            .is_some_and(|i| Self::saved_memory(i) == Some(memory));
         if !same {
             self.save_memory(id, memory);
         }
@@ -225,7 +224,7 @@ impl Launcher {
 
     /// The box follows the saved value and the slider except while it has the keyboard, and saves
     /// when it loses it. Read every frame.
-    fn sync_memory_box(&mut self, instance: &str, memory: Option<u32>) {
+    fn sync_memory_box(&mut self, instance: &str, memory: u32) {
         if self.memory_slider.shown.as_deref() != Some(instance) {
             self.memory_slider.saved = None;
             self.memory_slider.shown = Some(instance.to_owned());
@@ -238,38 +237,31 @@ impl Launcher {
             self.save_typed_memory(&id);
             return;
         }
-        let shown = memory.map_or_else(String::new, |mb| mb.to_string());
+        let shown = memory.to_string();
         if self.servers.value(Field::MemoryLimit) != shown {
             self.servers.text(Field::MemoryLimit).set(shown);
         }
     }
 
-    /// The row on Home, for the selected instance: the most memory its game may hold, from nothing
-    /// to all of this computer's, kept with the instance.
+    /// The maximum Java heap size for the selected Java instance.
     pub(super) fn memory_row(&mut self, cx: &mut Context<Self>) -> Option<Div> {
         let t = self.theme;
         let instance = self.selected_instance()?.clone();
-        let java = instance.java.as_ref();
+        instance.java.as_ref()?;
         let total = self.memory_slider.total();
         let area = self.memory_slider.area.clone();
-        let memory = self
-            .memory_slider
-            .dragging
-            .unwrap_or_else(|| Self::saved_memory(&instance));
+        let saved = Self::saved_memory(&instance)?;
+        let memory = self.memory_slider.dragging.unwrap_or(saved);
         self.sync_memory_box(&instance.id, memory);
         let typed = launch::parse_memory(self.servers.value(Field::MemoryLimit));
         // While typing, the slider follows a value it can read.
         let memory = match (self.servers.has_focus(Field::MemoryLimit), typed) {
-            (true, Ok(typed)) => typed,
+            (true, Ok(typed)) => typed.unwrap_or(instances::DEFAULT_MEMORY_MB),
             _ => memory,
         };
-        let unit = (memory.is_some() || self.servers.has_focus(Field::MemoryLimit))
-            .then(|| text(theme::LABEL).text_color(t.ink_soft).child("MB"));
-        let input = self.field(Field::MemoryLimit, tr("No limit"), 120., cx);
-        let about = match java {
-            Some(_) => "How much memory Java may use (-Xmx). Set it too low and the game can crash.",
-            None => "The game stays under this. Very low values make it slower, and it crashes only if it can't run at all. Change it while playing with /ramlimit.",
-        };
+        let unit = text(theme::LABEL).text_color(t.ink_soft).child("MB");
+        let input = self.field(Field::MemoryLimit, "4096", 120., cx);
+        let about = "How much memory Java may use (-Xmx). Set it too low and the game can crash.";
         let track = div()
             .id("launch-memory")
             .relative()
@@ -323,15 +315,9 @@ impl Launcher {
                 cx.listener(|this, _: &MouseUpEvent, _, cx| this.finish_memory(cx)),
             );
         let result = self.memory_slider.saved.as_ref().map(|s| match s {
-            MemorySaved::Ok(Some(mb)) => text(theme::CAPTION).text_color(t.muted).child(trf(
+            MemorySaved::Ok(mb) => text(theme::CAPTION).text_color(t.muted).child(trf(
                 "Saved: the next Play uses at most {mb} MB.",
                 &[("mb", &mb.to_string())],
-            )),
-            MemorySaved::Ok(None) => text(theme::CAPTION)
-                .text_color(t.muted)
-                .child(tr("Saved: no memory limit on the next Play.")),
-            MemorySaved::Invalid => text(theme::CAPTION).text_color(t.danger).child(tr(
-                "Type a number of MB like 4096, or 4gb, or leave it empty for no limit.",
             )),
             MemorySaved::Error(e) => text(theme::CAPTION).text_color(t.danger).child(e.clone()),
         });
@@ -359,7 +345,7 @@ impl Launcher {
                                 .items_center()
                                 .gap(px(8.))
                                 .child(input)
-                                .children(unit),
+                                .child(unit),
                         ),
                 )
                 .child(track)
@@ -377,21 +363,16 @@ impl Launcher {
         let instance = self.memory_instance()?;
         let total = self.memory_slider.total();
         let area = self.memory_slider.area.clone();
-        let memory = self
-            .memory_slider
-            .dragging
-            .unwrap_or_else(|| Self::saved_memory(&instance));
+        let saved = Self::saved_memory(&instance)?;
+        let memory = self.memory_slider.dragging.unwrap_or(saved);
         self.sync_memory_box(&instance.id, memory);
         let typed = launch::parse_memory(self.servers.value(Field::MemoryLimit));
         let memory = match (self.servers.has_focus(Field::MemoryLimit), typed) {
-            (true, Ok(typed)) => typed,
+            (true, Ok(typed)) => typed.unwrap_or(instances::DEFAULT_MEMORY_MB),
             _ => memory,
         };
         let f = launch::memory_fraction(memory, total).clamp(0., 1.);
-        let about = match instance.java {
-            Some(_) => "How much memory Java may use (-Xmx). Set it too low and the game can crash.",
-            None => "The game stays under this. Very low values make it slower, and it crashes only if it can't run at all. Change it while playing with /ramlimit.",
-        };
+        let about = "How much memory Java may use (-Xmx). Set it too low and the game can crash.";
         let track = div()
             .id("instance-memory")
             .relative()
@@ -448,17 +429,12 @@ impl Launcher {
                 MouseButton::Left,
                 cx.listener(|this, _: &MouseUpEvent, _, cx| this.finish_memory(cx)),
             );
-        let unit = (memory.is_some() || self.servers.has_focus(Field::MemoryLimit))
-            .then(|| ui::text(13., FontWeight::NORMAL, 0.6).child("MB"));
-        let input = self.field(Field::MemoryLimit, tr("No limit"), 96., cx);
+        let unit = ui::text(13., FontWeight::NORMAL, 0.6).child("MB");
+        let input = self.field(Field::MemoryLimit, "4096", 96., cx);
         let result = self.memory_slider.saved.as_ref().map(|s| match s {
-            MemorySaved::Ok(Some(mb)) => div().child(trf(
+            MemorySaved::Ok(mb) => div().child(trf(
                 "Saved: the next Play uses at most {mb} MB.",
                 &[("mb", &mb.to_string())],
-            )),
-            MemorySaved::Ok(None) => div().child(tr("Saved: no memory limit on the next Play.")),
-            MemorySaved::Invalid => div().text_color(ui::danger()).child(tr(
-                "Type a number of MB like 4096, or 4gb, or leave it empty for no limit.",
             )),
             MemorySaved::Error(e) => div().text_color(ui::danger()).child(e.clone()),
         });
@@ -479,7 +455,7 @@ impl Launcher {
                         .gap(px(12.))
                         .child(track)
                         .child(input)
-                        .children(unit)
+                        .child(unit)
                         .into_any_element(),
                 ),
             )

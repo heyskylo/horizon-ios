@@ -703,19 +703,21 @@ impl Game<'_> {
         self.native_living_conversion_post(from.id, &from_kind, id, &transformed_kind);
         Some(id)
     }
+    /// Default position for a summon command (3 blocks in front of the player).
+    pub(super) fn default_summon_position(&self) -> Result<[f64; 3]> {
+        let p = self.player.as_ref().ok_or("no player yet")?;
+        let d = view_vector(self.yaw, 0.0);
+        Ok([
+            p.position.x + d[0] * 3.0,
+            p.position.y,
+            p.position.z + d[2] * 3.0,
+        ])
+    }
     /// The `summon` command: spawn a mob in front of the player or at a position.
     pub(super) fn summon(&mut self, kind: &str, at: Option<[f64; 3]>, baby: bool) -> Result<u32> {
         let at = match at {
             Some(a) => a,
-            None => {
-                let p = self.player.as_ref().ok_or("no player yet")?;
-                let d = view_vector(self.yaw, 0.0);
-                [
-                    p.position.x + d[0] * 3.0,
-                    p.position.y,
-                    p.position.z + d[2] * 3.0,
-                ]
-            }
+            None => self.default_summon_position()?,
         };
         let id = self
             .spawn_mob_spawned(kind, at)
@@ -1723,7 +1725,12 @@ impl Game<'_> {
         }
     }
     /// Melee or ranged damage to another mob; whether the hit landed.
-    fn mob_hits_mob(&mut self, target: u32, amount: f32, source: Damage) -> bool {
+    fn mob_hits_mob(&mut self, target: u32, amount: f32, mut source: Damage) -> bool {
+        if source.attacker_species.is_none()
+            && let Some(Who::Mob(id)) = source.attacker
+        {
+            source.attacker_species = self.mobs.iter().find(|m| m.id == id).map(|m| m.species());
+        }
         let mut killed = false;
         let mut hurt = false;
         let mut infested = false;
@@ -2402,6 +2409,7 @@ impl Game<'_> {
                                 kind: DamageKind::SonicBoom,
                                 attacker: Some(Who::Mob(attacker)),
                                 from: Some(from),
+                                attacker_species: Some(Species::Warden),
                             };
                             let hurt = self.mob_hits_mob(id, 10.0, source);
                             let resistance = self
@@ -2919,6 +2927,16 @@ impl Game<'_> {
                     ambient,
                 } => {
                     self.give_mob_effect(effect, ticks, amplifier, ambient);
+                }
+                MobEvent::EffectMob {
+                    target,
+                    effect,
+                    ticks,
+                    amplifier,
+                } => {
+                    if let Some(t) = self.mobs.iter_mut().find(|m| m.id == target) {
+                        t.add_effect(effect, ticks, amplifier);
+                    }
                 }
                 MobEvent::Ignite { target, seconds } => match target {
                     Who::Player => {
@@ -4391,7 +4409,7 @@ impl Game<'_> {
         let _ = self.destroy_block_dropping(pos);
     }
     /// What an arrow's tick asked for: its particles and sounds.
-    fn arrow_event(&mut self, at: Vec3, event: horizon_client::arrows::ArrowEvent) {
+    pub(super) fn arrow_event(&mut self, at: Vec3, event: horizon_client::arrows::ArrowEvent) {
         use horizon_client::arrows::{ArrowEvent, ArrowParticle, ArrowSound, BlockReaction};
         use horizon_client::particles::{ParticleOptions, ParticleType};
         let kind = |k| match k {
@@ -4733,10 +4751,15 @@ impl Game<'_> {
             }
             _ => DamageKind::Thrown,
         };
+        let attacker_species = match p.owner {
+            Some(Who::Mob(id)) => self.mobs.iter().find(|m| m.id == id).map(|m| m.species()),
+            _ => None,
+        };
         let source = Damage {
             kind: source_kind,
             attacker: p.owner,
             from: Some([p.previous.x, p.previous.y, p.previous.z]),
+            attacker_species,
         };
         let aim = self.attacker_aim(source.attacker);
         match (&p.kind, hit) {
@@ -7956,6 +7979,7 @@ mod damage_type_tests {
                     kind: DamageKind::Named(named),
                     attacker,
                     from: None,
+                    attacker_species: None,
                 }),
                 "example:fan_fire"
             );
@@ -7970,6 +7994,7 @@ mod damage_type_tests {
             kind: DamageKind::Explosion,
             attacker,
             from: Some([0.0; 3]),
+            attacker_species: None,
         };
         let creeper = blast(Some(Who::Mob(7)));
         assert_eq!(source_damage_type(creeper), "minecraft:player_explosion");

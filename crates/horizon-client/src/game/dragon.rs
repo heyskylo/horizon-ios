@@ -462,6 +462,7 @@ fn is_fire(kind: DamageKind) -> bool {
         kind,
         attacker: None,
         from: None,
+        attacker_species: None,
     };
     source.is_fire()
 }
@@ -1366,6 +1367,7 @@ impl Game<'_> {
                 kind,
                 attacker: by_player.then_some(Who::Player),
                 from: None,
+                attacker_species: None,
             });
             // `damageSources().explosion(crystal, player)`: the crystal is the direct entity.
             if kind == DamageKind::Explosion {
@@ -2400,7 +2402,10 @@ impl Game<'_> {
                 [0.0; 3],
             );
         }
-        let first_kill = !self.fight.previously_killed;
+        // ServerLevel.getDragonFight: only the End has a fight; elsewhere
+        // (`/summon`) a dragon is worth 500 and its death ends nothing.
+        let fight = self.dim == Dim::End;
+        let first_kill = fight && !self.fight.previously_killed;
         let xp = if first_kill { 12000 } else { 500 };
         let drops = self.ui.rules.bool("mob_drops");
         if t > 150 && t % 5 == 0 && drops {
@@ -2423,7 +2428,9 @@ impl Game<'_> {
                 self.spawn_orbs([p.x, p.y, p.z], (xp as f32 * 0.2) as u32);
             }
             self.dragon = None;
-            self.dragon_killed();
+            if fight {
+                self.dragon_killed();
+            }
         }
     }
     /// `EnderDragonFight.setDragonKilled`.

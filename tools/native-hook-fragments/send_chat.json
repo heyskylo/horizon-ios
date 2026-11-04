@@ -1,9 +1,0 @@
-{
-  "hooks": [],
-  "helpers": [
-    {"name": "send_chat", "target": "horizon_client::game::native_net::Game<'_>::native_send_chat"}
-  ],
-  "rust_summary": "a client mod's chat line or command to the server (`native_send_chat`).",
-  "doc_summary": "`native_send_chat(message)` sends chat, or a command with a leading `/`, as the chat screen would, to any server; an error when not in a server's play state, for an empty message, or when the Chat option blocks it. Bundles need \"hooks\": @API:send_chat@.",
-  "comments": ["crates/horizon-client/src/game/native_net.rs"]
-}

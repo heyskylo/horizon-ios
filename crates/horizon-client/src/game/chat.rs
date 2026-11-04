@@ -63,8 +63,6 @@ impl Game<'_> {
     ) -> horizon_client::command::Dispatcher {
         let mut names = Vec::new();
         self.native_commands(&mut names);
-        // The window answers this one itself, as it does a client mod's.
-        names.push(horizon_client::ram_limit::COMMAND);
         let base = match base {
             Some(tree) => tree,
             None => horizon_client::command::vanilla::game_dispatcher(),
@@ -1719,17 +1717,6 @@ mod tests {
         assert_eq!(once.effects, ["b"]);
         assert!(!Arc::ptr_eq(&once, &command_export(&other, false).unwrap()));
         let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn the_ram_limit_command_is_known_to_the_chat_box() {
-        let reg = Registries::default();
-        let vanilla = horizon_client::command::vanilla::game_dispatcher();
-        assert!(vanilla.find(horizon_client::ram_limit::COMMAND).is_none());
-        let tree = with_native_commands(vanilla, &[horizon_client::ram_limit::COMMAND]);
-        for typed in ["ramlimit", "ramlimit 2048", "ramlimit off"] {
-            assert!(tree.parse(typed, &reg).executable().is_ok(), "{typed}");
-        }
     }
 
     /// A native mod's command is in the tree the chat box uses (#456): known
