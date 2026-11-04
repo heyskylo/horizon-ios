@@ -1,9 +1,0 @@
-{
-  "hooks": [],
-  "helpers": [
-    {"name": "send_packet", "target": "horizon_client::game::native_net::Game<'_>::native_send_packet"}
-  ],
-  "rust_summary": "a client mod's play packet to the server, as it is (`native_send_packet`).",
-  "doc_summary": "`native_send_packet(packet)` sends any serverbound play packet (`ServerboundPlayPacket`), a plugin channel's custom payload included, to any server, unchecked; an error when not in a server's play state. Bundles need \"hooks\": @API:send_packet@.",
-  "comments": ["crates/horizon-client/src/game/native_net.rs"]
-}

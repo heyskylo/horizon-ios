@@ -1872,7 +1872,7 @@ fn custom_server_ai_step(m: &mut Mob, cx: &mut Cx) {
         Species::ElderGuardian => super::guardian::elder_server_ai_step(m, cx),
         Species::Wither if m.alive() => super::wither::custom_server_ai_step(m, cx.w, cx.events),
         // SpellcasterIllager.customServerAiStep.
-        Species::Evoker if m.extra.counter > 0 => m.extra.counter -= 1,
+        Species::Evoker | Species::Illusioner if m.extra.counter > 0 => m.extra.counter -= 1,
         Species::Bat => super::bat::server_ai_step(m, cx.w, cx.events),
         Species::Bee => super::bee::server_ai_step(m, cx),
         Species::Frog => super::frog::server_ai_step(m, cx.w),

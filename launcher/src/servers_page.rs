@@ -324,6 +324,15 @@ impl Servers {
         self.texts.get(&f).map_or("", LineEdit::text)
     }
 
+    /// Mark a field invalid without an explanatory message, or clear its previous error.
+    pub(super) fn set_field_invalid(&mut self, field: Field, invalid: bool) {
+        if invalid {
+            self.invalid = Some((field, ""));
+        } else if self.invalid.is_some_and(|(current, _)| current == field) {
+            self.invalid = None;
+        }
+    }
+
     /// Whether this field has the keyboard, as of this frame.
     pub(super) fn has_focus(&self, f: Field) -> bool {
         self.focused == Some(f)

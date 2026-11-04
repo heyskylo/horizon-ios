@@ -170,7 +170,7 @@ impl Game<'_> {
     /// chat history, and no client chat event (vanilla's `ClientChatEvent`
     /// comes only from ChatScreen). An error when the player isn't in a
     /// server's play state or the Chat option blocks the message. API
-    /// @API:send_chat@.
+    /// 404.
     pub(super) fn native_send_chat(&mut self, message: &str) -> Result<(), String> {
         let Some(remote) = self.remote.as_ref() else {
             return Err("not connected to a server".into());
@@ -197,7 +197,7 @@ impl Game<'_> {
     /// the client's own state is the mod's to get right. An error when the
     /// player isn't in a server's play state, and for a custom payload past
     /// `ServerboundCustomPayloadPacket.MAX_PAYLOAD_SIZE`, which a server
-    /// disconnects for. API @API:send_packet@.
+    /// disconnects for. API 409.
     pub(super) fn native_send_packet(
         &mut self,
         packet: ServerboundPlayPacket,

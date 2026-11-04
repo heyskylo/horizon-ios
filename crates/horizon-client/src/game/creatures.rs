@@ -703,19 +703,21 @@ impl Game<'_> {
         self.native_living_conversion_post(from.id, &from_kind, id, &transformed_kind);
         Some(id)
     }
+    /// Default position for a summon command (3 blocks in front of the player).
+    pub(super) fn default_summon_position(&self) -> Result<[f64; 3]> {
+        let p = self.player.as_ref().ok_or("no player yet")?;
+        let d = view_vector(self.yaw, 0.0);
+        Ok([
+            p.position.x + d[0] * 3.0,
+            p.position.y,
+            p.position.z + d[2] * 3.0,
+        ])
+    }
     /// The `summon` command: spawn a mob in front of the player or at a position.
     pub(super) fn summon(&mut self, kind: &str, at: Option<[f64; 3]>, baby: bool) -> Result<u32> {
         let at = match at {
             Some(a) => a,
-            None => {
-                let p = self.player.as_ref().ok_or("no player yet")?;
-                let d = view_vector(self.yaw, 0.0);
-                [
-                    p.position.x + d[0] * 3.0,
-                    p.position.y,
-                    p.position.z + d[2] * 3.0,
-                ]
-            }
+            None => self.default_summon_position()?,
         };
         let id = self
             .spawn_mob_spawned(kind, at)
@@ -1486,7 +1488,16 @@ impl Game<'_> {
     /// causing entity, and the projectile when one dealt it.
     pub(super) fn damage_view(&self, d: Damage) -> horizon_client::advancements::DamageView {
         let source = match d.attacker {
-            Some(Who::Player) => Some(self.player_entity()),
+            // Its callers are KilledTrigger's: the source as their killing_blow sees it.
+            Some(Who::Player) => Some(
+                self.player_entity_looking(
+                    self.adv.tree.may_look("minecraft:player_killed_entity")
+                        || self
+                            .adv
+                            .tree
+                            .may_look("minecraft:kill_mob_near_sculk_catalyst"),
+                ),
+            ),
             Some(Who::Mob(id)) => self
                 .mobs
                 .iter()
@@ -2685,26 +2696,7 @@ impl Game<'_> {
                     self.native_entity_break_door(mob, &kind, pos);
                 }
                 MobEvent::DestroyProgress { mob, pos, progress } => {
-                    self.destroy_block_progress(mob as i32, pos, progress);
-                    // ServerLevel.destroyBlockProgress: every player nearby sees it.
-                    if let Some(host) = self.lan.as_ref() {
-                        host.hub.broadcast_near(
-                            [f64::from(pos[0]), f64::from(pos[1]), f64::from(pos[2])],
-                            64.0,
-                            &horizon_protocol::packets::play::Clientbound::BlockDestruction(
-                                horizon_protocol::packets::play::BlockDestruction {
-                                    id: mob as i32,
-                                    pos,
-                                    progress: if (0..10).contains(&progress) {
-                                        progress as u8
-                                    } else {
-                                        255
-                                    },
-                                },
-                            ),
-                            None,
-                        );
-                    }
+                    self.server_destroy_block_progress(mob as i32, pos, progress);
                 }
                 MobEvent::LevelEvent { id, pos, data } => self.level_event_at(id, pos, data),
                 MobEvent::SetBlockName {
@@ -2925,6 +2917,16 @@ impl Game<'_> {
                     ambient,
                 } => {
                     self.give_mob_effect(effect, ticks, amplifier, ambient);
+                }
+                MobEvent::EffectMob {
+                    target,
+                    effect,
+                    ticks,
+                    amplifier,
+                } => {
+                    if let Some(t) = self.mobs.iter_mut().find(|m| m.id == target) {
+                        t.add_effect(effect, ticks, amplifier);
+                    }
                 }
                 MobEvent::Ignite { target, seconds } => match target {
                     Who::Player => {
@@ -4397,7 +4399,7 @@ impl Game<'_> {
         let _ = self.destroy_block_dropping(pos);
     }
     /// What an arrow's tick asked for: its particles and sounds.
-    fn arrow_event(&mut self, at: Vec3, event: horizon_client::arrows::ArrowEvent) {
+    pub(super) fn arrow_event(&mut self, at: Vec3, event: horizon_client::arrows::ArrowEvent) {
         use horizon_client::arrows::{ArrowEvent, ArrowParticle, ArrowSound, BlockReaction};
         use horizon_client::particles::{ParticleOptions, ParticleType};
         let kind = |k| match k {

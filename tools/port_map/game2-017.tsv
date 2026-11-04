@@ -1,6 +1,7 @@
+BellBlockEntity.serverTick	port	crates/horizon-client/src/game/block_entity_anims.rs::Game::tick_bell_servers	world-owned ringing bells tick without a renderer; clients animate their separate copy
 BellBlockEntity.areRaidersNearby	inline	crates/horizon-client-render/src/block_entity_anim.rs::Bell::tick	resonation start check (raider within 32 blocks) folded into Bell::tick
-BellBlockEntity.makeRaidersGlow	port	crates/horizon-client/src/game/block_entity_anims.rs::Game::tick_block_entity_anims	GLOWING 60 applied to the raiders Bell::tick returns
-BellBlockEntity.showBellParticles	port	crates/horizon-client-render/src/block_entity_anim.rs::Bell::tick	particle positions and colours computed here; emitted in tick_block_entity_anims
+BellBlockEntity.makeRaidersGlow	port	crates/horizon-client/src/game/block_entity_anims.rs::Game::tick_bell	GLOWING 60 applied to the raiders Bell::tick returns
+BellBlockEntity.showBellParticles	port	crates/horizon-client-render/src/block_entity_anim.rs::Bell::tick	particle positions and colours computed here; emitted in Game::tick_bell
 BellBlockEntity.isRaiderWithinRange	inline	crates/horizon-client-render/src/block_entity_anim.rs::Bell::tick	raider_in closure (48 blocks)
 BlockEntity.validateBlockState	skip:other		guard that throws on a wrong block state; no player behaviour
 BlockEntity.getPosFromTag	missing		`save::decode_block_entity` keeps the saved x/y/z and `game.rs:1762` inserts the block entity at that key; a block entity saved in the wrong chunk keeps its saved x/z

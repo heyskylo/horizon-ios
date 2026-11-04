@@ -860,7 +860,7 @@ impl Game<'_> {
         // sent again when one of those options changes.
         let info = self
             .settings
-            .client_information(client_view_distance(self.render_distance_in_use()));
+            .client_information(client_view_distance(self.settings.render_distance));
         if local.is_none() && !self.options.split_guest {
             horizon_client::crash::set_detail(
                 "Server",
@@ -922,7 +922,7 @@ impl Game<'_> {
             self.res.threads(),
         );
         streaming.remote = true;
-        streaming.radius = self.render_distance_in_use();
+        streaming.radius = self.settings.render_distance;
         self.streaming = streaming;
         self.world = World::new(self.res.facts().air, 0);
         self.save = Arc::new(SaveDir::new(
@@ -1202,12 +1202,7 @@ impl Game<'_> {
         // Out of the server's bed: InBedChatScreen goes with the level.
         self.sleeping = None;
         self.sleep_timer = 0;
-        self.mobs.clear();
-        self.clear_remote_objects();
-        self.clear_remote_projectiles();
-        self.dropped.clear();
-        self.particles.clear();
-        self.pickups.clear();
+        self.clear_entities();
         self.score.board = Default::default();
         self.tab_list = Default::default();
         self.border = Default::default();
@@ -3162,7 +3157,7 @@ impl Game<'_> {
                     r.do_limited_crafting = p.limited_crafting;
                 }
                 self.streaming.radius =
-                    self.render_distance_in_use().min(p.chunk_radius + 1).max(2);
+                    self.settings.render_distance.min(p.chunk_radius + 1).max(2);
                 // handleLogin: startWaitingForNewLevel(.., Reason.OTHER).
                 self.enter_remote_dimension(
                     &p.spawn,
@@ -3171,7 +3166,7 @@ impl Game<'_> {
                 );
                 let info = self
                     .settings
-                    .client_information(client_view_distance(self.render_distance_in_use()));
+                    .client_information(client_view_distance(self.settings.render_distance));
                 if let Some(r) = self.remote.as_mut() {
                     r.sent_info = info.clone();
                 }
@@ -4084,6 +4079,10 @@ impl Game<'_> {
                 if p.event == 21 {
                     self.start_guardian_sound(p.id as u32);
                 }
+                // ZombieVillager.handleEntityEvent 16: the cure starts.
+                if p.event == 16 {
+                    self.zombie_villager_cure_sound(p.id as u32);
+                }
                 // Witch.handleEntityEvent 15: the magic puffs over its hat.
                 if p.event == 15 {
                     self.witch_magic_particles(p.id as u32);
@@ -4941,7 +4940,7 @@ impl Game<'_> {
                 }
             }
             C::SetChunkCacheRadius(p) => {
-                self.streaming.radius = self.render_distance_in_use().min(p.distance + 1).max(2);
+                self.streaming.radius = self.settings.render_distance.min(p.distance + 1).max(2);
                 if let Some(r) = self.remote.as_mut() {
                     r.view_distance = p.distance;
                 }
@@ -5889,10 +5888,9 @@ impl Game<'_> {
         self.tick_bundle_hover();
         // Options.broadcastOptions: a changed render distance or Chat option
         // is sent again.
-        self.tick_ram_limit();
         let info = self
             .settings
-            .client_information(client_view_distance(self.render_distance_in_use()));
+            .client_information(client_view_distance(self.settings.render_distance));
         if let Some(r) = self.remote.as_mut()
             && r.joined
             && r.sent_info != info
@@ -9166,10 +9164,7 @@ impl Game<'_> {
             return;
         }
         if let Some(command) = message.strip_prefix('/') {
-            // The player's own RAM limit, which no server has a say in.
-            if !self.ram_limit_command(command) {
-                self.send_command(command);
-            }
+            self.send_command(command);
         } else {
             self.send_signed_chat(message);
         }
@@ -10290,6 +10285,14 @@ impl horizon_world::level::LevelAccess for DryLevel<'_> {
     }
     fn is_loaded(&self, pos: horizon_core::position::BlockPos) -> bool {
         self.base.is_loaded(pos)
+    }
+    /// A block this guess changed has no block entity left, so it reads as a
+    /// missing one; every other position asks the level it stands in for.
+    fn shulker_is_closed(&self, pos: horizon_core::position::BlockPos) -> Option<bool> {
+        if self.changed.contains_key(&pos) {
+            return None;
+        }
+        self.base.shulker_is_closed(pos)
     }
     fn min_y(&self) -> i32 {
         self.base.min_y()

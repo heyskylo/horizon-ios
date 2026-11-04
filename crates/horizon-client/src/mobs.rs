@@ -1989,6 +1989,14 @@ pub enum MobEvent {
         /// `MobEffectInstance` ambient flag (the beacon-style translucent icon).
         ambient: bool,
     },
+    /// Apply an effect to another mob: `IllusionerBlindnessSpellGoal.performSpellCasting`
+    /// blinds whatever `LivingEntity` the illusioner targets, not only a player.
+    EffectMob {
+        target: u32,
+        effect: &'static str,
+        ticks: i32,
+        amplifier: i32,
+    },
     /// Set an entity on fire.
     Ignite {
         target: Who,
