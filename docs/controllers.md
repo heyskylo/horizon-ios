@@ -147,7 +147,7 @@ real mouse hands control back at once.
 
 Every interactive rectangle a screen draws registers itself as a focus
 target with its kind (`widgets::target_as`): classic buttons, sliders, edit
-boxes and list rows (worlds, servers, languages), icon buttons (the title's
+boxes and list rows (worlds, servers, languages, superflat layers and presets, biomes), icon buttons (the title's
 and pause menu's Friends button), inventory and container slots, creative and recipe-book
 tabs, and the stations' own buttons (trades, loom patterns, beacon effects,
 enchantments, stonecutter recipes, the recipe book's recipes, pages and
@@ -164,23 +164,24 @@ the crafting result, armour to the player's grid.
 
 | Input | Focus mode |
 |---|---|
-| D-pad, left stick | move focus (held: repeats after 0.35 s, every 0.09 s) |
+| D-pad, left stick | move focus (held: repeats after 0.35 s, every 0.09 s; the stick steps past 0.55 and lets go under 0.35) |
 | A | press the focused widget: a button when A is let go, if the focus is still on it; anything else when A goes down (held: drag); on a text field, type with the on-screen keyboard. With nothing focused yet, A only lands the focus, as the D-pad does |
 | B, Menu | back (Escape); on the title's main menu, B moves the focus to Quit Game, for A to confirm |
 | X | right click (inventories: take half, place one); on the title's main menu, Options |
 | Y | quick move (shift-click) in inventories; on the pause menu, moves the focus to the exit button, for A to confirm |
 | View | throw one item from the focused slot (Q) |
 | Left stick click | throw the focused stack (Ctrl+Q) |
-| LB / RB | previous / next tab (creative, recipe book, the Horizon options' sections) |
-| Right stick | scroll |
+| LB / RB | previous / next tab (Create World, Player Social, the graphics settings' sidebar) |
+| Right stick | scroll the list, wherever the focus is: the focus stays on its row (when the row leaves the view, on the nearest one still in view), no value changes, and nothing scrolls under the on-screen keyboard |
 
 - **Declared buttons**: a button that says what it's for gets its controller
   button and a glyph on it while the pad drives; see "Adding a screen".
 - **Sliders**: left and right move the value (one pixel per press like
   vanilla's arrow keys, faster while held); A does nothing on a slider, as a
   click would jump the handle.
-- **Lists** follow focus: a step past the last visible row scrolls the list
-  and lands on the next row once it is drawn.
+- **Lists** follow focus: a step out of a list that can still scroll that way
+  scrolls it and lands on the next row once it is drawn, so every row can be
+  reached; the buttons below or above come after its last or first row.
 - **Inventories**: the carried stack is drawn on the focused slot (vanilla
   draws it under the pointer). A takes or places, X splits or places one, Y
   quick-moves, View and the left stick click throw.
@@ -265,10 +266,13 @@ Approximations:
   onto the nearest slot or control; a short flick toward a neighbouring slot
   lands on that slot rather than back where it started. The rules and their
   numbers live in one place (`horizon_client_input::snap`).
-- D-pad hops to the nearest target that way (a slot, a button).
+- D-pad hops to the nearest target that way (a slot, a button). Held, it stops
+  at the edge of the slots it is on; a fresh press crosses.
 - A = left click, X = right click, Y = quick move, B = back; View and the left
   stick click throw, as in focus mode.
-- LB / RB switch tabs; right stick scrolls.
+- LB / RB switch tabs (creative, Statistics, Advancements); with the recipe book
+  open they turn its pages, stopping at the ends, and LT / RT change its category.
+  Right stick scrolls.
 - Sliders: hold A on the slider and move the stick, or nudge with the D-pad.
 
 The cursor is drawn only while the pad is the last-used input.

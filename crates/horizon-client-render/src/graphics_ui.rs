@@ -1946,7 +1946,18 @@ impl GraphicsUi {
             return;
         };
         let x = cols.bar_x();
-        let track = [x, cols.top, style::SCROLLER_W, cols.bottom - cols.top];
+        let height = cols.bottom - cols.top;
+        crate::widgets::scroll_area(
+            [
+                cols.list_x,
+                cols.top,
+                x + style::SCROLLER_W - cols.list_x,
+                height,
+            ],
+            self.scroll.amount,
+            content - height,
+        );
+        let track = [x, cols.top, style::SCROLLER_W, height];
         style::scroller(batch, atlas, track, [x, y, style::SCROLLER_W, bar]);
     }
     /// The strip under the plate: the hovered or focused setting's name and
