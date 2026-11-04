@@ -253,7 +253,7 @@ impl Mob {
     }
     /// RandomPos.generateRandomPosTowardDirection: a mob with a home leans
     /// half the distance back toward it.
-    pub fn toward(&mut self, h: f64, d: [i32; 3]) -> [i32; 3] {
+    fn toward(&mut self, h: f64, d: [i32; 3]) -> [i32; 3] {
         let (mut xt, mut zt) = (f64::from(d[0]), f64::from(d[2]));
         if let Some((c, _)) = self.ai.home
             && h > 1.0
