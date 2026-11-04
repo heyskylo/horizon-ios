@@ -354,3 +354,54 @@ fn the_shop_status_is_asked_without_a_session() {
         ("GET", "/v1/shop", "")
     );
 }
+
+#[test]
+fn a_claim_through_paddle_brings_a_checkout_and_the_history_its_orders() {
+    let answer = json!({
+        "uuid": "u", "name": "Notch", "owned": [], "equipped": {}, "visible": true,
+        "claim": {"state": "open", "items": ["hat"], "starts_at": 1, "ends_at": 2, "claimed": false, "open": true},
+        "purchases": [
+            {"transaction_id": "txn_b", "item": "top_hat", "amount": 330, "currency": "EUR", "status": "refunded", "at": 9},
+            {"transaction_id": "txn_a", "item": "founder_set", "amount": 0, "currency": "CHF", "status": "paid", "at": 5}
+        ],
+        "checkout": {"transaction_id": "txn_c", "checkout_url": "https://playhorizon.dev/shop/pay?_ptxn=txn_c"}
+    });
+    let me: Me = serde_json::from_value(answer).unwrap();
+    assert_eq!(
+        me.checkout.as_ref().and_then(|c| c.url()),
+        Some("https://playhorizon.dev/shop/pay?_ptxn=txn_c")
+    );
+    assert_eq!(me.purchases[0].price().as_deref(), Some("3.30 EUR"));
+    assert_eq!(me.purchases[1].price(), None);
+    // The checkout is never kept on disk; the history is.
+    let kept: Me = serde_json::from_str(&serde_json::to_string(&me).unwrap()).unwrap();
+    assert!(kept.checkout.is_none());
+    assert_eq!(kept.purchases, me.purchases);
+    // An answer from before sales still reads.
+    let old: Me = serde_json::from_value(json!({
+        "uuid": "u", "name": "Notch", "owned": [], "equipped": {},
+        "claim": {"state": "not_yet", "items": [], "starts_at": null, "ends_at": null}
+    }))
+    .unwrap();
+    assert!(old.purchases.is_empty() && old.checkout.is_none());
+}
+
+#[test]
+fn only_horizons_checkout_page_is_opened() {
+    let at = |u: &str| Checkout {
+        transaction_id: "txn".into(),
+        checkout_url: u.into(),
+    };
+    assert!(at("https://www.playhorizon.dev/shop/pay?_ptxn=txn_1")
+        .url()
+        .is_some());
+    for bad in [
+        "https://evil.example/shop/pay?_ptxn=txn_1",
+        "https://playhorizon.dev.evil.example/shop/pay?_ptxn=1",
+        "http://playhorizon.dev/shop/pay?_ptxn=txn_1",
+        "https://playhorizon.dev/shop/pay?_ptxn=a b",
+        "file:///etc/passwd",
+    ] {
+        assert!(at(bad).url().is_none(), "{bad}");
+    }
+}

@@ -1098,7 +1098,6 @@
   "August": "august",
   "Back to the wardrobe": "Tagasi garderoobi",
   "Bound to your Minecraft account, on every computer you sign in on.": "Seotud teie Minecrafti kontoga igas arvutis, kuhu sisse logite.",
-  "Bound to your Minecraft account. Nothing to pay, no card asked.": "Seotud teie Minecrafti kontoga. Midagi pole vaja maksta, kaarti ei küsita.",
   "Changes waiting to sync: {n}": "Sünkroonimist ootavad muudatused: {n}",
   "Claimed · Open the wardrobe": "Välja võetud · Ava garderoob",
   "Claiming…": "Välja võtmine…",
@@ -1152,5 +1151,18 @@
   "{d} days {h} h": "{d} päeva {h} h",
   "{h} h {m} min": "{h} h {m} min",
   "{m} min": "{m} min",
-  "{time} left to claim it": "väljavõtmiseks jäänud {time}"
+  "{time} left to claim it": "väljavõtmiseks jäänud {time}",
+  "Bound to your Minecraft account. Free: a 0 CHF checkout through Paddle records your claim.": "Seotud teie Minecrafti kontoga. Tasuta: Paddle'i kaudu tehtud 0 CHF ostukorv registreerib teie nõude.",
+  "Finish the free checkout in your browser. The set lands here a moment later.": "Lõpetage tasuta makse oma brauseris. Komplekt ilmub siia hetke pärast.",
+  "Open the checkout again": "Ava makse uuesti",
+  "Waiting for the checkout…": "Makset oodatakse…",
+  "Your purchases": "Teie ostud",
+  "Refunded": "Tagastatud",
+  "Partly refunded": "Osaliselt tagastatud",
+  "Charged back": "Pank tühistas makse",
+  "Paid": "Makstud",
+  "Order {id}": "Tellimus {id}",
+  "The claim didn't go through: the checkout's address isn't Horizon's.": "Nõue ei läinud läbi: makselehe aadress ei kuulu Horizonile.",
+  "Paste a friend's invite code": "Kleepige sõbra kutsekood",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Mängib {build}, ehitatud Horizon {commit} peale, mille on kinnitanud {mods}, mitte {version} peale."
 }

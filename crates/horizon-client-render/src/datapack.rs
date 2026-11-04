@@ -58,6 +58,24 @@ impl DataPack {
         }
         out
     }
+    /// The files of `data/<namespace>/<folder>/` in every namespace, as
+    /// `list` names them; a folder pack walks only those folders.
+    pub fn list_folder(&self, folder: &str) -> Vec<String> {
+        let files = self.list_kinds(&[folder]);
+        let Source::Zip(_) = &self.source else {
+            return files;
+        };
+        files
+            .into_iter()
+            .filter(|f| {
+                f.strip_prefix("data/")
+                    .and_then(|r| r.split_once('/'))
+                    .is_some_and(|(_, r)| {
+                        r.strip_prefix(folder).is_some_and(|r| r.starts_with('/'))
+                    })
+            })
+            .collect()
+    }
     pub fn read(&self, path: &str) -> Option<Vec<u8>> {
         match &self.source {
             Source::Zip(z) => z.read(path).ok(),

@@ -376,6 +376,10 @@ pub(super) fn supported(
         // The pass binds 8, the last cave culling's graph.
         && limits.max_storage_buffers_per_shader_stage >= 8
         && !super::flat::is_broken_intel_vulkan(info)
+        // DX12's count draws leave each draw's base vertex out of `vertex_index`, by which the
+        // pulled solid pipelines (those of a device with flat page groups) read the page.
+        // shortcut: not offered there, until GPU culling's draws carry their base vertex otherwise.
+        && !(info.backend == wgpu::Backend::Dx12 && flat_min_sections.is_some())
 }
 
 /// A buffer that is recreated larger when it must hold more.

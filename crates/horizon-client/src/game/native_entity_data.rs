@@ -12,7 +12,7 @@ const MAX_TAGS: usize = 1024;
 impl Game<'_> {
     /// The entity's data as `/data get entity` shows it
     /// (`Entity.saveWithoutId`): its compound without `id`. An entity with no
-    /// UUID yet gets the one it will be saved with. API @API:entity_data@.
+    /// UUID yet gets the one it will be saved with. API 386.
     pub(super) fn native_entity_nbt(&mut self, entity: EntityRef) -> Option<Compound> {
         let t = self.native_entity_target(entity)?;
         match self.entity_nbt(t)? {
@@ -28,7 +28,7 @@ impl Game<'_> {
     /// changed. False for a player (vanilla refuses them too), a kind Horizon
     /// can't reload yet (only mobs, dropped items, armor stands and item
     /// frames), data nested too deep, or data that changes nothing. API
-    /// @API:entity_data@.
+    /// 386.
     pub(super) fn native_entity_merge_nbt(&mut self, entity: EntityRef, nbt: Compound) -> bool {
         let Some(t) = self.native_entity_target(entity) else {
             return false;
@@ -44,12 +44,12 @@ impl Game<'_> {
         merged != old && self.apply_entity_nbt(t, merged).is_ok()
     }
     /// The entity's tags (`Entity.getTags`), as `/tag <entity> list` shows
-    /// them. API @API:entity_data@.
+    /// them. API 386.
     pub(super) fn native_entity_tags(&self, entity: EntityRef) -> Option<Vec<String>> {
         Some(self.tags_of(self.native_entity_target(entity)?))
     }
     /// Adds tag `tag` (`Entity.addTag`): false when it has it already, holds
-    /// 1024, its kind can't store tags yet, or the handle is stale. API @API:entity_data@.
+    /// 1024, its kind can't store tags yet, or the handle is stale. API 386.
     pub(super) fn native_entity_add_tag(&mut self, entity: EntityRef, tag: &str) -> bool {
         let Some(t) = self.native_entity_target(entity) else {
             return false;
@@ -64,7 +64,7 @@ impl Game<'_> {
         self.set_entity_tags(t, &tags)
     }
     /// Removes tag `tag` (`Entity.removeTag`): false when it didn't have it.
-    /// API @API:entity_data@.
+    /// API 386.
     pub(super) fn native_entity_remove_tag(&mut self, entity: EntityRef, tag: &str) -> bool {
         let Some(t) = self.native_entity_target(entity) else {
             return false;
@@ -75,7 +75,7 @@ impl Game<'_> {
         tags.len() != before && self.set_entity_tags(t, &tags)
     }
     /// The entity's name as plain text (`Entity.getName`): its custom name,
-    /// a player's name, else its type's name. API @API:entity_data@.
+    /// a player's name, else its type's name. API 386.
     pub(super) fn native_entity_name(&self, entity: EntityRef) -> Option<String> {
         Some(self.target_name(self.native_entity_target(entity)?).plain())
     }

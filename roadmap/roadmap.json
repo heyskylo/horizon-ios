@@ -1179,10 +1179,11 @@
    "status": "help-wanted",
    "area": "gameplay",
    "plain": "Banners in End cities show as plain magenta instead of with their pattern.",
-   "dev": "Compare the banner block entities the End city templates place with vanilla's (`EndCityPieces`, the templates' block entity NBT, `BannerBlockEntity`'s patterns), in `crates/horizon-world/src/worldgen/structure/`. Issue #1438; possibly related: #526.",
+   "dev": "Compare the banner block entities the End city templates place with vanilla's (`EndCityPieces`, the templates' block entity NBT, `BannerBlockEntity`'s patterns), in `crates/horizon-world/src/worldgen/structure/`. Issue #1438; possibly related: #526. The templates' block entities now keep their patterns (#1928).",
    "links": [
     "#1438",
-    "#526"
+    "#526",
+    "#1928"
    ]
   },
   {
@@ -1191,10 +1192,12 @@
    "status": "help-wanted",
    "area": "gameplay",
    "plain": "Armour and tools in End city chests should come enchanted, as in vanilla.",
-   "dev": "`loot.rs` implements `enchant_with_levels`: find why the End city chest table's rolls come out bare, and compare them with vanilla's for a few seeds. Issues #1437, #1660.",
+   "dev": "`loot.rs` implements `enchant_with_levels`: find why the End city chest table's rolls come out bare, and compare them with vanilla's for a few seeds. Issues #1437, #1660. The loot's enchantment functions now reach every table that rolls (#1911, #2037).",
    "links": [
     "#1437",
-    "#1660"
+    "#1660",
+    "#1911",
+    "#2037"
    ]
   },
   {

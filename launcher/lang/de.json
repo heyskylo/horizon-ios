@@ -1135,7 +1135,6 @@
   "The founder set was free to claim until {date}.": "Das Gründer-Set war bis {date} gratis erhältlich.",
   "The founder set isn't offered any more.": "Das Gründer-Set wird nicht mehr angeboten.",
   "Bound to your Minecraft account, on every computer you sign in on.": "An dein Minecraft-Konto gebunden, auf jedem Computer, auf dem du dich anmeldest.",
-  "Bound to your Minecraft account. Nothing to pay, no card asked.": "An dein Minecraft-Konto gebunden. Nichts zu bezahlen, keine Karte nötig.",
   "Cosmetics show only to Horizon players. Nothing changes how the game plays.": "Kosmetik sehen nur Horizon-Spieler. Am Spiel selbst ändert sich nichts.",
   "For the players who were here first. Free to claim from {date}; once claimed, it's yours to keep.": "Für die Spieler, die von Anfang an dabei waren. Ab {date} gratis; einmal geholt, gehört es dir.",
   "For the players who were here first. Free to claim until {date}; once claimed, it's yours to keep.": "Für die Spieler, die von Anfang an dabei waren. Bis {date} gratis; einmal geholt, gehört es dir.",
@@ -1152,5 +1151,18 @@
   "For the players who were here first. Free to claim; once claimed, it's yours to keep.": "Für die Spieler, die von Anfang an dabei waren. Gratis; einmal geholt, gehört es dir.",
   "First Light": "Erstes Licht",
   "Free for everyone. First Light paints the sky just before sunrise behind the light appearance, with a blue accent.": "Für alle kostenlos. Erstes Licht malt den Himmel kurz vor Sonnenaufgang hinter das helle Erscheinungsbild, mit blauem Akzent.",
-  "Shirt": "Shirt"
+  "Shirt": "Shirt",
+  "Bound to your Minecraft account. Free: a 0 CHF checkout through Paddle records your claim.": "An dein Minecraft-Konto gebunden. Gratis: Ein Checkout über 0 CHF bei Paddle hält deinen Anspruch fest.",
+  "Finish the free checkout in your browser. The set lands here a moment later.": "Schließe den kostenlosen Checkout in deinem Browser ab. Das Set erscheint kurz danach hier.",
+  "Open the checkout again": "Checkout erneut öffnen",
+  "Waiting for the checkout…": "Warte auf den Checkout…",
+  "Your purchases": "Deine Käufe",
+  "Refunded": "Erstattet",
+  "Partly refunded": "Teilweise erstattet",
+  "Charged back": "Rückbuchung",
+  "Paid": "Bezahlt",
+  "Order {id}": "Bestellung {id}",
+  "The claim didn't go through: the checkout's address isn't Horizon's.": "Die Anforderung ist fehlgeschlagen: Die Adresse des Checkouts gehört nicht zu Horizon.",
+  "Paste a friend's invite code": "Einladungscode eines Freundes einfügen",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Spielt {build}, gebaut auf Horizon {commit}, dem von {mods} festgelegten Commit, nicht auf {version}."
 }
