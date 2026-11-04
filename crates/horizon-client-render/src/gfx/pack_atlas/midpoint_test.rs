@@ -123,7 +123,7 @@ fn mid_tex_coord_follows_each_quads_mapped_corners() {
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
-/// A stitched atlas (the one `stitched_sprites_keep_their_own_size` works out: 16 by
+/// A stitched atlas (the one `stitched_sprites_keep_their_own_size_and_padding` works out: 16 by
 /// 8, sprites of 2, 4 and 1 px at (9, 1), (1, 1) and (9, 5)): flat draws map a quad's UVs onto its
 /// sprite's own pixels, so a corner is half the sprite's own side from `mc_midTexCoord`.
 #[test]

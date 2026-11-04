@@ -6425,6 +6425,7 @@ impl Renderer {
         );
         if let Some(atlas) = &self.pack_atlas {
             atlas.copy(
+                &self.device,
                 encoder,
                 &self.sprite_textures,
                 self.animations.changed().iter().copied(),
