@@ -32,25 +32,55 @@ use std::{
 /// data, and the registries and tags.
 type Synced = (bool, std::result::Result<Arc<SyncData>, String>);
 
-/// One world session's frozen registries and reloadable tags. Entry into
-/// another world forgets this snapshot before any data is published.
+/// One world session's frozen registries and reloadable tags, or the no-pack
+/// preload waiting for a world. Leaving a session forgets its snapshot.
 static SYNC: Mutex<Option<Synced>> = Mutex::new(None);
 
 /// The registries and tags a server sends, loaded from `root` the first
 /// time, with the world's data packs' recipes, advancements and dialogs over
-/// them. Every world entry forgets the previous session's snapshot; pack
-/// changes within one session retain its frozen registries.
+/// them. Pack changes within one session retain its frozen registries.
 pub(super) fn sync_data(
     root: &std::path::Path,
     overlay: &horizon_world::loot::PackOverlay,
 ) -> std::result::Result<Arc<SyncData>, String> {
-    let packs = !overlay.files.is_empty();
     let mut sync = SYNC.lock().unwrap_or_else(|e| e.into_inner());
-    // Entry into another world explicitly forgets this session's snapshot.
-    // Pack enable/disable within it must never replace frozen registries.
+    cached_sync_data(&mut sync, root, overlay)
+}
+
+fn cached_sync_data(
+    sync: &mut Option<Synced>,
+    root: &std::path::Path,
+    overlay: &horizon_world::loot::PackOverlay,
+) -> std::result::Result<Arc<SyncData>, String> {
+    let packs = !overlay.files.is_empty();
     sync.get_or_insert_with(|| (packs, SyncData::load(root, overlay).map(Arc::new)))
         .1
         .clone()
+}
+
+/// Freeze the entering world's registries before a reload or a guest can
+/// observe them. Ordinary worlds reuse the existing no-pack preload. A
+/// pack world replaces it while holding the same lock used by preload readers:
+/// there is no empty-cache window in which a helper can install vanilla data.
+pub(super) fn open_world_sync_data(
+    root: &std::path::Path,
+    overlay: &horizon_world::loot::PackOverlay,
+) -> std::result::Result<Arc<SyncData>, String> {
+    let mut sync = SYNC.lock().unwrap_or_else(|e| e.into_inner());
+    initialize_world_sync_data(&mut sync, root, overlay)
+}
+
+fn initialize_world_sync_data(
+    sync: &mut Option<Synced>,
+    root: &std::path::Path,
+    overlay: &horizon_world::loot::PackOverlay,
+) -> std::result::Result<Arc<SyncData>, String> {
+    // World exits discard the preceding session. Here the cache may only
+    // contain its vanilla preload; packs need their own initial snapshot.
+    if !overlay.files.is_empty() {
+        *sync = None;
+    }
+    cached_sync_data(sync, root, overlay)
 }
 
 /// Let go of what `sync_data` loaded: a preload no world used
@@ -3126,6 +3156,86 @@ mod tests {
     use super::{OFFHAND_SLOT, equipment_slot_name, living_flags, mob_freeze_meta};
     use horizon_client::mobs::Mob;
     use horizon_protocol::entity_data::{Value, serializer};
+
+    #[test]
+    #[ignore = "requires prepared vanilla resources"]
+    fn datapack_damage_world_open_reuses_the_no_pack_preload() {
+        use super::{SyncData, cached_sync_data, initialize_world_sync_data};
+        use horizon_world::loot::PackOverlay;
+        use std::{path::Path, sync::Arc};
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        let preloaded = Arc::new(SyncData::load(&root, &PackOverlay::NONE).unwrap());
+        let mut cache = Some((false, Ok(preloaded.clone())));
+        // A missing root makes an accidental second disk read fail, rather
+        // than merely comparing equal snapshots loaded twice.
+        let absent = root.join("no-such-resources");
+        let opened = initialize_world_sync_data(&mut cache, &absent, &PackOverlay::NONE).unwrap();
+        assert!(Arc::ptr_eq(&preloaded, &opened));
+        assert!(Arc::ptr_eq(
+            &opened,
+            &cached_sync_data(&mut cache, &absent, &PackOverlay::NONE).unwrap()
+        ));
+    }
+
+    #[test]
+    #[ignore = "requires prepared vanilla resources"]
+    fn datapack_damage_world_open_replaces_preload_atomically() {
+        use super::{SyncData, cached_sync_data, initialize_world_sync_data};
+        use horizon_world::loot::PackOverlay;
+        use std::{
+            path::Path,
+            sync::{Arc, Barrier, Mutex},
+        };
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        let preloaded = Arc::new(SyncData::load(&root, &PackOverlay::NONE).unwrap());
+        let cache = Arc::new(Mutex::new(Some((false, Ok(preloaded.clone())))));
+        let barrier = Arc::new(Barrier::new(2));
+        let worker = {
+            let cache = cache.clone();
+            let barrier = barrier.clone();
+            let root = root.clone();
+            std::thread::spawn(move || {
+                barrier.wait();
+                for _ in 0..32 {
+                    cached_sync_data(&mut cache.lock().unwrap(), &root, &PackOverlay::NONE)
+                        .unwrap();
+                }
+            })
+        };
+        let files = vec![(
+            "damage_type/demo:world_heat".into(),
+            vec![br#"{"message_id":"world_heat","scaling":"never","exhaustion":0.25}"#.to_vec()],
+        )];
+        barrier.wait();
+        let opened = initialize_world_sync_data(
+            &mut cache.lock().unwrap(),
+            &root,
+            &PackOverlay { files: &files },
+        )
+        .unwrap();
+        worker.join().unwrap();
+        assert!(!Arc::ptr_eq(&preloaded, &opened));
+        let id = opened
+            .id("minecraft:damage_type", "demo:world_heat")
+            .unwrap();
+        let later =
+            cached_sync_data(&mut cache.lock().unwrap(), &root, &PackOverlay::NONE).unwrap();
+        assert!(
+            Arc::ptr_eq(&opened, &later),
+            "a late helper or disabled pack cannot replace a frozen world"
+        );
+        let packet = later.registry_packets(true, &horizon_client::chunk::LevelShapes::VANILLA);
+        let packet = packet
+            .iter()
+            .find(|p| p.registry == "minecraft:damage_type")
+            .unwrap();
+        assert_eq!(packet.entries[id as usize].id, "demo:world_heat");
+        assert!(packet.entries[id as usize].data.is_some());
+    }
 
     fn mob_of(kind: &str) -> Option<Mob> {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))

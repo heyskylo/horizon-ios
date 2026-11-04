@@ -8,8 +8,34 @@ import struct
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import lab
+
+
+def snapshot_tests(build):
+    """Run the prepared-resource hurt, landing, world lifetime and wire cases."""
+    run = subprocess.run(
+        ["cargo", "test", "--locked", "-p", "horizon-client", "-p", "horizon-client-lib",
+         "--lib", "datapack_damage_", "--", "--include-ignored"],
+        cwd=lab.ROOT, text=True, capture_output=True)
+    output = run.stdout + run.stderr
+    (build / "snapshot-tests.log").write_text(output)
+    if run.returncode:
+        print(output)
+    run.check_returncode()
+    passed = re.findall(r"^test (\S*datapack_damage_\S*) \.\.\. ok$", run.stdout, re.MULTILINE)
+    expected = {
+        "datapack_damage_new_world_drops_a_removed_resource_root_definition",
+        "datapack_damage_initial_snapshot_uses_the_prepared_worlds_features",
+        "datapack_damage_uses_custom_identity_armor_fire_and_reloaded_tags",
+        "datapack_damage_landing_uses_world_armor_tags_and_exhaustion",
+        "datapack_damage_world_open_reuses_the_no_pack_preload",
+        "datapack_damage_world_open_replaces_preload_atomically",
+        "datapack_damage_registry_reload_keeps_wire_ids_and_reloads_tags_before_future_join",
+    }
+    assert expected <= {name.rsplit("::", 1)[-1] for name in passed}, output
+    return passed
 
 
 def corpus():
@@ -39,11 +65,16 @@ def main():
     args = parser.parse_args()
     build = lab.LOCAL / "rust-damage-catalog-parity"
     build.mkdir(parents=True, exist_ok=True)
+    (build / "report.json").unlink(missing_ok=True)
     source = lab.ROOT / "mods/horizon/src/test/java/dev/horizonlab/parity/VanillaDamageCatalogOracle.java"
     sources = [source, Path(__file__).resolve(),
                lab.ROOT / "crates/horizon-world/examples/damage_catalog_probe.rs",
                lab.ROOT / "crates/horizon-world/src/damage_source.rs",
-               lab.ROOT / "crates/horizon-world/src/damage_source/resources.rs"]
+               lab.ROOT / "crates/horizon-world/src/damage_source/resources.rs",
+               lab.ROOT / "crates/horizon-client/src/health/datapack_tests.rs",
+               lab.ROOT / "crates/horizon-client/src/landing.rs",
+               lab.ROOT / "crates/horizon-client/src/lan/data.rs",
+               lab.ROOT / "crates/horizon-client/src/game/lan.rs"]
     hashes = {str(p.relative_to(lab.ROOT)): hashlib.sha256(p.read_bytes()).hexdigest() for p in sources}
     libraries = sorted((args.game_dir / "libraries/server").rglob("*.jar"))
     jar = args.game_dir / "jars/server-game.jar"
@@ -84,9 +115,11 @@ def main():
     assert len(expected) == len(actual) == len(cases), (len(expected), len(actual), len(cases))
     for i, (want, got) in enumerate(zip(expected, actual)):
         assert want == got, (i, cases[i], want, got)
+    snapshots = snapshot_tests(build)
     assert hashes == {str(p.relative_to(lab.ROOT)): hashlib.sha256(p.read_bytes()).hexdigest() for p in sources}, "source changed during comparison"
     report = {"schema": 1, "sources_sha256": hashes, "server_game_sha256": hashlib.sha256(jar.read_bytes()).hexdigest(), "minecraft": lab.VERSION, "cases": len(cases), "pass": True,
-              "scope": "Actual DamageType.DIRECT_CODEC acceptance, defaults, enum values, exhaustion float bits and NbtOps float/default-field encoding; registry/tag layering is covered by Rust snapshot tests."}
+              "snapshot_tests": snapshots,
+              "scope": "Actual DamageType.DIRECT_CODEC acceptance, defaults, enum values, exhaustion float bits and NbtOps float/default-field encoding; prepared-resource player hurt, landing, world lifetime, preload and wire snapshot regressions also run."}
     (build / "report.json").write_text(json.dumps(report, indent=2) + "\n")
     print(f"Damage resource codec parity passed: {len(cases)} cases")
 

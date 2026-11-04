@@ -754,7 +754,7 @@ mod tests {
 
     #[test]
     #[ignore = "requires prepared vanilla resources"]
-    fn damage_registry_reload_keeps_wire_ids_and_reloads_tags_before_future_join() {
+    fn datapack_damage_registry_reload_keeps_wire_ids_and_reloads_tags_before_future_join() {
         use horizon_world::loot::PackOverlay;
         let root = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../.local/horizon-client")

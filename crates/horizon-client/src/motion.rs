@@ -3579,6 +3579,7 @@ mod tests {
                 assets: &assets,
                 collision_binding: &binding,
                 resources: &resources,
+                health: &resources.health,
             }
             .passenger_block_effects_tick()
             .unwrap();

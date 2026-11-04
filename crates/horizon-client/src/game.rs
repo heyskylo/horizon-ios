@@ -12285,10 +12285,9 @@ impl Game<'_> {
         self.damage_tag_generation = self.damage_tag_generation.wrapping_add(1);
         // Native tag reads use the lock to tell that the tag tables are ready.
         self.session_lock = Some(session_lock);
-        // Registries belong to a world session, even when no LAN hub exists
-        // yet. A later /reload keeps this snapshot; another world starts fresh.
-        lan::forget_sync_data();
-        lan::sync_data(&self.options.resources, &pack_files(&self.world_tables))
+        // Keep the no-pack preload; a world's packs replace it atomically.
+        // A later /reload keeps this session's synchronized registries.
+        lan::open_world_sync_data(&self.options.resources, &pack_files(&self.world_tables))
             .map_err(|e| format!("world registries: {e}"))?;
         // Warm the loot data with this world's packs before chunks decode
         // (`save::roll_loaded_loot` reads the cached copy).
