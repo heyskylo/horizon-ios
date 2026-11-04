@@ -26,7 +26,8 @@ sent the same things over TLS, and every answer is compared exactly:
   (including saved properties and restart), max players read and changed (including saved
   properties and restart), player idle timeout read and changed (including disabling it, invalid input,
   saved properties and restart), the live pause-when-empty timer read and changed (including its saved
-  property and restart), and `server/stop`;
+  property and restart), and the live view distance read and changed (including invalid input, saved
+  properties and restart), and `server/stop`;
 - the TLS version each server agrees on.
 
 A parse error's `data` is Gson's message in vanilla and serde's in Horizon: left out. The notifications the
@@ -148,6 +149,15 @@ MESSAGES = [
     '{"jsonrpc":"2.0","id":52,"method":"minecraft:serversettings/game_mode"}',
     '{"jsonrpc":"2.0","id":53,"method":"minecraft:serversettings/game_mode/set","params":["spectator"]}',
     '{"jsonrpc":"2.0","id":54,"method":"minecraft:serversettings/game_mode"}',
+    '{"jsonrpc":"2.0","id":160,"method":"minecraft:serversettings/view_distance"}',
+    '{"jsonrpc":"2.0","id":161,"method":"minecraft:serversettings/view_distance/set","params":[6]}',
+    '{"jsonrpc":"2.0","id":162,"method":"minecraft:serversettings/view_distance"}',
+    '{"jsonrpc":"2.0","id":163,"method":"minecraft:serversettings/view_distance/set","params":[1]}',
+    '{"jsonrpc":"2.0","id":164,"method":"minecraft:serversettings/view_distance"}',
+    '{"jsonrpc":"2.0","id":165,"method":"minecraft:serversettings/view_distance/set","params":["yes"]}',
+    '{"jsonrpc":"2.0","id":166,"method":"minecraft:serversettings/view_distance"}',
+    '{"jsonrpc":"2.0","id":167,"method":"minecraft:serversettings/view_distance/set","params":[8]}',
+    '{"jsonrpc":"2.0","id":168,"method":"minecraft:serversettings/view_distance"}',
     '{"jsonrpc":"2.0","id":220,"method":"minecraft:serversettings/operator_user_permission_level"}',
     '{"jsonrpc":"2.0","id":221,"method":"minecraft:serversettings/operator_user_permission_level/set","params":[2]}',
     '{"jsonrpc":"2.0","id":222,"method":"minecraft:serversettings/operator_user_permission_level"}',
@@ -528,6 +538,9 @@ def main():
                 sides[side]['saved_player_idle_timeout'] = next(
                     (line.partition('=')[2] for line in properties.splitlines()
                      if line.startswith('player-idle-timeout=')), None)
+                sides[side]['saved_view_distance'] = next(
+                    (line.partition('=')[2] for line in properties.splitlines()
+                     if line.startswith('view-distance=')), None)
                 sides[side]['saved_spawn_protection'] = next(
                     (line.partition('=')[2] for line in properties.splitlines()
                      if line.startswith('spawn-protection=')), None)
@@ -558,6 +571,8 @@ def main():
                     sides[side]['saved_config_max_players'] = 'max_players = 30' in (
                         folder / 'server.toml').read_text()
                     sides[side]['saved_config_player_idle_timeout'] = 'player-idle-timeout = 30' in (
+                        folder / 'server.toml').read_text()
+                    sides[side]['saved_config_view_distance'] = 'view_distance = 8' in (
                         folder / 'server.toml').read_text()
                     sides[side]['saved_config_spawn_protection'] = 'spawn-protection = 8' in (
                         folder / 'server.toml').read_text()
@@ -624,6 +639,12 @@ def main():
                         if not isinstance(reply, dict) or 'method' not in reply or 'id' in reply:
                             break
                     sides[side]['restarted_allow_flight'] = reply
+                    ws.send('{"jsonrpc":"2.0","id":169,"method":"minecraft:serversettings/view_distance"}')
+                    while True:
+                        reply = normal(ws.receive(timeout=60))
+                        if not isinstance(reply, dict) or 'method' not in reply or 'id' in reply:
+                            break
+                    sides[side]['restarted_view_distance'] = reply
                     ws.send('{"jsonrpc":"2.0","id":159,"method":"minecraft:serversettings/spawn_protection_radius"}')
                     while True:
                         reply = normal(ws.receive(timeout=60))
@@ -719,6 +740,13 @@ def main():
         if vanilla['restarted_player_idle_timeout'] != horizon['restarted_player_idle_timeout'] or \
                 vanilla['restarted_player_idle_timeout'] != {'jsonrpc': '2.0', 'id': 133, 'result': 30}:
             failures.append(f"restarted player idle timeout: vanilla {vanilla['restarted_player_idle_timeout']!r}, Horizon {horizon['restarted_player_idle_timeout']!r}")
+        if vanilla['saved_view_distance'] != horizon['saved_view_distance'] or vanilla['saved_view_distance'] != '8':
+            failures.append(f"saved view distance: vanilla {vanilla['saved_view_distance']!r}, Horizon {horizon['saved_view_distance']!r}")
+        if not horizon['saved_config_view_distance']:
+            failures.append('Horizon did not save view distance in server.toml')
+        if vanilla['restarted_view_distance'] != horizon['restarted_view_distance'] or \
+                vanilla['restarted_view_distance'] != {'jsonrpc': '2.0', 'id': 169, 'result': 8}:
+            failures.append(f"restarted view distance: vanilla {vanilla['restarted_view_distance']!r}, Horizon {horizon['restarted_view_distance']!r}")
         if vanilla['saved_spawn_protection'] != horizon['saved_spawn_protection'] or vanilla['saved_spawn_protection'] != '8':
             failures.append(f"saved spawn protection: vanilla {vanilla['saved_spawn_protection']!r}, Horizon {horizon['saved_spawn_protection']!r}")
         if not horizon['saved_config_spawn_protection']:

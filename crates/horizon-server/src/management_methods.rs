@@ -80,6 +80,10 @@ pub fn call(shared: &Shared, client: u32, short: &str, argument: &Value) -> Resu
                     .ok_or_else(|| invalid_params("Not a string"))?,
             ),
         ),
+        "serversettings/view_distance" => game.view_distance(client, None),
+        "serversettings/view_distance/set" => {
+            game.view_distance(client, Some(management_int(argument)?))
+        }
         "serversettings/operator_user_permission_level" => {
             game.operator_user_permission_level(client, None)
         }
@@ -780,6 +784,29 @@ impl Game<'_> {
                 "world",
                 "difficulty",
                 toml::Value::String(value.into()),
+            )
+            .map_err(|e| (INTERNAL_ERROR, Some(e)))?;
+        }
+        Ok(reply["value"].clone())
+    }
+
+    /// `MinecraftServerSettingsServiceImpl.getViewDistance` and `setViewDistance`.
+    fn view_distance(&self, client: u32, value: Option<i32>) -> Result<Value, Failure> {
+        let mut request = json!({ "method": "serversettings/view_distance" });
+        if let Some(value) = value {
+            request["method"] = json!("serversettings/view_distance/set");
+            request["value"] = json!(value);
+        }
+        let reply = self.ask(&format!("management {client} {request}"))?;
+        if let Some(error) = reply["error"].as_str() {
+            return Err((INTERNAL_ERROR, Some(error.to_owned())));
+        }
+        if let Some(value) = value {
+            crate::config::update(
+                &self.shared.dir,
+                "server",
+                "view_distance",
+                toml::Value::Integer(i64::from(value)),
             )
             .map_err(|e| (INTERNAL_ERROR, Some(e)))?;
         }
