@@ -474,6 +474,9 @@ pub(super) struct Remote {
     pub(super) builtin: Arc<Builtin>,
     lang: Arc<Language>,
     pub(super) registries: Arc<Dynamic>,
+    /// The game's enchantments and the server's that it lacks (a data
+    /// pack's), from their synced data; `None` when the server has none.
+    pub(super) enchantments: Option<Arc<horizon_client::enchant::Enchantments>>,
     pub(super) joined: bool,
     /// `ServerReconfigScreen` is up since this tick.
     pub(super) reconfiguring: Option<u64>,
@@ -1006,6 +1009,7 @@ impl Game<'_> {
                 .unwrap_or_else(|| "Connecting to the server...".into()),
             lang,
             registries: Arc::new(Dynamic::default()),
+            enchantments: None,
             joined: false,
             reconfiguring: None,
             logged_in: false,
@@ -2083,7 +2087,25 @@ impl Game<'_> {
                     .collect()
             })
             .unwrap_or_default();
+        let entries: Vec<(&str, serde_json::Value)> = registries
+            .registries
+            .get("minecraft:enchantment")
+            .into_iter()
+            .flatten()
+            .filter_map(|(name, data)| {
+                Some((
+                    name.as_str(),
+                    horizon_client::scoreboard::tag_to_json(data.as_ref()?),
+                ))
+            })
+            .collect();
+        let enchantments = self
+            .stations()
+            .enchantments
+            .with_entries(entries.iter().map(|(n, v)| (*n, v)))
+            .map(Arc::new);
         if let Some(r) = self.remote.as_mut() {
+            r.enchantments = enchantments;
             let bits = ceil_log2(biomes.len());
             let column = r.chunk_format.layout();
             r.chunk_format =
