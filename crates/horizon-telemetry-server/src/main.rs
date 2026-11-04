@@ -16,6 +16,9 @@ async fn main() {
         .unwrap_or(8080);
     let store = Store::open(&path).unwrap_or_else(|e| panic!("{path}: {e}"));
     let config = Config::from_env();
+    if let Some(warning) = config.client_ip_warning() {
+        eprintln!("horizon-telemetry-server: WARNING: {warning}");
+    }
     if std::env::var("HORIZON_TELEMETRY_AGGREGATE_DAYS").is_ok_and(|v| !v.trim().is_empty())
         && config.aggregate_days.is_none()
     {

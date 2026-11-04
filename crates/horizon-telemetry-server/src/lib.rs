@@ -57,9 +57,14 @@ pub struct Config {
     pub requests_per_hour: f64,
     /// Items one install may send a day.
     pub items_per_day: u32,
-    /// Behind a proxy (Railway, Fly…): the client's address is the proxy's `X-Real-IP`, else the
-    /// last `X-Forwarded-For` entry.
+    /// Behind a proxy (Railway, Fly…): the client's address is read from `client_ip_header`.
     pub trust_proxy: bool,
+    /// The one header the proxy in front sets to the client's address, overwriting whatever the
+    /// client sent (`HORIZON_TELEMETRY_CLIENT_IP_HEADER`, e.g. `x-real-ip` on Railway). Its last
+    /// comma-separated entry is used. Read only with `trust_proxy`; without it the TCP peer counts,
+    /// which behind a proxy is the proxy, so every client shares one bucket (the server warns at
+    /// start).
+    pub client_ip_header: Option<String>,
     /// The website allowed to read the totals from a browser.
     pub allow_origin: String,
     /// Live count requests (pings and reads) an IP address may make an hour, with a burst of a
@@ -109,6 +114,7 @@ impl Default for Config {
             requests_per_hour: 60.0,
             items_per_day: 100,
             trust_proxy: false,
+            client_ip_header: None,
             allow_origin: "https://playhorizon.dev".into(),
             live_per_hour: 600.0,
             live_window: horizon_telemetry::live::WINDOW,
@@ -160,6 +166,7 @@ impl Config {
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(d.items_per_day),
             trust_proxy: var("TRUST_PROXY").is_some_and(|v| v == "1"),
+            client_ip_header: var("CLIENT_IP_HEADER").and_then(|v| header_name(&v)),
             allow_origin: var("ALLOW_ORIGIN").unwrap_or(d.allow_origin),
             live_per_hour: var("LIVE_PER_HOUR")
                 .and_then(|v| v.parse().ok())
@@ -207,6 +214,34 @@ impl Config {
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(d.aggregate_builds_per_hour),
             aggregate_days: var("AGGREGATE_DAYS").and_then(|v| parse_days(&v)),
+        }
+    }
+}
+
+/// A header name as `HORIZON_TELEMETRY_CLIENT_IP_HEADER` gives it, lowercase; None when empty or not
+/// a header name.
+pub fn header_name(text: &str) -> Option<String> {
+    let name = text.trim().to_ascii_lowercase();
+    (!name.is_empty() && axum::http::HeaderName::from_bytes(name.as_bytes()).is_ok())
+        .then_some(name)
+}
+
+impl Config {
+    /// What the client-address settings will do, when it isn't what they seem to ask for: printed at
+    /// start (`main.rs`).
+    pub fn client_ip_warning(&self) -> Option<String> {
+        match (self.trust_proxy, &self.client_ip_header) {
+            (true, None) => Some(
+                "HORIZON_TELEMETRY_TRUST_PROXY=1 but HORIZON_TELEMETRY_CLIENT_IP_HEADER is unset: rate limits \
+                 count the TCP peer, which behind a proxy is the proxy, so every client shares one bucket. Set \
+                 it to the header your proxy overwrites with the client's address (x-real-ip on Railway)."
+                    .into(),
+            ),
+            (false, Some(name)) => Some(format!(
+                "HORIZON_TELEMETRY_CLIENT_IP_HEADER={name} is ignored without HORIZON_TELEMETRY_TRUST_PROXY=1: \
+                 rate limits count the TCP peer"
+            )),
+            _ => None,
         }
     }
 }
@@ -370,27 +405,18 @@ impl App {
     }
 
     /// The address requests are counted under, for the rate limits only: kept in memory, never
-    /// stored or logged. Behind a proxy (Railway) the TCP peer is the proxy, so it is the proxy's
-    /// `X-Real-IP`, else the last `X-Forwarded-For` entry: the one the proxy added, which a client
-    /// can't choose (the first one it can). An IPv6 client counts by its /64.
+    /// stored or logged. Behind a proxy (Railway) the TCP peer is the proxy, so with `trust_proxy`
+    /// it is the last entry of the one configured header (`client_ip_header`), which the proxy
+    /// overwrites. No other header is read: which one a client can't forge depends on the platform.
+    /// An IPv6 client counts by its /64.
     fn client(&self, headers: &HeaderMap, peer: Option<SocketAddr>) -> IpAddr {
-        let header = |name: &str| headers.get(name)?.to_str().ok();
         let forwarded = self
             .config
-            .trust_proxy
-            .then(|| {
-                header("x-real-ip")
-                    .and_then(|ip| ip.trim().parse().ok())
-                    .or_else(|| {
-                        header("x-forwarded-for")?
-                            .rsplit(',')
-                            .next()?
-                            .trim()
-                            .parse()
-                            .ok()
-                    })
-            })
-            .flatten();
+            .client_ip_header
+            .as_deref()
+            .filter(|_| self.config.trust_proxy)
+            .and_then(|name| headers.get(name)?.to_str().ok())
+            .and_then(|value| value.rsplit(',').next()?.trim().parse().ok());
         rate_key(
             forwarded
                 .or(peer.map(|p| p.ip()))

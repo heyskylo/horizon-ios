@@ -80,7 +80,7 @@ All are environment variables:
 - `HORIZON_TELEMETRY_MIN_INSTALL_DAYS` (5)
 - `HORIZON_TELEMETRY_REQUESTS_PER_HOUR` per address (60, bursts of 6)
 - `HORIZON_TELEMETRY_ITEMS_PER_DAY` per install (100)
-- `HORIZON_TELEMETRY_TRUST_PROXY=1` behind a proxy (the client's address is then the proxy's `X-Real-IP`, else the last `X-Forwarded-For` entry; it is used only for the rate limits, in memory, and never stored or logged)
+- `HORIZON_TELEMETRY_TRUST_PROXY=1` behind a proxy, with `HORIZON_TELEMETRY_CLIENT_IP_HEADER` naming the one header the proxy overwrites with the client's address (`x-real-ip` on Railway; its last comma-separated entry is used). No other header is read. The address is used only for the rate limits, in memory, and never stored or logged. `TRUST_PROXY=1` without the header counts the TCP peer, which behind a proxy is the proxy, so every client shares one bucket: the server prints a warning at start.
 - `HORIZON_TELEMETRY_ALLOW_ORIGIN` (`https://playhorizon.dev`)
 - `HORIZON_TELEMETRY_LIVE_PER_HOUR` per address, pings and reads (600, bursts of 60: ten players behind one address)
 - `HORIZON_TELEMETRY_LIVE_WINDOW_SECONDS` (120)

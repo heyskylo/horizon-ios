@@ -276,6 +276,7 @@ async fn an_address_is_rate_limited() {
     let s = server(Config {
         requests_per_hour: 30.0,
         trust_proxy: true,
+        client_ip_header: Some("x-forwarded-for".into()),
         ..Config::default()
     });
     for n in 0..3 {
@@ -298,13 +299,14 @@ async fn an_address_is_rate_limited() {
         }
         req.body(Body::from(body)).unwrap()
     };
-    // A client can't pick its address: the proxy adds the real one last, or sets X-Real-IP.
+    // A client can't pick its address: the proxy adds the real one last. Only the configured header
+    // is read: an X-Real-IP the client made up changes nothing.
     assert_eq!(
         s.send(from("198.51.100.7, 203.0.113.9", None)).await.0,
         StatusCode::TOO_MANY_REQUESTS
     );
     assert_eq!(
-        s.send(from("198.51.100.7", Some("203.0.113.9"))).await.0,
+        s.send(from("203.0.113.9", Some("198.51.100.42"))).await.0,
         StatusCode::TOO_MANY_REQUESTS
     );
     // Another address has its own allowance.
@@ -571,6 +573,7 @@ async fn the_totals_are_rate_limited_per_address() {
     let s = server(Config {
         reads_per_hour: 30.0,
         trust_proxy: true,
+        client_ip_header: Some("x-forwarded-for".into()),
         ..generous()
     });
     for _ in 0..3 {
@@ -620,4 +623,88 @@ async fn the_windows_answered_can_be_listed() {
     for bad in ["", ",", "0", "367", "30,x"] {
         assert_eq!(horizon_telemetry_server::parse_days(bad), None, "{bad:?}");
     }
+}
+
+async fn ask(s: &Server, headers: &[(&str, &str)]) -> StatusCode {
+    let mut req = Request::get("/v1/aggregate?days=30");
+    for (k, v) in headers {
+        req = req.header(*k, *v);
+    }
+    s.send(req.body(Body::empty()).unwrap()).await.0
+}
+
+#[tokio::test]
+async fn the_client_address_comes_from_the_configured_header_only() {
+    // Railway: X-Real-IP, which its edge overwrites. Three reads each (a burst of 3 at 30 an hour).
+    let s = server(Config {
+        reads_per_hour: 30.0,
+        trust_proxy: true,
+        client_ip_header: Some("x-real-ip".into()),
+        ..generous()
+    });
+    for _ in 0..3 {
+        assert_eq!(
+            ask(&s, &[("x-real-ip", "203.0.113.1")]).await,
+            StatusCode::OK
+        );
+    }
+    assert_eq!(
+        ask(&s, &[("x-real-ip", "203.0.113.1")]).await,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    // A different X-Forwarded-For doesn't make it someone else.
+    assert_eq!(
+        ask(
+            &s,
+            &[
+                ("x-real-ip", "203.0.113.1"),
+                ("x-forwarded-for", "198.51.100.1")
+            ]
+        )
+        .await,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    assert_eq!(
+        ask(&s, &[("x-real-ip", "203.0.113.2")]).await,
+        StatusCode::OK
+    );
+    // Trusting a proxy with no header named: the TCP peer (here none, so one shared bucket), as
+    // the start-up warning says.
+    let s = server(Config {
+        reads_per_hour: 30.0,
+        trust_proxy: true,
+        ..generous()
+    });
+    for ip in ["203.0.113.1", "203.0.113.2", "203.0.113.3"] {
+        assert_eq!(ask(&s, &[("x-real-ip", ip)]).await, StatusCode::OK);
+    }
+    assert_eq!(
+        ask(&s, &[("x-real-ip", "203.0.113.4")]).await,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+}
+
+#[test]
+fn client_address_settings_warn_when_they_do_nothing() {
+    let config = |trust_proxy, header: Option<&str>| Config {
+        trust_proxy,
+        client_ip_header: header.map(str::to_owned),
+        ..Config::default()
+    };
+    let warning = config(true, None).client_ip_warning().unwrap();
+    assert!(warning.contains("every client shares one bucket") && warning.contains("x-real-ip"));
+    assert!(
+        config(false, Some("x-real-ip"))
+            .client_ip_warning()
+            .unwrap()
+            .contains("ignored")
+    );
+    assert_eq!(config(true, Some("x-real-ip")).client_ip_warning(), None);
+    assert_eq!(config(false, None).client_ip_warning(), None);
+    assert_eq!(
+        horizon_telemetry_server::header_name(" X-Real-IP "),
+        Some("x-real-ip".into())
+    );
+    assert_eq!(horizon_telemetry_server::header_name(""), None);
+    assert_eq!(horizon_telemetry_server::header_name("bad header"), None);
 }
