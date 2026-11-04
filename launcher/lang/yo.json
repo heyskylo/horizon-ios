@@ -1098,7 +1098,6 @@
   "August": "Ògún",
   "Back to the wardrobe": "Pada si ibi aṣọ",
   "Bound to your Minecraft account, on every computer you sign in on.": "Ti so mọ akọọlẹ Minecraft rẹ, lori gbogbo kọmputa ti o wọle si.",
-  "Bound to your Minecraft account. Nothing to pay, no card asked.": "Ti so mọ akọọlẹ Minecraft rẹ. Kò sí ohun tí o máa san, a kò beere kaadi.",
   "Changes waiting to sync: {n}": "Awọn ayipada tí ń dúró de amuṣiṣẹpọ: {n}",
   "Claimed · Open the wardrobe": "Ti gba · Ṣii ibi aṣọ",
   "Claiming…": "N gbà…",
@@ -1152,5 +1151,16 @@
   "{d} days {h} h": "ọjọ́ {d} wákàtí {h}",
   "{h} h {m} min": "wákàtí {h} ìṣẹ́jú {m}",
   "{m} min": "ìṣẹ́jú {m}",
-  "{time} left to claim it": "{time} ló kù láti gbà á"
+  "{time} left to claim it": "{time} ló kù láti gbà á",
+  "Bound to your Minecraft account. Free: a 0 CHF checkout through Paddle records your claim.": "Ti so mọ akọọlẹ Minecraft rẹ. Ọ̀fẹ́: sísan owó 0 CHF nípasẹ̀ Paddle ń forúkọ ìbéèrè rẹ sílẹ̀.",
+  "Finish the free checkout in your browser. The set lands here a moment later.": "Parí sísan owó ọ̀fẹ́ náà nínú ẹ̀rọ aṣàwákiri rẹ. Àpótí náà yóò dé síbí láìpẹ́ lẹ́yìn náà.",
+  "Open the checkout again": "Ṣí ojú ìwé sísan owó lẹ́ẹ̀kansí",
+  "Waiting for the checkout…": "Ń dúró de sísan owó…",
+  "Your purchases": "Àwọn ohun tí o rà",
+  "Refunded": "A ti dá owó padà",
+  "Partly refunded": "A dá apá kan owó padà",
+  "Charged back": "Ilé ìfowópamọ́ ti gba padà",
+  "Paid": "A ti sanwó",
+  "Order {id}": "Àṣẹ ríra {id}",
+  "The claim didn't go through: the checkout's address isn't Horizon's.": "Ìbéèrè náà kò yọrí: àdírẹ́sì ojú ìwé sísan owó kì í ṣe ti Horizon."
 }
