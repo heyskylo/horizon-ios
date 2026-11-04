@@ -1,5 +1,7 @@
-//! The Mods page: search Horizon's own registry for mods and shader packs made for Horizon, or
-//! Modrinth for resource packs (a Java instance's mods too), see where each comes
+//! The Mods page: its tabs are the kinds (mods, modpacks, resource packs, shader packs, data
+//! packs). Search Horizon's own registry for what was made for Horizon, or Modrinth (CurseForge:
+//! coming soon) for Java mods, modpacks, resource packs and data packs (a Java instance's files
+//! always come from Modrinth, for its version), see where each comes
 //! from and how well it runs (a Java mod's jar is checked first; a Horizon mod says whether it is
 //! signed and what it may do), install it with its checksum checked, turn Horizon mods on and
 //! off, and update or remove what was installed (`horizon_launcher::browser`). Imported modpacks
@@ -17,7 +19,7 @@ use java_instance::Target;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-/// The kinds, as the Mods page's tabs: name and icon. Only [`SHOWN`]'s have a tab.
+/// The kinds, as the Mods page's tabs: name and icon.
 const KINDS: [(PackKind, &str, &str); 5] = [
     (PackKind::Mod, "Mods", "box"),
     (PackKind::Modpack, "Modpacks", "archive"),
@@ -25,15 +27,13 @@ const KINDS: [(PackKind, &str, &str); 5] = [
     (PackKind::Shader, "Shader packs", "zap"),
     (PackKind::DataPack, "Data packs", "notes"),
 ];
-/// The kinds with a tab: Horizon's registry's, and Modrinth's resource packs. Modrinth's mods and
-/// data packs aren't usable yet; the Modpacks tab shows while the sidebar has it open.
-const SHOWN: [PackKind; 3] = [PackKind::Mod, PackKind::ResourcePack, PackKind::Shader];
 /// Java mods checked at once.
 const CHECKING: usize = 2;
-/// The sources to pick from on the Resource packs and Modpacks tabs; CurseForge is shown beside them as coming soon.
-const SOURCES: [(SourceId, &str); 2] = [
-    (SourceId::Modrinth, "Modrinth"),
+/// The sources to pick from on the tabs that have both ([`switches`]); CurseForge is shown
+/// beside them as coming soon.
+pub(super) const SOURCES: [(SourceId, &str); 2] = [
     (SourceId::Horizon, "Horizon"),
+    (SourceId::Modrinth, "Modrinth"),
 ];
 const PAGE: usize = 20;
 
@@ -159,6 +159,7 @@ impl Mods {
             Ok("modpacks") => PackKind::Modpack,
             Ok("resourcepacks") => PackKind::ResourcePack,
             Ok("shaders") => PackKind::Shader,
+            Ok("datapacks") => PackKind::DataPack,
             _ => PackKind::Mod,
         };
         Self {
@@ -940,6 +941,10 @@ impl Launcher {
         if self.mods.kind != kind {
             self.mods.kind = kind;
             self.mods.source = source_for(kind);
+            // A data pack goes into a world: one may have been made since.
+            if kind == PackKind::DataPack {
+                self.mods.read_worlds();
+            }
             // Categories and loaders differ by kind.
             self.mods.browse.filters = Default::default();
             self.mods.browse.open = None;
@@ -1021,11 +1026,7 @@ impl Launcher {
         );
         let this = cx.entity().downgrade();
         let open = self.mods.kind;
-        let shown: Vec<_> = KINDS
-            .into_iter()
-            .filter(|&(kind, ..)| SHOWN.contains(&kind) || kind == open)
-            .collect();
-        let kinds = blocks::tabs("mods-kind", &shown, open, &t, {
+        let kinds = blocks::tabs("mods-kind", &KINDS, open, &t, {
             let this = this.clone();
             move |kind, _, cx| {
                 let _ = this.update(cx, |this, cx| {
@@ -1052,11 +1053,11 @@ impl Launcher {
                 this.mods_search(0);
                 cx.notify();
             }));
-        // Only the kinds Modrinth serves pick their source: CurseForge is coming soon there,
-        // shown, inert, never searched (like the Microsoft account's "Coming soon").
-        // A Java instance's mods and resource packs come from Modrinth, for its version.
+        // The kinds both sources serve pick theirs: CurseForge is coming soon there, shown,
+        // inert, never searched (like the Microsoft account's "Coming soon").
+        // A Java instance's files come from Modrinth, for its version.
         let java = self.mods.java_for(self.mods.kind).is_some();
-        let source_note = (source_for(self.mods.kind) == SourceId::Modrinth && !java)
+        let source_note = (switches(self.mods.kind) && !java)
             .then(|| div().flex().child(self.mods_source_switch(cx)));
         // The registry lists only what was made for Horizon: no "everything", no Modrinth filters,
         // only its sort.
@@ -1838,13 +1839,23 @@ impl Launcher {
     }
 }
 
-/// Where a kind's tab searches first: Horizon's registry, but Modrinth for resource packs and
-/// modpacks.
+/// Where a kind's tab searches first: Horizon's registry for mods and shader packs, Modrinth for
+/// the rest (data packs are only there).
 fn source_for(kind: PackKind) -> SourceId {
     match kind {
-        PackKind::ResourcePack | PackKind::Modpack => SourceId::Modrinth,
-        _ => SourceId::Horizon,
+        PackKind::Mod | PackKind::Shader => SourceId::Horizon,
+        PackKind::ResourcePack | PackKind::Modpack | PackKind::DataPack => SourceId::Modrinth,
     }
+}
+
+/// Whether a kind's tab picks its source: mods, modpacks and resource packs are on both Horizon's
+/// registry and Modrinth; Horizon's shader packs are on its registry only, data packs on Modrinth
+/// only.
+pub(super) fn switches(kind: PackKind) -> bool {
+    matches!(
+        kind,
+        PackKind::Mod | PackKind::ResourcePack | PackKind::Modpack
+    )
 }
 
 impl Launcher {
