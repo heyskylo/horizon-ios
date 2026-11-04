@@ -4034,54 +4034,13 @@ impl Game<'_> {
                         }
                     };
                     if let Some((position, movement, width, support)) = hop {
-                        // Entity.getOnPosLegacy: getOnPos(0.2).
-                        let below = (position.y - f64::from(0.2f32)).floor() as i32;
-                        let tall = |game: &Self, s: [i32; 3]| {
-                            let name = game.block_name(s);
-                            [
-                                "minecraft:fences",
-                                "minecraft:walls",
-                                "minecraft:fence_gates",
-                            ]
-                            .iter()
-                            .any(|tag| game.block_in_tag(tag, &name))
-                        };
-                        let at = match support {
-                            Some(s) if tall(self, s) => s,
-                            Some(s) => [s[0], below, s[2]],
-                            None => [position.x.floor() as i32, below, position.z.floor() as i32],
-                        };
-                        let state = self.world.block(at[0], at[1], at[2]);
-                        if self.res.facts().get(state).render_shape
-                            != horizon_client::blocks::RenderShape::Invisible
-                            && let Some((sprite, tint)) = self.particle_sprite(state, at)
-                        {
-                            // this.random, then the crumb at the feet. Velocity
-                            // is -4 * deltaMovement on x and z.
-                            let offset = self
-                                .mob_index
-                                .get_mut(&mut self.mobs, p.id as u32)
-                                .map(|m| (m.random.next_double(), m.random.next_double()));
-                            if let Some((rx, rz)) = offset {
-                                let mut x = position.x + (rx - 0.5) * width;
-                                let mut z = position.z + (rz - 0.5) * width;
-                                if position.x.floor() as i32 != at[0] {
-                                    x = x.clamp(f64::from(at[0]), f64::from(at[0]) + 1.0);
-                                }
-                                if position.z.floor() as i32 != at[2] {
-                                    z = z.clamp(f64::from(at[2]), f64::from(at[2]) + 1.0);
-                                }
-                                self.particles.add(
-                                    &horizon_client::particles::ParticleOptions::block(
-                                        horizon_client::particles::ParticleType::Block,
-                                        sprite,
-                                        tint,
-                                    ),
-                                    [x, position.y + 0.1, z],
-                                    [movement.x * -4.0, 1.5, movement.z * -4.0],
-                                );
-                            }
-                        }
+                        let id = p.id as u32;
+                        self.sprint_particle(position, movement, support, width, |game| {
+                            // this.random: the rabbit's own, x then z.
+                            game.mob_index
+                                .get_mut(&mut game.mobs, id)
+                                .map(|m| (m.random.next_double(), m.random.next_double()))
+                        });
                     }
                 }
                 if p.event == 19
