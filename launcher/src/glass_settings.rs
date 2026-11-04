@@ -290,7 +290,7 @@ impl Launcher {
             .flex()
             .gap(px(8.))
             .child(about_tile(
-                ui::mark_tile(42., ui::look().accent_soft).into_any_element(),
+                self.horizon_mark(42.),
                 "Horizon".into(),
                 installed.unwrap_or_else(|| tr("Nightly").to_string()),
                 div()

@@ -125,9 +125,9 @@ browser installed from it, the URLs asked for in one request (`GET /projects?ids
 (`fabric.mod.json`/`quilt.mod.json` `icon`, `mods.toml` `logoFile`), read from the jar off the UI thread and scaled to
 the row; else a generic glyph. The tab builds only the rows near the view, so a pack of hundreds costs what a few do.
 
-**Vanilla Minecraft** is marked with a grass block drawn at run time from the player's own prepared game files
-(`assets/minecraft/textures/block/grass_block_*.png`, tinted with the plains grass colour): the game-version filter
-shows it. No Mojang file or logo is in the launcher or the repository.
+**Vanilla Minecraft** is marked with Horizon's own grass block (`launcher/assets/logos/grass-block.png`, drawn by
+`tools/launcher_grass_block.py` from our palette, not from Mojang's textures): the game-version filter, the Java Edition
+tab and plain Minecraft instances show it. No Mojang file or logo is in the launcher or the repository.
 
 **Source logos.** Modrinth's logo is not shown: Modrinth's own repository says its branding is all rights reserved and
 "the use of Modrinth branding elements, including but not limited to the wrench-in-labyrinth logo, ... is strictly
