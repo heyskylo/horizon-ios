@@ -14,7 +14,7 @@ use super::{
 use crate::projectiles::{Projectile, ProjectileWorld, STEPS};
 use horizon_core::geometry::trig::Mth;
 use horizon_core::{
-    geometry::{Aabb, Vec3},
+    geometry::{Aabb, Direction, ShapeOp, Vec3, VoxelShape},
     random::{LegacyRandom, RandomSource},
 };
 use std::f32::consts::PI;
@@ -110,19 +110,121 @@ fn progress_aabb(direction: u8, from: f64, to: f64, pos: Vec3) -> Aabb {
         ))
         .move_by(pos)
 }
-/// `Level.noCollision(shulker, aabb)`: no block collision under the empty
-/// context, and none of the entities a shulker collides with overlaps
-/// (`canBeCollidedWith`: living shulkers and adult happy ghasts; players
-/// and other mobs never block it).
-fn no_collision(m: &Mob, w: &MobWorld, bounds: Aabb) -> bool {
-    let mut scene = crate::collisions::SceneCollisions {
-        world: w.world,
-        binding: w.collision,
-        subject: None,
-    };
-    if !crate::collisions::no_collision_empty(&mut scene, bounds) {
-        return false;
+/// Block queries shared by attachment and teleport candidates. Entity overlap
+/// is checked separately, using the nearby-entity index from MobWorld.
+struct BlockSpace<'w, 'r> {
+    world: &'w crate::world::World,
+    registry: &'r horizon_world::registry::BlockRegistry,
+    facts: &'w crate::blocks::BlockFacts,
+    binding: &'w horizon_world::block_collision::BlockCollisionRegistry<'r>,
+    powder_walkable: bool,
+}
+impl<'w, 'r> BlockSpace<'w, 'r> {
+    fn context(m: &Mob) -> horizon_world::collision_context::CollisionContext<'_> {
+        use horizon_world::{
+            collision_context::{CollisionContext, CollisionEntity, CollisionItem},
+            entity_obstruction::EntityIdentity,
+        };
+        CollisionContext::for_entity(
+            CollisionEntity {
+                identity: EntityIdentity(u64::from(m.id)),
+                // A teleport candidate is queried before setPos changes the entity.
+                y: m.position.y,
+                descending: false,
+                main_hand: Some(CollisionItem {
+                    item: m.extra.main_hand.as_deref().unwrap_or("minecraft:air"),
+                    count: m
+                        .extra
+                        .main_hand_stack()
+                        .map_or(i32::from(m.extra.main_hand.is_some()), |s| {
+                            s.count.min(i32::MAX as u32) as i32
+                        }),
+                }),
+            },
+            false,
+        )
     }
+    fn scene(&self, m: &Mob) -> crate::collisions::SceneCollisions<'_, 'r> {
+        crate::collisions::SceneCollisions {
+            world: self.world,
+            binding: self.binding,
+            subject: Some(crate::collisions::PowderSnowSubject {
+                fall_distance: m.fall_distance,
+                leather_boots: m.extra.feet.as_deref() == Some("minecraft:leather_boots")
+                    && m.extra.armor[3].as_ref().is_none_or(|s| s.count > 0),
+                walkable_type: self.powder_walkable,
+                ..Default::default()
+            }),
+        }
+    }
+    fn no_collision(&self, m: &Mob, bounds: Aabb) -> bool {
+        use horizon_world::{
+            entity_obstruction::EntityIdentity,
+            world_movement::{CollisionCheckRequest, no_world_collision},
+        };
+        no_world_collision(
+            &mut self.scene(m),
+            CollisionCheckRequest {
+                entity: EntityIdentity(u64::from(m.id)),
+                context: Self::context(m),
+                bounds,
+                candidate_budget: 1_000_000,
+            },
+        )
+        .unwrap_or(false)
+    }
+    fn can_stay_at(&self, m: &Mob, p: [i32; 3], face: u8) -> bool {
+        // isPositionBlocked: anything but air blocks, except a moving piston
+        // being driven through the shulker's own cell.
+        if !self.facts.is_air(self.world.block(p[0], p[1], p[2]))
+            && (p != block_pos(m)
+                || self
+                    .registry
+                    .state(self.world.block(p[0], p[1], p[2]))
+                    .map_or("", |s| s.name.as_str())
+                    != "minecraft:moving_piston")
+        {
+            return false;
+        }
+        // loadedAndEntityCanStandOnFace uses the entity-context collision shape,
+        // not the block's generic support shape (notably different on soul sand).
+        let s = face_step(face);
+        let support_pos =
+            horizon_core::position::BlockPos::new(p[0] + s[0], p[1] + s[1], p[2] + s[2]);
+        let support = self
+            .world
+            .block(support_pos.x, support_pos.y, support_pos.z);
+        let open = opposite(face);
+        let Ok(shape) = self.binding.collision_shape_with_context(
+            &mut self.scene(m),
+            support,
+            support_pos,
+            &Self::context(m),
+        ) else {
+            return false;
+        };
+        let full = shape
+            .face_shape(Direction::ALL[open as usize])
+            .is_ok_and(|face| {
+                VoxelShape::block()
+                    .join_is_not_empty(&face, ShapeOp::XOR)
+                    .is_ok_and(|differs| !differs)
+            });
+        full && self.no_collision(m, attachment_box(p, face))
+    }
+}
+fn block_space<'w, 'r>(m: &Mob, w: &'w MobWorld<'r>) -> BlockSpace<'w, 'r> {
+    BlockSpace {
+        world: w.world,
+        registry: w.registry,
+        facts: w.facts,
+        binding: w.collision,
+        powder_walkable: w
+            .data
+            .entity_has("minecraft:powder_snow_walkable_mobs", &m.kind.id),
+    }
+}
+fn entities_clear(m: &Mob, w: &MobWorld, bounds: Aabb) -> bool {
     let grown = bounds.inflate(Vec3::new(1.0e-7, 1.0e-7, 1.0e-7));
     !w.others_near(grown).any(|s| {
         s.id != m.id
@@ -131,27 +233,12 @@ fn no_collision(m: &Mob, w: &MobWorld, bounds: Aabb) -> bool {
             && s.bounds.intersects(grown)
     })
 }
-/// `Shulker.canStayAt`: an empty spot against a sturdy face, with room
-/// for the fully opened shell (`canStayAt`).
-fn can_stay_at(m: &Mob, w: &MobWorld, p: [i32; 3], face: u8) -> bool {
-    // isPositionBlocked: anything but air blocks, except a moving piston
-    // being driven through the shulker's own cell.
-    if !w.facts.is_air(w.world.block(p[0], p[1], p[2]))
-        && (p != block_pos(m) || w.block_name(p[0], p[1], p[2]) != "minecraft:moving_piston")
-    {
-        return false;
-    }
-    // loadedAndEntityCanStandOnFace: the supporting block's face toward
-    // the shell is sturdy.
-    let s = face_step(face);
-    let support = w.world.block(p[0] + s[0], p[1] + s[1], p[2] + s[2]);
-    let open = opposite(face);
-    if w.facts.get(support).sturdy_full & (1 << open) == 0 {
-        return false;
-    }
-    // The fully opened shell's box, shrunk by the skin vanilla uses.
-    let opened = progress_aabb(
-        open,
+fn no_collision(m: &Mob, w: &MobWorld, bounds: Aabb) -> bool {
+    block_space(m, w).no_collision(m, bounds) && entities_clear(m, w, bounds)
+}
+fn attachment_box(p: [i32; 3], face: u8) -> Aabb {
+    progress_aabb(
+        opposite(face),
         -1.0,
         1.0,
         Vec3::new(
@@ -160,8 +247,11 @@ fn can_stay_at(m: &Mob, w: &MobWorld, p: [i32; 3], face: u8) -> bool {
             f64::from(p[2]) + 0.5,
         ),
     )
-    .deflate(Vec3::new(1.0e-6, 1.0e-6, 1.0e-6));
-    no_collision(m, w, opened)
+    .deflate(Vec3::new(1.0e-6, 1.0e-6, 1.0e-6))
+}
+/// Shulker.canStayAt, including its separately indexed collidable entities.
+fn can_stay_at(m: &Mob, w: &MobWorld, p: [i32; 3], face: u8) -> bool {
+    block_space(m, w).can_stay_at(m, p, face) && entities_clear(m, w, attachment_box(p, face))
 }
 /// `findAttachableSurface`: the first face (down, up, north, south, west,
 /// east) to cling to.
@@ -616,13 +706,17 @@ pub fn anim(m: &Mob, s: &State, p: &mut Poses) {
 }
 
 #[cfg(test)]
+#[path = "shulker_space_tests.rs"]
+mod space_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::mobs::sensor_scan_tests::kind;
     use std::sync::Arc;
 
     /// A shulker fixed to a block face.
-    fn shulker() -> Mob {
+    pub(super) fn shulker() -> Mob {
         let mut kind = kind();
         let k = Arc::make_mut(&mut kind);
         k.id = "minecraft:shulker".into();
