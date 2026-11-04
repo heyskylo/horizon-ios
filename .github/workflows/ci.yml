@@ -182,10 +182,48 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-pc-windows-msvc
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: windows-arm64-game
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: launcher
+          shared-key: windows-arm64-launcher
+      - name: Check LLVM assembler used by ring
+        shell: pwsh
+        run: |
+          $llvmBin = Join-Path $env:ProgramFiles 'LLVM\bin'
+          if (-not (Get-Command clang -ErrorAction SilentlyContinue) -and (Test-Path (Join-Path $llvmBin 'clang.exe'))) {
+            $env:PATH = "$llvmBin;$env:PATH"
+            "PATH=$env:PATH" >> $env:GITHUB_ENV
+          }
+          $clang = Get-Command clang -ErrorAction Stop
+          Write-Output "Using $($clang.Source)"
+          & $clang.Source --version
       - name: Build the game for native Windows ARM64
         run: cargo build --release --locked --target aarch64-pc-windows-msvc -p horizon-client -p horizon-client-lib --bin horizon-client --bin horizon-ctl -p horizon-prepare --bin horizon-prepare -p horizon-server --bin horizon-server
       - name: Check the game's PE machine
         run: python tools/check_pe_arch.py arm64 target/aarch64-pc-windows-msvc/release/horizon-client.exe target/aarch64-pc-windows-msvc/release/horizon-ctl.exe target/aarch64-pc-windows-msvc/release/horizon-prepare.exe target/aarch64-pc-windows-msvc/release/horizon-server.exe
+      - name: Check game DLL imports
+        run: python tools/check_imports.py target/aarch64-pc-windows-msvc/release/horizon-client.exe target/aarch64-pc-windows-msvc/release/horizon-ctl.exe target/aarch64-pc-windows-msvc/release/horizon-prepare.exe target/aarch64-pc-windows-msvc/release/horizon-server.exe
+      - name: Start every game executable
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $client = 'target/aarch64-pc-windows-msvc/release/horizon-client.exe'
+          $output = & $client --help 2>&1
+          if ($LASTEXITCODE -ne 0 -or ($output -join "`n") -notmatch '--resources') { throw 'horizon-client --help failed' }
+          foreach ($binary in @('horizon-ctl.exe', 'horizon-prepare.exe', 'horizon-server.exe')) {
+            $path = "target/aarch64-pc-windows-msvc/release/$binary"
+            $output = & $path --help 2>&1
+            if ($LASTEXITCODE -ne 0 -or -not $output) { throw "$binary --help failed" }
+          }
+          foreach ($binary in @('horizon-prepare.exe', 'horizon-server.exe')) {
+            $path = "target/aarch64-pc-windows-msvc/release/$binary"
+            $output = & $path --version 2>&1
+            if ($LASTEXITCODE -ne 0 -or -not $output) { throw "$binary --version failed" }
+            Write-Output ($output -join "`n")
+          }
       - name: Test and build the native Windows ARM64 launcher
         working-directory: launcher
         run: |
@@ -194,17 +232,16 @@ jobs:
       - name: Check the launcher's PE machine
         working-directory: launcher
         run: python ../tools/check_pe_arch.py arm64 target/aarch64-pc-windows-msvc/release/horizon-launcher.exe
-      - uses: actions/upload-artifact@v4
-        with:
-          name: windows-arm64-verification
-          path: |
-            target/aarch64-pc-windows-msvc/release/horizon-client.exe
-            target/aarch64-pc-windows-msvc/release/horizon-ctl.exe
-            target/aarch64-pc-windows-msvc/release/horizon-prepare.exe
-            target/aarch64-pc-windows-msvc/release/horizon-server.exe
-            launcher/target/aarch64-pc-windows-msvc/release/horizon-launcher.exe
-          if-no-files-found: error
-          retention-days: 7
+      - name: Check launcher DLL imports and command-line startup
+        working-directory: launcher
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $launcher = 'target/aarch64-pc-windows-msvc/release/horizon-launcher.exe'
+          python ../tools/check_imports.py $launcher
+          $output = & $launcher --version 2>&1
+          if ($LASTEXITCODE -ne 0 -or -not $output) { throw 'horizon-launcher --version failed' }
+          Write-Output ($output -join "`n")
   # Most pull requests leave the harnesses to parity-main, which runs them on main a batch of merges at a time
   # (.github/workflows/parity-main.yml; releases wait for it). A pull request still runs them itself when it changes
   # a harness, an oracle, a probe or the runner, or carries the run-parity label (run-parity.yml, when it is added).

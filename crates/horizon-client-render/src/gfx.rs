@@ -1821,18 +1821,28 @@ impl wgpu::rwh::HasDisplayHandle for WindowDisplay {
 /// The backends to open a device on, each tried in turn until one gives a
 /// device. `api` is the player's choice (`GraphicsApi::with_env` applied);
 /// `os` is `std::env::consts::OS`; `wgpu_backend`: whether `WGPU_BACKEND` is set,
-/// which picks the backends itself. Auto tries Vulkan, then DirectX 12 on Windows,
-/// then OpenGL (Windows and Linux) for GPUs with neither driver, each when the one
-/// before has no surface, adapter or device. A native crash in the driver can't be
+/// which picks the backends itself. Auto tries DirectX 12 first on Windows ARM64,
+/// then Vulkan, based on the device-loss observed in a Windows ARM64 test. Other
+/// Windows systems try Vulkan, then DirectX 12, then OpenGL; Linux tries Vulkan then
+/// OpenGL. Each is tried when the one before has no surface, adapter or device. A native
+/// crash in the driver can't be
 /// caught in the game; the launcher switches the setting to DirectX 12 after one at
 /// the renderer's start (#746). macOS has Metal only.
-fn backend_order(api: GraphicsApi, os: &str, wgpu_backend: bool) -> Vec<wgpu::Backends> {
+fn backend_order(
+    api: GraphicsApi,
+    os: &str,
+    arch: &str,
+    wgpu_backend: bool,
+) -> Vec<wgpu::Backends> {
     use wgpu::Backends;
     if os == "macos" || wgpu_backend {
         return vec![Backends::default()];
     }
     let windows = os == "windows";
     match api {
+        GraphicsApi::Auto if windows && arch == "aarch64" => {
+            vec![Backends::DX12, Backends::VULKAN, Backends::GL]
+        }
         GraphicsApi::Auto if windows => vec![Backends::VULKAN, Backends::DX12, Backends::GL],
         GraphicsApi::Auto => vec![Backends::VULKAN, Backends::GL],
         GraphicsApi::Dx12 if windows => vec![Backends::DX12],
@@ -1973,7 +1983,12 @@ async fn open_device(
 ) -> Result<Opened> {
     let wgpu_backend = std::env::var_os("WGPU_BACKEND").is_some();
     let mut first = None;
-    for (order, allow_cpu) in device_search(api.with_env(), std::env::consts::OS, wgpu_backend) {
+    for (order, allow_cpu) in device_search(
+        api.with_env(),
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+        wgpu_backend,
+    ) {
         match open_device_with(window, offscreen, &order, layers, allow_cpu).await {
             Ok(opened) => {
                 if let Some(first) = &first {
@@ -2005,10 +2020,11 @@ async fn open_device(
 fn device_search(
     api: GraphicsApi,
     os: &str,
+    arch: &str,
     wgpu_backend: bool,
 ) -> Vec<(Vec<wgpu::Backends>, bool)> {
-    let chosen = backend_order(api, os, wgpu_backend);
-    let others: Vec<_> = backend_order(GraphicsApi::Auto, os, wgpu_backend)
+    let chosen = backend_order(api, os, arch, wgpu_backend);
+    let others: Vec<_> = backend_order(GraphicsApi::Auto, os, arch, wgpu_backend)
         .into_iter()
         .filter(|b| !chosen.contains(b))
         .filter(|&b| !(api == GraphicsApi::Dx12 && b == wgpu::Backends::VULKAN))
@@ -11690,27 +11706,49 @@ mod tests {
         assert!(!is_software(wgpu::DeviceType::VirtualGpu));
     }
     #[test]
-    fn auto_tries_vulkan_then_directx_12_then_opengl() {
+    fn auto_uses_directx_12_first_on_windows_arm64() {
         use super::{GraphicsApi, backend_order};
         use wgpu::Backends;
-        let order = |api, os| backend_order(api, os, false);
+        let order = |api, os, arch| backend_order(api, os, arch, false);
         assert_eq!(
-            order(GraphicsApi::Auto, "windows"),
+            order(GraphicsApi::Auto, "windows", "x86_64"),
             [Backends::VULKAN, Backends::DX12, Backends::GL]
         );
-        assert_eq!(order(GraphicsApi::Vulkan, "windows"), [Backends::VULKAN]);
-        assert_eq!(order(GraphicsApi::Dx12, "windows"), [Backends::DX12]);
-        assert_eq!(order(GraphicsApi::OpenGl, "windows"), [Backends::GL]);
         assert_eq!(
-            order(GraphicsApi::Auto, "linux"),
+            order(GraphicsApi::Auto, "windows", "aarch64"),
+            [Backends::DX12, Backends::VULKAN, Backends::GL]
+        );
+        assert_eq!(
+            order(GraphicsApi::Vulkan, "windows", "aarch64"),
+            [Backends::VULKAN]
+        );
+        assert_eq!(
+            order(GraphicsApi::Dx12, "windows", "aarch64"),
+            [Backends::DX12]
+        );
+        assert_eq!(
+            order(GraphicsApi::OpenGl, "windows", "aarch64"),
+            [Backends::GL]
+        );
+        assert_eq!(
+            order(GraphicsApi::Auto, "linux", "x86_64"),
             [Backends::VULKAN, Backends::GL]
         );
-        assert_eq!(order(GraphicsApi::Dx12, "linux"), [Backends::VULKAN]);
-        assert_eq!(order(GraphicsApi::OpenGl, "linux"), [Backends::GL]);
+        assert_eq!(
+            order(GraphicsApi::Dx12, "linux", "x86_64"),
+            [Backends::VULKAN]
+        );
+        assert_eq!(
+            order(GraphicsApi::OpenGl, "linux", "x86_64"),
+            [Backends::GL]
+        );
         // WGPU_BACKEND picks the backends itself; macOS has Metal only.
         for api in GraphicsApi::ALL {
-            assert_eq!(backend_order(api, "windows", true), [Backends::default()]);
-            assert_eq!(order(api, "macos"), [Backends::default()]);
+            assert_eq!(
+                backend_order(api, "windows", "aarch64", true),
+                [Backends::default()]
+            );
+            assert_eq!(order(api, "macos", "aarch64"), [Backends::default()]);
         }
     }
     #[test]
@@ -11718,28 +11756,33 @@ mod tests {
         use super::{GraphicsApi, device_search};
         use wgpu::Backends;
         let (v, d, g) = (Backends::VULKAN, Backends::DX12, Backends::GL);
+        let search = |api, os, arch| device_search(api, os, arch, false);
         // #5185: DirectX 12 chosen on an Intel HD 2500 (WARP only): OpenGL's GPU before WARP.
         assert_eq!(
-            device_search(GraphicsApi::Dx12, "windows", false),
+            search(GraphicsApi::Dx12, "windows", "x86_64"),
             [(vec![d], false), (vec![g], false), (vec![d], true)]
         );
         assert_eq!(
-            device_search(GraphicsApi::Vulkan, "windows", false),
+            search(GraphicsApi::Vulkan, "windows", "x86_64"),
             [(vec![v], false), (vec![d, g], false), (vec![v], true)]
         );
         assert_eq!(
-            device_search(GraphicsApi::Auto, "windows", false),
+            search(GraphicsApi::Auto, "windows", "x86_64"),
             [(vec![v, d, g], false), (vec![v, d, g], true)]
         );
         assert_eq!(
-            device_search(GraphicsApi::OpenGl, "linux", false),
+            search(GraphicsApi::Auto, "windows", "aarch64"),
+            [(vec![d, v, g], false), (vec![d, v, g], true)]
+        );
+        assert_eq!(
+            search(GraphicsApi::OpenGl, "linux", "x86_64"),
             [(vec![g], false), (vec![v], false), (vec![g], true)]
         );
         // WGPU_BACKEND and macOS: one set of backends, nothing else to try.
         let all = Backends::default();
         for (os, env) in [("windows", true), ("macos", false)] {
             assert_eq!(
-                device_search(GraphicsApi::Vulkan, os, env),
+                device_search(GraphicsApi::Vulkan, os, "x86_64", env),
                 [(vec![all], false), (vec![all], true)]
             );
         }
