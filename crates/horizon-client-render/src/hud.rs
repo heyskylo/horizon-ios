@@ -598,15 +598,16 @@ fn atlas_sprites(root: &Path, packed: &[PackedImage]) -> (Vec<PackedImage>, Vec<
                     let path = texture.split_once(':').map_or(texture.as_str(), |(_, p)| p);
                     let file = atlas_sources::texture_path(root, texture, "textures");
                     decode(&file).ok().map(|image| {
-                        // Animated strips keep their first frame and animate,
-                        // like the packed files.
-                        if path.starts_with("block/") || path.starts_with("item/") {
-                            let mcmeta = horizon_core::prepared_files::read_to_string(
-                                &file.with_extension("png.mcmeta"),
-                            )
-                            .ok();
-                            let animation = animation_of(mcmeta.as_deref());
-                            animated = animation.is_some();
+                        // Animated strips keep their first frame and animate, like the
+                        // packed files, under any folder: vanilla animates every sprite of
+                        // these atlases (a server pack's `wynn/...` as well as `item/...`).
+                        let mcmeta = horizon_core::prepared_files::read_to_string(
+                            &file.with_extension("png.mcmeta"),
+                        )
+                        .ok();
+                        let animation = animation_of(mcmeta.as_deref());
+                        animated = animation.is_some();
+                        if animated || path.starts_with("block/") || path.starts_with("item/") {
                             first_frame(image, animation.as_ref())
                         } else {
                             image
@@ -3355,6 +3356,45 @@ mod tests {
             .find(|(r, _)| r.u0 == rect.u0 && r.v0 == rect.v0)
             .expect("the namespaced sprite animates");
         assert_eq!(animation.frame_count(), 2);
+    }
+    #[test]
+    fn an_animated_texture_outside_item_folders_packs_its_first_frame_and_animates() {
+        let root =
+            std::env::temp_dir().join(format!("horizon-atlas-dir-anim-{}", std::process::id()));
+        let atlases = root.join("assets/minecraft/atlases");
+        let custom = root.join("assets/minecraft/textures/custom");
+        fs::create_dir_all(&atlases).unwrap();
+        fs::create_dir_all(&custom).unwrap();
+        fs::write(
+            atlases.join("items.json"),
+            r#"{"sources": [{"type": "directory", "source": "custom", "prefix": "custom/"}]}"#,
+        )
+        .unwrap();
+        // A server pack's item under its own folder: two 16x16 frames, blue then yellow, and
+        // a still 16x32 texture beside it.
+        write_strip(
+            &custom.join("gem.png"),
+            16,
+            32,
+            &[[0, 0, 255, 255], [255, 255, 0, 255]],
+            Some(r#"{"animation": {"frametime": 20}}"#),
+        );
+        write_strip(&custom.join("banner.png"), 16, 32, &[[9, 9, 9, 255]], None);
+        let atlas = HudAtlas::build(&root).unwrap();
+        let _ = fs::remove_dir_all(&root);
+        let rect = atlas.sprites["custom/gem"];
+        // One frame, not the whole strip squeezed into a slot.
+        assert_eq!(rect.texels((atlas.width, atlas.height)), (16, 16));
+        assert_eq!(texel_at(&atlas, rect, 0, 15), [0, 0, 255, 255]);
+        let (_, animation) = atlas
+            .sprite_animations
+            .iter()
+            .find(|(r, _)| r.u0 == rect.u0 && r.v0 == rect.v0)
+            .expect("the sprite animates");
+        assert_eq!(animation.frame_count(), 2);
+        // A still texture there stays whole, as vanilla stitches it.
+        let banner = atlas.sprites["custom/banner"];
+        assert_eq!(banner.texels((atlas.width, atlas.height)), (16, 32));
     }
     /// A resource root with one plain item texture and these CIT files (relative path, contents).
     fn cit_root(name: &str, files: &[(&str, &str)]) -> PathBuf {
