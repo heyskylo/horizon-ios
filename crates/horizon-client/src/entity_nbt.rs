@@ -2498,19 +2498,10 @@ pub fn fireball_to_nbt(
     if let Some(power) = power {
         put(&mut tag, "ExplosionPower", Tag::Byte(power as i8));
     }
-    // Fireball.addAdditionalSaveData: the item it is drawn as, one of the loaded
-    // item or else a fire charge (`setItem` refuses an empty stack and keeps one).
-    if matches!(
-        p.kind,
-        ProjectileKind::LargeFireball { .. } | ProjectileKind::SmallFireball
-    ) {
-        let mut item = tag
-            .get("Item")
-            .and_then(item_from_nbt)
-            .filter(|i| i.count > 0 && &*i.item != "minecraft:air")
-            .unwrap_or_else(|| crate::items::ItemStack::new("minecraft:fire_charge", 1));
-        item.count = 1;
-        put(&mut tag, "Item", item_to_nbt(&item));
+    // Fireball.addAdditionalSaveData: the item `getItem` returns, a fire
+    // charge unless `setItem` was given another (kept as a single one).
+    if let Some(item) = &p.item {
+        put(&mut tag, "Item", item_to_nbt(item));
     }
     Some(tag)
 }
@@ -2722,6 +2713,10 @@ pub fn owner_uuid(tag: &Tag) -> Option<[i32; 4]> {
     uuid_from_tag(tag.get("Owner"))
 }
 
+/// `Fireball.readAdditionalSaveData` (and, around it, `Projectile`'s Owner and
+/// LeftOwner and `AbstractHurtingProjectile`'s acceleration power): a fireball
+/// also reads the item it is drawn as through `setItem`, whose default is the
+/// fire charge; a wind charge is no `Fireball` and has none.
 pub fn fireball_from_nbt(tag: &Tag, player: Option<[i32; 4]>) -> Option<Projectile> {
     let kind = match kind(tag)?.as_str() {
         "minecraft:fireball" => ProjectileKind::LargeFireball {
@@ -2742,6 +2737,9 @@ pub fn fireball_from_nbt(tag: &Tag, player: Option<[i32; 4]>) -> Option<Projecti
     p.owner_uuid = owner;
     p.no_gravity = flag(tag, "NoGravity");
     p.acceleration = float(tag.get("acceleration_power")).unwrap_or(0.1);
+    if let Some(item) = tag.get("Item").and_then(item_from_nbt) {
+        p.set_item(item);
+    }
     Some(p)
 }
 
@@ -2825,6 +2823,7 @@ pub struct TridentSave<'a> {
     pub dealt_damage: bool,
     pub creative_only: bool,
     pub no_gravity: bool,
+    pub fire_ticks: i32,
     pub item: &'a crate::items::ItemStack,
 }
 pub fn trident_to_nbt(t: &TridentSave, uuid: [i32; 4], raw: Option<&Tag>) -> Tag {
@@ -2851,6 +2850,7 @@ pub fn trident_to_nbt(t: &TridentSave, uuid: [i32; 4], raw: Option<&Tag>) -> Tag
         ("SoundEvent", string("minecraft:item.trident.hit_ground")),
         ("item", item_to_nbt(t.item)),
         ("DealtDamage", Tag::Byte(i8::from(t.dealt_damage))),
+        ("Fire", Tag::Short(t.fire_ticks as i16)),
     ] {
         put(&mut tag, key, value);
     }
@@ -2875,6 +2875,7 @@ pub struct TridentNbt {
     pub dealt_damage: bool,
     pub creative_only: bool,
     pub no_gravity: bool,
+    pub fire_ticks: i32,
     pub item: crate::items::ItemStack,
 }
 pub fn trident_from_nbt(tag: &Tag) -> Option<TridentNbt> {
@@ -2890,6 +2891,7 @@ pub fn trident_from_nbt(tag: &Tag) -> Option<TridentNbt> {
         dealt_damage: flag(tag, "DealtDamage"),
         creative_only: number(tag.get("pickup")) == Some(2),
         no_gravity: flag(tag, "NoGravity"),
+        fire_ticks: number(tag.get("Fire")).unwrap_or(0) as i32,
         item: tag
             .get("item")
             .and_then(item_from_nbt)
@@ -3799,6 +3801,7 @@ mod tests {
                 dealt_damage: true,
                 creative_only: true,
                 no_gravity: true,
+                fire_ticks: 0,
                 item: &trident,
             },
             [1, 2, 3, 4],
@@ -5684,7 +5687,7 @@ mod fireball_nbt_tests {
                 ("minecraft:fire_charge".to_owned(), 1),
                 "{id}"
             );
-            // A loaded item stays, as a single one.
+            // A loaded item stays, as a single one, on the entity itself.
             let mut loaded = plain.clone();
             put(
                 &mut loaded,
@@ -5692,7 +5695,18 @@ mod fireball_nbt_tests {
                 item_to_nbt(&crate::items::ItemStack::new("minecraft:diamond", 5)),
             );
             let p = fireball_from_nbt(&loaded, None).unwrap();
-            let back = fireball_to_nbt(&p, [1, 2, 3, 4], None, Some(&loaded)).unwrap();
+            let held = p.item.as_ref().unwrap();
+            assert_eq!((&*held.item, held.count), ("minecraft:diamond", 1), "{id}");
+            // `addAdditionalSaveData` writes `getItem()`: the item in the
+            // compound it was loaded from does not replace the one it holds,
+            // which is what `/data get` and the chunk save then report.
+            let mut stale = plain.clone();
+            put(
+                &mut stale,
+                "Item",
+                item_to_nbt(&crate::items::ItemStack::new("minecraft:stone", 8)),
+            );
+            let back = fireball_to_nbt(&p, [1, 2, 3, 4], None, Some(&stale)).unwrap();
             assert_eq!(item_of(&back), ("minecraft:diamond".to_owned(), 1), "{id}");
             // An empty one falls back to the fire charge.
             let mut empty = plain.clone();

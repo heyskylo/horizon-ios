@@ -51,6 +51,7 @@ use winit::{
 
 mod frames;
 mod hud;
+pub(super) mod launcher;
 mod pads;
 mod players;
 mod setup;
@@ -145,6 +146,9 @@ pub(super) struct Split<'a> {
     /// Whose game runs now (0 = P1), and P1's buttons while another's does.
     turn: usize,
     host_widgets: widgets::Saved,
+    /// The launcher's other Microsoft accounts' sessions, for splitscreen players to sign in
+    /// with (`launcher::accounts`).
+    accounts: Vec<Arc<horizon_client::auth::AuthSession>>,
     /// `HORIZON_SPLIT_STATS`: when the frame times were last printed.
     stats: Option<Instant>,
     /// For the readout: where a frame's wall time goes (the turns with their renders, presents,
@@ -200,6 +204,7 @@ impl<'a> Split<'a> {
             res: None,
             turn: 0,
             host_widgets: Default::default(),
+            accounts: launcher::accounts(),
             stats: std::env::var_os("HORIZON_SPLIT_STATS").map(|_| Instant::now()),
             spent: Default::default(),
             spent_frames: 0,

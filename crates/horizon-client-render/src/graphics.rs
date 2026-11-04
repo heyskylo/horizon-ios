@@ -968,13 +968,13 @@ impl Graphics {
     pub fn save(&self, dir: &Path) {
         let _ = fs::write(dir.join(FILE), self.serialize());
     }
-    /// Paper white, in nits: the player's, or on Auto the desktop's SDR white as the
-    /// system reports it, else 203 (BT.2408's reference white).
     /// Whether a renderer made now draws its frame in 16 bits (`Renderer::new`'s `wide_frame`):
     /// HDR on, with Smooth Gradients.
     pub fn wide_frame(&self) -> bool {
         self.hdr && self.hdr_smooth_gradients
     }
+    /// Paper white, in nits: the player's, or on Auto the desktop's SDR white as the
+    /// system reports it, else 203 (BT.2408's reference white).
     pub fn paper_white_nits(&self) -> u32 {
         match self.hdr_paper_white {
             0 => reported().map_or(203, |r| r.paper_white),

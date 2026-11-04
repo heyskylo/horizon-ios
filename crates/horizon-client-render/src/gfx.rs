@@ -1737,6 +1737,45 @@ fn surface_format(
     .or_else(|| formats.iter().copied().find(|f| !f.is_srgb()))
     .unwrap_or(default)
 }
+/// The 16-bit frame HDR output draws into where it can (`Renderer::frame_format`). Unorm
+/// rather than float: it clips at white after every pass as the 8-bit frame does, so light
+/// added past white (the sun on the sky) and then blended over (glass) looks the same.
+const WIDE_FRAME: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Unorm;
+
+/// Whether a device with `features` can draw, blend and filter `WIDE_FRAME`, whose
+/// format features (`format`) the adapter reports. Drawing into it is an adapter-specific
+/// format feature, beyond the format itself.
+fn draws_wide_frame(features: wgpu::Features, format: wgpu::TextureFormatFeatures) -> bool {
+    features.contains(
+        wgpu::Features::TEXTURE_FORMAT_16BIT_NORM
+            | wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES,
+    ) && format.allowed_usages.contains(
+        wgpu::TextureUsages::RENDER_ATTACHMENT
+            | wgpu::TextureUsages::TEXTURE_BINDING
+            | wgpu::TextureUsages::COPY_SRC
+            | wgpu::TextureUsages::COPY_DST,
+    ) && format.flags.contains(
+        wgpu::TextureFormatFeatureFlags::BLENDABLE | wgpu::TextureFormatFeatureFlags::FILTERABLE,
+    )
+}
+
+/// What a renderer's frame is drawn in: `WIDE_FRAME` when it is made with HDR on and Smooth
+/// Gradients (`wide_frame`, `Graphics::wide_frame`), the surface offering HDR output
+/// (`hdr_offered`) and the device drawing it (`draws_wide_frame`): an 8-bit frame's steps band
+/// in dark gradients, and HDR shows them. Else the swapchain's 8-bit format, as without HDR.
+fn frame_format(
+    wide_frame: bool,
+    hdr_offered: bool,
+    device_draws_it: bool,
+    swapchain: wgpu::TextureFormat,
+) -> wgpu::TextureFormat {
+    if wide_frame && hdr_offered && device_draws_it {
+        WIDE_FRAME
+    } else {
+        swapchain.remove_srgb_suffix()
+    }
+}
+
 /// Opens a device on the first of `backend_order`'s backends that gives one.
 /// Offscreen rendering needs no surface, so it can use a GPU the window's
 /// display cannot present from (a headless compositor).
@@ -2298,32 +2337,12 @@ impl Renderer {
         let offscreen = surface
             .is_none()
             .then(|| Self::offscreen_target(&device, &config));
-        // A 16-bit frame where HDR output is on when the renderer is made: an 8-bit frame's
-        // steps band in dark gradients, and HDR shows them. Unorm rather than float: it clips
-        // at white after every pass as the 8-bit frame does, so light added past white (the
-        // sun on the sky) and then blended over (glass) looks the same. Where the device
-        // can't draw, blend and filter it, and with HDR switched on later, the 8-bit frame.
-        let wide = wgpu::TextureFormat::Rgba16Unorm;
-        let f = adapter.get_texture_format_features(wide);
-        // Drawing into it is an adapter-specific format feature, beyond the format itself.
-        let wide_ok = device.features().contains(
-            wgpu::Features::TEXTURE_FORMAT_16BIT_NORM
-                | wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES,
-        ) && f.allowed_usages.contains(
-            wgpu::TextureUsages::RENDER_ATTACHMENT
-                | wgpu::TextureUsages::TEXTURE_BINDING
-                | wgpu::TextureUsages::COPY_SRC
-                | wgpu::TextureUsages::COPY_DST,
-        ) && f.flags.contains(
-            wgpu::TextureFormatFeatureFlags::BLENDABLE
-                | wgpu::TextureFormatFeatureFlags::FILTERABLE,
+        let wide_ok = draws_wide_frame(
+            device.features(),
+            adapter.get_texture_format_features(WIDE_FRAME),
         );
         crate::graphics::offer_smooth_gradients(wide_ok);
-        let frame_format = if wide_frame && hdr_output.is_some() && wide_ok {
-            wide
-        } else {
-            config.format.remove_srgb_suffix()
-        };
+        let frame_format = frame_format(wide_frame, hdr_output.is_some(), wide_ok, config.format);
         if previous.is_none() {
             startup_step(format_args!("creating the pipelines"));
         }
@@ -7743,6 +7762,7 @@ impl Renderer {
                 frame.entities,
                 frame.entity_spans,
                 frame.crumbling_sprite,
+                frame.end_portal_sprites[1],
                 &mut self.pack_entity_rest,
                 skin.filter(|_| pack_skin),
             );
@@ -11104,6 +11124,72 @@ mod tests {
             Rgba8Unorm,
         ];
         assert_eq!(surface_format(&without_bgra, Rgba8UnormSrgb), Rgba8Unorm);
+    }
+    /// The 16-bit frame only with HDR on, Smooth Gradients on, an HDR surface and a device
+    /// that draws it; in every other case the swapchain's 8-bit format, as before it existed.
+    #[test]
+    fn the_frame_is_16_bit_only_with_hdr_and_a_device_that_draws_it() {
+        use super::frame_format;
+        use wgpu::TextureFormat::{Bgra8Unorm, Bgra8UnormSrgb, Rgba8Unorm, Rgba16Unorm};
+        assert_eq!(frame_format(true, true, true, Bgra8Unorm), Rgba16Unorm);
+        for (wide_frame, hdr_offered, draws) in [
+            (false, true, true),
+            (true, false, true),
+            (true, true, false),
+            (false, false, false),
+        ] {
+            assert_eq!(
+                frame_format(wide_frame, hdr_offered, draws, Bgra8UnormSrgb),
+                Bgra8Unorm
+            );
+            assert_eq!(
+                frame_format(wide_frame, hdr_offered, draws, Rgba8Unorm),
+                Rgba8Unorm
+            );
+        }
+    }
+    /// What `draws_wide_frame` needs of a device: both features, and the usages and flags
+    /// every pass takes of the frame. Missing any one of them keeps the 8-bit frame.
+    #[test]
+    fn the_16_bit_frame_needs_every_usage_and_flag_the_passes_take() {
+        use super::draws_wide_frame;
+        use wgpu::{Features as F, TextureFormatFeatureFlags as Fl, TextureUsages as U};
+        let features = F::TEXTURE_FORMAT_16BIT_NORM | F::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES;
+        let usages = U::RENDER_ATTACHMENT | U::TEXTURE_BINDING | U::COPY_SRC | U::COPY_DST;
+        let flags = Fl::BLENDABLE | Fl::FILTERABLE;
+        let format = |allowed_usages, flags| wgpu::TextureFormatFeatures {
+            allowed_usages,
+            flags,
+        };
+        // A desktop GPU: all of it, and more.
+        assert!(draws_wide_frame(
+            features | F::FLOAT32_FILTERABLE,
+            format(usages | U::STORAGE_BINDING, flags | Fl::MULTISAMPLE_X4),
+        ));
+        assert!(!draws_wide_frame(
+            F::TEXTURE_FORMAT_16BIT_NORM,
+            format(usages, flags)
+        ));
+        assert!(!draws_wide_frame(
+            F::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES,
+            format(usages, flags)
+        ));
+        // A downlevel device reports no usages at all for a format it lacks.
+        assert!(!draws_wide_frame(
+            F::empty(),
+            format(U::empty(), Fl::empty())
+        ));
+        for usage in [
+            U::RENDER_ATTACHMENT,
+            U::TEXTURE_BINDING,
+            U::COPY_SRC,
+            U::COPY_DST,
+        ] {
+            assert!(!draws_wide_frame(features, format(usages - usage, flags)));
+        }
+        for flag in [Fl::BLENDABLE, Fl::FILTERABLE] {
+            assert!(!draws_wide_frame(features, format(usages, flags - flag)));
+        }
     }
     #[test]
     fn special_material_batches_preserve_quad_order_and_offsets() {

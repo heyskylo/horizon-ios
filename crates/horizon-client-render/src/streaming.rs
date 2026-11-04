@@ -1224,6 +1224,14 @@ impl Streaming {
                 world.layout().sections() as i32,
             );
         }
+        // `ChunkTaskPriorityQueue.release` for each of them (`ChunkTaskDispatcher`'s
+        // `release(col, true)` from the chunk's unload): the jobs still queued for a
+        // column go with it instead of running for a level they no longer belong to.
+        if !gone.is_empty()
+            && let Ok(mut queue) = self.shared.queue.lock()
+        {
+            release_columns(&mut queue, gone);
+        }
         let mut chunks = Vec::with_capacity(gone.len());
         for &(x, z) in gone {
             self.lit.remove(&(x, z));
@@ -2879,6 +2887,25 @@ fn rank_again(queue: &mut BinaryHeap<Queued>, distance: impl Fn(i32, i32) -> i64
     }
     *queue = BinaryHeap::from(jobs);
 }
+/// `ChunkTaskPriorityQueue.release(pos, clearQueue=true)`: the jobs queued for the
+/// `gone` columns are dropped, so a view that moved or shrank does not wait behind the
+/// generation of the chunks it left. A job without a column (a save, meshes to free)
+/// stays, as vanilla keeps the tasks of a chunk that is still loaded. Returns how many
+/// jobs went.
+fn release_columns(queue: &mut BinaryHeap<Queued>, gone: &FxHashSet<(i32, i32)>) -> usize {
+    if queue.is_empty() || gone.is_empty() {
+        return 0;
+    }
+    let queued = std::mem::take(queue).into_vec();
+    let before = queued.len();
+    let kept: Vec<Queued> = queued
+        .into_iter()
+        .filter(|job| !job.at.is_some_and(|at| gone.contains(&at)))
+        .collect();
+    let released = before - kept.len();
+    *queue = BinaryHeap::from(kept);
+    released
+}
 /// Whether the 3x3 a light job for (x, z) reads is all there: every
 /// neighbour a finished column, or a decorated proto chunk past the area
 /// (the last FULL ring lights against neighbours at FEATURES, as
@@ -3308,6 +3335,59 @@ mod tests {
         let moved = ranges((19, 0));
         rank_again(&mut queue, |x, z| moved.priority(x, z));
         assert_eq!(queue.pop().and_then(|q| q.at), Some((20, 0)));
+    }
+
+    /// `ChunkTaskPriorityQueue.release`: a column that unloaded keeps no queued job, so
+    /// a teleport or a smaller render distance does not spend its workers on the world
+    /// it left; the other columns' jobs and the jobs without a column (saves, meshes to
+    /// free) stay, in the same order.
+    #[test]
+    fn a_released_column_keeps_no_queued_job() {
+        let generate = |x, z, priority, order| Queued {
+            priority,
+            at: Some((x, z)),
+            bias: 0,
+            order,
+            job: Job::Generate(x, z),
+        };
+        let save = |order| Queued {
+            priority: i64::MIN,
+            at: None,
+            bias: 0,
+            order,
+            job: Job::Save(Vec::new()),
+        };
+        let queued = || {
+            BinaryHeap::from(vec![
+                generate(0, 0, 0, 1),
+                generate(0, 0, 4, 2),
+                generate(1, 0, 8, 3),
+                generate(9, 9, 12, 4),
+                save(5),
+            ])
+        };
+        let pops = |mut queue: BinaryHeap<Queued>| {
+            std::iter::from_fn(move || queue.pop())
+                .map(|q| q.at)
+                .collect::<Vec<_>>()
+        };
+        // Nothing goes for a column that is still loaded, or for nothing at all.
+        let mut queue = queued();
+        assert_eq!(release_columns(&mut queue, &FxHashSet::default()), 0);
+        assert_eq!(
+            release_columns(&mut queue, &[(20, 20)].into_iter().collect()),
+            0
+        );
+        assert_eq!(queue.len(), 5);
+        // Both of (0, 0)'s jobs go, its neighbour's and the save stay.
+        let gone: FxHashSet<(i32, i32)> = [(0, 0)].into_iter().collect();
+        assert_eq!(release_columns(&mut queue, &gone), 2);
+        assert_eq!(pops(queue), [None, Some((1, 0)), Some((9, 9))]);
+        // Every column leaving at once: only the jobs without one are left.
+        let mut queue = queued();
+        let all: FxHashSet<(i32, i32)> = [(0, 0), (1, 0), (9, 9)].into_iter().collect();
+        assert_eq!(release_columns(&mut queue, &all), 4);
+        assert_eq!(pops(queue), [None]);
     }
 
     /// The light and mesh stages submit bounded work, the nearest first:
