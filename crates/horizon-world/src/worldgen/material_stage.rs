@@ -3,8 +3,8 @@ use super::{
     DecodeError,
     anchor::WorldGenerationContext,
     material_condition::{
-        MaterialConditions, MaterialDensitySources, MaterialRule, MaterialRuleError,
-        MaterialSurfaceQueries,
+        CompiledSurfaceRule, MaterialConditions, MaterialDensitySources, MaterialRule,
+        MaterialRuleError, MaterialSurfaceQueries,
     },
     material_extensions::{ExtensionError, MaterialColumn, MaterialExtensions},
     terrain::{TerrainBlockStates, TerrainChunk, TerrainError},
@@ -268,6 +268,20 @@ pub fn build_surface<R: RandomSource, S: MaterialSurfaceQueries, B: TerrainBlock
 where
     R::Positional: Clone,
 {
+    build_surface_shared(chunk, &rule, &mut None, inputs, extensions)
+}
+/// `build_surface` with the rule compiled once for the chunks `shared` serves
+/// (`MaterialConditions::add_shared_rule`): one world's, one worker's.
+pub fn build_surface_shared<R: RandomSource, S: MaterialSurfaceQueries, B: TerrainBlockStates>(
+    chunk: &mut TerrainChunk<'_, B>,
+    rule: &MaterialRule,
+    shared: &mut Option<CompiledSurfaceRule<R>>,
+    inputs: SurfaceInputs<'_, R, S>,
+    extensions: &MaterialExtensions<R::Positional>,
+) -> Result<(), SurfaceError>
+where
+    R::Positional: Clone,
+{
     let min = chunk.min_y();
     let max = min + chunk.height() - 1;
     if inputs.write_min_y < min
@@ -295,6 +309,7 @@ where
     let result = build_columns(
         chunk,
         rule,
+        shared,
         &mut worker,
         extensions,
         inputs.write_min_y,
@@ -306,7 +321,8 @@ where
 }
 fn build_columns<R: RandomSource, S: MaterialSurfaceQueries, B: TerrainBlockStates>(
     chunk: &mut TerrainChunk<'_, B>,
-    rule: MaterialRule,
+    rule: &MaterialRule,
+    shared: &mut Option<CompiledSurfaceRule<R>>,
     worker: &mut MaterialConditions<R, S>,
     extensions: &MaterialExtensions<R::Positional>,
     write_min_y: i32,
@@ -316,7 +332,7 @@ where
     R::Positional: Clone,
 {
     let min = chunk.min_y();
-    let rule = worker.add_rule(rule)?;
+    let rule = worker.add_shared_rule(rule, shared)?;
     let variants = worker.surface_variants(rule)?;
     let cx = chunk.position().x.wrapping_shl(4);
     let cz = chunk.position().z.wrapping_shl(4);
