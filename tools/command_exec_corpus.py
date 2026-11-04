@@ -2377,6 +2377,74 @@ def creeper_custom_fuse():
     return ops + setup('/gamerule mob_griefing true')
 
 
+def axolotl_integer_memory_ttl():
+    """Loaded integer-memory TTL survives NoAI; behavior writes reset it (#8852)."""
+    keys = ('play_dead_ticks', 'temptation_cooldown_ticks')
+    ops = setup('/fill 0 217 0 15 217 15 stone', '/fill 0 218 0 15 225 15 water')
+
+    def summon(tag, key, value, ttl, no_ai, x=8.5, z=12.5):
+        lifetime = '' if ttl is None else f',ttl:{ttl}'
+        return setup(f'/summon axolotl {x} 220 {z} '
+                     f'{{Tags:["{tag}"],NoAI:{no_ai}b,NoGravity:1b,PersistenceRequired:1b,'
+                     f'Brain:{{memories:{{"minecraft:{key}":{{value:{value}{lifetime}}}}}}}}}')
+
+    def observe(tag, key, value, ttl):
+        target = f'@e[tag={tag},limit=1]'
+        path = f'Brain.memories."minecraft:{key}"'
+        if value is None:
+            memory = f'/execute unless data entity {target} {path}'
+        else:
+            # Typed predicates check the serialized tags without depending on SNBT styling.
+            entry = '{value:' + str(value)
+            if ttl is not None:
+                entry += ',ttl:' + str(ttl) + 'L'
+            entry += '}'
+            nbt = '{Brain:{memories:{"minecraft:' + key + '":' + entry + '}}}'
+            memory = f'/execute if entity @e[tag={tag},limit=1,nbt={nbt}]'
+            if ttl is None:
+                memory += f' unless data entity {target} {path}.ttl'
+        return [cmd(f'/execute if entity {target}', expect_result=1),
+                cmd(f'/execute if entity @e[tag={tag},limit=1,nbt={{NoAI:1b}}]'),
+                cmd(f'/execute as {target} at @s anchored eyes positioned ^ ^ ^ '
+                    'if block ~ ~ ~ minecraft:water', expect_result=1),
+                cmd(memory, expect_result=1)]
+
+    codecs = [(v, None, 7, None) for v in ('7', '7L', '7b', '7s', '7.5f', '7.5d')]
+    codecs += [('"invalid"', '5L', None, None)]
+    codecs += [('7', ttl, 7, 5) for ttl in ('5L', '5', '5b', '5s', '5.5d')]
+    codecs += [('7', '"invalid"', 7, None), ('7', '0L', 7, 0), ('7', '-1L', 7, -1)]
+    for key in keys:
+        for case, (value, ttl, expected_value, expected_ttl) in enumerate(codecs):
+            tag = f'axmem_codec_{key}_{case}'
+            ops += summon(tag, key, value, ttl, 1)
+            ops += observe(tag, key, expected_value, expected_ttl)
+            ops += setup(f'/kill @e[tag={tag}]')
+    # Clear dead numeric-control subjects before the shared tank's six actual ticks.
+    ops.append({'op': 'tick', 'n': 25})
+    cases = []
+    for no_ai in (0, 1):
+        for key in keys:
+            for name, ttl in [('absent', None), ('zero', '0L'), ('one', '1L'),
+                              ('five', '5L'), ('negative', '-1L'), ('max', '9223372036854775807L')]:
+                tag = f'axmem_{no_ai}_{key}_{name}'
+                i = len(cases)
+                ops += summon(tag, key, '100', ttl, no_ai, 2.5 + (i % 6) * 2, 2.5 + (i // 6) * 2)
+                cases.append((tag, key, no_ai, name))
+    elapsed = 0
+    for tick in (0, 1, 3, 6):
+        if tick != elapsed:
+            ops.append({'op': 'tick', 'n': tick - elapsed})
+        elapsed = tick
+        for tag, key, no_ai, name in cases:
+            value = None if not no_ai and tick > 0 and name in ('zero', 'negative') else (
+                100 if no_ai else 100 - tick)
+            ttl = {'zero': 0, 'one': 1, 'five': 5, 'negative': -1}.get(name)
+            if not no_ai and tick > 0:
+                ttl = None  # The behavior's ordinary setMemory resets expiry.
+            ops += observe(tag, key, value, ttl)
+    return ops + setup('/kill @e[type=axolotl]', '/fill 0 218 0 15 225 15 air')
+
+
 def groups():
     return [
         ('setup', group_setup()),
@@ -2389,6 +2457,7 @@ def groups():
         ('setblock destroy air', setblock_destroy_air()),
         ('forceload query order', forceload_query_order()),
         ('entities', entities()),
+        ('axolotl integer memory TTL', axolotl_integer_memory_ttl()),
         ('aquatic FromBucket', aquatic_from_bucket()),
         ('villager command names', villager_command_names()),
         ('item lifetime counters', item_lifetime_counters()),
