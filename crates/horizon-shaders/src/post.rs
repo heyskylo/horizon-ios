@@ -154,8 +154,9 @@ const BLOCK: [&str; 5] = [
     "gbuffers_basic",
 ];
 
-/// `gbuffers_clouds`: no fallback, the game draws its clouds otherwise (OQ-3).
-const CLOUDS: [&str; 1] = ["gbuffers_clouds"];
+/// `gbuffers_clouds` and its fallbacks, as in Iris (its ShaderDoc's gbuffers table): without
+/// any of them the game draws its clouds.
+const CLOUDS: [&str; 3] = ["gbuffers_clouds", "gbuffers_textured", "gbuffers_basic"];
 
 /// `gbuffers_hand` and its fallbacks (2.3).
 const HAND: [&str; 4] = [
@@ -2371,6 +2372,53 @@ blend.composite1.colortex3 = ONE ONE ONE ONE
         assert!(off.clouds.is_none() && off.clouds_off);
     }
 
+    /// Without `gbuffers_clouds` the clouds draw with `gbuffers_textured`, else `gbuffers_basic`,
+    /// blended; a pack with none of them leaves the clouds to the game.
+    #[test]
+    fn clouds_fall_back_to_textured_then_basic() {
+        let vsh = "#version 120\nvoid main() { gl_Position = ftransform(); }\n";
+        let fsh = "#version 120\nvoid main() { gl_FragColor = vec4(1.0); }\n";
+        let macros = Macros::standard();
+        let inputs = GameInputs {
+            clouds: Some(crate::GbuffersInputs {
+                declarations: "layout(location = 0) in vec3 hz_v_pos;".into(),
+                body: "    hz_Vertex = vec4(hz_v_pos, 1.0);\n".into(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let clouds = |programs: &[&str]| {
+            let files: Vec<(String, &str)> = programs
+                .iter()
+                .flat_map(|p| {
+                    [
+                        (format!("shaders/{p}.vsh"), vsh),
+                        (format!("shaders/{p}.fsh"), fsh),
+                    ]
+                })
+                .collect();
+            let files: Vec<(&str, &str)> = files.iter().map(|(n, t)| (n.as_str(), *t)).collect();
+            let pack = Pack::from_zip_bytes("clouds.zip", crate::pack::tests::zip(&files)).unwrap();
+            load_post(&pack, "", &Properties::default(), &macros, &inputs)
+                .clouds
+                .map(|p| (p.name, p.blend))
+        };
+        let blended = |name: &str| Some((name.to_owned(), Some(TRANSLUCENT_BLEND)));
+        assert_eq!(
+            clouds(&["gbuffers_textured", "gbuffers_basic"]),
+            blended("gbuffers_textured")
+        );
+        assert_eq!(
+            clouds(&["gbuffers_textured_lit", "gbuffers_basic"]),
+            blended("gbuffers_basic")
+        );
+        assert_eq!(
+            clouds(&["gbuffers_clouds", "gbuffers_textured"]),
+            blended("gbuffers_clouds")
+        );
+        assert_eq!(clouds(&["gbuffers_terrain", "composite"]), None);
+    }
+
     #[test]
     fn water_falls_back_to_terrain_and_blends() {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/packs/terrain-test");
@@ -2439,8 +2487,12 @@ blend.composite1.colortex3 = ONE ONE ONE ONE
         );
         assert_eq!(particles.blend, Some(TRANSLUCENT_BLEND));
         assert!(post.particles_late && !post.translucent_late);
-        // gbuffers_clouds has no fallback (OQ-3): without it the game draws its clouds.
-        assert!(post.clouds.is_none());
+        // Clouds fall back to gbuffers_textured, blended.
+        let clouds = post.clouds.as_ref().unwrap();
+        assert_eq!(
+            (clouds.name.as_str(), clouds.blend),
+            ("gbuffers_textured", Some(TRANSLUCENT_BLEND))
+        );
         // The hand falls back to gbuffers_textured and does not blend.
         let hand = post.hand.as_ref().unwrap();
         assert_eq!(

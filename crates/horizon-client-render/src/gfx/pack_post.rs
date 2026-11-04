@@ -522,8 +522,9 @@ pub struct PackPost {
     lines: Option<Pass>,
     line_draw: Option<Lines>,
     cloud_draw: Option<Clouds>,
-    /// The pack has `gbuffers_clouds`, even one that writes nothing (a pack drawing its own
-    /// clouds discards vanilla's), or `clouds=off`: the game's clouds are not drawn.
+    /// The pack draws the clouds (`gbuffers_clouds` or its fallback), even with a program that
+    /// writes nothing (a pack drawing its own clouds discards vanilla's), or `clouds=off`: the
+    /// game's clouds are not drawn.
     hides_clouds: bool,
     /// The pack has a sky (`gbuffers_skybasic`) or sun and moon (`gbuffers_skytextured`)
     /// program: vanilla's stays hidden even when the program writes nothing.
