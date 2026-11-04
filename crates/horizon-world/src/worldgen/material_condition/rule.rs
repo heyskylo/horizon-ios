@@ -510,6 +510,7 @@ where
                 let compiled =
                     CompiledRule::compile(rule.clone(), &self.root, &mut self.context, 0, &mut 0);
                 self.context.possible_biomes = possible;
+                let compiled = compiled?;
                 let mut noises: Vec<_> = self
                     .context
                     .noise_indices
@@ -524,7 +525,7 @@ where
                 let mut densities = Vec::new();
                 density_bindings(rule, &mut densities);
                 *shared = Some(CompiledSurfaceRule {
-                    rule: compiled?,
+                    rule: compiled,
                     noises,
                     densities,
                 });
