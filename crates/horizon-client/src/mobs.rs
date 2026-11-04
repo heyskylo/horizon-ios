@@ -3194,7 +3194,10 @@ impl Mob {
         if equine::is_equine(self.species()) {
             equine::after_hurt_server(self);
         }
-        if self.species() == Species::GlowSquid {
+        // GlowSquid.hurtServer dims the squid only when Squid.hurtServer took the
+        // hit, which it reports only for a living entity's blow: environmental
+        // damage (suffocation, a campfire, drying out) leaves the glow alone.
+        if self.species() == Species::GlowSquid && self.ai.last_hurt_by.is_some() {
             aquatic::hurt_server(self);
         }
         true
@@ -5013,6 +5016,27 @@ mod effect_refusal_tests {
             refused("minecraft:parched", "minecraft:slowness"),
             (true, 1)
         );
+    }
+
+    /// Squid.hurtServer reports a hit only when a living entity dealt it, so
+    /// environmental damage leaves a glow squid glowing; a mob's blow dims it.
+    #[test]
+    fn only_a_mobs_blow_dims_a_glow_squid() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        if !root.join("entity-types.json").exists() {
+            return;
+        }
+        let types = MobTypes::load_for_server(&root).unwrap();
+        let mut burned = mob(&types, "minecraft:glow_squid");
+        burned.health = 10.0;
+        assert!(burned.damage(1.0, Damage::of(DamageKind::Campfire)));
+        assert_eq!(aquatic::dark_ticks(&burned), 0);
+        let mut struck = mob(&types, "minecraft:glow_squid");
+        struck.health = 10.0;
+        assert!(struck.damage(1.0, Damage::mob(2, [0.0, 64.0, 0.0])));
+        assert_eq!(aquatic::dark_ticks(&struck), 100);
     }
 }
 crate::impl_joined!(Mob);
