@@ -465,10 +465,10 @@ impl Screen {
                         } else {
                             let _ = client.reject_invite(&inv_id);
                         }
-                        if let Ok(res) = client.pending_invites() {
-                            if let Ok(mut lock) = invites.lock() {
-                                *lock = Some(Ok(res));
-                            }
+                        if let Ok(res) = client.pending_invites()
+                            && let Ok(mut lock) = invites.lock()
+                        {
+                            *lock = Some(Ok(res));
                         }
                     }
                 }
