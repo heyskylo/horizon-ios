@@ -126,7 +126,7 @@ impl Page {
         match std::env::var("HORIZON_LAUNCHER_PAGE").as_deref() {
             Ok("mods" | "modpacks" | "resourcepacks" | "shaders" | "datapacks") => Page::Mods,
             Ok("servers") => Page::Servers,
-            Ok("wardrobe") if horizon_cosmetics::enabled() => Page::Wardrobe,
+            Ok("wardrobe") if horizon_cosmetics::forced() => Page::Wardrobe,
             Ok("versions") => Page::Versions,
             Ok("notes") => Page::Notes,
             Ok("settings") => Page::Settings,
@@ -304,6 +304,8 @@ struct Launcher {
     /// The selected account's own answer on it from its last Wardrobe visit, kept on disk (a
     /// preview the service grants it, its claim).
     shop_kept: Option<horizon_launcher::wardrobe::Claim>,
+    /// The Wardrobe page's Shop tab (`wardrobe_page/shop.rs`).
+    shop: wardrobe_page::Shop,
     /// Work the look out again on the next frame (a launcher theme put on or taken off).
     restyle: bool,
     /// Why the last picture for Home's background was refused.
@@ -605,7 +607,9 @@ impl Launcher {
             wardrobe_reload: false,
             shop_status: None,
             shop_kept: None,
-            restyle: horizon_cosmetics::enabled(),
+            shop: Default::default(),
+            // The first draw takes the launcher theme from Settings.
+            restyle: true,
             background_error: None,
             args_input: line_edit::LineEdit::new(settings.game_args.clone(), 1024, 38),
             args_focused: false,
