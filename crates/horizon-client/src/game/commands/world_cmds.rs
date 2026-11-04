@@ -825,6 +825,10 @@ impl Game<'_> {
                         let _ = player.attributes.edit(&handle, |value, observer| {
                             value.set_base_value(value_arg, observer)
                         });
+                        // onAttributeUpdated: a lowered max_health clamps health.
+                        if attribute == "minecraft:max_health" {
+                            let _ = player.clamp_health_to_max();
+                        }
                         self.feedback(Text::translate(
                             "commands.attribute.base_value.set.success",
                             &[description, name, java_double_text(value_arg)],
@@ -843,6 +847,9 @@ impl Game<'_> {
                             .attributes
                             .value(Some(key.clone()), ValueKind::Base)
                             .unwrap_or(0.0);
+                        if attribute == "minecraft:max_health" {
+                            let _ = player.clamp_health_to_max();
+                        }
                         self.feedback(Text::translate(
                             "commands.attribute.base_value.reset.success",
                             &[description, name, java_double_text(v)],

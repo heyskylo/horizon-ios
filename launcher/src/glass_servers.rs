@@ -66,10 +66,13 @@ impl Launcher {
                 .child(main.flex_1().min_w_0())
                 .child(side),
         );
+        // Sculk's banner right under the server, where it is seen without scrolling past the
+        // server's tabs (as before the glass look, under the page's actions).
+        page = page.children(self.glass_sculk(cx));
         if let Some(dir) = &open {
             page = page.child(self.glass_server_tabs(dir, &status, cx));
         }
-        page.children(self.glass_sculk(cx))
+        page
     }
 
     /// The open server's glass: its state, name and numbers, its buttons, then its console.
@@ -332,10 +335,7 @@ impl Launcher {
             );
         }
         if let Some(p) = self.servers.problem.clone() {
-            let mut d = line(
-                Some(ui::color(horizon_theme::glass::DANGER)),
-                p.message.clone(),
-            );
+            let mut d = line(Some(ui::danger()), p.message.clone());
             if let Some(fix) = p.fix {
                 let label = match &fix {
                     Fix::UsePort(port) => trf("Use port {port}", &[("port", &port.to_string())]),
@@ -364,7 +364,7 @@ impl Launcher {
             );
         }
         if let Some(n) = self.servers.note.clone() {
-            out.push(line(Some(ui::color(horizon_theme::glass::LIVE)), n));
+            out.push(line(Some(ui::live()), n));
         }
         if running && !self.servers.restart_needed.is_empty() {
             let names: Vec<String> = self
@@ -575,7 +575,7 @@ impl Launcher {
                         ("max", &status.max_players.unwrap_or(0).to_string()),
                     ],
                 ),
-                "stopped" => tr("Stopped").to_string(),
+                "stopped" => self.servers.stopped_line(&e.dir),
                 _ => phase_label(&status),
             };
             let dir = e.dir.clone();
@@ -867,7 +867,7 @@ pub(super) fn glass_setting_row(
 impl Launcher {
     /// A tab's section heading: the mockup's small card heading in the glass look.
     pub(super) fn tab_heading(&self, label: impl Into<SharedString>) -> Div {
-        if self.theme.dark {
+        if self.theme.glass {
             return ui::card_heading(label);
         }
         text(theme::HEADING)
@@ -879,7 +879,7 @@ impl Launcher {
     /// the other.
     pub(super) fn toggle_row(&self, name: &str, about: String, toggle: Stateful<Div>) -> Div {
         let t = self.theme;
-        if t.dark {
+        if t.glass {
             return glass_setting_row(name, about, None, toggle.into_any_element());
         }
         div()
@@ -910,7 +910,7 @@ impl Launcher {
         right: Option<AnyElement>,
     ) -> Div {
         let t = self.theme;
-        if !t.dark {
+        if !t.glass {
             return slot_row(lead, name, detail, right, &t);
         }
         div()
