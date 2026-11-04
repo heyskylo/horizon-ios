@@ -5,7 +5,13 @@
 /// `HORIZON_STILL=1`, read once (`FixedStep::still`).
 fn still_requested() -> bool {
     static STILL: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *STILL.get_or_init(|| std::env::var("HORIZON_STILL").is_ok_and(|v| v == "1"))
+    *STILL.get_or_init(|| {
+        let on = std::env::var("HORIZON_STILL").is_ok_and(|v| v == "1");
+        if on {
+            log::warn!("HORIZON_STILL=1: worlds start frozen (/tick unfreeze), frames follow the world's ticks");
+        }
+        on
+    })
 }
 
 /// `DeltaTracker.Timer`: float arithmetic on integer milliseconds, exactly as
