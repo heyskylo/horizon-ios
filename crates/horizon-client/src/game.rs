@@ -6160,8 +6160,15 @@ impl Game<'_> {
         {
             return Ok(());
         }
-        // ServerPlayerGameMode.destroyBlock.
+        // ServerPlayerGameMode.destroyBlock (and MultiPlayerGameMode.destroyBlock
+        // on the client): a GameMasterBlock stays when the player cannot use
+        // game master blocks (Player.canUseGameMasterBlocks).
         let state = self.world.block(pos[0], pos[1], pos[2]);
+        if !self.can_use_game_master_blocks()
+            && is_game_master_block(&self.res.facts().get(state).name)
+        {
+            return Ok(());
+        }
         // Native mods, once the game allowed the break: a canceled one keeps
         // the block, and a guest's acknowledgement puts it back in its world.
         let mut canceled = false;
@@ -22160,6 +22167,19 @@ fn debug_crosshair_drawn(
     panorama: bool,
 ) -> bool {
     enabled && first_person && !hide_gui && !panorama
+}
+
+/// Blocks whose class implements `GameMasterBlock`: the command blocks, structure
+/// block, jigsaw and the test blocks.
+fn is_game_master_block(name: &str) -> bool {
+    horizon_client::command_block::Mode::of_block(name).is_some()
+        || matches!(
+            name,
+            "minecraft:structure_block"
+                | "minecraft:jigsaw"
+                | "minecraft:test_block"
+                | "minecraft:test_instance_block"
+        )
 }
 
 #[cfg(test)]
