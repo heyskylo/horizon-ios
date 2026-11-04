@@ -57,7 +57,7 @@ pub(super) struct PackStack {
 impl PackStack {
     /// The enabled packs in `enabled` (the selected) order, later overriding
     /// earlier: `PackRepository.openAllSelected` keeps the selected order.
-    fn enabled_packs(&self) -> impl Iterator<Item = &DataPack> {
+    pub(super) fn enabled_packs(&self) -> impl Iterator<Item = &DataPack> {
         self.enabled
             .iter()
             .filter_map(|id| self.packs.iter().find(|p| &p.id == id))

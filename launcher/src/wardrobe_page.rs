@@ -440,30 +440,9 @@ impl Launcher {
         self.wardrobe_wait(task, done, cx);
     }
 
-    /// Claim the founder set.
+    /// Claim the founder set, as the Shop does (a free Paddle checkout when the service asks).
     fn wardrobe_claim(&mut self, cx: &mut Context<Self>) {
-        let Some(w) = self.wardrobe.as_mut().filter(|w| !w.busy) else {
-            return;
-        };
-        let Some(session) = w.session.clone() else {
-            return;
-        };
-        w.busy = true;
-        let (uuid, mut saved) = (w.uuid.clone(), w.saved.clone());
-        let task = cx.background_executor().spawn(async move {
-            let result = Service::live()
-                .claim(&session)
-                .map(|me| saved.me = Some(me));
-            let _ = saved.save(&dir(), &uuid);
-            Trip {
-                saved,
-                items: HashMap::new(),
-                session: None,
-                result,
-            }
-        });
-        let done = tr("Founder set claimed. It's in your wardrobe.").into();
-        self.wardrobe_wait(task, done, cx);
+        self.shop_claim(cx);
     }
 
     fn wardrobe_wait(&mut self, task: gpui::Task<Trip>, done: String, cx: &mut Context<Self>) {
@@ -561,6 +540,8 @@ impl Launcher {
                 equipped: if empty { Default::default() } else { equipped },
                 visible: true,
                 claim,
+                purchases: Vec::new(),
+                checkout: None,
             }),
             catalogue: Some(catalogue),
             pending: Vec::new(),

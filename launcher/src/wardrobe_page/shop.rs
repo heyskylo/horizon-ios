@@ -1,12 +1,15 @@
 //! The Wardrobe page's Shop tab: the founder set, free to claim while its window is open, then
 //! retired (`horizon_launcher::shop` holds the rules). It shows only once the cosmetics service
-//! has a window, or previews it for the account; nothing in it asks for money.
+//! has a window, or previews it for the account. The claim goes through a free (0 CHF) Paddle
+//! checkout when the cosmetics service asks for one: the browser opens Horizon's checkout page,
+//! and the set arrives once Paddle tells the service. Under the panel, the account's purchase
+//! history.
 //!
 //! Signed in, it reads the Wardrobe's own trip to the service (the kept outfit first, then the
 //! answer); signed out, it asks for the catalogue alone, to know whether there is a Shop to show.
 use super::*;
 use horizon_launcher::shop::{self as rules, Window};
-use horizon_launcher::wardrobe::{service_now, Entry, Me};
+use horizon_launcher::wardrobe::{service_now, Entry, Me, Purchase};
 use horizon_theme::glass::{ink, radius};
 
 /// The founder panel's left column.
@@ -15,6 +18,9 @@ const LEFT: f32 = 300.;
 const THUMB: f32 = 120.;
 /// How often the time left is drawn again.
 const TICK: Duration = Duration::from_secs(30);
+/// How often the service is asked whether a checkout is done, and for how long.
+const CHECKOUT_POLL: Duration = Duration::from_secs(3);
+const CHECKOUT_WAIT: Duration = Duration::from_secs(20 * 60);
 
 /// The Shop tab's own state; the account's items are the Wardrobe's.
 #[derive(Default)]
@@ -27,6 +33,8 @@ pub(crate) struct Shop {
     claimed_now: bool,
     /// The last claim's failure, in words, and the line to copy.
     failed: Option<(String, String)>,
+    /// A Paddle checkout open in the browser, waited for: its link (to open it again).
+    checkout: Option<String>,
     /// Signed out: the catalogue, asked without an account.
     anon: Option<Catalogue>,
     asking: bool,
@@ -499,7 +507,56 @@ impl Launcher {
         let (Some(c), Some(me)) = (w.saved.catalogue.clone(), w.saved.me.clone()) else {
             return self.shop_loading();
         };
-        self.founder_panel(&c, Some(me), cx)
+        let purchases = self.purchase_history(&c, &me);
+        self.founder_panel(&c, Some(me), cx).children(purchases)
+    }
+
+    /// The account's orders through Paddle, newest first: date, item, price, state, order
+    /// number. Nothing when there are none.
+    fn purchase_history(&self, c: &Catalogue, me: &Me) -> Option<Div> {
+        let t = self.theme;
+        if me.purchases.is_empty() {
+            return None;
+        }
+        let lang = game_language();
+        let rows = me.purchases.iter().map(|p| {
+            let item = if p.item == "founder_set" {
+                tr("The founder set").to_string()
+            } else {
+                c.items
+                    .iter()
+                    .find(|e| e.id == p.item)
+                    .map_or_else(|| p.item.clone(), |e| e.name(lang).to_string())
+            };
+            let price = p.price().unwrap_or_else(|| tr("Free").to_string());
+            div()
+                .flex()
+                .flex_wrap()
+                .items_center()
+                .gap(px(12.))
+                .py(px(10.))
+                .child(words(&t, 13., FontWeight::NORMAL, ink::NOTE).child(day(p.at)))
+                .child(
+                    words(&t, 14., FontWeight::MEDIUM, ink::FULL)
+                        .flex_1()
+                        .child(item),
+                )
+                .child(words(&t, 14., FontWeight::NORMAL, ink::BODY).child(price))
+                .child(chip(purchase_chip(p), purchase_state(p), &t))
+                .child(
+                    words(&t, 12., FontWeight::NORMAL, ink::NOTE)
+                        .child(trf("Order {id}", &[("id", &p.transaction_id)])),
+                )
+        });
+        Some(
+            crate::glass::plate(radius::PANEL)
+                .mt(px(16.))
+                .p(px(24.))
+                .flex()
+                .flex_col()
+                .child(words(&t, 17., FontWeight::SEMIBOLD, ink::FULL).child(tr("Your purchases")))
+                .children(rows),
+        )
     }
 
     /// Before the first answer: placeholders at the panel's size, no spinner.
@@ -677,8 +734,21 @@ impl Launcher {
             (true, true) => {
                 tr("Bound to your Minecraft account, on every computer you sign in on.")
             }
-            (true, false) => tr("Bound to your Minecraft account. Nothing to pay, no card asked."),
+            (true, false) if self.shop.checkout.is_some() => {
+                tr("Finish the free checkout in your browser. The set lands here a moment later.")
+            }
+            (true, false) => tr(
+                "Bound to your Minecraft account. Free: a 0 CHF checkout through Paddle records \
+                 your claim.",
+            ),
         };
+        let again = self.shop.checkout.clone().filter(|_| !owned).map(|url| {
+            glass_ui::link("shop-checkout-again", tr("Open the checkout again"))
+                .mt(px(8.))
+                .text_size(px(13.))
+                .text_color(tone(&t, ink::FULL))
+                .on_click(move |_: &ClickEvent, _, cx| cx.open_url(&url))
+        });
         let failed = self.shop.failed.clone().map(|(said, line)| {
             div()
                 .flex()
@@ -752,6 +822,7 @@ impl Launcher {
                             .mt(px(8.))
                             .child(note),
                     )
+                    .children(again)
                     .children(failed),
             );
         let cards = entries
@@ -813,13 +884,16 @@ impl Launcher {
             .wardrobe
             .as_ref()
             .is_some_and(|w| !w.busy && w.session.as_ref().is_some_and(|s| s.live()));
-        let label = if self.shop.claiming {
+        let label = if self.shop.checkout.is_some() {
+            "Waiting for the checkout…"
+        } else if self.shop.claiming {
             "Claiming…"
         } else {
             "Claim the founder set"
         };
         let b = wide(button("shop-claim", label, Kind::Primary, &t)).text_size(px(16.));
-        if !matches!(window, Window::Open { .. }) || !ready || self.shop.claiming {
+        let waiting = self.shop.claiming || self.shop.checkout.is_some();
+        if !matches!(window, Window::Open { .. }) || !ready || waiting {
             return disabled(b).into_any_element();
         }
         b.on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
@@ -967,7 +1041,7 @@ impl Launcher {
 
     /// Claim the founder set from the Shop: the button says "Claiming…" until the service
     /// answers. The window closing meanwhile, or the session ending, asks the service again.
-    fn shop_claim(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn shop_claim(&mut self, cx: &mut Context<Self>) {
         let Some(w) = self.wardrobe.as_mut().filter(|w| !w.busy) else {
             return;
         };
@@ -991,7 +1065,33 @@ impl Launcher {
             let (saved, result) = task.await;
             let _ = this.update(cx, |this, cx| {
                 this.shop.claiming = false;
+                let checkout = saved.me.as_ref().and_then(|m| m.checkout.clone());
                 match result {
+                    // The service asks for a free Paddle checkout: open Horizon's checkout page,
+                    // then wait for Paddle's word to reach the service.
+                    Ok(()) if checkout.is_some() => {
+                        let trip = Trip {
+                            saved,
+                            items: HashMap::new(),
+                            session: None,
+                            result: Ok(()),
+                        };
+                        this.wardrobe_back(trip, None);
+                        match checkout.as_ref().and_then(|c| c.url()) {
+                            Some(url) => {
+                                cx.open_url(url);
+                                this.shop.checkout = Some(url.to_owned());
+                                this.shop_wait_checkout(cx);
+                            }
+                            None => {
+                                this.shop.failed = Some((
+                                    tr("The claim didn't go through: the checkout's address isn't Horizon's.")
+                                        .into(),
+                                    "checkout url".into(),
+                                ));
+                            }
+                        }
+                    }
                     Ok(()) => {
                         this.shop.claimed_now = true;
                         let trip = Trip {
@@ -1031,6 +1131,62 @@ impl Launcher {
         })
         .detach();
     }
+    /// Asks the service every `CHECKOUT_POLL` whether Paddle's checkout reached it, for
+    /// `CHECKOUT_WAIT` at most: the set claimed, the panel says so.
+    fn shop_wait_checkout(&mut self, cx: &mut Context<Self>) {
+        let Some(w) = self.wardrobe.as_ref() else {
+            return;
+        };
+        let Some(session) = w.session.clone().filter(|s| s.live()) else {
+            return;
+        };
+        let (uuid, saved) = (w.uuid.clone(), w.saved.clone());
+        cx.spawn(async move |this, cx| {
+            let started = Instant::now();
+            let mut saved = saved;
+            while started.elapsed() < CHECKOUT_WAIT && session.live() {
+                cx.background_executor().timer(CHECKOUT_POLL).await;
+                let waiting = this
+                    .update(cx, |this, _| this.shop.checkout.is_some())
+                    .unwrap_or(false);
+                if !waiting {
+                    return;
+                }
+                let s = session.clone();
+                let me = cx
+                    .background_executor()
+                    .spawn(async move { Service::live().me(&s) })
+                    .await;
+                let Ok(me) = me else { continue };
+                if me.claim.claimed != Some(true) {
+                    continue;
+                }
+                saved.me = Some(me);
+                let _ = saved.save(&dir(), &uuid);
+                let trip = Trip {
+                    saved,
+                    items: HashMap::new(),
+                    session: None,
+                    result: Ok(()),
+                };
+                let _ = this.update(cx, |this, cx| {
+                    this.shop.checkout = None;
+                    this.shop.claimed_now = true;
+                    let done = tr("Founder set claimed. It's in your wardrobe.").into();
+                    this.wardrobe_back(trip, Some(done));
+                    cx.notify();
+                });
+                return;
+            }
+            // Given up: the button comes back; the claim can be started again.
+            let _ = this.update(cx, |this, cx| {
+                this.shop.checkout = None;
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
     /// The Wardrobe's screenshot preview (`wardrobe_preview`) on the Shop tab, in `state`:
     /// `open`, `claiming`, `claimed`, `owned`, `error` (the claim failed), `not-yet`, `preview`
     /// (open for this account only, no dates), `closed`, `closed-owned`, `loading`, `offline`,
@@ -1135,5 +1291,22 @@ impl Launcher {
             }
             _ => {}
         }
+    }
+}
+
+/// A purchase's state, in words.
+fn purchase_state(p: &Purchase) -> &'static str {
+    match p.status.as_str() {
+        "refunded" => tr("Refunded"),
+        "partly_refunded" => tr("Partly refunded"),
+        "charged_back" => tr("Charged back"),
+        _ => tr("Paid"),
+    }
+}
+
+fn purchase_chip(p: &Purchase) -> Chip {
+    match p.status.as_str() {
+        "paid" | "partly_refunded" => Chip::Live,
+        _ => Chip::Ghost,
     }
 }
