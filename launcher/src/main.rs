@@ -44,6 +44,7 @@ mod internet;
 mod language_page;
 mod launch_page;
 mod line_edit;
+mod location_page;
 mod markdown;
 mod mcp;
 mod microsoft;
@@ -123,7 +124,7 @@ impl Page {
     /// made-up code, `owner_page::sign_in_preview`; `new-instance`: Home with the New instance
     /// dialog open on Modded; `edit-instance`: the selected one's Edit dialog; `worlds`, `packs`...: Home on that tab, `HomeTab::from_env`).
     fn from_env() -> Page {
-        match std::env::var("HORIZON_LAUNCHER_PAGE").as_deref() {
+        let page = match std::env::var("HORIZON_LAUNCHER_PAGE").as_deref() {
             Ok("mods" | "modpacks" | "resourcepacks" | "shaders" | "datapacks") => Page::Mods,
             Ok("servers") => Page::Servers,
             Ok("wardrobe") if horizon_cosmetics::forced() => Page::Wardrobe,
@@ -131,7 +132,13 @@ impl Page {
             Ok("notes") => Page::Notes,
             Ok("settings") => Page::Settings,
             _ => Page::Play,
-        }
+        };
+        // The data folder did not open: start on Settings, where the message and the two
+        // recoveries are (an explicit HORIZON_LAUNCHER_PAGE still wins, for screenshots).
+        page_after_startup(
+            page,
+            horizon_launcher::data_location::startup_error().is_some(),
+        )
     }
 
     /// Every page, with its name and icon: the top bar shows all but Settings, which has its
@@ -311,6 +318,10 @@ struct Launcher {
     restyle: bool,
     /// Why the last picture for Home's background was refused.
     background_error: Option<String>,
+    /// Settings' data relocation confirmation and the worker's last result.
+    location_target: Option<std::path::PathBuf>,
+    location_error: Option<String>,
+    location_note: Option<String>,
     settings: Settings,
     /// The last failed settings write, kept across page changes until a save succeeds.
     settings_save_error: Option<String>,
@@ -612,6 +623,9 @@ impl Launcher {
             // The first draw takes the launcher theme from Settings.
             restyle: true,
             background_error: None,
+            location_target: None,
+            location_error: location_page::startup_error(),
+            location_note: location_page::startup_note(),
             args_input: line_edit::LineEdit::new(settings.game_args.clone(), 1024, 38),
             args_focused: false,
             args_focus: cx.focus_handle(),
@@ -718,6 +732,9 @@ impl Launcher {
             sky_wake: None,
             scale: window.scale_factor(),
         };
+        if this.location_error.is_some() || this.location_note.is_some() {
+            this.page = Page::Settings;
+        }
         this.reload_instances();
         if this.bench.is_some() {
             this.perf.keep_local_log(false);
@@ -3830,13 +3847,7 @@ impl Launcher {
                         launcher_action,
                         &t,
                     ))
-                    .child(index_row(
-                        n + 9,
-                        tr("Data folder"),
-                        Some(mono(short(&backend::data_dir()))),
-                        None,
-                        &t,
-                    ))
+                    .child(self.location_row(n + 9, cx))
                     .child(index_row(
                         n + 10,
                         tr("Logs"),
@@ -4786,7 +4797,6 @@ impl Launcher {
                     .gap(px(10.))
                     .py(px(14.))
                     .px(px(16.))
-                    .mb(px(8.))
                     .bg(t.panel)
                     .border_2()
                     .border_color(t.outline)
@@ -4922,7 +4932,6 @@ impl Launcher {
                     .relative()
                     .gap(px(16.))
                     .p(px(20.))
-                    .mb(px(10.))
                     .bg(t.panel)
                     .border_2()
                     .border_color(t.outline)
@@ -5416,6 +5425,16 @@ fn key_bindings() -> Vec<KeyBinding> {
     Vec::new()
 }
 
+/// A data folder that did not open starts on Settings, where the message, Retry and
+/// "Use the default folder" are; an explicit page still wins.
+fn page_after_startup(page: Page, data_folder_failed: bool) -> Page {
+    if page == Page::Play && data_folder_failed {
+        Page::Settings
+    } else {
+        page
+    }
+}
+
 /// The menu bar on macOS, where "Quit" belongs to the app menu.
 fn menus() -> Vec<Menu> {
     vec![
@@ -5443,6 +5462,13 @@ fn main() {
     if let Some(code) = horizon_launcher::installer::run_quiet() {
         std::process::exit(code);
     }
+    if let Some(code) = horizon_launcher::relocation::run_worker() {
+        std::process::exit(code);
+    }
+    // A broken location must still open a window: startup() falls back to the default
+    // folders and records the error, which Settings shows with Retry and Use the default folder.
+    // It keeps the migration lease for the life of the process.
+    let _location_error = horizon_launcher::data_location::startup();
     perf::process_started();
     backend::exe_path();
     #[cfg(windows)]
@@ -5525,6 +5551,17 @@ fn closed_by_press(closed_at: Option<Point<Pixels>>, event: &ClickEvent) -> bool
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn an_unopenable_data_folder_starts_on_settings_instead_of_exiting() {
+        use super::{page_after_startup, Page};
+        assert!(matches!(
+            page_after_startup(Page::Play, true),
+            Page::Settings
+        ));
+        assert!(matches!(page_after_startup(Page::Play, false), Page::Play));
+        assert!(matches!(page_after_startup(Page::Mods, true), Page::Mods));
+    }
+
     #[test]
     fn a_menu_button_stays_closed_after_the_press_that_closed_its_menu() {
         use super::closed_by_press;

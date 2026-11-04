@@ -357,6 +357,10 @@ enum InstanceCmd {
         /// The instance a pack goes into
         #[arg(long)]
         instance: Option<String>,
+        /// A .mrpack becomes a Minecraft: Java Edition instance with its Minecraft version, mod
+        /// loader, mods and overrides, instead of a Horizon instance or a Modpacks import
+        #[arg(long)]
+        java: bool,
     },
     /// List the instances other launchers keep (Prism Launcher, MultiMC, the official
     /// launcher, the CurseForge app, the Modrinth App), read without changing anything there
@@ -777,6 +781,13 @@ enum Cmd {
         #[arg(long)]
         accept_eula: bool,
     },
+    /// Show the native compilation cache's size and limit as JSON. Installed games and saves
+    /// are never removed; builds must be idle
+    NativeCache {
+        /// Clear only fast/release compiler outputs. The next changed build recompiles
+        #[arg(long)]
+        clear: bool,
+    },
     /// Native mods (docs/native-mods.md): compile mixin bundles on the Horizon revision they
     /// pin, else the one the instance plays, with the launcher's own Rust, as the version the
     /// instance then plays. Not sandboxed: the mods' code runs with your rights
@@ -841,7 +852,8 @@ enum Cmd {
     /// system|en|fr|ru|de|zh|es|uk|pl (the window's language; system follows the computer's), accent
     /// violet|blue|teal|green|amber|red|pink|#rrggbb|DEGREES (a named accent, any colour, or any
     /// hue), background PATH (a picture behind Home; "default"
-    /// shows Horizon's landscape), native-profile performance|dev|release (the profile native
+    /// shows Horizon's landscape), native-cache-gib N (combined native compilation cache limit
+    /// in GiB, default 30; 0 disables automatic cleanup), native-profile performance|dev|release (the profile native
     /// mods build with: performance is incremental, dev rebuilds a mod quickest for a slow game,
     /// release is slowest to build and slightly faster to play)
     Settings {
@@ -991,7 +1003,7 @@ pub fn command() -> clap::Command {
 pub const AI_COMMANDS: [&str; 2] = ["mcp", "agent-config"];
 
 /// The keys `settings` sets.
-const SETTING_KEYS: [&str; 13] = [
+const SETTING_KEYS: [&str; 14] = [
     "selected-version",
     "minecraft-dir",
     "server-dir",
@@ -1005,6 +1017,7 @@ const SETTING_KEYS: [&str; 13] = [
     "accent",
     "background",
     "native-profile",
+    "native-cache-gib",
 ];
 
 fn on_off(value: &str) -> Result<bool, String> {
@@ -1067,6 +1080,20 @@ fn set_setting(s: &mut backend::Settings, key: &str, value: &str) -> Result<(), 
                 })?),
             }
         }
+        "native-cache-gib" => {
+            s.native_cache_gib = match value {
+                "default" => None,
+                n => Some(
+                    n.parse::<u64>()
+                        .ok()
+                        .filter(|n| n.checked_mul(1 << 30).is_some())
+                        .ok_or_else(|| {
+                            tr("Enter a cache limit in GiB; 0 disables automatic cleanup.")
+                                .to_string()
+                        })?,
+                ),
+            };
+        }
         "native-profile" => {
             // "default", as for the other settings, goes back to `performance`.
             s.native_profile = match value {
@@ -1110,6 +1137,7 @@ fn settings_json(s: &backend::Settings) -> serde_json::Value {
         "accent": s.accent.name(),
         "background": horizon_launcher::themes::background(&backend::data_dir(), s.background.as_deref()),
         "native_profile": native_mods::Profile::chosen(s).name(),
+        "native_cache_gib": s.native_cache_gib.unwrap_or(native_mods::DEFAULT_CACHE_GIB),
         "no_ai": backend::no_ai(),
     })
 }
@@ -1260,6 +1288,12 @@ fn execute(command: Cmd, as_json: bool) -> Result<(), String> {
                     "Installed {tag}. Prepare it next: horizon-launcher prepare --version {tag}"
                 );
             }
+        }
+        Cmd::NativeCache { clear } => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&native_mods::cache_info(clear)?).unwrap()
+            );
         }
         Cmd::NativeBuild {
             folder,
@@ -3168,7 +3202,23 @@ fn instance(action: InstanceCmd, as_json: bool) -> Result<(), String> {
             }
             changed(made);
         }
-        InstanceCmd::Import { file, instance } => {
+        InstanceCmd::Import {
+            file, java: true, ..
+        } => {
+            let i =
+                horizon_launcher::instances_mrpack::import(&file, &|line, _| eprintln!("{line}"))?;
+            if as_json {
+                json(value(&i, false));
+            } else {
+                println!(
+                    "Made the Java instance {} in {}: horizon-launcher play --instance \"{}\"",
+                    i.name,
+                    i.home.display(),
+                    i.name
+                );
+            }
+        }
+        InstanceCmd::Import { file, instance, .. } => {
             use horizon_launcher::import::{self, Dropped};
             use horizon_launcher::modpacks;
             match import::what(&file)? {
@@ -3918,5 +3968,27 @@ mod tests {
             );
         }
         assert_eq!(native_mods::base_for(None, &[], false), None);
+    }
+
+    #[test]
+    fn native_cache_command_and_persisted_limit() {
+        for (args, clear) in [
+            (vec!["horizon-launcher", "native-cache"], false),
+            (vec!["horizon-launcher", "native-cache", "--clear"], true),
+        ] {
+            assert!(matches!(Cli::try_parse_from(args).unwrap().command,
+                Some(Cmd::NativeCache { clear: parsed }) if parsed == clear));
+        }
+        let mut settings = backend::Settings::default();
+        set_setting(&mut settings, "native-cache-gib", "12").unwrap();
+        let saved = serde_json::to_string(&settings).unwrap();
+        let loaded: backend::Settings = serde_json::from_str(&saved).unwrap();
+        assert_eq!(loaded.native_cache_gib, Some(12));
+        assert!(set_setting(&mut settings, "native-cache-gib", "18446744073709551615").is_err());
+        assert!(set_setting(&mut settings, "native-cache-gib", "-1").is_err());
+        set_setting(&mut settings, "native-cache-gib", "0").unwrap();
+        assert_eq!(settings.native_cache_gib, Some(0));
+        set_setting(&mut settings, "native-cache-gib", "default").unwrap();
+        assert_eq!(settings.native_cache_gib, None);
     }
 }

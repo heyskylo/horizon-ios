@@ -75,6 +75,12 @@ pub(super) struct Instances {
     pub(super) versions: new_instance::VersionList,
 }
 
+impl Instances {
+    pub(super) fn location_busy(&self) -> bool {
+        self.dialog.as_ref().is_some_and(|d| d.busy)
+    }
+}
+
 impl Launcher {
     pub(super) fn reload_instances(&mut self) {
         self.instances.list = instances::list();

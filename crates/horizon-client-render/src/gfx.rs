@@ -524,7 +524,8 @@ impl SectionGpu {
         }
     }
     /// GPU culling's record of it at `key`, its quads within `bounds`
-    /// (`SectionMesh::bounds`), `FADING` while it fades (`gpu_fading`).
+    /// (`SectionMesh::bounds`) and in their buckets by facing side (`sides`),
+    /// `FADING` while it fades (`gpu_fading`).
     fn record(&self, key: SectionKey, bounds: Option<[Vec3; 2]>) -> gpu_culling::Record {
         let boxed = gpu_culling::rounded_box(bounds);
         gpu_culling::Record::new(
@@ -534,6 +535,7 @@ impl SectionGpu {
             self.solid,
             boxed,
         )
+        .facing(&self.sides)
         .fading(self.gpu_fading)
     }
     /// Whether GPU frames' walk lists it within the render distance
@@ -1358,6 +1360,8 @@ pub struct Renderer {
     /// The marker file of an HDR output that has not presented a frame yet
     /// (`graphics::HDR_MARKER`).
     hdr_marker: Option<std::path::PathBuf>,
+    /// The HDR Lighting setting, kept for the HDR output made when HDR turns on.
+    hdr_lighting_setting: bool,
     /// The shader pack's post-processing, and the dimension (legacy id) it was loaded for.
     pack_post: Option<(i32, Option<pack_post::PackPost>)>,
     /// The post passes of one of Horizon's own shader packs; never beside `pack_post`'s.
@@ -4636,6 +4640,7 @@ impl Renderer {
             frame_gen: frame_gen::FrameGen::new(),
             entity_atlas: atlas_view.clone(),
             hdr: None,
+            hdr_lighting_setting: true,
             emission_stats,
             hdr_output,
             frame_format,
@@ -6106,6 +6111,13 @@ impl Renderer {
             None => "HDR: not offered by this display".into(),
         }
     }
+    /// The HDR Lighting setting (`Hdr::look`).
+    pub fn set_hdr_lighting(&mut self, on: bool) {
+        self.hdr_lighting_setting = on;
+        if let Some(hdr) = &mut self.hdr {
+            hdr.look = on;
+        }
+    }
     /// HDR output (Horizon setting): HDR10 or scRGB at `paper_white` nits, the world's
     /// highlights expanded up to `peak` nits. Off where the surface can't present it.
     /// Offscreen (`hdr::offscreen_output`) the frame is drawn the same and its HDR screenshot
@@ -6150,6 +6162,9 @@ impl Renderer {
             let format = self.frame_format;
             self.hdr =
                 output.map(|output| hdr::Hdr::new(&self.device, &self.queue, format, output));
+            if let Some(hdr) = &mut self.hdr {
+                hdr.look = self.hdr_lighting_setting;
+            }
             self.configure_surface();
             match output {
                 Some(output) => log::info!(
@@ -6768,12 +6783,18 @@ impl Renderer {
             if let Some(atlases) = &self.pack_material_atlases {
                 for kind in 0..2 {
                     let arrays: Vec<_> = arrays.iter().map(|pair| pair[kind].clone()).collect();
-                    atlases[kind].copy(encoder, &arrays, self.animations.changed().iter().copied());
+                    atlases[kind].copy(
+                        &self.device,
+                        encoder,
+                        &arrays,
+                        self.animations.changed().iter().copied(),
+                    );
                 }
             }
         }
         if let Some(atlas) = &self.pack_atlas {
             atlas.copy(
+                &self.device,
                 encoder,
                 &self.sprite_textures,
                 self.animations.changed().iter().copied(),
@@ -7412,6 +7433,7 @@ impl Renderer {
                 radius,
                 frustum: &view,
                 reach: self.occlusion.reach().filter(|_| culling),
+                eye,
             };
             let prepared = crate::spans::time("gpu culling", || {
                 gpu.prepare(
@@ -7423,7 +7445,7 @@ impl Renderer {
                 )
             });
             // A frame whose planes leave the test's integers (the camera millions of blocks
-            // above or below the level) is the CPU's.
+            // above or below the level), or whose eye is not a number, is the CPU's.
             gpu_frame = prepared == gpu_culling::Prepared::Gpu;
             if prepared == gpu_culling::Prepared::OutOfMemory {
                 log::warn!("Horizon renderer: GPU culling off: its buffers do not fit");
@@ -8159,7 +8181,7 @@ impl Renderer {
             && self.pack_post.as_ref().is_none_or(|p| p.1.is_none())
             && std::env::var_os("HORIZON_HDR_LIGHTING").is_none_or(|v| v != "0");
         if let Some(hdr) = &mut self.hdr {
-            hdr.lighting = hdr_lighting;
+            hdr.lighting = hdr_lighting && hdr.look;
         }
         let oit_on = self.improved_transparency
             && !frame.title

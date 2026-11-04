@@ -17,6 +17,21 @@ switch. The first install shows a trust notice, and every build waits behind a r
 after a review (its later releases are checked by machine); and they play in a game of their own, built for the
 instance they are installed in.
 
+## Compilation cache
+
+Native builds share `native/target/fast` (Performance and Dev) and `native/target/release`.
+After a build finishes, the launcher clears these compiler outputs if their combined size exceeds
+30 GiB. The installed game or exported server stays usable; a later changed build recompiles.
+`horizon-launcher settings native-cache-gib N` changes the limit (`default` restores 30; `0`
+disables automatic cleanup). This is an after-build limit, not a cap on peak compilation space.
+
+`horizon-launcher native-cache` reports its path, size in bytes and limit as JSON.
+`horizon-launcher native-cache --clear` frees the compilation cache immediately when builds are idle.
+Both use the same process lock as native builds; cleanup also refuses busy Cargo profile locks.
+It preserves lock files, refuses symbolic links and Windows junctions, and never targets installed
+versions, exported servers, instances, saves, mods, Rust toolchains or downloaded crates.
+
+
 ## Conditional item model properties
 
 A client mod supplies its own namespaced `minecraft:condition` property by implementing
@@ -2836,6 +2851,18 @@ is trimmed first, as the chat screen trims it. It isn't added to the chat histor
 state (not connected, not joined yet or being reconfigured), when the trimmed message is empty, and when the Chat option
 blocks it: Commands Only blocks chat, Hidden blocks chat and commands. The server's own spam limits apply as they do to
 typed chat. Bundles need `"hooks": @API:send_chat@`.
+
+### Packets a client mod sends
+
+API @API:send_packet@, `crates/horizon-client/src/game/native_net.rs`: `native_send_packet(packet)` sends one
+serverbound play packet (`mod_api::ServerboundPlayPacket`, Horizon's `play::Serverbound`) to any server, a vanilla one
+included. The usual one is a plugin channel's `ServerboundPlayPacket::CustomPayload`, for a server plugin or a Java mod
+that listens on that channel; its data is at most 32767 bytes (`ServerboundCustomPayloadPacket.MAX_PAYLOAD_SIZE`), past
+which a server disconnects. The packet goes out as it is: nothing counts it, and the game doesn't apply it on its side,
+so a packet that needs a sequence number, a signature or the client's own state (a block placed, a slot clicked, signed
+chat) is the mod's to get right. It is an error when the player isn't in a server's play state (not connected, not
+joined yet or being reconfigured), and for a custom payload over the limit. Mod messages between the halves of one
+Horizon mod stay with `native_net_send_to_server`. Bundles need `"hooks": @API:send_packet@`.
 
 ### Server menus
 

@@ -98,6 +98,33 @@ pub fn save(path: &Path, servers: &[ServerEntry]) -> std::io::Result<()> {
 /// Puts `entry` first, keeping every other entry and field as the file has them (the hidden
 /// ones too). A file that is there but can't be read is left as it is.
 pub fn prepend(path: &Path, entry: &ServerEntry) -> std::io::Result<()> {
+    insert(path, entry, |_| None)
+}
+/// Puts `entry` just after the first entry whose address `after` accepts, or last when none
+/// does, keeping every other entry and field as the file has them (the hidden ones too).
+pub fn insert_after(
+    path: &Path,
+    entry: &ServerEntry,
+    after: impl Fn(&str) -> bool,
+) -> std::io::Result<()> {
+    insert(path, entry, |list| {
+        let ip = |t: &Tag| match t.get("ip") {
+            Some(Tag::String(s)) => s.to_string_lossy(),
+            _ => String::new(),
+        };
+        Some(
+            list.iter()
+                .position(|t| after(&ip(t)))
+                .map_or(list.len(), |i| i + 1),
+        )
+    })
+}
+/// Inserts `entry` at the index `at` picks in the file's list (`None`: first).
+fn insert(
+    path: &Path,
+    entry: &ServerEntry,
+    at: impl Fn(&[Tag]) -> Option<usize>,
+) -> std::io::Result<()> {
     let mut root = match std::fs::read(path) {
         Ok(bytes) => {
             nbt::read_named(&bytes, nbt::Limits::default())
@@ -117,7 +144,10 @@ pub fn prepend(path: &Path, entry: &ServerEntry) -> std::io::Result<()> {
         .entry(JavaString::from("servers"))
         .or_insert_with(|| Tag::List(Vec::new()))
     {
-        Tag::List(list) => list.insert(0, entry.to_tag()),
+        Tag::List(list) => {
+            let index = at(list).unwrap_or(0);
+            list.insert(index, entry.to_tag());
+        }
         _ => return Err(std::io::Error::other("servers.dat has no server list")),
     }
     write(path, &root)
