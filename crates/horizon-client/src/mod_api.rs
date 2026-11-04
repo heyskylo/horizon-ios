@@ -17,9 +17,10 @@ pub use crate::first_person::Hand;
 pub use crate::fog::{FogData, FogType};
 pub use crate::game::native_block_entity_draw::{BlockEntityDraw, CubeFace};
 pub use crate::game::{
-    ItemEnergyBuffer, NativeBlockEdit, NativeBlockRun, NativeClock, NativeColumnBlocks,
-    NativeConfig, NativeConfigFile, NativeConfigKind, NativeDataMapType, NativeExperienceOrb,
-    NativeFalling, NativeHeightmap, NativeHeldItem, NativeHit, NativeMapDecoration, NativeMapInfo,
+    ItemEnergyBuffer, NativeBlockEdit, NativeBlockReadError, NativeBlockRun, NativeClock,
+    NativeColumnBlocks, NativeComponentError, NativeConfig, NativeConfigFile, NativeConfigKind,
+    NativeCriterion, NativeDataMapType, NativeExperienceOrb, NativeFalling, NativeHeightmap,
+    NativeHeldItem, NativeHit, NativeItemEntity, NativeMapDecoration, NativeMapInfo,
     NativeMobRender, NativeModEvent, NativePlayerRender, NativeReloadListener, NativeShake,
 };
 pub use crate::gfx::native_render::{
@@ -84,6 +85,38 @@ pub struct NativeCamera {
 /// A dispenser hook's answer: the slot's remainder (None empties it) and the
 /// level event to play, `CLICK` (1000), `FAIL` (1001) or 0 for none.
 pub type NativeDispensed = (Option<ItemStack>, i32);
+
+/// What a mod's fake player uses its item on (`Host::use_as_player`), as a
+/// player's click would.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum NativeUseTarget {
+    /// `ServerPlayerGameMode.useItemOn`: the block at `pos`, clicked on its
+    /// `face` at `point` (world coordinates on that face).
+    Block {
+        pos: [i32; 3],
+        face: Direction,
+        point: [f64; 3],
+    },
+    /// `ServerPlayerGameMode.useItem`: the item alone, in the air.
+    Item,
+    /// `Player.interactOn`: the entity with this id, clicked at `location`
+    /// (from the entity's position), as an interact packet names one.
+    Entity { id: i32, location: [f64; 3] },
+}
+
+/// What a mod's fake player did (`Host::use_as_player`).
+#[derive(Clone, Debug, Default, PartialEq)]
+#[non_exhaustive]
+pub struct NativeFakeUse {
+    /// Whether the use did something (`InteractionResult.consumesAction`).
+    pub consumed: bool,
+    /// What its hand holds afterwards: what is left of the stack, or what the
+    /// item became (a filled bucket).
+    pub held: Option<ItemStack>,
+    /// What else ended up in its inventory (a bowl of stew from a stack of
+    /// bowls, a bottle), for the mod to keep or drop.
+    pub other: Vec<ItemStack>,
+}
 
 /// Context for a player tuning a note block.
 #[derive(Clone, Copy, Debug)]
