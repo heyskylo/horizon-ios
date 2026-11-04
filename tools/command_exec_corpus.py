@@ -252,15 +252,23 @@ def world_blocks():
         cmd('/item replace block 3 206 3 container.0 with minecraft:apple 5'),
         cmd('/data get block 3 206 3 Items[0].count'),
         cmd('/data merge block 3 206 3 {CustomName:"Box"}'),
+        cmd('/data get block 3 206 3 CustomName'),
+        cmd('/data merge block 3 206 3 {Items:[]}'),
+        cmd('/data get block 3 206 3 CustomName'),
         cmd('/clone 0 205 0 4 207 4 6 205 6'),
         cmd('/clone 0 205 0 4 207 4 6 205 6 masked'),
         cmd('/execute if blocks 0 205 0 4 207 4 6 205 6 all'),
+        cmd('/data get block 9 206 9 CustomName'),
         cmd('/setblock 3 206 3 minecraft:air'),
         # A container keeps its loot table and seed until its items change
         # (RandomizableContainer.tryLoadLootTable / trySaveLootTable).
         cmd('/setblock 7 206 7 minecraft:chest{LootTable:"minecraft:chests/simple_dungeon",LootTableSeed:42L}'),
         cmd('/data get block 7 206 7'),
         cmd('/data get block 7 206 7 LootTableSeed'),
+        cmd('/setblock 7 206 7 minecraft:air'),
+        # BaseContainerBlockEntity.loadAdditional reads the tag's CustomName.
+        cmd('/setblock 7 206 7 minecraft:barrel{CustomName:"Loot"}'),
+        cmd('/data get block 7 206 7 CustomName'),
         cmd('/setblock 7 206 7 minecraft:air'),
         # A hopper placed into power turns `enabled=false` and keeps its block entity.
         cmd('/setblock 5 205 5 minecraft:redstone_block'),
