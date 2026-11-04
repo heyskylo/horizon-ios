@@ -437,6 +437,9 @@ struct Targets {
 pub(super) struct World<'a> {
     /// The block atlas and its size.
     pub atlas: Option<(wgpu::TextureView, [u32; 2])>,
+    /// Of a stitched block atlas, each sprite layer's place (`PackAtlas::rects_table`); empty
+    /// for a grid.
+    pub sprite_rects: &'a [u32],
     pub lightmap: wgpu::TextureView,
     /// Terrain's geometry, when the pack draws it.
     pub terrain: Option<Geometry<'a>>,
@@ -561,9 +564,9 @@ pub struct PackPost {
     down: HashMap<wgpu::TextureFormat, (wgpu::RenderPipeline, wgpu::BindGroupLayout)>,
     /// The per-draw uniforms of gbuffers programs.
     draws: DrawUniforms,
-    /// Set 3 of flat terrain (`mc_Entity`'s table) and its bind group for each arena page,
-    /// with the page buffer it was made for.
-    block_ids: Option<(wgpu::BindGroupLayout, wgpu::Buffer)>,
+    /// Set 3 of flat terrain (`mc_Entity`'s table, then the sprites' places) and its bind group
+    /// for each arena page, with the page buffer it was made for.
+    block_ids: Option<(wgpu::BindGroupLayout, wgpu::Buffer, wgpu::Buffer)>,
     page_groups: HashMap<u32, (wgpu::Buffer, wgpu::BindGroup)>,
     gui_size: [u32; 2],
     /// GPU time of each pass, while the renderer asks for it (`pack_timing.rs`).
@@ -1021,19 +1024,29 @@ pub(super) struct ShadowView {
 }
 
 /// Set 3 of flat terrain, read by the vertex stage: the sprite layers' table (`mc_Entity`'s id
-/// and fluid, `at_midBlock.w`; -1, -1, 0 when empty) and, per arena page, the page's vertices
-/// (a vertex reads its quad's corners for its normal).
-fn block_ids(device: &wgpu::Device, table: &[i32]) -> (wgpu::BindGroupLayout, wgpu::Buffer) {
+/// and fluid, `at_midBlock.w`; -1, -1, 0 when empty), per arena page, the page's vertices
+/// (a vertex reads its quad's corners for its normal), and each sprite's place in a stitched
+/// atlas (`rects`; zeros for a grid, which doesn't read them).
+fn block_ids(
+    device: &wgpu::Device,
+    table: &[i32],
+    rects: &[u32],
+) -> (wgpu::BindGroupLayout, wgpu::Buffer, wgpu::Buffer) {
     let empty = [-1, -1, 0];
     let table = if table.is_empty() { &empty[..] } else { table };
-    let buffer = wgpu::util::DeviceExt::create_buffer_init(
-        device,
-        &wgpu::util::BufferInitDescriptor {
-            label: Some("Shader pack block ids"),
-            contents: bytemuck::cast_slice(table),
-            usage: wgpu::BufferUsages::STORAGE,
-        },
-    );
+    let buffer = |label, contents: &[u8]| {
+        wgpu::util::DeviceExt::create_buffer_init(
+            device,
+            &wgpu::util::BufferInitDescriptor {
+                label: Some(label),
+                contents,
+                usage: wgpu::BufferUsages::STORAGE,
+            },
+        )
+    };
+    let rects = if rects.is_empty() { &[0, 0][..] } else { rects };
+    let ids = buffer("Shader pack block ids", bytemuck::cast_slice(table));
+    let rects = buffer("Shader pack sprite rects", bytemuck::cast_slice(rects));
     let storage = |binding| wgpu::BindGroupLayoutEntry {
         binding,
         visibility: wgpu::ShaderStages::VERTEX,
@@ -1046,9 +1059,9 @@ fn block_ids(device: &wgpu::Device, table: &[i32]) -> (wgpu::BindGroupLayout, wg
     };
     let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("Shader pack terrain"),
-        entries: &[storage(0), storage(1)],
+        entries: &[storage(0), storage(1), storage(2)],
     });
-    (layout, buffer)
+    (layout, ids, rects)
 }
 
 /// The game's geometry a gbuffers program draws: its vertex buffers and, for flat draws
@@ -2026,7 +2039,7 @@ impl PackPost {
             .terrain
             .as_ref()
             .filter(|g| g.table.is_some())
-            .map(|_| block_ids(device, world.block_ids));
+            .map(|_| block_ids(device, world.block_ids, world.sprite_rects));
         let terrain_geometry = world.terrain.as_ref().map(|g| Geometry {
             buffers: g.buffers,
             table: g.table,
@@ -4075,7 +4088,7 @@ impl PackPost {
         terrain: &mut TerrainDraw<'_>,
     ) {
         self.resize(device, size);
-        if let Some((layout, ids)) = &self.block_ids {
+        if let Some((layout, ids, rects)) = &self.block_ids {
             // A page that grew has a new buffer.
             self.page_groups
                 .retain(|p, (b, _)| pages.iter().any(|(q, c)| q == p && c == b));
@@ -4092,6 +4105,10 @@ impl PackPost {
                             wgpu::BindGroupEntry {
                                 binding: 1,
                                 resource: buffer.as_entire_binding(),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 2,
+                                resource: rects.as_entire_binding(),
                             },
                         ],
                     });

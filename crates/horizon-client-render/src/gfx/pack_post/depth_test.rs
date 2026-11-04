@@ -332,6 +332,7 @@ fn check(sampler: &str, stage: Stage, scene: Scene, expected: [u8; 4]) {
                 cull: false,
             }),
             block_ids: &[],
+            sprite_rects: &[],
             celestial: None,
             gui_size: SIZE,
             clouds: None,

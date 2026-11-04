@@ -5990,9 +5990,14 @@ impl Renderer {
         };
         let buffers = [Some(vertex), Some(instances)];
         let flat = self.pack_terrain_flat;
+        let sprite_rects = self
+            .pack_atlas
+            .as_ref()
+            .map_or_else(Vec::new, |a| a.rects_table());
         let post = pack.map(|post| {
             let world = pack_post::World {
                 atlas: self.pack_atlas.as_ref().map(|a| (a.view.clone(), a.size())),
+                sprite_rects: &sprite_rects,
                 lightmap: self.lightmap_view.clone(),
                 gui_size: self
                     .hud

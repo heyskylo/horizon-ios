@@ -211,6 +211,7 @@ impl Fixture {
                 lightmap,
                 terrain: None,
                 block_ids: &[],
+                sprite_rects: &[],
                 celestial: None,
                 gui_size: [16, 16],
                 clouds: None,
