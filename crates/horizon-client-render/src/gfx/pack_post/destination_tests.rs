@@ -199,25 +199,7 @@ impl Fixture {
     }
 
     pub(super) fn build(&self, post: Post) -> PackPost {
-        let lightmap = self.texture([1, 1], T::Rgba8Unorm);
-        let post = PackPost::new(
-            &self.device,
-            &self.queue,
-            &self.adapter,
-            post,
-            T::Rgba8Unorm,
-            World {
-                atlas: None,
-                lightmap,
-                terrain: None,
-                block_ids: &[],
-                celestial: None,
-                gui_size: [16, 16],
-                clouds: None,
-                weather: false,
-                hand: false,
-            },
-        );
+        let post = self.try_build(post).expect("the pack runs");
         assert!(
             post.notes.iter().all(|n| n.starts_with("shadow map ")),
             "{:?}",
@@ -226,7 +208,56 @@ impl Fixture {
         post
     }
 
+    /// [`Self::build`] for a pack that may be refused.
+    pub(super) fn try_build(&self, post: Post) -> Result<PackPost, Refused> {
+        self.try_build_with_terrain(post, None)
+    }
+
+    /// `build`, with the game's terrain geometry handed to the pack.
+    pub(super) fn build_with_terrain(&self, post: Post, terrain: Option<Geometry<'_>>) -> PackPost {
+        self.try_build_with_terrain(post, terrain)
+            .expect("the pack runs")
+    }
+
+    fn try_build_with_terrain(
+        &self,
+        post: Post,
+        terrain: Option<Geometry<'_>>,
+    ) -> Result<PackPost, Refused> {
+        let lightmap = self.texture([1, 1], T::Rgba8Unorm);
+        PackPost::new(
+            &self.device,
+            &self.queue,
+            &self.adapter,
+            post,
+            T::Rgba8Unorm,
+            World {
+                atlas: None,
+                material_maps: None,
+                lightmap,
+                terrain,
+                block_ids: &[],
+                sprite_rects: &[],
+                celestial: None,
+                gui_size: [16, 16],
+                clouds: None,
+                weather: false,
+                hand: false,
+            },
+        )
+    }
+
     pub(super) fn render(&self, post: &mut PackPost, size: [u32; 2]) -> Vec<[u8; 4]> {
+        self.render_with_terrain(post, size, &mut |_, _, _, _| {})
+    }
+
+    /// `render`, with `terrain` drawing the game's terrain lists.
+    pub(super) fn render_with_terrain(
+        &self,
+        post: &mut PackPost,
+        size: [u32; 2],
+        terrain: &mut TerrainDraw<'_>,
+    ) -> Vec<[u8; 4]> {
         let world = self.texture(size, T::Rgba8Unorm);
         let depth = self.texture(size, T::Depth32Float);
         let screen = self.texture(size, T::Rgba8Unorm);
@@ -251,7 +282,7 @@ impl Fixture {
             size,
             size,
             &[],
-            &mut |_, _, _, _| {},
+            terrain,
         );
         encoder.copy_texture_to_buffer(
             screen.texture().as_image_copy(),
@@ -346,8 +377,8 @@ fn frame_clear_and_retained_history_apply_before_partial_post_writes() {
     let Some(gpu) = Fixture::new() else { return };
     for clear in [true, false] {
         let mut post = gpu.build(pack(Coverage::Full, false, false, Some(clear), false));
-        // Every frame changes which physical image is main. The other image is fully
-        // seeded red before the partial write, independent of its initial clearing.
+        // The other image is fully seeded red before the partial write, independent of its
+        // initial clearing.
         for frame in 0..3 {
             let actual = gpu.render(&mut post, [16, 16]);
             assert!(
@@ -433,6 +464,7 @@ fn fixture_frame(hud: &HudBatch) -> Frame<'_> {
         celestial: &[],
         stars: None,
         hand: &[],
+        hand_items: &[],
         hand_fov_degrees: 70.0,
         screen: &[],
         pack: Default::default(),
@@ -521,3 +553,6 @@ fn a_cleared_buffer_starts_every_frame_cleared_on_both_textures() {
         assert!(wrong.is_empty(), "frame {frame}: {wrong:?}");
     }
 }
+
+#[path = "clear_false_tests.rs"]
+mod clear_false_tests;

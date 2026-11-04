@@ -422,7 +422,7 @@ impl Launcher {
                     .top_0()
                     .left_0()
                     .size_full()
-                    .bg(ui::color(horizon_theme::glass::SCRIM).opacity(0.5)),
+                    .bg(ui::scrim()),
             )
             .child(card)
     }

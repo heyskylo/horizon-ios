@@ -19,6 +19,7 @@ pub mod import;
 #[cfg(windows)]
 pub mod installer;
 pub mod instances;
+pub mod instances_mrpack;
 pub mod java;
 pub mod java_launch;
 pub mod launch;
@@ -47,5 +48,6 @@ pub mod sources;
 pub mod tailscale;
 pub mod telemetry;
 pub mod themes;
+pub mod uninstall_aside;
 pub mod wardrobe;
 pub mod worlds;

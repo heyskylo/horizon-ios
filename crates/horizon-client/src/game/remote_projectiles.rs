@@ -179,6 +179,18 @@ fn shulker_bullet_trail_at(at: Vec3, random: &mut impl RandomSource) -> [f64; 3]
     ]
 }
 
+/// `ClientPacketListener.handleSetEntityData`'s `Fireball.DATA_ITEM_STACK`:
+/// the item the guest draws the fireball as, through `Fireball.setItem`;
+/// a kind that is no `Fireball` has none.
+pub(super) fn remote_projectile_item(projectiles: &mut [Projectile], id: u32, stack: ItemStack) {
+    if let Some(p) = projectiles
+        .iter_mut()
+        .find(|p| p.id == id && p.kind.is_item_fireball())
+    {
+        p.set_item(stack);
+    }
+}
+
 /// `ClientPacketListener.handleProjectilePowerPacket`: the power a hurting
 /// projectile (`AbstractHurtingProjectile`) accelerates by, found by id;
 /// anything else is ignored.
@@ -332,6 +344,7 @@ impl Game<'_> {
         match kind {
             "minecraft:evoker_fangs" => self.insert_fangs(id, position, yaw, 0, 0),
             "minecraft:tnt" => self.tnts.push(super::tnt::PrimedTnt {
+                rotation: [0.0, 0.0],
                 join: Default::default(),
                 no_gravity: false,
                 id,
@@ -343,9 +356,11 @@ impl Game<'_> {
                 owner: None,
                 guest: None,
                 power: 4.0,
+                block_state: None,
             }),
             // FallingBlockEntity.recreateFromPacket: the block state is the data.
             "minecraft:falling_block" => self.falling.push(FallingBlock {
+                rotation: [0.0, 0.0],
                 join: Default::default(),
                 id,
                 state: BlockStateId(data.max(0) as u32),
@@ -503,6 +518,17 @@ impl Game<'_> {
             }
             return;
         }
+        // Fireball.DATA_ITEM_STACK: the item a fireball is drawn as.
+        if let Some(stack) = values
+            .iter()
+            .find_map(|(index, _, value)| match (index, value) {
+                (8, Value::Item(stack)) => Some(stack),
+                _ => None,
+            })
+            && let Some(stack) = self.to_stack(stack)
+        {
+            remote_projectile_item(&mut self.creatures.projectiles, id, stack);
+        }
         for (index, _, value) in values {
             if let Some(t) = self.tnts.iter_mut().find(|t| t.id == id) {
                 // PrimedTnt.DATA_FUSE_ID.
@@ -525,6 +551,8 @@ impl Game<'_> {
                 // AbstractArrow.ID_FLAGS (no physics) and IN_GROUND, and
                 // ThrownTrident.ID_LOYALTY.
                 match (index, value) {
+                    // Clients retain the server's fire flag until the next update.
+                    (0, Value::Byte(flags)) => t.fire_ticks = i32::from(flags & 1),
                     (8, Value::Byte(flags)) => t.no_physics = flags & 2 != 0,
                     (10, Value::Bool(in_ground)) => t.in_ground = *in_ground,
                     (11, Value::Byte(loyalty)) => t.loyalty = u32::from(*loyalty as u8),
@@ -650,6 +678,14 @@ impl Game<'_> {
             let _ = t.tick(world, collision, assets, facts, fluids, border);
             t.fuse > 0
         });
+        // PrimedTnt.tick: while the fuse is still lit, a client adds one SMOKE
+        // particle at (x, y + 0.5, z). The server's Level.addParticle never
+        // reaches this window.
+        let smoking: Vec<Vec3> = self.tnts.iter().map(|t| t.position).collect();
+        let smoke = ParticleOptions::simple(ParticleType::Smoke);
+        for p in smoking {
+            self.particles.add(&smoke, [p.x, p.y + 0.5, p.z], [0.0; 3]);
+        }
         // FallingBlockEntity.tick runs on a client too: the block falls by
         // itself between the server's updates (every 20 ticks), then waits
         // where it lands for the server to place it and remove it.
@@ -837,7 +873,7 @@ impl Game<'_> {
             out.push(json!({"id": c.id, "kind": "minecraft:end_crystal", "position": at(c.position), "show_bottom": c.show_bottom}));
         }
         for t in &self.tridents {
-            out.push(json!({"id": t.id, "kind": "minecraft:trident", "position": at(t.position), "velocity": at(t.velocity)}));
+            out.push(json!({"id": t.id, "kind": "minecraft:trident", "position": at(t.position), "velocity": at(t.velocity), "on_fire": t.fire_ticks > 0}));
         }
         for r in &self.rockets {
             out.push(json!({"id": r.id, "kind": "minecraft:firework_rocket", "position": at(r.position), "velocity": at(r.velocity)}));
@@ -1054,10 +1090,9 @@ mod tests {
         let mut list = vec![tracked(ProjectileKind::LargeFireball { power: 1 }, 12)];
         remote_projectile_power(&mut list, 12, 0.5);
         assert_eq!(list[0].acceleration, 0.5);
-        // AbstractHurtingProjectile.applyInertia: (v + v/|v| * 0.5) * 0.95,
-        // where the default 0.1 would have made 1.52.
+        // AbstractHurtingProjectile.applyInertia: (1.5 + 0.5) * (double) 0.95f.
         remote_projectile_tick(&mut list[0], &Empty);
-        assert!((list[0].velocity.x - 1.9).abs() < 1e-9, "{:?}", list[0]);
+        assert_eq!(list[0].velocity.x, 1.899_999_976_158_142);
     }
 
     #[test]
@@ -1083,5 +1118,32 @@ mod tests {
             list.iter().map(|p| p.acceleration).collect::<Vec<_>>(),
             [0.1; 3]
         );
+    }
+
+    #[test]
+    fn a_guest_draws_a_fireball_as_the_item_the_server_sends() {
+        // `ClientPacketListener.handleSetEntityData` of
+        // Fireball.DATA_ITEM_STACK: the item `Fireball.getItem` returns, which
+        // is the fire charge the default was until the server says otherwise.
+        let mut list = vec![
+            tracked(ProjectileKind::LargeFireball { power: 1 }, 12),
+            tracked(ProjectileKind::SmallFireball, 13),
+            tracked(ProjectileKind::Snowball, 14),
+        ];
+        remote_projectile_item(&mut list, 12, ItemStack::new("minecraft:diamond", 4));
+        assert_eq!(
+            list[0].item.as_ref().map(|i| (&*i.item, i.count)),
+            Some(("minecraft:diamond", 1)),
+            "one of it, as `setItem` keeps"
+        );
+        // The default fire charge goes back when the server sends an empty
+        // stack, and a snowball is no `Fireball`: it has no item to set.
+        remote_projectile_item(&mut list, 13, ItemStack::new("minecraft:air", 1));
+        assert_eq!(
+            list[1].item.as_ref().map(|i| (&*i.item, i.count)),
+            Some(("minecraft:fire_charge", 1))
+        );
+        remote_projectile_item(&mut list, 14, ItemStack::new("minecraft:diamond", 1));
+        assert_eq!(list[2].item, None);
     }
 }

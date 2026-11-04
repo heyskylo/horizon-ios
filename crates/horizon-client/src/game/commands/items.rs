@@ -34,6 +34,11 @@ pub(in crate::game) enum Slot {
     /// A slot of another player (`for_player`): reached with their state in place.
     Guest(u32, Box<Slot>),
 }
+struct SlotCandidate {
+    slot: Slot,
+    filters: Vec<serde_json::Value>,
+    limit: usize,
+}
 /// Whose slots a command addresses.
 #[derive(Clone, Debug, PartialEq)]
 pub(in crate::game) enum Owner {
@@ -185,6 +190,157 @@ impl Game<'_> {
             Owner::Entity(_) => {}
         }
         out
+    }
+    /// `ItemCommands.getSlotsFromProvider`: evaluate inline sources against
+    /// the accessor's live owner. Named ranges retain their existing adapter.
+    fn command_slots(&mut self, owner: &Owner, raw: &str) -> Vec<Slot> {
+        if raw.starts_with('{') || raw.starts_with('[') {
+            let Ok((tag, _)) = horizon_world::nbt::parse_snbt(raw) else {
+                return Vec::new();
+            };
+            self.inline_slots(owner, &horizon_client::scoreboard::tag_to_json(&tag))
+        } else {
+            self.slots_named(owner, raw)
+        }
+    }
+    /// `SlotCollection.itemCopies` / `size`: transforms apply to the
+    /// collection, before a command's item predicate or item modifier.
+    fn inline_slots(&mut self, owner: &Owner, source: &serde_json::Value) -> Vec<Slot> {
+        if let Some(terms) = source.as_array() {
+            return terms
+                .iter()
+                .flat_map(|s| self.inline_slots(owner, s))
+                .collect();
+        }
+        match source["type"]
+            .as_str()
+            .unwrap_or_default()
+            .trim_start_matches("minecraft:")
+        {
+            "group" => source["terms"].as_array().map_or_else(Vec::new, |terms| {
+                terms
+                    .iter()
+                    .flat_map(|s| self.inline_slots(owner, s))
+                    .collect()
+            }),
+            "slot_range" => self.slots_named(owner, source["slots"].as_str().unwrap_or_default()),
+            "limit_slots" => {
+                let mut slots = self.inline_slots(owner, &source["slot_source"]);
+                slots.truncate(source["limit"].as_u64().unwrap_or(0) as usize);
+                slots
+            }
+            "filtered" => {
+                let slots = self.inline_slots(owner, &source["slot_source"]);
+                slots
+                    .into_iter()
+                    .filter(|slot| self.slot_filter(slot, &source["item_filter"]))
+                    .collect()
+            }
+            _ => Vec::new(),
+        }
+    }
+    fn slot_filter(&mut self, slot: &Slot, filter: &serde_json::Value) -> bool {
+        let stack = self
+            .slot_get(slot)
+            .unwrap_or_else(|| ItemStack::new("minecraft:air", 0));
+        self.loot_item_filter(filter, &stack)
+    }
+    /// `SlotCollection.modifySlots` / `replaceSlotItems`: filters inspect the
+    /// live stack when visited. Limits share the command's TrackingSelector
+    /// count across owners and group terms, and count selected empty slots
+    /// only for replacement (not modification).
+    fn command_slot_candidates(&mut self, owner: &Owner, raw: &str) -> Vec<SlotCandidate> {
+        let source = horizon_world::nbt::parse_snbt(raw)
+            .ok()
+            .map(|(tag, _)| horizon_client::scoreboard::tag_to_json(&tag));
+        if raw.starts_with('{') || raw.starts_with('[') {
+            let mut out = Vec::new();
+            if let Some(source) = source {
+                self.slot_candidates(owner, &source, &[], usize::MAX, &mut out);
+            }
+            out
+        } else {
+            self.slots_named(owner, raw)
+                .into_iter()
+                .map(|slot| SlotCandidate {
+                    slot,
+                    filters: Vec::new(),
+                    limit: usize::MAX,
+                })
+                .collect()
+        }
+    }
+    /// `CompositeSlotSource.provide` and `TransformedSlotSource.provide`:
+    /// carry each leaf's filters and selection bound into live writes.
+    fn slot_candidates(
+        &mut self,
+        owner: &Owner,
+        source: &serde_json::Value,
+        filters: &[serde_json::Value],
+        limit: usize,
+        out: &mut Vec<SlotCandidate>,
+    ) {
+        if let Some(terms) = source.as_array() {
+            for term in terms {
+                self.slot_candidates(owner, term, filters, limit, out);
+            }
+            return;
+        }
+        match source["type"]
+            .as_str()
+            .unwrap_or_default()
+            .trim_start_matches("minecraft:")
+        {
+            "group" => {
+                if let Some(terms) = source["terms"].as_array() {
+                    for term in terms {
+                        self.slot_candidates(owner, term, filters, limit, out);
+                    }
+                }
+            }
+            "slot_range" => {
+                for slot in self.slots_named(owner, source["slots"].as_str().unwrap_or_default()) {
+                    out.push(SlotCandidate {
+                        slot,
+                        filters: filters.to_vec(),
+                        limit,
+                    });
+                }
+            }
+            "filtered" => {
+                let mut filters = filters.to_vec();
+                filters.push(source["item_filter"].clone());
+                self.slot_candidates(owner, &source["slot_source"], &filters, limit, out);
+            }
+            "limit_slots" => self.slot_candidates(
+                owner,
+                &source["slot_source"],
+                filters,
+                limit.min(source["limit"].as_u64().unwrap_or(0) as usize),
+                out,
+            ),
+            _ => {}
+        }
+    }
+    /// `SlotSelector.TrackingSelector.trySelectSlot`: count only slots that
+    /// pass the predicate, before attempting the setter.
+    fn select_slot(
+        &mut self,
+        candidate: &SlotCandidate,
+        selected: &mut usize,
+        nonempty: bool,
+    ) -> bool {
+        if *selected >= candidate.limit
+            || (nonempty && self.slot_get(&candidate.slot).is_none())
+            || !candidate
+                .filters
+                .iter()
+                .all(|f| self.slot_filter(&candidate.slot, f))
+        {
+            return false;
+        }
+        *selected += 1;
+        true
     }
     pub(in crate::game) fn slot_get(&mut self, s: &Slot) -> Option<ItemStack> {
         match s {
@@ -789,7 +945,7 @@ impl Game<'_> {
         let mut tracker = Tracker::default();
         let mut selected = 0;
         for o in &targets {
-            let slots = self.slots_named(o, &slot_name);
+            let slots = self.command_slot_candidates(o, &slot_name);
             if slots.is_empty() {
                 if let Owner::Block(p) = o
                     && self.block_container_size(*p).is_none()
@@ -802,12 +958,15 @@ impl Game<'_> {
                 continue;
             }
             let mut changed = 0;
-            for slot in &slots {
+            for candidate in &slots {
+                if !self.select_slot(candidate, &mut selected, true) {
+                    continue;
+                }
+                let slot = &candidate.slot;
                 // SlotSelector.NON_EMPTY_SLOTS
                 let Some(current) = self.slot_get(slot) else {
                     continue;
                 };
-                selected += 1;
                 let new = self.apply_item_modifier(
                     &modifier,
                     Some(current.clone()),
@@ -831,7 +990,13 @@ impl Game<'_> {
             tracker.track(&h, changed);
         }
         if selected == 0 {
-            return Err(err("commands.item.target.no_such_slot", &[&slot_name]));
+            return Err(
+                if slot_name.starts_with('{') || slot_name.starts_with('[') {
+                    err("commands.item.target.no_such_slot.unnamed", &[])
+                } else {
+                    err("commands.item.target.no_such_slot", &[&slot_name])
+                },
+            );
         }
         let pos = match targets.first() {
             Some(Owner::Block(p)) => Some(*p),
@@ -891,16 +1056,23 @@ impl Game<'_> {
             };
             let mut found = Vec::new();
             for o in &sources {
-                for s in self.slots_named(o, &source_slots) {
+                for s in self.command_slots(o, &source_slots) {
                     found.push(self.slot_get(&s));
                 }
             }
             if found.is_empty() {
                 return Err(match &sources[..] {
-                    [Owner::Block(p)] => err(
-                        "commands.item.source.not_a_container",
-                        &[&p[0], &p[1], &p[2]],
-                    ),
+                    [Owner::Block(p)]
+                        if !self.world.block_entities.contains_key(&(p[0], p[1], p[2])) =>
+                    {
+                        err(
+                            "commands.item.source.not_a_container",
+                            &[&p[0], &p[1], &p[2]],
+                        )
+                    }
+                    _ if source_slots.starts_with('{') || source_slots.starts_with('[') => {
+                        err("commands.item.source.no_such_slot.unnamed", &[])
+                    }
                     _ => err("commands.item.source.no_such_slot", &[&source_slots]),
                 });
             }
@@ -932,7 +1104,7 @@ impl Game<'_> {
         let mut tracker = Tracker::default();
         let mut selected = 0;
         for o in &targets {
-            let slots = self.slots_named(o, &slot_name);
+            let slots = self.command_slot_candidates(o, &slot_name);
             if slots.is_empty() {
                 if let Owner::Block(p) = o
                     && self.block_container_size(*p).is_none()
@@ -944,9 +1116,13 @@ impl Game<'_> {
                 }
                 continue;
             }
-            selected += slots.len();
             let mut changed = 0;
-            for (i, slot) in slots.iter().enumerate() {
+            let mut i = 0;
+            for candidate in &slots {
+                if !self.select_slot(candidate, &mut selected, false) {
+                    continue;
+                }
+                let slot = &candidate.slot;
                 // `fill` cycles through the items; `replace` stops when they
                 // run out; `override` empties the rest.
                 let item = match mode.as_str() {
@@ -957,6 +1133,7 @@ impl Game<'_> {
                         None => break,
                     },
                 };
+                i += 1;
                 // ItemStack.isEmpty: air (or a count of 0) is an empty slot.
                 // SlotAccess.set counts every slot it sets, the same item too.
                 let item = item.filter(|s| &*s.item != "minecraft:air" && s.count > 0);
@@ -968,7 +1145,13 @@ impl Game<'_> {
             tracker.track(&h, changed);
         }
         if selected == 0 {
-            return Err(err("commands.item.target.no_such_slot", &[&slot_name]));
+            return Err(
+                if slot_name.starts_with('{') || slot_name.starts_with('[') {
+                    err("commands.item.target.no_such_slot.unnamed", &[])
+                } else {
+                    err("commands.item.target.no_such_slot", &[&slot_name])
+                },
+            );
         }
         let block = matches!(targets.first(), Some(Owner::Block(_)));
         let pos = match targets.first() {
@@ -1053,7 +1236,7 @@ impl Game<'_> {
                     &[&p[0], &p[1], &p[2]],
                 ));
             }
-            let slots = self.slots_named(&o, &slot_name);
+            let slots = self.command_slots(&o, &slot_name);
             if predicate.is_none() {
                 count += slots.len() as i32;
                 continue;

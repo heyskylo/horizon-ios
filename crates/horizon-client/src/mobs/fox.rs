@@ -241,7 +241,9 @@ fn fully_crouched(m: &Mob) -> bool {
     m.anim.v[CROUCH_AMOUNT] == MAX_CROUCH_AMOUNT
 }
 
-/// `Fox.tick` and the eating part of `Fox.aiStep`.
+/// `Fox.tick` and `Fox.aiStep`: eating, and `SoundEvents.FOX_AGGRO`
+/// (`Entity.playSound` at its feet) while the fox is defending. Only the
+/// server broadcasts that sound.
 pub fn ai_step(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
     client_tick(m);
     if !m.alive() {
@@ -286,6 +288,12 @@ pub fn ai_step(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
     }
     if in_water || flag(m, SLEEPING) {
         set_flag(m, SITTING, false);
+    }
+    // `Fox.aiStep`, after the living step: one tick in twenty a defending fox
+    // growls. `Entity.playSound` is positional and a silent fox stays quiet.
+    if flag(m, DEFENDING) && m.random.next_float() < 0.05 && !m.silent {
+        let at = [m.position.x, m.position.y, m.position.z];
+        events.push(MobEvent::Sound("entity.fox.aggro", at, 1.0, 1.0));
     }
     // Faceplanted: crumbs of the snow now and then (level event 2001).
     if flag(m, FACEPLANTED) && m.random.next_float() < 0.2 {
@@ -358,6 +366,13 @@ fn teleport_randomly(
         if !random_teleport(w, m, Vec3::new(x, y, z)) {
             continue;
         }
+        // `LivingEntity.checkPositionAndTeleport` broadcasts entity event 46
+        // before the teleport sound and the directional trail.
+        events.push(MobEvent::EntityEvent {
+            mob: m.id,
+            event: 46,
+            at: [m.position.x, m.position.y, m.position.z],
+        });
         // `SoundEvents.FOX_TELEPORT`, else the chorus fruit's own; the sound
         // plays at the point reached.
         events.push(MobEvent::Sound(
@@ -1287,6 +1302,12 @@ mod consume_tests {
                         .iter()
                         .any(|e| matches!(e, MobEvent::LevelEvent { id: 2017, .. })),
                     "the portal trail: {events:?}"
+                );
+                assert!(
+                    events
+                        .iter()
+                        .any(|e| matches!(e, MobEvent::EntityEvent { event: 46, .. })),
+                    "entity event 46: {events:?}"
                 );
             },
         );

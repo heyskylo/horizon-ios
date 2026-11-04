@@ -154,8 +154,9 @@ const BLOCK: [&str; 5] = [
     "gbuffers_basic",
 ];
 
-/// `gbuffers_clouds`: no fallback, the game draws its clouds otherwise (OQ-3).
-const CLOUDS: [&str; 1] = ["gbuffers_clouds"];
+/// `gbuffers_clouds` and its fallbacks, as in Iris (its ShaderDoc's gbuffers table): without
+/// any of them the game draws its clouds.
+const CLOUDS: [&str; 3] = ["gbuffers_clouds", "gbuffers_textured", "gbuffers_basic"];
 
 /// `gbuffers_hand` and its fallbacks (2.3).
 const HAND: [&str; 4] = [
@@ -181,6 +182,10 @@ const ENTITIES_TRANSLUCENT: [&str; 5] = [
     "gbuffers_textured",
     "gbuffers_basic",
 ];
+
+/// `gbuffers_beaconbeam` and its fallbacks (the shaders.properties reference): beacon and End
+/// gateway beams.
+const BEACON_BEAM: [&str; 3] = ["gbuffers_beaconbeam", "gbuffers_textured", "gbuffers_basic"];
 
 /// `gbuffers_particles` and its fallbacks (2.3).
 const PARTICLES: [&str; 4] = [
@@ -408,6 +413,8 @@ pub struct Post {
     pub entities_translucent: Option<PostProgram>,
     /// What draws particles.
     pub particles: Option<PostProgram>,
+    /// What draws beacon and End gateway beams (after deferred, blended).
+    pub beacon_beam: Option<PostProgram>,
     pub damaged_block: Option<PostProgram>,
     /// What draws the game's clouds.
     pub clouds: Option<PostProgram>,
@@ -605,6 +612,7 @@ pub fn load_post(
         block: None,
         entities_translucent: None,
         particles: None,
+        beacon_beam: None,
         damaged_block: None,
         clouds: None,
         lines: None,
@@ -780,6 +788,7 @@ pub fn load_post(
     let mut gbuffers_dyn = |names: &[&str], i: &GbuffersInputs| gbuffers(names, Group::Gbuffers, i);
     let entities_translucent = translucent(&ENTITIES_TRANSLUCENT, 0.0, &mut gbuffers_dyn);
     let particles = translucent(&PARTICLES, 0.1, &mut gbuffers_dyn);
+    let beacon_beam = translucent(&BEACON_BEAM, 0.0, &mut gbuffers_dyn);
     // Clouds blend, as vanilla's do (OQ-23).
     let clouds = inputs
         .clouds
@@ -842,6 +851,7 @@ pub fn load_post(
     loader.post.block = block;
     loader.post.entities_translucent = entities_translucent;
     loader.post.particles = particles;
+    loader.post.beacon_beam = beacon_beam;
     loader.post.damaged_block = damaged_block;
     loader.post.clouds_off = properties.get("clouds").is_some_and(|v| v.trim() == "off");
     loader.post.clouds = clouds.filter(|_| !loader.post.clouds_off);
@@ -863,7 +873,6 @@ pub fn load_post(
         inputs.entities.as_ref(),
         [&inputs.terrain_geometry, &inputs.entity_geometry].map(Option::as_ref),
     );
-    post.config = std::mem::take(&mut post.config).finish();
     post
 }
 
@@ -888,6 +897,7 @@ fn load_shadow(
         &post.block,
         &post.entities_translucent,
         &post.particles,
+        &post.beacon_beam,
         &post.damaged_block,
         &post.clouds,
         &post.weather,
@@ -908,6 +918,19 @@ fn load_shadow(
     let on = forced.unwrap_or(reads);
     loader.post.shadow_pass = on;
     if !on {
+        // Observed in probe packs of ours (p9063a, p9063c), not a rule Iris states: Iris 1.11.7
+        // honoured a `colortexNFormat` declared only in `shadow.fsh` or `shadowcomp.fsh` of a
+        // pack Horizon runs without a shadow pass. So the colortex formats of the shadow
+        // programs' fragment shaders are read here, and nothing else of them (nothing else was
+        // probed). The other shadow programs' files were not probed; they are read as `shadow`.
+        let names = ["shadow", "shadow_water", "shadow_entities", "shadow_block"]
+            .map(str::to_owned)
+            .into_iter()
+            .chain(std::iter::once("shadowcomp".to_owned()))
+            .chain((1..=99).map(|n| format!("shadowcomp{n}")));
+        for name in names {
+            loader.read_formats(&name);
+        }
         return;
     }
     let names =
@@ -1092,7 +1115,7 @@ impl Loader<'_> {
                 return None;
             }
         };
-        self.post.config.read(&vertex);
+        self.post.config.read_vertex(&vertex);
         self.post.config.read(&fragment);
         let mut buffers =
             config::draw_buffers(&fragment).unwrap_or_else(|| default_draw_buffers(group.shadow()));
@@ -1137,6 +1160,28 @@ impl Loader<'_> {
             compute,
             geometry_triangles: 0,
         })
+    }
+
+    /// Reads the colortex formats of program `name` without loading it, when it is there and
+    /// enabled: those of its fragment shader, as [`Self::load`] reads them.
+    fn read_formats(&mut self, name: &str) {
+        let path = |ext: &str| match self.folder {
+            "" => format!("{name}.{ext}"),
+            f => format!("{f}/{name}.{ext}"),
+        };
+        let (vsh, fsh) = (path("vsh"), path("fsh"));
+        let on = enabled(
+            self.properties,
+            self.folder,
+            name,
+            &self.options,
+            &self.switches,
+        );
+        if !on || !self.pack.exists(&fsh) || !self.pack.exists(&vsh) {
+            return;
+        }
+        let fragment = self.preprocess(&fsh);
+        self.post.config.read_formats(&fragment);
     }
 
     /// Stage file `path` through the preprocessor; the pack's images declared without a format
@@ -1218,7 +1263,7 @@ impl Loader<'_> {
                     return None;
                 }
             };
-        self.post.config.read(vertex);
+        self.post.config.read_vertex(vertex);
         self.post.config.read(fragment);
         let mut buffers =
             config::draw_buffers(fragment).unwrap_or_else(|| default_draw_buffers(true));
@@ -1414,12 +1459,15 @@ fn scale(properties: &Properties, program: &str, group: Group) -> [f32; 3] {
     }
 }
 
-/// Whether the pack names the `HIGHER_SHADOWCOLOR` feature, required or optional.
+/// Whether the pack names the `HIGHER_SHADOWCOLOR` feature, required or optional, in any case.
 fn higher_shadowcolor(properties: &Properties) -> bool {
     ["iris.features.required", "iris.features.optional"]
         .iter()
         .filter_map(|k| properties.get(k))
-        .any(|v| v.split_whitespace().any(|w| w == "HIGHER_SHADOWCOLOR"))
+        .any(|v| {
+            v.split_whitespace()
+                .any(|w| w.eq_ignore_ascii_case("HIGHER_SHADOWCOLOR"))
+        })
 }
 
 /// `flip.<program>.<buffer>=<bool>` keys of one program.
@@ -2249,6 +2297,12 @@ blend.composite1.colortex3 = ONE ONE ONE ONE
         let optional = "iris.features.optional = HIGHER_SHADOWCOLOR\n";
         let post = load(optional, Some("0,1,2,3,4"));
         assert_eq!(buffers(&post).1, Some(vec![0, 1, 2, 3, 4]));
+        // Iris 1.11.7 takes the name in any case (#8996, a probe pack of our own).
+        let post = load(
+            "iris.features.optional = higher_shadowcolor\n",
+            Some("0,1,2,3,4"),
+        );
+        assert_eq!(buffers(&post).1, Some(vec![0, 1, 2, 3, 4]));
         // No directive: shadowcolor0 and 1, as without the feature.
         let post = load(required, None);
         assert_eq!(buffers(&post).1, Some(vec![0, 1]));
@@ -2361,6 +2415,53 @@ blend.composite1.colortex3 = ONE ONE ONE ONE
         assert!(off.clouds.is_none() && off.clouds_off);
     }
 
+    /// Without `gbuffers_clouds` the clouds draw with `gbuffers_textured`, else `gbuffers_basic`,
+    /// blended; a pack with none of them leaves the clouds to the game.
+    #[test]
+    fn clouds_fall_back_to_textured_then_basic() {
+        let vsh = "#version 120\nvoid main() { gl_Position = ftransform(); }\n";
+        let fsh = "#version 120\nvoid main() { gl_FragColor = vec4(1.0); }\n";
+        let macros = Macros::standard();
+        let inputs = GameInputs {
+            clouds: Some(crate::GbuffersInputs {
+                declarations: "layout(location = 0) in vec3 hz_v_pos;".into(),
+                body: "    hz_Vertex = vec4(hz_v_pos, 1.0);\n".into(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let clouds = |programs: &[&str]| {
+            let files: Vec<(String, &str)> = programs
+                .iter()
+                .flat_map(|p| {
+                    [
+                        (format!("shaders/{p}.vsh"), vsh),
+                        (format!("shaders/{p}.fsh"), fsh),
+                    ]
+                })
+                .collect();
+            let files: Vec<(&str, &str)> = files.iter().map(|(n, t)| (n.as_str(), *t)).collect();
+            let pack = Pack::from_zip_bytes("clouds.zip", crate::pack::tests::zip(&files)).unwrap();
+            load_post(&pack, "", &Properties::default(), &macros, &inputs)
+                .clouds
+                .map(|p| (p.name, p.blend))
+        };
+        let blended = |name: &str| Some((name.to_owned(), Some(TRANSLUCENT_BLEND)));
+        assert_eq!(
+            clouds(&["gbuffers_textured", "gbuffers_basic"]),
+            blended("gbuffers_textured")
+        );
+        assert_eq!(
+            clouds(&["gbuffers_textured_lit", "gbuffers_basic"]),
+            blended("gbuffers_basic")
+        );
+        assert_eq!(
+            clouds(&["gbuffers_clouds", "gbuffers_textured"]),
+            blended("gbuffers_clouds")
+        );
+        assert_eq!(clouds(&["gbuffers_terrain", "composite"]), None);
+    }
+
     #[test]
     fn water_falls_back_to_terrain_and_blends() {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/packs/terrain-test");
@@ -2429,8 +2530,12 @@ blend.composite1.colortex3 = ONE ONE ONE ONE
         );
         assert_eq!(particles.blend, Some(TRANSLUCENT_BLEND));
         assert!(post.particles_late && !post.translucent_late);
-        // gbuffers_clouds has no fallback (OQ-3): without it the game draws its clouds.
-        assert!(post.clouds.is_none());
+        // Clouds fall back to gbuffers_textured, blended.
+        let clouds = post.clouds.as_ref().unwrap();
+        assert_eq!(
+            (clouds.name.as_str(), clouds.blend),
+            ("gbuffers_textured", Some(TRANSLUCENT_BLEND))
+        );
         // The hand falls back to gbuffers_textured and does not blend.
         let hand = post.hand.as_ref().unwrap();
         assert_eq!(
@@ -2464,6 +2569,67 @@ blend.composite1.colortex3 = ONE ONE ONE ONE
         );
         assert_eq!(blend(&properties, "gbuffers_water"), Some(None));
         assert_eq!(blend(&properties, "gbuffers_basic"), None);
+    }
+
+    #[test]
+    fn formats_come_from_the_fragment_shaders_iris_reads() {
+        // Cut down from probe packs p9063a, p9063b and p9063c (ours). Iris 1.11.7: colortex8,
+        // declared only in `composite.vsh`, kept RGBA8; colortex12 and colortex6, declared only
+        // in `shadow.fsh` and `shadowcomp.fsh` of a pack whose shadow pass Horizon doesn't run,
+        // took RGBA16F; colortex1 with `gdepth` declared and no format kept RGBA8. Other
+        // settings of those shadow files weren't probed, and Horizon leaves them out.
+        let declare = |n: u32| format!("/*\nconst int colortex{n}Format = RGBA16F;\n*/\n");
+        let write = "#version 120\n/* RENDERTARGETS: 1,6,8,12 */\nvoid main() { gl_FragData[0] = \
+                     vec4(2.5); gl_FragData[1] = vec4(2.5); gl_FragData[2] = vec4(2.5); \
+                     gl_FragData[3] = vec4(2.5); }\n";
+        let pack = Pack::from_zip_bytes(
+            "original-format-files",
+            zip(&[
+                (
+                    "shaders/composite.vsh",
+                    format!("{}{VSH}", declare(8)).as_str(),
+                ),
+                ("shaders/composite.fsh", write),
+                ("shaders/shadow.vsh", VSH),
+                (
+                    "shaders/shadow.fsh",
+                    format!(
+                        "{}const bool colortex12Clear = false;\n{write}",
+                        declare(12)
+                    )
+                    .as_str(),
+                ),
+                ("shaders/shadowcomp.vsh", VSH),
+                (
+                    "shaders/shadowcomp.fsh",
+                    format!("{}{write}", declare(6)).as_str(),
+                ),
+                ("shaders/final.vsh", VSH),
+                (
+                    "shaders/final.fsh",
+                    "#version 120\nuniform sampler2D gdepth;\nvarying vec2 uv;\n\
+                     void main() { gl_FragColor = texture2D(gdepth, uv); }\n",
+                ),
+            ]),
+        )
+        .unwrap();
+        let macros = Macros::standard();
+        let post = load_post(
+            &pack,
+            "",
+            &Properties::default(),
+            &macros,
+            &GameInputs::default(),
+        );
+        assert!(!post.shadow_pass);
+        let half = crate::Format::parse("RGBA16F").unwrap();
+        let formats: Vec<bool> = [1, 6, 8, 12]
+            .iter()
+            .map(|&n| post.config.buffers[n].format == half)
+            .collect();
+        assert_eq!(formats, [false, true, false, true]);
+        assert_eq!(post.config.buffers[1].format, crate::Format::RGBA8);
+        assert!(post.config.buffers[12].clear);
     }
 
     #[test]

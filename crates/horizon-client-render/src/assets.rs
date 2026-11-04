@@ -84,7 +84,9 @@ pub struct Assets {
 pub struct RenderAssets {
     pub sprite_size: u32,
     pub sprite_minimum_size: u32,
-    pub pixels: Vec<u8>,
+    /// The block sprites' RGBA, layer by layer: as built until a renderer has
+    /// them, then kept compressed ([`SpritePixels`]).
+    pub pixels: SpritePixels,
     pub texture_layers: u32,
     pub model_catalog: crate::models::StateModels,
     /// Shared parsed resources; item-only validation errors surface at item preparation.
@@ -110,6 +112,76 @@ pub struct RenderAssets {
     /// Counts up each time resources load, from 1: a native mod asks again where blocks'
     /// sprites are when it changes (`native_block_sprites_version`).
     pub generation: u64,
+}
+/// The block sprites' pixels for a renderer to upload. Once a renderer has
+/// them ([`Self::pack`]) they are kept lz4-compressed: the GPU holds the
+/// texture array, and the copy only serves a renderer made again (another
+/// window, a lost device, another graphics API), which waits for
+/// [`Self::get`] to uncompress them. Shared by the window and the workers'
+/// `RenderAssets`, so the compressed form replaces the raw one in place.
+pub struct SpritePixels(Arc<PixelStore>);
+struct PixelStore {
+    len: usize,
+    /// Set by the first `pack`: later calls cost one atomic read.
+    packing: std::sync::atomic::AtomicBool,
+    /// As built; dropped once `packed` holds them.
+    raw: std::sync::Mutex<Option<Arc<Vec<u8>>>>,
+    packed: std::sync::OnceLock<Vec<u8>>,
+}
+impl SpritePixels {
+    pub fn new(pixels: Vec<u8>) -> Self {
+        Self(Arc::new(PixelStore {
+            len: pixels.len(),
+            packing: std::sync::atomic::AtomicBool::new(false),
+            raw: std::sync::Mutex::new(Some(Arc::new(pixels))),
+            packed: std::sync::OnceLock::new(),
+        }))
+    }
+    /// Their size in bytes, uncompressed.
+    pub fn len(&self) -> usize {
+        self.0.len
+    }
+    pub fn is_empty(&self) -> bool {
+        self.0.len == 0
+    }
+    /// The pixels as built, uncompressed again once packed.
+    pub fn get(&self) -> Arc<Vec<u8>> {
+        let raw = self.0.raw.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        raw.unwrap_or_else(|| {
+            let packed = self.0.packed.get().map(Vec::as_slice).unwrap_or_default();
+            Arc::new(
+                lz4_flex::decompress_size_prepended(packed)
+                    .ok()
+                    .filter(|p| p.len() == self.0.len)
+                    .unwrap_or_else(|| vec![0; self.0.len]),
+            )
+        })
+    }
+    /// Keep them compressed from now on, once a renderer has uploaded them:
+    /// compressed on a thread of their own, the raw copy dropped after.
+    pub fn pack(&self) {
+        use std::sync::atomic::Ordering;
+        if self.0.len == 0 || self.0.packing.swap(true, Ordering::Relaxed) {
+            return;
+        }
+        let store = self.0.clone();
+        let job = move || {
+            let raw = store.raw.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            if let Some(raw) = raw {
+                let _ = store.packed.set(lz4_flex::compress_prepend_size(&raw));
+                // `get` reads the compressed copy from here on.
+                *store.raw.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            }
+        };
+        let fallback = job.clone();
+        if std::thread::Builder::new()
+            .name("Sprite packing".into())
+            .spawn(job)
+            .is_err()
+        {
+            fallback();
+        }
+    }
 }
 /// The last `RenderAssets::generation` handed out.
 static GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -207,6 +279,20 @@ impl Assets {
     pub fn reload(&self, root: &Path) -> Result<RenderAssets> {
         RenderAssets::load(root, self)
     }
+    /// [`Assets::reload`] with the model library already parsed.
+    ///
+    /// Parsing it reads every model file under `assets/`, which needs no
+    /// block registry, so a caller that has the files to spare can start
+    /// it before `Assets::load` finishes and hand the result in here. On
+    /// a cold cache that is most of a second of reading moved off the
+    /// critical path.
+    pub fn reload_with_models(
+        &self,
+        root: &Path,
+        parsed: crate::model_library::ParsedModels,
+    ) -> Result<RenderAssets> {
+        RenderAssets::load_with_parsed(root, self, true, Some(parsed))
+    }
     /// [`Assets::reload`] for a server, which draws nothing: the sprites'
     /// layers, without the block or item models or the textures' pixels.
     pub fn reload_for_server(&self, root: &Path) -> Result<RenderAssets> {
@@ -218,6 +304,16 @@ impl RenderAssets {
         Self::load_with(root, assets, true)
     }
     fn load_with(root: &Path, assets: &Assets, draws: bool) -> Result<Self> {
+        Self::load_with_parsed(root, assets, draws, None)
+    }
+    /// `parsed`: the model library when a caller parsed it ahead of this
+    /// (see [`Assets::reload_with_models`]); otherwise it is parsed here.
+    fn load_with_parsed(
+        root: &Path,
+        assets: &Assets,
+        draws: bool,
+        parsed: Option<crate::model_library::ParsedModels>,
+    ) -> Result<Self> {
         let registry = assets.registry;
         let mut sprites = crate::sprites::Sprites::with_disk_cache(root);
         for name in MATERIALS {
@@ -225,17 +321,24 @@ impl RenderAssets {
         }
         // A server draws no block and no item: its block models (about 24 MB
         // baked) and item model library (7 MB) stay empty.
-        let parsed = if draws {
-            crate::model_library::ParsedModels::load(root)
-        } else {
-            crate::model_library::ParsedModels::default()
+        let parsed = match parsed {
+            Some(parsed) => parsed,
+            None if draws => {
+                let _step = crate::spans::startup::step("core.models_parse");
+                crate::model_library::ParsedModels::load(root)
+            }
+            None => crate::model_library::ParsedModels::default(),
         };
         let mut models = if draws {
+            let _step = crate::spans::startup::step("core.models_bake");
             crate::models::prepare_with_models(root, registry, &mut sprites, &parsed)?
         } else {
             crate::models::PreparedModels::default()
         };
-        let model_library = parsed.into_item_library();
+        let model_library = {
+            let _step = crate::spans::startup::step("core.item_library");
+            parsed.into_item_library()
+        };
         // Fluids are drawn by the fluid renderer, not block models; breaking
         // progress uses the destroy-stage overlays.
         for name in [
@@ -251,6 +354,7 @@ impl RenderAssets {
             sprites.insert(root, &format!("minecraft:block/destroy_stage_{stage}"))?;
         }
         let fusion = if draws {
+            let _step = crate::spans::startup::step("core.fusion");
             crate::fusion::FusionTextures::load(root, registry, &mut sprites, &mut models.catalog)
         } else {
             Default::default()
@@ -301,7 +405,7 @@ impl RenderAssets {
             sprite_size: sprites.size,
             sprite_minimum_size: sprites.minimum_size,
             texture_layers: u32::try_from(sprites.count())?,
-            pixels: sprites.pixels,
+            pixels: SpritePixels::new(sprites.pixels),
             model_catalog: models.catalog,
             model_library,
             model_placements: models.placements,
@@ -398,5 +502,30 @@ mod tests {
             chicken.consumable.as_ref().unwrap().effects[..],
             [ConsumeEffect::ApplyEffects { probability, .. }] if probability == 0.3
         ));
+    }
+
+    #[test]
+    fn sprite_pixels_come_back_the_same_once_packed() {
+        // Two layers of 16x16 RGBA with some structure, as sprites have.
+        let pixels: Vec<u8> = (0..2 * 16 * 16 * 4).map(|i| (i * 7 % 251) as u8).collect();
+        let stored = super::SpritePixels::new(pixels.clone());
+        assert_eq!(*stored.get(), pixels);
+        stored.pack();
+        stored.pack();
+        // The packing thread drops the raw copy once the compressed one is set.
+        let started = std::time::Instant::now();
+        while stored.0.raw.lock().unwrap().is_some() {
+            assert!(started.elapsed().as_secs() < 10, "packing never finished");
+            std::thread::yield_now();
+        }
+        assert!(
+            stored
+                .0
+                .packed
+                .get()
+                .is_some_and(|p| p.len() < pixels.len())
+        );
+        assert_eq!(*stored.get(), pixels);
+        assert_eq!(stored.len(), pixels.len());
     }
 }

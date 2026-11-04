@@ -3657,3 +3657,123 @@ fn a_level_can_answer_what_makes_a_campfire_signal() {
     w.set(ground, hay);
     assert_eq!(w.prop(campfire, "signal_fire"), "false");
 }
+
+/// #8490 carpet duplication machine: four slime blocks, a sticky piston, a dead
+/// wall coral fan and three carpets on the slime column's far side.
+#[test]
+fn carpet_duplication_machine_8490() {
+    let mut w = world!();
+    w.floor(0, 10, "stone");
+    let slime = w.id("slime_block", &[]);
+    let air = w.b().air();
+    let piston = w.id("sticky_piston", &[("facing", "west")]);
+    let power = w.id("redstone_block", &[]);
+    let fan = w.id(
+        "dead_tube_coral_wall_fan",
+        &[("facing", "west"), ("waterlogged", "false")],
+    );
+    let carpet = w.id("white_carpet", &[]);
+    w.set(
+        BlockPos::new(4, 1, 0),
+        w.id("grass_block", &[("snowy", "false")]),
+    );
+    for y in 2..6 {
+        w.set(BlockPos::new(3, y, 0), slime);
+    }
+    w.set(BlockPos::new(4, 2, 0), piston);
+    w.set(BlockPos::new(2, 2, 0), fan);
+    for y in 3..6 {
+        w.set(BlockPos::new(2, y, 0), carpet);
+    }
+    w.set(BlockPos::new(5, 2, 0), power);
+    let fan_name = |w: &mut World, x: i32, y: i32| w.name(BlockPos::new(x, y, 0));
+    for _ in 0..6 {
+        w.full_tick();
+    }
+    // Pushed one block west: the column lands with its fan and carpets (the
+    // fan reads the slime block still shown as a finished moving piston).
+    for y in 2..6 {
+        assert_eq!(w.get(BlockPos::new(2, y, 0)), slime, "slime y={y}");
+    }
+    assert!(fan_name(&mut w, 1, 2).starts_with("dead_tube_coral_wall_fan"));
+    for y in 3..6 {
+        assert_eq!(w.get(BlockPos::new(1, y, 0)), carpet, "carpet y={y}");
+    }
+    w.set(BlockPos::new(5, 2, 0), air);
+    for _ in 0..6 {
+        w.full_tick();
+    }
+    // Pulled back: the machine is whole again at its start.
+    for y in 2..6 {
+        assert_eq!(w.get(BlockPos::new(3, y, 0)), slime, "pulled slime y={y}");
+    }
+    assert!(fan_name(&mut w, 2, 2).starts_with("dead_tube_coral_wall_fan"));
+    for y in 3..6 {
+        assert_eq!(w.get(BlockPos::new(2, y, 0)), carpet, "pulled carpet y={y}");
+    }
+}
+
+#[test]
+fn a_rail_on_a_block_a_piston_pushes_pops_off() {
+    // PistonBaseBlock.moveBlocks writes the arriving blocks as `moving_piston`
+    // and then updates the neighbours of every source cell. The rail on the
+    // second stone asks whether that cell supports it: vanilla reads the moving
+    // block's shape offset by `progress - 1`, a whole block back at progress 0,
+    // so nothing holds the rail and it pops, though another stone arrives under
+    // it (dynamic_support pins the moving shape's support against vanilla).
+    let mut w = world!();
+    w.floor(0, 10, "stone");
+    let piston = w.id("piston", &[("facing", "east")]);
+    let stone = w.id("stone", &[]);
+    let rail = w.id("rail", &[]);
+    let power = w.id("redstone_block", &[]);
+    let piston_pos = BlockPos::new(0, 1, 0);
+    let rail_pos = BlockPos::new(2, 2, 0);
+    w.set(piston_pos, piston);
+    w.set(BlockPos::new(1, 1, 0), stone);
+    w.set(BlockPos::new(2, 1, 0), stone);
+    w.set(rail_pos, rail);
+    w.set(BlockPos::new(-1, 1, 0), power);
+    for _ in 0..4 {
+        w.full_tick();
+    }
+    assert_eq!(w.prop(piston_pos, "extended"), "true");
+    assert_eq!(w.name(BlockPos::new(2, 1, 0)), "stone[]");
+    assert_eq!(w.name(BlockPos::new(3, 1, 0)), "stone[]");
+    assert_eq!(w.name(rail_pos), "air[]");
+}
+
+#[test]
+fn a_rail_riding_on_slime_stays_on_it() {
+    // #8111: the slime block carries the rail on top of it. The rail's block
+    // entity can finish while the slime's still holds `moving_piston` at
+    // progress 1, whose shape is the slime block in its cell, so the rail is
+    // supported both ways.
+    let mut w = world!();
+    w.floor(0, 10, "stone");
+    let piston = w.id("sticky_piston", &[("facing", "east")]);
+    let slime = w.id("slime_block", &[]);
+    let rail = w.id("rail", &[]);
+    let power = w.id("redstone_block", &[]);
+    let air = w.b().air();
+    let piston_pos = BlockPos::new(0, 1, 0);
+    let power_pos = BlockPos::new(-1, 1, 0);
+    w.set(piston_pos, piston);
+    w.set(BlockPos::new(1, 1, 0), slime);
+    w.set(BlockPos::new(1, 2, 0), rail);
+    w.set(power_pos, power);
+    for _ in 0..4 {
+        w.full_tick();
+    }
+    assert_eq!(w.prop(piston_pos, "extended"), "true");
+    assert_eq!(w.name(BlockPos::new(2, 1, 0)), "slime_block[]");
+    let pushed = w.name(BlockPos::new(2, 2, 0));
+    assert!(pushed.starts_with("rail"), "pushed: got {pushed}");
+    w.set(power_pos, air);
+    for _ in 0..4 {
+        w.full_tick();
+    }
+    assert_eq!(w.prop(piston_pos, "extended"), "false");
+    let pulled = w.name(BlockPos::new(1, 2, 0));
+    assert!(pulled.starts_with("rail"), "pulled back: got {pulled}");
+}

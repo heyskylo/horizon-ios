@@ -101,6 +101,9 @@ pub struct World {
     /// Every block position written since the log was last drained, kept
     /// only while the world is open to the network (see `lan`).
     pub block_log: Option<Vec<(i32, i32, i32)>>,
+    /// Writes of this tick's block events and block entities, held out of
+    /// the log while it is sent: they go out with the next tick's.
+    pub block_log_held: Vec<(i32, i32, i32)>,
     /// Every write since the mobs last ticked (position, old and new state),
     /// for `ServerLevel.sendBlockUpdated`'s path recomputing; kept only while
     /// the mobs of this world tick (`game/creatures.rs`).
@@ -217,6 +220,7 @@ impl World {
             day_time: 1000,
             weather: Weather::default(),
             block_log: None,
+            block_log_held: Vec::new(),
             path_writes: None,
             bulk_log: Default::default(),
             light_log: None,
@@ -386,6 +390,7 @@ impl World {
             chunk.motion_blocking(x & 15, z & 15, |v| blocks(BlockStateId(v)))
         })
     }
+    #[inline]
     pub fn block(&self, x: i32, y: i32, z: i32) -> BlockStateId {
         self.chunks
             .get(&(x >> 4, z >> 4))

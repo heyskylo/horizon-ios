@@ -357,6 +357,10 @@ enum InstanceCmd {
         /// The instance a pack goes into
         #[arg(long)]
         instance: Option<String>,
+        /// A .mrpack becomes a Minecraft: Java Edition instance with its Minecraft version, mod
+        /// loader, mods and overrides, instead of a Horizon instance or a Modpacks import
+        #[arg(long)]
+        java: bool,
     },
     /// List the instances other launchers keep (Prism Launcher, MultiMC, the official
     /// launcher, the CurseForge app, the Modrinth App), read without changing anything there
@@ -813,6 +817,10 @@ enum Cmd {
         /// Build mods made for different Horizon versions together anyway, on the newest of them
         #[arg(long)]
         allow_version_mismatch: bool,
+        /// Build every mod on the commit of the version the build starts from, even the mods that
+        /// pin another Horizon commit (they may not apply or compile there)
+        #[arg(long)]
+        ignore_pins: bool,
         /// The build profile: performance (the default: incremental, quick to rebuild), dev (quickest
         /// to rebuild a mod, slow game) or release (thin LTO: slowest to build, slightly faster
         /// game). Default: the native-profile setting
@@ -1126,7 +1134,13 @@ pub fn run() -> Option<i32> {
     let result = match command {
         Cmd::Mcp | Cmd::AgentConfig { .. } if no_ai => Err(horizon_core::no_ai::REFUSAL.into()),
         Cmd::Mcp => crate::mcp::serve(),
-        command => execute(command, cli.json),
+        command => {
+            let result = execute(command, cli.json);
+            // A game it started has ended (attached) or none did (an error): a session file it
+            // didn't read goes now.
+            account::discard_unread_sessions();
+            result
+        }
     };
     Some(match result {
         Ok(()) => 0,
@@ -1259,6 +1273,7 @@ fn execute(command: Cmd, as_json: bool) -> Result<(), String> {
             update,
             trust_native_code,
             allow_version_mismatch,
+            ignore_pins,
             profile,
         } => {
             if !trust_native_code {
@@ -1289,6 +1304,7 @@ fn execute(command: Cmd, as_json: bool) -> Result<(), String> {
                     &folder,
                     &output,
                     allow_version_mismatch,
+                    ignore_pins,
                     profile,
                     steps,
                 )
@@ -1335,6 +1351,7 @@ fn execute(command: Cmd, as_json: bool) -> Result<(), String> {
                 &folder,
                 &target,
                 allow_version_mismatch,
+                ignore_pins,
                 profile,
                 steps,
             )
@@ -3155,7 +3172,23 @@ fn instance(action: InstanceCmd, as_json: bool) -> Result<(), String> {
             }
             changed(made);
         }
-        InstanceCmd::Import { file, instance } => {
+        InstanceCmd::Import {
+            file, java: true, ..
+        } => {
+            let i =
+                horizon_launcher::instances_mrpack::import(&file, &|line, _| eprintln!("{line}"))?;
+            if as_json {
+                json(value(&i, false));
+            } else {
+                println!(
+                    "Made the Java instance {} in {}: horizon-launcher play --instance \"{}\"",
+                    i.name,
+                    i.home.display(),
+                    i.name
+                );
+            }
+        }
+        InstanceCmd::Import { file, instance, .. } => {
             use horizon_launcher::import::{self, Dropped};
             use horizon_launcher::modpacks;
             match import::what(&file)? {
@@ -3179,6 +3212,17 @@ fn instance(action: InstanceCmd, as_json: bool) -> Result<(), String> {
                         "Port and play it: horizon-launcher modpack port {}",
                         pack.slug
                     );
+                }
+                // A game build is its own command: it installs a version
+                // rather than touching an instance, and takes a `--version` to
+                // say which release's game files it plays with.
+                Dropped::Build => {
+                    let tag = horizon_launcher::build_import::import(&file, None)?;
+                    if as_json {
+                        json(serde_json::json!({ "version": tag }));
+                    } else {
+                        println!("Imported the build as {tag}, and selected it.");
+                    }
                 }
                 Dropped::Pack(_) => {
                     let i = match instance {

@@ -18,13 +18,18 @@ sent the same things over TLS, and every answer is compared exactly:
   `clear`; with no profile service, players named resolve to offline players on both), the live server
   message, difficulty, default and forced game mode read and changed (including saved properties), operator
   permission level read and changed (including saved properties and restart), autosave read and changed
-  (including its reset after restart), allow-flight read and changed (including invalid input, saved properties
-  and restart), hidden online players read and changed (including invalid input, saved properties
-  and restart), allowlist use and enforcement read and changed
+  (including its reset after restart), spawn-protection radius read and changed (including invalid input,
+  saved properties and restart), accepts-transfers and allow-flight read and changed (including invalid input,
+  saved properties and restart), hidden online players read and changed (including invalid input, saved properties and restart),
+  status replies read and changed (including invalid input, saved properties and restart), allowlist use and
+  enforcement read and changed
   (including saved properties and restart), max players read and changed (including saved
   properties and restart), player idle timeout read and changed (including disabling it, invalid input,
   saved properties and restart), the live pause-when-empty timer read and changed (including its saved
-  property and restart), and `server/stop`;
+  property and restart), the live view distance read and changed (including invalid input, saved
+  properties and restart), the live simulation distance read and changed (including invalid input, saved
+  properties and restart), the live entity broadcast range read and changed (including invalid input,
+  saved properties and restart), and `server/stop`;
 - the TLS version each server agrees on.
 
 A parse error's `data` is Gson's message in vanilla and serde's in Horizon: left out. The notifications the
@@ -146,6 +151,33 @@ MESSAGES = [
     '{"jsonrpc":"2.0","id":52,"method":"minecraft:serversettings/game_mode"}',
     '{"jsonrpc":"2.0","id":53,"method":"minecraft:serversettings/game_mode/set","params":["spectator"]}',
     '{"jsonrpc":"2.0","id":54,"method":"minecraft:serversettings/game_mode"}',
+    '{"jsonrpc":"2.0","id":180,"method":"minecraft:serversettings/entity_broadcast_range"}',
+    '{"jsonrpc":"2.0","id":181,"method":"minecraft:serversettings/entity_broadcast_range/set","params":[60]}',
+    '{"jsonrpc":"2.0","id":182,"method":"minecraft:serversettings/entity_broadcast_range"}',
+    '{"jsonrpc":"2.0","id":183,"method":"minecraft:serversettings/entity_broadcast_range/set","params":[1]}',
+    '{"jsonrpc":"2.0","id":184,"method":"minecraft:serversettings/entity_broadcast_range"}',
+    '{"jsonrpc":"2.0","id":185,"method":"minecraft:serversettings/entity_broadcast_range/set","params":["yes"]}',
+    '{"jsonrpc":"2.0","id":186,"method":"minecraft:serversettings/entity_broadcast_range"}',
+    '{"jsonrpc":"2.0","id":187,"method":"minecraft:serversettings/entity_broadcast_range/set","params":[80]}',
+    '{"jsonrpc":"2.0","id":188,"method":"minecraft:serversettings/entity_broadcast_range"}',
+    '{"jsonrpc":"2.0","id":170,"method":"minecraft:serversettings/simulation_distance"}',
+    '{"jsonrpc":"2.0","id":171,"method":"minecraft:serversettings/simulation_distance/set","params":[6]}',
+    '{"jsonrpc":"2.0","id":172,"method":"minecraft:serversettings/simulation_distance"}',
+    '{"jsonrpc":"2.0","id":173,"method":"minecraft:serversettings/simulation_distance/set","params":[1]}',
+    '{"jsonrpc":"2.0","id":174,"method":"minecraft:serversettings/simulation_distance"}',
+    '{"jsonrpc":"2.0","id":175,"method":"minecraft:serversettings/simulation_distance/set","params":["yes"]}',
+    '{"jsonrpc":"2.0","id":176,"method":"minecraft:serversettings/simulation_distance"}',
+    '{"jsonrpc":"2.0","id":177,"method":"minecraft:serversettings/simulation_distance/set","params":[8]}',
+    '{"jsonrpc":"2.0","id":178,"method":"minecraft:serversettings/simulation_distance"}',
+    '{"jsonrpc":"2.0","id":160,"method":"minecraft:serversettings/view_distance"}',
+    '{"jsonrpc":"2.0","id":161,"method":"minecraft:serversettings/view_distance/set","params":[6]}',
+    '{"jsonrpc":"2.0","id":162,"method":"minecraft:serversettings/view_distance"}',
+    '{"jsonrpc":"2.0","id":163,"method":"minecraft:serversettings/view_distance/set","params":[1]}',
+    '{"jsonrpc":"2.0","id":164,"method":"minecraft:serversettings/view_distance"}',
+    '{"jsonrpc":"2.0","id":165,"method":"minecraft:serversettings/view_distance/set","params":["yes"]}',
+    '{"jsonrpc":"2.0","id":166,"method":"minecraft:serversettings/view_distance"}',
+    '{"jsonrpc":"2.0","id":167,"method":"minecraft:serversettings/view_distance/set","params":[8]}',
+    '{"jsonrpc":"2.0","id":168,"method":"minecraft:serversettings/view_distance"}',
     '{"jsonrpc":"2.0","id":220,"method":"minecraft:serversettings/operator_user_permission_level"}',
     '{"jsonrpc":"2.0","id":221,"method":"minecraft:serversettings/operator_user_permission_level/set","params":[2]}',
     '{"jsonrpc":"2.0","id":222,"method":"minecraft:serversettings/operator_user_permission_level"}',
@@ -164,6 +196,15 @@ MESSAGES = [
     '{"jsonrpc":"2.0","id":61,"method":"minecraft:serversettings/force_game_mode"}',
     '{"jsonrpc":"2.0","id":62,"method":"minecraft:serversettings/force_game_mode/set","params":["yes"]}',
     '{"jsonrpc":"2.0","id":63,"method":"minecraft:serversettings/force_game_mode"}',
+    '{"jsonrpc":"2.0","id":150,"method":"minecraft:serversettings/spawn_protection_radius"}',
+    '{"jsonrpc":"2.0","id":151,"method":"minecraft:serversettings/spawn_protection_radius/set","params":[4]}',
+    '{"jsonrpc":"2.0","id":152,"method":"minecraft:serversettings/spawn_protection_radius"}',
+    '{"jsonrpc":"2.0","id":153,"method":"minecraft:serversettings/spawn_protection_radius/set","params":[-1]}',
+    '{"jsonrpc":"2.0","id":154,"method":"minecraft:serversettings/spawn_protection_radius"}',
+    '{"jsonrpc":"2.0","id":155,"method":"minecraft:serversettings/spawn_protection_radius/set","params":["yes"]}',
+    '{"jsonrpc":"2.0","id":156,"method":"minecraft:serversettings/spawn_protection_radius"}',
+    '{"jsonrpc":"2.0","id":157,"method":"minecraft:serversettings/spawn_protection_radius/set","params":[8]}',
+    '{"jsonrpc":"2.0","id":158,"method":"minecraft:serversettings/spawn_protection_radius"}',
     '{"jsonrpc":"2.0","id":140,"method":"minecraft:serversettings/allow_flight"}',
     '{"jsonrpc":"2.0","id":141,"method":"minecraft:serversettings/allow_flight/set","params":[true]}',
     '{"jsonrpc":"2.0","id":142,"method":"minecraft:serversettings/allow_flight"}',
@@ -173,6 +214,14 @@ MESSAGES = [
     '{"jsonrpc":"2.0","id":146,"method":"minecraft:serversettings/allow_flight"}',
     '{"jsonrpc":"2.0","id":147,"method":"minecraft:serversettings/allow_flight/set","params":[true]}',
     '{"jsonrpc":"2.0","id":148,"method":"minecraft:serversettings/allow_flight"}',
+    '{"jsonrpc":"2.0","id":300,"method":"minecraft:serversettings/accept_transfers"}',
+    '{"jsonrpc":"2.0","id":301,"method":"minecraft:serversettings/accept_transfers/set","params":[true]}',
+    '{"jsonrpc":"2.0","id":302,"method":"minecraft:serversettings/accept_transfers"}',
+    '{"jsonrpc":"2.0","id":303,"method":"minecraft:serversettings/accept_transfers/set","params":["yes"]}',
+    '{"jsonrpc":"2.0","id":304,"method":"minecraft:serversettings/accept_transfers"}',
+    '{"jsonrpc":"2.0","id":305,"method":"minecraft:serversettings/accept_transfers/set","params":[false]}',
+    '{"jsonrpc":"2.0","id":306,"method":"minecraft:serversettings/accept_transfers"}',
+    '{"jsonrpc":"2.0","id":307,"method":"minecraft:serversettings/accept_transfers/set","params":[true]}',
     '{"jsonrpc":"2.0","id":190,"method":"minecraft:serversettings/hide_online_players"}',
     '{"jsonrpc":"2.0","id":191,"method":"minecraft:serversettings/hide_online_players/set","params":[true]}',
     '{"jsonrpc":"2.0","id":192,"method":"minecraft:serversettings/hide_online_players"}',
@@ -182,6 +231,15 @@ MESSAGES = [
     '{"jsonrpc":"2.0","id":196,"method":"minecraft:serversettings/hide_online_players"}',
     '{"jsonrpc":"2.0","id":197,"method":"minecraft:serversettings/hide_online_players/set","params":[true]}',
     '{"jsonrpc":"2.0","id":198,"method":"minecraft:serversettings/hide_online_players"}',
+    '{"jsonrpc":"2.0","id":210,"method":"minecraft:serversettings/status_replies"}',
+    '{"jsonrpc":"2.0","id":211,"method":"minecraft:serversettings/status_replies/set","params":[false]}',
+    '{"jsonrpc":"2.0","id":212,"method":"minecraft:serversettings/status_replies"}',
+    '{"jsonrpc":"2.0","id":213,"method":"minecraft:serversettings/status_replies/set","params":["yes"]}',
+    '{"jsonrpc":"2.0","id":214,"method":"minecraft:serversettings/status_replies"}',
+    '{"jsonrpc":"2.0","id":215,"method":"minecraft:serversettings/status_replies/set","params":[true]}',
+    '{"jsonrpc":"2.0","id":216,"method":"minecraft:serversettings/status_replies"}',
+    '{"jsonrpc":"2.0","id":217,"method":"minecraft:serversettings/status_replies/set","params":[false]}',
+    '{"jsonrpc":"2.0","id":218,"method":"minecraft:serversettings/status_replies"}',
     '{"jsonrpc":"2.0","id":65,"method":"minecraft:serversettings/autosave"}',
     '{"jsonrpc":"2.0","id":66,"method":"minecraft:serversettings/autosave/set","params":[false]}',
     '{"jsonrpc":"2.0","id":67,"method":"minecraft:serversettings/autosave"}',
@@ -230,6 +288,16 @@ MESSAGES = [
     '{"jsonrpc":"2.0","id":206,"method":"minecraft:gamerules/update","params":[{"key":"minecraft:nope","value":true}]}',
     '{"jsonrpc":"2.0","id":207,"method":"minecraft:gamerules/update","params":[{"value":true}]}',
     '{"jsonrpc":"2.0","id":208,"method":"minecraft:gamerules"}',
+    '{"jsonrpc":"2.0","id":400,"method":"minecraft:serversettings/status_heartbeat_interval"}',
+    '{"jsonrpc":"2.0","id":401,"method":"minecraft:serversettings/status_heartbeat_interval/set","params":[30]}',
+    '{"jsonrpc":"2.0","id":402,"method":"minecraft:serversettings/status_heartbeat_interval"}',
+    '{"jsonrpc":"2.0","id":403,"method":"minecraft:serversettings/status_heartbeat_interval/set","params":["yes"]}',
+    '{"jsonrpc":"2.0","id":404,"method":"minecraft:serversettings/status_heartbeat_interval"}',
+    # -5 cancels the running 30 s heartbeat and schedules none; ManagementServer keeps the cancelled future,
+    # so the set to 30 that follows is refused (cancel(true) returns false) and -5 is what is saved.
+    '{"jsonrpc":"2.0","id":405,"method":"minecraft:serversettings/status_heartbeat_interval/set","params":[-5]}',
+    '{"jsonrpc":"2.0","id":406,"method":"minecraft:serversettings/status_heartbeat_interval"}',
+    '{"jsonrpc":"2.0","id":407,"method":"minecraft:serversettings/status_heartbeat_interval/set","params":[30]}',
     '{"jsonrpc":"2.0","id":120,"method":"minecraft:serversettings/player_idle_timeout"}',
     '{"jsonrpc":"2.0","id":121,"method":"minecraft:serversettings/player_idle_timeout/set","params":[10]}',
     '{"jsonrpc":"2.0","id":122,"method":"minecraft:serversettings/player_idle_timeout"}',
@@ -505,18 +573,39 @@ def main():
                 sides[side]['saved_max_players'] = next(
                     (line.partition('=')[2] for line in properties.splitlines()
                      if line.startswith('max-players=')), None)
+                sides[side]['saved_status_heartbeat_interval'] = next(
+                    (line.partition('=')[2] for line in properties.splitlines()
+                     if line.startswith('status-heartbeat-interval=')), None)
                 sides[side]['saved_player_idle_timeout'] = next(
                     (line.partition('=')[2] for line in properties.splitlines()
                      if line.startswith('player-idle-timeout=')), None)
+                sides[side]['saved_entity_broadcast_range'] = next(
+                    (line.partition('=')[2] for line in properties.splitlines()
+                     if line.startswith('entity-broadcast-range-percentage=')), None)
+                sides[side]['saved_simulation_distance'] = next(
+                    (line.partition('=')[2] for line in properties.splitlines()
+                     if line.startswith('simulation-distance=')), None)
+                sides[side]['saved_view_distance'] = next(
+                    (line.partition('=')[2] for line in properties.splitlines()
+                     if line.startswith('view-distance=')), None)
+                sides[side]['saved_spawn_protection'] = next(
+                    (line.partition('=')[2] for line in properties.splitlines()
+                     if line.startswith('spawn-protection=')), None)
                 sides[side]['saved_operator_user_permission_level'] = next(
                     (line.partition('=')[2] for line in properties.splitlines()
                      if line.startswith('op-permission-level=')), None)
                 sides[side]['saved_allow_flight'] = next(
                     (line.partition('=')[2] for line in properties.splitlines()
                      if line.startswith('allow-flight=')), None)
+                sides[side]['saved_accepts_transfers'] = next(
+                    (line.partition('=')[2] for line in properties.splitlines()
+                     if line.startswith('accepts-transfers=')), None)
                 sides[side]['saved_hide_online_players'] = next(
                     (line.partition('=')[2] for line in properties.splitlines()
                      if line.startswith('hide-online-players=')), None)
+                sides[side]['saved_status_replies'] = next(
+                    (line.partition('=')[2] for line in properties.splitlines()
+                     if line.startswith('enable-status=')), None)
                 if side == 'horizon':
                     world = (folder / 'server.toml').read_text().partition('[world]')[2].split('\n[', 1)[0]
                     sides[side]['saved_config_difficulty'] = 'difficulty = "peaceful"' in world
@@ -533,11 +622,23 @@ def main():
                         folder / 'server.toml').read_text()
                     sides[side]['saved_config_player_idle_timeout'] = 'player-idle-timeout = 30' in (
                         folder / 'server.toml').read_text()
+                    sides[side]['saved_config_entity_broadcast_range'] = 'entity-broadcast-range-percentage = 80' in (
+                        folder / 'server.toml').read_text()
+                    sides[side]['saved_config_simulation_distance'] = 'simulation_distance = 8' in (
+                        folder / 'server.toml').read_text()
+                    sides[side]['saved_config_view_distance'] = 'view_distance = 8' in (
+                        folder / 'server.toml').read_text()
+                    sides[side]['saved_config_spawn_protection'] = 'spawn-protection = 8' in (
+                        folder / 'server.toml').read_text()
                     sides[side]['saved_config_operator_user_permission_level'] = 'op-permission-level = 2' in (
                         folder / 'server.toml').read_text()
                     sides[side]['saved_config_allow_flight'] = 'allow-flight = true' in (
                         folder / 'server.toml').read_text()
+                    sides[side]['saved_config_accepts_transfers'] = 'accepts-transfers = true' in (
+                        folder / 'server.toml').read_text()
                     sides[side]['saved_config_hide_online_players'] = 'hide-online-players = true' in (
+                        folder / 'server.toml').read_text()
+                    sides[side]['saved_config_status_replies'] = 'enable-status = false' in (
                         folder / 'server.toml').read_text()
             finally:
                 server.stop()
@@ -582,6 +683,12 @@ def main():
                         if not isinstance(reply, dict) or 'method' not in reply or 'id' in reply:
                             break
                     sides[side]['restarted_max_players'] = reply
+                    ws.send('{"jsonrpc":"2.0","id":408,"method":"minecraft:serversettings/status_heartbeat_interval"}')
+                    while True:
+                        reply = normal(ws.receive(timeout=60))
+                        if not isinstance(reply, dict) or 'method' not in reply or 'id' in reply:
+                            break
+                    sides[side]['restarted_status_heartbeat_interval'] = reply
                     ws.send('{"jsonrpc":"2.0","id":133,"method":"minecraft:serversettings/player_idle_timeout"}')
                     while True:
                         reply = normal(ws.receive(timeout=60))
@@ -594,6 +701,36 @@ def main():
                         if not isinstance(reply, dict) or 'method' not in reply or 'id' in reply:
                             break
                     sides[side]['restarted_allow_flight'] = reply
+                    ws.send('{"jsonrpc":"2.0","id":308,"method":"minecraft:serversettings/accept_transfers"}')
+                    while True:
+                        reply = normal(ws.receive(timeout=60))
+                        if not isinstance(reply, dict) or 'method' not in reply or 'id' in reply:
+                            break
+                    sides[side]['restarted_accepts_transfers'] = reply
+                    ws.send('{"jsonrpc":"2.0","id":189,"method":"minecraft:serversettings/entity_broadcast_range"}')
+                    while True:
+                        reply = normal(ws.receive(timeout=60))
+                        if not isinstance(reply, dict) or 'method' not in reply or 'id' in reply:
+                            break
+                    sides[side]['restarted_entity_broadcast_range'] = reply
+                    ws.send('{"jsonrpc":"2.0","id":179,"method":"minecraft:serversettings/simulation_distance"}')
+                    while True:
+                        reply = normal(ws.receive(timeout=60))
+                        if not isinstance(reply, dict) or 'method' not in reply or 'id' in reply:
+                            break
+                    sides[side]['restarted_simulation_distance'] = reply
+                    ws.send('{"jsonrpc":"2.0","id":169,"method":"minecraft:serversettings/view_distance"}')
+                    while True:
+                        reply = normal(ws.receive(timeout=60))
+                        if not isinstance(reply, dict) or 'method' not in reply or 'id' in reply:
+                            break
+                    sides[side]['restarted_view_distance'] = reply
+                    ws.send('{"jsonrpc":"2.0","id":159,"method":"minecraft:serversettings/spawn_protection_radius"}')
+                    while True:
+                        reply = normal(ws.receive(timeout=60))
+                        if not isinstance(reply, dict) or 'method' not in reply or 'id' in reply:
+                            break
+                    sides[side]['restarted_spawn_protection'] = reply
                     ws.send('{"jsonrpc":"2.0","id":199,"method":"minecraft:serversettings/hide_online_players"}')
                     while True:
                         reply = normal(ws.receive(timeout=60))
@@ -606,6 +743,12 @@ def main():
                         if not isinstance(reply, dict) or 'method' not in reply or 'id' in reply:
                             break
                     sides[side]['restarted_operator_user_permission_level'] = reply
+                    ws.send('{"jsonrpc":"2.0","id":219,"method":"minecraft:serversettings/status_replies"}')
+                    while True:
+                        reply = normal(ws.receive(timeout=60))
+                        if not isinstance(reply, dict) or 'method' not in reply or 'id' in reply:
+                            break
+                    sides[side]['restarted_status_replies'] = reply
                 finally:
                     ws.sock.close()
             finally:
@@ -669,6 +812,12 @@ def main():
         if vanilla['restarted_max_players'] != horizon['restarted_max_players'] or \
                 vanilla['restarted_max_players'] != {'jsonrpc': '2.0', 'id': 109, 'result': 30}:
             failures.append(f"restarted max players: vanilla {vanilla['restarted_max_players']!r}, Horizon {horizon['restarted_max_players']!r}")
+        if vanilla['saved_status_heartbeat_interval'] != horizon['saved_status_heartbeat_interval'] or \
+                vanilla['saved_status_heartbeat_interval'] != '-5':
+            failures.append(f"saved status heartbeat interval: vanilla {vanilla['saved_status_heartbeat_interval']!r}, Horizon {horizon['saved_status_heartbeat_interval']!r}")
+        if vanilla['restarted_status_heartbeat_interval'] != horizon['restarted_status_heartbeat_interval'] or \
+                vanilla['restarted_status_heartbeat_interval'] != {'jsonrpc': '2.0', 'id': 408, 'result': -5}:
+            failures.append(f"restarted status heartbeat interval: vanilla {vanilla['restarted_status_heartbeat_interval']!r}, Horizon {horizon['restarted_status_heartbeat_interval']!r}")
         if vanilla['saved_player_idle_timeout'] != horizon['saved_player_idle_timeout'] or \
                 vanilla['saved_player_idle_timeout'] != '30':
             failures.append(f"saved player idle timeout: vanilla {vanilla['saved_player_idle_timeout']!r}, Horizon {horizon['saved_player_idle_timeout']!r}")
@@ -677,6 +826,36 @@ def main():
         if vanilla['restarted_player_idle_timeout'] != horizon['restarted_player_idle_timeout'] or \
                 vanilla['restarted_player_idle_timeout'] != {'jsonrpc': '2.0', 'id': 133, 'result': 30}:
             failures.append(f"restarted player idle timeout: vanilla {vanilla['restarted_player_idle_timeout']!r}, Horizon {horizon['restarted_player_idle_timeout']!r}")
+        if vanilla['saved_entity_broadcast_range'] != horizon['saved_entity_broadcast_range'] or \
+                vanilla['saved_entity_broadcast_range'] != '80':
+            failures.append(f"saved entity broadcast range: vanilla {vanilla['saved_entity_broadcast_range']!r}, Horizon {horizon['saved_entity_broadcast_range']!r}")
+        if not horizon['saved_config_entity_broadcast_range']:
+            failures.append('Horizon did not save entity broadcast range in server.toml')
+        if vanilla['restarted_entity_broadcast_range'] != horizon['restarted_entity_broadcast_range'] or \
+                vanilla['restarted_entity_broadcast_range'] != {'jsonrpc': '2.0', 'id': 189, 'result': 80}:
+            failures.append(f"restarted entity broadcast range: vanilla {vanilla['restarted_entity_broadcast_range']!r}, Horizon {horizon['restarted_entity_broadcast_range']!r}")
+        if vanilla['saved_simulation_distance'] != horizon['saved_simulation_distance'] or \
+                vanilla['saved_simulation_distance'] != '8':
+            failures.append(f"saved simulation distance: vanilla {vanilla['saved_simulation_distance']!r}, Horizon {horizon['saved_simulation_distance']!r}")
+        if not horizon['saved_config_simulation_distance']:
+            failures.append('Horizon did not save simulation distance in server.toml')
+        if vanilla['restarted_simulation_distance'] != horizon['restarted_simulation_distance'] or \
+                vanilla['restarted_simulation_distance'] != {'jsonrpc': '2.0', 'id': 179, 'result': 8}:
+            failures.append(f"restarted simulation distance: vanilla {vanilla['restarted_simulation_distance']!r}, Horizon {horizon['restarted_simulation_distance']!r}")
+        if vanilla['saved_view_distance'] != horizon['saved_view_distance'] or vanilla['saved_view_distance'] != '8':
+            failures.append(f"saved view distance: vanilla {vanilla['saved_view_distance']!r}, Horizon {horizon['saved_view_distance']!r}")
+        if not horizon['saved_config_view_distance']:
+            failures.append('Horizon did not save view distance in server.toml')
+        if vanilla['restarted_view_distance'] != horizon['restarted_view_distance'] or \
+                vanilla['restarted_view_distance'] != {'jsonrpc': '2.0', 'id': 169, 'result': 8}:
+            failures.append(f"restarted view distance: vanilla {vanilla['restarted_view_distance']!r}, Horizon {horizon['restarted_view_distance']!r}")
+        if vanilla['saved_spawn_protection'] != horizon['saved_spawn_protection'] or vanilla['saved_spawn_protection'] != '8':
+            failures.append(f"saved spawn protection: vanilla {vanilla['saved_spawn_protection']!r}, Horizon {horizon['saved_spawn_protection']!r}")
+        if not horizon['saved_config_spawn_protection']:
+            failures.append('Horizon did not save spawn protection in server.toml')
+        if vanilla['restarted_spawn_protection'] != horizon['restarted_spawn_protection'] or \
+                vanilla['restarted_spawn_protection'] != {'jsonrpc': '2.0', 'id': 159, 'result': 8}:
+            failures.append(f"restarted spawn protection: vanilla {vanilla['restarted_spawn_protection']!r}, Horizon {horizon['restarted_spawn_protection']!r}")
         if vanilla['saved_operator_user_permission_level'] != horizon['saved_operator_user_permission_level'] or \
                 vanilla['saved_operator_user_permission_level'] != '2':
             failures.append(f"saved operator permission level: vanilla {vanilla['saved_operator_user_permission_level']!r}, Horizon {horizon['saved_operator_user_permission_level']!r}")
@@ -692,6 +871,14 @@ def main():
         if vanilla['restarted_allow_flight'] != horizon['restarted_allow_flight'] or \
                 vanilla['restarted_allow_flight'] != {'jsonrpc': '2.0', 'id': 149, 'result': True}:
             failures.append(f"restarted allow-flight: vanilla {vanilla['restarted_allow_flight']!r}, Horizon {horizon['restarted_allow_flight']!r}")
+        if vanilla['saved_accepts_transfers'] != horizon['saved_accepts_transfers'] or \
+                vanilla['saved_accepts_transfers'] != 'true':
+            failures.append(f"saved accepts-transfers: vanilla {vanilla['saved_accepts_transfers']!r}, Horizon {horizon['saved_accepts_transfers']!r}")
+        if not horizon['saved_config_accepts_transfers']:
+            failures.append('Horizon did not save accepts-transfers in server.toml')
+        if vanilla['restarted_accepts_transfers'] != horizon['restarted_accepts_transfers'] or \
+                vanilla['restarted_accepts_transfers'] != {'jsonrpc': '2.0', 'id': 308, 'result': True}:
+            failures.append(f"restarted accepts-transfers: vanilla {vanilla['restarted_accepts_transfers']!r}, Horizon {horizon['restarted_accepts_transfers']!r}")
         if vanilla['saved_hide_online_players'] != horizon['saved_hide_online_players'] or \
                 vanilla['saved_hide_online_players'] != 'true':
             failures.append(f"saved hide-online-players: vanilla {vanilla['saved_hide_online_players']!r}, Horizon {horizon['saved_hide_online_players']!r}")
@@ -700,6 +887,13 @@ def main():
         if vanilla['restarted_hide_online_players'] != horizon['restarted_hide_online_players'] or \
                 vanilla['restarted_hide_online_players'] != {'jsonrpc': '2.0', 'id': 199, 'result': True}:
             failures.append(f"restarted hide-online-players: vanilla {vanilla['restarted_hide_online_players']!r}, Horizon {horizon['restarted_hide_online_players']!r}")
+        if vanilla['saved_status_replies'] != horizon['saved_status_replies'] or vanilla['saved_status_replies'] != 'false':
+            failures.append(f"saved status replies: vanilla {vanilla['saved_status_replies']!r}, Horizon {horizon['saved_status_replies']!r}")
+        if not horizon['saved_config_status_replies']:
+            failures.append('Horizon did not save status replies in server.toml')
+        if vanilla['restarted_status_replies'] != horizon['restarted_status_replies'] or \
+                vanilla['restarted_status_replies'] != {'jsonrpc': '2.0', 'id': 219, 'result': False}:
+            failures.append(f"restarted status replies: vanilla {vanilla['restarted_status_replies']!r}, Horizon {horizon['restarted_status_replies']!r}")
         (build / 'report.json').write_text(json.dumps(sides, indent=1))
         if failures:
             sys.exit(f'{NAME}: {len(failures)} differences (logs in {build}):\n' + '\n'.join(failures))

@@ -5,37 +5,44 @@ DedicatedServer.saveAllChunks	port	crates/horizon-client/src/game.rs::Game::save
 DedicatedServer.sendLowDiskSpaceWarning	port	crates/horizon-client/src/lan/hub.rs::Hub::send_low_disk_space_warning	chunk_io reports the low disk space and the operators are told (game/dedicated.rs); a client shows the toast (game/remote.rs)
 DedicatedServer.setAllowFlight	port	crates/horizon-client/src/game/dedicated/management.rs::Game::management	updates the live movement check and server.properties through management
 DedicatedServer.setDifficulty	port	crates/horizon-client/src/game/commands.rs::Game::cmd_difficulty	the /difficulty command; gap: minor: the new value is not written back to server.properties
-DedicatedServer.setViewDistance	skip:server		JSON-RPC management API only; view-distance is read at start
-DedicatedServer.setSimulationDistance	skip:server		JSON-RPC management API only; simulation-distance is read at start
+DedicatedServer.setViewDistance	port	crates/horizon-client/src/game/lan.rs::Game::set_view_distance	updates the live player chunk radius and view-distance through management
+DedicatedServer.setSimulationDistance	port	crates/horizon-client/src/game/lan.rs::Game::set_simulation_distance	updates the live player simulation radius and simulation-distance through management
 DedicatedServer.fillServerSystemReport	skip:debug		adds rows to the system report of a server crash report; Horizon writes no server crash report
 DedicatedServer.dumpServerProperties	skip:debug		writes server.properties.txt into the debug report only
 DedicatedServer.onServerExit	inline	crates/horizon-client/src/game/dedicated.rs::Game::stop_dedicated	gap: minor: closes no query, GUI or JSON-RPC (RCON is the supervisor's, which outlives the game); the LAN pinger and listener are closed by lan_close
 DedicatedServer.setMaxPlayers	port	crates/horizon-client/src/game/dedicated.rs::Game::set_max_players	live login limit and server.properties max-players via the management protocol
-DedicatedServer.setSpawnProtectionRadius	skip:server		JSON-RPC management API only; spawn-protection is read at start and used by Game::under_spawn_protection
-DedicatedServer.setRepliesToStatus	skip:server		JSON-RPC management API only (ServerSettingsService); Horizon has no such API
+DedicatedServer.setSpawnProtectionRadius	port	crates/horizon-client/src/game/dedicated/management.rs::Game::management	updates the live spawn-protection radius and server.properties through management
+DedicatedServer.setRepliesToStatus	port	crates/horizon-client/src/lan/mod.rs::Shared::set_enable_status	management toggles live status responses and enable-status in server.properties
 DedicatedServer.setHidesOnlinePlayers	port	crates/horizon-client/src/lan/mod.rs::Shared::set_hide_online_players	management updates live status responses and hide-online-players in server.properties
 DedicatedServer.setOperatorUserPermissions	port	crates/horizon-client/src/game/dedicated/management.rs::Game::management	management updates the live default operator permission level and op-permission-level in server.properties
 DedicatedServer.setPlayerIdleTimeout	port	crates/horizon-client/src/game/dedicated.rs::Game::set_player_idle_timeout	updates the live idle sweep and player-idle-timeout via management; gap: minor: /setidletimeout remains unimplemented
 MinecraftServerSettingsServiceImpl.setPlayerIdleTimeout	port	crates/horizon-server/src/management_methods.rs::Game::player_idle_timeout	forwards the live idle timeout to the game and persists properties.player-idle-timeout in server.toml
+DedicatedServer.setStatusHeartbeatInterval	port	crates/horizon-server/src/management.rs::set_heartbeat_seconds	the supervisor owns the heartbeat: the interval changes live, the countdown starts again, as scheduleHeartbeat cancels and schedules
 MinecraftServerSettingsServiceImpl.setOperatorUserPermissions	port	crates/horizon-server/src/management_methods.rs::Game::operator_user_permission_level	forwards the live default operator permission level and persists properties.op-permission-level in server.toml
-DedicatedServer.setStatusHeartbeatInterval	skip:server		JSON-RPC management API only (status heartbeat)
 DedicatedServer.setMotd	skip:server		JSON-RPC management API only (ServerSettingsService); Horizon has no such API
 DedicatedServer.enforceSecureProfile	inline	crates/horizon-client/src/game/dedicated.rs::Game::run_dedicated	gap: minor: services.canValidateProfileKeys() is not part of the check
 DedicatedServer.convertOldUsers	skip:other		one-time import of pre-1.7 .txt user lists; Horizon reads only the json lists in user_lists.rs
 DedicatedServer.runCommand	port	crates/horizon-server/src/rcon.rs::run_on_game	gap: minor: runs as the console (`console <line>` on the control endpoint), not as an Rcon source
-DedicatedServer.setEntityBroadcastRangePercentage	skip:server		JSON-RPC management API only (ServerSettingsService); Horizon has no such API
+DedicatedServer.setEntityBroadcastRangePercentage	port	crates/horizon-client/src/game/lan.rs::Game::set_entity_broadcast_range_percentage	updates the live entity tracking range and entity-broadcast-range-percentage through management
 DedicatedServer.createTextFilterForPlayer	skip:service		external chat filter service; Horizon has no text filter
 DedicatedServer.setForceGameMode	port	crates/horizon-client/src/game/dedicated/management.rs::Game::management	stores force-gamemode, updates the host and applies the default mode to online players
 MinecraftServerSettingsServiceImpl.setForceGameMode	port	crates/horizon-server/src/management_methods.rs::Game::force_game_mode	forwards the live setting to the game and persists it in server.toml
 MinecraftServerSettingsServiceImpl.setAllowFlight	port	crates/horizon-server/src/management_methods.rs::Game::allow_flight	forwards the live setting to the game and persists properties.allow-flight in server.toml
 MinecraftServerSettingsServiceImpl.setHidesOnlinePlayers	port	crates/horizon-server/src/management_methods.rs::Game::hide_online_players	forwards the live status visibility setting and persists properties.hide-online-players in server.toml
+MinecraftServerSettingsServiceImpl.setAcceptsTransfers	port	crates/horizon-server/src/management_methods.rs::Game::accepts_transfers	forwards the live setting to the game and persists properties.accepts-transfers in server.toml
+MinecraftServerSettingsServiceImpl.setRepliesToStatus	port	crates/horizon-server/src/management_methods.rs::Game::status_replies	forwards the live status-response setting and persists properties.enable-status in server.toml
 MinecraftServerSettingsServiceImpl.setUsingWhitelist	port	crates/horizon-server/src/management_methods.rs::Game::allowlist_setting	forwards the live setting to the game and persists server.whitelist in server.toml
 MinecraftServerSettingsServiceImpl.setEnforceWhitelist	port	crates/horizon-server/src/management_methods.rs::Game::allowlist_setting	forwards the live setting to the game and persists server.enforce_whitelist in server.toml
 MinecraftServerSettingsServiceImpl.setMaxPlayers	port	crates/horizon-server/src/management_methods.rs::Game::max_players	forwards the live limit to the game and persists server.max_players
+MinecraftServerSettingsServiceImpl.setStatusHeartbeatInterval	port	crates/horizon-server/src/management_methods.rs::status_heartbeat_interval	changes the supervisor's live heartbeat and persists properties.status-heartbeat-interval in server.properties and server.toml
+MinecraftServerSettingsServiceImpl.setEntityBroadcastRangePercentage	port	crates/horizon-server/src/management_methods.rs::Game::entity_broadcast_range	forwards the live entity range to the game and persists properties.entity-broadcast-range-percentage in server.toml
+MinecraftServerSettingsServiceImpl.setSimulationDistance	port	crates/horizon-server/src/management_methods.rs::Game::simulation_distance	forwards the live simulation radius to the game and persists server.simulation_distance in server.toml
+MinecraftServerSettingsServiceImpl.setViewDistance	port	crates/horizon-server/src/management_methods.rs::Game::view_distance	forwards the live chunk radius to the game and persists server.view_distance in server.toml
+MinecraftServerSettingsServiceImpl.setSpawnProtectionRadius	port	crates/horizon-server/src/management_methods.rs::Game::spawn_protection_radius	forwards the live radius to the game and persists properties.spawn-protection in server.toml
 MinecraftServerSettingsServiceImpl.setAutoSave	port	crates/horizon-server/src/management_methods.rs::Game::autosave	forwards the live save flag to the game; unlike a server property, it resets when the server restarts
 MinecraftServerSettingsServiceImpl.setPauseWhenEmptySeconds	port	crates/horizon-server/src/management_methods.rs::Game::pause_when_empty_seconds	forwards the live timer to the game and persists the server.properties setting
 DedicatedServer.setGameMode	port	crates/horizon-client/src/game/lan.rs::Game::set_default_game_mode	the /defaultgamemode command; gap: minor: the value is not written back to server.properties
-DedicatedServer.setAcceptsTransfers	skip:server		JSON-RPC management API only (ServerSettingsService); Horizon has no such API
+DedicatedServer.setAcceptsTransfers	port	crates/horizon-client/src/game/dedicated.rs::Game::set_accepts_transfers	the live handshake check of the listener and accepts-transfers in server.properties, through management
 DedicatedServer.setPauseWhenEmptySeconds	port	crates/horizon-client/src/game/dedicated.rs::Game::set_pause_when_empty_seconds	live empty-server pause timer and server.properties pause-when-empty-seconds via the management protocol
 DedicatedServer.createServerLinks	inline	crates/horizon-client/src/game/dedicated.rs::Game::run_dedicated	builds the bug-report server link from bug-report-link (dedicated.rs 636-646)
 DedicatedServer.parseBugReportLink	port	crates/horizon-client/src/game/server_links.rs::valid_untrusted_uri	a yes or no check of the link; the caller builds the link in run_dedicated
