@@ -132,6 +132,39 @@ impl Game<'_> {
             _ => false,
         }
     }
+    /// Whether that answer is `InteractionResult.SUCCESS`, the only result that
+    /// swings the hand: `CONSUME` ends the click without one. An adult animal's
+    /// food (`Animal.mobInteract`), a tame tamable's sit or stand, a zombie
+    /// villager's golden apple and a sheep's shears (the server alone checks
+    /// `readyForShearing`) all answer CONSUME on a client (#9437).
+    pub(super) fn remote_mob_swings(&self, i: usize, hand: Hand) -> bool {
+        let Some(m) = self.mobs.get(i).filter(|m| m.alive()) else {
+            return false;
+        };
+        let stack = match hand {
+            Hand::Main => self.stack_in(self.selected),
+            Hand::Off => self.offhand.as_ref(),
+        };
+        let item = stack.map_or("", |s| &*s.item);
+        // A baby's food is SUCCESS, since it ages up; an adult's is CONSUME,
+        // as only the server knows whether it can breed.
+        if m.kind.flags.animal
+            && !matches!(m.species(), Species::Nautilus | Species::ZombieNautilus)
+            && m.kind.food.iter().any(|f| f.as_str() == item)
+        {
+            return m.is_baby() && !m.extra.age_locked;
+        }
+        let consumes = match m.species() {
+            // TamableAnimal.mobInteract: a tame one sits or stands.
+            Species::Wolf | Species::Cat | Species::Parrot => m.extra.tame,
+            // ZombieVillager.mobInteract: a golden apple cures it on the server.
+            Species::ZombieVillager => item == "minecraft:golden_apple",
+            // Sheep.mobInteract: shears, sheared or not.
+            Species::Sheep => item == "minecraft:shears",
+            _ => false,
+        };
+        !consumes
+    }
     /// `AbstractHorse.handleEating` (`Llama`'s and `Camel`'s too) on this
     /// client's copy: a baby fed something that ages it draws one happy
     /// villager particle. The server draws it on its own level only, so no
