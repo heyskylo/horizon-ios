@@ -62,6 +62,16 @@ fn hdr_pack(sized: bool, format: &str) -> Post {
     post
 }
 
+// Check the fixture contract even when the render tests cannot find an adapter.
+#[test]
+fn clear_fixture_loads_the_requested_formats_without_a_gpu() {
+    for sized in [false, true] {
+        for format in ["RGBA16F", "RGBA8"] {
+            hdr_pack(sized, format);
+        }
+    }
+}
+
 fn hdr_clear_case(sized: bool, attachment_limit: u32, byte_budget: u32, format: &str) {
     let instance = crate::gfx::test_gpu::instance();
     let Ok(adapter) = pollster::block_on(instance.request_adapter(&Default::default())) else {

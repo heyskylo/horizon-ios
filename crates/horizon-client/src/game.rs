@@ -213,6 +213,7 @@ mod narrator;
 mod native_biome_colors;
 pub mod native_block_entity_draw;
 mod native_block_sprites;
+mod native_chunk_tickets;
 mod native_claimed_items;
 mod native_components;
 mod native_configs;
@@ -225,6 +226,7 @@ mod native_entity_refs;
 mod native_explosions;
 mod native_falling;
 mod native_hooks;
+mod native_host_bridge;
 mod native_inventories;
 mod native_item_container;
 mod native_item_energy;
@@ -232,6 +234,7 @@ mod native_item_fluids;
 mod native_level_refs;
 mod native_lifecycle;
 mod native_living_refs;
+mod native_machines;
 mod native_menus;
 mod native_mob_draw;
 mod native_mobs;
@@ -244,6 +247,7 @@ mod native_projectiles;
 mod native_quick_move;
 mod native_recipes;
 mod native_reload_listeners;
+mod native_scene;
 mod native_server;
 mod native_shaders;
 mod native_ticks;
@@ -279,6 +283,7 @@ mod potions;
 mod powder_snow;
 mod prediction;
 mod pumpkin;
+mod pvp;
 mod quick_actions;
 mod raids;
 mod random_textures;
@@ -429,16 +434,19 @@ use horizon_world::{
 pub use maps::{NativeMapDecoration, NativeMapInfo};
 pub use native_block_entity_draw::BlockEntityDraw;
 pub use native_claimed_items::{NativeHeldItem, NativeHit, NativeModEvent};
+pub use native_components::NativeComponentError;
 pub use native_configs::{NativeConfig, NativeConfigFile, NativeConfigKind};
+pub use native_criteria::NativeCriterion;
 pub use native_data_maps::NativeDataMapType;
 pub use native_falling::NativeFalling;
-pub use native_hooks::{NativeClock, NativeShake};
+pub use native_hooks::{NativeClock, NativeItemEntity, NativeShake};
 pub use native_item_energy::ItemEnergyBuffer;
 pub use native_mob_draw::{NativeMobRender, NativePlayerRender};
 pub use native_reload_listeners::NativeReloadListener;
 pub use native_server::NativeExperienceOrb;
 pub use native_world_columns::NativeColumnBlocks;
 pub use native_world_edit::{NativeBlockEdit, NativeBlockRun, NativeHeightmap};
+pub use native_world_read::NativeBlockReadError;
 use std::{
     cell::RefCell,
     collections::{HashMap, HashSet},
@@ -1026,6 +1034,12 @@ struct GameLevel<'w> {
     debug: bool,
     native_sounds: &'w mut Vec<creatures::NativeSound>,
     native_particles: &'w mut Vec<lan_particles::QueuedParticle>,
+    /// The tool a mod's machine breaks blocks with (`native_machine_destroy_block`):
+    /// `Block.dropResources` rolls the loot with it instead of with none.
+    drop_tool: Option<ItemStack>,
+    /// Where `Block.dropResources` puts the drops instead of popping them,
+    /// while a mod's machine breaks a block (`native_machine_destroy_block`).
+    drop_into: Option<Vec<ItemStack>>,
 }
 struct PlayerCollision {
     y: f64,
@@ -1849,6 +1863,14 @@ impl LevelAccess for GameLevel<'_> {
                 self.world.block_entities.get(&(pos.x, pos.y, pos.z)),
                 Some(BlockEntity::Mod(_))
             )
+    }
+    /// `ShulkerBoxBlockEntity.isClosed`: the lid state the block-entity tick
+    /// copied from `be_anims` (`ShulkerBoxBlock.getBlockSupportShape`).
+    fn shulker_is_closed(&self, pos: BlockPos) -> Option<bool> {
+        self.world
+            .shulkers
+            .get(&[pos.x, pos.y, pos.z])
+            .map(|s| s.status == horizon_client::block_entity_anim::ShulkerStatus::Closed)
     }
     fn remove_block_entity(&mut self, pos: BlockPos, old: BlockStateId, side_effects: bool) -> u8 {
         self.remove_entity(pos, old, side_effects)
@@ -2967,6 +2989,9 @@ struct Game<'a> {
     mod_screen: Option<native_hooks::OpenNativeScreen>,
     /// The players with each mod container open, by level (`tick_mod_container_viewers`).
     mod_container_viewers: HashMap<(&'static str, (i32, i32, i32)), u32>,
+    /// The owners of each chunk a native mod's ticket holds, by level
+    /// (`native_force_chunk`); `streaming.mod_forced` is the level's chunks.
+    mod_chunk_tickets: HashMap<Dim, HashMap<(i32, i32), std::collections::BTreeSet<String>>>,
     /// Where item entities are, while the block entities tick (hoppers).
     item_columns: Option<machines::ItemColumns>,
     creative_screen: Creative,
@@ -2987,6 +3012,8 @@ struct Game<'a> {
     frame_graph: horizon_client::perf_overlay::FrameGraph,
     /// Horizon's extras (minimap, auto-reconnect; mods' counters): `game/extras.rs`.
     extras: extras::ExtrasState,
+    /// The PvP & HUD options' state (`game/pvp.rs`).
+    pvp: pvp::PvpState,
     /// Horizon mods (`game/mods.rs`), none running unless turned on.
     mods: mods::ModsState,
     /// Every item and recipe, for mods (`game/native_recipes.rs`), made once.
@@ -4720,6 +4747,8 @@ impl Game<'_> {
             debug: self.world_debug,
             native_sounds: &mut self.creatures.lan_sounds,
             native_particles: &mut self.creatures.lan_particles,
+            drop_tool: None,
+            drop_into: None,
         };
         let result = f(self.res.behaviours(), &mut level, &mut self.block_ticks);
         self.flush_spill();
@@ -4911,7 +4940,20 @@ impl Game<'_> {
                     .filter(|&(_, spectator)| game_mode::loads_chunks(rule, spectator))
                     .map(|(chunk, _)| chunk)
                     .collect(),
-                forced: self.streaming.forced.iter().copied().collect(),
+                // A native mod's ticket holds its chunk as `/forceload` does
+                // (NeoForge's `TicketController` uses the same `FORCED` level).
+                forced: self
+                    .streaming
+                    .forced
+                    .iter()
+                    .chain(
+                        self.streaming
+                            .mod_forced
+                            .iter()
+                            .filter(|c| !self.streaming.forced.contains(c)),
+                    )
+                    .copied()
+                    .collect(),
                 // Filled from the `PORTAL` tickets by `update`.
                 portal: Vec::new(),
                 // EnderDragonFight.tick: while a player watches the fight, the
@@ -8742,7 +8784,14 @@ impl Game<'_> {
                 });
                 let draws = hud_layout::crosshair(wi, hi, attack, full);
                 self.gui_layer("minecraft:crosshair", &mut batch, |g, batch| {
-                    hud_layout::paint(batch, &g.gui.atlas, &draws);
+                    // The custom crosshair takes the sprite's place (the first draw); the
+                    // attack indicator stays.
+                    if g.custom_crosshair() {
+                        g.draw_custom_crosshair(batch, wi, hi);
+                        hud_layout::paint(batch, &g.gui.atlas, &draws[1..]);
+                    } else {
+                        hud_layout::paint(batch, &g.gui.atlas, &draws);
+                    }
                 });
             }
             self.gui_layer("minecraft:hotbar", &mut batch, |g, batch| {
@@ -11691,6 +11740,35 @@ impl Game<'_> {
         }
     }
 
+    /// `ServerLevel.destroyBlockProgress`: breaker `breaker`'s crack on `pos`
+    /// (0..=9, anything else takes it away), for every player within 64 blocks.
+    pub(super) fn server_destroy_block_progress(
+        &mut self,
+        breaker: i32,
+        pos: [i32; 3],
+        progress: i32,
+    ) {
+        self.destroy_block_progress(breaker, pos, progress);
+        if let Some(host) = self.lan.as_ref() {
+            host.hub.broadcast_near(
+                [f64::from(pos[0]), f64::from(pos[1]), f64::from(pos[2])],
+                64.0,
+                &horizon_protocol::packets::play::Clientbound::BlockDestruction(
+                    horizon_protocol::packets::play::BlockDestruction {
+                        id: breaker,
+                        pos,
+                        progress: if (0..10).contains(&progress) {
+                            progress as u8
+                        } else {
+                            255
+                        },
+                    },
+                ),
+                None,
+            );
+        }
+    }
+
     /// The cracks to draw and their stage sprite's atlas origin: our own mining and the
     /// other players' (`renderBlockDestroyAnimation`: within 32 blocks of the camera, the
     /// furthest progress on each block).
@@ -12891,7 +12969,7 @@ impl Game<'_> {
     }
     /// Let go of every entity of the level (saved first): the next world
     /// opened must not inherit them, nor save them as its own.
-    fn clear_entities(&mut self) {
+    pub(super) fn clear_entities(&mut self) {
         self.mobs.clear();
         self.dropped.clear();
         self.orbs.clear();
@@ -12918,6 +12996,19 @@ impl Game<'_> {
         self.riding = None;
         self.persist = Default::default();
         self.entity_attachments.clear();
+        self.clear_remote_objects();
+        self.clear_remote_projectiles();
+        self.levels.clear();
+        self.entity_vertices.clear();
+        self.see_through_vertices.clear();
+        self.glowing_vertices.get_mut().clear();
+        self.shadow_only_vertices.get_mut().clear();
+        self.entity_spans.borrow_mut().clear();
+        self.entity_motion.borrow_mut().clear();
+        self.skin_models
+            .borrow_mut()
+            .restart(&mut self.skin_frame.borrow_mut());
+        self.skin_frame.borrow_mut().clear_draws();
     }
     /// Equipment attribute modifiers (LivingEntity.collectEquipmentChanges).
     fn apply_equipment(&mut self) {
@@ -19569,6 +19660,7 @@ impl<'a> Game<'a> {
             hoppers: HashMap::new(),
             mod_screen: None,
             mod_container_viewers: HashMap::new(),
+            mod_chunk_tickets: HashMap::new(),
             item_columns: None,
             creative_screen: prepared.creative_screen,
             control: None,
@@ -19594,6 +19686,7 @@ impl<'a> Game<'a> {
             pending_uploads: Vec::new(),
             frame_graph: Default::default(),
             extras: Default::default(),
+            pvp: Default::default(),
             mods: Default::default(),
             recipe_tables: Default::default(),
             panel: Default::default(),

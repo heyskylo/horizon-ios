@@ -4,6 +4,8 @@ use super::*;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Item {
     PackBrowser,
+    /// Shared PvP & HUD page options, with their upstream translations.
+    Pvp(crate::pvp::Opt),
     CosmeticsAuras,
     MusicPage,
     CosmeticsMine,
@@ -119,6 +121,7 @@ fn next<T: Copy + PartialEq>(all: &[T], current: T, back: bool) -> T {
 impl Item {
     fn shared(self) -> Option<super::desktop_ui::Item> {
         Some(match self {
+            Self::Pvp(option) => super::desktop_ui::Item::Pvp(option),
             Self::PackBrowser => super::desktop_ui::Item::PackBrowser,
             Self::CosmeticsAuras => super::desktop_ui::Item::CosmeticsAuras,
             Self::MusicPage => super::desktop_ui::Item::MusicPage,
@@ -156,7 +159,8 @@ impl Item {
 
     pub fn caption(self) -> &'static str {
         match self {
-            Item::PackBrowser
+            Item::Pvp(_)
+            | Item::PackBrowser
             | Item::CosmeticsAuras
             | Item::MusicPage
             | Item::CosmeticsMine
@@ -200,6 +204,7 @@ impl Item {
     pub fn parent(self) -> Option<Item> {
         use self::Item::*;
         Some(match self {
+            Pvp(option) => return option.parent().map(Pvp),
             ChatIndicator => ChatAnimation,
             HideBlockParticles | UiSoundReserve | ChatAnimation | Splitscreen | PackBrowser
             | CosmeticsAuras | MusicPage | CosmeticsMine | CosmeticsOthers | ReproKeys
@@ -219,7 +224,8 @@ impl Item {
     /// What the row says under its caption.
     pub fn description(self) -> &'static str {
         match self {
-            Item::PackBrowser
+            Item::Pvp(_)
+            | Item::PackBrowser
             | Item::CosmeticsAuras
             | Item::MusicPage
             | Item::CosmeticsMine
@@ -292,7 +298,8 @@ impl Item {
     /// On/off items and their value.
     pub fn switch(self, e: &Extras) -> Option<bool> {
         Some(match self {
-            Item::PackBrowser
+            Item::Pvp(_)
+            | Item::PackBrowser
             | Item::CosmeticsAuras
             | Item::MusicPage
             | Item::CosmeticsMine
@@ -329,7 +336,9 @@ impl Item {
     /// The value of the other items, as their button shows it.
     pub fn value(self, e: &Extras) -> String {
         match self {
-            Item::CosmeticsMine | Item::CosmeticsOthers => self.shared().unwrap().value(e),
+            Item::Pvp(_) | Item::CosmeticsMine | Item::CosmeticsOthers => {
+                self.shared().unwrap().value(e)
+            }
             Item::ZoomKey => crate::keybinds::display_name(&e.zoom_key).plain(),
             Item::SortKey => crate::keybinds::display_name(&e.sort_key).plain(),
             Item::ZoomLevel => format!("{}x", e.zoom_level),
@@ -352,7 +361,8 @@ impl Item {
     /// A click (`back` for the right button). The zoom key binds instead.
     pub fn cycle(self, e: &mut Extras, back: bool) {
         match self {
-            Item::PackBrowser
+            Item::Pvp(_)
+            | Item::PackBrowser
             | Item::CosmeticsAuras
             | Item::MusicPage
             | Item::CosmeticsMine
