@@ -1603,6 +1603,62 @@ def test_command():
     ]
 
 
+def end_clock_commands():
+    """No observation ticks: independent built-in clocks and command callbacks."""
+    ops = [*setup('/tick freeze', '/gamerule advance_time false',
+                  '/scoreboard objectives add audit_time dummy',
+                  '/execute store result score before audit_time run time query gametime')]
+    for dimension in ('overworld', 'the_nether', 'the_end'):
+        ops += [cmd(f'/execute in minecraft:{dimension} if dimension minecraft:{dimension}', expect_result=1)]
+    ops += [cmd('/time of minecraft:the_end set 333', expect_result=333),
+            cmd('/time of minecraft:overworld set 30000', expect_result=30000),
+            cmd('/time of minecraft:the_end query time', expect_result=333),
+            cmd('/time of minecraft:overworld query time', expect_result=30000),
+            cmd('/execute in minecraft:the_end run time query time', expect_result=333),
+            cmd('/execute in minecraft:the_nether run time query time'),
+            cmd('/execute in minecraft:the_nether run time of minecraft:overworld query time', expect_result=30000)]
+    commands = [
+        '/time of minecraft:overworld query time', '/time of minecraft:the_end query time',
+        '/time of minecraft:the_end set 900', '/time of minecraft:the_end set 900',
+        '/time of minecraft:the_end add -1000', '/time of minecraft:the_end set day',
+        '/time of minecraft:the_end pause', '/time of minecraft:the_end pause',
+        '/time of minecraft:the_end resume', '/time of minecraft:the_end resume',
+        '/time of minecraft:the_end rate 2', '/time of minecraft:the_end rate 2',
+        '/time of minecraft:the_end rate 1', '/execute in minecraft:the_nether run time query time',
+        '/execute in minecraft:the_end run time query time',
+        '/execute in minecraft:the_nether run time of minecraft:overworld query time',
+        '/time query time', '/time of minecraft:the_end set 777']
+    expected = [(30000, 1, 333), (333, 1, 333), (900, 1, 900), (0, 0, 900),
+                (0, 1, 0), (0, 0, 0), (1, 1, 0), (0, 0, 0), (1, 1, 0),
+                (0, 0, 0), (1, 1, 0), (0, 0, 0), (1, 1, 0), (0, 0, 0),
+                (0, 1, 0), (30000, 1, 0), (30000, 1, 0), (777, 1, 777)]
+    for command, (result, success, end_time) in zip(commands, expected):
+        ops += [*setup('/scoreboard players set result audit_time -99',
+                       '/scoreboard players set success audit_time -99'),
+                cmd('/execute store result score result audit_time store success score success audit_time run '+command.lstrip('/')),
+                cmd('/scoreboard players get result audit_time', expect_result=result),
+                cmd('/scoreboard players get success audit_time', expect_result=success),
+                cmd('/time of minecraft:overworld query time', expect_result=30000),
+                cmd('/time of minecraft:the_end query time', expect_result=end_time)]
+        if command == '/time of minecraft:the_end pause' and success:
+            ops += [cmd('/time of minecraft:overworld pause', expect_result=1),
+                    cmd('/time of minecraft:overworld resume', expect_result=1)]
+        if command == '/time of minecraft:the_end rate 2' and success:
+            ops += [cmd('/time of minecraft:overworld rate 2', expect_result=1),
+                    cmd('/time of minecraft:overworld rate 1', expect_result=1)]
+    ops += [cmd('/time of minecraft:the_end query minecraft:day'),
+            cmd('/time of minecraft:the_moon query time'),
+            # End pause/rate operations must leave the Overworld state alone.
+            cmd('/time pause'), cmd('/time pause'), cmd('/time resume'),
+            cmd('/time rate 2'), cmd('/time rate 2'), cmd('/time rate 1'),
+            cmd('/time set day'), cmd('/time query minecraft:day'),
+            *setup('/execute store result score elapsed audit_time run time query gametime',
+                   '/scoreboard players operation elapsed audit_time -= before audit_time'),
+            cmd('/scoreboard players get elapsed audit_time', expect_result=0),
+            *setup('/scoreboard objectives remove audit_time', '/tick unfreeze')]
+    return ops
+
+
 def server_clock():
     """Only explicit tick operations advance the script's authoritative clock."""
     return [
@@ -2406,6 +2462,7 @@ def groups():
     return [
         ('setup', group_setup()),
         ('server clock', server_clock()),
+        ('End clock commands', end_clock_commands()),
         ('client commands', client_commands()),
         ('game state', game_state()),
         ('player state', player_state()),
