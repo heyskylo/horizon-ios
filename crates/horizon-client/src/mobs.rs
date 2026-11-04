@@ -1542,9 +1542,11 @@ pub enum MobEvent {
         from: [f64; 3],
         kind: &'static str,
     },
-    /// `ElderGuardian`'s curse on players within 50 blocks.
+    /// `ElderGuardian`'s curse on players within 50 blocks; a silent elder's
+    /// shows the apparition without the curse sound.
     ElderCurse {
         at: [f64; 3],
+        silent: bool,
     },
     /// `Entity.setDeltaMovement`: replace a target's velocity.
     SetVelocity {

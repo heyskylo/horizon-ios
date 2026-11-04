@@ -2054,7 +2054,7 @@ impl Game<'_> {
                 MobEvent::DamagePlayer { amount, from, kind } => {
                     self.mob_hits_player(amount, from, kind);
                 }
-                MobEvent::ElderCurse { at } => self.elder_curse(at),
+                MobEvent::ElderCurse { at, silent } => self.elder_curse(at, silent),
                 MobEvent::SetVelocity { target, velocity } => {
                     let v = Vec3::new(velocity[0], velocity[1], velocity[2]);
                     match target {
@@ -3463,15 +3463,16 @@ impl Game<'_> {
     /// `MobEffectUtil.addEffectToPlayersAround` for an elder guardian:
     /// mining fatigue III for five minutes unless a stronger or longer one
     /// is on, with the curse sound and the elder's apparition.
-    fn elder_curse(&mut self, at: [f64; 3]) {
+    fn elder_curse(&mut self, at: [f64; 3], silent: bool) {
         let mut cursed = Vec::new();
         self.for_each_player(|g| {
-            if g.elder_curse_player(at) {
+            if g.elder_curse_player(at, silent) {
                 cursed.push(g.lan_acting);
             }
         });
         // A guest's client shows the apparition and plays the curse itself
-        // (ClientboundGameEventPacket.GUARDIAN_ELDER_EFFECT).
+        // (ClientboundGameEventPacket.GUARDIAN_ELDER_EFFECT), the sound only
+        // for 1: `isSilent() ? 0.0F : 1.0F`.
         if let Some(host) = self.lan.as_ref() {
             for conn in cursed.into_iter().flatten() {
                 host.hub.send_to(
@@ -3479,7 +3480,7 @@ impl Game<'_> {
                     &horizon_protocol::packets::play::Clientbound::GameEvent(
                         horizon_protocol::packets::play::GameEvent {
                             event: horizon_client::lan::hub::game_event::GUARDIAN_ELDER_EFFECT,
-                            param: 1.0,
+                            param: crate::mobs::guardian::elder_curse_param(silent),
                         },
                     ),
                 );
@@ -3487,7 +3488,7 @@ impl Game<'_> {
         }
     }
     /// The curse on the player in place; whether it took.
-    fn elder_curse_player(&mut self, at: [f64; 3]) -> bool {
+    fn elder_curse_player(&mut self, at: [f64; 3], silent: bool) -> bool {
         if self.creative || self.spectator() {
             return false;
         }
@@ -3507,8 +3508,12 @@ impl Game<'_> {
         let at = [p.position.x, p.position.y, p.position.z];
         self.give_player_effect("minecraft:mining_fatigue", 6000, 2);
         if self.lan_acting.is_none() {
-            self.audio
-                .play("minecraft:entity.elder_guardian.curse", Some(at), 1.0, 1.0);
+            // ClientPacketListener.handleGameEvent: the apparition always, the
+            // curse sound unless the elder is silent.
+            if crate::mobs::guardian::elder_curse_param(silent) == 1.0 {
+                self.audio
+                    .play("minecraft:entity.elder_guardian.curse", Some(at), 1.0, 1.0);
+            }
             self.creatures.elder_apparition = super::mob_blocks::APPARITION_TICKS;
         }
         true
