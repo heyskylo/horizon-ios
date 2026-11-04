@@ -11175,12 +11175,16 @@ mod tests {
     /// shaders with storage buffers enough, where Translucent Batching is (indirect
     /// multi-draws that aren't OpenGL's) and vanilla frames are never drawn flat, and never
     /// on Intel Gen11/Gen12's Vulkan driver, whose draws read instance-rate origins from the
-    /// wrong first instance, even with flat draws off there.
+    /// wrong first instance, even with flat draws off there, nor on DX12 with flat page
+    /// groups, whose count draws leave the base vertex out of the pulled pipelines'
+    /// `vertex_index`.
     #[test]
     fn gpu_culling_is_offered_where_counts_are_drawn_and_vanilla_never_draws_flat() {
         let vulkan = adapter(wgpu::DeviceType::DiscreteGpu);
         let mut gl = adapter(wgpu::DeviceType::DiscreteGpu);
         gl.backend = wgpu::Backend::Gl;
+        let mut dx12 = adapter(wgpu::DeviceType::DiscreteGpu);
+        dx12.backend = wgpu::Backend::Dx12;
         let mut intel = adapter(wgpu::DeviceType::IntegratedGpu);
         (intel.vendor, intel.device) = (0x8086, 0x9a49); // Tiger Lake
         let counts = wgpu::Features::MULTI_DRAW_INDIRECT_COUNT;
@@ -11214,6 +11218,8 @@ mod tests {
         assert!(!offered(&vulkan, counts, compute, 8, false, None));
         assert!(!offered(&gl, counts, compute, 8, true, None));
         assert!(!offered(&intel, counts, compute, 8, true, None));
+        assert!(offered(&dx12, counts, compute, 8, true, None));
+        assert!(!offered(&dx12, counts, compute, 8, true, Some(usize::MAX)));
     }
 
     /// The pack-flat rule: with Translucent Batching translucent quads have an arena of
