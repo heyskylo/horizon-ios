@@ -129,6 +129,12 @@ pub(super) struct Levels {
 }
 
 impl Levels {
+    /// Clear every parked level and dimensions recorded as heard open.
+    pub(super) fn clear(&mut self) {
+        self.parked.clear();
+        self.heard_open.clear();
+    }
+
     /// A parked level, without opening or loading it.
     pub(super) fn parked_world(&self, dim: Dim) -> Option<&World> {
         self.parked.get(&dim).map(|level| &level.world)
@@ -772,4 +778,19 @@ fn slowest_steps(notes: &[(f32, String)]) -> String {
         .map(|(ms, what)| format!("{what} {ms:.1}"))
         .collect();
     format!("; slowest: {}", list.join(", "))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn levels_clear_empties_parked_and_heard_open() {
+        let mut levels = Levels::default();
+        levels.heard_open.push(Dim::Nether);
+        assert!(!levels.heard_open.is_empty());
+        levels.clear();
+        assert!(levels.heard_open.is_empty());
+        assert!(levels.parked.is_empty());
+    }
 }

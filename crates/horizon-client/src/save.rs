@@ -52,6 +52,8 @@ use std::{
 pub const VERSION_NAME: &str = horizon_core::VANILLA_VERSION;
 
 mod gateway;
+#[cfg(test)]
+mod loot_tests;
 
 /// Snapshot live block entities and custom names for a save batch without
 /// mutating the world. Each map is visited once, retaining its iteration order
@@ -526,6 +528,25 @@ impl SaveTables {
 
 pub use crate::chunk::{ChunkExtras, RolledLoot, SavedProto};
 
+/// A container was opened: its eager roll is now the container's own inventory.
+pub fn consume_container_loot(extras: &mut ChunkExtras, pos: (i32, i32, i32)) {
+    let before = extras.rolled_loot.len();
+    extras.rolled_loot.retain(|r| r.pos != pos);
+    if extras.rolled_loot.len() == before {
+        return;
+    }
+    // The source compound participates in the save overlay. Once opened,
+    // even an emptied chest must not inherit its old loot table from there.
+    for (source_pos, source) in &mut extras.block_entity_sources {
+        if *source_pos == pos
+            && let Tag::Compound(map) = source
+        {
+            map.remove(&"LootTable".into());
+            map.remove(&"LootTableSeed".into());
+        }
+    }
+}
+
 fn tick_list(ticks: &[SavedTick], name: impl Fn(u32) -> Option<String>) -> Tag {
     Tag::List(
         ticks
@@ -931,9 +952,17 @@ pub fn decode_block_entity(tag: &Tag) -> Option<((i32, i32, i32), crate::contain
         return Some((pos, BlockEntity::CreakingHeart(Box::new(heart))));
     }
     if id == "minecraft:lectern" {
+        // `LecternBlockEntity.loadAdditional`: the page is `Mth.clamp(Page, 0,
+        // getPageCount(book) - 1)`, so a stored page before the book's first
+        // page or past its last comes back as the page the block holds. No
+        // book, or a book with no pages, counts 0 pages: the maximum is then
+        // -1, and `Mth.clamp` (`Math.min(Math.max(value, min), max)`) answers
+        // it, -1.
+        let book = tag.get("Book").and_then(item_from_nbt);
+        let count = book.as_ref().map_or(0, crate::menu::book_pages) as i32;
         let lectern = crate::containers::Lectern {
-            book: tag.get("Book").and_then(item_from_nbt),
-            page: int("Page").unwrap_or(0),
+            book,
+            page: int("Page").unwrap_or(0).max(0).min(count - 1),
         };
         return Some((pos, BlockEntity::Lectern(lectern)));
     }
@@ -6150,6 +6179,65 @@ mod tests {
             crate::lan::chunks::entity_tag(&crate::containers::BlockEntity::Campfire(Box::new(c)))
                 .expect("update tag");
         assert!(update.get("Items").is_some() && update.get("CookingTimes").is_none());
+    }
+    /// `LecternBlockEntity.loadAdditional`: `Page` is clamped to
+    /// `0..getPageCount(book) - 1`, so a stored page outside the book loads as
+    /// the first or last page the block holds. A bookless lectern counts no
+    /// pages and loads page -1.
+    #[test]
+    fn a_lecterns_page_loads_within_its_book() {
+        let page_of = |tag: &str| {
+            let tag = horizon_world::nbt::parse_snbt(tag).unwrap().0;
+            let (_, entity) = decode_block_entity(&tag).expect("lectern");
+            let crate::containers::BlockEntity::Lectern(l) = entity else {
+                panic!("not a lectern");
+            };
+            l.page
+        };
+        let book = |pages: &str| {
+            format!(
+                r#"id:"minecraft:written_book",count:1,components:{{
+                    "minecraft:written_book_content":{{title:"t",author:"a",pages:[{pages}]}}
+                }}"#
+            )
+        };
+        // Two pages: a stored 7 is the last page, a stored -3 the first.
+        assert_eq!(
+            page_of(&format!(
+                r#"{{id:"minecraft:lectern",x:1,y:64,z:2,Page:7,Book:{{{}}}}}"#,
+                book(r#""one","two""#)
+            )),
+            1
+        );
+        assert_eq!(
+            page_of(&format!(
+                r#"{{id:"minecraft:lectern",x:1,y:64,z:2,Page:-3,Book:{{{}}}}}"#,
+                book(r#""one","two""#)
+            )),
+            0
+        );
+        // No book counts no pages, so any page loads as -1, as vanilla's.
+        assert_eq!(
+            page_of(r#"{id:"minecraft:lectern",x:1,y:64,z:2,Page:4}"#),
+            -1
+        );
+        // A page already inside the book is kept, and saved back as it is.
+        let tag = format!(
+            r#"{{id:"minecraft:lectern",x:1,y:64,z:2,Page:1,Book:{{{}}}}}"#,
+            book(r#""one","two","three""#)
+        );
+        let tag = horizon_world::nbt::parse_snbt(&tag).unwrap().0;
+        let (pos, entity) = decode_block_entity(&tag).expect("lectern");
+        let crate::containers::BlockEntity::Lectern(l) = entity else {
+            panic!("not a lectern");
+        };
+        assert_eq!(l.page, 1);
+        let saved = encode_block_entity(
+            pos,
+            &crate::containers::BlockEntity::Lectern(l),
+            "minecraft:lectern",
+        );
+        assert_eq!(number(saved.get("Page")), Some(1));
     }
     #[test]
     fn a_chest_loot_table_takes_precedence_over_saved_items() {

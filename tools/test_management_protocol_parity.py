@@ -351,7 +351,13 @@ def management_properties(port, keystore):
 def make_keystore(work):
     """A PKCS12 keystore with a self-signed certificate for 127.0.0.1, made with the JDK's keytool, and a TLS
     client context that trusts it."""
-    keytool = Path(shutil.which('java')).resolve().parent / f'keytool{EXE}'
+    keytool = shutil.which('keytool')
+    if keytool is None:
+        java_home = os.environ.get('JAVA_HOME')
+        candidate = Path(java_home) / 'bin' / f'keytool{EXE}' if java_home else None
+        if candidate is None or not candidate.is_file():
+            raise RuntimeError('keytool not found; add a JDK to PATH or set JAVA_HOME')
+        keytool = str(candidate)
     keystore, certificate = work / 'management.p12', work / 'management.pem'
     common = ['-storetype', 'PKCS12', '-keystore', str(keystore), '-storepass', KEYSTORE_PASSWORD]
     subprocess.run([keytool, '-genkeypair', '-alias', 'management', '-keyalg', 'RSA', '-keysize', '2048',

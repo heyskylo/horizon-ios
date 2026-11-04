@@ -1070,7 +1070,7 @@ fn unhappy_counter(
 /// What a client shakes a mob by: Entity.DATA_TICKS_FROZEN (7), whose full
 /// count is `isFullyFrozen`, and Strider.DATA_SUFFOCATING (19, after
 /// AgeableMob's two and DATA_BOOST_TIME).
-fn mob_freeze_meta(
+pub(super) fn mob_freeze_meta(
     m: &Mob,
     meta: &mut Vec<(u8, i32, Value)>,
     defaults: &mut Vec<(u8, i32, Value)>,
@@ -1081,15 +1081,12 @@ fn mob_freeze_meta(
         meta.push((7, serializer::INT, Value::Int(m.ticks_frozen)));
     }
     defaults.push((7, serializer::INT, Value::Int(0)));
-    // Entity.DATA_AIR_SUPPLY_ID (1): only an axolotl ticks `Mob.air` (its
-    // default is its 6000 max air supply).
-    if m.species() == horizon_client::mobs::Species::Axolotl {
-        let max = horizon_client::mobs::axolotl::MAX_AIR;
-        if m.air != max {
-            meta.push((1, serializer::INT, Value::Int(m.air)));
-        }
-        defaults.push((1, serializer::INT, Value::Int(max)));
+    // Every Entity tracks air, including changes back to its species' default.
+    let max = m.max_air_supply();
+    if m.air != max {
+        meta.push((1, serializer::INT, Value::Int(m.air)));
     }
+    defaults.push((1, serializer::INT, Value::Int(max)));
     if m.kind.id == "minecraft:strider" {
         if m.extra.flag {
             meta.push((19, serializer::BOOLEAN, Value::Bool(true)));
@@ -2661,6 +2658,7 @@ impl Game<'_> {
                     // passes null): the composter fill (1500), the egg's
                     // teleport, bone meal's growth, anvil result sounds, a
                     // finished brushing or an eye inserted in a portal frame,
+                    // a zombie's infection and a finished cure (1026, 1027),
                     // and the digger's own crack and hit sound (2019, 2020).
                     let except = level_event_except(
                         *id,
@@ -2695,6 +2693,10 @@ impl Game<'_> {
     pub(super) fn lan_entity_event(&mut self, id: i32, event: i8, at: [f64; 3]) {
         if self.audio.capture.is_some() {
             self.lan_entity_events.push((id, event, at));
+        }
+        // Event 16: zombie villagers play their cure sound on each client.
+        if event == 16 && self.options.execution_role.is_client() {
+            self.zombie_villager_cure_sound(id as u32);
         }
         // Event 63: a sniffer's digging sound loop starts (ClientPacketListener.handleEntityEvent 63).
         if event == 63 && self.options.execution_role.is_client() {
@@ -3104,7 +3106,20 @@ fn event_kind(event: &HostEvent) -> EventKind {
 fn level_event_except(id: i32, acting: Option<u32>, collateral_break: bool) -> Option<u32> {
     if matches!(
         id,
-        2015 | 1500 | 1501 | 1503 | 1505 | 1029 | 1030 | 1045 | 1052 | 2019 | 2020 | 3000 | 3008
+        2015 | 1500
+            | 1501
+            | 1503
+            | 1505
+            | 1026
+            | 1027
+            | 1029
+            | 1030
+            | 1045
+            | 1052
+            | 2019
+            | 2020
+            | 3000
+            | 3008
     ) || collateral_break
     {
         None
@@ -3207,7 +3222,7 @@ mod tests {
     }
 
     /// Entity.setTicksFrozen can go negative; index 7 must carry it. Index 1
-    /// (air supply) goes out for an axolotl only, against its 6000 default.
+    /// (air supply) goes out for every mob, with the species' own default.
     #[test]
     fn negative_frozen_ticks_and_axolotl_air_are_synced() {
         let Some(mut cow) = mob_of("minecraft:cow") else {
@@ -3217,7 +3232,11 @@ mod tests {
         let (meta, _) = freeze_meta(&cow);
         assert!(meta.contains(&(7, serializer::INT, Value::Int(-3))));
         cow.air = 100;
-        assert!(freeze_meta(&cow).0.iter().all(|e| e.0 != 1));
+        assert!(
+            freeze_meta(&cow)
+                .0
+                .contains(&(1, serializer::INT, Value::Int(100)))
+        );
 
         let Some(mut axolotl) = mob_of("minecraft:axolotl") else {
             return;
