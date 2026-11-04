@@ -87,7 +87,11 @@ fn entity_light(normal: vec3<f32>, nether: bool) -> f32 {
 // primed TNT flash (5) and at column overlay - 16 for 16..=31 (a creeper's
 // swelling). Alpha 1 changes nothing.
 fn overlay_texel(overlay: u32) -> vec4<f32> {
-    if overlay == 1u || overlay == 8u { return HURT_OVERLAY; }
+    if overlay == 1u || overlay == 8u {
+        // PvP & HUD's hit colour (pvp.rs `Hit::texel`) rides in colored_count.y; 0 is vanilla's.
+        let hit = globals.colored_count.y;
+        return select(HURT_OVERLAY, unpack4x8unorm(hit), hit != 0u);
+    }
     if overlay == 5u { return vec4(1.0, 1.0, 1.0, WHITE_OVERLAY_ALPHA[15]); }
     if overlay >= 16u && overlay < 32u { return vec4(1.0, 1.0, 1.0, WHITE_OVERLAY_ALPHA[overlay - 16u]); }
     return vec4(1.0);

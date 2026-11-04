@@ -27,3 +27,19 @@ Each feature is built from what it visibly does, never from another client's or 
   attack indicator reads (`crosshairPickEntity`).
 - The attack indicator, the F3 axes and the spectator rules stay vanilla's; only the sprite is replaced.
 - Cost: the pixels are worked out once per settings change (`CrosshairCache`); a frame adds a few quads.
+
+## Block outline (`outline`, default off)
+
+- Colour (solid), opacity 10-100%, thickness 1-4 times vanilla's width, and an optional fill that tints the
+  targeted block's faces at 25%. Turned on, its first settings are vanilla's: black at 40%, vanilla's width.
+- With Accessibility's high contrast outline, the colour replaces the bright stroke and the black one stays.
+- The fill draws each box of the block's shape (`getShape`, the boxes the outline's edges come from) as
+  translucent faces after translucent terrain, 0.002 out from the block. Only while the outline shows.
+- Cost: the stroke is vanilla's draw with another colour and width; the fill adds at most a few dozen quads.
+
+## Hit colour (`hit`, default off)
+
+- The colour hurt mobs and players flash, and how much of it covers them (0-100%). Its first settings are
+  vanilla's: `OverlayTexture`'s red over 30%.
+- The texel rides in the frame's uniforms (`colored_count.y`, 0 for vanilla's), so changing it costs nothing.
+- Shader packs keep vanilla's red (`pack_entities::entity_color`).
