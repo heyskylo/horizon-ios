@@ -31,6 +31,13 @@ macro_rules! packet_enum {
                     Self::Unknown(id, _) => *id,
                 }
             }
+            /// The packet's name in this enum (`MoveVehicle`), for logs.
+            pub fn name(&self) -> &'static str {
+                match self {
+                    $(Self::$variant(_) => stringify!($variant),)*
+                    Self::Unknown(..) => "Unknown",
+                }
+            }
             /// Decode a packet body (after the id).
             pub fn decode(id: i32, payload: &[u8]) -> $crate::Result<Self> {
                 use $ids as ids;

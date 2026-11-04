@@ -3,19 +3,21 @@ DedicatedServer.setEnforceWhitelist	port	crates/horizon-client/src/game/dedicate
 DedicatedServer.setUsingWhitelist	port	crates/horizon-client/src/game/dedicated.rs::Game::console_whitelist	console whitelist on|off; store_property writes white-list back
 DedicatedServer.saveAllChunks	port	crates/horizon-client/src/game.rs::Game::save_game	gap: minor: no save notifications to the JSON-RPC management API
 DedicatedServer.sendLowDiskSpaceWarning	port	crates/horizon-client/src/lan/hub.rs::Hub::send_low_disk_space_warning	chunk_io reports the low disk space and the operators are told (game/dedicated.rs); a client shows the toast (game/remote.rs)
-DedicatedServer.setAllowFlight	skip:server		JSON-RPC management API only (ServerSettingsService); Horizon has no such API
+DedicatedServer.setAllowFlight	port	crates/horizon-client/src/game/dedicated/management.rs::Game::management	updates the live movement check and server.properties through management
 DedicatedServer.setDifficulty	port	crates/horizon-client/src/game/commands.rs::Game::cmd_difficulty	the /difficulty command; gap: minor: the new value is not written back to server.properties
-DedicatedServer.setViewDistance	skip:server		JSON-RPC management API only; view-distance is read at start
-DedicatedServer.setSimulationDistance	skip:server		JSON-RPC management API only; simulation-distance is read at start
+DedicatedServer.setViewDistance	port	crates/horizon-client/src/game/lan.rs::Game::set_view_distance	updates the live player chunk radius and view-distance through management
+DedicatedServer.setSimulationDistance	port	crates/horizon-client/src/game/lan.rs::Game::set_simulation_distance	updates the live player simulation radius and simulation-distance through management
 DedicatedServer.fillServerSystemReport	skip:debug		adds rows to the system report of a server crash report; Horizon writes no server crash report
 DedicatedServer.dumpServerProperties	skip:debug		writes server.properties.txt into the debug report only
 DedicatedServer.onServerExit	inline	crates/horizon-client/src/game/dedicated.rs::Game::stop_dedicated	gap: minor: closes no query, GUI or JSON-RPC (RCON is the supervisor's, which outlives the game); the LAN pinger and listener are closed by lan_close
 DedicatedServer.setMaxPlayers	port	crates/horizon-client/src/game/dedicated.rs::Game::set_max_players	live login limit and server.properties max-players via the management protocol
-DedicatedServer.setSpawnProtectionRadius	skip:server		JSON-RPC management API only; spawn-protection is read at start and used by Game::under_spawn_protection
-DedicatedServer.setRepliesToStatus	skip:server		JSON-RPC management API only (ServerSettingsService); Horizon has no such API
-DedicatedServer.setHidesOnlinePlayers	skip:server		JSON-RPC management API only (ServerSettingsService); Horizon has no such API
-DedicatedServer.setOperatorUserPermissions	skip:server		JSON-RPC management API only (ServerSettingsService); Horizon has no such API
-DedicatedServer.setPlayerIdleTimeout	missing		no /setidletimeout in Horizon's command tree (command_order.rs lists the name, the dispatcher has no arm); player-idle-timeout is read once at start and the kick it drives is game/dedicated.rs's idle sweep
+DedicatedServer.setSpawnProtectionRadius	port	crates/horizon-client/src/game/dedicated/management.rs::Game::management	updates the live spawn-protection radius and server.properties through management
+DedicatedServer.setRepliesToStatus	port	crates/horizon-client/src/lan/mod.rs::Shared::set_enable_status	management toggles live status responses and enable-status in server.properties
+DedicatedServer.setHidesOnlinePlayers	port	crates/horizon-client/src/lan/mod.rs::Shared::set_hide_online_players	management updates live status responses and hide-online-players in server.properties
+DedicatedServer.setOperatorUserPermissions	port	crates/horizon-client/src/game/dedicated/management.rs::Game::management	management updates the live default operator permission level and op-permission-level in server.properties
+DedicatedServer.setPlayerIdleTimeout	port	crates/horizon-client/src/game/dedicated.rs::Game::set_player_idle_timeout	updates the live idle sweep and player-idle-timeout via management; gap: minor: /setidletimeout remains unimplemented
+MinecraftServerSettingsServiceImpl.setPlayerIdleTimeout	port	crates/horizon-server/src/management_methods.rs::Game::player_idle_timeout	forwards the live idle timeout to the game and persists properties.player-idle-timeout in server.toml
+MinecraftServerSettingsServiceImpl.setOperatorUserPermissions	port	crates/horizon-server/src/management_methods.rs::Game::operator_user_permission_level	forwards the live default operator permission level and persists properties.op-permission-level in server.toml
 DedicatedServer.setStatusHeartbeatInterval	skip:server		JSON-RPC management API only (status heartbeat)
 DedicatedServer.setMotd	skip:server		JSON-RPC management API only (ServerSettingsService); Horizon has no such API
 DedicatedServer.enforceSecureProfile	inline	crates/horizon-client/src/game/dedicated.rs::Game::run_dedicated	gap: minor: services.canValidateProfileKeys() is not part of the check
@@ -25,13 +27,20 @@ DedicatedServer.setEntityBroadcastRangePercentage	skip:server		JSON-RPC manageme
 DedicatedServer.createTextFilterForPlayer	skip:service		external chat filter service; Horizon has no text filter
 DedicatedServer.setForceGameMode	port	crates/horizon-client/src/game/dedicated/management.rs::Game::management	stores force-gamemode, updates the host and applies the default mode to online players
 MinecraftServerSettingsServiceImpl.setForceGameMode	port	crates/horizon-server/src/management_methods.rs::Game::force_game_mode	forwards the live setting to the game and persists it in server.toml
+MinecraftServerSettingsServiceImpl.setAllowFlight	port	crates/horizon-server/src/management_methods.rs::Game::allow_flight	forwards the live setting to the game and persists properties.allow-flight in server.toml
+MinecraftServerSettingsServiceImpl.setHidesOnlinePlayers	port	crates/horizon-server/src/management_methods.rs::Game::hide_online_players	forwards the live status visibility setting and persists properties.hide-online-players in server.toml
+MinecraftServerSettingsServiceImpl.setRepliesToStatus	port	crates/horizon-server/src/management_methods.rs::Game::status_replies	forwards the live status-response setting and persists properties.enable-status in server.toml
 MinecraftServerSettingsServiceImpl.setUsingWhitelist	port	crates/horizon-server/src/management_methods.rs::Game::allowlist_setting	forwards the live setting to the game and persists server.whitelist in server.toml
 MinecraftServerSettingsServiceImpl.setEnforceWhitelist	port	crates/horizon-server/src/management_methods.rs::Game::allowlist_setting	forwards the live setting to the game and persists server.enforce_whitelist in server.toml
 MinecraftServerSettingsServiceImpl.setMaxPlayers	port	crates/horizon-server/src/management_methods.rs::Game::max_players	forwards the live limit to the game and persists server.max_players
+MinecraftServerSettingsServiceImpl.setSimulationDistance	port	crates/horizon-server/src/management_methods.rs::Game::simulation_distance	forwards the live simulation radius to the game and persists server.simulation_distance in server.toml
+MinecraftServerSettingsServiceImpl.setViewDistance	port	crates/horizon-server/src/management_methods.rs::Game::view_distance	forwards the live chunk radius to the game and persists server.view_distance in server.toml
+MinecraftServerSettingsServiceImpl.setSpawnProtectionRadius	port	crates/horizon-server/src/management_methods.rs::Game::spawn_protection_radius	forwards the live radius to the game and persists properties.spawn-protection in server.toml
 MinecraftServerSettingsServiceImpl.setAutoSave	port	crates/horizon-server/src/management_methods.rs::Game::autosave	forwards the live save flag to the game; unlike a server property, it resets when the server restarts
+MinecraftServerSettingsServiceImpl.setPauseWhenEmptySeconds	port	crates/horizon-server/src/management_methods.rs::Game::pause_when_empty_seconds	forwards the live timer to the game and persists the server.properties setting
 DedicatedServer.setGameMode	port	crates/horizon-client/src/game/lan.rs::Game::set_default_game_mode	the /defaultgamemode command; gap: minor: the value is not written back to server.properties
 DedicatedServer.setAcceptsTransfers	skip:server		JSON-RPC management API only (ServerSettingsService); Horizon has no such API
-DedicatedServer.setPauseWhenEmptySeconds	skip:server		JSON-RPC management API only (ServerSettingsService); Horizon has no such API
+DedicatedServer.setPauseWhenEmptySeconds	port	crates/horizon-client/src/game/dedicated.rs::Game::set_pause_when_empty_seconds	live empty-server pause timer and server.properties pause-when-empty-seconds via the management protocol
 DedicatedServer.createServerLinks	inline	crates/horizon-client/src/game/dedicated.rs::Game::run_dedicated	builds the bug-report server link from bug-report-link (dedicated.rs 636-646)
 DedicatedServer.parseBugReportLink	port	crates/horizon-client/src/game/server_links.rs::valid_untrusted_uri	a yes or no check of the link; the caller builds the link in run_dedicated
 DedicatedServerProperties.getDatapackConfig	inline	crates/horizon-server-files/src/properties.rs::ServerProperties::new	splits initial-enabled-packs and initial-disabled-packs
@@ -84,11 +93,11 @@ PlayerChunkSender.sendChunk	inline	crates/horizon-client/src/lan/hub.rs::Hub::up
 PlayerChunkSender.collectChunksToSend	port	crates/horizon-client/src/lan/hub.rs::Hub::next_batch	closest first within the batch quota; gap: minor: the in-memory player is cut to the quota too, vanilla sends it all pending chunks
 PlayerSafetyServiceTextFilter.createTextFilterFromConfig	skip:service		external chat filter service (Microsoft identity, text-filtering-config); Horizon has no text filter
 PlayerSafetyServiceTextFilter.filterText	skip:service		external chat filter service; Horizon has no text filter
-ServerCommandSuggestionsProvider.tick	inline	crates/horizon-client/src/game/lan_actions.rs::Game::guest_suggestions	gap: minor: no per-tick budget; every request is answered when it arrives
+ServerCommandSuggestionsProvider.tick	port	crates/horizon-client/src/game/lan_actions.rs::Game::guest_try_suggestions	the budget is refilled for each guest once a tick, and the newest request is answered then
 ServerCommandSuggestionsProvider.tryProcessRequest	port	crates/horizon-client/src/game/lan_actions.rs::Game::guest_suggestions	parses the command (after an optional slash) and gets its suggestions
-ServerCommandSuggestionsProvider.limitSuggestionCount	missing		minor: vanilla keeps the first 1000 suggestions; Horizon sends them all
+ServerCommandSuggestionsProvider.limitSuggestionCount	port	crates/horizon-client/src/game/lan_actions.rs::Game::guest_suggestions	the list is cut to its first 1000 suggestions, the range kept
 ServerCommandSuggestionsProvider.trySchedule	inline	crates/horizon-client/src/game/lan_actions.rs::Game::guest_suggestions	gap: minor: no hop to the server thread; the request is handled on its packet
-ServerCommandSuggestionsProvider.request	port	crates/horizon-client/src/game/lan_actions.rs::Game::guest_suggestions	gap: minor: no coalescing of rapid requests; vanilla keeps only the newest text
+ServerCommandSuggestionsProvider.request	port	crates/horizon-client/src/game/lan_actions.rs::Game::guest_suggestions	the newest command text replaces the one not answered yet, as lastRequest does
 ServerCommonPacketListenerImpl.onDisconnect	inline	crates/horizon-client/src/game/integrated.rs::Integrated::halt	gap: minor: unsure: whether a dropped local connection halts the server is not checked
 ServerCommonPacketListenerImpl.onPacketError	missing		vanilla records the exception for the crash report (reportPacketHandlingException); nothing in the tree keeps one — a failing packet is not named anywhere, and every other ServerWatchdog gap here is now closed
 ServerCommonPacketListenerImpl.handleKeepAlive	inline	crates/horizon-client/src/lan/conn.rs::write_loop	gap: minor: read_loop stores the id and write_loop sets the latency; a wrong id is not an instant disconnect

@@ -122,7 +122,7 @@ PlayerAdvancements.asData	inline	crates/horizon-client/src/game/advancements.rs:
 PlayerAdvancements.revoke	port	crates/horizon-client/src/game/advancements.rs::Game::revoke_advancement	revokes one criterion or all of them
 PlayerAdvancements.markForVisibilityUpdate	inline	crates/horizon-client/src/lan/advancements.rs::ServerAdvancements::update	visibility is recomputed for the whole tree on each update
 PlayerAdvancements.unregisterListeners	skip:other		no per-criterion listener map; trigger() tests every criterion when an event fires
-PlayerAdvancements.setSelectedTab	missing		the host keeps no selected advancement tab, and vanilla's only effect here is the ClientboundSelectAdvancementsTabPacket it sends when the tab changes; only the SELECT_ADVANCEMENTS_TAB id exists
+PlayerAdvancements.setSelectedTab	port	crates/horizon-client/src/lan/hub.rs::Hub::process_inbox	the SeenAdvancements arm: a root with a display is kept as Guest::selected_tab, anything else clears it, and the tab is sent back when it changed; ServerAdvancements::selectable decides
 PlayerAdvancements.getOrStartProgress	skip:java		map get-or-create
 PlayerAdvancements.startProgress	skip:java		initialises progress for an advancement
 PlayerAdvancements.updateTreeVisibility	port	crates/horizon-client/src/advancements.rs::Tree::visible	gap: minor: returns the visible flags; the added and removed lists are built in lan/advancements.rs
