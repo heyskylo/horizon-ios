@@ -291,12 +291,22 @@ impl Game<'_> {
             self.pack.context.clone(),
         );
         let (unicode, japanese) = (self.settings.force_unicode, self.settings.japanese_glyphs);
+        let import_home = horizon_client::import::home();
         self.pack_reload = Some(PackReload::spawn(kind, move |progress| {
-            stage_pack(
-                &vanilla, &selected, &server, &mods, &dev_mods, &assets, &res, &context, unicode,
-                japanese, progress,
-            )
-            .map_err(|e| e.to_string())
+            let stage = || {
+                stage_pack(
+                    &vanilla, &selected, &server, &mods, &dev_mods, &assets, &res, &context,
+                    unicode, japanese, progress,
+                )
+            };
+            // The CPU stage reads the base tree before applying it on the frame
+            // thread; do not let an importer replace that tree halfway through.
+            let result = if import_home.is_dir() {
+                horizon_client::import::with_home_access(&import_home, stage)
+            } else {
+                stage()
+            };
+            result.map_err(|e| e.to_string())
         })?);
         Ok(())
     }
