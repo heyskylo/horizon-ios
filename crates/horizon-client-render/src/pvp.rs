@@ -1,4 +1,4 @@
-//! PvP and HUD options (`docs/pvp.md`): a custom crosshair. Kept in
+//! PvP and HUD options (`docs/pvp.md`): a custom crosshair, block outline and hit colour. Kept in
 //! `horizon-extras.txt` with the other extras ([`crate::extras::Extras::pvp`]) and shown on
 //! Horizon Settings > PvP & HUD. Every option is off by default, so the game looks like
 //! vanilla until the player changes one, and none of them shows anything vanilla doesn't
@@ -71,7 +71,7 @@ impl Colour {
     pub fn argb(self) -> u32 {
         match self {
             Colour::Inverted | Colour::White => 0xFFFF_FFFF,
-            Colour::Red => 0xFFFF_3030,
+            Colour::Red => 0xFFFF_0000,
             Colour::Orange => 0xFFFF_A020,
             Colour::Yellow => 0xFFFF_FF40,
             Colour::Green => 0xFF40_FF40,
@@ -87,6 +87,18 @@ impl Colour {
     fn step(self, back: bool) -> Colour {
         step(&Self::ALL, self, back)
     }
+    /// The next solid colour (`Inverted` left out).
+    fn step_solid(self, back: bool) -> Colour {
+        step(&Self::ALL[1..], self, back)
+    }
+    /// The colour at `percent` opacity, as ARGB.
+    pub fn with_opacity(self, percent: u8) -> u32 {
+        self.argb() & 0x00FF_FFFF | alpha(percent) << 24
+    }
+}
+/// `percent` of 255, rounded.
+fn alpha(percent: u8) -> u32 {
+    (u32::from(percent.min(100)) * 255 + 50) / 100
 }
 
 /// The next (or previous) value of `all` after `v`, wrapping.
@@ -97,11 +109,15 @@ fn step<T: Copy + PartialEq>(all: &[T], v: T, back: bool) -> T {
 }
 /// `v` one step up or down within `lo..=hi`, wrapping.
 fn step_num(v: u8, lo: u8, hi: u8, back: bool) -> u8 {
+    step_by(v, (lo, hi), 1, back)
+}
+/// `v` `by` up or down within `lo..=hi`, wrapping.
+fn step_by(v: u8, (lo, hi): (u8, u8), by: u8, back: bool) -> u8 {
     match (back, v) {
         (false, v) if v >= hi => lo,
-        (false, v) => v + 1,
+        (false, v) => (v + by).min(hi),
         (true, v) if v <= lo => hi,
-        (true, v) => v - 1,
+        (true, v) => v.saturating_sub(by).max(lo),
     }
 }
 
@@ -339,9 +355,104 @@ impl CrosshairCache {
     }
 }
 
+/// The block outline (`LevelRenderer.submitBlockOutline`). Off, vanilla's: black at 40%, or the
+/// accessibility option's high contrast one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Outline {
+    pub custom: bool,
+    /// A solid colour, at `opacity` percent.
+    pub colour: Colour,
+    pub opacity: u8,
+    /// Times vanilla's width (`Window.getAppropriateLineWidth`).
+    pub thickness: u8,
+    /// The block's faces tinted with this colour, lightly.
+    pub fill: Option<Colour>,
+}
+pub const OPACITIES: (u8, u8) = (10, 100);
+pub const OUTLINE_THICKNESSES: (u8, u8) = (1, 4);
+/// How much the fill covers the block's faces, in percent.
+pub const FILL_OPACITY: u8 = 25;
+impl Default for Outline {
+    fn default() -> Self {
+        Self {
+            custom: false,
+            colour: Colour::Black,
+            opacity: 40,
+            thickness: 1,
+            fill: None,
+        }
+    }
+}
+impl Outline {
+    /// The stroke's ARGB and its width as a multiple of vanilla's; none for vanilla's.
+    pub fn stroke(&self) -> Option<(u32, f32)> {
+        self.custom.then(|| {
+            (
+                self.colour.with_opacity(self.opacity),
+                f32::from(self.thickness),
+            )
+        })
+    }
+    /// The fill's ARGB, when there is one.
+    pub fn fill(&self) -> Option<u32> {
+        self.fill
+            .filter(|_| self.custom)
+            .map(|c| c.with_opacity(FILL_OPACITY))
+    }
+}
+/// The tint a hurt entity flashes (`OverlayTexture`'s red rows). Off, vanilla's: red over 30%.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Hit {
+    pub custom: bool,
+    pub colour: Colour,
+    /// How much of the colour covers the entity, in percent.
+    pub opacity: u8,
+}
+pub const HIT_OPACITIES: (u8, u8) = (0, 100);
+impl Default for Hit {
+    fn default() -> Self {
+        Self {
+            custom: false,
+            colour: Colour::Red,
+            opacity: 30,
+        }
+    }
+}
+impl Hit {
+    /// The overlay texel as RGBA bytes in a little-endian u32 (WGSL's `unpack4x8unorm`), its alpha
+    /// what of the entity's own colour stays (`entity.fsh` mixes by it); 0 for vanilla's texel.
+    pub fn texel(&self) -> u32 {
+        if !self.custom {
+            return 0;
+        }
+        let [_, r, g, b] = self.colour.argb().to_be_bytes();
+        u32::from_le_bytes([r, g, b, (255 - alpha(self.opacity)) as u8])
+    }
+}
+
+/// What the renderer reads of these options each frame (`FrameInputs::pvp`); the default is
+/// vanilla's look.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Frame {
+    /// The block outline's stroke ([`Outline::stroke`]).
+    pub outline: Option<(u32, f32)>,
+    /// The hurt overlay texel ([`Hit::texel`]), 0 for vanilla's.
+    pub hurt_texel: u32,
+}
+impl Pvp {
+    pub fn frame(&self) -> Frame {
+        Frame {
+            outline: self.outline.stroke(),
+            hurt_texel: self.hit.texel(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Pvp {
     pub crosshair: Crosshair,
+    pub outline: Outline,
+    pub hit: Hit,
 }
 fn flag(value: &str, d: bool) -> bool {
     match value {
@@ -357,6 +468,7 @@ impl Pvp {
     /// One `key:value` line of `horizon-extras.txt`; false when the key isn't a PvP one.
     pub fn parse_line(&mut self, key: &str, value: &str) -> bool {
         let c = &mut self.crosshair;
+        let (o, h) = (&mut self.outline, &mut self.hit);
         match key {
             "crosshair" => c.custom = flag(value, c.custom),
             "crosshairShape" => c.shape = Shape::parse(value).unwrap_or(c.shape),
@@ -372,6 +484,19 @@ impl Pvp {
                     v => Colour::parse(v).or(c.hover),
                 }
             }
+            "outline" => o.custom = flag(value, o.custom),
+            "outlineColour" => o.colour = Colour::parse(value).unwrap_or(o.colour),
+            "outlineOpacity" => o.opacity = num(value, OPACITIES, o.opacity),
+            "outlineThickness" => o.thickness = num(value, OUTLINE_THICKNESSES, o.thickness),
+            "outlineFill" => {
+                o.fill = match value {
+                    "off" => None,
+                    v => Colour::parse(v).or(o.fill),
+                }
+            }
+            "hit" => h.custom = flag(value, h.custom),
+            "hitColour" => h.colour = Colour::parse(value).unwrap_or(h.colour),
+            "hitOpacity" => h.opacity = num(value, HIT_OPACITIES, h.opacity),
             _ => return false,
         }
         true
@@ -392,6 +517,19 @@ impl Pvp {
             c.outline,
             c.dot,
             c.hover.map_or("off", Colour::name),
+        );
+        let (o, h) = (&self.outline, &self.hit);
+        let _ = write!(
+            out,
+            "outline:{}\noutlineColour:{}\noutlineOpacity:{}\noutlineThickness:{}\noutlineFill:{}\nhit:{}\nhitColour:{}\nhitOpacity:{}\n",
+            o.custom,
+            o.colour.name(),
+            o.opacity,
+            o.thickness,
+            o.fill.map_or("off", Colour::name),
+            h.custom,
+            h.colour.name(),
+            h.opacity,
         );
     }
 }
@@ -433,6 +571,15 @@ opts! {
     CrosshairDot, "crosshair_dot", "Centre dot", "A dot in the middle of the crosshair.";
     CrosshairHover, "crosshair_hover", "Colour on entities",
         "Another colour while the crosshair is over a mob or a player you could hit, as vanilla's attack indicator knows it.";
+    Outline, "outline", "Custom block outline", "Changes the outline around the block you look at.";
+    OutlineColour, "outline_colour", "Colour", "The outline's colour. Black at 40% is vanilla's.";
+    OutlineOpacity, "outline_opacity", "Opacity", "How solid the outline is.";
+    OutlineThickness, "outline_thickness", "Thickness", "The outline's width, in times vanilla's.";
+    OutlineFill, "outline_fill", "Fill", "Tints the faces of the block you look at, lightly.";
+    Hit, "hit", "Custom hit colour",
+        "Changes the colour mobs and players flash when they are hurt. Red at 30% is vanilla's.";
+    HitColour, "hit_colour", "Colour", "The colour hurt mobs and players flash.";
+    HitOpacity, "hit_opacity", "Opacity", "How much of the colour covers them.";
 }
 /// The PvP & HUD page: headers (language keys) and options.
 pub fn rows() -> Vec<Result<Opt, &'static str>> {
@@ -452,14 +599,30 @@ pub fn rows() -> Vec<Result<Opt, &'static str>> {
         ]
         .map(Ok),
     );
+    rows.push(Err("horizon.pvp.header.outline"));
+    rows.extend(
+        [
+            Outline,
+            OutlineColour,
+            OutlineOpacity,
+            OutlineThickness,
+            OutlineFill,
+        ]
+        .map(Ok),
+    );
+    rows.push(Err("horizon.pvp.header.hit"));
+    rows.extend([Hit, HitColour, HitOpacity].map(Ok));
     rows
 }
 impl Opt {
     /// The switch this option belongs to.
     pub fn parent(self) -> Option<Opt> {
+        use Opt::*;
         match self {
-            Opt::Crosshair => None,
-            _ => Some(Opt::Crosshair),
+            Crosshair | Outline | Hit => None,
+            OutlineColour | OutlineOpacity | OutlineThickness | OutlineFill => Some(Outline),
+            HitColour | HitOpacity => Some(Hit),
+            _ => Some(Crosshair),
         }
     }
     pub fn switch(self, p: &Pvp) -> Option<bool> {
@@ -468,6 +631,8 @@ impl Opt {
             Opt::Crosshair => c.custom,
             Opt::CrosshairOutline => c.outline,
             Opt::CrosshairDot => c.dot,
+            Opt::Outline => p.outline.custom,
+            Opt::Hit => p.hit.custom,
             _ => return None,
         })
     }
@@ -484,12 +649,29 @@ impl Opt {
                 Some(colour) => colour.label(),
                 None => crate::lang::get_or("Off", "Off"),
             },
+            Opt::OutlineColour => p.outline.colour.label(),
+            Opt::OutlineOpacity => format!("{}%", p.outline.opacity),
+            Opt::OutlineThickness => format!("{}x", p.outline.thickness),
+            Opt::OutlineFill => match p.outline.fill {
+                Some(colour) => colour.label(),
+                None => crate::lang::get_or("Off", "Off"),
+            },
+            Opt::HitColour => p.hit.colour.label(),
+            Opt::HitOpacity => format!("{}%", p.hit.opacity),
             _ => return None,
         })
     }
     /// A click; `back` (right button, wheel up) goes the other way.
     pub fn cycle(self, p: &mut Pvp, back: bool) {
         let c = &mut p.crosshair;
+        let (o, h) = (&mut p.outline, &mut p.hit);
+        // Off, then every solid colour.
+        let solid_or_off = |v: Option<Colour>| {
+            let all = [None]
+                .into_iter()
+                .chain(Colour::ALL[1..].iter().copied().map(Some));
+            step(&all.collect::<Vec<_>>(), v, back)
+        };
         match self {
             Opt::Crosshair => c.custom = !c.custom,
             Opt::CrosshairShape => c.shape = step(&Shape::ALL, c.shape, back),
@@ -508,6 +690,16 @@ impl Opt {
                     .collect();
                 c.hover = step(&all, c.hover, back);
             }
+            Opt::Outline => o.custom = !o.custom,
+            Opt::OutlineColour => o.colour = o.colour.step_solid(back),
+            Opt::OutlineOpacity => o.opacity = step_by(o.opacity, OPACITIES, 10, back),
+            Opt::OutlineThickness => {
+                o.thickness = step_by(o.thickness, OUTLINE_THICKNESSES, 1, back)
+            }
+            Opt::OutlineFill => o.fill = solid_or_off(o.fill),
+            Opt::Hit => h.custom = !h.custom,
+            Opt::HitColour => h.colour = h.colour.step_solid(back),
+            Opt::HitOpacity => h.opacity = step_by(h.opacity, HIT_OPACITIES, 10, back),
         }
     }
 }
@@ -662,6 +854,54 @@ mod tests {
         assert!(p.parse_line("crosshairSize", "99") && p.crosshair.size == SIZES.1);
         assert!(p.parse_line("crosshairColour", "plaid") && p.crosshair.colour == Colour::White);
         assert!(!p.parse_line("fullbright", "true"));
+    }
+
+    #[test]
+    fn outline_and_hit_colours_default_to_vanillas() {
+        // Turned on with their first settings, they give vanilla's colours: the outline's
+        // 0x66000000 (LevelRenderer) and OverlayTexture's hurt texel 0xB2FF0000.
+        let o = Outline {
+            custom: true,
+            ..Default::default()
+        };
+        assert_eq!(o.stroke(), Some((0x6600_0000, 1.0)));
+        assert_eq!(o.fill(), None);
+        let [r, g, b, a] = crate::overlay::HURT_TEXEL;
+        let hit = Hit {
+            custom: true,
+            ..Default::default()
+        };
+        assert_eq!(hit.texel(), u32::from_le_bytes([r, g, b, a]));
+        assert_eq!(
+            (Outline::default().stroke(), Hit::default().texel()),
+            (None, 0)
+        );
+        // Fully opaque cyan covers the entity entirely: none of its own colour stays.
+        let cyan = Hit {
+            custom: true,
+            colour: Colour::Cyan,
+            opacity: 100,
+        };
+        assert_eq!(cyan.texel().to_le_bytes(), [0x40, 0xFF, 0xFF, 0]);
+        let mut p = Pvp::default();
+        Opt::Outline.cycle(&mut p, false);
+        Opt::OutlineFill.cycle(&mut p, false);
+        assert_eq!(p.outline.fill(), Some(0x40FF_FFFF), "white at 25%");
+        Opt::OutlineOpacity.cycle(&mut p, true);
+        Opt::OutlineOpacity.cycle(&mut p, true);
+        Opt::OutlineOpacity.cycle(&mut p, true);
+        Opt::OutlineOpacity.cycle(&mut p, true);
+        assert_eq!(p.outline.opacity, 100, "down from 10% wraps to 100%");
+        Opt::OutlineColour.cycle(&mut p, true);
+        assert_eq!(p.outline.colour, Colour::Magenta, "never Inverted");
+        let mut text = String::new();
+        p.serialize(&mut text);
+        let mut read = Pvp::default();
+        for line in text.lines() {
+            let (k, v) = line.split_once(':').unwrap();
+            assert!(read.parse_line(k, v), "{k}");
+        }
+        assert_eq!(read, p);
     }
 
     #[test]
