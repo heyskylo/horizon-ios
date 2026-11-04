@@ -84,6 +84,7 @@ Inventory.isEmpty	port	crates/horizon-world/src/player_inventory.rs::PlayerInven
 Inventory.getItem	port	crates/horizon-world/src/player_inventory.rs::PlayerInventory::get	slots past the main inventory address equipment
 Inventory.replaceWith	port	crates/horizon-world/src/player_inventory.rs::PlayerInventory::replace_with	
 Inventory.removeFromSelected	port	crates/horizon-world/src/player_inventory.rs::PlayerInventory::remove_selected	
+Player.getVoicePitch	port	crates/horizon-client/src/game/remote.rs::player_voice_pitch	a constant 1.0 (fconst_1), so the hurt sound of handleDamageEvent and the death sound of handleEntityEvent 3 are played unpitched and draw nothing from the level random
 Player.defineSynchedData	skip:java		synched data definitions; Horizon keeps the fields in game and player state
 Player.turtleHelmetTick	port	crates/horizon-client/src/game/potions.rs::Game::turtle_helmet_tick	
 Player.isEquipped	inline	crates/horizon-client/src/game/potions.rs::Game::turtle_helmet_tick	the head-slot check for the turtle helmet
@@ -92,6 +93,7 @@ Player.increaseScore	skip:other		the score is experience.total in Horizon (death
 Player.getWeaponItem	missing		the riptide spin attack keeps only `auto_spin_attack_ticks` and `auto_spin_attack_dmg`, not the stack it started with (`autoSpinAttackItemStack`), so there is no item to answer with mid-spin
 Player.destroyVanishingCursedItems	port	crates/horizon-client/src/game.rs::Game::drop_inventory	vanishing-curse stacks are removed from the death drops
 Player.hasCorrectToolForDrops	port	crates/horizon-client/src/game.rs::Game::tick_mining	the correct-tool test for harvest drops
+Player.canDropItems	inline	crates/horizon-client/src/lan/menu.rs::click	THROW is not acted on while the client has dropped items too fast
 Player.readAdditionalSaveData	port	crates/horizon-client/src/save.rs::Level::read_player	
 Player.addAdditionalSaveData	port	crates/horizon-client/src/save.rs::Level::player_tag	
 Player.hurtHelmet	inline	crates/horizon-client/src/game.rs::Game::hurt_armor	gap: minor: hurt_armor hits all four armour slots; the head-only hit from LivingEntity.hurt is not separated
@@ -105,7 +107,7 @@ Player.startSleepInBed	port	crates/horizon-client/src/game.rs::Game::try_sleep
 Player.isSleepingLongEnough	port	crates/horizon-client/src/game/lan_actions.rs::sleep_counts	100 ticks in bed is what counts a sleeper as deep for SleepStatus.update
 Player.updateSwimming	port	crates/horizon-client/src/motion.rs::MotionWorld::swimming	
 Player.getXpNeededForNextLevel	port	crates/horizon-client/src/entities.rs::Experience::needed	
-Player.hasEnoughFoodToDoExhaustiveManoeuvres	missing		no food-or-flying gate anywhere in `motion.rs`: the exhaustion of a jump or a move is added without asking the food level
+Player.hasEnoughFoodToDoExhaustiveManoeuvres	inline	crates/horizon-client/src/sprint.rs::Conditions::possible	the food-or-mayfly test is the sprint gate's `enough_food || may_fly`: `enough_food` is `FoodData::has_enough_food` (food level above 6) filled in `motion.rs`, and `player_food::enough_food_for_manoeuvres` is the same test as a probed free function
 Player.mayUseItemAt	port	crates/horizon-client/src/game.rs::Game::use_hand	the may-build test before use-on in adventure mode
 Player.isSwimming	port	crates/horizon-client/src/motion.rs::MotionWorld::swimming	
 Player.decorateDisplayNameComponent	port	crates/horizon-client/src/game/commands.rs::player_display_name	click suggests /tell, hover shows the player entity, plus the insertion
@@ -133,8 +135,8 @@ StackedContents.RecipePicker.getVisitedIngredientIndex	skip:java		bitset index a
 StackedContents.RecipePicker.getVisitiedItemIndex	skip:java		bitset index arithmetic; plain bool vectors in Horizon
 StackedContents.RecipePicker.clearAllVisited	port	crates/horizon-client/src/menu/place.rs::Picker::clear_visited	
 StackedItemContents.getBiggestCraftableStack	port	crates/horizon-client/src/menu/place.rs::Stacked::try_pick_all	the largest craftable count, found by a bounded search
-EvokerFangs.readAdditionalSaveData	missing		fangs are not saved: `entity_nbt.rs` has no evoker fangs writer, so a save in mid-bite drops them
-EvokerFangs.addAdditionalSaveData	missing		no writer for the warmup delay or the owner either
+EvokerFangs.readAdditionalSaveData	port	crates/horizon-client/src/game/persist.rs::Game::spawn_loaded_entities	Warmup defaults to 0 and enters active fangs; gap: Owner resolution only finds already-loaded mobs
+EvokerFangs.addAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::evoker_fangs_to_nbt	live Warmup, known owner UUID, unresolved Owner retained from raw NBT
 EvokerFangs.getAnimationProgress	port	crates/horizon-client/src/game/fangs.rs::Game::fangs_geometry	the bite progress that positions the fang model
 EyeOfEnder.setItem	skip:ui		the item sprite a flying eye shows; Horizon draws the eye itself
 EyeOfEnder.shouldRenderAtSqrDistance	skip:ui		render distance culling only

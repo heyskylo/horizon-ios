@@ -163,12 +163,17 @@ def mob_hits_case(kind):
 
 
 def zombie_half_shield_case():
-    """A zombie one block in front of Bob, who holds a raised half-blocking shield, hits him once."""
+    """A zombie in front of Bob, who holds a raised half-blocking shield, hits him once.
+
+    The zombie stands south-west of Bob, 45 degrees from his view whether it is the west of his position packets
+    (yaw 90) or the south the `use` packet turns him to (`handleUseItem`'s absSnapRotationTo(0, 0)): which of the two
+    counts at the tick of the hit is down to timing, and one block east (behind him, or at exactly 90 degrees) made the
+    shield block in some runs of vanilla and not in others (#8164)."""
     mob = '@e[type=minecraft:zombie,limit=1]'
     return ['cmd Bob clear @s', 'cmd Alice gamemode creative', *stand('Bob', V, 90),
             f'cmd Bob item replace entity @s weapon.mainhand with {HALF_SHIELD}', 'ticks 2', 'use Bob', 'ticks 30',
             *stand('Bob', V, 90, ticks=1), 'mark Bob',
-            f'cmd Alice summon minecraft:zombie {V[0] + 1} {V[1]} {V[2]} {{Rotation:[90f,0f]}}',
+            f'cmd Alice summon minecraft:zombie {V[0] - 1} {V[1]} {V[2] + 1} {{Rotation:[-135f,0f]}}',
             f'cmd Alice effect give {mob} minecraft:slowness 100000 127 true', 'await Bob', f'cmd Alice kill {mob}',
             'ticks 20', *stand('Bob', V, 90), 'cmd Bob clear @s', 'cmd Alice kill @e[type=!player]',
             'cmd Alice gamemode survival']

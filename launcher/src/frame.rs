@@ -400,10 +400,10 @@ impl Launcher {
             _ => {}
         }
 
-        // Sculk's card (not in the mockup, kept: a sponsor), where the old sidebar had it: above
-        // the links on every page but Servers, which shows the wide banner. Tall where the
-        // sidebar has the height for it besides its rows, compact otherwise.
-        if self.page != Page::Servers && !self.settings.partner_hidden {
+        // Sculk's card (not in the mockup, kept: a sponsor), where the old sidebar had it: at
+        // the sidebar's foot above the links, on every page (Servers shows the wide banner too).
+        // Tall where the sidebar has the height for it besides its rows, compact otherwise.
+        if !self.settings.partner_hidden {
             let rows = self.instances.list.len() + servers.len();
             let free = f32::from(window.viewport_size().height)
                 - 2. * MARGIN
@@ -532,10 +532,7 @@ impl Launcher {
     pub(super) fn glass_topbar(&mut self, cx: &mut Context<Self>) -> Div {
         let t = self.theme;
         let mut tabs = div().flex().items_center().gap(px(4.)).min_w_0();
-        for (page, label, _) in Page::ALL {
-            if page == Page::Settings {
-                continue;
-            }
+        for (page, label, _) in Page::in_top_bar(self.wardrobe_shown()) {
             tabs = tabs.child(
                 ui::tab(format!("nav-{label}"), tr(label), self.page == page, &t).on_click(
                     cx.listener(move |this, _: &ClickEvent, _, cx| {
@@ -562,7 +559,7 @@ impl Launcher {
         let (name, how) = self.who_plays();
         let face = match self.accounts.player() {
             Player::Microsoft(_) => self.accounts.selected().map(|a| a.uuid.clone()),
-            _ => None,
+            _ => Some(profile_heads::offline_key(&name)),
         };
         let open = self.account_menu;
         let chip =
@@ -698,6 +695,7 @@ impl Launcher {
             .px(px(32.))
             .pt(px(14.))
             .child(strip)
+            .children(self.toast_in_topbar())
             .child(
                 div()
                     .ml_auto()
@@ -756,15 +754,18 @@ impl Launcher {
                                 .size(px(30.))
                                 .rounded(px(8.))
                                 .overflow_hidden()
-                                .child(self.profile_heads.draw(
-                                    match &who {
-                                        Player::Microsoft(uuid) => Some(uuid),
-                                        _ => None,
-                                    },
-                                    30.,
-                                    self.scale,
-                                    &t,
-                                )),
+                                .child(
+                                    self.profile_heads.draw(
+                                        match &who {
+                                            Player::Microsoft(uuid) => Some(uuid.clone()),
+                                            _ => Some(profile_heads::offline_key(&name)),
+                                        }
+                                        .as_deref(),
+                                        30.,
+                                        self.scale,
+                                        &t,
+                                    ),
+                                ),
                         )
                         .child(
                             div()
@@ -877,7 +878,7 @@ impl Launcher {
                     move |this, _: &ClickEvent, _, cx| {
                         this.row_menu.open = None;
                         let _ = std::fs::create_dir_all(&home);
-                        cx.open_with_system(&home);
+                        crate::glass_toast::open(cx, &home);
                         cx.notify();
                     },
                 )),

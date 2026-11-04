@@ -136,6 +136,16 @@ pub fn jump_sound(m: &Mob) -> &'static str {
         _ => "entity.horse.jump",
     }
 }
+/// `PlayerRideableJumping.getPlayerJumpPendingScale`: the charge `data` out of
+/// 100 as the scale a mount leaps or dashes with (a full bar is 1.0 and the
+/// shortest is 0.4).
+pub fn jump_pending_scale(data: i32) -> f32 {
+    if data >= 90 {
+        1.0
+    } else {
+        0.4 + 0.4 * data as f32 / 90.0
+    }
+}
 /// `AbstractHorse.onPlayerJump`: a released jump bar lets the horse slide on
 /// the rider's keys (`allowStandSliding`) and makes it rear.
 pub fn on_player_jump(m: &mut Mob) {

@@ -2406,7 +2406,7 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
         cursor: (f32, f32),
         hide_splash: bool,
     ) {
-        self.draw_with_items(atlas, None, batch, cursor, hide_splash);
+        self.draw_with_items(atlas, None, batch, cursor, hide_splash, false);
     }
     /// [`Title::draw`] with the item models, which draw the item icons of the
     /// Superflat screens the way `GuiGraphics.renderItem` does.
@@ -2417,6 +2417,7 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
         batch: &mut HudBatch,
         cursor: (f32, f32),
         hide_splash: bool,
+        hide_server_address: bool,
     ) {
         let (w, h) = (batch.width.ceil(), batch.height.ceil());
         if let Some(rules) = self.rules.borrow_mut().as_mut() {
@@ -3116,6 +3117,7 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
                 &mut self.caret.borrow_mut(),
                 self.started,
                 cursor,
+                hide_server_address,
             ),
         }
         for b in self.buttons(w, h) {
@@ -3386,16 +3388,27 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
         }
         if matches!(self.mode, Mode::CreateBuffet { .. }) {
             self.buffet_click(x, y, (w, h), hit);
+            self.drop_button_focus_for_field(hit);
             return (Action::None, hit.is_some());
         }
         if matches!(self.mode, Mode::CreateFlat { .. }) {
             self.flat_click(x, y, (w, h), hit);
+            self.drop_button_focus_for_field(hit);
             return (Action::None, hit.is_some());
         }
         let action = self.click_action(x, y, (w, h), hit);
+        self.drop_button_focus_for_field(hit);
         // World list selection is silent; launching its selected entry sounds.
         let sound = hit.is_some() || matches!(action, Action::Play { .. });
         (action, sound)
+    }
+    /// A click that misses every button and leaves an edit box focused moves the focus
+    /// to that box (`Screen.setFocused`): a focused button must not keep reacting to
+    /// Space, which the box now types.
+    fn drop_button_focus_for_field(&mut self, hit: Option<u8>) {
+        if hit.is_none() && self.has_caret_field() {
+            self.focused_button = None;
+        }
     }
     fn click_action(&mut self, x: f32, y: f32, (w, h): (f32, f32), hit: Option<u8>) -> Action {
         match (&mut self.mode, hit) {
@@ -4640,6 +4653,35 @@ mod classic_tests {
             title.focused_button.is_some(),
             "the next Tab reaches the buttons"
         );
+    }
+
+    /// Vanilla: clicking an EditBox focuses it, so a button focused earlier stops
+    /// reacting to Space (which the box types).
+    #[test]
+    fn clicking_a_text_field_drops_the_focused_button() {
+        let mut title = Title::new(
+            PathBuf::new(),
+            Path::new("/nonexistent/horizon-test-resources"),
+        );
+        title.mode = Mode::Create {
+            name: String::new(),
+            seed: String::new(),
+            creative: false,
+            focus: 0,
+            options: WorldOptions::default(),
+        };
+        title.focused_button = Some(1);
+        // A click inside the name field hits no button and focuses the field.
+        let (_, [fx, fy, fw, fh]) = create_world::field_rect(854.0, 480.0, 0).unwrap();
+        let (action, _) = title.click(fx + fw / 2.0, fy + fh / 2.0, (854.0, 480.0));
+        assert!(matches!(action, Action::None));
+        assert!(title.focused_button.is_none());
+        assert!(title.has_caret_field());
+        title.type_text(" ");
+        match &title.mode {
+            Mode::Create { name, .. } => assert_eq!(name, " "),
+            _ => unreachable!(),
+        }
     }
 
     #[test]

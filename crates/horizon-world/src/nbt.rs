@@ -10,6 +10,19 @@ impl From<&str> for JavaString {
         Self(value.encode_utf16().collect())
     }
 }
+/// `key` in UTF-16 in a buffer kept per thread, to search a compound
+/// without allocating a key every time.
+fn with_key<R>(key: &str, f: impl FnOnce(&JavaString) -> R) -> R {
+    thread_local! {
+        static KEY: std::cell::RefCell<JavaString> = Default::default();
+    }
+    KEY.with_borrow_mut(|units| {
+        units.0.clear();
+        units.0.extend(key.encode_utf16());
+        f(units)
+    })
+}
+
 impl JavaString {
     pub fn to_string(&self) -> Result<String, std::string::FromUtf16Error> {
         String::from_utf16(&self.0)
@@ -62,13 +75,13 @@ impl Tag {
     }
     pub fn get(&self, key: &str) -> Option<&Tag> {
         match self {
-            Self::Compound(map) => map.get(&JavaString::from(key)),
+            Self::Compound(map) => with_key(key, |key| map.get(key)),
             _ => None,
         }
     }
     pub fn get_mut(&mut self, key: &str) -> Option<&mut Tag> {
         match self {
-            Self::Compound(map) => map.get_mut(&JavaString::from(key)),
+            Self::Compound(map) => with_key(key, |key| map.get_mut(key)),
             _ => None,
         }
     }
