@@ -2,7 +2,10 @@
 //! writes, and the per-thread context the item and particle readers consult while a packet from such a
 //! server is decoded (an id there decides how the bytes after it read, so it must be renumbered as it is
 //! read, not afterwards).
-use std::cell::Cell;
+use std::{
+    cell::{Cell, RefCell},
+    collections::HashMap,
+};
 
 /// How one registry's ids differ between an older version and the pinned one.
 #[derive(Clone, Copy, Debug)]
@@ -89,12 +92,21 @@ pub struct Quirks {
     pub shoulder_parrots_as_nbt: bool,
     /// Before 1.21.6, attribute modifiers had no display and equippables no shearing fields.
     pub components_before_1_21_6: bool,
+    /// The 1.21.4 component patch has per-component tooltip flags and older nested codecs.
+    pub components_before_1_21_5: bool,
+    /// These releases use count-first ItemStack.STREAM_CODEC where the pinned version uses templates.
+    pub count_first_templates: bool,
+    /// Optional name/UUID and properties, without the pinned profile tag or skin patch.
+    pub optional_profile_fields: bool,
 }
 impl Quirks {
     pub const NONE: Self = Self {
         tag_slot_display_is_id: false,
         shoulder_parrots_as_nbt: false,
         components_before_1_21_6: false,
+        components_before_1_21_5: false,
+        count_first_templates: false,
+        optional_profile_fields: false,
     };
 }
 
@@ -126,12 +138,31 @@ pub enum Way {
 
 thread_local! {
     static ACTIVE: Cell<Option<(&'static Ids, Way)>> = const { Cell::new(None) };
+    static TRIM_PATTERNS: RefCell<HashMap<i32,i32>> = RefCell::new(HashMap::new());
+}
+
+/// Connection-local trim ids while decoding the old smithing preview's template displays.
+pub(crate) fn trim_patterns(patterns: HashMap<i32, i32>) -> TrimGuard {
+    TrimGuard(TRIM_PATTERNS.replace(patterns))
+}
+pub(crate) struct TrimGuard(HashMap<i32, i32>);
+impl Drop for TrimGuard {
+    fn drop(&mut self) {
+        TRIM_PATTERNS.replace(std::mem::take(&mut self.0));
+    }
+}
+pub(crate) fn trim_pattern(item: i32) -> Option<i32> {
+    TRIM_PATTERNS.with_borrow(|patterns| patterns.get(&item).copied())
 }
 
 /// Renumber ids `way` on this thread until the guard drops. Readers and writers that pick a layout by an id
 /// (item stacks, data components, particles) consult it through [`item`], [`component`] and [`particle`].
 pub fn renumbering(ids: &'static Ids, way: Way) -> Guard {
     Guard(ACTIVE.replace(Some((ids, way))))
+}
+/// Decode a stored pinned value before encoding its nested values for an older server.
+pub(crate) fn unrenumbered() -> Guard {
+    Guard(ACTIVE.replace(None))
 }
 
 /// Restores the previous context when dropped.

@@ -309,6 +309,10 @@ fn consume_effect(r: &mut Reader) -> Result<()> {
 /// BlockPredicate: blocks, properties, nbt, then DataComponentMatchers (exact, partial).
 fn block_predicate(r: &mut Reader) -> Result<()> {
     optional(r, holder_set)?;
+    block_properties_and_nbt(r)?;
+    component_matchers(r)
+}
+pub(super) fn block_properties_and_nbt(r: &mut Reader) -> Result<()> {
     // StatePropertiesPredicate: PropertyMatchers, each a name and an
     // Either<ExactMatcher (value), RangedMatcher (min, max)>.
     optional(r, |r| {
@@ -322,7 +326,9 @@ fn block_predicate(r: &mut Reader) -> Result<()> {
             }
         })
     })?;
-    optional(r, nbt)?;
+    optional(r, nbt)
+}
+pub(super) fn component_matchers(r: &mut Reader) -> Result<()> {
     // DataComponentExactPredicate: TypedDataComponents, a component type id and its value.
     list(r, |r| {
         let kind = r.varint()?;

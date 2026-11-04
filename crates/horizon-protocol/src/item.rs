@@ -13,6 +13,7 @@ use std::sync::Arc;
 pub mod custom;
 mod hash;
 mod skip;
+mod v1_21_4;
 mod v1_21_5;
 
 pub use hash::{Names, NoNames};
@@ -267,6 +268,12 @@ impl SkinPatch {
 }
 impl Component {
     pub(crate) fn read(kind: i32, r: &mut Reader) -> Result<Self> {
+        if kind == component::CONTAINER && ids::quirks().count_first_templates {
+            return Ok(Self::Raw(read_legacy_container(r)?));
+        }
+        if kind == component::PROFILE && ids::quirks().optional_profile_fields {
+            return read_optional_profile(r).map(Self::Profile);
+        }
         if let Some(bytes) = v1_21_5::read(kind, r)? {
             return Ok(Self::Raw(bytes));
         }
@@ -523,7 +530,13 @@ impl Component {
     pub(crate) fn write(&self, kind: i32, w: &mut Writer) {
         match self {
             Self::Raw(bytes) => {
-                let legacy = v1_21_5::write(kind, bytes);
+                let legacy = if kind == component::CONTAINER
+                    && matches!(ids::active(),Some((ids,ids::Way::Down)) if ids.quirks.count_first_templates)
+                {
+                    write_legacy_container(bytes).ok()
+                } else {
+                    v1_21_5::write(kind, bytes)
+                };
                 w.bytes(legacy.as_deref().unwrap_or(bytes));
             }
             Self::BannerPatterns(layers) => {
@@ -579,6 +592,11 @@ impl Component {
                 }
             }
             Self::Profile(p) => {
+                if matches!(ids::active(),Some((ids,ids::Way::Down)) if ids.quirks.optional_profile_fields)
+                {
+                    write_optional_profile(p, w);
+                    return;
+                }
                 w.u8(0);
                 w.bool(p.name.is_some());
                 if let Some(name) = &p.name {
@@ -678,6 +696,80 @@ impl Component {
     }
 }
 
+fn read_optional_profile(r: &mut Reader) -> Result<Profile> {
+    let name = if r.bool()? { Some(r.string(16)?) } else { None };
+    let id = if r.bool()? { Some(r.uuid()?) } else { None };
+    let n = r.count(16)?;
+    let mut properties = Vec::with_capacity(n);
+    for _ in 0..n {
+        let name = r.string(64)?;
+        let value = r.string(32767)?;
+        let signature = if r.bool()? {
+            Some(r.string(32767)?)
+        } else {
+            None
+        };
+        properties.push((name, value, signature));
+    }
+    Ok(Profile {
+        name,
+        id,
+        properties,
+        skin: SkinPatch::default(),
+    })
+}
+fn write_optional_profile(p: &Profile, w: &mut Writer) {
+    w.bool(p.name.is_some());
+    if let Some(name) = &p.name {
+        w.string(name);
+    }
+    w.bool(p.id.is_some());
+    if let Some(id) = p.id {
+        w.uuid(id);
+    }
+    w.varint(p.properties.len() as i32);
+    for (name, value, signature) in &p.properties {
+        w.string(name);
+        w.string(value);
+        w.bool(signature.is_some());
+        if let Some(signature) = signature {
+            w.string(signature);
+        }
+    }
+}
+fn read_legacy_container(r: &mut Reader) -> Result<Vec<u8>> {
+    let n = r.count(256)?;
+    let mut w = Writer::new();
+    w.varint(n as i32);
+    for _ in 0..n {
+        let stack = Slot::read(r)?;
+        w.bool(stack.is_some());
+        if let Some(stack) = stack {
+            let _pinned = ids::unrenumbered();
+            Template::write(&stack, &mut w);
+        }
+    }
+    Ok(w.data)
+}
+fn write_legacy_container(bytes: &[u8]) -> Result<Vec<u8>> {
+    let mut r = Reader::new(bytes);
+    let mut w = Writer::new();
+    let n = r.count(256)?;
+    w.varint(n as i32);
+    for _ in 0..n {
+        let stack = if r.bool()? {
+            Some({
+                let _pinned = ids::unrenumbered();
+                Template::read(&mut r)?
+            })
+        } else {
+            None
+        };
+        write_slot(stack.as_ref(), &mut w);
+    }
+    Ok(w.data)
+}
+
 /// A component patch as `DelimitedSlot` writes it (both counts, then each
 /// value behind its length), kept from a stack that was read so one nobody
 /// edited goes back byte for byte. It is no part of a stack's equality.
@@ -770,21 +862,28 @@ impl Codec<Option<Stack>> for Slot {
         read_stack(r, false)
     }
     fn write(v: &Option<Stack>, w: &mut Writer) {
-        let Some(s) = v else {
-            w.varint(0);
-            return;
-        };
-        w.varint(s.count);
-        w.varint(ids::item(s.item));
-        w.varint(s.added.len() as i32);
-        w.varint(s.removed.len() as i32);
-        for (kind, c) in &s.added {
-            w.varint(ids::component(*kind));
-            c.write(*kind, w);
-        }
-        for kind in &s.removed {
-            w.varint(ids::component(*kind));
-        }
+        write_slot(v.as_ref(), w);
+    }
+}
+fn write_slot(v: Option<&Stack>, w: &mut Writer) {
+    if v1_21_4::writing() {
+        v1_21_4::write_stack(v, w);
+        return;
+    }
+    let Some(s) = v else {
+        w.varint(0);
+        return;
+    };
+    w.varint(s.count);
+    w.varint(ids::item(s.item));
+    w.varint(s.added.len() as i32);
+    w.varint(s.removed.len() as i32);
+    for (kind, c) in &s.added {
+        w.varint(ids::component(*kind));
+        c.write(*kind, w);
+    }
+    for kind in &s.removed {
+        w.varint(ids::component(*kind));
     }
 }
 
@@ -792,6 +891,9 @@ impl Codec<Option<Stack>> for Slot {
 /// has a length in front (DataComponentPatch.DELIMITED_STREAM_CODEC). The
 /// patch is also kept, in the delimited form, for [`Stack::wire`].
 fn read_stack(r: &mut Reader, delimited: bool) -> Result<Option<Stack>> {
+    if v1_21_4::reading() {
+        return v1_21_4::read_stack(r);
+    }
     let count = r.varint()?;
     if count <= 0 {
         return Ok(None);
@@ -848,6 +950,10 @@ impl Codec<Option<Stack>> for DelimitedSlot {
         read_stack(r, true)
     }
     fn write(v: &Option<Stack>, w: &mut Writer) {
+        if v1_21_4::writing() {
+            v1_21_4::write_stack(v.as_ref(), w);
+            return;
+        }
         let Some(s) = v else {
             w.varint(0);
             return;
@@ -880,6 +986,9 @@ impl Codec<Option<Stack>> for DelimitedSlot {
 pub struct Template;
 impl Codec<Stack> for Template {
     fn read(r: &mut Reader) -> Result<Stack> {
+        if ids::quirks().count_first_templates {
+            return read_stack(r, false)?.ok_or_else(|| crate::Error::new("empty item template"));
+        }
         let item = ids::item(r.varint()?);
         let count = r.varint()?;
         let positive = r.count(65536)?;
@@ -901,6 +1010,10 @@ impl Codec<Stack> for Template {
         })
     }
     fn write(s: &Stack, w: &mut Writer) {
+        if matches!(ids::active(),Some((ids,ids::Way::Down)) if ids.quirks.count_first_templates) {
+            write_slot(Some(s), w);
+            return;
+        }
         w.varint(ids::item(s.item));
         w.varint(s.count);
         w.varint(s.added.len() as i32);

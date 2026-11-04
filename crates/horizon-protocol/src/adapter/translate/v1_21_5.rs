@@ -2,16 +2,17 @@
 use super::*;
 
 pub(super) fn clientbound(
-    _session: &Session,
+    session: &Session,
     state: State,
     id: i32,
     payload: &[u8],
 ) -> Result<Option<Vec<u8>>> {
-    if (state, id)
-        != (
-            State::Play,
-            packet_ids::play::clientbound::LEVEL_CHUNK_WITH_LIGHT,
-        )
+    if session.version != ServerVersion::V1_21_5
+        || (state, id)
+            != (
+                State::Play,
+                packet_ids::play::clientbound::LEVEL_CHUNK_WITH_LIGHT,
+            )
     {
         return Ok(None);
     }

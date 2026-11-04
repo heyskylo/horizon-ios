@@ -18,7 +18,12 @@ use crate::{
     packets::{configuration, play},
 };
 
+mod v1_21_4;
 mod v1_21_5;
+
+pub(super) fn old_experience_orb(session: &Session, payload: &[u8]) -> Result<(i32, Vec<u8>)> {
+    v1_21_4::experience_orb(session, payload)
+}
 mod v1_21_8;
 
 impl Ids {
@@ -58,6 +63,16 @@ pub fn clientbound(
         return Ok(Some((id, None)));
     };
     use packet_ids::play::clientbound as cb;
+    if session.version.at_most(ServerVersion::V1_21_4)
+        && state == State::Configuration
+        && id == packet_ids::configuration::clientbound::REGISTRY_DATA
+    {
+        v1_21_4::registry_data(session, payload)?;
+    }
+    let _trims = (session.version.at_most(ServerVersion::V1_21_4)
+        && state == State::Play
+        && matches!(id, cb::RECIPE_BOOK_ADD | cb::PLACE_GHOST_RECIPE))
+    .then(|| ids::trim_patterns(session.trim_patterns.lock().unwrap().clone()));
     // 1.21.11's configuration ends with the world clocks 26.1 syncs as a registry.
     if session.version.at_most(ServerVersion::V1_21_11)
         && (state, id)
@@ -79,7 +94,8 @@ pub fn clientbound(
     // A release at a time: an older server's packets are brought to 26.2's layout first, oldest step first.
     let mut before: Option<Vec<u8>> = None;
     type Step = fn(&Session, State, i32, &[u8]) -> Result<Option<Vec<u8>>>;
-    let steps: [(ServerVersion, Step); 4] = [
+    let steps: [(ServerVersion, Step); 5] = [
+        (ServerVersion::V1_21_4, v1_21_4::clientbound),
         (ServerVersion::V1_21_5, v1_21_5::clientbound),
         (ServerVersion::V1_21_8, v1_21_8::clientbound),
         (ServerVersion::V1_21_11, v1_21_11::clientbound),
@@ -206,6 +222,9 @@ pub fn clientbound(
         (State::Play, cb::SET_ENTITY_DATA) if session.version.at_most(ServerVersion::V1_21_11) => {
             let mut p = decode_play(ids, id, payload)?;
             if let play::Clientbound::SetEntityData(d) = &mut p {
+                if session.version.at_most(ServerVersion::V1_21_4) {
+                    v1_21_4::entity_data(session, d);
+                }
                 if session.version.at_most(ServerVersion::V1_21_5) {
                     v1_21_5::entity_data(session, d);
                 }
@@ -265,6 +284,16 @@ pub fn serverbound(
     };
     use packet_ids::play::serverbound as sb;
     match (state, id) {
+        (State::Play, sb::CHAT | sb::CHAT_COMMAND_SIGNED)
+            if session.version.at_most(ServerVersion::V1_21_4) =>
+        {
+            // LastSeenMessages.Update gained its trailing checksum in 1.21.5.
+            play::Serverbound::decode(id, payload)?;
+            renumbered(id, payload[..payload.len() - 1].to_vec())
+        }
+        (State::Play, sb::CONTAINER_CLICK) if session.version.at_most(ServerVersion::V1_21_4) => {
+            renumbered(id, v1_21_4::container_click(payload)?)
+        }
         (State::Play, sb::PLAYER_COMMAND) if session.version.at_most(ServerVersion::V1_21_5) => {
             renumbered(id, v1_21_5::player_command(payload)?)
         }
@@ -307,7 +336,9 @@ pub fn serverbound(
         (State::Play, sb::PUNCH) => {
             let mut w = Writer::new();
             w.varint(0);
-            let swing = if session.version.at_most(ServerVersion::V1_21_5) {
+            let swing = if session.version.at_most(ServerVersion::V1_21_4) {
+                58 // Vanilla 1.21.4, before the two 1.21.5 test-block packets.
+            } else if session.version.at_most(ServerVersion::V1_21_5) {
                 59 // Vanilla 1.21.5's swing, before change_game_mode shifted the later ids.
             } else if session.version.at_most(ServerVersion::V1_21_11) {
                 v1_21_11::SWING
@@ -776,7 +807,9 @@ mod v1_21_11 {
                 let n = r.count(r.remaining())?;
                 let mut kinds = session.kinds.lock().unwrap();
                 for _ in 0..n {
-                    kinds.remove(&r.varint()?);
+                    let entity = r.varint()?;
+                    kinds.remove(&entity);
+                    session.minecart_display.lock().unwrap().remove(&entity);
                 }
                 None
             }

@@ -84,8 +84,18 @@ fn rewrite(kind: i32, r: &mut Reader, up: bool) -> Result<Option<Vec<u8>>> {
                     }
                 }
             }
-            for _ in 0..4 {
+            let before_5 =
+                ids::active().is_some_and(|(ids, _)| ids.quirks.components_before_1_21_5);
+            for _ in 0..3 {
                 w.bool(r.bool()?);
+            }
+            if up && before_5 {
+                w.bool(false);
+            } else {
+                let interact = r.bool()?;
+                if !before_5 {
+                    w.bool(interact);
+                }
             }
             if up {
                 w.bool(false); // Equippable's default canBeSheared.
@@ -157,6 +167,16 @@ mod tests {
                 "combined",
                 "01f80603000d01000b6d696e6563726166743a7a4008000000000000000003111c034700000001010100",
                 "01a40803001001010b6d696e6563726166743a7a400800000000000000000003112003470000000101010000a80b",
+            ),
+            (
+                "profile",
+                "01f80601003d010b486f72697a6f6e576972650000",
+                "01a40801004800010b486f72697a6f6e57697265000000000000",
+            ),
+            (
+                "container",
+                "01f80601004206030100000000000002fa020000",
+                "01a40801004d0601010300000000000001d903020000",
             ),
         ] {
             let old = bytes(old);

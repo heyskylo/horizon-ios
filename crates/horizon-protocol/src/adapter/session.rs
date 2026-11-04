@@ -47,6 +47,9 @@ pub struct Session {
     pub(super) dimension: Mutex<String>,
     /// Local entity id and last shift input, for pre-1.21.6 crouch commands.
     pub(super) local_player: Mutex<Option<(i32, bool)>>,
+    pub(super) chat_index: std::sync::atomic::AtomicI32,
+    pub(super) minecart_display: Mutex<HashMap<i32, (i32, bool)>>,
+    pub(super) trim_patterns: Mutex<HashMap<i32, i32>>,
     reading: AtomicU8,
     writing: AtomicU8,
     /// Entity UUIDs by network id, for a server that is told which entity a spectator picked by its UUID.
@@ -66,6 +69,9 @@ impl Session {
             version,
             dimension: Mutex::new("minecraft:overworld".into()),
             local_player: Mutex::new(None),
+            chat_index: std::sync::atomic::AtomicI32::new(0),
+            minecart_display: Mutex::new(HashMap::new()),
+            trim_patterns: Mutex::new(HashMap::new()),
             reading: AtomicU8::new(0),
             writing: AtomicU8::new(0),
             uuids: Mutex::new(HashMap::new()),
@@ -91,6 +97,10 @@ impl Session {
     /// knows no such packet.
     pub fn clientbound(&self, id: i32, payload: Vec<u8>) -> Result<Option<(i32, Vec<u8>)>> {
         let state = self.reading();
+        // Vanilla 1.21.4's separate add_experience_orb (id 2) became AddEntity plus metadata.
+        if self.version == ServerVersion::V1_21_4 && state == State::Play && id == 2 {
+            return translate::old_experience_orb(self, &payload).map(Some);
+        }
         let Some(pinned) = self.version.clientbound_id(state, id) else {
             return Ok(None);
         };
@@ -204,6 +214,7 @@ mod tests {
             (ServerVersion::V1_21_8, 772),
             (ServerVersion::V1_21_6, 771),
             (ServerVersion::V1_21_5, 770),
+            (ServerVersion::V1_21_4, 769),
         ] {
             let s = Session::new(version);
             let mut payload = Writer::new();
