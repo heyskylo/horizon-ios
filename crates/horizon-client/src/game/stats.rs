@@ -135,8 +135,9 @@ impl Stats {
         }
         stats
     }
-    /// `ServerStatsCounter.save`.
-    pub(super) fn write(&self, path: &Path) {
+    /// `ServerStatsCounter.toJson`: what `write` puts in the file, and what a
+    /// hand-over's record carries (`player-export`).
+    pub(super) fn to_json(&self) -> serde_json::Value {
         let stats: serde_json::Map<String, serde_json::Value> = self
             .values
             .iter()
@@ -147,10 +148,14 @@ impl Stats {
                 (ty.clone(), serde_json::Value::Object(entries))
             })
             .collect();
-        let json = serde_json::json!({
+        serde_json::json!({
             "stats": stats,
             "DataVersion": horizon_world::DATA_VERSION,
-        });
+        })
+    }
+    /// `ServerStatsCounter.save`.
+    pub(super) fn write(&self, path: &Path) {
+        let json = self.to_json();
         if let Some(dir) = path.parent() {
             let _ = std::fs::create_dir_all(dir);
         }

@@ -80,6 +80,9 @@ pub struct Joined {
     /// Smoothed keep-alive round trip in milliseconds.
     pub latency: Arc<AtomicI32>,
     pub address: SocketAddr,
+    /// The login used up an expectation of a proxy's (`player-expect`) when it
+    /// started (`arrivals`).
+    pub expected: bool,
 }
 /// What a [`PlayerSender`] made for a test's channel gives it.
 pub enum Out {
@@ -182,6 +185,10 @@ pub struct NetConfig {
     /// Behind a Velocity proxy: the secret its forwarded player information is signed with. Only an offline
     /// server (the proxy authenticates) uses it; without it a login is the plain offline one.
     pub forwarding_secret: Option<Vec<u8>>,
+    /// `[transfer]` on: the players a proxy said would arrive
+    /// (`arrivals::Transfers`), shared with the hub. A login uses its
+    /// expectation up as it starts, once the bans and the whitelist let it in.
+    pub arrivals: Option<Arc<std::sync::Mutex<arrivals::Expectations>>>,
     pub log: Option<NetLog>,
     /// server.properties `resource-pack`: offered to every player during
     /// configuration (a dedicated server's; MinecraftServer.getServerResourcePack).
@@ -234,6 +241,7 @@ impl NetConfig {
             gate: None,
             online: None,
             forwarding_secret: None,
+            arrivals: None,
             log: None,
             resource_pack: None,
             code_of_conducts: Vec::new(),

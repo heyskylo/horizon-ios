@@ -269,8 +269,9 @@ pub struct Hub {
     pub native_menu_events: Vec<super::menu::NativeMenuEvent>,
     /// Kicks waiting for the game thread to notify native mods.
     pending_kicks: Vec<HostEvent>,
-    /// The players a proxy said would arrive (`player-expect`).
-    pub arrivals: super::arrivals::Expectations,
+    /// `[transfer]` on (a dedicated server's `--transfers`): the players a proxy
+    /// said would arrive (`player-expect`). None while it is off.
+    pub transfers: Option<super::arrivals::Transfers>,
     /// The entities players started and stopped tracking, collected by
     /// `collect_tracking`, for the game to tell the mods.
     pub native_tracking: Vec<TrackingBatch>,
@@ -670,7 +671,7 @@ impl Hub {
             mod_commands: (serde_json::Value::Null, None),
             native_menu_events: Vec::new(),
             pending_kicks: Vec::new(),
-            arrivals: Default::default(),
+            transfers: None,
             native_tracking: Vec::new(),
             attachment_snapshots: Vec::new(),
             sync_attachments: false,
@@ -998,21 +999,26 @@ impl Hub {
     /// it said would come and did not, and the freezes no hand-over ended.
     /// Neither may last for ever.
     fn expire_arrivals(&mut self, events: &mut Vec<HostEvent>) {
-        for uuid in self.arrivals.expire(std::time::Instant::now()) {
+        // Off: nothing to do (and no player can be frozen).
+        let Some(transfers) = &self.transfers else {
+            return;
+        };
+        for uuid in transfers.table().expire(std::time::Instant::now()) {
             events.push(HostEvent::Warn(format!(
                 "player {} was expected from another server and never came",
                 horizon_protocol::crypto::uuid_string(uuid)
             )));
         }
+        let max = transfers.settings.max_freeze_ticks;
         for g in &mut self.guests {
-            if g.frozen_since
-                .is_some_and(|since| super::arrivals::frozen_too_long(since, self.ticks))
+            if g.handover
+                .as_ref()
+                .is_some_and(|h| super::arrivals::frozen_too_long(h.since, self.ticks, max))
             {
-                g.frozen_since = None;
+                g.handover = None;
                 events.push(HostEvent::Warn(format!(
-                    "{} was frozen for a hand-over for {} ticks and nothing finished it: let go",
+                    "{} was frozen for a hand-over for {max} ticks and nothing finished it: let go",
                     g.name,
-                    super::arrivals::FROZEN_MAX_TICKS
                 )));
             }
         }
@@ -1184,9 +1190,6 @@ impl Hub {
             let g = &self.guests[i];
             (g.name.clone(), g.uuid, g.entity_id, g.game_mode)
         };
-        // The login of a player a proxy said would arrive uses up the
-        // expectation (`arrivals`), so it is not reported as never come.
-        self.arrivals.take(uuid, std::time::Instant::now());
         let g = &self.guests[i];
         g.send(&C::Login(play::Login {
             player_id: entity_id,
@@ -1801,27 +1804,37 @@ impl Hub {
 
     /// Keeps, in a frozen player's inbox, the packets that answer the server
     /// (teleport, chunk batch, loaded, keep-alive, ping, tick end, client
-    /// information) and drops the rest.
-    fn keep_acknowledgements(&mut self, i: usize) {
-        let g = &mut self.guests[i];
+    /// information, chat acknowledgement) and drops the rest. A chat message or
+    /// signed command is dropped too, but the messages it says the client has
+    /// seen are taken first (`unpackAndApplyLastSeen`): the client counts them
+    /// as acknowledged, and its next message after the freeze would not
+    /// validate otherwise.
+    pub(crate) fn keep_acknowledgements(&mut self, i: usize, events: &mut Vec<HostEvent>) {
+        let inbox = std::mem::take(&mut self.guests[i].inbox);
         let mut bytes = 0;
-        g.inbox.retain(|(packet, size)| {
-            let keep = matches!(
-                packet,
+        for (packet, size) in inbox {
+            match &packet {
+                S::Chat(c) => {
+                    self.apply_last_seen(i, &c.last_seen, events);
+                }
+                S::ChatCommandSigned(c) => {
+                    self.apply_last_seen(i, &c.last_seen, events);
+                }
                 S::AcceptTeleportation(_)
-                    | S::PlayerLoaded(_)
-                    | S::ChunkBatchReceived(_)
-                    | S::ClientInformation(_)
-                    | S::ClientTickEnd(_)
-                    | S::KeepAlive(_)
-                    | S::Pong(_)
-            );
-            if keep {
-                bytes += *size;
+                | S::PlayerLoaded(_)
+                | S::ChunkBatchReceived(_)
+                | S::ClientInformation(_)
+                | S::ClientTickEnd(_)
+                | S::KeepAlive(_)
+                | S::Pong(_)
+                | S::ChatAck(_) => {
+                    bytes += size;
+                    self.guests[i].inbox.push_back((packet, size));
+                }
+                _ => {}
             }
-            keep
-        });
-        g.inbox_bytes = bytes;
+        }
+        self.guests[i].inbox_bytes = bytes;
     }
 
     /// Handle the players in this level's packets (`ServerGamePacketListenerImpl`
@@ -1834,14 +1847,19 @@ impl Hub {
         let timed = crate::spans::recording_here();
         for i in 0..self.guests.len() {
             if self.here(&self.guests[i]) {
-                if self.guests[i].frozen_since.is_some() {
+                let frozen = self.guests[i].handover.is_some();
+                if frozen {
                     // Frozen for a hand-over: it answers the server and nothing more.
-                    self.keep_acknowledgements(i);
+                    self.keep_acknowledgements(i, &mut events);
                 }
                 let started = timed.then(std::time::Instant::now);
                 let waiting = self.guests[i].inbox.len();
                 self.process_inbox(i, ctx, &mut events);
-                self.tick_floating(i, &mut events);
+                // Its moves are dropped, so whether the last one left it floating is
+                // stale: a player frozen in a jump is not kicked for flying.
+                if !frozen {
+                    self.tick_floating(i, &mut events);
+                }
                 // A slow tick's line says whose packets took it (`spans::note`).
                 if let Some(started) = started {
                     let g = &self.guests[i];
@@ -4525,6 +4543,7 @@ mod tests {
                 sender: crate::lan::PlayerSender::new(tx, std::sync::Arc::default()),
                 latency: std::sync::Arc::new(std::sync::atomic::AtomicI32::new(0)),
                 address: "127.0.0.1:25565".parse().unwrap(),
+                expected: false,
             },
             1,
             [0.5, 64.0, 0.5],

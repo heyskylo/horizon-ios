@@ -903,6 +903,7 @@ mod tests {
                 sender: PlayerSender::new(tx, Arc::default()),
                 latency: Arc::new(AtomicI32::new(0)),
                 address: "127.0.0.1:25565".parse().unwrap(),
+                expected: false,
             },
             2,
             [0.0, 64.0, 0.0],

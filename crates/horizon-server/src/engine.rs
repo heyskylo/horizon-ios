@@ -238,8 +238,9 @@ pub fn spawn(
     resources: &Path,
     dir: &Path,
     low_memory: bool,
+    transfers: Option<&str>,
 ) -> std::io::Result<Child> {
-    command(program, resources, dir, low_memory)?.spawn()
+    command(program, resources, dir, low_memory, transfers)?.spawn()
 }
 
 /// The command `spawn` runs.
@@ -248,6 +249,7 @@ fn command(
     resources: &Path,
     dir: &Path,
     low_memory: bool,
+    transfers: Option<&str>,
 ) -> std::io::Result<Command> {
     // The game runs in the server folder, so a folder given relative to ours (`--dir srv`) would put its
     // control endpoint in `srv/srv/.horizon`, which doesn't exist.
@@ -258,7 +260,12 @@ fn command(
         .arg("--resources")
         .arg(resources)
         .arg("--control-socket")
-        .arg(control_path(&dir))
+        .arg(control_path(&dir));
+    // `[transfer]` on: a proxy's hand-over requests on that endpoint (docs/server.md).
+    if let Some(transfers) = transfers {
+        command.arg("--transfers").arg(transfers);
+    }
+    command
         .args(["--dedicated", "--nogui"])
         .current_dir(&dir)
         .env("HORIZON_NO_AUDIO", "1")
@@ -339,7 +346,8 @@ mod tests {
     fn low_memory_turns_huge_pages_off_for_the_game() {
         let thp = |low_memory| {
             let dir = std::env::temp_dir();
-            let command = command(Path::new("horizon-client"), &dir, &dir, low_memory).unwrap();
+            let command =
+                command(Path::new("horizon-client"), &dir, &dir, low_memory, None).unwrap();
             command
                 .get_envs()
                 .find(|(k, _)| *k == "MIMALLOC_ALLOW_THP")
@@ -347,6 +355,25 @@ mod tests {
         };
         assert_eq!(thp(true).as_deref(), Some(std::ffi::OsStr::new("0")));
         assert_eq!(thp(false), None);
+    }
+
+    #[test]
+    fn transfers_reach_the_game_only_when_they_are_on() {
+        let args = |transfers: Option<&str>| {
+            let dir = std::env::temp_dir();
+            let command =
+                command(Path::new("horizon-client"), &dir, &dir, false, transfers).unwrap();
+            command
+                .get_args()
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+        };
+        assert!(!args(None).iter().any(|a| a == "--transfers"));
+        let on = args(Some("expect_seconds=10"));
+        let at = on.iter().position(|a| a == "--transfers").unwrap();
+        assert_eq!(on[at + 1], "expect_seconds=10");
+        // Before `--dedicated`: what follows it is vanilla's server arguments.
+        assert!(at < on.iter().position(|a| a == "--dedicated").unwrap());
     }
 
     #[test]
@@ -515,6 +542,7 @@ mod tests {
                 &root.join("res"),
                 &server,
                 false,
+                None,
             ) {
                 Err(e) if e.raw_os_error() == Some(26) && tries < 50 => {
                     tries += 1;

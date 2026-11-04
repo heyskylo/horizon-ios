@@ -771,10 +771,20 @@ fn serve_login(
         lost(shared, &user, &text);
         return Ok(());
     }
+    // A player a proxy said would arrive (`player-expect`) uses the expectation up
+    // here, as the login starts: one that ran out while the player was still in
+    // configuration (a resource pack prompt) would otherwise make it an ordinary
+    // login from this server's own file.
+    let expected = shared.config.arrivals.as_ref().is_some_and(|table| {
+        table
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take(uuid, std::time::Instant::now())
+    });
     let result = login_and_configure(&mut c, shared, uuid, &name, properties);
     match result {
         Ok(Some(parts)) => {
-            play(c, shared, parts, address, counted);
+            play(c, shared, parts, address, counted, expected);
             Ok(())
         }
         Ok(None) => {
@@ -1227,6 +1237,7 @@ fn play(
     parts: Parts,
     address: std::net::SocketAddr,
     counted: Option<super::Counted>,
+    expected: bool,
 ) {
     shared.entered_play();
     let conn = shared.next_id();
@@ -1277,6 +1288,7 @@ fn play(
         sender,
         latency,
         address,
+        expected,
     };
     let mut session = Box::new(session);
     if shared

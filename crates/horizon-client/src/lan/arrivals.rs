@@ -8,16 +8,104 @@
 //! bound, because a proxy that dies in the middle of a move leaves its
 //! expectations and its freezes behind: every expectation expires, the table
 //! has a size cap, and a freeze is let go by itself.
+//!
+//! All of it is off unless `server.toml`'s `[transfer]` turns it on
+//! (horizon-server passes it to the game as `--transfers`, [`Settings`]). While
+//! it is off the hub has no [`Transfers`], every request is refused and nothing
+//! is done on a tick. It has nothing to do with vanilla's `accepts-transfers`,
+//! which is about the transfer packet a server sends a client.
 use super::hub::Hub;
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-/// How long an expectation lives when the request names no time.
-pub const DEFAULT_TTL: Duration = Duration::from_secs(10);
-/// The longest an expectation may be asked to live.
-pub const MAX_TTL: Duration = Duration::from_secs(60);
-/// The most expectations the table keeps at once.
-pub const MAX_EXPECTED: usize = 64;
+/// `server.toml`'s `[transfer]`, as horizon-server passes it: `--transfers
+/// expect_seconds=10,max_expect_seconds=60,max_expected=64,max_freeze_seconds=30`.
+/// A key left out keeps its default.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Settings {
+    /// How long an expectation lives when the request names no time.
+    pub expect: Duration,
+    /// The longest an expectation may be asked to live.
+    pub max_expect: Duration,
+    /// The most expectations the table keeps at once.
+    pub max_expected: usize,
+    /// Server ticks a player may stay frozen for a hand-over: a proxy that dies
+    /// in the middle of one must not leave the player stuck.
+    pub max_freeze_ticks: u64,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            expect: Duration::from_secs(10),
+            max_expect: Duration::from_secs(60),
+            max_expected: 64,
+            max_freeze_ticks: 20 * 30,
+        }
+    }
+}
+
+impl Settings {
+    /// Reads `--transfers`' value: `key=value` pairs separated by commas, each a
+    /// whole number above zero.
+    pub fn parse(text: &str) -> Result<Self, String> {
+        let mut s = Self::default();
+        for pair in text.split(',').map(str::trim).filter(|p| !p.is_empty()) {
+            let (key, value) = pair
+                .split_once('=')
+                .ok_or_else(|| format!("{pair:?} is not key=value"))?;
+            let key = key.trim();
+            let n: u64 = value
+                .trim()
+                .parse()
+                .ok()
+                .filter(|n| *n > 0)
+                .ok_or_else(|| format!("{key} must be a whole number above zero"))?;
+            match key {
+                "expect_seconds" => s.expect = Duration::from_secs(n),
+                "max_expect_seconds" => s.max_expect = Duration::from_secs(n),
+                "max_expected" => {
+                    s.max_expected = usize::try_from(n).map_err(|_| "max_expected is too large")?
+                }
+                "max_freeze_seconds" => {
+                    s.max_freeze_ticks =
+                        n.checked_mul(20).ok_or("max_freeze_seconds is too large")?
+                }
+                other => return Err(format!("unknown setting {other:?}")),
+            }
+        }
+        if s.expect > s.max_expect {
+            return Err("expect_seconds is above max_expect_seconds".into());
+        }
+        Ok(s)
+    }
+}
+
+/// What a server with transfers on keeps: its settings and the players it was
+/// told to expect. The table is shared with the network threads, which use an
+/// expectation up when a login starts.
+#[derive(Debug)]
+pub struct Transfers {
+    pub settings: Settings,
+    pub expected: Arc<Mutex<Expectations>>,
+}
+
+impl Transfers {
+    pub fn new(settings: Settings) -> Self {
+        let expected = Arc::new(Mutex::new(Expectations::new(
+            settings.max_expected,
+            settings.max_expect,
+        )));
+        Self { settings, expected }
+    }
+
+    /// The table, locked. A thread that panicked while holding it left it
+    /// whole: every change is one map operation.
+    pub fn table(&self) -> std::sync::MutexGuard<'_, Expectations> {
+        self.expected.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
 
 /// Why an expectation could not be recorded.
 #[derive(Debug, PartialEq, Eq)]
@@ -27,26 +115,44 @@ pub enum ExpectError {
 }
 
 /// The players a server was told to expect, by unique id.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Expectations {
     until: HashMap<u128, Instant>,
+    max: usize,
+    max_ttl: Duration,
+}
+
+impl Default for Expectations {
+    fn default() -> Self {
+        let s = Settings::default();
+        Self::new(s.max_expected, s.max_expect)
+    }
 }
 
 impl Expectations {
-    /// Records that `uuid` will log in within `ttl` (cut to [`MAX_TTL`]). A second
-    /// request for the same player replaces the first one's deadline. Returns
-    /// whether the player was already expected.
+    pub fn new(max: usize, max_ttl: Duration) -> Self {
+        Self {
+            until: HashMap::new(),
+            max,
+            max_ttl,
+        }
+    }
+
+    /// Records that `uuid` will log in within `ttl` (cut to the longest time
+    /// allowed). A second request for the same player replaces the first one's
+    /// deadline. Returns whether the player was already expected.
     pub fn expect(&mut self, uuid: u128, ttl: Duration, now: Instant) -> Result<bool, ExpectError> {
         self.expire(now);
-        if !self.until.contains_key(&uuid) && self.until.len() >= MAX_EXPECTED {
+        if !self.until.contains_key(&uuid) && self.until.len() >= self.max {
             return Err(ExpectError::Full);
         }
-        let deadline = now + ttl.min(MAX_TTL);
+        let deadline = now + ttl.min(self.max_ttl);
         Ok(self.until.insert(uuid, deadline).is_some())
     }
 
-    /// Consumes the expectation of `uuid`, and says whether it was still alive:
-    /// one login takes it, and a second login of the same player finds none.
+    /// Uses up the expectation of `uuid`, and says whether it was still alive:
+    /// the login that starts takes it, and a second login of the same player
+    /// finds none.
     pub fn take(&mut self, uuid: u128, now: Instant) -> bool {
         match self.until.remove(&uuid) {
             Some(deadline) => now < deadline,
@@ -69,6 +175,11 @@ impl Expectations {
         gone
     }
 
+    /// The longest an expectation may live.
+    pub fn max_ttl(&self) -> Duration {
+        self.max_ttl
+    }
+
     /// How many expectations are recorded (some may be past their time but not
     /// yet swept).
     pub fn len(&self) -> usize {
@@ -80,15 +191,45 @@ impl Expectations {
     }
 }
 
-/// Server ticks a player may stay frozen for a hand-over (thirty seconds): a proxy
-/// that dies in the middle of one must not leave the player stuck.
-pub const FROZEN_MAX_TICKS: u64 = 20 * 30;
 /// The version of the record `player-export` answers with.
 pub const RECORD_VERSION: i64 = 1;
 
-/// Whether a player frozen at tick `since` has been frozen too long at tick `now`.
-pub fn frozen_too_long(since: u64, now: u64) -> bool {
-    now.saturating_sub(since) >= FROZEN_MAX_TICKS
+/// A hand-over in progress on the source: the player was exported with
+/// `freeze`. Its id names it in the later requests, and its record is what
+/// every later export answers with until it ends, the same bytes each time,
+/// so a proxy that lost the reply can ask again.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Handover {
+    pub id: u128,
+    /// The hub tick the freeze started at.
+    pub since: u64,
+    pub record: serde_json::Value,
+}
+
+/// A hand-over id as a reply writes it: 32 lowercase hexadecimal digits.
+pub fn handover_text(id: u128) -> String {
+    format!("{id:032x}")
+}
+
+/// A hand-over id from a request: 32 hexadecimal digits.
+pub fn parse_handover(text: &str) -> Option<u128> {
+    if text.len() != 32 || !text.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    u128::from_str_radix(text, 16).ok()
+}
+
+/// A new hand-over id, from the operating system's secure randomness.
+fn new_handover_id() -> Result<u128, String> {
+    let mut bytes = [0u8; 16];
+    horizon_protocol::crypto::random_bytes(&mut bytes).map_err(|e| e.to_string())?;
+    Ok(u128::from_le_bytes(bytes))
+}
+
+/// Whether a player frozen at tick `since` has been frozen too long at tick
+/// `now`, for a freeze of at most `max` ticks.
+pub fn frozen_too_long(since: u64, now: u64, max: u64) -> bool {
+    now.saturating_sub(since) >= max
 }
 
 /// Why the connected player `uuid` cannot be exported now, or the index of its
@@ -100,6 +241,8 @@ pub fn check_exportable(hub: &Hub, uuid: u128) -> Result<usize, &'static str> {
     let g = &hub.guests[i];
     if !g.placed {
         Err("that player has not finished joining")
+    } else if !g.left_reason.is_empty() {
+        Err("that player is leaving")
     } else if g.vehicle.is_some() {
         Err("that player is riding")
     } else if g.sleeping {
@@ -111,19 +254,33 @@ pub fn check_exportable(hub: &Hub, uuid: u128) -> Result<usize, &'static str> {
     }
 }
 
+/// What a record carries besides the player compound: the JSON the server keeps
+/// for the player's advancements and statistics (null where it keeps none).
+#[derive(Clone, Debug, Default)]
+pub struct Records {
+    pub advancements: serde_json::Value,
+    pub stats: serde_json::Value,
+}
+
 /// The record of the player at guest index `i` (which [`check_exportable`] gave,
-/// with its menus closed): the player compound as the server saves it, as the
-/// uncompressed NBT of the compound in base64, and the few values a proxy reads
-/// without opening it. `advancements` is the JSON the server keeps for the
-/// player, or null. With `freeze`, the player's own inputs stop being acted on
-/// until the freeze is let go.
+/// with its menus closed and its attachments in place): the player compound as
+/// the server saves it, as the uncompressed NBT of the compound in base64, its
+/// advancements and statistics, and the few values a proxy reads without opening
+/// it. With `freeze`, a hand-over starts: the record gets an id, the player's
+/// own inputs stop being acted on until the hand-over ends, and every later
+/// export answers with this same record. A player already frozen is answered
+/// with its hand-over's record, whatever `freeze` says.
 pub fn export_record(
     hub: &mut Hub,
     i: usize,
     freeze: bool,
-    advancements: serde_json::Value,
+    records: Records,
 ) -> Result<serde_json::Value, String> {
     use horizon_world::nbt::{Limits, NamedTag, write_named};
+    if let Some(h) = &hub.guests[i].handover {
+        return Ok(h.record.clone());
+    }
+    let id = freeze.then(new_handover_id).transpose()?;
     let g = &hub.guests[i];
     let tag = super::playerdata::player_tag(g);
     let bytes = write_named(
@@ -141,6 +298,7 @@ pub fn export_record(
     let record = serde_json::json!({
         "version": RECORD_VERSION,
         "data_version": horizon_world::DATA_VERSION,
+        "handover": id.map(handover_text),
         "uuid": horizon_protocol::crypto::uuid_string(g.uuid),
         "name": g.name,
         "dimension": g.dimension,
@@ -149,11 +307,16 @@ pub fn export_record(
         "velocity": velocity,
         "game_mode": g.game_mode,
         "player": super::base64(&bytes),
-        "advancements": advancements,
+        "advancements": records.advancements,
+        "stats": records.stats,
     });
-    if freeze {
+    if let Some(id) = id {
         let since = hub.ticks;
-        hub.guests[i].frozen_since = Some(since);
+        hub.guests[i].handover = Some(Handover {
+            id,
+            since,
+            record: record.clone(),
+        });
     }
     Ok(record)
 }
@@ -171,17 +334,24 @@ fn error(message: &str) -> serde_json::Value {
     serde_json::json!({ "error": message })
 }
 
+/// The reply to every `player-*` request on a server with transfers off.
+pub const OFF: &str = "transfers are off on this server";
+
 /// `player-expect <uuid> [seconds]`: the player will log in within that time
-/// (10 seconds by default, 60 at most). The reply says whether an earlier
-/// expectation was renewed. The login uses the expectation up; one that no
-/// login used is reported when it runs out.
+/// (`[transfer]`'s `expect_seconds` by default, `max_expect_seconds` at most).
+/// The reply says whether an earlier expectation was renewed. The login uses
+/// the expectation up when it starts; one that no login used is reported when
+/// it runs out.
 pub fn expect_request(hub: &mut Hub, args: &str, now: Instant) -> serde_json::Value {
+    let Some(transfers) = &hub.transfers else {
+        return error(OFF);
+    };
     let mut parts = args.split_whitespace();
     let Some(uuid) = parts.next().and_then(parse_uuid) else {
         return error("player-expect needs the player's unique id");
     };
     let ttl = match parts.next() {
-        None => DEFAULT_TTL,
+        None => transfers.settings.expect,
         Some(seconds) => match seconds.parse::<u64>() {
             Ok(s) if s > 0 => Duration::from_secs(s),
             _ => return error("the time must be a number of seconds above zero"),
@@ -193,11 +363,12 @@ pub fn expect_request(hub: &mut Hub, args: &str, now: Instant) -> serde_json::Va
     if hub.guests.iter().any(|g| g.uuid == uuid) {
         return error("that player is already connected to this server");
     }
-    match hub.arrivals.expect(uuid, ttl, now) {
+    let mut table = transfers.table();
+    match table.expect(uuid, ttl, now) {
         Ok(renewed) => serde_json::json!({
             "ok": true,
             "renewed": renewed,
-            "ttl_seconds": ttl.min(MAX_TTL).as_secs(),
+            "ttl_seconds": ttl.min(table.max_ttl()).as_secs(),
         }),
         Err(ExpectError::Full) => error("too many players are expected at once"),
     }
@@ -255,7 +426,7 @@ mod tests {
         let t0 = Instant::now();
         let mut e = Expectations::default();
         e.expect(A, secs(3600), t0).unwrap();
-        assert!(!e.take(A, t0 + MAX_TTL));
+        assert!(!e.take(A, t0 + Settings::default().max_expect));
     }
 
     #[test]
@@ -273,7 +444,7 @@ mod tests {
     fn the_table_refuses_new_players_when_full_but_expired_ones_make_room() {
         let t0 = Instant::now();
         let mut e = Expectations::default();
-        for n in 0..MAX_EXPECTED as u128 {
+        for n in 0..Settings::default().max_expected as u128 {
             e.expect(100 + n, secs(10), t0).unwrap();
         }
         assert_eq!(e.expect(A, secs(10), t0), Err(ExpectError::Full));
@@ -282,6 +453,58 @@ mod tests {
         // Once the old ones are past their time, there is room again.
         assert_eq!(e.expect(A, secs(10), t0 + secs(11)), Ok(false));
         assert_eq!(e.len(), 1);
+    }
+
+    #[test]
+    fn the_settings_are_read_from_the_supervisors_line() {
+        assert_eq!(Settings::parse(""), Ok(Settings::default()));
+        let s = Settings::parse(
+            "expect_seconds=5,max_expect_seconds=20,max_expected=3,max_freeze_seconds=12",
+        )
+        .unwrap();
+        assert_eq!(s.expect, secs(5));
+        assert_eq!(s.max_expect, secs(20));
+        assert_eq!(s.max_expected, 3);
+        assert_eq!(s.max_freeze_ticks, 240);
+        // One key alone keeps the others' defaults.
+        assert_eq!(
+            Settings::parse("max_expected=8").unwrap(),
+            Settings {
+                max_expected: 8,
+                ..Settings::default()
+            }
+        );
+        for bad in [
+            "expect_seconds=0",
+            "expect_seconds=-1",
+            "expect_seconds",
+            "colour=blue",
+            "expect_seconds=90",
+        ] {
+            assert!(Settings::parse(bad).is_err(), "{bad:?} was taken");
+        }
+    }
+
+    #[test]
+    fn the_table_follows_the_settings() {
+        let t0 = Instant::now();
+        let mut e = Expectations::new(2, secs(5));
+        e.expect(A, secs(60), t0).unwrap();
+        assert!(!e.take(A, t0 + secs(5)), "cut to five seconds");
+        e.expect(A, secs(1), t0).unwrap();
+        e.expect(B, secs(1), t0).unwrap();
+        assert_eq!(e.expect(3, secs(1), t0), Err(ExpectError::Full));
+    }
+
+    #[test]
+    fn a_hand_over_id_is_32_hexadecimal_digits() {
+        let id = 0x0123_4567_89ab_cdef_0011_2233_4455_6677;
+        assert_eq!(handover_text(id), "0123456789abcdef0011223344556677");
+        assert_eq!(parse_handover(&handover_text(id)), Some(id));
+        assert_eq!(parse_handover("0123456789ABCDEF0011223344556677"), Some(id));
+        assert_eq!(parse_handover("0123456789abcdef001122334455667"), None);
+        assert_eq!(parse_handover("01234567-89ab-cdef-0011-223344556677"), None);
+        assert_ne!(new_handover_id().unwrap(), new_handover_id().unwrap());
     }
 }
 
@@ -331,7 +554,14 @@ mod hub_tests {
             integrated: false,
             levels: Default::default(),
         };
-        Hub::new(lan, sync, encoder, config)
+        let mut hub = Hub::new(lan, sync, encoder, config);
+        hub.transfers = Some(super::Transfers::new(super::Settings::default()));
+        hub
+    }
+
+    /// The table a server with transfers on keeps.
+    fn table(hub: &Hub) -> std::sync::MutexGuard<'_, super::Expectations> {
+        hub.transfers.as_ref().unwrap().table()
     }
 
     /// A guest in the overworld and the end of the channel its packets go to.
@@ -348,6 +578,7 @@ mod hub_tests {
                 sender: PlayerSender::new(tx, std::sync::Arc::default()),
                 latency: std::sync::Arc::new(std::sync::atomic::AtomicI32::new(0)),
                 address: "127.0.0.1:25565".parse().unwrap(),
+                expected: false,
             },
             conn as i32,
             [0.5, 64.0, 0.5],
@@ -410,7 +641,7 @@ mod hub_tests {
     fn an_expectation_nobody_came_for_is_reported_and_swept() {
         let mut hub = hub();
         // Already past its time when the hub next ticks.
-        hub.arrivals
+        table(&hub)
             .expect(7, Duration::ZERO, Instant::now())
             .unwrap();
         let mut world = crate::world::World::new(horizon_world::registry::BlockStateId(0), 0);
@@ -422,27 +653,42 @@ mod hub_tests {
             events.iter().filter(|e| is_warn(e, "never came")).count(),
             1
         );
-        assert!(hub.arrivals.is_empty());
+        assert!(table(&hub).is_empty());
     }
 
-    /// The login of an expected player uses the expectation up, so nothing is
-    /// reported when its time would have run out; another player's stays.
+    /// A login takes the expectation from the table the network threads share
+    /// with the hub (`lan/conn.rs`, as the login starts), so nothing is reported
+    /// when its time would have run out; another player's stays.
     #[test]
     fn a_login_uses_up_the_expectation_of_that_player_only() {
         let mut hub = hub();
-        let (newcomer, _mine) = guest(2, 2, "Newcomer");
-        hub.guests.push(newcomer);
         let now = Instant::now();
-        hub.arrivals
-            .expect(2, Duration::from_secs(10), now)
-            .unwrap();
-        hub.arrivals
-            .expect(3, Duration::from_secs(10), now)
-            .unwrap();
+        table(&hub).expect(2, Duration::from_secs(10), now).unwrap();
+        table(&hub).expect(3, Duration::from_secs(10), now).unwrap();
+        let shared = hub.transfers.as_ref().unwrap().expected.clone();
+        assert!(shared.lock().unwrap().take(2, now));
+        let (mut newcomer, _mine) = guest(2, 2, "Newcomer");
+        newcomer.expected = true;
+        hub.guests.push(newcomer);
         place(&mut hub, 2);
         assert!(hub.guests[0].placed);
-        assert_eq!(hub.arrivals.len(), 1, "the other player is still expected");
-        assert!(hub.arrivals.take(3, now));
+        assert_eq!(table(&hub).len(), 1, "the other player is still expected");
+        assert!(table(&hub).take(3, now));
+    }
+
+    /// While `[transfer]` is off every request is refused, there is no table,
+    /// and a tick does nothing for transfers.
+    #[test]
+    fn with_transfers_off_every_request_is_refused() {
+        let mut hub = hub();
+        hub.transfers = None;
+        let reply = super::expect_request(&mut hub, UUID, Instant::now());
+        assert_eq!(reply["error"], super::OFF);
+        let mut world = crate::world::World::new(horizon_world::registry::BlockStateId(0), 0);
+        let border = crate::worldborder::WorldBorder::default();
+        let mut next = 100;
+        let mut ctx = tick_context(&mut world, &border, &mut next);
+        assert!(hub.poll(&mut ctx).is_empty());
     }
 
     const UUID: &str = "123e4567-e89b-12d3-a456-426614174000";
@@ -487,8 +733,15 @@ mod hub_tests {
         // A time past the maximum is cut, and the reply says what it became.
         let reply = super::expect_request(&mut hub, &format!("{UUID} 3600"), now);
         assert_eq!(reply["ttl_seconds"], 60);
-        assert_eq!(hub.arrivals.len(), 1);
-        assert!(hub.arrivals.take(UUID_N, now));
+        assert_eq!(table(&hub).len(), 1);
+        assert!(table(&hub).take(UUID_N, now));
+        // The default time is the server's own.
+        hub.transfers = Some(super::Transfers::new(super::Settings {
+            expect: Duration::from_secs(4),
+            ..super::Settings::default()
+        }));
+        let reply = super::expect_request(&mut hub, UUID, now);
+        assert_eq!(reply["ttl_seconds"], 4);
     }
 
     #[test]
@@ -516,14 +769,14 @@ mod hub_tests {
                 .contains("already connected"),
             "{reply}"
         );
-        assert!(hub.arrivals.is_empty());
+        assert!(table(&hub).is_empty());
     }
 
     #[test]
     fn player_expect_refuses_when_the_table_is_full() {
         let mut hub = hub();
         let now = Instant::now();
-        for n in 0..super::MAX_EXPECTED as u128 {
+        for n in 0..super::Settings::default().max_expected as u128 {
             let reply = super::expect_request(&mut hub, &format!("{:032x}", 1000 + n), now);
             assert_eq!(reply["ok"], true);
         }
@@ -622,8 +875,11 @@ mod hub_tests {
     fn the_record_carries_what_a_proxy_reads_and_the_vanilla_player_compound() {
         use crate::save::{float, number};
         let (mut hub, i) = exported_guest();
-        let record =
-            super::export_record(&mut hub, i, false, serde_json::json!({"done": []})).unwrap();
+        let records = super::Records {
+            advancements: serde_json::json!({"done": []}),
+            stats: serde_json::json!({"stats": {"minecraft:custom": {"minecraft:jump": 3}}}),
+        };
+        let record = super::export_record(&mut hub, i, false, records).unwrap();
         assert_eq!(record["version"], 1);
         assert_eq!(record["data_version"], horizon_world::DATA_VERSION);
         assert_eq!(record["uuid"], UUID);
@@ -633,7 +889,13 @@ mod hub_tests {
         assert_eq!(record["rotation"], serde_json::json!([90.0, 15.0]));
         assert_eq!(record["game_mode"], 1);
         assert_eq!(record["advancements"], serde_json::json!({"done": []}));
-        assert_eq!(hub.guests[i].frozen_since, None, "no freeze was asked for");
+        assert_eq!(
+            record["stats"]["stats"]["minecraft:custom"]["minecraft:jump"],
+            3
+        );
+        // A read, not a hand-over: no id, and the player goes on.
+        assert_eq!(record["handover"], serde_json::Value::Null);
+        assert_eq!(hub.guests[i].handover, None, "no freeze was asked for");
 
         let tag = compound_of(&record);
         for key in VANILLA_PLAYER_KEYS {
@@ -662,8 +924,13 @@ mod hub_tests {
     fn a_frozen_player_is_inert_until_it_is_let_go() {
         use horizon_protocol::packets::play::{ChunkBatchReceived, MovePlayerPos, Serverbound};
         let (mut hub, i) = exported_guest();
-        super::export_record(&mut hub, i, true, serde_json::Value::Null).unwrap();
-        assert_eq!(hub.guests[i].frozen_since, Some(hub.ticks));
+        let record = super::export_record(&mut hub, i, true, Default::default()).unwrap();
+        let handover = hub.guests[i].handover.clone().unwrap();
+        assert_eq!(handover.since, hub.ticks);
+        assert_eq!(
+            record["handover"].as_str(),
+            Some(super::handover_text(handover.id).as_str())
+        );
         let before = hub.guests[i].position;
         let g = &mut hub.guests[i];
         g.unacknowledged = 2;
@@ -697,17 +964,98 @@ mod hub_tests {
             "its acknowledgement was handled"
         );
         // Nobody finishes the hand-over: thirty seconds of ticks later it is let go.
-        hub.ticks = hub.guests[i].frozen_since.unwrap() + super::FROZEN_MAX_TICKS - 2;
+        let max = super::Settings::default().max_freeze_ticks;
+        hub.ticks = handover.since + max - 2;
         assert!(!hub.poll(&mut ctx).iter().any(|e| is_warn(e, "frozen")));
-        assert!(hub.guests[i].frozen_since.is_some());
+        assert!(hub.guests[i].handover.is_some());
         assert!(hub.poll(&mut ctx).iter().any(|e| is_warn(e, "frozen")));
-        assert_eq!(hub.guests[i].frozen_since, None);
+        assert_eq!(hub.guests[i].handover, None, "the hand-over is over");
     }
 
     #[test]
-    fn the_freeze_lasts_thirty_seconds_of_ticks() {
-        assert!(!super::frozen_too_long(10, 10 + 599));
-        assert!(super::frozen_too_long(10, 10 + 600));
-        assert!(!super::frozen_too_long(500, 100));
+    fn the_freeze_lasts_the_settings_ticks() {
+        assert_eq!(super::Settings::default().max_freeze_ticks, 600);
+        assert!(!super::frozen_too_long(10, 10 + 599, 600));
+        assert!(super::frozen_too_long(10, 10 + 600, 600));
+        assert!(!super::frozen_too_long(500, 100, 600));
+        assert!(super::frozen_too_long(10, 50, 40));
+    }
+
+    /// A proxy that lost the reply asks again: the same hand-over, the same
+    /// bytes, and the freeze is not restarted, however the player changed since.
+    #[test]
+    fn a_repeated_export_answers_with_the_first_record() {
+        let (mut hub, i) = exported_guest();
+        let first = super::export_record(&mut hub, i, true, Default::default()).unwrap();
+        let since = hub.guests[i].handover.as_ref().unwrap().since;
+        hub.ticks += 50;
+        hub.guests[i].health = 3.0;
+        hub.guests[i].position[0] += 4.0;
+        for freeze in [true, false] {
+            let again = super::export_record(&mut hub, i, freeze, Default::default()).unwrap();
+            assert_eq!(
+                serde_json::to_string(&again).unwrap(),
+                serde_json::to_string(&first).unwrap()
+            );
+        }
+        assert_eq!(hub.guests[i].handover.as_ref().unwrap().since, since);
+        // Once it is over, a new freeze is a new hand-over.
+        hub.guests[i].handover = None;
+        let next = super::export_record(&mut hub, i, true, Default::default()).unwrap();
+        assert_ne!(next["handover"], first["handover"]);
+        assert_eq!(next["position"][0], 14.5);
+    }
+
+    /// A player frozen in the rising part of a jump is not kicked for flying:
+    /// its moves are dropped, so the last one's floating is stale.
+    #[test]
+    fn a_frozen_player_is_not_kicked_for_floating() {
+        let (mut hub, i) = exported_guest();
+        super::export_record(&mut hub, i, true, Default::default()).unwrap();
+        hub.guests[i].client_is_floating = true;
+        let mut world = crate::world::World::new(horizon_world::registry::BlockStateId(0), 0);
+        let border = crate::worldborder::WorldBorder::default();
+        let mut next = 100;
+        let mut ctx = tick_context(&mut world, &border, &mut next);
+        for _ in 0..200 {
+            hub.drain_packets(&mut ctx);
+        }
+        assert_eq!(hub.guests[i].above_ground_ticks, 0);
+        assert!(hub.guests[i].left_reason.is_empty(), "not kicked");
+    }
+
+    /// A frozen player's chat acknowledgements are still taken, and its chat
+    /// message is dropped without a kick.
+    #[test]
+    fn a_frozen_player_keeps_acknowledging_chat() {
+        use horizon_protocol::packets::play::{Chat, ChatAck, LastSeenUpdate, Serverbound};
+        let (mut hub, i) = exported_guest();
+        super::export_record(&mut hub, i, true, Default::default()).unwrap();
+        let g = &mut hub.guests[i];
+        g.inbox.push_back((
+            Serverbound::Chat(Chat {
+                message: "hello".into(),
+                timestamp: 0,
+                salt: 0,
+                signature: None,
+                last_seen: LastSeenUpdate {
+                    offset: 0,
+                    acknowledged: [0; 3],
+                    checksum: 0,
+                },
+            }),
+            10,
+        ));
+        g.inbox
+            .push_back((Serverbound::ChatAck(ChatAck { offset: 0 }), 2));
+        g.inbox_bytes = 12;
+        hub.keep_acknowledgements(i, &mut Vec::new());
+        let kept: Vec<_> = hub.guests[i].inbox.iter().map(|(p, _)| p.clone()).collect();
+        assert!(
+            matches!(kept.as_slice(), [Serverbound::ChatAck(_)]),
+            "{kept:?}"
+        );
+        assert_eq!(hub.guests[i].inbox_bytes, 2);
+        assert!(hub.guests[i].left_reason.is_empty(), "not kicked");
     }
 }
