@@ -931,9 +931,17 @@ pub fn decode_block_entity(tag: &Tag) -> Option<((i32, i32, i32), crate::contain
         return Some((pos, BlockEntity::CreakingHeart(Box::new(heart))));
     }
     if id == "minecraft:lectern" {
+        // `LecternBlockEntity.loadAdditional`: the page is `Mth.clamp(Page, 0,
+        // getPageCount(book) - 1)`, so a stored page before the book's first
+        // page or past its last comes back as the page the block holds. No
+        // book, or a book with no pages, counts 0 pages: the maximum is then
+        // -1, and `Mth.clamp` (`Math.min(Math.max(value, min), max)`) answers
+        // it, -1.
+        let book = tag.get("Book").and_then(item_from_nbt);
+        let count = book.as_ref().map_or(0, crate::menu::book_pages) as i32;
         let lectern = crate::containers::Lectern {
-            book: tag.get("Book").and_then(item_from_nbt),
-            page: int("Page").unwrap_or(0),
+            book,
+            page: int("Page").unwrap_or(0).max(0).min(count - 1),
         };
         return Some((pos, BlockEntity::Lectern(lectern)));
     }
@@ -969,7 +977,16 @@ pub fn decode_block_entity(tag: &Tag) -> Option<((i32, i32, i32), crate::contain
     };
     let mut entity = BlockEntity::for_block(block)?;
     match &mut entity {
-        BlockEntity::Chest(items) => *items = decode_items(tag.get("Items"), items.len()),
+        BlockEntity::Chest(items) => {
+            // Randomizable containers reset their inventory, then load Items only
+            // when tryLoadLootTable did not read a valid loot-table key.
+            let has_table = text(tag.get("LootTable"))
+                .and_then(|id| horizon_client_core::identifier::normalize_id(&id))
+                .is_some();
+            if !has_table {
+                *items = decode_items(tag.get("Items"), items.len());
+            }
+        }
         BlockEntity::Furnace(f) => {
             let items = decode_items(tag.get("Items"), 3);
             f.items = [items[0].clone(), items[1].clone(), items[2].clone()];
@@ -2562,16 +2579,18 @@ impl SaveDir {
             let Some(root) = self.read_record_raw("region", pos.x, pos.z) else {
                 continue;
             };
-            let old = match root.tag.get("DataVersion") {
-                Some(Tag::Int(version)) => *version < 4997,
-                _ => true,
-            } || root.tag.get("blending_data").is_some();
-            if old {
+            if record_is_old(&root) {
                 let index = ((pos.x & 31) + (pos.z & 31) * 32) as usize;
                 bits[index / 64] |= 1 << (index % 64);
             }
         }
         bits
+    }
+    /// Whether the saved chunk at `x, z` is old ([`Self::old_chunk_bits`]'s test), from its
+    /// record alone: false for a chunk not saved.
+    pub fn is_old_chunk(&self, x: i32, z: i32) -> bool {
+        self.read_record_raw("region", x, z)
+            .is_some_and(|root| record_is_old(&root))
     }
     /// A saved chunk brought to the current version, for the readers of its
     /// fields that `load` does not decode (`blending_data`).
@@ -3985,10 +4004,19 @@ impl Level {
                 .filter_map(|e| {
                     let id = text(e.get("id"))?;
                     let get = |k: &str| number(e.get(k));
+                    // `MobEffectInstance.Details` stores `amplifier` as
+                    // `ExtraCodecs.UNSIGNED_BYTE`: the NBT byte is signed, and
+                    // `UnsignedBytes.toInt` maps it back to 0..=255. A plain
+                    // sign-extend turns 255 (byte -1) into -1, which
+                    // `EffectInstance::new` then clamps to the lowest level.
+                    let amplifier = match e.get("amplifier") {
+                        Some(Tag::Byte(v)) => i32::from(*v as u8),
+                        other => number(other).unwrap_or(0) as i32,
+                    };
                     Some((
                         id,
                         get("duration").unwrap_or(0) as i32,
-                        get("amplifier").unwrap_or(0) as i32,
+                        amplifier,
                         get("ambient").unwrap_or(0) != 0,
                         get("show_particles").is_none_or(|v| v != 0),
                     ))
@@ -4107,7 +4135,12 @@ impl Level {
                             Tag::compound([
                                 ("id", string(id)),
                                 ("duration", Tag::Int(*duration)),
-                                ("amplifier", Tag::Byte(*amplifier as i8)),
+                                // Same unsigned byte the codec writes:
+                                // `Mth.clamp` to 0..=255, then `byteValue`.
+                                (
+                                    "amplifier",
+                                    Tag::Byte((*amplifier).clamp(0, 255) as u8 as i8),
+                                ),
                                 ("ambient", Tag::Byte(i8::from(*ambient))),
                                 ("show_particles", Tag::Byte(i8::from(*particles))),
                                 ("show_icon", Tag::Byte(i8::from(*particles))),
@@ -5064,6 +5097,15 @@ impl<G: ChunkGenerator> ChunkGenerator for Persistent<G> {
     }
 }
 
+/// `IOWorker.createOldDataForRegion`'s test of one record: saved before DataVersion 4997, or
+/// with `blending_data`.
+fn record_is_old(root: &NamedTag) -> bool {
+    let before_blending = match root.tag.get("DataVersion") {
+        Some(Tag::Int(version)) => *version < 4997,
+        _ => true,
+    };
+    before_blending || root.tag.get("blending_data").is_some()
+}
 #[cfg(test)]
 mod tests {
     use crate::mobs::spawner::SpawnDataExt;
@@ -6117,6 +6159,105 @@ mod tests {
                 .expect("update tag");
         assert!(update.get("Items").is_some() && update.get("CookingTimes").is_none());
     }
+    /// `LecternBlockEntity.loadAdditional`: `Page` is clamped to
+    /// `0..getPageCount(book) - 1`, so a stored page outside the book loads as
+    /// the first or last page the block holds. A bookless lectern counts no
+    /// pages and loads page -1.
+    #[test]
+    fn a_lecterns_page_loads_within_its_book() {
+        let page_of = |tag: &str| {
+            let tag = horizon_world::nbt::parse_snbt(tag).unwrap().0;
+            let (_, entity) = decode_block_entity(&tag).expect("lectern");
+            let crate::containers::BlockEntity::Lectern(l) = entity else {
+                panic!("not a lectern");
+            };
+            l.page
+        };
+        let book = |pages: &str| {
+            format!(
+                r#"id:"minecraft:written_book",count:1,components:{{
+                    "minecraft:written_book_content":{{title:"t",author:"a",pages:[{pages}]}}
+                }}"#
+            )
+        };
+        // Two pages: a stored 7 is the last page, a stored -3 the first.
+        assert_eq!(
+            page_of(&format!(
+                r#"{{id:"minecraft:lectern",x:1,y:64,z:2,Page:7,Book:{{{}}}}}"#,
+                book(r#""one","two""#)
+            )),
+            1
+        );
+        assert_eq!(
+            page_of(&format!(
+                r#"{{id:"minecraft:lectern",x:1,y:64,z:2,Page:-3,Book:{{{}}}}}"#,
+                book(r#""one","two""#)
+            )),
+            0
+        );
+        // No book counts no pages, so any page loads as -1, as vanilla's.
+        assert_eq!(
+            page_of(r#"{id:"minecraft:lectern",x:1,y:64,z:2,Page:4}"#),
+            -1
+        );
+        // A page already inside the book is kept, and saved back as it is.
+        let tag = format!(
+            r#"{{id:"minecraft:lectern",x:1,y:64,z:2,Page:1,Book:{{{}}}}}"#,
+            book(r#""one","two","three""#)
+        );
+        let tag = horizon_world::nbt::parse_snbt(&tag).unwrap().0;
+        let (pos, entity) = decode_block_entity(&tag).expect("lectern");
+        let crate::containers::BlockEntity::Lectern(l) = entity else {
+            panic!("not a lectern");
+        };
+        assert_eq!(l.page, 1);
+        let saved = encode_block_entity(
+            pos,
+            &crate::containers::BlockEntity::Lectern(l),
+            "minecraft:lectern",
+        );
+        assert_eq!(number(saved.get("Page")), Some(1));
+    }
+    #[test]
+    fn a_chest_loot_table_takes_precedence_over_saved_items() {
+        let mut saved = horizon_world::nbt::parse_snbt(
+            r#"{id:"minecraft:chest",x:1,y:2,z:3,Items:[{Slot:3b,id:"minecraft:diamond",count:7}],LootTable:"minecraft:chests/simple_dungeon",LootTableSeed:42L}"#,
+        )
+        .unwrap()
+        .0;
+        let (_, mut chest) = decode_block_entity(&saved).expect("chest");
+        assert!(
+            chest.slots().iter().all(Option::is_none),
+            "ChestBlockEntity.loadAdditional ignores Items when a loot table loads"
+        );
+        // The command path rolls an empty inventory and keeps the table/seed
+        // for data get and saving. No loot resources are needed to keep that state.
+        let rolled = crate::structure_blocks::roll_container(
+            chest.slots_mut(),
+            None,
+            "minecraft:chests/simple_dungeon".into(),
+            Some(42),
+            (1, 2, 3),
+            "minecraft:plains",
+        );
+        let mut stored = block_entity_data((1, 2, 3), &chest, "minecraft:chest", None);
+        let Tag::Compound(fields) = &mut stored else {
+            panic!("compound");
+        };
+        assert!(rolled.restore(fields));
+        assert_eq!(stored.get("LootTable"), saved.get("LootTable"));
+        assert_eq!(stored.get("LootTableSeed"), saved.get("LootTableSeed"));
+        assert!(stored.get("Items").is_none());
+        let Tag::Compound(fields) = &mut saved else {
+            panic!("compound");
+        };
+        fields.remove(&"LootTable".into());
+        let (_, chest) = decode_block_entity(&saved).expect("chest without table");
+        let item = chest.slots()[3].as_ref().expect("saved item");
+        assert_eq!(item.item.as_ref(), "minecraft:diamond");
+        assert_eq!(item.count, 7);
+    }
+
     /// `LockCode`: a chest's `lock` is not in Horizon's model, so `data get`
     /// takes it from the tag the block entity was loaded (or set) with.
     #[test]
@@ -6814,6 +6955,40 @@ mod tests {
     }
 
     #[test]
+    fn effect_amplifier_255_reloads_as_an_unsigned_byte() {
+        // `MobEffectInstance.MAX_AMPLIFIER` is 255. `Details.MAP_CODEC` writes
+        // it with `ExtraCodecs.UNSIGNED_BYTE`: `255.byteValue()` is -1 and
+        // `128.byteValue()` is -128; `UnsignedBytes.toInt` restores both.
+        let effects = vec![
+            ("minecraft:strength".into(), -1, 255, false, true),
+            ("minecraft:regeneration".into(), -1, 128, false, true),
+            ("minecraft:speed".into(), 40, 1, false, true),
+        ];
+        let level = Level {
+            active_effects: effects.clone(),
+            ..Level::default()
+        };
+        let tag = level.player_tag();
+        let Tag::List(saved) = tag.get("active_effects").expect("active_effects") else {
+            panic!("active_effects list");
+        };
+        assert_eq!(
+            saved
+                .iter()
+                .map(|e| e.get("amplifier").cloned())
+                .collect::<Vec<_>>(),
+            vec![
+                Some(Tag::Byte(-1)),
+                Some(Tag::Byte(-128)),
+                Some(Tag::Byte(1)),
+            ]
+        );
+        let mut loaded = Level::default();
+        loaded.read_player(&tag);
+        assert_eq!(loaded.active_effects, effects);
+    }
+
+    #[test]
     fn creative_flight_status_persists_in_save_and_resets_for_survival() {
         let mut level = Level {
             creative: true,
@@ -7440,6 +7615,30 @@ mod tests {
         let upgraded = nether.raw_chunk(0, 0).expect("the chunk reads");
         assert!(upgraded.tag.get("blending_data").is_none());
         assert_ne!(nether.old_chunk_bits(0, 0)[0] & 1, 0);
+        // One chunk's record tells the same, without the region's other chunks; a chunk this
+        // version saved, and one not saved, are not old.
+        let current = Record::Tag(Arc::new(NamedTag {
+            name: "".into(),
+            tag: Tag::compound([
+                ("DataVersion", Tag::Int(DATA_VERSION)),
+                ("xPos", Tag::Int(1)),
+                ("zPos", Tag::Int(0)),
+                ("yPos", Tag::Int(0)),
+                ("Status", string("minecraft:full")),
+                ("sections", Tag::List(Vec::new())),
+            ]),
+        }));
+        super::write_region_records(
+            &nether.root,
+            &nether.regions,
+            "region",
+            &[((1, 0), &current)],
+        )
+        .unwrap();
+        assert!(nether.is_old_chunk(0, 0));
+        assert!(!nether.is_old_chunk(1, 0));
+        assert!(!nether.is_old_chunk(2, 0));
+        assert_eq!(nether.old_chunk_bits(0, 0)[0] & 0b110, 0);
         // A POI record of before 1.14.4 (no DataVersion, read as 1945): its
         // sections at the root, which 1946 moved under `Sections`.
         let overworld = SaveDir::new(

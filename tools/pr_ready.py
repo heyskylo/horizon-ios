@@ -32,6 +32,7 @@ import shlex
 import socket
 import subprocess
 import sys
+import threading
 import time
 
 if os.name == "nt":
@@ -516,6 +517,31 @@ def run_windows(steps, verbose):
         finish(step, verbose)
 
 
+def run_checks(steps, host, verbose):
+    """Runs the checks: the Python ones here beside the cargo ones on host, then the harnesses.
+
+    The Python tests and the public-tree check only read files, and they took about two minutes of a warm run that
+    waited for them before cargo started (114 of 213 s, 2026-11-03). Side by side, the run takes about as long as the
+    longer of the two. The harnesses build with cargo, so they still come after it. With --verbose, every check's
+    output is shown, and the checks run one after another so that it doesn't interleave.
+    """
+    here = [step for step in steps if step.where == "here" and step.status is None]
+    beside = [step for step in here if step.name != "Parity"]
+    after = [step for step in here if step.name == "Parity"]
+    on_host = [step for step in steps if step.where == "host" and step.status is None]
+    if verbose:
+        run_script(beside + after, "local", verbose)
+        run_script(on_host, host, verbose)
+        return
+    python = threading.Thread(target=run_script, args=(beside, "local", verbose))
+    python.start()
+    try:
+        run_script(on_host, host, verbose)
+    finally:
+        python.join()
+    run_script(after, "local", verbose)
+
+
 def finish(step, verbose):
     if step.status == "pass" and step.summary:
         step.detail = step.summary(step.output)
@@ -572,8 +598,7 @@ def main():
     problem = lock_problem(changed)
     lock.status, lock.detail = ("fail", problem) if problem else ("pass", "unchanged" if not any(
         p.endswith("Cargo.lock") for p in changed) else "changes with a Cargo.toml")
-    run_script([step for step in steps if step.where == "here" and step.status is None], "local", args.verbose)
-    run_script([step for step in steps if step.where == "host" and step.status is None], args.host, args.verbose)
+    run_checks(steps, args.host, args.verbose)
     warning = old_rust(rust_version(), datetime.date.today()) if args.host == "local" else None
     if warning and any(step.name.endswith("clippy") and step.skip is None for step in steps):
         print(f"pr_ready: Rust {warning}", file=sys.stderr)

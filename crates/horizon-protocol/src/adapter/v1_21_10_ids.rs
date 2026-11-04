@@ -245,6 +245,8 @@ pub const ENCHANTMENT_EFFECT_COMPONENT_TYPE_UP: &[(u16, u16, u16)] = &[
 pub const ENCHANTMENT_EFFECT_COMPONENT_TYPE_DOWN: &[(u16, u16, u16)] = &[
     (0, 0, 7), (8, 7, 2), (10, 10, 14), (24, 9, 1), (25, 24, 6),
 ];
+/// Data components 1.21.10 has and the pinned version lacks, by their 1.21.10 id.
+pub const DROPPED_COMPONENTS: &[(u16, &str)] = &[(36, "minecraft:map_color")];
 /// Every table above, as the adapter reads them.
 pub const IDS: super::ids::Ids = super::ids::Ids {
     quirks: super::ids::Quirks::NONE,
@@ -326,6 +328,7 @@ pub const IDS: super::ids::Ids = super::ids::Ids {
         up: ENCHANTMENT_EFFECT_COMPONENT_TYPE_UP,
         down: ENCHANTMENT_EFFECT_COMPONENT_TYPE_DOWN,
     },
+    dropped_components: DROPPED_COMPONENTS,
     // Not a registry: set by hand where a version numbers EntityDataSerializers differently.
     entity_data_serializer: super::ids::Remap::Same,
 };

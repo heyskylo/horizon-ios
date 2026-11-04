@@ -199,6 +199,8 @@ impl Launcher {
                 .as_ref()
                 .is_some_and(|(id, _)| *id == i.id);
             let menu_id = i.id.clone();
+            // A right click on the row opens the same menu the ⋮ does.
+            let right_id = i.id.clone();
             let more = div()
                 .absolute()
                 .top_0()
@@ -221,10 +223,8 @@ impl Launcher {
                             if this.closed_by_this_press(event) {
                                 return;
                             }
-                            let was = this.row_menu.open.take();
-                            if was.is_none_or(|(id, _)| id != menu_id) {
-                                this.row_menu.open = Some((menu_id.clone(), false));
-                            }
+                            this.row_menu.open =
+                                row_menu_after_press(this.row_menu.open.take(), &menu_id);
                             cx.notify();
                         },
                     )),
@@ -249,7 +249,22 @@ impl Launcher {
                                     InstanceKind::Pack => this.show_modpack(None),
                                 }
                                 cx.notify();
-                            })),
+                            }))
+                            // The ⋮ menu, from a right click anywhere on the row.
+                            .on_mouse_down(
+                                gpui::MouseButton::Right,
+                                cx.listener(move |this, event: &gpui::MouseDownEvent, _, cx| {
+                                    // The open menu's mouse-down-out already closed it on this
+                                    // press: reopening here would make the toggle a no-op.
+                                    if this.menu_closed_at.take() == Some(event.position) {
+                                        cx.notify();
+                                        return;
+                                    }
+                                    this.row_menu.open =
+                                        row_menu_after_press(this.row_menu.open.take(), &right_id);
+                                    cx.notify();
+                                }),
+                            ),
                     )
                     .child(more),
             );
@@ -550,11 +565,10 @@ impl Launcher {
             .min_w_0()
             .when(wide, |d| d.flex_none())
             .when(!wide, |d| d.flex_shrink(1.).overflow_hidden())
-            .child(
-                tabs.id("nav-pages")
-                    .relative()
-                    .when(!wide, |d| d.overflow_x_scroll()),
-            );
+            .child(tabs.id("nav-pages").relative().when(!wide, |d| {
+                d.overflow_x_scroll()
+                    .on_scroll(|_, _, cx| cx.stop_propagation())
+            }));
 
         let (name, how) = self.who_plays();
         let face = match self.accounts.player() {

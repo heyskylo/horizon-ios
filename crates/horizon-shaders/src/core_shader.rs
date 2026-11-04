@@ -254,6 +254,31 @@ fn declaration(line: &str) -> Option<Decl<'_>> {
     })
 }
 
+/// GLSL pack shaders are often minified, with several global declarations on one line.
+/// Keep the line-oriented rewriter simple by separating only declaration statements; ordinary
+/// statements and function bodies remain untouched.
+fn declaration_lines(line: &str) -> Vec<&str> {
+    let mut lines = Vec::new();
+    let mut start = 0;
+    while let Some(relative) = line[start..].find(';') {
+        let end = start + relative + 1;
+        if declaration(&line[start..end]).is_some() {
+            lines.push(&line[start..end]);
+            start = end;
+        } else {
+            break;
+        }
+    }
+    if start == 0 {
+        vec![line]
+    } else {
+        if start < line.len() {
+            lines.push(&line[start..]);
+        }
+        lines
+    }
+}
+
 /// The block a `uniform Name {` line opens, with the line's text before `uniform`.
 fn block_name(line: &str) -> Option<&str> {
     let at = line.find("uniform")?;
@@ -313,94 +338,124 @@ fn rewrite(
         }
     }
     let mut outputs: Vec<&str> = Vec::new();
-    for line in text.lines() {
-        if let Some(name) = block_name(line) {
-            let binding = BLOCKS
-                .iter()
-                .find(|(block, _)| *block == name)
-                .map_or_else(|| names.other_binding(name), |(_, b)| *b);
-            let tail = line[line.find("uniform").unwrap_or(0)..].trim();
-            writeln!(out, "layout(std140, set = 0, binding = {binding}) {tail}").unwrap();
-            continue;
-        }
-        let Some(decl) = declaration(line) else {
-            out.push_str(line);
-            out.push('\n');
-            continue;
-        };
-        let qualifiers = decl.qualifiers.join(" ");
-        match decl.storage {
-            "uniform" if decl.ty == "sampler2D" => {
-                let binding = SAMPLERS
+    for source_line in text.lines() {
+        for line in declaration_lines(source_line) {
+            if let Some(name) = block_name(line) {
+                let binding = BLOCKS
                     .iter()
-                    .find(|(sampler, _)| *sampler == decl.name)
-                    .map_or_else(|| names.other_binding(decl.name), |(_, b)| *b);
-                let name = decl.name;
-                writeln!(
-                    out,
-                    "layout(set = 0, binding = {binding}) uniform texture2D hz_tex_{name};\n\
+                    .find(|(block, _)| *block == name)
+                    .map_or_else(|| names.other_binding(name), |(_, b)| *b);
+                let tail = line[line.find("uniform").unwrap_or(0)..].trim();
+                writeln!(out, "layout(std140, set = 0, binding = {binding}) {tail}").unwrap();
+                continue;
+            }
+            let Some(decl) = declaration(line) else {
+                out.push_str(line);
+                out.push('\n');
+                continue;
+            };
+            let qualifiers = decl.qualifiers.join(" ");
+            match decl.storage {
+                "uniform" if decl.ty == "sampler2D" => {
+                    let binding = SAMPLERS
+                        .iter()
+                        .find(|(sampler, _)| *sampler == decl.name)
+                        .map_or_else(|| names.other_binding(decl.name), |(_, b)| *b);
+                    let name = decl.name;
+                    writeln!(
+                        out,
+                        "layout(set = 0, binding = {binding}) uniform texture2D hz_tex_{name};\n\
                      layout(set = 0, binding = {}) uniform sampler hz_smp_{name};\n\
                      #define {name} sampler2D(hz_tex_{name}, hz_smp_{name})",
-                    binding + 1
-                )
-                .unwrap();
-            }
-            "uniform" => {
-                return Err(format!(
-                    "uniform {} outside a block (26.x's shaders keep them in blocks)",
-                    decl.name
-                ));
-            }
-            "in" if vertex => {
-                if glue.inputs.iter().any(|(name, _)| *name == decl.name) {
-                    // Declared by the glue as a global.
-                    out.push('\n');
-                } else {
-                    // Another format's input (`UV2` behind `#if !defined(IS_GUI)`): the
-                    // preprocessor drops it when it is for another pipeline, else it reads 0.
-                    writeln!(out, "{} {};", decl.ty, decl.name).unwrap();
+                        binding + 1
+                    )
+                    .unwrap();
                 }
-            }
-            "out" if vertex => {
-                // One location each: naga takes scalars and vectors only.
-                let location = names.location(decl.name).unwrap_or_else(|| {
-                    names.varyings.push(decl.name.to_owned());
-                    names.varyings.len() as u32 - 1
-                });
-                writeln!(
-                    out,
-                    "layout(location = {location}) {qualifiers} out {} {};",
-                    decl.ty, decl.name
-                )
-                .unwrap();
-            }
-            "in" => {
-                let location = names.location(decl.name).ok_or_else(|| {
-                    format!("input {} isn't written by the vertex shader", decl.name)
-                })?;
-                writeln!(
-                    out,
-                    "layout(location = {location}) {qualifiers} in {} {};",
-                    decl.ty, decl.name
-                )
-                .unwrap();
-            }
-            _ => {
-                // Pipelines with more targets (OIT's, behind `#ifdef OIT`) name them; the
-                // colour this pipeline draws is the one at location 0.
-                let location = decl.location.unwrap_or_else(|| {
-                    let at = outputs.iter().position(|o| *o == decl.name);
-                    at.unwrap_or_else(|| {
-                        outputs.push(decl.name);
-                        outputs.len() - 1
-                    }) as u32
-                });
-                writeln!(
-                    out,
-                    "layout(location = {location}) out {} {};",
-                    decl.ty, decl.name
-                )
-                .unwrap();
+                "uniform" => {
+                    // Some packs keep the legacy standalone declarations in an `#else` branch
+                    // alongside 26.x's uniform-block imports. The GLSL compiler selects the
+                    // branch later, but the declaration pass sees both; the block already provides
+                    // these names, so the legacy declarations must not be emitted or rejected.
+                    if matches!(
+                        decl.name,
+                        "CameraBlockPos"
+                            | "GlintAlpha"
+                            | "CameraOffset"
+                            | "GameTime"
+                            | "ScreenSize"
+                            | "MenuBlurRadius"
+                            | "UseRgss"
+                            | "ProjMat"
+                            | "TextureMat"
+                            | "ModelViewMat"
+                            | "ColorModulator"
+                            | "FogColor"
+                            | "FogEnvironmentalStart"
+                            | "FogRenderDistanceStart"
+                            | "FogRenderDistanceEnd"
+                            | "FogEnd"
+                            | "FogStart"
+                            | "FogShape"
+                    ) {
+                        out.push('\n');
+                        continue;
+                    }
+                    return Err(format!(
+                        "uniform {} outside a block (26.x's shaders keep them in blocks)",
+                        decl.name
+                    ));
+                }
+                "in" if vertex => {
+                    if glue.inputs.iter().any(|(name, _)| *name == decl.name) {
+                        // Declared by the glue as a global.
+                        out.push('\n');
+                    } else {
+                        // Another format's input (`UV2` behind `#if !defined(IS_GUI)`): the
+                        // preprocessor drops it when it is for another pipeline, else it reads 0.
+                        writeln!(out, "{} {};", decl.ty, decl.name).unwrap();
+                    }
+                }
+                "out" if vertex => {
+                    // One location each: naga takes scalars and vectors only.
+                    let location = names.location(decl.name).unwrap_or_else(|| {
+                        names.varyings.push(decl.name.to_owned());
+                        names.varyings.len() as u32 - 1
+                    });
+                    writeln!(
+                        out,
+                        "layout(location = {location}) {qualifiers} out {} {};",
+                        decl.ty, decl.name
+                    )
+                    .unwrap();
+                }
+                "in" => {
+                    let location = names.location(decl.name).ok_or_else(|| {
+                        format!("input {} isn't written by the vertex shader", decl.name)
+                    })?;
+                    writeln!(
+                        out,
+                        "layout(location = {location}) {qualifiers} in {} {};",
+                        decl.ty, decl.name
+                    )
+                    .unwrap();
+                }
+                _ => {
+                    // Pipelines with more targets (OIT's, behind `#ifdef OIT`) name them; the
+                    // colour this pipeline draws is the one at location 0.
+                    let location = decl.location.unwrap_or_else(|| {
+                        let at = outputs.iter().position(|o| *o == decl.name);
+                        at.unwrap_or_else(|| {
+                            outputs.push(decl.name);
+                            outputs.len() - 1
+                        }) as u32
+                    });
+                    writeln!(
+                        out,
+                        "layout(location = {location}) out {} {};",
+                        decl.ty, decl.name
+                    )
+                    .unwrap();
+                }
             }
         }
     }
@@ -609,6 +664,26 @@ mod tests {
         let mut read = locations(&program.fragment, true);
         read.sort_unstable();
         assert_eq!(read, [0, 2]);
+    }
+
+    #[test]
+    fn minified_varying_declarations_are_rewritten() {
+        let vsh = "#version 330\nout float sphericalVertexDistance;out float cylindricalVertexDistance;\
+            void main() { sphericalVertexDistance = 0.0; cylindricalVertexDistance = 0.0; \
+            gl_Position = vec4(0.0); }\n";
+        let fsh = "#version 330\nin float sphericalVertexDistance;in float cylindricalVertexDistance;\
+            out vec4 fragColor;void main() { fragColor = vec4(sphericalVertexDistance + cylindricalVertexDistance); }\n";
+        translate_core(vsh, fsh, &[], &include, &GLUE).unwrap();
+    }
+
+    #[test]
+    fn legacy_uniforms_next_to_modern_blocks_are_ignored() {
+        let vsh = "#version 330\n#include <minecraft:projection.glsl>\n\
+            uniform mat4 ProjMat;out vec4 vertexColor;\
+            void main() { vertexColor = vec4(1.0); gl_Position = ProjMat[0]; }\n";
+        let fsh = "#version 330\nin vec4 vertexColor;out vec4 fragColor;\
+            void main() { fragColor = vertexColor; }\n";
+        translate_core(vsh, fsh, &[], &include, &GLUE).unwrap();
     }
 
     #[test]

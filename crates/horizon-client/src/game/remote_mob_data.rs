@@ -1022,21 +1022,21 @@ mod tests {
             return;
         };
         apply(&mut m, &[(20, s::BOOLEAN, Value::Bool(true))]);
-        client_tick(&mut m, 0);
+        client_tick(&mut m, 0, &mut Vec::new());
         assert!((m.anim.v[tame::INTEREST] - 0.4).abs() < 1e-6);
         assert_eq!(m.anim.vo[tame::INTEREST], 0.0);
-        client_tick(&mut m, 0);
+        client_tick(&mut m, 0, &mut Vec::new());
         assert!((m.anim.v[tame::INTEREST] - 0.64).abs() < 1e-6);
         assert!((m.anim.lerp(tame::INTEREST, 0.5) - 0.52).abs() < 1e-6);
         for _ in 0..30 {
-            client_tick(&mut m, 0);
+            client_tick(&mut m, 0, &mut Vec::new());
         }
         assert!(m.anim.v[tame::INTEREST] > 0.999);
         apply(&mut m, &[(20, s::BOOLEAN, Value::Bool(false))]);
-        client_tick(&mut m, 0);
+        client_tick(&mut m, 0, &mut Vec::new());
         assert!(m.anim.v[tame::INTEREST] < 0.61);
         for _ in 0..30 {
-            client_tick(&mut m, 0);
+            client_tick(&mut m, 0, &mut Vec::new());
         }
         assert!(m.anim.v[tame::INTEREST] < 0.001);
     }
