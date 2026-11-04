@@ -30,6 +30,9 @@ fn tools() -> Vec<Value> {
                 description = "Capture the game window and return it as a PNG image.".into();
             }
             let mut tool = json!({ "name": commands::tool_name(c), "description": description, "inputSchema": schema });
+            if let Some(out) = commands::reply_schema(c) {
+                tool["outputSchema"] = out;
+            }
             if commands::DESTRUCTIVE.contains(&c.name) {
                 tool["annotations"] = json!({ "destructiveHint": true });
             } else if commands::OPEN_WORLD.contains(&c.name) {
@@ -152,7 +155,20 @@ impl Session {
                 }
                 let args = params.get("arguments").cloned().unwrap_or(json!({}));
                 let (content, error) = self.call(name, &args);
-                Ok(json!({ "content": content, "isError": error }))
+                let mut result = json!({ "content": content, "isError": error });
+                // A tool that declares an outputSchema answers with structuredContent too.
+                if !error
+                    && tools()
+                        .iter()
+                        .any(|t| t["name"] == name && t.get("outputSchema").is_some())
+                    && let Some(v) = result["content"][0]["text"]
+                        .as_str()
+                        .and_then(|t| serde_json::from_str::<Value>(t).ok())
+                        .filter(Value::is_object)
+                {
+                    result["structuredContent"] = v;
+                }
+                Ok(result)
             }
             _ => Err((-32601, format!("Method not found: {method}"))),
         }
@@ -185,6 +201,16 @@ mod tests {
             assert!(names.insert(t["name"].as_str().unwrap().to_owned()));
             assert_eq!(t["inputSchema"]["type"], "object");
         }
+        let by = |n: &str| list.iter().find(|t| t["name"] == n).unwrap();
+        assert_eq!(
+            by("hello")["outputSchema"]["required"],
+            json!(["protocol", "release", "features"])
+        );
+        assert_eq!(
+            by("status")["outputSchema"]["properties"]["screen"]["type"],
+            "string"
+        );
+        assert!(by("state").get("outputSchema").is_none());
         for want in [
             "launch",
             "state",
