@@ -102,6 +102,10 @@ pub struct Quirks {
     pub integer_custom_model_data: bool,
     /// Before 1.21.4, trail options left the lifetime to the client particle provider.
     pub trail_without_duration: bool,
+    /// Before 1.21.2, food combined consumption effects and several packet/component layouts differed.
+    pub components_before_1_21_2: bool,
+    /// Through 1.21.8 these particle types carried no options at all.
+    pub simple_spell_particles: bool,
 }
 impl Quirks {
     pub const NONE: Self = Self {
@@ -113,6 +117,8 @@ impl Quirks {
         optional_profile_fields: false,
         integer_custom_model_data: false,
         trail_without_duration: false,
+        components_before_1_21_2: false,
+        simple_spell_particles: false,
     };
 }
 

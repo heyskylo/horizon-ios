@@ -50,6 +50,8 @@ pub struct Session {
     pub(super) chat_index: std::sync::atomic::AtomicI32,
     pub(super) minecart_display: Mutex<HashMap<i32, (i32, bool)>>,
     pub(super) trim_patterns: Mutex<HashMap<i32, i32>>,
+    pub(super) legacy_recipes: Mutex<translate::v1_21_1::recipes::Recipes>,
+    pub(super) legacy_boats: Mutex<HashMap<i32, translate::v1_21_1::boats::Boat>>,
     reading: AtomicU8,
     writing: AtomicU8,
     /// Entity UUIDs by network id, for a server that is told which entity a spectator picked by its UUID.
@@ -72,6 +74,8 @@ impl Session {
             chat_index: std::sync::atomic::AtomicI32::new(0),
             minecart_display: Mutex::new(HashMap::new()),
             trim_patterns: Mutex::new(HashMap::new()),
+            legacy_recipes: Mutex::new(translate::v1_21_1::recipes::Recipes::default()),
+            legacy_boats: Mutex::new(HashMap::new()),
             reading: AtomicU8::new(0),
             writing: AtomicU8::new(0),
             uuids: Mutex::new(HashMap::new()),
@@ -97,6 +101,9 @@ impl Session {
     /// knows no such packet.
     pub fn clientbound(&self, id: i32, payload: Vec<u8>) -> Result<Option<(i32, Vec<u8>)>> {
         let state = self.reading();
+        if self.version.at_most(ServerVersion::V1_21_1) && state == State::Play && id == 65 {
+            return translate::v1_21_1::recipes::recipe_book(self, &payload).map(Some);
+        }
         // Vanilla 1.21.4's separate add_experience_orb (id 2) became AddEntity plus metadata.
         if self.version.at_most(ServerVersion::V1_21_4) && state == State::Play && id == 2 {
             return translate::old_experience_orb(self, &payload).map(Some);
@@ -118,18 +125,24 @@ impl Session {
         }
         // A packet the translation can't read goes on as it came, as an unknown packet would: Horizon's
         // own reader then skips it or reports it, rather than the connection dropping here.
-        match translate::clientbound(self, state, pinned, &payload) {
-            Ok(Some((id, Some(translated)))) => Ok(Some((id, translated))),
-            Ok(Some((id, None))) => Ok(Some((id, payload))),
-            Ok(None) => Ok(None),
+        let translated = match translate::clientbound(self, state, pinned, &payload) {
+            Ok(Some((id, Some(translated)))) => Some((id, translated)),
+            Ok(Some((id, None))) => Some((id, payload)),
+            Ok(None) => None,
             Err(e) => {
                 log::warn!(
                     "Horizon: could not translate {} packet {pinned} ({state:?}): {e}",
                     self.version.name()
                 );
-                Ok(Some((pinned, payload)))
+                Some((pinned, payload))
+            }
+        };
+        if self.version.at_most(ServerVersion::V1_21_1) && state == State::Play {
+            if let Some((id, body)) = translated {
+                return translate::v1_21_1::boats::finish(self, id, body).map(Some);
             }
         }
+        Ok(translated)
     }
 
     /// A packet body (VarInt id + payload) Horizon sends, as this server numbers and lays it out. `None`:
@@ -216,6 +229,7 @@ mod tests {
             (ServerVersion::V1_21_5, 770),
             (ServerVersion::V1_21_4, 769),
             (ServerVersion::V1_21_3, 768),
+            (ServerVersion::V1_21_1, 767),
         ] {
             let s = Session::new(version);
             let mut payload = Writer::new();

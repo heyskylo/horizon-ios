@@ -104,6 +104,16 @@ def runs(values):
     return found
 
 
+def item_names(source, target, renames=None):
+    """Canonical item identifiers by old id, for pre-1.21.2 item-based cooldown packets."""
+    renames = renames or {}
+    names = []
+    for name, _ in sorted(source.items(), key=lambda entry: entry[1]):
+        canonical = name if name in target else renames.get(name, name)
+        names.append(canonical if canonical in target else "")
+    return names
+
+
 def state_alias(spec):
     """Two block-state keys, keeping property order irrelevant as it is in the reports."""
     left, right = spec.split("]=", 1)
@@ -141,6 +151,8 @@ def main():
                              "minecraft:command_argument_type:minecraft:color=minecraft:team_color")
     parser.add_argument("--state-alias", action="append", default=[], metavar="OLD_STATE=NEW_STATE",
                         help="explicit state properties, e.g. minecraft:block[old=a]=minecraft:block[new=b]")
+    parser.add_argument("--item-names", action="store_true",
+                        help="also emit canonical item identifiers indexed by the old item id")
     args = parser.parse_args()
     renames = {}
     for spec in args.rename:
@@ -205,6 +217,14 @@ def main():
         backward = {new: old for old, new in forward.items()}
         lines.extend(rust_table(f"{name}_UP", table(o, n, forward)))
         lines.extend(rust_table(f"{name}_DOWN", table(n, o, backward)))
+    if args.item_names:
+        names = item_names(entries(old_reg, "minecraft:item"), entries(new_reg, "minecraft:item"),
+                           renames.get("minecraft:item"))
+        lines.extend(["/// Canonical item identifiers for item-based cooldowns, indexed by old id.",
+                      "#[rustfmt::skip]", "pub const ITEM_NAMES: &[&str] = &["])
+        for i in range(0, len(names), 6):
+            lines.append("    " + ", ".join(json.dumps(name) for name in names[i:i + 6]) + ",")
+        lines.append("];")
     lines.append(f"/// Every table above, as the adapter reads them.")
     lines.append("pub const IDS: super::ids::Ids = super::ids::Ids {")
     if not inherited_module:

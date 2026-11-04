@@ -198,18 +198,28 @@ impl Particle {
             1 | 2 | 36 | 121 | 125 => Some(ParticleData::State(ids::block_state(r.varint()?))),
             28 | 46 | 52 => Some(ParticleData::Color(r.i32()?)),
             21 => {
-                let color = r.i32()?;
+                let color = if ids::quirks().components_before_1_21_2 {
+                    legacy_rgb(r)?
+                } else {
+                    r.i32()?
+                };
                 Some(ParticleData::ColorScale(color, r.f32()?))
             }
             22 => {
-                let from = r.i32()?;
-                let to = r.i32()?;
+                let legacy = ids::quirks().components_before_1_21_2;
+                let from = if legacy { legacy_rgb(r)? } else { r.i32()? };
+                let to = if legacy { legacy_rgb(r)? } else { r.i32()? };
                 Some(ParticleData::ColorScale2(from, to, r.f32()?))
             }
             23 | 56 => {
-                let color = r.i32()?;
-                Some(ParticleData::ColorPower(color, r.f32()?))
+                if ids::quirks().simple_spell_particles {
+                    Some(ParticleData::ColorPower(-1, 1.0))
+                } else {
+                    let color = r.i32()?;
+                    Some(ParticleData::ColorPower(color, r.f32()?))
+                }
             }
+            15 if ids::quirks().simple_spell_particles => Some(ParticleData::Scalar(1.0)),
             15 | 48 => Some(ParticleData::Scalar(r.f32()?)),
             115 => Some(ParticleData::Delay(r.varint()?)),
             59 => {
@@ -292,6 +302,14 @@ impl Particle {
         }
     }
 }
+// ARGB.colorFromFloat(1, r, g, b), preserving Java's float multiply before flooring.
+fn legacy_rgb(r: &mut Reader) -> Result<i32> {
+    let red = (r.f32()? * 255.0).floor() as i32;
+    let green = (r.f32()? * 255.0).floor() as i32;
+    let blue = (r.f32()? * 255.0).floor() as i32;
+    Ok((255_i32 << 24) | (red << 16) | (green << 8) | blue)
+}
+
 /// Serializer ids in EntityDataSerializers registration order.
 pub mod serializer {
     pub const BYTE: i32 = 0;
@@ -483,6 +501,63 @@ pub const ITEM_ENTITY_ITEM: u8 = 8;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn older_simple_particle_defaults_do_not_consume_the_next_field() {
+        use crate::adapter::{ServerVersion, ids::Way};
+        for version in [
+            ServerVersion::V1_21_1,
+            ServerVersion::V1_21_3,
+            ServerVersion::V1_21_4,
+            ServerVersion::V1_21_5,
+            ServerVersion::V1_21_6,
+            ServerVersion::V1_21_8,
+        ] {
+            let ids = version.ids().unwrap();
+            for (pinned, expected) in [
+                (15, ParticleData::Scalar(1.0)),
+                (23, ParticleData::ColorPower(-1, 1.0)),
+                (56, ParticleData::ColorPower(-1, 1.0)),
+            ] {
+                let mut w = Writer::new();
+                w.varint(ids.particle_type.down(pinned).unwrap());
+                w.u8(99);
+                let mut r = Reader::new(&w.data);
+                let particle = {
+                    let _up = ids::renumbering(ids, Way::Up);
+                    Particle::read(&mut r).unwrap()
+                };
+                assert_eq!(particle.data, Some(expected));
+                assert_eq!(r.u8().unwrap(), 99);
+            }
+        }
+    }
+
+    #[test]
+    fn old_float_dust_colours_become_argb_without_reading_past_the_option() {
+        use crate::adapter::{ServerVersion, ids::Way};
+        let ids = ServerVersion::V1_21_1.ids().unwrap();
+        let mut w = Writer::new();
+        w.varint(ids.particle_type.down(22).unwrap());
+        for f in [0.25, 0.5, 0.75, 1.0, 0.0, 0.5, 2.0] {
+            w.f32(f);
+        }
+        w.u8(99);
+        let mut r = Reader::new(&w.data);
+        let p = {
+            let _up = ids::renumbering(ids, Way::Up);
+            Particle::read(&mut r).unwrap()
+        };
+        assert_eq!(
+            p.data,
+            Some(ParticleData::ColorScale2(
+                0xff3f7fbf_u32 as i32,
+                0xffff007f_u32 as i32,
+                2.0
+            ))
+        );
+        assert_eq!(r.u8().unwrap(), 99);
+    }
 
     #[test]
     fn round_trips_and_stops_at_unknown_serializers() {

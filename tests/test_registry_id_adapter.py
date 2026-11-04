@@ -1,9 +1,15 @@
 """Renamed blocks retain every state's properties in both adapter directions."""
 import unittest
-from tools.generate_registry_id_adapter import states, table, state_alias
+from tools.generate_registry_id_adapter import states, table, state_alias, item_names
 
 
 class RenamedBlockStates(unittest.TestCase):
+    def test_cooldown_names_follow_the_current_item_rename_and_reject_missing_entries(self):
+        old = {"minecraft:stone": 0, "minecraft:chain": 1, "minecraft:removed": 2}
+        new = {"minecraft:stone": 0, "minecraft:iron_chain": 1}
+        self.assertEqual(item_names(old, new, {"minecraft:chain": "minecraft:iron_chain"}),
+                         ["minecraft:stone", "minecraft:iron_chain", ""])
+
     def test_rename_matches_properties_instead_of_state_order(self):
         old = {"minecraft:chain": {"states": [
             {"id": 0, "properties": {"axis": "x", "waterlogged": "false"}},

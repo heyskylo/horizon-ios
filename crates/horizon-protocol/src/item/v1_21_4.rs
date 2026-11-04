@@ -9,11 +9,19 @@ pub(super) fn reading() -> bool {
 pub(super) fn writing() -> bool {
     matches!(ids::active(),Some((ids,ids::Way::Down)) if ids.quirks.components_before_1_21_5)
 }
-const TOOLTIP_FLAGS: &[i32] = &[4, 13, 14, 15, 16, 45, 47, 58, 64];
+pub(super) const TOOLTIP_FLAGS: &[i32] = &[4, 13, 14, 15, 16, 45, 47, 58, 64];
 // The old hide_additional_tooltip hid item-specific tooltip providers.
-const ADDITIONAL: &[i32] = &[
+pub(super) const ADDITIONAL: &[i32] = &[
     74, 79, 62, 78, 52, 51, 77, 82, 70, 71, 63, 48, 109, 76, 53, 95, 57,
 ];
+
+pub(super) fn tooltip_ids() -> (i32, i32) {
+    if ids::active().is_some_and(|(ids, _)| ids.quirks.components_before_1_21_2) {
+        (14, 15)
+    } else {
+        (15, 16)
+    }
+}
 
 pub(super) fn read_stack(r: &mut Reader) -> Result<Option<Stack>> {
     let count = r.varint()?;
@@ -26,13 +34,14 @@ pub(super) fn read_stack(r: &mut Reader) -> Result<Option<Stack>> {
     let mut hide = false;
     let mut additional = false;
     let mut hidden = Vec::new();
+    let (additional_id, hide_id) = tooltip_ids();
     for _ in 0..positive {
         let old = r.varint()?;
-        if old == 15 {
+        if old == additional_id {
             additional = true;
             continue;
         }
-        if old == 16 {
+        if old == hide_id {
             hide = true;
             continue;
         }
@@ -62,7 +71,7 @@ pub(super) fn read_stack(r: &mut Reader) -> Result<Option<Stack>> {
     }
     for _ in 0..negative {
         let old = r.varint()?;
-        let kind = if old == 15 || old == 16 {
+        let kind = if old == additional_id || old == hide_id {
             component::TOOLTIP_DISPLAY
         } else {
             ids::component(old)
@@ -74,14 +83,16 @@ pub(super) fn read_stack(r: &mut Reader) -> Result<Option<Stack>> {
     Ok(Some(stack))
 }
 
-fn read_component(kind: i32, r: &mut Reader) -> Result<Component> {
+pub(super) fn read_component(kind: i32, r: &mut Reader) -> Result<Component> {
     match kind {
         14 | 15 | 28 => Ok(Component::Raw(rewrite(kind, r, true)?)),
         component::TRIM => {
             let material = r.varint()?;
             let pattern = r.varint()?;
             if material == 0 || pattern == 0 {
-                return Err(Error::new("inline 1.21.4 trim holders are not supported"));
+                return Err(Error::new(
+                    "inline pre-1.21.5 trim holders are not supported",
+                ));
             }
             Ok(Component::Trim {
                 material: material - 1,
@@ -113,6 +124,7 @@ pub(super) fn write_stack(stack: Option<&Stack>, w: &mut Writer) {
         .filter(|(kind, _)| ids::component(*kind) >= 0)
         .collect();
     let additional = hidden.iter().any(|kind| ADDITIONAL.contains(kind));
+    let (additional_id, hide_id) = tooltip_ids();
     let mut removed: Vec<_> = stack
         .removed
         .iter()
@@ -120,7 +132,7 @@ pub(super) fn write_stack(stack: Option<&Stack>, w: &mut Writer) {
         .filter(|id| *id >= 0)
         .collect();
     if stack.removed.contains(&component::TOOLTIP_DISPLAY) {
-        removed.extend([15, 16]);
+        removed.extend([additional_id, hide_id]);
     }
     w.varint(stack.count);
     w.varint(item);
@@ -128,26 +140,30 @@ pub(super) fn write_stack(stack: Option<&Stack>, w: &mut Writer) {
     w.varint(removed.len() as i32);
     for (kind, value) in added {
         w.varint(ids::component(*kind));
-        match (*kind, value) {
-            (14 | 15 | 28, Component::Raw(bytes)) => {
-                let rewritten = rewrite(*kind, &mut Reader::new(bytes), false)
-                    .unwrap_or_else(|_| bytes.clone());
-                w.bytes(&rewritten);
-            }
-            _ => value.write(*kind, w),
-        }
+        write_component(*kind, value, w);
         if TOOLTIP_FLAGS.contains(kind) {
             w.bool(!hidden.contains(kind));
         }
     }
     if hide {
-        w.varint(16);
+        w.varint(hide_id);
     }
     if additional {
-        w.varint(15);
+        w.varint(additional_id);
     }
     for kind in removed {
         w.varint(kind);
+    }
+}
+
+pub(super) fn write_component(kind: i32, value: &Component, w: &mut Writer) {
+    match (kind, value) {
+        (14 | 15 | 28, Component::Raw(bytes)) => {
+            let rewritten =
+                rewrite(kind, &mut Reader::new(bytes), false).unwrap_or_else(|_| bytes.clone());
+            w.bytes(&rewritten);
+        }
+        _ => value.write(kind, w),
     }
 }
 
@@ -173,7 +189,7 @@ fn block_set(r: &mut Reader, w: &mut Writer) -> Result<()> {
     }
     Ok(())
 }
-fn rewrite(kind: i32, r: &mut Reader, up: bool) -> Result<Vec<u8>> {
+pub(super) fn rewrite(kind: i32, r: &mut Reader, up: bool) -> Result<Vec<u8>> {
     let mut w = Writer::new();
     let n = r.count(65536)?;
     w.varint(n as i32);

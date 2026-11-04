@@ -8,10 +8,12 @@
 pub mod ids;
 pub mod session;
 mod translate;
+pub mod v1_21_1;
 pub mod v1_21_10;
 mod v1_21_10_ids;
 pub mod v1_21_11;
 mod v1_21_11_ids;
+mod v1_21_1_ids;
 pub mod v1_21_3;
 mod v1_21_3_ids;
 pub mod v1_21_4;
@@ -52,11 +54,12 @@ pub enum ServerVersion {
     V1_21_5,
     V1_21_4,
     V1_21_3,
+    V1_21_1,
 }
 
 impl ServerVersion {
     /// Newest first.
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 11] = [
         Self::Current,
         Self::V26_2,
         Self::V26_1,
@@ -67,6 +70,7 @@ impl ServerVersion {
         Self::V1_21_5,
         Self::V1_21_4,
         Self::V1_21_3,
+        Self::V1_21_1,
     ];
 
     /// Whether this is `other` or an older release: the translation steps from `other` up apply.
@@ -88,6 +92,7 @@ impl ServerVersion {
             Self::V1_21_5 => v1_21_5::PROTOCOL,
             Self::V1_21_4 => v1_21_4::PROTOCOL,
             Self::V1_21_3 => v1_21_3::PROTOCOL,
+            Self::V1_21_1 => v1_21_1::PROTOCOL,
         }
     }
 
@@ -104,6 +109,7 @@ impl ServerVersion {
             Self::V1_21_5 => v1_21_5::NAME,
             Self::V1_21_4 => v1_21_4::NAME,
             Self::V1_21_3 => v1_21_3::NAME,
+            Self::V1_21_1 => v1_21_1::NAME,
         }
     }
 
@@ -187,6 +193,7 @@ impl ServerVersion {
                 shoulder_parrots_as_nbt: true,
                 count_first_templates: true,
                 optional_profile_fields: true,
+                simple_spell_particles: true,
                 ..BEFORE_26_3
             },
             // EntityDataSerializers in 1.21.8's registration order: compound tags (16) went away;
@@ -263,6 +270,14 @@ impl ServerVersion {
             entity_data_serializer: V1_21_4.entity_data_serializer,
             ..v1_21_3_ids::IDS
         };
+        static V1_21_1: ids::Ids = ids::Ids {
+            quirks: ids::Quirks {
+                components_before_1_21_2: true,
+                ..V1_21_3.quirks
+            },
+            entity_data_serializer: V1_21_3.entity_data_serializer,
+            ..v1_21_1_ids::IDS
+        };
         match self {
             Self::Current => None,
             Self::V26_2 => Some(&V26_2),
@@ -274,6 +289,7 @@ impl ServerVersion {
             Self::V1_21_5 => Some(&V1_21_5),
             Self::V1_21_4 => Some(&V1_21_4),
             Self::V1_21_3 => Some(&V1_21_3),
+            Self::V1_21_1 => Some(&V1_21_1),
         }
     }
 
@@ -298,6 +314,8 @@ impl ServerVersion {
             (Self::V1_21_4, Direction::Serverbound) => v1_21_4::serverbound(state),
             (Self::V1_21_3, Direction::Clientbound) => v1_21_3::clientbound(state),
             (Self::V1_21_3, Direction::Serverbound) => v1_21_3::serverbound(state),
+            (Self::V1_21_1, Direction::Clientbound) => v1_21_1::clientbound(state),
+            (Self::V1_21_1, Direction::Serverbound) => v1_21_1::serverbound(state),
         };
         let mapped = *table.get(usize::try_from(id).ok()?)?;
         mapped.map(i32::from)
@@ -372,7 +390,11 @@ mod tests {
             ServerVersion::from_protocol(768),
             Some(ServerVersion::V1_21_3)
         );
-        assert_eq!(ServerVersion::from_protocol(767), None);
+        assert_eq!(
+            ServerVersion::from_protocol(767),
+            Some(ServerVersion::V1_21_1)
+        );
+        assert_eq!(ServerVersion::from_protocol(766), None);
         assert!(ServerVersion::V26_1.at_most(ServerVersion::V26_2));
         assert!(!ServerVersion::V26_2.at_most(ServerVersion::V26_1));
     }

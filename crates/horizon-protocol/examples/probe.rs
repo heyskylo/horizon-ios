@@ -129,6 +129,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let biome_bits = ceil_log2(registries.len("minecraft:worldgen/biome"));
     let mut counts: BTreeMap<&str, (u32, u32)> = BTreeMap::new();
+    let mut entity_types: BTreeMap<String, u32> = BTreeMap::new();
     let mut dimension = registries.dimension(0);
     let start = Instant::now();
     c.reader
@@ -202,6 +203,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         .as_ref()
                         .and_then(|b| b.get("minecraft:entity_type")?.name(p.kind))
                         .unwrap_or("?");
+                    *entity_types.entry(kind.to_owned()).or_default() += 1;
                     if counts.get("add_entity").is_some_and(|c| c.0 < 4) {
                         println!("entity {} {kind} at {:?}", p.id, p.position);
                     }
@@ -225,6 +227,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     println!("{ticks} chunk batches");
+    for (kind, count) in entity_types {
+        println!("entity_type {kind} {count}");
+    }
     for (name, (n, errors)) in counts {
         println!(
             "{name:32} {n:6} {}",
