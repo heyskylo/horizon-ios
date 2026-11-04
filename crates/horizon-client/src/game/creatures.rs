@@ -2018,6 +2018,13 @@ impl Game<'_> {
                     let ctx = self.who_context(Some(Who::Mob(source)), None);
                     self.post_game_event(event, at, ctx);
                 }
+                // Armadillo.rollUp/rollOut: `gameEvent(ENTITY_ACTION)`.
+                MobEvent::GameEvent {
+                    event, at, source, ..
+                } if event == "minecraft:entity_action" => {
+                    let ctx = self.who_context(Some(Who::Mob(source)), None);
+                    self.post_game_event(event, at, ctx);
+                }
                 // The sculk layer tracks steps and bee/bat flaps itself
                 // (`entity_motion_events`, `tick_mob_sculk_events`). Birds
                 // above use their movement's flyDist/nextFlap threshold.
