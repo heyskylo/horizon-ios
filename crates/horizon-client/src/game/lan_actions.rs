@@ -2127,10 +2127,13 @@ impl Game<'_> {
                         g.forced_hit = Some(hit);
                         g.guest_use = Some(GuestUse::OnBlock(hand));
                         let swings = g.swings_started;
-                        let consumed = matches!(g.use_item(), Ok(Some(_)));
+                        // InteractionResult.consumesAction: a FAIL (`use_failed`,
+                        // as BlockItem.place's failed placement) does not count,
+                        // even though the click ended on it.
+                        let consumed = matches!(g.use_item(), Ok(Some(_))) && !g.use_failed;
                         // handleUseItemOn: a consuming useItemOn triggers
                         // ANY_BLOCK_USE with the hand's stack as it now is.
-                        if consumed && !g.use_failed {
+                        if consumed {
                             let stack = g
                                 .with_hand(hand, |g| g.held().cloned())
                                 .unwrap_or_else(|| ItemStack::new("minecraft:air", 0));

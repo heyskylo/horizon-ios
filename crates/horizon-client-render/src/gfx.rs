@@ -1235,6 +1235,10 @@ pub struct Renderer {
     /// Whether `lightmap` holds `lightmap_pixels` yet.
     lightmap_uploaded: bool,
     sprite_minimum_size: u32,
+    /// Each sprite layer's own side, before the arrays scaled it up (`mipmap::Settings::native_size`).
+    sprite_native: Vec<u32>,
+    /// The Mipmap Levels option (`set_mipmap_levels`), which sets a shader pack atlas's padding.
+    mipmap_option: u32,
     indices: wgpu::Buffer,
     index_quads: u32,
     instances: wgpu::Buffer,
@@ -1354,6 +1358,8 @@ pub struct Renderer {
     /// The marker file of an HDR output that has not presented a frame yet
     /// (`graphics::HDR_MARKER`).
     hdr_marker: Option<std::path::PathBuf>,
+    /// The HDR Lighting setting, kept for the HDR output made when HDR turns on.
+    hdr_lighting_setting: bool,
     /// The shader pack's post-processing, and the dimension (legacy id) it was loaded for.
     pack_post: Option<(i32, Option<pack_post::PackPost>)>,
     /// The post passes of one of Horizon's own shader packs; never beside `pack_post`'s.
@@ -1442,6 +1448,10 @@ fn requested_split() -> Option<u32> {
         .ok()
         .and_then(|v| v.parse().ok())
         .filter(|&n| (1..=SPRITE_SPLIT).contains(&n))
+}
+fn adapter_requested_split(info: &wgpu::AdapterInfo, requested: Option<u32>) -> Option<u32> {
+    // Metal can fail to sample large mipmapped array textures despite advertising the layer limit.
+    requested.or_else(|| (info.backend == wgpu::Backend::Metal).then_some(512))
 }
 /// The split the CPU mip chains are cut by before the adapter is known.
 fn sprite_split() -> u32 {
@@ -1878,10 +1888,11 @@ fn describe_adapter(adapter: &wgpu::Adapter) {
 /// Whether an adapter's texture arrays hold the block textures Horizon puts
 /// in one array.
 fn check_layers(adapter: &wgpu::Adapter, layers: u32) -> Result<u32> {
+    let info = adapter.get_info();
     Ok(layer_split(
         adapter.limits().max_texture_array_layers,
-        adapter.get_info().backend == wgpu::Backend::Gl,
-        requested_split(),
+        info.backend == wgpu::Backend::Gl,
+        adapter_requested_split(&info, requested_split()),
         layers,
     )?)
 }
@@ -4571,6 +4582,8 @@ impl Renderer {
             shrink_gate: ShrinkGate::default(),
             lightmap_uploaded: false,
             sprite_minimum_size,
+            sprite_native: sprite_mips.iter().map(|s| s.native_size).collect(),
+            mipmap_option: 4,
             indices,
             index_quads,
             instances,
@@ -4625,6 +4638,7 @@ impl Renderer {
             frame_gen: frame_gen::FrameGen::new(),
             entity_atlas: atlas_view.clone(),
             hdr: None,
+            hdr_lighting_setting: true,
             emission_stats,
             hdr_output,
             frame_format,
@@ -6095,6 +6109,13 @@ impl Renderer {
             None => "HDR: not offered by this display".into(),
         }
     }
+    /// The HDR Lighting setting (`Hdr::look`).
+    pub fn set_hdr_lighting(&mut self, on: bool) {
+        self.hdr_lighting_setting = on;
+        if let Some(hdr) = &mut self.hdr {
+            hdr.look = on;
+        }
+    }
     /// HDR output (Horizon setting): HDR10 or scRGB at `paper_white` nits, the world's
     /// highlights expanded up to `peak` nits. Off where the surface can't present it.
     /// Offscreen (`hdr::offscreen_output`) the frame is drawn the same and its HDR screenshot
@@ -6139,6 +6160,9 @@ impl Renderer {
             let format = self.frame_format;
             self.hdr =
                 output.map(|output| hdr::Hdr::new(&self.device, &self.queue, format, output));
+            if let Some(hdr) = &mut self.hdr {
+                hdr.look = self.hdr_lighting_setting;
+            }
             self.configure_surface();
             match output {
                 Some(output) => log::info!(
@@ -6420,6 +6444,13 @@ impl Renderer {
     }
 
     fn pack_terrain_inputs(&mut self) -> Option<horizon_shaders::GbuffersInputs> {
+        // Flat draws whenever the device has them (`render` keeps them on with a pack).
+        let flat = self.flat.is_some() && self.flat_on;
+        // Flat draws read each sprite's place from a table: the atlas is stitched as the game's.
+        // Other draws need the grid.
+        if !flat && self.pack_atlas.as_ref().is_some_and(|a| a.is_stitched()) {
+            self.pack_atlas = None;
+        }
         if self.pack_atlas.is_none() {
             let mut encoder = self.device.create_command_encoder(&Default::default());
             let layers = self
@@ -6427,14 +6458,42 @@ impl Renderer {
                 .iter()
                 .map(|t| t.depth_or_array_layers())
                 .sum();
-            let mut atlas = pack_atlas::PackAtlas::new(
-                &self.device,
-                &mut encoder,
-                &self.sprite_textures,
-                self.sprite_split,
-                layers,
-                self.sprite_textures[0].width(),
-            );
+            let sprite = self.sprite_textures[0].width();
+            // Vanilla's padding counts the anisotropy bit only with anisotropic filtering.
+            let anisotropy_bit = if self.texture_filtering == 2 {
+                u32::from(self.max_anisotropy).trailing_zeros()
+            } else {
+                0
+            };
+            let stitched = flat
+                .then(|| {
+                    pack_atlas::PackAtlas::stitched(
+                        &self.device,
+                        &mut encoder,
+                        &self.sprite_textures,
+                        self.sprite_split,
+                        sprite,
+                        &self.sprite_native,
+                        self.mipmap_option,
+                        anisotropy_bit,
+                    )
+                })
+                .flatten();
+            if flat && stitched.is_none() {
+                log::warn!(
+                    "shader pack block atlas: the sprites don't stitch on this device, a grid instead"
+                );
+            }
+            let mut atlas = stitched.or_else(|| {
+                pack_atlas::PackAtlas::new(
+                    &self.device,
+                    &mut encoder,
+                    &self.sprite_textures,
+                    self.sprite_split,
+                    layers,
+                    sprite,
+                )
+            });
             if let Some(atlas) = &mut atlas {
                 atlas.separate_ao = self.separate_ao;
             }
@@ -6455,8 +6514,7 @@ impl Renderer {
             self.pack_atlas = atlas;
             self.queue.submit([encoder.finish()]);
         }
-        // Flat draws whenever the device has them (`render` keeps them on with a pack).
-        self.pack_terrain_flat = self.flat.is_some() && self.flat_on;
+        self.pack_terrain_flat = flat;
         Some(
             self.pack_atlas
                 .as_ref()?
@@ -6569,6 +6627,7 @@ impl Renderer {
     /// The Mipmap Levels option: block textures sample at most `levels`
     /// reduced copies (0: none).
     pub fn set_mipmap_levels(&mut self, levels: u32) {
+        self.mipmap_option = levels;
         let levels = crate::sprites::sprite_mipmap_limit(
             levels,
             self.sprite_textures[0].width(),
@@ -7899,14 +7958,14 @@ impl Renderer {
         self.translucency_cursor += budget;
         let translucent_draws = self.draws.len() as u32 - solid_draws;
         self.section_draws = self.draws.len();
-        // The shadow camera's sections after the camera's: quads that can face the light, then
-        // translucent ones (in their last sorted order; depth decides there).
+        // The shadow camera's sections after the camera's: quads that can face the light (all of
+        // them for `every_face`), then translucent ones (in their last sorted order; depth
+        // decides there).
         let shadow_first = self.draws.len() as u32;
         let mut shadow_translucent = Vec::new();
         self.shadow_runs.clear();
         if let Some(view) = &shadow_view {
             let base = self.drawn_sections;
-            let toward = view.light * 1.0e5;
             // How far below the nearest section to the light (squared, as bits, as `PageRuns`
             // takes distances): each band's draws go by page, a call per page and band.
             let height = |v: &resident::Visible| glam::Vec3::from(v.origin).dot(view.light);
@@ -7938,13 +7997,7 @@ impl Renderer {
                     }
                 }
                 let before = self.draws.len();
-                // Every face of a section within the unculled distance.
-                let unculled = view.unculled.is_some_and(|d| {
-                    let o = glam::Vec3::from(v.origin) + 8.0;
-                    o.x.abs().max(o.z.abs()) <= d + 8.0
-                });
-                let toward = (!unculled).then_some(toward);
-                facing_runs(&s.sides, toward, v.origin, |first, quads| {
+                shadow_runs(&s.sides, view, v.origin, |first, quads| {
                     let start = s.solid_base() + first * 4;
                     self.draws.push([quads * 6, 1, 0, start, instance]);
                     self.draw_pages.push((s.page, None));
@@ -8119,7 +8172,7 @@ impl Renderer {
             && self.pack_post.as_ref().is_none_or(|p| p.1.is_none())
             && std::env::var_os("HORIZON_HDR_LIGHTING").is_none_or(|v| v != "0");
         if let Some(hdr) = &mut self.hdr {
-            hdr.lighting = hdr_lighting;
+            hdr.lighting = hdr_lighting && hdr.look;
         }
         let oit_on = self.improved_transparency
             && !frame.title
@@ -11140,6 +11193,22 @@ fn projection_center(view_proj: Mat4) -> Option<Vec3> {
     let b = DVec3::new(rows[0].w, rows[1].w, rows[2].w);
     Some((a.inverse() * -b).as_vec3())
 }
+/// The runs of a section's solid quads the shadow pass draws: every face within the unculled
+/// distance, or everywhere for `every_face`; else the quads that can face the light.
+fn shadow_runs(
+    sides: &Sides,
+    view: &pack_post::ShadowView,
+    origin: [f32; 3],
+    draw: impl FnMut(u32, u32),
+) {
+    let unculled = view.unculled.is_some_and(|d| {
+        let o = Vec3::from(origin) + 8.0;
+        o.x.abs().max(o.z.abs()) <= d + 8.0
+    });
+    let toward = (!unculled && !view.every_face).then_some(view.light * 1.0e5);
+    facing_runs(sides, toward, origin, draw);
+}
+
 /// Calls `draw(first, quads)` for each run of a mesh's solid quads that can
 /// face `eye` (`projection_center`), the mesh at the camera-relative
 /// `origin`; all of them when there is no eye.
@@ -12504,6 +12573,30 @@ mod sprite_upload_tests {
     }
 
     #[test]
+    fn metal_uses_a_conservative_default_split_but_respects_overrides() {
+        let mut info = wgpu::AdapterInfo {
+            name: "test adapter".into(),
+            vendor: 0,
+            device: 0,
+            device_type: wgpu::DeviceType::IntegratedGpu,
+            device_pci_bus_id: String::new(),
+            driver: String::new(),
+            driver_info: String::new(),
+            backend: wgpu::Backend::Vulkan,
+            subgroup_min_size: 0,
+            subgroup_max_size: 0,
+            transient_saves_memory: None,
+            limit_bucket: None,
+        };
+        info.backend = wgpu::Backend::Metal;
+        assert_eq!(adapter_requested_split(&info, None), Some(512));
+        assert_eq!(adapter_requested_split(&info, Some(1024)), Some(1024));
+
+        info.backend = wgpu::Backend::Vulkan;
+        assert_eq!(adapter_requested_split(&info, None), None);
+    }
+
+    #[test]
     fn mip_chain_allocates_exactly_its_size() {
         for size in [16, 64] {
             let animation = crate::sprites::test_animation(size, 0);
@@ -12698,5 +12791,64 @@ fn reported(l: horizon_hdr::wayland::Luminances) -> crate::graphics::Reported {
         paper_white: 203,
         peak: peak.clamp(200, 10_000),
         black: hundredths_of_a_nit(l.target_min * 203.0 / l.reference.max(1.0)),
+    }
+}
+
+#[cfg(test)]
+mod shadow_face_tests {
+    use super::*;
+
+    /// The faces of one block at `at` (section-relative), each with its own layer:
+    /// 0 +X, 1 -X, 2 +Y (up), 3 -Y (down), 4 +Z, 5 -Z; counter-clockwise from outside.
+    fn block(at: [f32; 3]) -> Vec<TerrainVertex> {
+        let [x, y, z] = at;
+        let (a, b, c) = (x + 1.0, y + 1.0, z + 1.0);
+        [
+            [[a, y, z], [a, b, z], [a, b, c], [a, y, c]],
+            [[x, y, z], [x, y, c], [x, b, c], [x, b, z]],
+            [[x, b, z], [x, b, c], [a, b, c], [a, b, z]],
+            [[x, y, z], [a, y, z], [a, y, c], [x, y, c]],
+            [[x, y, c], [a, y, c], [a, b, c], [x, b, c]],
+            [[x, y, z], [x, b, z], [a, b, z], [a, y, z]],
+        ]
+        .into_iter()
+        .enumerate()
+        .flat_map(|(layer, q)| q.map(|p| TerrainVertex::new(p, [0.0; 2], layer as u16, 0, 0)))
+        .collect()
+    }
+
+    /// The layers (faces) of the quads the shadow pass draws of `solid`.
+    fn drawn(view: &pack_post::ShadowView, origin: [f32; 3]) -> Vec<u16> {
+        let mut solid = block([7.0, 7.0, 7.0]);
+        let sides = crate::mesher::sort_tinted(&mut solid, &mut Vec::new());
+        let mut layers = Vec::new();
+        shadow_runs(&sides, view, origin, |first, quads| {
+            for q in first..first + quads {
+                layers.push(solid[q as usize * 4].layer);
+            }
+        });
+        layers.sort_unstable();
+        layers
+    }
+
+    fn view(every_face: bool) -> pack_post::ShadowView {
+        pack_post::ShadowView {
+            cull: Mat4::IDENTITY,
+            light: Vec3::Y,
+            distance: None,
+            unculled: None,
+            every_face,
+        }
+    }
+
+    /// Iris 1.11.7's shadow map holds faces turned away from the light (#9033): the block's
+    /// bottom face, under a sun straight above, is drawn too.
+    #[test]
+    fn the_shadow_pass_draws_faces_turned_away_from_the_light() {
+        // A section 32 blocks under the camera.
+        let origin = [-8.0, -40.0, -8.0];
+        assert_eq!(drawn(&view(true), origin), [0, 1, 2, 3, 4, 5]);
+        // Horizon's own packs keep drawing only what can face the light: no bottom face.
+        assert!(!drawn(&view(false), origin).contains(&3));
     }
 }

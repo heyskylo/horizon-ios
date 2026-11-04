@@ -35,6 +35,8 @@ pub(super) enum Status {
 }
 #[derive(Clone, Debug)]
 pub(super) struct Boat {
+    /// `Entity.xRot`: kept for `/tp` and `Rotation`; the kind turns only in yaw.
+    pub pitch: f32,
     /// When it joined its list (`horizon_client::join_seq`); set by the list.
     pub(super) join: horizon_client::join_seq::JoinSeq,
     pub id: u32,
@@ -157,6 +159,7 @@ impl Boat {
 
     pub fn new(id: u32, wood: Arc<str>, position: Vec3, yaw: f32) -> Self {
         Self {
+            pitch: 0.0,
             join: Default::default(),
             id,
             wood,

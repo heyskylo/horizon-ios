@@ -344,6 +344,7 @@ impl Game<'_> {
         match kind {
             "minecraft:evoker_fangs" => self.insert_fangs(id, position, yaw, 0, 0),
             "minecraft:tnt" => self.tnts.push(super::tnt::PrimedTnt {
+                rotation: [0.0, 0.0],
                 join: Default::default(),
                 no_gravity: false,
                 id,
@@ -359,6 +360,7 @@ impl Game<'_> {
             }),
             // FallingBlockEntity.recreateFromPacket: the block state is the data.
             "minecraft:falling_block" => self.falling.push(FallingBlock {
+                rotation: [0.0, 0.0],
                 join: Default::default(),
                 id,
                 state: BlockStateId(data.max(0) as u32),
