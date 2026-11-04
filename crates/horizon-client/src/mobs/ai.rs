@@ -822,9 +822,11 @@ fn effects_from_blocks(
                         "minecraft:sweet_berry_bush"
                             if !matches!(m.species(), Species::Fox | Species::Bee) =>
                         {
-                            m.fall_distance = 0.0;
-                            m.stuck_multiplier =
-                                Vec3::new(f64::from(0.8_f32), 0.75, f64::from(0.8_f32));
+                            if m.species() != Species::Wither {
+                                m.fall_distance = 0.0;
+                                m.stuck_multiplier =
+                                    Vec3::new(f64::from(0.8_f32), 0.75, f64::from(0.8_f32));
+                            }
                             let moved = m.previous.subtract(m.position);
                             if w.prop(x, y, z, "age") != Some("0")
                                 && moved.horizontal_distance_squared() > 0.0
@@ -844,9 +846,11 @@ fn effects_from_blocks(
                                 m.position.z.floor() as i32,
                             ) == "minecraft:powder_snow" =>
                         {
-                            m.fall_distance = 0.0;
-                            m.stuck_multiplier =
-                                Vec3::new(f64::from(0.9_f32), 1.5, f64::from(0.9_f32));
+                            if m.species() != Species::Wither {
+                                m.fall_distance = 0.0;
+                                m.stuck_multiplier =
+                                    Vec3::new(f64::from(0.9_f32), 1.5, f64::from(0.9_f32));
+                            }
                             let known_movement =
                                 w.controlling_player_movement.unwrap_or(m.velocity);
                             if let Some(velocity) =
@@ -4263,6 +4267,166 @@ mod burn_and_rose_tests {
             assert_eq!(m.health, start - 8.0, "second hit on tick 11");
             assert_eq!(m.fire_ticks, 300);
         });
+    }
+}
+
+#[cfg(test)]
+mod wither_block_slowdown_tests {
+    use super::*;
+    use crate::mobs::world::with_built_test_world;
+    use horizon_world::registry::BlockRegistry;
+    use std::sync::Arc;
+
+    fn build_with(block: &'static str) -> impl FnOnce(&mut crate::world::World, &BlockRegistry) {
+        move |world, registry| {
+            let stone = registry.default_state("minecraft:stone").unwrap();
+            let state = registry.default_state(block).unwrap();
+            for cx in -1..1 {
+                for cz in -1..1 {
+                    world
+                        .chunks
+                        .insert((cx, cz), Arc::new(crate::chunk::Chunk::empty(cx, cz)));
+                }
+            }
+            for x in -4..4 {
+                for z in -4..4 {
+                    world.set(x, 63, z, stone).unwrap();
+                }
+            }
+            world.set(0, 64, 0, state).unwrap();
+        }
+    }
+
+    fn mob(types: &crate::mobs::MobTypes, id: &str) -> Mob {
+        let kind = Arc::new(types.types[id].clone());
+        let mut m = Mob::new(1, kind, Vec3::new(0.5, 64.0, 0.5), 0.0);
+        register(&mut m);
+        m
+    }
+
+    /// `SweetBerryBushBlock.entityInside` -> `makeStuckInBlock`: a regular mob
+    /// (e.g. cow) is slowed down and its fall distance is reset to 0.
+    #[test]
+    fn cow_gets_stuck_in_sweet_berry_bush() {
+        let ran =
+            with_built_test_world(&[], build_with("minecraft:sweet_berry_bush"), |w, types| {
+                let mut m = mob(types, "minecraft:cow");
+                m.fall_distance = 4.5;
+                m.stuck_multiplier = Vec3::ZERO;
+                let mut random = LegacyRandom::new(42);
+                let mut events = Vec::new();
+                effects_from_blocks(&mut m, w, &mut random, &mut events);
+                assert_eq!(m.fall_distance, 0.0, "cow fall distance reset");
+                assert_eq!(
+                    m.stuck_multiplier,
+                    Vec3::new(f64::from(0.8_f32), 0.75, f64::from(0.8_f32)),
+                    "cow stuck multiplier applied"
+                );
+            });
+        let _ = ran;
+    }
+
+    /// `PowderSnowBlock.entityInside` -> `makeStuckInBlock`: a regular mob
+    /// (e.g. cow) in powder snow is slowed down and its fall distance is reset to 0.
+    #[test]
+    fn cow_gets_stuck_in_powder_snow() {
+        let ran = with_built_test_world(&[], build_with("minecraft:powder_snow"), |w, types| {
+            let mut m = mob(types, "minecraft:cow");
+            m.fall_distance = 4.5;
+            m.stuck_multiplier = Vec3::ZERO;
+            let mut random = LegacyRandom::new(42);
+            let mut events = Vec::new();
+            effects_from_blocks(&mut m, w, &mut random, &mut events);
+            assert_eq!(m.fall_distance, 0.0, "cow fall distance reset");
+            assert_eq!(
+                m.stuck_multiplier,
+                Vec3::new(f64::from(0.9_f32), 1.5, f64::from(0.9_f32)),
+                "cow powder snow stuck multiplier applied"
+            );
+        });
+        let _ = ran;
+    }
+
+    /// `WitherBoss.makeStuckInBlock` is a NO-OP: a wither inside sweet berry bush
+    /// does not receive stuck multiplier and preserves its fall distance.
+    #[test]
+    fn wither_does_not_get_stuck_in_sweet_berry_bush() {
+        let ran =
+            with_built_test_world(&[], build_with("minecraft:sweet_berry_bush"), |w, types| {
+                let mut m = mob(types, "minecraft:wither");
+                m.fall_distance = 4.5;
+                m.stuck_multiplier = Vec3::ZERO;
+                let mut random = LegacyRandom::new(42);
+                let mut events = Vec::new();
+                effects_from_blocks(&mut m, w, &mut random, &mut events);
+                assert_eq!(m.fall_distance, 4.5, "wither fall distance preserved");
+                assert_eq!(m.stuck_multiplier, Vec3::ZERO, "wither not slowed");
+            });
+        let _ = ran;
+    }
+
+    /// `WitherBoss.makeStuckInBlock` is a NO-OP: a wither inside powder snow
+    /// does not receive stuck multiplier and preserves its fall distance.
+    #[test]
+    fn wither_does_not_get_stuck_in_powder_snow() {
+        let ran = with_built_test_world(&[], build_with("minecraft:powder_snow"), |w, types| {
+            let mut m = mob(types, "minecraft:wither");
+            m.fall_distance = 4.5;
+            m.stuck_multiplier = Vec3::ZERO;
+            let mut random = LegacyRandom::new(42);
+            let mut events = Vec::new();
+            effects_from_blocks(&mut m, w, &mut random, &mut events);
+            assert_eq!(m.fall_distance, 4.5, "wither fall distance preserved");
+            assert_eq!(m.stuck_multiplier, Vec3::ZERO, "wither not slowed");
+        });
+        let _ = ran;
+    }
+
+    /// `SweetBerryBushBlock.entityInside`: Wither is NOT exempt from damage
+    /// when moving through a mature bush (age > 0).
+    #[test]
+    fn wither_takes_damage_when_moving_in_mature_sweet_berry_bush() {
+        let ran = with_built_test_world(
+            &[],
+            |world, registry| {
+                let stone = registry.default_state("minecraft:stone").unwrap();
+                let default_bush = registry
+                    .default_state("minecraft:sweet_berry_bush")
+                    .unwrap();
+                let mut state = registry.state(default_bush).unwrap().clone();
+                state.properties.insert("age".into(), "3".into());
+                let mature_bush = registry.id(&state).unwrap();
+                for cx in -1..1 {
+                    for cz in -1..1 {
+                        world
+                            .chunks
+                            .insert((cx, cz), Arc::new(crate::chunk::Chunk::empty(cx, cz)));
+                    }
+                }
+                for x in -4..4 {
+                    for z in -4..4 {
+                        world.set(x, 63, z, stone).unwrap();
+                    }
+                }
+                world.set(0, 64, 0, mature_bush).unwrap();
+            },
+            |w, types| {
+                let mut m = mob(types, "minecraft:wither");
+                let initial_health = m.health;
+                m.previous = Vec3::new(0.5, 64.0, 0.5);
+                m.position = Vec3::new(0.52, 64.0, 0.5);
+                let mut random = LegacyRandom::new(42);
+                let mut events = Vec::new();
+                effects_from_blocks(&mut m, w, &mut random, &mut events);
+                assert_eq!(
+                    m.health,
+                    initial_health - 0.86,
+                    "wither takes sweet berry bush damage through armor"
+                );
+                assert_eq!(m.stuck_multiplier, Vec3::ZERO, "wither still not slowed");
+            },
+        );
+        let _ = ran;
     }
 }
 
