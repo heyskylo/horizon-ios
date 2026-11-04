@@ -4005,8 +4005,9 @@ impl Game<'_> {
             // This player's own hurt tilt and flash come from the server too
             // (sent to the player itself): its own moves never hurt it.
             C::DamageEvent(p) => {
-                let own = self.remote.as_ref().is_some_and(|r| r.entity_id == p.id);
-                self.pvp_hurt(p.id, own);
+                let me = self.remote.as_ref().map(|r| r.entity_id);
+                let own = me == Some(p.id);
+                self.pvp_hurt(p.id, own, p.direct.map(|d| Some(d) == me));
                 if own {
                     let at = self
                         .player
@@ -8943,12 +8944,6 @@ impl Game<'_> {
     /// hit on another player with extra knockback runs the attacker's side of
     /// `causeExtraKnockback`: the 0.6 horizontal speed cut and the sprint
     /// stop. Without it the next move outruns the server's player.
-    /// The latency the server's player list gives this player (`PlayerInfo.getLatency`).
-    pub(super) fn own_latency(&self) -> Option<i32> {
-        let r = self.remote.as_ref()?;
-        let me = r.tab_players.get(&r.profile)?;
-        (me.latency >= 0).then_some(me.latency)
-    }
     fn remote_player_attack(&mut self, mob: usize) {
         // Java dispatches this through the target's RemotePlayer type. The
         // level_players map is profile bookkeeping and can lag the entity;
@@ -8990,6 +8985,14 @@ impl Game<'_> {
             );
         }
         self.stop_sprint_after_extra_knockback();
+    }
+    /// The latency the server's player list gives this player
+    /// (`PlayerInfo.getLatency`). A new entry reads 0 until the server's first
+    /// latency update (every 600 ticks), so 0 shows nothing rather than `0 ms`.
+    pub(super) fn own_latency(&self) -> Option<i32> {
+        let r = self.remote.as_ref()?;
+        let me = r.tab_players.get(&r.profile)?;
+        (me.latency > 0).then_some(me.latency)
     }
 
     /// An attribute's value on this client's player, if its map has the attribute.
