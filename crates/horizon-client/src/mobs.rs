@@ -3514,20 +3514,25 @@ impl Mob {
         }
     }
     /// `LivingEntity.canBeAffected`: whether an effect of this kind may be added at
-    /// all, asked by `addEffect` before it stores anything. Five classes narrow the
-    /// rule first — a spider (a cave spider with it) and a nautilus refuse poison, a
-    /// wither and a wither skeleton the wither effect, a parched weakness — and the
-    /// entity type tags answer for the rest: `immune_to_infested` keeps infested off
-    /// a silverfish, `immune_to_oozing` keeps oozing off a slime, and
-    /// `ignores_poison_and_regen` (which is `#minecraft:undead`) keeps poison and
-    /// regeneration off a zombie, a skeleton, a phantom, a wither and the rest.
+    /// all, asked by `addEffect` before it stores anything. `WitherBoss.addEffect`
+    /// refuses every effect; four classes narrow the rule first — a spider (a cave
+    /// spider with it) and a nautilus refuse poison, a wither skeleton the wither
+    /// effect, a parched weakness — and the entity type tags answer for the rest:
+    /// `immune_to_infested` keeps infested off a silverfish, `immune_to_oozing` keeps
+    /// oozing off a slime, and `ignores_poison_and_regen` (which is
+    /// `#minecraft:undead`) keeps poison and regeneration off a zombie, a skeleton,
+    /// a phantom and the rest.
     pub fn can_be_affected(&self, effect: &'static str) -> bool {
         let effect = horizon_client_core::potions::namespaced(effect);
+        // WitherBoss.addEffect returns false: the boss takes no effect at all.
+        if self.species() == Species::Wither {
+            return false;
+        }
         let refused = match self.species() {
             Species::Spider | Species::CaveSpider | Species::Nautilus | Species::ZombieNautilus => {
                 effect == "minecraft:poison"
             }
-            Species::Wither | Species::WitherSkeleton => effect == "minecraft:wither",
+            Species::WitherSkeleton => effect == "minecraft:wither",
             Species::Parched => effect == "minecraft:weakness",
             Species::Silverfish => effect == "minecraft:infested",
             Species::Slime => effect == "minecraft:oozing",
@@ -4941,7 +4946,8 @@ mod effect_refusal_tests {
     /// effect the mob's type refuses never joins the list, so the cloud on its head,
     /// the `/effect` reply and an effect tick never see it. The refused ones are the
     /// `ignores_poison_and_regen` tag (which is `#minecraft:undead`), a silverfish's
-    /// infested and a slime's oozing, plus the five classes that override the rule.
+    /// infested and a slime's oozing, the classes that override the rule, and the
+    /// wither, whose `addEffect` refuses every effect.
     #[test]
     fn an_effect_the_mobs_type_refuses_is_never_added() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -4964,7 +4970,6 @@ mod effect_refusal_tests {
             "minecraft:skeleton",
             "minecraft:phantom",
             "minecraft:zombie_horse",
-            "minecraft:wither",
         ] {
             for effect in ["minecraft:poison", "minecraft:regeneration"] {
                 assert_eq!(refused(undead, effect), (false, 0), "{undead} {effect}");
@@ -4998,11 +5003,29 @@ mod effect_refusal_tests {
             assert_eq!(refused(spider, "minecraft:poison"), (false, 0), "{spider}");
         }
         assert_eq!(refused("minecraft:cow", "minecraft:poison"), (true, 1));
-        // WitherBoss.canBeAffected and WitherSkeleton.canBeAffected: the wither
-        // effect only, which a zombie takes.
-        for wither in ["minecraft:wither", "minecraft:wither_skeleton"] {
-            assert_eq!(refused(wither, "minecraft:wither"), (false, 0), "{wither}");
+        // WitherBoss.addEffect returns false: the boss takes no effect at all.
+        for effect in [
+            "minecraft:wither",
+            "minecraft:strength",
+            "minecraft:speed",
+            "minecraft:poison",
+        ] {
+            assert_eq!(
+                refused("minecraft:wither", effect),
+                (false, 0),
+                "wither {effect}"
+            );
         }
+        // WitherSkeleton.canBeAffected refuses the wither effect only, which a
+        // zombie takes.
+        assert_eq!(
+            refused("minecraft:wither_skeleton", "minecraft:wither"),
+            (false, 0)
+        );
+        assert_eq!(
+            refused("minecraft:wither_skeleton", "minecraft:strength"),
+            (true, 1)
+        );
         assert_eq!(refused("minecraft:zombie", "minecraft:wither"), (true, 1));
         // Parched.canBeAffected: weakness only, slowness takes.
         assert_eq!(

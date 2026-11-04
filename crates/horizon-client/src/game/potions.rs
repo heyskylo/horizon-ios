@@ -136,10 +136,11 @@ pub(super) struct PotionOwner {
 pub(super) fn mob_effect_id(id: &str) -> Option<&'static str> {
     brewing::effect(id).map(|e| brewing::namespaced(e.id))
 }
-/// `LivingEntity.canBeAffected` with the mob overrides (`WitherBoss` and
-/// `WitherSkeleton` shrug off wither, `Spider` and `AbstractNautilus` poison,
-/// `Parched` weakness): the immune-to-infested and immune-to-oozing tags
-/// decide first, then the tag of mobs that ignore poison and regeneration.
+/// `LivingEntity.canBeAffected` with the mob overrides (`WitherBoss` takes no
+/// effect at all, `WitherSkeleton` shrugs off wither, `Spider` and
+/// `AbstractNautilus` poison, `Parched` weakness): the immune-to-infested and
+/// immune-to-oozing tags decide first, then the tag of mobs that ignore poison
+/// and regeneration.
 pub(super) fn mob_can_be_affected(
     tags: &std::collections::HashMap<String, std::collections::HashSet<String>>,
     kind: &str,
@@ -148,7 +149,9 @@ pub(super) fn mob_can_be_affected(
     let effect = effect.trim_start_matches("minecraft:");
     let kind = kind.trim_start_matches("minecraft:");
     let overridden = match kind {
-        "wither" | "wither_skeleton" => effect == "wither",
+        // WitherBoss.addEffect returns false for every effect.
+        "wither" => return false,
+        "wither_skeleton" => effect == "wither",
         "spider" | "cave_spider" | "nautilus" | "zombie_nautilus" => effect == "poison",
         "parched" => effect == "weakness",
         _ => false,
@@ -1892,6 +1895,29 @@ mod tests {
     use super::super::sculk::darkness_blend_added;
     use super::*;
     use horizon_client::screen_effects::nausea_blend_added;
+
+    /// `WitherBoss.addEffect` returns false: no effect lands on the boss, while a
+    /// wither skeleton still takes everything but the wither effect.
+    #[test]
+    fn the_wither_takes_no_effect_at_all() {
+        let tags = std::collections::HashMap::new();
+        for effect in ["strength", "speed", "poison", "wither"] {
+            assert!(
+                !mob_can_be_affected(&tags, "minecraft:wither", effect),
+                "{effect}"
+            );
+        }
+        assert!(mob_can_be_affected(
+            &tags,
+            "minecraft:wither_skeleton",
+            "speed"
+        ));
+        assert!(!mob_can_be_affected(
+            &tags,
+            "minecraft:wither_skeleton",
+            "wither"
+        ));
+    }
 
     /// #5876: a potion thrown straight up from inside its thrower's box does
     /// not hit them while it climbs out, then hits them on the way down;
