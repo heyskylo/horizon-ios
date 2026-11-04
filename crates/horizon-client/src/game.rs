@@ -5783,12 +5783,14 @@ impl Game<'_> {
             self.resolve_container_maps(key, centre);
             self.container = Some(key);
             let first = self.container_opener_event(key, true);
-            self.post_block_game_event(
-                "minecraft:container_open",
-                [key.0, key.1, key.2],
-                Some(horizon_client::mobs::Who::Player),
-                None,
-            );
+            if first {
+                self.post_block_game_event(
+                    "minecraft:container_open",
+                    [key.0, key.1, key.2],
+                    Some(horizon_client::mobs::Who::Player),
+                    None,
+                );
+            }
             let stat = match &*name {
                 "minecraft:chest" => "open_chest",
                 "minecraft:trapped_chest" => "trigger_trapped_chest",
@@ -9463,13 +9465,13 @@ impl Game<'_> {
             // A cart's or chest boat's items go back to it.
             self.close_cart_container(key);
             let last = self.container_opener_event(key, false);
-            self.post_block_game_event(
-                "minecraft:container_close",
-                [key.0, key.1, key.2],
-                Some(horizon_client::mobs::Who::Player),
-                None,
-            );
             if last {
+                self.post_block_game_event(
+                    "minecraft:container_close",
+                    [key.0, key.1, key.2],
+                    Some(horizon_client::mobs::Who::Player),
+                    None,
+                );
                 self.container_edge_sound(key, false);
             }
             self.world.modified.insert((key.0 >> 4, key.2 >> 4));
