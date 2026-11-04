@@ -29,6 +29,11 @@ enum State {
     Bobbing,
     Hooked(u32),
 }
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum EntityCollision {
+    Hooked,
+    Deflected { first: bool },
+}
 pub(super) struct Hook {
     /// Its entity id, which a server's players track it under.
     id: u32,
@@ -36,6 +41,8 @@ pub(super) struct Hook {
     pub(super) previous: Vec3,
     velocity: Vec3,
     state: State,
+    last_deflected_by: Option<u32>,
+    needs_sync: bool,
     tick_count: i32,
     life: i32,
     on_ground: bool,
@@ -127,6 +134,21 @@ fn pull_item(item: &mut horizon_client::entities::ItemEntity, delta: Vec3) {
     item.needs_sync = true;
 }
 impl Hook {
+    fn hit_entity(&mut self, id: u32, deflects: bool) -> EntityCollision {
+        if deflects {
+            let first = self.last_deflected_by != Some(id);
+            if first {
+                self.velocity = self.velocity.scale(-0.5);
+                self.last_deflected_by = Some(id);
+                self.needs_sync = true;
+            }
+            return EntityCollision::Deflected { first };
+        }
+        self.state = State::Hooked(id);
+        self.velocity = Vec3::ZERO;
+        EntityCollision::Hooked
+    }
+
     pub(super) fn bounds(&self) -> Aabb {
         bounds(self.position)
     }
@@ -225,6 +247,8 @@ impl Game<'_> {
                 previous: start,
                 velocity: v,
                 state: State::Flying,
+                last_deflected_by: None,
+                needs_sync: false,
                 tick_count: 0,
                 life: 0,
                 on_ground: false,
@@ -612,6 +636,7 @@ impl Game<'_> {
         let Some(mut h) = self.hook.take() else {
             return;
         };
+        h.needs_sync = false;
         let Some(owner) = self.player.as_ref().map(|p| p.position) else {
             return;
         };
@@ -719,18 +744,36 @@ impl Game<'_> {
                         ),
                 );
                 if let Some(id) = hit {
-                    // Projectile.onHit on an entity: PROJECTILE_LAND.
-                    self.projectile_event(
-                        "minecraft:projectile_land",
-                        Some(horizon_client::mobs::Who::Player),
-                        [h.position.x, h.position.y, h.position.z],
-                    );
-                    h.state = State::Hooked(id);
-                    h.velocity = Vec3::ZERO;
-                    self.hook = Some(h);
-                    return;
-                }
-                if let Some(hit) = block_hit {
+                    let breeze = self
+                        .mobs
+                        .iter()
+                        .find(|m| {
+                            m.id == id && m.species() == horizon_client::mobs::Species::Breeze
+                        })
+                        .map(|m| [m.position.x, m.position.y, m.position.z]);
+                    match h.hit_entity(id, breeze.is_some()) {
+                        EntityCollision::Deflected { first } => {
+                            if first {
+                                self.audio.play(
+                                    "minecraft:entity.breeze.deflect",
+                                    breeze,
+                                    1.0,
+                                    1.0,
+                                );
+                            }
+                        }
+                        EntityCollision::Hooked => {
+                            // Projectile.onHit on an entity: PROJECTILE_LAND.
+                            self.projectile_event(
+                                "minecraft:projectile_land",
+                                Some(horizon_client::mobs::Who::Player),
+                                [h.position.x, h.position.y, h.position.z],
+                            );
+                            self.hook = Some(h);
+                            return;
+                        }
+                    }
+                } else if let Some(hit) = block_hit {
                     // Projectile.onHit on a block: PROJECTILE_LAND.
                     self.projectile_event(
                         "minecraft:projectile_land",
@@ -1172,6 +1215,8 @@ impl Hook {
             previous: at,
             velocity: Vec3::ZERO,
             state: State::Flying,
+            last_deflected_by: None,
+            needs_sync: false,
             tick_count: 0,
             life: 0,
             on_ground: false,
@@ -1199,6 +1244,7 @@ impl Hook {
         e.position = [p.x, p.y, p.z];
         e.velocity = [self.velocity.x, self.velocity.y, self.velocity.z];
         e.on_ground = self.on_ground;
+        e.needs_sync = self.needs_sync;
         e.data = owner;
         if let State::Hooked(id) = self.state {
             e.meta.push((8, serializer::INT, Value::Int(id as i32 + 1)));
@@ -1478,6 +1524,86 @@ fn cast_direction(yaw: f32, pitch: f32) -> (f32, f32, f32) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_breeze_deflects_the_hook_without_attaching_it() {
+        use super::{EntityCollision, Hook, State};
+        let mut hook = Hook::remote(1, Vec3::ZERO);
+        hook.velocity = Vec3::new(2.0, -0.4, 1.0);
+        assert_eq!(
+            hook.hit_entity(10, true),
+            EntityCollision::Deflected { first: true }
+        );
+        assert_eq!(hook.state, State::Flying);
+        assert!(hook.needs_sync);
+        assert_eq!(hook.velocity, Vec3::new(-1.0, 0.2, -0.5));
+        assert_eq!(
+            hook.hit_entity(10, true),
+            EntityCollision::Deflected { first: false }
+        );
+        assert_eq!(hook.velocity, Vec3::new(-1.0, 0.2, -0.5));
+        assert_eq!(
+            hook.hit_entity(11, true),
+            EntityCollision::Deflected { first: true }
+        );
+        assert_eq!(hook.velocity, Vec3::new(0.5, -0.1, 0.25));
+    }
+
+    #[test]
+    fn ordinary_targets_still_hook_and_a_deflection_is_tracked_immediately() {
+        use super::{EntityCollision, Hook, State};
+        let mut hook = Hook::remote(1, Vec3::ZERO);
+        hook.velocity = Vec3::new(2.0, 0.0, 0.0);
+        hook.hit_entity(10, true);
+        let mut states = horizon_client::lan::entity::States::default();
+        hook.track(99, &mut states);
+        let state = &states.as_slice()[0];
+        assert!(state.needs_sync);
+        assert_eq!(state.velocity, [-1.0, -0.0, -0.0]);
+        assert!(!state.meta.iter().any(|entry| entry.0 == 8));
+        assert_eq!(hook.hit_entity(20, false), EntityCollision::Hooked);
+        assert_eq!(hook.state, State::Hooked(20));
+        assert_eq!(hook.velocity, Vec3::ZERO);
+    }
+
+    #[test]
+    #[ignore = "run by tools/test_breeze_hook_parity.py"]
+    fn breeze_hook_parity_fixture() {
+        use super::{EntityCollision, Hook, State};
+        use std::io::Write;
+        let input =
+            std::fs::read_to_string(std::env::var("HORIZON_BREEZE_HOOK_INPUT").unwrap()).unwrap();
+        let mut out =
+            std::fs::File::create(std::env::var("HORIZON_BREEZE_HOOK_OUTPUT").unwrap()).unwrap();
+        for line in input.lines() {
+            let parts: Vec<_> = line.split_whitespace().collect();
+            let mut hook = Hook::remote(1, Vec3::ZERO);
+            hook.velocity = Vec3::new(
+                parts[1].parse().unwrap(),
+                parts[2].parse().unwrap(),
+                parts[3].parse().unwrap(),
+            );
+            let mut trace = Vec::new();
+            for target in &parts[4..] {
+                hook.needs_sync = false;
+                let response = hook.hit_entity(target.parse::<u32>().unwrap() + 10, true);
+                let sounds = i32::from(matches!(
+                    response,
+                    EntityCollision::Deflected { first: true }
+                ));
+                let landed = i32::from(matches!(response, EntityCollision::Hooked));
+                trace.push(format!(
+                    "{:016x},{:016x},{:016x}:{sounds}:{landed}:{}:{}",
+                    hook.velocity.x.to_bits(),
+                    hook.velocity.y.to_bits(),
+                    hook.velocity.z.to_bits(),
+                    i32::from(hook.needs_sync),
+                    i32::from(matches!(hook.state, State::Hooked(_)))
+                ));
+            }
+            writeln!(out, "{}", trace.join(" ")).unwrap();
+        }
+    }
+
     use super::{cast_direction, entity_hit_margin, first_entity_hit, pull_item, rebound};
     use horizon_client::{entities::ItemEntity, items::ItemStack};
     use horizon_core::geometry::{Aabb, Vec3};
