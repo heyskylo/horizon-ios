@@ -550,7 +550,9 @@ impl Game<'_> {
     }
     /// `LocalPlayer.isReducedDebugInfo`: the server's rule or the option.
     pub(super) fn reduced_debug_info(&self) -> bool {
-        self.settings.reduced_debug_info || self.ui.rules.bool("reduced_debug_info")
+        self.settings.reduced_debug_info
+            || self.ui.rules.bool("reduced_debug_info")
+            || self.remote.as_ref().is_some_and(|r| r.reduced_debug_info)
     }
     /// `DebugScreenEntryList.isCurrentlyEnabled` for an entry's path.
     pub(super) fn debug_entry(&self, path: &str) -> bool {
