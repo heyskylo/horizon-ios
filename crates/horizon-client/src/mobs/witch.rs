@@ -240,7 +240,7 @@ fn witch_attack(m: &mut Mob, who: Who, _power: f32, cx: &mut Cx) {
     cx.events.push(MobEvent::Projectile(p));
     // Witch.performRangedAttack: the throw sound, and its pitch draw, only
     // when the witch is not silent.
-    witch_sound(m, &mut cx.events, "entity.witch.throw");
+    witch_sound(m, cx.events, "entity.witch.throw");
 }
 /// The movement speed of a witch with `SPEED_MODIFIER_DRINKING` (-0.25,
 /// `ADD_VALUE`) while it drinks: it stands still for the 32 ticks.
