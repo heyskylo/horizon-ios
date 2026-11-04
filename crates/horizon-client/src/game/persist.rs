@@ -642,6 +642,9 @@ impl Game<'_> {
                 // PrimedTnt.readAdditionalSaveData: 4 by default,
                 // kept to 0..128.
                 power: entity_nbt::tnt_power(&tag),
+                block_state: tag
+                    .get("block_state")
+                    .and_then(|v| entity_nbt::state_from_nbt(self.pack.assets.registry, v)),
             });
             // `Entity.load`: the `PortalCooldown` of one that just came through.
             self.remember(id, uuid, tag);
@@ -1725,6 +1728,7 @@ impl Game<'_> {
                 t.on_ground,
                 t.fuse,
                 t.power,
+                t.block_state_nbt(self.pack.assets.registry),
                 uuid,
                 self.persist.raw.get(&id),
             );

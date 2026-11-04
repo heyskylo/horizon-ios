@@ -55,6 +55,27 @@ def group_setup():
     ]
 
 
+def primed_tnt_block_state():
+    """PrimedTnt decodes block_state and saves its canonical live state."""
+    cases = [None, '"minecraft:tnt"', '"minecraft:tnt[unstable=true]"',
+             '"minecraft:stone"', '{id:"minecraft:tnt",properties:{unstable:"true"}}',
+             '{id:"minecraft:oak_log",properties:{axis:"x"}}', '"audit_missing:block"']
+    expected = ['"minecraft:tnt"', '"minecraft:tnt"', '"minecraft:tnt"',
+                '"minecraft:stone"', cases[4], cases[5], '"minecraft:tnt"']
+    ops = setup('/forceload add 0 16 15 31')
+    ops.append(cmd('/execute if loaded 0 206 28', expect_result=1))
+    for i, state in enumerate(cases):
+        fields = f'UUID:[I;221,0,0,{i + 1}],Tags:["h221_{i}"],NoGravity:1b,fuse:400s'
+        if state is not None:
+            fields += f',block_state:{state}'
+        ops += setup(f'/summon tnt {i + 1}.5 206 28.5 {{{fields}}}')
+        target = f'@e[tag=h221_{i},limit=1]'
+        ops.append(cmd(f'/execute if entity @e[tag=h221_{i},nbt={{UUID:[I;221,0,0,{i + 1}],fuse:400s}},limit=1]', expect_result=1))
+        ops.append(cmd(f'/data get entity {target} block_state'))
+        ops.append(cmd(f'/execute if entity @e[tag=h221_{i},nbt={{block_state:{expected[i]}}},limit=1]', expect_result=1))
+    return ops
+
+
 def client_commands():
     return [
         cmd('/version'),
@@ -2419,6 +2440,7 @@ def groups():
         ('levels', levels()),
         ('end portal entities', end_portal_entities()),
         ('items and loot', items_and_loot()),
+        ('primed TNT block state', primed_tnt_block_state()),
         ('summoned fangs lifetime', summoned_fangs_lifetime()),
         ('summoned fangs edits', summoned_fangs_edits()),
         ('summoned fangs levels', summoned_fangs_levels()),

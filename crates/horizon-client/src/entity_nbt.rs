@@ -2160,13 +2160,15 @@ pub fn tnt_power(tag: &Tag) -> f32 {
 }
 
 /// `PrimedTnt.addAdditionalSaveData`: its `fuse` and, when it is not the
-/// default, its `explosion_power`.
+/// default, its `explosion_power`, and the encoded live block state.
+#[allow(clippy::too_many_arguments)]
 pub fn tnt_to_nbt(
     position: Vec3,
     motion: Vec3,
     on_ground: bool,
     fuse: i32,
     power: f32,
+    block_state: Tag,
     uuid: [i32; 4],
     raw: Option<&Tag>,
 ) -> Tag {
@@ -2184,10 +2186,7 @@ pub fn tnt_to_nbt(
     if power != 4.0 {
         put(&mut tag, "explosion_power", Tag::Float(power.to_bits()));
     }
-    // PrimedTnt writes its block state (a summoned `block_state` is kept).
-    if tag.get("block_state").is_none() {
-        put(&mut tag, "block_state", string("minecraft:tnt"));
-    }
+    put(&mut tag, "block_state", block_state);
     tag
 }
 /// `EvokerFangs.addAdditionalSaveData`: always save the live warmup counter.
@@ -3514,9 +3513,27 @@ mod tnt_power_tests {
         assert_eq!(tnt_power(&with(Some(-3.0))), 0.0);
         // And it round-trips through the save, which writes it only when it is
         // not the default.
-        let saved = tnt_to_nbt(Vec3::ZERO, Vec3::ZERO, false, 20, 10.0, [1, 2, 3, 4], None);
+        let saved = tnt_to_nbt(
+            Vec3::ZERO,
+            Vec3::ZERO,
+            false,
+            20,
+            10.0,
+            string("minecraft:tnt"),
+            [1, 2, 3, 4],
+            None,
+        );
         assert_eq!(tnt_power(&saved), 10.0);
-        let plain = tnt_to_nbt(Vec3::ZERO, Vec3::ZERO, false, 20, 4.0, [1, 2, 3, 4], None);
+        let plain = tnt_to_nbt(
+            Vec3::ZERO,
+            Vec3::ZERO,
+            false,
+            20,
+            4.0,
+            string("minecraft:tnt"),
+            [1, 2, 3, 4],
+            None,
+        );
         assert!(plain.get("explosion_power").is_none());
     }
 }
