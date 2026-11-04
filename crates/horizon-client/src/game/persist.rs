@@ -1180,7 +1180,7 @@ impl Game<'_> {
     /// A loaded chest minecart with a loot table and no items: the table
     /// rolled now, as generated containers are (Horizon does not unpack on
     /// first open), and kept to save it again while unchanged.
-    fn roll_cart_loot(&self, cart: &mut super::minecarts::Minecart, tag: &Tag) {
+    pub(in crate::game) fn roll_cart_loot(&self, cart: &mut super::minecarts::Minecart, tag: &Tag) {
         let Some(table) = horizon_client::save::text(tag.get("LootTable")) else {
             return;
         };
