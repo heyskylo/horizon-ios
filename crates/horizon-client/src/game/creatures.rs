@@ -1032,7 +1032,7 @@ impl Game<'_> {
                 .iter()
                 .map(super::boat_leads::boat_state)
                 .collect();
-            let base = self.mob_world_base(&[]);
+            let mut base = self.mob_world_base(&[]);
             let path_changes = horizon_client::mobs::collision_changes(&base, &path_writes);
             // Each mob keeps its snapshot slot all tick; the first slot of an
             // id answers, as a scan would.
@@ -1044,16 +1044,33 @@ impl Game<'_> {
                     villager_slots.push(i as u32);
                 }
             }
+            let mut cached_difficulty: Option<((i32, i32), spawning::LocalDifficulty)> = None;
             for i in 0..mobs.len() {
-                let mut w = MobWorld {
-                    others: &snapshot,
-                    others_grid: Some(&grid),
-                    others_index: Some(&index),
-                    others_villagers: Some(&villager_slots),
-                    ..base.clone()
-                };
                 let m = &mut mobs[i];
-                w.controlling_player_movement = horizon_client::mobs::equine::controlled(m)
+                let (bx, bz) = (m.position.x.floor() as i32, m.position.z.floor() as i32);
+                let seen_guest = if guests.is_empty() {
+                    None
+                } else {
+                    let bound = bindings.get(&m.id).copied();
+                    let conn = super::lan_mobs::player_for(m, base.player.as_ref(), &guests, bound);
+                    match conn {
+                        Some(conn) => {
+                            bindings.insert(m.id, conn);
+                        }
+                        None => {
+                            bindings.remove(&m.id);
+                        }
+                    }
+                    conn
+                };
+                if !base.world.loaded(bx, bz) {
+                    keep.push(!m.hostile() || m.persistent);
+                    continue;
+                }
+                let nearest_player = nearest
+                    .nearest(m.position.x, m.position.y, m.position.z)
+                    .map(|p| p.position);
+                let controlling_player_movement = horizon_client::mobs::equine::controlled(m)
                     .then(|| {
                         base.player
                             .as_ref()
@@ -1067,40 +1084,29 @@ impl Game<'_> {
                             })
                     })
                     .flatten();
-                // getCurrentDifficultyAt(blockPosition()): the mob's own chunk,
-                // not the local player's (a server thread has no player).
-                w.difficulty = self.local_difficulty([m.position.x, m.position.y, m.position.z]);
-                w.nearest_player = nearest
-                    .nearest(m.position.x, m.position.y, m.position.z)
-                    .map(|p| p.position);
-                let seen_guest = if guests.is_empty() {
-                    None
-                } else {
-                    let bound = bindings.get(&m.id).copied();
-                    let conn = super::lan_mobs::player_for(m, w.player.as_ref(), &guests, bound);
-                    match conn {
-                        Some(conn) => {
-                            bindings.insert(m.id, conn);
-                            w.player = guests.iter().find(|g| g.0 == conn).map(|g| g.1.clone());
-                        }
-                        None => {
-                            bindings.remove(&m.id);
-                        }
-                    }
-                    conn
-                };
-                if !w
-                    .world
-                    .loaded(m.position.x.floor() as i32, m.position.z.floor() as i32)
-                {
-                    keep.push(!m.hostile() || m.persistent);
-                    continue;
-                }
                 // ServerLevel.tick: every loaded entity checks despawning, but
                 // only those in entity-ticking chunks (within the simulation
                 // distance) tick.
-                if !ticking(m.position.x.floor() as i32, m.position.z.floor() as i32) {
+                if !ticking(bx, bz) {
+                    let active_player = match seen_guest {
+                        Some(conn) => guests.iter().find(|g| g.0 == conn).map(|g| g.1.clone()),
+                        None => base.player.take(),
+                    };
+                    let mut w = MobWorld {
+                        others: &snapshot,
+                        others_grid: Some(&grid),
+                        others_index: Some(&index),
+                        others_villagers: Some(&villager_slots),
+                        nearest_player,
+                        player: active_player,
+                        teams: std::sync::Arc::clone(&base.teams),
+                        ..base
+                    };
+                    w.controlling_player_movement = controlling_player_movement;
                     let kept = horizon_client::mobs::ai::despawn_check(m, &w);
+                    if seen_guest.is_none() {
+                        base.player = w.player;
+                    }
                     if !kept {
                         died.remove(&m.id);
                         snapshot[i].alive = false;
@@ -1113,10 +1119,41 @@ impl Game<'_> {
                     keep.push(true);
                     continue;
                 }
+                // getCurrentDifficultyAt(blockPosition()): the mob's own chunk,
+                // not the local player's (a server thread has no player).
+                let chunk_key = (bx >> 4, bz >> 4);
+                let difficulty = match cached_difficulty {
+                    Some((key, difficulty)) if key == chunk_key => difficulty,
+                    _ => {
+                        let difficulty =
+                            self.local_difficulty([m.position.x, m.position.y, m.position.z]);
+                        cached_difficulty = Some((chunk_key, difficulty));
+                        difficulty
+                    }
+                };
                 horizon_client::mobs::apply_mob_pushes(m, &mut pushes);
                 horizon_client::mobs::blocks_changed(m, &path_changes);
                 let from = events.len();
+                let active_player = match seen_guest {
+                    Some(conn) => guests.iter().find(|g| g.0 == conn).map(|g| g.1.clone()),
+                    None => base.player.take(),
+                };
+                let mut w = MobWorld {
+                    others: &snapshot,
+                    others_grid: Some(&grid),
+                    others_index: Some(&index),
+                    others_villagers: Some(&villager_slots),
+                    difficulty,
+                    nearest_player,
+                    player: active_player,
+                    teams: std::sync::Arc::clone(&base.teams),
+                    ..base
+                };
+                w.controlling_player_movement = controlling_player_movement;
                 let kept = m.tick(&w, &mut scratch, &mut events);
+                if seen_guest.is_none() {
+                    base.player = w.player;
+                }
                 // A killed mob's body is removed: its effects that act on
                 // death run (`LivingEntity.remove` with KILLED).
                 if !kept && !m.alive() && !m.removed && !m.extra.effects.is_empty() {
@@ -2075,7 +2112,7 @@ impl Game<'_> {
                 MobEvent::DamagePlayer { amount, from, kind } => {
                     self.mob_hits_player(amount, from, kind);
                 }
-                MobEvent::ElderCurse { at } => self.elder_curse(at),
+                MobEvent::ElderCurse { at, silent } => self.elder_curse(at, silent),
                 MobEvent::SetVelocity { target, velocity } => {
                     let v = Vec3::new(velocity[0], velocity[1], velocity[2]);
                     match target {
@@ -2938,8 +2975,12 @@ impl Game<'_> {
                 }
                 MobEvent::DigParticles { at } => self.warden_dig_particles(at),
                 MobEvent::BlockBreakEffect { pos, block } => {
+                    // Turtle.aiStep broadcasts LevelEvent 2001, not the
+                    // particles themselves: the event carries the particles and
+                    // the sand's break sound, and reaches the clients the same
+                    // way a broken block's does.
                     let state = self.world.block(block[0], block[1], block[2]);
-                    self.destroy_particles(pos, state);
+                    self.level_event_at(2001, pos, state.0 as i32);
                 }
                 MobEvent::Darkness { at, radius } => self.apply_darkness(at, radius),
                 MobEvent::CreakingHurt {
@@ -3484,15 +3525,16 @@ impl Game<'_> {
     /// `MobEffectUtil.addEffectToPlayersAround` for an elder guardian:
     /// mining fatigue III for five minutes unless a stronger or longer one
     /// is on, with the curse sound and the elder's apparition.
-    fn elder_curse(&mut self, at: [f64; 3]) {
+    fn elder_curse(&mut self, at: [f64; 3], silent: bool) {
         let mut cursed = Vec::new();
         self.for_each_player(|g| {
-            if g.elder_curse_player(at) {
+            if g.elder_curse_player(at, silent) {
                 cursed.push(g.lan_acting);
             }
         });
         // A guest's client shows the apparition and plays the curse itself
-        // (ClientboundGameEventPacket.GUARDIAN_ELDER_EFFECT).
+        // (ClientboundGameEventPacket.GUARDIAN_ELDER_EFFECT), the sound only
+        // for 1: `isSilent() ? 0.0F : 1.0F`.
         if let Some(host) = self.lan.as_ref() {
             for conn in cursed.into_iter().flatten() {
                 host.hub.send_to(
@@ -3500,7 +3542,7 @@ impl Game<'_> {
                     &horizon_protocol::packets::play::Clientbound::GameEvent(
                         horizon_protocol::packets::play::GameEvent {
                             event: horizon_client::lan::hub::game_event::GUARDIAN_ELDER_EFFECT,
-                            param: 1.0,
+                            param: crate::mobs::guardian::elder_curse_param(silent),
                         },
                     ),
                 );
@@ -3508,7 +3550,7 @@ impl Game<'_> {
         }
     }
     /// The curse on the player in place; whether it took.
-    fn elder_curse_player(&mut self, at: [f64; 3]) -> bool {
+    fn elder_curse_player(&mut self, at: [f64; 3], silent: bool) -> bool {
         if self.creative || self.spectator() {
             return false;
         }
@@ -3528,8 +3570,12 @@ impl Game<'_> {
         let at = [p.position.x, p.position.y, p.position.z];
         self.give_player_effect("minecraft:mining_fatigue", 6000, 2);
         if self.lan_acting.is_none() {
-            self.audio
-                .play("minecraft:entity.elder_guardian.curse", Some(at), 1.0, 1.0);
+            // ClientPacketListener.handleGameEvent: the apparition always, the
+            // curse sound unless the elder is silent.
+            if crate::mobs::guardian::elder_curse_param(silent) == 1.0 {
+                self.audio
+                    .play("minecraft:entity.elder_guardian.curse", Some(at), 1.0, 1.0);
+            }
             self.creatures.elder_apparition = super::mob_blocks::APPARITION_TICKS;
         }
         true
@@ -3856,6 +3902,10 @@ impl Game<'_> {
     }
 
     fn tick_projectiles(&mut self) -> Result<()> {
+        if self.creatures.projectiles.is_empty() {
+            self.flush_lan_explosions();
+            return self.flush_wind_bursts();
+        }
         let mut projectiles = std::mem::take(&mut self.creatures.projectiles);
         let mut hits = Vec::new();
         let mut deflections: Vec<[f64; 3]> = Vec::new();
@@ -3878,7 +3928,7 @@ impl Game<'_> {
                 .collect();
             // Drawn only when a breeze could deflect a projectile: an empty
             // level must not move the level random every tick.
-            let jitter = if breezes.is_empty() || projectiles.is_empty() {
+            let jitter = if breezes.is_empty() {
                 0.0
             } else {
                 self.world.random.next_float()
@@ -3888,8 +3938,14 @@ impl Game<'_> {
             let scene = self.arrow_scene(&rain);
             // Mobs' projectiles also hit the guests (game/lan_mobs.rs).
             let guests = self.lan_projectile_targets();
-            let mut targets_guests = targets.clone();
-            targets_guests.extend(guests);
+            let has_guests = !guests.is_empty();
+            let targets_guests = if has_guests {
+                let mut targets_guests = targets.clone();
+                targets_guests.extend(guests);
+                targets_guests
+            } else {
+                Vec::new()
+            };
             let border = Some(self.border.bounds());
             let pw = ProjWorld {
                 w: &w,
@@ -3901,6 +3957,8 @@ impl Game<'_> {
                 targets: targets_guests,
                 border,
             };
+            // Every guest, not only the ones a projectile can hit: a dead or
+            // spectating guest's pearl or arrow still resolves to them.
             let guest_entities = self.lan_guest_entities();
             // ThrownEnderpearl.tick: a dead player's pearl is discarded in
             // place of its tick while ender_pearls_vanish_on_death is on.
@@ -3948,7 +4006,8 @@ impl Game<'_> {
                 if shooter.is_some() {
                     p.owner = shooter;
                 }
-                let (keep, hit) = match (p.arrow.is_some(), mob_shot || pvp, winds.is_empty()) {
+                let use_guests = (mob_shot || pvp) && has_guests;
+                let (keep, hit) = match (p.arrow.is_some(), use_guests, winds.is_empty()) {
                     (true, false, true) => horizon_client::arrows::tick(p, &scene, &pw.targets),
                     (true, true, true) => {
                         horizon_client::arrows::tick(p, &scene, &pw_guests.targets)

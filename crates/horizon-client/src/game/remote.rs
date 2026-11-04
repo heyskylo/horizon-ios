@@ -1146,6 +1146,13 @@ impl Game<'_> {
         // Kept mod block entity geometry belongs to the world leaving.
         self.kept_block_entities.get_mut().clear();
         self.clear_narrator();
+        // updateLevelInEngines(null): every sound stops and the music manager
+        // lets go of its track. Leaving a server comes straight here, not
+        // through finish_close_world, so the biome's ambient loop would
+        // otherwise play on over the title screen until the next world.
+        self.ambience.clear(&mut self.audio);
+        self.music.stop_playing(None, &mut self.audio);
+        self.audio.stop_all();
         // A world is leaving either way: its icon attempt goes with it.
         self.world_icon = None;
         // Minecraft.disconnect: the client level goes.
@@ -2564,6 +2571,7 @@ impl Game<'_> {
             // Its value (ExperienceOrb.DATA_VALUE) follows in SetEntityData.
             self.orbs.retain(|o| o.id != id as u32);
             self.orbs.push(ExperienceOrb {
+                rotation: [0.0, 0.0],
                 join: Default::default(),
                 no_gravity: false,
                 id: id as u32,
@@ -2651,6 +2659,26 @@ impl Game<'_> {
                 return;
             }
             if let Some(m) = mob {
+                // Shulker.createInterpolationHandler is NO_OP, so a move packet
+                // is setPos at once. The 6-tick slide starts from the block
+                // the shulker occupied before this packet.
+                if m.species() == horizon_client::mobs::Species::Shulker {
+                    r.stepped.remove(&id);
+                    if path.is_some() {
+                        horizon_client::mobs::shulker::client_set_pos(
+                            m,
+                            position[0],
+                            position[1],
+                            position[2],
+                        );
+                    }
+                    if let Some((yaw, pitch)) = rotation {
+                        m.yaw += wrap_degrees(yaw - m.yaw);
+                        m.head_pitch = (pitch % 360.0).clamp(-90.0, 90.0);
+                    }
+                    m.on_ground = on_ground;
+                    return;
+                }
                 // A living entity: LivingEntity.createInterpolationHandler's
                 // SteppedInterpolationHandler, over its type's update interval.
                 let entity = PosRot {
@@ -5549,6 +5577,7 @@ impl Game<'_> {
         let at = Vec3::new(p[0], p[1], p[2]);
         let bob_offset = self.world.random.next_float() * std::f32::consts::PI * 2.0;
         self.dropped.push(ItemEntity {
+            rotation: [0.0, 0.0],
             join: Default::default(),
             no_gravity: false,
             health: 5,
@@ -6762,8 +6791,9 @@ impl Game<'_> {
             if m.species() == horizon_client::mobs::Species::Bat {
                 horizon_client::mobs::bat::setup_animation_states(m);
             }
-            // The animation states a server computes in its own `ai_step`.
-            horizon_client::mobs::sync::client_tick(m, game_time);
+            // The animation states a server computes in its own `ai_step`,
+            // and the particles vanilla draws on the client.
+            horizon_client::mobs::sync::client_tick(m, game_time, &mut mob_fx);
             match m.species() {
                 // WitherBoss.aiStep: the side heads turn toward their targets.
                 horizon_client::mobs::Species::Wither => {

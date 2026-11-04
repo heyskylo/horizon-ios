@@ -969,7 +969,16 @@ pub fn decode_block_entity(tag: &Tag) -> Option<((i32, i32, i32), crate::contain
     };
     let mut entity = BlockEntity::for_block(block)?;
     match &mut entity {
-        BlockEntity::Chest(items) => *items = decode_items(tag.get("Items"), items.len()),
+        BlockEntity::Chest(items) => {
+            // Randomizable containers reset their inventory, then load Items only
+            // when tryLoadLootTable did not read a valid loot-table key.
+            let has_table = text(tag.get("LootTable"))
+                .and_then(|id| horizon_client_core::identifier::normalize_id(&id))
+                .is_some();
+            if !has_table {
+                *items = decode_items(tag.get("Items"), items.len());
+            }
+        }
         BlockEntity::Furnace(f) => {
             let items = decode_items(tag.get("Items"), 3);
             f.items = [items[0].clone(), items[1].clone(), items[2].clone()];
@@ -6142,6 +6151,46 @@ mod tests {
                 .expect("update tag");
         assert!(update.get("Items").is_some() && update.get("CookingTimes").is_none());
     }
+    #[test]
+    fn a_chest_loot_table_takes_precedence_over_saved_items() {
+        let mut saved = horizon_world::nbt::parse_snbt(
+            r#"{id:"minecraft:chest",x:1,y:2,z:3,Items:[{Slot:3b,id:"minecraft:diamond",count:7}],LootTable:"minecraft:chests/simple_dungeon",LootTableSeed:42L}"#,
+        )
+        .unwrap()
+        .0;
+        let (_, mut chest) = decode_block_entity(&saved).expect("chest");
+        assert!(
+            chest.slots().iter().all(Option::is_none),
+            "ChestBlockEntity.loadAdditional ignores Items when a loot table loads"
+        );
+        // The command path rolls an empty inventory and keeps the table/seed
+        // for data get and saving. No loot resources are needed to keep that state.
+        let rolled = crate::structure_blocks::roll_container(
+            chest.slots_mut(),
+            None,
+            "minecraft:chests/simple_dungeon".into(),
+            Some(42),
+            (1, 2, 3),
+            "minecraft:plains",
+        );
+        let mut stored = block_entity_data((1, 2, 3), &chest, "minecraft:chest", None);
+        let Tag::Compound(fields) = &mut stored else {
+            panic!("compound");
+        };
+        assert!(rolled.restore(fields));
+        assert_eq!(stored.get("LootTable"), saved.get("LootTable"));
+        assert_eq!(stored.get("LootTableSeed"), saved.get("LootTableSeed"));
+        assert!(stored.get("Items").is_none());
+        let Tag::Compound(fields) = &mut saved else {
+            panic!("compound");
+        };
+        fields.remove(&"LootTable".into());
+        let (_, chest) = decode_block_entity(&saved).expect("chest without table");
+        let item = chest.slots()[3].as_ref().expect("saved item");
+        assert_eq!(item.item.as_ref(), "minecraft:diamond");
+        assert_eq!(item.count, 7);
+    }
+
     /// `LockCode`: a chest's `lock` is not in Horizon's model, so `data get`
     /// takes it from the tag the block entity was loaded (or set) with.
     #[test]
