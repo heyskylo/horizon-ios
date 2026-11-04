@@ -535,15 +535,29 @@ pub fn name_mods(ids: &'static [&'static str]) {
 
 /// `mods` in order, each marked as running `hook` until the next one is (or the loop ends), so a
 /// panic in it names the mod. The generated dispatch loops over it.
+/// A part of [`mods`] (one mod, dispatched on its own) keeps its entries' places in it.
 fn entered<'a>(mods: &'a [Box<dyn Hooks>], hook: &'static str) -> Entered<'a> {
     Entered {
+        first: place_in(self::mods(), mods),
         mods: mods.iter().enumerate(),
         hook,
         guard: None,
     }
 }
 
+/// Where `part` starts in `all`, 0 when it is not a part of it.
+fn place_in<T>(all: &[T], part: &[T]) -> usize {
+    let range = all.as_ptr_range();
+    if range.contains(&part.as_ptr()) {
+        (part.as_ptr().addr() - range.start.addr()) / size_of::<T>().max(1)
+    } else {
+        0
+    }
+}
+
 struct Entered<'a> {
+    /// Where `mods` starts in [`mods`].
+    first: usize,
     mods: std::iter::Enumerate<std::slice::Iter<'a, Box<dyn Hooks>>>,
     hook: &'static str,
     guard: Option<crate::crash::NativeModGuard>,
@@ -556,6 +570,7 @@ impl<'a> Iterator for Entered<'a> {
         // The last mod's mark goes first, so the next one's puts back what was there before.
         drop(self.guard.take());
         let (index, hooks) = self.mods.next()?;
+        let index = self.first + index;
         self.guard = Some(crate::crash::enter_native_mod(
             crate::crash::NativeModCall {
                 id: MOD_IDS.get().and_then(|ids| ids.get(index)).copied(),
@@ -671,6 +686,14 @@ mod tests {
 
     struct Quiet;
     impl Hooks for Quiet {}
+
+    #[test]
+    fn one_mod_dispatched_alone_keeps_its_place() {
+        let all = [10, 11, 12, 13];
+        assert_eq!(place_in(&all, &all[2..=2]), 2);
+        assert_eq!(place_in(&all, &all), 0);
+        assert_eq!(place_in(&all, &[12]), 0);
+    }
 
     struct Broken;
     impl Hooks for Broken {
