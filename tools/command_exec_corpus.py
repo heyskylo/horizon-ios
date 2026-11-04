@@ -55,6 +55,40 @@ def group_setup():
     ]
 
 
+def awake_villager_saved_position():
+    """A real bed-use wake clears stale saved sleeping_pos, with live guards."""
+    ops = setup('/fill 0 199 3 6 199 9 stone', '/gamemode survival',
+                '/tp @s 4.5 200 4.5', '/time set noon',
+                '/setblock 2 200 7 red_bed[facing=north,part=foot,occupied=true] strict',
+                '/setblock 2 200 6 red_bed[facing=north,part=head,occupied=true] strict')
+    ops.append({'op': 'settle'})
+    target = '000000e8-0000-0000-0000-000000000001'
+    ops += setup('/summon villager 2.5 200.6875 6.5 {UUID:[I;232,0,0,1],Tags:["h232"],NoAI:1b,Health:20f,sleeping_pos:[I;2,200,6]}')
+    ops.append(cmd(f'/execute as {target} if entity @s[tag=h232,nbt={{Health:20f,NoAI:1b,Pos:[2.5d,200.6875d,6.5d]}}]', expect_result=1))
+    ops.append(cmd('/execute if entity @s[gamemode=survival,nbt={Pos:[4.5d,200d,4.5d]}]', expect_result=1))
+    for z in (6, 7):
+        ops.append(cmd(f'/execute if block 2 200 {z} red_bed[occupied=true]', expect_result=1))
+    ops.append(cmd(f'/data get entity {target} sleeping_pos', expect_result=3))
+    ops += [{'op': 'use_block', 'pos': [2, 200, 6], 'face': 1}, {'op': 'tick', 'n': 1}]
+    ops.append(cmd(f'/execute as {target} if entity @s[tag=h232,nbt={{Health:20f,NoAI:1b,Pos:[3.5d,200d,6.5d]}}]', expect_result=1))
+    for z in (6, 7):
+        ops.append(cmd(f'/execute if block 2 200 {z} red_bed[occupied=false]', expect_result=1))
+    ops.append(cmd('/execute unless data entity @s sleeping_pos', expect_result=1))
+    ops.append(cmd(f'/data get entity {target} sleeping_pos'))
+    ops.append(cmd(f'/execute unless data entity {target} sleeping_pos', expect_result=1))
+    # A live villager without supplied sleep data is already saved awake.
+    awake = '000000e8-0000-0000-0000-000000000002'
+    ops += setup('/summon villager 5.5 200 7.5 {UUID:[I;232,0,0,2],Tags:["h232"],NoAI:1b,Health:20f}')
+    ops.append(cmd(f'/execute as {awake} if entity @s[tag=h232,nbt={{Health:20f,NoAI:1b,Pos:[5.5d,200d,7.5d]}}]', expect_result=1))
+    ops.append(cmd(f'/data get entity {awake} sleeping_pos'))
+    ops.append(cmd(f'/execute unless data entity {awake} sleeping_pos', expect_result=1))
+    ops += setup('/kill @e[tag=h232]', '/setblock 2 200 6 air strict',
+                 '/setblock 2 200 7 air strict', '/gamemode creative',
+                 '/tp @s 8.5 230 8.5', '/time set 1000')
+    ops.append({'op': 'settle'})
+    return ops
+
+
 def client_commands():
     return [
         cmd('/version'),
@@ -2419,6 +2453,7 @@ def groups():
         ('levels', levels()),
         ('end portal entities', end_portal_entities()),
         ('items and loot', items_and_loot()),
+        ('awake villager saved position', awake_villager_saved_position()),
         ('summoned fangs lifetime', summoned_fangs_lifetime()),
         ('summoned fangs edits', summoned_fangs_edits()),
         ('summoned fangs levels', summoned_fangs_levels()),

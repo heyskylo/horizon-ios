@@ -809,6 +809,9 @@ pub fn write_nbt(m: &Mob, map: &mut horizon_world::nbt::Compound) {
     use horizon_world::nbt::Tag;
     if let Some(p) = sleeping_pos(m) {
         map.insert("sleeping_pos".into(), Tag::IntArray(p.to_vec()));
+    } else {
+        // LivingEntity.addAdditionalSaveData omits an absent modeled position.
+        map.remove(&"sleeping_pos".into());
     }
     let Some(e) = ext(m) else { return };
     map.insert(
@@ -955,6 +958,30 @@ mod tests {
         assert!(!map.contains_key(&"sleeping_pos".into()));
         read_nbt(&mut awake, &horizon_world::nbt::Tag::Compound(map));
         assert!(!sleeping(&awake));
+    }
+    #[test]
+    fn saved_sleeping_position_follows_live_state_over_stale_input() {
+        use horizon_world::nbt::Tag;
+        for asleep in [false, true] {
+            let mut m = villager();
+            if asleep {
+                m.extra.ints[1] = bed_facing_code(Some("north"));
+                ext_mut(&mut m).sleeping_pos = Some([3, 64, -7]);
+            }
+            let expected = asleep.then_some(Tag::IntArray(vec![3, 64, -7]));
+            for stale in [false, true] {
+                let mut map = horizon_world::nbt::Compound::new();
+                map.insert("h232_control".into(), Tag::Int(42));
+                if stale {
+                    map.insert("sleeping_pos".into(), Tag::IntArray(vec![9, 90, 9]));
+                }
+                write_nbt(&m, &mut map);
+                assert_eq!(map.get(&"sleeping_pos".into()), expected.as_ref());
+                assert_eq!(map.get(&"h232_control".into()), Some(&Tag::Int(42)));
+            }
+            let saved = crate::entity_nbt::mob_to_nbt(&m, [0; 4], None, None);
+            assert_eq!(saved.get("sleeping_pos"), expected.as_ref());
+        }
     }
     /// `Villager.setUnhappy` -> `Mob.makeSound(VILLAGER_NO)` plays with
     /// `LivingEntity.getVoicePitch`: a baby is pitched about 1.5, an adult 1.0.
