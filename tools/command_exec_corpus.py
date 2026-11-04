@@ -1603,6 +1603,51 @@ def test_command():
     ]
 
 
+def comparator_output_data():
+    """ComparatorBlockEntity load/save through the live circuit output, without ticks."""
+    ops = setup('/forceload add 0 0 15 15', '/setblock 4 199 4 stone',
+                '/scoreboard objectives add comparator_data dummy',
+                '/execute store result score before comparator_data run time query gametime')
+    ops += [cmd('/execute if loaded 4 200 4', expect_result=1),
+            cmd('/execute if block 4 199 4 stone', expect_result=1)]
+    cases = [(str(n), 0, n) for n in
+             (-1, 0, 1, 2, 15, 16, 255, 256, 257, 2147483647, -2147483648)]
+    cases += [('2b', 0, 2), ('2s', 0, 2), ('2L', 0, 2), ('2.5f', 0, 2),
+              ('-2.5d', 0, -3), ('"bad"', 0, 0), ('{}', 0, 0),
+              ('"bad"', 7, 0), ('{}', 7, 0), (None, 7, 0), ('7', 7, 7)]
+    for value, before, after in cases:
+        # Reusing the coordinate also checks that a replacement is a fresh entity.
+        ops += setup('/setblock 4 200 4 air', '/setblock 4 200 4 comparator')
+        ops += [cmd('/execute if block 4 200 4 comparator', expect_result=1),
+                cmd('/data get block 4 200 4 id'),
+                cmd('/data get block 4 200 4 OutputSignal', expect_result=0)]
+        if before:
+            ops.append(cmd(f'/data modify block 4 200 4 OutputSignal set value {before}', expect_result=1))
+            ops.append(cmd('/data get block 4 200 4 OutputSignal', expect_result=before))
+        ops += setup('/scoreboard players set result comparator_data -99',
+                     '/scoreboard players set success comparator_data -99')
+        ops += [cmd('/scoreboard players get result comparator_data', expect_result=-99),
+                cmd('/scoreboard players get success comparator_data', expect_result=-99)]
+        edit = ('data remove block 4 200 4 OutputSignal' if value is None else
+                f'data modify block 4 200 4 OutputSignal set value {value}')
+        changed = int(value is None or value != str(before))
+        ops += [cmd('/execute store result score result comparator_data '
+                    f'store success score success comparator_data run {edit}'),
+                cmd('/scoreboard players get result comparator_data', expect_result=changed),
+                cmd('/scoreboard players get success comparator_data', expect_result=changed),
+                cmd('/data get block 4 200 4 OutputSignal', expect_result=after)]
+    # An ordinary block entity and an invalid block keep their existing routes.
+    ops += setup('/setblock 6 199 4 stone', '/setblock 6 200 4 chest')
+    ops += [cmd('/data get block 6 200 4 Items'),
+            cmd('/data modify block 6 200 4 CustomName set value "control"'),
+            cmd('/data get block 6 200 4 CustomName'),
+            cmd('/data get block 6 199 4 OutputSignal')]
+    ops += setup('/execute store result score elapsed comparator_data run time query gametime',
+                 '/scoreboard players operation elapsed comparator_data -= before comparator_data')
+    return ops + [cmd('/scoreboard players get elapsed comparator_data', expect_result=0)] + setup(
+        '/scoreboard objectives remove comparator_data')
+
+
 def server_clock():
     """Only explicit tick operations advance the script's authoritative clock."""
     return [
@@ -2406,6 +2451,7 @@ def groups():
     return [
         ('setup', group_setup()),
         ('server clock', server_clock()),
+        ('comparator output data', comparator_output_data()),
         ('client commands', client_commands()),
         ('game state', game_state()),
         ('player state', player_state()),
