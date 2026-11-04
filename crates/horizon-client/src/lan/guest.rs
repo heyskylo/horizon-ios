@@ -32,15 +32,28 @@ pub struct SavedBody {
     pub fire_ticks: i32,
     pub air: i32,
     pub fall_distance: f64,
+    /// `Motion`: the delta movement, blocks a tick.
+    pub velocity: [f64; 3],
+    /// `foodExhaustionLevel` and `foodTickTimer` (FoodData); the food level
+    /// and saturation live on the guest.
+    pub food_exhaustion: f32,
+    pub food_tick_timer: i32,
+    /// `TicksFrozen`: the time spent in powder snow.
+    pub ticks_frozen: i32,
 }
 
 impl SavedBody {
     /// The body state of `motion`, to save.
     pub fn of(motion: &PlayerMotion) -> Self {
+        let v = motion.velocity;
         Self {
             fire_ticks: motion.fire_ticks,
             air: motion.air,
             fall_distance: motion.fall_distance,
+            velocity: [v.x, v.y, v.z],
+            food_exhaustion: motion.health.food.exhaustion,
+            food_tick_timer: motion.health.food.timer,
+            ticks_frozen: motion.ticks_frozen,
         }
     }
     /// Put it on a new body.
@@ -48,6 +61,11 @@ impl SavedBody {
         motion.fire_ticks = self.fire_ticks;
         motion.air = self.air;
         motion.fall_distance = self.fall_distance;
+        let [x, y, z] = self.velocity;
+        motion.velocity = Vec3::new(x, y, z);
+        motion.health.food.exhaustion = self.food_exhaustion;
+        motion.health.food.timer = self.food_tick_timer;
+        motion.ticks_frozen = self.ticks_frozen;
     }
 }
 
@@ -104,6 +122,9 @@ pub struct Guest {
     pub head_yaw: f32,
     pub on_ground: bool,
     pub game_mode: i32,
+    /// `previousPlayerGameType`: the mode left last, which the game mode
+    /// switcher goes back to; none until the mode first changes.
+    pub previous_game_mode: Option<i32>,
     /// The permission level (0 none, 2 game masters, 4 owners).
     pub permission: u8,
     pub sneaking: bool,
@@ -387,6 +408,7 @@ impl Guest {
             head_yaw: 0.0,
             on_ground: false,
             game_mode: SURVIVAL,
+            previous_game_mode: None,
             permission: 0,
             sneaking: false,
             input: 0,
@@ -622,6 +644,14 @@ impl Guest {
     /// loaded, or waited for long enough. Until then the player's actions are ignored.
     pub fn client_loaded(&self) -> bool {
         !self.dead && self.load_timeout == 0
+    }
+    /// `ServerPlayerGameMode.changeGameModeForPlayer`: the mode left becomes
+    /// the previous one; the mode already in use changes nothing.
+    pub fn change_game_mode(&mut self, mode: i32) {
+        if mode != self.game_mode {
+            self.previous_game_mode = Some(self.game_mode);
+            self.game_mode = mode;
+        }
     }
     pub fn spectator(&self) -> bool {
         self.game_mode == SPECTATOR
