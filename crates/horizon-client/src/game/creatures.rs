@@ -3910,27 +3910,21 @@ impl Game<'_> {
                 targets: targets_guests,
                 border,
             };
-            let guest_entities = if has_guests {
-                self.lan_guest_entities()
-            } else {
-                Vec::new()
-            };
+            // Every guest, not only the ones a projectile can hit: a dead or
+            // spectating guest's pearl or arrow still resolves to them.
+            let guest_entities = self.lan_guest_entities();
             // ThrownEnderpearl.tick: a dead player's pearl is discarded in
             // place of its tick while ender_pearls_vanish_on_death is on.
             let vanish = self.ui.rules.bool("ender_pearls_vanish_on_death");
             let host_dead = self.player_view().is_some_and(|p| !p.alive);
-            let dead_guests: Vec<u32> = if has_guests {
-                self.lan.as_ref().map_or_else(Vec::new, |h| {
-                    h.hub
-                        .guests
-                        .iter()
-                        .filter(|g| g.dead)
-                        .map(|g| g.conn)
-                        .collect()
-                })
-            } else {
-                Vec::new()
-            };
+            let dead_guests: Vec<u32> = self.lan.as_ref().map_or_else(Vec::new, |h| {
+                h.hub
+                    .guests
+                    .iter()
+                    .filter(|g| g.dead)
+                    .map(|g| g.conn)
+                    .collect()
+            });
             for i in 0..projectiles.len() {
                 // A wind charge is pickable, so a pearl, an arrow or a trident can
                 // strike it (`Projectile.isPickable`, `Projectile.onHit`).
