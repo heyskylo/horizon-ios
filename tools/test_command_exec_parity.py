@@ -63,6 +63,8 @@ def main():
     parser.add_argument('--limit', type=int, default=40, help='print at most this many mismatches')
     parser.add_argument('--allow-gaps', action='store_true', help='report mismatches without failing')
     parser.add_argument('--only', help='run only corpus groups whose name contains this')
+    parser.add_argument('--sulfur-power-load-diagnostic', action='store_true',
+                        help='retain the immediate-load powered sulfur cube H249 diagnostic')
     parser.add_argument('--binary', type=Path, help='use an already built Horizon game instead of building it')
     args = parser.parse_args()
     build = lab.LOCAL / 'command-exec-parity'
@@ -86,6 +88,9 @@ def main():
             sys.exit(f'{name} failed ({result.returncode}):\n{tail}')
 
     groups = corpus_module.groups()
+    if args.sulfur_power_load_diagnostic:
+        groups = [('setup', corpus_module.group_setup()),
+                  ('sulfur powered-load diagnostic', corpus_module.sulfur_cube_fuse_ticks(True))]
     if args.only:
         groups = [g for g in groups if args.only in g[0] or g[0] == 'setup']
     script = []
