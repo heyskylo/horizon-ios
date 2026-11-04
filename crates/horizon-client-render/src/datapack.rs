@@ -579,7 +579,7 @@ pub struct DataStore {
     /// `item_modifier` files, for `/item modify`.
     pub item_modifiers: BTreeMap<String, serde_json::Value>,
     /// The content tables' raw files from the packs after the built-in one:
-    /// `recipe/`, `recipe_filter/`, `loot_table/`, `advancement/`, `dialog/`, `data_maps/` and `tags/…/` files, by
+    /// `recipe/`, `recipe_filter/`, `loot_table/`, `advancement/`, `dialog/`, `damage_type/`, `data_maps/` and `tags/…/` files, by
     /// `<kind-dir>/<ns>:<path>`, each id's files in pack order. The tables
     /// merge them over what they read from the resource root.
     pub files: BTreeMap<String, Vec<Vec<u8>>>,
@@ -588,7 +588,7 @@ pub struct DataStore {
 }
 /// `<kind-dir>/<ns>:<path>` for a pack file the content tables read:
 /// `recipe/`, `recipe_filter/`, `loot_table/`, `advancement/`, `trade_set/`,
-/// `villager_trade/`, `dialog/`, `data_maps/` or `tags/<sub>/`, where the id keeps the sub
+/// `villager_trade/`, `dialog/`, `damage_type/`, `data_maps/` or `tags/<sub>/`, where the id keeps the sub
 /// path so a nested tag kind stays addressable.
 fn content_id(file: &str) -> Option<String> {
     let rest = file.strip_prefix("data/")?;
@@ -596,7 +596,7 @@ fn content_id(file: &str) -> Option<String> {
     let (kind, rest) = rest.split_once('/')?;
     let kind = match kind {
         "recipe" | "recipe_filter" | "loot_table" | "advancement" | "trade_set"
-        | "villager_trade" | "dialog" | "data_maps" => kind,
+        | "villager_trade" | "dialog" | "damage_type" | "data_maps" => kind,
         // A tag id is `{ns}:{path-under-tags}` (`tags/worldgen/biome/
         // test:sub/mytag`), the whole path after the namespace, so nested
         // registries keep their directory (`TagLoader`'s id shape).
@@ -627,6 +627,7 @@ impl DataStore {
             let builtin = pack.id == "vanilla";
             for f in pack.list_kinds(&[
                 "advancement",
+                "damage_type",
                 "data_maps",
                 "dialog",
                 "function",

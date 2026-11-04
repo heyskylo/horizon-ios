@@ -80,6 +80,7 @@ impl Game<'_> {
                 assets: &self.pack.assets,
                 collision_binding: self.collision,
                 resources: self.motion,
+                health: &self.health_resources,
             }
             .replayed_tick(keys, sprinting)
         };

@@ -718,6 +718,7 @@ impl Game<'_> {
             assets: &self.pack.assets,
             collision_binding: self.collision,
             resources: self.motion,
+            health: &self.health_resources,
         }
         .cause_mount_fall(distance, modifier);
     }

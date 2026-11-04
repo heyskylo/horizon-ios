@@ -2657,7 +2657,7 @@ impl Game<'_> {
         if hurts {
             self.note_dragon_attacker("minecraft:mob_attack");
         }
-        let (health, rules) = (&self.motion.health, self.world.health_rules);
+        let (health, rules) = (&self.health_resources, self.world.health_rules);
         let id = health.damage.id("minecraft:mob_attack");
         let mut canceled = false;
         if let Some(p) = self.player.as_mut() {

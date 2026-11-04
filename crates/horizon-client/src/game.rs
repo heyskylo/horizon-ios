@@ -2337,6 +2337,9 @@ struct Game<'a> {
     world_renderer_ready: bool,
     collision: &'a BlockCollisionRegistry<'a>,
     motion: &'a MotionResources,
+    /// This world's frozen damage definitions and reloadable tag snapshot.
+    pub(super) health_resources: horizon_client::health::HealthResources,
+    damage_tag_generation: u64,
     /// This game's resource packs (`reload_packs` replaces them).
     pack: PackResources,
     /// The title and menu bundle (GUI atlas, font and panorama).
@@ -12216,16 +12219,16 @@ impl Game<'_> {
         self.share_spawn_conditions();
         self.score = Default::default();
         self.fns = Default::default();
-        self.world_tables = self.build_world_tables();
+        (self.world_tables, self.health_resources) =
+            self.build_world_tables(false, &level.enabled_features)?;
+        self.damage_tag_generation = self.damage_tag_generation.wrapping_add(1);
         // Native tag reads use the lock to tell that the tag tables are ready.
         self.session_lock = Some(session_lock);
-        // The registries a preload or an earlier world read are not this
-        // world's packs': a world with packs sends its own (their dialogs,
-        // recipes and advancements). For a world without packs, `sync_data`
-        // drops what was read with packs.
-        if self.world_tables.is_some() {
-            lan::forget_sync_data();
-        }
+        // Registries belong to a world session, even when no LAN hub exists
+        // yet. A later /reload keeps this snapshot; another world starts fresh.
+        lan::forget_sync_data();
+        lan::sync_data(&self.options.resources, &pack_files(&self.world_tables))
+            .map_err(|e| format!("world registries: {e}"))?;
         // Warm the loot data with this world's packs before chunks decode
         // (`save::roll_loaded_loot` reads the cached copy).
         let _ = horizon_client::structure_blocks::world_loot_data(
@@ -12706,15 +12709,13 @@ impl Game<'_> {
         }
         let amount = ((damage / 4.0) as u32).max(1);
         let name = self
-            .motion
-            .health
+            .health_resources
             .damage
             .definition(source)
             .map(|d| d.name.clone())
             .unwrap_or_default();
         let fire = self
-            .motion
-            .health
+            .health_resources
             .damage
             .in_tag(source, "minecraft:is_fire");
         let mut broke = false;
@@ -18751,6 +18752,8 @@ impl<'a> Game<'a> {
             world_renderer_ready: false,
             collision: res.collision(),
             motion: res.motion(),
+            health_resources: res.motion().health.clone(),
+            damage_tag_generation: 1,
             pack,
             gui,
             fog: Default::default(),
@@ -19563,7 +19566,11 @@ impl Game<'_> {
     /// Load the world's data packs' content tables (`None`: the world has no
     /// packs, and `Resources.rest` stays in use). This re-reads the tables,
     /// so it runs once per world open and on `/reload`.
-    fn build_world_tables(&self) -> Option<WorldTables> {
+    fn build_world_tables(
+        &self,
+        reload: bool,
+        enabled_features: &[String],
+    ) -> Result<(Option<WorldTables>, horizon_client::health::HealthResources)> {
         // The ask of this load, both here and on `/reload`: a native mod
         // recomputes the pack files it contributes every time.
         let mut contributed = Vec::new();
@@ -19572,31 +19579,27 @@ impl Game<'_> {
             &self.world_root,
             &self.options.resources,
             self.cmds.vanilla_disabled,
-            &self.level.enabled_features,
+            enabled_features,
             contributed,
         );
-        if files.is_empty() {
-            return None;
-        }
         let overlay = horizon_world::loot::PackOverlay { files: &files };
         let root = &self.options.resources;
-        let items = match Items::load(root, self.pack.assets.registry, self.res.facts(), &overlay) {
-            Ok(items) => items,
-            Err(e) => {
-                log::warn!("Horizon: the world's data packs are not applied: {e}");
-                return None;
-            }
+        let base = if reload {
+            &self.health_resources
+        } else {
+            &self.motion.health
         };
+        let health = base.with_packs(root, &overlay, reload)?;
+        if files.is_empty() {
+            return Ok((None, health));
+        }
+        let mut items = Items::load(root, self.pack.assets.registry, self.res.facts(), &overlay)?;
+        // Item damage predicates use the same frozen registry as player hurt.
+        Arc::make_mut(&mut items.enchantments).bind_damage_catalog(&health.damage);
         // The recipe tables, the stations and the recipe book read one folder:
         // hold its files so it is read once.
         let _recipe_files = horizon_client::json_folder::read(&root.join("data/minecraft/recipe"));
-        let recipes = match Recipes::load(root, &items, &overlay) {
-            Ok(recipes) => recipes,
-            Err(e) => {
-                log::warn!("Horizon: the world's data packs are not applied: {e}");
-                return None;
-            }
-        };
+        let recipes = Recipes::load(root, &items, &overlay)?;
         let stations = horizon_client::stations::StationData::load(root, &items, &overlay);
         let mut data_map_types = Vec::new();
         self.native_data_map_types(&mut data_map_types);
@@ -19606,13 +19609,16 @@ impl Game<'_> {
             &items.item_tags,
             &items.block_tags,
         );
-        Some(WorldTables {
-            files,
-            items,
-            recipes,
-            stations,
-            data_maps,
-        })
+        Ok((
+            Some(WorldTables {
+                files,
+                items,
+                recipes,
+                stations,
+                data_maps,
+            }),
+            health,
+        ))
     }
     /// Reload the content tables with the world's packs, as
     /// `/reload` reloads a server's (`ReloadableServerResources`).
@@ -19620,7 +19626,17 @@ impl Game<'_> {
         if self.remote.is_some() {
             return;
         }
-        self.world_tables = self.build_world_tables();
+        match self.build_world_tables(true, &self.level.enabled_features) {
+            Ok((tables, health)) => {
+                self.world_tables = tables;
+                self.health_resources = health;
+            }
+            Err(e) => {
+                log::warn!("Horizon: the world's data packs are not applied: {e}");
+                return;
+            }
+        }
+        self.damage_tag_generation = self.damage_tag_generation.wrapping_add(1);
         self.recipe_tables.categories = None;
         horizon_client::structure_blocks::forget_loot_data();
         // Before the players are sent the reloaded data below.
@@ -19643,7 +19659,13 @@ impl Game<'_> {
                     }
                 }
             }
-            None => lan::forget_sync_data(),
+            None => {
+                if let Err(e) =
+                    lan::reload_cached_sync_data(&self.options.resources, &self.pack_files())
+                {
+                    log::warn!("Horizon: the cached world data is not reloaded: {e}");
+                }
+            }
         }
         let overlay = pack_files(&self.world_tables);
         self.adv.tree = Arc::new(horizon_client::advancements::Tree::load_with(

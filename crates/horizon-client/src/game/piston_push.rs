@@ -151,6 +151,7 @@ impl Game<'_> {
                 assets: &self.pack.assets,
                 collision_binding: self.collision,
                 resources: self.motion,
+                health: &self.health_resources,
             }
             .shulker_box_push(movement);
         }

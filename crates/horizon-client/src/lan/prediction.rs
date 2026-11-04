@@ -809,6 +809,7 @@ mod tests {
                 assets: &assets,
                 collision_binding: &binding,
                 resources: &resources,
+                health: &resources.health,
             })
         };
         // Settle on the floor first (or fall for a while).

@@ -219,12 +219,10 @@ impl adv::World for View<'_, '_> {
             "worldgen/biome" => self.0.res.mob_data().biome_has(tag, id),
             "damage_type" => self
                 .0
-                .res
-                .stations()
-                .enchantments
-                .damage_tags
-                .get(tag)
-                .is_some_and(|t| t.contains(id)),
+                .health_resources
+                .damage
+                .id(id)
+                .is_some_and(|source| self.0.health_resources.damage.in_tag(source, tag)),
             _ => false,
         }
     }

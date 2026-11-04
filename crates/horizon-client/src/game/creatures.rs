@@ -554,11 +554,10 @@ impl Game<'_> {
         let amount = ((damage / 4.0) as u32).max(1);
         let name = damage_type(kind, false);
         let fire = self
-            .motion
-            .health
+            .health_resources
             .damage
             .id(name)
-            .is_some_and(|d| self.motion.health.damage.in_tag(d, "minecraft:is_fire"));
+            .is_some_and(|d| self.health_resources.damage.in_tag(d, "minecraft:is_fire"));
         // A piece's maximum, or none when it may not lose durability at all.
         // `doHurtEquipment` starts from the item's `equippable` component
         // (`Equippable equippable = item.get(DataComponents.EQUIPPABLE)`), so a
@@ -3534,9 +3533,7 @@ impl Game<'_> {
         // A projectile entity dealt it: `#is_projectile`, or a firework
         // rocket (its `fireworks` type is not in the tag).
         let projectile = rocket
-            || self
-                .res
-                .stations()
+            || world_stations!(self)
                 .enchantments
                 .damage_tags
                 .get("minecraft:is_projectile")
@@ -3591,9 +3588,9 @@ impl Game<'_> {
         // runs `applyItemBlocking` before `dealDefaultKnockback`).
         let mut default_push: Option<([f64; 2], HurtSource<'_>)> = None;
         if let Some(player) = self.player.as_mut()
-            && let Some(id) = self.motion.health.damage.id(damage_type)
+            && let Some(id) = self.health_resources.damage.id(damage_type)
             && let Ok(o) = player.hurt_caused_by(
-                &self.motion.health,
+                &self.health_resources,
                 self.world.health_rules,
                 id,
                 amount,
@@ -3733,9 +3730,9 @@ impl Game<'_> {
         let mut canceled = false;
         if !self.creative
             && let Some(player) = self.player.as_mut()
-            && let Some(id) = self.motion.health.damage.id(damage_type)
+            && let Some(id) = self.health_resources.damage.id(damage_type)
             && let Ok(o) = player.hurt_blocking(
-                &self.motion.health,
+                &self.health_resources,
                 self.world.health_rules,
                 id,
                 amount,

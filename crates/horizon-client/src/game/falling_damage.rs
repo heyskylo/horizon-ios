@@ -197,9 +197,9 @@ impl Game<'_> {
             amount
         };
         if let Some(p) = self.player.as_mut()
-            && let Some(id) = self.motion.health.damage.id(kind)
+            && let Some(id) = self.health_resources.damage.id(kind)
         {
-            let _ = p.hurt(&self.motion.health, self.world.health_rules, id, amount);
+            let _ = p.hurt(&self.health_resources, self.world.health_rules, id, amount);
         }
     }
 }

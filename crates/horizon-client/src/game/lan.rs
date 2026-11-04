@@ -32,37 +32,49 @@ use std::{
 /// data, and the registries and tags.
 type Synced = (bool, std::result::Result<Arc<SyncData>, String>);
 
-/// The registries and tags, loaded once per world (a world with packs open
-/// or a `/reload` forgets them, as `forget_sync_data` does).
+/// One world session's frozen registries and reloadable tags. Entry into
+/// another world forgets this snapshot before any data is published.
 static SYNC: Mutex<Option<Synced>> = Mutex::new(None);
 
 /// The registries and tags a server sends, loaded from `root` the first
 /// time, with the world's data packs' recipes, advancements and dialogs over
-/// them. What was read with packs is read again for a world without them
-/// (their dialogs would stay); a world with packs forgets what was read
-/// before it at open (`finish_open_world`).
+/// them. Every world entry forgets the previous session's snapshot; pack
+/// changes within one session retain its frozen registries.
 pub(super) fn sync_data(
     root: &std::path::Path,
     overlay: &horizon_world::loot::PackOverlay,
 ) -> std::result::Result<Arc<SyncData>, String> {
     let packs = !overlay.files.is_empty();
     let mut sync = SYNC.lock().unwrap_or_else(|e| e.into_inner());
-    if sync
-        .as_ref()
-        .is_some_and(|(with_packs, _)| *with_packs != packs)
-    {
-        *sync = None;
-    }
+    // Entry into another world explicitly forgets this session's snapshot.
+    // Pack enable/disable within it must never replace frozen registries.
     sync.get_or_insert_with(|| (packs, SyncData::load(root, overlay).map(Arc::new)))
         .1
         .clone()
 }
 
 /// Let go of what `sync_data` loaded: a preload no world used
-/// (game/world_loading.rs), what was read before a world with packs opened,
-/// or before a `/reload` without a hub.
+/// (game/world_loading.rs), or the previous session when another world opens.
 pub(super) fn forget_sync_data() {
     *SYNC.lock().unwrap_or_else(|e| e.into_inner()) = None;
+}
+
+/// Without a hub yet, retain this world's frozen registries through `/reload`
+/// too. World entry discards this snapshot before loading another world's.
+pub(super) fn reload_cached_sync_data(
+    root: &std::path::Path,
+    overlay: &horizon_world::loot::PackOverlay,
+) -> std::result::Result<(), String> {
+    let kept = SYNC
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .and_then(|(_, result)| result.as_ref().ok())
+        .cloned();
+    if let Some(kept) = kept {
+        reload_sync_data(root, overlay, &kept)?;
+    }
+    Ok(())
 }
 
 /// `/reload` (MinecraftServer.reloadResources) under a running hub: the
@@ -77,8 +89,7 @@ pub(super) fn reload_sync_data(
     // Kept pack dialogs count as packs: a world opened without packs after
     // a `/reload` that dropped them must read its own registries again.
     let packs = !overlay.files.is_empty() || kept.has_pack_entries();
-    let sync = SyncData::load(root, overlay).map(|mut sync| {
-        sync.keep_registries(root, kept);
+    let sync = SyncData::reload(root, overlay, kept).map(|mut sync| {
         sync.features.clone_from(&kept.features);
         Arc::new(sync)
     });
@@ -1274,10 +1285,11 @@ impl Game<'_> {
             // The shared resource preload has vanilla flags and vanilla biomes.
             // Feature flags and biomes belong to this world, not to the cached
             // resources or the next world opened.
-            let mut world_sync = SyncData::load_with(
+            let mut world_sync = SyncData::load_with_kept(
                 &self.options.resources,
                 &self.pack_files(),
                 packed.as_deref(),
+                Some(sync.as_ref()),
             )?;
             world_sync.features = features;
             sync = Arc::new(world_sync);

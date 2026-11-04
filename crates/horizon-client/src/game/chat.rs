@@ -194,7 +194,6 @@ impl UiState {
 /// instead of at every world opening (thousands of files).
 struct ResourceIds {
     recipes: Vec<String>,
-    damage_types: Vec<String>,
     loot_tables: Vec<String>,
     templates: Vec<String>,
     /// `entity-types.json`'s keys, sorted (empty when the file is missing).
@@ -286,7 +285,6 @@ fn resource_ids(root: &Path) -> Arc<ResourceIds> {
     let (timelines, markers) = overworld_timelines(root);
     let ids = Arc::new(ResourceIds {
         recipes: ids_under(&data.join("recipe"), "json"),
-        damage_types: ids_under(&data.join("damage_type"), "json"),
         // `/loot ... loot <id>` must find a content mod's tables too.
         loot_tables: json_ids_of_every_namespace(root, "loot_table"),
         templates: templates_under(&root.join("worldgen/structure")),
@@ -503,7 +501,12 @@ impl Game<'_> {
         reg.permission = permission;
         let ids = resource_ids(&self.options.resources);
         self.ui.registries.recipes = ids.recipes.clone();
-        self.ui.registries.damage_types = ids.damage_types.clone();
+        self.ui.registries.damage_types = self
+            .health_resources
+            .damage
+            .entries()
+            .map(|(_, d)| d.name.clone())
+            .collect();
         self.ui.registries.loot_tables = ids.loot_tables.clone();
         self.ui.registries.templates = ids.templates.clone();
         self.ui.registries.sounds = self.audio.event_names();

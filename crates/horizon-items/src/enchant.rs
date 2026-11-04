@@ -63,7 +63,7 @@ pub struct ItemProps {
     /// `minecraft:brewing_fuel` present.
     pub brewing_fuel: bool,
 }
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct Enchantments {
     pub list: Vec<Enchantment>,
     index: HashMap<Arc<str>, usize>,
@@ -131,6 +131,18 @@ pub fn level_name(level: u32) -> String {
 }
 
 impl Enchantments {
+    /// Use the same frozen registry and resolved tags as player damage.
+    pub fn bind_damage_catalog(&mut self, catalog: &horizon_world::damage_source::Catalog) {
+        self.damage_tags = catalog
+            .tags()
+            .map(|tag| {
+                (
+                    tag.to_owned(),
+                    catalog.tag_members(tag).map(str::to_owned).collect(),
+                )
+            })
+            .collect();
+    }
     pub fn load(root: &Path) -> Self {
         Self::load_with(root, &horizon_world::loot::PackOverlay::NONE)
     }
@@ -180,7 +192,19 @@ impl Enchantments {
                 .collect()
         };
         let entity_tags = unordered(read_tag_dir(&data.join("tags/entity_type")));
-        let damage_tags = unordered(read_tag_dir(&data.join("tags/damage_type")));
+        let damage_tags = match horizon_world::damage_source::Catalog::load(root, overlay) {
+            Ok(catalog) => catalog
+                .tags()
+                .map(|tag| {
+                    (
+                        tag.to_owned(),
+                        catalog.tag_members(tag).map(str::to_owned).collect(),
+                    )
+                })
+                .collect(),
+            // Small tools/fixtures may not carry the prepared catalog.
+            Err(_) => unordered(read_tag_dir(&data.join("tags/damage_type"))),
+        };
         // The registry lists entries sorted by id, like the data-pack loader.
         let mut files: BTreeMap<String, Value> = BTreeMap::new();
         // The folder's own files, not its subfolders'.

@@ -377,6 +377,16 @@ still add theirs, as a higher data pack does. Since the result depends on load o
 of adds are left out, ...". Tags are the only `minecraft` files a mod may hold: its other content stays in its own
 namespaces.
 
+Damage types use vanilla files at `data/<namespace>/damage_type/<name>.json`,
+with required `message_id`, `scaling` and `exhaustion` fields, plus optional
+`effects` and `death_message_type`. Resource-root files and enabled world packs
+load when a world opens; an invalid definition refuses that load. Definitions
+remain frozen for that world session. `/reload` rebuilds
+`tags/damage_type/` against those definitions, so disabling a pack removes its
+tag additions but keeps its registered types until the world is reopened.
+Player damage, damage predicates and synchronized damage tags use that same
+world snapshot; local catalog indices and network registry IDs are separate.
+
 A mod adds to structure sets, template pools and processor lists that are not its own (vanilla's villages, another
 mod's houses) with a set, pool or processor list file in its own namespace holding `horizon:add_to`, a key vanilla data
 never has. Its entries are appended to each set, pool or list named, after every mod's own files, by
