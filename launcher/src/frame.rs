@@ -400,10 +400,10 @@ impl Launcher {
             _ => {}
         }
 
-        // Sculk's card (not in the mockup, kept: a sponsor), where the old sidebar had it: above
-        // the links on every page but Servers, which shows the wide banner. Tall where the
-        // sidebar has the height for it besides its rows, compact otherwise.
-        if self.page != Page::Servers && !self.settings.partner_hidden {
+        // Sculk's card (not in the mockup, kept: a sponsor), where the old sidebar had it: at
+        // the sidebar's foot above the links, on every page (Servers shows the wide banner too).
+        // Tall where the sidebar has the height for it besides its rows, compact otherwise.
+        if !self.settings.partner_hidden {
             let rows = self.instances.list.len() + servers.len();
             let free = f32::from(window.viewport_size().height)
                 - 2. * MARGIN
