@@ -4198,6 +4198,8 @@ def nautilus_saved_sitting():
     out += setup('/kill @e[type=!player]', '/forceload add 0 0 15 15')
     out.append({'op': 'settle'})
     check('/execute if loaded 0 200 0')
+    # /fill counts changed blocks; prior groups may already have stone here.
+    out += setup('/fill 0 199 0 15 199 15 air')
     check('/fill 0 199 0 15 199 15 stone', 256)
     out += setup('/execute store result score #before saved_sit run time query gametime')
     serial = 0
@@ -4266,6 +4268,8 @@ def zombie_nautilus_ignored_age():
     out += setup('/kill @e[type=!player]', '/forceload add 0 0 15 15')
     out.append({'op': 'settle'})
     check('/execute if loaded 0 200 0')
+    # /fill counts changed blocks; prior groups may already have stone here.
+    out += setup('/fill 0 199 0 15 199 15 air')
     check('/fill 0 199 0 15 199 15 stone', 256)
     out += setup('/execute store result score #before ignored_age run time query gametime')
     for serial, age in enumerate((None, -24000, 0, 37), 1):
