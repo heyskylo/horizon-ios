@@ -1493,6 +1493,11 @@ pub struct ArmorStand {
     pub enchantment_equipment: [Option<ItemStack>; 6],
     /// `Entity.mainSupportingBlockPos` after the last move.
     pub support: horizon_world::ground_support::GroundState,
+    /// Its `AttributeMap` holds a `movement_speed` instance, which
+    /// `AttributeMap.pack` saves. `LivingEntity.aiStep`'s `removeFrost` makes it
+    /// (`getAttribute`) on the stand's first server tick, and a save that lists
+    /// it loads it back, so a stand summoned this tick has none yet.
+    pub speed_instance: bool,
 }
 /// The fluid a stand travels in (`LivingEntity.travelInFluid`: water first,
 /// then lava), from the heights `Entity::push_by_fluid` measured.
@@ -1664,6 +1669,7 @@ impl ArmorStand {
             enchantment_fall_distance: 0.0,
             enchantment_equipment: Default::default(),
             support: Default::default(),
+            speed_instance: false,
         }
     }
     /// `Entity.getOnPos(0.2)` (`getOnPosLegacy`): the supporting block's
