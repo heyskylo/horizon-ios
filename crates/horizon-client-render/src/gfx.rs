@@ -5837,8 +5837,6 @@ impl Renderer {
             None => "HDR: not offered by this display".into(),
         }
     }
-    /// HDR output (Horizon setting): HDR10 or scRGB at `paper_white` nits, the world's
-    /// highlights expanded up to `peak` nits. Off where the surface can't present it.
     /// The HDR Lighting setting (`Hdr::look`).
     pub fn set_hdr_lighting(&mut self, on: bool) {
         self.hdr_lighting_setting = on;
@@ -5846,6 +5844,8 @@ impl Renderer {
             hdr.look = on;
         }
     }
+    /// HDR output (Horizon setting): HDR10 or scRGB at `paper_white` nits, the world's
+    /// highlights expanded up to `peak` nits. Off where the surface can't present it.
     pub fn set_hdr(
         &mut self,
         on: bool,
