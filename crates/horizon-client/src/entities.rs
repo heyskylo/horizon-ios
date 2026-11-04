@@ -14,6 +14,7 @@ use crate::{
 use horizon_core::{
     geometry::{Aabb, Direction, Vec3, VoxelShape, border::BorderGeometry},
     position::BlockPos,
+    random::RandomSource,
 };
 use horizon_world::{
     block_collision::BlockCollisionRegistry,
@@ -119,6 +120,9 @@ pub struct ItemEntity {
     /// `Entity.stuckSpeedMultiplier`: set after a move by the cobweb or powder snow
     /// the item is in, scales (and stops) the next one.
     pub stuck: Vec3,
+    /// `Entity.wasTouchingWater`: the last fluid push. Entering water after
+    /// the first tick is what splashes.
+    pub was_touching_water: bool,
     /// `Entity.noGravity` (`NoGravity` in its save): `applyGravity` does nothing.
     pub no_gravity: bool,
     /// `Entity.verticalCollision`: the last move was stopped vertically.
@@ -127,6 +131,81 @@ pub struct ItemEntity {
     pub vertical_collision: bool,
     /// `Entity.horizontalCollision`: the last move was stopped on x or z.
     pub horizontal_collision: bool,
+}
+/// What `Entity.doWaterSplashEffect` asks the level to do for a dropped item.
+/// Particles are drawn on the client (`Level.addParticle` is empty on the
+/// server). The sound is `Entity.playSound`, which the server broadcasts;
+/// `ClientLevel.playSeededSound` ignores it when the except entity is null.
+#[derive(Clone, Copy, Debug)]
+pub enum ItemSplash {
+    Sound {
+        at: [f64; 3],
+        volume: f32,
+        pitch: f32,
+    },
+    Particle {
+        bubble: bool,
+        at: [f64; 3],
+        velocity: [f64; 3],
+    },
+}
+/// `Entity.doWaterSplashEffect` for a dropped item.
+struct ItemWater<'a, F> {
+    item: &'a mut ItemEntity,
+    random: &'a mut horizon_core::random::LegacyRandom,
+    splash: &'a mut F,
+}
+impl<F: FnMut(ItemSplash)> horizon_world::water_splash::WaterSplashWorld for ItemWater<'_, F> {
+    type Error = std::convert::Infallible;
+    type Entity = ();
+    type Sound = ();
+    fn this_entity(&self) {}
+    fn controlling_passenger(&mut self) -> Result<Option<()>, Self::Error> {
+        Ok(None)
+    }
+    fn velocity(&mut self, _: ()) -> Result<Vec3, Self::Error> {
+        Ok(self.item.velocity)
+    }
+    fn splash_sound(&mut self, _: bool) -> Result<(), Self::Error> {
+        Ok(())
+    }
+    fn random_float(&mut self) -> Result<f32, Self::Error> {
+        Ok(self.random.next_float())
+    }
+    fn random_double(&mut self) -> Result<f64, Self::Error> {
+        Ok(self.random.next_double())
+    }
+    fn play_sound(&mut self, _: (), volume: f32, pitch: f32) -> Result<(), Self::Error> {
+        let at = [
+            self.item.position.x,
+            self.item.position.y,
+            self.item.position.z,
+        ];
+        (self.splash)(ItemSplash::Sound { at, volume, pitch });
+        Ok(())
+    }
+    fn position(&self) -> Vec3 {
+        self.item.position
+    }
+    fn width(&self) -> f32 {
+        ItemEntity::WIDTH as f32
+    }
+    fn particle(
+        &mut self,
+        kind: horizon_world::water_splash::SplashParticle,
+        position: Vec3,
+        velocity: Vec3,
+    ) -> Result<(), Self::Error> {
+        (self.splash)(ItemSplash::Particle {
+            bubble: matches!(kind, horizon_world::water_splash::SplashParticle::Bubble),
+            at: [position.x, position.y, position.z],
+            velocity: [velocity.x, velocity.y, velocity.z],
+        });
+        Ok(())
+    }
+    fn splash_event(&mut self) -> Result<(), Self::Error> {
+        Ok(())
+    }
 }
 /// Environment results needed by the entity owner, including lethal lava damage.
 #[derive(Debug)]
@@ -197,13 +276,14 @@ impl ItemEntity {
         entity_boxes: &[Aabb],
         border: Option<&BorderGeometry>,
     ) -> bool {
-        let heights = self.update_fluids(world, fluids);
+        let (water, lava) = self.update_fluids(world, fluids);
+        self.water_entry(water > 0.0, self.ticks == 0, &mut |_| {});
         let step = self.tick_move(
             world,
             facts,
             collision,
             no_physics,
-            heights,
+            (water, lava),
             entity_boxes,
             border,
         );
@@ -216,7 +296,8 @@ impl ItemEntity {
             &mut self.velocity,
         );
         let alive = self.tick_settle(world, facts, no_physics, step);
-        self.update_fluids(world, fluids);
+        let (water, _) = self.update_fluids(world, fluids);
+        self.water_entry(water > 0.0, false, &mut |_| {});
         alive
     }
 }
@@ -318,6 +399,31 @@ impl ItemEntity {
         };
         let inner = self.bounds().deflate(Vec3::new(1.0e-7, 1.0e-7, 1.0e-7));
         !crate::collisions::no_collision_empty(&mut scene, inner)
+    }
+    /// `Entity.updateFluidInteraction`: entering water after the first tick
+    /// runs `doWaterSplashEffect`.
+    pub fn water_entry<F: FnMut(ItemSplash)>(
+        &mut self,
+        in_water: bool,
+        first_tick: bool,
+        splash: &mut F,
+    ) {
+        if in_water && !self.was_touching_water && !first_tick {
+            let mut random = horizon_core::random::LegacyRandom::new(
+                (self.id as i64)
+                    .wrapping_mul(0x5DEECE66D)
+                    .wrapping_add(self.ticks as i64),
+            );
+            let _ = horizon_world::water_splash::water_splash(
+                &mut ItemWater {
+                    item: self,
+                    random: &mut random,
+                    splash,
+                },
+                1_000_000,
+            );
+        }
+        self.was_touching_water = in_water;
     }
     /// `Entity.moveTowardsClosestSpace` from the middle of the item's box:
     /// towards the nearest side of its block (north, south, west, east or
@@ -835,6 +941,13 @@ pub fn merge_with_neighbours(
         }
     }
 }
+/// `ExperienceOrbRenderer.submit`'s billboard before its 0.3 scale, in the
+/// order of its four `vertex` calls (bottom left, bottom right, top right, top
+/// left). The quad is a whole block tall about the orb's centre and hangs a
+/// quarter of it below.
+pub const ORB_QUAD: [[f32; 2]; 4] = [[-0.5, -0.25], [0.5, -0.25], [0.5, 0.75], [-0.5, 0.75]];
+/// `poseStack.scale(0.3F, 0.3F, 0.3F)`.
+pub const ORB_QUAD_SCALE: f32 = 0.3;
 /// ExperienceOrb: gravity 0.03, homing towards the player within 8 blocks.
 #[derive(Clone, Debug)]
 pub struct ExperienceOrb {
@@ -941,6 +1054,20 @@ impl ExperienceOrb {
             3.. => 1,
             _ => 0,
         }
+    }
+    /// `Entity.getLightProbePosition`: the block an entity is lit from is the
+    /// one its eye is in. An orb's box is half a block, so its eye is
+    /// `0.5 * 0.85` above its feet (`EntityDimensions.defaultEyeHeight`).
+    pub fn light_probe_y(&self) -> f64 {
+        self.position.y + 0.5 * 0.85
+    }
+    /// `ExperienceOrbRenderer.getBlockLightLevel` over `EntityRenderer`'s
+    /// packing: the level's block light raised by 7 and clamped, the sky
+    /// light unchanged. `light` is the level's packed light.
+    pub fn render_light(&self, light: i32) -> u32 {
+        let block = ((light & 15) + 7).clamp(0, 15);
+        let sky = light >> 4;
+        (u32::try_from(sky).unwrap_or(0) * 16) | ((u32::try_from(block).unwrap_or(15) * 16) << 8)
     }
     pub fn tick(
         &mut self,
@@ -1387,6 +1514,11 @@ pub struct ArmorStand {
     pub enchantment_equipment: [Option<ItemStack>; 6],
     /// `Entity.mainSupportingBlockPos` after the last move.
     pub support: horizon_world::ground_support::GroundState,
+    /// Its `AttributeMap` holds a `movement_speed` instance, which
+    /// `AttributeMap.pack` saves. `LivingEntity.aiStep`'s `removeFrost` makes it
+    /// (`getAttribute`) on the stand's first server tick, and a save that lists
+    /// it loads it back, so a stand summoned this tick has none yet.
+    pub speed_instance: bool,
 }
 /// The fluid a stand travels in (`LivingEntity.travelInFluid`: water first,
 /// then lava), from the heights `Entity::push_by_fluid` measured.
@@ -1558,6 +1690,7 @@ impl ArmorStand {
             enchantment_fall_distance: 0.0,
             enchantment_equipment: Default::default(),
             support: Default::default(),
+            speed_instance: false,
         }
     }
     /// `Entity.getOnPos(0.2)` (`getOnPosLegacy`): the supporting block's
@@ -1929,6 +2062,7 @@ mod fire_environment_tests {
             ticks: 0,
             needs_sync: false,
             stuck: Vec3::ZERO,
+            was_touching_water: false,
         };
         let mut wood = make("minecraft:oak_planks");
         let mut metal = make("minecraft:netherite_ingot");
@@ -2057,6 +2191,7 @@ mod destroyed_bundle_environment_tests {
             ticks: 0,
             needs_sync: false,
             stuck: Vec3::ZERO,
+            was_touching_water: false,
         };
         // 5 health against 4 a tick: the first tick leaves 1 and nothing out.
         let first = bundle.environment_tick(&world, &facts, assets.registry, &items);
@@ -2159,6 +2294,7 @@ mod merge_tests {
             ticks: age.max(0) as u32,
             needs_sync: false,
             stuck: Vec3::ZERO,
+            was_touching_water: false,
         }
     }
     fn max_stack(stack: &ItemStack) -> u32 {
@@ -2583,6 +2719,7 @@ mod honey_slide_tests {
             ticks: 10,
             needs_sync: false,
             stuck: Vec3::ZERO,
+            was_touching_water: false,
         }
     }
 
@@ -2732,6 +2869,7 @@ mod slime_bounce_tests {
             ticks: 10,
             needs_sync: false,
             stuck: Vec3::ZERO,
+            was_touching_water: false,
         }
     }
 
@@ -3433,6 +3571,7 @@ mod item_destroyed_tests {
             ticks: 0,
             needs_sync: false,
             stuck: Vec3::ZERO,
+            was_touching_water: false,
         }
     }
 
@@ -3497,6 +3636,77 @@ mod item_destroyed_tests {
             box_item.stack.data().is_none_or(|d| d.container.is_empty()),
             "the destroyed box keeps no slot filled"
         );
+    }
+}
+#[cfg(test)]
+mod render_light_tests {
+    use super::*;
+
+    fn orb(y: f64) -> ExperienceOrb {
+        ExperienceOrb {
+            join: Default::default(),
+            no_gravity: false,
+            id: 1,
+            position: Vec3::new(0.5, y, 0.5),
+            previous: Vec3::new(0.5, y, 0.5),
+            velocity: Vec3::new(0.0, 0.0, 0.0),
+            value: 3,
+            age: 0,
+            on_ground: false,
+            count: 1,
+            ticks: 0,
+            health: 5,
+        }
+    }
+
+    /// `ExperienceOrbRenderer.getBlockLightLevel`: the level's block light
+    /// plus 7, clamped to 15; the sky light is the level's own. The orb used
+    /// to be drawn at 10 in both nibbles, so an orb in a dark cave was washed
+    /// out and one in daylight at block light 5 was too dim.
+    #[test]
+    fn an_orb_is_seven_brighter_than_the_block_it_sits_in() {
+        let light = |sky: i32, block: i32| (sky << 4) | block;
+        // Sky 15, block 0 (daylight): sky stays 15, block goes to 7.
+        assert_eq!(
+            orb(64.0).render_light(light(15, 0)),
+            (15 * 16) | ((7 * 16) << 8)
+        );
+        // A dark cave: sky 0, block 0 -> block 7, and no invented sky light.
+        assert_eq!(orb(20.0).render_light(light(0, 0)), (7 * 16) << 8);
+        // Torchlight 9 -> 15, the clamp, not 16.
+        assert_eq!(orb(20.0).render_light(light(0, 9)), (15 * 16) << 8);
+        assert_eq!(
+            orb(20.0).render_light(light(15, 15)),
+            (15 * 16) | ((15 * 16) << 8)
+        );
+    }
+
+    /// `Entity.getLightProbePosition` is the eye position: an orb's box is
+    /// half a block, so it reads the light of the cell 0.425 above its feet.
+    #[test]
+    fn an_orb_is_lit_from_the_block_its_eye_is_in() {
+        assert_eq!(orb(64.6).light_probe_y().floor(), 65.0);
+        assert_eq!(orb(64.6).position.y.floor(), 64.0);
+        assert!((orb(64.0).light_probe_y() - 64.425).abs() < 1e-9);
+    }
+
+    /// `ExperienceOrbRenderer.submit`'s quad: a block tall about the orb's
+    /// centre, scaled by 0.3, so it spans -0.075 to +0.225 above the 0.1 the
+    /// pose is translated by. Horizon drew a symmetric 0.3 square, a quarter
+    /// of the sprite too low.
+    #[test]
+    fn the_orb_sprite_hangs_a_quarter_below_its_centre() {
+        let off = ORB_QUAD.map(|[x, y]| [x * ORB_QUAD_SCALE, 0.1 + y * ORB_QUAD_SCALE]);
+        let want = [
+            [-0.15, 0.1 - 0.075],
+            [0.15, 0.1 - 0.075],
+            [0.15, 0.1 + 0.225],
+            [-0.15, 0.1 + 0.225],
+        ];
+        for (got, want) in off.into_iter().zip(want) {
+            assert!((got[0] - want[0]).abs() < 1e-6, "{got:?} vs {want:?}");
+            assert!((got[1] - want[1]).abs() < 1e-6, "{got:?} vs {want:?}");
+        }
     }
 }
 crate::impl_joined!(ItemEntity, ExperienceOrb, ArmorStand);

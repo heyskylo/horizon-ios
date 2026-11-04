@@ -165,6 +165,31 @@ impl Game<'_> {
         Ok(())
     }
 
+    /// A mod's chat line or command (`/` first), sent as `send_chat` sends
+    /// it (ClientPacketListener.sendChat / sendCommand), to any server: no
+    /// chat history, and no client chat event (vanilla's `ClientChatEvent`
+    /// comes only from ChatScreen). An error when the player isn't in a
+    /// server's play state or the Chat option blocks the message. API
+    /// @API:send_chat@.
+    pub(super) fn native_send_chat(&mut self, message: &str) -> Result<(), String> {
+        let Some(remote) = self.remote.as_ref() else {
+            return Err("not connected to a server".into());
+        };
+        // A server that reconfigures the player has them out of the play state.
+        if !remote.joined || remote.reconfiguring.is_some() {
+            return Err("the player has not joined yet".into());
+        }
+        let message = message.trim();
+        if message.is_empty() {
+            return Err("the message is empty".into());
+        }
+        if !self.chat_abilities().allows(message) {
+            return Err("the Chat option blocks this message".into());
+        }
+        self.send_chat(message);
+        Ok(())
+    }
+
     /// Sends `packet` to the server as it is, to any server, a vanilla one
     /// included: a plugin channel's payload (`ServerboundCustomPayloadPacket`)
     /// or any other play packet. Nothing counts it, and the game doesn't apply

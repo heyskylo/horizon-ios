@@ -76,14 +76,14 @@ pub struct WorldDrawn<'a> {
     /// the run's first vertex and the entity, `(1 << 32) | id` for a mob or a player and
     /// `(2 << 32) | id` for a dropped item (their entity ids), 0 for anything else. A run lasts
     /// until the next. Unlike `spans`, whose ids name a type, these follow one entity from
-    /// frame to frame (API @API:world_drawn_motion@).
+    /// frame to frame (API 371).
     pub motion: &'a [(u32, u64)],
     /// The shared atlas entity UVs point into.
     pub atlas: Option<&'a wgpu::Texture>,
     /// Quad indices (0 1 2 0 2 3 for each 4 vertices), for as many quads as `entities` holds.
     pub quad_indices: &'a wgpu::Buffer,
     /// The block textures the terrain samples, for drawing blocks with the player's own
-    /// textures (`native_block_sprites` says where a block's are). API @API:native_block_sprites@.
+    /// textures (`native_block_sprites` says where a block's are). API 380.
     pub block_sprites: BlockSpriteArrays<'a>,
 }
 
@@ -154,7 +154,7 @@ pub fn native_world_drawn(world: &mut WorldDrawn<'_>) {
 }
 
 /// The first-person hand is drawn (see [`HandDrawn`]), on every frame [`native_world_drawn`]
-/// runs, with no hand too. API @API:hand_drawn@.
+/// runs, with no hand too. API 364.
 #[inline(never)]
 pub fn native_hand_drawn(hand: &mut HandDrawn<'_>) {
     generated::dispatch_hand_drawn(RENDERERS.get().map_or(&[], |renderers| renderers), hand);

@@ -2377,9 +2377,84 @@ def creeper_custom_fuse():
     return ops + setup('/gamerule mob_griefing true')
 
 
+def ravager_noai_counters():
+    ops = setup('/difficulty normal', '/gamerule spawn_mobs false',
+                '/gamerule mob_griefing false', '/forceload add 0 0 31 31',
+                '/fill 0 199 0 15 199 15 stone', '/fill 0 200 0 15 206 15 air')
+    case = 0
+    for no_ai in (0, 1):
+        for attack, stun, roar in ((20, 30, 5), (0, 0, 0), (-2, -3, -4), (2, 2, 0)):
+            case += 1
+            tag = f'h179_{case}'
+            target = f'@e[type=minecraft:ravager,tag={tag},limit=1]'
+            ops += setup('/summon ravager 10.5 200 10.5 '
+                         f'{{Tags:["{tag}"],NoAI:{no_ai}b,NoGravity:1b,Silent:1b,'
+                         f'PersistenceRequired:1b,AttackTick:{attack},StunTick:{stun},RoarTick:{roar}}}')
+            elapsed = 0
+            for tick in (0, 1, 2, 3, 10, 12, 22):
+                if tick > elapsed:
+                    ops.append({'op': 'tick', 'n': tick - elapsed})
+                ops.append(cmd(f'/execute if entity {target}'))
+                for field in ('AttackTick', 'StunTick', 'RoarTick'):
+                    ops.append(cmd(f'/data get entity {target} {field}'))
+                elapsed = tick
+            ops += setup(f'/kill {target}')
+    return ops + setup('/gamerule mob_griefing true', '/forceload remove 0 0 31 31')
+
+
+def mining_efficiency_9021():
+    """Exercise Player.getDestroySpeed through actual block destroy progress."""
+    probe = {'op': 'destroy_progress', 'pos': [8, 229, 9]}
+    enchanted = 'diamond_pickaxe[minecraft:enchantments={efficiency:5}]'
+    attr = '/attribute @s minecraft:mining_efficiency '
+    operations = [
+        *setup('/gamemode survival', '/effect clear @s',
+               '/fill 7 229 7 9 229 9 stone', '/tp @s 8.5 230 8.5',
+               '/item replace entity @s weapon.mainhand with diamond_pickaxe',
+               attr + 'base set 0'),
+        {'op': 'tick', 'n': 1}, dict(probe),
+        *setup('/item replace entity @s weapon.mainhand with ' + enchanted),
+        {'op': 'tick', 'n': 1}, dict(probe),
+        *setup(attr + 'modifier add harness:slow -20 add_value'),
+        {'op': 'tick', 'n': 1}, dict(probe),
+        *setup(attr + 'modifier remove harness:slow', attr + 'base set 10'),
+        {'op': 'tick', 'n': 1}, dict(probe),
+        *setup(attr + 'modifier add harness:base 0.5 add_multiplied_base'),
+        {'op': 'tick', 'n': 1}, dict(probe),
+        *setup(attr + 'modifier add harness:total 0.5 add_multiplied_total'),
+        {'op': 'tick', 'n': 1}, dict(probe),
+        *setup(attr + 'modifier remove harness:base', attr + 'modifier remove harness:total',
+               '/item replace entity @s weapon.mainhand with stick'),
+        {'op': 'tick', 'n': 1}, dict(probe),
+        *setup('/item replace entity @s weapon.mainhand with diamond_pickaxe', attr + 'base set 0'),
+        {'op': 'tick', 'n': 1}, dict(probe),
+        *setup('/item replace entity @s weapon.offhand with ' + enchanted),
+        {'op': 'tick', 'n': 1}, dict(probe),
+        *setup('/item replace entity @s weapon.offhand with air',
+               '/item replace entity @s weapon.mainhand with air',
+               '/fill 7 229 7 9 229 9 air', '/gamemode creative'),
+    ]
+
+    # Independent vanilla controls: effective speeds before hardness/divisor.
+    # Round both divisions to Java float precision, as getDestroyProgress does.
+    import struct
+    def f32(value):
+        return struct.unpack('>f', struct.pack('>f', value))[0]
+    expected = iter([(8, 30), (34, 30), (14, 30), (44, 30), (62, 30),
+                     (89, 30), (1, 100), (8, 30), (8, 30)])
+    for operation in operations:
+        if operation['op'] == 'destroy_progress':
+            speed, divisor = next(expected)
+            value = f32(f32(speed / 1.5) / divisor)
+            operation['expect_result'] = struct.unpack('>I', struct.pack('>f', value))[0]
+            operation['cmd'] = '#destroy_progress'
+    return operations
+
+
 def groups():
     return [
         ('setup', group_setup()),
+        ('mining_efficiency_9021', mining_efficiency_9021()),
         ('server clock', server_clock()),
         ('client commands', client_commands()),
         ('game state', game_state()),
@@ -2389,6 +2464,7 @@ def groups():
         ('setblock destroy air', setblock_destroy_air()),
         ('forceload query order', forceload_query_order()),
         ('entities', entities()),
+        ('ravager NoAI counters', ravager_noai_counters()),
         ('aquatic FromBucket', aquatic_from_bucket()),
         ('villager command names', villager_command_names()),
         ('item lifetime counters', item_lifetime_counters()),
