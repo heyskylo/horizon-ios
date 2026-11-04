@@ -6,7 +6,7 @@
 use super::Game;
 use horizon_client::{
     first_person::Hand,
-    mobs::{Species, ai, equine, llama, render::DYE_NAMES},
+    mobs::{Species, equine, llama, render::DYE_NAMES},
 };
 
 /// The dye color index (0..16) from a dye item identifier, if it is a dye item.
@@ -41,9 +41,10 @@ pub(super) fn remote_mob_takes_item(
     if age_lock_takes {
         return true;
     }
-    // Animal.mobInteract: its food is CONSUME on a client when the animal
-    // takes food (an adult that can breed or a baby that can age up).
-    if m.kind.flags.animal && m.kind.food.iter().any(|f| f.as_str() == item) && ai::takes_food(m) {
+    // Animal.mobInteract: its food is SUCCESS on a client for a baby that can
+    // age up and CONSUME otherwise, whether or not the server's animal can
+    // breed (the client doesn't know an adult's breeding cooldown).
+    if m.kind.flags.animal && m.kind.food.iter().any(|f| f.as_str() == item) {
         return true;
     }
     match m.species() {
@@ -73,9 +74,12 @@ pub(super) fn remote_mob_takes_item(
                 ) || m.extra.variant == 1
                     && horizon_client::flowers::stew_effect(item).is_some())
         }
+        // Sheep.mobInteract: shears are CONSUME on a client, sheared or not.
+        // DyeItem.interactLivingEntity: a dye takes an unsheared sheep of
+        // another colour, and passes otherwise.
         Species::Sheep => {
-            (item == "minecraft:shears" && !m.extra.sheared)
-                || dye_color(item).is_some_and(|c| c != m.extra.color)
+            item == "minecraft:shears"
+                || !m.extra.sheared && dye_color(item).is_some_and(|c| c != m.extra.color)
         }
         // SnowGolem.mobInteract: shears take the pumpkin off.
         Species::SnowGolem => item == "minecraft:shears" && !m.extra.sheared,
@@ -235,19 +239,20 @@ mod tests {
         remote_mob_takes_item(m, item, false, false, false, false)
     }
 
+    /// `Sheep.mobInteract` answers CONSUME for shears on a client whether or not the
+    /// sheep is sheared: only the server checks `readyForShearing`.
     #[test]
-    fn sheared_sheep_does_not_take_shears() {
+    fn shears_take_a_sheep_sheared_or_not() {
         let mut sheep = test_mob(
             Species::Sheep,
             "minecraft:sheep",
             true,
             &["minecraft:wheat"],
         );
-        sheep.extra.sheared = false;
-        assert!(takes(&sheep, "minecraft:shears"));
-
-        sheep.extra.sheared = true;
-        assert!(!takes(&sheep, "minecraft:shears"));
+        for sheared in [false, true] {
+            sheep.extra.sheared = sheared;
+            assert!(takes(&sheep, "minecraft:shears"), "sheared {sheared}");
+        }
     }
 
     #[test]
@@ -265,34 +270,29 @@ mod tests {
         sheep.extra.color = 14;
         assert!(!takes(&sheep, "minecraft:red_dye"));
         assert!(takes(&sheep, "minecraft:white_dye"));
+
+        // DyeItem.interactLivingEntity: a sheared sheep passes any dye.
+        sheep.extra.sheared = true;
+        assert!(!takes(&sheep, "minecraft:white_dye"));
     }
 
+    /// `Animal.mobInteract` on a client: food is SUCCESS for a baby that can age up and
+    /// CONSUME otherwise, so it takes the click in love, cooling down or age locked.
     #[test]
-    fn animal_with_breeding_cooldown_or_already_in_love_does_not_take_food() {
+    fn an_animal_takes_its_food_on_a_client_whatever_its_age() {
         let mut cow = test_mob(Species::Cow, "minecraft:cow", true, &["minecraft:wheat"]);
-        // Adult ready to breed
-        cow.extra.age = 0;
-        cow.extra.in_love = 0;
-        assert!(takes(&cow, "minecraft:wheat"));
-
-        // Adult in breeding cooldown (> 0)
-        cow.extra.age = 6000;
-        cow.extra.in_love = 0;
-        assert!(!takes(&cow, "minecraft:wheat"));
-
-        // Adult already in love (> 0)
-        cow.extra.age = 0;
-        cow.extra.in_love = 600;
-        assert!(!takes(&cow, "minecraft:wheat"));
-
-        // Baby animal can age up when not age locked
-        cow.extra.age = -24000;
-        cow.extra.in_love = 0;
-        cow.extra.age_locked = false;
-        assert!(takes(&cow, "minecraft:wheat"));
-
-        // Baby animal cannot age up when age locked
-        cow.extra.age_locked = true;
-        assert!(!takes(&cow, "minecraft:wheat"));
+        for (age, in_love, age_locked) in [
+            (0, 0, false),
+            (6000, 0, false),
+            (0, 600, false),
+            (-24000, 0, false),
+            (-24000, 0, true),
+        ] {
+            cow.extra.age = age;
+            cow.extra.in_love = in_love;
+            cow.extra.age_locked = age_locked;
+            assert!(takes(&cow, "minecraft:wheat"), "{age} {in_love} {age_locked}");
+        }
+        assert!(!takes(&cow, "minecraft:stick"));
     }
 }
