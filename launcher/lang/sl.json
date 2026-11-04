@@ -1162,5 +1162,7 @@
   "Charged back": "Banka je razveljavila plačilo",
   "Paid": "Plačano",
   "Order {id}": "Naročilo {id}",
-  "The claim didn't go through: the checkout's address isn't Horizon's.": "Zahteva ni uspela: naslov plačila ni Horizonov."
+  "The claim didn't go through: the checkout's address isn't Horizon's.": "Zahteva ni uspela: naslov plačila ni Horizonov.",
+  "Paste a friend's invite code": "Prilepite kodo povabila prijatelja",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Igra {build}, zgrajena na Horizon {commit}, commitu, ki ga je pripel {mods}, ne na {version}."
 }

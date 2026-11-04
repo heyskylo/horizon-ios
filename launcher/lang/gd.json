@@ -1162,5 +1162,7 @@
   "Charged back": "Air a thilleadh leis a' bhanca",
   "Paid": "Pàighte",
   "Order {id}": "Òrdugh {id}",
-  "The claim didn't go through: the checkout's address isn't Horizon's.": "Cha deach an tagradh troimhe: chan e seòladh Horizon a th' ann an seòladh a' phàighidh."
+  "The claim didn't go through: the checkout's address isn't Horizon's.": "Cha deach an tagradh troimhe: chan e seòladh Horizon a th' ann an seòladh a' phàighidh.",
+  "Paste a friend's invite code": "Cuir a-steach còd cuireadh caraid",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "A' cluich {build}, air a thogail air Horizon {commit}, an commit a phrìnich {mods}, chan ann air {version}."
 }

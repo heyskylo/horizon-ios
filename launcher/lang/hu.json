@@ -1162,5 +1162,7 @@
   "Charged back": "Visszaterhelve",
   "Paid": "Kifizetve",
   "Order {id}": "Rendelés {id}",
-  "The claim didn't go through: the checkout's address isn't Horizon's.": "Az igénylés nem sikerült: a fizetési oldal címe nem a Horizoné."
+  "The claim didn't go through: the checkout's address isn't Horizon's.": "Az igénylés nem sikerült: a fizetési oldal címe nem a Horizoné.",
+  "Paste a friend's invite code": "Illessze be egy barát meghívókódját",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "{build} fut, a Horizon {commit} commitra építve, amelyet {mods} rögzít, nem a {version} verzióra."
 }

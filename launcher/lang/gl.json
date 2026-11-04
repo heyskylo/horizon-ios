@@ -1162,5 +1162,7 @@
   "Charged back": "Devolto polo banco",
   "Paid": "Pagado",
   "Order {id}": "Pedido {id}",
-  "The claim didn't go through: the checkout's address isn't Horizon's.": "A reclamación non se completou: o enderezo do pagamento non é o de Horizon."
+  "The claim didn't go through: the checkout's address isn't Horizon's.": "A reclamación non se completou: o enderezo do pagamento non é o de Horizon.",
+  "Paste a friend's invite code": "Pega o código de invitación dun amigo",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Xoga {build}, construído sobre Horizon {commit}, o commit fixado por {mods}, non sobre {version}."
 }

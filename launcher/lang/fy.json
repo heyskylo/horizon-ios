@@ -1162,5 +1162,7 @@
   "Charged back": "Weromboekt troch de bank",
   "Paid": "Betelle",
   "Order {id}": "Bestelling {id}",
-  "The claim didn't go through: the checkout's address isn't Horizon's.": "De oanspraak is net slagge: it adres fan de checkout is net dat fan Horizon."
+  "The claim didn't go through: the checkout's address isn't Horizon's.": "De oanspraak is net slagge: it adres fan de checkout is net dat fan Horizon.",
+  "Paste a friend's invite code": "Plak de útnoegingskoade fan in freon",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Spilet {build}, boud op Horizon {commit}, de commit dy't {mods} fêstset, net op {version}."
 }

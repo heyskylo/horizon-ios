@@ -1162,5 +1162,7 @@
   "Charged back": "Банк буцаасан",
   "Paid": "Төлсөн",
   "Order {id}": "Захиалга {id}",
-  "The claim didn't go through: the checkout's address isn't Horizon's.": "Хүсэлт амжилтгүй боллоо: төлбөрийн хаяг Horizon-ых биш байна."
+  "The claim didn't go through: the checkout's address isn't Horizon's.": "Хүсэлт амжилтгүй боллоо: төлбөрийн хаяг Horizon-ых биш байна.",
+  "Paste a friend's invite code": "Найзын урилгын кодыг буулгана уу",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "{build} тоглодог: {version} биш, {mods}-ийн бэхэлсэн Horizon {commit} коммит дээр бүтээгдсэн."
 }

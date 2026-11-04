@@ -1162,5 +1162,7 @@
   "Charged back": "Greiðsla afturkölluð af banka",
   "Paid": "Greitt",
   "Order {id}": "Pöntun {id}",
-  "The claim didn't go through: the checkout's address isn't Horizon's.": "Beiðnin gekk ekki í gegn: heimilisfang greiðslunnar er ekki frá Horizon."
+  "The claim didn't go through: the checkout's address isn't Horizon's.": "Beiðnin gekk ekki í gegn: heimilisfang greiðslunnar er ekki frá Horizon.",
+  "Paste a friend's invite code": "Límdu boðskóða vinar",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Spilar {build}, byggt á Horizon {commit}, commit sem {mods} festir, ekki á {version}."
 }

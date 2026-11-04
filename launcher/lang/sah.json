@@ -1162,5 +1162,7 @@
   "Charged back": "Баанка төттөрү ылбыт",
   "Paid": "Төлөммүт",
   "Order {id}": "Сакаас {id}",
-  "The claim didn't go through: the checkout's address isn't Horizon's.": "Көрдөбүл ааспата: төлөбүр аадырыһа Horizon буолбатах."
+  "The claim didn't go through: the checkout's address isn't Horizon's.": "Көрдөбүл ааспата: төлөбүр аадырыһа Horizon буолбатах.",
+  "Paste a friend's invite code": "Доҕор ыҥырыы куодун киллэр",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "{build} оонньуур: {version} буолбакка, {mods} иҥэрбит Horizon {commit} коммитын үрдүгэр тутуллубут."
 }

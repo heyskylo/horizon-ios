@@ -1162,5 +1162,7 @@
   "Charged back": "Distaolet gant ar vanka",
   "Paid": "Paeet",
   "Order {id}": "Gourc'hemenn {id}",
-  "The claim didn't go through: the checkout's address isn't Horizon's.": "N'eo ket aet ar goulenn da benn: chomlec'h ar paeamant n'eo ket hini Horizon."
+  "The claim didn't go through: the checkout's address isn't Horizon's.": "N'eo ket aet ar goulenn da benn: chomlec'h ar paeamant n'eo ket hini Horizon.",
+  "Paste a friend's invite code": "Pegañ kod pediñ ur mignon",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "C'hoari {build}, savet diwar Horizon {commit}, ar commit spilhet gant {mods}, ha neket diwar {version}."
 }

@@ -1162,5 +1162,7 @@
   "Charged back": "بینک نے ادائیگی واپس لے لی",
   "Paid": "ادا شدہ",
   "Order {id}": "آرڈر {id}",
-  "The claim didn't go through: the checkout's address isn't Horizon's.": "دعویٰ مکمل نہیں ہو سکا: چیک آؤٹ کا پتہ Horizon کا نہیں ہے۔"
+  "The claim didn't go through: the checkout's address isn't Horizon's.": "دعویٰ مکمل نہیں ہو سکا: چیک آؤٹ کا پتہ Horizon کا نہیں ہے۔",
+  "Paste a friend's invite code": "کسی دوست کا دعوتی کوڈ چسپاں کریں",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "{build} چلتا ہے، Horizon {commit} پر بنایا گیا، وہ کمٹ جسے {mods} نے پن کیا، {version} پر نہیں۔"
 }

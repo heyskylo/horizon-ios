@@ -1162,5 +1162,7 @@
   "Charged back": "Ibhange libuyisile",
   "Paid": "Kukhokhiwe",
   "Order {id}": "I-oda {id}",
-  "The claim didn't go through: the checkout's address isn't Horizon's.": "Isicelo asiphumelelanga: ikheli lokukhokha akulona elikaHorizon."
+  "The claim didn't go through: the checkout's address isn't Horizon's.": "Isicelo asiphumelelanga: ikheli lokukhokha akulona elikaHorizon.",
+  "Paste a friend's invite code": "Namathisela ikhodi yesimemo yomngane",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Idlala {build}, eyakhelwe ku-Horizon {commit}, i-commit ephiniwe ngu-{mods}, hhayi ku-{version}."
 }
