@@ -24,6 +24,9 @@ fn apply(m: &mut Mob, values: &[(u8, i32, Value)], builtin: &Builtin, local_enti
     }
     for (index, _, value) in values {
         match (*index, value) {
+            // Entity's signed air and frozen counters are synced as-is.
+            (1, Value::Int(air)) => m.air = *air,
+            (7, Value::Int(frozen)) => m.ticks_frozen = *frozen,
             // Entity.DATA_POSE: a player's or mannequin's box follows it.
             (6, Value::Id(pose))
                 if matches!(&*m.kind.id, "minecraft:player" | "minecraft:mannequin") =>
@@ -503,6 +506,7 @@ impl Game<'_> {
 /// defaults the server leaves out (`getNonDefaultValues`) that differ from
 /// what `Mob::new` gives, such as a wolf's and a cat's red collar.
 pub(super) fn client_defaults(m: &mut Mob) {
+    m.air = m.max_air_supply();
     if matches!(m.species(), Species::Wolf | Species::Cat) {
         m.extra.color = tame::RED;
     }
@@ -520,6 +524,217 @@ pub(super) fn client_defaults(m: &mut Mob) {
 mod tests {
     use super::*;
     use horizon_protocol::entity_data::serializer as s;
+
+    fn air_mob(kind: &str) -> Mob {
+        use horizon_client::mobs::{Anim, Brain, Flags, MobType, Part};
+        use std::sync::Arc;
+        let species = match kind {
+            "minecraft:cow" => Species::Cow,
+            "minecraft:axolotl" => Species::Axolotl,
+            "minecraft:dolphin" => Species::Dolphin,
+            "minecraft:cod" => Species::Cod,
+            _ => panic!("unknown fixture species"),
+        };
+        // Metadata needs no AI or model. Avoid the resource loader, which also
+        // initializes process-wide item tags used by unrelated mob tests.
+        let kind = Arc::new(MobType {
+            id: kind.into(),
+            species,
+            width: 0.6,
+            height: 1.95,
+            eye_height: 1.5,
+            category: "monster".into(),
+            max_health: 20.0,
+            speed: 0.25,
+            flying_speed: 0.0,
+            attack_damage: 0.0,
+            attack_knockback: 0.0,
+            follow_range: 16.0,
+            step_height: 0.6,
+            armor: 0.0,
+            armor_toughness: 0.0,
+            knockback_resistance: 0.0,
+            jump_strength: 0.42,
+            attributes: Arc::default(),
+            item_stack_limits: Arc::default(),
+            gravity: 0.08,
+            safe_fall_distance: 3.0,
+            fall_damage_multiplier: 1.0,
+            water_efficiency: 0.0,
+            water_slowdown: 0.8,
+            air_speed: 0.02,
+            baby_scale: 0.5,
+            head_rot_speed: 10.0,
+            max_head_x_rot: 40.0,
+            max_head_y_rot: 75.0,
+            ambient_interval: 120,
+            flags: Flags::default(),
+            model: Arc::new(Part {
+                name: "root".into(),
+                pose: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+                polygons: Vec::new(),
+                children: Vec::new(),
+            }),
+            layers: Default::default(),
+            texture: String::new(),
+            brain: Brain::Passive,
+            anim: Anim::Zombie,
+            sounds: [""; 3],
+            step_sound: None,
+            food: Arc::default(),
+            tempt: Arc::default(),
+        });
+        Mob::new(1, kind, horizon_core::geometry::Vec3::ZERO, 0.0)
+    }
+
+    #[test]
+    fn air_and_frozen_metadata_reach_the_client() {
+        for kind in ["cow", "cod", "dolphin", "axolotl"] {
+            let mut mob = air_mob(&format!("minecraft:{kind}"));
+            super::client_defaults(&mut mob);
+            let max = match kind {
+                "axolotl" => 6000,
+                "dolphin" => 4800,
+                _ => 300,
+            };
+            assert_eq!(mob.air, max, "initial air: {kind}");
+            for (air, frozen) in [(100, -3), (-20, 140), (max, 0)] {
+                super::apply(
+                    &mut mob,
+                    &[
+                        (1, s::INT, Value::Int(air)),
+                        (7, s::INT, Value::Int(frozen)),
+                    ],
+                    &Builtin::default(),
+                    99,
+                );
+                assert_eq!((mob.air, mob.ticks_frozen), (air, frozen), "{kind}");
+            }
+        }
+    }
+
+    fn air_trace(kind: &str, sequence: &[(i32, i32)]) -> Vec<String> {
+        use horizon_client::lan::entity::{Entities, EntityState, Riding, Tracker, Viewer};
+        use horizon_protocol::{buf::Reader, packets::play::Clientbound};
+        let name = format!("minecraft:{kind}");
+        let mut server = air_mob(&name);
+        let mut client = air_mob(&name);
+        super::client_defaults(&mut client);
+        let mut level = Entities::default();
+        let mut tracker = Tracker::default();
+        let chunks = [(0, 0)].into_iter().collect();
+        let mut state = EntityState {
+            id: 1,
+            uuid: 1,
+            kind: name,
+            needs_sync: true,
+            ..Default::default()
+        };
+        let mut trace = Vec::new();
+        for &(air, frozen) in sequence {
+            server.air = air;
+            server.ticks_frozen = frozen;
+            state.meta.clear();
+            state.defaults.clear();
+            super::super::lan::mob_freeze_meta(&server, &mut state.meta, &mut state.defaults);
+            let mut packets = Vec::new();
+            level.tick(
+                &[&state],
+                &Riding::default(),
+                &mut [Viewer {
+                    entity_id: 99,
+                    spectator: false,
+                    permission: 0,
+                    moved: true,
+                    position: [0.0; 3],
+                    view_distance: 10,
+                    chunks: &chunks,
+                    tracker: &mut tracker,
+                    out: &mut packets,
+                    gone: None,
+                }],
+                |_| Some(100),
+            );
+            let mut sent = Vec::new();
+            for body in packets {
+                let mut reader = Reader::new(&body);
+                let id = reader.varint().unwrap();
+                if let Ok(Clientbound::SetEntityData(data)) = Clientbound::decode(id, reader.rest())
+                {
+                    for (index, serializer, value) in &data.values {
+                        if matches!(*index, 1 | 7) {
+                            assert_eq!(*serializer, s::INT);
+                            let Value::Int(value) = value else {
+                                panic!("integer metadata");
+                            };
+                            sent.push((*index, *value));
+                        }
+                    }
+                    super::apply(&mut client, &data.values, &Builtin::default(), 99);
+                }
+            }
+            sent.sort_unstable_by_key(|v| v.0);
+            let sent = if sent.is_empty() {
+                "-".into()
+            } else {
+                sent.iter()
+                    .map(|(index, value)| format!("{index}={value}"))
+                    .collect::<Vec<_>>()
+                    .join(",")
+            };
+            trace.push(format!("{sent}:{},{}", client.air, client.ticks_frozen));
+        }
+        trace
+    }
+
+    #[test]
+    fn air_and_frozen_cross_the_tracker_and_wire() {
+        for (kind, max) in [
+            ("cow", 300),
+            ("cod", 300),
+            ("dolphin", 4800),
+            ("axolotl", 6000),
+        ] {
+            let sequence = [(max, 0), (100, -3), (100, -3), (max, 0), (max, 0)];
+            assert_eq!(
+                air_trace(kind, &sequence),
+                vec![
+                    format!("-:{max},0"),
+                    "1=100,7=-3:100,-3".into(),
+                    "-:100,-3".into(),
+                    format!("1={max},7=0:{max},0"),
+                    format!("-:{max},0")
+                ],
+                "{kind}"
+            );
+            assert_eq!(
+                air_trace(kind, &[(100, -3)]),
+                vec!["1=100,7=-3:100,-3"],
+                "joining while changed: {kind}"
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "run by tools/test_mob_air_parity.py"]
+    fn mob_air_parity_fixture() {
+        use std::io::Write;
+        let input =
+            std::fs::read_to_string(std::env::var("HORIZON_MOB_AIR_INPUT").unwrap()).unwrap();
+        let mut output =
+            std::fs::File::create(std::env::var("HORIZON_MOB_AIR_OUTPUT").unwrap()).unwrap();
+        for line in input.lines() {
+            let mut fields = line.split_whitespace();
+            let kind = fields.next().unwrap();
+            let sequence: Vec<_> = fields
+                .map(|pair| {
+                    let (air, frozen) = pair.split_once(',').unwrap();
+                    (air.parse().unwrap(), frozen.parse().unwrap())
+                })
+                .collect();
+            writeln!(output, "{}", air_trace(kind, &sequence).join(" ")).unwrap();
+        }
+    }
 
     /// A mob of the prepared resources' type `kind`, as a client spawns it
     /// (None without the resources).
