@@ -3513,6 +3513,76 @@ def sulfur_cube_loaded_health():
 
 
 
+def numeric_array_edits(include_storage_side_effects=False):
+    """Replay list/string controls before the finite numeric-array edit cases."""
+    ops = setup('/tick freeze', '/scoreboard objectives add audit dummy',
+                '/execute store result score clockBefore audit run time query gametime')
+    def edit(initial, suffix, result, source=None):
+        ops.extend(setup('/data remove storage audit:edit value',
+                         f'/data modify storage audit:edit value set value {initial}',
+                         '/scoreboard players set result audit 17',
+                         '/scoreboard players set success audit 17'))
+        if source is not None:
+            ops.extend(setup(f'/data modify storage audit:source value set value {source}'))
+        ops.append(cmd('/execute store result score result audit store success score success audit run data ' + suffix))
+        ops.append(cmd('/scoreboard players get result audit', expect_result=result))
+        ops.append(cmd('/scoreboard players get success audit', expect_result=int(result > 0)))
+        ops.append(cmd('/data get storage audit:edit value'))
+    def modify(initial, tail, result=1):
+        edit(initial, 'modify storage audit:edit ' + tail, result)
+    # The audit's original 22 edit actions, including heterogeneous lists.
+    for tail, result in [('value append value 4', 1), ('value append value "four"', 1),
+                         ('value prepend value 4b', 1), ('value[] set value 9', 3)]:
+        modify('[1,2,3]', tail, result)
+    for path, result in [('value[-1]', 1), ('value[9]', 0), ('value[]', 3)]:
+        edit('[1,2,3]', 'remove storage audit:edit ' + path, result)
+    modify('[1,2,3]', 'value[1] set value 2', 0)
+    for index, result in [(0, 1), (3, 1), (4, 0), (-1, 1), (-4, 1), (-5, 0)]:
+        modify('[1,2,3]', f'value insert {index} value 8', result)
+    modify('[B;1b,2b]', 'value append value 257')
+    modify('[I;1,2]', 'value append value 3.5d')
+    modify('[L;1L,2L]', 'value append value 3')
+    modify('[B;1b,2b]', 'value[0] set value 7b')
+    edit('[I;1,2]', 'remove storage audit:edit value[0]', 1)
+    modify('[[1,2],[3,4]]', 'value[0] append value 5')
+    modify('[[1,2],[3,4]]', 'value[] append value 5', 2)
+    modify('[[1,2],[3,4]]', 'value[-1] prepend value 5')
+    # The original 13 string actions use UTF-16 boundaries without lone surrogates.
+    strings = [('"abcd"', '1 3', 1), ('"abcd"', '-3 -1', 1),
+               ('"abcd"', '2 2', 1), ('"abcd"', '3 1', 0), ('"abcd"', '0 5', 0),
+               ('"AéB"', '1 2', 1), ('"A😀B"', '1 3', 1), ('"A😀B"', '3 4', 1),
+               ('"A😀B"', '-3 -1', 1), ('"A😀B"', '-1', 1),
+               ('3.0f', '', 1), ('3.0d', '', 1), ('1.0E20d', '', 1)]
+    for source, indices, result in strings:
+        suffix = 'modify storage audit:edit value set string storage audit:source value'
+        edit('"unchanged"', suffix + (' ' + indices if indices else ''), result, source)
+    # Destination-specific negative rounding, admission and raw-tag change counts.
+    for kind, initial, empty in [('B', '[B;1b,2b]', '[B;]'),
+                                 ('I', '[I;1,2]', '[I;]'), ('L', '[L;1L,2L]', '[L;]')]:
+        for value in ('3.5f', '-3.5f', '3.5d', '-3.5d', '"bad"'):
+            modify(initial, f'value append value {value}', int(value != '"bad"'))
+        for value in ('-3.5d', '"bad"'):
+            modify(initial, f'value prepend value {value}', int(value != '"bad"'))
+        for value in ('-3.5f', '"bad"'):
+            modify(initial, f'value insert 1 value {value}', int(value != '"bad"'))
+        for value in ('-3.5f', '-3.5d', '"bad"'):
+            modify(initial, f'value[0] set value {value}', int(value != '"bad"'))
+            if value != '"bad"' or include_storage_side_effects:
+                modify(initial, f'value[] set value {value}', 0 if value == '"bad"' else 2)
+        modify(initial, 'value[0] set value 1.0f')
+        modify(initial, 'value[] set value 1', 1 if kind == 'I' else 2)
+        # AllElementsNode's empty collection branch returns 1 even on rejection.
+        modify(empty, 'value[] set value "bad"')
+        modify(empty, 'value[] set value -3.5f')
+        modify(empty, 'value append value "bad"', 0)
+    ops.extend(setup('/execute store result score clockAfter audit run time query gametime'))
+    ops.append(cmd('/execute if score clockAfter audit = clockBefore audit', expect_result=1))
+    ops.extend(setup('/data remove storage audit:edit value', '/data remove storage audit:source value',
+                     '/scoreboard objectives remove audit', '/tick unfreeze'))
+    return ops
+
+
+
 def groups():
     return [
         ('setup', group_setup()),
@@ -3559,6 +3629,7 @@ def groups():
         ('levels', levels()),
         ('end portal entities', end_portal_entities()),
         ('items and loot', items_and_loot()),
+        ('numeric array edits', numeric_array_edits()),
         ('projectile saved UUID', projectile_saved_uuid()),
         ('awake villager saved position', awake_villager_saved_position()),
         ('villager wake rotation', villager_wake_rotation()),

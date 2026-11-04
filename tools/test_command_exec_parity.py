@@ -68,6 +68,8 @@ def main():
     parser.add_argument('--limit', type=int, default=40, help='print at most this many mismatches')
     parser.add_argument('--allow-gaps', action='store_true', help='report mismatches without failing')
     parser.add_argument('--only', help='run only corpus groups whose name contains this')
+    parser.add_argument('--array-storage-diagnostic', action='store_true',
+                        help='run all numeric-array edit cases, including the known wildcard/string storage side effects')
     parser.add_argument('--binary', type=Path, help='use an already built Horizon game instead of building it')
     args = parser.parse_args()
     build = lab.LOCAL / 'command-exec-parity'
@@ -90,7 +92,10 @@ def main():
             tail = (build / (name + '.log')).read_text(errors='replace')[-3000:]
             sys.exit(f'{name} failed ({result.returncode}):\n{tail}')
 
-    groups = corpus_module.groups()
+    groups = ([('setup', corpus_module.group_setup()),
+               ('numeric array edits with storage side effects',
+                corpus_module.numeric_array_edits(include_storage_side_effects=True))]
+              if args.array_storage_diagnostic else corpus_module.groups())
     if args.only:
         groups = [g for g in groups if args.only in g[0] or g[0] == 'setup']
     script = []
