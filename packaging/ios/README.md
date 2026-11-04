@@ -205,6 +205,28 @@ nothing installed, but nobody has read it on a real phone yet. Nobody has run th
 is measured there is in the workflow's summary -- the game compiles for the target, links, and comes out of
 Xcode's bundle as the same bytes Cargo wrote.
 
+### Checking first-run import without a device
+
+The shared importer can be checked end to end with prebuilt desktop binaries and
+resources prepared from your own game:
+
+```sh
+python3 tools/test_import_startup.py --bin-dir target/fast \
+  --resources .local/horizon-client/26.3
+```
+
+This starts a scratch game without resources, serves a temporary archive over
+loopback, and requires the game to reach its title without restarting and exit
+cleanly. It checks the installed manifest and rejects Authorization headers on the
+automatic download. Logs and a JSON result go under `.local/import-startup`; the
+archive and installed test copy are removed afterward. `--scratch-parent` can put
+those temporary files on a drive with enough free space.
+
+The desktop explicitly enables `HORIZON_IMPORT_SCREEN` to exercise the shared
+first-run flow. This does not verify physical iOS input, orientation, or shader
+appearance. Native launcher download/import presentation is covered separately by
+`tools/test_ios_game_files.py` on the Simulator.
+
 ## Why the game, when it comes, is the Cargo executable and not another static library
 
 `crates/horizon-ios` is a library, so `cargo rustc --crate-type staticlib` works for it. The game is not a

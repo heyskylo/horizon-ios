@@ -20347,8 +20347,16 @@ impl Progress {
     }
 }
 
-/// Harness and dedicated runs keep the fully-synchronous startup so their
-/// output stays byte-identical; only an ordinary launch shows the window first.
+/// An explicitly requested import screen needs the loading loop, even when
+/// control automation drives its first-run flow.
+fn import_loading_screen(options: &Options) -> bool {
+    options.execution_role.is_client()
+        && !options.headless
+        && horizon_client::import::waits_on_screen()
+}
+
+/// Harness and dedicated runs keep fully synchronous startup unless a graphical
+/// client explicitly requests the import screen for its first-run flow.
 fn synchronous_startup(options: &Options) -> bool {
     // A headless game has no window for the loading screen.
     options.headless
@@ -20356,7 +20364,9 @@ fn synchronous_startup(options: &Options) -> bool {
         || options.world_frames.is_some()
         || options.benchmark.is_some()
         // Native launcher automation must observe the same idle/start lifecycle as touch input.
-        || (options.control.is_some() && !horizon_ios_launcher::waiting())
+        || (options.control.is_some()
+            && !horizon_ios_launcher::waiting()
+            && !import_loading_screen(options))
         || !options.execution_role.is_client()
         || std::env::var_os("HORIZON_DISPENSE_FIXTURE").is_some()
         || std::env::var_os("HORIZON_SCULK_FIXTURE").is_some()
@@ -22374,6 +22384,7 @@ pub fn run_with() -> Result<()> {
     }
     let vanilla_root = options.resources.clone();
     if !cfg!(any(target_os = "ios", target_os = "android"))
+        && !import_loading_screen(&options)
         && let Some(error) = missing_resources(&vanilla_root)
     {
         // The game build started by hand (the release's zip), not by the

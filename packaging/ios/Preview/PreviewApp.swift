@@ -11,6 +11,8 @@ struct OrientationFixtureEntry {
 }
 #endif
 
+private var finishPreviewImport: (() -> Void)?
+
 private let previewSubmit: HorizonSubmit = { pointer, context, done in
     let line = pointer.map { String(cString: $0) } ?? ""
 #if ORIENTATION_FIXTURE
@@ -40,6 +42,13 @@ private let previewSubmit: HorizonSubmit = { pointer, context, done in
            bytes == Data("horizon-download-fixture".utf8) {
             try? FileManager.default.createDirectory(at: GameFolder.resources, withIntermediateDirectories: true)
             try? Data("{}".utf8).write(to: GameFolder.resources.appendingPathComponent("horizon-resources.json"))
+            if ProcessInfo.processInfo.environment["PREVIEW_HOLD_IMPORT"] == "1" {
+                finishPreviewImport = {
+                    finishPreviewImport = nil
+                    #"{"ok":true,"kind":"resources"}"#.withCString { done(context, $0) }
+                }
+                return
+            }
             response = ["ok": true, "kind": "resources"]
         } else { response = ["error": "Unexpected preview fixture."] }
     case "worlds":
@@ -94,6 +103,13 @@ struct LauncherPreview: App {
                     Button("OK", role: .cancel) {}
                 } message: { Text("The worlds and server entry here are sample data for reviewing the interface. This preview does not start the game.") }
                 .frame(width: ProcessInfo.processInfo.environment["PREVIEW_WIDTH"].flatMap(Double.init).map { CGFloat($0) })
+                .overlay(alignment: .bottomLeading) {
+                    if ProcessInfo.processInfo.environment["PREVIEW_HOLD_IMPORT"] == "1" {
+                        Button("Finish fixture import") { finishPreviewImport?() }
+                            .accessibilityIdentifier("fixture-finish-import")
+                            .padding(.leading, 20).padding(.bottom, 110)
+                    }
+                }
         }
     }
 }

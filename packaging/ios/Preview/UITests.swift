@@ -1,7 +1,7 @@
 import XCTest
 
 final class LauncherLayoutTests: XCTestCase {
-    private func launch(signedIn: Bool, optionsResponse: String? = nil, gameFilesURL: String? = nil) -> XCUIApplication {
+    private func launch(signedIn: Bool, optionsResponse: String? = nil, gameFilesURL: String? = nil, holdImport: Bool = false) -> XCUIApplication {
         let app = XCUIApplication()
         let root = NSTemporaryDirectory() + "horizon-native-" + UUID().uuidString
         app.launchEnvironment = ["PREVIEW_SIGNED_IN": signedIn ? "1" : "0",
@@ -14,6 +14,7 @@ final class LauncherLayoutTests: XCTestCase {
             app.launchEnvironment["PREVIEW_MISSING_FILES"] = "1"
             app.launchEnvironment["PREVIEW_GAME_FILES_URL"] = gameFilesURL
         }
+        if holdImport { app.launchEnvironment["PREVIEW_HOLD_IMPORT"] = "1" }
         app.launch()
         XCTAssertTrue(app.buttons["launcher-play-button"].waitForExistence(timeout: 15))
         return app
@@ -30,6 +31,25 @@ final class LauncherLayoutTests: XCTestCase {
         waitForExpectations(timeout: 20)
         XCTAssertFalse(app.staticTexts["Game files needed"].exists)
         XCTAssertFalse(app.alerts["Launcher UI preview"].exists, "Setup must not launch the game")
+    }
+
+    func testImportCommitKeepsPlayDisabledUntilAcknowledged() throws {
+        guard let url = ProcessInfo.processInfo.environment["HORIZON_DOWNLOAD_FIXTURE_URL"] else {
+            throw XCTSkip("Requires the loopback download fixture")
+        }
+        let app = launch(signedIn: false, gameFilesURL: url, holdImport: true)
+        let play = app.buttons["launcher-play-button"]
+        // The preview has placed the marker, but the importer has not yet
+        // acknowledged its transaction. File presence alone cannot enable Play.
+        expectation(for: NSPredicate(format: "label == 'Play'"), evaluatedWith: play)
+        waitForExpectations(timeout: 15)
+        XCTAssertFalse(play.isEnabled)
+        let finish = app.buttons["fixture-finish-import"]
+        XCTAssertTrue(finish.isHittable)
+        finish.tap()
+        expectation(for: NSPredicate(format: "enabled == true"), evaluatedWith: play)
+        waitForExpectations(timeout: 10)
+        XCTAssertFalse(app.alerts["Launcher UI preview"].exists)
     }
 
     func testFirstRunDownloadFailureKeepsRetryAndManualFallbackAvailable() throws {

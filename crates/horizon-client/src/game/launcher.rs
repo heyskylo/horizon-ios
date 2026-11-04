@@ -75,8 +75,21 @@ fn deliver() -> bool {
     resources
 }
 
+/// A native import owns its destination until its completion is delivered.
+fn importing_archive() -> bool {
+    PENDING.with_borrow(|pending| {
+        pending
+            .iter()
+            .any(|(waiting, _)| matches!(waiting, Waiting::Import(_)))
+    })
+}
+
 /// Install the archive named by `import PATH` on a worker: a prepared tree is hundreds of megabytes.
 fn start_import(request: horizon_ios_launcher::Request) {
+    if importing_archive() {
+        request.answer(r#"{"error":"Wait for the current import to finish."}"#);
+        return;
+    }
     let command = request.line.split_whitespace().next().unwrap_or_default();
     let resources_only = command == "import-game-files";
     let path = request
@@ -362,8 +375,15 @@ impl Loading {
                     .to_string(),
                 ),
                 "launcher-start" => {
-                    horizon_ios_launcher::start();
-                    request.answer(r#"{"ok":true}"#);
+                    if importing_archive() {
+                        request.answer(r#"{"error":"Wait for the current import to finish."}"#);
+                    } else {
+                        if horizon_ios_launcher::waiting() {
+                            self.refresh_import_root(&horizon_client::import::home())?;
+                        }
+                        horizon_ios_launcher::start();
+                        request.answer(r#"{"ok":true}"#);
+                    }
                 }
                 "launcher-state" => {
                     let state = if horizon_ios_launcher::waiting() {

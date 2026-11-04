@@ -233,18 +233,27 @@ impl Loading {
         self.import.as_ref().map(|import| import.reason.as_str())
     }
 
+    /// Resolve newly installed files before a loader captures its vanilla base.
+    /// An existing explicit base wins; a staged pack overlay is never the base.
+    pub(super) fn refresh_import_root(&mut self, home: &std::path::Path) -> Result<()> {
+        let options = self.options.as_mut().ok_or("loading already finished")?;
+        if let Some(root) = horizon_client::import::resources_root(&self.vanilla_root, Some(home)) {
+            options.resources = root.clone();
+            self.vanilla_root = root;
+        }
+        Ok(())
+    }
+
     /// Start the loader again on the files that arrived, as if the first attempt had found them.
     fn load_the_files_that_arrived(&mut self, home: std::path::PathBuf) -> Result<()> {
         self.loaded = None;
+        self.delivered = false;
         if let Some(handle) = self.handle.take() {
             let _ = handle.join();
         }
         self.progress = Progress::new();
-        let mut options = self.options.take().ok_or("loading already finished")?;
-        if let Some(root) = horizon_client::import::resources_root(&options.resources, Some(&home))
-        {
-            options.resources = root;
-        }
+        self.refresh_import_root(&home)?;
+        let options = self.options.take().ok_or("loading already finished")?;
         let (receiver, handle) = startup_menu::spawn_loader(
             &options,
             &self.settings,

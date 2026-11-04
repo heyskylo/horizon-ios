@@ -81,6 +81,7 @@ def main():
                 "-parallel-testing-enabled", "NO",
                 "-only-testing:LauncherLogicTests/AutomaticGameFilesTests",
                 "-only-testing:LauncherPreviewUITests/LauncherLayoutTests/testFirstRunAutomaticallyDownloadsAndEnablesPlay",
+                "-only-testing:LauncherPreviewUITests/LauncherLayoutTests/testImportCommitKeepsPlayDisabledUntilAcknowledged",
                 "-only-testing:LauncherPreviewUITests/LauncherLayoutTests/testFirstRunDownloadFailureKeepsRetryAndManualFallbackAvailable",
                 "-only-testing:LauncherPreviewUITests/LauncherLayoutTests/testOversizedAutomaticArchiveStopsBeforeImport",
                 "test-without-building",

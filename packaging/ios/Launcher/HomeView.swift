@@ -204,7 +204,7 @@ struct HomeView: View {
                 .controlSize(.large)
                 .launcherPrimaryButton()
                 .tint(Theme.accent)
-                .disabled(needsFiles || link.launching != nil)
+                .disabled(needsFiles || download.busy || link.launching != nil)
                 .accessibilityIdentifier("launcher-play-button")
                 if link.launching != nil {
                     Button("Cancel") { link.cancelLaunch() }.foregroundStyle(.white).frame(minHeight: 44)
