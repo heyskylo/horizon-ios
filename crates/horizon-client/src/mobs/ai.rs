@@ -3625,7 +3625,10 @@ mod warden_push_tests {
                 // Non-pushable is not an early return: it still pushes others.
                 assert!(events.iter().any(|e| matches!(
                     e,
-                    MobEvent::Push { target: Who::Mob(2), .. }
+                    MobEvent::Push {
+                        target: Who::Mob(2),
+                        ..
+                    }
                 )));
 
                 // The other mob's tick: the warden's Seen must exclude it.
@@ -3633,10 +3636,15 @@ mod warden_push_tests {
                 w.others = &others;
                 events.clear();
                 push_entities(&mut cow, &w, &mut events);
-                let pushes_warden = events.iter().any(|e| matches!(
-                    e,
-                    MobEvent::Push { target: Who::Mob(1), .. }
-                ));
+                let pushes_warden = events.iter().any(|e| {
+                    matches!(
+                        e,
+                        MobEvent::Push {
+                            target: Who::Mob(1),
+                            ..
+                        }
+                    )
+                });
                 assert_eq!(pushes_warden, standing, "other tick: {pose:?}");
 
                 // The player branch of the warden's tick has its own target path.
