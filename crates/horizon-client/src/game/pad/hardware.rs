@@ -134,9 +134,9 @@ impl Pads {
                     // Some backends report the controllers already there as they open.
                     if !self.devices.known.contains(&id) {
                         self.devices.known.push(id);
-                        let vendor = gilrs.gamepad(id).vendor_id();
-                        self.connections
-                            .push(Connection::Connected(GlyphStyle::of_vendor(vendor)));
+                        let pad = gilrs.gamepad(id);
+                        let style = GlyphStyle::of_device(pad.vendor_id(), pad.product_id());
+                        self.connections.push(Connection::Connected(style));
                     }
                     if let Some(output) = &self.devices.output {
                         output.scan();
@@ -179,7 +179,7 @@ impl Pads {
             return PadState::default();
         };
         self.device = Some(device_of(&pad));
-        self.style = GlyphStyle::of_vendor(pad.vendor_id());
+        self.style = GlyphStyle::of_device(pad.vendor_id(), pad.product_id());
         self.devices.dualsense = is_dualsense(&pad);
         state_of(&pad)
     }
@@ -340,7 +340,7 @@ impl PadRouter {
             .as_ref()
             .and_then(|g| g.connected_gamepad(id))
             .map_or(GlyphStyle::Auto, |pad| {
-                GlyphStyle::of_vendor(pad.vendor_id())
+                GlyphStyle::of_device(pad.vendor_id(), pad.product_id())
             })
     }
 

@@ -447,7 +447,7 @@ impl Game<'_> {
                 winit::keyboard::KeyCode::KeyD,
             ]
             .iter()
-            .any(|k| self.keys.contains(k))
+            .any(|k| self.movement_key_held(*k))
     }
     /// `MultiPlayerGameMode.startUseItem`'s bookkeeping around the game's
     /// use: nothing starts while a block is being broken or the hands are

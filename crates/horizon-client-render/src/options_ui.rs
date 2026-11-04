@@ -281,6 +281,7 @@ impl Opt {
             Opt::PadToggleSneak => "horizon.options.sneak_button",
             Opt::PadMoveDeadzone => "horizon.options.move_deadzone",
             Opt::PadLookDeadzone => "horizon.options.look_deadzone",
+            Opt::PadTriggerThreshold => "horizon.options.trigger_threshold",
             Opt::PadGlyphs => "horizon.options.button_glyphs",
             Opt::PadKeyboard => "horizon.options.on_screen_keyboard",
             Opt::ModelPart(i) => [
@@ -361,6 +362,7 @@ impl Opt {
             Opt::PadRepeatInterval => unit(s.controller.repeat_interval, 0.03, 0.3),
             Opt::PadMoveDeadzone => unit(s.controller.move_deadzone, 0.0, 0.5),
             Opt::PadLookDeadzone => unit(s.controller.look_deadzone, 0.0, 0.5),
+            Opt::PadTriggerThreshold => unit(s.controller.trigger_threshold, 0.1, 0.9),
             Opt::SprintWindow => unit(s.sprint_window as f32, 0.0, 10.0),
             _ => Kind::Cycle,
         }
@@ -425,6 +427,7 @@ impl Opt {
             Opt::MenuBlur => Some(10),
             Opt::NotificationDisplayTime => Some(95),
             Opt::PadMoveDeadzone | Opt::PadLookDeadzone => Some(50),
+            Opt::PadTriggerThreshold => Some(80),
             Opt::SprintWindow => Some(10),
             _ => None,
         }
@@ -634,11 +637,11 @@ impl Opt {
                     )],
                 ),
             ),
-            Opt::PadMoveDeadzone | Opt::PadLookDeadzone => {
-                let v = if self == Opt::PadMoveDeadzone {
-                    s.controller.move_deadzone
-                } else {
-                    s.controller.look_deadzone
+            Opt::PadMoveDeadzone | Opt::PadLookDeadzone | Opt::PadTriggerThreshold => {
+                let v = match self {
+                    Opt::PadMoveDeadzone => s.controller.move_deadzone,
+                    Opt::PadLookDeadzone => s.controller.look_deadzone,
+                    _ => s.controller.trigger_threshold,
                 };
                 Text::translate(
                     "options.percent_value",
@@ -897,6 +900,7 @@ impl Opt {
             Opt::PadRepeatInterval => s.controller.repeat_interval = step(30.0, 300.0) / 1000.0,
             Opt::PadMoveDeadzone => s.controller.move_deadzone = step(0.0, 50.0) / 100.0,
             Opt::PadLookDeadzone => s.controller.look_deadzone = step(0.0, 50.0) / 100.0,
+            Opt::PadTriggerThreshold => s.controller.trigger_threshold = step(10.0, 90.0) / 100.0,
             Opt::SprintWindow => s.sprint_window = step(0.0, 10.0) as i32,
             _ => {}
         }
@@ -1564,7 +1568,7 @@ pub struct OptionsUi {
     pub selected_key: Option<&'static str>,
     /// The native mod's key waiting: (mod, key) in `mods.installed`.
     selected_native_key: Option<(usize, usize)>,
-    /// Controller Binds: the action waiting for a pad button.
+    /// Bindings: the action waiting for a pad button.
     pub selected_pad_action: Option<&'static str>,
     /// The glyphs the binds list shows (the setting, else the pad's family).
     pub pad_style: GlyphStyle,
@@ -8249,6 +8253,7 @@ mod tests {
             Opt::NotificationDisplayTime,
             Opt::PadMoveDeadzone,
             Opt::PadLookDeadzone,
+            Opt::PadTriggerThreshold,
             Opt::SprintWindow,
         ];
         for opt in stepped_opts {

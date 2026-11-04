@@ -3,6 +3,7 @@
 //! (`LocalPlayer.aiStep`'s riding jump), positioning, dismounting, and the
 //! mount's health and jump bar on the HUD.
 use super::Game;
+use horizon_client::actions::Action;
 use horizon_client::{
     blocks::Fluid,
     hud::HudBatch,
@@ -156,7 +157,7 @@ impl Game<'_> {
         {
             return Some(false);
         }
-        if self.keys.contains(&winit::keyboard::KeyCode::ShiftLeft) {
+        if self.keys.held(Action::Sneak) {
             return None;
         }
         let saddle = m.saddle_item()?;
@@ -198,7 +199,7 @@ impl Game<'_> {
         }
         // Pig.mobInteract: held food goes to Animal.mobInteract, not a ride.
         let food = m.kind.food.iter().any(|f| f.as_str() == item);
-        if !m.extra.saddled || food || self.keys.contains(&winit::keyboard::KeyCode::ShiftLeft) {
+        if !m.extra.saddled || food || self.keys.held(Action::Sneak) {
             return false;
         }
         let id = m.id;
@@ -294,8 +295,8 @@ impl Game<'_> {
         if species == Species::SkeletonHorse && !m.extra.tame {
             return false;
         }
-        let sneaking = self.keys.contains(&winit::keyboard::KeyCode::ShiftLeft)
-            || self.keys.contains(&winit::keyboard::KeyCode::ShiftRight);
+        let sneaking =
+            self.keys.held(Action::Sneak) || self.keys.raw(&winit::keyboard::KeyCode::ShiftRight);
         // Horse / ZombieHorse.mobInteract: food is fed, and anything else in
         // hand makes an untamed one mad instead of seating the player.
         let dandelion = [self.held(), self.offhand.as_ref()]
@@ -531,7 +532,7 @@ impl Game<'_> {
             pitch: self.pitch,
             jump: if jump > 0.0 { jump } else { pending },
             steer,
-            sprint: keys.sprint || self.keys.contains(&winit::keyboard::KeyCode::ControlLeft),
+            sprint: keys.sprint || self.keys.held(Action::Sprint),
             jumping: keys.jump,
             // A server's player (a LAN guest, single player's window) drives
             // a horse from its own client (`handleMoveVehicle`).
