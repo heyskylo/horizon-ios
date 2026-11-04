@@ -3257,6 +3257,8 @@ impl Game<'_> {
                 .unwrap_or_else(|| parent.clone());
             let mut child = parent.clone();
             child.baby = true;
+            // Not born yet: none of the parent's saved data is its own.
+            child.nbt = None;
             // TurtleBreedGoal.breed triggers it without a child.
             let turtle = matches!(p.species(), Species::Turtle | Species::Frog);
             if matches!(

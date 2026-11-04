@@ -451,8 +451,13 @@ impl Game<'_> {
     /// [`Self::player_entity`] for `trigger`'s criteria: what the player
     /// looks at only when one of them may ask (a ray against every entity
     /// otherwise).
-    pub(super) fn player_entity_for(&self, trigger: &str) -> EntityView {
-        self.player_entity_looking(self.adv.tree.may_look(trigger))
+    /// The player's compound only when one of them may test `nbt`.
+    pub(super) fn player_entity_for(&mut self, trigger: &str) -> EntityView {
+        let mut me = self.player_entity_looking(self.adv.tree.may_look(trigger));
+        if self.adv.tree.may_test_nbt(trigger) {
+            me.nbt = self.player_nbt();
+        }
+        me
     }
     /// The player as predicates see it, with what it looks at when `looking`.
     pub(super) fn player_entity_looking(&self, looking: bool) -> EntityView {
@@ -565,6 +570,24 @@ impl Game<'_> {
             armor.damage = m.extra.body_damage.max(0) as u32;
             item_view(&armor)
         });
+        let passengers: Vec<EntityView> = self
+            .mobs
+            .iter()
+            .filter(|r| r.extra.mount == Some(m.id))
+            .map(|r| self.mob_entity(r))
+            .chain(self.rider_entity(m.id))
+            .collect();
+        // `NbtPredicate.getEntityTagToCompare`: the mob as saved, with the
+        // mobs riding it under `Passengers`, when a criterion may ask.
+        let nbt = self.adv.tree.tests_nbt().then(|| {
+            let uuid = self.persist.uuids.get(&m.id).copied().unwrap_or_default();
+            let raw = self.persist.raw.get(&m.id);
+            let registry = Some(self.pack.assets.registry);
+            let mut tag = horizon_client::entity_nbt::mob_to_nbt(m, uuid, raw, registry);
+            let riders = passengers.iter().filter_map(|r| r.nbt.clone()).collect();
+            super::persist::add_passengers(&mut tag, riders);
+            tag
+        });
         EntityView {
             kind: m.kind.id.clone(),
             position: [m.position.x, m.position.y, m.position.z],
@@ -576,13 +599,8 @@ impl Game<'_> {
                 .map(|(id, value)| (id.to_owned(), value))
                 .into_iter()
                 .collect(),
-            passengers: self
-                .mobs
-                .iter()
-                .filter(|r| r.extra.mount == Some(m.id))
-                .map(|r| self.mob_entity(r))
-                .chain(self.rider_entity(m.id))
-                .collect(),
+            passengers,
+            nbt,
             ..Default::default()
         }
     }
@@ -2238,6 +2256,41 @@ mod tests {
         assert!(tree.may_look("minecraft:using_item"));
         assert!(tree.may_look("minecraft:location"));
         assert!(!tree.may_look("minecraft:tick"));
+    }
+
+    #[test]
+    fn nbt_triggers_are_the_ones_that_ask() {
+        let criterion = |trigger: &str, conditions: serde_json::Value| adv::Criterion {
+            name: "c".into(),
+            trigger: trigger.into(),
+            conditions: horizon_world::lazy_json::LazyJson::new(&conditions),
+        };
+        let nbt = serde_json::json!({"entity": [{"condition": "minecraft:entity_properties",
+            "entity": "this", "predicate": {"minecraft:nbt": "{Variant:1}"}}]});
+        let reference = serde_json::json!({"player": [{"condition": "minecraft:reference",
+            "name": "pack:saved"}]});
+        let plain = serde_json::json!({"entity": [{"condition": "minecraft:entity_properties",
+            "entity": "this", "predicate": {"minecraft:flags": {"is_baby": true}}}]});
+        let mut tree = Tree::default();
+        tree.index_nbt();
+        assert!(!tree.tests_nbt());
+        tree.list.push(adv::Advancement {
+            id: "pack:a".into(),
+            parent: None,
+            display: None,
+            criteria: vec![
+                criterion("minecraft:player_interacted_with_entity", nbt),
+                criterion("minecraft:location", reference),
+                criterion("minecraft:tame_animal", plain),
+            ],
+            requirements: Vec::new(),
+            rewards: Default::default(),
+        });
+        tree.index_nbt();
+        assert!(tree.tests_nbt());
+        assert!(tree.may_test_nbt("minecraft:player_interacted_with_entity"));
+        assert!(tree.may_test_nbt("minecraft:location"));
+        assert!(!tree.may_test_nbt("minecraft:tame_animal"));
     }
 
     #[test]

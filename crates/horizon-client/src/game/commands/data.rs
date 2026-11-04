@@ -67,43 +67,47 @@ impl Game<'_> {
         self.in_target_level(t, |g| g.entity_nbt_in_level(t))
             .flatten()
     }
-    fn entity_nbt_in_level(&mut self, t: Target) -> Option<Tag> {
-        // The acting player's own UUID: a guest's turn (the window's player on
-        // the server thread) keeps the world owner's in `level`.
-        let player_uuid = self
-            .lan_acting_uuid
+    /// The acting player's own UUID: a guest's turn (the window's player on
+    /// the server thread) keeps the world owner's in `level`.
+    fn saved_player_uuid(&self) -> Option<[i32; 4]> {
+        self.lan_acting_uuid
             .map(horizon_client::lan::playerdata::uuid_ints)
-            .or(self.level.player_uuid);
+            .or(self.level.player_uuid)
+    }
+    /// [`Self::entity_nbt`] of the player whose turn it is.
+    pub(in crate::game) fn player_nbt(&mut self) -> Option<Tag> {
+        self.player.as_ref()?;
+        self.sync_level();
+        let mut tag = self.level.player_tag();
+        if let Some(u) = self.saved_player_uuid() {
+            set_key(&mut tag, "UUID", Tag::IntArray(u.to_vec()));
+        }
+        // NbtPredicate.getEntityTagToCompare: a player's held stack.
+        let selected = self.level.selected_slot;
+        let held = match tag.get("Inventory") {
+            Some(Tag::List(items)) => items
+                .iter()
+                .find(|i| matches!(i.get("Slot"), Some(Tag::Byte(b)) if i32::from(*b) == selected))
+                .cloned(),
+            _ => None,
+        };
+        if let Some(mut stack) = held {
+            if let Tag::Compound(c) = &mut stack {
+                c.remove(&"Slot".into());
+            }
+            set_key(&mut tag, "SelectedItem", stack);
+        }
+        Some(tag)
+    }
+    fn entity_nbt_in_level(&mut self, t: Target) -> Option<Tag> {
+        let player_uuid = self.saved_player_uuid();
         Some(match t {
             Target::Guest(_) => {
                 return self
                     .for_player(t, |g| g.entity_nbt(Target::Player))
                     .flatten();
             }
-            Target::Player => {
-                self.player.as_ref()?;
-                self.sync_level();
-                let mut tag = self.level.player_tag();
-                if let Some(u) = player_uuid {
-                    set_key(&mut tag, "UUID", Tag::IntArray(u.to_vec()));
-                }
-                // NbtPredicate.getEntityTagToCompare: a player's held stack.
-                let selected = self.level.selected_slot;
-                let held = match tag.get("Inventory") {
-                    Some(Tag::List(items)) => items
-                        .iter()
-                        .find(|i| matches!(i.get("Slot"), Some(Tag::Byte(b)) if i32::from(*b) == selected))
-                        .cloned(),
-                    _ => None,
-                };
-                if let Some(mut stack) = held {
-                    if let Tag::Compound(c) = &mut stack {
-                        c.remove(&"Slot".into());
-                    }
-                    set_key(&mut tag, "SelectedItem", stack);
-                }
-                tag
-            }
+            Target::Player => return self.player_nbt(),
             Target::Mob(id) => {
                 // `saveWithoutId` writes the entity as saved, riders under
                 // `Passengers`: `/data get` reads the same tree persistence does (#1519).
