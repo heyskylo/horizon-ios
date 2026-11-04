@@ -3933,13 +3933,28 @@ impl Game<'_> {
     /// `Player.dropEquipment` for the player who died: unless keep_inventory
     /// is on, `destroyVanishingCursedItems`, then `Inventory.dropAll` from
     /// `at` (the eyes less 0.3): slots 0..36, armor feet to head (36..39),
-    /// the off hand (40), each thrown in a random direction.
-    fn drop_inventory(&mut self, at: [f64; 3]) {
+    /// the off hand (40), each thrown in a random direction. The mods
+    /// (`native_loot_drops`, the dying player `who`: uuid and entity id)
+    /// may add to, change or take out the stacks before they are thrown.
+    fn drop_inventory(&mut self, at: [f64; 3], who: (u128, i32)) {
         if self.ui.rules.bool("keep_inventory") {
             return;
         }
-        let stacks = death_drops(&mut self.inventory, &mut self.offhand, &mut self.armor);
+        let mut stacks = death_drops(&mut self.inventory, &mut self.offhand, &mut self.armor);
         self.apply_equipment();
+        let context = horizon_client::mod_api::NativeLootDrops {
+            table: "",
+            dimension: self.dim.id(),
+            origin: at,
+            block: None,
+            entity: Some((who.1 as u32, "minecraft:player")),
+            player: Some(who.0),
+            tool: None,
+            explosion: None,
+            used: false,
+        };
+        self.native_loot_drops(&context, &mut stacks);
+        stacks.retain(|stack| stack.count > 0 && &*stack.item != "minecraft:air");
         for stack in stacks {
             let r = &mut self.world.random;
             let strength = f64::from(r.next_float()) * 0.5;
