@@ -5126,3 +5126,6 @@ mod rgb_alpha_tests;
 
 #[cfg(test)]
 mod trinary_tests;
+
+#[cfg(test)]
+mod const_offset_tests;
