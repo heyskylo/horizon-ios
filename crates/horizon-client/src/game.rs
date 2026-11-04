@@ -15625,6 +15625,7 @@ impl Game<'_> {
         // compressed (a no-op once it is).
         if self.renderer.is_some() {
             self.gui.atlas.pack_pixels();
+            self.pack.render.pixels.pack();
         }
         // Before any text of this frame: a full glyph region starts over.
         self.gui.atlas.font.begin_frame();
@@ -20682,7 +20683,7 @@ fn load_world_rest(
 fn prepare_renderer_textures(pack: &PackResources) -> horizon_client::gfx::PreparedTextures {
     let assets = &pack.render;
     horizon_client::gfx::PreparedTextures::new(
-        &assets.pixels,
+        &assets.pixels.get(),
         assets.sprite_size,
         assets.texture_layers,
         &assets.sprite_mips,
@@ -20728,7 +20729,7 @@ fn build_renderer(
     let mut renderer = pollster::block_on(Renderer::new(
         window,
         offscreen,
-        &assets.pixels,
+        &assets.pixels.get(),
         assets.sprite_size,
         assets.sprite_minimum_size,
         assets.texture_layers,
