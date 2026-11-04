@@ -52,4 +52,8 @@ jobs:
             git fetch origin "+refs/heads/$branch:refs/remotes/origin/$branch"
           fi
           git push --force-with-lease origin "$branch"
-          gh pr create --base main --head "$branch" --title 'Stamp native hook API fragments' --body 'Assign API numbers to the pending native hook fragments. Close and reopen this PR to run CI.'
+          # The repo doesn't let GitHub Actions open pull requests (that setting would also let it approve them):
+          # the branch is pushed, and a maintainer opens the PR from it.
+          if ! gh pr create --base main --head "$branch" --title 'Stamp native hook API fragments' --body 'Assign API numbers to the pending native hook fragments. Close and reopen this PR to run CI.'; then
+            echo "::warning::Stamped fragments are on $branch; open a pull request from it (GitHub Actions may not open one here)."
+          fi
