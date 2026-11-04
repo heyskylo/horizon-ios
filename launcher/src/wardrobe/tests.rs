@@ -412,6 +412,21 @@ fn the_shop_status_is_asked_without_a_session() {
 }
 
 #[test]
+fn a_state_this_launcher_does_not_know_still_reads() {
+    let (m, service) = serve(|m| m.claim = "paused");
+    assert_eq!(service.shop().unwrap().state, ClaimState::Unknown);
+    assert_eq!(
+        service.catalogue().unwrap().claim.state,
+        ClaimState::Unknown
+    );
+    let me = service.me(&sign_in(&m, &service)).unwrap();
+    assert_eq!(me.claim.state, ClaimState::Unknown);
+    // Kept on disk, it reads back the same.
+    let kept = serde_json::to_vec(&me).unwrap();
+    assert_eq!(serde_json::from_slice::<Me>(&kept).unwrap(), me);
+}
+
+#[test]
 fn the_history_keeps_its_orders_and_an_old_answer_still_reads() {
     let answer = json!({
         "uuid": "u", "name": "Notch", "owned": [], "equipped": {}, "visible": true,

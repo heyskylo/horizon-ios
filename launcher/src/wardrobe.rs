@@ -64,6 +64,10 @@ pub enum ClaimState {
     NotYet,
     Open,
     Closed,
+    /// A state this launcher doesn't know, from a newer service: the answer still reads, and the
+    /// rest of it (`open`, the dates) decides.
+    #[serde(other)]
+    Unknown,
 }
 
 /// The founder set: free to claim between `starts_at` and `ends_at` (Unix seconds, `[start,
