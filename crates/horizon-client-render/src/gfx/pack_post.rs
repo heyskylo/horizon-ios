@@ -5029,3 +5029,6 @@ mod material_tests;
 
 #[cfg(test)]
 mod rgb_alpha_tests;
+
+#[cfg(test)]
+mod trinary_tests;
