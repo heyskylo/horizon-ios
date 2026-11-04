@@ -133,17 +133,59 @@ impl SculkState {
 struct Index {
     order: Vec<(i32, i32, i32)>,
     set: HashSet<(i32, i32, i32)>,
+    /// The positions by 32-block cell, each with its rank: ranks only grow,
+    /// so sorting by them gives `order`'s order. Every mob's step posts a
+    /// game event, and the listeners near it are read from at most eight
+    /// cells instead of the whole level's.
+    cells: FxHashMap<(i32, i32, i32), Vec<(u64, (i32, i32, i32))>>,
+    next: u64,
+}
+fn index_cell(key: (i32, i32, i32)) -> (i32, i32, i32) {
+    (key.0 >> 5, key.1 >> 5, key.2 >> 5)
 }
 impl Index {
     fn insert(&mut self, key: (i32, i32, i32)) {
         if self.set.insert(key) {
             self.order.push(key);
+            self.cells
+                .entry(index_cell(key))
+                .or_default()
+                .push((self.next, key));
+            self.next += 1;
         }
     }
     fn remove(&mut self, key: &(i32, i32, i32)) {
         if self.set.remove(key) {
             self.order.retain(|k| k != key);
+            let cell = index_cell(*key);
+            if let Some(list) = self.cells.get_mut(&cell) {
+                list.retain(|(_, k)| k != key);
+                if list.is_empty() {
+                    self.cells.remove(&cell);
+                }
+            }
         }
+    }
+    /// The positions whose `dist_sqr` to `at` is at most `radius` squared,
+    /// in `order`'s order: what filtering `iter` gives.
+    fn within(&self, at: [i32; 3], radius: i32) -> Vec<(i32, i32, i32)> {
+        let limit = i64::from(radius * radius);
+        let span = |v: i32| {
+            let cell = |w: i64| (w >> 5).clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32;
+            cell(i64::from(v) - i64::from(radius))..=cell(i64::from(v) + i64::from(radius))
+        };
+        let mut found: Vec<(u64, (i32, i32, i32))> = Vec::new();
+        for x in span(at[0]) {
+            for y in span(at[1]) {
+                for z in span(at[2]) {
+                    if let Some(list) = self.cells.get(&(x, y, z)) {
+                        found.extend(list.iter().filter(|(_, k)| dist_sqr(at, *k) <= limit));
+                    }
+                }
+            }
+        }
+        found.sort_unstable_by_key(|(rank, _)| *rank);
+        found.into_iter().map(|(_, k)| k).collect()
     }
     fn contains(&self, key: &(i32, i32, i32)) -> bool {
         self.set.contains(key)
@@ -154,6 +196,10 @@ impl Index {
     fn retain(&mut self, mut keep: impl FnMut(&(i32, i32, i32)) -> bool) {
         self.order.retain(|k| keep(k));
         self.set.retain(|k| keep(k));
+        self.cells.retain(|_, list| {
+            list.retain(|(_, k)| keep(k));
+            !list.is_empty()
+        });
     }
 }
 const KIND_SENSOR: u8 = 1;
@@ -548,13 +594,7 @@ impl Game<'_> {
         }
         let at = block_of(pos);
         let radius = sculk::notification_radius(event).min(16);
-        let near: Vec<(i32, i32, i32)> = self
-            .sculk
-            .index
-            .iter()
-            .copied()
-            .filter(|p| dist_sqr(at, *p) <= i64::from(radius * radius))
-            .collect();
+        let near = self.sculk.index.within(at, radius);
         for key in near {
             self.sculk_listen(key, event, pos, &ctx);
         }
@@ -2057,6 +2097,50 @@ mod tests {
         assert_eq!(index.set.len(), 2);
         index.insert((41, 4, 0));
         assert_eq!(index.iter().last(), Some(&(41, 4, 0)));
+    }
+
+    /// The listeners near a point come out as filtering the whole index in
+    /// order would give them, through inserts, removals and retains.
+    #[test]
+    fn listeners_within_a_radius_are_the_filtered_index_in_order() {
+        let mut index = Index::default();
+        let mut seed = 0x2545_f491_4f6c_dd1du64;
+        let mut next = move |n: i32| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % (2 * n as u64 + 1)) as i32 - n
+        };
+        for step in 0..3000 {
+            let key = (next(70), next(40), next(70));
+            match step % 7 {
+                0..=3 => index.insert(key),
+                4..=5 => {
+                    let picked = index
+                        .order
+                        .get(next(1000).unsigned_abs() as usize % index.order.len().max(1))
+                        .copied();
+                    if let Some(k) = picked {
+                        index.remove(&k);
+                    }
+                }
+                _ if step % 500 == 6 => index.retain(|p| (p.0 ^ p.2) & 3 != 0),
+                _ => {}
+            }
+            let at = [next(80), next(50), next(80)];
+            let radius = next(16).abs();
+            let expected: Vec<_> = index
+                .iter()
+                .copied()
+                .filter(|p| dist_sqr(at, *p) <= i64::from(radius * radius))
+                .collect();
+            assert_eq!(
+                index.within(at, radius),
+                expected,
+                "step {step} at {at:?} r {radius}"
+            );
+        }
+        assert!(index.cells.values().map(Vec::len).sum::<usize>() == index.order.len());
     }
 
     /// A bat flaps every tenth tick while it is not resting, whether it is on

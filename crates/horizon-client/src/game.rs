@@ -148,6 +148,7 @@ mod input_trace;
 mod integrated;
 mod interaction_shapes;
 mod interactions;
+mod item_areas;
 mod item_draw;
 mod item_particles;
 mod item_use;
@@ -3994,6 +3995,7 @@ impl Game<'_> {
             ticks: 0,
             needs_sync: false,
             stuck: Vec3::ZERO,
+            was_touching_water: false,
         });
         // ServerLevel.addFreshEntity.
         if self.native_joins_flush(false, self.next_entity) {
@@ -4149,6 +4151,35 @@ impl Game<'_> {
             None => self.level.ensure_player_uuid(),
         }
     }
+    /// `Entity.doWaterSplashEffect` for a dropped item. The client draws the
+    /// bubble and splash particles (`Level.addParticle` is empty on a server).
+    /// The server plays `entity.generic.splash` (`Entity.playSound`); a
+    /// client's `playSeededSound` ignores that call.
+    pub(super) fn apply_item_splash(&mut self, splash: horizon_client::entities::ItemSplash) {
+        use horizon_client::entities::ItemSplash;
+        let client = self.options.execution_role.is_client();
+        match splash {
+            ItemSplash::Sound { at, volume, pitch } if !client => {
+                self.audio
+                    .play("minecraft:entity.generic.splash", Some(at), volume, pitch);
+            }
+            ItemSplash::Particle {
+                bubble,
+                at,
+                velocity,
+            } if client => {
+                use horizon_client::particles::{ParticleOptions, ParticleType};
+                let kind = if bubble {
+                    ParticleType::Bubble
+                } else {
+                    ParticleType::Splash
+                };
+                self.particles
+                    .add(&ParticleOptions::simple(kind), at, velocity);
+            }
+            _ => {}
+        }
+    }
     fn tick_items(&mut self) {
         // EntityTickEvent.Pre for the items about to tick, and the Post after them.
         let mut round = self.native_tick_round();
@@ -4221,6 +4252,7 @@ impl Game<'_> {
                 item.velocity.z.abs() + 1.0,
             );
             obstacles.near(item.bounds().inflate(reach), &mut nearby);
+            let mut entered = Vec::new();
             let alive = entity::tick_item(
                 item,
                 &self.world,
@@ -4231,7 +4263,13 @@ impl Game<'_> {
                 no_physics,
                 &nearby,
                 Some(self.border.geometry()),
+                &mut |splash| entered.push(splash),
             );
+            // Entity.doWaterSplashEffect: the server plays the sound (broadcast
+            // to clients). Its addParticle is empty.
+            for splash in entered {
+                self.apply_item_splash(splash);
+            }
             if merging && !no_physics {
                 self.item_landing_event(item.id, item.previous, item.position, item.on_ground);
                 self.entity_powder_snow_particles(
@@ -5039,7 +5077,7 @@ impl Game<'_> {
                     // The last answer, asked from Y `from` at a world revision:
                     // the next ticking section and its mask. It stands for a
                     // later Y up to that section's until a block changes.
-                    let mut last: Option<(u64, i32, Option<(i32, Arc<_>)>)> = None;
+                    let mut last: Option<(u64, i32, Option<(i32, std::rc::Rc<_>)>)> = None;
                     let pos = horizon_core::position::ChunkPos::new(x, z);
                     b.tick_chunk_random_masked(level, ticks, pos, |level, from| {
                         let revision = level.world.revision;
@@ -5320,6 +5358,23 @@ impl Game<'_> {
                     pos,
                     data,
                 } => self.trial_level_event(id, [pos.x, pos.y, pos.z], data),
+                // LevelEvent.SOUND_PORTAL_TRAVEL: LevelEventHandler.levelEvent
+                // plays SimpleSoundInstance.forLocalAmbience (ambient, no
+                // position). EndPortalBlock.entityInside travels through
+                // TeleportTransition.PLAY_PORTAL_SOUND, which sends 1032 to
+                // the traveling player. The packet's position is BlockPos.ZERO,
+                // so a positional play would not be heard; at None is the
+                // relative sound, and it is not captured for other players.
+                LevelEvent::LevelEvent { id: 1032, .. } => {
+                    let pitch = self.particles.level_random().next_float() * 0.4 + 0.8;
+                    self.audio.play_on(
+                        horizon_client::sound_engine::AMBIENT,
+                        "minecraft:block.portal.travel",
+                        None,
+                        0.25,
+                        pitch,
+                    );
+                }
                 LevelEvent::LevelEvent { id, pos, .. } => {
                     let c = Some([
                         f64::from(pos.x) + 0.5,
@@ -5729,12 +5784,14 @@ impl Game<'_> {
             self.resolve_container_maps(key, centre);
             self.container = Some(key);
             let first = self.container_opener_event(key, true);
-            self.post_block_game_event(
-                "minecraft:container_open",
-                [key.0, key.1, key.2],
-                Some(horizon_client::mobs::Who::Player),
-                None,
-            );
+            if first {
+                self.post_block_game_event(
+                    "minecraft:container_open",
+                    [key.0, key.1, key.2],
+                    Some(horizon_client::mobs::Who::Player),
+                    None,
+                );
+            }
             let stat = match &*name {
                 "minecraft:chest" => "open_chest",
                 "minecraft:trapped_chest" => "trigger_trapped_chest",
@@ -9409,13 +9466,13 @@ impl Game<'_> {
             // A cart's or chest boat's items go back to it.
             self.close_cart_container(key);
             let last = self.container_opener_event(key, false);
-            self.post_block_game_event(
-                "minecraft:container_close",
-                [key.0, key.1, key.2],
-                Some(horizon_client::mobs::Who::Player),
-                None,
-            );
             if last {
+                self.post_block_game_event(
+                    "minecraft:container_close",
+                    [key.0, key.1, key.2],
+                    Some(horizon_client::mobs::Who::Player),
+                    None,
+                );
                 self.container_edge_sound(key, false);
             }
             self.world.modified.insert((key.0 >> 4, key.2 >> 4));
@@ -12661,7 +12718,7 @@ impl Game<'_> {
             return;
         };
         for (attribute, id) in std::mem::take(&mut self.applied_modifiers) {
-            let _ = player.set_modifier(&attribute, &id, 0.0, "add_value", false);
+            let _ = player.set_modifier_unclamped(&attribute, &id, 0.0, "add_value", false);
         }
         let slots = ["head", "chest", "legs", "feet"];
         let mut equipped: Vec<(Option<&ItemStack>, &str)> = self
@@ -12683,13 +12740,14 @@ impl Game<'_> {
                     continue;
                 }
                 if player
-                    .set_modifier(attribute, id, *amount, op, true)
+                    .set_modifier_unclamped(attribute, id, *amount, op, true)
                     .is_ok()
                 {
                     self.applied_modifiers.push((attribute.clone(), id.clone()));
                 }
             }
         }
+        let _ = player.clamp_health_to_max();
         self.apply_enchantment_attributes();
     }
     /// The armor hits among a tick's motion events (`Player.hurtArmor` from
@@ -13182,10 +13240,13 @@ impl Game<'_> {
             Some(held) => self.wear(&held, amount),
             None => amount,
         };
-        let max = self
-            .held()
-            .and_then(|s| self.items().get(&s.item))
-            .map_or(0, |i| i.max_damage);
+        let max = self.held().map_or(0, |s| {
+            if &*s.item == "minecraft:trident" {
+                self.trident_max_damage(s)
+            } else {
+                self.items().get(&s.item).map_or(0, |i| i.max_damage)
+            }
+        });
         let cell = self.held_mut();
         if let Some(stack) = cell.as_mut()
             && max > 0
@@ -13214,7 +13275,7 @@ impl Game<'_> {
             return;
         };
         let amount = self.wear(&held, amount);
-        let max = self.items().get(&held.item).map_or(0, |i| i.max_damage);
+        let max = self.trident_max_damage(&held);
         if amount == 0 || max == 0 {
             return;
         }
@@ -13884,8 +13945,14 @@ impl Game<'_> {
         self.native_entity_shoot_bow(player, &name, projectile, power * 3.0);
         self.player_projectile_shot();
         let pitch = 1.0 / (self.world.random.next_float() * 0.4 + 1.2) + power * 0.5;
+        // BowItem.releaseUsing: `playSound(null, getX(), getY(), getZ(), ...)`, at
+        // the feet: an eye-height source a few cm from the listener pans hard.
+        let feet = self
+            .player
+            .as_ref()
+            .map_or(eye, |pl| [pl.position.x, pl.position.y, pl.position.z]);
         self.audio
-            .play("minecraft:entity.arrow.shoot", Some(eye), 1.0, pitch);
+            .play("minecraft:entity.arrow.shoot", Some(feet), 1.0, pitch);
         if !self.creative
             && !infinity
             && let Some(i) = arrow_slot
@@ -18240,8 +18307,9 @@ impl Game<'_> {
                             PhysicalKey::Code(
                                 code @ (KeyCode::Enter | KeyCode::NumpadEnter | KeyCode::Space),
                             ) if code != KeyCode::Space
-                                || self.title.as_ref().is_some_and(|t| {
-                                    t.list_focused() || t.focused_button.is_some()
+                                || self.title.as_mut().is_some_and(|t| {
+                                    !t.has_caret_field()
+                                        && (t.list_focused() || t.focused_button.is_some())
                                 }) =>
                             {
                                 let (action, sound) = self

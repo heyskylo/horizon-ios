@@ -676,6 +676,14 @@ impl Game<'_> {
             let _ = t.tick(world, collision, assets, facts, fluids, border);
             t.fuse > 0
         });
+        // PrimedTnt.tick: while the fuse is still lit, a client adds one SMOKE
+        // particle at (x, y + 0.5, z). The server's Level.addParticle never
+        // reaches this window.
+        let smoking: Vec<Vec3> = self.tnts.iter().map(|t| t.position).collect();
+        let smoke = ParticleOptions::simple(ParticleType::Smoke);
+        for p in smoking {
+            self.particles.add(&smoke, [p.x, p.y + 0.5, p.z], [0.0; 3]);
+        }
         // FallingBlockEntity.tick runs on a client too: the block falls by
         // itself between the server's updates (every 20 ticks), then waits
         // where it lands for the server to place it and remove it.
