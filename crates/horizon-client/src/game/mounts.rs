@@ -54,6 +54,50 @@ impl MountState {
         self.jump_scale = 0.0;
     }
 }
+/// `AbstractHorse.isFood` and `handleEating`: what a mount eats, and what that
+/// mouthful does — `(heal, age up seconds, temper, falls in love)`. The temper
+/// is the `u8` the mob stores it in.
+///
+/// `AbstractHorse.isFood` is the `#minecraft:horse_food` tag, `ZombieHorse`
+/// overrides it with `#minecraft:zombie_horse_food` (a red mushroom and
+/// nothing else), and the horse food tag carries no red mushrooms; a skeleton
+/// horse inherits the horse food tag but only a tamed one gets that far
+/// (`SkeletonHorse.mobInteract` passes for an untamed one).
+fn eating(species: Species, item: &str) -> Option<(f32, i32, u8, bool)> {
+    let camel = species == Species::Camel;
+    // CamelHusk.isFood: rabbit's feet (and it never falls in love).
+    if species == Species::CamelHusk && item != "minecraft:rabbit_foot" {
+        return None;
+    }
+    if species != Species::CamelHusk && camel != (item == "minecraft:cactus") {
+        return None;
+    }
+    let food = match species {
+        Species::ZombieHorse => item == "minecraft:red_mushroom",
+        Species::Horse | Species::Donkey | Species::Mule | Species::SkeletonHorse => {
+            item != "minecraft:red_mushroom"
+        }
+        // Camels and llamas answer their own tags above or in the table.
+        _ => true,
+    };
+    if !food {
+        return None;
+    }
+    Some(match item {
+        "minecraft:rabbit_foot" if species == Species::CamelHusk => (2.0, 10, 0, false),
+        // Camel.handleEating.
+        "minecraft:cactus" => (2.0, 10, 0, true),
+        "minecraft:wheat" => (2.0, 20, 3, false),
+        "minecraft:sugar" => (1.0, 30, 3, false),
+        "minecraft:hay_block" => (20.0, 180, 0, false),
+        "minecraft:apple" => (3.0, 60, 3, false),
+        "minecraft:red_mushroom" => (3.0, 0, 3, false),
+        "minecraft:carrot" => (3.0, 60, 3, false),
+        "minecraft:golden_carrot" => (4.0, 60, 5, true),
+        "minecraft:golden_apple" | "minecraft:enchanted_golden_apple" => (10.0, 240, 10, true),
+        _ => return None,
+    })
+}
 /// `EntityTypeTags.DISMOUNTS_UNDERWATER` (`Entity.dismountsUnderwater`): the mounts that throw their
 /// riders off when the rider's eyes are in water.
 pub(super) fn dismounts_underwater(species: Species) -> bool {
@@ -145,7 +189,7 @@ impl Game<'_> {
             return false;
         }
         let id = m.id;
-        if !self.native_may_board(id) {
+        if !self.may_board() || !self.native_may_board(id) {
             return true;
         }
         self.riding = Some(id);
@@ -306,7 +350,7 @@ impl Game<'_> {
         }
         // doPlayerRide
         let id = self.mobs[index].id;
-        if !self.native_may_board(id) {
+        if !self.may_board() || !self.native_may_board(id) {
             return true;
         }
         let m = &mut self.mobs[index];
@@ -321,33 +365,10 @@ impl Game<'_> {
     }
     /// `AbstractHorse.handleEating`.
     fn feed_mount(&mut self, index: usize, item: &str) -> bool {
-        let species = self.mobs[index].species();
-        let camel = species == Species::Camel;
-        // CamelHusk.isFood: rabbit's feet (and it never falls in love).
-        if species == Species::CamelHusk && item != "minecraft:rabbit_foot" {
+        let Some((heal, age_up, temper, love)) = eating(self.mobs[index].species(), item) else {
             return false;
-        }
-        if species != Species::CamelHusk && camel != (item == "minecraft:cactus") {
-            return false;
-        }
-        let (heal, age_up, temper, love) = match item {
-            "minecraft:rabbit_foot" if species == Species::CamelHusk => (2.0, 10, 0, false),
-            // Camel.handleEating.
-            "minecraft:cactus" => (2.0, 10, 0, true),
-            "minecraft:wheat" => (2.0, 20, 3, false),
-            "minecraft:sugar" => (1.0, 30, 3, false),
-            "minecraft:hay_block" => (20.0, 180, 0, false),
-            "minecraft:apple" => (3.0, 60, 3, false),
-            "minecraft:red_mushroom" => (3.0, 0, 3, false),
-            "minecraft:carrot" => (3.0, 60, 3, false),
-            "minecraft:golden_carrot" => (4.0, 60, 5, true),
-            "minecraft:golden_apple" | "minecraft:enchanted_golden_apple" => (10.0, 240, 10, true),
-            _ => return false,
         };
         let m = &mut self.mobs[index];
-        if matches!(m.species(), Species::SkeletonHorse | Species::ZombieHorse) {
-            return false;
-        }
         let mut used = false;
         let mut loved = false;
         if love && m.extra.tame && m.extra.age == 0 && m.extra.in_love <= 0 {
@@ -381,6 +402,8 @@ impl Game<'_> {
             Species::Donkey => "minecraft:entity.donkey.eat",
             Species::Mule => "minecraft:entity.mule.eat",
             Species::Horse if m.is_baby() => "minecraft:entity.baby_horse.eat",
+            // ZombieHorse.getEatingSound.
+            Species::ZombieHorse => "minecraft:entity.zombie_horse.eat",
             _ => "minecraft:entity.horse.eat",
         };
         let pitch = (self.world.random.next_float() - self.world.random.next_float()) * 0.2 + 1.0;
@@ -1021,6 +1044,46 @@ pub(super) fn start_riding_jump(
 mod tests {
     use super::*;
     use std::collections::HashMap;
+
+    /// `ZombieHorse.isFood` is `#minecraft:zombie_horse_food`, which holds only
+    /// the red mushroom, and `AbstractHorse.isFood` is `#minecraft:horse_food`,
+    /// which holds none (#8593). A skeleton horse inherits the horse food tag.
+    #[test]
+    fn only_a_zombie_horse_eats_a_red_mushroom() {
+        assert_eq!(
+            eating(Species::ZombieHorse, "minecraft:red_mushroom"),
+            Some((3.0, 0, 3, false)),
+            "a zombie horse takes the red mushroom"
+        );
+        for item in ["minecraft:wheat", "minecraft:apple", "minecraft:hay_block"] {
+            assert_eq!(eating(Species::ZombieHorse, item), None, "{item}");
+        }
+        for species in [
+            Species::Horse,
+            Species::Donkey,
+            Species::Mule,
+            Species::SkeletonHorse,
+        ] {
+            assert_eq!(
+                eating(species, "minecraft:red_mushroom"),
+                None,
+                "{species:?}: horse food has no red mushrooms"
+            );
+            assert_eq!(
+                eating(species, "minecraft:wheat"),
+                Some((2.0, 20, 3, false)),
+                "{species:?}: wheat is horse food"
+            );
+        }
+        assert_eq!(
+            eating(Species::Camel, "minecraft:cactus"),
+            Some((2.0, 10, 0, true))
+        );
+        assert_eq!(
+            eating(Species::CamelHusk, "minecraft:rabbit_foot"),
+            Some((2.0, 10, 0, false))
+        );
+    }
 
     #[test]
     fn the_mounts_that_throw_a_swimmer_off_are_the_dismounts_underwater_tag() {

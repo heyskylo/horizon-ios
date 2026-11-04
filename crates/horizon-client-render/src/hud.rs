@@ -887,13 +887,39 @@ impl HudAtlas {
         ));
     }
     /// Only the font's metrics, for a game that draws nothing (the
-    /// integrated server): text measures as with the full atlas, without
-    /// holding its textures. The pixels are dropped once the glyph widths are
-    /// read, since nothing uploads them.
+    /// integrated or dedicated server): text measures as with the full atlas,
+    /// without packing textures or rasterizing glyphs.
     pub fn fonts(root: &Path) -> Result<Self> {
-        let mut atlas = Self::pack(root, root, &["font"], false, false)?;
-        atlas.pixels = Vec::new();
-        Ok(atlas)
+        let white = Rect {
+            u0: 0.0,
+            v0: 0.0,
+            u1: 1.0,
+            v1: 1.0,
+            w: 1,
+            h: 1,
+        };
+        Ok(Self {
+            revision: Self::next_revision(),
+            pixels: Vec::new(),
+            packed: None,
+            galactic_widths: [0; 128],
+            width: 1,
+            height: 1,
+            sprites: HashMap::new(),
+            object_skins: HashMap::new(),
+            translucent: HashSet::new(),
+            flags: HashMap::new(),
+            sprite_animations: Vec::new(),
+            font: crate::font::Font::metrics(root),
+            glint: (Vec::new(), 1, 1),
+            glint_armor: (Vec::new(), 1, 1),
+            text_shader: None,
+            lines_shader: None,
+            random_textures: Default::default(),
+            emissive: Arc::default(),
+            blinks: Default::default(),
+            white,
+        })
     }
     /// The boot screen's atlas, before any pack loads: the theme's run-time
     /// glyphs (`horizon/ui-text`), a white sprite and the glyph rows over

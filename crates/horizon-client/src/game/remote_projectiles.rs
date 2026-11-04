@@ -109,56 +109,6 @@ fn projectile_kind(kind: &str) -> Option<ProjectileKind> {
     })
 }
 
-/// `AbstractArrow.tick` on a client: water drag before the move, air drag
-/// after it, then gravity; a block it reaches holds it (`inGround`).
-/// Returns the tick's bubble and critical particles (`Projectile::arrow_trail`).
-fn remote_arrow_tick(
-    p: &mut Projectile,
-    w: &impl ProjectileWorld,
-) -> Vec<(ParticleType, [f64; 3], [f64; 3])> {
-    p.set_old_pos_and_rot();
-    p.age += 1;
-    // AbstractArrow.tick: the shake timer runs down, and `inGroundTime` counts
-    // the ticks in a block.
-    if let Some(a) = p.arrow.as_mut() {
-        a.shake = (a.shake - 1).max(0);
-        a.in_ground_time = if p.stuck { a.in_ground_time + 1 } else { 0 };
-    }
-    if p.stuck {
-        return Vec::new();
-    }
-    let water = w.in_water(p.bounds());
-    // The trail is taken from the position before the move and the drag.
-    let trail = p.arrow_trail(water);
-    if water {
-        p.velocity = p.velocity.scale(0.6);
-    }
-    let (movement_x, movement_y, movement_z) = (p.velocity.x, p.velocity.y, p.velocity.z);
-    let sd = (movement_x * movement_x + movement_z * movement_z).sqrt();
-    let y_rot = horizon_core::geometry::trig::atan2_degrees(movement_x, movement_z);
-    let x_rot = horizon_core::geometry::trig::atan2_degrees(movement_y, sd);
-    p.pitch = horizon_client::arrows::lerp_rotation(p.pitch, x_rot);
-    p.yaw = horizon_client::arrows::lerp_rotation(p.yaw, y_rot);
-    let to = p.position.add_vector(p.velocity);
-    if let Some((at, _, _)) = w.clip(p.position, to) {
-        p.position = at;
-        p.velocity = Vec3::ZERO;
-        p.stuck = true;
-        // AbstractArrow.onSyncedDataUpdated: IN_GROUND turning true starts the shake.
-        if let Some(a) = p.arrow.as_mut()
-            && a.shake <= 0
-        {
-            a.shake = 7;
-        }
-        return trail;
-    }
-    p.position = to;
-    if !water {
-        p.velocity = p.velocity.scale(0.99);
-    }
-    p.velocity.y -= 0.05;
-    trail
-}
 /// A server's client ticks a projectile itself: it flies on between the
 /// tracker's updates (10 to 20 ticks apart) with its own gravity and drag,
 /// and a block stops it there; only the server decides what it hits.
@@ -344,6 +294,7 @@ impl Game<'_> {
         match kind {
             "minecraft:evoker_fangs" => self.insert_fangs(id, position, yaw, 0, 0),
             "minecraft:tnt" => self.tnts.push(super::tnt::PrimedTnt {
+                rotation: [0.0, 0.0],
                 join: Default::default(),
                 no_gravity: false,
                 id,
@@ -359,6 +310,7 @@ impl Game<'_> {
             }),
             // FallingBlockEntity.recreateFromPacket: the block state is the data.
             "minecraft:falling_block" => self.falling.push(FallingBlock {
+                rotation: [0.0, 0.0],
                 join: Default::default(),
                 id,
                 state: BlockStateId(data.max(0) as u32),
@@ -563,12 +515,18 @@ impl Game<'_> {
                     // fire down: the flag goes off when the server's fire is out.
                     (_, 0, Value::Byte(flags)) => {
                         if let Some(a) = p.arrow.as_mut() {
-                            a.fire_ticks = i32::from(flags & 1);
+                            a.synced_fire = flags & 1 != 0;
                         }
                     }
                     // AbstractArrow.ID_FLAGS (critical) and IN_GROUND.
                     (ProjectileKind::Arrow { critical, .. }, 8, Value::Byte(flags)) => {
                         *critical = flags & 1 != 0;
+                        if let Some(a) = p.arrow.as_mut() {
+                            a.no_physics = flags & 2 != 0;
+                        }
+                    }
+                    (ProjectileKind::Arrow { .. }, 5, Value::Bool(no_gravity)) => {
+                        p.no_gravity = *no_gravity;
                     }
                     (ProjectileKind::Arrow { .. }, 10, Value::Bool(in_ground)) => {
                         // AbstractArrow.onSyncedDataUpdated: IN_GROUND turning true after
@@ -582,6 +540,9 @@ impl Game<'_> {
                             a.shake = 7;
                         }
                         p.stuck = *in_ground;
+                        if let Some(a) = p.arrow.as_mut() {
+                            a.in_ground = *in_ground;
+                        }
                     }
                     // Arrow.ID_EFFECT_COLOR.
                     (ProjectileKind::Arrow { .. }, 11, Value::Int(color)) => {
@@ -663,17 +624,18 @@ impl Game<'_> {
         // fuse down (the swell and flash follow it) between the server's
         // updates (every 10 ticks), and a client discards it when the fuse
         // runs out; only the server explodes it.
-        let (world, collision, assets, facts, fluids, border) = (
+        let (world, collision, assets, facts, fluids, border, blocks) = (
             &self.world,
             self.collision,
             &self.pack.assets,
             self.res.facts(),
             &self.res.motion().fluids,
             Some(self.border.geometry()),
+            Some(&self.res.motion().blocks),
         );
         self.tnts.retain_mut(|t| {
             // A fluid lookup that fails leaves it where its move put it.
-            let _ = t.tick(world, collision, assets, facts, fluids, border);
+            let _ = t.tick(world, collision, assets, facts, fluids, border, blocks);
             t.fuse > 0
         });
         // PrimedTnt.tick: while the fuse is still lit, a client adds one SMOKE
@@ -704,7 +666,9 @@ impl Game<'_> {
             .filter_map(Projectile::water_bubbles)
             .collect();
         let mut tridents = std::mem::take(&mut self.tridents);
-        let mut arrow_trails = Vec::new();
+        let mut arrow_events = Vec::new();
+        let rain = self.arrow_rain();
+        let arrow_scene = self.arrow_scene(&rain);
         {
             let w = self.mob_world_base(&[]);
             let world = super::creatures::ProjWorld {
@@ -715,7 +679,14 @@ impl Game<'_> {
             for p in &mut projectiles {
                 match p.kind {
                     ProjectileKind::Arrow { .. } => {
-                        arrow_trails.extend(remote_arrow_tick(p, &world));
+                        let _ = horizon_client::arrows::tick_client(p, &arrow_scene);
+                        if let Some(a) = p.arrow.as_mut() {
+                            arrow_events.extend(
+                                std::mem::take(&mut a.events)
+                                    .into_iter()
+                                    .map(|event| (p.position, event)),
+                            );
+                        }
                     }
                     // ShulkerBullet.tick: only the server steers it.
                     ProjectileKind::ShulkerBullet { .. } => {
@@ -730,11 +701,11 @@ impl Game<'_> {
                 t.remote_tick(&world, self.remote_eye(t.owner));
             }
         }
+        drop(rain);
         self.creatures.projectiles = projectiles;
         self.tridents = tridents;
-        for (kind, at, speed) in arrow_trails {
-            self.particles
-                .add(&ParticleOptions::simple(kind), at, speed);
+        for (at, event) in arrow_events {
+            self.arrow_event(at, event);
         }
         self.arrow_effect_particles();
         let trails: Vec<Vec3> = self
@@ -913,75 +884,6 @@ mod tests {
         }
     }
 
-    struct Wet;
-    impl ProjectileWorld for Wet {
-        fn clip(&self, _: Vec3, _: Vec3) -> Option<(Vec3, [i32; 3], [i32; 3])> {
-            None
-        }
-        fn in_water(&self, _: Aabb) -> bool {
-            true
-        }
-        fn targets(&self) -> &[(Who, Aabb)] {
-            &[]
-        }
-    }
-
-    fn arrow_at(critical: bool, velocity: Vec3) -> Projectile {
-        let mut p = Projectile::new(
-            ProjectileKind::Arrow {
-                base_damage: 2.0,
-                critical,
-                effect: None,
-            },
-            Vec3::new(10.0, 50.0, -3.0),
-            None,
-        );
-        p.velocity = velocity;
-        p
-    }
-
-    /// `AbstractArrow.tick`: in water, four BUBBLE at `pos - motion * 0.25`
-    /// with the drag-0.6 motion; a crit arrow adds four CRIT along the move.
-    #[test]
-    fn a_remote_arrow_in_water_leaves_bubbles_and_crit_streaks() {
-        let v = Vec3::new(1.0, 0.5, -2.0);
-        let trail = remote_arrow_tick(&mut arrow_at(true, v), &Wet);
-        let bubbles: Vec<_> = trail
-            .iter()
-            .filter(|t| t.0 == ParticleType::Bubble)
-            .collect();
-        assert_eq!(bubbles.len(), 4);
-        let m = [0.6f32 as f64, 0.3, -1.2];
-        for b in bubbles {
-            for k in 0..3 {
-                assert!((b.2[k] - m[k]).abs() < 1e-6, "{b:?}");
-            }
-            assert!((b.1[0] - (10.0 - 0.15)).abs() < 1e-6, "{b:?}");
-            assert!((b.1[1] - (50.0 - 0.075)).abs() < 1e-6, "{b:?}");
-            assert!((b.1[2] - (-3.0 + 0.3)).abs() < 1e-6, "{b:?}");
-        }
-        let crits: Vec<_> = trail.iter().filter(|t| t.0 == ParticleType::Crit).collect();
-        assert_eq!(crits.len(), 4);
-        for (i, c) in crits.iter().enumerate() {
-            let f = i as f64 / 4.0;
-            assert!((c.1[0] - (10.0 + f)).abs() < 1e-6, "{c:?}");
-            assert!((c.1[2] - (-3.0 - 2.0 * f)).abs() < 1e-6, "{c:?}");
-            assert!((c.2[1] - (-0.5 + 0.2)).abs() < 1e-6, "{c:?}");
-        }
-    }
-
-    #[test]
-    fn a_remote_arrow_in_air_or_stuck_leaves_no_bubbles() {
-        let v = Vec3::new(1.0, 0.0, 0.0);
-        assert!(remote_arrow_tick(&mut arrow_at(false, v), &Empty).is_empty());
-        let mut stuck = arrow_at(true, v);
-        stuck.stuck = true;
-        assert!(remote_arrow_tick(&mut stuck, &Wet).is_empty());
-        let air = remote_arrow_tick(&mut arrow_at(true, v), &Empty);
-        assert!(air.iter().all(|t| t.0 == ParticleType::Crit));
-        assert_eq!(air.len(), 4);
-    }
-
     /// A thrown item, as a server's client tracks it: the spawn position and
     /// the motion the server gave it.
     fn thrown(kind: ProjectileKind) -> Projectile {
@@ -1013,37 +915,6 @@ mod tests {
     /// rotation from is the rotation the last tick ended with. An arrow shot
     /// straight up at the lowest power a bow fires turns over within a few
     /// ticks, so every tick has to carry the value of the one before it.
-    #[test]
-    fn a_remote_arrow_keeps_the_rotation_the_last_tick_drew() {
-        let mut p = Projectile::new(
-            ProjectileKind::Arrow {
-                base_damage: 2.0,
-                critical: false,
-                effect: None,
-            },
-            Vec3::new(0.0, 100.0, 0.0),
-            None,
-        );
-        let mut random = horizon_core::random::LegacyRandom::new(7);
-        p.shoot(&mut random, [0.0, 1.0, 0.0], 0.3, 0.0);
-        // `Projectile.shoot` ends with `yRotO = getYRot(); xRotO = getXRot()`.
-        assert_eq!(p.previous_pitch, p.pitch);
-        assert_eq!(p.previous_yaw, p.yaw);
-        assert!((p.pitch - 90.0).abs() < 1.0e-4, "aimed up: {}", p.pitch);
-        let (mut yaw, mut pitch) = (p.yaw, p.pitch);
-        for _ in 0..30 {
-            remote_arrow_tick(&mut p, &Empty);
-            assert_eq!(p.previous_pitch, pitch);
-            assert_eq!(p.previous_yaw, yaw);
-            (yaw, pitch) = (p.yaw, p.pitch);
-        }
-        assert!(
-            p.pitch < 0.0,
-            "the arrow turned over as it fell: {}",
-            p.pitch
-        );
-    }
-
     #[test]
     fn a_thrown_item_flies_on_between_the_server_updates() {
         // A thrown egg, an ender pearl and a wind charge (#1762): the server

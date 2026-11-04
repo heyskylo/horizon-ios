@@ -2222,6 +2222,17 @@ impl Game<'_> {
     /// before the entities': what joined the level up to here (a falling
     /// block, a dispensed arrow, the last tick's late joins) is paired and
     /// first updated in this tick's pass (`Entities::synced`).
+    /// `ServerChunkCache.tick`'s broadcast, where ServerLevel.tick runs it:
+    /// after the scheduled and random ticks, before the block events, so the
+    /// players get the blocks as they are then. The block log's length after
+    /// it: what the tick writes from there on goes out with the next tick's.
+    pub(super) fn lan_broadcast_changes(&mut self) -> Option<usize> {
+        if let Some(host) = self.lan.as_mut() {
+            host.hub.broadcast_changes(&mut self.world);
+        }
+        self.world.block_log.as_ref().map(Vec::len)
+    }
+
     pub(super) fn lan_mark_synced(&mut self) {
         if let Some(next) = self.lan_ids_so_far()
             && let Some(host) = self.lan.as_mut()
@@ -2364,10 +2375,11 @@ impl Game<'_> {
                 self.clock.frozen(),
                 self.clock.step_state(),
             );
-            // `runBlockEvents`' broadcast precedes the tick's block changes
-            // (`ChunkHolder.broadcastChanges` in `tick_level` below): the
-            // guest re-runs a piston's `triggerEvent` while its level still
-            // has the blocks as they were before the move.
+            // `runBlockEvents`' broadcast precedes what the events change (held
+            // for the next tick, `tick_world`), and follows the blocks changed
+            // before them (`lan_broadcast_changes`): the guest re-runs a
+            // piston's `triggerEvent` on the blocks as they were before the
+            // move, a base the last tick restored included.
             for (pos, b0, b1, state) in std::mem::take(&mut self.lan_block_events) {
                 host.hub.block_event(pos, b0, b1, state);
             }
@@ -2644,30 +2656,18 @@ impl Game<'_> {
                     if own && self.lan_break_pos == Some([pos.x, pos.y, pos.z]) {
                         own_break = false;
                     }
-                    // The acting guest does not predict the egg's teleport
-                    // particles, bone meal's growth, anvil result sounds, or a
-                    // finished brushing or an eye inserted in a portal frame (these calls name no
-                    // excluded player), nor the digger's own crack and hit
-                    // sound (2019, 2020).
-                    let except = if matches!(
+                    // The acting guest does not predict these, and the vanilla
+                    // call names no excluded player (`levelEvent(id, pos, data)`
+                    // passes null): the composter fill (1500), the egg's
+                    // teleport, bone meal's growth, anvil result sounds, a
+                    // finished brushing or an eye inserted in a portal frame,
+                    // a zombie's infection and a finished cure (1026, 1027),
+                    // and the digger's own crack and hit sound (2019, 2020).
+                    let except = level_event_except(
                         *id,
-                        2015 | 1501
-                            | 1503
-                            | 1505
-                            | 1029
-                            | 1030
-                            | 1045
-                            | 1052
-                            | 2019
-                            | 2020
-                            | 3000
-                            | 3008
-                    ) || (*id == 2001 && self.lan_break_pos.is_some() && !own)
-                    {
-                        None
-                    } else {
-                        self.lan_acting
-                    };
+                        self.lan_acting,
+                        *id == 2001 && self.lan_break_pos.is_some() && !own,
+                    );
                     self.lan_events
                         .push((*id, [pos.x, pos.y, pos.z], *data, except));
                 }
@@ -2696,6 +2696,10 @@ impl Game<'_> {
     pub(super) fn lan_entity_event(&mut self, id: i32, event: i8, at: [f64; 3]) {
         if self.audio.capture.is_some() {
             self.lan_entity_events.push((id, event, at));
+        }
+        // Event 16: zombie villagers play their cure sound on each client.
+        if event == 16 && self.options.execution_role.is_client() {
+            self.zombie_villager_cure_sound(id as u32);
         }
         // Event 63: a sniffer's digging sound loop starts (ClientPacketListener.handleEntityEvent 63).
         if event == 63 && self.options.execution_role.is_client() {
@@ -3094,6 +3098,39 @@ fn event_kind(event: &HostEvent) -> EventKind {
     }
 }
 
+/// Who `ServerLevel.levelEvent` leaves out of the broadcast.
+///
+/// `LevelAccessor.levelEvent(int, BlockPos, int)` passes a null source, so the
+/// acting player is included. `ComposterBlock.useItemOn` (and the hopper input
+/// container) fill that way: event 1500, which the client turns into
+/// `handleFill` (the fill particles and `playLocalSound`). A call that names
+/// the player still excludes them. `collateral_break` is a later 2001 from
+/// `destroyBlock` with no player, after the breaker's own `playerWillDestroy`.
+fn level_event_except(id: i32, acting: Option<u32>, collateral_break: bool) -> Option<u32> {
+    if matches!(
+        id,
+        2015 | 1500
+            | 1501
+            | 1503
+            | 1505
+            | 1026
+            | 1027
+            | 1029
+            | 1030
+            | 1045
+            | 1052
+            | 2019
+            | 2020
+            | 3000
+            | 3008
+    ) || collateral_break
+    {
+        None
+    } else {
+        acting
+    }
+}
+
 /// Notes how long the event that started at `started` took (`spans::note`), with what it
 /// was about when [`Game::event_detail`] said.
 fn note_event(host: &LanHost, started: Option<(Instant, EventKind, Option<UseDetail>)>) {
@@ -3219,6 +3256,17 @@ mod tests {
         assert_eq!(living_flags(None), 0);
         assert_eq!(living_flags(Some((0, 12))), 1);
         assert_eq!(living_flags(Some((OFFHAND_SLOT, 12))), 3);
+    }
+
+    /// `ComposterBlock.useItemOn` calls `levelEvent(1500, pos, data)`, the
+    /// null-source overload, so the player who filled it still receives
+    /// `handleFill`. `Block.playerWillDestroy`'s 2001 names that player.
+    #[test]
+    fn the_composter_fill_reaches_the_player_who_filled_it() {
+        let actor = Some(4);
+        assert_eq!(super::level_event_except(1500, actor, false), None);
+        assert_eq!(super::level_event_except(2001, actor, false), actor);
+        assert_eq!(super::level_event_except(2001, actor, true), None);
     }
 
     /// The names a mod matches on for a broken item's slot (a contract).

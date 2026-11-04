@@ -6,7 +6,7 @@
 use super::Game;
 use horizon_client::{
     first_person::Hand,
-    mobs::{Species, equine, llama},
+    mobs::{Mob, Species, armadillo, equine, llama, nautilus, render::DYE_NAMES},
 };
 
 impl Game<'_> {
@@ -30,13 +30,24 @@ impl Game<'_> {
         {
             return true;
         }
+        // Armadillo.mobInteract: a rolled-up armadillo fails before
+        // AgeableMob/Animal.mobInteract, so food and age lock are not taken.
+        // A brush still reaches brushOffScute below.
+        if m.species() == Species::Armadillo && armadillo::client_rejects_food(m, item) {
+            return false;
+        }
         // AgeableMob.mobInteract: a golden dandelion on a baby that can be age
         // locked is SUCCESS on a client too (the server sets the lock).
         if self.age_lock_takes(m, item) {
             return true;
         }
-        // Animal.mobInteract: its food is CONSUME on a client.
-        if m.kind.flags.animal && m.kind.food.iter().any(|f| f.as_str() == item) {
+        // Animal.mobInteract: its food is CONSUME on a client. A nautilus
+        // overrides mobInteract, and an untamed one only takes its taming
+        // items, so it answers in its own arm below.
+        if m.kind.flags.animal
+            && !matches!(m.species(), Species::Nautilus | Species::ZombieNautilus)
+            && m.kind.food.iter().any(|f| f.as_str() == item)
+        {
             return true;
         }
         let sneaking = self.keys.contains(&winit::keyboard::KeyCode::ShiftLeft);
@@ -57,7 +68,7 @@ impl Game<'_> {
             // TamableAnimal (wolf, cat, parrot) on a client: CONSUME once tame.
             Species::Wolf | Species::Cat | Species::Parrot => m.extra.tame,
             // Allay.mobInteract: gives an item or takes it back.
-            Species::Allay => !item.is_empty() || m.extra.main_hand.is_some(),
+            Species::Allay => allay_takes(hand, item, m.extra.main_hand.is_some(), m.extra.flag),
             Species::Cow | Species::Goat => item == "minecraft:bucket" && !baby,
             Species::Mooshroom => {
                 !baby
@@ -67,9 +78,27 @@ impl Game<'_> {
                     ) || m.extra.variant == 1
                         && horizon_client::flowers::stew_effect(item).is_some())
             }
-            Species::Sheep => item == "minecraft:shears" || item.ends_with("_dye"),
+            Species::Sheep => sheep_takes(item, m.extra.sheared, m.extra.color),
             // SnowGolem.mobInteract: shears take the pumpkin off.
             Species::SnowGolem => item == "minecraft:shears" && !m.extra.sheared,
+            // AbstractNautilus.mobInteract: an untamed adult only answers its
+            // taming items, a tame one is fed, mounted or opens its screen.
+            Species::Nautilus | Species::ZombieNautilus => {
+                let taming: Vec<String> = self
+                    .res
+                    .items()
+                    .item_tags
+                    .get("minecraft:nautilus_taming_items")
+                    .map(|t| t.iter().cloned().collect())
+                    .unwrap_or_default();
+                nautilus_takes(nautilus::is_food(m, item, &taming), m.extra.tame, baby)
+            }
+            // IronGolem.mobInteract.
+            Species::IronGolem => iron_golem_takes(item, m.health, m.attrs.max_health),
+            // CopperGolem.mobInteract.
+            Species::CopperGolem => {
+                copper_golem_takes(item, m.extra.main_hand.is_some(), self.golem_shearable(i))
+            }
             // Bucketable.bucketMobPickup.
             Species::Cod
             | Species::Salmon
@@ -81,7 +110,9 @@ impl Game<'_> {
                 item == "minecraft:water_bucket"
                     || !m.extra.age_locked && m.kind.food.iter().any(|f| f.as_str() == item)
             }
-            Species::Armadillo => item == "minecraft:brush",
+            // Armadillo.brushOffScute fails on a baby, so its brush falls
+            // through to FAIL (scared) or Mob.mobInteract's PASS.
+            Species::Armadillo => item == "minecraft:brush" && !baby,
             // ZombieVillager.mobInteract: CONSUME for a golden apple.
             Species::ZombieVillager => item == "minecraft:golden_apple",
             // Creeper.mobInteract: CREEPER_IGNITERS.
@@ -106,7 +137,7 @@ impl Game<'_> {
     /// villager particle. The server draws it on its own level only, so no
     /// packet brings it.
     pub(super) fn remote_feed_particles(&mut self, i: usize, hand: Hand) {
-        let Some(m) = self.mobs.get(i).filter(|m| m.alive() && m.is_baby()) else {
+        let Some(m) = self.mobs.get(i).filter(|m| m.alive()) else {
             return;
         };
         let stack = match hand {
@@ -114,32 +145,264 @@ impl Game<'_> {
             Hand::Off => self.offhand.as_ref(),
         };
         let item = stack.map_or("", |s| &*s.item);
-        let ages = match m.species() {
-            // Llama.handleEating: wheat 10, hay 90.
-            s if llama::is_llama(s) => matches!(item, "minecraft:wheat" | "minecraft:hay_block"),
-            // Camel.handleEating: its food ages it by 10.
-            Species::Camel => m.kind.food.iter().any(|f| f.as_str() == item),
-            // AbstractHorse.handleEating: every food but the red mushroom.
-            Species::Horse | Species::Donkey | Species::Mule => matches!(
-                item,
-                "minecraft:wheat"
-                    | "minecraft:sugar"
-                    | "minecraft:hay_block"
-                    | "minecraft:apple"
-                    | "minecraft:carrot"
-                    | "minecraft:golden_carrot"
-                    | "minecraft:golden_apple"
-                    | "minecraft:enchanted_golden_apple"
-            ),
-            _ => false,
-        };
-        if ages {
-            let id = m.id;
-            self.particles_around_mob(
-                id,
-                "happy_villager",
-                horizon_client::particles::Burst::HORSE_EATING,
+        if !ages_on_food(m, item) {
+            return;
+        }
+        let id = m.id;
+        self.particles_around_mob(
+            id,
+            "happy_villager",
+            horizon_client::particles::Burst::HORSE_EATING,
+        );
+    }
+}
+
+/// `Sheep.mobInteract` on a client answers CONSUME for shears whether or not the
+/// sheep is sheared (only the server checks `readyForShearing`).
+/// `DyeItem.interactLivingEntity` takes a living, unsheared sheep of another
+/// colour, and passes otherwise.
+fn sheep_takes(item: &str, sheared: bool, color: u8) -> bool {
+    let dye = item
+        .strip_prefix("minecraft:")
+        .and_then(|name| name.strip_suffix("_dye"))
+        .and_then(|name| DYE_NAMES.iter().position(|&d| d == name));
+    item == "minecraft:shears" || !sheared && dye.is_some_and(|c| c != usize::from(color))
+}
+
+/// `AbstractNautilus.mobInteract` on a client: its food is answered while the
+/// nautilus takes it (taming items for an untamed adult, its food once tamed),
+/// and a tame adult answers every click because that is the mount.
+fn nautilus_takes(food: bool, tame: bool, baby: bool) -> bool {
+    food || (tame && !baby)
+}
+
+/// `IronGolem.mobInteract`: an iron ingot heals 25 and only answers SUCCESS when
+/// that changed the health, so a full golem leaves the click to the item.
+fn iron_golem_takes(item: &str, health: f32, max_health: f32) -> bool {
+    item == "minecraft:iron_ingot" && health < max_health
+}
+
+/// `CopperGolem.mobInteract` on a client: an empty hand makes the golem throw
+/// what it holds, and shears answer only when `readyForShearing`. Honeycomb and
+/// axes return `PASS` here because the waxing and scraping run on the server.
+fn copper_golem_takes(item: &str, holding: bool, shearable: bool) -> bool {
+    (item.is_empty() && holding) || (item == "minecraft:shears" && shearable)
+}
+
+/// `Allay.mobInteract` on the client's copy: a dancing allay with a
+/// `#minecraft:duplicates_allays` item duplicates, an empty-handed one takes
+/// what the used hand offers, and one that holds something gives it back only
+/// to a **main hand** that is empty (vanilla compares the hand and returns
+/// `PASS` otherwise, which lets the item be used).
+fn allay_takes(hand: Hand, item: &str, holding: bool, dancing: bool) -> bool {
+    if dancing && item == "minecraft:amethyst_shard" {
+        return true;
+    }
+    if !holding {
+        return !item.is_empty();
+    }
+    hand == Hand::Main && item.is_empty()
+}
+
+/// `AbstractHorse.handleEating` (and the llama and camel variants): this
+/// mouthful is the one that ages the baby up, which is the same moment the
+/// level draws one happy villager particle.
+///
+/// `handleEating` gates both on `isBaby() && !isAgeLocked()` — a locked baby
+/// does not grow, and the particle goes with the growth.
+pub(super) fn ages_on_food(m: &Mob, item: &str) -> bool {
+    if !m.is_baby() || m.extra.age_locked || item.is_empty() {
+        return false;
+    }
+    match m.species() {
+        // Llama.handleEating: wheat 10, hay 90.
+        s if llama::is_llama(s) => matches!(item, "minecraft:wheat" | "minecraft:hay_block"),
+        // Camel.handleEating: its food ages it by 10.
+        Species::Camel => m.kind.food.iter().any(|f| f.as_str() == item),
+        // AbstractHorse.handleEating: every food but the red mushroom.
+        Species::Horse | Species::Donkey | Species::Mule => matches!(
+            item,
+            "minecraft:wheat"
+                | "minecraft:sugar"
+                | "minecraft:hay_block"
+                | "minecraft:apple"
+                | "minecraft:carrot"
+                | "minecraft:golden_carrot"
+                | "minecraft:golden_apple"
+                | "minecraft:enchanted_golden_apple"
+        ),
+        _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+
+    fn mob(kind: &str) -> Option<Mob> {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        if !root.join("entity-types.json").exists() {
+            return None;
+        }
+        let data = horizon_client::mobs::MobTypes::load(&root).ok()?;
+        let kind = Arc::new(data.types.get(kind)?.clone());
+        Some(Mob::new(
+            1,
+            kind,
+            horizon_core::geometry::Vec3::new(0.0, 4.0, 0.0),
+            0.0,
+        ))
+    }
+
+    /// `Sheep.mobInteract` and `DyeItem.interactLivingEntity` on a client (#9121).
+    #[test]
+    fn a_sheep_takes_shears_always_and_dye_only_to_change_its_colour() {
+        for sheared in [false, true] {
+            assert!(
+                sheep_takes("minecraft:shears", sheared, 0),
+                "shears, sheared {sheared}"
             );
+        }
+        assert!(sheep_takes("minecraft:red_dye", false, 0));
+        assert!(!sheep_takes("minecraft:white_dye", false, 0), "same colour");
+        assert!(sheep_takes("minecraft:white_dye", false, 14));
+        assert!(!sheep_takes("minecraft:red_dye", false, 14), "same colour");
+        assert!(!sheep_takes("minecraft:red_dye", true, 0), "sheared");
+        assert!(!sheep_takes("minecraft:stick", false, 0));
+    }
+
+    /// `AbstractNautilus.mobInteract` (#8595): an untamed adult takes its taming
+    /// items only, and a tame adult is mounted by any click.
+    #[test]
+    fn a_nautilus_answers_its_food_and_a_tame_one_is_ridden() {
+        assert!(
+            !nautilus_takes(false, false, false),
+            "untamed, taming item missing"
+        );
+        assert!(nautilus_takes(true, false, false), "a taming item");
+        assert!(
+            nautilus_takes(false, true, false),
+            "a tame adult is mounted"
+        );
+        assert!(!nautilus_takes(false, true, true), "a baby is not mounted");
+
+        // `AbstractNautilus.isFood`: taming items while untamed, its food after.
+        let Some(mut m) = mob("minecraft:nautilus") else {
+            return;
+        };
+        let taming = vec!["minecraft:pufferfish".to_string()];
+        m.extra.age = 0;
+        m.extra.tame = false;
+        assert!(nautilus::is_food(&m, "minecraft:pufferfish", &taming));
+        assert!(
+            !nautilus::is_food(&m, "minecraft:cod", &taming),
+            "cod tames nothing"
+        );
+        m.extra.tame = true;
+        assert!(
+            nautilus::is_food(&m, "minecraft:cod", &taming),
+            "a tame one eats cod"
+        );
+    }
+
+    /// `IronGolem.mobInteract` and `CopperGolem.mobInteract` (#8630): the click
+    /// has to end on the golem, or the client goes on to use the item and turns
+    /// to the off hand.
+    #[test]
+    fn the_golems_answer_the_click() {
+        assert!(iron_golem_takes("minecraft:iron_ingot", 50.0, 100.0));
+        assert!(
+            !iron_golem_takes("minecraft:iron_ingot", 100.0, 100.0),
+            "full"
+        );
+        assert!(
+            !iron_golem_takes("minecraft:stick", 50.0, 100.0),
+            "not ingot"
+        );
+
+        assert!(copper_golem_takes("", true, false), "takes its item back");
+        assert!(!copper_golem_takes("", false, false), "nothing to take");
+        assert!(
+            copper_golem_takes("minecraft:shears", false, true),
+            "shears"
+        );
+        assert!(
+            !copper_golem_takes("minecraft:shears", false, false),
+            "no flower"
+        );
+        assert!(
+            !copper_golem_takes("minecraft:honeycomb", false, true),
+            "waxing is server-only"
+        );
+        assert!(
+            !copper_golem_takes("minecraft:iron_axe", false, true),
+            "scraping too"
+        );
+    }
+
+    /// `Allay.mobInteract` (#8629): a holding allay gives its item back only to
+    /// an empty **main** hand, so an item in hand is still used and an empty
+    /// off hand does not take the item.
+    #[test]
+    fn a_holding_allay_only_answers_an_empty_main_hand() {
+        assert!(allay_takes(Hand::Main, "", true, false), "main hand, empty");
+        assert!(!allay_takes(Hand::Off, "", true, false), "off hand, empty");
+        assert!(
+            !allay_takes(Hand::Main, "minecraft:bread", true, false),
+            "item in hand"
+        );
+        assert!(!allay_takes(Hand::Off, "minecraft:bread", true, false));
+        assert!(
+            allay_takes(Hand::Main, "minecraft:stick", false, false),
+            "give it one"
+        );
+        assert!(
+            allay_takes(Hand::Off, "minecraft:stick", false, false),
+            "either hand gives"
+        );
+        assert!(
+            !allay_takes(Hand::Main, "", false, false),
+            "empty hand gives nothing"
+        );
+        assert!(
+            allay_takes(Hand::Main, "minecraft:amethyst_shard", true, true),
+            "a dancing allay duplicates"
+        );
+    }
+
+    /// `AbstractHorse.handleEating` draws the particle only while the baby can
+    /// still grow: `isBaby() && !isAgeLocked()` (#8590).
+    #[test]
+    fn a_locked_baby_draws_no_happy_villager() {
+        let Some(mut horse) = mob("minecraft:horse") else {
+            return;
+        };
+        horse.extra.age = -24000;
+        assert!(ages_on_food(&horse, "minecraft:wheat"));
+        horse.extra.age_locked = true;
+        assert!(!ages_on_food(&horse, "minecraft:wheat"), "locked");
+        horse.extra.age_locked = false;
+        horse.extra.age = 0;
+        assert!(!ages_on_food(&horse, "minecraft:wheat"), "adult");
+        horse.extra.age = -24000;
+        assert!(!ages_on_food(&horse, "minecraft:red_mushroom"), "no food");
+
+        if let Some(mut llama) = mob("minecraft:llama") {
+            llama.extra.age = -24000;
+            assert!(ages_on_food(&llama, "minecraft:hay_block"));
+            llama.extra.age_locked = true;
+            assert!(!ages_on_food(&llama, "minecraft:hay_block"), "locked llama");
+        }
+        if let Some(mut camel) = mob("minecraft:camel")
+            && camel.kind.food.iter().any(|f| f == "minecraft:cactus")
+        {
+            camel.extra.age = -24000;
+            assert!(ages_on_food(&camel, "minecraft:cactus"));
+            camel.extra.age_locked = true;
+            assert!(!ages_on_food(&camel, "minecraft:cactus"), "locked camel");
         }
     }
 }

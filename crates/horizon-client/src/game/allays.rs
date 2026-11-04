@@ -4,6 +4,7 @@
 use super::Game;
 use horizon_client::{
     containers::BlockEntity,
+    first_person::Hand,
     items::ItemStack,
     mobs::{Species, allay},
 };
@@ -291,7 +292,8 @@ impl Game<'_> {
             self.consume_held();
             return true;
         }
-        if holds && item.is_none() {
+        // Allay.mobInteract takes the item back only through an empty main hand.
+        if holds && item.is_none() && self.hand == Hand::Main {
             let m = &mut self.mobs[index];
             // The hand's stack keeps the components (a potion) the items came with.
             let held = m
@@ -305,6 +307,8 @@ impl Game<'_> {
             m.extra.owner = None;
             self.audio
                 .play("minecraft:entity.allay.item_taken", Some(at), 2.0, 1.0);
+            // Allay.mobInteract ends with swing(MAIN_HAND, ...).
+            self.mobs[index].swing();
             if let Some(stack) = carried {
                 self.spawn_item(stack, at, [0.0, 0.2, 0.0], 40);
             }

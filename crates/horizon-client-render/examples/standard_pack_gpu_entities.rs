@@ -79,7 +79,10 @@ fn pack(renderer: &mut Renderer, folder: &Path, valid: bool) {
     let (properties, _) = horizon_shaders::read_properties(&pack, &mut macros);
     let post = horizon_shaders::load_post(&pack, "", &properties, &macros, &renderer.pack_inputs());
     assert_eq!(post.notes.is_empty(), valid, "{:?}", post.notes);
-    let (_, notes) = renderer.set_shader_pack(0, Some(post), &[]).unwrap();
+    let (_, notes) = renderer
+        .set_shader_pack(0, Some(post), &[])
+        .unwrap()
+        .unwrap();
     assert!(
         !valid || notes.iter().all(|n| !n.contains("skipped")),
         "{notes:?}"

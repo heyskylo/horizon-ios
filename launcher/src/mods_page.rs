@@ -702,6 +702,9 @@ impl Launcher {
             && horizon::is_native_mod(&id);
         if first_native {
             self.mods.native_notice = Some((source, id, known));
+            self.content_scroll
+                .handle
+                .set_offset(gpui::point(px(0.), px(0.)));
             return;
         }
         self.mods.native_notice = None;

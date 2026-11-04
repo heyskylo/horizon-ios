@@ -134,6 +134,7 @@ pub struct Font {
     /// Atlas size and the reserved dynamic region (y, height).
     atlas: (u32, u32),
     region: (u32, u32),
+    metrics_only: bool,
     cache: RefCell<Cache>,
     /// Set anew for each font and each `reset_cache` (see `epoch`).
     generation: std::cell::Cell<u64>,
@@ -284,6 +285,7 @@ fn load_bitmap(
     sheets: &HashMap<String, Rect>,
     pixels: &[u8],
     atlas: (u32, u32),
+    metrics_only: bool,
 ) -> HashMap<char, BitmapGlyph> {
     let mut out = HashMap::new();
     let file = p["file"].as_str().unwrap_or("");
@@ -349,6 +351,10 @@ fn load_bitmap(
                 advance: (0.5 + used as f32 * scale).floor() + 1.0,
                 offset: 1.0,
             };
+            if metrics_only {
+                out.insert(*ch, BitmapGlyph::Atlas(glyph));
+                continue;
+            }
             let glyph = match &sheet {
                 None => BitmapGlyph::Atlas(Glyph {
                     rect: Some(glyph_rect(
@@ -597,6 +603,30 @@ impl Font {
         region: (u32, u32),
         white: Rect,
     ) -> Self {
+        Self::load_with(root, sprites, pixels, atlas, region, white, false)
+    }
+    /// A server measures text but never draws it. Decode bitmap sheets only
+    /// to obtain advances, then release their pixels; never rasterize glyphs.
+    pub fn metrics(root: &Path) -> Self {
+        let white = Rect {
+            u0: 0.0,
+            v0: 0.0,
+            u1: 1.0,
+            v1: 1.0,
+            w: 1,
+            h: 1,
+        };
+        Self::load_with(root, &HashMap::new(), &[], (1, 1), (0, 0), white, true)
+    }
+    fn load_with(
+        root: &Path,
+        sprites: &HashMap<String, Rect>,
+        pixels: &[u8],
+        atlas: (u32, u32),
+        region: (u32, u32),
+        white: Rect,
+        metrics_only: bool,
+    ) -> Self {
         let sheets = sprites
             .iter()
             .filter(|(k, _)| k.starts_with("font/"))
@@ -617,6 +647,7 @@ impl Font {
             root: root.to_owned(),
             atlas,
             region,
+            metrics_only,
             cache: RefCell::new(Cache {
                 sets: Vec::new(),
                 region: Region {
@@ -665,7 +696,14 @@ impl Font {
                 )),
                 "bitmap" => Some(Provider::Bitmap(
                     Filter::of(p),
-                    load_bitmap(&self.root, p, &self.sheets, pixels, self.atlas),
+                    load_bitmap(
+                        &self.root,
+                        p,
+                        &self.sheets,
+                        pixels,
+                        self.atlas,
+                        self.metrics_only,
+                    ),
                 )),
                 "unihex" => Some(Provider::Unihex(Filter::of(p), p.clone(), None)),
                 "ttf" => Some(Provider::TrueType(
@@ -841,6 +879,14 @@ impl Font {
                     if let Some(id) = ttf.ids.get(&c)
                         && !(non_fishy && fishy_advance(ttf.advance(*id)))
                     {
+                        if self.metrics_only {
+                            return Some(Glyph {
+                                rect: None,
+                                advance: ttf.advance(*id),
+                                offset: 1.0,
+                                ..self.missing
+                            });
+                        }
                         let (glyph, bitmap) = ttf.glyph(*id);
                         return match bitmap {
                             Some((w, h, rgba)) => {
@@ -861,6 +907,17 @@ impl Font {
     }
     fn rasterize_hex(&self, region: &mut Region, h: HexGlyph) -> Option<Glyph> {
         let width = h.right.saturating_sub(h.left) + 1;
+        if self.metrics_only {
+            return Some(Glyph {
+                rect: None,
+                left: 0.0,
+                top: 0.0,
+                right: width as f32 / 2.0,
+                bottom: 8.0,
+                advance: hex_advance(&h),
+                offset: 0.5,
+            });
+        }
         let mut rgba = Vec::with_capacity((width * 16 * 4) as usize);
         for row in h.rows {
             for bit in h.left..=h.right {
@@ -1359,6 +1416,55 @@ mod tests {
             .write_image_data(&pixels)
             .unwrap();
         out
+    }
+
+    #[test]
+    fn server_metrics_preserve_bitmap_true_type_and_unihex_advances() {
+        let sheet = png(16, 8, |x, _| x < 2 || (8..14).contains(&x));
+        let def = br#"{"providers":[{"type":"space","advances":{" ":4}},{"type":"bitmap","file":"minecraft:font/a.png","ascent":7,"chars":["ab"]}]}"#;
+        let ttf = br#"{"providers":[{"type":"ttf","file":"minecraft:mono.ttf","size":11,"oversample":2}]}"#;
+        let root = root(
+            "metrics",
+            &[
+                ("assets/minecraft/font/default.json", def),
+                ("assets/minecraft/font/alt.json", ttf),
+                (
+                    "assets/minecraft/font/mono.ttf",
+                    horizon_theme::fonts::GEIST_MONO,
+                ),
+                ("assets/minecraft/textures/font/a.png", &sheet),
+            ],
+        );
+        let rendered = load(&root);
+        let metrics = Font::metrics(&root);
+        assert_eq!(metrics.width("a b"), 14.0);
+        assert_eq!(metrics.width("§lab"), 12.0);
+        let text = Text::literal("ab ab");
+        assert_eq!(
+            metrics.split_formatted(&text, 10.0),
+            rendered.split_formatted(&text, 10.0)
+        );
+        let alt = Style {
+            font: Some("minecraft:alt".into()),
+            bold: Some(true),
+            ..Style::default()
+        };
+        for c in ['A', 'i', ' ', '\u{fffd}'] {
+            assert_eq!(metrics.advance(c, &alt), rendered.advance(c, &alt));
+            assert!(metrics.glyph_styled(c, &alt).rect.is_none());
+        }
+        let mut hex = HashMap::new();
+        parse_hex(b"0041:0000000018242442427E424242420000\n", &mut hex);
+        let h = hex[&0x41];
+        let glyph = metrics
+            .rasterize_hex(&mut metrics.cache.borrow_mut().region, h)
+            .unwrap();
+        assert_eq!(glyph.advance, 4.0);
+        assert_eq!(glyph.offset, 0.5);
+        assert!(glyph.rect.is_none());
+        assert!(metrics.take_patches().is_empty());
+        assert!(!rendered.take_patches().is_empty());
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

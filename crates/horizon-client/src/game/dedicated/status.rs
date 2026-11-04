@@ -137,6 +137,7 @@ impl Game<'_> {
                         g.uuid,
                         &g.address.ip().to_string(),
                         g.latency.load(Ordering::Relaxed),
+                        &g.dimension,
                         g.position,
                     )
                 })
@@ -161,12 +162,20 @@ impl Game<'_> {
     }
 }
 
-fn player_status(name: &str, uuid: u128, address: &str, ping_ms: i32, position: [f64; 3]) -> Value {
+fn player_status(
+    name: &str,
+    uuid: u128,
+    address: &str,
+    ping_ms: i32,
+    dimension: &str,
+    position: [f64; 3],
+) -> Value {
     json!({
         "name": name,
         "uuid": horizon_protocol::crypto::uuid_string(uuid),
         "address": address,
         "ping_ms": ping_ms,
+        "dimension": dimension,
         "position": position,
     })
 }
@@ -179,12 +188,20 @@ mod tests {
     #[test]
     fn player_status_includes_coordinates() {
         assert_eq!(
-            player_status("Alex", 1, "203.0.113.7", 42, [1.5, 64.0, -2.25]),
+            player_status(
+                "Alex",
+                1,
+                "203.0.113.7",
+                42,
+                "minecraft:the_nether",
+                [1.5, 64.0, -2.25]
+            ),
             json!({
                 "name": "Alex",
                 "uuid": "00000000-0000-0000-0000-000000000001",
                 "address": "203.0.113.7",
                 "ping_ms": 42,
+                "dimension": "minecraft:the_nether",
                 "position": [1.5, 64.0, -2.25],
             })
         );

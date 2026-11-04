@@ -851,7 +851,24 @@ impl Game<'_> {
                 let baby = words.contains(&"baby");
                 let nums: Vec<f64> = words[2..].iter().filter_map(|w| w.parse().ok()).collect();
                 let at = (nums.len() >= 3).then(|| [nums[0], nums[1], nums[2]]);
-                let id = self.summon(arg(1)?, at, baby)?;
+                let kind = arg(1)?.to_owned();
+                // Single player on its server thread: spawn in the owner's level
+                // so the mob enters the server tick loop and is tracked to clients.
+                if let Some(server) = &self.integrated {
+                    let at = match at {
+                        Some(a) => a,
+                        None => self.default_summon_position()?,
+                    };
+                    let id = server
+                        .call(move |g| {
+                            g.in_owner_level(|g| {
+                                g.summon(&kind, Some(at), baby).map_err(|e| e.to_string())
+                            })
+                        })
+                        .ok_or(super::integrated::NO_ANSWER)??;
+                    return Ok(Some(json!({ "ok": true, "id": id })));
+                }
+                let id = self.summon(&kind, at, baby)?;
                 Ok(Some(json!({ "ok": true, "id": id })))
             }
             "mobs" => {
