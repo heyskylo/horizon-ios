@@ -255,14 +255,17 @@ fn translate(
     } else {
         GBUFFERS_MATRICES.to_owned()
     };
-    // Struct types without a name get one (`anonymous_structs`), and interface blocks travel
-    // as plain varyings (`interface_blocks`).
+    // Struct types without a name get one (`anonymous_structs`), interface blocks travel
+    // as plain varyings (`interface_blocks`), and buffer vectors that atomic functions use by
+    // component become arrays (`atomic_vectors`).
     let flat = |pp: &Preprocessed| {
         let named = anonymous_structs::name(&pp.code);
         let code = named.as_deref().unwrap_or(&pp.code);
-        interface_blocks::flatten(code)
+        let flat = interface_blocks::flatten(code)
             .or(named)
-            .map(|code| Preprocessed { code, ..pp.clone() })
+            .map(|code| Preprocessed { code, ..pp.clone() });
+        let split = atomic_vectors::rewrite(flat.as_ref().unwrap_or(pp));
+        split.or(flat)
     };
     let (vertex_flat, fragment_flat) = (flat(vertex), flat(fragment));
     let vertex = vertex_flat.as_ref().unwrap_or(vertex);
@@ -2821,6 +2824,68 @@ in VertexData {{ {member} }} vIn;
                    sums += ivec4(1);\n    lights[gl_LocalInvocationIndex] += uvec2(1u);\n    \
                    uvec2 l = lights[gl_LocalInvocationIndex];\n    barrier();\n    \
                    imageStore(colorimg5, ivec2(0), ivec4(sums.y + int(lights[1].x + l.y)));\n}\n";
+        let pack = Pack::from_zip_bytes("P.zip", zip(&[("shaders/deferred_a.csh", csh)])).unwrap();
+        translate_compute(&preprocess(&pack, "deferred_a.csh", &Macros::standard()))
+            .unwrap_or_else(|e| panic!("{e:?}"));
+    }
+
+    /// The std430 offsets of the members of the buffer block at `binding`, by the names the
+    /// pack gave them (a split vector's `_hz` dropped, our padding left out), and its size.
+    fn buffer_layout(module: &naga::Module, binding: u32) -> (Vec<(String, u32)>, u32) {
+        let (_, global) = module
+            .global_variables
+            .iter()
+            .find(|(_, g)| g.binding.as_ref().is_some_and(|b| b.binding == binding))
+            .expect("the block");
+        let ty = &module.types[global.ty];
+        let naga::TypeInner::Struct { members, span } = &ty.inner else {
+            panic!("{ty:?}");
+        };
+        let members = members
+            .iter()
+            .filter_map(|m| {
+                let name = m.name.as_deref()?;
+                (!name.starts_with("hz_pad_"))
+                    .then(|| (name.trim_end_matches("_hz").to_owned(), m.offset))
+            })
+            .collect();
+        (members, *span)
+    }
+
+    /// Atomic functions on a component of a buffer block's vector, which GLSL 4.60 8.11 allows
+    /// (our probe pack's shape, in a composite vertex stage): the program translates, and the
+    /// block keeps the std430 layout the fragment stage, which uses no atomics, gives it.
+    #[test]
+    fn atomics_on_buffer_vector_components_compile_and_keep_the_layout() {
+        let block = "layout(std430, binding = 2) restrict buffer probeSums { uint n; uvec2 a; uvec3 c[2]; uint m; uvec2 b; } sums;\n";
+        let vsh = format!(
+            "#version 430 compatibility\n{block}out vec2 uv;\nvoid main() {{\n    \
+             atomicAdd(sums.a.x, 1u);\n    atomicMax(sums.b.y, uint(gl_VertexID));\n    \
+             atomicOr(sums.c[gl_VertexID & 1].z, 2u);\n    sums.a += uvec2(1u);\n    \
+             uv = vec2(sums.a.y + sums.c[1].x, sums.c.length());\n    gl_Position = ftransform();\n}}\n"
+        );
+        let fsh = format!(
+            "#version 430 compatibility\n{block}in vec2 uv;\nvoid main() {{\n    \
+             gl_FragData[0] = vec4(vec2(sums.a), vec2(sums.b)) + uv.x + float(sums.m + sums.c[0].z);\n}}\n"
+        );
+        let p = program(
+            &[("composite.vsh", &vsh), ("composite.fsh", &fsh)],
+            Target::Buffers,
+        )
+        .unwrap_or_else(|e| panic!("{e:?}"));
+        let expected: Vec<(String, u32)> = [("n", 0), ("a", 8), ("c", 16), ("m", 48), ("b", 56)]
+            .map(|(n, o)| (n.to_owned(), o))
+            .into();
+        assert_eq!(buffer_layout(&p.fragment, 2), (expected.clone(), 64));
+        assert_eq!(buffer_layout(&p.vertex, 2), (expected, 64));
+    }
+
+    /// A block without an instance name: its member is named alone.
+    #[test]
+    fn atomics_on_vector_components_of_an_unnamed_buffer_block_compile() {
+        let csh = "#version 430\nlayout(local_size_x = 4) in;\n\
+                   layout(std430, binding = 1) buffer Counts { ivec4 counts; };\n\
+                   void main() {\n    atomicAdd(counts.w, 1);\n    ivec4 c = counts;\n    counts = c + 1;\n}\n";
         let pack = Pack::from_zip_bytes("P.zip", zip(&[("shaders/deferred_a.csh", csh)])).unwrap();
         translate_compute(&preprocess(&pack, "deferred_a.csh", &Macros::standard()))
             .unwrap_or_else(|e| panic!("{e:?}"));
