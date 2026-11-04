@@ -16,7 +16,7 @@ use horizon_client::{
 use horizon_core::{
     geometry::{Aabb, Vec3, traverse_blocks, trig},
     position::BlockPos,
-    random::RandomSource,
+    random::{LegacyRandom, RandomSource},
 };
 use horizon_protocol::entity_data::{Value, serializer};
 use std::{collections::HashMap, sync::Arc};
@@ -126,6 +126,24 @@ fn pull_item(item: &mut horizon_client::entities::ItemEntity, delta: Vec3) {
     // cannot request the immediate motion update for tracking clients.
     item.needs_sync = true;
 }
+/// `FishingHook.pullEntity`: add a tenth of the vector from the hook to its owner.
+fn pull_hooked(velocity: Vec3, hook: Vec3, owner: Vec3) -> Vec3 {
+    Vec3::new(
+        velocity.x + (owner.x - hook.x) * 0.1,
+        velocity.y + (owner.y - hook.y) * 0.1,
+        velocity.z + (owner.z - hook.z) * 0.1,
+    )
+}
+/// Minecarts a hook can catch. `AbstractMinecart.isPickable` is true while the
+/// cart exists, and `Projectile.canHitEntity` skips the vehicle the owner rides.
+fn minecart_hook_targets<'a>(
+    carts: impl Iterator<Item = &'a super::minecarts::Minecart> + 'a,
+    own_vehicle: Option<u32>,
+) -> impl Iterator<Item = (u32, Aabb)> + 'a {
+    carts
+        .filter(move |c| Some(c.id) != own_vehicle)
+        .map(|c| (c.id, c.bounds()))
+}
 impl Hook {
     pub(super) fn bounds(&self) -> Aabb {
         bounds(self.position)
@@ -135,6 +153,24 @@ impl Hook {
     pub(super) fn applies_block_effects(&self) -> bool {
         !matches!(self.state, State::Hooked(_))
     }
+    /// `FishingHook.catchingFish`: the nibble timer, and DATA_BITING's plunge
+    /// (`onSyncedDataUpdated` runs on the server too).
+    pub(super) fn trigger_bite(&mut self, r: &mut impl RandomSource, game_time: i64) {
+        self.nibble = 20 + r.next_int_bound(21).unwrap_or(0);
+        self.velocity.y = bite_impulse(&mut synchronized_random(self.id, game_time));
+    }
+}
+/// `FishingHook.syncronizedRandom`, reseeded every tick from the hook's UUID and the game
+/// time so the server and its clients draw alike. Horizon's hook has no UUID: its entity
+/// id stands in. Kept off the level's random, whose draws must stay in vanilla's order.
+fn synchronized_random(id: u32, game_time: i64) -> LegacyRandom {
+    LegacyRandom::new(i64::from(id) ^ game_time)
+}
+/// `FishingHook.onSyncedDataUpdated` on DATA_BITING: the downward plunge,
+/// `-0.4F * Mth.nextFloat(syncronizedRandom, 0.6F, 1.0F)`, in float as vanilla.
+fn bite_impulse(r: &mut impl RandomSource) -> f64 {
+    // Mth.nextFloat(random, min, max): `random.nextFloat() * (max - min) + min`.
+    f64::from(-0.4f32 * (r.next_float() * (1.0f32 - 0.6f32) + 0.6f32))
 }
 /// RandomSource.triangle(mode, deviation).
 fn triangle(r: &mut impl RandomSource, mode: f64, deviation: f64) -> f64 {
@@ -272,7 +308,7 @@ impl Game<'_> {
                 owner.y - hook.position.y,
                 owner.z - hook.position.z,
             );
-            let pulled = |v: Vec3| Vec3::new(v.x + d.x * 0.1, v.y + d.y * 0.1, v.z + d.z * 0.1);
+            let pulled = |v: Vec3| pull_hooked(v, hook.position, owner);
             let mut hooked_item = false;
             if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
                 m.velocity = pulled(m.velocity);
@@ -285,6 +321,9 @@ impl Game<'_> {
                 a.velocity = pulled(a.velocity);
             } else if let Some(b) = self.boats.iter_mut().find(|b| b.id == id) {
                 b.velocity = pulled(b.velocity);
+            } else if let Some(c) = self.carts.iter_mut().find(|c| c.id == id) {
+                // `AbstractMinecart` is pickable, so `pullEntity` moves it too.
+                c.velocity = pulled(c.velocity);
             } else if self.creatures.hook_targets.iter().any(|t| t.id == id) {
                 // A player: the hub moves them when the tick ends.
                 self.creatures
@@ -538,7 +577,7 @@ impl Game<'_> {
                 for kind in [ParticleType::Bubble, ParticleType::Fishing] {
                     self.send_particles(kind, at, spread, f64::from(0.2f32), count);
                 }
-                h.nibble = 20 + self.world.random.next_int_bound(21).unwrap_or(0);
+                h.trigger_bite(&mut self.world.random, self.world.game_time);
             }
         } else if h.time_until_lured > 0 {
             h.time_until_lured -= speed;
@@ -710,6 +749,7 @@ impl Game<'_> {
                                 .filter(|b| Some(b.id) != own_vehicle)
                                 .map(|b| (b.id, b.bounds())),
                         )
+                        .chain(minecart_hook_targets(self.carts.iter(), own_vehicle))
                         .chain(self.dropped.iter().map(|i| (i.id, i.bounds())))
                         .chain(
                             self.tnts
@@ -771,6 +811,12 @@ impl Game<'_> {
                             .iter()
                             .find(|b| b.id == id)
                             .map(|b| (b.position, super::boats::HEIGHT))
+                    })
+                    .or_else(|| {
+                        self.carts
+                            .iter()
+                            .find(|c| c.id == id)
+                            .map(|c| (c.position, super::minecarts::HEIGHT))
                     })
                     .or_else(|| {
                         self.dropped
@@ -1251,6 +1297,7 @@ impl Game<'_> {
     pub(super) fn remote_hook_data(&mut self, id: u32, values: &[(u8, i32, Value)]) {
         // DATA_HOOKED_ENTITY (the hooked id plus one, 0 for none): a hook on a
         // client follows what it hooked (`FishingHook.onSyncedDataUpdated`).
+        let time = self.world.game_time;
         let hooked = |value: &Value| match value {
             Value::Int(v) if *v > 0 => State::Hooked(*v as u32 - 1),
             _ => State::Flying,
@@ -1262,15 +1309,26 @@ impl Game<'_> {
         {
             for (index, _, value) in values {
                 match (index, value) {
-                    (9, Value::Bool(biting)) => h.nibble = i32::from(*biting),
+                    (9, Value::Bool(biting)) => {
+                        h.nibble = i32::from(*biting);
+                        if *biting {
+                            h.velocity.y = bite_impulse(&mut synchronized_random(h.id, time));
+                        }
+                    }
                     (8, value) => h.state = hooked(value),
                     _ => {}
                 }
             }
         } else if let Some(h) = self.remote_hooks.iter_mut().find(|h| h.id == id) {
             for (index, _, value) in values {
-                if *index == 8 {
-                    h.state = hooked(value);
+                match (index, value) {
+                    (9, Value::Bool(biting)) => {
+                        if *biting {
+                            h.velocity.y = bite_impulse(&mut synchronized_random(h.id, time));
+                        }
+                    }
+                    (8, value) => h.state = hooked(value),
+                    _ => {}
                 }
             }
         }
@@ -1360,6 +1418,12 @@ impl Game<'_> {
                         .iter()
                         .find(|m| m.id == id && m.alive())
                         .map(|m| (m.position, f64::from(m.height())))
+                        .or_else(|| {
+                            self.carts
+                                .iter()
+                                .find(|c| c.id == id)
+                                .map(|c| (c.position, super::minecarts::HEIGHT))
+                        })
                         .or_else(|| {
                             self.dropped
                                 .iter()
@@ -1478,9 +1542,10 @@ fn cast_direction(yaw: f32, pitch: f32) -> (f32, f32, f32) {
 
 #[cfg(test)]
 mod tests {
-    use super::{cast_direction, entity_hit_margin, first_entity_hit, pull_item, rebound};
+    use super::{Hook, cast_direction, entity_hit_margin, first_entity_hit, pull_item, rebound};
     use horizon_client::{entities::ItemEntity, items::ItemStack};
     use horizon_core::geometry::{Aabb, Vec3};
+    use horizon_core::random::LegacyRandom;
 
     #[test]
     fn casting_straight_down_aims_down_and_straight_up_aims_up() {
@@ -1514,6 +1579,7 @@ mod tests {
     #[test]
     fn reeling_an_item_requests_an_immediate_motion_update() {
         let mut item = ItemEntity {
+            rotation: [0.0, 0.0],
             join: Default::default(),
             no_gravity: false,
             health: 5,
@@ -1593,5 +1659,57 @@ mod tests {
             first_entity_hit(start, end, 0.0, [(2, far), (1, near)]),
             Some(1)
         );
+    }
+
+    #[test]
+    fn bite_triggers_initial_downward_plunge_impulse() {
+        let mut rng = LegacyRandom::new(12345);
+        for _ in 0..100 {
+            let mut hook = Hook::remote(1, Vec3::ZERO);
+            assert_eq!(hook.velocity.y, 0.0);
+            hook.trigger_bite(&mut rng, 0);
+            assert!(
+                hook.velocity.y < 0.0,
+                "vertical velocity should be negative on bite, got {}",
+                hook.velocity.y
+            );
+            assert!(
+                hook.velocity.y <= -0.24 && hook.velocity.y >= -0.40,
+                "vertical velocity {} not between -0.24 and -0.40",
+                hook.velocity.y
+            );
+            assert!(
+                hook.nibble >= 20 && hook.nibble <= 40,
+                "nibble {} not in 20..=40",
+                hook.nibble
+            );
+        }
+    }
+
+    /// A minecart is pickable (`AbstractMinecart.isPickable`), so the hook
+    /// meets it. The cart the owner rides is the same vehicle and is skipped.
+    #[test]
+    fn a_fishing_hook_meets_a_minecart_but_not_the_one_it_rides() {
+        use super::super::minecarts::{CartKind, Minecart};
+        let cart = Minecart::new(7, CartKind::Rideable, Vec3::new(0.6, 0.0, 0.0));
+        let ridden = Minecart::new(3, CartKind::Chest, Vec3::new(0.2, 0.0, 0.0));
+        let boxes = super::minecart_hook_targets([&cart, &ridden].into_iter(), Some(3));
+        assert_eq!(
+            first_entity_hit(Vec3::ZERO, Vec3::new(1.0, 0.0, 0.0), 0.0, boxes),
+            Some(7)
+        );
+    }
+
+    /// `FishingHook.pullEntity` scales the hook-to-owner vector by 0.1.
+    #[test]
+    fn reeling_pulls_a_hooked_minecart_a_tenth_of_the_way() {
+        // Still cart at the origin, owner 10 east and 2 up: +1 x and +0.2 y,
+        // on top of the cart's own 0.5.
+        let pulled = super::pull_hooked(
+            Vec3::new(0.5, 0.0, 0.0),
+            Vec3::ZERO,
+            Vec3::new(10.0, 2.0, 0.0),
+        );
+        assert_eq!(pulled, Vec3::new(1.5, 0.2, 0.0));
     }
 }

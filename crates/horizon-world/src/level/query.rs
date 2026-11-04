@@ -212,6 +212,15 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
                         .table
                         .set_bool(piston.moved_state, self.b.props.extended, true);
                 }
+                // The same method for any other moving block: its collision shape
+                // is `movedState.getCollisionShape(..).move(dir * extendedProgress)`,
+                // and `getExtendedProgress` is 0 once progress reaches 1.0, so a
+                // finished-but-not-yet-placed block supports like itself (a wall
+                // coral fan keeps its slime block while the column lands). At 0 or
+                // 0.5 progress the shape is shifted off the cell, a face never full.
+                if !piston.source && piston.progress >= 1.0 {
+                    return piston.moved_state;
+                }
             }
         }
         state
