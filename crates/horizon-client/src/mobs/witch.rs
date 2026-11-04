@@ -238,13 +238,9 @@ fn witch_attack(m: &mut Mob, who: Who, _power: f32, cx: &mut Cx) {
         8.0,
     );
     cx.events.push(MobEvent::Projectile(p));
-    let pitch = 0.8 + m.random.next_float() * 0.4;
-    cx.events.push(MobEvent::Sound(
-        "entity.witch.throw",
-        m.center(),
-        1.0,
-        pitch,
-    ));
+    // Witch.performRangedAttack: the throw sound, and its pitch draw, only
+    // when the witch is not silent.
+    witch_sound(m, &mut cx.events, "entity.witch.throw");
 }
 /// The movement speed of a witch with `SPEED_MODIFIER_DRINKING` (-0.25,
 /// `ADD_VALUE`) while it drinks: it stands still for the 32 ticks.
@@ -322,14 +318,19 @@ fn drink(m: &mut Mob, cx_events: &mut Vec<MobEvent>, target_far: bool) {
         // PotionItem use duration 32 ticks.
         m.extra.using_item = 32;
         m.extra.flag = true;
-        let pitch = 0.8 + m.random.next_float() * 0.4;
-        cx_events.push(MobEvent::Sound(
-            "entity.witch.drink",
-            m.center(),
-            1.0,
-            pitch,
-        ));
+        // Witch.aiStep: the drink sound, and its pitch draw, only when the
+        // witch is not silent.
+        witch_sound(m, cx_events, "entity.witch.drink");
     }
+}
+/// `Witch` drink and throw sounds: volume 1, pitch `0.8 + nextFloat * 0.4`,
+/// skipped entirely (including the pitch draw) when `isSilent()`.
+fn witch_sound(m: &mut Mob, events: &mut Vec<MobEvent>, name: &'static str) {
+    if m.silent {
+        return;
+    }
+    let pitch = 0.8 + m.random.next_float() * 0.4;
+    events.push(MobEvent::Sound(name, m.center(), 1.0, pitch));
 }
 /// `WitchRenderer.extractRenderState`'s `isHoldingPotion`: the main hand holds
 /// a potion, either a drunk one (kept by the potion's name, `drink`) or a
@@ -390,6 +391,72 @@ mod tests {
         );
         assert!(!goal.ignore.contains(&Species::Vex));
         assert!(!goal.ignore.contains(&Species::Zombie));
+    }
+
+    fn witch() -> Mob {
+        use std::sync::Arc;
+        let mut kind = (*crate::mobs::sensor_scan_tests::kind()).clone();
+        kind.id = "minecraft:witch".into();
+        kind.species = Species::Witch;
+        kind.max_health = 26.0;
+        Mob::new(1, Arc::new(kind), Vec3::ZERO, 0.0)
+    }
+
+    /// How many drink sounds forty attempts produce. Vanilla plays
+    /// `entity.witch.drink` at volume 1, and skips it when the witch is silent.
+    fn drink_sounds(silent: bool) -> usize {
+        use horizon_core::random::LegacyRandom;
+        let mut m = witch();
+        m.silent = silent;
+        m.random = LegacyRandom::new(1);
+        m.fluids.eye_in_water = true;
+        m.fire_ticks = 20;
+        m.health = 1.0;
+        m.ai.target = Some(Who::Player);
+        let mut events = Vec::new();
+        for _ in 0..40 {
+            m.extra.flag = false;
+            drink(&mut m, &mut events, true);
+        }
+        events
+            .iter()
+            .filter(|e| {
+                matches!(e, MobEvent::Sound(s, _, volume, _) if *s == "entity.witch.drink" && *volume == 1.0)
+            })
+            .count()
+    }
+
+    /// `Witch.aiStep` and `performRangedAttack` play at volume 1 only when
+    /// the witch is not silent. The pitch draw stays inside that check.
+    #[test]
+    fn a_silent_witch_does_not_play_its_drink_or_throw_sound() {
+        use horizon_core::random::LegacyRandom;
+        assert!(drink_sounds(false) > 0);
+        assert_eq!(drink_sounds(true), 0);
+
+        let mut loud = witch();
+        loud.random = LegacyRandom::new(11);
+        let mut quiet = witch();
+        quiet.silent = true;
+        quiet.random = LegacyRandom::new(11);
+        let mut oracle = LegacyRandom::new(11);
+        // Vanilla: 0.8F + nextFloat() * 0.4F, volume 1.
+        let pitch = 0.8 + oracle.next_float() * 0.4;
+        let mut events = Vec::new();
+        witch_sound(&mut loud, &mut events, "entity.witch.throw");
+        match &events[0] {
+            MobEvent::Sound(name, _, volume, got) => {
+                assert_eq!(*name, "entity.witch.throw");
+                assert_eq!(*volume, 1.0);
+                assert!((got - pitch).abs() < 1.0e-5);
+            }
+            other => panic!("throw sound, got {other:?}"),
+        }
+        events.clear();
+        witch_sound(&mut quiet, &mut events, "entity.witch.throw");
+        assert!(events.is_empty());
+        let mut untouched = LegacyRandom::new(11);
+        assert_eq!(quiet.random.next_float(), untouched.next_float());
     }
 
     /// The hoisted list is exactly the set `is_raider` answers yes for.
