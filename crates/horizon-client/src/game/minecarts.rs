@@ -180,9 +180,18 @@ pub(super) const HEIGHT: f64 = 0.7_f32 as f64;
 /// `EntityEvent.TNT_PRIME`. `MinecartTNT.primeFuse` broadcasts it;
 /// `MinecartTNT.handleEntityEvent` answers by calling `primeFuse`.
 pub(super) const TNT_PRIME_EVENT: i8 = 70;
-/// AbstractMinecart.getDefaultDisplayOffset, in sixteenths of a block.
+/// `AbstractMinecart.getDefaultDisplayOffset` (6), in sixteenths of a block, as
+/// `MinecartChest` (8) and `MinecartHopper` (1) override it.
 pub(super) fn default_display_offset(kind: CartKind) -> f64 {
-    if kind == CartKind::Hopper { 1.0 } else { 6.0 }
+    match kind {
+        CartKind::Chest => 8.0,
+        CartKind::Hopper => 1.0,
+        CartKind::Rideable
+        | CartKind::Furnace
+        | CartKind::Tnt
+        | CartKind::CommandBlock
+        | CartKind::Spawner => 6.0,
+    }
 }
 /// `AbstractMinecart.getDisplayOffset`: the saved `DisplayOffset`, else the default.
 fn display_offset(c: &Minecart) -> f64 {
@@ -2982,8 +2991,12 @@ mod tests {
 
     #[test]
     fn display_offset_is_not_saved_at_its_default() {
-        // A hopper cart's default is 1, any other kind's 6.
-        for (kind, default) in [(CartKind::Hopper, 1), (CartKind::Chest, 6)] {
+        // A hopper cart's default is 1, a chest cart's 8, any other kind's 6.
+        for (kind, default) in [
+            (CartKind::Hopper, 1),
+            (CartKind::Chest, 8),
+            (CartKind::Rideable, 6),
+        ] {
             let saved = saved_cart(kind, &[("DisplayOffset", Tag::Int(default))]);
             let cart = Minecart::from_nbt(&saved, 1, kind).unwrap();
             assert_eq!(display_offset(&cart), f64::from(default));
@@ -2998,16 +3011,30 @@ mod tests {
             cart.to_nbt([0; 4], None).get("DisplayOffset"),
             Some(&Tag::Int(6))
         );
+        // And a chest cart saved with 6, the base default, keeps it too.
+        let saved = saved_cart(CartKind::Chest, &[("DisplayOffset", Tag::Int(6))]);
+        let cart = Minecart::from_nbt(&saved, 1, CartKind::Chest).unwrap();
+        assert_eq!(display_offset(&cart), 6.0);
+        assert_eq!(
+            cart.to_nbt([0; 4], None).get("DisplayOffset"),
+            Some(&Tag::Int(6))
+        );
     }
 
     #[test]
     fn display_offset_matches_vanilla_for_each_cart_kind() {
+        // MinecartChest and MinecartHopper override getDefaultDisplayOffset;
+        // the rest keep AbstractMinecart's 6.
+        assert_eq!(default_display_offset(CartKind::Chest), 8.0);
         assert_eq!(default_display_offset(CartKind::Hopper), 1.0);
-        assert_eq!(default_display_offset(CartKind::Chest), 6.0);
         assert_eq!(default_display_offset(CartKind::Furnace), 6.0);
         assert_eq!(default_display_offset(CartKind::Tnt), 6.0);
         assert_eq!(default_display_offset(CartKind::CommandBlock), 6.0);
+        assert_eq!(default_display_offset(CartKind::Spawner), 6.0);
         assert_eq!(default_display_offset(CartKind::Rideable), 6.0);
+        // A cart without a saved offset draws at its kind's default.
+        let chest = Minecart::new(1, CartKind::Chest, Vec3::ZERO);
+        assert_eq!(display_offset(&chest), 8.0);
     }
 
     /// `MinecartSpawner`: its `BaseSpawner` is saved and loaded with the cart (the delay, the
