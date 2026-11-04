@@ -12,7 +12,12 @@
 //! for the next one. A section meshed in between propagates into the graph the
 //! frame has (vanilla's partial update), so what it opens shows at once; what
 //! it closes goes at the next full search.
+//!
+//! GPU culling (gfx/gpu_culling.rs) answers as `contains` does from a copy of
+//! the graph (`Reach`): the cells it reached, kept as bits too, sent again
+//! whenever the generation moves, which it does whenever an answer may change.
 use super::SectionKey;
+use crate::fast_hash::FxHashSet;
 use crate::mesher::ALL_VISIBLE;
 use glam::DVec3;
 use std::collections::{HashMap, VecDeque};
@@ -128,6 +133,10 @@ struct Graph {
     /// (`Node.sourceDirections`, as the faces rather than the steps); none for
     /// the camera's.
     entered: Vec<u8>,
+    /// `REACHED` of each cell again, a bit each at `index` (32 a word, lowest
+    /// bit first): the GPU's copy (`Occlusion::reach`), written with it
+    /// (`set_reached`).
+    bits: Vec<u32>,
     /// Whether any section in the searched top layer was reached. Sections
     /// above a clamped box use this conservative sky-band answer.
     sky_reached: bool,
@@ -176,6 +185,13 @@ impl Graph {
             false
         }
     }
+    /// Cell `i` is reached, having travelled `directions` (`REACHED` among
+    /// them): the one writer of `REACHED`, so `bits` say what `directions` do.
+    fn set_reached(&mut self, i: usize, directions: u8) {
+        debug_assert!(directions & REACHED != 0);
+        self.directions[i] = directions;
+        self.bits[i / 32] |= 1 << (i % 32);
+    }
     /// The full search from the camera (vanilla's `scheduleFullUpdate`).
     fn search(
         &mut self,
@@ -219,6 +235,8 @@ impl Graph {
         let size = side * side * self.height as usize;
         self.directions.clear();
         self.directions.resize(size, 0);
+        self.bits.clear();
+        self.bits.resize(size.div_ceil(32), 0);
         self.entered.clear();
         self.entered.resize(size, 0);
         self.sky_reached = false;
@@ -242,7 +260,7 @@ impl Graph {
         queue.clear();
         if (0..columns.sections).contains(&from.1) {
             let start = self.index(from).expect("camera inside the searched box");
-            self.directions[start] = REACHED;
+            self.set_reached(start, REACHED);
             queue.push_back(start as u32);
         } else {
             self.seed_outside(camera, queue);
@@ -293,7 +311,7 @@ impl Graph {
             let i = self
                 .index((self.from.0 + dx, y, self.from.2 + dz))
                 .expect("seed inside the searched box");
-            self.directions[i] = directions;
+            self.set_reached(i, directions);
             // Entered through the face opposite the travel (`sourceDirection`).
             self.entered[i] = 1 << (travel ^ 1);
             queue.push_back(i as u32);
@@ -303,14 +321,15 @@ impl Graph {
     /// every face their entry faces connect to, away from the camera. A step
     /// into a section already reached adds the face it enters through.
     /// `full`: the search from `camera` (`rays` holds its lines), not a
-    /// partial update.
+    /// partial update. Whether it reached a cell it had not.
     fn propagate(
         &mut self,
         queue: &mut VecDeque<u32>,
         camera: DVec3,
         full: bool,
         vis: impl Fn(usize, SectionKey) -> u64,
-    ) {
+    ) -> bool {
+        let mut grew = false;
         let eye = (
             (camera.x.floor() as i32) >> 4,
             (camera.y.floor() as i32 - self.min_y) >> 4,
@@ -364,14 +383,16 @@ impl Graph {
                     }
                 }
                 if self.directions[n] & REACHED == 0 {
-                    self.directions[n] = directions | 1 << d;
+                    self.set_reached(n, directions | 1 << d);
                     self.entered[n] = 1 << (d ^ 1);
                     queue.push_back(n as u32);
+                    grew = true;
                 } else {
                     self.entered[n] |= 1 << (d ^ 1);
                 }
             }
         }
+        grew
     }
     /// Vanilla's distant step test: from the corner of `key` that the step `d`
     /// picks, walk towards the camera in section diagonals while farther than
@@ -471,6 +492,42 @@ impl Graph {
     }
 }
 
+/// The graph `Occlusion::contains` reads, for GPU culling's copy
+/// (gfx/gpu_culling.rs): its searched box (`Graph::index`), the level's height
+/// in sections, whether the search reached the box's top layer (the sky band
+/// above a clamped box), and its cells' `REACHED` as bits.
+#[derive(Clone, Copy)]
+pub struct Reach<'a> {
+    /// `Occlusion::generation` when it was taken.
+    pub generation: u64,
+    pub from_x: i32,
+    pub from_z: i32,
+    pub radius: i32,
+    pub y0: i32,
+    pub height: i32,
+    pub sections: i32,
+    pub sky_reached: bool,
+    pub bits: &'a [u32],
+}
+
+#[cfg(test)]
+impl Reach<'_> {
+    /// gpu_culling.wgsl's `reached`, statement for statement: what
+    /// `Graph::contains` answers.
+    pub fn contains(&self, key: SectionKey) -> bool {
+        let r = self.radius;
+        let (dx, dz, dy) = (key.0 - self.from_x, key.2 - self.from_z, key.1 - self.y0);
+        if dx < -r || dx > r || dz < -r || dz > r || dy < 0 {
+            return false;
+        }
+        if dy >= self.height {
+            return self.sky_reached && (0..=self.sections).contains(&key.1);
+        }
+        let i = (((dz + r) * (2 * r + 1) + dx + r) * self.height + dy) as usize;
+        (self.bits[i / 32] >> (i % 32)) & 1 != 0
+    }
+}
+
 /// `Mth.floor` for coordinates inside the world, without a libm call (the
 /// x86-64 baseline has no rounding instruction).
 fn floor(x: f64) -> i32 {
@@ -517,6 +574,14 @@ impl Worker {
     }
 }
 
+/// A new value for `Occlusion::generation`, unique in the process: a copy made
+/// from an older `Occlusion` (another level's) never matches. As gfx.rs
+/// `next_block_entity_revision`.
+fn next_generation() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
 pub struct Occlusion {
     /// The render thread's copy, for partial updates (and searches when the
     /// worker is gone).
@@ -544,6 +609,8 @@ pub struct Occlusion {
     changed_late: Vec<SectionKey>,
     vis: Vec<u64>,
     queue: VecDeque<u32>,
+    /// Changes whenever `contains` may answer differently (`generation`).
+    generation: u64,
 }
 
 impl Occlusion {
@@ -563,6 +630,7 @@ impl Occlusion {
             changed_late: Vec::new(),
             vis: Vec::new(),
             queue: VecDeque::new(),
+            generation: next_generation(),
         }
     }
     pub fn set(&mut self, key: SectionKey, vis: u64) {
@@ -589,14 +657,29 @@ impl Occlusion {
             }
         }
     }
+    /// `remove_column` for each of `gone`. When they are every column it holds (a
+    /// teleport drops the whole view), the old graph says nothing about what arrives
+    /// next: it starts over as `clear` does instead of seeing through each removed
+    /// section one edit at a time (some 90 000 at render distance 32).
+    pub fn remove_columns(&mut self, gone: &FxHashSet<(i32, i32)>) {
+        if self.columns.map.keys().all(|column| gone.contains(column)) {
+            self.clear();
+            return;
+        }
+        for &(x, z) in gone {
+            self.remove_column(x, z);
+        }
+    }
     pub fn clear(&mut self) {
         self.columns.map.clear();
         self.edits.clear();
         self.edits.push(Edit::Clear);
         self.dirty = true;
-        // Another world: the old graph says nothing about it.
+        // Another world: the old graph says nothing about it. Without one, every
+        // section was visible already, and stays so.
         if let Some(graph) = self.graph.take() {
             self.spare = graph;
+            self.generation = next_generation();
         }
         self.searched = None;
         self.discard = self.running.is_some();
@@ -608,6 +691,38 @@ impl Occlusion {
     /// never reached) every section is.
     pub fn contains(&self, key: SectionKey) -> bool {
         self.graph.as_ref().is_none_or(|g| g.contains(key))
+    }
+    /// Changes whenever `contains` may answer differently: a search landed, a
+    /// partial update reached more sections, or the graph went.
+    #[cfg(any(test, debug_assertions))]
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+    /// The graph `contains` reads; `None` while every section counts as
+    /// visible.
+    pub fn reach(&self) -> Option<Reach<'_>> {
+        self.graph.as_ref().map(|g| Reach {
+            generation: self.generation,
+            from_x: g.from.0,
+            from_z: g.from.2,
+            radius: g.radius,
+            y0: g.y0,
+            height: g.height,
+            sections: g.sections,
+            sky_reached: g.sky_reached,
+            bits: &g.bits,
+        })
+    }
+    /// The bits `reach` exports are the cells' `REACHED`, cell for cell.
+    #[cfg(any(test, debug_assertions))]
+    pub fn reach_is_exact(&self) -> bool {
+        self.graph.as_ref().is_none_or(|g| {
+            g.bits.len() == g.directions.len().div_ceil(32)
+                && g.directions
+                    .iter()
+                    .enumerate()
+                    .all(|(i, &d)| (d & REACHED != 0) == ((g.bits[i / 32] >> (i % 32)) & 1 != 0))
+        })
     }
     /// Take a finished search, propagate changed sections into the graph,
     /// and start a search when sections changed or the camera moved to
@@ -628,6 +743,7 @@ impl Occlusion {
             && let Some(graph) = self.graph.take()
         {
             self.spare = graph;
+            self.generation = next_generation();
         }
     }
     fn start(&mut self, camera: DVec3, radius: i32) {
@@ -699,6 +815,7 @@ impl Occlusion {
         if let Some(old) = self.graph.replace(graph) {
             self.spare = old;
         }
+        self.generation = next_generation();
     }
     /// Vanilla's `runPartialUpdate`: what changed sections now connect to.
     fn propagate_changes(&mut self, camera: DVec3) {
@@ -715,7 +832,9 @@ impl Occlusion {
             }
         }
         let columns = &self.columns;
-        graph.propagate(&mut self.queue, camera, false, |_, key| columns.get(key));
+        if graph.propagate(&mut self.queue, camera, false, |_, key| columns.get(key)) {
+            self.generation = next_generation();
+        }
     }
     /// Wait for the running search: tests, and A/B timing of the old
     /// blocking search.
@@ -1313,6 +1432,46 @@ mod tests {
         println!("search_cost: best {best:.2} ms over 12, {reached} reached");
     }
 
+    /// Removed columns see through every face: the graph is the one of a world that
+    /// never had them, whether some columns go or all of them (a teleport).
+    #[test]
+    fn removed_columns_leave_the_graph_of_a_world_without_them() {
+        fn without(o: &Occlusion, gone: &FxHashSet<(i32, i32)>) -> Occlusion {
+            let mut fresh = Occlusion::new(0, 6);
+            for (&(x, z), column) in &o.columns.map {
+                if !gone.contains(&(x, z)) {
+                    for (y, &vis) in column.iter().enumerate() {
+                        fresh.set((x, y as i32, z), vis);
+                    }
+                }
+            }
+            fresh
+        }
+        let camera = at((0, 2, 0));
+        let mut o = Occlusion::new(0, 6);
+        random_world(&mut o, 0x51ed_2701, 900, 6);
+        o.settle(camera, 6);
+        let some: FxHashSet<(i32, i32)> = (-6..=6)
+            .flat_map(|x| (-1..=1).map(move |z| (x, z)))
+            .collect();
+        let mut expected = without(&o, &some);
+        o.remove_columns(&some);
+        o.settle(camera, 6);
+        expected.settle(camera, 6);
+        let graph = |o: &Occlusion| o.graph.as_ref().expect("searched").directions.clone();
+        assert_eq!(graph(&o), graph(&expected));
+
+        let all: FxHashSet<(i32, i32)> = o.columns.map.keys().copied().collect();
+        o.remove_columns(&all);
+        assert!(o.contains((40, 3, 40)), "no graph from the old view culls");
+        random_world(&mut o, 0x2545_f491, 900, 6);
+        let mut arrived = Occlusion::new(0, 6);
+        random_world(&mut arrived, 0x2545_f491, 900, 6);
+        o.settle(camera, 6);
+        arrived.settle(camera, 6);
+        assert_eq!(graph(&o), graph(&arrived));
+    }
+
     /// The worker's graph is the one the render thread would compute.
     #[test]
     fn the_worker_matches_a_search_on_the_render_thread() {
@@ -1350,5 +1509,198 @@ mod tests {
             !cave.contains((0, 10, 0)),
             "enclosed cave does not see the sky"
         );
+    }
+
+    /// `contains` over the columns `radius` + 3 around `from`, from two
+    /// sections below the level to two above it, checked against the graph
+    /// `reach` exports: `None` exactly without a graph, the same answer for
+    /// every key, nothing past its box, its bits its cells' `REACHED`, and its
+    /// sky band reached exactly when a bit of its top layer is.
+    fn answers(o: &Occlusion, from: SectionKey, radius: i32) -> Vec<bool> {
+        let reach = o.reach();
+        assert_eq!(reach.is_some(), o.graph.is_some(), "a graph exported");
+        assert!(o.reach_is_exact(), "the bits are the cells'");
+        if let Some(g) = &o.graph {
+            let height = g.height as usize;
+            let mut top = (height - 1..g.directions.len()).step_by(height);
+            let sky = top.any(|i| (g.bits[i / 32] >> (i % 32)) & 1 != 0);
+            assert_eq!(g.sky_reached, sky, "the sky band");
+        }
+        let past = |key: SectionKey| {
+            o.graph.as_ref().is_some_and(|g| {
+                (key.0 - g.from.0).abs() > g.radius
+                    || (key.2 - g.from.2).abs() > g.radius
+                    || !(g.y0..=g.sections).contains(&key.1)
+            })
+        };
+        let mut answers = Vec::new();
+        for x in from.0 - radius - 3..=from.0 + radius + 3 {
+            for z in from.2 - radius - 3..=from.2 + radius + 3 {
+                for y in -2..=o.columns.sections + 1 {
+                    let key = (x, y, z);
+                    let contains = o.contains(key);
+                    assert_eq!(reach.is_none_or(|r| r.contains(key)), contains, "{key:?}");
+                    assert!(!(contains && past(key)), "{key:?} past the box");
+                    answers.push(contains);
+                }
+            }
+        }
+        answers
+    }
+
+    /// The graph `reach` exports answers as `contains` (`answers`): walled in,
+    /// opened by a partial update, cleared; over clamped boxes, the sky band
+    /// above them reached or not (a closed cave); from above the world. The
+    /// search, the partial update and `clear` each change the generation, and
+    /// another level's graph never repeats one.
+    #[test]
+    fn the_exported_graph_answers_as_contains() {
+        let mut o = Occlusion::new(0, 4);
+        let first = o.generation();
+        answers(&o, (0, 1, 0), 3);
+        for (dx, dy, dz) in STEPS {
+            o.set((dx, 1 + dy, dz), 0);
+        }
+        o.settle(at((0, 1, 0)), 3);
+        assert_ne!(o.generation(), first, "a search landed");
+        let walled = answers(&o, (0, 1, 0), 3);
+        let searched = o.generation();
+        o.set((0, 1, 1), ALL_VISIBLE);
+        o.update(at((0, 1, 0)), 3);
+        assert_ne!(o.generation(), searched, "a partial update reached more");
+        assert_ne!(answers(&o, (0, 1, 0), 3), walled);
+        let opened = o.generation();
+        o.clear();
+        assert_ne!(o.generation(), opened, "the graph went");
+        answers(&o, (0, 1, 0), 3);
+        // Another level's graph never takes one of this one's generations, or
+        // the pass would keep its copy of this one.
+        let mut other = Occlusion::new(0, 4);
+        other.settle(at((0, 1, 0)), 3);
+        assert_ne!(other.generation(), searched, "another level's graph");
+
+        let (mut clamped, mut band) = (0, [0; 2]);
+        let mut check = |mut o: Occlusion, camera: DVec3, radius: i32| {
+            o.settle(camera, radius);
+            answers(&o, o.columns.section_of(camera), radius);
+            let g = o.graph.as_ref().expect("searched");
+            if g.height < o.columns.sections + 2 {
+                clamped += 1;
+                // The first section above the box, over the camera's column.
+                band[usize::from(o.contains((g.from.0, g.y0 + g.height, g.from.2)))] += 1;
+            }
+        };
+        for seed in [0x9e37_79b9, 7, 0xdead_beef, 0x2545_f491] {
+            for (spread, count, radius) in [(6, 900, 6), (12, 2600, 12)] {
+                let mut o = Occlusion::new(0, 24);
+                random_world(&mut o, seed, count, spread);
+                check(o, at((0, 2, 0)) + DVec3::new(3.3, -5.7, 1.9), radius);
+            }
+        }
+        let mut cave = Occlusion::new(0, 24);
+        for (dx, dy, dz) in STEPS {
+            cave.set((dx, 1 + dy, dz), 0);
+        }
+        check(cave, at((0, 1, 0)), 4);
+        let mut above = Occlusion::new(0, 24);
+        random_world(&mut above, 7, 900, 6);
+        check(above, DVec3::new(3.3, 400.0, -5.6), 6);
+        assert!(
+            clamped > 0 && band[0] > 0 && band[1] > 0,
+            "{clamped} clamped, the band above hidden and seen {band:?}"
+        );
+    }
+
+    /// Whenever an answer of `contains` changes, so does the generation: over
+    /// 300 random steps, each a section set (open, closed or anything between),
+    /// a column removed, the camera moved to another section (now and then
+    /// above or below the world), or now and then another world, after a
+    /// `clear` or a teleport that drops every column (`remove_columns`), each
+    /// followed by a frame's `update` or a settled search; then an update from
+    /// a section the graph never reached. The exported graph answers as
+    /// `contains` after every step.
+    #[test]
+    fn every_change_of_the_answers_changes_the_generation() {
+        let mut seed = 0x0bad_5eed_u64;
+        let mut next = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        let (spread, radius, around) = (5, 3, (0, 0, 0));
+        let offset = DVec3::new(3.3, -5.7, 1.9);
+        let mut o = Occlusion::new(0, 24);
+        random_world(&mut o, 0x2545_f491, 400, spread);
+        let mut camera = at((0, 2, 0)) + offset;
+        o.settle(camera, radius);
+        let mut last = (o.generation(), answers(&o, around, spread + radius));
+        let mut changed = 0;
+        for step in 0..300 {
+            let r = next();
+            let key = (
+                (r % 11) as i32 - spread,
+                ((r >> 8) % 7) as i32,
+                ((r >> 16) % 11) as i32 - spread,
+            );
+            match r >> 24 & 15 {
+                0..=7 => {
+                    let vis = match r >> 28 & 3 {
+                        0 => ALL_VISIBLE,
+                        1 => 0,
+                        _ => next() & ALL_VISIBLE,
+                    };
+                    o.set(key, vis);
+                }
+                8 | 9 => o.remove_column(key.0, key.2),
+                10..=13 => {
+                    let y = match r >> 32 & 7 {
+                        0 => 30,
+                        1 => -3,
+                        _ => key.1,
+                    };
+                    camera = at((key.0, y, key.2)) + offset;
+                }
+                _ if r >> 36 & 7 == 0 => {
+                    o.clear();
+                    random_world(&mut o, next(), 400, spread);
+                }
+                _ if r >> 36 & 7 == 1 => {
+                    // A teleport: every column goes at once.
+                    let all: FxHashSet<_> = o.columns.map.keys().copied().collect();
+                    o.remove_columns(&all);
+                    random_world(&mut o, next(), 400, spread);
+                }
+                _ => {}
+            }
+            if r >> 40 & 1 == 0 {
+                o.update(camera, radius);
+            } else {
+                o.settle(camera, radius);
+            }
+            let now = (o.generation(), answers(&o, around, spread + radius));
+            if now.1 != last.1 {
+                assert_ne!(
+                    now.0, last.0,
+                    "step {step}: answers changed, the generation not"
+                );
+                changed += 1;
+            }
+            last = now;
+        }
+        assert!(changed >= 50, "{changed} steps changed answers");
+        // Walled in, then past the wall: the graph never reached the camera's
+        // section, and goes until the next search lands. (The first settle may
+        // land a search that started before the wall.)
+        for (dx, dy, dz) in STEPS {
+            o.set((dx, 1 + dy, dz), 0);
+        }
+        o.settle(at((0, 1, 0)), radius);
+        o.settle(at((0, 1, 0)), radius);
+        let walled = (o.generation(), answers(&o, around, spread + radius));
+        assert!(!o.contains((3, 1, 0)), "past the wall");
+        o.update(at((3, 1, 0)), radius);
+        assert_ne!(answers(&o, around, spread + radius), walled.1);
+        assert_ne!(o.generation(), walled.0, "the graph went");
     }
 }
