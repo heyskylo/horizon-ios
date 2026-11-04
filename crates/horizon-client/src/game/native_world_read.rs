@@ -116,6 +116,19 @@ impl Game<'_> {
         .ok_or(NativeBlockReadError::UnavailableDimension)?;
         read_block(world, self.pack.assets.registry, pos)
     }
+
+    /// The current of the fluid at `pos` in the level in place
+    /// (`FluidState.getFlow(level, pos)`), normalised: the push an item in it
+    /// gets, a water wheel's speed from the water around it. Zero where there
+    /// is no fluid or it doesn't move, and for a block not loaded. A client
+    /// reads its own copy of the level. API @API:fluid_flow@.
+    #[allow(dead_code)]
+    pub(super) fn native_fluid_flow(&self, pos: [i32; 3]) -> [f64; 3] {
+        if !self.world.loaded(pos[0], pos[2]) {
+            return [0.0; 3];
+        }
+        horizon_client::entities::fluid_flow(&self.world, &self.res.motion().fluids, pos)
+    }
 }
 
 /// Resolve an existing world state, preserving unloaded and invalid states.

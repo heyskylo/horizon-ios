@@ -13,18 +13,39 @@ use std::sync::Arc;
 /// A tank as a side reaches it (`native_fluid_tanks`).
 #[allow(dead_code)]
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct NativeFluidTank {
+pub struct NativeFluidTank {
     /// Its number, for the mod's own use.
-    pub(crate) tank: usize,
-    /// `minecraft:water` or `minecraft:lava`; none when the tank is empty.
-    pub(crate) fluid: Option<String>,
+    pub tank: usize,
+    /// `minecraft:water`, `minecraft:lava` or a mod's own (`create:honey`);
+    /// none when the tank is empty.
+    pub fluid: Option<String>,
     /// In millibuckets: a bucket is a thousand.
-    pub(crate) amount: i32,
-    pub(crate) capacity: i32,
+    pub amount: i32,
+    pub capacity: i32,
     /// Whether a fill may reach it through this side.
-    pub(crate) can_fill: bool,
+    pub can_fill: bool,
     /// Whether a drain may take it through this side.
-    pub(crate) can_drain: bool,
+    pub can_drain: bool,
+}
+
+/// A fluid a tank may hold: vanilla's water and lava, or a mod's own
+/// (`create:chocolate`), any id in a namespace other than `minecraft`, of
+/// vanilla's identifier characters. A mod's fluid lives in tanks only, the
+/// world has vanilla's alone, and its mod draws it; a cauldron takes only
+/// water and lava. Variants of one fluid (a potion's kinds) are fluids of
+/// their own (`create:potion/healing`): equal ids merge, others don't.
+fn tank_fluid(fluid: &str) -> bool {
+    if matches!(fluid, "minecraft:water" | "minecraft:lava") {
+        return true;
+    }
+    let ok = |b: u8| b.is_ascii_lowercase() || b.is_ascii_digit() || b"_.-".contains(&b);
+    fluid.split_once(':').is_some_and(|(namespace, path)| {
+        !namespace.is_empty()
+            && namespace != "minecraft"
+            && namespace.bytes().all(ok)
+            && !path.is_empty()
+            && path.bytes().all(|b| ok(b) || b == b'/')
+    })
 }
 
 /// A cauldron level's contents: level `level` holds `level * 1000 / 3`
@@ -191,11 +212,12 @@ impl Game<'_> {
         }
     }
     /// `native_fluid_insert`: up to `amount` millibuckets of `fluid`
-    /// (`minecraft:water`, `minecraft:lava`) into the block at `pos`, through
-    /// its side `face`, in the level in place: a mod block's tanks first
-    /// those with the same fluid, then empty ones, by the sides and tanks its
-    /// table gave; a cauldron by thirds of a bucket, a lava one only whole.
-    /// What did not fit. API 54.
+    /// (`minecraft:water`, `minecraft:lava`, or since API
+    /// @API:mod_fluids@ a mod's own, `create:chocolate`) into the block at
+    /// `pos`, through its side `face`, in the level in place: a mod block's
+    /// tanks first those with the same fluid, then empty ones, by the sides
+    /// and tanks its table gave; a cauldron by thirds of a bucket, a lava one
+    /// only whole, and none of a mod's fluid. What did not fit. API 54.
     pub(in crate::game) fn native_fluid_insert(
         &mut self,
         pos: [i32; 3],
@@ -203,7 +225,7 @@ impl Game<'_> {
         fluid: &str,
         amount: i32,
     ) -> i32 {
-        if fluid != "minecraft:water" && fluid != "minecraft:lava" {
+        if !tank_fluid(fluid) {
             return amount;
         }
         if !self.native_simulates() {
@@ -552,6 +574,31 @@ impl Game<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Tanks hold vanilla's two fluids and any of a mod's own; not a
+    /// made-up vanilla one, nor a name that isn't an identifier.
+    #[test]
+    fn a_tank_holds_vanilla_fluids_and_mods_own() {
+        for fluid in [
+            "minecraft:water",
+            "minecraft:lava",
+            "create:chocolate",
+            "create:potion/healing",
+        ] {
+            assert!(tank_fluid(fluid), "{fluid}");
+        }
+        for fluid in [
+            "minecraft:milk",
+            "minecraft:empty",
+            "chocolate",
+            ":x",
+            "create:",
+            "Create:honey",
+            "create:honey cake",
+        ] {
+            assert!(!tank_fluid(fluid), "{fluid}");
+        }
+    }
 
     #[test]
     fn a_cauldron_level_holds_a_third_of_a_bucket() {
