@@ -171,10 +171,26 @@ pub enum Language {
     Chuvash,
     #[serde(rename = "fo")]
     Faroese,
+    #[serde(rename = "fur")]
+    Friulian,
+    #[serde(rename = "li")]
+    Limburgish,
+    #[serde(rename = "lmo")]
+    Lombard,
+    #[serde(rename = "oc")]
+    Occitan,
+    #[serde(rename = "sah")]
+    Sakha,
+    #[serde(rename = "se")]
+    NorthernSami,
+    #[serde(rename = "szl")]
+    Silesian,
+    #[serde(rename = "vec")]
+    Venetian,
 }
 
 impl Language {
-    pub const ALL: [Language; 79] = [
+    pub const ALL: [Language; 87] = [
         Self::English,
         Self::French,
         Self::Russian,
@@ -254,6 +270,14 @@ impl Language {
         Self::Breton,
         Self::Chuvash,
         Self::Faroese,
+        Self::Friulian,
+        Self::Limburgish,
+        Self::Lombard,
+        Self::Occitan,
+        Self::Sakha,
+        Self::NorthernSami,
+        Self::Silesian,
+        Self::Venetian,
     ];
 
     /// Its code in `settings.json` and on the command line.
@@ -338,6 +362,14 @@ impl Language {
             Self::Breton => "br",
             Self::Chuvash => "cv",
             Self::Faroese => "fo",
+            Self::Friulian => "fur",
+            Self::Limburgish => "li",
+            Self::Lombard => "lmo",
+            Self::Occitan => "oc",
+            Self::Sakha => "sah",
+            Self::NorthernSami => "se",
+            Self::Silesian => "szl",
+            Self::Venetian => "vec",
         }
     }
 
@@ -423,6 +455,14 @@ impl Language {
             Self::Breton => "Brezhoneg",
             Self::Chuvash => "Чӑвашла",
             Self::Faroese => "Føroyskt",
+            Self::Friulian => "Furlan",
+            Self::Limburgish => "Limburgs",
+            Self::Lombard => "Lombard",
+            Self::Occitan => "Occitan",
+            Self::Sakha => "Саха тыла",
+            Self::NorthernSami => "Davvisámegiella",
+            Self::Silesian => "Ślōnskŏ",
+            Self::Venetian => "Vèneto",
         }
     }
 
@@ -550,6 +590,14 @@ impl Language {
             Self::Breton => include_str!("../lang/br.json"),
             Self::Chuvash => include_str!("../lang/cv.json"),
             Self::Faroese => include_str!("../lang/fo.json"),
+            Self::Friulian => include_str!("../lang/fur.json"),
+            Self::Limburgish => include_str!("../lang/li.json"),
+            Self::Lombard => include_str!("../lang/lmo.json"),
+            Self::Occitan => include_str!("../lang/oc.json"),
+            Self::Sakha => include_str!("../lang/sah.json"),
+            Self::NorthernSami => include_str!("../lang/se.json"),
+            Self::Silesian => include_str!("../lang/szl.json"),
+            Self::Venetian => include_str!("../lang/vec.json"),
         }
     }
 }
