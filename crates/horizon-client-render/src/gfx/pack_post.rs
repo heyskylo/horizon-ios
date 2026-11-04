@@ -4844,6 +4844,7 @@ mod tests {
             draw: false,
             images: Vec::new(),
             buffers: Vec::new(),
+            initial_values: vec![0; 48],
         };
         let buffers = pack_images::Buffers::new(
             &device,
@@ -4863,6 +4864,7 @@ mod tests {
             rgb: 0,
             released: std::cell::Cell::new(("", 0)),
             stand_ins: &stand_ins,
+            shadow_linear: 0,
         };
         let (_, samplers, ..) = bindings(
             device.features(),
