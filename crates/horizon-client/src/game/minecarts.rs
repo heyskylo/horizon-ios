@@ -177,6 +177,9 @@ pub(super) struct Minecart {
 /// `EntityType.MINECART`'s `sized(0.98F, 0.7F)`: float dimensions, widened.
 pub(super) const WIDTH: f64 = 0.98_f32 as f64;
 pub(super) const HEIGHT: f64 = 0.7_f32 as f64;
+/// `EntityEvent.TNT_PRIME`. `MinecartTNT.primeFuse` broadcasts it;
+/// `MinecartTNT.handleEntityEvent` answers by calling `primeFuse`.
+pub(super) const TNT_PRIME_EVENT: i8 = 70;
 /// AbstractMinecart.getDefaultDisplayOffset, in sixteenths of a block.
 fn default_display_offset(kind: CartKind) -> f64 {
     if kind == CartKind::Hopper { 1.0 } else { 6.0 }
@@ -1407,14 +1410,34 @@ impl Game<'_> {
             _ => {}
         }
     }
+    /// `MinecartTNT.primeFuse`: fuse 80, then `Level.broadcastEntityEvent`
+    /// (`EntityEvent.TNT_PRIME`, 70) and `SoundEvents.TNT_PRIMED`. A client
+    /// that receives 70 only sets the fuse (`handleEntityEvent`).
     fn prime_cart(&mut self, c: &mut Minecart) {
         if !self.ui.rules.bool("tnt_explodes") {
             return;
         }
         c.fuse = 80;
         let at = [c.position.x, c.position.y, c.position.z];
+        let id = c.id as i32;
+        self.lan_entity_event(id, TNT_PRIME_EVENT, at);
         self.audio
             .play("minecraft:entity.tnt.primed", Some(at), 1.0, 1.0);
+    }
+    /// `MinecartTNT.handleEntityEvent`: event 70 calls `primeFuse`, which on a
+    /// client only sets the fuse to 80. The window then counts it down
+    /// (`MinecartTNT.tick`) for the smoke, the flash and the swell.
+    pub(super) fn remote_tnt_cart_event(&mut self, id: i32, event: i8) {
+        if event != TNT_PRIME_EVENT {
+            return;
+        }
+        if let Some(c) = self
+            .carts
+            .iter_mut()
+            .find(|c| c.id == id as u32 && c.kind == CartKind::Tnt)
+        {
+            c.fuse = 80;
+        }
     }
     fn explode_cart(&mut self, c: &Minecart, speed_sqr: f64) {
         if !self.ui.rules.bool("tnt_explodes") {
@@ -1746,7 +1769,13 @@ impl Game<'_> {
             let Some(i) = cart_at(&self.carts, id, i) else {
                 continue;
             };
+            // The ticked copy takes the loot roll instead of copying it: only
+            // opening the cart, a command or a save reads it, never a tick, and
+            // a mineshaft's chest cart carries its whole roll as NBT. The
+            // stored cart keeps its slots for whatever reads them meanwhile.
+            let loot = self.carts[i].loot.take();
             let mut c = self.carts[i].clone();
+            c.loot = loot;
             let alive = self.tick_cart(&mut c, [0.0; 2]);
             if c.kind == CartKind::Hopper && c.enabled {
                 self.hopper_cart_suck(&mut c);
