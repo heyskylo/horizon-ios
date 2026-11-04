@@ -2,6 +2,7 @@
 //! block entity and storage data accessors over the game state.
 use super::{Arg, Context, Game, R, Target, err};
 use horizon_client::{
+    containers::BlockEntity,
     data_cmd::{self, Op, path_error},
     entity_nbt,
     nbt_path::NbtPath,
@@ -705,7 +706,18 @@ impl Game<'_> {
                 if let Some((_, mut new)) = save::decode_block_entity(&tag) {
                     self.take_loot_table(key, &tag, &mut new);
                     self.load_block_name(key, &new, &tag);
-                    self.world.block_entities.insert(key, new);
+                    if let (Some(BlockEntity::Mod(current)), BlockEntity::Mod(loaded)) =
+                        (self.world.block_entities.get_mut(&key), &mut new)
+                        && current.id == loaded.id
+                    {
+                        // BlockDataAccessor.setData loads the existing entity.
+                        // Replace its saved fields, preserving runtime data and
+                        // identity; DerefMut still invalidates content caches.
+                        current.nbt = std::mem::take(&mut loaded.nbt);
+                        current.items = std::mem::take(&mut loaded.items);
+                    } else {
+                        self.world.block_entities.insert(key, new);
+                    }
                     self.world.set_block_lock(key, &tag);
                     self.update_spawner_display(key);
                     // BlockDataAccessor.setData: setChanged and sendBlockUpdated(3),
@@ -1508,3 +1520,6 @@ mod loot_table_tests {
         assert!(saved.get("Items").is_none());
     }
 }
+
+#[cfg(test)]
+mod mod_block_entity_tests;
