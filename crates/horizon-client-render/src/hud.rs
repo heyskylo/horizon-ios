@@ -796,10 +796,10 @@ impl HudAtlas {
         let g = self.font.glyph(ch);
         g.rect.map(|rect| (rect, g.advance))
     }
-    /// A font glyph's atlas cell (none for blank glyphs such as the space) and advance.
-    pub fn glyph_cell(&self, ch: char) -> (Option<Rect>, f32) {
-        let g = self.font.glyph(ch);
-        (g.rect, g.advance)
+    /// A font glyph in the default font: its atlas cell (none for blank
+    /// glyphs such as the space), its box and advance.
+    pub fn glyph_cell(&self, ch: char) -> crate::font::Glyph {
+        self.font.glyph(ch)
     }
     pub fn build(root: &Path) -> Result<Self> {
         Self::build_over(root, root)
@@ -1274,6 +1274,12 @@ impl HudAtlas {
             edition.3 = pixels;
         }
         images.push(("horizon/white".into(), 4, 4, vec![255; 64]));
+        images.push((
+            crate::pad_cursor::SPRITE.into(),
+            crate::pad_cursor::SIZE,
+            crate::pad_cursor::SIZE,
+            crate::pad_cursor::pixels(),
+        ));
         if full {
             Self::slots(&mut images, crate::trims::slot_size(root), mod_image);
             // MissingTextureAtlasSprite.generateMissingImage: 16x16, magenta

@@ -3369,6 +3369,10 @@ pub struct Settings {
     /// the mockup's 24.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub blur: Option<f32>,
+    /// The launcher theme (`themes::theme`): its sky behind the light appearance. Unset is
+    /// Horizon's own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub theme: Option<String>,
     /// The cheaper scene for older computers (a lower-resolution sky, a box blur, the scene
     /// following the mouse less often and resizes baked in the background). Unset is off.
     #[serde(default, skip_serializing_if = "Option::is_none")]
