@@ -13,6 +13,7 @@ use horizon_core::{
     random::RandomSource,
     ticks::TickTypeId,
 };
+use std::rc::Rc;
 use std::sync::Arc;
 
 impl<L: LevelAccess + ?Sized> Sim<'_, L> {
@@ -110,6 +111,44 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
                         if previous != count && b.data(state).is(Class::TrappedChest) {
                             self.trapped_chest_update_neighbors(pos, state);
                         }
+                        if count > 0 {
+                            self.schedule_tick(pos, block, 5);
+                        }
+                    }
+                }
+                Class::Barrel => {
+                    // BarrelBlock.tick → BarrelBlockEntity.recheckOpen →
+                    // ContainerOpenersCounter.recheckOpeners: the barrel
+                    // recounts its openers, and the count crossing zero opens
+                    // or closes it. Unlike a chest it broadcasts no block
+                    // event (BarrelBlockEntity$1.openerCountChanged is empty):
+                    // the `open` property, the barrel's own sound and the
+                    // container game events are its whole report.
+                    if let Some((previous, count)) = self.level.recheck_container_openers(pos) {
+                        if previous != count {
+                            let open = count > 0;
+                            let sound: Arc<str> = if open {
+                                "minecraft:block.barrel.open".into()
+                            } else {
+                                "minecraft:block.barrel.close".into()
+                            };
+                            // BarrelBlockEntity.playSound: volume 0.5, pitch
+                            // 0.9 to 1.0 from the level random.
+                            let pitch = 0.9 + self.random().next_float() * 0.1;
+                            self.sound(pos, &sound, 0.5, pitch);
+                            // BarrelBlockEntity.updateBlockState.
+                            self.set_block_and_update(pos, b.table.set_bool(state, p.open, open));
+                            self.game_event(
+                                pos,
+                                if open {
+                                    "minecraft:container_open"
+                                } else {
+                                    "minecraft:container_close"
+                                },
+                            );
+                        }
+                        // ContainerOpenersCounter.scheduleRecheck holds only
+                        // while someone has it open.
                         if count > 0 {
                             self.schedule_tick(pos, block, 5);
                         }
@@ -1826,7 +1865,7 @@ impl Behaviours {
         level: &mut L,
         ticks: &mut Ticks,
         chunk: ChunkPos,
-        mut next_ticking: impl FnMut(&mut L, i32) -> Option<(i32, Option<Arc<RandomTickMask>>)>,
+        mut next_ticking: impl FnMut(&mut L, i32) -> Option<(i32, Option<Rc<RandomTickMask>>)>,
     ) {
         let speed = level.game_rules().random_tick_speed;
         if speed <= 0 {
@@ -1933,6 +1972,7 @@ impl RandomTickMask {
         }
         Self(bits)
     }
+    #[inline]
     pub fn may_tick(&self, pos: BlockPos) -> bool {
         let i = ((pos.y & 15) << 8 | (pos.z & 15) << 4 | (pos.x & 15)) as usize;
         self.0[i >> 6] >> (i & 63) & 1 != 0

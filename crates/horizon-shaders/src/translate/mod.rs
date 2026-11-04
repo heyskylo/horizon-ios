@@ -28,6 +28,7 @@ use naga::valid::{Capabilities, ValidationFlags, Validator};
 use crate::Preprocessed;
 
 mod anonymous_structs;
+mod array_constructors;
 mod atomic_vectors;
 mod geometry;
 mod image_parameters;
@@ -287,6 +288,14 @@ fn translate(
         }
         for (name, ty) in &stage.samplers {
             samplers.insert(name.clone(), ty.clone());
+        }
+    }
+    if gbuffers.is_some() {
+        // The references use the geometry transform state instead of a second frame slot.
+        for name in ["projectionMatrix", "modelViewMatrix"] {
+            if uniforms.get(name).is_some_and(|ty| ty == "mat4") {
+                uniforms.remove(name);
+            }
         }
     }
     // `alphaTestRef` is the program's alpha test reference: a constant of the program.
@@ -1127,7 +1136,7 @@ fn compile(stage: &Stage, text: &str, header_lines: usize) -> Result<naga::Modul
             message,
         }]
     })?;
-    let bounded = integer_bounds::rewrite(&specialized);
+    let bounded = integer_bounds::rewrite(&array_constructors::rewrite(&specialized));
     let text = bounded.as_str();
     let at = |text: &str, span: naga::Span, message: String| {
         let start = span.to_range().map_or(0, |r| r.start);
@@ -1444,6 +1453,110 @@ mod tests {
         }
     }
 
+    /// Core matrix state and compatibility matrix state describe the same geometry transform.
+    #[test]
+    fn gbuffers_core_matrices_use_frame_state() {
+        for declaration in ["", "uniform mat4 projectionMatrix, modelViewMatrix;"] {
+            for profile in ["330 compatibility", "330 core"] {
+                let source = format!(
+                    "#version {profile}\n{declaration}\nin vec3 vaPosition;\nvoid main() {{ gl_Position = projectionMatrix * modelViewMatrix * vec4(vaPosition, 1.0); }}\n"
+                );
+                let p = core_matrix_program(&source, false).unwrap();
+                for name in ["projectionMatrix", "modelViewMatrix"] {
+                    assert!(!p.interface.uniforms.iter().any(|u| u.name == name));
+                }
+                for name in ["gbufferProjection", "gbufferModelView"] {
+                    assert!(p.interface.uniforms.iter().any(|u| u.name == name));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn core_matrix_aliases_preserve_authored_names_and_errors() {
+        for declarations in [
+            "mat4 projectionMatrix = mat4(2.0), modelViewMatrix = mat4(3.0);",
+            "mat4 projectionMatrix; mat4 modelViewMatrix;",
+            "const mat4 projectionMatrix = mat4(2.0), modelViewMatrix = mat4(3.0);",
+            "uniform mat4 projectionMatrix, modelViewMatrix;",
+        ] {
+            let source = format!(
+                "#version 330\n{declarations}\n\
+                 struct S {{ mat4 projectionMatrix; mat4 modelViewMatrix; }};\n\
+                 vec4 local(mat4 projectionMatrix, mat4 modelViewMatrix) {{\n\
+                 return projectionMatrix * modelViewMatrix * vec4(1.0); }}\n\
+                 void main() {{\n\
+                 S s; s.projectionMatrix = mat4(1.0); s.modelViewMatrix = mat4(1.0);\n\
+                 vec4 p = projectionMatrix * modelViewMatrix * vec4(1.0);\n\
+                 {{ mat4 projectionMatrix = modelViewMatrix; p += projectionMatrix * vec4(1.0); }}\n\
+                 for (int modelViewMatrix = 0; modelViewMatrix < 2; modelViewMatrix++) p.x += float(modelViewMatrix);\n\
+                 gl_Position = p + local(s.projectionMatrix, s.modelViewMatrix); }}"
+            );
+            core_matrix_program(&source, false).unwrap_or_else(|e| panic!("{declarations}: {e:?}"));
+        }
+        core_matrix_program(
+            "#version 330\nmat4 projectionMatrix() { return mat4(2.0); }\nvoid main() { gl_Position = projectionMatrix() * modelViewMatrix * vec4(1.0); }", false,
+        ).unwrap();
+        let unknown = core_matrix_program(
+            "#version 330\nvoid main() { gl_Position = unknownMatrix * vec4(1.0); }",
+            false,
+        )
+        .err()
+        .unwrap();
+        assert!(unknown.iter().any(|e| e.message.contains("unknownMatrix")));
+        let shadow = core_matrix_program(
+            "#version 330\nvoid main() { gl_Position = projectionMatrix * modelViewMatrix * vec4(1.0); }", true,
+        ).unwrap();
+        for name in ["shadowProjection", "shadowModelView"] {
+            assert!(shadow.interface.uniforms.iter().any(|u| u.name == name));
+        }
+        // Composite shaders have their own transform; undeclared core names stay errors.
+        let composite = program(
+            &[
+                (
+                    "composite.vsh",
+                    "#version 330\nvoid main() { gl_Position = projectionMatrix * vec4(1.0); }",
+                ),
+                (
+                    "composite.fsh",
+                    "#version 330\nout vec4 c; void main() { c = vec4(1.0); }",
+                ),
+            ],
+            Target::Buffers,
+        )
+        .err()
+        .unwrap();
+        assert!(
+            composite
+                .iter()
+                .any(|e| e.message.contains("projectionMatrix"))
+        );
+    }
+
+    fn core_matrix_program(source: &str, shadow: bool) -> Result<Program, Vec<Error>> {
+        let files = [
+            ("shaders/gbuffers_line.vsh", source),
+            (
+                "shaders/gbuffers_line.fsh",
+                "#version 330\nout vec4 color; void main() { color = vec4(1.0); }",
+            ),
+        ];
+        let pack = Pack::from_zip_bytes("core-matrices.zip", zip(&files)).unwrap();
+        let macros = Macros::standard();
+        let vertex = preprocess(&pack, "gbuffers_line.vsh", &macros);
+        let fragment = preprocess(&pack, "gbuffers_line.fsh", &macros);
+        let inputs = GbuffersInputs {
+            body: "hz_Vertex = vec4(0.25, 0.5, -2.0, 1.0);".into(),
+            attributes: vec![("vaPosition".into(), "hz_Vertex.xyz".into())],
+            ..Default::default()
+        };
+        if shadow {
+            translate_shadow(&vertex, &fragment, &inputs)
+        } else {
+            translate_gbuffers(&vertex, &fragment, Target::Buffers, &inputs)
+        }
+    }
+
     #[test]
     fn compute_dispatch_does_not_guess_unsupported_scalar_expressions() {
         for declaration in [
@@ -1484,6 +1597,62 @@ mod tests {
 
     const VSH_120: &str = "#version 120\nvarying vec2 texcoord;\nvoid main() {\n    gl_Position = ftransform();\n    \
                            texcoord = (gl_TextureMatrix[0] * gl_MultiTexCoord0).xy;\n}\n";
+
+    #[test]
+    fn mixed_type_array_constructor_arguments_validate() {
+        // Drivers take these; naga composed them unconverted ("Composing 0's component type").
+        for body in [
+            "int k[2] = int[2](1u, 2); return float(k[1]);",
+            "float k[] = float[](1u, 2); return k[1];",
+            "uint k[2] = uint[2](1.0, 2); return float(k[1]);",
+            "vec2 k[2] = vec2[](ivec2(1), texcoord); return k[1].x;",
+        ] {
+            let fsh = format!(
+                "#version 120\nvarying vec2 texcoord;\nfloat n2d() {{ {body} }}\nvoid main() {{ gl_FragColor = vec4(n2d()); }}\n"
+            );
+            let p = program(
+                &[("composite.vsh", VSH_120), ("composite.fsh", &fsh)],
+                Target::Window,
+            );
+            assert!(p.is_ok(), "{body}: {:?}", p.err());
+        }
+    }
+
+    #[test]
+    fn mixed_type_constructor_arguments_validate() {
+        // Each kind of constructor and call, with arguments drivers convert (spec 5.4).
+        let cases = [
+            ("", "vec3 k = vec3(1u, 2, texcoord.x); return k.x;"),
+            ("", "ivec2 k = ivec2(1u, 2.0); return float(k.x);"),
+            ("", "mat2 m = mat2(1u, 2, texcoord.x, 4.0); return m[0].x;"),
+            (
+                "struct S { int a; float b; vec2 c; };\n",
+                "S s = S(1u, 2, ivec2(3)); return s.b;",
+            ),
+            (
+                "struct S { uint a; float b; };\n",
+                "S s = S(1.0, 2); return s.b;",
+            ),
+            (
+                "float h(float x, int y) { return x + float(y); }\n",
+                "return h(1, 2);",
+            ),
+        ];
+        let mut bad = Vec::new();
+        for (decl, body) in cases {
+            let fsh = format!(
+                "#version 120\nvarying vec2 texcoord;\n{decl}float n2d() {{ {body} }}\nvoid main() {{ gl_FragColor = vec4(n2d()); }}\n"
+            );
+            let p = program(
+                &[("composite.vsh", VSH_120), ("composite.fsh", &fsh)],
+                Target::Window,
+            );
+            if let Err(e) = p {
+                bad.push(format!("{body}: {:?}", e.first().map(|e| &e.message)));
+            }
+        }
+        assert!(bad.is_empty(), "{}", bad.join("\n"));
+    }
 
     #[test]
     fn compatibility_programs_translate() {
@@ -1540,6 +1709,28 @@ mod tests {
         assert!(p.is_ok(), "{:?}", p.err());
     }
 
+    /// `sqrt` of a negative is undefined in GLSL: in functions it reads zero, as packs written
+    /// against GL drivers expect at `sqrt(1.0 - y * y)` with y rounding just above 1. A global
+    /// constant keeps the built-in, so it stays a constant (an array's size here).
+    #[test]
+    fn sqrt_in_functions_never_takes_a_negative() {
+        let fsh = "#version 120\nconst int n = int(sqrt(16.0));\nfloat w[n];\n\
+                   vec2 f(vec2 v) { float y = v.x; return vec2(sqrt(1.0 - y * y), sqrt(v).y); }\n\
+                   void main() { w[3] = 1.0; gl_FragColor = vec4(f(vec2(1.0)), w[3], 1.0); }\n";
+        let p = program(
+            &[("composite.vsh", VSH_120), ("composite.fsh", fsh)],
+            Target::Window,
+        )
+        .unwrap();
+        let clamped = p.fragment.functions.iter().any(|(_, f)| {
+            f.expressions.iter().any(|(_, e)| {
+                matches!(e, naga::Expression::Math { fun: naga::MathFunction::Sqrt, arg, .. }
+                    if matches!(f.expressions[*arg], naga::Expression::Math { fun: naga::MathFunction::Max, .. }))
+            })
+        });
+        assert!(clamped, "sqrt's argument is clamped at zero");
+    }
+
     #[test]
     fn core_programs_translate() {
         let vsh = "#version 330 core\nin vec3 vaPosition;\nin vec2 vaUV0;\nuniform mat4 modelViewMatrix, projectionMatrix;\n\
@@ -1581,6 +1772,131 @@ mod tests {
             Target::Buffers,
         );
         assert!(p.is_ok(), "{:?}", p.err());
+    }
+
+    /// #8174: the interpolation qualifiers on a varying, in the order and the profile packs write
+    /// them. The reporter's own two-line pair first; each variant alone, so one failing shows.
+    #[test]
+    fn interpolation_qualifiers_translate_on_varyings() {
+        let vsh = |version: &str, decl: &str| {
+            format!(
+                "#version {version}
+{decl}
+void main() {{
+    texcoord = gl_MultiTexCoord0.xy;
+                     gl_Position = gl_ModelViewProjectionMatrix * gl_Vertex;
+}}
+"
+            )
+        };
+        let fsh = |version: &str, decl: &str| {
+            format!(
+                "#version {version}
+{decl}
+void main() {{ gl_FragColor = vec4(texcoord, 0.0, 1.0); }}
+"
+            )
+        };
+        let mut failures = Vec::new();
+        for version in ["430 compatibility", "330 compatibility", "430"] {
+            for qualifier in [
+                "flat",
+                "smooth",
+                "centroid",
+                "noperspective",
+                "centroid smooth",
+                "flat centroid",
+                "centroid flat",
+            ] {
+                for order in [0, 1] {
+                    let (out, input) = if order == 0 {
+                        (
+                            format!("{qualifier} out vec2 texcoord;"),
+                            format!("{qualifier} in vec2 texcoord;"),
+                        )
+                    } else {
+                        (
+                            format!("out {qualifier} vec2 texcoord;"),
+                            format!("in {qualifier} vec2 texcoord;"),
+                        )
+                    };
+                    let p = program(
+                        &[
+                            ("composite.vsh", &vsh(version, &out)),
+                            ("composite.fsh", &fsh(version, &input)),
+                        ],
+                        Target::Buffers,
+                    );
+                    if let Err(e) = p {
+                        failures.push(format!("{version}: `{out}` / `{input}`: {e:?}"));
+                    }
+                }
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "{}",
+            failures.join(
+                "
+"
+            )
+        );
+    }
+
+    /// #8174: the same qualifiers on the members of an interface block, which is how packs with
+    /// a `dimensions/` folder pass their varyings. Before #6875 the members' `flat` reached naga
+    /// as "Expected Void, Struct or a type, found Interpolation(Flat)".
+    #[test]
+    fn interpolation_qualifiers_translate_on_interface_block_members() {
+        let mut failures = Vec::new();
+        for member in [
+            "flat vec2 texcoord;",
+            "flat int id; vec2 texcoord;",
+            "smooth vec2 texcoord;",
+            "centroid vec2 texcoord;",
+            "noperspective vec2 texcoord;",
+            "flat centroid vec2 texcoord;",
+            "centroid flat vec2 texcoord;",
+            "flat sample vec2 texcoord;",
+            "sample flat vec2 texcoord;",
+            "layout(location = 1) flat vec2 texcoord;",
+        ] {
+            let id_out = if member.contains("int id") {
+                "    vOut.id = 1;
+"
+            } else {
+                ""
+            };
+            let vsh = format!(
+                "#version 430 compatibility
+out VertexData {{ {member} }} vOut;
+void main() {{
+{id_out}                     vOut.texcoord = gl_MultiTexCoord0.xy;
+    gl_Position = gl_ModelViewProjectionMatrix * gl_Vertex;
+}}
+"
+            );
+            let fsh = format!(
+                "#version 430 compatibility
+in VertexData {{ {member} }} vIn;
+                 void main() {{ gl_FragColor = vec4(vIn.texcoord, 0.0, 1.0); }}
+"
+            );
+            if let Err(e) = program(
+                &[("composite.vsh", &vsh), ("composite.fsh", &fsh)],
+                Target::Buffers,
+            ) {
+                failures.push(format!("`{member}`: {e:?}"));
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "{}",
+            failures.join(
+                "
+"
+            )
+        );
     }
 
     #[test]

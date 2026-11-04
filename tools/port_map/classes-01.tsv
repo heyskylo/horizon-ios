@@ -48,29 +48,30 @@ Pillager.pickUpItem	inline	crates/horizon-client/src/game/raids.rs::Game::sync_r
 Pillager.registerGoals	port	crates/horizon-client/src/mobs/illager.rs::register_pillager	
 Pillager.wantsItem	skip:other		dead code: only a white banner passes, and Pillager.pickUpItem sends every BannerItem to Raider.pickUpItem before consulting it; the ominous banner pickup is in game/raids.rs
 PiglinBrute.createAttributes	skip:data		attributes come from entity-types.json
-PiglinBrute.customServerAiStep	inline	crates/horizon-client/src/mobs/piglin.rs::register_brute	gap: minor: the brain tick is replaced by the goals set in register_brute; the activity update is in PiglinBruteAi rows
+PiglinBrute.customServerAiStep	inline	crates/horizon-client/src/mobs/piglin.rs::ai_step	after the goals that pick the target: update_activity, then maybe_play_brute_sound; the goals set in register_brute stand in for vanilla's brain tick
 PiglinBrute.finalizeSpawn	inline	crates/horizon-client/src/mobs/finalize.rs::Ctx::mob	golden axe in the main hand via populate; initMemories is missing
 PiglinBrute.hurtServer	inline	crates/horizon-client/src/mobs/piglin.rs::register_brute	gap: minor: retaliation is the HurtByTarget goal; no PiglinAi.maybeRetaliate for non-piglin attackers
 PiglinBrute.wantsToPickUp	port	crates/horizon-client/src/mobs/equip.rs::wants_to_pick_up	
 PiglinBruteAi.createIdleLookBehaviors	inline	crates/horizon-client/src/mobs/piglin.rs::register_brute	gap: minor: looks at players only (LookAtPlayer); no look at piglins, random look or do-nothing pause
-PiglinBruteAi.createIdleMovementBehaviors	inline	crates/horizon-client/src/mobs/piglin.rs::register_brute	gap: minor: strolls anywhere; no visits to piglins and no return to its home point
+PiglinBruteAi.createIdleMovementBehaviors	inline	crates/horizon-client/src/mobs/piglin.rs::register_brute	the walk back to the home memory is `BruteStrollHome` (`StrollToPoi(HOME, 0.6F, 2, 100)`); gap: minor: no visits to piglins (`InteractWith`) and no `StrollAroundPoi`, and the goal yields within ten blocks of home where vanilla re-targets it every 80 ticks
 PiglinBruteAi.findNearestValidAttackTarget	inline	crates/horizon-client/src/mobs/piglin.rs::register_brute	gap: minor: targets nearest player or wither skeleton through the target goals; no anger memory first
 PiglinBruteAi.initCoreActivity	inline	crates/horizon-client/src/mobs/piglin.rs::register_brute	gap: minor: no door opening and no stop-anger-when-target-dead rule; panic-free float only
 PiglinBruteAi.initFightActivity	inline	crates/horizon-client/src/mobs/piglin.rs::register_brute	melee goal at priority 2; attacks as the MeleeAttack goal does
 PiglinBruteAi.initIdleActivity	inline	crates/horizon-client/src/mobs/piglin.rs::register_brute	idle behaviour as goals: stroll, look at player, targets
-PiglinBruteAi.initMemories	missing		minor: no home point is remembered, so the brute never returns to where it spawned
+PiglinBruteAi.initMemories	port	crates/horizon-client/src/mobs/finalize.rs::Ctx::finalize	the brute's spawn stores its block position as the home memory (`extra.home` plus the brain mirror), which `mobs/piglin.rs::register_brute` now walks it back to; a hit no longer clears it
 PiglinBruteAi.isNearestValidAttackTarget	missing		minor: the brute never drops a target for a nearer one; target goals keep theirs until it dies or is lost
 PiglinBruteAi.maybePlayActivitySound	port	crates/horizon-client/src/mobs/piglin.rs::maybe_play_brute_sound	the level random is drawn every tick and the angry grunt plays under 0.0125 while the brute is fighting
 PiglinBruteAi.playActivitySound	port	crates/horizon-client/src/mobs/piglin.rs::play_brute_sound	entity.piglin_brute.angry when the fight activity starts
 PiglinBruteAi.setAngerTarget	missing		minor: no 600-tick anger memory; the target goals keep the target instead
-PiglinBruteAi.updateActivity	inline	crates/horizon-client/src/mobs/piglin.rs::register_brute	gap: minor: no fight and idle activity switch; the melee goal sets the aggressive flag
+PiglinBruteAi.updateActivity	inline	crates/horizon-client/src/mobs/piglin.rs::update_activity	the first valid activity (fight on a target, else idle for a brute) is stored and voiced on a change; shared with PiglinAi and HoglinAi
 StartAdmiringItemIfSeen.create	inline	crates/horizon-client/src/game/piglins.rs::Game::piglin_pickups	gap: player: a piglin takes a wanted item and admires it in hand; it does not stop to admire one it only sees on the ground
 StopAdmiringIfItemTooFarAway.create	inline	crates/horizon-client/src/mobs/piglin.rs::Memories::admire_seen	the 9 block test on NEAREST_VISIBLE_WANTED_ITEM (squared 81) while the off hand holds what is admired, folded into the admire memory tick
 StopAdmiringIfTiredOfTryingToReachItem.create	inline	crates/horizon-client/src/mobs/piglin.rs::Memories::admire_seen	the 200 tick TIME_TRYING_TO_REACH_ADMIRE_ITEM countdown that ends the admire, then DISABLE_WALK_TO_ADMIRE_ITEM for 200
 Parched.getArrow	inline	crates/horizon-client/src/mobs/undead.rs::perform_ranged_attack	Parched arrows carry weakness for 600 ticks
+Parched.canBeAffected	port	crates/horizon-client/src/mobs.rs::Mob::can_be_affected	weakness only, so weakness arrows a parched fires still land on others
 Stray.checkStraySpawnRules	port	crates/horizon-client/src/mobs/spawn_rules.rs::check_spawn_rules	S::Stray arm: powder snow skipped, sky must be visible
 Stray.getArrow	inline	crates/horizon-client/src/mobs/undead.rs::perform_ranged_attack	Stray arrows carry slowness for 600 ticks
-CaveSpider.getVehicleAttachmentPoint	port	crates/horizon-client/src/mobs/riders.rs::vehicle_attachment	gap: minor: rides at 0 height; vanilla uses 0.21875 when the vehicle is not wider
+CaveSpider.getVehicleAttachmentPoint	port	crates/horizon-client/src/mobs/riders.rs::vehicle_attachment	0.21875 of the scale when the vehicle's box is no wider than the spider's; the wider case falls to the type default
 VillagerDataHolder.finalizeVillagerType	inline	crates/horizon-client/src/mobs/finalize.rs::Ctx::villager_type	
 Abilities.apply	port	crates/horizon-client/src/game/remote.rs::Game::apply_remote_abilities	gap: minor: invulnerable, flying, may fly and flying speed only; instabuild, may build and walk speed are not applied
 Abilities.pack	skip:java		record copy for the abilities packet; the flags are read in remote.rs
@@ -78,9 +79,9 @@ PlayerSkin.with	missing		minor: skin patches (body, cape, elytra and model overr
 PlayerSkin.Patch.create	skip:java		record factory for the patch; the patch itself is missing (see PlayerSkin.with)
 SpectralArrow.doPostHurtEffects	port	crates/horizon-client/src/game/potions.rs::Game::arrow_post_hurt_effects	200-tick Glowing on any target a spectral arrow lands on (creatures.rs:3589); a bow, a crossbow and a dispenser also store the effect on the arrow
 SpectralArrow.tick	port	crates/horizon-client/src/game/remote_projectiles.rs::Game::arrow_effect_particles	client tick: an effect sparkle at the arrow's position while it is not stuck; the tipped arrow's colour swirls share the fn
-Fireball.getSlot	missing		minor: the fireball's item slot (its displayed fire charge) is not modelled
-Fireball.readAdditionalSaveData	missing		`fireball_from_nbt` reads no `Item` key, so a saved fireball is drawn as the default fire charge
-Fireball.setItem	missing		minor: the displayed item of a fireball is not set
+Fireball.getSlot	missing		minor: entity slot access (`/loot insert` on an entity) is not modelled, so nothing here can set the slot the fireball's item sits in
+Fireball.readAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::fireball_from_nbt	the `Item` it is drawn as goes through `setItem`, which refuses an empty stack and keeps a single one
+Fireball.setItem	port	crates/horizon-client/src/projectiles.rs::Projectile::set_item	an empty stack puts the default fire charge back, anything else is kept as one (`copyWithCount(1)`); a kind that is no `Fireball` has no item
 Fireball.shouldRenderAtSqrDistance	skip:ui		render distance rule for the first two ticks; Horizon draws the projectile as its own pass
 LargeFireball.onHit	port	crates/horizon-client/src/game/creatures.rs::Game::projectile_hit	LargeFireball arm: explosion of the given power, then the projectile is gone
 LargeFireball.onHitEntity	port	crates/horizon-client/src/game/creatures.rs::Game::projectile_hit	LargeFireball arm: 6 damage to the entity
@@ -114,7 +115,7 @@ MinecartCommandBlock.MinecartCommandBase.onUpdated	inline	crates/horizon-client/
 MinecartFurnace.addAdditionalSaveData	port	crates/horizon-client/src/game/minecarts.rs::Minecart::to_nbt	
 MinecartFurnace.addFuel	inline	crates/horizon-client/src/game/minecarts.rs::Game::interact_cart	furnace arm: coal or charcoal adds 3600 ticks of fuel up to 32000
 MinecartFurnace.applyNaturalSlowdown	port	crates/horizon-client/src/game/minecarts.rs::Game::natural_slowdown	
-MinecartFurnace.calculateNewPushAlong	inline	crates/horizon-client/src/game/minecarts.rs::Game::natural_slowdown	the push projected on the velocity, inside natural_slowdown
+MinecartFurnace.calculateNewPushAlong	port	crates/horizon-client/src/game/minecarts.rs::push_along	the push projected on the movement when both horizontal lengths pass 1.0E-4 and 0.001, else the push; the slow path and the cart tick both call it
 MinecartFurnace.getDefaultDisplayBlockState	port	crates/horizon-client/src/game/minecarts.rs::Game::display_state	lit furnace while it has fuel
 MinecartFurnace.getMaxSpeed	port	crates/horizon-client/src/game/minecarts.rs::Game::max_speed	half speed on land, three quarters of 0.2 in water
 MinecartFurnace.interact	inline	crates/horizon-client/src/game/minecarts.rs::Game::interact_cart	furnace arm

@@ -255,7 +255,7 @@ NBT, the random's state. On top of that, the harnesses that cover server code ru
 - section encoding once per chunk, on helper threads (#623, `lan/chunks.rs`);
 - chunk frames compressed once for every player (`SharedFrames`, `lan/conn.rs`);
 - vanilla's chunk batch pacing (`ChunkBatchReceived`) and its move checks (#586);
-- a reader and a writer thread per connection (#649 made the writer wake once per tick).
+- a fixed pool of network threads for every play connection (5.1, `lan/io_pool.rs`).
 
 #3036 (hectoreccles) moves batch bodies to helper threads. W1 builds on it rather than redoing it.
 
@@ -267,6 +267,11 @@ Framing, compression, encryption and the socket writes happen on the pool. A pla
 budget gets its chunk sending throttled first (as vanilla's batch pacing does). Vanilla's timeouts and
 disconnects stay unchanged. **Removes:** thread switches and lock traffic per packet. Bench: CPU per player at
 200 idle bots.
+
+**Done** (`lan/io_pool.rs`): the pool, one bounded outbox per player (past `MAX_PENDING` it disconnects), and the
+integrated server's own player on the same threads through its in-memory pipe. Login and configuration still run
+on a thread of their own until the player enters play. `SharedFrames` hashes a body once (XXH3-128 keyed by a
+random secret) and a second sender of a body being compressed waits for that frame instead of compressing it again.
 
 ### 5.2 Join
 

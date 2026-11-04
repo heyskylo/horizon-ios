@@ -3,6 +3,7 @@
 //! client sends back in container clicks (HashedStack).
 use crate::{
     Result,
+    adapter::ids,
     buf::{Codec, Reader, Writer, pack_block_pos, unpack_block_pos},
 };
 use horizon_world::nbt::Tag;
@@ -64,6 +65,9 @@ pub mod component {
     pub const CONTAINER: i32 = 77;
     pub const SULFUR_CUBE_CONTENT: i32 = 80;
     pub const PAINTING_VARIANT: i32 = 109;
+    /// `SignText.STREAM_CODEC`: a sign item's text, front and back.
+    pub const SIGN_TEXT_FRONT: i32 = 118;
+    pub const SIGN_TEXT_BACK: i32 = 119;
 }
 
 /// A written book's content (`WrittenBookContent.STREAM_CODEC`). The raw title
@@ -702,14 +706,16 @@ impl WirePatch {
         let negative = r.count(65536)?;
         let mut added = Vec::with_capacity(positive.min(64));
         for _ in 0..positive {
-            let kind = r.varint()?;
+            let kind = ids::component(r.varint()?);
             let len = r.count(r.remaining())?;
             added.push((
                 kind,
                 Component::read(kind, &mut Reader::new(r.bytes(len)?))?,
             ));
         }
-        let removed = (0..negative).map(|_| r.varint()).collect::<Result<_>>()?;
+        let removed = (0..negative)
+            .map(|_| r.varint().map(ids::component))
+            .collect::<Result<_>>()?;
         Ok((added, removed))
     }
 }
@@ -762,15 +768,15 @@ impl Codec<Option<Stack>> for Slot {
             return;
         };
         w.varint(s.count);
-        w.varint(s.item);
+        w.varint(ids::item(s.item));
         w.varint(s.added.len() as i32);
         w.varint(s.removed.len() as i32);
         for (kind, c) in &s.added {
-            w.varint(*kind);
+            w.varint(ids::component(*kind));
             c.write(*kind, w);
         }
         for kind in &s.removed {
-            w.varint(*kind);
+            w.varint(ids::component(*kind));
         }
     }
 }
@@ -783,7 +789,7 @@ fn read_stack(r: &mut Reader, delimited: bool) -> Result<Option<Stack>> {
     if count <= 0 {
         return Ok(None);
     }
-    let item = r.varint()?;
+    let item = ids::item(r.varint()?);
     let positive = r.count(65536)?;
     let negative = r.count(65536)?;
     let mut added = Vec::with_capacity(positive.min(64));
@@ -791,7 +797,7 @@ fn read_stack(r: &mut Reader, delimited: bool) -> Result<Option<Stack>> {
     patch.varint(positive as i32);
     patch.varint(negative as i32);
     for _ in 0..positive {
-        let kind = r.varint()?;
+        let kind = ids::component(r.varint()?);
         let (component, value) = if delimited {
             let len = r.count(r.remaining())?;
             let value = r.bytes(len)?;
@@ -809,7 +815,9 @@ fn read_stack(r: &mut Reader, delimited: bool) -> Result<Option<Stack>> {
         patch.byte_array(value);
         added.push((kind, component));
     }
-    let removed: Vec<i32> = (0..negative).map(|_| r.varint()).collect::<Result<_>>()?;
+    let removed: Vec<i32> = (0..negative)
+        .map(|_| r.varint().map(ids::component))
+        .collect::<Result<_>>()?;
     removed.iter().for_each(|kind| patch.varint(*kind));
     Ok(Some(Stack {
         item,
@@ -834,21 +842,25 @@ impl Codec<Option<Stack>> for DelimitedSlot {
             return;
         };
         w.varint(s.count);
-        w.varint(s.item);
-        if let Some(patch) = &s.wire.0 {
+        w.varint(ids::item(s.item));
+        // The patch as read holds the pinned version's component ids: written again from the values when
+        // they are being renumbered.
+        if let Some(patch) = &s.wire.0
+            && ids::active().is_none()
+        {
             w.bytes(patch);
             return;
         }
         w.varint(s.added.len() as i32);
         w.varint(s.removed.len() as i32);
         for (kind, c) in &s.added {
-            w.varint(*kind);
+            w.varint(ids::component(*kind));
             let mut value = Writer::new();
             c.write(*kind, &mut value);
             w.byte_array(&value.data);
         }
         for kind in &s.removed {
-            w.varint(*kind);
+            w.varint(ids::component(*kind));
         }
     }
 }
@@ -857,16 +869,18 @@ impl Codec<Option<Stack>> for DelimitedSlot {
 pub struct Template;
 impl Codec<Stack> for Template {
     fn read(r: &mut Reader) -> Result<Stack> {
-        let item = r.varint()?;
+        let item = ids::item(r.varint()?);
         let count = r.varint()?;
         let positive = r.count(65536)?;
         let negative = r.count(65536)?;
         let mut added = Vec::with_capacity(positive.min(64));
         for _ in 0..positive {
-            let kind = r.varint()?;
+            let kind = ids::component(r.varint()?);
             added.push((kind, Component::read(kind, r)?));
         }
-        let removed = (0..negative).map(|_| r.varint()).collect::<Result<_>>()?;
+        let removed = (0..negative)
+            .map(|_| r.varint().map(ids::component))
+            .collect::<Result<_>>()?;
         Ok(Stack {
             item,
             count,
@@ -876,16 +890,16 @@ impl Codec<Stack> for Template {
         })
     }
     fn write(s: &Stack, w: &mut Writer) {
-        w.varint(s.item);
+        w.varint(ids::item(s.item));
         w.varint(s.count);
         w.varint(s.added.len() as i32);
         w.varint(s.removed.len() as i32);
         for (kind, c) in &s.added {
-            w.varint(*kind);
+            w.varint(ids::component(*kind));
             c.write(*kind, w);
         }
         for kind in &s.removed {
-            w.varint(*kind);
+            w.varint(ids::component(*kind));
         }
     }
 }
@@ -930,16 +944,16 @@ impl Codec<Option<Hashed>> for HashedSlot {
     fn write(v: &Option<Hashed>, w: &mut Writer) {
         w.bool(v.is_some());
         if let Some(h) = v {
-            w.varint(h.item);
+            w.varint(ids::item(h.item));
             w.varint(h.count);
             w.varint(h.added.len() as i32);
             for (k, hash) in &h.added {
-                w.varint(*k);
+                w.varint(ids::component(*k));
                 w.i32(*hash);
             }
             w.varint(h.removed.len() as i32);
             for k in &h.removed {
-                w.varint(*k);
+                w.varint(ids::component(*k));
             }
         }
     }

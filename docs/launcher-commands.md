@@ -222,7 +222,7 @@ MCP: `account_skin`.
 
 ## `horizon-launcher settings`
 
-Show the launcher's settings, or set one (the Settings page): selected-version TAG, minecraft-dir PATH, server-dir PATH ("default" resets a folder), install-new-versions on|off, prune-old-versions on|off (delete old versions after an install, keeping the selected one, the ones instances use and the newest few), keep-versions N (how many of the newest to keep; "default" is 2), opening-animation on|off, proxy http://host:port ("default" removes it), while-playing stay|minimize|hide (what the window does while the game runs), language system|en|fr|ru|de|zh|es|uk|pl (the window's language; system follows the computer's), accent violet|blue|teal|green|amber|red|pink, background PATH (a picture behind Home; "default" shows Horizon's landscape), native-profile performance|dev|release (the profile native mods build with: performance is incremental, dev rebuilds a mod quickest for a slow game, release is slowest to build and slightly faster to play).
+Show the launcher's settings, or set one (the Settings page): selected-version TAG, minecraft-dir PATH, server-dir PATH ("default" resets a folder), install-new-versions on|off, prune-old-versions on|off (delete old versions after an install, keeping the selected one, the ones instances use and the newest few), keep-versions N (how many of the newest to keep; "default" is 2), opening-animation on|off, proxy http://host:port ("default" removes it), while-playing stay|minimize|hide (what the window does while the game runs), language system|en|fr|ru|de|zh|es|uk|pl (the window's language; system follows the computer's), accent violet|blue|teal|green|amber|red|pink|#rrggbb|DEGREES (a named accent, any colour, or any hue), background PATH (a picture behind Home; "default" shows Horizon's landscape), native-profile performance|dev|release (the profile native mods build with: performance is incremental, dev rebuilds a mod quickest for a slow game, release is slowest to build and slightly faster to play).
 
     horizon-launcher settings [KEY] [VALUE]
 
@@ -384,7 +384,7 @@ Make an instance: empty but for your options and name, or a copy of another one'
 - `NAME`
 - `--copy`: The instance to copy (its name or id)
 - `--minecraft`: Make a Minecraft: Java Edition instance of this version (1.21.4, latest or latest-snapshot) instead of a Horizon one
-- `--loader`: With this mod loader: fabric or quilt
+- `--loader`: With this mod loader: fabric, quilt, forge or neoforge
 - `--loader-version`: The loader's version (default: its newest stable one)
 
 MCP: `instance_create`.
@@ -417,7 +417,7 @@ MCP: `instance_java`.
 
 ## `horizon-launcher instance loader`
 
-A Java instance's mod loader: fabric or quilt, or none. --list shows its versions.
+A Java instance's mod loader: fabric, quilt, forge or neoforge, or none. --list shows its versions.
 
     horizon-launcher instance loader <INSTANCE> <LOADER>
 

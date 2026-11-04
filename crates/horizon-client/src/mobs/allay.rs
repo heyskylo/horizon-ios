@@ -372,10 +372,15 @@ pub fn ai_step(m: &mut Mob) {
             m.extra.ints[i] -= 1;
         }
     }
+    update_duplication_cooldown(m);
+    animate(m);
+}
+/// `Allay.updateDuplicationCooldown`: the server decrements positive counters,
+/// independently of the AI goal gate.
+pub fn update_duplication_cooldown(m: &mut Mob) {
     if m.extra.egg_time > 0 {
         m.extra.egg_time -= 1;
     }
-    animate(m);
 }
 /// `Allay.tick`'s client half: the hold and spin clocks (the server's and a
 /// client's).
