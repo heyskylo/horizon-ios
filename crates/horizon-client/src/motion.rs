@@ -1652,6 +1652,26 @@ impl MotionWorld<'_, '_, '_> {
         }
         Ok(())
     }
+    /// The block effects and the frost of a window's own player while a vehicle carries it. Its
+    /// client does not travel (`passenger_pose_tick` is all it runs), but `LivingEntity.aiStep`
+    /// still applies the effects of the blocks a passenger is in (`applyEffectsFromBlocks`: powder
+    /// snow's FREEZE adds a tick of frost) and thaws it when it is out of powder snow. The
+    /// frostbite overlay reads these ticks. The server's copy does this in `server_block_damage`.
+    pub fn passenger_block_effects_tick(&mut self) -> Result<()> {
+        // Entity.baseTick
+        self.player.was_in_powder_snow = self.player.in_powder_snow;
+        self.player.in_powder_snow = false;
+        if self.player.block_effects {
+            self.apply_effects_from_blocks()?;
+        }
+        // LivingEntity.aiStep "freezing" (server), as the client predicts it on foot.
+        if !self.player.in_powder_snow || !self.player.can_freeze() {
+            self.player.ticks_frozen = (self.player.ticks_frozen - 2).max(0);
+        }
+        // The vehicle moves the passenger between ticks: the next sweep starts here.
+        self.player.old_position = self.player.position;
+        Ok(())
+    }
     /// `Entity.checkInsideBlocks(from, to, ...)`: the blocks the box at `to`
     /// sweeps through from `from`; returns the iterations used plus one.
     fn check_inside_blocks(
@@ -3514,6 +3534,82 @@ mod tests {
         .controlled_simulation_tick(Default::default())
         .unwrap();
         assert_eq!(roses(&away), 0);
+    }
+
+    /// #8156: a window's own player carried by a boat does not travel, but it still freezes
+    /// in powder snow and thaws out of it (`LivingEntity.aiStep`), or the frostbite overlay,
+    /// which reads `ticks_frozen`, never shows.
+    #[test]
+    fn a_passenger_in_powder_snow_freezes_and_thaws() {
+        let root = std::env::var_os("HORIZON_TEST_RESOURCES")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| {
+                Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../.local/horizon-client")
+                    .join(horizon_core::VANILLA_VERSION)
+            });
+        if !root.join("movement-properties.nbt").exists() {
+            return;
+        }
+        let assets = Assets::load(&root).unwrap();
+        let render = assets.reload(&root).unwrap();
+        let binding = crate::collisions::load(&root, assets.registry).unwrap();
+        let resources = MotionResources::load(&root, &assets).unwrap();
+        let mut scene = World::test_scene(&assets, &render, 1).unwrap();
+        let snow = assets
+            .registry
+            .default_state("minecraft:powder_snow")
+            .unwrap();
+        scene.set(20, 4, 20, snow).unwrap();
+        let in_snow = Vec3::new(20.5, 4.0, 20.5);
+        let clear = Vec3::new(30.5, 4.0, 30.5);
+        let mut player = PlayerMotion::new(&resources, in_snow).unwrap();
+        player.client_side = true;
+        let tick = |player: &mut PlayerMotion, scene: &mut World| {
+            MotionWorld {
+                entities: &[],
+                player,
+                scene,
+                assets: &assets,
+                collision_binding: &binding,
+                resources: &resources,
+            }
+            .passenger_block_effects_tick()
+            .unwrap();
+        };
+        // One tick of frost for each tick in powder snow, up to the 140 that freeze fully.
+        for expected in 1..=5 {
+            tick(&mut player, &mut scene);
+            assert!(player.in_powder_snow);
+            assert_eq!(player.ticks_frozen, expected);
+        }
+        for _ in 0..200 {
+            tick(&mut player, &mut scene);
+        }
+        assert_eq!(player.ticks_frozen, PlayerMotion::TICKS_REQUIRED_TO_FREEZE);
+        assert!(player.is_fully_frozen());
+        // Carried out of it: two ticks of frost thaw each tick.
+        player.position = clear;
+        player.old_position = clear;
+        player.ticks_frozen = 5;
+        for expected in [3, 1, 0, 0] {
+            tick(&mut player, &mut scene);
+            assert!(!player.in_powder_snow);
+            assert_eq!(player.ticks_frozen, expected);
+        }
+        // What cannot freeze (a freeze-immune player) takes no frost in it.
+        player.position = in_snow;
+        player.old_position = in_snow;
+        player.freeze_immune = true;
+        tick(&mut player, &mut scene);
+        assert_eq!(player.ticks_frozen, 0);
+        // Block effects off (a mod's switch): nothing is sampled, the frost thaws.
+        player.freeze_immune = false;
+        player.block_effects = false;
+        player.ticks_frozen = 10;
+        tick(&mut player, &mut scene);
+        assert!(!player.in_powder_snow);
+        assert_eq!(player.ticks_frozen, 8);
     }
 
     #[test]
