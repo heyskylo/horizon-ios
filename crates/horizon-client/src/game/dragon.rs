@@ -4020,15 +4020,15 @@ impl Game<'_> {
             // before the `isDeadOrDying` branch, then a dead dragon adds
             // `ParticleTypes.EXPLOSION` every tick. Both use the risen spot.
             let mut growl = None;
-            if let Some(d) = self.dragon.as_mut() {
-                if !sitting {
-                    d.growl -= 1;
-                    if d.growl < 0 {
-                        // `this.random`: pitch, then `nextInt(200)`, before the puff.
-                        let pitch = 0.8 + d.random.next_float() * 0.3;
-                        d.growl = 200 + d.random.next_int_bound(200).unwrap_or(0);
-                        growl = Some(([d.position.x, d.position.y, d.position.z], pitch));
-                    }
+            if let Some(d) = self.dragon.as_mut()
+                && !sitting
+            {
+                d.growl -= 1;
+                if d.growl < 0 {
+                    // `this.random`: pitch, then `nextInt(200)`, before the puff.
+                    let pitch = 0.8 + d.random.next_float() * 0.3;
+                    d.growl = 200 + d.random.next_int_bound(200).unwrap_or(0);
+                    growl = Some(([d.position.x, d.position.y, d.position.z], pitch));
                 }
             }
             if let Some((at, pitch)) = growl {
