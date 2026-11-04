@@ -581,10 +581,13 @@ impl Goal for Celebration {
             };
             m.voice(sound, cx.events);
         }
-        if m.random
-            .next_int_bound(super::goals::reduced(50))
-            .unwrap_or(1)
-            == 0
+        // Raider.RaiderCelebration.tick: a raider riding a ravager (or any
+        // vehicle) does not jump. The roll is skipped too, as in vanilla.
+        if m.extra.mount.is_none()
+            && m.random
+                .next_int_bound(super::goals::reduced(50))
+                .unwrap_or(1)
+                == 0
         {
             m.ai.jumping = true;
         }
@@ -784,5 +787,44 @@ mod tests {
         let at = Vec3::new(10.5, 64.5, 10.5);
         assert!(close_to_center([10, 64, 10], at, 1.0));
         assert!(!close_to_center([30, 64, 10], at, 10.0));
+    }
+
+    /// `RaiderCelebration.tick` jumps only when the raider is not a passenger.
+    #[test]
+    fn a_celebrating_raider_does_not_jump_while_riding() {
+        use crate::mobs::world::with_test_world;
+        use horizon_core::random::LegacyRandom;
+        use std::sync::Arc;
+        let ran = with_test_world(&[], |w, _| {
+            let jumped = |seed: i64, riding: bool| {
+                let mut k = (*crate::mobs::sensor_scan_tests::kind()).clone();
+                k.id = "minecraft:pillager".into();
+                k.species = Species::Pillager;
+                let mut m = Mob::new(1, Arc::new(k), Vec3::ZERO, 0.0);
+                m.random = LegacyRandom::new(seed);
+                m.extra.raider = Some(Box::default());
+                if riding {
+                    m.extra.mount = Some(9);
+                }
+                let mut goal = Celebration;
+                let mut lr = LegacyRandom::new(1);
+                let mut events = Vec::new();
+                let mut cx = Cx {
+                    w,
+                    lr: &mut lr,
+                    events: &mut events,
+                };
+                goal.tick(&mut m, &mut cx);
+                m.ai.jumping
+            };
+            let seed = (1..500)
+                .find(|seed| jumped(*seed, false))
+                .expect("some seed celebrates with a jump");
+            assert!(jumped(seed, false));
+            assert!(!jumped(seed, true));
+        });
+        if !ran {
+            return;
+        }
     }
 }
