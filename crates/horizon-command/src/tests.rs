@@ -1085,3 +1085,23 @@ fn local_coordinate_missing_after_space_expects_a_coordinate() {
     assert_eq!(parse("^1 ^2 "), ("argument.pos.missing.double".into(), 6));
     assert_eq!(parse("^1 ~"), ("argument.pos.mixed".into(), 0));
 }
+
+/// `execute … run` redirects back to the root, so a crafted deeply nested chain
+/// recurses `parse_nodes` once per level. It must be rejected by the depth guard,
+/// never overflow the parsing thread's stack (a stack overflow would abort this
+/// test binary rather than let it pass).
+#[test]
+fn deeply_nested_execute_run_is_rejected_not_overflowed() {
+    let mut deep = String::from("say hi");
+    for _ in 0..400 {
+        deep = format!("execute if entity @s run {deep}");
+    }
+    assert!(run(&deep).is_err());
+}
+
+/// The guard is high enough that real command chains still parse.
+#[test]
+fn shallow_execute_run_still_parses() {
+    assert!(run("execute if entity @s run say hi").is_ok());
+    assert!(run("execute as @a at @s run tp @s 0 0 0").is_ok());
+}
