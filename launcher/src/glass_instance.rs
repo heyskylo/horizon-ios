@@ -943,7 +943,8 @@ impl Launcher {
                 .into_any_element(),
         );
         // Our grass block, then the loaders' logos: each becomes the instance's picture.
-        let mut logos: Vec<(&'static str, Vec<u8>)> = vec![("grass", instance_icons::GRASS.to_vec())];
+        let mut logos: Vec<(&'static str, Vec<u8>)> =
+            vec![("grass", instance_icons::GRASS.to_vec())];
         for id in LOGO_ICONS {
             if let Some(png) = instance_icons::logo_png(id) {
                 logos.push((id, png.to_vec()));

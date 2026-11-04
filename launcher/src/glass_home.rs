@@ -114,11 +114,7 @@ impl Launcher {
             .flex()
             .items_center()
             .gap(px(4.))
-            .child(tab(
-                "Rust Edition",
-                horizon,
-                !java,
-            ))
+            .child(tab("Rust Edition", horizon, !java))
             .child(tab("Java Edition", java_icon, java))
     }
 
