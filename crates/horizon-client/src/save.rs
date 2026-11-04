@@ -933,17 +933,15 @@ pub fn decode_block_entity(tag: &Tag) -> Option<((i32, i32, i32), crate::contain
     if id == "minecraft:lectern" {
         // `LecternBlockEntity.loadAdditional`: the page is `Mth.clamp(Page, 0,
         // getPageCount(book) - 1)`, so a stored page before the book's first
-        // page or past its last comes back as the page the block holds. A book
-        // with no pages leaves the maximum below the minimum, and vanilla's
-        // clamp answers the minimum it was given first: -1.
+        // page or past its last comes back as the page the block holds. No
+        // book, or a book with no pages, counts 0 pages: the maximum is then
+        // -1, and `Mth.clamp` (`Math.min(Math.max(value, min), max)`) answers
+        // it, -1.
         let book = tag.get("Book").and_then(item_from_nbt);
-        let count = book.as_ref().map_or(1, crate::menu::book_pages) as i32;
-        let stored = int("Page").unwrap_or(0);
+        let count = book.as_ref().map_or(0, crate::menu::book_pages) as i32;
         let lectern = crate::containers::Lectern {
             book,
-            // `Mth.clamp`: a value under the minimum is the minimum, else the
-            // smaller of the value and the maximum.
-            page: if stored < 0 { 0 } else { stored.min(count - 1) },
+            page: int("Page").unwrap_or(0).max(0).min(count - 1),
         };
         return Some((pos, BlockEntity::Lectern(lectern)));
     }
@@ -6140,8 +6138,8 @@ mod tests {
     }
     /// `LecternBlockEntity.loadAdditional`: `Page` is clamped to
     /// `0..getPageCount(book) - 1`, so a stored page outside the book loads as
-    /// the first or last page the block holds. A one-page (or bookless)
-    /// lectern has a single page, page 0.
+    /// the first or last page the block holds. A bookless lectern counts no
+    /// pages and loads page -1.
     #[test]
     fn a_lecterns_page_loads_within_its_book() {
         let page_of = |tag: &str| {
@@ -6174,10 +6172,10 @@ mod tests {
             )),
             0
         );
-        // No book is one page, so any page loads as the first.
+        // No book counts no pages, so any page loads as -1, as vanilla's.
         assert_eq!(
             page_of(r#"{id:"minecraft:lectern",x:1,y:64,z:2,Page:4}"#),
-            0
+            -1
         );
         // A page already inside the book is kept, and saved back as it is.
         let tag = format!(
