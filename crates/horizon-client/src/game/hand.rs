@@ -383,6 +383,8 @@ impl Game<'_> {
         }
         let held = self.held();
         let mut speed = self.items().mining_speed(held, &facts.name);
+        let hardness = facts.hardness;
+        let harvest = !facts.requires_tool || self.items().correct_for_drops(held, &facts.name);
         speed = self.modify_destroy_speed(speed);
         speed *= block_break_speed;
         if let Some(eye) = self.eye_position()
@@ -402,8 +404,7 @@ impl Game<'_> {
         if self.player.as_ref().is_some_and(|p| !p.ground.on_ground) {
             speed /= 5.0;
         }
-        let harvest = !facts.requires_tool || self.items().correct_for_drops(held, &facts.name);
-        speed / facts.hardness / if harvest { 30.0 } else { 100.0 }
+        speed / hardness / if harvest { 30.0 } else { 100.0 }
     }
     /// A key for the main-hand stack (`destroyingItem`): its item and components.
     pub(super) fn main_hand_key(&self) -> String {

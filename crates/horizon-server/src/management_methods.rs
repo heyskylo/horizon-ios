@@ -89,6 +89,10 @@ pub fn call(shared: &Shared, client: u32, short: &str, argument: &Value) -> Resu
         "serversettings/simulation_distance/set" => {
             game.simulation_distance(client, Some(management_int(argument)?))
         }
+        "serversettings/entity_broadcast_range" => game.entity_broadcast_range(client, None),
+        "serversettings/entity_broadcast_range/set" => {
+            game.entity_broadcast_range(client, Some(management_int(argument)?))
+        }
         "serversettings/operator_user_permission_level" => {
             game.operator_user_permission_level(client, None)
         }
@@ -128,6 +132,15 @@ pub fn call(shared: &Shared, client: u32, short: &str, argument: &Value) -> Resu
         ),
         "serversettings/status_replies" => game.status_replies(client, None),
         "serversettings/status_replies/set" => game.status_replies(
+            client,
+            Some(
+                argument
+                    .as_bool()
+                    .ok_or_else(|| invalid_params(format!("Not a boolean: {argument}")))?,
+            ),
+        ),
+        "serversettings/accept_transfers" => game.accepts_transfers(client, None),
+        "serversettings/accept_transfers/set" => game.accepts_transfers(
             client,
             Some(
                 argument
@@ -648,6 +661,29 @@ impl Game<'_> {
         Ok(reply["value"].clone())
     }
 
+    /// `MinecraftServerSettingsServiceImpl.acceptsTransfers` and `setAcceptsTransfers`.
+    fn accepts_transfers(&self, client: u32, value: Option<bool>) -> Result<Value, Failure> {
+        let mut request = json!({ "method": "serversettings/accept_transfers" });
+        if let Some(value) = value {
+            request["method"] = json!("serversettings/accept_transfers/set");
+            request["value"] = json!(value);
+        }
+        let reply = self.ask(&format!("management {client} {request}"))?;
+        if let Some(error) = reply["error"].as_str() {
+            return Err((INTERNAL_ERROR, Some(error.to_owned())));
+        }
+        if let Some(value) = value {
+            crate::config::update(
+                &self.shared.dir,
+                "properties",
+                "accepts-transfers",
+                toml::Value::Boolean(value),
+            )
+            .map_err(|e| (INTERNAL_ERROR, Some(e)))?;
+        }
+        Ok(reply["value"].clone())
+    }
+
     /// `MinecraftServerSettingsServiceImpl.getPlayerIdleTimeout` and `setPlayerIdleTimeout`.
     fn player_idle_timeout(&self, client: u32, value: Option<i32>) -> Result<Value, Failure> {
         let mut request = json!({ "method": "serversettings/player_idle_timeout" });
@@ -835,6 +871,31 @@ impl Game<'_> {
                 "server",
                 "simulation_distance",
                 toml::Value::Integer(i64::from(value)),
+            )
+            .map_err(|e| (INTERNAL_ERROR, Some(e)))?;
+        }
+        Ok(reply["value"].clone())
+    }
+
+    /// `MinecraftServerSettingsServiceImpl.getEntityBroadcastRangePercentage` and
+    /// `setEntityBroadcastRangePercentage`.
+    fn entity_broadcast_range(&self, client: u32, value: Option<i32>) -> Result<Value, Failure> {
+        let mut request = json!({ "method": "serversettings/entity_broadcast_range" });
+        if let Some(value) = value {
+            request["method"] = json!("serversettings/entity_broadcast_range/set");
+            request["value"] = json!(value);
+        }
+        let reply = self.ask(&format!("management {client} {request}"))?;
+        if let Some(error) = reply["error"].as_str() {
+            return Err((INTERNAL_ERROR, Some(error.to_owned())));
+        }
+        if let Some(value) = value {
+            let value = reply["value"].as_i64().unwrap_or(i64::from(value));
+            crate::config::update(
+                &self.shared.dir,
+                "properties",
+                "entity-broadcast-range-percentage",
+                toml::Value::Integer(value),
             )
             .map_err(|e| (INTERNAL_ERROR, Some(e)))?;
         }

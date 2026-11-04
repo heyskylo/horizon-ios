@@ -170,6 +170,8 @@ and particles (the material stage covers terrain only).
 
 ## Changelog
 
+- 2026-11-03: API 0.1 (no change to packs): float and int `[[options]]` are sliders on the options page, on their
+  `step`; the value is saved, and the pack rebuilt, when the slider is let go.
 - 2026-11-03: API 0.1 (additions): `[shadow] option`, `resolution_option` and `distance_option`: a pack's
   options can turn its shadow map off (no map, no shadow pass, `has_shadow` 0) and pick its size, so
   one pack offers its own quality levels. The options sizing the map need no `override`.
