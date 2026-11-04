@@ -557,7 +557,9 @@ impl Dragon {
     /// (the dragon's type is fire immune) before `EnderDragon.hurt`.
     /// `direct` is the projectile that hit: a direct `AbstractArrow` or a
     /// `WindCharge` is the arrow a perched dragon shrugs off, a breeze's
-    /// `BreezeWindCharge` is neither.
+    /// `BreezeWindCharge` is neither. Gameplay calls `hurt_part_from`; this
+    /// is the no-attacker form the tests use.
+    #[cfg(test)]
     fn hurt_part(
         &mut self,
         part: usize,
@@ -595,7 +597,8 @@ impl Dragon {
     /// `reallyHurt` takes when `source.getEntity() instanceof Player` or its
     /// type always hurts dragons (explosions), and none otherwise; `arrow` a
     /// direct arrow or wind charge, which a perched dragon shrugs off
-    /// (`AbstractDragonSittingPhase.onHurt`).
+    /// (`AbstractDragonSittingPhase.onHurt`). Gameplay calls `hurt_from`.
+    #[cfg(test)]
     fn hurt(&mut self, part: usize, damage: f32, counts: Option<HurtSource>, arrow: bool) -> Hurt {
         self.hurt_from(part, damage, counts, arrow, None)
     }
