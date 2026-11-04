@@ -748,12 +748,11 @@ impl Game<'_> {
                 .get_mut(&pos)
                 .is_some_and(EndGateway::portal_tick);
             if triggered {
-                self.block_entity_event(pos, 1, 0);
+                self.gateway_cooldown_event(pos);
             }
         }
     }
-    /// `EndGatewayBlock.entityInside` on the server: whether the gateway at
-    /// `pos` let the entity in (`triggerCooldown`, with its block event).
+    /// Whether the gateway at `pos` can be entered (`!isCoolingDown`).
     pub(super) fn gateway_available(&self, pos: [i32; 3]) -> bool {
         self.be_anims
             .gateway_servers
@@ -764,6 +763,8 @@ impl Game<'_> {
             <= 0
     }
 
+    /// `EndGatewayBlock.entityInside` on the server: whether the gateway at
+    /// `pos` let the entity in (`triggerCooldown`, with its block event).
     pub(super) fn gateway_enter(&mut self, pos: [i32; 3]) -> bool {
         let initial = self.gateway_loaded(pos);
         let entered = self
@@ -773,9 +774,17 @@ impl Game<'_> {
             .or_insert(initial)
             .enter();
         if entered {
-            self.block_entity_event(pos, 1, 0);
+            // `TheEndGatewayBlockEntity.triggerCooldown`: event 1 here, and
+            // `Level.blockEvent` so the window's copy starts the beam.
+            self.gateway_cooldown_event(pos);
         }
         entered
+    }
+    /// `triggerCooldown`'s block event 1, on this level and for the window
+    /// (`ClientboundBlockEventPacket` within 64 blocks).
+    fn gateway_cooldown_event(&mut self, pos: [i32; 3]) {
+        self.block_entity_event(pos, 1, 0);
+        self.lan_block_event(pos, 1, 0);
     }
     /// The End gateway at `pos` as its chunk was loaded: `Age` from the saved
     /// block entity (`getUpdateTag`), or a new gateway.

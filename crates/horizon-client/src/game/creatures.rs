@@ -821,6 +821,7 @@ impl Game<'_> {
             leash_boats: &self.leash_boats,
             others_grid: None,
             others_index: None,
+            others_villagers: None,
             daylight: self.dim != Dim::Nether && self.sky_darken() < 4,
             // day.json: false from tick 12542, true from 23460 (a step track).
             monsters_burn: self.dim == Dim::Overworld
@@ -1023,14 +1024,19 @@ impl Game<'_> {
             // Each mob keeps its snapshot slot all tick; the first slot of an
             // id answers, as a scan would.
             let mut index = horizon_client::fast_hash::FxHashMap::<u32, u32>::default();
+            let mut villager_slots = Vec::new();
             for (i, s) in snapshot.iter().enumerate() {
                 index.entry(s.id).or_insert(i as u32);
+                if s.species == horizon_client::mobs::Species::Villager {
+                    villager_slots.push(i as u32);
+                }
             }
             for i in 0..mobs.len() {
                 let mut w = MobWorld {
                     others: &snapshot,
                     others_grid: Some(&grid),
                     others_index: Some(&index),
+                    others_villagers: Some(&villager_slots),
                     ..base.clone()
                 };
                 let m = &mut mobs[i];
@@ -2837,8 +2843,9 @@ impl Game<'_> {
                     effect,
                     ticks,
                     amplifier,
+                    ambient,
                 } => {
-                    self.give_player_effect(effect, ticks, amplifier);
+                    self.give_mob_effect(effect, ticks, amplifier, ambient);
                 }
                 MobEvent::Ignite { target, seconds } => match target {
                     Who::Player => {
@@ -3709,15 +3716,16 @@ impl Game<'_> {
     }
     /// A status effect from a mob, arrow or splash potion (`addEffect`).
     pub(super) fn give_player_effect(&mut self, effect: &'static str, ticks: i32, amplifier: i32) {
-        if self.creative || self.spectator() {
-            return;
+        self.give_mob_effect(effect, ticks, amplifier, false);
+    }
+    /// A mob's effect on the player. Creative and spectator players shrug off
+    /// the damaging effects here, but the nautilus's ambient Breath is plain
+    /// `addEffect` and lands in every game mode.
+    fn give_mob_effect(&mut self, effect: &'static str, ticks: i32, amplifier: i32, ambient: bool) {
+        let immune = self.creative || self.spectator();
+        if let Some(instance) = mob_effect_instance(effect, ticks, amplifier, ambient, immune) {
+            self.potions.effects.add(instance);
         }
-        let id = effect.strip_prefix("minecraft:").unwrap_or(effect);
-        self.potions
-            .effects
-            .add(horizon_client::effects::EffectInstance::new(
-                id, ticks, amplifier,
-            ));
     }
     /// `WitherRoseBlock.entityInside` for the player: on a server level that
     /// isn't peaceful, `getBeeInteractionEffect` (Wither, 40 ticks) unless the
@@ -6768,15 +6776,17 @@ impl Game<'_> {
             if d.length_squared() >= range * range {
                 continue;
             }
-            // EntityRenderer.shouldRender: the culling box, grown by 0.5
-            // (GuardianRenderer also draws while its beam is out).
+            // EntityRenderer.shouldRender: the box its renderer culls with
+            // (`getBoundingBoxForCulling`, interpolated over the frame), grown
+            // by 0.5 (GuardianRenderer also draws while its beam is out).
             if let Some(view) = &self.view_frustum
                 && horizon_client::mobs::guardian::beam(mob, alpha as f32).is_none()
             {
-                let lo =
-                    d.as_vec3() - glam::Vec3::new(w as f32 / 2.0 + 0.5, 0.5, w as f32 / 2.0 + 0.5);
-                let hi = d.as_vec3()
-                    + glam::Vec3::new(w as f32 / 2.0 + 0.5, h as f32 + 0.5, w as f32 / 2.0 + 0.5);
+                let (lo, hi) = super::entity_culling::cull_box(mob, alpha);
+                let (lo, hi) = (
+                    (lo - camera - glam::DVec3::splat(0.5)).as_vec3(),
+                    (hi - camera + glam::DVec3::splat(0.5)).as_vec3(),
+                );
                 if !view.intersects(lo, hi) {
                     continue;
                 }
@@ -7234,6 +7244,19 @@ impl Game<'_> {
                 let size = a.kind.size() as f32;
                 flame_geometry(atlas, c, size, size, self.yaw, light, out);
             }
+            // `ThrownItemRenderer` for a fireball: the item `Fireball.getItem`
+            // returns (a fire charge until `setItem` gave it another), its model
+            // at the renderer's scale for the kind. `packed` is already 15, the
+            // renderer's full bright.
+            if let Some(stack) = a.item.as_ref() {
+                let owner = super::item_draw::owner_at(at, 0.0, a.kind.id());
+                let state = self.resolve_item(stack, DisplayContext::Ground, Some(&owner), 0);
+                let pose = glam::Mat4::from_translation(c)
+                    * glam::Mat4::from_quat(self.camera_orientation())
+                    * glam::Mat4::from_scale(glam::Vec3::splat(a.sprite_scale()));
+                self.submit_item_world(&state, pose, packed, out);
+                continue;
+            }
             let Some(name) = a.item_sprite() else {
                 continue;
             };
@@ -7294,15 +7317,12 @@ fn thrown_item_quad(
 }
 /// Whether vanilla draws the kind as `ThrownItemRenderer`'s item billboard, the
 /// only ones that take that lift. Llama spit shares this quad but
-/// `LlamaSpitRenderer` is a model, with its own offset.
+/// `LlamaSpitRenderer` is a model, with its own offset, and a fireball's item
+/// is drawn as the item model that carries the lift itself.
 fn is_item_billboard(kind: &ProjectileKind) -> bool {
     matches!(
         kind,
-        ProjectileKind::Snowball
-            | ProjectileKind::Egg
-            | ProjectileKind::EnderPearl
-            | ProjectileKind::SmallFireball
-            | ProjectileKind::LargeFireball { .. }
+        ProjectileKind::Snowball | ProjectileKind::Egg | ProjectileKind::EnderPearl
     )
 }
 /// `Bucketable.getBucketItemStack` and `getPickupSound` of a mob that a water
@@ -7531,9 +7551,28 @@ fn knock_back(
     );
 }
 
+/// The instance a mob effect gives the player; `None` for a creative or
+/// spectator player (`immune`) unless it is ambient (the nautilus's Breath).
+fn mob_effect_instance(
+    effect: &'static str,
+    ticks: i32,
+    amplifier: i32,
+    ambient: bool,
+    immune: bool,
+) -> Option<horizon_client::effects::EffectInstance> {
+    if immune && !ambient {
+        return None;
+    }
+    let id = effect.strip_prefix("minecraft:").unwrap_or(effect);
+    let mut instance = horizon_client::effects::EffectInstance::new(id, ticks, amplifier);
+    instance.ambient = ambient;
+    Some(instance)
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::perspective::CameraType;
+    use super::mob_effect_instance;
     use super::thrown_item_axes;
     use super::thrown_item_quad;
     use super::{ProjectileKind, is_item_billboard};
@@ -7547,14 +7586,40 @@ mod tests {
     }
 
     #[test]
+    fn nautilus_breath_lands_in_creative_as_ambient() {
+        // AbstractNautilus.applyEffects: MobEffectInstance(BREATH_OF_THE_NAUTILUS,
+        // 60, 0, ambient true, visible true, showIcon true), no game-mode gate.
+        let e = mob_effect_instance("minecraft:breath_of_the_nautilus", 60, 0, true, true)
+            .expect("applies to a creative player");
+        assert_eq!(
+            (e.id, e.duration, e.amplifier),
+            ("breath_of_the_nautilus", 60, 0)
+        );
+        assert!(e.ambient && e.visible);
+        // Survival gets the same ambient instance.
+        let e =
+            mob_effect_instance("minecraft:breath_of_the_nautilus", 60, 0, true, false).unwrap();
+        assert!(e.ambient);
+    }
+
+    #[test]
+    fn other_mob_effects_stay_blocked_in_creative() {
+        assert!(mob_effect_instance("minecraft:poison", 140, 0, false, true).is_none());
+        let e = mob_effect_instance("minecraft:poison", 140, 0, false, false).unwrap();
+        assert!(!e.ambient);
+    }
+
+    #[test]
     fn thrown_item_billboard_lifts_by_the_generated_ground_transform() {
-        // The kinds vanilla draws with `ThrownItemRenderer`: the only lifted ones.
+        // The kinds vanilla draws with `ThrownItemRenderer` as a billboard: the
+        // only lifted ones. A fireball hands `getItem` to the item renderer
+        // instead, which carries the ground transform itself.
         assert!(is_item_billboard(&ProjectileKind::Snowball));
         assert!(is_item_billboard(&ProjectileKind::Egg));
         assert!(is_item_billboard(&ProjectileKind::EnderPearl));
-        assert!(is_item_billboard(&ProjectileKind::SmallFireball));
+        assert!(!is_item_billboard(&ProjectileKind::SmallFireball));
         let large = ProjectileKind::LargeFireball { power: 1 };
-        assert!(is_item_billboard(&large));
+        assert!(!is_item_billboard(&large));
         // A projectile at y = 100 with right = +X, up = +Y: the sprite sits
         // 0.125 blocks above the entity (2 of `item/generated`'s 16 units) and
         // stays 0.5 blocks wide, so the quad's y runs 99.875 .. 100.375.
@@ -7564,13 +7629,6 @@ mod tests {
         let (lo, hi) = bounds(&thrown_item_quad(at, right, up, 1.0, lifted));
         assert_eq!((lo.y, hi.y), (99.875, 100.375));
         assert_eq!((lo.x, hi.x), (-0.25, 0.25));
-        // A small fireball's 0.75 scale: the same quad scaled down, lifted by
-        // 0.09375, half extent 0.1875.
-        let (lo, hi) = bounds(&thrown_item_quad(at, right, up, 0.75, lifted));
-        assert_eq!((lo.y, hi.y), (99.90625, 100.28125));
-        // A large fireball's 3.0: lift 0.375, half extent 0.75.
-        let (lo, hi) = bounds(&thrown_item_quad(at, right, up, 3.0, lifted));
-        assert_eq!((lo.y, hi.y), (99.625, 101.125));
         // Llama spit shares the quad here but is a model in vanilla
         // (`LlamaSpitRenderer`): no lift at all.
         let lifted = is_item_billboard(&ProjectileKind::LlamaSpit);
@@ -7770,6 +7828,7 @@ mod pearl_tests {
             leash_boats: &[],
             others_grid: None,
             others_index: None,
+            others_villagers: None,
             daylight: true,
             monsters_burn: false,
             game_time: 1000,
