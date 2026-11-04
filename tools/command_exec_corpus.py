@@ -3227,19 +3227,10 @@ def groups():
         ('aquatic FromBucket', aquatic_from_bucket()),
         ('villager command names', villager_command_names()),
         ('item lifetime counters', item_lifetime_counters()),
-
-
-
         ('animal signed InLove', animal_signed_in_love()),
         ('mob fire resistance damage', mob_fire_resistance_damage()),
-
-
         ('armor stand climbing', armor_stand_climbing()),
-
-
-
         ('mob armor damage', mob_armor_damage()),
-
         ('mob max health bounds', mob_max_health_bounds()),
         ('creeper custom fuse', creeper_custom_fuse()),
         ('wither spawn', wither_spawn()),
@@ -3267,13 +3258,8 @@ def groups():
         ('summoned fangs levels', summoned_fangs_levels()),
         ('bird flap sensors', bird_flap_sensors()),
         ('entity landing sensors', entity_landing_sensors()),
-
         ('loot set damage', loot_set_damage()),
-
-
-
         ('item NBT count bounds', item_nbt_count_bounds()),
-
         ('world', world_misc()),
         ('recipe special arguments', recipe_special_arguments()),
         ('progression', progression()),
