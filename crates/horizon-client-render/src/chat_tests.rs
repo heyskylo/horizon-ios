@@ -264,6 +264,93 @@ fn history_arrows_recall_messages_and_restore_the_draft() {
     }
 }
 
+/// `ChatScreen.isDraft`: the box opens on the draft kept from last time
+/// (`ChatComponent.createScreen` passes `true`, which `ChatScreen.init`
+/// stores), so the text draws grey italic through `ChatScreen.formatChat`
+/// and the first Backspace clears the whole draft instead of one character.
+/// Editing the draft (`onEdited`) ends both.
+#[test]
+fn a_restored_draft_is_grey_italic_and_one_backspace_clears_it() {
+    use winit::keyboard::KeyCode::Backspace;
+
+    let font = font();
+    let m = Measure(&font);
+    let registries = Registries::default();
+    let c = Commands {
+        dispatcher: crate::command::vanilla::game_dispatcher(),
+        registries: &registries,
+    };
+    // The input's own text as the game draws it: x 4, y height - 12.
+    let input_text = |screen: &mut ChatScreen| -> Text {
+        screen
+            .draw(&m, (0, 0), 0, i32::MIN)
+            .into_iter()
+            .find_map(|draw| match draw {
+                Draw::Text {
+                    text, x: 4, y: 348, ..
+                } => Some(text),
+                _ => None,
+            })
+            .expect("the input draws its text")
+    };
+    let draft_style = |t: &Text| {
+        t.spans
+            .iter()
+            .all(|s| s.style.color == Some(text::GRAY) && s.style.is_italic())
+    };
+    let mut screen = ChatScreen::new(&m, &c, "half-written", true, 0, 640, 360, full());
+    assert_eq!(screen.value(), "half-written");
+    assert!(
+        draft_style(&input_text(&mut screen)),
+        "the restored draft draws grey italic"
+    );
+    // Typing into the draft (`onEdited`) ends the draft style, and Backspace
+    // eats one character again.
+    screen.type_text(&m, &c, "!");
+    assert_eq!(screen.value(), "half-written!");
+    let typed = input_text(&mut screen);
+    assert!(
+        !typed.spans.iter().any(|s| s.style.is_italic()),
+        "an edited draft is not grey italic"
+    );
+    assert_eq!(
+        screen.key(&m, &c, &[], Backspace, false, false),
+        ChatAction::None
+    );
+    assert_eq!(screen.value(), "half-written");
+    // A draft left alone clears whole on its first Backspace.
+    let mut screen = ChatScreen::new(&m, &c, "half-written", true, 0, 640, 360, full());
+    assert_eq!(
+        screen.key(&m, &c, &[], Backspace, false, false),
+        ChatAction::None
+    );
+    assert_eq!(screen.value(), "", "the first Backspace clears the draft");
+    // The flag is gone with it: typing is ordinary text, and Backspace eats
+    // one character.
+    screen.type_text(&m, &c, "hi");
+    assert_eq!(screen.value(), "hi");
+    let typed = input_text(&mut screen);
+    assert!(!typed.spans.iter().any(|s| s.style.is_italic()));
+    assert_eq!(
+        screen.key(&m, &c, &[], Backspace, false, false),
+        ChatAction::None
+    );
+    assert_eq!(screen.value(), "h");
+    // A box opened on ordinary text deletes one character at a time.
+    let mut screen = ChatScreen::new(&m, &c, "half-written", false, 0, 640, 360, full());
+    assert!(!draft_style(&input_text(&mut screen)));
+    assert_eq!(
+        screen.key(&m, &c, &[], Backspace, false, false),
+        ChatAction::None
+    );
+    assert_eq!(screen.value(), "half-writte");
+    // A command draft is grey italic as a whole: `formatChat` is registered
+    // before `CommandSuggestions.formatText`, so it wins over the argument
+    // colours.
+    let mut screen = ChatScreen::new(&m, &c, "/give @s stone", true, 0, 640, 360, full());
+    assert!(draft_style(&input_text(&mut screen)));
+}
+
 #[test]
 fn mod_commands_are_coloured_and_complete_like_vanilla_ones() {
     let font = font();
