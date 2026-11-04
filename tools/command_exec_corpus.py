@@ -55,6 +55,36 @@ def group_setup():
     ]
 
 
+def hurting_projectile_float_inertia():
+    """Float inertia widens before double motion multiplication; no impacts."""
+    ops = setup('/forceload add 16 0 47 31', '/fill 16 199 0 47 199 31 stone',
+                '/fill 16 200 0 47 213 31 air',
+                '/fill 25 203 20 38 211 28 glass hollow',
+                '/fill 26 204 21 37 210 27 water')
+    # Finish terrain work before introducing the measured projectiles.
+    ops.append({'op': 'settle'})
+    ops.append(cmd('/execute if loaded 30 207 24', expect_result=1))
+    ops.append(cmd('/execute if block 30 207 24 water', expect_result=1))
+    cases = [('dry', 4.5, '.1'), ('custom', 14.5, '.2'), ('water', 24.5, '.1')]
+    for i, (name, z, acceleration) in enumerate(cases):
+        ops += setup(f'/summon fireball 30.5 207 {z} {{UUID:[I;222,0,0,{i + 1}],Tags:["h222_{name}"],ExplosionPower:1b,Motion:[.1d,0d,0d],acceleration_power:{acceleration}d}}')
+        ops.append(cmd(f'/data get entity @e[tag=h222_{name},limit=1] acceleration_power'))
+    dry = [(30.689999997615814, .1899999976158142),
+           (30.96549999189377, .27549999427795413),
+           (31.322224981981517, .35672499008774766)]
+    for tick in range(3):
+        ops.append({'op': 'tick', 'n': 1})
+        for i, (name, z, acceleration) in enumerate(cases):
+            target = f'@e[tag=h222_{name},limit=1]'
+            ops.append(cmd(f'/execute as 000000de-0000-0000-0000-{i + 1:012x} if entity @s[tag=h222_{name}]', expect_result=1))
+            ops.append(cmd(f'/data get entity {target} Pos'))
+            ops.append(cmd(f'/data get entity {target} Motion'))
+        x, vx = dry[tick]
+        ops.append(cmd(f'/execute if entity @e[tag=h222_dry,nbt={{Pos:[{x}d,207d,4.5d],Motion:[{vx}d,0d,0d]}},limit=1]', expect_result=1))
+        ops.append(cmd('/execute if block 31 207 24 water', expect_result=1))
+    return ops
+
+
 def client_commands():
     return [
         cmd('/version'),
@@ -2419,6 +2449,7 @@ def groups():
         ('levels', levels()),
         ('end portal entities', end_portal_entities()),
         ('items and loot', items_and_loot()),
+        ('hurting projectile float inertia', hurting_projectile_float_inertia()),
         ('summoned fangs lifetime', summoned_fangs_lifetime()),
         ('summoned fangs edits', summoned_fangs_edits()),
         ('summoned fangs levels', summoned_fangs_levels()),
