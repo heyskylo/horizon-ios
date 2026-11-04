@@ -6,6 +6,14 @@ license.workspace = true
 rust-version = "1.86"
 description = "cargo horizon-mod new/build/run/check: make Horizon content mods (docs/mods.md)"
 
+# `cargo binstall --git https://github.com/horizon-rust/horizon cargo-horizon-mod` (#2120) reads this: the archive
+# `cargo-horizon-mod`'s workflow attaches to the `cargo-horizon-mod-v<version>` release for the runner's target,
+# holding the binary at its root. tools/horizon_mod_binstall.py expands it for the workflow's targets.
+[package.metadata.binstall]
+pkg-url = "https://github.com/horizon-rust/horizon/releases/download/cargo-horizon-mod-v{ version }/{ name }-{ target }.tar.gz"
+bin-dir = "{ bin }{ binary-ext }"
+pkg-fmt = "tgz"
+
 [dependencies]
 horizon-mods = { path = "../horizon-mods", default-features = false, features = ["index"] }
 serde_json = "1.0.151"
