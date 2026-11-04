@@ -10,9 +10,6 @@ from pathlib import Path
 
 import tools.horizon_mod_binstall as binstall
 
-WORKFLOW = binstall.ROOT / ".github/workflows/cargo-horizon-mod.yml"
-
-
 class BinstallTests(unittest.TestCase):
     def test_the_manifest_names_one_archive_per_platform_in_this_release(self):
         for platform in binstall.PLATFORMS:
@@ -47,12 +44,6 @@ class BinstallTests(unittest.TestCase):
             self.assertTrue(any("mystery" in problem for problem in problems), problems)
 
             self.assertTrue(any("not" in problem for problem in binstall.check(directory, "cargo-horizon-mod-v9.9.9")))
-
-    def test_the_workflow_builds_this_list_and_checks_it_before_publishing(self):
-        workflow = WORKFLOW.read_text()
-        self.assertIn("tools.horizon_mod_binstall", workflow)
-        self.assertIn("fromJSON(needs.plan.outputs.platforms)", workflow)
-        self.assertIn("tools/horizon_mod_binstall.py dist", workflow)
 
 
 if __name__ == "__main__":

@@ -176,13 +176,16 @@ const NIGHT_ART: Colors = Colors {
 
 const DAWN_ART: Colors = Colors {
     sun: [0xfffbea, 0xffeac2, 0xffd3a1],
-    far: 0xbaa8de,
-    near: 0x8c79c6,
+    far: 0xdcd3ee,
+    near: 0xbaafdd,
     cloud: [0xeef0fb, 0xfbeef3, 0xfff1e4],
     lit: [0xffffff; 3],
     shade: 0xd9cbe8,
     star: 0xffffff,
 };
+
+/// How much white the light look lays over the dawn's colours.
+const MORNING: f32 = 0.55;
 
 /// The stars' brightness steps and each group's period: a group steps through the levels in
 /// turn, so a star brightens and dims without a frame for every shade in between.
@@ -441,20 +444,33 @@ fn until_next(v: f32) -> f32 {
 /// sky in four steps toward the next, the stops sharing the height as [`SHARES`] says.
 fn bands(n: &Night, h: f32) -> Vec<(f32, f32, u32)> {
     const STEPS: usize = 4;
+    // The light look's sky is the dawn's washed with white, so the page reads white with a tint
+    // of the dawn rather than lilac.
+    let wash = |c: u32| {
+        if n.dark {
+            c
+        } else {
+            horizon_theme::night::over(0xffffff, MORNING, c)
+        }
+    };
     let rows = (h / TEXEL).ceil();
     let mut out = Vec::with_capacity(SHARES.len() * STEPS);
     let mut at = 0.;
     for (i, share) in SHARES.iter().enumerate() {
         let span = (share * rows).round().max(STEPS as f32);
         let Some(&next) = n.sky.get(i + 1) else {
-            out.push((at * TEXEL, (h / TEXEL - at).max(span) * TEXEL, n.sky[i]));
+            out.push((
+                at * TEXEL,
+                (h / TEXEL - at).max(span) * TEXEL,
+                wash(n.sky[i]),
+            ));
             break;
         };
         let mut from = at;
         for k in 0..STEPS {
             let to = (at + span * (k + 1) as f32 / STEPS as f32).round();
             let c = horizon_theme::night::over(next, k as f32 / STEPS as f32, n.sky[i]);
-            out.push((from * TEXEL, (to - from) * TEXEL, c));
+            out.push((from * TEXEL, (to - from) * TEXEL, wash(c)));
             from = to;
         }
         at += span;

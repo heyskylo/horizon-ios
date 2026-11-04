@@ -814,6 +814,8 @@ impl Game<'_> {
             let a = &mut self.armor_stands[i];
             a.previous = a.position;
             a.previous_yaw = a.yaw;
+            // aiStep's freezing step (removeFrost) makes the speed instance.
+            a.speed_instance = true;
             let (water_height, lava_height) =
                 a.push_by_fluid(&self.world, &self.res.motion().fluids);
             let in_water = water_height > 0.0;
@@ -864,6 +866,16 @@ impl Game<'_> {
                 self.armor_stand_location_effects(i, true);
             }
             self.armor_stand_turtle_eggs(i, landed)?;
+            let a = &self.armor_stands[i];
+            if !a.marker && !a.no_gravity {
+                self.entity_powder_snow_particles(
+                    a.previous,
+                    a.position,
+                    a.bounds(),
+                    a.velocity,
+                    true,
+                );
+            }
             let a = &mut self.armor_stands[i];
             if !a.environment_tick(&self.world, self.res.facts(), self.pack.assets.registry) {
                 dead.push(i);
