@@ -49,6 +49,7 @@ pub(super) fn read_stack(r: &mut Reader) -> Result<Option<Stack>> {
         }
         let kind = ids::component(old);
         let value = match kind {
+            16 if v1_20_5::active() => Component::Raw(v1_20_5::read_attributes(r)?),
             component::POTION_CONTENTS => read_potion(r)?,
             component::INSTRUMENT => read_instrument(r)?,
             _ => v1_21_4::read_component(kind, r)?,
@@ -211,7 +212,8 @@ fn read_food(r: &mut Reader, stack: &mut Stack) -> Result<()> {
     food.f32(r.f32()?);
     food.bool(r.bool()?);
     let seconds = r.f32()?;
-    let remainder = if r.bool()? {
+    let before_1_21 = v1_20_5::active();
+    let remainder = if !before_1_21 && r.bool()? {
         Some(Template::read(r)?)
     } else {
         None
@@ -240,7 +242,7 @@ fn read_food(r: &mut Reader, stack: &mut Stack) -> Result<()> {
         stack
             .added
             .push((component::USE_REMAINDER, Component::Raw(w.data)));
-    } else {
+    } else if !before_1_21 {
         remove(stack, component::USE_REMAINDER);
     }
     Ok(())
@@ -314,11 +316,16 @@ pub(super) fn write_stack(stack: Option<&Stack>, w: &mut Writer) {
                 continue;
             };
             body.bytes(&bytes);
+        } else if *kind == 16 && v1_20_5::active() {
+            let Ok(bytes) = raw(value).and_then(v1_20_5::write_attributes) else {
+                continue;
+            };
+            body.bytes(&bytes);
         } else {
             v1_21_4::write_component(*kind, value, &mut body);
-            if v1_21_4::TOOLTIP_FLAGS.contains(kind) {
-                body.bool(!hidden.contains(kind));
-            }
+        }
+        if v1_21_4::TOOLTIP_FLAGS.contains(kind) {
+            body.bool(!hidden.contains(kind));
         }
         added.push((old, body.data));
     }
@@ -405,15 +412,17 @@ fn write_food(stack: &Stack, value: &Component) -> Result<Vec<u8>> {
         1.6
     };
     w.f32(seconds);
-    let remainder = if let Some(value) = stack.component(component::USE_REMAINDER) {
-        let _pinned = ids::unrenumbered();
-        Some(Template::read(&mut Reader::new(raw(value)?))?)
-    } else {
-        None
-    };
-    w.bool(remainder.is_some());
-    if let Some(remainder) = remainder {
-        Template::write(&remainder, &mut w);
+    if !v1_20_5::active() {
+        let remainder = if let Some(value) = stack.component(component::USE_REMAINDER) {
+            let _pinned = ids::unrenumbered();
+            Some(Template::read(&mut Reader::new(raw(value)?))?)
+        } else {
+            None
+        };
+        w.bool(remainder.is_some());
+        if let Some(remainder) = remainder {
+            Template::write(&remainder, &mut w);
+        }
     }
     w.varint(effects.len() as i32);
     for (effect, probability) in effects {

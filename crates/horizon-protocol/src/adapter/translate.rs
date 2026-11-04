@@ -18,6 +18,7 @@ use crate::{
     packets::{configuration, play},
 };
 
+mod v1_20_5;
 pub(super) mod v1_21_1;
 mod v1_21_3;
 mod v1_21_4;
@@ -97,20 +98,33 @@ pub fn clientbound(
                 packet_ids::configuration::clientbound::FINISH_CONFIGURATION,
             )
     {
-        session
-            .incoming
-            .lock()
-            .unwrap()
-            .push_back((id, payload.to_vec()));
+        let clocks = v1_21_11::world_clocks();
+        let mut incoming = session.incoming.lock().unwrap();
+        let first = if session.version.at_most(ServerVersion::V1_20_5) {
+            let [enchantments, paintings] = legacy_registries();
+            incoming.push_back((
+                packet_ids::configuration::clientbound::REGISTRY_DATA,
+                paintings,
+            ));
+            incoming.push_back((
+                packet_ids::configuration::clientbound::REGISTRY_DATA,
+                clocks,
+            ));
+            enchantments
+        } else {
+            clocks
+        };
+        incoming.push_back((id, payload.to_vec()));
         return Ok(Some((
             packet_ids::configuration::clientbound::REGISTRY_DATA,
-            Some(v1_21_11::world_clocks()),
+            Some(first),
         )));
     }
     // A release at a time: an older server's packets are brought to 26.2's layout first, oldest step first.
     let mut before: Option<Vec<u8>> = None;
     type Step = fn(&Session, State, i32, &[u8]) -> Result<Option<Vec<u8>>>;
-    let steps: [(ServerVersion, Step); 7] = [
+    let steps: [(ServerVersion, Step); 8] = [
+        (ServerVersion::V1_20_5, v1_20_5::clientbound),
         (ServerVersion::V1_21_1, v1_21_1::clientbound),
         (ServerVersion::V1_21_3, v1_21_3::clientbound),
         (ServerVersion::V1_21_4, v1_21_4::clientbound),
@@ -313,6 +327,9 @@ pub fn serverbound(
     };
     use packet_ids::play::serverbound as sb;
     match (state, id) {
+        (State::Play, sb::USE_ITEM) if session.version.at_most(ServerVersion::V1_20_5) => {
+            renumbered(id, v1_20_5::use_item(payload)?)
+        }
         (State::Play, sb::USE_ITEM_ON) if session.version.at_most(ServerVersion::V1_21_1) => {
             renumbered(id, v1_21_1::use_item_on(payload)?)
         }
@@ -475,6 +492,33 @@ fn strip_id(body: Vec<u8>) -> Vec<u8> {
         Ok(_) => r.rest().to_vec(),
         Err(_) => body,
     }
+}
+
+/// Before 1.21 these registries were static. Keep their old ids and provide the names the native
+/// client resolves through RegistryData, without pretending to synchronize newer custom definitions.
+fn legacy_registries() -> [Vec<u8>; 2] {
+    use super::v1_20_5_ids::{ENCHANTMENT_NAMES, PAINTING_VARIANT_NAMES};
+    [
+        ("minecraft:enchantment", ENCHANTMENT_NAMES),
+        ("minecraft:painting_variant", PAINTING_VARIANT_NAMES),
+    ]
+    .map(|(registry, names)| {
+        let mut w = Writer::new();
+        configuration::RegistryData::write(
+            &configuration::RegistryData {
+                registry: registry.into(),
+                entries: names
+                    .iter()
+                    .map(|name| configuration::RegistryEntry {
+                        id: (*name).into(),
+                        data: None,
+                    })
+                    .collect(),
+            },
+            &mut w,
+        );
+        w.data
+    })
 }
 
 fn tags(ids: &Ids, registries: &mut [configuration::RegistryTags]) {
@@ -1407,5 +1451,73 @@ mod tests {
         assert_eq!(action(0), Some(0)); // start destroying
         assert_eq!(action(1), None); // change_destroy_direction, new in 26.3
         assert_eq!(action(3), Some(2)); // stop destroying: 3 in 26.3, 2 in 26.2
+    }
+}
+
+#[cfg(test)]
+mod legacy_registry_tests {
+    use super::*;
+
+    #[test]
+    fn static_registries_arrive_before_clocks_and_configuration_finishes() {
+        let session = Session::new(ServerVersion::V1_20_5);
+        let finish = packet_ids::configuration::clientbound::FINISH_CONFIGURATION;
+        let registry = packet_ids::configuration::clientbound::REGISTRY_DATA;
+        let (id, body) = clientbound(&session, State::Configuration, finish, &[])
+            .unwrap()
+            .unwrap();
+        assert_eq!(id, registry);
+        let enchantments =
+            configuration::RegistryData::read(&mut Reader::new(&body.unwrap())).unwrap();
+        assert_eq!(enchantments.registry, "minecraft:enchantment");
+        assert_eq!(enchantments.entries.len(), 42);
+        assert_eq!(enchantments.entries[0].id, "minecraft:protection");
+        assert_eq!(enchantments.entries[13].id, "minecraft:sharpness");
+        assert_eq!(enchantments.entries[40].id, "minecraft:mending");
+        assert!(
+            enchantments
+                .entries
+                .iter()
+                .all(|entry| entry.data.is_none())
+        );
+        let (id, body) = session.next_incoming().unwrap();
+        assert_eq!(id, registry);
+        let paintings = configuration::RegistryData::read(&mut Reader::new(&body)).unwrap();
+        assert_eq!(paintings.registry, "minecraft:painting_variant");
+        assert_eq!(paintings.entries.len(), 30);
+        assert_eq!(paintings.entries[0].id, "minecraft:kebab");
+        assert_eq!(paintings.entries[29].id, "minecraft:donkey_kong");
+        let (id, body) = session.next_incoming().unwrap();
+        assert_eq!(id, registry);
+        assert_eq!(
+            configuration::RegistryData::read(&mut Reader::new(&body))
+                .unwrap()
+                .registry,
+            "minecraft:world_clock"
+        );
+        assert_eq!(session.next_incoming(), Some((finish, vec![])));
+        assert!(session.next_incoming().is_none());
+    }
+
+    #[test]
+    fn item_cooldowns_use_the_target_registry_after_the_disc_insertions() {
+        let session = Session::new(ServerVersion::V1_20_5);
+        // Vanilla 1.20.5/1.20.6: trial_key is item 1325, versus 1328 in 1.21.
+        let mut old = Writer::new();
+        old.varint(1325);
+        old.varint(17);
+        let (_, body) = clientbound(
+            &session,
+            State::Play,
+            packet_ids::play::clientbound::COOLDOWN,
+            &old.data,
+        )
+        .unwrap()
+        .unwrap();
+        let body = body.unwrap();
+        let mut r = Reader::new(&body);
+        assert_eq!(r.string(32767).unwrap(), "minecraft:trial_key");
+        assert_eq!(r.varint().unwrap(), 17);
+        assert_eq!(r.remaining(), 0);
     }
 }

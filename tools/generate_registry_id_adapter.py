@@ -16,6 +16,9 @@ are generated normally, so a patch release need not duplicate unchanged tables.
 
 `--state-alias BLOCK[old=value]=BLOCK[new=value]` matches changed state properties explicitly.
 Repeat an old state for several new states to map all back; its first alias is used going forward.
+
+`--registry-names REGISTRY` emits an old static registry's names in wire-id order, for registries
+that newer versions synchronize. `--item-names` additionally applies canonical item renames.
 """
 
 import argparse
@@ -114,6 +117,14 @@ def item_names(source, target, renames=None):
     return names
 
 
+def registry_names(source):
+    """Static registry names in wire-id order, including any unused slots."""
+    names = [""] * (max(source.values(), default=-1) + 1)
+    for name, index in source.items():
+        names[index] = name
+    return names
+
+
 def state_alias(spec):
     """Two block-state keys, keeping property order irrelevant as it is in the reports."""
     left, right = spec.split("]=", 1)
@@ -153,6 +164,8 @@ def main():
                         help="explicit state properties, e.g. minecraft:block[old=a]=minecraft:block[new=b]")
     parser.add_argument("--item-names", action="store_true",
                         help="also emit canonical item identifiers indexed by the old item id")
+    parser.add_argument("--registry-names", action="append", default=[], metavar="REGISTRY",
+                        help="also emit this old static registry's identifiers in wire-id order")
     args = parser.parse_args()
     renames = {}
     for spec in args.rename:
@@ -222,6 +235,18 @@ def main():
                            renames.get("minecraft:item"))
         lines.extend(["/// Canonical item identifiers for item-based cooldowns, indexed by old id.",
                       "#[rustfmt::skip]", "pub const ITEM_NAMES: &[&str] = &["])
+        for i in range(0, len(names), 6):
+            lines.append("    " + ", ".join(json.dumps(name) for name in names[i:i + 6]) + ",")
+        lines.append("];")
+    for registry in dict.fromkeys(args.registry_names):
+        name = const_name(registry)
+        if registry not in old_reg or not name.isascii() or not name.isidentifier():
+            parser.error("--registry-names requires a reported registry with a simple identifier")
+        if name == "ITEM" and args.item_names:
+            parser.error("--item-names already emits ITEM_NAMES")
+        names = registry_names(entries(old_reg, registry))
+        lines.extend([f"/// `{registry}` identifiers, indexed by old id (before registry sync).",
+                      "#[rustfmt::skip]", f"pub const {name}_NAMES: &[&str] = &["])
         for i in range(0, len(names), 6):
             lines.append("    " + ", ".join(json.dumps(name) for name in names[i:i + 6]) + ",")
         lines.append("];")

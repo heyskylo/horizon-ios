@@ -767,4 +767,97 @@ mod tests {
         assert_eq!(book.entries.len(), 1);
         assert_eq!(book.entries[0].flags, 2);
     }
+
+    #[test]
+    fn vanilla_1_20_5_and_1_20_6_recipe_codecs_reuse_displays_and_request_keys() {
+        // Official 1.20.6 UpdateRecipes codec output, independently byte-identical on 1.20.5.
+        // Includes all 23 serializers; registry ids differ from the 1.21.1 fixture above.
+        let old = bytes(
+            "1713686f72697a6f6e5f776972653a736861706564000c686f72697a6f6e5f776972650302010101aa0600000101aa06000002e40200000016686f72697a6f6e5f776972653a73686170656c657373010c686f72697a6f6e5f776972650002010101000002011c0000012300000301000019686f72697a6f6e5f776972653a73746f6e6563757474696e67130c686f72697a6f6e5f77697265010101000002880200001f686f72697a6f6e5f776972653a736d697468696e675f7472616e73666f726d140101f20900000101e40600000101af06000001ec0600001a686f72697a6f6e5f776972653a736d697468696e675f7472696d150101f30900000101e40600000101ae06000015686f72697a6f6e5f776972653a736d656c74696e670f0c686f72697a6f6e5f7769726501010140000001aa0600003f4000007815686f72697a6f6e5f776972653a626c617374696e67100c686f72697a6f6e5f7769726501010140000001aa0600003f4000007814686f72697a6f6e5f776972653a736d6f6b696e67110c686f72697a6f6e5f7769726501010140000001aa0600003f400000781d686f72697a6f6e5f776972653a63616d70666972655f636f6f6b696e67120c686f72697a6f6e5f7769726501010140000001aa0600003f4000007826686f72697a6f6e5f776972653a6372616674696e675f7370656369616c5f61726d6f72647965020329686f72697a6f6e5f776972653a6372616674696e675f7370656369616c5f626f6f6b636c6f6e696e67030328686f72697a6f6e5f776972653a6372616674696e675f7370656369616c5f6d6170636c6f6e696e6704032a686f72697a6f6e5f776972653a6372616674696e675f7370656369616c5f6d6170657874656e64696e6705032d686f72697a6f6e5f776972653a6372616674696e675f7370656369616c5f66697265776f726b5f726f636b657406032b686f72697a6f6e5f776972653a6372616674696e675f7370656369616c5f66697265776f726b5f73746172070330686f72697a6f6e5f776972653a6372616674696e675f7370656369616c5f66697265776f726b5f737461725f66616465080329686f72697a6f6e5f776972653a6372616674696e675f7370656369616c5f7469707065646172726f7709032d686f72697a6f6e5f776972653a6372616674696e675f7370656369616c5f62616e6e65726475706c69636174650a032e686f72697a6f6e5f776972653a6372616674696e675f7370656369616c5f736869656c646465636f726174696f6e0b0330686f72697a6f6e5f776972653a6372616674696e675f7370656369616c5f7368756c6b6572626f78636f6c6f72696e670c032c686f72697a6f6e5f776972653a6372616674696e675f7370656369616c5f737573706963696f7573737465770d0328686f72697a6f6e5f776972653a6372616674696e675f7370656369616c5f7265706169726974656d0e0323686f72697a6f6e5f776972653a6372616674696e675f6465636f72617465645f706f741603",
+        );
+        let session = Session::new(ServerVersion::V1_20_5);
+        session.trim_patterns.lock().unwrap().insert(1580, 7);
+        let properties = clientbound(&session, cb::UPDATE_RECIPES, &old)
+            .unwrap()
+            .unwrap();
+        assert!(!properties.is_empty());
+        {
+            let state = session.legacy_recipes.lock().unwrap();
+            assert_eq!(state.recipes.len(), 23);
+            assert_eq!(
+                state
+                    .recipes
+                    .values()
+                    .filter(|r| r.display.is_some())
+                    .count(),
+                9
+            );
+            let Some(RecipeDisplay::Shaped { result, .. }) =
+                &state.recipes["horizon_wire:shaped"].display
+            else {
+                panic!("shaped")
+            };
+            let SlotDisplay::ItemStack(stack) = result else {
+                panic!("result")
+            };
+            assert_eq!((stack.item, stack.count), (473, 2));
+            assert_eq!(
+                state.recipes["horizon_wire:shaped"].requirements,
+                [HolderSet::Items(vec![1018]), HolderSet::Items(vec![1018])]
+            );
+            let Some(RecipeDisplay::Smithing { result, .. }) =
+                &state.recipes["horizon_wire:smithing_trim"].display
+            else {
+                panic!("smithing")
+            };
+            let SlotDisplay::Composite(previews) = result else {
+                panic!("previews")
+            };
+            let SlotDisplay::SmithingTrim { pattern, .. } = &previews[0] else {
+                panic!("trim")
+            };
+            assert_eq!(*pattern, TrimPattern::Id(7));
+        }
+        recipe_book(
+            &session,
+            &old_book(
+                0,
+                &["shaped", "smelting", "crafting_special_armordye"],
+                &["shaped"],
+            ),
+        )
+        .unwrap();
+        let book = next_book(&session);
+        assert!(book.replace);
+        assert_eq!(book.entries.len(), 2);
+        assert_eq!(book.entries[0].flags, 2);
+        let id = book.entries[0].id;
+        let selected = serverbound(
+            &session,
+            sb::PLACE_RECIPE,
+            &encode(&PlaceRecipe {
+                container: 3,
+                recipe: id,
+                use_max: true,
+            }),
+        )
+        .unwrap()
+        .unwrap();
+        let mut r = Reader::new(&selected);
+        assert_eq!(r.i8().unwrap(), 3);
+        assert_eq!(r.string(32767).unwrap(), "horizon_wire:shaped");
+        assert!(r.bool().unwrap());
+        assert_eq!(r.remaining(), 0);
+        let seen = serverbound(
+            &session,
+            sb::RECIPE_BOOK_SEEN_RECIPE,
+            &encode(&RecipeBookSeenRecipe { recipe: id }),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            Reader::new(&seen).string(32767).unwrap(),
+            "horizon_wire:shaped"
+        );
+    }
 }

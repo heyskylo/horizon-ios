@@ -104,6 +104,10 @@ pub struct Quirks {
     pub trail_without_duration: bool,
     /// Before 1.21.2, food combined consumption effects and several packet/component layouts differed.
     pub components_before_1_21_2: bool,
+    /// Before 1.21, food had no remainder and attribute modifiers used UUIDs and names.
+    pub components_before_1_21: bool,
+    /// 1.21 through 1.21.4 encoded wolf variants as registry-or-inline holders.
+    pub wolf_variant_holder: bool,
     /// Through 1.21.8 these particle types carried no options at all.
     pub simple_spell_particles: bool,
 }
@@ -118,6 +122,8 @@ impl Quirks {
         integer_custom_model_data: false,
         trail_without_duration: false,
         components_before_1_21_2: false,
+        components_before_1_21: false,
+        wolf_variant_holder: false,
         simple_spell_particles: false,
     };
 }

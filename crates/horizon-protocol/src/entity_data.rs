@@ -382,6 +382,24 @@ fn read_value(kind: i32, r: &mut Reader) -> Result<Option<Value>> {
         }
         // VillagerData: type, profession and level.
         VILLAGER_DATA => Value::Ids(vec![r.varint()?, r.varint()?, r.varint()?]),
+        WOLF_VARIANT if ids::quirks().wolf_variant_holder => {
+            let holder = r.varint()?;
+            if holder <= 0 {
+                return Err(crate::Error::new(
+                    "inline legacy wolf variant is unsupported",
+                ));
+            }
+            Value::Id(holder - 1)
+        }
+        PAINTING_VARIANT if ids::quirks().components_before_1_21 => {
+            // 1.21 changed this bare registry id into a registry-or-inline holder (id + 1).
+            let id = r.varint()?;
+            Value::Id(
+                id.checked_add(1)
+                    .filter(|_| id >= 0)
+                    .ok_or_else(|| crate::Error::new("invalid legacy variant id"))?,
+            )
+        }
         // VarInt-encoded: direction, block states, optional ints, pose, the
         // holder-registry variants (cat to zombie nautilus, painting) and the
         // enum states (sniffer to weathering copper), arm, dye.
@@ -503,9 +521,44 @@ mod tests {
     use super::*;
 
     #[test]
+    fn vanilla_variant_wire_ids_survive_the_holder_boundaries() {
+        use crate::adapter::{ServerVersion, ids::Way};
+        // The real vanilla EntityDataSerializers encode registry slot 2 as these bytes.
+        // Painting changes in 1.21; wolf changes in 1.21 and back in 1.21.5. Cat/frog stay bare.
+        for (version, painting, wolf) in [
+            (ServerVersion::V1_20_5, 2, 2),
+            (ServerVersion::V1_21_1, 3, 3),
+            (ServerVersion::V1_21_3, 3, 3),
+            (ServerVersion::V1_21_4, 3, 3),
+            (ServerVersion::V1_21_5, 3, 2),
+            (ServerVersion::V1_21_8, 3, 2),
+            (ServerVersion::V1_21_10, 3, 2),
+        ] {
+            for (kind, wire, expected) in [
+                (serializer::PAINTING_VARIANT, painting, 3),
+                (serializer::WOLF_VARIANT, wolf, 2),
+                (serializer::CAT_VARIANT, 2, 2),
+                (serializer::FROG_VARIANT, 2, 2),
+            ] {
+                let wire = [wire, 99];
+                let mut r = Reader::new(&wire);
+                let value = {
+                    let _up = ids::renumbering(version.ids().unwrap(), Way::Up);
+                    read_value(kind, &mut r).unwrap()
+                };
+                assert_eq!(value, Some(Value::Id(expected)), "{version:?}, {kind}");
+                assert_eq!(r.u8().unwrap(), 99);
+            }
+        }
+        let _up = ids::renumbering(ServerVersion::V1_21_1.ids().unwrap(), Way::Up);
+        assert!(read_value(serializer::WOLF_VARIANT, &mut Reader::new(&[0, 99])).is_err());
+    }
+
+    #[test]
     fn older_simple_particle_defaults_do_not_consume_the_next_field() {
         use crate::adapter::{ServerVersion, ids::Way};
         for version in [
+            ServerVersion::V1_20_5,
             ServerVersion::V1_21_1,
             ServerVersion::V1_21_3,
             ServerVersion::V1_21_4,

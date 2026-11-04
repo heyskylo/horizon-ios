@@ -13,6 +13,7 @@ use std::sync::Arc;
 pub mod custom;
 mod hash;
 mod skip;
+pub(crate) mod v1_20_5;
 mod v1_21_1;
 mod v1_21_4;
 mod v1_21_5;

@@ -114,7 +114,7 @@ reason.
 ### Experimental older servers
 
 The native Rust adapter recognizes 26.2, 26.1.x, 1.21.11, 1.21.9/1.21.10,
-1.21.7/1.21.8, 1.21.6, 1.21.5, 1.21.4, 1.21.2/1.21.3 and 1.21/1.21.1. It is off by default while compatibility is incomplete. Set
+1.21.7/1.21.8, 1.21.6, 1.21.5, 1.21.4, 1.21.2/1.21.3, 1.21/1.21.1 and 1.20.5/1.20.6. It is off by default while compatibility is incomplete. Set
 `HORIZON_OLDER_SERVERS=1` before starting the game; the server's status ping selects
 the adapter. The client still needs its prepared **26.3** resources.
 
@@ -140,7 +140,7 @@ The 1.21.2/1.21.3 bridge also handles particle flags and client-chosen trail lif
 vehicle movement, tab-list hats, integer custom-model data, old creaking-heart states
 and the transient creaking type. Custom-model data uses the first float when sent
 back; integers beyond exact float precision can lose precision. Server-delegated
-block/entity picking is not supported on 1.21 through 1.21.3, whose old pick packet
+block/entity picking is not supported on 1.20.5 through 1.21.3, whose old pick packet
 requires a client inventory index instead of a world target.
 The 1.21/1.21.1 bridge converts older recipe declarations and book updates, food
 consumption data, potions, instruments, teleports, inventory windows and settings.
@@ -148,6 +148,17 @@ Boat wood variants become their corresponding modern entity types, retaining
 movement, metadata and passengers when recreated. Old explosions preserve their
 radius, destroyed-block updates and knockback. Custom recipe serializers and
 consumable effects without an old representation remain unsupported.
+The 1.20.5/1.20.6 bridge also converts UUID-based attribute modifiers, food without
+a remainder field, horse inventory sizes, projectile acceleration and item-use
+packets without rotation. Static enchantment and painting names are supplied in
+their original wire-id order; their definitions use the client's prepared resources.
+Old modifier names become vanilla's canonical identifiers and cannot retain arbitrary
+original display names on write-back. New identifiers without a known old UUID
+receive a stable generated UUID, so their original identifier is lost on a round trip.
+The old three-component projectile acceleration is represented by its
+magnitude; a custom direction independent of velocity has no scalar representation.
+Wolf registry references on 1.21 through 1.21.4 are normalized past their older
+holder encoding; inline wolf definitions on those versions remain unsupported.
 Online-mode login and complete interactive playthroughs on these versions
 have not been validated. Earlier Java releases, Classic/Alpha/Beta,
 April Fools and Bedrock are outside the implemented adapter set.
@@ -155,7 +166,7 @@ April Fools and Bedrock are outside the implemented adapter set.
 For a protocol-only development check, append `--server-protocol 772` to
 `cargo run -p horizon-protocol --example protocol_probe -- 127.0.0.1:25565 20`.
 The probe fails if it encounters packet or chunk decode errors.
-Use `--server-protocol 767` for 1.21/1.21.1, `768` for 1.21.2/1.21.3, `769` for 1.21.4, `770` for 1.21.5, or `771` for 1.21.6;
+Use `--server-protocol 766` for 1.20.5/1.20.6, `767` for 1.21/1.21.1, `768` for 1.21.2/1.21.3, `769` for 1.21.4, `770` for 1.21.5, or `771` for 1.21.6;
 1.21.7 and 1.21.8 both use `772`.
 
 ### Agent control (`horizon-ctl` and MCP)

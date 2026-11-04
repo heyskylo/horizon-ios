@@ -5,7 +5,7 @@ pub(crate) mod boats;
 pub(crate) mod recipes;
 
 pub(super) fn clientbound(
-    _session: &Session,
+    session: &Session,
     state: State,
     id: i32,
     payload: &[u8],
@@ -106,7 +106,12 @@ pub(super) fn clientbound(
         cb::COOLDOWN => {
             let item = usize::try_from(r.varint()?)
                 .map_err(|_| crate::Error::new("negative cooldown item"))?;
-            let name = crate::adapter::v1_21_1_ids::ITEM_NAMES
+            let names = if session.version.at_most(ServerVersion::V1_20_5) {
+                crate::adapter::v1_20_5_ids::ITEM_NAMES
+            } else {
+                crate::adapter::v1_21_1_ids::ITEM_NAMES
+            };
+            let name = names
                 .get(item)
                 .filter(|name| !name.is_empty())
                 .ok_or_else(|| crate::Error::new("unknown cooldown item"))?;
