@@ -50,6 +50,7 @@ mod microsoft;
 mod modpacks_page;
 mod mods_page;
 mod mods_project;
+mod motion;
 mod multiplayer_page;
 mod native_log_page;
 mod new_instance;
@@ -70,6 +71,7 @@ mod shortcut_page;
 mod skin_page;
 mod sky;
 mod specimen;
+mod sticky;
 mod switch_page;
 mod theme;
 mod themes_page;
@@ -208,6 +210,10 @@ struct Launcher {
     content_scroll: Scrollbar,
     /// The glass Settings page's own scroll: its sections beside their list.
     settings_pane: gpui::ScrollHandle,
+    /// The section the glass Settings list marked when last drawn (`glass_settings`).
+    settings_marked: usize,
+    /// The Mods page's project card, kept in view beside its list.
+    mods_sticky: sticky::Sticky,
     /// The rows of the page's long list (Versions, Patch notes) last drawn.
     long_list: cull::Cull,
     opening: Option<Opening>,
@@ -544,6 +550,8 @@ impl Launcher {
             switches: 0,
             content_scroll: Scrollbar::default(),
             settings_pane: gpui::ScrollHandle::new(),
+            settings_marked: 0,
+            mods_sticky: sticky::Sticky::default(),
             long_list: cull::Cull::default(),
             opening: (!settings.skip_opening).then(|| {
                 let focus = cx.focus_handle();
@@ -828,6 +836,7 @@ impl Launcher {
             self.switches += 1;
             self.content_scroll = Scrollbar::default();
             self.long_list = cull::Cull::default();
+            self.mods_sticky.reset();
             if page == Page::Mods {
                 self.mods.reset_lists();
             }
@@ -1951,7 +1960,7 @@ fn hover_fade(
     let key = |dir: &str, at: Instant| {
         ElementId::named_usize(format!("{id}-{dir}"), (at - start).as_micros() as usize)
     };
-    let ease = || Animation::new(theme::QUICK).with_easing(ease_out_quint());
+    let ease = || motion::eased(horizon_theme::QUICK);
     if let Some((_, at)) = state.on.as_ref().filter(|(h, _)| h == id) {
         return layer()
             .with_animation(key("in", *at), ease(), paint)
@@ -3269,6 +3278,9 @@ impl Launcher {
                 None,
                 &t,
             )),
+            // The glass look's Overview ends with the screenshots and the patch log: Prepare is in
+            // Play's ⋯ menu, the Minecraft folder in the folder menu, signing in in the top bar.
+            None if t.glass => rows,
             None => rows
                 .child(index_row(
                     2,
@@ -5023,7 +5035,7 @@ impl Render for Launcher {
             Page::Settings => self.settings_page(cx),
         };
         self.sky.free_replaced(window);
-        // The new page fades in and rises a few pixels.
+        // The new page fades in and rises a few pixels, as the website's tabs do (`hzl-pop`).
         let content = div()
             .relative()
             .w_full()
@@ -5032,8 +5044,8 @@ impl Render for Launcher {
             .child(content)
             .with_animation(
                 ElementId::named_usize("page", self.switches),
-                Animation::new(theme::ENTER).with_easing(ease_out_quint()),
-                |d, p| d.opacity(p).top(px(theme::RISE * (1. - p))),
+                motion::eased(motion::POP),
+                |d, p| d.opacity(p).top(px(motion::POP_RISE * (1. - p))),
             );
         let (reveal, held) = self.opening_phase(window);
         let ui = ease_out_cubic((reveal - 0.3) / 0.7);
@@ -5148,6 +5160,24 @@ impl Render for Launcher {
                                             .flex_1()
                                             .min_h_0()
                                             .overflow_y_scroll()
+                                            // A scrolled page is drawn from its layer, not
+                                            // rendered: the Mods page's card asks, once the
+                                            // offset has moved, whether it must follow.
+                                            .on_scroll(cx.listener(
+                                                |this, _: &gpui::ScrollEvent, window, cx| {
+                                                    if this.page != Page::Mods {
+                                                        return;
+                                                    }
+                                                    cx.on_next_frame(window, |this, _, cx| {
+                                                        if this
+                                                            .mods_sticky
+                                                            .moved(&this.content_scroll.handle)
+                                                        {
+                                                            cx.notify();
+                                                        }
+                                                    });
+                                                },
+                                            ))
                                             .child(
                                                 div()
                                                     .flex()
@@ -5173,7 +5203,8 @@ impl Render for Launcher {
                                         &t,
                                     )
                                     .flex_1()
-                                    .min_h_0(),
+                                    .min_h_0()
+                                    .when(t.glass, |d| d.mt(px(crate::glass::CONTENT_INSET))),
                             ),
                     ),
             );

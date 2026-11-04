@@ -68,6 +68,37 @@ impl PackAtlas {
         layers: u32,
         sprite: u32,
     ) -> Option<Self> {
+        Self::with_levels(
+            device,
+            encoder,
+            arrays,
+            split,
+            layers,
+            sprite,
+            arrays[0].mip_level_count(),
+        )
+    }
+
+    /// Encoded material channels must select an existing texel, including at distance.
+    pub fn material(
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        arrays: &[wgpu::Texture],
+        split: u32,
+        layers: u32,
+    ) -> Option<Self> {
+        Self::with_levels(device, encoder, arrays, split, layers, arrays[0].width(), 1)
+    }
+
+    fn with_levels(
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        arrays: &[wgpu::Texture],
+        split: u32,
+        layers: u32,
+        sprite: u32,
+        levels: u32,
+    ) -> Option<Self> {
         let layers = layers.max(1);
         let columns = (f64::from(layers).sqrt().ceil() as u32).max(1);
         let rows = layers.div_ceil(columns);
@@ -76,7 +107,7 @@ impl PackAtlas {
             return None;
         }
         // Levels past a sprite's single pixel would mix neighbours: stop there.
-        let levels = arrays[0].mip_level_count().min(sprite.ilog2() + 1);
+        let levels = levels.min(sprite.ilog2() + 1);
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Shader pack block atlas"),
             size: wgpu::Extent3d {
@@ -416,6 +447,7 @@ impl PackAtlas {
                 .collect(),
             after: String::new(),
             alpha_test: None,
+            item_id_declared: false,
         }
     }
 }
