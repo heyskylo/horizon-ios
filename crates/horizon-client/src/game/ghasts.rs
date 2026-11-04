@@ -164,9 +164,18 @@ impl Game<'_> {
             m.yaw = yaw;
             m.body_yaw = yaw;
             m.head_yaw = yaw;
-            let at = m.center();
-            self.audio
-                .play("minecraft:entity.ghastling.spawn", Some(at), 1.0, 1.0);
+            self.audio.play_bound(
+                "minecraft:entity.ghastling.spawn",
+                4,
+                1.0,
+                1.0,
+                horizon_client::sound_engine::SoundEntity::new(
+                    m.id,
+                    [m.position.x, m.position.y, m.position.z],
+                    m.silent,
+                ),
+                None,
+            );
         }
     }
 }

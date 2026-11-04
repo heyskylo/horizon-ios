@@ -2275,15 +2275,43 @@ impl Game<'_> {
 
     /// The end of the level's tick: the entities added since its states were
     /// taken for the guests (a falling block's drop, a spawner's mob, the
-    /// host's snowball) are noted as they joined, for the next tick's
-    /// tracking to pair them from (`Hub::note_joined`). Only they are
+    /// host's snowball) are paired without another tracking tick
+    /// (`Hub::note_joined`). Only they are
     /// described (their ids are above the counter the states were taken at),
     /// and nothing when the counter has not moved or no guest is in the level.
     pub(super) fn lan_note_joined(&mut self) {
         let Some(mut host) = self.lan.take() else {
             return;
         };
-        if let Some(next) = host.states_next_entity.take()
+        host = self.lan_flush_tracking(host);
+        host.states_next_entity = None;
+        self.flush_attachment_sync(&mut host);
+        self.lan = Some(host);
+    }
+
+    /// Deliver start/stop callbacks before sounds and attachment snapshots.
+    /// A callback can spawn another entity, whose pairing is part of the same
+    /// operation, as a nested ChunkMap.addEntity would be in vanilla.
+    fn lan_flush_tracking(&mut self, mut host: LanHost) -> LanHost {
+        loop {
+            self.lan_pair_joined(&mut host);
+            host.hub.collect_tracking();
+            if host.hub.native_tracking.is_empty() {
+                return host;
+            }
+            self.lan = Some(host);
+            self.run_native_tracking();
+            host = self
+                .lan
+                .take()
+                .expect("the hub is back after the tracking events");
+        }
+    }
+
+    /// Pair late arrivals before a sound flush as well as at the end of the
+    /// tick. The counter prevents taking or draining an entity's state twice.
+    pub(super) fn lan_pair_joined(&mut self, host: &mut LanHost) {
+        if let Some(next) = host.states_next_entity
             && host.hub.guests.iter().any(|g| host.hub.here(g))
         {
             self.lan_assign_ids();
@@ -2294,8 +2322,8 @@ impl Game<'_> {
                 self.lan_entity_uuids(&mut states);
                 host.hub.note_joined(states.as_slice());
             }
+            host.states_next_entity = Some(self.next_entity);
         }
-        self.lan = Some(host);
     }
 
     /// Run the hub for this tick and apply what the guests did. While the
@@ -2397,6 +2425,7 @@ impl Game<'_> {
                 host.hub.block_event(pos, b0, b1, state);
             }
             let entities = states.as_slice();
+            self.lan_prepare_captured_sounds(&mut host, entities);
             // An entity that left the level since the last tick (a snowball
             // that hit) is dropped by the tracker below: its event goes out
             // first, as `Level.broadcastEntityEvent` precedes the discard.
@@ -2502,15 +2531,7 @@ impl Game<'_> {
                 .take()
                 .expect("the hub is back after the menu events");
         }
-        host.hub.collect_tracking();
-        if !host.hub.native_tracking.is_empty() {
-            self.lan = Some(host);
-            self.run_native_tracking();
-            host = self
-                .lan
-                .take()
-                .expect("the hub is back after the tracking events");
-        }
+        host = self.lan_flush_tracking(host);
         self.lan = Some(host);
         // A blast from a guest's attack, and a mace's wind burst.
         self.flush_lan_explosions();
@@ -2525,6 +2546,7 @@ impl Game<'_> {
             .lan
             .take()
             .expect("the hub is back after the guest flushes");
+        host = self.lan_flush_tracking(host);
         self.lan_flush_effects(&mut host);
         self.lan_living_flags(&mut host);
         self.lan_stuck(&mut host, paused);

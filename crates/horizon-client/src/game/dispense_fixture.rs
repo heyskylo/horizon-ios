@@ -441,8 +441,8 @@ impl Game<'_> {
             .collect();
         out.extend(log);
         out.extend(fizzes);
-        for (sound, at, _, _) in self.audio.capture.take().unwrap_or_default() {
-            out.push(format!("S {} {sound}", floor_pos(at)));
+        for sound in self.audio.capture.take().unwrap_or_default() {
+            out.push(format!("S {} {}", floor_pos(sound.position), sound.event));
         }
         out.extend(used);
         out.push(format!("rng {}", self.world.random.next_long()));
