@@ -119,10 +119,78 @@ pub enum Language {
     Albanian,
     #[serde(rename = "cy")]
     Welsh,
+    #[serde(rename = "ga")]
+    Irish,
+    #[serde(rename = "eu")]
+    Basque,
+    #[serde(rename = "gl")]
+    Galician,
+    #[serde(rename = "fil")]
+    Filipino,
+    #[serde(rename = "ta")]
+    Tamil,
+    #[serde(rename = "mn")]
+    Mongolian,
+    #[serde(rename = "lo")]
+    Lao,
+    #[serde(rename = "so")]
+    Somali,
+    #[serde(rename = "fy")]
+    Frisian,
+    #[serde(rename = "gd")]
+    ScottishGaelic,
+    #[serde(rename = "lb")]
+    Luxembourgish,
+    #[serde(rename = "ky")]
+    Kyrgyz,
+    #[serde(rename = "kn")]
+    Kannada,
+    #[serde(rename = "mt")]
+    Maltese,
+    #[serde(rename = "eo")]
+    Esperanto,
+    #[serde(rename = "haw")]
+    Hawaiian,
+    #[serde(rename = "ig")]
+    Igbo,
+    #[serde(rename = "la")]
+    Latin,
+    #[serde(rename = "tt")]
+    Tatar,
+    #[serde(rename = "yi")]
+    Yiddish,
+    #[serde(rename = "yo")]
+    Yoruba,
+    #[serde(rename = "zu")]
+    Zulu,
+    #[serde(rename = "ba")]
+    Bashkir,
+    #[serde(rename = "br")]
+    Breton,
+    #[serde(rename = "cv")]
+    Chuvash,
+    #[serde(rename = "fo")]
+    Faroese,
+    #[serde(rename = "fur")]
+    Friulian,
+    #[serde(rename = "li")]
+    Limburgish,
+    #[serde(rename = "lmo")]
+    Lombard,
+    #[serde(rename = "oc")]
+    Occitan,
+    #[serde(rename = "sah")]
+    Sakha,
+    #[serde(rename = "se")]
+    NorthernSami,
+    #[serde(rename = "szl")]
+    Silesian,
+    #[serde(rename = "vec")]
+    Venetian,
 }
 
 impl Language {
-    pub const ALL: [Language; 53] = [
+    pub const ALL: [Language; 87] = [
         Self::English,
         Self::French,
         Self::Russian,
@@ -176,6 +244,40 @@ impl Language {
         Self::Macedonian,
         Self::Albanian,
         Self::Welsh,
+        Self::Irish,
+        Self::Basque,
+        Self::Galician,
+        Self::Filipino,
+        Self::Tamil,
+        Self::Mongolian,
+        Self::Lao,
+        Self::Somali,
+        Self::Frisian,
+        Self::ScottishGaelic,
+        Self::Luxembourgish,
+        Self::Kyrgyz,
+        Self::Kannada,
+        Self::Maltese,
+        Self::Esperanto,
+        Self::Hawaiian,
+        Self::Igbo,
+        Self::Latin,
+        Self::Tatar,
+        Self::Yiddish,
+        Self::Yoruba,
+        Self::Zulu,
+        Self::Bashkir,
+        Self::Breton,
+        Self::Chuvash,
+        Self::Faroese,
+        Self::Friulian,
+        Self::Limburgish,
+        Self::Lombard,
+        Self::Occitan,
+        Self::Sakha,
+        Self::NorthernSami,
+        Self::Silesian,
+        Self::Venetian,
     ];
 
     /// Its code in `settings.json` and on the command line.
@@ -234,6 +336,40 @@ impl Language {
             Self::Macedonian => "mk",
             Self::Albanian => "sq",
             Self::Welsh => "cy",
+            Self::Irish => "ga",
+            Self::Basque => "eu",
+            Self::Galician => "gl",
+            Self::Filipino => "fil",
+            Self::Tamil => "ta",
+            Self::Mongolian => "mn",
+            Self::Lao => "lo",
+            Self::Somali => "so",
+            Self::Frisian => "fy",
+            Self::ScottishGaelic => "gd",
+            Self::Luxembourgish => "lb",
+            Self::Kyrgyz => "ky",
+            Self::Kannada => "kn",
+            Self::Maltese => "mt",
+            Self::Esperanto => "eo",
+            Self::Hawaiian => "haw",
+            Self::Igbo => "ig",
+            Self::Latin => "la",
+            Self::Tatar => "tt",
+            Self::Yiddish => "yi",
+            Self::Yoruba => "yo",
+            Self::Zulu => "zu",
+            Self::Bashkir => "ba",
+            Self::Breton => "br",
+            Self::Chuvash => "cv",
+            Self::Faroese => "fo",
+            Self::Friulian => "fur",
+            Self::Limburgish => "li",
+            Self::Lombard => "lmo",
+            Self::Occitan => "oc",
+            Self::Sakha => "sah",
+            Self::NorthernSami => "se",
+            Self::Silesian => "szl",
+            Self::Venetian => "vec",
         }
     }
 
@@ -293,6 +429,40 @@ impl Language {
             Self::Macedonian => "Македонски",
             Self::Albanian => "Shqip",
             Self::Welsh => "Cymraeg",
+            Self::Irish => "Gaeilge",
+            Self::Basque => "Euskara",
+            Self::Galician => "Galego",
+            Self::Filipino => "Filipino",
+            Self::Tamil => "தமிழ்",
+            Self::Mongolian => "Монгол",
+            Self::Lao => "ລາວ",
+            Self::Somali => "Soomaali",
+            Self::Frisian => "Frysk",
+            Self::ScottishGaelic => "Gàidhlig",
+            Self::Luxembourgish => "Lëtzebuergesch",
+            Self::Kyrgyz => "Кыргызча",
+            Self::Kannada => "ಕನ್ನಡ",
+            Self::Maltese => "Malti",
+            Self::Esperanto => "Esperanto",
+            Self::Hawaiian => "ʻŌlelo Hawaiʻi",
+            Self::Igbo => "Igbo",
+            Self::Latin => "Latina",
+            Self::Tatar => "Татарча",
+            Self::Yiddish => "ייִדיש",
+            Self::Yoruba => "Yorùbá",
+            Self::Zulu => "isiZulu",
+            Self::Bashkir => "Башҡортса",
+            Self::Breton => "Brezhoneg",
+            Self::Chuvash => "Чӑвашла",
+            Self::Faroese => "Føroyskt",
+            Self::Friulian => "Furlan",
+            Self::Limburgish => "Limburgs",
+            Self::Lombard => "Lombard",
+            Self::Occitan => "Occitan",
+            Self::Sakha => "Саха тыла",
+            Self::NorthernSami => "Davvisámegiella",
+            Self::Silesian => "Ślōnskŏ",
+            Self::Venetian => "Vèneto",
         }
     }
 
@@ -394,6 +564,40 @@ impl Language {
             Self::Macedonian => include_str!("../lang/mk.json"),
             Self::Albanian => include_str!("../lang/sq.json"),
             Self::Welsh => include_str!("../lang/cy.json"),
+            Self::Irish => include_str!("../lang/ga.json"),
+            Self::Basque => include_str!("../lang/eu.json"),
+            Self::Galician => include_str!("../lang/gl.json"),
+            Self::Filipino => include_str!("../lang/fil.json"),
+            Self::Tamil => include_str!("../lang/ta.json"),
+            Self::Mongolian => include_str!("../lang/mn.json"),
+            Self::Lao => include_str!("../lang/lo.json"),
+            Self::Somali => include_str!("../lang/so.json"),
+            Self::Frisian => include_str!("../lang/fy.json"),
+            Self::ScottishGaelic => include_str!("../lang/gd.json"),
+            Self::Luxembourgish => include_str!("../lang/lb.json"),
+            Self::Kyrgyz => include_str!("../lang/ky.json"),
+            Self::Kannada => include_str!("../lang/kn.json"),
+            Self::Maltese => include_str!("../lang/mt.json"),
+            Self::Esperanto => include_str!("../lang/eo.json"),
+            Self::Hawaiian => include_str!("../lang/haw.json"),
+            Self::Igbo => include_str!("../lang/ig.json"),
+            Self::Latin => include_str!("../lang/la.json"),
+            Self::Tatar => include_str!("../lang/tt.json"),
+            Self::Yiddish => include_str!("../lang/yi.json"),
+            Self::Yoruba => include_str!("../lang/yo.json"),
+            Self::Zulu => include_str!("../lang/zu.json"),
+            Self::Bashkir => include_str!("../lang/ba.json"),
+            Self::Breton => include_str!("../lang/br.json"),
+            Self::Chuvash => include_str!("../lang/cv.json"),
+            Self::Faroese => include_str!("../lang/fo.json"),
+            Self::Friulian => include_str!("../lang/fur.json"),
+            Self::Limburgish => include_str!("../lang/li.json"),
+            Self::Lombard => include_str!("../lang/lmo.json"),
+            Self::Occitan => include_str!("../lang/oc.json"),
+            Self::Sakha => include_str!("../lang/sah.json"),
+            Self::NorthernSami => include_str!("../lang/se.json"),
+            Self::Silesian => include_str!("../lang/szl.json"),
+            Self::Venetian => include_str!("../lang/vec.json"),
         }
     }
 }
