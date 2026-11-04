@@ -488,6 +488,13 @@ impl Shared {
     pub(crate) fn phase(&self) -> Phase {
         self.state.lock().unwrap().phase
     }
+    /// Stops the game and then the supervisor itself (`POST /api/v1/stop`, the management `server/stop`): the
+    /// process exits, as vanilla's does. Only a `stop` that reaches the game some other way leaves the supervisor
+    /// in [`Phase::Stopped`].
+    pub fn shut_down(&self) {
+        self.shutdown.store(true, Ordering::SeqCst);
+        self.stop.store(true, Ordering::SeqCst);
+    }
 
     /// A backup while the server runs: the game saves everything and stops writing while the zip is made.
     pub fn back_up(&self, file_name: &str) -> Result<PathBuf, String> {
@@ -684,8 +691,7 @@ pub fn route(shared: &Arc<Shared>, request: &Request) -> Response {
             }
         }
         ("POST", "/api/v1/stop") => {
-            shared.shutdown.store(true, Ordering::SeqCst);
-            shared.stop.store(true, Ordering::SeqCst);
+            shared.shut_down();
             Response::json(200, &json!({ "ok": true }))
         }
         ("POST", "/api/v1/start") => {
