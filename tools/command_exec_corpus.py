@@ -1530,12 +1530,35 @@ def progression():
     ]
 
 
-def function_return_fixtures(group_names):
-    if 'function return feedback' not in group_names:
+def advancement_reward_fixtures(group_names):
+    if 'advancement reward functions' not in group_names:
         return {}
-    return {'parity:fail': 'return fail\n', 'parity:zero': 'return 0\n',
-            'parity:value': 'return 7\n', 'parity:empty': '# no commands\n',
-            'parity:add': 'scoreboard players add #count audit 1\n'}
+    def advancement(function=None):
+        value = {'criteria': {'never': {'trigger': 'minecraft:impossible'}}}
+        if function is not None:
+            value['rewards'] = {'function': function}
+        return value
+    return {'h291:reward': advancement('h291:reward'),
+            'h291:no_function': advancement(),
+            'h291:missing_function': advancement('h291:missing'),
+            'h291:alias': advancement('h291_alias')}
+
+
+def function_return_fixtures(group_names):
+    functions = {}
+    if 'function return feedback' in group_names:
+        functions.update({'parity:fail': 'return fail\n', 'parity:zero': 'return 0\n',
+                          'parity:value': 'return 7\n', 'parity:empty': '# no commands\n',
+                          'parity:add': 'scoreboard players add #count audit 1\n'})
+    if 'advancement reward functions' in group_names:
+        # Explicit return must not replace the enclosing advancement callback.
+        functions.update({'h291:reward': 'scoreboard players add @s reward_hits 1\n'
+                          'tag @s add h291_rewarded\n'
+                          'execute if block ~ ~-1 ~ stone run scoreboard players add @s reward_origin 1\n'
+                          'function h291:nested\nreturn 9\n',
+                          'h291:nested': 'scoreboard players add @s reward_nested 1\n',
+                          'minecraft:h291_alias': 'scoreboard players add @s reward_alias 1\n'})
+    return functions
 
 
 def function_return_feedback():
@@ -4368,6 +4391,69 @@ def mining_efficiency_9021():
 
 
 
+def advancement_reward_functions():
+    """Function-only impossible advancements isolate reward dispatch from triggers and XP/loot."""
+    ops = setup('/forceload add 0 0 15 15', '/setblock 8 229 8 stone',
+                '/tp @s 8.5 230 8.5 0 0', '/scoreboard objectives add reward_hits dummy',
+                '/scoreboard objectives add reward_origin dummy',
+                '/scoreboard objectives add reward_nested dummy',
+                '/scoreboard objectives add reward_alias dummy',
+                '/scoreboard objectives add reward_audit dummy')
+    ops += [cmd('/execute if loaded 8 230 8', expect_result=1),
+            cmd('/execute if entity @s[type=player,nbt={Pos:[8.5d,230d,8.5d],Health:20f}]', expect_result=1)]
+    # Snapshot the entire actual UUID; the final no-change write checks identity without
+    # assuming the two harnesses choose the same offline player UUID.
+    ops += setup('/data modify storage h291:identity value set from entity @s UUID',
+                 '/execute store result score clock reward_audit run time query gametime')
+    for objective in ('reward_hits', 'reward_origin', 'reward_nested', 'reward_alias'):
+        ops += setup(f'/scoreboard players set @s {objective} 0')
+    ops += [cmd('/function h291:reward')]
+    ops += [cmd('/scoreboard players get @s reward_hits', expect_result=1),
+            cmd('/scoreboard players get @s reward_origin', expect_result=1),
+            cmd('/scoreboard players get @s reward_nested', expect_result=1),
+            cmd('/execute if entity @s[tag=h291_rewarded]', expect_result=1)]
+    ops += setup('/scoreboard players set @s reward_hits 0',
+                 '/scoreboard players set @s reward_origin 0',
+                 '/scoreboard players set @s reward_nested 0', '/tag @s remove h291_rewarded')
+    # Reward uses the player's own position, not the granting execute source's position.
+    cases = [('execute positioned 40 240 40 run advancement grant @s only h291:reward', 1, 1, 1, True),
+             ('advancement grant @s only h291:reward', 0, 1, 1, True),
+             ('advancement revoke @s only h291:reward', 1, 1, 1, False),
+             ('advancement grant @s only h291:reward', 1, 2, 2, True),
+             ('advancement grant @s only h291:no_function', 1, 2, 2, True),
+             ('advancement grant @s only h291:no_function', 0, 2, 2, True),
+             ('advancement grant @s only h291:missing_function', 1, 2, 2, True),
+             ('advancement grant @s only h291:alias', 1, 2, 2, True)]
+    for operation, changed, hits, nested, completed in cases:
+        ops += [cmd('/execute if entity @s[type=player,nbt={Pos:[8.5d,230d,8.5d],Health:20f}]', expect_result=1)]
+        ops += setup('/scoreboard players set result reward_audit -99',
+                     '/scoreboard players set success reward_audit -99')
+        ops += [cmd('/scoreboard players get result reward_audit', expect_result=-99),
+                cmd('/scoreboard players get success reward_audit', expect_result=-99),
+                cmd('/execute store result score result reward_audit store success score success reward_audit run ' + operation),
+                cmd('/scoreboard players get result reward_audit', expect_result=changed),
+                cmd('/scoreboard players get success reward_audit', expect_result=changed),
+                cmd('/scoreboard players get @s reward_hits', expect_result=hits),
+                cmd('/scoreboard players get @s reward_origin', expect_result=hits),
+                cmd('/scoreboard players get @s reward_nested', expect_result=nested),
+                cmd('/execute if entity @s[tag=h291_rewarded]', expect_result=1)]
+        advancement = operation.split(' only ')[1]
+        sign = 'if' if completed else 'unless'
+        ops += [cmd(f'/execute {sign} entity @s[advancements={{{advancement}=true}}]', expect_result=1)]
+    ops += [cmd('/scoreboard players get @s reward_alias', expect_result=1),
+            cmd('/function h291:reward'),
+            cmd('/scoreboard players get @s reward_hits', expect_result=3),
+            cmd('/scoreboard players get @s reward_nested', expect_result=3)]
+    ops += setup('/execute store success score identity_changed reward_audit run data modify storage h291:identity value set from entity @s UUID',
+                 '/execute store result score elapsed reward_audit run time query gametime',
+                 '/scoreboard players operation elapsed reward_audit -= clock reward_audit')
+    ops += [cmd('/scoreboard players get identity_changed reward_audit', expect_result=0),
+            cmd('/scoreboard players get elapsed reward_audit', expect_result=0)]
+    for objective in ('reward_hits', 'reward_origin', 'reward_nested', 'reward_alias', 'reward_audit'):
+        ops += setup(f'/scoreboard objectives remove {objective}')
+    return ops
+
+
 def groups():
     try:
         from .loaded_cloud_corpus import loaded_clouds
@@ -4375,6 +4461,7 @@ def groups():
         from loaded_cloud_corpus import loaded_clouds
     return [
         ('setup', group_setup()),
+        ('advancement reward functions', advancement_reward_functions()),
         ('mining_efficiency_9021', mining_efficiency_9021()),
         ('structured item slots', structured_item_slots()),
         ('loaded potion clouds', loaded_clouds(cmd, setup)),
