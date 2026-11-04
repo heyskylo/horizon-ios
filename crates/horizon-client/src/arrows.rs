@@ -553,7 +553,14 @@ pub fn tick_through(
 /// Simulate a remote arrow without server-only despawn or block reactions.
 /// Entity hits remain authoritative on the server.
 pub fn tick_client(p: &mut Projectile, scene: &ArrowScene) -> (bool, Hit) {
-    tick_with(p, scene, &[], true, true)
+    let out = tick_with(p, scene, &[], true, true);
+    // `Entity.playSound` passes no player to `Level.playSound`, and
+    // `ClientLevel.playSeededSound` plays only for its own player: the server's
+    // sound packets carry the hit and splash. The sounds' draws still happened.
+    if let Some(a) = p.arrow.as_mut() {
+        a.events.retain(|e| !matches!(e, ArrowEvent::Sound { .. }));
+    }
+    out
 }
 fn tick_with(
     p: &mut Projectile,

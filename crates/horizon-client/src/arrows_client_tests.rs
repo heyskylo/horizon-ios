@@ -369,3 +369,40 @@ fn remote_arrow_preserves_previous_rotation_as_it_turns_and_falls() {
     }
     assert!(steps.last().unwrap().pitch < 0.0);
 }
+/// `Entity.playSound` hands `Level.playSound` no player and
+/// `ClientLevel.playSeededSound` plays only for its own player, so a client's
+/// arrow makes no sound itself: the server's sound packets carry its hit and
+/// splash.
+#[test]
+fn a_client_arrow_hitting_stone_or_entering_water_plays_no_sound_itself() {
+    let stone = run(&[([1, 18, 0], 1)], 2, false);
+    assert!(
+        stone.iter().any(|p| p.stuck),
+        "the arrow sticks in the stone"
+    );
+    let mut water = Vec::new();
+    for x in 2..8 {
+        for y in 16..21 {
+            for z in -2..3 {
+                water.push(([x, y, z], 2));
+            }
+        }
+    }
+    let wet = run(&water, 4, false);
+    assert!(
+        wet.last()
+            .unwrap()
+            .arrow
+            .as_ref()
+            .unwrap()
+            .was_touching_water,
+        "the arrow entered the water"
+    );
+    for p in stone.iter().chain(&wet) {
+        let events = &p.arrow.as_ref().unwrap().events;
+        assert!(
+            !events.iter().any(|e| matches!(e, ArrowEvent::Sound { .. })),
+            "{events:?}"
+        );
+    }
+}
