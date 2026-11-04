@@ -116,6 +116,23 @@ pub struct Session {
     far: Arc<crate::lod_net::Inbox>,
 }
 impl Session {
+    /// The negotiated wire release, once the connection has been established.
+    pub fn server_version(&self) -> horizon_protocol::adapter::ServerVersion {
+        self.writer.lock().unwrap().as_ref().map_or(
+            horizon_protocol::adapter::ServerVersion::Current,
+            ConnWriter::server_version,
+        )
+    }
+
+    /// Secure-chat enforcement synchronized later than login on older servers.
+    pub fn legacy_secure_chat_enforcement(&self) -> Option<bool> {
+        self.writer
+            .lock()
+            .unwrap()
+            .as_ref()
+            .and_then(ConnWriter::legacy_secure_chat_enforcement)
+    }
+
     /// Start connecting in the background, as `auth`'s account when there is one.
     pub fn connect(
         address: &str,

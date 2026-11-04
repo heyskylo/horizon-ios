@@ -54,6 +54,8 @@ pub struct ParticleOptions {
     /// A native mod's own particle type, by its namespaced name (`mymod:spark`):
     /// `SimpleParticleType` plus the provider `particles/<name>.json` names.
     pub mod_particle: Option<String>,
+    /// Pre-1.20.5 entity-effect providers use spawn velocity as RGB; true is the ambient provider.
+    pub legacy_entity_effect: Option<bool>,
 }
 impl ParticleOptions {
     pub fn simple(ty: ParticleType) -> Self {
@@ -68,6 +70,7 @@ impl ParticleOptions {
             geyser: None,
             vibration: None,
             mod_particle: None,
+            legacy_entity_effect: None,
         }
     }
     /// A native mod's `SimpleParticleType`: the sprite set of
@@ -3062,8 +3065,16 @@ impl ParticleEngine {
                         q.set_color(b, 0.0, b);
                     }
                     T::EntityEffect => {
-                        q.set_color(o.color[0], o.color[1], o.color[2]);
-                        q.rgba[3] = o.color[3];
+                        if let Some(ambient) = o.legacy_entity_effect {
+                            q.set_color(v[0] as f32, v[1] as f32, v[2] as f32);
+                            // AmbientMobProvider overrides constructor alpha; MobProvider only sets RGB.
+                            if ambient {
+                                q.rgba[3] = 0.15;
+                            }
+                        } else {
+                            q.set_color(o.color[0], o.color[1], o.color[2]);
+                            q.rgba[3] = o.color[3];
+                        }
                     }
                     T::Effect | T::InstantEffect => {
                         q.set_color(o.color[0], o.color[1], o.color[2]);
@@ -3072,7 +3083,12 @@ impl ParticleEngine {
                     _ => {}
                 }
                 q.behaviour = Behaviour::Spell {
-                    original_alpha: q.rgba[3],
+                    // The old SpellParticle.tick always eased back to 1, including ambient effects.
+                    original_alpha: if o.legacy_entity_effect.is_some() {
+                        1.0
+                    } else {
+                        q.rgba[3]
+                    },
                 };
                 q.set = set;
                 q
@@ -4826,6 +4842,45 @@ const CREEPER: [[f64; 2]; 12] = [
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legacy_spell_providers_use_velocity_rgb_and_their_original_alpha_rules() {
+        let mut engine = ParticleEngine::new(Path::new(""), &HashMap::new(), &HashSet::new());
+        let velocity = [0.25, 0.5, 0.75];
+        for scoped in [false, true] {
+            engine.set_scope_eye(scoped.then_some([0.0; 3]));
+            for ambient in [false, true] {
+                let mut options =
+                    ParticleOptions::colored(ParticleType::EntityEffect, [1.0, 0.0, 0.0, 0.8]);
+                options.legacy_entity_effect = Some(ambient);
+                let particle = engine.make(&options, [0.0; 3], velocity, 7).unwrap();
+                let alpha = if ambient {
+                    0.15
+                } else if scoped {
+                    0.0
+                } else {
+                    1.0
+                };
+                assert_eq!(particle.rgba, [0.25, 0.5, 0.75, alpha]);
+                assert_eq!(
+                    particle.behaviour,
+                    Behaviour::Spell {
+                        original_alpha: 1.0
+                    }
+                );
+            }
+            let options =
+                ParticleOptions::colored(ParticleType::EntityEffect, [1.0, 0.0, 0.0, 0.8]);
+            let current = engine.make(&options, [0.0; 3], velocity, 7).unwrap();
+            assert_eq!(current.rgba, options.color);
+            assert_eq!(
+                current.behaviour,
+                Behaviour::Spell {
+                    original_alpha: 0.8
+                }
+            );
+        }
+    }
 
     #[test]
     fn particle_light_cache_reuses_exact_blocks_and_fails_open_on_collisions() {

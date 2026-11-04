@@ -588,6 +588,20 @@ impl ConnReader {
     }
 }
 impl ConnWriter {
+    /// The server release selected for this connection (local play uses the pinned release).
+    pub fn server_version(&self) -> crate::adapter::ServerVersion {
+        self.adapter
+            .as_ref()
+            .map_or(crate::adapter::ServerVersion::Current, |a| a.version)
+    }
+
+    /// The old ServerData flag, once it arrived on a pre-component connection.
+    pub fn legacy_secure_chat_enforcement(&self) -> Option<bool> {
+        self.adapter
+            .as_ref()
+            .and_then(|a| a.legacy_secure_chat_enforcement())
+    }
+
     /// Write bytes as they are, with no framing: the legacy server list ping
     /// (`LegacyServerPinger`) is not a framed protocol.
     pub fn write_raw(&mut self, data: &[u8]) -> Result<()> {

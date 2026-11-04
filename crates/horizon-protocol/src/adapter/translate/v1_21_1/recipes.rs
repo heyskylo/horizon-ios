@@ -103,9 +103,14 @@ impl Recipes {
             .map_err(|_| Error::new("too many recipe groups"))?;
         Ok(*self.groups.entry((category, group)).or_insert(next))
     }
-    fn parse(&mut self, r: &mut Reader, id: i32, trims: &HashMap<i32, i32>) -> Result<Recipe> {
+    fn parse(
+        &mut self,
+        r: &mut Reader,
+        serializer: i32,
+        id: i32,
+        trims: &HashMap<i32, i32>,
+    ) -> Result<Recipe> {
         // RecipeSerializer's 1.21/1.21.1 registration order from the vanilla report.
-        let serializer = r.varint()?;
         let mut recipe = Recipe {
             id,
             display: None,
@@ -368,9 +373,25 @@ pub(crate) fn clientbound(session: &Session, id: i32, payload: &[u8]) -> Result<
             let _up = ids::renumbering(session.version.ids().unwrap(), Way::Up);
             let n = r.count(MAX_RECIPES)?;
             for _ in 0..n {
+                let legacy_serializer = if ids::quirks().legacy_item_nbt {
+                    let name = r.string(32767)?;
+                    Some(
+                        crate::adapter::v1_20_3_ids::RECIPE_SERIALIZER_NAMES
+                            .iter()
+                            .position(|candidate| *candidate == name)
+                            .ok_or_else(|| Error::new("unknown legacy recipe serializer"))?
+                            as i32,
+                    )
+                } else {
+                    None
+                };
                 let key = r.string(32767)?;
+                let serializer = match legacy_serializer {
+                    Some(id) => id,
+                    None => r.varint()?,
+                };
                 let display = state.id(&key)?;
-                let recipe = state.parse(&mut r, display, &trims)?;
+                let recipe = state.parse(&mut r, serializer, display, &trims)?;
                 if state.recipes.insert(key, recipe).is_some() {
                     return Err(Error::new("duplicate legacy recipe key"));
                 }
@@ -776,6 +797,100 @@ mod tests {
             "1713686f72697a6f6e5f776972653a736861706564000c686f72697a6f6e5f776972650302010101aa0600000101aa06000002e40200000016686f72697a6f6e5f776972653a73686170656c657373010c686f72697a6f6e5f776972650002010101000002011c0000012300000301000019686f72697a6f6e5f776972653a73746f6e6563757474696e67130c686f72697a6f6e5f77697265010101000002880200001f686f72697a6f6e5f776972653a736d697468696e675f7472616e73666f726d140101f20900000101e40600000101af06000001ec0600001a686f72697a6f6e5f776972653a736d697468696e675f7472696d150101f30900000101e40600000101ae06000015686f72697a6f6e5f776972653a736d656c74696e670f0c686f72697a6f6e5f7769726501010140000001aa0600003f4000007815686f72697a6f6e5f776972653a626c617374696e67100c686f72697a6f6e5f7769726501010140000001aa0600003f4000007814686f72697a6f6e5f776972653a736d6f6b696e67110c686f72697a6f6e5f7769726501010140000001aa0600003f400000781d686f72697a6f6e5f776972653a63616d70666972655f636f6f6b696e67120c686f72697a6f6e5f7769726501010140000001aa0600003f4000007826686f72697a6f6e5f776972653a6372616674696e675f7370656369616c5f61726d6f72647965020329686f72697a6f6e5f776972653a6372616674696e675f7370656369616c5f626f6f6b636c6f6e696e67030328686f72697a6f6e5f776972653a6372616674696e675f7370656369616c5f6d6170636c6f6e696e6704032a686f72697a6f6e5f776972653a6372616674696e675f7370656369616c5f6d6170657874656e64696e6705032d686f72697a6f6e5f776972653a6372616674696e675f7370656369616c5f66697265776f726b5f726f636b657406032b686f72697a6f6e5f776972653a6372616674696e675f7370656369616c5f66697265776f726b5f73746172070330686f72697a6f6e5f776972653a6372616674696e675f7370656369616c5f66697265776f726b5f737461725f66616465080329686f72697a6f6e5f776972653a6372616674696e675f7370656369616c5f7469707065646172726f7709032d686f72697a6f6e5f776972653a6372616674696e675f7370656369616c5f62616e6e65726475706c69636174650a032e686f72697a6f6e5f776972653a6372616674696e675f7370656369616c5f736869656c646465636f726174696f6e0b0330686f72697a6f6e5f776972653a6372616674696e675f7370656369616c5f7368756c6b6572626f78636f6c6f72696e670c032c686f72697a6f6e5f776972653a6372616674696e675f7370656369616c5f737573706963696f7573737465770d0328686f72697a6f6e5f776972653a6372616674696e675f7370656369616c5f7265706169726974656d0e0323686f72697a6f6e5f776972653a6372616674696e675f6465636f72617465645f706f741603",
         );
         let session = Session::new(ServerVersion::V1_20_5);
+        session.trim_patterns.lock().unwrap().insert(1580, 7);
+        let properties = clientbound(&session, cb::UPDATE_RECIPES, &old)
+            .unwrap()
+            .unwrap();
+        assert!(!properties.is_empty());
+        {
+            let state = session.legacy_recipes.lock().unwrap();
+            assert_eq!(state.recipes.len(), 23);
+            assert_eq!(
+                state
+                    .recipes
+                    .values()
+                    .filter(|r| r.display.is_some())
+                    .count(),
+                9
+            );
+            let Some(RecipeDisplay::Shaped { result, .. }) =
+                &state.recipes["horizon_wire:shaped"].display
+            else {
+                panic!("shaped")
+            };
+            let SlotDisplay::ItemStack(stack) = result else {
+                panic!("result")
+            };
+            assert_eq!((stack.item, stack.count), (473, 2));
+            assert_eq!(
+                state.recipes["horizon_wire:shaped"].requirements,
+                [HolderSet::Items(vec![1018]), HolderSet::Items(vec![1018])]
+            );
+            let Some(RecipeDisplay::Smithing { result, .. }) =
+                &state.recipes["horizon_wire:smithing_trim"].display
+            else {
+                panic!("smithing")
+            };
+            let SlotDisplay::Composite(previews) = result else {
+                panic!("previews")
+            };
+            let SlotDisplay::SmithingTrim { pattern, .. } = &previews[0] else {
+                panic!("trim")
+            };
+            assert_eq!(*pattern, TrimPattern::Id(7));
+        }
+        recipe_book(
+            &session,
+            &old_book(
+                0,
+                &["shaped", "smelting", "crafting_special_armordye"],
+                &["shaped"],
+            ),
+        )
+        .unwrap();
+        let book = next_book(&session);
+        assert!(book.replace);
+        assert_eq!(book.entries.len(), 2);
+        assert_eq!(book.entries[0].flags, 2);
+        let id = book.entries[0].id;
+        let selected = serverbound(
+            &session,
+            sb::PLACE_RECIPE,
+            &encode(&PlaceRecipe {
+                container: 3,
+                recipe: id,
+                use_max: true,
+            }),
+        )
+        .unwrap()
+        .unwrap();
+        let mut r = Reader::new(&selected);
+        assert_eq!(r.i8().unwrap(), 3);
+        assert_eq!(r.string(32767).unwrap(), "horizon_wire:shaped");
+        assert!(r.bool().unwrap());
+        assert_eq!(r.remaining(), 0);
+        let seen = serverbound(
+            &session,
+            sb::RECIPE_BOOK_SEEN_RECIPE,
+            &encode(&RecipeBookSeenRecipe { recipe: id }),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            Reader::new(&seen).string(32767).unwrap(),
+            "horizon_wire:shaped"
+        );
+    }
+    #[test]
+    fn vanilla_1_20_3_and_1_20_4_recipe_codecs_reuse_displays_and_request_keys() {
+        // Official 1.20.4 UpdateRecipes codec output, independently byte-identical on 1.20.3.
+        // All 23 serializer identifiers and NBT slots pass through the full recipe bridge.
+        let old = bytes(
+            "17196d696e6563726166743a6372616674696e675f73686170656413686f72697a6f6e5f776972653a7368617065640c686f72697a6f6e5f776972650302010101a70601000101a706010001e3020200001c6d696e6563726166743a6372616674696e675f73686170656c65737316686f72697a6f6e5f776972653a73686170656c6573730c686f72697a6f6e5f776972650002010101010002011c01000123010001010300166d696e6563726166743a73746f6e6563757474696e6719686f72697a6f6e5f776972653a73746f6e6563757474696e670c686f72697a6f6e5f77697265010101010001870202001c6d696e6563726166743a736d697468696e675f7472616e73666f726d1f686f72697a6f6e5f776972653a736d697468696e675f7472616e73666f726d0101e90901000101e106010a03000644616d61676500000000000101ac06010001e906010a03000644616d6167650000000000176d696e6563726166743a736d697468696e675f7472696d1a686f72697a6f6e5f776972653a736d697468696e675f7472696d0101ea0901000101e106010a03000644616d61676500000000000101ab060100126d696e6563726166743a736d656c74696e6715686f72697a6f6e5f776972653a736d656c74696e670c686f72697a6f6e5f7769726501010140010001a70601003f40000078126d696e6563726166743a626c617374696e6715686f72697a6f6e5f776972653a626c617374696e670c686f72697a6f6e5f7769726501010140010001a70601003f40000078116d696e6563726166743a736d6f6b696e6714686f72697a6f6e5f776972653a736d6f6b696e670c686f72697a6f6e5f7769726501010140010001a70601003f400000781a6d696e6563726166743a63616d70666972655f636f6f6b696e671d686f72697a6f6e5f776972653a63616d70666972655f636f6f6b696e670c686f72697a6f6e5f7769726501010140010001a70601003f40000078236d696e6563726166743a6372616674696e675f7370656369616c5f61726d6f7264796526686f72697a6f6e5f776972653a6372616674696e675f7370656369616c5f61726d6f7264796503266d696e6563726166743a6372616674696e675f7370656369616c5f626f6f6b636c6f6e696e6729686f72697a6f6e5f776972653a6372616674696e675f7370656369616c5f626f6f6b636c6f6e696e6703256d696e6563726166743a6372616674696e675f7370656369616c5f6d6170636c6f6e696e6728686f72697a6f6e5f776972653a6372616674696e675f7370656369616c5f6d6170636c6f6e696e6703276d696e6563726166743a6372616674696e675f7370656369616c5f6d6170657874656e64696e672a686f72697a6f6e5f776972653a6372616674696e675f7370656369616c5f6d6170657874656e64696e67032a6d696e6563726166743a6372616674696e675f7370656369616c5f66697265776f726b5f726f636b65742d686f72697a6f6e5f776972653a6372616674696e675f7370656369616c5f66697265776f726b5f726f636b657403286d696e6563726166743a6372616674696e675f7370656369616c5f66697265776f726b5f737461722b686f72697a6f6e5f776972653a6372616674696e675f7370656369616c5f66697265776f726b5f73746172032d6d696e6563726166743a6372616674696e675f7370656369616c5f66697265776f726b5f737461725f6661646530686f72697a6f6e5f776972653a6372616674696e675f7370656369616c5f66697265776f726b5f737461725f6661646503266d696e6563726166743a6372616674696e675f7370656369616c5f7469707065646172726f7729686f72697a6f6e5f776972653a6372616674696e675f7370656369616c5f7469707065646172726f77032a6d696e6563726166743a6372616674696e675f7370656369616c5f62616e6e65726475706c69636174652d686f72697a6f6e5f776972653a6372616674696e675f7370656369616c5f62616e6e65726475706c6963617465032b6d696e6563726166743a6372616674696e675f7370656369616c5f736869656c646465636f726174696f6e2e686f72697a6f6e5f776972653a6372616674696e675f7370656369616c5f736869656c646465636f726174696f6e032d6d696e6563726166743a6372616674696e675f7370656369616c5f7368756c6b6572626f78636f6c6f72696e6730686f72697a6f6e5f776972653a6372616674696e675f7370656369616c5f7368756c6b6572626f78636f6c6f72696e6703296d696e6563726166743a6372616674696e675f7370656369616c5f737573706963696f7573737465772c686f72697a6f6e5f776972653a6372616674696e675f7370656369616c5f737573706963696f75737374657703256d696e6563726166743a6372616674696e675f7370656369616c5f7265706169726974656d28686f72697a6f6e5f776972653a6372616674696e675f7370656369616c5f7265706169726974656d03206d696e6563726166743a6372616674696e675f6465636f72617465645f706f7423686f72697a6f6e5f776972653a6372616674696e675f6465636f72617465645f706f7403",
+        );
+        let session = Session::new(ServerVersion::V1_20_3);
+        let _names = ids::legacy_registries(session.legacy_registries.lock().unwrap().clone());
+        let _items = ids::legacy_items(session.legacy_items.clone());
         session.trim_patterns.lock().unwrap().insert(1580, 7);
         let properties = clientbound(&session, cb::UPDATE_RECIPES, &old)
             .unwrap()

@@ -10,7 +10,10 @@ use horizon_core::{
     random::RandomSource,
 };
 use horizon_protocol::{
-    entity_data::{MOD_PARTICLE_ID, Particle, ParticleData, PositionSource},
+    entity_data::{
+        LEGACY_AMBIENT_ENTITY_EFFECT_PARTICLE_ID, LEGACY_ENTITY_EFFECT_PARTICLE_ID,
+        MOD_PARTICLE_ID, Particle, ParticleData, PositionSource,
+    },
     packets::play::{self, Clientbound as C},
 };
 use horizon_world::registry::BlockStateId;
@@ -104,6 +107,17 @@ fn rgb_int(c: [f32; 3]) -> i32 {
 }
 fn rgb(c: [f32; 4]) -> [f32; 3] {
     [c[0], c[1], c[2]]
+}
+fn legacy_effect_options(particle: &Particle) -> Option<ParticleOptions> {
+    let ambient = match particle.id {
+        LEGACY_ENTITY_EFFECT_PARTICLE_ID => false,
+        LEGACY_AMBIENT_ENTITY_EFFECT_PARTICLE_ID => true,
+        _ => return None,
+    };
+    Some(ParticleOptions {
+        legacy_entity_effect: Some(ambient),
+        ..ParticleOptions::simple(ParticleType::EntityEffect)
+    })
 }
 
 /// `ServerLevel.sendParticles` of one soul particle moving by `velocity`
@@ -436,6 +450,9 @@ impl Game<'_> {
         p: &Particle,
         at: [f64; 3],
     ) -> Option<ParticleOptions> {
+        if let Some(options) = legacy_effect_options(p) {
+            return Some(options);
+        }
         if p.id == MOD_PARTICLE_ID
             && let Some(ParticleData::Mod(name)) = &p.data
         {
@@ -850,6 +867,32 @@ mod tests {
     use horizon_client::particles::{ParticleOptions, ParticleType};
     use horizon_core::random::LegacyRandom;
     use horizon_protocol::packets::play;
+
+    #[test]
+    fn legacy_effect_markers_select_providers_without_a_registry_lookup() {
+        for (id, ambient) in [
+            (LEGACY_ENTITY_EFFECT_PARTICLE_ID, false),
+            (LEGACY_AMBIENT_ENTITY_EFFECT_PARTICLE_ID, true),
+        ] {
+            let options = legacy_effect_options(&Particle { id, data: None }).unwrap();
+            assert_eq!(options.ty, ParticleType::EntityEffect);
+            assert_eq!(options.legacy_entity_effect, Some(ambient));
+        }
+        assert!(
+            legacy_effect_options(&Particle {
+                id: MOD_PARTICLE_ID,
+                data: None
+            })
+            .is_none()
+        );
+        assert!(
+            legacy_effect_options(&Particle {
+                id: 28,
+                data: Some(ParticleData::Color(-1))
+            })
+            .is_none()
+        );
+    }
 
     /// The Nether's evaporation smoke (ALTERNATIVE, dist 1, speed 0) lands
     /// inside the block from its corner and stands still; DEFAULT spreads

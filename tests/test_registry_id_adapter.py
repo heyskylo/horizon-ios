@@ -1,9 +1,16 @@
 """Renamed blocks retain every state's properties in both adapter directions."""
 import unittest
-from tools.generate_registry_id_adapter import states, table, state_alias, item_names, registry_names
+from tools.generate_registry_id_adapter import states, table, state_alias, item_names, registry_names, reverse_table
 
 
 class RenamedBlockStates(unittest.TestCase):
+    def test_a_reused_projectile_name_does_not_change_the_old_breeze_projectile(self):
+        old = {"minecraft:wind_charge": 0, "minecraft:arrow": 1}
+        new = {"minecraft:arrow": 0, "minecraft:breeze_wind_charge": 1, "minecraft:wind_charge": 2}
+        moved = {"minecraft:wind_charge": "minecraft:breeze_wind_charge"}
+        self.assertEqual(table(old, new, reassign=moved), [1, 0])
+        self.assertEqual(reverse_table(old, new, reassign=moved), [1, 0, 65535])
+
     def test_static_registry_names_follow_wire_ids_instead_of_alphabetical_report_order(self):
         self.assertEqual(registry_names({"minecraft:aqua_affinity": 2, "minecraft:protection": 0}),
                          ["minecraft:protection", "", "minecraft:aqua_affinity"])

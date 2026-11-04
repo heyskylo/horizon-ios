@@ -83,14 +83,28 @@ def states(blocks, renames=None):
     return found
 
 
-def table(source, target, renames=None):
+def table(source, target, renames=None, reassign=None):
     """For each id of `source` (in order), the id `target` gives the same key (or the key it was renamed
     to), or NONE."""
     renames = renames or {}
+    reassign = reassign or {}
     by_id = sorted(source.items(), key=lambda kv: kv[1])
     # A removed entry may alias an entry that still exists (creaking_transient -> creaking).
     # Prefer that exact name in reverse, rather than sending the removed variant back.
-    return [target.get(key, target.get(renames.get(key, key), NONE)) for key, _ in by_id]
+    return [target.get(reassign[key], NONE) if key in reassign else
+            target.get(key, target.get(renames.get(key, key), NONE)) for key, _ in by_id]
+
+
+def reverse_table(source, target, renames=None, reassign=None):
+    """Invert semantic assignments without mapping a reused newer name to its old meaning."""
+    forward = table(source, target, renames, reassign)
+    names = {index: name for name, index in source.items()}
+    out = []
+    for name, index in sorted(target.items(), key=lambda entry: entry[1]):
+        candidates = [old for old, new in enumerate(forward) if new == index]
+        exact = next((old for old in candidates if names[old] == name), None)
+        out.append(exact if exact is not None else min(candidates, default=NONE))
+    return out
 
 
 def runs(values):
@@ -160,19 +174,25 @@ def main():
     parser.add_argument("--rename", action="append", default=[], metavar="REGISTRY:OLD=NEW",
                         help="an entry the pinned version knows by another name, e.g. "
                              "minecraft:command_argument_type:minecraft:color=minecraft:team_color")
+    parser.add_argument("--reassign", action="append", default=[], metavar="REGISTRY:OLD=NEW",
+                        help="an old registry meaning moved to a new name while its old name was reused")
     parser.add_argument("--state-alias", action="append", default=[], metavar="OLD_STATE=NEW_STATE",
                         help="explicit state properties, e.g. minecraft:block[old=a]=minecraft:block[new=b]")
     parser.add_argument("--item-names", action="store_true",
                         help="also emit canonical item identifiers indexed by the old item id")
-    parser.add_argument("--registry-names", action="append", default=[], metavar="REGISTRY",
-                        help="also emit this old static registry's identifiers in wire-id order")
+    parser.add_argument("--registry-names", action="append", default=[], metavar="REGISTRY[=CONSTANT]",
+                        help="also emit old registry identifiers in wire-id order, optionally naming the constant")
+    parser.add_argument("--name-aliases", action="store_true",
+                        help="also emit the explicit old/current name aliases used by legacy NBT")
     args = parser.parse_args()
     renames = {}
-    for spec in args.rename:
-        head, new = spec.split("=", 1)
-        registry, old_path = head.rsplit(":", 1)
-        registry, old_ns = registry.rsplit(":", 1)
-        renames.setdefault(registry, {})[f"{old_ns}:{old_path}"] = new
+    reassign = {}
+    for specs, destination in ((args.rename, renames), (args.reassign, reassign)):
+        for spec in specs:
+            head, new = spec.split("=", 1)
+            registry, old_path = head.rsplit(":", 1)
+            registry, old_ns = registry.rsplit(":", 1)
+            destination.setdefault(registry, {})[f"{old_ns}:{old_path}"] = new
     old_reports = args.old / "datagen/reports"
     new_reports = args.new / "datagen/reports" if args.new else ROOT / ".local/datagen/out/reports"
     old_info = lab.version_info(args.old / "jars/client.jar")
@@ -218,18 +238,20 @@ def main():
     inherited = []
     for registry in REGISTRIES:
         o, n = entries(old_reg, registry), entries(new_reg, registry)
-        if inherited_reg is not None and o == entries(inherited_reg, registry):
+        if inherited_reg is not None and o == entries(inherited_reg, registry) and not reassign.get(registry):
             inherited.append(registry)
             continue
-        if o == n:
+        if o == n and not reassign.get(registry):
             same.append(registry)
             continue
         name = const_name(registry)
         lines.append(f"/// `{registry}`: {len(o)} in {old_info['id']}, {len(n)} pinned.")
         forward = renames.get(registry, {})
         backward = {new: old for old, new in forward.items()}
-        lines.extend(rust_table(f"{name}_UP", table(o, n, forward)))
-        lines.extend(rust_table(f"{name}_DOWN", table(n, o, backward)))
+        forced = reassign.get(registry)
+        lines.extend(rust_table(f"{name}_UP", table(o, n, forward, forced)))
+        reverse = reverse_table(o, n, forward, forced) if forced else table(n, o, backward)
+        lines.extend(rust_table(f"{name}_DOWN", reverse))
     if args.item_names:
         names = item_names(entries(old_reg, "minecraft:item"), entries(new_reg, "minecraft:item"),
                            renames.get("minecraft:item"))
@@ -238,8 +260,9 @@ def main():
         for i in range(0, len(names), 6):
             lines.append("    " + ", ".join(json.dumps(name) for name in names[i:i + 6]) + ",")
         lines.append("];")
-    for registry in dict.fromkeys(args.registry_names):
-        name = const_name(registry)
+    for spec in dict.fromkeys(args.registry_names):
+        registry, _, override = spec.partition("=")
+        name = override or const_name(registry)
         if registry not in old_reg or not name.isascii() or not name.isidentifier():
             parser.error("--registry-names requires a reported registry with a simple identifier")
         if name == "ITEM" and args.item_names:
@@ -249,6 +272,16 @@ def main():
                       "#[rustfmt::skip]", f"pub const {name}_NAMES: &[&str] = &["])
         for i in range(0, len(names), 6):
             lines.append("    " + ", ".join(json.dumps(name) for name in names[i:i + 6]) + ",")
+        lines.append("];")
+    if args.name_aliases:
+        lines.append("/// Explicit old/current registry spellings for legacy NBT name lookups.")
+        lines.append("pub const NAME_ALIASES: &[(&str, &str, &str)] = &[")
+        for registry in sorted(renames.keys() | reassign.keys()):
+            aliases = renames.get(registry, {}) | reassign.get(registry, {})
+            source, target = entries(old_reg, registry), entries(new_reg, registry)
+            for old, new in sorted(aliases.items()):
+                if old in source and new in target:
+                    lines.append("    (" + ", ".join(json.dumps(v) for v in (registry, old, new)) + "),")
         lines.append("];")
     lines.append(f"/// Every table above, as the adapter reads them.")
     lines.append("pub const IDS: super::ids::Ids = super::ids::Ids {")

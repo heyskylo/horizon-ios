@@ -5,6 +5,7 @@
 use std::{
     cell::{Cell, RefCell},
     collections::HashMap,
+    sync::{Arc, Mutex},
 };
 
 /// How one registry's ids differ between an older version and the pinned one.
@@ -108,6 +109,8 @@ pub struct Quirks {
     pub components_before_1_21: bool,
     /// 1.21 through 1.21.4 encoded wolf variants as registry-or-inline holders.
     pub wolf_variant_holder: bool,
+    /// Before 1.20.5 an item stack carried a single legacy NBT tag instead of a component patch.
+    pub legacy_item_nbt: bool,
     /// Through 1.21.8 these particle types carried no options at all.
     pub simple_spell_particles: bool,
 }
@@ -124,6 +127,7 @@ impl Quirks {
         components_before_1_21_2: false,
         components_before_1_21: false,
         wolf_variant_holder: false,
+        legacy_item_nbt: false,
         simple_spell_particles: false,
     };
 }
@@ -157,6 +161,50 @@ pub enum Way {
 thread_local! {
     static ACTIVE: Cell<Option<(&'static Ids, Way)>> = const { Cell::new(None) };
     static TRIM_PATTERNS: RefCell<HashMap<i32,i32>> = RefCell::new(HashMap::new());
+    static LEGACY_REGISTRIES: RefCell<Option<Arc<LegacyRegistries>>> = const { RefCell::new(None) };
+    static LEGACY_ITEMS: RefCell<Option<Arc<Mutex<crate::item::v1_20_3::Cache>>>> = const { RefCell::new(None) };
+}
+
+pub(crate) fn legacy_items(cache: Arc<Mutex<crate::item::v1_20_3::Cache>>) -> LegacyItemGuard {
+    LegacyItemGuard(LEGACY_ITEMS.replace(Some(cache)))
+}
+pub(crate) fn legacy_item_cache() -> Option<Arc<Mutex<crate::item::v1_20_3::Cache>>> {
+    LEGACY_ITEMS.with_borrow(Clone::clone)
+}
+pub(crate) struct LegacyItemGuard(Option<Arc<Mutex<crate::item::v1_20_3::Cache>>>);
+impl Drop for LegacyItemGuard {
+    fn drop(&mut self) {
+        LEGACY_ITEMS.replace(self.0.take());
+    }
+}
+
+/// Name lookups for legacy NBT. Fixed registries use pinned ids; synchronized registries keep the
+/// connection's ids. Reverse names retain old spellings, with current names accepted as aliases.
+pub(crate) type LegacyRegistries = HashMap<String, crate::registry::Ids>;
+
+pub(crate) fn legacy_registries(registries: Arc<LegacyRegistries>) -> LegacyRegistryGuard {
+    LegacyRegistryGuard(LEGACY_REGISTRIES.replace(Some(registries)))
+}
+
+pub(crate) struct LegacyRegistryGuard(Option<Arc<LegacyRegistries>>);
+impl Drop for LegacyRegistryGuard {
+    fn drop(&mut self) {
+        LEGACY_REGISTRIES.replace(self.0.take());
+    }
+}
+
+pub(crate) fn legacy_registry_id(registry: &str, name: &str) -> Option<i32> {
+    LEGACY_REGISTRIES.with_borrow(|registries| registries.as_ref()?.get(registry)?.id(name))
+}
+
+pub(crate) fn legacy_registry_name(registry: &str, id: i32) -> Option<String> {
+    LEGACY_REGISTRIES.with_borrow(|registries| {
+        registries
+            .as_ref()?
+            .get(registry)?
+            .name(id)
+            .map(str::to_owned)
+    })
 }
 
 /// Connection-local trim ids while decoding the old smithing preview's template displays.

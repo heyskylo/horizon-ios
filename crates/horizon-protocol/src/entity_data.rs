@@ -171,6 +171,9 @@ pub enum ParticleData {
 /// `minecraft:particle_type` ids are registry ids and never negative, so this
 /// one cannot collide with a vanilla type.
 pub const MOD_PARTICLE_ID: i32 = -1;
+/// Adapter markers: pre-1.20.5 spell providers take their RGB from the spawn velocity.
+pub const LEGACY_ENTITY_EFFECT_PARTICLE_ID: i32 = -2;
+pub const LEGACY_AMBIENT_ENTITY_EFFECT_PARTICLE_ID: i32 = -3;
 /// `PositionSource.STREAM_CODEC`: a `minecraft:position_source_type` id
 /// (block 0, entity 1), then that type's data.
 #[derive(Clone, Debug, PartialEq)]
@@ -181,8 +184,19 @@ pub enum PositionSource {
 impl Particle {
     pub fn read(r: &mut Reader) -> Result<Particle> {
         let id = r.varint()?;
-        let id = if id == MOD_PARTICLE_ID {
+        let id = if matches!(
+            id,
+            MOD_PARTICLE_ID
+                | LEGACY_ENTITY_EFFECT_PARTICLE_ID
+                | LEGACY_AMBIENT_ENTITY_EFFECT_PARTICLE_ID
+        ) {
             id
+        } else if ids::quirks().legacy_item_nbt && matches!(id, 0 | 21) {
+            if id == 0 {
+                LEGACY_AMBIENT_ENTITY_EFFECT_PARTICLE_ID
+            } else {
+                LEGACY_ENTITY_EFFECT_PARTICLE_ID
+            }
         } else {
             ids::particle(id)
         };
@@ -208,8 +222,21 @@ impl Particle {
             22 => {
                 let legacy = ids::quirks().components_before_1_21_2;
                 let from = if legacy { legacy_rgb(r)? } else { r.i32()? };
+                let scale = if ids::quirks().legacy_item_nbt {
+                    Some(r.f32()?)
+                } else {
+                    None
+                };
                 let to = if legacy { legacy_rgb(r)? } else { r.i32()? };
-                Some(ParticleData::ColorScale2(from, to, r.f32()?))
+                Some(ParticleData::ColorScale2(
+                    from,
+                    to,
+                    if let Some(scale) = scale {
+                        scale
+                    } else {
+                        r.f32()?
+                    },
+                ))
             }
             23 | 56 => {
                 if ids::quirks().simple_spell_particles {
@@ -552,6 +579,75 @@ mod tests {
         }
         let _up = ids::renumbering(ServerVersion::V1_21_1.ids().unwrap(), Way::Up);
         assert!(read_value(serializer::WOLF_VARIANT, &mut Reader::new(&[0, 99])).is_err());
+    }
+
+    #[test]
+    fn legacy_entity_effect_markers_leave_the_next_field_and_survive_pinned_roundtrip() {
+        use crate::adapter::{ServerVersion, ids::Way};
+        for (raw, marker) in [
+            (0, LEGACY_AMBIENT_ENTITY_EFFECT_PARTICLE_ID),
+            (21, LEGACY_ENTITY_EFFECT_PARTICLE_ID),
+        ] {
+            let data = [raw, 99];
+            let mut r = Reader::new(&data);
+            let particle = {
+                let _up = ids::renumbering(ServerVersion::V1_20_3.ids().unwrap(), Way::Up);
+                Particle::read(&mut r).unwrap()
+            };
+            assert_eq!(
+                particle,
+                Particle {
+                    id: marker,
+                    data: None
+                }
+            );
+            assert_eq!(r.u8().unwrap(), 99);
+            let mut w = Writer::new();
+            particle.write(&mut w);
+            let mut r = Reader::new(&w.data);
+            assert_eq!(Particle::read(&mut r).unwrap(), particle);
+            assert_eq!(r.remaining(), 0);
+        }
+    }
+
+    #[test]
+    fn dust_transition_keeps_each_release_scale_position() {
+        use crate::adapter::{ServerVersion, ids::Way};
+        // Actual DustColorTransitionOptions layouts: RGB,scale,RGB in765; RGB,RGB,scale in766.
+        for (version, raw, floats) in [
+            (
+                ServerVersion::V1_20_3,
+                15,
+                [0.25, 0.5, 0.75, 2.0, 1.0, 0.0, 0.5],
+            ),
+            (
+                ServerVersion::V1_20_5,
+                14,
+                [0.25, 0.5, 0.75, 1.0, 0.0, 0.5, 2.0],
+            ),
+        ] {
+            let mut w = Writer::new();
+            w.varint(raw);
+            for value in floats {
+                w.f32(value);
+            }
+            w.u8(99);
+            let mut r = Reader::new(&w.data);
+            let particle = {
+                let _up = ids::renumbering(version.ids().unwrap(), Way::Up);
+                Particle::read(&mut r).unwrap()
+            };
+            assert_eq!(
+                particle.data,
+                Some(ParticleData::ColorScale2(
+                    0xff3f7fbfu32 as i32,
+                    0xffff007fu32 as i32,
+                    2.0
+                ))
+            );
+            assert_eq!(r.u8().unwrap(), 99);
+            assert_eq!(r.remaining(), 0);
+        }
     }
 
     #[test]

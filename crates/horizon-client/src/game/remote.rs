@@ -4845,7 +4845,16 @@ impl Game<'_> {
                 self.spawn = (p.pos.dimension == "minecraft:overworld")
                     .then(|| Vec3::new(f64::from(x) + 0.5, f64::from(y), f64::from(z) + 0.5));
             }
-            C::ServerData(p) => self.remote_server_data(p.icon.as_deref()),
+            C::ServerData(p) => {
+                if let Some(r) = self.remote.as_mut()
+                    && let Some(enforced) = r.session.legacy_secure_chat_enforcement()
+                    && r.enforces_secure_chat != enforced
+                {
+                    r.enforces_secure_chat = enforced;
+                    r.chat_validators.clear();
+                }
+                self.remote_server_data(p.icon.as_deref());
+            }
             C::MapItemData(p) => self.remote_map_item_data(&p),
             // handleTickingState / handleTickingStep: the level's TickRateManager.
             C::TickingState(p) => {
