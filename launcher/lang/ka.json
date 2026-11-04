@@ -1152,5 +1152,7 @@
   "{d} days {h} h": "{d} დღე {h} სთ",
   "{h} h {m} min": "{h} სთ {m} წთ",
   "{m} min": "{m} წთ",
-  "{time} left to claim it": "მისაღებად დარჩა {time}"
+  "{time} left to claim it": "მისაღებად დარჩა {time}",
+  "Paste a friend's invite code": "ჩასვით მეგობრის მოწვევის კოდი",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "უკრავს {build}, აგებულია Horizon {commit}-ზე, {mods}-ის მიერ მიმაგრებულ commit-ზე და არა {version}-ზე."
 }

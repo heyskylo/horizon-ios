@@ -1152,5 +1152,7 @@
   "{d} days {h} h": "{d} dagar {h} klst.",
   "{h} h {m} min": "{h} klst. {m} mín.",
   "{m} min": "{m} mín.",
-  "{time} left to claim it": "{time} eftir til að sækja það"
+  "{time} left to claim it": "{time} eftir til að sækja það",
+  "Paste a friend's invite code": "Límdu boðskóða vinar",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Spilar {build}, byggt á Horizon {commit}, commit sem {mods} festir, ekki á {version}."
 }

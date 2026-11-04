@@ -1152,5 +1152,7 @@
   "For the players who were here first. Free to claim; once claimed, it's yours to keep.": "לשחקנים שהיו כאן ראשונים. חינם; אחרי שתקבל אותו, הוא שלך.",
   "First Light": "אור ראשון",
   "Free for everyone. First Light paints the sky just before sunrise behind the light appearance, with a blue accent.": "חינם לכולם. «אור ראשון» צובע את השמיים רגע לפני הזריחה מאחורי המראה האור, עם גוון הדגשה כחול.",
-  "Shirt": "חולצה"
+  "Shirt": "חולצה",
+  "Paste a friend's invite code": "הדבק קוד הזמנה של חבר",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "מריץ את {build}, שנבנה על Horizon {commit}, הקומיט שננעץ על ידי {mods}, ולא על {version}."
 }

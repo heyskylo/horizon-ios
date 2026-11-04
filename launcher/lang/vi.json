@@ -1152,5 +1152,7 @@
   "{d} days {h} h": "{d} ngày {h} giờ",
   "{h} h {m} min": "{h} giờ {m} phút",
   "{m} min": "{m} phút",
-  "{time} left to claim it": "còn {time} để nhận"
+  "{time} left to claim it": "còn {time} để nhận",
+  "Paste a friend's invite code": "Dán mã mời của bạn bè",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Chạy {build}, được xây dựng trên Horizon {commit}, commit được {mods} ghim, không phải trên {version}."
 }

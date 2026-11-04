@@ -1152,5 +1152,7 @@
   "{d} days {h} h": "{d} dae {h} u",
   "{h} h {m} min": "{h} u {m} min",
   "{m} min": "{m} min",
-  "{time} left to claim it": "{time} oor om dit op te eis"
+  "{time} left to claim it": "{time} oor om dit op te eis",
+  "Paste a friend's invite code": "Plak 'n vriend se uitnodigingskode",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Speel {build}, gebou op Horizon {commit}, die commit wat {mods} vaspen, nie op {version} nie."
 }

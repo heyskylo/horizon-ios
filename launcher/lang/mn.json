@@ -1152,5 +1152,7 @@
   "{d} days {h} h": "{d} өдөр {h} цаг",
   "{h} h {m} min": "{h} цаг {m} мин",
   "{m} min": "{m} мин",
-  "{time} left to claim it": "Авахад {time} үлдлээ"
+  "{time} left to claim it": "Авахад {time} үлдлээ",
+  "Paste a friend's invite code": "Найзын урилгын кодыг буулгана уу",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "{build} тоглодог: {version} биш, {mods}-ийн бэхэлсэн Horizon {commit} коммит дээр бүтээгдсэн."
 }

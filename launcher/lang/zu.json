@@ -1152,5 +1152,7 @@
   "{d} days {h} h": "izinsuku ezingu-{d} amahora angu-{h}",
   "{h} h {m} min": "amahora angu-{h} nemizuzu engu-{m}",
   "{m} min": "imizuzu engu-{m}",
-  "{time} left to claim it": "kusele {time} ukuyithatha"
+  "{time} left to claim it": "kusele {time} ukuyithatha",
+  "Paste a friend's invite code": "Namathisela ikhodi yesimemo yomngane",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Idlala {build}, eyakhelwe ku-Horizon {commit}, i-commit ephiniwe ngu-{mods}, hhayi ku-{version}."
 }

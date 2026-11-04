@@ -1152,5 +1152,7 @@
   "{d} days {h} h": "{d} maalmood {h} saac",
   "{h} h {m} min": "{h} saac {m} daq",
   "{m} min": "{m} daq",
-  "{time} left to claim it": "{time} ayaa harsan oo la qaadan karo"
+  "{time} left to claim it": "{time} ayaa harsan oo la qaadan karo",
+  "Paste a friend's invite code": "Ku dheji koodka martiqaadka saaxiib",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Ciyaarta {build}, oo lagu dhisay Horizon {commit}, commit-ka uu {mods} xiray, ee aan ahayn {version}."
 }

@@ -1152,5 +1152,7 @@
   "For the players who were here first. Free to claim; once claimed, it's yours to keep.": "Žaidėjams, kurie čia buvo pirmieji. Nemokamai; atsiėmus lieka tau.",
   "First Light": "Pirmoji šviesa",
   "Free for everyone. First Light paints the sky just before sunrise behind the light appearance, with a blue accent.": "Nemokama visiems. Pirmoji šviesa nutapo dangų prieš pat saulėtekį už šviesios išvaizdos, su mėlynu akcentu.",
-  "Shirt": "Marškinėliai"
+  "Shirt": "Marškinėliai",
+  "Paste a friend's invite code": "Įklijuokite draugo pakvietimo kodą",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Groja {build}, sukurtą ant Horizon {commit} – commit, kurį prisegė {mods}, o ne ant {version}."
 }

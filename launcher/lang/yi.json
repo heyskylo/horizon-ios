@@ -1152,5 +1152,7 @@
   "{d} days {h} h": "{d} טעג {h} שע׳",
   "{h} h {m} min": "{h} שע׳ {m} מין",
   "{m} min": "{m} מין",
-  "{time} left to claim it": "{time} איבערגעבליבן צו באַקומען עס"
+  "{time} left to claim it": "{time} איבערגעבליבן צו באַקומען עס",
+  "Paste a friend's invite code": "פּאַפּ דעם פאַרבעטן קאָד פון אַ פריינט",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "שפּילט {build}, געבויט אויף Horizon {commit}, דער קאָמיט וואָס {mods} פּינט, נישט אויף {version}."
 }

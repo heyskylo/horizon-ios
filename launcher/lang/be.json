@@ -1152,5 +1152,7 @@
   "{d} days {h} h": "{d} дн. {h} гадз",
   "{h} h {m} min": "{h} гадз {m} хв",
   "{m} min": "{m} хв",
-  "{time} left to claim it": "засталося {time}, каб атрымаць"
+  "{time} left to claim it": "засталося {time}, каб атрымаць",
+  "Paste a friend's invite code": "Устаўце код запрашэння сябра",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Гуляе {build}, пабудаваны на Horizon {commit}, каміце, замацаваным {mods}, а не на {version}."
 }

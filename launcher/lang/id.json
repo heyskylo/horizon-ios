@@ -1152,5 +1152,7 @@
   "For the players who were here first. Free to claim; once claimed, it's yours to keep.": "Untuk pemain yang datang lebih dulu. Gratis; setelah diklaim, jadi milikmu.",
   "First Light": "Cahaya Pertama",
   "Free for everyone. First Light paints the sky just before sunrise behind the light appearance, with a blue accent.": "Gratis untuk semua orang. Cahaya Pertama melukis langit tepat sebelum matahari terbit di balik tampilan terang, dengan aksen biru.",
-  "Shirt": "Kaus"
+  "Shirt": "Kaus",
+  "Paste a friend's invite code": "Tempel kode undangan teman",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Memainkan {build}, dibangun di atas Horizon {commit}, commit yang disematkan oleh {mods}, bukan di atas {version}."
 }

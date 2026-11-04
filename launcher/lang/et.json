@@ -1152,5 +1152,7 @@
   "{d} days {h} h": "{d} päeva {h} h",
   "{h} h {m} min": "{h} h {m} min",
   "{m} min": "{m} min",
-  "{time} left to claim it": "väljavõtmiseks jäänud {time}"
+  "{time} left to claim it": "väljavõtmiseks jäänud {time}",
+  "Paste a friend's invite code": "Kleepige sõbra kutsekood",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Mängib {build}, ehitatud Horizon {commit} peale, mille on kinnitanud {mods}, mitte {version} peale."
 }

@@ -1152,5 +1152,7 @@
   "{d} days {h} h": "ọjọ́ {d} wákàtí {h}",
   "{h} h {m} min": "wákàtí {h} ìṣẹ́jú {m}",
   "{m} min": "ìṣẹ́jú {m}",
-  "{time} left to claim it": "{time} ló kù láti gbà á"
+  "{time} left to claim it": "{time} ló kù láti gbà á",
+  "Paste a friend's invite code": "Lẹẹmọ koodu ifiwepe ọrẹ kan",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Ń ṣe {build}, ti a kọ lori Horizon {commit}, commit ti {mods} so mọ, kii ṣe lori {version}."
 }

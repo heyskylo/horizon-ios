@@ -1152,5 +1152,7 @@
   "{d} days {h} h": "{d} kun {h} soat",
   "{h} h {m} min": "{h} soat {m} daq.",
   "{m} min": "{m} daq.",
-  "{time} left to claim it": "olish uchun {time} qoldi"
+  "{time} left to claim it": "olish uchun {time} qoldi",
+  "Paste a friend's invite code": "Do'stingizning taklif kodini joylashtiring",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "{build} oʻynaydi: {version} emas, {mods} mahkamlagan Horizon {commit} commit asosida qurilgan."
 }

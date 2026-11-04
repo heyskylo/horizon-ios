@@ -1152,5 +1152,7 @@
   "For the players who were here first. Free to claim; once claimed, it's yours to keep.": "Pre hráčov, ktorí tu boli prví. Zadarmo; keď ho získaš, ostane tvoj.",
   "First Light": "Prvé svetlo",
   "Free for everyone. First Light paints the sky just before sunrise behind the light appearance, with a blue accent.": "Zadarmo pre všetkých. Prvé svetlo maľuje nebo tesne pred východom slnka za svetlým vzhľadom, s modrým akcentom.",
-  "Shirt": "Tričko"
+  "Shirt": "Tričko",
+  "Paste a friend's invite code": "Prilepte pozývací kód od priateľa",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Hrá {build}, postavený na Horizon {commit}, commite pripnutom {mods}, nie na {version}."
 }

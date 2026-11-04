@@ -1152,5 +1152,7 @@
   "{d} days {h} h": "ụbọchị {d} awa {h}",
   "{h} h {m} min": "awa {h} nkeji {m}",
   "{m} min": "nkeji {m}",
-  "{time} left to claim it": "{time} fọdụrụ iji nweta ya"
+  "{time} left to claim it": "{time} fọdụrụ iji nweta ya",
+  "Paste a friend's invite code": "Tapawa koodu ịkpọ òkù enyi",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Ejije {build}, wuru na Horizon {commit}, commit nke {mods} kpọchiri, ọ bụghị na {version}."
 }

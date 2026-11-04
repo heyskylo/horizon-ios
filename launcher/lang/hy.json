@@ -1152,5 +1152,7 @@
   "{d} days {h} h": "{d} օր {h} ժ",
   "{h} h {m} min": "{h} ժ {m} րոպե",
   "{m} min": "{m} րոպե",
-  "{time} left to claim it": "Մնացել է {time}՝ այն ստանալու համար"
+  "{time} left to claim it": "Մնացել է {time}՝ այն ստանալու համար",
+  "Paste a friend's invite code": "Տեղադրեք ընկերոջ հրավերի կոդը",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Խաղում է {build}, կառուցված Horizon {commit}-ի վրա՝ {mods}-ի ամրացրած commit-ի, ոչ թե {version}-ի:"
 }

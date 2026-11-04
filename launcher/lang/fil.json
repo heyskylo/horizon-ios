@@ -1152,5 +1152,7 @@
   "{d} days {h} h": "{d} araw {h} h",
   "{h} h {m} min": "{h} h {m} min",
   "{m} min": "{m} min",
-  "{time} left to claim it": "{time} na lang para i-claim ito"
+  "{time} left to claim it": "{time} na lang para i-claim ito",
+  "Paste a friend's invite code": "I-paste ang invite code ng isang kaibigan",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Naglalaro ng {build}, na binuo sa Horizon {commit}, ang commit na naka-pin ng {mods}, hindi sa {version}."
 }

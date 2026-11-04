@@ -1152,5 +1152,7 @@
   "{d} days {h} h": "{d} diwrnod {h} awr",
   "{h} h {m} min": "{h} awr {m} munud",
   "{m} min": "{m} munud",
-  "{time} left to claim it": "{time} ar ôl i’w hawlio"
+  "{time} left to claim it": "{time} ar ôl i’w hawlio",
+  "Paste a friend's invite code": "Gludwch god gwahoddiad ffrind",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Yn chwarae {build}, wedi'i adeiladu ar Horizon {commit}, y commit a binnwyd gan {mods}, nid ar {version}."
 }

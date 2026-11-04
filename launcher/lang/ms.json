@@ -1152,5 +1152,7 @@
   "{d} days {h} h": "{d} hari {h} j",
   "{h} h {m} min": "{h} j {m} min",
   "{m} min": "{m} min",
-  "{time} left to claim it": "{time} lagi untuk menuntutnya"
+  "{time} left to claim it": "{time} lagi untuk menuntutnya",
+  "Paste a friend's invite code": "Tampalkan kod jemputan rakan",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Memainkan {build}, dibina di Horizon {commit}, commit yang disematkan oleh {mods}, bukan di {version}."
 }

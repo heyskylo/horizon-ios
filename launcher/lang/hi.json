@@ -1152,5 +1152,7 @@
   "For the players who were here first. Free to claim; once claimed, it's yours to keep.": "उन खिलाड़ियों के लिए जो सबसे पहले आए। मुफ़्त; एक बार मिलने पर हमेशा आपका।",
   "First Light": "पहली किरण",
   "Free for everyone. First Light paints the sky just before sunrise behind the light appearance, with a blue accent.": "सबके लिए मुफ़्त। पहली किरण सूर्योदय से ठीक पहले के आकाश को लाइट रूप-रंग के पीछे, नीले एक्सेंट के साथ रंगती है।",
-  "Shirt": "टी-शर्ट"
+  "Shirt": "टी-शर्ट",
+  "Paste a friend's invite code": "किसी दोस्त का आमंत्रण कोड पेस्ट करें",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "{build} खेलता है, Horizon {commit} पर निर्मित, जो {mods} द्वारा पिन किया गया कमिट है, {version} पर नहीं।"
 }

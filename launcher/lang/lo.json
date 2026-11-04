@@ -1152,5 +1152,7 @@
   "{d} days {h} h": "{d} ມື້ {h} ຊມ",
   "{h} h {m} min": "{h} ຊມ {m} ນທ",
   "{m} min": "{m} ນທ",
-  "{time} left to claim it": "ເຫຼືອ {time} ເພື່ອຮັບ"
+  "{time} left to claim it": "ເຫຼືອ {time} ເພື່ອຮັບ",
+  "Paste a friend's invite code": "ວາງລະຫັດເຊີນຂອງໝູ່",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "ຫຼິ້ນ {build}, ສ້າງເທິງ Horizon {commit}, commit ທີ່ {mods} ປັກໝຸດໄວ້, ບໍ່ແມ່ນເທິງ {version}."
 }

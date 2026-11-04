@@ -1152,5 +1152,7 @@
   "For the players who were here first. Free to claim; once claimed, it's yours to keep.": "Para quem chegou primeiro. Grátis; depois de resgatado, é seu para sempre.",
   "First Light": "Primeira Luz",
   "Free for everyone. First Light paints the sky just before sunrise behind the light appearance, with a blue accent.": "Grátis para todo mundo. A Primeira Luz pinta o céu logo antes do nascer do sol atrás da aparência clara, com um destaque azul.",
-  "Shirt": "Camiseta"
+  "Shirt": "Camiseta",
+  "Paste a friend's invite code": "Cole o código de convite de um amigo",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Roda {build}, compilado no Horizon {commit}, o commit fixado por {mods}, não no {version}."
 }

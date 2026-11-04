@@ -1152,5 +1152,7 @@
   "{d} days {h} h": "{d} ದಿನಗಳು {h} ಗಂ",
   "{h} h {m} min": "{h} ಗಂ {m} ನಿಮಿ",
   "{m} min": "{m} ನಿಮಿ",
-  "{time} left to claim it": "ಪಡೆಯಲು {time} ಉಳಿದಿದೆ"
+  "{time} left to claim it": "ಪಡೆಯಲು {time} ಉಳಿದಿದೆ",
+  "Paste a friend's invite code": "ಸ್ನೇಹಿತನ ಆಹ್ವಾನ ಕೋಡ್ ಅನ್ನು ಅಂಟಿಸಿ",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "{build} ಆಡುತ್ತದೆ, {version} ಅಲ್ಲ, {mods} ಪಿನ್ ಮಾಡಿದ ಕಮಿಟ್ Horizon {commit} ನಲ್ಲಿ ನಿರ್ಮಿಸಲಾಗಿದೆ."
 }

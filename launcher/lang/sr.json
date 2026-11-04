@@ -1152,5 +1152,7 @@
   "{d} days {h} h": "{d} дана {h} ч",
   "{h} h {m} min": "{h} ч {m} мин",
   "{m} min": "{m} мин",
-  "{time} left to claim it": "остало је {time} за преузимање"
+  "{time} left to claim it": "остало је {time} за преузимање",
+  "Paste a friend's invite code": "Налепите пријатељев код за позив",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Покреће {build}, направљен на Horizon-у {commit}, комиту који је закачио {mods}, а не на {version}."
 }

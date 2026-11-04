@@ -1152,5 +1152,7 @@
   "{d} days {h} h": "{d} دن {h} گھنٹے",
   "{h} h {m} min": "{h} گھنٹے {m} منٹ",
   "{m} min": "{m} منٹ",
-  "{time} left to claim it": "حاصل کرنے کے لیے {time} باقی"
+  "{time} left to claim it": "حاصل کرنے کے لیے {time} باقی",
+  "Paste a friend's invite code": "کسی دوست کا دعوتی کوڈ چسپاں کریں",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "{build} چلتا ہے، Horizon {commit} پر بنایا گیا، وہ کمٹ جسے {mods} نے پن کیا، {version} پر نہیں۔"
 }

@@ -1152,5 +1152,7 @@
   "{d} days {h} h": "{d} ημέρες {h} ώ",
   "{h} h {m} min": "{h} ώ {m} λ",
   "{m} min": "{m} λ",
-  "{time} left to claim it": "απομένουν {time} για να το διεκδικήσετε"
+  "{time} left to claim it": "απομένουν {time} για να το διεκδικήσετε",
+  "Paste a friend's invite code": "Επικολλήστε τον κωδικό πρόσκλησης ενός φίλου",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Παίζει {build}, χτισμένο στο Horizon {commit}, το commit που καρφιτσώνει το {mods}, όχι στο {version}."
 }

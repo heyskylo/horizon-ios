@@ -1152,5 +1152,7 @@
   "{d} days {h} h": "{d} ijiem {h} sa",
   "{h} h {m} min": "{h} sa {m} min",
   "{m} min": "{m} min",
-  "{time} left to claim it": "{time} fadal biex titlobha"
+  "{time} left to claim it": "{time} fadal biex titlobha",
+  "Paste a friend's invite code": "Waħħal il-kodiċi tal-istedina ta' ħabib",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Iħaddem {build}, mibni fuq Horizon {commit}, il-commit imwaħħal minn {mods}, mhux fuq {version}."
 }

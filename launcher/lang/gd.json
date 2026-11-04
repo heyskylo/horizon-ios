@@ -1152,5 +1152,7 @@
   "{d} days {h} h": "{d} làithean {h} h",
   "{h} h {m} min": "{h} h {m} mion",
   "{m} min": "{m} mion",
-  "{time} left to claim it": "{time} air fhàgail airson a thagradh"
+  "{time} left to claim it": "{time} air fhàgail airson a thagradh",
+  "Paste a friend's invite code": "Cuir a-steach còd cuireadh caraid",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "A' cluich {build}, air a thogail air Horizon {commit}, an commit a phrìnich {mods}, chan ann air {version}."
 }

@@ -1152,5 +1152,7 @@
   "{d} days {h} h": "{d} dagen {h} oere",
   "{h} h {m} min": "{h} oere {m} min",
   "{m} min": "{m} min",
-  "{time} left to claim it": "noch {time} om it op te easkjen"
+  "{time} left to claim it": "noch {time} om it op te easkjen",
+  "Paste a friend's invite code": "Plak de útnoegingskoade fan in freon",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Spilet {build}, boud op Horizon {commit}, de commit dy't {mods} fêstset, net op {version}."
 }

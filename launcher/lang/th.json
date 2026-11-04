@@ -1152,5 +1152,7 @@
   "{d} days {h} h": "{d} วัน {h} ชม.",
   "{h} h {m} min": "{h} ชม. {m} นาที",
   "{m} min": "{m} นาที",
-  "{time} left to claim it": "เหลือ {time} ให้รับ"
+  "{time} left to claim it": "เหลือ {time} ให้รับ",
+  "Paste a friend's invite code": "วางรหัสเชิญของเพื่อน",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "เล่น {build} สร้างบน Horizon {commit} ซึ่งเป็นคอมมิตที่ {mods} ตรึงไว้ ไม่ใช่บน {version}"
 }

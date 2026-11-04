@@ -1152,5 +1152,7 @@
   "For the players who were here first. Free to claim; once claimed, it's yours to keep.": "Для гравців, які були тут першими. Безкоштовно; отримавши, залишиш собі назавжди.",
   "First Light": "Перше світло",
   "Free for everyone. First Light paints the sky just before sunrise behind the light appearance, with a blue accent.": "Безкоштовно для всіх. «Перше світло» малює небо перед самим сходом сонця за світлим виглядом, із синім акцентом.",
-  "Shirt": "Футболка"
+  "Shirt": "Футболка",
+  "Paste a friend's invite code": "Вставте код запрошення друга",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Грає {build}, зібрано на Horizon {commit} — коміті, закріпленому {mods}, а не на {version}."
 }

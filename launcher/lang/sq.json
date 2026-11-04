@@ -1152,5 +1152,7 @@
   "{d} days {h} h": "{d} ditë {h} orë",
   "{h} h {m} min": "{h} orë {m} min",
   "{m} min": "{m} min",
-  "{time} left to claim it": "edhe {time} për ta marrë"
+  "{time} left to claim it": "edhe {time} për ta marrë",
+  "Paste a friend's invite code": "Ngjit kodin e ftesës së një shoku",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Luan {build}, i ndërtuar në Horizon {commit}, commit-i i fiksuar nga {mods}, jo në {version}."
 }

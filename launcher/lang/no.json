@@ -1152,5 +1152,7 @@
   "For the players who were here first. Free to claim; once claimed, it's yours to keep.": "For spillerne som var her først. Gratis; når det er hentet, er det ditt.",
   "First Light": "Første lys",
   "Free for everyone. First Light paints the sky just before sunrise behind the light appearance, with a blue accent.": "Gratis for alle. Første lys maler himmelen rett før soloppgang bak det lyse utseendet, med en blå aksent.",
-  "Shirt": "Skjorte"
+  "Shirt": "Skjorte",
+  "Paste a friend's invite code": "Lim inn en venns invitasjonskode",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Spiller {build}, bygget på Horizon {commit}, commiten {mods} låser, ikke på {version}."
 }

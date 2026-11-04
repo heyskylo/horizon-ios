@@ -1152,5 +1152,7 @@
   "{d} days {h} h": "{d} lā {h} h",
   "{h} h {m} min": "{h} h {m} min",
   "{m} min": "{m} min",
-  "{time} left to claim it": "{time} i koe e loaʻa ai"
+  "{time} left to claim it": "{time} i koe e loaʻa ai",
+  "Paste a friend's invite code": "Hoʻopili i ke code kono a kekahi hoaloha",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Hoʻokani {build}, kūkulu ʻia ma Horizon {commit}, ka commit i hoʻopaʻa ʻia e {mods}, ʻaʻole ma {version}."
 }

@@ -1152,5 +1152,7 @@
   "{d} days {h} h": "{d} beaivvi {h} t",
   "{h} h {m} min": "{h} t {m} min",
   "{m} min": "{m} min",
-  "{time} left to claim it": "{time} báhcá váldit"
+  "{time} left to claim it": "{time} báhcá váldit",
+  "Paste a friend's invite code": "Bija ustiba bovdehuskoda",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Spealut {build}, huksejuvvon Horizon {commit} ala, commit maid {mods} giddejit, ii {version} ala."
 }

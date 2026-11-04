@@ -1152,5 +1152,7 @@
   "For the players who were here first. Free to claim; once claimed, it's yours to keep.": "Pelaajille, jotka olivat täällä ensin. Ilmainen; lunastettuna se on pysyvästi sinun.",
   "First Light": "Ensivalo",
   "Free for everyone. First Light paints the sky just before sunrise behind the light appearance, with a blue accent.": "Ilmainen kaikille. Ensivalo maalaa taivaan juuri ennen auringonnousua vaalean ulkonäön taakse sinisellä korostevärillä.",
-  "Shirt": "Paita"
+  "Shirt": "Paita",
+  "Paste a friend's invite code": "Liitä ystävän kutsukoodi",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Pelaa {build}, rakennettu Horizon {commit} -commitille, jonka {mods} kiinnittää, ei {version}:lle."
 }

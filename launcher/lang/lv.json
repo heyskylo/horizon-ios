@@ -1152,5 +1152,7 @@
   "{d} days {h} h": "{d} dienas {h} st.",
   "{h} h {m} min": "{h} st. {m} min.",
   "{m} min": "{m} min.",
-  "{time} left to claim it": "Atlicis {time}, lai to saņemtu"
+  "{time} left to claim it": "Atlicis {time}, lai to saņemtu",
+  "Paste a friend's invite code": "Ielīmējiet drauga uzaicinājuma kodu",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Spēlē {build}, kas veidota uz Horizon {commit} – {mods} piespraustā commit, nevis uz {version}."
 }

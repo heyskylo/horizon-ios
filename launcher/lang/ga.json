@@ -1152,5 +1152,7 @@
   "{d} days {h} h": "{d} lá {h} u",
   "{h} h {m} min": "{h} u {m} nóim",
   "{m} min": "{m} nóim",
-  "{time} left to claim it": "{time} fágtha chun é a éileamh"
+  "{time} left to claim it": "{time} fágtha chun é a éileamh",
+  "Paste a friend's invite code": "Greamaigh cód cuireadh carad",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Imríonn {build}, tógtha ar Horizon {commit}, an tiomantas a phionnáil {mods}, ní ar {version}."
 }

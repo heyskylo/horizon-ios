@@ -1152,5 +1152,7 @@
   "{d} days {h} h": "{d} dies {h} h",
   "{h} h {m} min": "{h} h {m} min",
   "{m} min": "{m} min",
-  "{time} left to claim it": "queden {time} per reclamar-lo"
+  "{time} left to claim it": "queden {time} per reclamar-lo",
+  "Paste a friend's invite code": "Enganxeu el codi d'invitació d'un amic",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Juga {build}, construït sobre Horizon {commit}, el commit fixat per {mods}, no sobre {version}."
 }

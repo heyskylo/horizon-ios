@@ -1152,5 +1152,7 @@
   "For the players who were here first. Free to claim; once claimed, it's yours to keep.": "처음부터 함께한 플레이어를 위해. 무료로 받을 수 있고, 받으면 계속 내 것이에요.",
   "First Light": "첫 빛",
   "Free for everyone. First Light paints the sky just before sunrise behind the light appearance, with a blue accent.": "모두에게 무료입니다. 첫 빛은 해돋이 직전의 하늘을 라이트 모양새 뒤에 그려 내며, 파란 강조색을 더합니다.",
-  "Shirt": "셔츠"
+  "Shirt": "셔츠",
+  "Paste a friend's invite code": "친구의 초대 코드 붙여넣기",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "{build} 플레이 중: {version}이(가) 아니라 {mods}이(가) 고정한 커밋 Horizon {commit}에서 빌드됨."
 }

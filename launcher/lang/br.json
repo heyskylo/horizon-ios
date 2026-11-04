@@ -1152,5 +1152,7 @@
   "{d} days {h} h": "{d} devezh {h} e",
   "{h} h {m} min": "{h} e {m} min",
   "{m} min": "{m} min",
-  "{time} left to claim it": "{time} da c’hortoz evit e c’houlenn"
+  "{time} left to claim it": "{time} da c’hortoz evit e c’houlenn",
+  "Paste a friend's invite code": "Pegañ kod pediñ ur mignon",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "C'hoari {build}, savet diwar Horizon {commit}, ar commit spilhet gant {mods}, ha neket diwar {version}."
 }

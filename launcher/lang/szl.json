@@ -1152,5 +1152,7 @@
   "{d} days {h} h": "{d} dni {h} godz.",
   "{h} h {m} min": "{h} godz. {m} min",
   "{m} min": "{m} min",
-  "{time} left to claim it": "zostało {time} na ôdbiōr"
+  "{time} left to claim it": "zostało {time} na ôdbiōr",
+  "Paste a friend's invite code": "Wkludź kod zaproszynio od kamrata",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Gra {build}, zbudowane na Horizon {commit}, commicie przipiyntym bez {mods}, a niy na {version}."
 }

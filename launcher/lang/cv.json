@@ -1152,5 +1152,7 @@
   "{d} days {h} h": "{d} кун {h} сех",
   "{h} h {m} min": "{h} сех {m} мин",
   "{m} min": "{m} мин",
-  "{time} left to claim it": "илме {time} юлнӑ"
+  "{time} left to claim it": "илме {time} юлнӑ",
+  "Paste a friend's invite code": "Тусӑн йыхрав кодне ҫыпӑҫтарӑр",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "{build} вылять: {version} ҫинче мар, {mods} ҫирӗплетнӗ Horizon {commit} коммичӗ ҫинче тунӑ."
 }

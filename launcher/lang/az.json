@@ -1152,5 +1152,7 @@
   "{d} days {h} h": "{d} gün {h} saat",
   "{h} h {m} min": "{h} saat {m} dəq",
   "{m} min": "{m} dəq",
-  "{time} left to claim it": "əldə etmək üçün {time} qalıb"
+  "{time} left to claim it": "əldə etmək üçün {time} qalıb",
+  "Paste a friend's invite code": "Dostunun dəvət kodunu yerləşdirin",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "{build} oynayır: Horizon {version} deyil, {mods} tərəfindən sabitlənmiş Horizon {commit} commit-i üzərində qurulub."
 }

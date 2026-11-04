@@ -1152,5 +1152,7 @@
   "{d} days {h} h": "{d} көн {h} с",
   "{h} h {m} min": "{h} с {m} мин",
   "{m} min": "{m} мин",
-  "{time} left to claim it": "алыуға {time} ҡалды"
+  "{time} left to claim it": "алыуға {time} ҡалды",
+  "Paste a friend's invite code": "Дуҫтың саҡырыу кодын йәбештереү",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "{build} уйнай: Horizon {version} түгел, {mods} беркеткән Horizon {commit} коммиты өҫтөндә төҙөлгән."
 }
