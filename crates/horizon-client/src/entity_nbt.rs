@@ -2243,6 +2243,7 @@ pub fn item_entity_from_nbt(tag: &Tag, id: u32, bob_offset: f32) -> Option<ItemE
         ticks: 0,
         needs_sync: false,
         stuck: Vec3::ZERO,
+        was_touching_water: false,
     })
 }
 
@@ -3197,14 +3198,18 @@ pub fn armor_stand_to_nbt(a: &ArmorStand, uuid: [i32; 4], raw: Option<&Tag>) -> 
             ("AbsorptionAmount", Tag::Float(0)),
             ("FallFlying", Tag::Byte(0)),
             ("current_impulse_context_reset_grace_time", Tag::Int(0)),
-            // AttributeMap.pack: the movement_speed instance every living
-            // entity's first tick makes (removeFrost), at the registry default.
+            // AttributeMap.pack: the movement_speed instance the stand's first
+            // tick makes (removeFrost), at the registry default.
             (
                 "attributes",
-                Tag::List(vec![Tag::compound([
-                    ("id", string("minecraft:movement_speed")),
-                    ("base", Tag::Double(0.7f64.to_bits())),
-                ])]),
+                Tag::List(if a.speed_instance {
+                    vec![Tag::compound([
+                        ("id", string(SPEED_ATTRIBUTE)),
+                        ("base", Tag::Double(0.7f64.to_bits())),
+                    ])]
+                } else {
+                    Vec::new()
+                }),
             ),
             (
                 "Brain",
@@ -3218,8 +3223,13 @@ pub fn armor_stand_to_nbt(a: &ArmorStand, uuid: [i32; 4], raw: Option<&Tag>) -> 
     }
     tag
 }
+/// The attribute every living entity's first tick makes (`removeFrost`).
+const SPEED_ATTRIBUTE: &str = "minecraft:movement_speed";
 pub fn armor_stand_from_nbt(tag: &Tag, id: u32) -> Option<ArmorStand> {
     let mut a = ArmorStand::new(id, position(tag)?, rotation(tag)[0]);
+    // AttributeMap.load makes an instance for each saved attribute.
+    a.speed_instance = matches!(tag.get("attributes"), Some(Tag::List(list))
+        if list.iter().any(|attr| text(attr.get("id")).as_deref() == Some(SPEED_ATTRIBUTE)));
     a.velocity = motion(tag);
     a.health = float(tag.get("Health")).unwrap_or(20.0) as f32;
     a.fire_ticks = number(tag.get("Fire")).unwrap_or(0) as i32;
@@ -4066,6 +4076,7 @@ mod tests {
             bob_offset: 0.0,
             needs_sync: false,
             stuck: Vec3::ZERO,
+            was_touching_water: false,
         };
         let tag = item_entity_to_nbt(&e, [1, 2, 3, 4], None);
         assert_eq!(kind(&tag).as_deref(), Some("minecraft:item"));
@@ -4164,11 +4175,26 @@ mod tests {
         };
         let tag = orb_to_nbt(&orb, [0; 4]);
         assert_eq!(tag.get("Fire"), Some(&Tag::Short(0)));
-        let stand = armor_stand_to_nbt(&ArmorStand::new(1, Vec3::ZERO, 0.0), [0; 4], None);
-        let Some(Tag::List(attrs)) = stand.get("attributes") else {
-            panic!("no attributes");
-        };
-        assert_eq!(attrs.len(), 1);
+        // A stand summoned this tick has no instance yet; its first tick makes
+        // it, and a save that lists it (`/data merge`, a reload) keeps it.
+        let attributes =
+            |stand: &ArmorStand| match armor_stand_to_nbt(stand, [0; 4], None).get("attributes") {
+                Some(Tag::List(attrs)) => attrs
+                    .iter()
+                    .map(|a| (text(a.get("id")).unwrap(), a.get("base").cloned()))
+                    .collect::<Vec<_>>(),
+                other => panic!("attributes: {other:?}"),
+            };
+        let mut stand = ArmorStand::new(1, Vec3::ZERO, 0.0);
+        assert_eq!(attributes(&stand), []);
+        stand.speed_instance = true;
+        let speed = vec![(
+            "minecraft:movement_speed".to_owned(),
+            Some(Tag::Double(0.7f64.to_bits())),
+        )];
+        assert_eq!(attributes(&stand), speed);
+        let saved = armor_stand_to_nbt(&stand, [0; 4], None);
+        assert_eq!(attributes(&armor_stand_from_nbt(&saved, 1).unwrap()), speed);
     }
     #[test]
     fn orbs_keep_their_count() {
@@ -4282,8 +4308,14 @@ fn read_variant(m: &mut Mob, tag: &Tag) {
             } else {
                 0
             };
-            m.extra.variant2 = ((packed >> 16) & 15) as u8;
-            m.extra.variant3 = ((packed >> 24) & 15) as u8;
+            // TropicalFish.getBaseColor/getPatternColor use DyeColor.byId:
+            // read the full byte, then default invalid color ids to white.
+            let color = |shift| match (packed >> shift) & 0xFF {
+                value @ 0..=15 => value as u8,
+                _ => 0,
+            };
+            m.extra.variant2 = color(16);
+            m.extra.variant3 = color(24);
         }
         _ => {}
     }

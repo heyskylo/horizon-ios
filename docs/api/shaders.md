@@ -1,8 +1,9 @@
 # Shader API
 
-Horizon has no shader packs today: the earlier implementation was removed on 2026-10-24. Two things will replace it,
-designed separately: a **Horizon shader API**, described here, and a clean-room loader for the existing pack format
-(its own spec; it is not part of this API). Both sit on the same renderer hooks, agreed between the two.
+Horizon has its own shader packs: WGSL written against stages of Horizon's renderer, checked before it runs. This
+page is the **Horizon shader API**. A separate clean-room loader reads the existing `shaders/` pack format (its own
+spec, not part of this API); both sit on the same renderer hooks. The earlier implementation was removed on
+2026-10-24; this API was written from scratch after it.
 
 ## Overview: what a shader author will be able to do
 
@@ -157,13 +158,12 @@ the same way every time (files in path order, fixed dates), so a pack's SHA-256 
 
 ## Stability
 
-Not started. The first stages will be experimental (opt-in), then preview once a reference, an example and a test
-pack exist ([stability.md](stability.md)).
+Experimental (API 0.1). The stages ship in the game behind pack selection; see [stability.md](stability.md).
 
 ## Not there yet
 
-Option values other than the defaults (the three stages run, with hot reload), then the overlay and lighting
-stages.
+An overlay showing what each pass draws (F3 already shows what each costs), and stages for entities, block entities
+and particles (the material stage covers terrain only).
 
 ## Changelog
 
