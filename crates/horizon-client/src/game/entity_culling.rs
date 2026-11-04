@@ -68,6 +68,9 @@ impl Game<'_> {
             EntityCullingMode::Off => false,
             EntityCullingMode::Asynchronous => {
                 if let Some(culler) = &self.async_occlusion_culler {
+                    if !culler.camera_is_stationary() {
+                        return false;
+                    }
                     let Some(query) = culler.query_camera_bounds(lo, hi) else {
                         return false;
                     };
@@ -90,21 +93,29 @@ impl Game<'_> {
                         }
                     }
                 } else {
-                    let corners = [lo, hi].map(|pos| Vertex {
-                        pos: pos.to_array(),
-                        ..bytemuck::Zeroable::zeroed()
-                    });
-                    self.entity_hidden_sync(Some(&corners), 0, None)
+                    self.entity_hidden_sync_camera_bounds(lo, hi)
                 }
             }
-            EntityCullingMode::Synchronous => {
-                let corners = [lo, hi].map(|pos| Vertex {
-                    pos: pos.to_array(),
-                    ..bytemuck::Zeroable::zeroed()
-                });
-                self.entity_hidden_sync(Some(&corners), 0, None)
-            }
+            EntityCullingMode::Synchronous => self.entity_hidden_sync_camera_bounds(lo, hi),
         }
+    }
+
+    fn entity_hidden_sync_camera_bounds(&self, lo: glam::Vec3, hi: glam::Vec3) -> bool {
+        self.sync_occlusion_culler.as_ref().is_some_and(|culler| {
+            let mut occluder = SyncOccluder::new(
+                &self.world,
+                self.res.facts(),
+                self.renderer.as_ref(),
+                &self.streaming,
+                &self.pending_uploads,
+            );
+            culler.hidden_camera_bounds(lo.to_array(), hi.to_array(), |pos| occluder.ready(pos))
+        })
+    }
+
+    /// Pre-model visibility hook for dynamic block-entity geometry.
+    pub(super) fn block_entity_occluded(&self, bounds: Aabb) -> bool {
+        self.occlusion_hidden(None, 0, Some(bounds))
     }
 
     /// Cull from the shared entity AABB before generating its model vertices.
@@ -151,6 +162,9 @@ impl Game<'_> {
                         EntityCullDecision::CheckVertices
                     };
                 };
+                if !culler.camera_is_stationary() {
+                    return EntityCullDecision::CheckVertices;
+                }
                 let Some(query) = culler.query_entity_bounds(bounds) else {
                     return EntityCullDecision::CheckVertices;
                 };
@@ -203,6 +217,9 @@ impl Game<'_> {
             EntityCullingMode::Synchronous => self.entity_hidden_sync(vertices, start, bounds),
             EntityCullingMode::Asynchronous => {
                 if let Some(culler) = &self.async_occlusion_culler {
+                    if !culler.camera_is_stationary() {
+                        return false;
+                    }
                     let Some(query) = (match bounds {
                         Some(bounds) => culler.query_entity_bounds(bounds),
                         None => vertices.and_then(|vertices| culler.query(vertices, start)),

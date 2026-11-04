@@ -745,6 +745,8 @@ pub(super) struct AsyncOcclusionCuller {
     query_cache_stamp: Option<SnapshotKey>,
     query_cache_camera_cell: Option<[i32; 3]>,
     camera: [f64; 3],
+    previous_camera_key: Option<[u64; 3]>,
+    camera_stationary: bool,
     stamp: SnapshotKey,
     pending: bool,
     frame: u64,
@@ -856,6 +858,8 @@ impl AsyncOcclusionCuller {
             query_cache_stamp: None,
             query_cache_camera_cell: None,
             camera: [0.0; 3],
+            previous_camera_key: None,
+            camera_stationary: true,
             stamp: SnapshotKey {
                 world_revision: 0,
                 chunks_revision: 0,
@@ -901,6 +905,10 @@ impl AsyncOcclusionCuller {
             stats.previous_chunks_revision = Some(self.stamp.chunks_revision);
         }
         let camera_key = self.camera.map(f64::to_bits);
+        self.camera_stationary = self
+            .previous_camera_key
+            .is_none_or(|previous| previous == camera_key);
+        self.previous_camera_key = Some(camera_key);
         let current_camera_cell = camera_cell(self.camera);
         let layout_changed = self
             .query_cache_stamp
@@ -946,13 +954,7 @@ impl AsyncOcclusionCuller {
                     let mut stats = self.stats.borrow_mut();
                     stats.stale_camera_jobs = stats.stale_camera_jobs.saturating_add(1);
                 }
-                if results.camera == camera_key {
-                    self.cache_query_results(&mut results);
-                } else {
-                    // A stale-camera visible answer is fail-open. Never carry a
-                    // hidden proof across viewpoints.
-                    self.cache_visible_results(&mut results);
-                }
+                self.cache_results_for_camera(&mut results, camera_key);
                 let scratch = std::mem::take(&mut results.scratch_queries);
                 if scratch.capacity() > self.queries.get_mut().capacity() {
                     *self.queries.get_mut() = scratch;
@@ -979,6 +981,11 @@ impl AsyncOcclusionCuller {
             }
         }
         self.queries.get_mut().clear();
+    }
+
+    #[inline]
+    pub(super) fn camera_is_stationary(&self) -> bool {
+        self.camera_stationary
     }
 
     pub(super) fn query(&self, vertices: &[Vertex], start: usize) -> Option<CullKey> {
@@ -1229,10 +1236,17 @@ impl AsyncOcclusionCuller {
         self.cache_results(results, true, camera_cell);
     }
 
-    fn cache_visible_results(&mut self, results: &mut CullResults) {
-        // Visible results fail open, so they may follow the current camera
-        // sub-cell without ever hiding geometry.
-        self.cache_results(results, false, self.query_cache_camera_cell);
+    #[inline]
+    fn cache_results_for_camera(&mut self, results: &mut CullResults, camera: [u64; 3]) {
+        if results.camera == camera {
+            self.cache_query_results(results);
+        } else {
+            // Even visible answers suppress a fresh query while their cache
+            // entry is live. Drop stale batches instead of sorting and merging
+            // results that cannot help this viewpoint.
+            results.visible.clear();
+            results.hidden.clear();
+        }
     }
 
     fn cache_results(
@@ -1955,8 +1969,8 @@ pub(super) struct SyncOccluder<'a> {
     streaming: &'a Streaming,
     pending_uploads: &'a [((i32, i32, i32), SectionMesh)],
     bottom_y: i32,
-    last_chunk: Option<(ChunkKey, Option<&'a Chunk>)>,
-    last_section: Option<(SectionKey, bool)>,
+    chunk_slots: [Option<(ChunkKey, Option<&'a Chunk>)>; 4],
+    section_slots: [Option<(SectionKey, bool)>; 4],
 }
 
 impl<'a> SyncOccluder<'a> {
@@ -1974,19 +1988,20 @@ impl<'a> SyncOccluder<'a> {
             streaming,
             pending_uploads,
             bottom_y: world.bottom_y(),
-            last_chunk: None,
-            last_section: None,
+            chunk_slots: [None; 4],
+            section_slots: [None; 4],
         }
     }
 
     #[inline]
     pub(super) fn ready(&mut self, pos: [i32; 3]) -> bool {
         let chunk_key = (pos[0] >> 4, pos[2] >> 4);
-        let chunk = match self.last_chunk {
+        let chunk_index = (((chunk_key.0 as usize) & 1) << 1) | ((chunk_key.1 as usize) & 1);
+        let chunk = match self.chunk_slots[chunk_index] {
             Some((key, cached)) if key == chunk_key => cached,
             _ => {
                 let found = self.world.chunks.get(&chunk_key).map(Arc::as_ref);
-                self.last_chunk = Some((chunk_key, found));
+                self.chunk_slots[chunk_index] = Some((chunk_key, found));
                 found
             }
         };
@@ -2001,14 +2016,15 @@ impl<'a> SyncOccluder<'a> {
             return false;
         };
         let section = (chunk_key.0, y >> 4, chunk_key.1);
-        match self.last_section {
+        let section_index = (chunk_index ^ (section.1 as usize)) & 3;
+        match self.section_slots[section_index] {
             Some((key, ready)) if key == section => ready,
             _ => {
                 let ready = self.renderer.is_some_and(|r| r.has_section(section))
                     && !self.world.dirty_sections.contains(&section)
                     && !self.streaming.is_meshing(section)
                     && !self.pending_uploads.iter().any(|(key, _)| *key == section);
-                self.last_section = Some((section, ready));
+                self.section_slots[section_index] = Some((section, ready));
                 ready
             }
         }

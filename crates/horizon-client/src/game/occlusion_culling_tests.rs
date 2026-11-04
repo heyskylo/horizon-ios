@@ -244,7 +244,7 @@ fn stale_world_results_cannot_replace_a_current_proof_in_the_same_camera_cell() 
 }
 
 #[test]
-fn stale_visible_results_are_reusable_in_the_current_camera_cell() {
+fn stale_camera_visible_results_are_discarded_for_a_fresh_query() {
     let mut culler = AsyncOcclusionCuller::new().unwrap();
     culler.stamp = SnapshotKey {
         world_revision: 2,
@@ -275,11 +275,14 @@ fn stale_visible_results_are_reusable_in_the_current_camera_cell() {
         visible_entities: 1,
         deferred_entities: 0,
     };
-    culler.cache_visible_results(&mut results);
-    assert!(matches!(
-        culler.query_result(&current_key, QuerySource::EntityAabb),
-        Some((false, None))
-    ));
+    culler.cache_results_for_camera(&mut results, current_key.camera);
+    assert!(results.visible.is_empty());
+    assert!(results.hidden.is_empty());
+    assert!(
+        culler
+            .query_result(&current_key, QuerySource::EntityAabb)
+            .is_none()
+    );
 }
 
 #[test]

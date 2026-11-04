@@ -377,6 +377,7 @@ use horizon_client::{
     first_person::{Hand, SwingAnimation},
     furnace::FurnaceCooking,
     gfx::{Frame, Renderer},
+    graphics::EntityCullingMode,
     hud::{HudAtlas, HudBatch, rgba},
     hud_layout, hud_overlays,
     items::{ItemStack, Items},
@@ -11198,32 +11199,6 @@ impl Game<'_> {
         laps.lap("eg_shadows");
         // Block entities (BlockEntityRenderers): chests, shulker boxes, banners, skulls...
         if let Some(r) = &self.renderer {
-            let lid = |p: [i32; 3]| self.chest_lid(p, alpha as f32);
-            let anim = |p: [i32; 3]| self.block_anim(p, alpha as f32);
-            let scene = BlockEntityScene {
-                camera,
-                orientation: self.camera_orientation(),
-                anim: &anim,
-                texts: None,
-                partial: alpha as f32,
-                game_time: self.world.game_time,
-                max_y: self.world.shape.max_y() - 1,
-                world: &self.world,
-                sprites: &self.gui.atlas.sprites,
-                emissive: &self.gui.atlas.emissive,
-                translucent_sprites: &self.gui.atlas.translucent,
-                atlas_revision: self.gui.atlas.revision,
-                nether: self.dim == Dim::Nether,
-                lid: &lid,
-                sign: &|p| match self.world.block_entities.get(&(p[0], p[1], p[2])) {
-                    Some(BlockEntity::Sign(sign)) => Some(sign),
-                    _ => None,
-                },
-                banner: &|p| self.banner_layers_at(p),
-                skull: &|p| self.skull_skin_at(p),
-                glyph: &|c| self.gui.atlas.glyph_cell(c),
-                glyphs: self.gui.atlas.font.epoch(),
-            };
             // Block entities outside the view frustum are skipped (with a
             // block of margin for models larger than their block).
             let view = self.view_frustum;
@@ -11249,6 +11224,62 @@ impl Game<'_> {
                         .as_vec3();
                     v.intersects(o - glam::Vec3::ONE, o + glam::Vec3::splat(2.0))
                 })
+            };
+            let dynamic_visible = |_: [i32; 3], state: u32, lo: glam::DVec3, hi: glam::DVec3| {
+                if off_screen(state) {
+                    return true;
+                }
+                if let Some(view) = view
+                    && !view.intersects(
+                        (lo - camera - glam::DVec3::splat(0.5)).as_vec3(),
+                        (hi - camera + glam::DVec3::splat(0.5)).as_vec3(),
+                    )
+                {
+                    return false;
+                }
+                let name = &*self.res.facts().get(BlockStateId(state)).name;
+                if self.settings.horizon.entity_culling == EntityCullingMode::Off
+                    || self.pack_shadow_casters.0
+                    || name == "minecraft:end_portal"
+                    || name == "minecraft:end_gateway"
+                    || hi.y - lo.y > 2.0
+                {
+                    return true;
+                }
+                // Culler::aabb_bounds adds 0.05 on each side. Keep its final
+                // query just inside the conservative rendered-model envelope.
+                let bounds = Aabb::new(
+                    Vec3::new(lo.x + 0.06, lo.y + 0.06, lo.z + 0.06),
+                    Vec3::new(hi.x - 0.06, hi.y - 0.06, hi.z - 0.06),
+                );
+                !self.block_entity_occluded(bounds)
+            };
+            let lid = |p: [i32; 3]| self.chest_lid(p, alpha as f32);
+            let anim = |p: [i32; 3]| self.block_anim(p, alpha as f32);
+            let scene = BlockEntityScene {
+                camera,
+                orientation: self.camera_orientation(),
+                anim: &anim,
+                texts: None,
+                partial: alpha as f32,
+                game_time: self.world.game_time,
+                max_y: self.world.shape.max_y() - 1,
+                world: &self.world,
+                sprites: &self.gui.atlas.sprites,
+                emissive: &self.gui.atlas.emissive,
+                translucent_sprites: &self.gui.atlas.translucent,
+                atlas_revision: self.gui.atlas.revision,
+                nether: self.dim == Dim::Nether,
+                lid: &lid,
+                sign: &|p| match self.world.block_entities.get(&(p[0], p[1], p[2])) {
+                    Some(BlockEntity::Sign(sign)) => Some(sign),
+                    _ => None,
+                },
+                banner: &|p| self.banner_layers_at(p),
+                skull: &|p| self.skull_skin_at(p),
+                glyph: &|c| self.gui.atlas.glyph_cell(c),
+                glyphs: self.gui.atlas.font.epoch(),
+                dynamic_visible: Some(&dynamic_visible),
             };
             let visible = r
                 .visible_block_entities_in_frustum(

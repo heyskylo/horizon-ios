@@ -67,6 +67,29 @@ impl Culler {
         self.occluded(min, max, opaque)
     }
 
+    /// Whether camera-relative model bounds are hidden. This avoids building
+    /// synthetic vertices when a renderer already has a conservative AABB.
+    pub fn hidden_camera_bounds(
+        &self,
+        lo: [f32; 3],
+        hi: [f32; 3],
+        opaque: impl FnMut([i32; 3]) -> bool,
+    ) -> bool {
+        if self.remaining.get() == 0
+            || self.camera.into_iter().any(|value| !value.is_finite())
+            || lo.into_iter().chain(hi).any(|value| !value.is_finite())
+        {
+            return false;
+        }
+        let min = std::array::from_fn(|axis| {
+            f64::from(lo[axis].min(hi[axis])) + self.camera[axis] - 0.05
+        });
+        let max = std::array::from_fn(|axis| {
+            f64::from(lo[axis].max(hi[axis])) + self.camera[axis] + 0.05
+        });
+        self.occluded(min, max, opaque)
+    }
+
     /// World-space bounds expanded for floating-point and rasterization edges.
     pub fn aabb_bounds(bounds: Aabb) -> Option<([f64; 3], [f64; 3])> {
         let lo = bounds.min_position();
@@ -171,29 +194,45 @@ impl Culler {
             };
             cell = next;
         }
+        // These two reciprocals are invariant for every plane along the ray.
+        let denominator_min = (min[axis] - camera[axis]) * sign;
+        let denominator_max = (max[axis] - camera[axis]) * sign;
+        if !denominator_min.is_finite()
+            || !denominator_max.is_finite()
+            || denominator_min.abs() <= EPSILON
+            || denominator_max.abs() <= EPSILON
+        {
+            return false;
+        }
+        let reciprocal_min = 1.0 / denominator_min;
+        let reciprocal_max = 1.0 / denominator_max;
+        let transverse_min = [
+            min[across[0]] - camera[across[0]],
+            min[across[1]] - camera[across[1]],
+        ];
+        let transverse_max = [
+            max[across[0]] - camera[across[0]],
+            max[across[1]] - camera[across[1]],
+        ];
         loop {
             let depth = (f64::from(cell) + 0.5 - camera[axis]) * sign;
             if depth >= gap - EPSILON || *remaining == 0 {
                 return false;
             }
+            let t_min = depth * reciprocal_min;
+            let t_max = depth * reciprocal_max;
             let mut lo = [f64::INFINITY; 2];
             let mut hi = [f64::NEG_INFINITY; 2];
-            for corner in 0..8 {
-                let point: [f64; 3] = std::array::from_fn(|a| {
-                    if corner & (1 << a) == 0 {
-                        min[a]
-                    } else {
-                        max[a]
-                    }
-                });
-                let t = depth / ((point[axis] - camera[axis]) * sign);
-                for (i, &a) in across.iter().enumerate() {
-                    let p = camera[a] + t * (point[a] - camera[a]);
-                    if !p.is_finite() {
+            for i in 0..2 {
+                let camera_axis = camera[across[i]];
+                for t in [t_min, t_max] {
+                    let p_min = camera_axis + t * transverse_min[i];
+                    let p_max = camera_axis + t * transverse_max[i];
+                    if !p_min.is_finite() || !p_max.is_finite() {
                         return false;
                     }
-                    lo[i] = lo[i].min(p);
-                    hi[i] = hi[i].max(p);
+                    lo[i] = lo[i].min(p_min);
+                    hi[i] = hi[i].max(p_max);
                 }
             }
             let bounds = [
@@ -205,27 +244,51 @@ impl Culler {
             let [Some(x0), Some(x1), Some(y0), Some(y1)] = bounds else {
                 return false;
             };
+            let center_x = x0 + ((i64::from(x1) - i64::from(x0)) / 2) as i32;
+            let center_y = y0 + ((i64::from(y1) - i64::from(y0)) / 2) as i32;
             let mut pos = [0; 3];
             pos[axis] = cell;
-            pos[across[0]] = x0 + ((i64::from(x1) - i64::from(x0)) / 2) as i32;
-            pos[across[1]] = y0 + ((i64::from(y1) - i64::from(y0)) / 2) as i32;
+            pos[across[0]] = center_x;
+            pos[across[1]] = center_y;
             *remaining -= 1;
             if opaque(pos) {
                 let area = (i64::from(x1) - i64::from(x0) + 1)
                     .checked_mul(i64::from(y1) - i64::from(y0) + 1)
                     .and_then(|n| usize::try_from(n).ok());
-                let Some(area) = area.filter(|&n| n <= *remaining) else {
+                let Some(additional) = area.and_then(|n| n.checked_sub(1)) else {
                     return false;
                 };
-                // Reserve the worst-case lookups before walking the rectangle.
-                *remaining -= area;
-                let covered = (x0..=x1).all(|x| {
+                if additional > *remaining {
+                    return false;
+                }
+                // Keep Y in the inner loop for X-facing planes. This keeps
+                // consecutive probes in one chunk column. Charge only probes
+                // actually visited when a gap short-circuits the rectangle.
+                let covered = if across[0] == 1 {
                     (y0..=y1).all(|y| {
-                        pos[across[0]] = x;
                         pos[across[1]] = y;
-                        opaque(pos)
+                        (x0..=x1).all(|x| {
+                            if x == center_x && y == center_y {
+                                return true;
+                            }
+                            *remaining -= 1;
+                            pos[across[0]] = x;
+                            opaque(pos)
+                        })
                     })
-                });
+                } else {
+                    (x0..=x1).all(|x| {
+                        pos[across[0]] = x;
+                        (y0..=y1).all(|y| {
+                            if x == center_x && y == center_y {
+                                return true;
+                            }
+                            *remaining -= 1;
+                            pos[across[1]] = y;
+                            opaque(pos)
+                        })
+                    })
+                };
                 if covered {
                     return true;
                 }

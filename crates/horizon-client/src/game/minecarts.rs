@@ -2718,6 +2718,7 @@ impl Game<'_> {
             skull: &|_| None,
             glyph: &|c| self.gui.atlas.glyph_cell(c),
             glyphs: self.gui.atlas.font.epoch(),
+            dynamic_visible: None,
         };
         self.res
             .block_entity_render()
