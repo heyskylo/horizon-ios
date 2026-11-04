@@ -1230,6 +1230,11 @@ impl Game<'_> {
                 return false;
             }
             t.position = next;
+            let bounds = Aabb::new(
+                next.add_vector(Vec3::new(-0.125, 0.0, -0.125)),
+                next.add_vector(Vec3::new(0.125, 0.25, 0.125)),
+            );
+            self.entity_powder_snow_particles(t.previous, next, bounds, t.velocity, false);
             t.age < 1200 && t.position.y > -128.0
         });
         self.potions.thrown = thrown;

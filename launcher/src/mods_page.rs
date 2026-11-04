@@ -843,7 +843,7 @@ impl Launcher {
         let t = self.theme;
         let m = &self.mods;
         let focused = m.focused;
-        let placeholder = if t.dark {
+        let placeholder = if t.glass {
             self.mods_placeholder()
         } else {
             tr("Search, then Enter").into()
@@ -863,7 +863,7 @@ impl Launcher {
             .bg(t.well)
             .text_size(px(theme::UI.px))
             .cursor_text()
-            .child(if t.dark {
+            .child(if t.glass {
                 crate::glass_ui::icon("search-01", 17., crate::glass_ui::white(0.55))
                     .into_any_element()
             } else {
@@ -892,7 +892,7 @@ impl Launcher {
                 cx.notify();
             }));
         // The glass look's: `rounded-[12px] h-11 bg-white/[0.07] px-3.5`, a 17 px search icon.
-        let field = if t.dark {
+        let field = if t.glass {
             field
                 .w_full()
                 .h(px(44.))
@@ -1009,7 +1009,7 @@ impl Launcher {
             self.mods.asked = true;
             self.mods_search(0);
         }
-        if t.dark {
+        if t.glass {
             return self.glass_mods_page(cx);
         }
         let header = page_header(
