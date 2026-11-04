@@ -1564,6 +1564,9 @@ pub struct OptionsUi {
     pub selected_pad_action: Option<&'static str>,
     /// The glyphs the binds list shows (the setting, else the pad's family).
     pub pad_style: GlyphStyle,
+    /// The pad goes by its letters (`PadSettings::nintendo_letters`) and the glyphs are
+    /// Nintendo's: each part shows the letter of the button playing it.
+    pub pad_by_letter: bool,
     pub languages: Vec<LanguageInfo>,
     language_choice: Option<String>,
     language_search: ui::EditBox,
@@ -1645,6 +1648,7 @@ impl Default for OptionsUi {
             selected_native_key: None,
             selected_pad_action: None,
             pad_style: GlyphStyle::Xbox,
+            pad_by_letter: false,
             languages: Vec::new(),
             language_choice: None,
             language_search: search,
@@ -3233,6 +3237,7 @@ impl OptionsUi {
                     });
                     let mut message = match pad.binding(action) {
                         Some(b) => {
+                            let b = if self.pad_by_letter { b.by_letter() } else { b };
                             let [r, g, bl] = b.color(self.pad_style);
                             Text::literal(b.label(self.pad_style))
                                 .with_color(u32::from(r) << 16 | u32::from(g) << 8 | u32::from(bl))
