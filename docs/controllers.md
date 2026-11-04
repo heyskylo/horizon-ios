@@ -54,7 +54,7 @@ once per loop iteration next to winit's events.
 | Move | Left stick | Left stick | analog `key.forward/back/left/right` |
 | Look | Right stick | Right stick | camera |
 | Jump / fly up | A | ✕ | `key.jump` |
-| Drop item | B | ○ | `key.drop` |
+| Drop item | D-pad down | D-pad down | `key.drop` |
 | Swap offhand | X | □ | `key.swapOffhand` |
 | Inventory | Y | △ | `key.inventory` |
 | Hotbar left / right | LB / RB | L1 / R1 | Horizon `pad.hotbarPrevious/Next` |
@@ -62,12 +62,14 @@ once per loop iteration next to winit's events.
 | Attack / break | RT | R2 | `key.attack` |
 | Sprint | Left stick click | L3 | `key.sprint` |
 | Sneak (toggles) | Right stick click | R3 | `key.sneak` |
-| Change camera | D-pad up | D-pad up | `key.togglePerspective` |
+| Change camera | View | Create / Share | `key.togglePerspective` |
 | Pick block | D-pad left | D-pad left | `key.pickItem` |
-| Chat | D-pad right | D-pad right | `key.chat` |
-| Advancements | D-pad down | D-pad down | `key.advancements` |
-| Player list (hold) | View | Create / Share | `key.playerlist` |
+| Chat | D-pad up | D-pad up | `key.chat` |
 | Pause / back | Menu | Options | Escape (fixed) |
+
+Advancements and the player list have no button of their own, and are
+bindable. A settings file from before these defaults keeps its buttons where
+they were.
 
 The Guide / PS / Steam button is left to the system. Sneak on a stick click
 toggles by default (holding a stick in while steering the camera is

@@ -296,7 +296,7 @@ pub const HOTBAR_NEXT: &str = "pad.hotbarNext";
 /// always pause / back and isn't listed.
 pub const ACTIONS: &[(&str, Option<Button>)] = &[
     ("key.jump", Some(Button::South)),
-    ("key.drop", Some(Button::East)),
+    ("key.drop", Some(Button::DPadDown)),
     ("key.swapOffhand", Some(Button::West)),
     ("key.inventory", Some(Button::North)),
     (HOTBAR_PREVIOUS, Some(Button::LeftBumper)),
@@ -305,11 +305,11 @@ pub const ACTIONS: &[(&str, Option<Button>)] = &[
     ("key.attack", Some(Button::RightTrigger)),
     ("key.sprint", Some(Button::LeftStick)),
     ("key.sneak", Some(Button::RightStick)),
-    ("key.togglePerspective", Some(Button::DPadUp)),
+    ("key.togglePerspective", Some(Button::Select)),
     ("key.pickItem", Some(Button::DPadLeft)),
-    ("key.chat", Some(Button::DPadRight)),
-    ("key.advancements", Some(Button::DPadDown)),
-    ("key.playerlist", Some(Button::Select)),
+    ("key.chat", Some(Button::DPadUp)),
+    ("key.advancements", None),
+    ("key.playerlist", None),
     ("key.command", None),
     ("key.screenshot", None),
     ("key.toggleGui", None),
@@ -593,6 +593,24 @@ impl PadSettings {
                 }
             }
         }
+        // A file from before these defaults: its player's buttons stay where they were.
+        if !text.is_empty() && !text.lines().any(|line| line.starts_with("bindLayout:")) {
+            for (action, button) in [
+                ("key.drop", Button::East),
+                ("key.togglePerspective", Button::DPadUp),
+                ("key.chat", Button::DPadRight),
+                ("key.playerlist", Button::Select),
+                ("key.advancements", Button::DPadDown),
+            ] {
+                // A button saved by hand stays, even one that's now this action's default.
+                if !text
+                    .lines()
+                    .any(|line| line.starts_with(&format!("bind_{action}:")))
+                {
+                    s.bindings.entry(action).or_insert(Some(button));
+                }
+            }
+        }
         s
     }
     pub fn serialize(&self) -> String {
@@ -623,6 +641,7 @@ impl PadSettings {
                 button.map_or("none", Button::name)
             ));
         }
+        text.push_str("bindLayout:1\n");
         text
     }
     pub fn default_of(action: &str) -> Option<Button> {
@@ -1600,6 +1619,36 @@ mod tests {
     }
 
     #[test]
+    fn a_file_from_before_these_defaults_keeps_its_buttons() {
+        // Saved settings that never bound D-pad down: it stays on the advancements.
+        let s = PadSettings::parse("vibration:false\nbind_key.chat:up\n");
+        assert_eq!(s.binding("key.advancements"), Some(Button::DPadDown));
+        assert_eq!(s.binding("key.chat"), Some(Button::DPadUp));
+        assert_eq!(s.binding("key.drop"), Some(Button::East));
+        assert_eq!(s.binding("key.togglePerspective"), Some(Button::DPadUp));
+        assert_eq!(s.binding("key.playerlist"), Some(Button::Select));
+        assert!(!s.conflicts("key.advancements"));
+        // Advancements moved by hand stays moved, and the file stays this way from then on.
+        let s = PadSettings::parse("bind_key.advancements:left\nbind_key.drop:down\n");
+        assert_eq!(s.binding("key.advancements"), Some(Button::DPadLeft));
+        assert_eq!(s.binding("key.drop"), Some(Button::DPadDown));
+        assert_eq!(PadSettings::parse(&s.serialize()), s);
+    }
+
+    #[test]
+    fn a_new_player_drops_on_d_pad_down_and_chats_on_d_pad_up() {
+        for s in [PadSettings::default(), PadSettings::parse("")] {
+            assert_eq!(s.binding("key.drop"), Some(Button::DPadDown));
+            assert_eq!(s.binding("key.chat"), Some(Button::DPadUp));
+            assert_eq!(s.binding("key.togglePerspective"), Some(Button::Select));
+            assert_eq!(s.binding("key.playerlist"), None);
+            assert_eq!(s.binding("key.advancements"), None);
+        }
+        let s = PadSettings::parse(&PadSettings::default().serialize());
+        assert_eq!(s, PadSettings::default());
+    }
+
+    #[test]
     fn settings_round_trip_and_store_only_changes() {
         let mut s = PadSettings::default();
         assert!(!s.serialize().contains("bind_"));
@@ -1620,8 +1669,9 @@ mod tests {
         assert_eq!(back.binding("key.drop"), None);
         assert_eq!(back.actions_of(Button::East), ["key.jump"]);
         // Garbage keeps the defaults.
-        let odd =
-            PadSettings::parse("lookSensitivity:NaN\nbind_key.nope:south\nbind_key.jump:x9\n");
+        let odd = PadSettings::parse(
+            "lookSensitivity:NaN\nbind_key.nope:south\nbind_key.jump:x9\nbindLayout:1\n",
+        );
         assert_eq!(odd, PadSettings::default());
     }
 
