@@ -17,10 +17,11 @@ pub fn shown(claim: &Claim) -> bool {
         || (claim.starts_at.is_some() && claim.ends_at.is_some())
 }
 
-/// Whether the top bar has the Wardrobe page: the cosmetics switch is on, or the service's last
-/// answer (`status`) or the account's own (`kept`, from its last visit) shows the Shop.
-pub fn in_top_bar(cosmetics: bool, status: Option<&Claim>, kept: Option<&Claim>) -> bool {
-    cosmetics || status.is_some_and(shown) || kept.is_some_and(shown)
+/// Whether the top bar has the Wardrobe page: `HORIZON_COSMETICS=1` asked for it (`forced`), or
+/// the service's last answer (`status`) or the account's own (`kept`, from its last visit) shows
+/// the Shop. Cosmetics being on in the game (the default) doesn't: the page waits for the Shop.
+pub fn in_top_bar(forced: bool, status: Option<&Claim>, kept: Option<&Claim>) -> bool {
+    forced || status.is_some_and(shown) || kept.is_some_and(shown)
 }
 
 /// Where the founder set's window stands now.

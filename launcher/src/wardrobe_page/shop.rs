@@ -38,18 +38,17 @@ pub(crate) struct Shop {
     thumbs: HashMap<String, (f32, Arc<RenderImage>)>,
 }
 
-/// Text at `size` in Geist, in the page's ink at `a`.
-fn words(t: &Theme, size: f32, weight: FontWeight, a: f32) -> Div {
-    glass_ui::text(size, weight, a).text_color(tone(t, a))
+/// Below this window width the founder panel stacks: its words over its cards.
+const NARROW: f32 = 1280.;
+
+/// Text at `size` in Geist, in the glass look's ink at `a` (white in dark, ink in light).
+fn words(_t: &Theme, size: f32, weight: FontWeight, a: f32) -> Div {
+    glass_ui::text(size, weight, a)
 }
 
-/// The page's ink at `a`: white on the glass look, the theme's ink on the light one.
-fn tone(t: &Theme, a: f32) -> Hsla {
-    if t.dark {
-        glass_ui::white(a)
-    } else {
-        t.ink.opacity(a)
-    }
+/// The glass look's ink at `a`.
+fn tone(_t: &Theme, a: f32) -> Hsla {
+    glass_ui::white(a)
 }
 
 /// A small label (`chip`): 24 px, round at 8, 12 px medium.
@@ -82,11 +81,11 @@ fn chip(kind: Chip, label: impl Into<SharedString>, t: &Theme) -> Div {
             .bg(glass_ui::color(look.accent).opacity(0.3))
             .text_color(tone(t, ink::FULL)),
         Chip::Live => d
-            .bg(glass_ui::color(horizon_theme::glass::LIVE).opacity(0.16))
-            .text_color(if t.dark {
-                glass_ui::color(0xb8f5cf)
+            .bg(glass_ui::live().opacity(0.16))
+            .text_color(if glass_ui::light() {
+                glass_ui::live()
             } else {
-                t.success
+                glass_ui::color(0xb8f5cf)
             }),
         Chip::Ghost => d
             .border_1()
@@ -107,7 +106,7 @@ fn dot(c: u32) -> Div {
 
 /// A card's dark plate (`.item`): round at 16, 1 px violet edge; a 2 px ring in the accent's soft
 /// shade when the item is worn.
-fn card_plate(t: &Theme, worn: bool) -> Div {
+fn card_plate(_t: &Theme, worn: bool) -> Div {
     let look = glass_ui::look();
     let d = div()
         .flex()
@@ -117,21 +116,30 @@ fn card_plate(t: &Theme, worn: bool) -> Div {
         .p(px(8.))
         .pb(px(12.))
         .rounded(px(16.));
-    if !t.dark {
-        return d
-            .bg(t.well)
-            .border_2()
-            .border_color(if worn { t.accent } else { t.outline });
-    }
-    d.bg(gpui::rgba(0x15112ed6))
-        .when(worn, |d| {
-            d.border_2().border_color(glass_ui::color(look.accent_soft))
+    let light = glass_ui::light();
+    d.bg(if light {
+        gpui::rgba(0xffffffb3).into()
+    } else {
+        Hsla::from(gpui::rgba(0x15112ed6))
+    })
+    .when(worn, |d| {
+        d.border_2().border_color(glass_ui::color(if light {
+            look.accent
+        } else {
+            look.accent_soft
+        }))
+    })
+    .when(!worn, |d| {
+        d.border_1().border_color(if light {
+            glass_ui::white(0.10)
+        } else {
+            gpui::rgba(0xb9acff1f).into()
         })
-        .when(!worn, |d| d.border_1().border_color(gpui::rgba(0xb9acff1f)))
+    })
 }
 
 /// The picture's dark slot in a card.
-fn slot_well(t: &Theme) -> Div {
+fn slot_well(_t: &Theme) -> Div {
     div()
         .flex()
         .items_center()
@@ -140,16 +148,17 @@ fn slot_well(t: &Theme) -> Div {
         .w_full()
         .overflow_hidden()
         .rounded(px(radius::ROW))
-        .bg(if t.dark {
-            gpui::rgba(0x080614b3).into()
+        // Light: a soft violet grey, so the cream and violet items keep their edges.
+        .bg(if glass_ui::light() {
+            Hsla::from(gpui::rgb(0xdcd8ea))
         } else {
-            t.plate
+            gpui::rgba(0x080614b3).into()
         })
 }
 
 /// The empty states' plate (`states.html`): a title line, then centred lines and actions.
-fn state_card(t: &Theme) -> Div {
-    plate(t)
+fn state_card(_t: &Theme) -> Div {
+    crate::glass::plate(radius::PANEL)
         .flex()
         .flex_col()
         .items_center()
@@ -175,9 +184,9 @@ fn slot_name(slot: &str) -> &'static str {
     match slot {
         "head" => tr("Head"),
         "back" => tr("Back"),
+        "torso" => tr("Shirt"),
         "shoulder" => tr("Shoulder pet"),
         "name_tag" => tr("Name tag"),
-        "theme" => tr("Launcher theme"),
         _ => "",
     }
 }
@@ -317,7 +326,6 @@ impl Launcher {
                 .h(px(32.))
                 .px(px(12.))
                 .text_size(px(13.))
-                .when(!t.dark, |d| d.text_color(t.ink).when(on, |d| d.bg(t.well)))
                 .children(count.map(|n| div().text_color(tone(&t, ink::DIM)).child(n.to_string())))
         };
         let wardrobe = tab("wardrobe-tab", "Wardrobe", owned, !open).on_click(cx.listener(
@@ -339,10 +347,10 @@ impl Launcher {
                 .gap(px(12.))
                 .pt(px(28.))
                 .child(
-                    plate(&t)
+                    crate::glass::plate(radius::LARGE)
                         .flex()
                         .gap(px(4.))
-                        .p(px(3.))
+                        .p(px(4.))
                         .child(wardrobe)
                         .child(shop),
                 )
@@ -492,6 +500,7 @@ impl Launcher {
     /// Before the first answer: placeholders at the panel's size, no spinner.
     fn shop_loading(&self) -> Div {
         let t = self.theme;
+        let narrow = self.window_width < NARROW;
         let bar =
             |w: f32, h: f32, a: f32| div().w(px(w)).h(px(h)).rounded(px(h / 2.)).bg(tone(&t, a));
         let card = || {
@@ -502,6 +511,7 @@ impl Launcher {
         };
         crate::glass::plate(radius::PANEL)
             .flex()
+            .when(narrow, |d| d.flex_col())
             .gap(px(24.))
             .p(px(24.))
             .child(
@@ -686,14 +696,16 @@ impl Launcher {
                         }),
                 )
         });
+        let narrow = self.window_width < NARROW;
         let left = div()
             .relative()
             .flex()
             .flex_col()
             .justify_between()
             .gap(px(16.))
-            .w(px(LEFT))
             .flex_none()
+            .when(narrow, |d| d.w_full())
+            .when(!narrow, |d| d.w(px(LEFT)))
             .child(
                 div()
                     .flex()
@@ -743,6 +755,7 @@ impl Launcher {
             .collect::<Vec<_>>();
         crate::glass::plate(radius::PANEL)
             .flex()
+            .when(narrow, |d| d.flex_col())
             .gap(px(24.))
             .p(px(24.))
             .child(left)
@@ -827,15 +840,7 @@ impl Launcher {
                 Window::Closed { .. } => None,
             }
         };
-        let picture: AnyElement = if let Some(sky) = e.theme.as_ref().and_then(|th| th.sky()) {
-            // A launcher theme: its sky's six bands.
-            div()
-                .flex()
-                .flex_col()
-                .size_full()
-                .children(sky.map(|c| div().flex_1().w_full().bg(gpui::rgb(c))))
-                .into_any_element()
-        } else if e.slot == "name_tag" {
+        let picture: AnyElement = if e.slot == "name_tag" {
             self.tag_preview(e, me)
         } else if let Some((_, image)) = self.shop.thumbs.get(&e.id) {
             gpui::img(image.clone())
@@ -918,15 +923,16 @@ impl Launcher {
             if self.shop.thumbs.get(id).is_some_and(|(s, _)| *s == scale) {
                 continue;
             }
-            let Some(draw) = preview::Draw::item(item, &body, 0.0) else {
+            let draws = preview::Draw::item(item, &body, 0.0);
+            if draws.is_empty() {
                 continue;
-            };
+            }
             let yaw = if item.slot == horizon_cosmetics::Slot::Back {
                 210.
             } else {
                 -30.
             };
-            let image = preview::render(&[draw], wide, tall, yaw, 12.);
+            let image = preview::render(&draws, wide, tall, yaw, 12.);
             let Some(texels) = fit(&image.rgba, wide as usize, tall as usize, side as usize) else {
                 continue;
             };
@@ -1043,19 +1049,18 @@ impl Launcher {
         };
         let all = c.claim.items.clone();
         me.name = "Player46008".into();
+        // The founder set's window is 7 days (Ludovic, 2026-11-04).
+        const WEEK: i64 = 7 * DAY;
         let (claim_state, starts, ends) = match state {
-            "not-yet" => (
-                ClaimState::NotYet,
-                Some(at + 3 * DAY + 4 * 3600),
-                Some(at + 90 * DAY),
-            ),
+            "not-yet" => {
+                let start = at + 3 * DAY + 4 * 3600;
+                (ClaimState::NotYet, Some(start), Some(start + WEEK))
+            }
             "preview" => (ClaimState::Open, None, None),
-            "closed" | "closed-owned" => (ClaimState::Closed, Some(at - 120 * DAY), Some(at - DAY)),
-            _ => (
-                ClaimState::Open,
-                Some(at - 2 * DAY),
-                Some(at + 12 * DAY + 5 * 3600),
-            ),
+            "closed" | "closed-owned" => {
+                (ClaimState::Closed, Some(at - DAY - WEEK), Some(at - DAY))
+            }
+            _ => (ClaimState::Open, Some(at - DAY), Some(at - DAY + WEEK)),
         };
         let owns = matches!(state, "claimed" | "owned" | "closed-owned");
         for claim in [&mut c.claim, &mut me.claim] {
