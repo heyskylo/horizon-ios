@@ -65,6 +65,8 @@ def install_datapack_fixtures(world, predicates, functions, jar):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--prepare', action='store_true')
+    parser.add_argument('--pot-string-sherd-diagnostic', action='store_true',
+                        help='use string sherd input in the pot data group (known separate codec gap)')
     parser.add_argument('--limit', type=int, default=40, help='print at most this many mismatches')
     parser.add_argument('--allow-gaps', action='store_true', help='report mismatches without failing')
     parser.add_argument('--only', help='run only corpus groups whose name contains this')
@@ -97,6 +99,9 @@ def main():
             sys.exit(f'{name} failed ({result.returncode}):\n{tail}')
 
     groups = corpus_module.groups()
+    if args.pot_string_sherd_diagnostic:
+        groups = [(name, corpus_module.decorated_pot_data(string_sherd=True)
+                   if name == 'decorated pot data' else ops) for name, ops in groups]
     if args.array_storage_diagnostic:
         groups = [('setup', corpus_module.group_setup()),
                   ('numeric array edits with storage side effects',

@@ -4188,6 +4188,74 @@ def comparator_output_data():
 
 
 
+def decorated_pot_data(string_sherd=False):
+    """Pure DecoratedPotBlockEntity command NBT; no hopper or interaction ticks."""
+    ops = setup('/forceload add 0 0 15 15', '/setblock 4 199 4 stone',
+                '/scoreboard objectives add pot_data dummy',
+                '/execute store result score before pot_data run time query gametime')
+    ops += [cmd('/execute if loaded 4 200 4', expect_result=1),
+            cmd('/execute if block 4 199 4 stone', expect_result=1)]
+    for count in (None, 1, 3, 28):
+        ops += setup('/setblock 4 200 4 air')
+        nbt = '' if count is None else f'{{item:{{id:"minecraft:wheat",count:{count}}}}}'
+        ops += [cmd(f'/setblock 4 200 4 decorated_pot{nbt}', expect_result=1),
+                cmd('/execute if block 4 200 4 decorated_pot', expect_result=1),
+                cmd('/data get block 4 200 4 id'),
+                cmd('/data get block 4 200 4 item')]
+        if count is None:
+            ops.append(cmd('/data get block 4 200 4'))
+        else:
+            ops.append(cmd('/data get block 4 200 4 item.count', expect_result=count))
+    ops += setup('/setblock 4 200 4 air')
+    sherd = ('"minecraft:angler_pottery_sherd"' if string_sherd else
+             '{id:"minecraft:angler_pottery_sherd"}')
+    ops += [cmd('/setblock 4 200 4 decorated_pot{item:{id:"minecraft:wheat",count:3},'
+                f'sherds:{{front:{sherd}}}}}', expect_result=1),
+            cmd('/data get block 4 200 4 id'),
+            cmd('/data get block 4 200 4 item.count', expect_result=3),
+            cmd('/data get block 4 200 4 sherds')]
+    edits = [
+        ('data modify block 4 200 4 item.count set value 3', 0),
+        ('data modify block 4 200 4 item.count set value 5', 1),
+        ('data merge block 4 200 4 {item:{count:7}}', 1),
+        ('data modify block 4 200 4 item.id set value "minecraft:apple"', 1),
+        ('data remove block 4 200 4 item', 1),
+        ('data remove block 4 200 4 item', 0),
+        ('data modify block 4 200 4 item set value {id:"minecraft:stone",count:1}', 1),
+        ('data modify block 4 200 4 item set value {id:"minecraft:stone",count:1}', 0),
+    ]
+    for edit, changed in edits:
+        ops += setup('/scoreboard players set result pot_data -99',
+                     '/scoreboard players set success pot_data -99')
+        ops += [cmd('/scoreboard players get result pot_data', expect_result=-99),
+                cmd('/scoreboard players get success pot_data', expect_result=-99),
+                cmd('/execute store result score result pot_data '
+                    f'store success score success pot_data run {edit}'),
+                cmd('/scoreboard players get result pot_data', expect_result=changed),
+                cmd('/scoreboard players get success pot_data', expect_result=changed),
+                cmd('/data get block 4 200 4 id'),
+                cmd('/data get block 4 200 4 item'),
+                cmd('/data get block 4 200 4 sherds')]
+    # A data view must leave pending loot metadata pending, not call pot_tag's unpacker.
+    ops += setup('/setblock 4 200 4 air')
+    ops += [cmd('/setblock 4 200 4 decorated_pot{LootTable:"minecraft:chests/simple_dungeon",LootTableSeed:17L}', expect_result=1),
+            cmd('/data get block 4 200 4 id'),
+            cmd('/data get block 4 200 4 LootTable'),
+            cmd('/data get block 4 200 4 LootTableSeed', expect_result=17),
+            cmd('/data get block 4 200 4 item'),
+            cmd('/data modify block 4 200 4 LootTableSeed set value 19L', expect_result=1),
+            cmd('/data get block 4 200 4 LootTable'),
+            cmd('/data get block 4 200 4 LootTableSeed', expect_result=19)]
+    ops += setup('/setblock 6 200 4 chest')
+    ops += [cmd('/data get block 6 200 4 Items'),
+            cmd('/data get block 4 199 4 item')]
+    ops += setup('/execute store result score elapsed pot_data run time query gametime',
+                 '/scoreboard players operation elapsed pot_data -= before pot_data')
+    return ops + [cmd('/scoreboard players get elapsed pot_data', expect_result=0)] + setup(
+        '/scoreboard objectives remove pot_data')
+
+
+
 def groups():
     try:
         from .loaded_cloud_corpus import loaded_clouds
@@ -4198,6 +4266,7 @@ def groups():
         ('structured item slots', structured_item_slots()),
         ('loaded potion clouds', loaded_clouds(cmd, setup)),
         ('server clock', server_clock()),
+        ('decorated pot data', decorated_pot_data()),
         ('comparator output data', comparator_output_data()),
         ('hopper empty slot limits', hopper_empty_slot_limits()),
         ('End clock commands', end_clock_commands()),

@@ -534,6 +534,7 @@ impl Game<'_> {
                 let p = self.block_pos_arg(ctx, &format!("{prefix}Pos"))?;
                 if !self.world.block_entities.contains_key(&(p[0], p[1], p[2]))
                     && self.comparator_data(p).is_none()
+                    && self.pot_data(p).is_none()
                 {
                     return Err(err("commands.data.block.invalid", &[]));
                 }
@@ -558,7 +559,7 @@ impl Game<'_> {
                 Ok(tag)
             }
             DataRef::Block(p) => {
-                if let Some(tag) = self.comparator_data(*p) {
+                if let Some(tag) = self.comparator_data(*p).or_else(|| self.pot_data(*p)) {
                     return Ok(tag);
                 }
                 let key = (p[0], p[1], p[2]);
@@ -587,6 +588,9 @@ impl Game<'_> {
         match r {
             DataRef::Entity(t) => self.apply_entity_nbt(*t, tag),
             DataRef::Block(p) => {
+                if self.set_pot_data(*p, &tag).is_some() {
+                    return Ok(());
+                }
                 let key = (p[0], p[1], p[2]);
                 if let Some(mut input) = self.comparator_data(*p) {
                     // ComparatorBlockEntity.loadAdditional reads getIntOr(0).
