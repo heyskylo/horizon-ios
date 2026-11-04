@@ -62,14 +62,14 @@ impl Game<'_> {
     }
     /// The entity as a living entity (vanilla's `LivingEntity`: a mob, a
     /// player, an armor stand or the dragon), or None for another kind or a
-    /// stale handle. API @API:living_refs@.
+    /// stale handle. API 382.
     pub(super) fn native_living(&self, entity: EntityRef) -> Option<LivingRef> {
         let living = LivingRef::new(entity);
         self.native_living_target(living).map(|_| living)
     }
     /// The stack in equipment slot `slot` (`LivingEntity.getItemBySlot`):
     /// None when it is empty, the entity has no such slot (a player has no
-    /// body or saddle slot), or the handle is stale. API @API:living_refs@.
+    /// body or saddle slot), or the handle is stale. API 382.
     pub(super) fn native_living_equipment(
         &self,
         living: LivingRef,
@@ -101,7 +101,7 @@ impl Game<'_> {
         }
     }
     /// The stack in hand `hand` (`LivingEntity.getItemInHand`). API
-    /// @API:living_refs@.
+    /// 382.
     pub(super) fn native_living_hand_item(
         &self,
         living: LivingRef,
@@ -118,7 +118,7 @@ impl Game<'_> {
     /// when the entity has no such slot: a player has no body or saddle
     /// slot, the dragon none. A mob has every slot, head and body apart
     /// (`EntityEquipment`), as `/item` does; Horizon keeps no mob saddle here
-    /// yet. API @API:living_refs@.
+    /// yet. API 382.
     pub(super) fn native_living_set_equipment(
         &mut self,
         living: LivingRef,
