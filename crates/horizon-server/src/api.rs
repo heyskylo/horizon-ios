@@ -948,6 +948,122 @@ impl Client {
 mod tests {
     use super::*;
 
+    fn wire_reply(
+        address: SocketAddr,
+        method: &str,
+        path: &str,
+        host: &str,
+        token: Option<&str>,
+        body: &str,
+    ) -> Value {
+        use std::io::{Read, Write};
+        let mut stream = std::net::TcpStream::connect(address).unwrap();
+        let authorization = token
+            .map(|token| format!("Authorization: Bearer {token}\r\n"))
+            .unwrap_or_default();
+        write!(
+            stream,
+            "{method} {path} HTTP/1.1\r\nHost: {host}\r\n{authorization}Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        )
+        .unwrap();
+        stream.flush().unwrap();
+        let mut text = String::new();
+        stream.read_to_string(&mut text).unwrap();
+        let (head, body) = text.split_once("\r\n\r\n").unwrap();
+        let mut lines = head.lines();
+        let status = lines
+            .next()
+            .and_then(|line| line.split_whitespace().nth(1))
+            .and_then(|status| status.parse::<u16>().ok())
+            .unwrap();
+        let headers: Vec<Value> = lines
+            .filter_map(|line| {
+                let (name, value) = line.split_once(": ")?;
+                Some(json!([name, value]))
+            })
+            .collect();
+        json!({
+            "status": status,
+            "headers": headers,
+            "body": serde_json::from_str::<Value>(body).unwrap(),
+        })
+    }
+
+    #[test]
+    fn auth_and_command_replies_match_api_v1_goldens() {
+        let golden: Value =
+            serde_json::from_str(include_str!("../testdata/api-v1-auth-command.json")).unwrap();
+        let dir = std::env::temp_dir().join(format!(
+            "horizon-server-api-auth-command-goldens-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(".horizon")).unwrap();
+        let toml =
+            crate::config::TEMPLATE.replace("token = \"\"", "token = \"test-token-for-api\"");
+        std::fs::write(dir.join(crate::config::FILE), toml).unwrap();
+        let shared = Shared::with_install(&dir, None);
+        shared.set_phase(Phase::Stopped);
+        let endpoint = start(shared).unwrap();
+        let endpoint_info: Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.join(ENDPOINT)).unwrap()).unwrap();
+        let address: SocketAddr = endpoint_info["address"].as_str().unwrap().parse().unwrap();
+        let token = endpoint_info["token"].as_str().unwrap();
+        let host = address.to_string();
+        let call =
+            |case: &str, method: &str, path: &str, request_token: Option<&str>, body: &str| {
+                let actual = wire_reply(address, method, path, &host, request_token, body);
+                assert_eq!(actual, golden[case], "{case}");
+            };
+        let call_host = |case: &str, host: &str| {
+            let actual = wire_reply(address, "GET", "/api/v1/status", host, Some(token), "");
+            assert_eq!(actual, golden[case], "{case}");
+        };
+        call("missing_token", "GET", "/api/v1/status", None, "");
+        call("wrong_token", "GET", "/api/v1/status", Some("wrong"), "");
+        call_host("wrong_host", "example.invalid");
+        call(
+            "command_malformed",
+            "POST",
+            "/api/v1/command",
+            Some(token),
+            "not json",
+        );
+        call(
+            "command_missing_line",
+            "POST",
+            "/api/v1/command",
+            Some(token),
+            "{}",
+        );
+        call(
+            "command_newline",
+            "POST",
+            "/api/v1/command",
+            Some(token),
+            r#"{"line":"say hi\nthere"}"#,
+        );
+        call(
+            "command_blank",
+            "POST",
+            "/api/v1/command",
+            Some(token),
+            r#"{"line":"   "}"#,
+        );
+        call(
+            "command_stopped",
+            "POST",
+            "/api/v1/command",
+            Some(token),
+            r#"{"line":"list"}"#,
+        );
+        call("unknown_endpoint", "GET", "/api/v1/nope", Some(token), "");
+        call("wrong_method", "GET", "/api/v1/command", Some(token), "");
+        drop(endpoint);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     #[test]
     fn log_keeps_the_last_lines_numbered() {
         let mut log = Log::default();
