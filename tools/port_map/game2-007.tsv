@@ -55,8 +55,8 @@ MinecartHopper.activateMinecart	port	crates/horizon-client/src/game/minecarts.rs
 MinecartHopper.tryConsumeItems	inline	crates/horizon-client/src/game/minecarts.rs::Game::tick_carts	an enabled hopper cart sucks in once a tick
 MinecartHopper.suckInItems	port	crates/horizon-client/src/game/machines.rs::Game::hopper_cart_suck	container above first, then item entities at the hopper and the cart's box
 MinecartTNT.explode	port	crates/horizon-client/src/game/minecarts.rs::Game::explode_cart	power 4 plus speed, with the cart gone before the blast; gap: minor: the saved explosion power and speed factor are not applied
-MinecartTNT.handleEntityEvent	port	crates/horizon-client/src/game/minecarts.rs::Game::prime_cart	event 70 primes the fuse; Horizon primes locally with the same sound
-MinecartTNT.primeFuse	port	crates/horizon-client/src/game/minecarts.rs::Game::prime_cart	fuse 80 and the primed sound; gap: minor: no ignition source is recorded for who caused the blast
+MinecartTNT.handleEntityEvent	port	crates/horizon-client/src/game/minecarts.rs::Game::remote_tnt_cart_event	event 70 sets the client's fuse to 80
+MinecartTNT.primeFuse	port	crates/horizon-client/src/game/minecarts.rs::Game::prime_cart	fuse 80, entity event 70 and the primed sound; gap: minor: no ignition source is recorded for who caused the blast
 MinecartTNT.getBlockExplosionResistance	port	crates/horizon-client/src/game/explosion.rs::Game::exploded_positions	while the cart is primed (`combat.rail_proof_blast`, set from `fuse >= 0` in `minecarts.rs`) a rail, and a block with a rail above it, has no resistance to its blast
 MinecartTNT.shouldBlockExplode	inline	crates/horizon-client/src/game/explosion.rs::Game::exploded_positions	the same ray march leaves a spared rail out of the destroyed set, so the blast goes through it
 MinecartTNT.readAdditionalSaveData	port	crates/horizon-client/src/game/minecarts.rs::Minecart::from_nbt	fuse read back; gap: minor: explosion_power and explosion_speed_factor are not read
