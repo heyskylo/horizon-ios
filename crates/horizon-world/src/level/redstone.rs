@@ -231,7 +231,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
     /// entity and its exported facts call every face unsupported (#4728).
     fn wire_can_survive_on(&self, pos: BlockPos) -> bool {
         let state = self.support_state(pos);
-        self.b.is_face_sturdy(state, Direction::Up) || self.b.is_block(state, self.b.named.hopper)
+        self.sturdy(pos, Direction::Up) || self.b.is_block(state, self.b.named.hopper)
     }
     fn wire_connecting_side(
         &self,

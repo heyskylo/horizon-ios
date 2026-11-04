@@ -32,7 +32,7 @@ impl Launcher {
                         ))),
                 )
                 .child(
-                    ui::quiet("sponsor", tr("Sponsor on GitHub"), 36., &t)
+                    ui::quiet_icon("sponsor", Some("github"), tr("Sponsor on GitHub"), 36., &t)
                         .on_click(move |_: &ClickEvent, _, cx| cx.open_url(&url)),
                 )
         });

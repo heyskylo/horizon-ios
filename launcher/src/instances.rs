@@ -155,6 +155,10 @@ pub struct Meta {
     /// Set for a Minecraft: Java Edition instance: it plays the real game, not Horizon.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub java: Option<JavaGame>,
+    /// A Java instance's own settings while it plays Horizon, back when it plays Java again
+    /// ([`switch`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub java_kept: Option<JavaGame>,
 }
 
 /// A Minecraft: Java Edition instance: the real game of one version, with the Java it runs on
@@ -720,6 +724,10 @@ fn new_player_name_in(game_home: &Path, data: &Path) -> Result<String, String> {
     }
     Ok(name)
 }
+
+#[path = "instances/switch.rs"]
+mod switch;
+pub use switch::{switch, unkept, Plays, Unkept};
 
 #[cfg(test)]
 #[path = "instances/tests.rs"]

@@ -21,7 +21,7 @@ pub enum FogType {
 }
 
 /// The fog uniform (`FogData`).
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct FogData {
     pub color: [f32; 4],
     pub environmental_start: f32,

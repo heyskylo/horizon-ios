@@ -113,6 +113,16 @@ pub fn markdown() -> String {
     }
     out += "## The frame\n\n";
     out += &table(&Frame::WGSL, Some(Frame::OFFSETS));
+    out += "## Anti-aliasing\n\n\
+            While a pack's `[[post]]` chain draws the frame, the player's anti-aliasing settings do not run: `taa`, `fxaa`\n\
+            and `upscaling` in `horizon-graphics.txt` have no effect, and the frame's projection is never jittered, because the\n\
+            last post pass draws the picture itself and Horizon's own resolve, which does TAA, FXAA and TAA upscaling, is the\n\
+            step it replaces. The world is still rendered at `resolutionScale` before the pack reads it.\n\n\
+            A pack that wants smooth edges draws them itself, in a post pass: a spatial filter (FXAA, SMAA and the like) works on\n\
+            `previous` as it is. A temporal pass cannot do what TAA does here, even though `history` and\n\
+            `frame.previous_view_projection` give it the last frame: nothing moves the camera by a fraction of a texel from one\n\
+            frame to the next, so a still camera gives it the same picture twice and there is no sub-pixel detail to gather.\n\n\
+            Without a pack the settings apply as the player set them.\n\n";
     out += &format!(
         "## Options\n\n\
          Each `[[options]]` entry sets the WGSL `override` of the same name when the pipelines are built:\n\n\

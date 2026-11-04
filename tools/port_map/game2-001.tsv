@@ -13,6 +13,7 @@ SnifferAi.Searching.canStillUse	port	crates/horizon-client/src/mobs/animal_brain
 SnifferAi.Searching.stop	port	crates/horizon-client/src/mobs/animal_brain.rs::B::do_stop	
 SnifferAi.Sniffing.stop	port	crates/horizon-client/src/mobs/animal_brain.rs::B::do_stop	
 Squid.registerGoals	port	crates/horizon-client/src/mobs/aquatic.rs::register	
+Squid.getMovementEmission	port	crates/horizon-client/src/mobs/ai.rs::movement_sounds	EVENTS: the flop of a beached squid sends the step game event and no sound
 Squid.rotateVector	inline	crates/horizon-client/src/mobs/aquatic.rs::spawn_ink	xRot then yRot of the body angles, inside spawn_ink
 Squid.finalizeSpawn	port	crates/horizon-client/src/mobs/finalize.rs::Ctx::finalize	S::Squid arm: ageable group with 0.05 baby chance
 Turtle.defineSynchedData	port	crates/horizon-client/src/game/lan.rs::mob_meta	HAS_EGG and LAYING_EGG as entity metadata 18 and 19
@@ -72,6 +73,7 @@ DragonStrafePlayerPhase.navigateToNextPathNode	port	crates/horizon-client/src/ga
 DragonStrafePlayerPhase.begin	inline	crates/horizon-client/src/game/dragon.rs::Game::tick_phase	fresh strafe state (charge 0, no path or target) when entered
 EnderDragonPhaseManager.getPhase	skip:java		lazy cache of phase instances; Horizon phases are enum values
 WitherBoss.createNavigation	port	crates/horizon-client/src/mobs/wither.rs::register	gap: minor: door and float flags are not set here
+WitherBoss.canBeAffected	port	crates/horizon-client/src/mobs.rs::Mob::can_be_affected	the wither effect; the wither rose's own refusal is now that one
 WitherBoss.registerGoals	port	crates/horizon-client/src/mobs/wither.rs::register	
 WitherBoss.defineSynchedData	port	crates/horizon-client/src/game/lan.rs::mob_meta	gap: minor: only heads A and B are synced; the invulnerable counter is sent at index 19, the slot of target C
 WitherBoss.readAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::mob_from_nbt	Invul read; boss bar name not checked here

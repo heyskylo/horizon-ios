@@ -146,7 +146,7 @@ impl Launcher {
                                 button("world-packs-folder", "Open folder", Kind::Ghost, &t)
                                     .on_click(move |_, _, cx| {
                                         let _ = std::fs::create_dir_all(&dir);
-                                        cx.open_with_system(&dir);
+                                        crate::glass_toast::open(cx, &dir);
                                     })
                             }),
                     ),

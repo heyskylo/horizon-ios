@@ -1,8 +1,15 @@
-//! Atomic functions on a component of a shared integer vector (`atomicAdd(sums[i], n)`,
-//! `atomicMax(lights[k].w, w)`): GLSL allows them, naga has no atomic vectors. Such a vector
-//! (or array of vectors) becomes an array of its components, `shared int sums_hz[4]`; a
-//! component is an element, a whole vector is read through `hz_get_sums()` and written through
-//! `hz_set_sums(v)`. The source keeps its lines.
+//! Atomic functions on a component of an integer vector in shared memory or in a buffer block
+//! (`atomicAdd(sums[i], n)`, `atomicMax(lights[k].w, w)`, `atomicAdd(buf.counts.x, 1u)`): GLSL
+//! allows them (GLSL 4.60, 8.11), naga has no atomic vectors. Such a vector (or array of vectors)
+//! becomes an array of its components, `shared int sums_hz[4]`, `uint counts_hz[2];` in the
+//! block. A shared vector may share its declaration with other names (`shared ivec3 a, b;`), or
+//! be a member of a shared struct whose type is defined in place (`shared struct { ivec3 lo; }
+//! s;`, `int lo_hz[3];` in the struct). A component is an element, a whole vector is read
+//! through `hz_get_sums()` and written through `hz_set_sums(v)`. A `std430` buffer block keeps
+//! its layout: a padding member goes before the array when the vector's alignment would have
+//! moved it, and an array of 3-component vectors keeps a fourth, unused element per vector (its
+//! stride). Other layouts, runtime-sized arrays and blocks whose layout is not known up to the
+//! vector stay as written. The source keeps its lines.
 
 use std::collections::BTreeMap;
 use std::fmt::Write;
@@ -22,15 +29,70 @@ const ATOMICS: [&str; 8] = [
     "atomicCompSwap",
 ];
 
-/// A shared vector rewritten: its scalar and vector types, size, and array length if any.
+/// A vector rewritten: its type, size, array length if any, the elements'
+/// name (`sums_hz`, `buf.counts_hz`) and the name of its getter and setter (`hz_get_<key>`).
 struct Split {
-    scalar: &'static str,
     vector: String,
     size: usize,
     array: Option<String>,
+    base: String,
+    key: String,
 }
 
-/// `pp` with its shared vectors that atomic functions use by component rewritten.
+/// How a rewritten vector is named where it is used: a name of its own (a shared variable, a
+/// member of a block without an instance name), or `instance.member`.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Path<'a> {
+    Name(&'a str),
+    Member(&'a str, &'a str),
+}
+
+/// `ivecN`/`uvecN`: the scalar type and N.
+fn integer_vector(ty: &str) -> Option<(&'static str, usize)> {
+    let (scalar, n) = match ty {
+        v if v.starts_with("ivec") => ("int", &v[4..]),
+        v if v.starts_with("uvec") => ("uint", &v[4..]),
+        _ => return None,
+    };
+    n.parse()
+        .ok()
+        .filter(|n| (2..=4).contains(n))
+        .map(|n| (scalar, n))
+}
+
+/// A member type's std430 base alignment and size in bytes (the rules Horizon's naga applies in
+/// `front/glsl/offset.rs`), for the scalars, vectors and float matrices; `None` for any other
+/// type.
+fn std430(ty: &str) -> Option<(u32, u32)> {
+    let vector = |n: u32| match n {
+        2 => Some((8, 8)),
+        3 => Some((16, 12)),
+        4 => Some((16, 16)),
+        _ => None,
+    };
+    match ty {
+        "int" | "uint" | "float" | "bool" => Some((4, 4)),
+        _ if ty.starts_with("mat") => {
+            let dims = &ty[3..];
+            let (columns, rows) = match dims.split_once('x') {
+                Some((c, r)) => (c.parse().ok()?, r.parse().ok()?),
+                None => (dims.parse().ok()?, dims.parse().ok()?),
+            };
+            let (align, _) = vector(rows)?;
+            vector(columns)?;
+            Some((align, align * columns))
+        }
+        _ => {
+            let n = ty
+                .strip_prefix(['i', 'u', 'b'])
+                .unwrap_or(ty)
+                .strip_prefix("vec")?;
+            vector(n.parse().ok()?)
+        }
+    }
+}
+
+/// `pp` with its shared and buffer vectors that atomic functions use by component rewritten.
 pub(super) fn rewrite(pp: &Preprocessed) -> Option<Preprocessed> {
     if !ATOMICS.iter().any(|a| pp.code.contains(a)) {
         return None;
@@ -44,104 +106,314 @@ pub(super) fn rewrite(pp: &Preprocessed) -> Option<Preprocessed> {
         let size: String = tokens[open + 1..close].concat();
         Some((size.trim().to_owned(), next(close)))
     };
-    // The variables an atomic function takes a component of.
-    let mut used = Vec::new();
+    // What an atomic function takes a component of: its first name, and the name after a `.`.
+    let mut used: Vec<(&str, Option<&str>)> = Vec::new();
     for (i, &t) in tokens.iter().enumerate() {
         if ATOMICS.contains(&t)
             && let Some(open) = next(i).filter(|&j| tokens[j] == "(")
             && let Some(name) = next(open).filter(|&j| is_ident(tokens[j]))
         {
-            used.push(tokens[name]);
+            let member = next(name)
+                .filter(|&j| tokens[j] == ".")
+                .and_then(next)
+                .filter(|&j| is_ident(tokens[j]))
+                .map(|j| tokens[j]);
+            used.push((tokens[name], member));
         }
     }
-    // Their declarations: `shared ivec4 name;`, `shared ivec4[N] name;`, `shared ivec4 name[N];`.
-    let mut splits: BTreeMap<&str, Split> = BTreeMap::new();
-    let mut decl_ends = Vec::new();
+    let mut splits: BTreeMap<Path, Split> = BTreeMap::new();
+    // Declarations replaced (tokens `start..=end` by the text), and text after a token.
+    let mut decls: Vec<(usize, usize, String)> = Vec::new();
+    let mut after: Vec<(usize, String)> = Vec::new();
+    // A declaration's names, from `from` (after its type) to its `;`: each with its own array
+    // size, and the `;`. `None` for anything else (an initializer, an array of arrays).
+    let declarators = |from: Option<usize>| -> Option<(Vec<(&str, Option<String>)>, usize)> {
+        let mut names = Vec::new();
+        let mut at = from;
+        loop {
+            let name = at.filter(|&j| is_ident(tokens[j]))?;
+            let mut end = next(name);
+            let mut array = None;
+            if let Some((size, after)) = end.filter(|&e| tokens[e] == "[").and_then(bracket) {
+                array = Some(size);
+                end = after;
+            }
+            names.push((tokens[name], array));
+            let end = end?;
+            match tokens[end] {
+                ";" => return Some((names, end)),
+                "," => at = next(end),
+                _ => return None,
+            }
+        }
+    };
+    // The elements a vector of `ty` becomes, `name_hz[N]` (`[len][N]` in an array), or the
+    // vector as declared when no atomic function uses it.
+    let declared = |ty: &str, name: &str, array: &Option<String>, split: bool| match (
+        integer_vector(ty).filter(|_| split),
+        array,
+    ) {
+        (Some((scalar, n)), None) => format!("{scalar} {name}_hz[{n}];"),
+        (Some((scalar, n)), Some(len)) => format!("{scalar} {name}_hz[{len}][{n}];"),
+        (None, None) => format!("{ty} {name};"),
+        (None, Some(len)) => format!("{ty} {name}[{len}];"),
+    };
+    // Shared declarations: `shared ivec4 name;`, `shared ivec4[N] name;`, `shared ivec4 name[N];`,
+    // several names in one (`shared ivec4 a, b;`), and the members of a struct defined in place
+    // (`shared struct { ivec4 a; uint n; } s;`).
     for (i, &t) in tokens.iter().enumerate() {
         if t != "shared" {
             continue;
         }
         let Some(ty) = next(i) else { continue };
-        let (scalar, size) = match tokens[ty] {
-            v if v.starts_with("ivec") => ("int", &v[4..]),
-            v if v.starts_with("uvec") => ("uint", &v[4..]),
-            _ => continue,
-        };
-        let Ok(size) = size.parse::<usize>() else {
+        if tokens[ty] == "struct" {
+            // Its type has no name, or one used nowhere else, so its members change only here.
+            let name = next(ty).filter(|&j| is_ident(tokens[j]));
+            if name.is_some_and(|j| tokens.iter().filter(|&&t| t == tokens[j]).count() > 1) {
+                continue;
+            }
+            let Some(open) = next(name.unwrap_or(ty)).filter(|&j| tokens[j] == "{") else {
+                continue;
+            };
+            let Some(close) = (open..tokens.len()).find(|&j| tokens[j] == "}") else {
+                continue;
+            };
+            let Some(instance) = next(close).filter(|&j| is_ident(tokens[j])) else {
+                continue;
+            };
+            let Some(end) = next(instance).filter(|&j| tokens[j] == ";") else {
+                continue;
+            };
+            if tokens[open + 1..close].contains(&"{") {
+                continue;
+            }
+            let instance = tokens[instance];
+            let mut from = open + 1;
+            for semi in (open + 1..close).filter(|&j| tokens[j] == ";") {
+                let first = (from..semi).find(|&j| significant(tokens[j]));
+                from = semi + 1;
+                let mut member_ty = first;
+                while let Some(q) =
+                    member_ty.filter(|&j| matches!(tokens[j], "highp" | "mediump" | "lowp"))
+                {
+                    member_ty = next(q);
+                }
+                let (Some(first), Some(member_ty)) = (first, member_ty) else {
+                    continue;
+                };
+                let Some((scalar_size, (names, _))) = integer_vector(tokens[member_ty])
+                    .zip(declarators(next(member_ty)).filter(|&(_, e)| e == semi))
+                else {
+                    continue;
+                };
+                let is_used = |name: &str| used.contains(&(instance, Some(name)));
+                if !names.iter().any(|&(name, _)| is_used(name)) {
+                    continue;
+                }
+                let mut decl = Vec::new();
+                for (name, array) in names {
+                    decl.push(declared(tokens[member_ty], name, &array, is_used(name)));
+                    if !is_used(name) {
+                        continue;
+                    }
+                    let split = Split {
+                        vector: tokens[member_ty].to_owned(),
+                        size: scalar_size.1,
+                        array,
+                        base: format!("{instance}.{name}_hz"),
+                        key: format!("{instance}_{name}"),
+                    };
+                    after.push((end, format!(" {}", accessors(&split))));
+                    splits.insert(Path::Member(instance, name), split);
+                }
+                decls.push((first, semi, decl.join(" ")));
+            }
+            continue;
+        }
+        let Some((_, size)) = integer_vector(tokens[ty]) else {
             continue;
         };
         let mut j = next(ty);
-        let mut array = None;
+        let mut of_type = None;
         if let Some((size, after)) = j.filter(|&j| tokens[j] == "[").and_then(bracket) {
-            array = Some(size);
+            of_type = Some(size);
             j = after;
         }
-        let Some(name_at) = j.filter(|&j| is_ident(tokens[j])) else {
+        let Some((names, end)) = declarators(j) else {
             continue;
         };
-        let name = tokens[name_at];
-        let mut end = next(name_at);
-        if let Some((size, after)) = end.filter(|&e| tokens[e] == "[").and_then(bracket) {
-            array = Some(size);
-            end = after;
-        }
-        let Some(end) = end.filter(|&e| tokens[e] == ";") else {
-            continue;
-        };
-        if !used.contains(&name) {
+        let is_used = |name: &str| used.iter().any(|u| u.0 == name);
+        if !names.iter().any(|&(name, _)| is_used(name))
+            || of_type.is_some() && names.iter().any(|(_, array)| array.is_some())
+        {
             continue;
         }
-        splits.insert(
-            name,
-            Split {
-                scalar,
+        let mut decl = Vec::new();
+        for (name, array) in names {
+            let array = array.or(of_type.clone());
+            decl.push(format!(
+                "shared {}",
+                declared(tokens[ty], name, &array, is_used(name))
+            ));
+            if !is_used(name) {
+                continue;
+            }
+            let split = Split {
                 vector: tokens[ty].to_owned(),
                 size,
                 array,
-            },
-        );
-        decl_ends.push((i, end, name));
+                base: format!("{name}_hz"),
+                key: name.to_owned(),
+            };
+            decl.push(accessors(&split));
+            splits.insert(Path::Name(name), split);
+        }
+        decls.push((i, end, decl.join(" ")));
+    }
+    // Buffer blocks: `layout(std430, ...) buffer Name { members } instance;`.
+    for (i, &t) in tokens.iter().enumerate() {
+        if t != "buffer" {
+            continue;
+        }
+        let Some(open) = next(i)
+            .filter(|&j| is_ident(tokens[j]))
+            .and_then(next)
+            .filter(|&j| tokens[j] == "{")
+        else {
+            continue;
+        };
+        // The declaration's qualifiers, back to the previous declaration.
+        let first = (0..i)
+            .rev()
+            .find(|&j| matches!(tokens[j], ";" | "}"))
+            .map_or(0, |j| j + 1);
+        if !tokens[first..i].contains(&"std430") {
+            continue;
+        }
+        let Some(close) = (open..tokens.len()).find(|&j| tokens[j] == "}") else {
+            continue;
+        };
+        let (instance, end) = match next(close) {
+            Some(j) if tokens[j] == ";" => (None, j),
+            Some(j) if is_ident(tokens[j]) && next(j).is_some_and(|k| tokens[k] == ";") => {
+                (Some(tokens[j]), next(j).unwrap())
+            }
+            _ => continue,
+        };
+        // The members in order, with their std430 offsets while they are known.
+        let mut offset = Some(0u32);
+        let mut from = open + 1;
+        for semi in (open + 1..close).filter(|&j| tokens[j] == ";") {
+            let words: Vec<usize> = (from..semi).filter(|&j| significant(tokens[j])).collect();
+            from = semi + 1;
+            let words: Vec<usize> = words
+                .into_iter()
+                .skip_while(|&j| {
+                    matches!(
+                        tokens[j],
+                        "highp"
+                            | "mediump"
+                            | "lowp"
+                            | "coherent"
+                            | "volatile"
+                            | "restrict"
+                            | "readonly"
+                            | "writeonly"
+                            | "precise"
+                    )
+                })
+                .collect();
+            let [ty, name_at, ref rest @ ..] = words[..] else {
+                offset = None;
+                continue;
+            };
+            let (ty, name) = (tokens[ty], tokens[name_at]);
+            // One declarator, with at most one array size. A runtime-sized array (`[]`, last)
+            // stays as written: naga rejected the array of arrays it would become.
+            let array = match rest.iter().map(|&j| tokens[j]).collect::<Vec<_>>()[..] {
+                [] => None,
+                ["[", ref len @ .., "]"]
+                    if !len.is_empty() && !len.contains(&"[") && !len.contains(&",") =>
+                {
+                    Some(len.concat())
+                }
+                _ => {
+                    offset = None;
+                    continue;
+                }
+            };
+            let layout = std430(ty);
+            let end_before = offset;
+            let at = offset
+                .zip(layout)
+                .map(|(o, (align, _))| o.next_multiple_of(align));
+            offset = at.zip(layout).and_then(|(at, (align, size))| match &array {
+                None => Some(at + size),
+                Some(len) => Some(at + len.parse::<u32>().ok()? * size.next_multiple_of(align)),
+            });
+            let Some((scalar, size)) = integer_vector(ty) else {
+                continue;
+            };
+            let path = match instance {
+                Some(instance) => Path::Member(instance, name),
+                None => Path::Name(name),
+            };
+            let is_used = used.iter().any(|&u| match path {
+                Path::Member(instance, member) => u == (instance, Some(member)),
+                Path::Name(name) => u.0 == name,
+            });
+            let Some(at) = at.filter(|_| is_used) else {
+                continue;
+            };
+            // The bytes the vector's alignment skips, which the elements' does not.
+            let pad = end_before.map_or(0, |e| (at - e) / 4);
+            let mut decl = String::new();
+            if pad > 0 {
+                write!(decl, "uint hz_pad_{name}[{pad}]; ").unwrap();
+            }
+            // In an array, a 3-component vector takes 16 bytes: four elements.
+            let width = if array.is_some() && size == 3 {
+                4
+            } else {
+                size
+            };
+            match &array {
+                None => write!(decl, "{scalar} {name}_hz[{width}];"),
+                Some(len) => write!(decl, "{scalar} {name}_hz[{len}][{width}];"),
+            }
+            .unwrap();
+            let base = match instance {
+                Some(instance) => format!("{instance}.{name}_hz"),
+                None => format!("{name}_hz"),
+            };
+            let key = match instance {
+                Some(instance) => format!("{instance}_{name}"),
+                None => name.to_owned(),
+            };
+            let split = Split {
+                vector: ty.to_owned(),
+                size,
+                array,
+                base,
+                key,
+            };
+            after.push((end, format!(" {}", accessors(&split))));
+            decls.push((words[0], semi, decl));
+            splits.insert(path, split);
+        }
     }
     if splits.is_empty() {
         return None;
     }
     let mut out: Vec<String> = tokens.iter().map(|t| t.to_string()).collect();
-    for &(start, end, name) in &decl_ends {
-        let s = &splits[name];
-        let (v, sc, n) = (&s.vector, s.scalar, s.size);
-        let comps = |base: &str| {
-            (0..n)
-                .map(|c| format!("{base}[{c}]"))
-                .collect::<Vec<_>>()
-                .join(", ")
-        };
-        let sets = |base: &str| {
-            (0..n)
-                .map(|c| format!("{base}[{c}] = v[{c}];"))
-                .collect::<String>()
-        };
-        let mut decl = String::new();
-        match &s.array {
-            None => write!(
-                decl,
-                "shared {sc} {name}_hz[{n}]; {v} hz_get_{name}() {{ return {v}({}); }} \
-                 void hz_set_{name}({v} v) {{ {} }}",
-                comps(&format!("{name}_hz")),
-                sets(&format!("{name}_hz"))
-            ),
-            Some(len) => write!(
-                decl,
-                "shared {sc} {name}_hz[{len}][{n}]; {v} hz_get_{name}(int k) {{ return {v}({}); }} \
-                 void hz_set_{name}(int k, {v} v) {{ {} }}",
-                comps(&format!("{name}_hz[k]")),
-                sets(&format!("{name}_hz[k]"))
-            ),
-        }
-        .unwrap();
-        for t in &mut out[start..=end] {
+    for (start, end, decl) in &decls {
+        for t in &mut out[*start..=*end] {
             *t = t.chars().filter(|&c| c == '\n').collect();
         }
-        out[start] = decl + &out[start];
+        out[*start] = decl.clone() + &out[*start];
+    }
+    for (at, text) in &after {
+        out[*at].push_str(text);
     }
     let component = |s: &str| match s {
         "x" | "r" | "s" => Some(0),
@@ -154,23 +426,40 @@ pub(super) fn rewrite(pp: &Preprocessed) -> Option<Preprocessed> {
     // or the whole vector.
     let mut i = 0;
     while i < tokens.len() {
-        let name = tokens[i];
-        let Some(s) = splits.get(name) else {
+        let in_decl = decls.iter().any(|&(a, b, _)| (a..=b).contains(&i));
+        let member = next(i)
+            .filter(|&j| tokens[j] == ".")
+            .and_then(next)
+            .filter(|&j| is_ident(tokens[j]));
+        let found = if in_decl || prev(i).is_some_and(|p| tokens[p] == ".") {
+            None
+        } else if let Some(m) = member
+            && let Some(s) = splits.get(&Path::Member(tokens[i], tokens[m]))
+        {
+            Some((s, m))
+        } else {
+            splits.get(&Path::Name(tokens[i])).map(|s| (s, i))
+        };
+        let Some((s, name_end)) = found else {
             i += 1;
             continue;
         };
-        if decl_ends.iter().any(|&(a, b, _)| (a..=b).contains(&i))
-            || prev(i).is_some_and(|p| tokens[p] == ".")
-        {
-            i += 1;
-            continue;
-        }
-        let mut base = format!("{name}_hz");
+        let key = &s.key;
+        let mut base = s.base.clone();
         let mut getter_args = String::new();
-        let mut last = i;
+        let mut last = name_end;
         if s.array.is_some() {
+            // `name.length()`: the array's own.
+            if next(name_end).is_some_and(|j| tokens[j] == ".") {
+                out[i] = base;
+                for t in &mut out[i + 1..=name_end] {
+                    *t = t.chars().filter(|&c| c == '\n').collect();
+                }
+                i = name_end + 1;
+                continue;
+            }
             // `name[k]`: the index's tokens, written back as they are.
-            let Some(open) = next(i).filter(|&j| tokens[j] == "[") else {
+            let Some(open) = next(name_end).filter(|&j| tokens[j] == "[") else {
                 i += 1;
                 continue;
             };
@@ -225,7 +514,7 @@ pub(super) fn rewrite(pp: &Preprocessed) -> Option<Preprocessed> {
             } else {
                 format!("{getter_args}, ")
             };
-            out[i] = format!("hz_set_{name}({args}hz_get_{name}({getter_args}) {op} (");
+            out[i] = format!("hz_set_{key}({args}hz_get_{key}({getter_args}) {op} (");
             for t in &mut out[i + 1..=eq] {
                 *t = t.chars().filter(|&c| c == '\n').collect();
             }
@@ -242,7 +531,7 @@ pub(super) fn rewrite(pp: &Preprocessed) -> Option<Preprocessed> {
                 end = at;
             } else {
                 // A swizzle of several components: read only.
-                let get = format!("hz_get_{name}({getter_args})");
+                let get = format!("hz_get_{key}({getter_args})");
                 replacement = format!("{get}.{}", tokens[at]);
                 end = at;
             }
@@ -255,7 +544,7 @@ pub(super) fn rewrite(pp: &Preprocessed) -> Option<Preprocessed> {
             } else {
                 format!("{getter_args}, ")
             };
-            out[i] = format!("hz_set_{name}({args}");
+            out[i] = format!("hz_set_{key}({args}");
             for t in &mut out[i + 1..=eq] {
                 *t = t.chars().filter(|&c| c == '\n').collect();
             }
@@ -263,7 +552,7 @@ pub(super) fn rewrite(pp: &Preprocessed) -> Option<Preprocessed> {
             i = eq + 1;
             continue;
         } else {
-            replacement = format!("hz_get_{name}({getter_args})");
+            replacement = format!("hz_get_{key}({getter_args})");
         }
         out[i] = replacement;
         for t in &mut out[i + 1..=end] {
@@ -281,6 +570,32 @@ pub(super) fn rewrite(pp: &Preprocessed) -> Option<Preprocessed> {
         diagnostics: pp.diagnostics.clone(),
         warnings: pp.warnings.clone(),
     })
+}
+
+/// `hz_get_<key>` and `hz_set_<key>`: a whole vector of `split` (of an array: the `k`th),
+/// read from and written to its elements.
+fn accessors(split: &Split) -> String {
+    let (v, base, key) = (&split.vector, &split.base, &split.key);
+    let element = if split.array.is_some() {
+        format!("{base}[k]")
+    } else {
+        base.clone()
+    };
+    let comps = (0..split.size)
+        .map(|c| format!("{element}[{c}]"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sets: String = (0..split.size)
+        .map(|c| format!("{element}[{c}] = v[{c}];"))
+        .collect();
+    let (k, k_comma) = if split.array.is_some() {
+        ("int k", "int k, ")
+    } else {
+        ("", "")
+    };
+    format!(
+        "{v} hz_get_{key}({k}) {{ return {v}({comps}); }} void hz_set_{key}({k_comma}{v} v) {{ {sets} }}"
+    )
 }
 
 #[cfg(test)]
@@ -345,5 +660,56 @@ mod tests {
         };
         assert!(rewrite(&pp("shared ivec4 v;\nvoid f() { v.x = 1; }\n")).is_none());
         assert!(rewrite(&pp("shared int n;\nvoid f() { atomicAdd(n, 1); }\n")).is_none());
+    }
+
+    #[test]
+    fn each_name_of_a_declaration_on_its_own() {
+        let out = rewritten(
+            "shared ivec3 a, b[2],\n c;\nshared uvec2[4] d, e;\n\
+             void f(int k) {\n atomicMin(a.x, k);\n atomicMax(c.z, k);\n atomicAdd(e[k].y, 1u);\n \
+             ivec3 m = a + b[1] + c;\n}\n",
+        );
+        assert!(out.contains("shared int a_hz[3];"), "{out}");
+        assert!(out.contains("shared ivec3 b[2];"), "{out}");
+        assert!(out.contains("shared int c_hz[3];"), "{out}");
+        assert!(out.contains("shared uvec2 d[4];"), "{out}");
+        assert!(out.contains("shared uint e_hz[4][2];"), "{out}");
+        assert!(out.contains("atomicMin(a_hz[0], k);"));
+        assert!(out.contains("atomicMax(c_hz[2], k);"));
+        assert!(out.contains("atomicAdd(e_hz[k][1], 1u);"));
+        assert!(out.contains("ivec3 m = hz_get_a() + b[1] + hz_get_c();"));
+    }
+
+    #[test]
+    fn members_of_a_shared_struct_defined_in_place() {
+        let out = rewritten(
+            "shared struct hz_struct0 {\n ivec3 lo, hi;\n uint n;\n uvec4 v[2];\n} sh;\n\
+             void f(int k) {\n sh.lo = ivec3(9);\n atomicMin(sh.lo.x, k);\n \
+             atomicOr(sh.v[k].w, 1u);\n ivec3 l = sh.lo;\n ivec3 h = sh.hi;\n sh.n += 1u;\n}\n",
+        );
+        assert!(out.contains("int lo_hz[3]; ivec3 hi;"), "{out}");
+        assert!(out.contains("uint v_hz[2][4];"), "{out}");
+        assert!(out.contains("hz_set_sh_lo( ivec3(9));"), "{out}");
+        assert!(out.contains("atomicMin(sh.lo_hz[0], k);"));
+        assert!(out.contains("atomicOr(sh.v_hz[k][3], 1u);"));
+        assert!(out.contains("ivec3 l = hz_get_sh_lo();"));
+        assert!(out.contains("ivec3 h = sh.hi;"));
+        assert!(out.contains("sh.n += 1u;"));
+    }
+
+    #[test]
+    fn a_struct_type_used_elsewhere_keeps_its_members() {
+        let pp = Preprocessed {
+            code: "shared struct S { ivec3 lo; } sh;\nvoid f(S s) { atomicMin(sh.lo.x, 1); }\n"
+                .to_owned(),
+            lines: Vec::new(),
+            files: Vec::new(),
+            version: None,
+            extensions: Vec::new(),
+            comments: Vec::new(),
+            diagnostics: Vec::new(),
+            warnings: Vec::new(),
+        };
+        assert!(rewrite(&pp).is_none());
     }
 }

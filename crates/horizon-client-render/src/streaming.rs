@@ -502,6 +502,10 @@ pub struct Streaming {
     pub radius: i32,
     /// `/forceload`ed chunks: kept loaded whatever the distance.
     pub forced: HashSet<(i32, i32)>,
+    /// Chunks a native mod's tickets hold (NeoForge's `TicketController`):
+    /// kept loaded and ticking as forced ones are, but neither saved with
+    /// them nor listed by `/forceload`.
+    pub mod_forced: HashSet<(i32, i32)>,
     /// No work is scheduled while paused (title screen).
     pub paused: bool,
     /// Dimension flags: sky light, Nether face shading.
@@ -569,6 +573,7 @@ struct GenerationScan {
     radius: i32,
     extra: Vec<((i32, i32), i32)>,
     forced: HashSet<(i32, i32)>,
+    mod_forced: HashSet<(i32, i32)>,
     band: Option<Band>,
     chunk_revision: u64,
     plan: Vec<(i64, i32, i32)>,
@@ -584,6 +589,7 @@ impl GenerationScan {
             && self.radius == ranges.radius
             && self.extra == ranges.extra
             && self.forced == *ranges.forced
+            && self.mod_forced == *ranges.mod_forced
             && self.band.as_ref() == ranges.band
     }
     fn unchanged(&self, ranges: &Ranges<'_>, world: &World) -> bool {
@@ -622,6 +628,7 @@ impl GenerationScan {
         self.extra.clear();
         self.extra.extend_from_slice(ranges.extra);
         self.forced.clone_from(ranges.forced);
+        self.mod_forced.clone_from(ranges.mod_forced);
         self.band = ranges.band.copied();
         self.chunk_revision = world.chunks.membership_revision();
     }
@@ -719,7 +726,7 @@ impl GenerationScan {
             } else {
                 FORCED_FEATURES_RING
             };
-            for &(fx, fz) in input.ranges.forced {
+            for &(fx, fz) in input.ranges.forced_chunks() {
                 for dz in -reach..=reach {
                     for dx in -reach..=reach {
                         let (x, z) = (fx + dx, fz + dz);
@@ -739,6 +746,7 @@ impl GenerationScan {
                 radius: input.ranges.radius,
                 extra: input.ranges.extra,
                 forced: input.ranges.forced,
+                mod_forced: input.ranges.mod_forced,
                 cover: input.ranges.cover,
                 band: input.ranges.band,
             };
@@ -1063,6 +1071,7 @@ impl Streaming {
             center: (0, 0),
             radius: 8,
             forced: HashSet::new(),
+            mod_forced: HashSet::new(),
             paused: false,
             sky_light: true,
             nether_shading: false,
@@ -1223,6 +1232,14 @@ impl Streaming {
                 gone,
                 world.layout().sections() as i32,
             );
+        }
+        // `ChunkTaskPriorityQueue.release` for each of them (`ChunkTaskDispatcher`'s
+        // `release(col, true)` from the chunk's unload): the jobs still queued for a
+        // column go with it instead of running for a level they no longer belong to.
+        if !gone.is_empty()
+            && let Ok(mut queue) = self.shared.queue.lock()
+        {
+            release_columns(&mut queue, gone);
         }
         let mut chunks = Vec::with_capacity(gone.len());
         for &(x, z) in gone {
@@ -1729,7 +1746,7 @@ impl Streaming {
                                 > r4 * r4)
                         && !ranges.in_extra(x, z, 4)
                         && !ranges.in_band(x, z, 4)
-                        && !ranges.forced.iter().any(|f| {
+                        && !ranges.forced_chunks().any(|f| {
                             (x - f.0).abs() <= FORCED_TERRAIN_RING
                                 && (z - f.1).abs() <= FORCED_TERRAIN_RING
                         })
@@ -1800,6 +1817,7 @@ impl Streaming {
                 radius: self.radius,
                 extra: &self.extra,
                 forced: &self.forced,
+                mod_forced: &self.mod_forced,
                 cover: ExtraCover::matching(&self.cover, &self.extra),
                 band: self.band.as_ref(),
             };
@@ -1966,7 +1984,11 @@ impl Streaming {
         // vanilla draws). Sections set aside past it come back
         // when the player moves: a column that loads with its light gets no
         // other request (#228).
-        let area = (self.center, self.radius, self.forced.len());
+        let area = (
+            self.center,
+            self.radius,
+            self.forced.len() + self.mod_forced.len(),
+        );
         if self.waiting_area != area {
             self.waiting_area = area;
             let ranges = Ranges {
@@ -1974,6 +1996,7 @@ impl Streaming {
                 radius: self.radius,
                 extra: &self.extra,
                 forced: &self.forced,
+                mod_forced: &self.mod_forced,
                 cover: ExtraCover::matching(&self.cover, &self.extra),
                 band: self.band.as_ref(),
             };
@@ -2069,6 +2092,7 @@ impl Streaming {
                 radius: self.radius,
                 extra: &self.extra,
                 forced: &self.forced,
+                mod_forced: &self.mod_forced,
                 cover: ExtraCover::matching(&self.cover, &self.extra),
                 band: self.band.as_ref(),
             },
@@ -2202,6 +2226,7 @@ impl Streaming {
             radius: self.radius,
             extra: &self.extra,
             forced: &self.forced,
+            mod_forced: &self.mod_forced,
             cover: ExtraCover::matching(&self.cover, &self.extra),
             band: self.band.as_ref(),
         }
@@ -2478,6 +2503,8 @@ struct Ranges<'a> {
     radius: i32,
     extra: &'a [((i32, i32), i32)],
     forced: &'a HashSet<(i32, i32)>,
+    /// The chunks native mods' tickets hold, kept as forced ones are.
+    mod_forced: &'a HashSet<(i32, i32)>,
     /// `extra` indexed by a grid or buckets: coverage queries without a
     /// scan of every area.
     cover: Option<&'a ExtraCover>,
@@ -2822,10 +2849,20 @@ impl Ranges<'_> {
             .iter()
             .any(|&(c, radius)| (x - c.0).abs().max((z - c.1).abs()) <= radius + margin)
     }
+    /// Whether a `/forceload` or a native mod's ticket holds the chunk.
+    fn is_forced(&self, x: i32, z: i32) -> bool {
+        self.forced.contains(&(x, z)) || self.mod_forced.contains(&(x, z))
+    }
+    /// Every chunk a `/forceload` or a native mod's ticket holds, once each.
+    fn forced_chunks(&self) -> impl Iterator<Item = &(i32, i32)> + '_ {
+        self.forced
+            .iter()
+            .chain(self.mod_forced.iter().filter(|c| !self.forced.contains(c)))
+    }
     /// The columns meshed for drawing: those vanilla draws around the
     /// player (`in_view_distance`), and forced ones.
     fn in_view(&self, x: i32, z: i32) -> bool {
-        in_view_distance(self.center, self.radius, x, z) || self.forced.contains(&(x, z))
+        in_view_distance(self.center, self.radius, x, z) || self.is_forced(x, z)
     }
     fn in_main_range(&self, x: i32, z: i32, margin: i32) -> bool {
         let r = i64::from(self.radius + margin);
@@ -2843,8 +2880,7 @@ impl Ranges<'_> {
             3 => FORCED_TERRAIN_RING,
             _ => margin + 1,
         };
-        self.forced
-            .iter()
+        self.forced_chunks()
             .any(|f| (x - f.0).abs() <= reach && (z - f.1).abs() <= reach)
     }
 }
@@ -2878,6 +2914,25 @@ fn rank_again(queue: &mut BinaryHeap<Queued>, distance: impl Fn(i32, i32) -> i64
         }
     }
     *queue = BinaryHeap::from(jobs);
+}
+/// `ChunkTaskPriorityQueue.release(pos, clearQueue=true)`: the jobs queued for the
+/// `gone` columns are dropped, so a view that moved or shrank does not wait behind the
+/// generation of the chunks it left. A job without a column (a save, meshes to free)
+/// stays, as vanilla keeps the tasks of a chunk that is still loaded. Returns how many
+/// jobs went.
+fn release_columns(queue: &mut BinaryHeap<Queued>, gone: &FxHashSet<(i32, i32)>) -> usize {
+    if queue.is_empty() || gone.is_empty() {
+        return 0;
+    }
+    let queued = std::mem::take(queue).into_vec();
+    let before = queued.len();
+    let kept: Vec<Queued> = queued
+        .into_iter()
+        .filter(|job| !job.at.is_some_and(|at| gone.contains(&at)))
+        .collect();
+    let released = before - kept.len();
+    *queue = BinaryHeap::from(kept);
+    released
 }
 /// Whether the 3x3 a light job for (x, z) reads is all there: every
 /// neighbour a finished column, or a decorated proto chunk past the area
@@ -3047,6 +3102,10 @@ fn forget_pending_sections(
         }
     }
 }
+
+/// No chunk held by a native mod's ticket, for the tests' ranges.
+#[cfg(test)]
+static NO_CHUNKS: std::sync::LazyLock<HashSet<(i32, i32)>> = std::sync::LazyLock::new(HashSet::new);
 
 #[cfg(test)]
 mod tests {
@@ -3264,6 +3323,7 @@ mod tests {
             radius: 32,
             extra: &[],
             forced: &forced,
+            mod_forced: &NO_CHUNKS,
             cover: None,
             band: None,
         };
@@ -3308,6 +3368,59 @@ mod tests {
         let moved = ranges((19, 0));
         rank_again(&mut queue, |x, z| moved.priority(x, z));
         assert_eq!(queue.pop().and_then(|q| q.at), Some((20, 0)));
+    }
+
+    /// `ChunkTaskPriorityQueue.release`: a column that unloaded keeps no queued job, so
+    /// a teleport or a smaller render distance does not spend its workers on the world
+    /// it left; the other columns' jobs and the jobs without a column (saves, meshes to
+    /// free) stay, in the same order.
+    #[test]
+    fn a_released_column_keeps_no_queued_job() {
+        let generate = |x, z, priority, order| Queued {
+            priority,
+            at: Some((x, z)),
+            bias: 0,
+            order,
+            job: Job::Generate(x, z),
+        };
+        let save = |order| Queued {
+            priority: i64::MIN,
+            at: None,
+            bias: 0,
+            order,
+            job: Job::Save(Vec::new()),
+        };
+        let queued = || {
+            BinaryHeap::from(vec![
+                generate(0, 0, 0, 1),
+                generate(0, 0, 4, 2),
+                generate(1, 0, 8, 3),
+                generate(9, 9, 12, 4),
+                save(5),
+            ])
+        };
+        let pops = |mut queue: BinaryHeap<Queued>| {
+            std::iter::from_fn(move || queue.pop())
+                .map(|q| q.at)
+                .collect::<Vec<_>>()
+        };
+        // Nothing goes for a column that is still loaded, or for nothing at all.
+        let mut queue = queued();
+        assert_eq!(release_columns(&mut queue, &FxHashSet::default()), 0);
+        assert_eq!(
+            release_columns(&mut queue, &[(20, 20)].into_iter().collect()),
+            0
+        );
+        assert_eq!(queue.len(), 5);
+        // Both of (0, 0)'s jobs go, its neighbour's and the save stay.
+        let gone: FxHashSet<(i32, i32)> = [(0, 0)].into_iter().collect();
+        assert_eq!(release_columns(&mut queue, &gone), 2);
+        assert_eq!(pops(queue), [None, Some((1, 0)), Some((9, 9))]);
+        // Every column leaving at once: only the jobs without one are left.
+        let mut queue = queued();
+        let all: FxHashSet<(i32, i32)> = [(0, 0), (1, 0), (9, 9)].into_iter().collect();
+        assert_eq!(release_columns(&mut queue, &all), 4);
+        assert_eq!(pops(queue), [None]);
     }
 
     /// The light and mesh stages submit bounded work, the nearest first:
@@ -3481,6 +3594,7 @@ mod tests {
                     radius: self.radius,
                     extra: &self.extra,
                     forced: &self.forced,
+                    mod_forced: &NO_CHUNKS,
                     cover: None,
                     band: None,
                 },
@@ -3557,7 +3671,7 @@ mod tests {
         } else {
             FORCED_FEATURES_RING
         };
-        for &(fx, fz) in input.ranges.forced {
+        for &(fx, fz) in input.ranges.forced_chunks() {
             for dz in -forced_reach..=forced_reach {
                 for dx in -forced_reach..=forced_reach {
                     let (x, z) = (fx + dx, fz + dz);
@@ -3863,6 +3977,7 @@ mod tests {
                     radius,
                     extra: &[],
                     forced: &forced,
+                    mod_forced: &NO_CHUNKS,
                     cover: None,
                     band: None,
                 };
@@ -3919,6 +4034,7 @@ mod tests {
                     radius,
                     extra: &[((radius * 2 + 9, 3), 4)],
                     forced: &forced,
+                    mod_forced: &NO_CHUNKS,
                     cover: None,
                     band: None,
                 };
@@ -3955,6 +4071,7 @@ mod tests {
             radius: -1,
             extra: &extra,
             forced: &forced,
+            mod_forced: &NO_CHUNKS,
             cover: None,
             band: None,
         };
@@ -3988,6 +4105,7 @@ mod tests {
                 radius: 2,
                 extra: &extra,
                 forced: &forced,
+                mod_forced: &NO_CHUNKS,
                 cover: None,
                 band: None,
             };
@@ -4042,6 +4160,7 @@ mod tests {
             radius: 2,
             extra: &[],
             forced: &forced,
+            mod_forced: &NO_CHUNKS,
             cover: None,
             band: None,
         };
@@ -4113,6 +4232,7 @@ mod cover_tests {
                 radius: 10,
                 extra: &extra,
                 forced: &forced,
+                mod_forced: &NO_CHUNKS,
                 cover,
                 band: None,
             };
@@ -4155,6 +4275,7 @@ mod cover_tests {
                 radius: 10,
                 extra: &extra,
                 forced: &forced,
+                mod_forced: &NO_CHUNKS,
                 cover,
                 band: None,
             };
@@ -4220,6 +4341,7 @@ mod cover_tests {
                 radius: 10,
                 extra: &extra,
                 forced: &forced,
+                mod_forced: &NO_CHUNKS,
                 cover,
                 band: None,
             };

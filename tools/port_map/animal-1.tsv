@@ -20,7 +20,7 @@ Allay.shouldStopDancing	inline	crates/horizon-client/src/game/allays.rs::Game::t
 Allay.isSpinning	inline	crates/horizon-client/src/mobs/allay.rs::animate	dance clock modulo 55 below 15
 Allay.addAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::mob_to_nbt	inventory, DuplicationCooldown, liked player and the vibration listener (listener)
 Allay.readAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::mob_from_nbt	
-Allay.updateDuplicationCooldown	inline	crates/horizon-client/src/mobs/allay.rs::ai_step	egg_time counts down
+Allay.updateDuplicationCooldown	port	crates/horizon-client/src/mobs/allay.rs::update_duplication_cooldown	positive egg_time counts down with or without NoAI
 Allay.setDuplicationCooldown	inline	crates/horizon-client/src/game/allays.rs::Game::interact_allay	6000 set here; can_duplicate is derived from egg_time in mob_meta
 Allay.getLeashOffset	port	crates/horizon-client/src/mobs/leash.rs::Holder::leash_offset	ticked in #3512; `Allay.getLeashOffset` is cited at crates/horizon-client/src/mobs/leash.rs:455 (in a comment, so `where` names the enclosing fn)
 Allay.handleEntityEvent	port	crates/horizon-client-render/src/particles.rs::entity_event_burst	event 18, three hearts
@@ -53,6 +53,7 @@ Axolotl.applyImplicitComponent	port	crates/horizon-client/src/entity_nbt.rs::app
 Axolotl.getBreedOffspring	port	crates/horizon-client/src/game/creatures.rs::Game::breed	gap: baby takes the first parent's colour; no random parent, no 1-in-1200 blue, not set persistent
 Axolotl.createAttributes	skip:data		attributes come from entity-types.json
 Axolotl.mobInteract	port	crates/horizon-client/src/game/creatures.rs::Game::interact_mob	a water bucket scoops it up (bucketable)
+Axolotl.playAttackSound	port	crates/horizon-client/src/mobs/ai.rs::do_hurt_target	AXOLOTL_ATTACK at 1.0/1.0 after the blow lands, skipped for a silent mob
 Axolotl.loadFromBucketTag	port	crates/horizon-client/src/entity_nbt.rs::apply_item_components	age, age lock and hunting cooldown from the bucket_entity_data component
 Axolotl.applySupportingEffects	inline	crates/horizon-client/src/game/creatures.rs::Game::handle_mob_events	the AxolotlSupportPlayer event: regeneration and no mining fatigue, host player only
 Axolotl.usePlayerItem	port	crates/horizon-client/src/game/creatures.rs::Game::interact_mob	a fed tropical fish bucket leaves a water bucket in its place (creative keeps the fish bucket and adds the bucket)

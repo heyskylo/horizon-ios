@@ -98,10 +98,12 @@ Bogged.getArrow	port	crates/horizon-client/src/mobs/undead.rs::perform_ranged_at
 Bogged.shear	port	crates/horizon-client/src/game/creatures.rs::Game::interact_shear_mob	shear sound, sheared flag, shearing loot, game event
 Bogged.spawnShearedMushrooms	port	crates/horizon-client/src/game/creatures.rs::Game::interact_shear_mob	drops the shearing/bogged loot table at the mob's height
 WitherSkeleton.registerGoals	port	crates/horizon-client/src/mobs/undead.rs::register	piglin and piglin brute target at priority 3, then the skeleton goals
+WitherSkeleton.canBeAffected	port	crates/horizon-client/src/mobs.rs::Mob::can_be_affected	the wither effect, over #minecraft:undead's poison and regeneration
 WitherSkeleton.canHoldItem	port	crates/horizon-client/src/mobs/equip.rs::wants_to_pick_up	the wither_skeleton_disliked_weapons tag is refused
 WitherSkeleton.finalizeSpawn	port	crates/horizon-client/src/mobs/finalize.rs::Ctx::skeleton	attack damage 4 for wither skeletons
 WitherSkeleton.getArrow	port	crates/horizon-client/src/mobs/undead.rs::perform_ranged_attack	the arrow the bow made is `igniteForSeconds(100)` before the shot, so a wither skeleton's arrow burns for 2000 ticks
 Spider.registerGoals	port	crates/horizon-client/src/mobs/hostile.rs::register	spider goals: leap at target and the spider melee that gives up in bright light
+Spider.canBeAffected	port	crates/horizon-client/src/mobs.rs::Mob::can_be_affected	poison, and CaveSpider takes the same arm by inheritance
 Spider.isClimbing	skip:other		getter; Horizon reads the mob's climbing field
 Spider.setClimbing	inline	crates/horizon-client/src/mobs/ai.rs::ai_step	climbing set from the horizontal collision each tick
 Spider.getVehicleAttachmentPoint	port	crates/horizon-client/src/mobs/riders.rs::passenger_attachment	gap: minor: always the spider's fixed seat; vanilla uses a lower seat for riders narrower than the spider

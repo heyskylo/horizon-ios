@@ -109,11 +109,7 @@ impl Game<'_> {
         let forward = self.forward();
         let at = [camera.x, camera.y, camera.z];
         let fog_type = fog_type(&self.world, self.res.facts(), at, &self.near_plane());
-        let (rain, thunder) = if self.dim == Dim::Overworld {
-            self.world.weather.levels(self.clock.fraction() as f32)
-        } else {
-            (0.0, 0.0)
-        };
+        let (rain, thunder) = self.weather_levels(self.clock.fraction() as f32);
         let title_fog = horizon_client::fog::FogTables::default();
         let tables = if self.title.is_some() {
             &title_fog
@@ -403,11 +399,7 @@ impl Game<'_> {
                 e[1].floor() as i32,
                 e[2].floor() as i32,
             ];
-            let rain = if self.dim == Dim::Overworld {
-                self.world.weather.levels(1.0).0
-            } else {
-                0.0
-            };
+            let rain = self.weather_levels(1.0).0;
             let biome = self
                 .world
                 .chunks
@@ -426,11 +418,7 @@ impl Game<'_> {
         if let Some(e) = eye {
             self.particles.camera = e;
         }
-        let (rain, _) = if self.dim == Dim::Overworld {
-            self.world.weather.levels(1.0)
-        } else {
-            (0.0, 0.0)
-        };
+        let (rain, _) = self.weather_levels(1.0);
         let marker = marker_particle_target(self.mode, self.stack_in(self.selected));
         let marker_options = |state| {
             // BlockMarker: the particle sprite, untinted.
@@ -468,7 +456,7 @@ impl Game<'_> {
                 .len()
         };
         // Level.isThundering: a thunder level above 0.9 where the sky is open.
-        let thundering = self.dim == Dim::Overworld && world.weather.levels(1.0).1 > 0.9;
+        let thundering = self.can_have_weather() && world.weather.levels(1.0).1 > 0.9;
         let ctx = AnimateContext {
             world,
             facts,

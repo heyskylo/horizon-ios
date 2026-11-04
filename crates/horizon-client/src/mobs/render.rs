@@ -1088,7 +1088,8 @@ pub fn base_transform(m: &Mob, alpha: f32, camera: glam::DVec3) -> glam::Mat4 {
         m.previous.y + (m.position.y - m.previous.y) * a,
         m.previous.z + (m.position.z - m.previous.z) * a,
     ) - camera
-        + enderman_render_offset(m, alpha);
+        + enderman_render_offset(m, alpha)
+        + super::shulker::render_offset(m, alpha);
     base_transform_at(m, alpha, glam::Mat4::from_translation(p.as_vec3()))
 }
 /// `EndermanRenderer.getRenderOffset`: a creepy (angry) enderman is moved by
@@ -1975,10 +1976,12 @@ fn render_visible(
     let body_animation = custom_body.and_then(|c| c.animation.as_ref());
     let model = match custom_body {
         Some(custom) => custom.model.clone(),
+        // 3D skin layers: the player's own outer layer, one slab per painted
+        // texel (`mobs::skin_layers`), in place of the flat inflated box.
         None => m
-            .kind
-            .layer(&model_key)
-            .cloned()
+            .skin_3d
+            .clone()
+            .or_else(|| m.kind.layer(&model_key).cloned())
             .unwrap_or_else(|| m.kind.model.clone()),
     };
     let texture = cem_texture(custom_body, &texture, atlas);
@@ -2813,6 +2816,7 @@ mod tests {
             knockback_resistance: 0.0,
             jump_strength: 0.42,
             attributes: Arc::default(),
+            item_stack_limits: Default::default(),
             gravity: 0.08,
             safe_fall_distance: 3.0,
             fall_damage_multiplier: 1.0,

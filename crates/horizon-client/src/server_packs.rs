@@ -257,6 +257,10 @@ impl ServerPacks {
         }
         self.update = true;
     }
+    /// What the player answered for this server's packs (splitscreen: the others follow P1).
+    pub fn prompt(&self) -> Prompt {
+        self.prompt
+    }
     fn accept(&mut self, i: usize) {
         self.packs[i].accepted = true;
         let id = self.packs[i].id;

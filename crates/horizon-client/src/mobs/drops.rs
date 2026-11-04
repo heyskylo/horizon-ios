@@ -490,15 +490,6 @@ pub fn die(
         out.push(slot_drop(m, "mainhand", stack));
         clear_slot(m, "mainhand");
     }
-    // Allay: what it carries (`ints[1]` of the held item) is its inventory.
-    let allay_load = (s == Species::Allay)
-        .then(|| {
-            m.extra
-                .main_hand
-                .clone()
-                .map(|item| (item, m.extra.ints[1]))
-        })
-        .flatten();
     if let Some(table) = death_loot_table(m, d.mob_drops) {
         let params = EntityLootParams {
             this: this.clone(),
@@ -565,9 +556,9 @@ pub fn die(
     }
     // Allay.dropEquipment: its inventory, then the main-hand item unless it
     // prevents equipment drops.
-    if let Some((item, carried)) = allay_load {
-        if carried > 0 {
-            out.push(Drop::Item(loot_stack(&item, carried)));
+    if s == Species::Allay {
+        if let Some(stack) = m.extra.allay.as_mut().and_then(|st| st.inventory.take()) {
+            out.push(Drop::Stack(stack));
         }
         if let Some(stack) = slot_item(m, "mainhand")
             && !d.loot.prevents_equipment_drop(&stack)

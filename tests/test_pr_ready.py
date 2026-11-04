@@ -5,6 +5,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import threading
 import unittest
 from unittest import mock
 
@@ -159,10 +160,19 @@ class PrReadyTests(unittest.TestCase):
                        "cargo": "#!/bin/sh\nprintf '%s\\n' \"$@\"\n"}
             for name, script in scripts.items():
                 path = os.path.join(fake_bin, name)
-                with open(path, "w") as file:
+                # LF on every host: text mode makes the shebang "#!/bin/sh\r" on
+                # Windows, which bash cannot run, so the fake names are skipped.
+                with open(path, "w", newline="\n") as file:
                     file.write(script)
                 os.chmod(path, 0o755)
-            env = dict(os.environ, PATH=fake_bin + os.pathsep + os.environ["PATH"])
+            env = dict(os.environ)
+            if os.name == "nt":
+                # Git Bash puts /usr/bin ahead of every Windows PATH entry, so a fake
+                # named uname can only win when the shell itself puts its folder first.
+                command = 'export PATH="$(cygpath -u "$FAKE_BIN"):$PATH"\n' + command
+                env["FAKE_BIN"] = fake_bin
+            else:
+                env["PATH"] = fake_bin + os.pathsep + os.environ["PATH"]
             return subprocess.run([BASH, "-c", command], capture_output=True, text=True,
                                   cwd=pr_ready.ROOT, env=env, check=True).stdout.splitlines()
 
@@ -345,6 +355,36 @@ class PrReadyTests(unittest.TestCase):
                                                  "their current inputs.\nNothing to run: every harness passed."),
                          "no harness affected")
         self.assertEqual(pr_ready.duration(125), "2 min 5 s")
+
+    def test_python_checks_run_beside_cargo_and_harnesses_after_it(self):
+        steps = pr_ready.plan(args(), "origin/main", {"crates/horizon-core/src/lib.rs"}, PACKAGES, LIBRARIES,
+                              DEPENDENCIES)
+        steps[0].status = "pass"
+        steps[-1].where, steps[-1].command, steps[-1].status = "here", "parity", None
+        cargo_started = threading.Event()
+        runs = []
+
+        def run_script(group, host, verbose):
+            names = [step.name for step in group]
+            if "Python tests" in names:
+                # Waits for cargo: running them first, alone, would time out here.
+                runs.append(("python", cargo_started.wait(2)))
+            elif "rustfmt" in names:
+                cargo_started.set()
+                runs.append(("cargo", host))
+            elif names:
+                runs.append(("after", names))
+
+        with mock.patch.object(pr_ready, "run_script", run_script):
+            pr_ready.run_checks(steps, "local", verbose=False)
+        self.assertCountEqual(runs[:2], [("python", True), ("cargo", "local")])
+        self.assertEqual(runs[2], ("after", ["Parity"]))
+
+        runs.clear()
+        cargo_started.clear()
+        with mock.patch.object(pr_ready, "run_script", run_script):
+            pr_ready.run_checks(steps, "local", verbose=True)
+        self.assertEqual(runs[0], ("python", False))
 
 
 if __name__ == "__main__":

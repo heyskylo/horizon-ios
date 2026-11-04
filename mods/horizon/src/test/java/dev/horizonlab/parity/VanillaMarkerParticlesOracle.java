@@ -103,6 +103,8 @@ public final class VanillaMarkerParticlesOracle {
         TickLevel() { super(null, null, null, null, 0, 0, null, false, 0L, 0); }
         @Override public BlockState getBlockState(BlockPos pos) { return state; }
         @Override public FluidState getFluidState(BlockPos pos) { return Fluids.EMPTY.defaultFluidState(); }
+        /** Dry weather, as the probe's stand-in world reports it. */
+        @Override public boolean isRainingAt(BlockPos pos) { return false; }
         @Override public net.minecraft.world.attribute.EnvironmentAttributeSystem environmentAttributes() {
             return attributes;
         }

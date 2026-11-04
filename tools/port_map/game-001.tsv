@@ -87,12 +87,12 @@ ChunkMap.TrackedEntity.updatePlayers	port	crates/horizon-client/src/lan/entity.r
 ChunkResult.error	skip:java		result type
 ChunkTaskDispatcher.hasWork	port	crates/horizon-client-render/src/streaming.rs::Streaming::busy	
 ChunkTaskDispatcher.onLevelChange	port	crates/horizon-client-render/src/streaming.rs::Streaming::requeue	
-ChunkTaskDispatcher.release	missing		minor: queued jobs of a column that lost its ticket are not cancelled; their results are dropped on arrival (Done::Proto range check)
+ChunkTaskDispatcher.release	port	crates/horizon-client-render/src/streaming.rs::release_columns	the columns a view drop or a moved view unloads release their queued jobs (`Streaming::forget_columns`), so their protos are never generated and dropped on arrival
 ChunkTaskDispatcher.submit	port	crates/horizon-client-render/src/streaming.rs::Streaming::submit	
 ChunkTaskDispatcher.pollTask	inline	crates/horizon-client-render/src/streaming.rs::Streaming::new	each worker pops the most urgent job
 ChunkTaskDispatcher.scheduleForExecution	inline	crates/horizon-client-render/src/streaming.rs::Streaming::new	the worker runs the job it popped
 ChunkTaskPriorityQueue.resortChunkTasks	port	crates/horizon-client-render/src/streaming.rs::rank_again	
-ChunkTaskPriorityQueue.release	missing		minor: no per column release; queued jobs stay queued until run
+ChunkTaskPriorityQueue.release	port	crates/horizon-client-render/src/streaming.rs::release_columns	the jobs queued for a released column are dropped from the heap, the jobs without a column (saves, meshes to free) stay
 ChunkTaskPriorityQueue.pop	inline	crates/horizon-client-render/src/streaming.rs::Streaming::new	BinaryHeap pop in the worker loop
 ChunkTracker.checkNeighborsAfterUpdate	inline	crates/horizon-client/src/ticket_levels.rs::compute	closed form: ticket level plus Chebyshev distance, rebuilt when sources change
 ChunkTracker.getComputedLevel	inline	crates/horizon-client/src/ticket_levels.rs::compute	lowest ticket level plus distance, per cell

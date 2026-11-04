@@ -1,4 +1,4 @@
-//! A new Java instance's part of the glass instance dialog (`glass_instance.rs`; the mockup's
+//! A Java instance's part of the glass instance dialog (`glass_instance.rs`; the mockup's
 //! `InstanceModal` for Vanilla and Modded): Mojang's versions to pick from, then for Modded the
 //! loaders, each with its logo, as many as `loaders::Kind` knows.
 use super::*;
@@ -6,9 +6,11 @@ use crate::glass_ui::{self as ui, white};
 use glass_instance::{
     choice, choice_text, letter_tile, list_box, list_choice, loaders, section, tick, tile_image,
 };
+use horizon_launcher::instances::{self, Instance, Plays, Unkept};
+use horizon_launcher::loaders::Loader;
 use horizon_launcher::minecraft_versions::Kind as VersionKind;
 use horizon_theme::glass::{fill, ink, radius};
-use new_instance::VersionList;
+use new_instance::{NewKind, VersionList};
 use servers_page::Field;
 
 /// Mojang versions listed at most: the search finds the others.
@@ -28,7 +30,7 @@ impl Launcher {
             .trim()
             .to_string();
         let search = typed.to_lowercase();
-        let chosen = self.draft_minecraft(None);
+        let chosen = self.draft_minecraft();
         let filter = |id: &'static str, label: &'static str, on: bool| {
             keyboard(
                 div()
@@ -99,9 +101,8 @@ impl Launcher {
             VersionList::NotAsked | VersionList::Loading => list_box("mc-versions", 264.).child(
                 line(tr("Asking Mojang for its versions…").into(), ink::QUIET),
             ),
-            VersionList::Failed(e) => list_box("mc-versions", 264.).child(
-                line(e.clone(), ink::FULL).text_color(ui::color(horizon_theme::glass::DANGER)),
-            ),
+            VersionList::Failed(e) => list_box("mc-versions", 264.)
+                .child(line(e.clone(), ink::FULL).text_color(ui::danger())),
             VersionList::Ready(versions) => {
                 let rows: Vec<_> = versions
                     .of(choice.snapshots, choice.old)
@@ -161,8 +162,8 @@ impl Launcher {
     /// The loaders, four across from 1280 px, else two; then what Create installs.
     pub(super) fn loader_choice(&mut self, cx: &mut Context<Self>) -> Div {
         let t = self.theme;
-        let now = self.draft_loader(None);
-        let minecraft = self.draft_minecraft(None).unwrap_or_else(|| "…".into());
+        let now = self.draft_loader();
+        let minecraft = self.draft_minecraft().unwrap_or_else(|| "…".into());
         let mut grid = div()
             .grid()
             .grid_cols(if self.window_width >= 1280. { 4 } else { 2 })
@@ -205,6 +206,94 @@ impl Launcher {
                         &[("loader", now.name()), ("version", &minecraft)],
                     )),
             ),
+        )
+    }
+
+    /// What the dialog has `editing` play: Horizon, or a Java game with its loader. The loader
+    /// keeps its version while its kind and Minecraft stay; a new one's (empty here) is the
+    /// newest stable, asked of its service on Save.
+    pub(super) fn draft_plays(&self, editing: &Instance) -> Option<Plays> {
+        let d = self.instances.dialog.as_ref()?;
+        if d.java.kind == NewKind::Horizon {
+            return Some(Plays::Horizon);
+        }
+        let minecraft = self.draft_minecraft()?;
+        let loader = (d.java.kind == NewKind::Modded).then(|| {
+            editing
+                .java
+                .as_ref()
+                .filter(|j| j.minecraft == minecraft)
+                .and_then(|j| j.loader.clone())
+                .filter(|l| l.kind == d.java.loader)
+                .unwrap_or(Loader {
+                    kind: d.java.loader,
+                    version: String::new(),
+                })
+        });
+        Some(Plays::Java { minecraft, loader })
+    }
+
+    /// Before Save switches what `editing` plays: what can't keep working. Nothing in its folder
+    /// is deleted or changed.
+    pub(super) fn switch_notice(&self, editing: &Instance) -> Option<Div> {
+        let to = self.draft_plays(editing)?;
+        if to == Plays::of(editing) {
+            return None;
+        }
+        let horizon = backend::game_version(&self.draft_horizon().unwrap_or_default());
+        let lines: Vec<String> = instances::unkept(editing, &to, &horizon)
+            .into_iter()
+            .map(|u| match u {
+                Unkept::Mods { made_for, .. } => trf(
+                    "Its mods made for {loader} stay in its folder but won't load.",
+                    &[("loader", &made_for)],
+                ),
+                Unkept::ModsVersion { from, to, .. } => trf(
+                    "Its mods made for Minecraft {from} stay in its folder; some may not load in {to}.",
+                    &[("from", &from), ("to", &to)],
+                ),
+                Unkept::Worlds { from, to, .. } => trf(
+                    "Its worlds were saved by Minecraft {from}: {to} upgrades them for good, and can't open them if it is older.",
+                    &[("from", &from), ("to", &to)],
+                ),
+            })
+            .collect();
+        if lines.is_empty() {
+            return None;
+        }
+        let warn = ui::color(horizon_theme::glass::WARN);
+        Some(
+            div()
+                .flex()
+                .flex_none()
+                .gap(px(12.))
+                .p(px(16.))
+                .rounded(px(radius::POPOVER))
+                .bg(warn.opacity(0.1))
+                .child(ui::icon("information-circle", 20., warn))
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(6.))
+                        .min_w_0()
+                        .child(
+                            ui::text(15., FontWeight::SEMIBOLD, ink::FULL)
+                                .child(tr("What this change can't keep")),
+                        )
+                        .children(lines.into_iter().map(|l| {
+                            ui::text(13., FontWeight::NORMAL, ink::BODY)
+                                .line_height(px(19.))
+                                .child(l)
+                        }))
+                        .child(
+                            ui::text(13., FontWeight::NORMAL, ink::QUIET)
+                                .line_height(px(19.))
+                                .child(tr(
+                                    "Save changes switches it. Nothing in its folder is deleted.",
+                                )),
+                        ),
+                ),
         )
     }
 }

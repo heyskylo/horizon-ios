@@ -1111,7 +1111,7 @@ mod tests {
             return;
         };
         let (registry, flags) = BlockRegistry::from_facts_json_with_flags(
-            File::open(root.0.join("facts.json")).unwrap(),
+            std::fs::File::open(root.0.join("facts.json")).unwrap(),
         )
         .unwrap();
         // The game's cache folder, apart from the resources.

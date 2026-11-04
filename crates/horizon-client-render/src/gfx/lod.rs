@@ -63,6 +63,9 @@ pub(super) struct Tile {
     /// place until they have faded in (from the job's end, the instant), so
     /// no hole shows through them.
     previous: Option<(SectionGpu, Option<Instant>)>,
+    /// Its slot in occlusion culling's results (`cull::TILE`), kept while
+    /// meshes of the same tile replace one another.
+    pub cull_slot: u32,
 }
 
 /// How long a tile takes to fade in over the ones it replaces.
@@ -160,6 +163,18 @@ impl Tile {
             None => &mut self.mesh,
         }
     }
+    /// The box occlusion culling tests (`cull::Cull`), around its origin: its
+    /// mesh's bounds grown by a block, while that mesh is the one drawn
+    /// whole (no stand-in, no fade). A fading tile's dither moves its depth
+    /// toward the camera (terrain.wgsl's `fade_depth`), out of the box.
+    pub fn cull_bounds(&self, fade: u32) -> Option<[[f32; 3]; 2]> {
+        (fade == 0 && self.previous.is_none()).then(|| {
+            [
+                (self.bounds.min - 1.0).to_array(),
+                (self.bounds.max + 1.0).to_array(),
+            ]
+        })
+    }
     /// Both meshes it holds in the arena: its own and the stand-in, if any.
     pub fn meshes_mut(&mut self) -> impl Iterator<Item = &mut SectionGpu> {
         std::iter::once(&mut self.mesh).chain(self.previous.as_mut().map(|(mesh, _)| mesh))
@@ -192,6 +207,10 @@ impl Renderer {
     /// its old mesh stands in while they fade in. A new one waits for the rest of its job
     /// (`upload_lods`), then fades in.
     pub fn upload_lod(&mut self, key: TileKey, mesh: &SectionMesh, keep: bool) {
+        if let Some(copies) = &mut self.capture_copies {
+            copies.tile(key, mesh);
+        }
+        let old_slot = self.lods.get(&key).map(|tile| tile.cull_slot);
         let (shown, previous) = match self.lods.remove(&key) {
             Some(old) if old.dying.is_none() => match old.previous {
                 Some(previous) => {
@@ -212,6 +231,12 @@ impl Renderer {
         };
         match Bounds::mesh(mesh).zip(self.upload_mesh(mesh)) {
             Some((bounds, mesh)) => {
+                let cull_slot = old_slot.unwrap_or_else(|| {
+                    self.lod_cull_free.pop().unwrap_or_else(|| {
+                        self.lod_cull_next += 1;
+                        self.lod_cull_next - 1
+                    })
+                });
                 self.lods.insert(
                     key,
                     Tile {
@@ -221,6 +246,7 @@ impl Renderer {
                         dying: None,
                         alone: false,
                         previous,
+                        cull_slot,
                     },
                 );
             }
@@ -228,6 +254,7 @@ impl Renderer {
                 if let Some((previous, _)) = previous {
                     self.release_mesh(previous);
                 }
+                self.lod_cull_free.extend(old_slot);
             }
         }
     }
@@ -240,12 +267,19 @@ impl Renderer {
     }
 
     pub fn remove_lod(&mut self, key: TileKey) {
+        if let Some(copies) = &mut self.capture_copies {
+            copies.forget_tile(key);
+        }
         if let Some(tile) = self.lods.remove(&key) {
+            self.lod_cull_free.push(tile.cull_slot);
             self.release_tile(tile);
         }
     }
 
     pub fn clear_lods(&mut self) {
+        if let Some(copies) = &mut self.capture_copies {
+            copies.clear_tiles();
+        }
         self.lod_pending = None;
         // No far terrain left to fade out over.
         for (key, since) in std::mem::take(&mut self.lod_leaving) {
@@ -260,6 +294,8 @@ impl Renderer {
         for (_, tile) in std::mem::take(&mut self.lods) {
             self.release_tile(tile);
         }
+        self.lod_cull_free.clear();
+        self.lod_cull_next = 0;
         self.set_lod_cutout(Default::default());
     }
 
@@ -435,6 +471,15 @@ impl Renderer {
                 return;
             }
         }
+    }
+
+    /// The tiles drawn for good, not fading out (`render-capture`).
+    pub(super) fn standing_lods(&self) -> FxHashSet<TileKey> {
+        self.lods
+            .iter()
+            .filter(|(_, tile)| tile.dying.is_none())
+            .map(|(&key, _)| key)
+            .collect()
     }
 
     /// The chunk columns the resident tiles now leave out (`Lod::take_cutout`).

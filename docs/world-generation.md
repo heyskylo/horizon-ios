@@ -249,3 +249,11 @@ Horizon entry; `LootTableSeed` without a `LootTable` and a vault's default rewar
 
 Remaining known differences: a handful of single blocks near structure pieces in full generation (abandoned camps, shipwreck, villages) that
 need per-feature tracing, and tree features only through `tools/test_tree_feature_parity.py` (8,898 fixtures, all equal).
+
+## Related docs
+
+- [Noise generation](noise-generation.md)
+- [Density functions](density-functions.md)
+- [Terrain filling](terrain-filling.md)
+- [Heightmaps](heightmaps.md)
+- [Collision geometry](collision-geometry.md)

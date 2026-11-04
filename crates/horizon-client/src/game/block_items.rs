@@ -84,6 +84,30 @@ impl Game<'_> {
         block_entity_nbt::canonical(&tag)
     }
 
+    /// The `CustomName` a block entity loads from `tag`
+    /// (`BaseContainerBlockEntity.loadAdditional`): kept beside the model in
+    /// `block_names`, and dropped when the tag has none. Banners and signs
+    /// keep their name themselves. True when the name changed.
+    pub(super) fn load_block_name(
+        &mut self,
+        key: (i32, i32, i32),
+        entity: &BlockEntity,
+        tag: &Tag,
+    ) -> bool {
+        if matches!(entity, BlockEntity::Banner(_) | BlockEntity::Sign(_)) {
+            return false;
+        }
+        let name = save::text(tag.get("CustomName"));
+        if self.world.block_names.get(&key) == name.as_ref() {
+            return false;
+        }
+        match name {
+            Some(name) => self.world.block_names.insert(key, name),
+            None => self.world.block_names.remove(&key),
+        };
+        true
+    }
+
     /// `BlockState.getCloneItemStack` of the block at `pos`, then, with
     /// `include_data`, `ServerGamePacketListenerImpl.addBlockDataToItem`.
     pub(super) fn picked_stack(&self, pos: [i32; 3], include_data: bool) -> Option<ItemStack> {
@@ -239,6 +263,20 @@ impl Game<'_> {
         }
     }
 
+    /// `BlockItem.updateBlockEntityComponents` on a client's level, for the
+    /// block it predicts at `pos`: the block entity takes the stack's
+    /// components but not its `block_entity_data` (`updateCustomBlockEntityTag`
+    /// returns on a client), so a copied sign's editor opens with its text (#8102).
+    pub(super) fn apply_predicted_item(&mut self, pos: [i32; 3], stack: &ItemStack) {
+        let mut stack = stack.clone();
+        if stack.data().is_some() {
+            stack
+                .data_mut()
+                .set_other(block_entity_item::BLOCK_ENTITY_DATA, None);
+        }
+        self.apply_placed_item(pos, &stack, false);
+    }
+
     /// `BlockItem.updateCustomBlockEntityTag` and `updateBlockEntityComponents`
     /// for the block entity just placed at `pos` from `stack`; `game_master`:
     /// the placer can use game master blocks (a dispenser can't).
@@ -267,13 +305,7 @@ impl Game<'_> {
         {
             new.state_triggered = old.state_triggered;
         }
-        // Banners and signs keep their name themselves.
-        if !matches!(entity, BlockEntity::Banner(_) | BlockEntity::Sign(_)) {
-            match save::text(placed.get("CustomName")) {
-                Some(name) => self.world.block_names.insert(key, name),
-                None => self.world.block_names.remove(&key),
-            };
-        }
+        self.load_block_name(key, &entity, &placed);
         self.world.block_entities.insert(key, entity);
         self.update_spawner_display(key);
     }

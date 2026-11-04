@@ -500,3 +500,9 @@ serialized registries, concrete structure-density and nonempty old-world blendin
 providers, and full seeded chunk generation.
 This suite establishes only the operations and inputs it exercises;
 it does not establish whole-game parity or an FPS/render-distance improvement.
+
+## Related docs
+
+- [World generation](world-generation.md)
+- [Noise generation](noise-generation.md)
+- [Terrain filling](terrain-filling.md)

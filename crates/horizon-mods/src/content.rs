@@ -419,7 +419,7 @@ pub struct MenuType {
 /// container (`native_block_entity_container`) may.
 pub const MAX_MENU_SLOTS: u16 = 256;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 enum Source {
     Dir(PathBuf),
     Zip(PathBuf),
@@ -653,11 +653,7 @@ impl Content {
     /// A reader of its content files. A packaged mod's archive is opened
     /// once for all of them (opening it reads its whole index).
     pub fn reader(&self) -> Result<FileReader<'_>, String> {
-        Ok(match &self.source {
-            Source::Dir(root) => FileReader::Dir(root),
-            Source::Zip(path) => FileReader::Zip(Box::new(open_zip(path)?)),
-            Source::Code => FileReader::Dir(Path::new("")),
-        })
+        reader_of(&self.source)
     }
 
     /// Where content may go, and the declarations.
@@ -729,10 +725,14 @@ impl Content {
                 ));
             }
         }
+        // One reader for every declaration: opening a packaged mod reads its
+        // whole index, so a reader per file made loading a big mod quadratic.
+        let source = self.source.clone();
+        let mut reader = reader_of(&source)?;
         let mut ids = BTreeSet::new();
         for (block, name) in blocks {
             let file: BlockFile =
-                serde_json::from_slice(&self.file(&name)?).map_err(|e| format!("{name}: {e}"))?;
+                serde_json::from_slice(&reader.read(&name)?).map_err(|e| format!("{name}: {e}"))?;
             if file
                 .connects_to
                 .as_ref()
@@ -770,7 +770,7 @@ impl Content {
         let mut remainders = Vec::new();
         for (item, name) in items {
             let file: ItemFile =
-                serde_json::from_slice(&self.file(&name)?).map_err(|e| format!("{name}: {e}"))?;
+                serde_json::from_slice(&reader.read(&name)?).map_err(|e| format!("{name}: {e}"))?;
             let item = Item {
                 id: item,
                 template: file.template,
@@ -790,7 +790,7 @@ impl Content {
         }
         for (effect, name) in effects {
             let file: MobEffect =
-                serde_json::from_slice(&self.file(&name)?).map_err(|e| format!("{name}: {e}"))?;
+                serde_json::from_slice(&reader.read(&name)?).map_err(|e| format!("{name}: {e}"))?;
             if file.color > 0xFF_FFFF {
                 return Err(format!("{name}: color is RGB, 0 to 16777215 (0xFFFFFF)"));
             }
@@ -811,7 +811,7 @@ impl Content {
         }
         for (tab, name) in tabs {
             let file: CreativeTabFile =
-                serde_json::from_slice(&self.file(&name)?).map_err(|e| format!("{name}: {e}"))?;
+                serde_json::from_slice(&reader.read(&name)?).map_err(|e| format!("{name}: {e}"))?;
             let id_like = |s: &str| {
                 s.split_once(':')
                     .is_some_and(|(n, p)| !n.is_empty() && !p.is_empty())
@@ -830,7 +830,7 @@ impl Content {
         }
         for (kind, name) in types {
             let file: EntityType =
-                serde_json::from_slice(&self.file(&name)?).map_err(|e| format!("{name}: {e}"))?;
+                serde_json::from_slice(&reader.read(&name)?).map_err(|e| format!("{name}: {e}"))?;
             if !ENTITY_TEMPLATES.contains(&file.template.as_str()) {
                 return Err(format!(
                     "{name}: template {:?} is not one of {ENTITY_TEMPLATES:?}",
@@ -857,7 +857,7 @@ impl Content {
         }
         for (menu, name) in menus {
             let file: MenuType =
-                serde_json::from_slice(&self.file(&name)?).map_err(|e| format!("{name}: {e}"))?;
+                serde_json::from_slice(&reader.read(&name)?).map_err(|e| format!("{name}: {e}"))?;
             if !(1..=MAX_MENU_SLOTS).contains(&file.slots) || file.data_slots > MAX_MENU_SLOTS {
                 return Err(format!(
                     "{name}: slots is 1 to {MAX_MENU_SLOTS}, data_slots 0 to {MAX_MENU_SLOTS}"
@@ -1105,6 +1105,14 @@ fn check_sign_walls(blocks: &[&Block]) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+fn reader_of(source: &Source) -> Result<FileReader<'_>, String> {
+    Ok(match source {
+        Source::Dir(root) => FileReader::Dir(root),
+        Source::Zip(path) => FileReader::Zip(Box::new(open_zip(path)?)),
+        Source::Code => FileReader::Dir(Path::new("")),
+    })
 }
 
 fn open_zip(path: &Path) -> Result<zip::ZipArchive<std::fs::File>, String> {

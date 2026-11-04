@@ -1,8 +1,9 @@
 //! `horizon-server config`: read server.toml's settings, and change them the way the server checks them
 //! (docs/server.md, section 4). A running server takes what vanilla can change live through its console
-//! (difficulty, the default game mode, the whitelist) at once; the rest applies at the next start.
+//! (difficulty, the default game mode, the whitelist) and through its management settings (the message of the
+//! day, the player limit) at once; the rest applies at the next start.
 
-use crate::{api::Client, config};
+use crate::{api::Client, config, engine};
 use serde_json::{Value, json};
 use std::path::Path;
 
@@ -147,6 +148,35 @@ fn range(section: &str, field: &str) -> Option<std::ops::RangeInclusive<i64>> {
     }
 }
 
+/// The control line that applies a setting to a running game, if there is a way to: a console command, or the
+/// management setting (`serversettings/motd/set`, `serversettings/max_players/set`) that the management
+/// protocol uses; `Some("")` for the settings the supervisor itself reads every time (backups, updates).
+pub fn live_line(section: &str, field: &str, value: &toml::Value) -> Option<String> {
+    let setting = |name: &str, value: Value| {
+        let request = json!({ "method": format!("serversettings/{name}/set"), "value": value });
+        // Connection 0: no RPC client made this change, the command line did.
+        Some(format!("management 0 {request}"))
+    };
+    match (section, field, value) {
+        ("server", "motd", toml::Value::String(text)) => setting("motd", json!(text)),
+        ("server", "max_players", toml::Value::Integer(n)) => setting("max_players", json!(n)),
+        _ => live_command(section, field, value).map(|line| {
+            if line.is_empty() {
+                line
+            } else {
+                format!("console {line}")
+            }
+        }),
+    }
+}
+
+/// Sends the running game one control line on its endpoint, and says whether it took it.
+pub fn ask_game(dir: &Path, line: &str) -> bool {
+    engine::Control::connect(dir)
+        .and_then(|mut game| game.ask(line))
+        .is_ok_and(|reply| reply.get("error").is_none())
+}
+
 /// The console command that applies a setting to a running game, if vanilla has one; `Some("")` for the
 /// settings the supervisor itself reads every time (backups, updates).
 pub fn live_command(section: &str, field: &str, value: &toml::Value) -> Option<String> {
@@ -176,17 +206,12 @@ pub fn set(dir: &Path, changes: &[&str]) -> Result<Outcome, String> {
         c.call("GET", "/api/v1/status", None)
             .is_ok_and(|s| s["phase"] == "running")
     });
-    let run = |line: &str| {
-        up && client.as_ref().is_some_and(|c| {
-            c.call("POST", "/api/v1/command", Some(&json!({ "line": line })))
-                .is_ok()
-        })
-    };
+    let run = |line: &str| up && ask_game(dir, line);
     apply(dir, changes, client.is_some().then_some(&run))
 }
 
-/// Writes the changes to server.toml, then sends a running server (`live` runs a console command and says
-/// whether it did) what it can take at once.
+/// Writes the changes to server.toml, then sends a running server (`live` sends the game a control line and
+/// says whether it took it) what it can take at once.
 pub fn apply(
     dir: &Path,
     changes: &[&str],
@@ -209,7 +234,7 @@ pub fn apply(
     for (section, field, value) in &parsed {
         let key = format!("{section}.{field}");
         let unchanged = current.get(section).and_then(|s| s.get(field)) == Some(value);
-        match live_command(section, field, value) {
+        match live_line(section, field, value) {
             _ if unchanged => {}
             Some(line) if line.is_empty() => outcome.applied.push(key),
             Some(line) if live(&line) => outcome.applied.push(key),
@@ -316,6 +341,76 @@ mod tests {
             live_command("server", "view_distance", &toml::Value::Integer(8)),
             None
         );
+    }
+
+    #[test]
+    fn the_message_and_the_player_limit_go_to_the_management_settings() {
+        let s = |v: &str| toml::Value::String(v.into());
+        assert_eq!(
+            live_line("server", "motd", &s("Friends \"only\"")).as_deref(),
+            Some(r#"management 0 {"method":"serversettings/motd/set","value":"Friends \"only\""}"#)
+        );
+        assert_eq!(
+            live_line("server", "max_players", &toml::Value::Integer(8)).as_deref(),
+            Some(r#"management 0 {"method":"serversettings/max_players/set","value":8}"#)
+        );
+        // The console ones keep their command, the supervisor's own settings need none.
+        assert_eq!(
+            live_line("world", "difficulty", &s("hard")).as_deref(),
+            Some("console difficulty hard")
+        );
+        assert_eq!(live_line("backups", "every", &s("1h")).as_deref(), Some(""));
+        assert_eq!(
+            live_line("server", "view_distance", &toml::Value::Integer(8)),
+            None
+        );
+    }
+
+    #[test]
+    fn a_running_server_is_sent_only_what_changed() {
+        let dir = std::env::temp_dir().join(format!("horizon-server-live-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(config::FILE), config::TEMPLATE).unwrap();
+        let sent = std::cell::RefCell::new(Vec::new());
+        let game = |line: &str| {
+            sent.borrow_mut().push(line.to_owned());
+            true
+        };
+        let outcome = apply(
+            &dir,
+            &[
+                "server.motd=Back at noon",
+                "server.max_players=5",
+                "server.view_distance=9",
+            ],
+            Some(&game),
+        )
+        .unwrap();
+        assert_eq!(outcome.applied, ["server.motd", "server.max_players"]);
+        assert_eq!(outcome.restart, ["server.view_distance"]);
+        assert_eq!(
+            *sent.borrow(),
+            [
+                r#"management 0 {"method":"serversettings/motd/set","value":"Back at noon"}"#,
+                r#"management 0 {"method":"serversettings/max_players/set","value":5}"#,
+            ]
+        );
+        // The same values again change nothing, so nothing is sent.
+        sent.borrow_mut().clear();
+        let outcome = apply(
+            &dir,
+            &["server.motd=Back at noon", "server.max_players=5"],
+            Some(&game),
+        )
+        .unwrap();
+        assert!(outcome.applied.is_empty() && outcome.restart.is_empty());
+        assert!(sent.borrow().is_empty());
+        // A game that refuses leaves the setting for the next start.
+        let refuses = |_: &str| false;
+        let outcome = apply(&dir, &["server.motd=Closed"], Some(&refuses)).unwrap();
+        assert_eq!(outcome.restart, ["server.motd"]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

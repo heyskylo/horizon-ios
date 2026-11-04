@@ -125,7 +125,7 @@ impl Launcher {
                 tab_action("packs-folder", "Open folder", &t).on_click(move |_, _, cx| {
                     let dir = home.join(PackKind::Resource.folder());
                     let _ = std::fs::create_dir_all(&dir);
-                    cx.open_with_system(&dir);
+                    crate::glass_toast::open(cx, &dir);
                 }),
             );
         let mut section = div()

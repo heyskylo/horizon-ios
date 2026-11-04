@@ -25,6 +25,7 @@ use horizon_world::block_collision::BlockCollisionRegistry;
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
+    time::Instant,
 };
 
 /// What `sync_data` loaded: whether it was with data packs over the game's
@@ -77,7 +78,7 @@ pub(super) fn reload_sync_data(
     // a `/reload` that dropped them must read its own registries again.
     let packs = !overlay.files.is_empty() || kept.has_pack_entries();
     let sync = SyncData::load(root, overlay).map(|mut sync| {
-        sync.keep_registries(root, kept);
+        sync.keep_registries(root, kept, overlay);
         sync.features.clone_from(&kept.features);
         Arc::new(sync)
     });
@@ -1069,15 +1070,23 @@ fn unhappy_counter(
 /// What a client shakes a mob by: Entity.DATA_TICKS_FROZEN (7), whose full
 /// count is `isFullyFrozen`, and Strider.DATA_SUFFOCATING (19, after
 /// AgeableMob's two and DATA_BOOST_TIME).
-fn mob_freeze_meta(
+pub(super) fn mob_freeze_meta(
     m: &Mob,
     meta: &mut Vec<(u8, i32, Value)>,
     defaults: &mut Vec<(u8, i32, Value)>,
 ) {
-    if m.ticks_frozen > 0 {
+    // `setTicksFrozen` can go negative (a mob warming up), and a client reads
+    // the count as is, so anything but the default 0 goes out.
+    if m.ticks_frozen != 0 {
         meta.push((7, serializer::INT, Value::Int(m.ticks_frozen)));
     }
     defaults.push((7, serializer::INT, Value::Int(0)));
+    // Every Entity tracks air, including changes back to its species' default.
+    let max = m.max_air_supply();
+    if m.air != max {
+        meta.push((1, serializer::INT, Value::Int(m.air)));
+    }
+    defaults.push((1, serializer::INT, Value::Int(max)));
     if m.kind.id == "minecraft:strider" {
         if m.extra.flag {
             meta.push((19, serializer::BOOLEAN, Value::Bool(true)));
@@ -1675,6 +1684,34 @@ impl Game<'_> {
         }
     }
 
+    /// Update the live view distance used for player chunk tracking.
+    pub(super) fn set_view_distance(&mut self, distance: i32) {
+        if let Some(host) = self.lan.as_mut() {
+            host.hub.set_view_distance(distance);
+        }
+    }
+
+    /// Update the live spawn-protection radius.
+    pub(super) fn set_spawn_protection(&mut self, radius: i32) {
+        if let Some(host) = self.lan.as_mut() {
+            host.hub.spawn_protection = radius;
+        }
+    }
+
+    /// Update the live simulation distance sent to player clients.
+    pub(super) fn set_simulation_distance(&mut self, distance: i32) {
+        if let Some(host) = self.lan.as_mut() {
+            host.hub.set_simulation_distance(distance);
+        }
+    }
+
+    /// Update the live entity tracking range percentage.
+    pub(super) fn set_entity_broadcast_range_percentage(&mut self, percentage: i32) {
+        if let Some(host) = self.lan.as_mut() {
+            host.hub.entity_range_percent = percentage;
+        }
+    }
+
     /// Update the live movement check's flight policy.
     pub(super) fn set_allow_flight(&mut self, allow: bool) {
         if let Some(host) = self.lan.as_mut() {
@@ -1686,6 +1723,13 @@ impl Game<'_> {
     pub(super) fn set_hide_online_players(&mut self, hide: bool) {
         if let Some(host) = self.lan.as_ref() {
             host.hub.lan.shared.set_hide_online_players(hide);
+        }
+    }
+
+    /// Update whether the server answers connection status requests.
+    pub(super) fn set_status_replies(&mut self, enable: bool) {
+        if let Some(host) = self.lan.as_ref() {
+            host.hub.lan.shared.set_enable_status(enable);
         }
     }
 
@@ -1728,6 +1772,7 @@ impl Game<'_> {
         after: u32,
     ) {
         out.clear();
+        let mut speeds = super::lan_attributes::SpeedByType::default();
         for m in self.mobs.iter().filter(|m| !m.removed && m.id > after) {
             // The lead's holder: the player the mob sees, another mob or a
             // fence knot (game/lan_entities.rs).
@@ -1766,7 +1811,7 @@ impl Game<'_> {
                 && horizon_client::mobs::happy_ghast::on_still_timeout(m);
             mob_freeze_meta(m, &mut e.meta, &mut e.defaults);
             mob_equipment(m, hub, &mut e.equipment);
-            self.mob_attributes(m, &mut e.attributes);
+            self.mob_attributes(m, &mut speeds, &mut e.attributes);
             e.leash = leash;
         }
         for d in self.dropped.iter().filter(|d| d.id > after) {
@@ -1813,7 +1858,17 @@ impl Game<'_> {
         entities: &[EntityState],
         spawn: [f64; 3],
     ) -> Option<LanHost> {
+        // A slow tick's line says which event took it, and whose (`spans::note`): each event's
+        // time is noted when the next one starts (an event's arm may `continue`), the last's
+        // after the loop.
+        let timed = horizon_client::spans::recording_here();
+        let mut previous = None;
         for event in events {
+            if timed {
+                note_event(&host, previous.take());
+                let detail = self.event_detail(&host, &event);
+                previous = Some((Instant::now(), event_kind(&event), detail));
+            }
             match event {
                 event @ (HostEvent::Chat { .. } | HostEvent::Warn(_) | HostEvent::Error(_)) => {
                     self.lan_log_event(event);
@@ -2058,6 +2113,7 @@ impl Game<'_> {
                 }
             }
         }
+        note_event(&host, previous);
         Some(host)
     }
 
@@ -2102,20 +2158,24 @@ impl Game<'_> {
             host.hub.mods_loaded = !horizon_client::mod_api::mods().is_empty();
             let pass = self.level_pass;
             let mut events = if pass.first {
-                host.hub.poll(&mut ctx)
+                horizon_client::spans::time("lan_poll", || host.hub.poll(&mut ctx))
             } else {
                 Vec::new()
             };
-            events.extend(host.hub.drain_packets(&mut ctx));
+            events.extend(horizon_client::spans::time("lan_drain", || {
+                host.hub.drain_packets(&mut ctx)
+            }));
             events
         };
-        let Some(back) = self.lan_process_events(host, events, entities.as_slice(), spawn) else {
+        let Some(back) = horizon_client::spans::time("lan_events", || {
+            self.lan_process_events(host, events, entities.as_slice(), spawn)
+        }) else {
             return;
         };
         host = back;
         if !host.quiet.is_empty() {
             self.lan = Some(host);
-            self.run_quiet_commands();
+            horizon_client::spans::time("lan_quiet_commands", || self.run_quiet_commands());
             host = self
                 .lan
                 .take()
@@ -2123,7 +2183,9 @@ impl Game<'_> {
         }
         if !host.hub.native_advancement_grants.is_empty() {
             self.lan = Some(host);
-            self.run_native_advancement_grants();
+            horizon_client::spans::time("lan_advancement_grants", || {
+                self.run_native_advancement_grants()
+            });
             host = self
                 .lan
                 .take()
@@ -2131,7 +2193,7 @@ impl Game<'_> {
         }
         if !host.hub.native_menu_events.is_empty() {
             self.lan = Some(host);
-            self.run_native_menu_events();
+            horizon_client::spans::time("lan_menu_events", || self.run_native_menu_events());
             host = self
                 .lan
                 .take()
@@ -2157,6 +2219,17 @@ impl Game<'_> {
     /// before the entities': what joined the level up to here (a falling
     /// block, a dispensed arrow, the last tick's late joins) is paired and
     /// first updated in this tick's pass (`Entities::synced`).
+    /// `ServerChunkCache.tick`'s broadcast, where ServerLevel.tick runs it:
+    /// after the scheduled and random ticks, before the block events, so the
+    /// players get the blocks as they are then. The block log's length after
+    /// it: what the tick writes from there on goes out with the next tick's.
+    pub(super) fn lan_broadcast_changes(&mut self) -> Option<usize> {
+        if let Some(host) = self.lan.as_mut() {
+            host.hub.broadcast_changes(&mut self.world);
+        }
+        self.world.block_log.as_ref().map(Vec::len)
+    }
+
     pub(super) fn lan_mark_synced(&mut self) {
         if let Some(next) = self.lan_ids_so_far()
             && let Some(host) = self.lan.as_mut()
@@ -2299,10 +2372,11 @@ impl Game<'_> {
                 self.clock.frozen(),
                 self.clock.step_state(),
             );
-            // `runBlockEvents`' broadcast precedes the tick's block changes
-            // (`ChunkHolder.broadcastChanges` in `tick_level` below): the
-            // guest re-runs a piston's `triggerEvent` while its level still
-            // has the blocks as they were before the move.
+            // `runBlockEvents`' broadcast precedes what the events change (held
+            // for the next tick, `tick_world`), and follows the blocks changed
+            // before them (`lan_broadcast_changes`): the guest re-runs a
+            // piston's `triggerEvent` on the blocks as they were before the
+            // move, a base the last tick restored included.
             for (pos, b0, b1, state) in std::mem::take(&mut self.lan_block_events) {
                 host.hub.block_event(pos, b0, b1, state);
             }
@@ -2349,6 +2423,8 @@ impl Game<'_> {
                 }
                 host.hub
                     .set_immediate_respawn(self.ui.rules.bool("immediate_respawn"));
+                host.hub
+                    .set_reduced_debug_info(self.ui.rules.bool("reduced_debug_info"));
                 host.hub
                     .set_limited_crafting(self.ui.rules.bool("limited_crafting"));
                 // A server with several levels runs a pass for each
@@ -2577,30 +2653,18 @@ impl Game<'_> {
                     if own && self.lan_break_pos == Some([pos.x, pos.y, pos.z]) {
                         own_break = false;
                     }
-                    // The acting guest does not predict the egg's teleport
-                    // particles, bone meal's growth, anvil result sounds, or a
-                    // finished brushing or an eye inserted in a portal frame (these calls name no
-                    // excluded player), nor the digger's own crack and hit
-                    // sound (2019, 2020).
-                    let except = if matches!(
+                    // The acting guest does not predict these, and the vanilla
+                    // call names no excluded player (`levelEvent(id, pos, data)`
+                    // passes null): the composter fill (1500), the egg's
+                    // teleport, bone meal's growth, anvil result sounds, a
+                    // finished brushing or an eye inserted in a portal frame,
+                    // a zombie's infection and a finished cure (1026, 1027),
+                    // and the digger's own crack and hit sound (2019, 2020).
+                    let except = level_event_except(
                         *id,
-                        2015 | 1501
-                            | 1503
-                            | 1505
-                            | 1029
-                            | 1030
-                            | 1045
-                            | 1052
-                            | 2019
-                            | 2020
-                            | 3000
-                            | 3008
-                    ) || (*id == 2001 && self.lan_break_pos.is_some() && !own)
-                    {
-                        None
-                    } else {
-                        self.lan_acting
-                    };
+                        self.lan_acting,
+                        *id == 2001 && self.lan_break_pos.is_some() && !own,
+                    );
                     self.lan_events
                         .push((*id, [pos.x, pos.y, pos.z], *data, except));
                 }
@@ -2629,6 +2693,14 @@ impl Game<'_> {
     pub(super) fn lan_entity_event(&mut self, id: i32, event: i8, at: [f64; 3]) {
         if self.audio.capture.is_some() {
             self.lan_entity_events.push((id, event, at));
+        }
+        // Event 16: zombie villagers play their cure sound on each client.
+        if event == 16 && self.options.execution_role.is_client() {
+            self.zombie_villager_cure_sound(id as u32);
+        }
+        // Event 63: a sniffer's digging sound loop starts (ClientPacketListener.handleEntityEvent 63).
+        if event == 63 && self.options.execution_role.is_client() {
+            self.start_sniffer_digging_sound(id as u32);
         }
         // Event 21: a window that simulates the world itself is its own
         // client, and hears the guardian's hum too.
@@ -2997,9 +3069,185 @@ fn equipment_slot_name(slot: horizon_world::player_inventory::EquipmentSlot) -> 
     }
 }
 
+/// What a hub event is, whose connection, and the name of a player who left (no longer in the
+/// hub once it is handled): for a slow tick's notes.
+type EventKind = (&'static str, Option<u32>, Option<String>);
+
+fn event_kind(event: &HostEvent) -> EventKind {
+    match event {
+        HostEvent::Joined(c) => ("join", Some(*c), None),
+        HostEvent::Left(g) => ("leave", None, Some(g.name.clone())),
+        HostEvent::Packet(c, p) => (p.name(), Some(*c), None),
+        HostEvent::MainHandChanged(c, _) => ("main hand", Some(*c), None),
+        HostEvent::LocaleChanged(c, _) => ("locale", Some(*c), None),
+        HostEvent::PlayerLoaded(c) => ("loaded", Some(*c), None),
+        HostEvent::RecipeBookSettings { conn, .. } => ("recipe book", Some(*conn), None),
+        HostEvent::Sneak { conn, .. } => ("sneak", Some(*conn), None),
+        HostEvent::Input { conn, .. } => ("input", Some(*conn), None),
+        HostEvent::Kicked { name, .. } => ("kick", None, Some(name.clone())),
+        HostEvent::Flight { conn, .. } => ("flight", Some(*conn), None),
+        HostEvent::Chat { .. } => ("chat line", None, None),
+        HostEvent::PlayerChat { .. } => ("chat", None, None),
+        HostEvent::ChatFiltered { name, .. } => ("filtered chat", None, Some(name.clone())),
+        HostEvent::Warn(_) => ("warning", None, None),
+        HostEvent::Error(_) => ("error", None, None),
+        HostEvent::Ban { name, .. } => ("ban", None, Some(name.clone())),
+    }
+}
+
+/// Who `ServerLevel.levelEvent` leaves out of the broadcast.
+///
+/// `LevelAccessor.levelEvent(int, BlockPos, int)` passes a null source, so the
+/// acting player is included. `ComposterBlock.useItemOn` (and the hopper input
+/// container) fill that way: event 1500, which the client turns into
+/// `handleFill` (the fill particles and `playLocalSound`). A call that names
+/// the player still excludes them. `collateral_break` is a later 2001 from
+/// `destroyBlock` with no player, after the breaker's own `playerWillDestroy`.
+fn level_event_except(id: i32, acting: Option<u32>, collateral_break: bool) -> Option<u32> {
+    if matches!(
+        id,
+        2015 | 1500
+            | 1501
+            | 1503
+            | 1505
+            | 1026
+            | 1027
+            | 1029
+            | 1030
+            | 1045
+            | 1052
+            | 2019
+            | 2020
+            | 3000
+            | 3008
+    ) || collateral_break
+    {
+        None
+    } else {
+        acting
+    }
+}
+
+/// Notes how long the event that started at `started` took (`spans::note`), with what it
+/// was about when [`Game::event_detail`] said.
+fn note_event(host: &LanHost, started: Option<(Instant, EventKind, Option<UseDetail>)>) {
+    let Some((started, (kind, conn, name), detail)) = started else {
+        return;
+    };
+    horizon_client::spans::note(started.elapsed().as_secs_f32() * 1000.0, || {
+        let who = name
+            .or_else(|| conn.and_then(|c| host.hub.guest(c)).map(|g| g.name.clone()))
+            .or_else(|| conn.map(|c| format!("connection {c}")));
+        let line = match who {
+            Some(who) => format!("{kind} of {who}"),
+            None => kind.to_owned(),
+        };
+        match detail {
+            Some(d) => format!("{line} ({d})"),
+            None => line,
+        }
+    });
+}
+
+/// What a use packet was about, taken before it ran (the use may consume the item or change
+/// the block): the item in the hand it names and, on a block, that block, where, and the face.
+struct UseDetail {
+    item: Option<Arc<str>>,
+    block: Option<(Arc<str>, [i32; 3], i32)>,
+}
+
+impl std::fmt::Display for UseDetail {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.item.as_deref().unwrap_or("empty hand"))?;
+        if let Some((block, [x, y, z], face)) = &self.block {
+            let face = ["down", "up", "north", "south", "west", "east"]
+                .get(*face as usize)
+                .copied()
+                .unwrap_or("?");
+            write!(f, " on {block} at {x} {y} {z} {face}")?;
+        }
+        Ok(())
+    }
+}
+
+impl Game<'_> {
+    /// For a slow tick's note (#8669): the item a `UseItemOn` or `UseItem` uses and the block
+    /// it aims at. None for other events.
+    fn event_detail(&self, host: &LanHost, event: &HostEvent) -> Option<UseDetail> {
+        let HostEvent::Packet(conn, packet) = event else {
+            return None;
+        };
+        let (hand, block) = match &**packet {
+            play::Serverbound::UseItemOn(p) => (p.hand, Some((p.pos, p.face))),
+            play::Serverbound::UseItem(p) => (p.hand, None),
+            _ => return None,
+        };
+        let guest = host.hub.guest(*conn)?;
+        let held = if hand == 1 {
+            guest.offhand.as_ref()
+        } else {
+            guest.inventory.get(guest.selected).and_then(Option::as_ref)
+        };
+        Some(UseDetail {
+            item: held.map(|s| Arc::clone(&s.item)),
+            block: block.map(|(pos, face)| (self.block_name(pos), pos, face)),
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{OFFHAND_SLOT, equipment_slot_name, living_flags};
+    use super::{OFFHAND_SLOT, equipment_slot_name, living_flags, mob_freeze_meta};
+    use horizon_client::mobs::Mob;
+    use horizon_protocol::entity_data::{Value, serializer};
+
+    fn mob_of(kind: &str) -> Option<Mob> {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        let types = horizon_client::mobs::MobTypes::load(&root).ok()?;
+        let t = std::sync::Arc::new(types.types.get(kind)?.clone());
+        Some(Mob::new(
+            1,
+            t,
+            horizon_core::geometry::Vec3::new(0.0, 64.0, 0.0),
+            0.0,
+        ))
+    }
+
+    fn freeze_meta(m: &Mob) -> (Vec<(u8, i32, Value)>, Vec<(u8, i32, Value)>) {
+        let (mut meta, mut defaults) = (Vec::new(), Vec::new());
+        mob_freeze_meta(m, &mut meta, &mut defaults);
+        (meta, defaults)
+    }
+
+    /// Entity.setTicksFrozen can go negative; index 7 must carry it. Index 1
+    /// (air supply) goes out for every mob, with the species' own default.
+    #[test]
+    fn negative_frozen_ticks_and_axolotl_air_are_synced() {
+        let Some(mut cow) = mob_of("minecraft:cow") else {
+            return;
+        };
+        cow.ticks_frozen = -3;
+        let (meta, _) = freeze_meta(&cow);
+        assert!(meta.contains(&(7, serializer::INT, Value::Int(-3))));
+        cow.air = 100;
+        assert!(
+            freeze_meta(&cow)
+                .0
+                .contains(&(1, serializer::INT, Value::Int(100)))
+        );
+
+        let Some(mut axolotl) = mob_of("minecraft:axolotl") else {
+            return;
+        };
+        axolotl.air = 5000;
+        let (meta, defaults) = freeze_meta(&axolotl);
+        assert!(meta.contains(&(1, serializer::INT, Value::Int(5000))));
+        assert!(defaults.contains(&(1, serializer::INT, Value::Int(6000))));
+        axolotl.air = 6000;
+        assert!(freeze_meta(&axolotl).0.iter().all(|e| e.0 != 1));
+    }
 
     /// `LivingEntity.startUsingItem` sets flag 1 for the use and flag 2 for
     /// the off hand, so an off-hand use is 3, not 2. A reader takes bit 0 as
@@ -3009,6 +3257,17 @@ mod tests {
         assert_eq!(living_flags(None), 0);
         assert_eq!(living_flags(Some((0, 12))), 1);
         assert_eq!(living_flags(Some((OFFHAND_SLOT, 12))), 3);
+    }
+
+    /// `ComposterBlock.useItemOn` calls `levelEvent(1500, pos, data)`, the
+    /// null-source overload, so the player who filled it still receives
+    /// `handleFill`. `Block.playerWillDestroy`'s 2001 names that player.
+    #[test]
+    fn the_composter_fill_reaches_the_player_who_filled_it() {
+        let actor = Some(4);
+        assert_eq!(super::level_event_except(1500, actor, false), None);
+        assert_eq!(super::level_event_except(2001, actor, false), actor);
+        assert_eq!(super::level_event_except(2001, actor, true), None);
     }
 
     /// The names a mod matches on for a broken item's slot (a contract).

@@ -54,6 +54,10 @@ fn main() -> Result<(), Error> {
         let width = size / 16;
         let start = Instant::now();
         let mut spans = 0;
+        // How many spans each column holds, which is what the client's
+        // `Spans` inline capacity has to cover: a mean alone hides whether
+        // most columns fit inline or nearly all of them spill to the heap.
+        let mut histogram = [0usize; 33];
         // Everything the tiles hold: an exact speedup keeps it.
         let mut hash = std::hash::DefaultHasher::new();
         // The terrain's shape alone (surface and water heights): an
@@ -70,6 +74,9 @@ fn main() -> Result<(), Error> {
                 approximate,
             )?;
             spans += grid.iter().map(|(_, s)| s.len()).sum::<usize>();
+            for (_, column) in &grid {
+                histogram[column.len().min(histogram.len() - 1)] += 1;
+            }
             std::hash::Hash::hash(&format!("{grid:?}"), &mut hash);
             for (surface, _) in &grid {
                 let shape = surface.as_ref().map(|s| (s.height, s.water.map(|w| w.0)));
@@ -94,6 +101,23 @@ fn main() -> Result<(), Error> {
             std::hash::Hasher::finish(&hash),
             std::hash::Hasher::finish(&heights)
         );
+        let columns: usize = histogram.iter().sum();
+        let mut cumulative = 0;
+        let mut line = String::new();
+        for (count, &n) in histogram.iter().enumerate() {
+            if n == 0 {
+                continue;
+            }
+            cumulative += n;
+            let last = count == histogram.len() - 1;
+            line += &format!(
+                "  {count}{}: {:.1}% (<={:.1}%)",
+                if last { "+" } else { "" },
+                100. * n as f64 / columns as f64,
+                100. * cumulative as f64 / columns as f64
+            );
+        }
+        println!("  spans per column:{line}");
     }
     Ok(())
 }

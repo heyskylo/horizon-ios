@@ -10,7 +10,6 @@
   "horizon.options.move_deadzone": "移动摇杆死区",
   "horizon.options.look_deadzone": "视角摇杆死区",
   "horizon.options.button_glyphs": "按键图标",
-  "horizon.options.menu_navigation": "菜单导航",
   "horizon.options.on_screen_keyboard": "虚拟键盘",
   "horizon.options.chat_delay": "聊天延迟",
   "horizon.options.lightbar.health": "生命值",
@@ -19,8 +18,6 @@
   "horizon.options.glyphs.xbox": "Xbox",
   "horizon.options.glyphs.playstation": "PlayStation",
   "horizon.options.glyphs.nintendo": "Nintendo",
-  "horizon.options.menu_focus": "焦点",
-  "horizon.options.menu_pointer": "指针",
   "horizon.options.keyboard.auto": "自动",
   "horizon.options.keyboard.horizon": "Horizon",
   "horizon.options.keyboard.steam": "Steam",
@@ -354,5 +351,9 @@
   "horizon.agent.off": "关闭：代理无法访问此游戏。",
   "horizon.agent.session_opened": "由启动游戏的程序为本次会话开启。",
   "horizon.agent.socket": "套接字：%s（复制详细信息以获取完整路径）",
-  "horizon.agent.local_only": "仅限本机：此电脑上的代理可用，网络不可用。"
+  "horizon.agent.local_only": "仅限本机：此电脑上的代理可用，网络不可用。",
+  "Particle Culling": "粒子剔除",
+  "Draws every particle.": "绘制所有粒子。",
+  "Skips offscreen, subpixel and terrain-hidden particles.": "跳过屏幕外、小于一个像素和被地形遮挡的粒子。",
+  "Skips offscreen, subpixel and terrain-hidden particles with less render-thread work.": "跳过屏幕外、小于一个像素和被地形遮挡的粒子，减少渲染线程的工作量。"
 }

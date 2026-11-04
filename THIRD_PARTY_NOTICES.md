@@ -14,6 +14,11 @@ Apache-2.0; both licenses are in that folder (`LICENSE.MIT`, `LICENSE.APACHE`).
 fixes to its GLSL frontend that shader packs need, each applied in the commit that needed it. It is licensed under MIT or Apache-2.0; both licenses
 are in that folder (`LICENSE.MIT`, `LICENSE.APACHE`).
 
+The GLSL frontend also resets the common type for each comma-separated declarator so one
+variable's array specifier does not change later variables.
+It also reads a struct member outside a constant expression through a pointer to the member,
+not out of a loaded copy of the whole struct, so a member an atomic function uses can be read.
+
 ## libmimalloc-sys and mimalloc
 
 `third_party/libmimalloc-sys` is [libmimalloc-sys](https://github.com/purpleprotocol/mimalloc_rust)

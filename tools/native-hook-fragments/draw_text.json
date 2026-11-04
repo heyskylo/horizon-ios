@@ -1,0 +1,11 @@
+{
+  "hooks": [],
+  "helpers": [
+    {"name": "draw_text", "target": "horizon_client::game::native_block_entity_draw::Game<'_>::native_draw_text"}
+  ],
+  "rust_summary": "text in the world from `native_block_entity_submit` (`native_draw_text`), as a sign draws its lines.",
+  "doc_summary": "`native_draw_text(draw, text, at, color, glowing, outline)` draws a `Text` under a block entity's pose as a sign draws its lines (`Font.drawInBatch`): one unit a font pixel, each span in its colour, glowing text full bright, an optional outline; it returns the width. Bundles need \"hooks\": @API:draw_text@.",
+  "comments": [
+    "crates/horizon-client/src/game/native_block_entity_draw.rs"
+  ]
+}

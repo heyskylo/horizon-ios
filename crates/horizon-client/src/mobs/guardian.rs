@@ -140,6 +140,7 @@ impl Goal for GuardianAttack {
                         kind: DamageKind::Magic,
                         attacker: Some(Who::Mob(m.id)),
                         from: Some(from),
+                        attacker_species: Some(m.species()),
                     },
                 }),
             }
@@ -262,17 +263,19 @@ pub fn ai_step(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
             .add_vector(Vec3::new(f64::from(x) * 0.4, 0.5, f64::from(z) * 0.4));
         m.yaw = m.random.next_float() * 360.0;
         m.on_ground = false;
-        let flop = if is_elder(m) {
-            "entity.elder_guardian.flop"
-        } else {
-            "entity.guardian.flop"
-        };
-        events.push(MobEvent::Sound(
-            flop,
-            [m.position.x, m.position.y, m.position.z],
-            1.0,
-            1.0,
-        ));
+        if !m.silent {
+            let flop = if is_elder(m) {
+                "entity.elder_guardian.flop"
+            } else {
+                "entity.guardian.flop"
+            };
+            events.push(MobEvent::Sound(
+                flop,
+                [m.position.x, m.position.y, m.position.z],
+                1.0,
+                1.0,
+            ));
+        }
     }
     if m.extra.flag {
         m.yaw = m.head_yaw;
@@ -311,6 +314,7 @@ pub fn ai_step(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
                     kind: DamageKind::Thorns,
                     attacker: Some(Who::Mob(m.id)),
                     from: Some(from),
+                    attacker_species: Some(m.species()),
                 },
             }),
             None => {}
@@ -332,20 +336,105 @@ pub fn look_at(m: &mut Mob, look: [f64; 3]) {
     let dot = view[0] * side[0] + view[1] * side[1];
     m.anim.v[EYE_X] = dot.abs().sqrt() * 2.0 * dot.signum();
 }
+/// The GUARDIAN_ELDER_EFFECT parameter of an elder's curse
+/// (`isSilent() ? 0.0F : 1.0F`); the client plays the curse sound only for 1.
+pub fn elder_curse_param(silent: bool) -> f32 {
+    if silent { 0.0 } else { 1.0 }
+}
 /// `ElderGuardian.customServerAiStep`: every minute, mining fatigue III for
 /// players within 50 blocks; a home within 16 blocks.
 pub fn elder_server_ai_step(m: &mut Mob, cx: &mut Cx) {
     if (m.age as i64 + i64::from(m.id)) % 1200 == 0 {
         cx.events.push(MobEvent::ElderCurse {
             at: [m.position.x, m.position.y, m.position.z],
+            silent: m.silent,
         });
     }
-    if m.extra.home.is_none() {
-        m.extra.home = Some([
-            m.position.x.floor() as i32,
-            m.position.y.floor() as i32,
-            m.position.z.floor() as i32,
-        ]);
+    if m.ai.home.is_none() {
+        m.ai.home = Some((
+            [
+                m.position.x.floor() as i32,
+                m.position.y.floor() as i32,
+                m.position.z.floor() as i32,
+            ],
+            16,
+        ));
+    }
+}
+#[cfg(test)]
+mod elder_home_tests {
+    use super::*;
+    use crate::mobs::world::with_test_world;
+    use horizon_core::random::LegacyRandom;
+    use std::sync::Arc;
+
+    /// `ElderGuardian.customServerAiStep`: with no home yet, `setHomeTo(blockPosition(), 16)`,
+    /// the restriction its wandering goals read (`Mob::restricted`); a home it has is kept.
+    #[test]
+    fn an_elder_guardian_homes_where_it_stands() {
+        with_test_world(&[], |w, types| {
+            let kind = Arc::new(types.types["minecraft:elder_guardian"].clone());
+            let mut lr = LegacyRandom::new(0);
+            let mut events = Vec::new();
+            let mut m = Mob::new(1, kind.clone(), Vec3::new(10.7, 64.2, -20.9), 0.0);
+            elder_server_ai_step(
+                &mut m,
+                &mut Cx {
+                    w,
+                    lr: &mut lr,
+                    events: &mut events,
+                },
+            );
+            assert_eq!(m.ai.home, Some(([10, 64, -21], 16)));
+            assert!(!m.restricted(0.0, [20, 64, -21]));
+            assert!(m.restricted(0.0, [27, 64, -21]));
+
+            let mut kept = Mob::new(2, kind, Vec3::new(10.0, 64.0, 20.0), 0.0);
+            kept.ai.home = Some(([100, 50, 100], 24));
+            elder_server_ai_step(
+                &mut kept,
+                &mut Cx {
+                    w,
+                    lr: &mut lr,
+                    events: &mut events,
+                },
+            );
+            assert_eq!(kept.ai.home, Some(([100, 50, 100], 24)));
+        });
+    }
+
+    /// `ElderGuardian.customServerAiStep`: on its minute (`(tickCount + getId()) % 1200 == 0`)
+    /// the curse goes out with `isSilent() ? 0.0F : 1.0F`, and
+    /// `ClientPacketListener.handleGameEvent` plays the curse sound only for 1.
+    #[test]
+    fn a_silent_elder_guardian_curses_without_the_sound() {
+        with_test_world(&[], |w, types| {
+            let kind = Arc::new(types.types["minecraft:elder_guardian"].clone());
+            let mut lr = LegacyRandom::new(0);
+            for silent in [false, true] {
+                let mut events = Vec::new();
+                let mut m = Mob::new(1200, kind.clone(), Vec3::new(0.5, 64.0, 0.5), 0.0);
+                m.silent = silent;
+                elder_server_ai_step(
+                    &mut m,
+                    &mut Cx {
+                        w,
+                        lr: &mut lr,
+                        events: &mut events,
+                    },
+                );
+                let curses: Vec<_> = events
+                    .iter()
+                    .filter_map(|e| match e {
+                        MobEvent::ElderCurse { silent, .. } => Some(*silent),
+                        _ => None,
+                    })
+                    .collect();
+                assert_eq!(curses, [silent]);
+            }
+        });
+        assert_eq!(elder_curse_param(false), 1.0);
+        assert_eq!(elder_curse_param(true), 0.0);
     }
 }
 /// Guardian.aiStep's visual attack clock, also used by server clients.
@@ -483,5 +572,61 @@ pub fn attack_scale(m: &Mob) -> f32 {
         m.extra.counter2 as f32 / attack_duration(m) as f32
     } else {
         0.0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::mobs::world::with_test_world;
+    use std::sync::Arc;
+
+    fn flop(kind: &str, silent: bool) -> Option<(Mob, Vec<MobEvent>)> {
+        let mut result = None;
+        let ran = with_test_world(&[], |w, types| {
+            let mut mob = Mob::new(
+                1,
+                Arc::new(types.types[kind].clone()),
+                Vec3::new(0.5, 64.0, 0.5),
+                0.0,
+            );
+            register(&mut mob);
+            mob.on_ground = true;
+            mob.fluids.in_water = false;
+            mob.silent = silent;
+            let mut events = Vec::new();
+            ai_step(&mut mob, w, &mut events);
+            result = Some((mob, events));
+        });
+        if !ran {
+            return None;
+        }
+        result
+    }
+
+    /// `Guardian.aiStep`: a guardian out of water flops, and the flop is heard
+    /// (the elder's own sound) unless the guardian is silent (`!isSilent()`).
+    #[test]
+    fn a_silent_guardian_flops_without_a_sound() {
+        for (kind, sound) in [
+            ("minecraft:guardian", "entity.guardian.flop"),
+            ("minecraft:elder_guardian", "entity.elder_guardian.flop"),
+        ] {
+            for silent in [false, true] {
+                let Some((mob, events)) = flop(kind, silent) else {
+                    return;
+                };
+                assert!(!mob.on_ground && mob.velocity.y > 0.0, "{kind} flops");
+                let sounds: Vec<_> = events
+                    .iter()
+                    .filter_map(|e| match e {
+                        MobEvent::Sound(s, ..) => Some(*s),
+                        _ => None,
+                    })
+                    .collect();
+                let heard: &[&str] = if silent { &[] } else { &[sound] };
+                assert_eq!(sounds, heard, "{kind} silent={silent}");
+            }
+        }
     }
 }

@@ -129,6 +129,25 @@ impl Game<'_> {
             let _ = flight.reply.send(summary.to_string());
         }
     }
+    /// The game's settings a render capture records beside the renderer's own state.
+    fn render_capture_settings(&self) -> horizon_client::gfx::capture::Settings {
+        let s = &self.settings;
+        horizon_client::gfx::capture::Settings {
+            graphics_api: format!("{:?}", s.horizon.api),
+            translucent_batching: s.horizon.translucent_batching,
+            texture_filtering: s.file.int("textureFiltering"),
+            anisotropy_bit: s.file.int("maxAnisotropyBit"),
+            mipmap_levels: s.mipmap_levels.max(0) as u32,
+            resolution_scale: s.horizon.resolution_scale as f32 / 100.0,
+            fxaa: s.horizon.fxaa,
+            taa: s.horizon.taa,
+            upscale: s.horizon.upscaling.ratio(),
+            render_distance: self.streaming.radius,
+            lod_distance: self.far_terrain_choice().0,
+            resources: self.options.resources.clone(),
+            atlas: horizon_client::gfx::capture::AtlasCheck::of(&self.pack.render),
+        }
+    }
     /// The frame summary, with Horizon's own passes' median GPU times while they are timed.
     fn summary_with_passes(&self) -> Value {
         let mut summary = self.frame_stats.summary();
@@ -396,6 +415,53 @@ impl Game<'_> {
                 }
                 Ok(Some(json!({ "ok": true, "gpu_passes": self.gpu_passes })))
             }
+            "render-capture" => match words.get(1).copied() {
+                None => {
+                    let r = self.renderer.as_ref().ok_or("no renderer")?;
+                    Ok(Some(
+                        json!({ "ok": true, "keeping": r.keeps_capture_copies() }),
+                    ))
+                }
+                Some("on") => {
+                    let r = self.renderer.as_mut().ok_or("no renderer")?;
+                    if !r.keeps_capture_copies() {
+                        r.keep_capture_copies(true);
+                        // The copies start empty: every section and far tile is meshed
+                        // again, as after a relayout.
+                        self.clear_lod();
+                        self.all_sections_changed();
+                    }
+                    Ok(Some(json!({ "ok": true, "keeping": true })))
+                }
+                Some("off") => {
+                    let r = self.renderer.as_mut().ok_or("no renderer")?;
+                    r.keep_capture_copies(false);
+                    Ok(Some(json!({ "ok": true, "keeping": false })))
+                }
+                Some(_) => {
+                    if self.pending_render_capture.is_some() {
+                        return Err("a render capture is already pending".into());
+                    }
+                    // The rest of the line: a path may hold spaces.
+                    let dir = line
+                        .trim_start()
+                        .strip_prefix("render-capture")
+                        .unwrap_or("");
+                    let settings = self.render_capture_settings();
+                    let r = self.renderer.as_mut().ok_or("no renderer")?;
+                    if !r.keeps_capture_copies() {
+                        return Err("no mesh copies kept: run render-capture on (or start with \
+                            HORIZON_RENDER_CAPTURE=1) and let the terrain settle first"
+                            .into());
+                    }
+                    r.capture = Some(horizon_client::gfx::capture::Request {
+                        dir: dir.trim().into(),
+                        settings,
+                    });
+                    self.pending_render_capture = Some(reply.clone());
+                    Ok(None)
+                }
+            },
             "section-sides" => {
                 let r = self.renderer.as_mut().ok_or("no renderer")?;
                 match words.get(1).copied() {
@@ -595,7 +661,13 @@ impl Game<'_> {
                     // The system's auto-repeat while the key is held.
                     "repeat" => {
                         self.physical_keys.insert(physical);
-                        self.mapped_key(key, true, true, key)?;
+                        self.mapped_key(
+                            key,
+                            true,
+                            true,
+                            key,
+                            horizon_client::held::Source::Keyboard,
+                        )?;
                     }
                     "tap" => {
                         self.control_key_down(key, physical)?;
@@ -779,7 +851,24 @@ impl Game<'_> {
                 let baby = words.contains(&"baby");
                 let nums: Vec<f64> = words[2..].iter().filter_map(|w| w.parse().ok()).collect();
                 let at = (nums.len() >= 3).then(|| [nums[0], nums[1], nums[2]]);
-                let id = self.summon(arg(1)?, at, baby)?;
+                let kind = arg(1)?.to_owned();
+                // Single player on its server thread: spawn in the owner's level
+                // so the mob enters the server tick loop and is tracked to clients.
+                if let Some(server) = &self.integrated {
+                    let at = match at {
+                        Some(a) => a,
+                        None => self.default_summon_position()?,
+                    };
+                    let id = server
+                        .call(move |g| {
+                            g.in_owner_level(|g| {
+                                g.summon(&kind, Some(at), baby).map_err(|e| e.to_string())
+                            })
+                        })
+                        .ok_or(super::integrated::NO_ANSWER)??;
+                    return Ok(Some(json!({ "ok": true, "id": id })));
+                }
+                let id = self.summon(&kind, at, baby)?;
                 Ok(Some(json!({ "ok": true, "id": id })))
             }
             "mobs" => {
@@ -890,6 +979,7 @@ impl Game<'_> {
                     "graphics-advanced" => Page::GraphicsAdvanced,
                     "graphics-hdr" => Page::GraphicsHdr,
                     "extras" => Page::Extras,
+                    "pvp" => Page::Pvp,
                     "credits" => Page::Credits,
                     "horizon" => Page::Horizon,
                     "agent" => Page::Agent,
@@ -1237,6 +1327,7 @@ impl Game<'_> {
                 "culled_sections": r.culled_sections(),
                 "gpu_culling": r.gpu_culling(),
                 "gpu_frame": r.gpu_frame(),
+                "gpu_fading": r.gpu_fading(),
                 "uploaded_bytes": r.uploaded_bytes,
                 "resident_sections": r.resident_sections(),
                 "arena_bytes": arena_bytes,

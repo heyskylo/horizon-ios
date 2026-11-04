@@ -265,6 +265,13 @@ pub const NAMES: &[&str] = &[
     "playerMood",
     "constantMood",
     "centerDepthSmooth",
+    "alphaTestRef",
+    "entityId",
+    "blockEntityId",
+    "entityColor",
+    GBUFFERS_FOG_MODE,
+    GBUFFERS_FOG_SHAPE,
+    GBUFFERS_CENTER_DEPTH,
     "isRightHanded",
     "is_on_ground",
     "bedrockLevel",
@@ -276,6 +283,13 @@ pub const NAMES: &[&str] = &[
     "isElytraFlying",
     "cloudHeight",
 ];
+
+/// What programs that draw the game's geometry (gbuffers, shadow) read as `fogMode`,
+/// `fogShape` and `centerDepthSmooth`: no GLSL name can hold a dot, so no pack reads these
+/// directly.
+const GBUFFERS_FOG_MODE: &str = "gbuffers.fogMode";
+const GBUFFERS_FOG_SHAPE: &str = "gbuffers.fogShape";
+const GBUFFERS_CENTER_DEPTH: &str = "gbuffers.centerDepthSmooth";
 
 /// Values carried from frame to frame.
 pub struct FrameUniforms {
@@ -472,18 +486,16 @@ impl FrameUniforms {
             });
         }
         let center_depth = self.center_depth.unwrap_or(1.0);
-        // Vanilla fades by the stronger of two linear fogs; a pack gets one: the pair (start
-        // and end together) of the one that is complete nearer (OQ-36). Mixing the nearer start
-        // of one with the nearer end of the other made fog begin at the camera on clear days.
+        // Vanilla fades by the stronger of two linear fogs; a pack gets the environmental one
+        // (`FogData::environmental_start`/`environmental_end`), as Iris 1.11.7 gives it in every
+        // program kind: 0 to 1024 on a clear day, -160 to 768 in rain, -8 to 96 under water, 10
+        // to 96 in the Nether (measured with a probe pack).
         let (fog_color, fog_start, fog_end) = match &frame.fog {
-            Some(f) => {
-                let (start, end) = if f.environmental_end < f.render_distance_end {
-                    (f.environmental_start, f.environmental_end)
-                } else {
-                    (f.render_distance_start, f.render_distance_end)
-                };
-                ([f.color[0], f.color[1], f.color[2]], start, end)
-            }
+            Some(f) => (
+                [f.color[0], f.color[1], f.color[2]],
+                f.environmental_start,
+                f.environmental_end,
+            ),
             None => (frame.sky.fog_color, frame.distance * 0.9, frame.distance),
         };
         let light = shadow_light(frame, &self.shadow);
@@ -545,12 +557,22 @@ impl FrameUniforms {
                 "thunderStrength" => Value::f(&[inputs.thunder]),
                 "fogColor" => Value::f(&fog_color),
                 "skyColor" => Value::f(&frame.sky.sky_color),
-                // GL_LINEAR: vanilla's fog is linear.
-                "fogMode" => Value::i(&[9729]),
+                // Iris 1.11.7, measured: programs that draw no geometry read no fog mode (0) and
+                // shape (-1); those that do read GL_LINEAR and a cylinder (1). The density is 0.
+                "fogMode" => Value::i(&[0]),
+                GBUFFERS_FOG_MODE => Value::i(&[9729]),
                 "fogStart" => Value::f(&[fog_start]),
                 "fogEnd" => Value::f(&[fog_end]),
-                "fogDensity" => Value::f(&[1.0]),
-                "fogShape" => Value::i(&[0]),
+                "fogDensity" => Value::f(&[0.0]),
+                "fogShape" => Value::i(&[-1]),
+                GBUFFERS_FOG_SHAPE => Value::i(&[1]),
+                // Iris 1.11.7 gives gbuffers programs 0 (measured in 16 scenes).
+                GBUFFERS_CENTER_DEPTH => Value::f(&[0.0]),
+                // Outside a draw (gbuffers programs get these per draw), as Iris 1.11.7 gives
+                // them to composite and final programs (measured).
+                "alphaTestRef" => Value::f(&[0.1]),
+                "blockEntityId" => Value::i(&[-1]),
+                "entityColor" => Value::f(&[0.0; 4]),
                 "isEyeInWater" => Value::i(&[inputs.eye_in]),
                 "blindness" => Value::f(&[inputs.blindness]),
                 "nightVision" => Value::f(&[frame.night_vision]),
@@ -690,14 +712,34 @@ fn components(name: &str) -> usize {
         | "skyColor"
         | "endFlashPosition" => 3,
         "eyeBrightness" | "eyeBrightnessSmooth" | "atlasSize" => 2,
+        "entityColor" => 4,
         n if n.starts_with("gbuffer") || n.starts_with("shadow") && n != "shadowAngle" => 16,
         _ => 1,
     }
 }
 
+/// What `name` gives custom uniforms before the first frame: zeros, at its size, so their
+/// shapes check out as on a frame (#9086).
+pub fn zero(name: &str) -> Option<horizon_shaders::Val> {
+    index(name)?;
+    Some(horizon_shaders::Val::vector(&[0.0; 16][..components(name)]))
+}
+
 /// The position of `name` in [`NAMES`].
 pub fn index(name: &str) -> Option<usize> {
     NAMES.iter().position(|n| *n == name)
+}
+
+/// The position in [`NAMES`] of the value a program reads as `name`; `geometry`: the program
+/// draws the game's geometry (gbuffers, shadow), which reads its own fog mode and shape and no
+/// centre depth.
+pub fn index_in(name: &str, geometry: bool) -> Option<usize> {
+    match name {
+        "fogMode" if geometry => index(GBUFFERS_FOG_MODE),
+        "fogShape" if geometry => index(GBUFFERS_FOG_SHAPE),
+        "centerDepthSmooth" if geometry => index(GBUFFERS_CENTER_DEPTH),
+        _ => index(name),
+    }
 }
 
 #[cfg(test)]
@@ -715,6 +757,22 @@ mod tests {
         assert_eq!(i32::from_ne_bytes(out[16..20].try_into().unwrap()), 1);
         Value::f(&[1.0; 16]).write("mat4", &mut out, 60);
         assert_eq!(out[60..64], [0; 4], "a value past the block is dropped");
+    }
+
+    /// The load-time run of custom uniforms sees each built-in at its size: Iris 1.11.7 reads 2
+    /// for the first line of our probes K and X (#9086) and 0 for the others.
+    #[test]
+    fn custom_uniforms_check_the_shapes_of_built_ins_before_the_first_frame() {
+        let properties = horizon_shaders::Properties::parse(
+            "uniform.vec3.a = skyColor * vec3(0.0, 0.0, 0.0) + vec3(2.0, 2.0, 2.0)\n\
+             uniform.float.b = skyColor\n\
+             uniform.float.c = gbufferModelView * 0.0 + 2.0\n",
+            &horizon_shaders::Macros::standard(),
+        );
+        let mut custom = horizon_shaders::Custom::parse(&properties);
+        custom.eval(0.0, &zero);
+        let broken: Vec<&str> = custom.notes.iter().map(|n| &n[1..2]).collect();
+        assert_eq!(broken, ["b", "c"], "{:?}", custom.notes);
     }
 
     /// Iris's status uniforms as its documentation defines them (shaders.properties, "Status").
@@ -971,11 +1029,6 @@ mod initial_history_tests {
     #[test]
     #[ignore = "requires a host GPU; run with --ignored --nocapture"]
     fn core_matrix_inputs_render_provider_values() {
-        use horizon_shaders::{
-            GbuffersInputs, Macros, Pack, Target, preprocess, translate_gbuffers,
-        };
-        use std::io::Write;
-        use wgpu::util::DeviceExt;
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let adapter = pollster::block_on(instance.request_adapter(&Default::default())).unwrap();
         eprintln!("Core matrix GPU: {:?}", adapter.get_info());
@@ -1035,137 +1088,7 @@ mod initial_history_tests {
                  vec2 p = vec2((gl_VertexID << 1) & 2, gl_VertexID & 2);\n\
                  gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);\n}}"
             );
-            let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
-            for (path, source) in [
-                ("shaders/gbuffers_line.vsh", vertex.as_str()),
-                (
-                    "shaders/gbuffers_line.fsh",
-                    "#version 330\nin vec3 result; out vec4 color; void main() { color = vec4(result, 1.0); }",
-                ),
-            ] {
-                zip.start_file(path, zip::write::SimpleFileOptions::default())
-                    .unwrap();
-                zip.write_all(source.as_bytes()).unwrap();
-            }
-            let pack = Pack::from_zip_bytes("matrix-probe.zip", zip.finish().unwrap().into_inner())
-                .unwrap();
-            let macros = Macros::standard();
-            let program = translate_gbuffers(
-                &preprocess(&pack, "gbuffers_line.vsh", &macros),
-                &preprocess(&pack, "gbuffers_line.fsh", &macros),
-                Target::Buffers,
-                &GbuffersInputs::default(),
-            )
-            .unwrap();
-            let mut bytes = vec![0; program.interface.uniform_size as usize];
-            for uniform in &program.interface.uniforms {
-                if let Some(i) = index(&uniform.name) {
-                    values.values[i].write(&uniform.ty, &mut bytes, uniform.offset as usize);
-                }
-            }
-            let uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: None,
-                contents: &bytes,
-                usage: wgpu::BufferUsages::UNIFORM,
-            });
-            let module = |module| {
-                device.create_shader_module(wgpu::ShaderModuleDescriptor {
-                    label: None,
-                    source: wgpu::ShaderSource::Naga(std::borrow::Cow::Owned(module)),
-                })
-            };
-            let vs = module(program.vertex);
-            let fs = module(program.fragment);
-            let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: None,
-                layout: None,
-                vertex: wgpu::VertexState {
-                    module: &vs,
-                    entry_point: Some("main"),
-                    compilation_options: Default::default(),
-                    buffers: &[],
-                },
-                primitive: Default::default(),
-                depth_stencil: None,
-                multisample: Default::default(),
-                fragment: Some(wgpu::FragmentState {
-                    module: &fs,
-                    entry_point: Some("main"),
-                    compilation_options: Default::default(),
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format: wgpu::TextureFormat::Rgba8Unorm,
-                        blend: None,
-                        write_mask: wgpu::ColorWrites::ALL,
-                    })],
-                }),
-                multiview_mask: None,
-                cache: None,
-            });
-            let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: None,
-                layout: &pipeline.get_bind_group_layout(0),
-                entries: &[wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: uniform.as_entire_binding(),
-                }],
-            });
-            let texture = device.create_texture(&wgpu::TextureDescriptor {
-                label: None,
-                size: wgpu::Extent3d {
-                    width: 1,
-                    height: 1,
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::Rgba8Unorm,
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-                view_formats: &[],
-            });
-            let view = texture.create_view(&Default::default());
-            let read = device.create_buffer(&wgpu::BufferDescriptor {
-                label: None,
-                size: 256,
-                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-                mapped_at_creation: false,
-            });
-            let mut encoder = device.create_command_encoder(&Default::default());
-            {
-                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: None,
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: &view,
-                        resolve_target: None,
-                        depth_slice: None,
-                        ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                            store: wgpu::StoreOp::Store,
-                        },
-                    })],
-                    ..Default::default()
-                });
-                pass.set_pipeline(&pipeline);
-                pass.set_bind_group(0, &group, &[]);
-                pass.draw(0..3, 0..1);
-            }
-            encoder.copy_texture_to_buffer(
-                texture.as_image_copy(),
-                wgpu::TexelCopyBufferInfo {
-                    buffer: &read,
-                    layout: wgpu::TexelCopyBufferLayout {
-                        offset: 0,
-                        bytes_per_row: Some(256),
-                        rows_per_image: None,
-                    },
-                },
-                texture.size(),
-            );
-            queue.submit([encoder.finish()]);
-            read.slice(..)
-                .map_async(wgpu::MapMode::Read, |result| result.unwrap());
-            device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
-            let mapped = read.slice(..).get_mapped_range().unwrap();
+            let mapped = draw_line_program(&device, &queue, &values, &vertex);
             // Independent result: translated point (1, .5, -2), perspective (aspect 2,
             // vertical FOV 90): clip (.5, .5, z, 2), hence (.25, .25, .5, 1).
             for (actual, expected) in mapped[..4].iter().zip(expected) {
@@ -1176,6 +1099,261 @@ mod initial_history_tests {
                 );
             }
         }
+    }
+
+    /// `normalMatrix` in a core-profile gbuffers program is the view's rotation; in the
+    /// compatibility profile it stays zero (the issue's Iris 1.11.7 probes, #9136).
+    #[test]
+    #[ignore = "requires a host GPU; run with --ignored --nocapture"]
+    fn core_normal_matrix_renders_the_view_rotation() {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let adapter = pollster::block_on(instance.request_adapter(&Default::default())).unwrap();
+        eprintln!("Normal matrix GPU: {:?}", adapter.get_info());
+        let (device, queue) =
+            pollster::block_on(adapter.request_device(&Default::default())).unwrap();
+        let hud = HudBatch::new([800, 400]);
+        let mut f = frame(&hud);
+        // Facing west (-X), level: view space looks down -Z with +X to the right (north).
+        f.yaw = 90.0;
+        f.pitch = 0.0;
+        let mut values = FrameUniforms::default();
+        values.update(&f, &PackInputs::default(), [800, 400]);
+        for (profile, world, expected) in [
+            // East (behind the camera) is view +Z.
+            ("330 core", "vec3(1.0, 0.0, 0.0)", [128u8, 128, 255, 255]),
+            // South (to the left) is view -X; up stays up.
+            ("330 core", "vec3(0.0, 0.0, 1.0)", [0, 128, 128, 255]),
+            ("330 core", "vec3(0.0, 1.0, 0.0)", [128, 255, 128, 255]),
+            (
+                "330 compatibility",
+                "vec3(1.0, 0.0, 0.0)",
+                [128, 128, 128, 255],
+            ),
+        ] {
+            let vertex = format!(
+                "#version {profile}\nuniform mat3 normalMatrix;\nout vec3 result;\n\
+                 void main() {{\n\
+                 result = normalMatrix * {world} * 0.5 + 0.5;\n\
+                 vec2 p = vec2((gl_VertexID << 1) & 2, gl_VertexID & 2);\n\
+                 gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);\n}}"
+            );
+            let pixel = draw_line_program(&device, &queue, &values, &vertex);
+            eprintln!("{profile} {world}: {pixel:?}");
+            for (actual, expected) in pixel.iter().zip(expected) {
+                assert!(
+                    actual.abs_diff(expected) <= 1,
+                    "{profile} {world}: {pixel:?}"
+                );
+            }
+        }
+    }
+
+    /// Draws one fragment through a translated `gbuffers_line` program with `vertex` and the
+    /// provider's `values`, and reads it back.
+    fn draw_line_program(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        values: &FrameUniforms,
+        vertex: &str,
+    ) -> [u8; 4] {
+        use horizon_shaders::{
+            GbuffersInputs, Macros, Pack, Target, preprocess, translate_gbuffers,
+        };
+        use std::io::Write;
+        use wgpu::util::DeviceExt;
+        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        for (path, source) in [
+            ("shaders/gbuffers_line.vsh", vertex),
+            (
+                "shaders/gbuffers_line.fsh",
+                "#version 330\nin vec3 result; out vec4 color; void main() { color = vec4(result, 1.0); }",
+            ),
+        ] {
+            zip.start_file(path, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            zip.write_all(source.as_bytes()).unwrap();
+        }
+        let pack =
+            Pack::from_zip_bytes("matrix-probe.zip", zip.finish().unwrap().into_inner()).unwrap();
+        let macros = Macros::standard();
+        let program = translate_gbuffers(
+            &preprocess(&pack, "gbuffers_line.vsh", &macros),
+            &preprocess(&pack, "gbuffers_line.fsh", &macros),
+            Target::Buffers,
+            &GbuffersInputs::default(),
+        )
+        .unwrap();
+        let mut bytes = vec![0; program.interface.uniform_size as usize];
+        for uniform in &program.interface.uniforms {
+            if let Some(i) = index(&uniform.name) {
+                values.values[i].write(&uniform.ty, &mut bytes, uniform.offset as usize);
+            }
+        }
+        let uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: None,
+            contents: &bytes,
+            usage: wgpu::BufferUsages::UNIFORM,
+        });
+        let module = |module| {
+            device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: None,
+                source: wgpu::ShaderSource::Naga(std::borrow::Cow::Owned(module)),
+            })
+        };
+        let vs = module(program.vertex);
+        let fs = module(program.fragment);
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: None,
+            layout: None,
+            vertex: wgpu::VertexState {
+                module: &vs,
+                entry_point: Some("main"),
+                compilation_options: Default::default(),
+                buffers: &[],
+            },
+            primitive: Default::default(),
+            depth_stencil: None,
+            multisample: Default::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &fs,
+                entry_point: Some("main"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: wgpu::TextureFormat::Rgba8Unorm,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+        let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &pipeline.get_bind_group_layout(0),
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: uniform.as_entire_binding(),
+            }],
+        });
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: None,
+            size: wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&Default::default());
+        let read = device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: 256,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = device.create_command_encoder(&Default::default());
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: None,
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    depth_slice: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                ..Default::default()
+            });
+            pass.set_pipeline(&pipeline);
+            pass.set_bind_group(0, &group, &[]);
+            pass.draw(0..3, 0..1);
+        }
+        encoder.copy_texture_to_buffer(
+            texture.as_image_copy(),
+            wgpu::TexelCopyBufferInfo {
+                buffer: &read,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(256),
+                    rows_per_image: None,
+                },
+            },
+            texture.size(),
+        );
+        queue.submit([encoder.finish()]);
+        read.slice(..)
+            .map_async(wgpu::MapMode::Read, |result| result.unwrap());
+        device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        let mapped = read.slice(..).get_mapped_range().unwrap();
+        let pixel = mapped[..4].try_into().unwrap();
+        drop(mapped);
+        read.unmap();
+        pixel
+    }
+
+    fn int(u: &FrameUniforms, at: usize) -> i32 {
+        match u.values[at] {
+            Value::I(v) => v[0],
+            _ => panic!("integer uniform expected"),
+        }
+    }
+
+    /// Iris 1.11.7, read back exactly with a probe pack on a clear day (render distance 12,
+    /// cloud range 64): fogStart 0 and fogEnd 1024 (the environmental fog, not the render
+    /// distance's 172.8 to 192), fogDensity 0; composite and final programs read alphaTestRef
+    /// 0.1, blockEntityId -1, fogMode 0 and fogShape -1.
+    #[test]
+    fn fog_and_draw_uniforms_outside_a_draw_follow_iris() {
+        let hud = HudBatch::new([800, 450]);
+        let mut f = frame(&hud);
+        f.fog = Some(crate::fog::FogData {
+            color: [0.7, 0.8, 1.0, 1.0],
+            environmental_start: 0.0,
+            environmental_end: 1024.0,
+            render_distance_start: 172.8,
+            render_distance_end: 192.0,
+            sky_end: 192.0,
+            cloud_end: 1024.0,
+        });
+        let mut u = FrameUniforms::default();
+        u.update(&f, &PackInputs::default(), [800, 450]);
+        assert_eq!(float(&u, "fogStart")[0], 0.0);
+        assert_eq!(float(&u, "fogEnd")[0], 1024.0);
+        assert_eq!(float(&u, "fogDensity")[0], 0.0);
+        assert_eq!(float(&u, "alphaTestRef")[0], 0.1);
+        assert_eq!(int(&u, index("blockEntityId").unwrap()), -1);
+        assert_eq!(int(&u, index("entityId").unwrap()), 0);
+        assert_eq!(int(&u, index("fogMode").unwrap()), 0);
+        assert_eq!(int(&u, index("fogShape").unwrap()), -1);
+    }
+
+    /// Iris 1.11.7 (probe pack): gbuffers programs read fogMode GL_LINEAR (9729) and fogShape 1
+    /// (cylinder) where composite and final programs read 0 and -1.
+    #[test]
+    fn programs_that_draw_geometry_read_their_own_fog_and_centre_depth() {
+        let hud = HudBatch::new([800, 450]);
+        let mut u = FrameUniforms::default();
+        u.update(&frame(&hud), &PackInputs::default(), [800, 450]);
+        let at = |name, geometry| index_in(name, geometry).unwrap();
+        assert_eq!(int(&u, at("fogMode", true)), 9729);
+        assert_eq!(int(&u, at("fogShape", true)), 1);
+        assert_eq!(int(&u, at("fogMode", false)), 0);
+        assert_eq!(int(&u, at("fogShape", false)), -1);
+        assert_eq!(at("fogStart", true), at("fogStart", false));
+        // Iris 1.11.7 (probe pack): `centerDepthSmooth` reads 0 in gbuffers programs.
+        let depth = |geometry| match u.values[at("centerDepthSmooth", geometry)] {
+            Value::F(v) => v[0],
+            _ => panic!("float uniform expected"),
+        };
+        assert_eq!(depth(true), 0.0);
+        assert_eq!(depth(false), 1.0);
     }
 
     /// Iris 1.11.7, read frame by frame with a probe pack: eyeBrightnessSmooth falls by half
@@ -1295,6 +1473,7 @@ mod initial_history_tests {
             celestial: &[],
             stars: None,
             hand: &[],
+            hand_items: &[],
             hand_fov_degrees: 70.0,
             screen: &[],
             pack: Default::default(),

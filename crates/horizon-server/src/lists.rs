@@ -26,59 +26,88 @@ pub fn run(dir: &Path, command: &str, args: &[String]) -> Result<(), String> {
         return crate::cli::command(dir, &words);
     };
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    let edit = edit_locked(dir, &config, command, &args)?;
+    println!("{}", edit.message);
+    Ok(())
+}
+
+/// An edit to one of the vanilla lists, with the console line it would print.
+pub struct Edit {
+    pub changed: bool,
+    pub message: String,
+}
+
+/// Edits a file-backed list while the supervisor owns the server lock and the game is stopped.
+pub fn edit_stopped(dir: &Path, command: &str, args: &[&str]) -> Result<Edit, String> {
+    let config = config::Config::load(dir)?;
+    edit_locked(dir, &config, command, args)
+}
+
+fn edit_locked(
+    dir: &Path,
+    config: &config::Config,
+    command: &str,
+    args: &[&str],
+) -> Result<Edit, String> {
     let ops_path = dir.join("ops.json");
     let white_path = dir.join("whitelist.json");
-    let message = match (command, args.as_slice()) {
+    let (changed, message) = match (command, args) {
         ("op", [name]) => {
             let mut ops = load(OpList::new(ops_path))?;
             let user = account(name, config.server.online_mode)?;
             if ops.contains(&user) {
-                "Nothing changed. The player already is an operator".to_owned()
+                (
+                    false,
+                    "Nothing changed. The player already is an operator".to_owned(),
+                )
             } else {
                 ops.add(OpEntry {
                     user,
                     level: 4,
                     bypasses_player_limit: false,
                 });
-                format!("Made {name} a server operator")
+                (true, format!("Made {name} a server operator"))
             }
         }
         ("deop", [name]) => {
             let mut ops = load(OpList::new(ops_path))?;
             let user = listed(ops.entries().iter().map(|e| &e.user), name);
             if user.is_some_and(|user| ops.remove(&user)) {
-                format!("Made {name} no longer a server operator")
+                (true, format!("Made {name} no longer a server operator"))
             } else {
-                "Nothing changed. The player is not an operator".to_owned()
+                (
+                    false,
+                    "Nothing changed. The player is not an operator".to_owned(),
+                )
             }
         }
         ("whitelist", ["add", name]) => {
             let mut white = load(WhiteList::new(white_path))?;
             let user = account(name, config.server.online_mode)?;
             if white.contains(&user) {
-                "Player is already whitelisted".to_owned()
+                (false, "Player is already whitelisted".to_owned())
             } else {
                 white.add(WhiteEntry { user });
-                format!("Added {name} to the whitelist")
+                (true, format!("Added {name} to the whitelist"))
             }
         }
         ("whitelist", ["remove", name]) => {
             let mut white = load(WhiteList::new(white_path))?;
             let user = listed(white.entries().iter().map(|e| &e.user), name);
             if user.is_some_and(|user| white.remove(&user)) {
-                format!("Removed {name} from the whitelist")
+                (true, format!("Removed {name} from the whitelist"))
             } else {
-                "Player is not whitelisted".to_owned()
+                (false, "Player is not whitelisted".to_owned())
             }
         }
         ("whitelist", [state @ ("on" | "off")]) => {
             let on = *state == "on";
             match (on, config.server.whitelist) {
-                (true, true) => "Whitelist is already turned on".to_owned(),
-                (false, false) => "Whitelist is already turned off".to_owned(),
+                (true, true) => (false, "Whitelist is already turned on".to_owned()),
+                (false, false) => (false, "Whitelist is already turned off".to_owned()),
                 _ => {
                     config::update(dir, "server", "whitelist", toml::Value::Boolean(on))?;
-                    format!("Whitelist is now turned {state}")
+                    (true, format!("Whitelist is now turned {state}"))
                 }
             }
         }
@@ -91,12 +120,18 @@ pub fn run(dir: &Path, command: &str, args: &[String]) -> Result<(), String> {
                 .collect();
             let state = if config.server.whitelist { "on" } else { "off" };
             if names.is_empty() {
-                format!("There are no whitelisted players (the whitelist is {state})")
+                (
+                    false,
+                    format!("There are no whitelisted players (the whitelist is {state})"),
+                )
             } else {
-                format!(
-                    "There are {} whitelisted player(s): {} (the whitelist is {state})",
-                    names.len(),
-                    names.join(", ")
+                (
+                    false,
+                    format!(
+                        "There are {} whitelisted player(s): {} (the whitelist is {state})",
+                        names.len(),
+                        names.join(", ")
+                    ),
                 )
             }
         }
@@ -106,8 +141,7 @@ pub fn run(dir: &Path, command: &str, args: &[String]) -> Result<(), String> {
             );
         }
     };
-    println!("{message}");
-    Ok(())
+    Ok(Edit { changed, message })
 }
 
 /// `whitelist add` on a running offline server: the offline entry, then the game reloads the list.

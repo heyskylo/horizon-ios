@@ -23,6 +23,8 @@ const USAGE: u8 = 2;
 const UNREACHABLE: u8 = 3;
 /// No AI is on (`horizon_core::no_ai`): agent control is off.
 const DENIED: u8 = 4;
+/// `--api LINE`: the game speaks another protocol line.
+const API_MISMATCH: u8 = 5;
 
 /// A failure, with the exit status it maps to.
 #[derive(Debug)]
@@ -104,12 +106,41 @@ impl Client {
     }
 }
 
+/// Whether a game's protocol (`MAJOR.MINOR.PATCH`) is on the requested line (`MAJOR.MINOR`, or a full version):
+/// every part the line names must match. Before 1.0 a patch only adds, so `0.1` takes `0.1.0` and `0.1.4`.
+fn on_line(protocol: &str, line: &str) -> bool {
+    let game: Vec<&str> = protocol.split('.').collect();
+    let want: Vec<&str> = line.split('.').collect();
+    want.len() <= game.len() && want.iter().zip(&game).all(|(w, g)| w == g)
+}
+
+/// Ask the game `hello` and refuse it unless it speaks `line`. A game without the command
+/// (older than protocol 0.1.0) has no protocol line and is refused too.
+fn check_api(client: &mut Client, line: &str) -> Result<(), Failure> {
+    let refuse = |why: String| Failure {
+        reply: json!({ "error": format!("horizon-ctl --api {line}: {why}"), "kind": "api", "wanted": line }),
+        status: API_MISMATCH,
+    };
+    let reply = client.send("hello")?;
+    match reply.get("protocol").and_then(Value::as_str) {
+        Some(p) if on_line(p, line) => Ok(()),
+        Some(p) => Err(refuse(format!(
+            "the game speaks control protocol {p}, not the {line} line; use a horizon-ctl built for it (docs/api/agent-control.md)"
+        ))),
+        None => Err(refuse(
+            "the game does not report a control protocol (it predates hello); update the game or drop --api".to_owned(),
+        )),
+    }
+}
+
 /// Global options and the connection, opened on first use.
 pub struct Session {
     pub socket: PathBuf,
     pub timeout: Option<Duration>,
     /// The game's home, where No AI is read (`horizon_core::no_ai`).
     pub home: PathBuf,
+    /// `--api LINE`: the protocol line this run speaks; a game on another line is refused.
+    pub api: Option<String>,
     client: Option<Client>,
 }
 
@@ -119,6 +150,7 @@ impl Session {
             socket,
             timeout,
             home: horizon_client::logging::game_home(),
+            api: None,
             client: None,
         }
     }
@@ -128,7 +160,11 @@ impl Session {
     }
     fn client(&mut self) -> Result<&mut Client, Failure> {
         if self.client.is_none() {
-            self.client = Some(Client::connect(&self.socket, self.timeout)?);
+            let mut client = Client::connect(&self.socket, self.timeout)?;
+            if let Some(line) = &self.api {
+                check_api(&mut client, line)?;
+            }
+            self.client = Some(client);
         }
         Ok(self.client.as_mut().unwrap())
     }
@@ -428,6 +464,7 @@ fn main() -> ExitCode {
     let mut socket = horizon_client::control::default_path();
     let mut timeout = None;
     let mut pretty = false;
+    let mut api: Option<String> = None;
     // Global options before the command.
     loop {
         match args.first().map(String::as_str) {
@@ -446,6 +483,10 @@ fn main() -> ExitCode {
                 timeout = Some(Duration::from_secs_f64(s.max(0.001)));
                 args.drain(0..2);
             }
+            Some("--api") if args.len() >= 2 => {
+                api = Some(args[1].clone());
+                args.drain(0..2);
+            }
             Some("--pretty") => {
                 pretty = true;
                 args.remove(0);
@@ -453,7 +494,22 @@ fn main() -> ExitCode {
             _ => break,
         }
     }
+    if let Some(line) = &api {
+        let valid = !line.is_empty()
+            && line.split('.').count() <= 3
+            && line
+                .split('.')
+                .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()));
+        if !valid {
+            print(
+                &json!({ "error": "--api takes a protocol line such as 0.1", "kind": "usage" }),
+                false,
+            );
+            return ExitCode::from(USAGE);
+        }
+    }
     let mut session = Session::new(socket, timeout);
+    session.api = api;
     let name = args.first().cloned();
     let status = match name.as_deref() {
         None | Some("-h" | "--help") => {
@@ -620,6 +676,118 @@ mod tests {
         assert_eq!(split_line("chat issue#4").unwrap(), ["chat", "issue#4"]);
         assert!(split_line("   # only a comment").unwrap().is_empty());
         assert!(split_line("type \"open").is_err());
+    }
+
+    /// A fake game on a Unix socket: answers every line with `reply`, records the lines it got.
+    #[cfg(unix)]
+    fn fake_game(
+        name: &str,
+        reply: &'static str,
+    ) -> (PathBuf, std::thread::JoinHandle<Vec<String>>) {
+        let path = std::env::temp_dir().join(format!("hctl-{name}-{}.sock", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        let handle = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut lines = Vec::new();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut out = stream;
+            let mut line = String::new();
+            while reader.read_line(&mut line).unwrap_or(0) > 0 {
+                lines.push(line.trim_end().to_owned());
+                line.clear();
+                writeln!(out, "{reply}").unwrap();
+            }
+            lines
+        });
+        (path, handle)
+    }
+
+    #[cfg(unix)]
+    fn api_session(path: &Path, api: &str) -> Session {
+        let mut s = Session::new(path.to_owned(), Some(Duration::from_secs(5)));
+        s.home = std::env::temp_dir().join("horizon-ctl-api-no-home");
+        s.api = Some(api.to_owned());
+        s
+    }
+
+    #[test]
+    fn api_line_matches_whole_parts() {
+        assert!(on_line("0.1.0", "0.1"));
+        assert!(on_line("0.1.4", "0.1"));
+        assert!(on_line("0.1.0", "0.1.0"));
+        assert!(!on_line("0.1.0", "0.1.1"));
+        assert!(!on_line("0.2.0", "0.1"));
+        assert!(!on_line("0.10.0", "0.1"));
+        assert!(!on_line("1.0.0", "0"));
+        assert!(!on_line("0.1", "0.1.0"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn api_accepts_a_game_on_the_line() {
+        let (path, game) = fake_game(
+            "match",
+            r#"{"protocol":"0.1.0","release":"x","features":[]}"#,
+        );
+        let mut s = api_session(&path, "0.1");
+        let reply = s.game("hello").unwrap();
+        assert_eq!(reply["protocol"], "0.1.0");
+        drop(s);
+        // hello for the check, then the caller's own line.
+        assert_eq!(game.join().unwrap(), ["hello", "hello"]);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn api_refuses_a_game_on_another_line() {
+        let (path, game) = fake_game(
+            "mismatch",
+            r#"{"protocol":"0.2.0","release":"x","features":[]}"#,
+        );
+        let mut s = api_session(&path, "0.1");
+        let f = s.game("state").unwrap_err();
+        assert_eq!(f.status, API_MISMATCH);
+        assert_eq!(f.reply["kind"], "api");
+        let message = f.reply["error"].as_str().unwrap();
+        assert!(
+            message.contains("0.2.0") && message.contains("0.1"),
+            "{message}"
+        );
+        drop(s);
+        // The refused command never reached the game.
+        assert_eq!(game.join().unwrap(), ["hello"]);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn api_refuses_a_game_with_no_protocol_line() {
+        let (path, game) = fake_game("old", r#"{"error":"unknown command hello"}"#);
+        let mut s = api_session(&path, "0.1");
+        let f = s.game("state").unwrap_err();
+        assert_eq!(f.status, API_MISMATCH);
+        assert!(
+            f.reply["error"]
+                .as_str()
+                .unwrap()
+                .contains("predates hello")
+        );
+        drop(s);
+        assert_eq!(game.join().unwrap(), ["hello"]);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn without_api_the_game_is_not_asked_hello() {
+        let (path, game) = fake_game("noapi", r#"{"ok":true}"#);
+        let mut s = Session::new(path.clone(), Some(Duration::from_secs(5)));
+        s.game("state").unwrap();
+        drop(s);
+        assert_eq!(game.join().unwrap(), ["state"]);
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]

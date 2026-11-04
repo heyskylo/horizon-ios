@@ -224,7 +224,8 @@ turn the switch off.
   - `busy`: another action or a benchmark is running;
   - `timeout`;
   - `connection`: the game can't be reached;
-  - `denied`: No AI is on (exit status 4).
+  - `denied`: No AI is on (exit status 4);
+  - `api`: `--api LINE` named a protocol line the game's `hello` does not report (exit status 5).
 
   The message names what to do next ("no world open; use: open WORLD").
 - **Shapes are shared:**

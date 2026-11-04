@@ -84,6 +84,7 @@ Inventory.isEmpty	port	crates/horizon-world/src/player_inventory.rs::PlayerInven
 Inventory.getItem	port	crates/horizon-world/src/player_inventory.rs::PlayerInventory::get	slots past the main inventory address equipment
 Inventory.replaceWith	port	crates/horizon-world/src/player_inventory.rs::PlayerInventory::replace_with	
 Inventory.removeFromSelected	port	crates/horizon-world/src/player_inventory.rs::PlayerInventory::remove_selected	
+Player.getVoicePitch	port	crates/horizon-client/src/game/remote.rs::player_voice_pitch	a constant 1.0 (fconst_1), so the hurt sound of handleDamageEvent and the death sound of handleEntityEvent 3 are played unpitched and draw nothing from the level random
 Player.defineSynchedData	skip:java		synched data definitions; Horizon keeps the fields in game and player state
 Player.turtleHelmetTick	port	crates/horizon-client/src/game/potions.rs::Game::turtle_helmet_tick	
 Player.isEquipped	inline	crates/horizon-client/src/game/potions.rs::Game::turtle_helmet_tick	the head-slot check for the turtle helmet

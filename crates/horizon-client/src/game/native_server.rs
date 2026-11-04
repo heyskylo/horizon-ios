@@ -219,6 +219,8 @@ impl Game<'_> {
                 health: g.health,
                 yaw: g.yaw,
                 pitch: g.pitch,
+                entity_id: g.entity_id,
+                address: g.address.ip().to_string(),
             })
             .collect()
     }
@@ -453,6 +455,18 @@ impl Game<'_> {
             health: p.health.health(),
             yaw: p.yaw,
             pitch: p.pitch,
+            entity_id: self.native_acting_entity() as i32,
+            address: self
+                .lan
+                .as_ref()
+                .and_then(|host| {
+                    host.hub
+                        .guests
+                        .iter()
+                        .find(|g| Some(g.uuid) == self.lan_acting_uuid)
+                })
+                .map(|g| g.address.ip().to_string())
+                .unwrap_or_default(),
         })
     }
     /// Runs `line` (no slash) as the server's console does: permission
@@ -990,6 +1004,8 @@ impl Game<'_> {
             health: g.health,
             yaw: g.yaw,
             pitch: g.pitch,
+            entity_id: g.entity_id,
+            address: g.address.ip().to_string(),
         };
         let mut ran = false;
         self.native_perform_command(&player, line, &mut ran);

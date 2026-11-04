@@ -206,7 +206,7 @@ impl Launcher {
                 if gone {
                     disabled(b)
                 } else {
-                    b.on_click(move |_, _, cx| cx.open_with_system(&open))
+                    b.on_click(move |_, _, cx| crate::glass_toast::open(cx, &open))
                 }
             })
             .child({

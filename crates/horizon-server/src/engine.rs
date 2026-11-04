@@ -114,12 +114,15 @@ fn start_failure(program: &Path, code: Option<i32>, stderr: &str) -> String {
     text
 }
 
+/// The Minecraft version this server is pinned to; prepared game files must be stamped with it.
+pub const GAME_VERSION: &str = horizon_core::version::VERSION_ID;
+
 /// Where the prepared game files may be, in the order they are tried.
 pub fn resource_candidates(config: &Config, dir: &Path, program: Option<&Path>) -> Vec<PathBuf> {
     if !config.engine.resources.is_empty() {
         return vec![dir.join(&config.engine.resources)];
     }
-    let version = "26.3";
+    let version = GAME_VERSION;
     let mut out = vec![dir.join("resources")];
     // A release folder or a checkout: .local/horizon-client/<version> beside the program or above it.
     if let Some(program) = program {

@@ -1,4 +1,5 @@
 AbstractNautilus.createAttributes	skip:data		attributes come from the entity type table (MobType in mobs.rs)
+AbstractNautilus.canBeAffected	port	crates/horizon-client/src/mobs.rs::Mob::can_be_affected	poison, for the nautilus and its zombie
 AbstractNautilus.checkNautilusSpawnRules	port	crates/horizon-client/src/mobs/spawn_rules.rs::check_spawn_rules	S::Nautilus arm: sea level minus 25 to minus 5, water below and above; only the nautilus has a placement (the zombie nautilus has none of its own)
 AbstractNautilus.canUseSlot	port	crates/horizon-client/src/game/dispenser.rs::mob_can_use_slot	saddle and body slots need an alive, grown, tame nautilus
 AbstractNautilus.canDispenserEquipIntoSlot	port	crates/horizon-client/src/game/dispenser.rs::mob_can_dispenser_equip	body and saddle always, other slots only with pick_up_loot
@@ -61,6 +62,7 @@ Parrot.checkParrotSpawnRules	port	crates/horizon-client/src/mobs/spawn_rules.rs:
 Parrot.isFlapping	port	crates/horizon-client/src/mobs/parrot.rs::process_flapping	strict flyDist > nextFlap, used by air movement and live Game flap dispatch
 Parrot.onFlap	port	crates/horizon-client/src/mobs/parrot.rs::process_flapping	the wing-beat sound at 0.15 and nextFlap
 Parrot.hurtServer	port	crates/horizon-client/src/mobs/tame.rs::stand_when_hurt	
+Parrot.getVoicePitch	port	crates/horizon-client/src/mobs.rs::voice_pitch	getPitch(random): 1.0 +- 0.2 with no baby bump, where LivingEntity raises a baby to 1.5
 Parrot.get	skip:other		reads the variant as a data component for predicates; Horizon has no entity component view
 Parrot.applyImplicitComponent	missing		minor: a spawn egg's parrot_variant component is not applied (only bucketed mobs read item components)
 Parrot.defineSynchedData	skip:other		synched variant id; Horizon keeps it in extra.variant (remote_mob_data.rs reads index 20)
@@ -142,7 +144,7 @@ Sniffer.onScentingStart	inline	crates/horizon-client/src/mobs/animal_brain.rs::t
 Sniffer.onDiggingStart	inline	crates/horizon-client/src/mobs/animal_brain.rs::transition	the seed drop is set 120 ticks ahead (ints[3]); the client sound starts from the animation in tick_sniffer_effects
 Sniffer.dropSeed	inline	crates/horizon-client/src/mobs/sniffer.rs::ai_step	gift loot sniffer_digging at the head block and the drop seed sound when the tick comes
 Sniffer.storeExploredPosition	inline	crates/horizon-client/src/mobs/animal_brain.rs::B::do_stop	the on-pos is put in front of the explored list, kept to 20
-Sniffer.jumpFromGround	missing		minor: no sniffer arm in Mob::jump_from_ground, so its hop gets no extra forward nudge (moveRelative 0.1 forward) when it moves slowly
+Sniffer.jumpFromGround	port	crates/horizon-client/src/mobs/living.rs::jump_from_ground	the sniffer arm: a hop the move control asked for, from under 0.1 a tick of ground speed, adds moveRelative(0.1, forward)
 Sniffer.mobInteract	inline	crates/horizon-client/src/mobs/ai.rs::eating_sound	the eating sound plays when the food was taken (feed_animal)
 Sniffer.playEatingSound	port	crates/horizon-client/src/mobs/ai.rs::eating_sound	Species::Sniffer arm: entity.sniffer.eat with pitch 0.8 to 1.2
 Sniffer.playSearchingSound	port	crates/horizon-client/src/game/sniffers.rs::Game::tick_sniffer_effects	searching sound every 20 ticks while searching, near any player

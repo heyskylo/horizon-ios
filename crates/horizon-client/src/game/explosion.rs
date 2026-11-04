@@ -490,7 +490,9 @@ impl Game<'_> {
                     p.velocity.z + push[2],
                 );
                 if !(creative && flying) {
-                    pushed = (!p.health.sync_velocity).then_some(push);
+                    // ServerExplosion.hitPlayers: the packet carries the push even when the hurt
+                    // also marks the velocity (its motion packet follows).
+                    pushed = Some(push);
                 }
             }
         }
@@ -664,6 +666,7 @@ impl Game<'_> {
                                 .filter(|&o| o != m.id)
                                 .map(horizon_client::mobs::Who::Mob),
                             from: Some(center),
+                            attacker_species: cause,
                         };
                         // `EXPLOSION_KNOCKBACK_RESISTANCE`, not `KNOCKBACK_RESISTANCE`:
                         // its base is 0 for every mob type, so iron golems and
@@ -1141,6 +1144,7 @@ mod tests {
             knockback_resistance: 0.0,
             jump_strength: 0.42,
             attributes: Default::default(),
+            item_stack_limits: Default::default(),
             gravity: 0.08,
             safe_fall_distance: 3.0,
             fall_damage_multiplier: 1.0,

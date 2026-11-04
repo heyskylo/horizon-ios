@@ -2142,6 +2142,10 @@ impl Game<'_> {
         for (text, c) in horizon_client::item_tooltip::smithing_template_lines(stack, &translate) {
             push(&mut lines, text, c);
         }
+        // DiscFragmentItem.appendHoverText.
+        if let Some(text) = horizon_client::item_tooltip::disc_fragment_line(stack, &translate) {
+            push(&mut lines, text, gray);
+        }
         // HangingEntityItem.appendHoverText: a painting's variant, its title,
         // author and size, or in a creative tab "Random variant".
         if &*stack.item == "minecraft:painting" && display.shows("minecraft:painting/variant") {
@@ -2952,6 +2956,10 @@ impl Game<'_> {
                     }
                 }
             }
+        }
+        if matches!(self.world.block_entities.get(&pos), Some(BlockEntity::Brewing(b)) if b.idle())
+        {
+            self.world.block_entities.sleep(pos);
         }
         Ok(())
     }

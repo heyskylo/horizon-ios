@@ -131,8 +131,20 @@ def run(command, **kwargs):
     subprocess.run(command, cwd=lab.ROOT, check=True, timeout=900, **kwargs)
 
 
+def repo_path(path):
+    """`path` relative to the repository. Its absolute spelling first: a worktree's `.local` may be a
+    link (a junction on Windows) to another checkout's, which resolving would leave; then its
+    resolved one, for a root reached through a link (macOS's /var is /private/var)."""
+    for candidate in (Path(os.path.abspath(path)), Path(path).resolve()):
+        try:
+            return str(candidate.relative_to(lab.ROOT))
+        except ValueError:
+            pass
+    raise ValueError(f"{path} is outside {lab.ROOT}")
+
+
 def source_hashes(sources):
-    return {str(Path(path).resolve().relative_to(lab.ROOT)): lab.digest(Path(path), "sha256") for path in sources}
+    return {repo_path(path): lab.digest(Path(path), "sha256") for path in sources}
 
 
 def ensure_sources_unchanged(sources, expected):
