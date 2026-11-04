@@ -99,9 +99,8 @@ pub fn what(file: &Path) -> Result<Dropped, String> {
         // extension, so a file nothing else claims is read before giving up.
         _ if is_build(file) => return Ok(Dropped::Build),
         _ => {
-            return Err(format!(
-                "{name} can't be imported: drop a .mrpack, a .zip, a .hshader or a Horizon game build."
-            ))
+            let kinds = "a .mrpack, a .zip, a .hshader or a Horizon game build";
+            return Err(format!("{name} can't be imported: drop {kinds}."));
         }
     }
     let zip = open(file)?;
