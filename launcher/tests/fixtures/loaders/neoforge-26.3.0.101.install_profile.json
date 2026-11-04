@@ -1,0 +1,83 @@
+{
+ "spec": 1,
+ "profile": "NeoForge",
+ "version": "neoforge-26.3.0.101",
+ "minecraft": "26.3",
+ "json": "/version.json",
+ "hideExtract": true,
+ "data": {
+  "BINPATCH": {
+   "client": "/data/client.lzma",
+   "server": "/data/client.lzma"
+  },
+  "PATCHED": {
+   "client": "[net.neoforged:minecraft-client-patched:26.3.0.101]",
+   "server": "[net.neoforged:minecraft-server-patched:26.3.0.101]"
+  },
+  "MCP_VERSION": {
+   "client": "'26.3-1'",
+   "server": "'26.3-1'"
+  }
+ },
+ "processors": [
+  {
+   "sides": [
+    "server"
+   ],
+   "jar": "net.neoforged.installertools:installertools:4.0.17:fatjar",
+   "classpath": [
+    "net.neoforged.installertools:installertools:4.0.17:fatjar"
+   ],
+   "args": [
+    "--task",
+    "EXTRACT_FILES",
+    "--archive",
+    "{INSTALLER}",
+    "--from",
+    "data/run.sh",
+    "--to",
+    "{ROOT}/run.sh",
+    "--exec",
+    "{ROOT}/run.sh",
+    "--from",
+    "data/run.bat",
+    "--to",
+    "{ROOT}/run.bat",
+    "--from",
+    "data/user_jvm_args.txt",
+    "--to",
+    "{ROOT}/user_jvm_args.txt",
+    "--optional",
+    "{ROOT}/user_jvm_args.txt",
+    "--from",
+    "data/win_args.txt",
+    "--to",
+    "{ROOT}/libraries/net/neoforged/neoforge/26.3.0.101/win_args.txt",
+    "--from",
+    "data/unix_args.txt",
+    "--to",
+    "{ROOT}/libraries/net/neoforged/neoforge/26.3.0.101/unix_args.txt"
+   ]
+  },
+  {
+   "jar": "net.neoforged.installertools:installertools:4.0.17:fatjar",
+   "classpath": [
+    "net.neoforged.installertools:installertools:4.0.17:fatjar"
+   ],
+   "args": [
+    "--task",
+    "PROCESS_MINECRAFT_JAR",
+    "--no-mod-manifest",
+    "--input",
+    "{MINECRAFT_JAR}",
+    "--output",
+    "{PATCHED}",
+    "--extract-libraries-to",
+    "{ROOT}/libraries/",
+    "--apply-patches",
+    "{BINPATCH}"
+   ]
+  }
+ ],
+ "serverJarPath": "{LIBRARY_DIR}/net/minecraft/server/{MINECRAFT_VERSION}/server-{MINECRAFT_VERSION}.jar"
+}

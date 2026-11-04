@@ -43,13 +43,13 @@ AbstractInterpolationHandler.adjustInterpolationTargetFromDeltas	skip:other		sam
 AbstractInterpolationHandler.setLastPositionAndRotation	skip:other		only feeds the delta adjustments above; Horizon's own last is the start of the step
 AgeableMob.defineSynchedData	port	crates/horizon-client/src/game/lan.rs::mob_meta	the baby flag (baby_index) and AGE_LOCKED after it; a kind outside baby_index (sulfur cube, nautilus, happy ghast) sends neither
 AgeableMob.getAge	inline	crates/horizon-client/src/game/remote_mob_data.rs::apply	m.extra.age on the host; a remote client only learns baby or not (-1 or 0)
-AgeableMob.addAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::mob_to_nbt	Age, ForcedAge and AgeLocked for creatures
+AgeableMob.addAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::mob_to_nbt	modeled Age, ForcedAge and AgeLocked for baby-capable creatures; zombie nautiluses omit ignored raw age keys
 AgeableMob.readAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::mob_from_nbt	Age, ForcedAge and AgeLocked
 AnimationState.getTimeInMillis	port	crates/horizon-client/src/mobs/keyframes.rs::AnimationState::millis	
 AreaEffectCloud.defineSynchedData	port	crates/horizon-client/src/game/lan_entities.rs::Game::lan_projectile_states	radius, waiting and particle for dragon breath and lingering clouds; read back in remote_projectiles.rs::remote_projectile_data
-AreaEffectCloud.setRadius	inline	crates/horizon-client/src/game/potions.rs::Game::tick_potion_cloud	radius shrinks per tick and per victim; the 0..32 clamp is not needed
+AreaEffectCloud.setRadius	inline	crates/horizon-client/src/game/potions.rs::Game::tick_potion_cloud	loaded radius and nonzero per-tick/per-use changes clamp to 0..32
 AreaEffectCloud.refreshDimensions	inline	crates/horizon-client/src/game/potions.rs::Game::tick_potion_cloud	the affected box is rebuilt from the radius every check
-AreaEffectCloud.readAdditionalSaveData	missing		minor: clouds are not loaded from a world; a saved lingering or breath cloud, or one made by /summon, does not appear
+AreaEffectCloud.readAdditionalSaveData	port	crates/horizon-client/src/game/potions.rs::Game::load_potion_cloud	loaded potion effects, age, radius, duration, wait, reapplication, per-use/per-tick changes and duration scale join the live cloud model; owner resolution and custom particles remain unmodeled; save/reopen remains separate
 AreaEffectCloud.addAdditionalSaveData	missing		minor: a lingering potion or dragon breath cloud is gone after the world is saved and reopened
 AreaEffectCloud.get	skip:other		entity data component accessor for predicates and /data; Horizon keeps the cloud's potion in PotionCloud
 AreaEffectCloud.applyImplicitComponents	inline	crates/horizon-client/src/game/potions.rs::Game::splash	the lingering branch takes the thrown stack's potion effects and colour; potion_duration_scale is fixed at 0.25

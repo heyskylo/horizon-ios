@@ -59,8 +59,14 @@ impl Cull {
         let children = spans
             .iter()
             .map(|span| match span {
-                // The wrapper includes the row's margin in its measured height.
-                Span::Row(index) => div().flex().flex_col().flex_none().child(row(*index)),
+                // The wrapper supplies the row's gap as bottom padding.
+                Span::Row(index) => {
+                    let mut d = div().flex().flex_col().flex_none();
+                    if gap > 0. {
+                        d = d.pb(px(gap));
+                    }
+                    d.child(row(*index))
+                }
                 Span::Space(height) => div().flex_none().h(*height),
             })
             .collect::<Vec<_>>();
