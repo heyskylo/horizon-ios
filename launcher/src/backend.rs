@@ -544,9 +544,9 @@ pub fn data_dir() -> PathBuf {
     if let Some(home) = std::env::var_os("HORIZON_LAUNCHER_HOME").filter(|h| !h.is_empty()) {
         return PathBuf::from(home);
     }
-    if let Some(roots) = crate::data_location::configured_roots()
-        .expect("data location must be validated before using launcher data")
-    {
+    // A location that does not open stands in as the default folders, as
+    // `data_location::startup` makes it for the window: never a panic here.
+    if let Ok(Some(roots)) = crate::data_location::configured_roots() {
         return roots.launcher;
     }
     dirs::data_dir()
@@ -583,9 +583,9 @@ fn tool_safe(path: &Path) -> bool {
 /// path isn't [`tool_safe`], [`windows_build_dir`] names the same folder a way MinGW-w64 can open.
 pub fn build_dir() -> PathBuf {
     if std::env::var_os("HORIZON_LAUNCHER_HOME").is_none_or(|p| p.is_empty()) {
-        if let Some(roots) = crate::data_location::configured_roots()
-            .expect("data location must be validated before using build data")
-        {
+        // A location that does not open stands in as the default folders, as
+        // `data_location::startup` makes it for the window: never a panic here.
+        if let Ok(Some(roots)) = crate::data_location::configured_roots() {
             return roots.build;
         }
     }
@@ -2038,9 +2038,9 @@ pub fn game_home() -> PathBuf {
     if let Some(home) = std::env::var_os("HORIZON_HOME").filter(|h| !h.is_empty()) {
         return PathBuf::from(home);
     }
-    if let Some(roots) = crate::data_location::configured_roots()
-        .expect("data location must be validated before using game data")
-    {
+    // A location that does not open stands in as the default folders, as
+    // `data_location::startup` makes it for the window: never a panic here.
+    if let Ok(Some(roots)) = crate::data_location::configured_roots() {
         return roots.game;
     }
     dirs::data_dir()

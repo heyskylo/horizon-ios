@@ -113,12 +113,7 @@ pub fn startup() -> Option<String> {
         }
         Err(error) => problems.push(error),
     }
-    let error = (!problems.is_empty()).then(|| {
-        problems.join(
-            "
-",
-        )
-    });
+    let error = (!problems.is_empty()).then(|| problems.join("\n"));
     remember_startup_error(error.clone());
     error
 }
