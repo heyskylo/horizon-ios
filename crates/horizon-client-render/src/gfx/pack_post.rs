@@ -4998,3 +4998,6 @@ mod destination_tests;
 
 #[cfg(test)]
 mod rgb_alpha_tests;
+
+#[cfg(test)]
+mod const_offset_tests;
