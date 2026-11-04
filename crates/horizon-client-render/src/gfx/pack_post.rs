@@ -103,6 +103,9 @@ impl SamplerKind {
             Source::Color(_) | Source::ShadowColor(_) | Source::Dummy if !filtering => {
                 Self::Nearest
             }
+            // shadowtex0/1 through a plain sampler: linear, as Iris 1.11.7 reads them, when the
+            // device filters their copies (`ShadowTargets::linear`).
+            Source::ShadowDepth(_, false) if filtering => Self::Linear,
             Source::Depth | Source::Depth1 | Source::Depth2 | Source::ShadowDepth(_, false) => {
                 Self::Nearest
             }
@@ -616,7 +619,9 @@ pub struct PackPost {
     nearest: wgpu::Sampler,
     repeat: wgpu::Sampler,
     nearest_repeat: wgpu::Sampler,
-    blit: (wgpu::RenderPipeline, wgpu::BindGroupLayout),
+    /// None when it would write nothing: colortex0 holds integers and there is no depth to copy
+    /// nor buffer to clear.
+    blit: Option<(wgpu::RenderPipeline, wgpu::BindGroupLayout)>,
     /// The blit also writes depthtex0 (some program reads it) and clears these buffers.
     blit_depth: bool,
     blit_clears: Vec<usize>,
@@ -938,6 +943,14 @@ fn blend_state(b: horizon_shaders::Blend) -> wgpu::BlendState {
     }
 }
 
+/// A buffer whose texels are floats (normalized or not), not integers.
+fn holds_floats(format: wgpu::TextureFormat) -> bool {
+    matches!(
+        format.sample_type(None, None),
+        Some(wgpu::TextureSampleType::Float { .. })
+    )
+}
+
 fn target(format: wgpu::TextureFormat) -> Option<wgpu::ColorTargetState> {
     Some(wgpu::ColorTargetState {
         format,
@@ -1090,6 +1103,9 @@ struct Resources<'a> {
     released: std::cell::Cell<(&'static str, u16)>,
     /// The formats and dimensions of the images no `image.*` gives, for their stand-ins.
     stand_ins: &'a std::cell::RefCell<Vec<(wgpu::TextureFormat, wgpu::TextureViewDimension)>>,
+    /// Bit n: shadowtex n read through a plain sampler filters linearly (`shadowtexNNearest`
+    /// unset, and the device filters `R32Float`).
+    shadow_linear: u8,
 }
 
 /// A program's bind group layout (its uniform block, samplers and images) and how each sampler
@@ -1214,6 +1230,7 @@ fn bindings(
                     Source::ShadowColor(n) => shadow
                         .and_then(|f| f[n].sample_type(None, Some(features)))
                         .unwrap_or(float),
+                    Source::ShadowDepth(n, false) if pack.shadow_linear & 1 << n != 0 => float,
                     Source::Depth | Source::Depth1 | Source::Depth2 | Source::ShadowDepth(..) => {
                         wgpu::TextureSampleType::Float { filterable: false }
                     }
@@ -1948,6 +1965,13 @@ impl PackPost {
             rgb,
             released: std::cell::Cell::new(("", 0)),
             stand_ins: &stand_ins,
+            shadow_linear: if features.contains(wgpu::Features::FLOAT32_FILTERABLE) {
+                (0..2)
+                    .filter(|&n| !shadow_config.nearest[n])
+                    .fold(0, |m, n| m | 1 << n)
+            } else {
+                0
+            },
         };
         let mut build = |mut p: horizon_shaders::PostProgram, geometry: Option<&Geometry<'_>>| {
             let in_shadow = p.group.shadow();
@@ -2332,8 +2356,21 @@ impl PackPost {
             let depth1 = every_pass()
                 .flat_map(|p| &p.samplers)
                 .any(|s| matches!(s.source, Source::ShadowDepth(1, _)));
-            let t =
-                super::pack_shadow::ShadowTargets::new(device, &shadow_config, f, colors, depth1);
+            let linear = every_pass()
+                .flat_map(|p| &p.samplers)
+                .filter(|s| s.filtering)
+                .fold(0u8, |m, s| match s.source {
+                    Source::ShadowDepth(n, false) => m | 1 << n,
+                    _ => m,
+                });
+            let t = super::pack_shadow::ShadowTargets::new(
+                device,
+                &shadow_config,
+                f,
+                colors,
+                depth1,
+                linear,
+            );
             notes.push(format!(
                 "shadow map {0}x{0} over {2} blocks, sunPathRotation {3}, shadowcolor buffers {colors:#b}{1}",
                 t.size,
@@ -2404,7 +2441,13 @@ impl PackPost {
             }
         });
         let float = wgpu::TextureSampleType::Float { filterable: true };
-        let mut world_target = target(formats[0]);
+        // The world's colour is floats: an integer colortex0 (`RGBA32UI`...) gets only what the
+        // pack writes, and is cleared in a pass of its own.
+        let world_color = holds_floats(formats[0]);
+        if !world_color {
+            other_clears.push(0);
+        }
+        let mut world_target = world_color.then(|| target(formats[0])).flatten();
         if rgb & 1 != 0
             && let Some(t) = &mut world_target
         {
@@ -2421,28 +2464,30 @@ impl PackPost {
                 })
             }))
             .collect();
-        let blit = helper(
-            device,
-            "vs_full",
-            if blit_depth {
-                "fs_blit"
-            } else {
-                "fs_blit_color"
-            },
-            &[
-                texture_entry(0, float),
-                texture_entry(1, wgpu::TextureSampleType::Depth),
-            ],
-            &blit_targets,
-            // GL's window depth, written for depthtex0 and the terrain's depth test.
-            blit_depth.then_some(wgpu::DepthStencilState {
-                format: wgpu::TextureFormat::Depth32Float,
-                depth_write_enabled: Some(true),
-                depth_compare: Some(wgpu::CompareFunction::Always),
-                stencil: Default::default(),
-                bias: Default::default(),
-            }),
-        );
+        let blit = (world_color || blit_depth || !cleared.is_empty()).then(|| {
+            helper(
+                device,
+                "vs_full",
+                if blit_depth {
+                    "fs_blit"
+                } else {
+                    "fs_blit_color"
+                },
+                &[
+                    texture_entry(0, float),
+                    texture_entry(1, wgpu::TextureSampleType::Depth),
+                ],
+                &blit_targets,
+                // GL's window depth, written for depthtex0 and the terrain's depth test.
+                blit_depth.then_some(wgpu::DepthStencilState {
+                    format: wgpu::TextureFormat::Depth32Float,
+                    depth_write_enabled: Some(true),
+                    depth_compare: Some(wgpu::CompareFunction::Always),
+                    stencil: Default::default(),
+                    bias: Default::default(),
+                }),
+            )
+        });
         let copy = helper(
             device,
             "vs_uv",
@@ -2743,6 +2788,12 @@ impl PackPost {
                     Source::ShadowColor(i) => {
                         shadow_color(i, usize::from(key & 1 << (32 + i) != 0))
                             .unwrap_or(&self.dummy)
+                    }
+                    Source::ShadowDepth(i, false) if s.filtering => {
+                        match shadow.and_then(|t| t.linear[i].as_ref()) {
+                            Some(v) => v,
+                            None => &self.dummy,
+                        }
                     }
                     Source::ShadowDepth(i, _) => match shadow {
                         Some(t) => match (i, &t.depth1) {
@@ -3973,6 +4024,9 @@ impl PackPost {
             TerrainList::ShadowTranslucent,
             terrain,
         );
+        if let Some(t) = &self.shadow_targets {
+            t.copy_linear(encoder);
+        }
         let mut comp = std::mem::take(&mut self.shadow_comp);
         for pass in &mut comp {
             let mut compute = std::mem::take(&mut pass.compute);
@@ -4309,14 +4363,15 @@ impl PackPost {
         }
 
         // The world into colortex0 and depthtex0, flipped to GL's rows, and the clears.
-        if self
-            .blit_group
-            .as_ref()
-            .is_none_or(|g| g.0[0] != *world || g.0[1] != *world_depth)
+        if let Some(blit) = &self.blit
+            && self
+                .blit_group
+                .as_ref()
+                .is_none_or(|g| g.0[0] != *world || g.0[1] != *world_depth)
         {
             let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("Shader pack world"),
-                layout: &self.blit.1,
+                layout: &blit.1,
                 entries: &[
                     wgpu::BindGroupEntry {
                         binding: 0,
@@ -4330,7 +4385,7 @@ impl PackPost {
             });
             self.blit_group = Some(([world.clone(), world_depth.clone()], group));
         }
-        {
+        if let Some(blit) = &self.blit {
             // The blit leaves a three-channel colortex0's alpha at the 1 it starts with.
             let world_ops = if self.rgb & 1 != 0 {
                 wgpu::Operations {
@@ -4340,10 +4395,11 @@ impl PackPost {
             } else {
                 overwrite
             };
-            let mut attachments = vec![attach(
-                view(self.main, 0, false).expect("colortex0"),
-                world_ops,
-            )];
+            let mut attachments = vec![if holds_floats(self.formats[0]) {
+                attach(view(self.main, 0, false).expect("colortex0"), world_ops)
+            } else {
+                None
+            }];
             for &b in &self.blit_clears {
                 attachments.push(attach(
                     view(self.main, b, false).expect("used buffer"),
@@ -4366,7 +4422,7 @@ impl PackPost {
                 ),
                 ..Default::default()
             });
-            pass.set_pipeline(&self.blit.0);
+            pass.set_pipeline(&blit.0);
             pass.set_bind_group(0, self.blit_group.as_ref().map(|g| &g.1), &[]);
             pass.draw(0..3, 0..1);
         }
@@ -4515,7 +4571,14 @@ impl PackPost {
                 .as_ref()
                 .map(|t| &t[main(m, i) ^ usize::from(alt)])
         };
-        if !shown {
+        // An integer colortex0 has no colour to show: the screen is only cleared.
+        if !shown && !holds_floats(self.formats[0]) {
+            encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Shader pack colortex0"),
+                color_attachments: &[attach(screen, overwrite)],
+                ..Default::default()
+            });
+        } else if !shown {
             let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("Shader pack colortex0"),
                 layout: &self.copy.1,
@@ -4697,6 +4760,7 @@ mod tests {
             rgb: 0,
             released: std::cell::Cell::new(("", 0)),
             stand_ins: &stand_ins,
+            shadow_linear: 0,
         };
         let reads = |group: Group| {
             let (_, samplers, ..) = bindings(
@@ -4776,6 +4840,7 @@ mod tests {
             rgb: 0,
             released: std::cell::Cell::new(("", 0)),
             stand_ins: &stand_ins,
+            shadow_linear: 0,
         };
         let mut notes = Vec::new();
         let (.., images) = bindings(
@@ -4916,6 +4981,7 @@ mod tests {
             rgb: 0,
             released: std::cell::Cell::new(("", 0)),
             stand_ins: &stand_ins,
+            shadow_linear: 0,
         };
         let draws = DrawUniforms::new(&device);
         let mut notes = Vec::new();
@@ -5087,3 +5153,9 @@ mod rgb_alpha_tests;
 
 #[cfg(test)]
 mod trinary_tests;
+
+#[cfg(test)]
+mod const_offset_tests;
+
+#[cfg(test)]
+mod integer_colortex0_tests;
