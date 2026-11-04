@@ -166,7 +166,7 @@ pub(super) struct GuestSwap {
     /// The host's command permission, swapped for the guest's for its turn.
     permission: u8,
     xp: Experience,
-    host_keys: std::collections::HashSet<KeyCode>,
+    host_keys: horizon_client::held::HeldKeys,
     screen: Screen,
     host_sign: Option<super::sign_edit::SignEditor>,
     host_book: Option<super::books::BookScreen>,
@@ -191,6 +191,7 @@ pub(super) struct GuestSwap {
     left: bool,
     right: bool,
     riding: Option<u32>,
+    host_boarding: (i32, Option<u32>),
     host_station: Option<super::stations::Station>,
     sleeping: Option<[i32; 3]>,
     sleep_timer: u32,
@@ -522,6 +523,11 @@ impl Game<'_> {
         self.right = play.using.is_some() || self.using.is_some();
         // The guest's vehicle (Entity.vehicle) for its turn.
         let riding = std::mem::replace(&mut self.riding, g.vehicle);
+        // The guest's boarding cooldown for its turn; `guest_server_tick`
+        // counts it down once per tick (Entity.baseTick), not per turn.
+        let host_boarding = (self.boarding_cooldown, self.riding_at_tick);
+        self.boarding_cooldown = g.boarding_cooldown;
+        self.riding_at_tick = g.vehicle;
         // `Entity.isPassenger()` for that turn, from the same vehicle: the
         // guest's body keeps no swim (`Entity.updateSwimming` needs it false).
         // Taken from `g.vehicle` each turn, so boarding and getting out land.
@@ -635,6 +641,7 @@ impl Game<'_> {
             left,
             right,
             riding,
+            host_boarding,
             host_station,
             sleeping,
             sleep_timer,
@@ -734,6 +741,7 @@ impl Game<'_> {
             left,
             right,
             riding,
+            host_boarding,
             host_station,
             sleeping,
             sleep_timer,
@@ -912,6 +920,11 @@ impl Game<'_> {
             self.guest_attachments.entry(g.uuid).or_default(),
         );
         let left_vehicle = g.vehicle.filter(|_| guest_vehicle.is_none());
+        // Entity.removePassenger: 60 ticks before it may board again.
+        let guest_boarding =
+            super::boarding::after_leaving(self.boarding_cooldown, g.vehicle, guest_vehicle);
+        (self.boarding_cooldown, self.riding_at_tick) = host_boarding;
+        g.boarding_cooldown = guest_boarding;
         if guest_vehicle.is_none() {
             g.vehicle_good = None;
         }
@@ -967,9 +980,19 @@ impl Game<'_> {
         std::mem::swap(&mut self.armor, &mut g.armor);
         std::mem::swap(&mut self.offhand, &mut g.offhand);
         std::mem::swap(&mut self.carried, &mut g.carried);
-        // A teleport with a rotation (commands) turns the guest.
-        let turned = [self.yaw, self.pitch] != [g.yaw, g.pitch];
+        // A teleport with a rotation (commands) turns the guest. `/rotate`
+        // (ServerPlayer.forceSetRotation) sends the rotation alone, rider or not.
+        let forced = std::mem::take(&mut self.rotation_forced);
+        let turned = !forced && [self.yaw, self.pitch] != [g.yaw, g.pitch];
         [g.yaw, g.pitch] = [self.yaw, self.pitch];
+        if forced {
+            g.send(&C::PlayerRotation(play::PlayerRotation {
+                yaw: g.yaw,
+                relative_yaw: false,
+                pitch: g.pitch,
+                relative_pitch: false,
+            }));
+        }
         self.yaw = yaw;
         self.pitch = pitch;
         self.eye = eye.1;
@@ -997,14 +1020,8 @@ impl Game<'_> {
             let teleported = std::mem::take(&mut m.teleported);
             let moved: f64 = (0..3).map(|k| (at[k] - g.position[k]).powi(2)).sum();
             g.motion = Some(Box::new(m));
-            // Entity.teleportTo takes a rider out of its vehicle.
-            let left_vehicle = match g.vehicle.filter(|_| teleported) {
-                Some(v) => {
-                    (g.vehicle, g.vehicle_good) = (None, None);
-                    Some(v)
-                }
-                None => left_vehicle,
-            };
+            // The pearl and the bed took the rider out of its vehicle at their
+            // source (`stop_riding`), so `left_vehicle` already says so.
             // ServerPlayer.dismountTo: the client hears it is out of the
             // vehicle before the teleport beside it. A rider sits where its
             // vehicle puts it (lan_vehicles.rs), with no teleport.
@@ -1199,6 +1216,7 @@ impl Game<'_> {
             .facts()
             .get(self.world.block(pos.0, pos.1, pos.2))
             .name;
+        let block = name.to_string();
         let (menu, slots) = if &**name == "minecraft:ender_chest" {
             // EnderChestBlock.useWithoutItem: the player's own inventory.
             ("minecraft:generic_9x3", Slots::Ender)
@@ -1353,8 +1371,28 @@ impl Game<'_> {
         // lid (a vehicle keeps its own `Container`, an ender chest has none).
         let counts_openers = matches!(slots, Slots::Block(_) | Slots::Double(_, _));
         let hidden = self.native_hidden_slots(pos, items.len());
+        // A mod menu type's block tells the client where it is, with what its
+        // mod writes (`openMenu` with an extra-data writer); a stock menu
+        // sends nothing more.
+        let extra = match slots {
+            Slots::Block(k) if self.mod_menu_at(k).is_some() => {
+                let mut data = None;
+                self.native_menu_extra_data(uuid, menu, &block, [k.0, k.1, k.2], &mut data);
+                let mut data = data.unwrap_or_default();
+                if data.len() > horizon_protocol::menu_extra::MAX_DATA {
+                    log::warn!(
+                        "Horizon: {block}'s menu extra data ({} bytes) is past {} bytes; sent without it",
+                        data.len(),
+                        horizon_protocol::menu_extra::MAX_DATA
+                    );
+                    data.clear();
+                }
+                Some(data)
+            }
+            _ => None,
+        };
         host.hub
-            .open_container(conn, menu, title, pos, slots, items);
+            .open_container(conn, menu, title, pos, slots, items, extra);
         if !hidden.is_empty() {
             host.hub.hide_menu_slots(conn, hidden);
         }
@@ -1418,7 +1456,7 @@ impl Game<'_> {
         // ServerPlayer.openMenu closes the menu that was open.
         self.guest_close_all(host, conn);
         host.hub
-            .open_container(conn, menu, title, pos, slots, items);
+            .open_container(conn, menu, title, pos, slots, items, None);
         true
     }
 
@@ -2089,14 +2127,19 @@ impl Game<'_> {
                         g.forced_hit = Some(hit);
                         g.guest_use = Some(GuestUse::OnBlock(hand));
                         let swings = g.swings_started;
-                        let consumed = matches!(g.use_item(), Ok(Some(_)));
+                        // InteractionResult.consumesAction: a FAIL (`use_failed`,
+                        // as BlockItem.place's failed placement) does not count,
+                        // even though the click ended on it.
+                        let consumed = matches!(g.use_item(), Ok(Some(_))) && !g.use_failed;
                         // handleUseItemOn: a consuming useItemOn triggers
                         // ANY_BLOCK_USE with the hand's stack as it now is.
-                        if consumed && !g.use_failed {
+                        if consumed {
                             let stack = g
                                 .with_hand(hand, |g| g.held().cloned())
                                 .unwrap_or_else(|| ItemStack::new("minecraft:air", 0));
-                            g.trigger_any_block_use(p.pos, &stack);
+                            horizon_client::spans::time("use_advancements", || {
+                                g.trigger_any_block_use(p.pos, &stack);
+                            });
                         }
                         g.forced_hit = None;
                         g.guest_use = None;
@@ -2831,19 +2874,12 @@ impl Game<'_> {
         let g = &host.hub.guests[gi];
         let eye = [
             g.position[0],
-            g.position[1] + g.eye_height() - 0.3,
+            g.position[1] + g.eye_height() - f64::from(0.3f32),
             g.position[2],
         ];
-        let (yaw, pitch) = (
-            f64::from(g.yaw).to_radians(),
-            f64::from(g.pitch).to_radians(),
-        );
         for stack in stacks {
-            let v = [
-                -yaw.sin() * pitch.cos() * 0.3,
-                -pitch.sin() * 0.3 + 0.1,
-                yaw.cos() * pitch.cos() * 0.3,
-            ];
+            let r = &mut self.world.random;
+            let v = horizon_client::entities::drop_motion(r, g.yaw, g.pitch, false);
             self.spawn_item(stack, eye, v, 40);
         }
     }
@@ -3855,8 +3891,8 @@ impl Game<'_> {
             .death_reward(self.ui.rules.bool("keep_inventory") || g.game_mode == SPECTATOR);
             let (name, uuid) = (g.name.clone(), g.uuid);
             // ServerPlayer.die: dropAllDeathLoot unless a spectator, from the eyes less 0.3.
-            let drops =
-                (g.game_mode != SPECTATOR).then(|| [at[0], at[1] + g.eye_height() - 0.3, at[2]]);
+            let drops = (g.game_mode != SPECTATOR)
+                .then(|| [at[0], at[1] + g.eye_height() - f64::from(0.3f32), at[2]]);
             let cause = host.play.get_mut(&conn).and_then(|p| p.death_cause.take());
             self.native_player_died(uuid, cause.as_deref());
             // ServerPlayer.die: the neutral mobs near a guest in this level
@@ -3930,7 +3966,7 @@ impl Game<'_> {
             // the `deaths` statistic and the two timers it resets.
             self.as_guest(host, conn, |game| {
                 if let Some(eyes) = drops {
-                    game.drop_inventory(eyes);
+                    game.drop_inventory(eyes, (uuid, id));
                 }
                 game.score_player_died();
                 game.award_custom_stat("deaths", 1);
@@ -4298,6 +4334,10 @@ impl Game<'_> {
     /// regeneration and the food tick (ServerPlayer.doTick). Their hurt
     /// sounds are heard at the guest.
     fn guest_server_tick(&mut self, host: &mut LanHost, conn: u32) {
+        // Entity.baseTick: the boarding cooldown counts down once a tick.
+        if let Some(g) = host.hub.guest_mut(conn) {
+            g.boarding_cooldown = super::boarding::tick_down(g.boarding_cooldown);
+        }
         self.guest_replay(host, conn);
         self.guest_vehicle_tick(host, conn);
         // The last move's fall stands in for the server's delta movement.

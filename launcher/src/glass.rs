@@ -62,6 +62,11 @@ thread_local! {
 
 /// The scene was built again (a new window size or tint), or the blur changed: plates take
 /// their pieces from this backdrop.
+/// How far below the top bar the pages' scroll area starts, so what scrolls up stops short of the
+/// bar instead of running into it. The pages' heads hold that much less above their titles, so
+/// nothing moves at rest.
+pub const CONTENT_INSET: f32 = 14.;
+
 pub fn set_backdrop(model: &Model, tint: Option<u32>, blur: f32) {
     PIECES.with_borrow_mut(|p| {
         p.backdrop = Some(Backdrop::new(model, blur as f64, tint));

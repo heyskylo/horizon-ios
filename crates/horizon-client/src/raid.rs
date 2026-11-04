@@ -160,6 +160,23 @@ pub struct RaiderInfo {
     pub patrol_leader: bool,
 }
 
+/// `Raid.playSound` for one player. The horn is 13 blocks from them toward
+/// the wave centre, heard when they are within 64 blocks or in the raid.
+/// Standing on the centre leaves the horn there (`13 / 0` is not a point).
+pub fn horn_at(player: [f64; 3], center_x: f64, center_z: f64, in_raid: bool) -> Option<[f64; 3]> {
+    let dx = center_x - player[0];
+    let dz = center_z - player[2];
+    let distance = (dx * dx + dz * dz).sqrt();
+    if distance > 64.0 && !in_raid {
+        return None;
+    }
+    if distance == 0.0 {
+        return Some(player);
+    }
+    let k = 13.0 / distance;
+    Some([player[0] + k * dx, player[1], player[2] + k * dz])
+}
+
 /// The single player a raid sees (`level.players()`).
 #[derive(Clone, Copy, Debug)]
 pub struct RaidPlayer {
@@ -1641,6 +1658,25 @@ mod tests {
         let mut raid = Raid::new([0, 64, 0], 2, 3);
         raid.tick(&level(0), &[], &nobody);
         assert!(raid.is_stopped());
+    }
+    /// 13/32 of the way from the origin to a centre 32 blocks east is 13.
+    /// A player 32 blocks east of the centre hears it 13 blocks back, at 19.
+    /// 80 blocks away is outside the 64 block reach.
+    #[test]
+    fn the_raid_horn_sits_thirteen_blocks_toward_the_wave() {
+        assert_eq!(
+            horn_at([0.0, 70.0, 0.0], 32.0, 0.0, false),
+            Some([13.0, 70.0, 0.0])
+        );
+        assert_eq!(
+            horn_at([32.0, 70.0, 0.0], 0.0, 0.0, false),
+            Some([19.0, 70.0, 0.0])
+        );
+        assert_eq!(horn_at([80.0, 70.0, 0.0], 0.0, 0.0, false), None);
+        assert_eq!(
+            horn_at([80.0, 70.0, 0.0], 0.0, 0.0, true),
+            Some([67.0, 70.0, 0.0])
+        );
     }
     #[test]
     fn bar_progress_follows_java_clamp() {

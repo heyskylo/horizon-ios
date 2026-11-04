@@ -33,6 +33,7 @@ mod tests {
         pub(super) struct NativeLootDrops<'a>(pub &'a ());
         pub(super) struct NativeNoteBlockChange<'a>(pub &'a ());
         pub(super) struct NativeScreenView<'a>(pub &'a ());
+        pub(super) struct ClientboundPlayPacket;
         pub(super) struct Corners;
         #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
         pub(super) struct ItemEnergyBuffer;
@@ -63,6 +64,7 @@ mod tests {
         pub(super) struct NativeDataMapType;
         pub(super) struct NativeConfig;
         pub(super) struct NativeConfigFile;
+        pub(super) struct NativeReloadListener;
         pub(super) struct RecipeBookCategory;
         pub(super) struct NativeMapDecoration;
         pub(super) struct NativeMapInfo<'a>(pub &'a ());

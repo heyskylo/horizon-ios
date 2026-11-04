@@ -133,6 +133,8 @@ pub struct Guest {
     pub input: u8,
     /// The boat or minecart the player rides (`Entity.getVehicle`).
     pub vehicle: Option<u32>,
+    /// `Entity.boardingCooldown`: ticks before it may board a vehicle again.
+    pub boarding_cooldown: i32,
     /// When the player last got into its vehicle, from `Hub.seat_order`:
     /// `Entity.addPassenger` seats a rider behind the players already in the
     /// vehicle, so the smallest order on a boat is its controlling rider
@@ -398,7 +400,7 @@ impl Guest {
             entity_id,
             sender: j.sender,
             latency: j.latency,
-            view_distance: (i32::from(j.info.view_distance)).clamp(2, view_distance),
+            view_distance: i32::from(j.info.view_distance).max(2).min(view_distance),
             info: j.info,
             brand: j.brand,
             position,
@@ -413,6 +415,7 @@ impl Guest {
             sneaking: false,
             input: 0,
             vehicle: None,
+            boarding_cooldown: 0,
             vehicle_order: 0,
             vehicle_good: None,
             sprinting: false,
@@ -917,6 +920,13 @@ fn network_stack(
         ));
     }
     if let Some(d) = s.data() {
+        // TridentItem.use runs on both peers: each must see the stack's own durability limit.
+        if let Some(horizon_world::nbt::Tag::Int(max)) = d.other("minecraft:max_damage") {
+            stack.added.push((
+                horizon_protocol::item::component::MAX_DAMAGE,
+                horizon_protocol::item::Component::Int(*max),
+            ));
+        }
         // Unbreakable is a unit component; clients need its presence for the
         // durability bar, tooltip and item model, including in single player.
         if d.other("minecraft:unbreakable").is_some() {
@@ -1266,6 +1276,23 @@ fn network_stack(
         stack
             .removed
             .push(horizon_protocol::item::component::RARITY);
+    }
+    // `DataComponents.MAX_STACK_SIZE`: an int in 1..=99 on this stack, not the
+    // item's default. A removed component falls back to that default.
+    if s.data()
+        .is_some_and(|d| d.other("!minecraft:max_stack_size").is_some())
+    {
+        stack
+            .removed
+            .push(horizon_protocol::item::component::MAX_STACK_SIZE);
+    } else if let Some(horizon_world::nbt::Tag::Int(n)) =
+        s.data().and_then(|d| d.other("minecraft:max_stack_size"))
+        && (1..=99).contains(n)
+    {
+        stack.added.push((
+            horizon_protocol::item::component::MAX_STACK_SIZE,
+            horizon_protocol::item::Component::Int(*n),
+        ));
     }
     // The component as loaded, so a translatable name stays one.
     if let Some(name) = s.data().and_then(|d| d.other("minecraft:item_name")) {

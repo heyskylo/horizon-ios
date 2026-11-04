@@ -26,6 +26,7 @@ mod breaking_fixture;
 mod camera_probe;
 mod cauldron_fixture;
 mod chat_screen_fixture;
+mod chest_load_fixture;
 mod chest_pair_fixture;
 mod cloud_fixture;
 mod command_parse_fixture;
@@ -128,6 +129,7 @@ probes! {
     cauldron_fixture,
     chat_screen_fixture,
     chest_pair_fixture,
+    chest_load_fixture,
     cloud_fixture,
     command_parse_fixture,
     container_screen_probe,
