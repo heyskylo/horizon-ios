@@ -217,6 +217,105 @@ impl ResourceSource for Bundled {
             "assets/horizon/lang/cy_gb.json" => {
                 include_str!("../../horizon-client/assets/horizon/lang/cy_gb.json")
             }
+            "assets/horizon/lang/ga_ie.json" => {
+                include_str!("../../horizon-client/assets/horizon/lang/ga_ie.json")
+            }
+            "assets/horizon/lang/eu_es.json" => {
+                include_str!("../../horizon-client/assets/horizon/lang/eu_es.json")
+            }
+            "assets/horizon/lang/gl_es.json" => {
+                include_str!("../../horizon-client/assets/horizon/lang/gl_es.json")
+            }
+            "assets/horizon/lang/fil_ph.json" => {
+                include_str!("../../horizon-client/assets/horizon/lang/fil_ph.json")
+            }
+            "assets/horizon/lang/ta_in.json" => {
+                include_str!("../../horizon-client/assets/horizon/lang/ta_in.json")
+            }
+            "assets/horizon/lang/mn_mn.json" => {
+                include_str!("../../horizon-client/assets/horizon/lang/mn_mn.json")
+            }
+            "assets/horizon/lang/lo_la.json" => {
+                include_str!("../../horizon-client/assets/horizon/lang/lo_la.json")
+            }
+            "assets/horizon/lang/so_so.json" => {
+                include_str!("../../horizon-client/assets/horizon/lang/so_so.json")
+            }
+            "assets/horizon/lang/fy_nl.json" => {
+                include_str!("../../horizon-client/assets/horizon/lang/fy_nl.json")
+            }
+            "assets/horizon/lang/gd_gb.json" => {
+                include_str!("../../horizon-client/assets/horizon/lang/gd_gb.json")
+            }
+            "assets/horizon/lang/lb_lu.json" => {
+                include_str!("../../horizon-client/assets/horizon/lang/lb_lu.json")
+            }
+            "assets/horizon/lang/ky_kg.json" => {
+                include_str!("../../horizon-client/assets/horizon/lang/ky_kg.json")
+            }
+            "assets/horizon/lang/kn_in.json" => {
+                include_str!("../../horizon-client/assets/horizon/lang/kn_in.json")
+            }
+            "assets/horizon/lang/mt_mt.json" => {
+                include_str!("../../horizon-client/assets/horizon/lang/mt_mt.json")
+            }
+            "assets/horizon/lang/eo_uy.json" => {
+                include_str!("../../horizon-client/assets/horizon/lang/eo_uy.json")
+            }
+            "assets/horizon/lang/haw_us.json" => {
+                include_str!("../../horizon-client/assets/horizon/lang/haw_us.json")
+            }
+            "assets/horizon/lang/ig_ng.json" => {
+                include_str!("../../horizon-client/assets/horizon/lang/ig_ng.json")
+            }
+            "assets/horizon/lang/la_la.json" => {
+                include_str!("../../horizon-client/assets/horizon/lang/la_la.json")
+            }
+            "assets/horizon/lang/tt_ru.json" => {
+                include_str!("../../horizon-client/assets/horizon/lang/tt_ru.json")
+            }
+            "assets/horizon/lang/yi_de.json" => {
+                include_str!("../../horizon-client/assets/horizon/lang/yi_de.json")
+            }
+            "assets/horizon/lang/yo_ng.json" => {
+                include_str!("../../horizon-client/assets/horizon/lang/yo_ng.json")
+            }
+            "assets/horizon/lang/ba_ru.json" => {
+                include_str!("../../horizon-client/assets/horizon/lang/ba_ru.json")
+            }
+            "assets/horizon/lang/br_fr.json" => {
+                include_str!("../../horizon-client/assets/horizon/lang/br_fr.json")
+            }
+            "assets/horizon/lang/cv_cu.json" => {
+                include_str!("../../horizon-client/assets/horizon/lang/cv_cu.json")
+            }
+            "assets/horizon/lang/fo_fo.json" => {
+                include_str!("../../horizon-client/assets/horizon/lang/fo_fo.json")
+            }
+            "assets/horizon/lang/fur_it.json" => {
+                include_str!("../../horizon-client/assets/horizon/lang/fur_it.json")
+            }
+            "assets/horizon/lang/li_li.json" => {
+                include_str!("../../horizon-client/assets/horizon/lang/li_li.json")
+            }
+            "assets/horizon/lang/lmo.json" => {
+                include_str!("../../horizon-client/assets/horizon/lang/lmo.json")
+            }
+            "assets/horizon/lang/oc_fr.json" => {
+                include_str!("../../horizon-client/assets/horizon/lang/oc_fr.json")
+            }
+            "assets/horizon/lang/sah_sah.json" => {
+                include_str!("../../horizon-client/assets/horizon/lang/sah_sah.json")
+            }
+            "assets/horizon/lang/se_no.json" => {
+                include_str!("../../horizon-client/assets/horizon/lang/se_no.json")
+            }
+            "assets/horizon/lang/szl.json" => {
+                include_str!("../../horizon-client/assets/horizon/lang/szl.json")
+            }
+            "assets/horizon/lang/vec_it.json" => {
+                include_str!("../../horizon-client/assets/horizon/lang/vec_it.json")
+            }
             "assets/horizon/lang/de_de.json" | "assets/horizon/lang/de_at.json" => {
                 include_str!("../../horizon-client/assets/horizon/lang/de_de.json")
             }

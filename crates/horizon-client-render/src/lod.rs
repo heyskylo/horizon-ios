@@ -875,7 +875,16 @@ struct MeshInput {
 }
 struct ReducedColumns {
     columns: Arc<[Column; 256]>,
-    levels: [Vec<Column>; 4],
+    /// The chunk reduced to cells 2, 4, 8 and 16 blocks wide, each built the
+    /// first time a tile of that width asks for it.
+    ///
+    /// One chunk is covered by one far tile, so one of the four is what gets
+    /// read, and a chunk whose detail arrives while full-detail terrain still
+    /// draws it reads none. Building all four up front cost 405 us of a far
+    /// terrain thread for every chunk the world sent (`Column::reduced` walks
+    /// every span of the footprint four times over), and held 85 columns
+    /// beside the chunk's 256.
+    levels: [std::sync::OnceLock<Vec<Column>>; 4],
 }
 impl MeshInput {
     /// The column of every cell: the tile's own samples unless the snapshot
@@ -905,25 +914,26 @@ impl MeshInput {
 }
 impl ReducedColumns {
     fn new(columns: Arc<[Column; 256]>) -> Self {
-        let levels = std::array::from_fn(|level| {
-            let width = 2 << level;
+        Self {
+            columns,
+            levels: std::array::from_fn(|_| std::sync::OnceLock::new()),
+        }
+    }
+    fn get(&self, x: usize, z: usize, width: usize) -> &Column {
+        if width == 1 {
+            return &self.columns[z * 16 + x];
+        }
+        let level = width.trailing_zeros() as usize - 1;
+        let reduced = self.levels[level].get_or_init(|| {
+            let columns = &self.columns;
             (0..16 / width)
                 .flat_map(|z| {
-                    let columns = &columns;
                     (0..16 / width)
                         .map(move |x| Column::reduced(columns, x * width, z * width, width))
                 })
                 .collect()
         });
-        Self { columns, levels }
-    }
-    fn get(&self, x: usize, z: usize, width: usize) -> &Column {
-        if width == 1 {
-            &self.columns[z * 16 + x]
-        } else {
-            &self.levels[width.trailing_zeros() as usize - 1]
-                [(z / width) * (16 / width) + x / width]
-        }
+        &reduced[(z / width) * (16 / width) + x / width]
     }
 }
 enum Job {
@@ -3347,6 +3357,44 @@ mod tests {
             [span(0, 4, 1), span(4, 12, 2), span(12, 14, 3)],
             "a crown over one corner of a wide cell still sits on its trunk"
         );
+    }
+    /// A chunk is reduced to the one cell width that reads it, when it does.
+    ///
+    /// Reducing to all four widths up front cost 405 us of a far terrain
+    /// thread for every chunk the world sent, where at most one is read.
+    #[test]
+    fn a_chunk_is_reduced_only_to_the_width_that_reads_it() {
+        let built = |reduced: &ReducedColumns| {
+            reduced
+                .levels
+                .iter()
+                .enumerate()
+                .filter(|(_, level)| level.get().is_some())
+                .map(|(level, _)| 2usize << level)
+                .collect::<Vec<_>>()
+        };
+        let reduced = ReducedColumns::new(Arc::new(std::array::from_fn(|i| Column {
+            surface: None,
+            spans: vec![Span {
+                min: 0,
+                max: 4 + (i % 3) as i16,
+                state: BlockStateId(1),
+                biome: 0,
+                light: 240,
+            }]
+            .into(),
+        })));
+        assert!(built(&reduced).is_empty(), "nothing is reduced unread");
+        // A tile of full-detail cells reads the chunk's own columns.
+        reduced.get(3, 5, 1);
+        assert!(built(&reduced).is_empty());
+        reduced.get(4, 8, 4);
+        assert_eq!(built(&reduced), [4]);
+        // Read again, and the reduction is the one already built.
+        reduced.get(0, 0, 4);
+        assert_eq!(built(&reduced), [4]);
+        reduced.get(0, 0, 16);
+        assert_eq!(built(&reduced), [4, 16]);
     }
     /// Detail read before a refresh over its chunk is dropped (asked
     /// again); elsewhere, or read after, it is kept.
