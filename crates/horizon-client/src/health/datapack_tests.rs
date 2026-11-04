@@ -2,6 +2,49 @@ use super::*;
 
 #[test]
 #[ignore = "requires prepared vanilla resources"]
+fn datapack_damage_new_world_drops_a_removed_resource_root_definition() {
+    use horizon_world::loot::PackOverlay;
+    let prepared = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../.local/horizon-client")
+        .join(horizon_core::VANILLA_VERSION);
+    let root = std::env::temp_dir().join(format!("horizon-damage-root-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(root.join("data/demo/damage_type")).unwrap();
+    for file in [
+        "damage-catalog.json",
+        "damage-tags.json",
+        "player-float-ids.json",
+    ] {
+        fs::copy(prepared.join(file), root.join(file)).unwrap();
+    }
+    let definition = root.join("data/demo/damage_type/installed.json");
+    fs::write(
+        &definition,
+        r#"{"message_id":"installed","scaling":"never","exhaustion":0.25}"#,
+    )
+    .unwrap();
+    let cached_resources = HealthResources::load(&root).unwrap();
+    let first_world = cached_resources
+        .with_packs(&root, &PackOverlay::NONE, false)
+        .unwrap();
+    let custom = first_world.damage.id("demo:installed").unwrap();
+    let vanilla = first_world.damage.id("minecraft:fall").unwrap();
+    fs::remove_file(definition).unwrap();
+    let reloaded = first_world
+        .with_packs(&root, &PackOverlay::NONE, true)
+        .unwrap();
+    assert_eq!(reloaded.damage.id("demo:installed"), Some(custom));
+    let next_world = cached_resources
+        .with_packs(&root, &PackOverlay::NONE, false)
+        .unwrap();
+    assert!(next_world.damage.id("demo:installed").is_none());
+    assert_eq!(next_world.damage.id("minecraft:fall"), Some(vanilla));
+    assert_eq!(first_world.damage.id("demo:installed"), Some(custom));
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+#[ignore = "requires prepared vanilla resources"]
 fn datapack_damage_initial_snapshot_uses_the_prepared_worlds_features() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../.local/horizon-client")

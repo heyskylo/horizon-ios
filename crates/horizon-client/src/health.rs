@@ -169,7 +169,7 @@ impl HealthResources {
             damage: if reload {
                 self.damage.reload_tags(root, overlay)?
             } else {
-                self.damage.with_packs(root, overlay)?
+                Catalog::load(root, overlay)?
             },
             ids: self.ids,
         })
