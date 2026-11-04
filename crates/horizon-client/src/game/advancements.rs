@@ -210,6 +210,9 @@ impl adv::World for View<'_, '_> {
                 .ends_with("campfire")
         })
     }
+    fn block_entity_nbt(&self, p: [i32; 3]) -> Option<horizon_world::nbt::Tag> {
+        self.0.block_entity_nbt(p)
+    }
     fn in_tag(&self, registry: &str, tag: &str, id: &str) -> bool {
         let items = &self.0.res.items();
         match registry {

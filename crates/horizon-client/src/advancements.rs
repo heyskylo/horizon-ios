@@ -464,6 +464,10 @@ pub trait World {
     fn light(&self, pos: [i32; 3]) -> i32;
     fn smokey(&self, pos: [i32; 3]) -> bool;
     fn in_tag(&self, registry: &str, tag: &str, id: &str) -> bool;
+    /// The block entity's `saveWithFullMetadata` at `pos`, `None` without one.
+    fn block_entity_nbt(&self, _pos: [i32; 3]) -> Option<horizon_world::nbt::Tag> {
+        None
+    }
 }
 /// An item stack as predicates see it.
 #[derive(Clone, Debug, Default)]
@@ -668,6 +672,16 @@ pub fn block(v: &Value, pos: [i32; 3], w: &dyn World) -> bool {
             if !ok {
                 return false;
             }
+        }
+    }
+    // `matchesBlockEntity`: the block entity's data holds the pattern
+    // (`NbtPredicate.matches`, `NbtUtils.compareNbt`); no block entity fails.
+    if let Some(nbt) = v["nbt"].as_str() {
+        let Ok((pattern, _)) = horizon_world::nbt::parse_snbt(nbt) else {
+            return false;
+        };
+        if !crate::nbt_path::compare_nbt(&pattern, w.block_entity_nbt(pos).as_ref()) {
+            return false;
         }
     }
     true
@@ -1450,6 +1464,64 @@ mod tests {
                 || (tag == "minecraft:is_projectile"
                     && matches!(id, "minecraft:fireball" | "minecraft:arrow"))
         }
+    }
+    /// `BlockPredicate.matchesBlockEntity`: an `nbt` test needs a block
+    /// entity whose `saveWithFullMetadata` contains the pattern
+    /// (`NbtPredicate.matches`), so it never matches a plain block.
+    #[test]
+    fn a_block_predicates_nbt_needs_the_block_entitys_data() {
+        let w = Flat;
+        let stone = serde_json::json!({"blocks": "minecraft:stone", "nbt": "{}"});
+        assert!(!block(&stone, [0, 0, 0], &w), "stone has no block entity");
+        assert!(block(
+            &serde_json::json!({"blocks": "minecraft:stone"}),
+            [0, 0, 0],
+            &w
+        ));
+        /// An unpowered beacon: its saved data has `Levels:0`.
+        struct Beacon;
+        impl World for Beacon {
+            fn dimension(&self) -> &str {
+                Flat.dimension()
+            }
+            fn biome(&self, p: [i32; 3]) -> String {
+                Flat.biome(p)
+            }
+            fn structures(&self, p: [i32; 3]) -> Vec<String> {
+                Flat.structures(p)
+            }
+            fn block(&self, _: [i32; 3]) -> (String, BTreeMap<String, String>) {
+                ("minecraft:beacon".into(), BTreeMap::new())
+            }
+            fn fluid(&self, _: [i32; 3]) -> Option<String> {
+                None
+            }
+            fn can_see_sky(&self, _: [i32; 3]) -> bool {
+                true
+            }
+            fn light(&self, _: [i32; 3]) -> i32 {
+                15
+            }
+            fn smokey(&self, _: [i32; 3]) -> bool {
+                false
+            }
+            fn in_tag(&self, _: &str, _: &str, _: &str) -> bool {
+                false
+            }
+            fn block_entity_nbt(&self, _: [i32; 3]) -> Option<horizon_world::nbt::Tag> {
+                horizon_world::nbt::parse_snbt(r#"{id:"minecraft:beacon",x:0,y:0,z:0,Levels:0}"#)
+                    .ok()
+                    .map(|(t, _)| t)
+            }
+        }
+        let beacon = |nbt: &str| serde_json::json!({"blocks": "minecraft:beacon", "nbt": nbt});
+        assert!(block(&beacon("{Levels:0}"), [0, 0, 0], &Beacon));
+        assert!(block(&beacon("{}"), [0, 0, 0], &Beacon));
+        assert!(!block(&beacon("{Levels:4}"), [0, 0, 0], &Beacon));
+        assert!(
+            !block(&beacon("{Levels:0b}"), [0, 0, 0], &Beacon),
+            "an int, not a byte"
+        );
     }
     /// A `recipe_crafted` criterion names `minecraft:x`; the craft hands
     /// the recipe book and the trigger the same whole id (`award_crafted`

@@ -560,31 +560,29 @@ impl Game<'_> {
                 }
                 Ok(tag)
             }
-            DataRef::Block(p) => {
-                if let Some(tag) = self.comparator_data(*p).or_else(|| self.pot_data(*p)) {
-                    return Ok(tag);
-                }
-                let key = (p[0], p[1], p[2]);
-                let name = self.data_block_name(*p);
-                let e = self
-                    .world
-                    .block_entities
-                    .get(&key)
-                    .ok_or_else(|| err("commands.data.block.invalid", &[]))?;
-                // BlockEntity.saveWithFullMetadata: no chunk-only keepPacked,
-                // and the lock and custom name the model does not hold.
-                let mut tag = save::block_entity_data(key, e, &name, self.world.block_lock(key));
-                if let (Some(custom), Tag::Compound(map)) =
-                    (self.world.block_names.get(&key), &mut tag)
-                {
-                    map.entry("CustomName".into())
-                        .or_insert_with(|| Tag::String(custom.as_str().into()));
-                }
-                self.restore_loot_table(key, &mut tag);
-                Ok(tag)
-            }
+            DataRef::Block(p) => self
+                .block_entity_nbt(*p)
+                .ok_or_else(|| err("commands.data.block.invalid", &[])),
             DataRef::Storage(id) => Ok(self.score.storage.get(id)),
         }
+    }
+    /// `BlockEntity.saveWithFullMetadata` of the block entity at `p`: no
+    /// chunk-only keepPacked, and the lock and custom name the model does
+    /// not hold. `None` where there is no block entity.
+    pub(in crate::game) fn block_entity_nbt(&self, p: [i32; 3]) -> Option<Tag> {
+        if let Some(tag) = self.comparator_data(p).or_else(|| self.pot_data(p)) {
+            return Some(tag);
+        }
+        let key = (p[0], p[1], p[2]);
+        let name = self.data_block_name(p);
+        let e = self.world.block_entities.get(&key)?;
+        let mut tag = save::block_entity_data(key, e, &name, self.world.block_lock(key));
+        if let (Some(custom), Tag::Compound(map)) = (self.world.block_names.get(&key), &mut tag) {
+            map.entry("CustomName".into())
+                .or_insert_with(|| Tag::String(custom.as_str().into()));
+        }
+        self.restore_loot_table(key, &mut tag);
+        Some(tag)
     }
     pub(in crate::game) fn set_data_of(&mut self, r: &DataRef, tag: Tag) -> R<()> {
         match r {
