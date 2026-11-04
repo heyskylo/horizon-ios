@@ -4711,6 +4711,51 @@ def advancement_reward_functions():
     return ops
 
 
+def loaded_ticket_removal(blocks=False):
+    """Entity-ticking command visibility after forced tickets leave; FULL is separate."""
+    targets = [(d, x, z) for d in range(2, 7)
+               for x, z in [(0, d * 16 + 3), (d * 16 + 3, d * 16 + 3), (-d * 16 + 3, 0)]]
+    ops = setup('/scoreboard objectives add loaded_audit dummy', '/forceload remove all',
+                '/tp @s 0.5 -63 0.5 0 0')
+    ops += [cmd('/forceload add -128 -128 127 127', expect_result=256),
+            {'op': 'settle'},
+            {'op': 'wait_chunks', 'chunks': [[x >> 4, z >> 4] for _, x, z in targets]}]
+    for _, x, z in targets:
+        ops += [{'op': 'chunk_ready', 'chunk': [x >> 4, z >> 4], 'expect_values': [1, 1, 1]}]
+        ops += setup(f'/setblock {x} -63 {z} air')
+    ops += setup('/setblock 0 -64 0 stone', '/setblock 0 -63 0 air', '/setblock 0 -62 0 air',
+                 '/data modify storage h010:identity uuid set from entity @s UUID')
+    ops += [cmd('/data get entity @s UUID', expect_result=4),
+            cmd('/execute if entity @s[type=player,gamemode=creative,nbt={Health:20f,Pos:[0.5d,-63d,0.5d]}]', expect_result=1),
+            cmd('/forceload query', expect_result=256), {'op': 'server_distances', 'expect_values': [2, 2]}]
+    for phase, ticks in [('before', 40), ('after', 120)]:
+        if phase == 'after':
+            ops += [cmd('/forceload remove all', expect_result=0), cmd('/forceload query', expect_result=0)]
+        ops += setup('/execute store result score start loaded_audit run time query gametime')
+        ops += [{'op': 'tick', 'n': ticks, 'pace_ms': 50}]
+        ops += setup('/execute store result score elapsed loaded_audit run time query gametime',
+                     '/scoreboard players operation elapsed loaded_audit -= start loaded_audit')
+        ops += [cmd('/scoreboard players get elapsed loaded_audit', expect_result=ticks),
+                {'op': 'server_distances', 'expect_values': [2, 2]},
+                cmd('/execute if entity @s[type=player,gamemode=creative,nbt={Health:20f,Pos:[0.5d,-63d,0.5d]}]', expect_result=1)]
+        for distance, x, z in targets:
+            present = phase == 'before' or distance == 2
+            for sign in ['if', 'unless']:
+                accepted = present if sign == 'if' else not present
+                op = cmd(f'/execute {sign} loaded {x} -63 {z}')
+                op['label'] = f'h010 {phase}/{distance}/{x},{z}/{sign}'
+                op['expect_callback'] = [accepted, int(accepted)]
+                ops.append(op)
+            if blocks:
+                op = cmd(f'/execute if block {x} -63 {z} air')
+                op['label'] = f'h010 FULL diagnostic/{phase}/{distance}/{x},{z}'
+                ops.append(op)
+    ops += setup('/execute store success score changed loaded_audit run data modify storage h010:identity uuid set from entity @s UUID')
+    ops += [cmd('/scoreboard players get changed loaded_audit', expect_result=0),
+            cmd('/data get entity @s UUID', expect_result=4)]
+    return ops
+
+
 def groups():
     try:
         from .loaded_cloud_corpus import loaded_clouds
