@@ -50,6 +50,7 @@ mod microsoft;
 mod modpacks_page;
 mod mods_page;
 mod mods_project;
+mod motion;
 mod multiplayer_page;
 mod native_log_page;
 mod new_instance;
@@ -125,7 +126,7 @@ impl Page {
         match std::env::var("HORIZON_LAUNCHER_PAGE").as_deref() {
             Ok("mods" | "modpacks" | "resourcepacks" | "shaders" | "datapacks") => Page::Mods,
             Ok("servers") => Page::Servers,
-            Ok("wardrobe") if horizon_cosmetics::enabled() => Page::Wardrobe,
+            Ok("wardrobe") if horizon_cosmetics::forced() => Page::Wardrobe,
             Ok("versions") => Page::Versions,
             Ok("notes") => Page::Notes,
             Ok("settings") => Page::Settings,
@@ -209,6 +210,8 @@ struct Launcher {
     content_scroll: Scrollbar,
     /// The glass Settings page's own scroll: its sections beside their list.
     settings_pane: gpui::ScrollHandle,
+    /// The section the glass Settings list marked when last drawn (`glass_settings`).
+    settings_marked: usize,
     /// The Mods page's project card, kept in view beside its list.
     mods_sticky: sticky::Sticky,
     /// The rows of the page's long list (Versions, Patch notes) last drawn.
@@ -258,6 +261,9 @@ struct Launcher {
     /// The newer Horizon the open warning's build moves to (Update), else None: a build stays
     /// on the Horizon the instance plays.
     native_update: Option<String>,
+    /// The build waiting for the trust warning builds every mod on its Horizon's own commit,
+    /// pinned or not (`native_mods::build`'s `on_base`): Rebuild on Horizon's.
+    native_on_base: bool,
     /// What each installed native build was made from, by version. A build's version names its
     /// contents, so an entry never goes stale.
     native_builds:
@@ -295,7 +301,7 @@ struct Launcher {
     wardrobe: Option<wardrobe_page::Wardrobe>,
     /// Ask the service again on the next draw of the Wardrobe (set by each visit).
     wardrobe_reload: bool,
-    /// The cosmetics service's last word on the founder set's claim (`GET /v1/shop`): whether
+    /// The cosmetics service's last word on the founder set's window (`GET /v1/shop`): whether
     /// the top bar has the Wardrobe page with cosmetics off (`wardrobe_shown`).
     shop_status: Option<horizon_launcher::wardrobe::Claim>,
     /// The selected account's own answer on it from its last Wardrobe visit, kept on disk (a
@@ -547,6 +553,7 @@ impl Launcher {
             switches: 0,
             content_scroll: Scrollbar::default(),
             settings_pane: gpui::ScrollHandle::new(),
+            settings_marked: 0,
             mods_sticky: sticky::Sticky::default(),
             long_list: cull::Cull::default(),
             opening: (!settings.skip_opening).then(|| {
@@ -582,6 +589,7 @@ impl Launcher {
             native_confirm: None,
             native_for: None,
             native_update: None,
+            native_on_base: false,
             native_builds: Default::default(),
             native_mismatch: None,
             native_log: Default::default(),
@@ -601,7 +609,8 @@ impl Launcher {
             wardrobe_reload: false,
             shop_status: None,
             shop_kept: None,
-            restyle: horizon_cosmetics::enabled(),
+            // The first draw takes the launcher theme from Settings.
+            restyle: true,
             background_error: None,
             args_input: line_edit::LineEdit::new(settings.game_args.clone(), 1024, 38),
             args_focused: false,
@@ -929,6 +938,7 @@ impl Launcher {
         let instance = instances::selected();
         self.native_for = Some(instance.id.clone());
         let plays = self.version_of(&instance).cloned();
+        let on_base = std::mem::take(&mut self.native_on_base);
         let base = match self.native_update.take() {
             Some(newer) => Some(newer),
             None => native_mods::base_for(plays.as_deref(), &self.installed, false),
@@ -953,9 +963,17 @@ impl Launcher {
         let profile = native_mods::Profile::chosen(&self.settings);
         let tx = self.tx.clone();
         std::thread::spawn(move || {
-            let result = native_mods::build(&base, &folder, &instance, anyway, profile, |step| {
-                let _ = tx.send(Msg::NativeProgress(step.label()));
-            });
+            let result = native_mods::build(
+                &base,
+                &folder,
+                &instance,
+                anyway,
+                on_base,
+                profile,
+                |step| {
+                    let _ = tx.send(Msg::NativeProgress(step.label()));
+                },
+            );
             let _ = tx.send(Msg::Native(result));
         });
     }
@@ -1956,7 +1974,7 @@ fn hover_fade(
     let key = |dir: &str, at: Instant| {
         ElementId::named_usize(format!("{id}-{dir}"), (at - start).as_micros() as usize)
     };
-    let ease = || Animation::new(theme::QUICK).with_easing(ease_out_quint());
+    let ease = || motion::eased(horizon_theme::QUICK);
     if let Some((_, at)) = state.on.as_ref().filter(|(h, _)| h == id) {
         return layer()
             .with_animation(key("in", *at), ease(), paint)
@@ -3274,6 +3292,9 @@ impl Launcher {
                 None,
                 &t,
             )),
+            // The glass look's Overview ends with the screenshots and the patch log: Prepare is in
+            // Play's ⋯ menu, the Minecraft folder in the folder menu, signing in in the top bar.
+            None if t.glass => rows,
             None => rows
                 .child(index_row(
                     2,
@@ -3896,6 +3917,7 @@ impl Launcher {
                 |this, _: &ClickEvent, _, cx| {
                     this.native_confirm = None;
                     this.native_update = None;
+                    this.native_on_base = false;
                     cx.notify();
                 },
             )),
@@ -5028,7 +5050,7 @@ impl Render for Launcher {
             Page::Settings => self.settings_page(cx),
         };
         self.sky.free_replaced(window);
-        // The new page fades in and rises a few pixels.
+        // The new page fades in and rises a few pixels, as the website's tabs do (`hzl-pop`).
         let content = div()
             .relative()
             .w_full()
@@ -5037,8 +5059,8 @@ impl Render for Launcher {
             .child(content)
             .with_animation(
                 ElementId::named_usize("page", self.switches),
-                Animation::new(theme::ENTER).with_easing(ease_out_quint()),
-                |d, p| d.opacity(p).top(px(theme::RISE * (1. - p))),
+                motion::eased(motion::POP),
+                |d, p| d.opacity(p).top(px(motion::POP_RISE * (1. - p))),
             );
         let (reveal, held) = self.opening_phase(window);
         let ui = ease_out_cubic((reveal - 0.3) / 0.7);
@@ -5196,7 +5218,8 @@ impl Render for Launcher {
                                         &t,
                                     )
                                     .flex_1()
-                                    .min_h_0(),
+                                    .min_h_0()
+                                    .when(t.glass, |d| d.mt(px(crate::glass::CONTENT_INSET))),
                             ),
                     ),
             );

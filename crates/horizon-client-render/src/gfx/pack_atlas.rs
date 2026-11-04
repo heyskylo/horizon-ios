@@ -27,6 +27,37 @@ impl PackAtlas {
         layers: u32,
         sprite: u32,
     ) -> Option<Self> {
+        Self::with_levels(
+            device,
+            encoder,
+            arrays,
+            split,
+            layers,
+            sprite,
+            arrays[0].mip_level_count(),
+        )
+    }
+
+    /// Encoded material channels must select an existing texel, including at distance.
+    pub fn material(
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        arrays: &[wgpu::Texture],
+        split: u32,
+        layers: u32,
+    ) -> Option<Self> {
+        Self::with_levels(device, encoder, arrays, split, layers, arrays[0].width(), 1)
+    }
+
+    fn with_levels(
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        arrays: &[wgpu::Texture],
+        split: u32,
+        layers: u32,
+        sprite: u32,
+        levels: u32,
+    ) -> Option<Self> {
         let layers = layers.max(1);
         let columns = (f64::from(layers).sqrt().ceil() as u32).max(1);
         let rows = layers.div_ceil(columns);
@@ -35,7 +66,7 @@ impl PackAtlas {
             return None;
         }
         // Levels past a sprite's single pixel would mix neighbours: stop there.
-        let levels = arrays[0].mip_level_count().min(sprite.ilog2() + 1);
+        let levels = levels.min(sprite.ilog2() + 1);
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Shader pack block atlas"),
             size: wgpu::Extent3d {
@@ -63,6 +94,17 @@ impl PackAtlas {
         };
         atlas.copy(encoder, arrays, 0..layers);
         Some(atlas)
+    }
+
+    /// The table flat terrain reads (`hz_sprite_rects`): per layer, its sprite's top left corner
+    /// (x | y << 16) and side, in atlas pixels.
+    pub fn rects_table(&self) -> Vec<u32> {
+        (0..self.columns * self.texture.height() / self.sprite)
+            .flat_map(|layer| {
+                let (x, y) = (layer % self.columns, layer / self.columns);
+                [(x * self.sprite) | ((y * self.sprite) << 16), self.sprite]
+            })
+            .collect()
     }
 
     /// The atlas's size in pixels (`atlasSize`).
@@ -173,7 +215,8 @@ impl PackAtlas {
             // vertices (`TerrainVertex`, six words each).
             declarations.push_str(
                 "layout(set = 3, binding = 0) readonly buffer HzBlockIds { int hz_block_ids[]; };\n\
-                 layout(set = 3, binding = 1) readonly buffer HzVertices { uint hz_vertices[]; };\n",
+                 layout(set = 3, binding = 1) readonly buffer HzVertices { uint hz_vertices[]; };\n\
+                 layout(set = 3, binding = 2) readonly buffer HzSpriteRects { uvec2 hz_sprite_rects[]; };\n",
             );
             "hz_slot_origins[hz_block_slots[uint(gl_VertexIndex) >> 8u]]"
         } else {
@@ -181,11 +224,29 @@ impl PackAtlas {
             "hz_v_origin"
         };
         let [width, height] = self.size();
-        let scale = [
-            self.sprite as f32 / width as f32,
-            self.sprite as f32 / height as f32,
-        ];
+        // A sprite's cell in its own sides, and the share of the atlas a side is: from the table
+        // in flat draws (`rects_table`), from the grid in others.
         let columns = self.columns;
+        let (cell, side, scale) = if flat {
+            (
+                "uvec2 hz_rect = hz_sprite_rects[hz_layer];\n    \
+                 hz_cell = vec2(float(hz_rect.x & 65535u), float(hz_rect.x >> 16u)) / float(hz_rect.y);\n    "
+                    .to_owned(),
+                "float(hz_rect.y)",
+                [1.0 / width as f32, 1.0 / height as f32],
+            )
+        } else {
+            (
+                format!(
+                    "hz_cell = vec2(float(hz_layer % {columns}u), float(hz_layer / {columns}u));\n    "
+                ),
+                "1.0",
+                [
+                    self.sprite as f32 / width as f32,
+                    self.sprite as f32 / height as f32,
+                ],
+            )
+        };
         // UVs past a sprite (models up to 2, distant tiles) cannot repeat in an atlas: clamped.
         // The colour's alpha holds HDR's emission level (`mesher::EMISSION_BITS`): packs get 1 unless separate_ao.
         let color_a = if self.separate_ao {
@@ -196,8 +257,8 @@ impl PackAtlas {
         let body = format!(
             "    vec4 hz_origin = {origin};\n    \
              uint hz_layer = hz_v_layer & 32767u;\n    \
-             hz_cell = vec2(float(hz_layer % {columns}u), float(hz_layer / {columns}u));\n    \
-             hz_scale = vec2({:?}, {:?});\n    \
+             {cell}\
+             hz_scale = vec2({:?}, {:?}) * {side};\n    \
              hz_Vertex = vec4(hz_v_pos + hz_origin.xyz, 1.0);\n    \
              hz_uv_scale = hz_origin.w > 0.0 ? uintBitsToFloat(floatBitsToUint(hz_origin.w) & 0xff800000u) : fract(abs(hz_origin.w));\n    \
              hz_mid = vec2(0.5);\n    \
@@ -252,6 +313,7 @@ impl PackAtlas {
                 .collect(),
             after: String::new(),
             alpha_test: None,
+            item_id_declared: false,
         }
     }
 }

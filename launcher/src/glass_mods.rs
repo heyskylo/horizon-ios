@@ -6,10 +6,14 @@
 //! instance).
 //!
 //! The mockup's tabs are its sources (Horizon, Modrinth, CurseForge soon); the launcher's page
-//! is by kind (mods and shader packs from Horizon's registry, resource packs and modpacks from
-//! Modrinth), each kind with its sources, so the tabs are the kinds, CurseForge after them as
-//! coming soon. Not in the mockup, kept in its patterns: Show everything, the source switch, the
-//! filters and the sort, which instance or world installs go to (under the search); the
+//! is by kind (mods, modpacks, resource packs, shader packs, data packs), each with its sources,
+//! so the tabs are the kinds and the sources are a switch under the search: Horizon's registry
+//! or Modrinth, CurseForge beside them as coming soon, on the kinds both serve (`switches`):
+//! shader packs are Horizon's registry's only, data packs Modrinth's only, and a Java
+//! instance's files always Modrinth's. Modrinth's Java mods are offered to a Horizon instance
+//! too, each marked Works, Partly or Doesn't run in Horizon. Not in the mockup, kept in its
+//! patterns: Show everything, the filters, which instance or world installs go to (under the
+//! search); the
 //! project's page, its rating and why it runs or not (in the project's card); adding a native mod
 //! from GitHub, the instance's installed list and its native build, imported modpacks and the
 //! install's progress (cards under the two).
@@ -36,7 +40,9 @@ impl Launcher {
                 &[("count", &m.results.len().to_string())],
             )
             .into()
-        } else if m.source == SourceId::Modrinth {
+        } else if m.source == SourceId::Modrinth
+            && matches!(m.kind, PackKind::ResourcePack | PackKind::Modpack)
+        {
             tr("Search resource packs and modpacks").into()
         } else {
             tr("Search, then Enter").into()
@@ -59,10 +65,7 @@ impl Launcher {
         .mb_0();
         let open = self.mods.kind;
         let mut tabs = div().flex().flex_none().items_center().gap(px(4.));
-        for (kind, label, _) in KINDS
-            .into_iter()
-            .filter(|&(kind, ..)| SHOWN.contains(&kind) || kind == open)
-        {
+        for (kind, label, _) in KINDS {
             tabs = tabs.child(
                 small_tab(
                     SharedString::from(format!("mods-tab-{label}")),
@@ -76,25 +79,12 @@ impl Launcher {
                 })),
             );
         }
-        // CurseForge: shown, inert, never searched, as in the mockup.
-        tabs = tabs.child(
-            div()
-                .flex()
-                .items_center()
-                .gap(px(6.))
-                .h(px(32.))
-                .px(px(12.))
-                .text_size(px(13.))
-                .text_color(white(0.35))
-                .child("CurseForge")
-                .child(tr("soon").to_string()),
-        );
         let header = div()
             .flex()
             .items_end()
             .justify_between()
             .gap(px(20.))
-            .pt(px(40.))
+            .pt(px(40. - crate::glass::CONTENT_INSET))
             .mb(px(28.))
             .child(head.min_w_0())
             .child(tabs);
@@ -141,10 +131,9 @@ impl Launcher {
                         })),
                 )
             })
-            .when(
-                source_for(self.mods.kind) == SourceId::Modrinth && !java,
-                |d| d.child(div().flex().child(self.mods_source_switch(cx))),
-            )
+            .when(switches(self.mods.kind) && !java, |d| {
+                d.child(self.glass_source_switch(cx))
+            })
             .children((!registry).then(|| self.mods_filters(cx)))
             .children(self.mods_target_line(cx));
         // The search, and the sort on its right.
@@ -201,6 +190,46 @@ impl Launcher {
                 .gap(px(10.))
                 .mt(px(10.))
                 .children(more),
+        )
+    }
+
+    /// The source switch (`switches`): Horizon's registry or Modrinth as small tabs, CurseForge
+    /// after them as coming soon, shown, inert, never searched, as in the mockup.
+    fn glass_source_switch(&mut self, cx: &mut Context<Self>) -> Div {
+        let t = self.theme;
+        let current = self.mods.source;
+        let mut row = div().flex().items_center().gap(px(4.));
+        for (source, label) in SOURCES {
+            row = row.child(
+                small_tab(
+                    SharedString::from(format!("mods-source-{label}")),
+                    source == current,
+                    &t,
+                )
+                .child(tr(label).to_string())
+                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                    if this.mods.source != source {
+                        this.mods.source = source;
+                        this.mods.browse.filters = Default::default();
+                        this.mods.browse.open = None;
+                        this.mods.picked = None;
+                        this.mods_search(0);
+                    }
+                    cx.notify();
+                })),
+            );
+        }
+        row.child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(6.))
+                .h(px(32.))
+                .px(px(12.))
+                .text_size(px(13.))
+                .text_color(white(0.35))
+                .child("CurseForge")
+                .child(tr("soon").to_string()),
         )
     }
 

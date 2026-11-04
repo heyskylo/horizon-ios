@@ -233,11 +233,46 @@ public final class VanillaCommandExecOracle {
                         }
                     }
                     case "settle" -> settle();
+                    case "use_block" -> {
+                        JsonArray p = op.getAsJsonArray("pos");
+                        BlockPos pos = new BlockPos(p.get(0).getAsInt(), p.get(1).getAsInt(), p.get(2).getAsInt());
+                        int face = op.has("face") ? op.get("face").getAsInt() : 1;
+                        var hit = new net.minecraft.world.phys.BlockHitResult(
+                            new net.minecraft.world.phys.Vec3(pos.getX() + 0.5, pos.getY() + 1.0, pos.getZ() + 0.5),
+                            net.minecraft.core.Direction.from3DDataValue(face), pos, false);
+                        player.gameMode.useItemOn(player, player.level(), player.getMainHandItem(),
+                            net.minecraft.world.InteractionHand.MAIN_HAND, hit);
+                    }
                     case "break" -> {
                         JsonArray pos = op.getAsJsonArray("pos");
                         player.gameMode.destroyBlock(new BlockPos(pos.get(0).getAsInt(), pos.get(1).getAsInt(), pos.get(2).getAsInt()));
                     }
                     case "portal" -> portal();
+                    case "destroy_progress" -> {
+                        JsonArray coords = op.getAsJsonArray("pos");
+                        BlockPos pos = new BlockPos(coords.get(0).getAsInt(), coords.get(1).getAsInt(), coords.get(2).getAsInt());
+                        // The fixture server does not tick its standalone player. Run
+                        // LivingEntity's actual equipment refresh before observing mining.
+                        try {
+                            var refresh = net.minecraft.world.entity.LivingEntity.class.getDeclaredMethod("detectEquipmentUpdates");
+                            refresh.setAccessible(true);
+                            refresh.invoke(player);
+                        } catch (ReflectiveOperationException error) {
+                            throw new IllegalStateException(error);
+                        }
+                        player.setOnGround(true);
+                        float progress = player.level().getBlockState(pos).getDestroyProgress(player, player.level(), pos);
+                        JsonObject record = new JsonObject();
+                        record.addProperty("cmd", "#destroy_progress");
+                        record.add("messages", new JsonArray());
+                        JsonArray value = new JsonArray();
+                        value.add(true);
+                        value.add(Float.floatToRawIntBits(progress));
+                        JsonArray results = new JsonArray();
+                        results.add(value);
+                        record.add("results", results);
+                        out.append(gson.toJson(record)).append('\n');
+                    }
                     case "falling" -> {
                         String dimension = op.get("dimension").getAsString();
                         String block = op.get("block").getAsString();
