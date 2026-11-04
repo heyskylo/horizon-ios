@@ -853,6 +853,10 @@ impl Particle {
     pub fn remove(&mut self) {
         self.removed = true;
     }
+    /// Hide geometry while retaining the particle's lifetime and controller.
+    pub fn set_visible(&mut self, visible: bool) {
+        self.no_render = !visible;
+    }
     /// The particle's own random, distinct from the engine and level generators.
     pub fn random(&mut self) -> &mut LegacyRandom {
         &mut self.random

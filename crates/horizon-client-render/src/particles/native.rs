@@ -136,6 +136,11 @@ mod tests {
         assert!(vertices.iter().all(
             |v| v.color >> 24 == 127 && v.layer & crate::gfx::TRANSLUCENT_PARTICLE_OVERLAY != 0
         ));
+        e.particles[0].set_visible(false);
+        vertices.clear();
+        e.render(DVec3::ZERO, 0.0, 0.0, 0.5, &|_| 0, &mut vertices);
+        assert!(vertices.is_empty());
+        assert_eq!(e.particles[0].age, 2);
         e.tick_particle(&mut p, &level);
         assert!(p.removed);
         assert_eq!(p.position, [3.0, 0.0, 0.0]);
