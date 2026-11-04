@@ -91,7 +91,8 @@ addition; a change to one starts `/api/v2`, served beside `/api/v1`.
 - Commands: `players`, `kick`, `ban`, `pardon`, `ban-ip`, `pardon-ip`.
 - `/api/v1` additions: `players`, `players/{kick,ban,pardon,ban-ip,pardon-ip,op,deop}`, `whitelist`,
   `whitelist/{add,remove}`, stopped-server list edits, `metrics/prometheus`, `GET`/`PATCH config`,
-  `DELETE backups`, `GET backups/download`; `POST start` resumes a stopped supervisor;
+  `DELETE backups`, `GET backups/download`, `GET crash-reports` (the files in `crash-reports/`) and
+  `GET crash-reports/read?name=` (one report's text; only names the list holds); `POST start` resumes a stopped supervisor;
   `server.toml` gets `[api]` (`bind`, `token`, `allow_public`); `GET events` (server-sent events, or JSON).
 - The API compatibility suite pins the `/api/v1` status, metrics, logs, start, stop and restart replies.
 - RCON (`enable-rcon`, `rcon.port`, `rcon.password`): vanilla's remote console, served by the supervisor.

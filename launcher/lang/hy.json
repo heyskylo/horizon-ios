@@ -1098,6 +1098,8 @@
   "Charged back": "Բանկը չեղարկել է վճարումը",
   "Paid": "Վճարված է",
   "Order {id}": "Պատվեր {id}",
+  "Paste a friend's invite code": "Տեղադրեք ընկերոջ հրավերի կոդը",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Խաղում է {build}, կառուցված Horizon {commit}-ի վրա՝ {mods}-ի ամրացրած commit-ի, ոչ թե {version}-ի:",
   "Open the shop": "Բացել խանութը",
   "You don't own any cosmetics yet.": "Դուք դեռ կոսմետիկա չունեք։"
 }

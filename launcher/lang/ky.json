@@ -1098,6 +1098,8 @@
   "Charged back": "Банк кайтарып алды",
   "Paid": "Төлөндү",
   "Order {id}": "Буйрутма {id}",
+  "Paste a friend's invite code": "Досуңдун чакыруу кодун чаптаңыз",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "{build} ойнойт: {version} эмес, {mods} бекиткен Horizon {commit} коммитинин үстүнө курулган.",
   "Open the shop": "Дүкөндү ачуу",
   "You don't own any cosmetics yet.": "Сизде азырынча косметика жок."
 }

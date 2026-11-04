@@ -1098,6 +1098,8 @@
   "Charged back": "Visszaterhelve",
   "Paid": "Kifizetve",
   "Order {id}": "Rendelés {id}",
+  "Paste a friend's invite code": "Illessze be egy barát meghívókódját",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "{build} fut, a Horizon {commit} commitra építve, amelyet {mods} rögzít, nem a {version} verzióra.",
   "Open the shop": "Bolt megnyitása",
   "You don't own any cosmetics yet.": "Még nincs kozmetikumod."
 }

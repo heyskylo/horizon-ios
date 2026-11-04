@@ -1098,6 +1098,8 @@
   "Charged back": "Báŋku fas váldán",
   "Paid": "Máksojuvvon",
   "Order {id}": "Diŋga {id}",
+  "Paste a friend's invite code": "Bija ustiba bovdehuskoda",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Spealut {build}, huksejuvvon Horizon {commit} ala, commit maid {mods} giddejit, ii {version} ala.",
   "Open the shop": "Rabas gávpi",
   "You don't own any cosmetics yet.": "Dus ii leat vuos makkárge kosmetihkka."
 }

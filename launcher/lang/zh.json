@@ -1098,6 +1098,8 @@
   "Charged back": "已拒付",
   "Paid": "已支付",
   "Order {id}": "订单 {id}",
+  "Paste a friend's invite code": "粘贴好友的邀请码",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "运行 {build}，基于 Horizon {commit} 构建（{mods} 固定的提交），而不是 {version}。",
   "Open the shop": "打开商店",
   "You don't own any cosmetics yet.": "你还没有任何装饰。"
 }

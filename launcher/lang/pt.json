@@ -1098,6 +1098,8 @@
   "Charged back": "Estornado pelo banco",
   "Paid": "Pago",
   "Order {id}": "Encomenda {id}",
+  "Paste a friend's invite code": "Colar o código de convite de um amigo",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Joga {build}, construído no Horizon {commit}, o commit fixado por {mods}, não no {version}.",
   "Open the shop": "Abrir a loja",
   "You don't own any cosmetics yet.": "Ainda não tens nenhum cosmético."
 }

@@ -1098,6 +1098,8 @@
   "Charged back": "Pank tühistas makse",
   "Paid": "Makstud",
   "Order {id}": "Tellimus {id}",
+  "Paste a friend's invite code": "Kleepige sõbra kutsekood",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Mängib {build}, ehitatud Horizon {commit} peale, mille on kinnitanud {mods}, mitte {version} peale.",
   "Open the shop": "Ava pood",
   "You don't own any cosmetics yet.": "Sul pole veel ühtegi kosmeetikaeset."
 }

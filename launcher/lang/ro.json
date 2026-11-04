@@ -1098,6 +1098,8 @@
   "Charged back": "Plată returnată de bancă",
   "Paid": "Plătit",
   "Order {id}": "Comanda {id}",
+  "Paste a friend's invite code": "Lipiți codul de invitație al unui prieten",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Joacă {build}, construit pe Horizon {commit}, commitul fixat de {mods}, nu pe {version}.",
   "Open the shop": "Deschide magazinul",
   "You don't own any cosmetics yet.": "Încă nu ai produse cosmetice."
 }

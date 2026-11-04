@@ -1098,6 +1098,8 @@
   "Charged back": "Bankas atšaukė mokėjimą",
   "Paid": "Apmokėta",
   "Order {id}": "Užsakymas {id}",
+  "Paste a friend's invite code": "Įklijuokite draugo pakvietimo kodą",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Groja {build}, sukurtą ant Horizon {commit} – commit, kurį prisegė {mods}, o ne ant {version}.",
   "Open the shop": "Atidaryti parduotuvę",
   "You don't own any cosmetics yet.": "Dar neturite kosmetikos."
 }

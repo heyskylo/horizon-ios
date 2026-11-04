@@ -1098,6 +1098,8 @@
   "Charged back": "Bank tərəfindən geri çəkildi",
   "Paid": "Ödənilib",
   "Order {id}": "Sifariş {id}",
+  "Paste a friend's invite code": "Dostunun dəvət kodunu yerləşdirin",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "{build} oynayır: Horizon {version} deyil, {mods} tərəfindən sabitlənmiş Horizon {commit} commit-i üzərində qurulub.",
   "Open the shop": "Mağazanı aç",
   "You don't own any cosmetics yet.": "Hələ heç bir kosmetikanız yoxdur."
 }

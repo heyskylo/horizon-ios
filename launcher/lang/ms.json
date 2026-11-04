@@ -1098,6 +1098,8 @@
   "Charged back": "Dibatalkan oleh bank",
   "Paid": "Dibayar",
   "Order {id}": "Pesanan {id}",
+  "Paste a friend's invite code": "Tampalkan kod jemputan rakan",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Memainkan {build}, dibina di Horizon {commit}, commit yang disematkan oleh {mods}, bukan di {version}.",
   "Open the shop": "Buka kedai",
   "You don't own any cosmetics yet.": "Anda belum memiliki sebarang kosmetik."
 }

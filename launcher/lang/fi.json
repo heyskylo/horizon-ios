@@ -1098,6 +1098,8 @@
   "Charged back": "Palautettu pankin kautta",
   "Paid": "Maksettu",
   "Order {id}": "Tilaus {id}",
+  "Paste a friend's invite code": "Liitä ystävän kutsukoodi",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Pelaa {build}, rakennettu Horizon {commit} -commitille, jonka {mods} kiinnittää, ei {version}:lle.",
   "Open the shop": "Avaa kauppa",
   "You don't own any cosmetics yet.": "Sinulla ei ole vielä kosmetiikkaa."
 }

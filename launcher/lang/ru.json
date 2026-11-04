@@ -1098,6 +1098,8 @@
   "Charged back": "Возврат платежа банком",
   "Paid": "Оплачено",
   "Order {id}": "Заказ {id}",
+  "Paste a friend's invite code": "Вставьте код приглашения друга",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Играет {build}, скомпилировано на Horizon {commit} — коммите, закреплённом {mods}, а не на {version}.",
   "Open the shop": "Открыть магазин",
   "You don't own any cosmetics yet.": "У вас пока нет косметики."
 }

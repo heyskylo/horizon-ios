@@ -1098,6 +1098,8 @@
   "Charged back": "Maqlub mill-bank",
   "Paid": "Imħallas",
   "Order {id}": "Ordni {id}",
+  "Paste a friend's invite code": "Waħħal il-kodiċi tal-istedina ta' ħabib",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Iħaddem {build}, mibni fuq Horizon {commit}, il-commit imwaħħal minn {mods}, mhux fuq {version}.",
   "Open the shop": "Iftaħ il-ħanut",
   "You don't own any cosmetics yet.": "Għad m'għandekx kożmetiċi."
 }

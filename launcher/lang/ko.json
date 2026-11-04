@@ -1098,6 +1098,8 @@
   "Charged back": "차지백됨",
   "Paid": "결제됨",
   "Order {id}": "주문 {id}",
+  "Paste a friend's invite code": "친구의 초대 코드 붙여넣기",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "{build} 플레이 중: {version}이(가) 아니라 {mods}이(가) 고정한 커밋 Horizon {commit}에서 빌드됨.",
   "Open the shop": "상점 열기",
   "You don't own any cosmetics yet.": "아직 코스메틱이 없습니다."
 }

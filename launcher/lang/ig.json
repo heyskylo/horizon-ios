@@ -1098,6 +1098,8 @@
   "Charged back": "Ụlọ akụ weghaara ya",
   "Paid": "Akwụọla",
   "Order {id}": "Ahịrị {id}",
+  "Paste a friend's invite code": "Tapawa koodu ịkpọ òkù enyi",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Ejije {build}, wuru na Horizon {commit}, commit nke {mods} kpọchiri, ọ bụghị na {version}.",
   "Open the shop": "Mepee ụlọ ahịa",
   "You don't own any cosmetics yet.": "Ị nweghị ihe ịchọ mma ọ bụla ugbu a."
 }

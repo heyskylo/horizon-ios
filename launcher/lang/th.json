@@ -1098,6 +1098,8 @@
   "Charged back": "ธนาคารเรียกเงินคืน",
   "Paid": "ชำระแล้ว",
   "Order {id}": "คำสั่งซื้อ {id}",
+  "Paste a friend's invite code": "วางรหัสเชิญของเพื่อน",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "เล่น {build} สร้างบน Horizon {commit} ซึ่งเป็นคอมมิตที่ {mods} ตรึงไว้ ไม่ใช่บน {version}",
   "Open the shop": "เปิดร้านค้า",
   "You don't own any cosmetics yet.": "คุณยังไม่มีเครื่องสำอาง"
 }

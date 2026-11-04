@@ -1098,6 +1098,8 @@
   "Charged back": "بینک نے ادائیگی واپس لے لی",
   "Paid": "ادا شدہ",
   "Order {id}": "آرڈر {id}",
+  "Paste a friend's invite code": "کسی دوست کا دعوتی کوڈ چسپاں کریں",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "{build} چلتا ہے، Horizon {commit} پر بنایا گیا، وہ کمٹ جسے {mods} نے پن کیا، {version} پر نہیں۔",
   "Open the shop": "دکان کھولیں",
   "You don't own any cosmetics yet.": "آپ کے پاس ابھی تک کوئی کاسمیٹکس نہیں ہے۔"
 }

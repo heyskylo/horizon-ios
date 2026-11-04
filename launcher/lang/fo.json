@@ -1098,6 +1098,8 @@
   "Charged back": "Afturført av bankanum",
   "Paid": "Goldið",
   "Order {id}": "Pantan {id}",
+  "Paste a friend's invite code": "Set boðkotu hjá vini inn",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Leikur {build}, bygt á Horizon {commit}, commit sum {mods} festir, ikki á {version}.",
   "Open the shop": "Opna handilin",
   "You don't own any cosmetics yet.": "Tú eigur enn einki kosmetikk."
 }

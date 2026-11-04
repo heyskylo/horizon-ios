@@ -1098,6 +1098,8 @@
   "Charged back": "חויב בחזרה",
   "Paid": "שולם",
   "Order {id}": "הזמנה {id}",
+  "Paste a friend's invite code": "הדבק קוד הזמנה של חבר",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "מריץ את {build}, שנבנה על Horizon {commit}, הקומיט שננעץ על ידי {mods}, ולא על {version}.",
   "Open the shop": "פתיחת החנות",
   "You don't own any cosmetics yet.": "עדיין אין לך קוסמטיקה."
 }

@@ -1098,6 +1098,8 @@
   "Charged back": "Banka je razveljavila plačilo",
   "Paid": "Plačano",
   "Order {id}": "Naročilo {id}",
+  "Paste a friend's invite code": "Prilepite kodo povabila prijatelja",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Igra {build}, zgrajena na Horizon {commit}, commitu, ki ga je pripel {mods}, ne na {version}.",
   "Open the shop": "Odpri trgovino",
   "You don't own any cosmetics yet.": "Še nimate nobene kozmetike."
 }

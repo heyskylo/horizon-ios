@@ -1098,6 +1098,8 @@
   "Charged back": "Bank qaytarib oldi",
   "Paid": "To‘langan",
   "Order {id}": "Buyurtma {id}",
+  "Paste a friend's invite code": "Do'stingizning taklif kodini joylashtiring",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "{build} oʻynaydi: {version} emas, {mods} mahkamlagan Horizon {commit} commit asosida qurilgan.",
   "Open the shop": "Do‘konni ochish",
   "You don't own any cosmetics yet.": "Sizda hali kosmetika yo'q."
 }

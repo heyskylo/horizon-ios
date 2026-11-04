@@ -1098,6 +1098,8 @@
   "Charged back": "Банка поништила уплату",
   "Paid": "Плаћено",
   "Order {id}": "Поруџбина {id}",
+  "Paste a friend's invite code": "Налепите пријатељев код за позив",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Покреће {build}, направљен на Horizon-у {commit}, комиту који је закачио {mods}, а не на {version}.",
   "Open the shop": "Отвори продавницу",
   "You don't own any cosmetics yet.": "Још увек немате козметику."
 }

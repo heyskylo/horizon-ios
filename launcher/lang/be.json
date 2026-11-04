@@ -1098,6 +1098,8 @@
   "Charged back": "Банк адмяніў плацёж",
   "Paid": "Аплачана",
   "Order {id}": "Заказ {id}",
+  "Paste a friend's invite code": "Устаўце код запрашэння сябра",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Гуляе {build}, пабудаваны на Horizon {commit}, каміце, замацаваным {mods}, а не на {version}.",
   "Open the shop": "Адкрыць краму",
   "You don't own any cosmetics yet.": "У вас пакуль няма касметыкі."
 }

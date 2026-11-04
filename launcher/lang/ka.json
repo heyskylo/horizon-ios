@@ -1098,6 +1098,8 @@
   "Charged back": "ბანკმა გადახდა გააუქმა",
   "Paid": "გადახდილია",
   "Order {id}": "შეკვეთა {id}",
+  "Paste a friend's invite code": "ჩასვით მეგობრის მოწვევის კოდი",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "უკრავს {build}, აგებულია Horizon {commit}-ზე, {mods}-ის მიერ მიმაგრებულ commit-ზე და არა {version}-ზე.",
   "Open the shop": "მაღაზიის გახსნა",
   "You don't own any cosmetics yet.": "ჯერ არ გაქვთ კოსმეტიკა."
 }

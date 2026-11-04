@@ -1098,6 +1098,8 @@
   "Charged back": "Gwrthdroiwyd gan y banc",
   "Paid": "Talwyd",
   "Order {id}": "Archeb {id}",
+  "Paste a friend's invite code": "Gludwch god gwahoddiad ffrind",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Yn chwarae {build}, wedi'i adeiladu ar Horizon {commit}, y commit a binnwyd gan {mods}, nid ar {version}.",
   "Open the shop": "Agor y siop",
   "You don't own any cosmetics yet.": "Does gennych chi ddim colur eto."
 }

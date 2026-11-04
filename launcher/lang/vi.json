@@ -1098,6 +1098,8 @@
   "Charged back": "Bị ngân hàng đảo giao dịch",
   "Paid": "Đã thanh toán",
   "Order {id}": "Đơn hàng {id}",
+  "Paste a friend's invite code": "Dán mã mời của bạn bè",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Chạy {build}, được xây dựng trên Horizon {commit}, commit được {mods} ghim, không phải trên {version}.",
   "Open the shop": "Mở cửa hàng",
   "You don't own any cosmetics yet.": "Bạn chưa có mỹ phẩm nào."
 }

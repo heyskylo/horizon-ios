@@ -1098,6 +1098,8 @@
   "Charged back": "Банк каялла илнӗ",
   "Paid": "Тӳленӗ",
   "Order {id}": "Хушу {id}",
+  "Paste a friend's invite code": "Тусӑн йыхрав кодне ҫыпӑҫтарӑр",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "{build} вылять: {version} ҫинче мар, {mods} ҫирӗплетнӗ Horizon {commit} коммичӗ ҫинче тунӑ.",
   "Open the shop": "Лавккана уҫ",
   "You don't own any cosmetics yet.": "Сирӗн хальлӗхе пӗр косметика та ҫук."
 }

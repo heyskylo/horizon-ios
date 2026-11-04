@@ -1098,6 +1098,8 @@
   "Charged back": "ಬ್ಯಾಂಕ್‌ನಿಂದ ಹಿಂತಿರುಗಿಸಲಾಗಿದೆ",
   "Paid": "ಪಾವತಿಸಲಾಗಿದೆ",
   "Order {id}": "ಆರ್ಡರ್ {id}",
+  "Paste a friend's invite code": "ಸ್ನೇಹಿತನ ಆಹ್ವಾನ ಕೋಡ್ ಅನ್ನು ಅಂಟಿಸಿ",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "{build} ಆಡುತ್ತದೆ, {version} ಅಲ್ಲ, {mods} ಪಿನ್ ಮಾಡಿದ ಕಮಿಟ್ Horizon {commit} ನಲ್ಲಿ ನಿರ್ಮಿಸಲಾಗಿದೆ.",
   "Open the shop": "ಅಂಗಡಿಯನ್ನು ತೆರೆಯಿರಿ",
   "You don't own any cosmetics yet.": "ನಿಮ್ಮ ಬಳಿ ಇನ್ನೂ ಯಾವುದೇ ಸೌಂದರ್ಯವರ್ಧಕಗಳಿಲ್ಲ."
 }

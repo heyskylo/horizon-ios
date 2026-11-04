@@ -1098,6 +1098,8 @@
   "Charged back": "Ibhange libuyisile",
   "Paid": "Kukhokhiwe",
   "Order {id}": "I-oda {id}",
+  "Paste a friend's invite code": "Namathisela ikhodi yesimemo yomngane",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Idlala {build}, eyakhelwe ku-Horizon {commit}, i-commit ephiniwe ngu-{mods}, hhayi ku-{version}.",
   "Open the shop": "Vula isitolo",
   "You don't own any cosmetics yet.": "Awunazo izimonyo okwamanje."
 }

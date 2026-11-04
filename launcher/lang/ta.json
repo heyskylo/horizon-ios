@@ -1098,6 +1098,8 @@
   "Charged back": "வங்கியால் திரும்பப் பெறப்பட்டது",
   "Paid": "செலுத்தப்பட்டது",
   "Order {id}": "ஆர்டர் {id}",
+  "Paste a friend's invite code": "நண்பரின் அழைப்புக் குறியீட்டை ஒட்டவும்",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "{build} விளையாடுகிறது, {version} இல் அல்ல, {mods} பின் செய்த commit ஆன Horizon {commit} இல் கட்டப்பட்டது.",
   "Open the shop": "கடையைத் திற",
   "You don't own any cosmetics yet.": "உங்களிடம் இன்னும் அழகுசாதனப் பொருட்கள் எதுவும் இல்லை."
 }

@@ -1098,6 +1098,8 @@
   "Charged back": "Αναίρεση πληρωμής από την τράπεζα",
   "Paid": "Πληρώθηκε",
   "Order {id}": "Παραγγελία {id}",
+  "Paste a friend's invite code": "Επικολλήστε τον κωδικό πρόσκλησης ενός φίλου",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Παίζει {build}, χτισμένο στο Horizon {commit}, το commit που καρφιτσώνει το {mods}, όχι στο {version}.",
   "Open the shop": "Άνοιγμα καταστήματος",
   "You don't own any cosmetics yet.": "Δεν έχετε ακόμα καλλυντικά."
 }

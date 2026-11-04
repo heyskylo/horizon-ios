@@ -1098,6 +1098,8 @@
   "Charged back": "Bank sztornowoł płatność",
   "Paid": "Zapłacōne",
   "Order {id}": "Zōmówiynie {id}",
+  "Paste a friend's invite code": "Wkludź kod zaproszynio od kamrata",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Gra {build}, zbudowane na Horizon {commit}, commicie przipiyntym bez {mods}, a niy na {version}.",
   "Open the shop": "Ôtworz sklep",
   "You don't own any cosmetics yet.": "Jeszcze niy mosz żodnych kosmetyków."
 }

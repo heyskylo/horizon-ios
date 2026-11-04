@@ -1098,6 +1098,8 @@
   "Charged back": "Na-chargeback",
   "Paid": "Bayad na",
   "Order {id}": "Order {id}",
+  "Paste a friend's invite code": "I-paste ang invite code ng isang kaibigan",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Naglalaro ng {build}, na binuo sa Horizon {commit}, ang commit na naka-pin ng {mods}, hindi sa {version}.",
   "Open the shop": "Buksan ang shop",
   "You don't own any cosmetics yet.": "Wala ka pang pampaganda."
 }

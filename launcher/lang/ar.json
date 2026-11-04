@@ -1098,6 +1098,8 @@
   "Charged back": "تم رد المبلغ من البنك",
   "Paid": "مدفوع",
   "Order {id}": "الطلب {id}",
+  "Paste a friend's invite code": "الصق رمز دعوة صديق",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "يشغل {build}، المبني على هورايزون {commit}، وهو الإيداع الذي يثبّته {mods}، وليس على {version}.",
   "Open the shop": "فتح المتجر",
   "You don't own any cosmetics yet.": "لا تملك أي مظاهر بعد."
 }

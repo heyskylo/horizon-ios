@@ -1098,6 +1098,8 @@
   "Charged back": "Банк буцаасан",
   "Paid": "Төлсөн",
   "Order {id}": "Захиалга {id}",
+  "Paste a friend's invite code": "Найзын урилгын кодыг буулгана уу",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "{build} тоглодог: {version} биш, {mods}-ийн бэхэлсэн Horizon {commit} коммит дээр бүтээгдсэн.",
   "Open the shop": "Дэлгүүр нээх",
   "You don't own any cosmetics yet.": "Танд одоогоор гоо сайхны бүтээгдэхүүн алга."
 }

@@ -1098,6 +1098,8 @@
   "Charged back": "Ilé ìfowópamọ́ ti gba padà",
   "Paid": "A ti sanwó",
   "Order {id}": "Àṣẹ ríra {id}",
+  "Paste a friend's invite code": "Lẹẹmọ koodu ifiwepe ọrẹ kan",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Ń ṣe {build}, ti a kọ lori Horizon {commit}, commit ti {mods} so mọ, kii ṣe lori {version}.",
   "Open the shop": "Ṣí ṣọ́ọ̀bù",
   "You don't own any cosmetics yet.": "O ò tíì ní ohun ikunra kankan."
 }

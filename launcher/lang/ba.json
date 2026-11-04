@@ -1098,6 +1098,8 @@
   "Charged back": "Банк кире алды",
   "Paid": "Түләнде",
   "Order {id}": "Заказ {id}",
+  "Paste a friend's invite code": "Дуҫтың саҡырыу кодын йәбештереү",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "{build} уйнай: Horizon {version} түгел, {mods} беркеткән Horizon {commit} коммиты өҫтөндә төҙөлгән.",
   "Open the shop": "Магазинды асыу",
   "You don't own any cosmetics yet.": "Һеҙҙә әлегә бер косметика ла юҡ."
 }

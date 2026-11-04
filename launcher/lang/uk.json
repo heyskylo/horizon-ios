@@ -1098,6 +1098,8 @@
   "Charged back": "Банк скасував платіж",
   "Paid": "Оплачено",
   "Order {id}": "Замовлення {id}",
+  "Paste a friend's invite code": "Вставте код запрошення друга",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Грає {build}, зібрано на Horizon {commit} — коміті, закріпленому {mods}, а не на {version}.",
   "Open the shop": "Відкрити крамницю",
   "You don't own any cosmetics yet.": "У вас поки немає косметики."
 }

@@ -1098,6 +1098,8 @@
   "Charged back": "Repreno de la banko",
   "Paid": "Pagita",
   "Order {id}": "Mendo {id}",
+  "Paste a friend's invite code": "Algluu la invitkodon de amiko",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Ludas {build}, konstruitan sur Horizon {commit}, la enmeto fiksita de {mods}, ne sur {version}.",
   "Open the shop": "Malfermi la vendejon",
   "You don't own any cosmetics yet.": "Vi ankoraŭ ne posedas kosmetikaĵojn."
 }

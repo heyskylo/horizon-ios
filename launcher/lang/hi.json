@@ -1098,6 +1098,8 @@
   "Charged back": "चार्जबैक हुआ",
   "Paid": "भुगतान हो गया",
   "Order {id}": "ऑर्डर {id}",
+  "Paste a friend's invite code": "किसी दोस्त का आमंत्रण कोड पेस्ट करें",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "{build} खेलता है, Horizon {commit} पर निर्मित, जो {mods} द्वारा पिन किया गया कमिट है, {version} पर नहीं।",
   "Open the shop": "दुकान खोलें",
   "You don't own any cosmetics yet.": "आपके पास अभी कोई कॉस्मेटिक्स नहीं है।"
 }

@@ -1098,6 +1098,8 @@
   "Charged back": "Air a thilleadh leis a' bhanca",
   "Paid": "Pàighte",
   "Order {id}": "Òrdugh {id}",
+  "Paste a friend's invite code": "Cuir a-steach còd cuireadh caraid",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "A' cluich {build}, air a thogail air Horizon {commit}, an commit a phrìnich {mods}, chan ann air {version}.",
   "Open the shop": "Fosgail am bùth",
   "You don't own any cosmetics yet.": "Chan eil cungaidh-maise sam bith agad fhathast."
 }

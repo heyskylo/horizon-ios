@@ -1098,6 +1098,8 @@
   "Charged back": "Distaolet gant ar vanka",
   "Paid": "Paeet",
   "Order {id}": "Gourc'hemenn {id}",
+  "Paste a friend's invite code": "Pegañ kod pediñ ur mignon",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "C'hoari {build}, savet diwar Horizon {commit}, ar commit spilhet gant {mods}, ha neket diwar {version}.",
   "Open the shop": "Digeriñ ar stal",
   "You don't own any cosmetics yet.": "N'ho peus kosmetik ebet c'hoazh."
 }

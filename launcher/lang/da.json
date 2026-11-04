@@ -1098,6 +1098,8 @@
   "Charged back": "Tilbageført af banken",
   "Paid": "Betalt",
   "Order {id}": "Ordre {id}",
+  "Paste a friend's invite code": "Indsæt en vens invitationskode",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Spiller {build}, bygget på Horizon {commit}, det commit {mods} fastlåser, ikke på {version}.",
   "Open the shop": "Åbn butikken",
   "You don't own any cosmetics yet.": "Du ejer ingen kosmetik endnu."
 }

@@ -1098,6 +1098,8 @@
   "Charged back": "Hoʻihoʻi ʻia e ka waihona kālā",
   "Paid": "Ua uku ʻia",
   "Order {id}": "Kauoha {id}",
+  "Paste a friend's invite code": "Hoʻopili i ke code kono a kekahi hoaloha",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Hoʻokani {build}, kūkulu ʻia ma Horizon {commit}, ka commit i hoʻopaʻa ʻia e {mods}, ʻaʻole ma {version}.",
   "Open the shop": "E wehe i ka hale kūʻai",
   "You don't own any cosmetics yet.": "ʻAʻohe āu mea hoʻonaninani i kēia manawa."
 }

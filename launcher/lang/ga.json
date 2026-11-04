@@ -1098,6 +1098,8 @@
   "Charged back": "Aisiompaithe ag an mbanc",
   "Paid": "Íoctha",
   "Order {id}": "Ordú {id}",
+  "Paste a friend's invite code": "Greamaigh cód cuireadh carad",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Imríonn {build}, tógtha ar Horizon {commit}, an tiomantas a phionnáil {mods}, ní ar {version}.",
   "Open the shop": "Oscail an siopa",
   "You don't own any cosmetics yet.": "Níl aon chosmaid agat go fóill."
 }

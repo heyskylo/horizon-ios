@@ -1098,6 +1098,8 @@
   "Charged back": "Bangiga ayaa dib u qaaday",
   "Paid": "La bixiyay",
   "Order {id}": "Dalab {id}",
+  "Paste a friend's invite code": "Ku dheji koodka martiqaadka saaxiib",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Ciyaarta {build}, oo lagu dhisay Horizon {commit}, commit-ka uu {mods} xiray, ee aan ahayn {version}.",
   "Open the shop": "Fur dukaanka",
   "You don't own any cosmetics yet.": "Weli ma haysatid waxyaalo la isku qurxiyo."
 }

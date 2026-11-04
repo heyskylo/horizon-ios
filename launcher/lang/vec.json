@@ -1098,6 +1098,8 @@
   "Charged back": "Stornà da la banca",
   "Paid": "Pagà",
   "Order {id}": "Ordine {id}",
+  "Paste a friend's invite code": "Incoła el còdexe de invito de un amigo",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Gioca {build}, costruito su Horizon {commit}, el commit fisà da {mods}, no su {version}.",
   "Open the shop": "Verxi el negozio",
   "You don't own any cosmetics yet.": "Te ghè ancora nissun cosmetico."
 }

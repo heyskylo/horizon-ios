@@ -1098,6 +1098,8 @@
   "Charged back": "Vrátené bankou",
   "Paid": "Zaplatené",
   "Order {id}": "Objednávka {id}",
+  "Paste a friend's invite code": "Prilepte pozývací kód od priateľa",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Hrá {build}, postavený na Horizon {commit}, commite pripnutom {mods}, nie na {version}.",
   "Open the shop": "Otvoriť obchod",
   "You don't own any cosmetics yet.": "Zatiaľ nemáte žiadnu kozmetiku."
 }

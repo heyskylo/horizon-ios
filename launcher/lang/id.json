@@ -1098,6 +1098,8 @@
   "Charged back": "Chargeback",
   "Paid": "Dibayar",
   "Order {id}": "Pesanan {id}",
+  "Paste a friend's invite code": "Tempel kode undangan teman",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Memainkan {build}, dibangun di atas Horizon {commit}, commit yang disematkan oleh {mods}, bukan di atas {version}.",
   "Open the shop": "Buka toko",
   "You don't own any cosmetics yet.": "Kamu belum punya kosmetik."
 }

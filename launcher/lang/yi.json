@@ -1098,6 +1098,8 @@
   "Charged back": "דער באַנק האָט צוריקגענומען",
   "Paid": "באַצאָלט",
   "Order {id}": "באַשטעלונג {id}",
+  "Paste a friend's invite code": "פּאַפּ דעם פאַרבעטן קאָד פון אַ פריינט",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "שפּילט {build}, געבויט אויף Horizon {commit}, דער קאָמיט וואָס {mods} פּינט, נישט אויף {version}.",
   "Open the shop": "עפֿן דעם קראָם",
   "You don't own any cosmetics yet.": "דו האסט נאָך קיין קאָסמעטיקס נישט."
 }

@@ -1098,6 +1098,8 @@
   "Charged back": "Devolto polo banco",
   "Paid": "Pagado",
   "Order {id}": "Pedido {id}",
+  "Paste a friend's invite code": "Pega o código de invitación dun amigo",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Xoga {build}, construído sobre Horizon {commit}, o commit fixado por {mods}, non sobre {version}.",
   "Open the shop": "Abrir a tenda",
   "You don't own any cosmetics yet.": "Aínda non tes ningún cosmético."
 }

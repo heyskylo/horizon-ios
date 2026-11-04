@@ -1098,6 +1098,8 @@
   "Charged back": "Trökgeboekt door de bank",
   "Paid": "Betaald",
   "Order {id}": "Bestèlling {id}",
+  "Paste a friend's invite code": "Plak de uitnodigingscode van 'ne vriend",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Speelt {build}, geboewd op Horizon {commit}, de commit dae {mods} vastzet, neet op {version}.",
   "Open the shop": "Mook de winkel open",
   "You don't own any cosmetics yet.": "Geer höbt nog gein cosmetica."
 }

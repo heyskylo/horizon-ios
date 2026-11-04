@@ -1098,6 +1098,8 @@
   "Charged back": "Banka atcēla maksājumu",
   "Paid": "Samaksāts",
   "Order {id}": "Pasūtījums {id}",
+  "Paste a friend's invite code": "Ielīmējiet drauga uzaicinājuma kodu",
+  "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Spēlē {build}, kas veidota uz Horizon {commit} – {mods} piespraustā commit, nevis uz {version}.",
   "Open the shop": "Atvērt veikalu",
   "You don't own any cosmetics yet.": "Tev vēl nav kosmētikas."
 }
