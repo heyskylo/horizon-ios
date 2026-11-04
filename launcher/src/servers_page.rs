@@ -174,6 +174,17 @@ pub(super) struct Create {
 /// What the sidebar shows of the Servers page: its list once the page has read it, and whether
 /// a server answers.
 impl Servers {
+    pub(super) fn location_busy(&self) -> bool {
+        self.busy.is_some()
+            || self.creating
+            || self.applying
+            || !self.queued.is_empty()
+            || self
+                .statuses
+                .values()
+                .any(|s| matches!(s.phase.as_str(), "running" | "starting" | "stopping"))
+    }
+
     /// A stopped server's line in the list: "Survival · stopped", as the mockup's. The open
     /// server's mode is the one its settings show now, once read; the others' (and the open one's
     /// until then) come from their files.
