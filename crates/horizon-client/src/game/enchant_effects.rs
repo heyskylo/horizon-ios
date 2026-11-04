@@ -34,14 +34,13 @@ fn block_break_speed_factor(value: Option<f64>) -> f32 {
 impl Game<'_> {
     /// `Player.getDestroySpeed` after the tool speed: mining efficiency, haste
     /// and mining fatigue.
-    pub(super) fn modify_destroy_speed(&self, mut speed: f32) -> f32 {
+    pub(super) fn modify_destroy_speed(&mut self, mut speed: f32) -> f32 {
         if speed > 1.0 {
-            let held = self.inventory[self.selected].as_ref();
             speed += self
-                .res
-                .stations()
-                .enchantments
-                .attribute_add(held, "minecraft:mining_efficiency") as f32;
+                .player
+                .as_mut()
+                .and_then(|player| player.attribute("minecraft:mining_efficiency").ok())
+                .unwrap_or(0.0) as f32;
         }
         speed * self.potions.effects.mining_speed_factor()
     }
@@ -1042,15 +1041,25 @@ impl Game<'_> {
                     })
             })
     }
-    /// Enchantment attribute modifiers of worn armor (respiration, depth strider...).
+    /// Enchantment attribute modifiers of active equipment, including held Efficiency.
     /// Each piece's modifier id ends with its slot (`EnchantmentAttributeEffect.idForSlot`),
     /// so the same enchantment on two pieces stacks instead of replacing itself.
     pub(super) fn apply_enchantment_attributes(&mut self) {
         let mut wanted: Vec<(String, String, f64, String)> = Vec::new();
-        for (stack, slot) in self.armor.iter().zip(["head", "chest", "legs", "feet"]) {
+        for (stack, slot) in self
+            .armor
+            .iter()
+            .zip(["head", "chest", "legs", "feet"])
+            .chain([
+                (&self.inventory[self.selected], "mainhand"),
+                (&self.offhand, "offhand"),
+            ])
+        {
             let Some(stack) = stack else { continue };
-            for (attr, id, amount, op) in self.stations().enchantments.attributes(stack) {
-                wanted.push((attr, format!("{id}/{slot}"), amount, op));
+            for (attr, id, amount, op, group) in self.stations().enchantments.modifier_rows(stack) {
+                if super::equipment_modifier_applies(&group, slot) {
+                    wanted.push((attr, format!("{id}/{slot}"), amount, op));
+                }
             }
         }
         let Some(p) = self.player.as_mut() else {

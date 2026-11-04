@@ -583,6 +583,24 @@ pub enum EntityHit {
     /// flies on and falls to the ground.
     Dodged,
 }
+/// `ProjectileDeflection.REVERSE` with power `0.2`: each axis of the movement
+/// is multiplied by `-0.2 * 0.5` (`-0.1`), and the yaw turns `170 + nextFloat * 20`
+/// degrees. No hit sound. One left almost still (`lengthSqr < 1e-7`) drops its
+/// pickup when that is ALLOWED, then is discarded.
+pub fn deflect_reverse(velocity: &mut Vec3, yaw: &mut f32, st: &mut ArrowState) {
+    let power = 0.2;
+    let rotation = 170.0 + st.random.next_float() * 20.0;
+    let v = *velocity;
+    let k = -power * 0.5;
+    *velocity = Vec3::new(v.x * k, v.y * k, v.z * k);
+    *yaw += rotation;
+    if velocity.length_squared() < 1.0e-7 {
+        if st.pickup == Pickup::Allowed {
+            st.events.push(ArrowEvent::Drop);
+        }
+        st.removed = true;
+    }
+}
 /// The rest of the tick of an arrow that hit an entity: whether to keep it.
 pub fn finish_entity_hit(p: &mut Projectile, scene: &ArrowScene, outcome: EntityHit) -> bool {
     let Some(mut st) = p.arrow.take() else {
@@ -981,18 +999,7 @@ impl Ticker<'_, '_, '_, '_> {
     /// a half turn give or take ten degrees at a tenth of the speed; one
     /// left almost still drops its pickup (ALLOWED) and is discarded.
     fn turn_back(&mut self) {
-        let power = 0.2;
-        let rotation = 170.0 + self.st.random.next_float() * 20.0;
-        let v = self.p.velocity;
-        let k = -power * 0.5;
-        self.p.velocity = Vec3::new(v.x * k, v.y * k, v.z * k);
-        self.p.yaw += rotation;
-        if self.p.velocity.length_squared() < 1.0e-7 {
-            if self.st.pickup == Pickup::Allowed {
-                self.st.events.push(ArrowEvent::Drop);
-            }
-            self.st.removed = true;
-        }
+        deflect_reverse(&mut self.p.velocity, &mut self.p.yaw, self.st);
     }
     /// `AbstractArrow.onHitBlock`: back off the face by 0.05 along each axis
     /// it moved on, stop, and stick.

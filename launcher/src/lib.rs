@@ -19,6 +19,7 @@ pub mod import;
 #[cfg(windows)]
 pub mod installer;
 pub mod instances;
+pub mod instances_mrpack;
 pub mod java;
 pub mod java_launch;
 pub mod launch;
@@ -28,6 +29,7 @@ mod mac_update;
 pub mod minecraft_versions;
 pub mod modpacks;
 pub mod mojang;
+mod native_cache;
 pub mod native_mods;
 pub mod native_status;
 pub mod nightly;
