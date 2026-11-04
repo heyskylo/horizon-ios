@@ -103,6 +103,10 @@ jobs:
     needs: decide
     if: needs.decide.outputs.release == 'true'
     name: build ${{ matrix.name }}
+    # Windows ARM64 is new: its failure never holds the other platforms' release (the signing job
+    # needs this job, and a failed entry of it would fail it). The release steps leave the missing
+    # ARM64 files out with a warning.
+    continue-on-error: ${{ matrix.name == 'windows-arm64' }}
     strategy:
       fail-fast: false
       matrix:
@@ -394,6 +398,13 @@ jobs:
           key=(); [[ -n "$EPHEMERAL" ]] && key=(--key "$(cat dist/ephemeral.pub)")
           cargo run --locked --quiet -p horizon-release-sign -- verify --tag "$TAG" --publishing "${key[@]}" dist
       # Never marked latest: Horizon's own releases stay the repository's latest.
+      - name: The Windows ARM64 launcher, if it built
+        # Its build may fail without holding the release (continue-on-error): the release then has no ARM64
+        # files, and ARM64 launchers stay on their version until one has (backend::launcher_update_from).
+        run: |
+          for file in horizon-launcher-windows-arm64.zip horizon-launcher-setup-arm64.exe; do
+            [[ -f "dist/$file" ]] || echo "::warning::$file is missing: this release goes out without it"
+          done
       - name: Publish ${{ needs.decide.outputs.tag }}
         if: needs.decide.outputs.dry_run != 'true'
         env:

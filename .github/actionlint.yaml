@@ -1,3 +1,4 @@
 self-hosted-runner:
   # The Mac mini's runner (ludovics-mac-mini), which holds the maintainer's own Minecraft files.
-  labels: [horizon-game, ludovics-mac-mini]
+  # windows-11-vs2026-arm is GitHub's Windows ARM64 image (2026-08), newer than actionlint's label list.
+  labels: [horizon-game, ludovics-mac-mini, windows-11-vs2026-arm]

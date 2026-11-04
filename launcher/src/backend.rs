@@ -4016,6 +4016,26 @@ pub fn {f}("
             .all(|r| r.asset.as_ref().unwrap().0.ends_with(x64)));
     }
 
+    /// launcher.yml publishes a release even when its ARM64 build failed. An ARM64 launcher then
+    /// stays on its version until a release has its own zip: it never takes the x64 one.
+    #[test]
+    fn an_arm64_launcher_skips_a_release_without_its_zip() {
+        let (arm, x64) = (
+            "horizon-launcher-windows-arm64.zip",
+            "horizon-launcher-windows-x64.zip",
+        );
+        let asset = |name: &str| serde_json::json!({"name": name, "browser_download_url": format!("https://example.test/{name}"), "size": 1});
+        let list = serde_json::json!([
+            {"tag_name": "launcher@0.30.0", "assets": [asset(x64)]},
+            {"tag_name": "launcher@0.29.0", "assets": [asset(x64), asset(arm)]},
+        ]);
+        let releases = parse_releases(&list, Some(arm), is_launcher_tag);
+        assert!(launcher_update_from(&releases, "launcher@0.29.0").is_none());
+        let update = launcher_update_from(&releases, "launcher@0.28.0").unwrap();
+        assert_eq!(update.tag, "launcher@0.29.0");
+        assert!(update.asset.unwrap().0.ends_with(arm));
+    }
+
     /// Every asset a launcher looks for is one the release workflows build, sign and publish.
     #[test]
     fn platform_assets_are_published() {
@@ -4029,10 +4049,12 @@ pub fn {f}("
                 build.contains(&format!("asset: {game}")),
                 "game-build.yml builds no {game}"
             );
-            // Signed (SHA256SUMS), then published.
-            assert_eq!(
-                nightly.matches(&format!("dist/{game}")).count(),
-                2,
+            // Signed (SHA256SUMS), then published. Windows ARM64's build may fail without holding the
+            // Nightly, so both steps name it again where they check that it was built.
+            let named = nightly.matches(&format!("dist/{game}")).count();
+            let optional = (os, arch) == ("windows", "aarch64");
+            assert!(
+                named == 2 || (optional && named > 2),
                 "nightly-build.yml must sign and publish {game} ({os} {arch})"
             );
             assert!(

@@ -83,6 +83,10 @@ jobs:
   build:
     needs: exporters
     name: build ${{ matrix.name }}
+    # Windows ARM64 is new: its failure never holds the other platforms' release (the signing job
+    # needs this job, and a failed entry of it would fail it). The release steps leave the missing
+    # ARM64 files out with a warning.
+    continue-on-error: ${{ matrix.name == 'windows-arm64' }}
     strategy:
       fail-fast: false
       matrix:
