@@ -1210,6 +1210,7 @@ impl ExperienceOrb {
         );
     }
 }
+
 /// `Entity.moveTowardsClosestSpace` from the middle of an entity's box
 /// (`bounds`, its feet at `position`): the velocity pushed towards the
 /// nearest side of its block (north, south, west, east or up) without a full
