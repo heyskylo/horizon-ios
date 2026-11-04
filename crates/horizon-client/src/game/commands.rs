@@ -1511,6 +1511,7 @@ impl Game<'_> {
         let _ = self.in_target_level(t, |g| g.teleport_to_in_level(t, pos, rotation));
     }
     fn teleport_to_in_level(&mut self, t: Target, pos: [f64; 3], rotation: Option<[f32; 2]>) {
+        use super::entity::Entity;
         let from = self.target_position(t);
         let v = Vec3::new(pos[0], pos[1], pos[2]);
         // PositionMoveRotation.calculateAbsolute clamps pitch before setXRot.
@@ -1590,26 +1591,35 @@ impl Game<'_> {
                 if let Some(i) = self.dropped.iter_mut().find(|i| i.id == id) {
                     i.position = v;
                     i.previous = v;
+                    if let Some(r) = rotation {
+                        Entity::set_rotation(i, r);
+                    }
                 }
             }
             Target::Orb(id) => {
                 if let Some(o) = self.orbs.iter_mut().find(|o| o.id == id) {
                     o.position = v;
                     o.previous = v;
+                    if let Some(r) = rotation {
+                        Entity::set_rotation(o, r);
+                    }
                 }
             }
             Target::Projectile(id) => {
                 if let Some(a) = self.creatures.projectiles.iter_mut().find(|a| a.id == id) {
                     a.position = v;
                     a.previous = v;
+                    if let Some(r) = rotation {
+                        Entity::set_rotation(a, r);
+                    }
                 }
             }
             Target::Stand(id) => {
                 if let Some(a) = self.armor_stands.iter_mut().find(|a| a.id == id) {
                     a.position = v;
                     a.previous = v;
-                    if let Some([yaw, _]) = rotation.filter(|r| r[0].is_finite()) {
-                        a.yaw = yaw;
+                    if let Some(r) = rotation {
+                        Entity::set_rotation(a, r);
                     }
                 }
             }
@@ -1617,8 +1627,8 @@ impl Game<'_> {
                 if let Some(b) = self.boats.iter_mut().find(|b| b.id == id) {
                     b.position = v;
                     b.previous = v;
-                    if let Some([yaw, _]) = rotation.filter(|r| r[0].is_finite()) {
-                        b.yaw = yaw;
+                    if let Some(r) = rotation {
+                        Entity::set_rotation(b, r);
                     }
                 }
             }
@@ -1626,8 +1636,8 @@ impl Game<'_> {
                 if let Some(c) = self.carts.iter_mut().find(|c| c.id == id) {
                     c.position = v;
                     c.previous = v;
-                    if let Some([yaw, _]) = rotation.filter(|r| r[0].is_finite()) {
-                        c.yaw = yaw;
+                    if let Some(r) = rotation {
+                        Entity::set_rotation(c, r);
                     }
                 }
             }
@@ -1667,24 +1677,36 @@ impl Game<'_> {
                 if let Some(t) = self.tnts.iter_mut().find(|t| t.id == id) {
                     t.position = v;
                     t.previous = v;
+                    if let Some(r) = rotation {
+                        Entity::set_rotation(t, r);
+                    }
                 }
             }
             Target::Falling(id) => {
                 if let Some(f) = self.falling.iter_mut().find(|f| f.id == id) {
                     f.position = v;
                     f.previous = v;
+                    if let Some(r) = rotation {
+                        Entity::set_rotation(f, r);
+                    }
                 }
             }
             Target::Rocket(id) => {
                 if let Some(r) = self.rockets.iter_mut().find(|r| r.id == id) {
                     r.position = v;
                     r.previous = v;
+                    if let Some(rot) = rotation {
+                        Entity::set_rotation(r, rot);
+                    }
                 }
             }
             Target::Trident(id) => {
                 if let Some(t) = self.tridents.iter_mut().find(|t| t.id == id) {
                     t.position = v;
                     t.previous = v;
+                    if let Some(r) = rotation {
+                        Entity::set_rotation(t, r);
+                    }
                 }
             }
             Target::Spawner(id) => {
@@ -1699,6 +1721,10 @@ impl Game<'_> {
             }
             // Wall-mounted entities do not move.
             Target::Frame(_) | Target::Painting(_) => {}
+        }
+        // Entity.teleportPassengers: the riders go with their vehicle at once.
+        if let (Some(from), Some(to)) = (from, self.target_position(t)) {
+            self.teleport_passengers(t, from, to);
         }
         if self.options.dedicated.is_some()
             && let (Some(entity), Some(from), Some(to)) =
@@ -2337,6 +2363,7 @@ impl Game<'_> {
                     let at = self.unstuck_orb(pos);
                     self.next_entity += 1;
                     self.orbs.push(horizon_client::entities::ExperienceOrb {
+                        rotation: [0.0, 0.0],
                         join: Default::default(),
                         no_gravity: false,
                         id: self.next_entity,

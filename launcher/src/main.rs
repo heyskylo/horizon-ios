@@ -301,14 +301,12 @@ struct Launcher {
     wardrobe: Option<wardrobe_page::Wardrobe>,
     /// Ask the service again on the next draw of the Wardrobe (set by each visit).
     wardrobe_reload: bool,
-    /// The cosmetics service's last word on the founder set's claim (`GET /v1/shop`): whether
+    /// The cosmetics service's last word on the founder set's window (`GET /v1/shop`): whether
     /// the top bar has the Wardrobe page with cosmetics off (`wardrobe_shown`).
     shop_status: Option<horizon_launcher::wardrobe::Claim>,
     /// The selected account's own answer on it from its last Wardrobe visit, kept on disk (a
     /// preview the service grants it, its claim).
     shop_kept: Option<horizon_launcher::wardrobe::Claim>,
-    /// The Wardrobe page's Shop tab (`wardrobe_page/shop.rs`).
-    shop: wardrobe_page::Shop,
     /// Work the look out again on the next frame (a launcher theme put on or taken off).
     restyle: bool,
     /// Why the last picture for Home's background was refused.
@@ -611,7 +609,6 @@ impl Launcher {
             wardrobe_reload: false,
             shop_status: None,
             shop_kept: None,
-            shop: Default::default(),
             // The first draw takes the launcher theme from Settings.
             restyle: true,
             background_error: None,
@@ -1575,8 +1572,7 @@ impl Launcher {
     /// Asks for a game program (or a zip holding one) and installs it as its own version on a
     /// thread: a version is thousands of files. `Msg::Imported` ends it.
     fn import_build(&mut self, cx: &mut Context<Self>) {
-        // A removal still running could take the folder of the same program imported again.
-        if self.importing_build || !self.removing.is_empty() {
+        if !self.can_import_build() {
             return;
         }
         let paths = cx.prompt_for_paths(PathPromptOptions {
@@ -1594,19 +1590,31 @@ impl Launcher {
             };
             let _ = this.update(cx, |this, cx| {
                 // Another picker's import, or a removal, may have started meanwhile.
-                if this.importing_build || !this.removing.is_empty() {
-                    return;
-                }
-                this.importing_build = true;
-                this.import_error = None;
-                let tx = this.tx.clone();
-                std::thread::spawn(move || {
-                    let _ = tx.send(Msg::Imported(build_import::import(&path, None)));
-                });
-                cx.notify();
+                this.start_build_import(path, cx);
             });
         })
         .detach();
+    }
+    /// Whether a build may be imported now. A removal still running could take
+    /// the folder of the same program imported again.
+    fn can_import_build(&self) -> bool {
+        !self.importing_build && self.removing.is_empty()
+    }
+    /// Starts importing the build at `path` on a thread, as the picker does.
+    /// Separate from [`Self::import_build`] so a file dropped on the window can
+    /// start the same import (`import_dropped`) without a picker. Does nothing
+    /// when one is already running. `Msg::Imported` ends it.
+    fn start_build_import(&mut self, path: std::path::PathBuf, cx: &mut Context<Self>) {
+        if !self.can_import_build() {
+            return;
+        }
+        self.importing_build = true;
+        self.import_error = None;
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(Msg::Imported(build_import::import(&path, None)));
+        });
+        cx.notify();
     }
 
     /// Prepares the selected version, its Minecraft files from the player's install or, for an

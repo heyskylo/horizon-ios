@@ -26,12 +26,31 @@ def setup(*commands):
     return [cmd(c, False) for c in commands]
 
 
+def inline_predicate_constants():
+    always = {'type': 'minecraft:all_of', 'terms': []}
+    never = {'type': 'minecraft:inverted', 'term': always}
+    empty_any = {'type': 'minecraft:any_of', 'terms': []}
+    return [
+        ('always', always, True), ('never', never, False),
+        ('empty_any', empty_any, False),
+        ('nested_all', {'type': 'minecraft:all_of', 'terms': [
+            always, {'type': 'minecraft:inverted', 'term': empty_any}]}, True),
+        ('nested_any', {'type': 'minecraft:any_of', 'terms': [never, always]}, True),
+        ('nested_inverted', {'type': 'minecraft:inverted', 'term': {
+            'type': 'minecraft:any_of', 'terms': [always]}}, False),
+    ]
+
+
 def predicate_selector_fixtures(group_names):
-    if 'selector missing predicates' not in group_names:
-        return {}
-    sheep = {'type': 'minecraft:entity_properties', 'entity': 'this',
-             'predicate': {'minecraft:entity_type': 'minecraft:sheep'}}
-    return {'h124_selector:sheep': sheep, 'minecraft:h124_selector_sheep': sheep}
+    fixtures = {}
+    if 'selector missing predicates' in group_names:
+        sheep = {'type': 'minecraft:entity_properties', 'entity': 'this',
+                 'predicate': {'minecraft:entity_type': 'minecraft:sheep'}}
+        fixtures.update({'h124_selector:sheep': sheep, 'minecraft:h124_selector_sheep': sheep})
+    if 'inline execute predicates' in group_names:
+        fixtures.update({f'h286_inline:{name}': value
+                         for name, value, _ in inline_predicate_constants()})
+    return fixtures
 
 
 BASE = (0, 200, 0)
@@ -916,6 +935,17 @@ def levels():
         cmd('/execute if dimension minecraft:the_nether run say through the portal'),
         cmd('/data get entity @e[tag=remote_cow,limit=1] Pos'),
         cmd('/data get entity @e[tag=remote_cow,distance=..128,limit=1] Pos'),
+        # The unbounded selector reaches the Overworld cow while the player is
+        # in the Nether: /attribute acts on the entity in its own level, as
+        # AttributeCommand does on the entity it was given.
+        cmd('/attribute @e[tag=remote_cow,limit=1] minecraft:max_health get'),
+        cmd('/attribute @e[tag=remote_cow,limit=1] minecraft:follow_range base set 21'),
+        cmd('/attribute @e[tag=remote_cow,limit=1] minecraft:follow_range base get'),
+        cmd('/attribute @e[tag=remote_cow,limit=1] minecraft:follow_range base reset'),
+        cmd('/attribute @e[tag=remote_cow,limit=1] minecraft:scale modifier add harness:xdim 0.5 add_value'),
+        cmd('/attribute @e[tag=remote_cow,limit=1] minecraft:scale get'),
+        cmd('/attribute @e[tag=remote_cow,limit=1] minecraft:scale modifier remove harness:xdim'),
+        cmd('/attribute @e[tag=remote_cow,limit=1] minecraft:scale get'),
         {'op': 'portal'},
         {'op': 'settle'},
         cmd('/execute if dimension minecraft:overworld run say back through the portal'),
@@ -1827,6 +1857,49 @@ def test_command():
         cmd('/execute positioned 1 2 3 run kill @e[tag=nothing]'),
         *setup('/kill @e[tag=tp]'),
     ]
+
+
+def inline_execute_predicates():
+    """ResourceOrId command admission, using only already-supported constant conditions."""
+    import json
+    ops = setup('/forceload add 0 0 15 15',
+                '/scoreboard objectives add inline_pred dummy',
+                '/execute store result score before inline_pred run time query gametime')
+    ops += [cmd('/execute if loaded 4 200 4', expect_result=1),
+            cmd('/execute if predicate h286_inline:always', expect_result=1),
+            cmd('/execute unless predicate h286_inline:never', expect_result=1)]
+    cases = []
+    for name, value, truth in inline_predicate_constants():
+        for argument in (f'h286_inline:{name}', json.dumps(value, separators=(',', ':'))):
+            for sign in ('if', 'unless'):
+                cases.append((f'execute {sign} predicate {argument}', int(truth == (sign == 'if'))))
+    for value in ('h286_inline:missing', '{}', '{type:"minecraft:all_of"}',
+                  '{type:"minecraft:inverted"}', '{type:"h286_inline:missing"}',
+                  '{type:"minecraft:all_of",terms:[{}]}',
+                  '{type:"minecraft:inverted",term:{}}'):
+        for sign in ('if', 'unless'):
+            # Observe parse failure stores independently; do not assume callbacks fire.
+            cases.append((f'execute {sign} predicate {value}', -99))
+    for command, expected in cases:
+        ops += setup('/scoreboard players set result inline_pred -99',
+                     '/scoreboard players set success inline_pred -99')
+        ops += [cmd('/scoreboard players get result inline_pred', expect_result=-99),
+                cmd('/scoreboard players get success inline_pred', expect_result=-99),
+                cmd('/execute store result score result inline_pred '
+                    f'store success score success inline_pred run {command}'),
+                cmd('/scoreboard players get result inline_pred', expect_result=expected),
+                cmd('/scoreboard players get success inline_pred', expect_result=expected)]
+    # Functional conditional execution, beyond the terminal Test passed/failed reply.
+    ops += setup('/scoreboard players set hits inline_pred 0')
+    for value, sign in (('always', 'if'), ('never', 'if'), ('always', 'unless'), ('never', 'unless')):
+        predicate = next(v for name, v, _ in inline_predicate_constants() if name == value)
+        ops.append(cmd(f'/execute {sign} predicate {json.dumps(predicate, separators=(",", ":"))} '
+                       'run scoreboard players add hits inline_pred 1'))
+    ops.append(cmd('/scoreboard players get hits inline_pred', expect_result=2))
+    ops += setup('/execute store result score elapsed inline_pred run time query gametime',
+                 '/scoreboard players operation elapsed inline_pred -= before inline_pred')
+    return ops + [cmd('/scoreboard players get elapsed inline_pred', expect_result=0)] + setup(
+        '/scoreboard objectives remove inline_pred')
 
 
 def end_clock_commands():
@@ -4317,6 +4390,9 @@ def groups():
         ('structured item slots', structured_item_slots()),
         ('loaded potion clouds', loaded_clouds(cmd, setup)),
         ('server clock', server_clock()),
+        ('inline execute predicates', inline_execute_predicates()),
+
+
         ('decorated pot data', decorated_pot_data()),
         ('comparator output data', comparator_output_data()),
         ('hopper empty slot limits', hopper_empty_slot_limits()),
