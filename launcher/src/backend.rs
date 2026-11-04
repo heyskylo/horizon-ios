@@ -3405,6 +3405,10 @@ pub struct Settings {
     /// Horizon's own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub theme: Option<String>,
+    /// The cheaper scene for older computers (a lower-resolution sky, a box blur, the scene
+    /// following the mouse less often and resizes baked in the background). Unset is off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub performance: Option<bool>,
     /// Home's background: a picture the player picked, kept in the data folder under this name
     /// (`themes::keep_background`). Unset shows Horizon's landscape.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -3504,6 +3508,10 @@ impl Settings {
         self.blur
             .filter(|v| v.is_finite())
             .map_or(horizon_theme::glass::BLUR, |v| v.clamp(0., 48.))
+    }
+    /// Whether the cheaper scene is on ([`performance`](Self::performance)).
+    pub fn performance(&self) -> bool {
+        self.performance.unwrap_or(false)
     }
     /// How many of the newest release versions pruning keeps: at least the newest.
     pub fn keep_newest(&self) -> usize {

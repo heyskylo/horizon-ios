@@ -5056,6 +5056,12 @@ impl Render for Launcher {
         let tint = (self.theme.dark && self.look.accent != horizon_theme::glass::ACCENT)
             .then(|| horizon_theme::glass::mix_oklab(self.look.accent, 0x767676, 0.58));
         let blur = self.look.blur;
+        let performance = self.settings.performance();
+        // Performance mode's plates are solid: no glass, no blur, nothing sampled from the scene.
+        glass::set_plain(performance);
+        self.scene
+            .update(cx, |scene, cx| scene.set_performance(performance, cx));
+        let blur = if performance { 0. } else { blur };
         self.scene
             .update(cx, |scene, cx| scene.set_look(tint, blur, cx));
         self.scale = window.scale_factor();

@@ -1,4 +1,6 @@
 {
+  "Performance mode": "Performance mode",
+  "Smoother on older computers: a lower-resolution sky, a cheaper blur, window resizes baked in the background and no frame per mouse move.": "Smoother on older computers: a lower-resolution sky, a cheaper blur, window resizes baked in the background and no frame per mouse move.",
   "A native build or cache cleanup is running. Try again when it finishes.": "S'està executant una compilació nativa o una neteja de la memòria cau. Torna-ho a provar quan acabi.",
   "Cleared {bytes} bytes of native build cache. The next changed build will compile from scratch.": "S'han esborrat {bytes} bytes de la memòria cau de compilació nativa. La propera compilació amb canvis començarà de zero.",
   "Could not access the native build cache: {error}": "No s'ha pogut accedir a la memòria cau de compilació nativa: {error}",
