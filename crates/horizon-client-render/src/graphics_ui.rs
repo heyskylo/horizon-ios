@@ -390,7 +390,7 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
                         h(
                             H::EntityCullingPrecheck,
                             Saves,
-                            "Runs coarse culling after this many visible entities. Zero disables it.",
+                            "Runs the mob AABB precheck after this many loaded mobs. Zero disables it.",
                         ),
                         h(
                             H::LeafCulling,
@@ -756,7 +756,7 @@ impl H {
                 if g.entity_culling_precheck == 0 {
                     "Off".to_string()
                 } else {
-                    format!("{} entities", g.entity_culling_precheck)
+                    lang::tr("%s mobs", &[&g.entity_culling_precheck])
                 },
             ),
             H::ParticleCulling => labelled("Particle Culling", g.particle_culling.label()),

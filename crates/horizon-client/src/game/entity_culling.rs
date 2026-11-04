@@ -52,7 +52,7 @@ impl Game<'_> {
     }
 
     pub(super) fn cull_entity_camera_bounds(&self, lo: glam::Vec3, hi: glam::Vec3) -> bool {
-        if self.occlusion_hidden_camera_bounds(lo, hi) && !self.pack_shadow_casters.0 {
+        if self.occlusion_hidden_camera_bounds(lo, hi) {
             if self.settings.horizon.entity_culling == EntityCullingMode::Asynchronous
                 && let Some(culler) = &self.async_occlusion_culler
             {
@@ -113,6 +113,16 @@ impl Game<'_> {
         entity: &T,
         alpha: f64,
     ) -> EntityCullDecision {
+        self.entity_cull_decision_in_bounds(entity, entity.render_bounds(alpha))
+    }
+
+    /// Cull from a renderer-computed envelope when the rendered transform has
+    /// extra offsets or model geometry that the entity type alone cannot see.
+    pub(super) fn entity_cull_decision_in_bounds<T: RenderEntityBounds>(
+        &self,
+        entity: &T,
+        render_bounds: Aabb,
+    ) -> EntityCullDecision {
         if self.settings.horizon.entity_culling == EntityCullingMode::Off
             || self.pack_shadow_casters.0
             || entity.render_glowing(self)
@@ -123,7 +133,7 @@ impl Game<'_> {
         // envelope. Only cover f32 vertex rounding here; another half-block
         // would make coarse walls falsely visible and force mesh generation.
         let margin = Vec3::new(1.0e-4, 1.0e-4, 1.0e-4);
-        let bounds = entity.render_bounds(alpha).inflate(margin);
+        let bounds = render_bounds.inflate(margin);
         match self.settings.horizon.entity_culling {
             EntityCullingMode::Off => EntityCullDecision::Bypass,
             EntityCullingMode::Synchronous => {

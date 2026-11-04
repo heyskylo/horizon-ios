@@ -15,6 +15,7 @@ use horizon_client::{
     items::ItemStack,
     mesher::Vertex,
 };
+use horizon_core::geometry::{Aabb, Vec3};
 use serde_json::Value;
 use std::{cell::RefCell, collections::HashMap};
 
@@ -590,10 +591,6 @@ impl Game<'_> {
                     continue;
                 }
             }
-            let culling = entity.then(|| self.entity_cull_decision(item, f64::from(partial)));
-            if culling.is_some_and(|decision| decision.hides_entity()) {
-                continue;
-            }
             // `extractItemGroupRenderState`: GROUND, seeded by the entity id.
             let owner = owner_at([q.x, q.y, q.z], 0.0, "minecraft:item");
             let state = self.resolve_item(
@@ -626,6 +623,34 @@ impl Game<'_> {
                 item_render::rendered_amount(item.stack.count),
                 seed,
             );
+            // Use the same animated, spun, clustered transforms as the draw.
+            // ItemEntity's collision box is only 0.25 blocks and cannot prove
+            // that this larger rendered model stays behind an occluder.
+            let culling = entity.then(|| {
+                state
+                    .posed_bounds(&copies)
+                    .map(|(lo, hi)| {
+                        self.entity_cull_decision_in_bounds(
+                            item,
+                            Aabb::new(
+                                Vec3::new(
+                                    camera.x + f64::from(lo.x),
+                                    camera.y + f64::from(lo.y),
+                                    camera.z + f64::from(lo.z),
+                                ),
+                                Vec3::new(
+                                    camera.x + f64::from(hi.x),
+                                    camera.y + f64::from(hi.y),
+                                    camera.z + f64::from(hi.z),
+                                ),
+                            ),
+                        )
+                    })
+                    .unwrap_or_else(|| self.entity_cull_decision(item, f64::from(partial)))
+            });
+            if culling.is_some_and(|decision| decision.hides_entity()) {
+                continue;
+            }
             let glowing = self.entity_glowing(item.id);
             // Posed on the GPU when every layer can be, its silhouette too when it glows.
             let skinned = skinning

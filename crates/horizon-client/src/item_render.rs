@@ -236,6 +236,27 @@ impl ItemRenderState {
             (lo, hi)
         }
     }
+    /// Bounds of the actual submitted item geometry under each world pose.
+    /// Used for dropped-item occlusion because its collision box omits the
+    /// render bob, model size, and copies in a stacked item cluster.
+    pub fn posed_bounds(&self, poses: &[Mat4]) -> Option<(Vec3, Vec3)> {
+        let mut lo = Vec3::splat(f32::INFINITY);
+        let mut hi = Vec3::splat(f32::NEG_INFINITY);
+        for &pose in poses {
+            for layer in &self.layers {
+                let transform = pose * layer.matrix;
+                for &point in layer.extents.iter() {
+                    let point = transform.transform_point3(point);
+                    if !point.is_finite() {
+                        return None;
+                    }
+                    lo = lo.min(point);
+                    hi = hi.max(point);
+                }
+            }
+        }
+        (lo.x <= hi.x && lo.y <= hi.y && lo.z <= hi.z).then_some((lo, hi))
+    }
     /// `ItemStackRenderState.submit` under `pose`.
     pub fn submit(
         &self,
@@ -1107,6 +1128,42 @@ pub fn cluster_poses(state: &ItemRenderState, pose: Mat4, amount: u32, seed: i64
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn posed_item_bounds_include_each_cluster_transform() {
+        let state = ItemRenderState {
+            display: DisplayContext::Ground,
+            layers: vec![LayerRender {
+                geometry: LayerGeometry::Special {
+                    model: SpecialModel {
+                        kind: horizon_assets::item_model::SpecialKind::Trident,
+                    },
+                    argument: Value::Null,
+                },
+                tints: Vec::new(),
+                foil: FoilType::None,
+                matrix: Mat4::from_translation(Vec3::new(0.0, 2.0, 0.0)),
+                particle: String::new(),
+                uses_block_light: false,
+                extents: Arc::new(vec![
+                    Vec3::new(-1.0, -0.5, -0.25),
+                    Vec3::new(0.5, 1.0, 0.25),
+                ]),
+            }],
+            oversized_in_gui: false,
+            animated: false,
+            cit_glint: None,
+            hdr_tier: 0,
+            hdr_light: 0,
+        };
+        let poses = [
+            Mat4::from_translation(Vec3::new(2.0, 0.0, 0.0)),
+            Mat4::from_translation(Vec3::new(-1.0, 0.0, 0.0)),
+        ];
+        let (lo, hi) = state.posed_bounds(&poses).expect("item model has vertices");
+        assert_eq!(lo, Vec3::new(-2.0, 1.5, -0.25));
+        assert_eq!(hi, Vec3::new(2.5, 3.0, 0.25));
+    }
 
     /// One frame's glint is read once and shared: every item drawn from the
     /// same `GlintFrame` scrolls by the same phase, and without the atlas

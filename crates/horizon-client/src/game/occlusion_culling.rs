@@ -33,16 +33,6 @@ const OPACITY_GRID_SIZE: usize = 1_024;
 const MAX_OCCLUSION_RAY_STEPS: usize = 512;
 const CAMERA_SUBCELL_SCALE: f64 = 4.0;
 const QUERY_BOUNDS_SCALE: f64 = 4.0;
-pub(super) const ASYNC_MOB_CULLING_ENABLE_MIN: usize = 64;
-pub(super) const ASYNC_MOB_CULLING_DISABLE_BELOW: usize = 48;
-
-fn async_mob_culling_ready(mobs: usize, worker_active: bool) -> bool {
-    mobs >= if worker_active {
-        ASYNC_MOB_CULLING_DISABLE_BELOW
-    } else {
-        ASYNC_MOB_CULLING_ENABLE_MIN
-    }
-}
 const TIMING_SAMPLE_CAPACITY: usize = 256;
 const PROOF_VALIDATION_TIMING_SAMPLE_STRIDE: u64 = 16;
 
@@ -731,9 +721,9 @@ impl PlaneWorkerScratch {
 }
 
 /// Non-blocking world occlusion for entity rendering.
-/// Hidden proofs require the same quantized camera sub-cell and bounds, and
-/// their chunks and rendered sections are revalidated. Fail-open visible
-/// results survive camera movement because they can only reduce culling.
+/// Hidden proofs require the exact camera and quantized bounds, and their
+/// chunks and rendered sections are revalidated. Fail-open visible results
+/// survive camera movement because they can only reduce culling.
 pub(super) struct AsyncOcclusionCuller {
     jobs: SyncSender<CullJob>,
     _ray_thread: JoinHandle<()>,
@@ -916,11 +906,9 @@ impl AsyncOcclusionCuller {
             .query_cache_stamp
             .is_some_and(|stamp| !stamp.same_layout(self.stamp));
         if layout_changed {
-            // Invalidate in-flight work in O(1). Camera movement is handled by
-            // the sub-cell checks below: a result from the same cell remains
-            // conservative, while a result from another cell is retained only
-            // as fail-open visibility. Cancelling on every cell boundary would
-            // discard the worker's hidden proofs during normal movement.
+            // Invalidate in-flight work in O(1) when the world layout changes.
+            // Hidden proofs are tied to the exact camera position; stale-camera
+            // results below are retained only as fail-open visibility.
             self.job_generation.fetch_add(1, Ordering::Relaxed);
         }
         self.query_cache_stamp = Some(self.stamp);
@@ -958,9 +946,7 @@ impl AsyncOcclusionCuller {
                     let mut stats = self.stats.borrow_mut();
                     stats.stale_camera_jobs = stats.stale_camera_jobs.saturating_add(1);
                 }
-                let same_camera_cell =
-                    camera_cell(results.camera.map(f64::from_bits)) == current_camera_cell;
-                if results.camera == camera_key || same_camera_cell {
+                if results.camera == camera_key {
                     self.cache_query_results(&mut results);
                 } else {
                     // A stale-camera visible answer is fail-open. Never carry a
@@ -1076,11 +1062,10 @@ impl AsyncOcclusionCuller {
             .ok()
             .map(|index| &self.query_results[index]);
         let result = entry.and_then(|entry| {
-            let same_camera_cell = self
-                .query_cache_camera_cell
-                .is_some_and(|cell| entry.camera_cell == Some(cell));
-            let camera_matches =
-                entry.key.camera == key.camera || (entry.proof.is_some() && same_camera_cell);
+            // A hidden proof is only valid for the viewpoint that produced it.
+            // Bounds quantization does not compensate for camera parallax at an
+            // occluder, even when both camera positions share a sub-cell.
+            let camera_matches = entry.key.camera == key.camera;
             let exact = camera_matches
                 && query_bounds_key(&entry.key) == query_bounds_key(key)
                 && entry.stamp.same_layout(self.stamp)
@@ -2051,12 +2036,6 @@ impl Game<'_> {
         let wants_async = entity_mode == EntityCullingMode::Asynchronous;
         let wants_sync = entity_mode == EntityCullingMode::Synchronous;
         if wants_async {
-            if !async_mob_culling_ready(self.mobs.len(), self.async_occlusion_culler.is_some()) {
-                self.async_occlusion_culler = None;
-                self.async_occlusion_culling_failed = false;
-                self.sync_occlusion_culler = None;
-                return;
-            }
             if self.async_occlusion_culler.is_none() && !self.async_occlusion_culling_failed {
                 match AsyncOcclusionCuller::new() {
                     Ok(culler) => self.async_occlusion_culler = Some(Box::new(culler)),

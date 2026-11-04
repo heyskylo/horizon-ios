@@ -189,6 +189,24 @@ fn display_offset(c: &Minecart) -> f64 {
     c.custom_offset
         .map_or_else(|| default_display_offset(c.kind), f64::from)
 }
+
+/// World-space envelope of the cart model and its optional displayed block,
+/// based on the same root position and display offset used by the renderer.
+fn cart_render_bounds(position: Vec3, offset: f64, has_display: bool) -> Aabb {
+    let (bottom, top) = if has_display {
+        let display_shift = 0.75 * (offset - 8.0) / 16.0;
+        (
+            (position.y - 0.5).min(position.y + 0.375 - 0.4 + display_shift),
+            (position.y + 0.9).max(position.y + 0.375 + 0.4 + display_shift + 0.9),
+        )
+    } else {
+        (position.y - 0.5, position.y + 0.9)
+    };
+    Aabb::new(
+        Vec3::new(position.x - 1.0, bottom, position.z - 1.0),
+        Vec3::new(position.x + 1.0, top, position.z + 1.0),
+    )
+}
 /// A display state that is air shows nothing.
 fn shown_unless_air(
     state: Option<BlockStateId>,
@@ -2535,11 +2553,6 @@ impl Game<'_> {
                     }
                 }
             }
-            let culling = self.entity_cull_decision(c, alpha);
-            if culling.hides_entity() {
-                continue;
-            }
-            let entity_start = out.len();
             let mut yaw =
                 c.previous_yaw + ((c.yaw - c.previous_yaw + 180.0).rem_euclid(360.0) - 180.0) * a;
             let mut pitch = 0.0f32;
@@ -2558,6 +2571,17 @@ impl Game<'_> {
                     pitch = (d.y.atan() * 73.0) as f32;
                 }
             }
+            let render_position = Vec3::new(x + offset.x, y + offset.y, z + offset.z);
+            let has_display = shown.as_ref().is_some_and(Option::is_some)
+                || (shown.is_none() && self.display_state(c).is_some());
+            let culling = self.entity_cull_decision_in_bounds(
+                c,
+                cart_render_bounds(render_position, display_offset(c), has_display),
+            );
+            if culling.hides_entity() {
+                continue;
+            }
+            let entity_start = out.len();
             // The per-entity jitter (offsetSeed) that keeps stacked carts from z-fighting.
             let seed = i64::from(c.id).wrapping_mul(493_286_711);
             let seed = seed

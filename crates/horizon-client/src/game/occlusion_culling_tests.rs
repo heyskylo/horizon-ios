@@ -158,10 +158,11 @@ fn hidden_cache_entries_require_the_same_camera_and_bounds() {
     );
     culler.camera[0] = 0.01;
     let same_subcell_camera = culler.query_entity_bounds(bounds).unwrap();
-    assert!(matches!(
-        culler.query_result(&same_subcell_camera, QuerySource::EntityAabb),
-        Some((true, _))
-    ));
+    assert!(
+        culler
+            .query_result(&same_subcell_camera, QuerySource::EntityAabb)
+            .is_none()
+    );
     culler.camera[0] = 0.26;
     culler.query_cache_camera_cell = camera_cell(culler.camera);
     let moved_camera = culler.query_entity_bounds(bounds).unwrap();
