@@ -114,6 +114,8 @@
   "Peak Brightness": "Peak Brightness",
   "Black Level": "Black Level",
   "UI Brightness": "UI Brightness",
+  "Smooth Gradients": "Smooth Gradients",
+  "16-bit frame: dark skies and shadows don't band. A bit more VRAM. Next start.": "16-bit frame: dark skies and shadows don't band. A bit more VRAM. Next start.",
   "Battery Mode": "Battery Mode",
   "Graphics API": "Graphics API",
   "Translucent Batching": "Translucent Batching",
