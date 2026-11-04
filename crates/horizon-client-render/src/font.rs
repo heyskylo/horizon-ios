@@ -24,7 +24,7 @@ pub const DEFAULT: &str = "minecraft:default";
 
 /// A glyph ready to draw: atlas UVs and its box relative to the pen
 /// position (GlyphBitmap left/top/right/bottom), in GUI pixels.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Default)]
 pub struct Glyph {
     pub rect: Option<Rect>,
     pub left: f32,
