@@ -4240,8 +4240,16 @@ fn write_axolotl_memories(m: &Mob, map: &mut Compound) {
         return;
     };
     let mm = m.extra.animal_brain.as_deref().map(|b| &b.mem);
-    let hunting = crate::mobs::animal_brain::hunting_cooldown(m)
-        .map(|ttl| Tag::compound([("value", Tag::Byte(1)), ("ttl", Tag::Long(ttl))]));
+    let hunting = mm.and_then(|mem| {
+        let slot = &mem.hunting_cooldown;
+        slot.value().map(|value| {
+            let mut entry = Tag::compound([("value", Tag::Byte(i8::from(value)))]);
+            if slot.ttl() != i64::MAX {
+                put(&mut entry, "ttl", Tag::Long(slot.ttl()));
+            }
+            entry
+        })
+    });
     // ExpirableValue.codec: integer value and optional finite long TTL.
     let integer_memory = |slot: &crate::mobs::animal_brain::Slot<i32>| {
         slot.value().map(|v| {
@@ -4316,12 +4324,16 @@ fn read_variant(m: &mut Mob, tag: &Tag) {
 }
 fn restore_axolotl_memories(m: &mut Mob, tag: &Tag) {
     let memories = tag.get("Brain").and_then(|b| b.get("memories"));
-    let ttl = memories
-        .and_then(|b| b.get("minecraft:has_hunting_cooldown"))
-        .and_then(|v| number(v.get("ttl")))
-        .unwrap_or(0);
-    crate::mobs::animal_brain::set_hunting_cooldown(m, ttl);
+    // Initialize/clear the slot without applying the runtime setter's positive-TTL rule to saved data.
+    crate::mobs::animal_brain::set_hunting_cooldown(m, 0);
     if let Some(b) = m.extra.animal_brain.as_mut() {
+        if let Some(entry) = memories.and_then(|v| v.get("minecraft:has_hunting_cooldown"))
+            && let Some(value) = float(entry.get("value"))
+        {
+            // NbtOps boolean numbers use doubleValue()!=0; ExpirableValue's optional TTL is lenient.
+            let ttl = number(entry.get("ttl")).unwrap_or(i64::MAX);
+            b.mem.hunting_cooldown.set_ttl(value != 0.0, ttl);
+        }
         for (key, slot) in [
             ("minecraft:play_dead_ticks", &mut b.mem.play_dead_ticks),
             (
@@ -4578,6 +4590,54 @@ pub fn apply_item_components(m: &mut Mob, stack: &crate::items::ItemStack) {
 #[cfg(test)]
 mod axolotl_nbt_tests {
     use super::*;
+    #[test]
+    fn axolotl_boolean_memory_preserves_values_and_saved_lifetimes() {
+        let key = "minecraft:has_hunting_cooldown";
+        for (value, expected) in [
+            (Some(Tag::Byte(0)), Some(false)),
+            (Some(Tag::Byte(1)), Some(true)),
+            (Some(Tag::Int(256)), Some(true)),
+            (Some(Tag::Float(0.5f32.to_bits())), Some(true)),
+            (Some(Tag::Double((-0.5f64).to_bits())), Some(true)),
+            (Some(string("true")), None),
+            (Some(Tag::Compound(Compound::new())), None),
+            (None, None),
+        ] {
+            for ttl in [None, Some(3), Some(0), Some(-1), Some(i64::MAX)] {
+                let mut entry = Tag::Compound(Compound::new());
+                if let Some(value) = &value {
+                    put(&mut entry, "value", value.clone());
+                }
+                if let Some(ttl) = ttl {
+                    put(&mut entry, "ttl", Tag::Long(ttl));
+                }
+                let raw = Tag::compound([(
+                    "Brain",
+                    Tag::compound([("memories", Tag::compound([(key, entry)]))]),
+                )]);
+                let mut kind = crate::mobs::sensor_scan_tests::kind();
+                let ty = Arc::make_mut(&mut kind);
+                ty.id = "minecraft:axolotl".into();
+                ty.species = crate::mobs::Species::Axolotl;
+                let mut mob = Mob::new(1, kind, Vec3::ZERO, 0.0);
+                restore_axolotl_memories(&mut mob, &raw);
+                let saved = mob_to_nbt(&mob, [0; 4], Some(&raw), None);
+                let entry = saved
+                    .get("Brain")
+                    .and_then(|b| b.get("memories"))
+                    .and_then(|m| m.get(key));
+                match expected {
+                    Some(value) => {
+                        let entry = entry.expect("false and nonpositive lifetimes remain present");
+                        assert_eq!(entry.get("value"), Some(&Tag::Byte(i8::from(value))));
+                        let expected_ttl = ttl.filter(|v| *v != i64::MAX).map(Tag::Long);
+                        assert_eq!(entry.get("ttl"), expected_ttl.as_ref());
+                    }
+                    None => assert!(entry.is_none(), "invalid/missing boolean must be dropped"),
+                }
+            }
+        }
+    }
     #[test]
     fn aquatic_from_bucket_saves_defaults_and_tadpole_constant() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
