@@ -282,6 +282,7 @@ impl Launcher {
         };
         let more = div()
             .id("play-more")
+            .occlude()
             .absolute()
             .right(px(8.))
             .flex()
@@ -294,6 +295,7 @@ impl Launcher {
             .hover(|s| s.bg(gpui::black().opacity(0.2)))
             .child(ui::icon("more-horizontal", 20., glyph))
             .on_click(cx.listener(|this, event: &ClickEvent, _, cx| {
+                cx.stop_propagation();
                 if !this.closed_by_this_press(event) {
                     this.home_menu = match this.home_menu {
                         HomeMenu::Play => HomeMenu::None,
