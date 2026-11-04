@@ -319,7 +319,7 @@ pub struct NativeServerPlayer {
     /// API @API:server_player_entity_id@.
     pub entity_id: i32,
     /// The IP address the player connects from (behind a Velocity proxy: the address the proxy forwards);
-    /// empty when not known. API next.
+    /// empty when not known. API @API:server_player_address@.
     pub address: String,
 }
 
