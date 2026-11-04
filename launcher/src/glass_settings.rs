@@ -465,7 +465,8 @@ mod tests {
         assert_eq!(at(0.), 0);
         assert_eq!(at(300.), 1, "Updates' top is 120 px down: in the upper 30 %");
         assert_eq!(at(600.), 2);
-        assert_eq!(at(1000.), 4);
+        assert_eq!(at(1000.), 3, "Network's top at the pane's top, Game's 300 px down");
+        assert_eq!(at(1150.), 4, "Game's top 150 px down: in the upper 30 %");
     }
 
     #[test]
