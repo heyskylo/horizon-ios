@@ -2376,7 +2376,7 @@ impl Game<'_> {
         }
     }
     /// `Entity.isSilent` of the dragon: its `Silent`, kept with the fields
-    /// Horizon models nowhere (`remember_tags`; `/summon`, a load, `/data`).
+    /// Horizon models nowhere (`remember_tags`: `/summon`, a load).
     fn dragon_silent(&self) -> bool {
         let raw = self
             .dragon

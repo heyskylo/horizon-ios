@@ -1282,15 +1282,21 @@ impl Game<'_> {
             let uuid = saved_uuid(&self.persist, d.id);
             out.entry(chunk_of(d.position))
                 .or_default()
-                .push(d.to_nbt(uuid, raw.as_ref()));
+                // The fields kept with it (`remember_tags`: Silent, Tags, a
+                // name...) once it has flown from where it was loaded.
+                .push(with_raw(
+                    d.to_nbt(uuid, raw.as_ref()),
+                    self.persist.raw.get(&d.id),
+                ));
         }
         for c in &self.crystals {
             if keys.contains(&chunk_of(c.position)) {
                 let raw = anon_raw(&self.persist, "minecraft:end_crystal", c.position);
                 let uuid = saved_uuid(&self.persist, c.id);
-                out.entry(chunk_of(c.position))
-                    .or_default()
-                    .push(c.to_nbt(uuid, raw.as_ref()));
+                out.entry(chunk_of(c.position)).or_default().push(with_raw(
+                    c.to_nbt(uuid, raw.as_ref()),
+                    self.persist.raw.get(&c.id),
+                ));
             }
         }
         for s in &self.ominous_spawners {
