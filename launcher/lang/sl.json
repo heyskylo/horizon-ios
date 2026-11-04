@@ -1117,5 +1117,8 @@
   "Move…": "Move…",
   "The launcher closes while your data is copied and verified, then reopens. Old folders are kept and still use disk space until you verify the move and remove them yourself.": "The launcher closes while your data is copied and verified, then reopens. Old folders are kept and still use disk space until you verify the move and remove them yourself.",
   "Open the shop": "Odpri trgovino",
-  "You don't own any cosmetics yet.": "Še nimate nobene kozmetike."
+  "You don't own any cosmetics yet.": "Še nimate nobene kozmetike.",
+  "Claim for free": "Prevzemi brezplačno",
+  "The shop's payment provider doesn't serve your country, so you can claim the Founder Set here for free.": "Ponudnik plačil trgovine ne deluje v vaši državi, zato lahko Ustanoviteljski set tukaj prevzamete brezplačno.",
+  "The Founder Set is yours.": "Ustanoviteljski set je vaš."
 }

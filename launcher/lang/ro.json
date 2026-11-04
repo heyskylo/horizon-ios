@@ -1117,5 +1117,8 @@
   "Move…": "Move…",
   "The launcher closes while your data is copied and verified, then reopens. Old folders are kept and still use disk space until you verify the move and remove them yourself.": "The launcher closes while your data is copied and verified, then reopens. Old folders are kept and still use disk space until you verify the move and remove them yourself.",
   "Open the shop": "Deschide magazinul",
-  "You don't own any cosmetics yet.": "Încă nu ai produse cosmetice."
+  "You don't own any cosmetics yet.": "Încă nu ai produse cosmetice.",
+  "Claim for free": "Revendică gratuit",
+  "The shop's payment provider doesn't serve your country, so you can claim the Founder Set here for free.": "Furnizorul de plăți al magazinului nu operează în țara ta, așa că poți revendica aici gratuit Setul fondator.",
+  "The Founder Set is yours.": "Setul fondator este al tău."
 }

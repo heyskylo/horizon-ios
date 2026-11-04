@@ -2904,6 +2904,15 @@ one custom payload channel `horizon:mod_net`. A vanilla client never gets them, 
 - A player's message reaches the server's hook in the tick after it arrives, when the helpers can reach every player;
   a message to a player leaves at the end of the tick, from any server hook.
 
+### Scenes in screens
+
+`native_draw_scene(batch, rect, blocks, view)` (client, `crates/horizon-client/src/game/native_scene.rs`) draws a small
+scene into a box of a screen: block states at positions of the scene's own (`NativeSceneBlock`), each with its model and,
+given a mod block entity, its drawing through `native_block_entity_submit`, `spin` parts included. `NativeSceneView`
+sets the point at the box's middle, the turn (`yaw`, counterclockwise seen from above; at 0 the scene is seen from the
+north), the tilt of its top towards the viewer (`pitch`) and the pixels per block (`scale`). The scene has a depth of its
+own and is cut to the box. Draw it from the screen's drawing hook; Create's Ponder steps through its scenes this way.
+
 ### Chat and commands a client mod sends
 
 API 404, `crates/horizon-client/src/game/native_net.rs`: `native_send_chat(message)` sends what the player
@@ -2947,6 +2956,20 @@ stock client shows as a chest (`generic_9x1` to `generic_9x6`); nothing is insta
 
 The menu hooks run with no player's state swapped in; `native_player_stacks` and `native_exchange_items` refuse a
 player whose state is (inside `native_perform_command`): call them from a menu hook or `native_server_tick`.
+
+### Text, turning parts and copycats in block entities
+
+- `native_draw_text(draw, text, at, color, glowing, outline)` draws a `Text` under a block entity's pose, as a sign
+  draws its lines. One unit is one font pixel and y points down, so scale the pose by `[1/64, -1/64, 1/64]` as a sign
+  does. Each span keeps its own colour, and glowing text is full bright. It returns the width, for centring.
+- `BlockEntityDraw::spin(axis, pivot, degrees_per_tick, phase)` makes what is drawn next turn by itself, and `still`
+  ends it. The game works out the angle from the game time each frame. With `keep`, a shaft turning at a steady speed
+  is drawn again with no call of `native_block_entity_submit` until its block entity changes. This stands in for
+  Flywheel's rotating instances, on the CPU.
+- `native_block_face_sprite(state, side)` names the texture a block state shows on a side, as `native_draw_cube`
+  takes it. With it, a copycat block draws its material's textures on its own shape and keeps the result.
+- Connected textures (casings, framed glass) need no code. A content mod ships OptiFine CTM rules under
+  `assets/<id>/optifine/ctm/`, and the mesher reads them as it reads a resource pack's.
 
 ### Render hook points
 
