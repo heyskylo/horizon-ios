@@ -424,7 +424,8 @@ impl Game<'_> {
             look_at_target = Some((anchored_eyes, to, faced_entity));
             look_at(from, to)
         };
-        self.teleport_to(t, pos, Some(rot));
+        // RotateCommand: Entity.forceSetRotation, not a teleport.
+        self.set_rotation(t, rot);
         if let Some((eyes, to, entity)) = look_at_target {
             self.send_player_look_at(t, eyes, to, entity);
         }
