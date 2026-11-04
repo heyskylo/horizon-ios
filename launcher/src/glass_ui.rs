@@ -489,9 +489,12 @@ pub fn menu_row(
     keyboard(track_hover(d, id), t)
 }
 
-/// A popover (`POPOVER`): a float plate round at 16 with 6 px around its rows.
+/// A popover (`POPOVER`): the cards' glass (the mockup's darker `hzl-float` read as a different
+/// material beside them), round at 16 with 6 px around its rows, a shadow setting it above the
+/// card under it.
 pub fn popover(width: f32) -> Div {
-    crate::glass::float(radius::POPOVER)
+    crate::glass::plate(radius::POPOVER)
+        .shadow_lg()
         .w(px(width))
         .p(px(6.))
         .flex()
@@ -879,16 +882,17 @@ pub fn toggle(
     on_accent: u32,
     t: &Theme,
 ) -> Stateful<Div> {
+    let id = id.into();
     let knob = div()
         .absolute()
         .top(px(4.))
-        .left(px(if on { 20. } else { 4. }))
         .size(px(16.))
         .rounded_full()
         .bg(if on { color(on_accent) } else { white(0.7) });
+    let knob = crate::motion::knob(&id, on, knob, 4., 16.);
     keyboard(
         div()
-            .id(id.into())
+            .id(id)
             .relative()
             .flex_none()
             .w(px(40.))
