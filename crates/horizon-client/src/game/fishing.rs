@@ -139,14 +139,14 @@ impl Hook {
     /// (`onSyncedDataUpdated` runs on the server too).
     pub(super) fn trigger_bite(&mut self, r: &mut impl RandomSource, game_time: i64) {
         self.nibble = 20 + r.next_int_bound(21).unwrap_or(0);
-        self.velocity.y = bite_impulse(&mut self.synchronized_random(game_time));
+        self.velocity.y = bite_impulse(&mut synchronized_random(self.id, game_time));
     }
-    /// `FishingHook.syncronizedRandom`, reseeded every tick from the hook's UUID and the game
-    /// time so the server and its clients draw alike. Horizon's hook has no UUID: its entity
-    /// id stands in. Kept off the level's random, whose draws must stay in vanilla's order.
-    fn synchronized_random(&self, game_time: i64) -> LegacyRandom {
-        LegacyRandom::new(i64::from(self.id) ^ game_time)
-    }
+}
+/// `FishingHook.syncronizedRandom`, reseeded every tick from the hook's UUID and the game
+/// time so the server and its clients draw alike. Horizon's hook has no UUID: its entity
+/// id stands in. Kept off the level's random, whose draws must stay in vanilla's order.
+fn synchronized_random(id: u32, game_time: i64) -> LegacyRandom {
+    LegacyRandom::new(i64::from(id) ^ game_time)
 }
 /// `FishingHook.onSyncedDataUpdated` on DATA_BITING: the downward plunge,
 /// `-0.4F * Mth.nextFloat(syncronizedRandom, 0.6F, 1.0F)`, in float as vanilla.
@@ -1284,7 +1284,7 @@ impl Game<'_> {
                     (9, Value::Bool(biting)) => {
                         h.nibble = i32::from(*biting);
                         if *biting {
-                            h.velocity.y = bite_impulse(&mut h.synchronized_random(time));
+                            h.velocity.y = bite_impulse(&mut synchronized_random(h.id, time));
                         }
                     }
                     (8, value) => h.state = hooked(value),
@@ -1296,7 +1296,7 @@ impl Game<'_> {
                 match (index, value) {
                     (9, Value::Bool(biting)) => {
                         if *biting {
-                            h.velocity.y = bite_impulse(&mut h.synchronized_random(time));
+                            h.velocity.y = bite_impulse(&mut synchronized_random(h.id, time));
                         }
                     }
                     (8, value) => h.state = hooked(value),
