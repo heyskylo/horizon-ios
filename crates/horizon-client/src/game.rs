@@ -4233,6 +4233,7 @@ impl Game<'_> {
                 Some(self.border.geometry()),
             );
             if merging && !no_physics {
+                self.item_landing_event(item.id, item.previous, item.position, item.on_ground);
                 self.entity_powder_snow_particles(
                     item.previous,
                     item.position,
