@@ -769,15 +769,6 @@ impl Game<'_> {
             None => horizon_client::health::hurt_sound("hurt"),
         }
     }
-    /// Offline local profiles never borrow the account that started P1's game.
-    pub(super) fn auth(&self) -> Option<std::sync::Arc<horizon_client::auth::AuthSession>> {
-        if self.options.split_guest {
-            None
-        } else {
-            horizon_client::auth::current()
-        }
-    }
-
     /// Leave the title for a server (ConnectScreen): an empty world fed by the connection.
     pub(super) fn connect_server(&mut self, address: &str, name: &str) -> Result<()> {
         self.connect_server_with_cookies(address, name, None)
@@ -869,7 +860,8 @@ impl Game<'_> {
                 horizon_client::net::shown_address(address),
             );
         }
-        // A signed-in account always plays under its own name.
+        // A signed-in account always plays under its own name; a splitscreen player signs in
+        // with its own account when it picked one.
         let auth = self.auth();
         let name = auth.as_ref().map_or(name, |a| a.name.as_str());
         let user = auth.as_ref().map_or_else(
@@ -1697,6 +1689,13 @@ impl Game<'_> {
         )
     }
 
+    /// This player's account: a splitscreen player's own, else the game's (P1's).
+    pub(super) fn auth(&self) -> Option<std::sync::Arc<horizon_client::auth::AuthSession>> {
+        match self.options.split_guest {
+            true => self.split_auth.clone(),
+            false => horizon_client::auth::current(),
+        }
+    }
     /// Connected to a server in online mode (its Login): each player needs its own account.
     pub(super) fn online_server(&self) -> bool {
         self.remote.as_ref().is_some_and(|r| r.online_mode)
@@ -5076,15 +5075,13 @@ impl Game<'_> {
         }
     }
     fn poll_own_profile(&mut self) {
+        let auth = self.auth();
         let Some(r) = self.remote.as_mut() else {
             return;
         };
         match &mut r.own_profile {
             OwnProfile::Idle => {
-                let Some(auth) = (!self.options.split_guest)
-                    .then(horizon_client::auth::current)
-                    .flatten()
-                else {
+                let Some(auth) = auth else {
                     r.own_profile = OwnProfile::Done(None);
                     return;
                 };

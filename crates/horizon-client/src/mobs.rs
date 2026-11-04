@@ -2636,6 +2636,10 @@ pub struct MobWorld<'a> {
     pub others_grid: Option<&'a seen_grid::SeenGrid>,
     /// Where each id stands in `others`, when the caller keeps one.
     pub others_index: Option<&'a crate::fast_hash::FxHashMap<u32, u32>>,
+    /// The slots of `others` holding a villager, in order, when the caller
+    /// keeps them (the mob ticks: a slot keeps its mob, and its species, all
+    /// tick). Each zombie looking for a village read every slot.
+    pub others_villagers: Option<&'a [u32]>,
     pub daylight: bool,
     /// The `gameplay/monsters_burn` attribute: the overworld day timeline's
     /// step track, false in every other dimension.
@@ -2832,12 +2836,15 @@ impl Mob {
     }
     /// `Entity.makeBoundingBox(position)`.
     pub fn bounds_at(&self, position: Vec3) -> Aabb {
-        let w = f64::from(self.width()) / 2.0;
+        // `width()` and `height()` in one `dims()`: every box asked for (each
+        // collision, push and cart test) read the whole size twice.
+        let (width, height, _) = self.dims();
+        let w = f64::from(width as f32) / 2.0;
         Aabb::new(
             Vec3::new(position.x - w, position.y, position.z - w),
             Vec3::new(
                 position.x + w,
-                position.y + f64::from(self.height()),
+                position.y + f64::from(height as f32),
                 position.z + w,
             ),
         )

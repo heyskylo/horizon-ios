@@ -472,6 +472,7 @@ pub(crate) fn with_resource_test_world(
         leash_boats: &[],
         others_grid: None,
         others_index: None,
+        others_villagers: None,
         daylight: true,
         monsters_burn: false,
         game_time: 1000,

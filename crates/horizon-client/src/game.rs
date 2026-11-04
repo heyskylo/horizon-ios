@@ -148,6 +148,7 @@ mod input_trace;
 mod integrated;
 mod interaction_shapes;
 mod interactions;
+mod item_areas;
 mod item_draw;
 mod item_particles;
 mod item_use;
@@ -572,6 +573,7 @@ impl Options {
             Ok(None) => {}
             Err(e) => eprintln!("Horizon: not signed in: {e}"),
         }
+        split::launcher::read_now();
         if let Some(dir) = o.game_dir.take() {
             // Paths given on the command line stay relative to where the game was started.
             o.resources = std::path::absolute(&o.resources)?;
@@ -2447,6 +2449,9 @@ struct Game<'a> {
     view_at: [u32; 2],
     /// Splitscreen: what it draws over this player's view (its badge, questions, notices).
     split_hud: split::Hud,
+    /// Splitscreen: this player's own Microsoft account session (one of the launcher's other
+    /// accounts), in place of the process's (P1's) for its connections and skin.
+    split_auth: Option<std::sync::Arc<horizon_client::auth::AuthSession>>,
     focused: bool,
     /// Whether the window currently accepts input method events.
     ime_allowed: bool,
@@ -5034,7 +5039,7 @@ impl Game<'_> {
                     // The last answer, asked from Y `from` at a world revision:
                     // the next ticking section and its mask. It stands for a
                     // later Y up to that section's until a block changes.
-                    let mut last: Option<(u64, i32, Option<(i32, Arc<_>)>)> = None;
+                    let mut last: Option<(u64, i32, Option<(i32, std::rc::Rc<_>)>)> = None;
                     let pos = horizon_core::position::ChunkPos::new(x, z);
                     b.tick_chunk_random_masked(level, ticks, pos, |level, from| {
                         let revision = level.world.revision;
@@ -14217,6 +14222,7 @@ impl Game<'_> {
             None,
             self.settings.horizon.api,
             self.settings.horizon.translucent_batching,
+            self.settings.horizon.wide_frame(),
             shader_packs::picked_pack_draws_flat(&self.settings),
         )?;
         renderer.screenshot = screenshot;
@@ -14253,6 +14259,7 @@ impl Game<'_> {
             None,
             self.settings.horizon.api,
             self.settings.horizon.translucent_batching,
+            self.settings.horizon.wide_frame(),
             shader_packs::picked_pack_draws_flat(&self.settings),
         )
     }
@@ -18820,6 +18827,7 @@ impl<'a> Game<'a> {
             split_window: false,
             view_at: [0, 0],
             split_hud: Default::default(),
+            split_auth: None,
             focused: true,
             ime_allowed: false,
             ime_area: None,
@@ -20461,6 +20469,9 @@ fn build_renderer(
     prepared: Option<horizon_client::gfx::PreparedTextures>,
     api: horizon_client::graphics::GraphicsApi,
     translucent_batching: bool,
+    // HDR with Smooth Gradients (`Graphics::wide_frame`): a 16-bit frame where HDR output is
+    // offered (`Renderer::new`).
+    wide_frame: bool,
     shader_pack: bool,
 ) -> Result<Renderer> {
     let assets = &pack.render;
@@ -20498,6 +20509,7 @@ fn build_renderer(
         previous,
         api,
         translucent_batching,
+        wide_frame,
         shader_pack,
     ))?;
     renderer.hud.sprite_animations = atlas
@@ -20564,6 +20576,8 @@ fn loading_renderer(
         previous,
         api,
         // It draws no terrain.
+        false,
+        // An 8-bit frame, which HDR output takes as well.
         false,
         false,
     ))?;
@@ -21146,6 +21160,7 @@ impl Loading {
                 loaded.renderer_cpu,
                 self.settings.horizon.api,
                 self.settings.horizon.translucent_batching,
+                self.settings.horizon.wide_frame(),
                 shader_packs::picked_pack_draws_flat(&self.settings),
             )
         })?;
@@ -21408,7 +21423,11 @@ pub fn run_with() -> Result<()> {
         // 10 to 200 ms to get one back.
         horizon_threads::favour_current();
     }
-    if options.execution_role.is_client() {
+    // A dedicated server too: vanilla's "Server Shutdown Thread" (`DedicatedServer.initServer`'s
+    // shutdown hook) halts the server and saves its players and levels on SIGTERM, SIGINT or SIGHUP.
+    if options.execution_role.is_client()
+        || options.execution_role == execution_role::ExecutionRole::DedicatedServer
+    {
         horizon_threads::catch_stop_signals();
     }
     let started = Instant::now();
