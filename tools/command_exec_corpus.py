@@ -1727,6 +1727,10 @@ def progression():
 
 
 def advancement_reward_fixtures(group_names):
+    if 'crafting recipe priority' in group_names:
+        return {f'h295:{name}': {'criteria': {'crafted': {
+                    'trigger': 'minecraft:crafter_recipe_crafted', 'conditions': {'recipes': recipe}}}}
+                for name, recipe in [('custom_crafted', 'parity:aaa_star'), ('wrong_recipe', 'parity:zzz_star')]}
     if 'advancement reward functions' not in group_names:
         return {}
     def advancement(function=None):
@@ -4711,6 +4715,36 @@ def crafting_recipe_priority(world=True):
                 cmd('/data get block 4 200 3 Items'),
                 cmd(f'/execute if items block 4 200 3 container.0 minecraft:{output}', expect_result=count),
                 cmd(f'/execute if data block 4 200 3 Items[{{Slot:0b,id:"minecraft:{output}",count:{count}}}]', expect_result=1)]
+        ops += setup('/execute store result score elapsed recipe_order run time query gametime',
+                     '/scoreboard players operation elapsed recipe_order -= start recipe_order')
+        ops += [cmd('/scoreboard players get elapsed recipe_order', expect_result=10)]
+    if world:
+        # Open-air ejection exercises the existing trigger route, independently
+        # of insertion into a chest. The wrong recipe is a negative control.
+        for advancement in ['h295:custom_crafted', 'h295:wrong_recipe']:
+            ops += [cmd('/advancement grant @s only ' + advancement, expect_result=1),
+                    cmd('/advancement revoke @s only ' + advancement, expect_result=1),
+                    cmd('/execute unless entity @s[advancements={' + advancement + '=true}]', expect_result=1)]
+        ops += setup('/kill @e[type=item]', '/setblock 4 200 5 air', '/setblock 4 200 4 air',
+                     '/setblock 4 200 3 air', '/setblock 4 200 4 crafter[orientation=north_up]',
+                     '/item replace block 4 200 4 container.0 with gunpowder 1',
+                     '/item replace block 4 200 4 container.1 with blue_dye 1')
+        ops += [cmd('/execute if entity @s[type=player,nbt={Pos:[8.5d,200d,8.5d],Health:20f}]', expect_result=1),
+                cmd('/execute if block 4 199 4 stone', expect_result=1),
+                cmd('/execute if block 4 200 3 air', expect_result=1),
+                cmd('/execute if block 4 200 4 crafter[orientation=north_up,triggered=false]', expect_result=1),
+                cmd('/execute if items block 4 200 4 container.0 gunpowder', expect_result=1),
+                cmd('/execute if items block 4 200 4 container.1 blue_dye', expect_result=1)]
+        ops += setup('/execute store result score start recipe_order run time query gametime')
+        # Invoke the real block tick in the connected owner's context. Ordinary
+        # server ticks have no acting player in this harness; recipient dispatch
+        # is a separate route and is not repaired by recipe-ID normalization.
+        ops += [cmd('/setblock 4 200 5 redstone_block'),
+                {'op': 'crafter_tick', 'pos': [4, 200, 4]}, {'op': 'tick', 'n': 10},
+                cmd('/execute unless data block 4 200 4 Items[]', expect_result=1),
+                cmd('/execute if entity @e[type=item,nbt={Item:{id:"minecraft:diamond",count:1}}]', expect_result=1),
+                cmd('/execute if entity @s[advancements={h295:custom_crafted=true}]', expect_result=1),
+                cmd('/execute unless entity @s[advancements={h295:wrong_recipe=true}]', expect_result=1)]
         ops += setup('/execute store result score elapsed recipe_order run time query gametime',
                      '/scoreboard players operation elapsed recipe_order -= start recipe_order')
         ops += [cmd('/scoreboard players get elapsed recipe_order', expect_result=10)]

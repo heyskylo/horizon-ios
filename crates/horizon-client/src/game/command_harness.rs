@@ -314,6 +314,17 @@ impl Game<'_> {
                         Ok(())
                     })?;
                 }
+                "crafter_tick" => {
+                    let [x, y, z] =
+                        std::array::from_fn(|i| op["pos"][i].as_i64().unwrap_or(0) as i32);
+                    self.harness_owner(|g| {
+                        let state = g.world.block(x, y, z);
+                        if &*g.res.facts().get(state).name != "minecraft:crafter" {
+                            return Err("command harness: crafter tick without a crafter".into());
+                        }
+                        g.dispense_from(horizon_core::position::BlockPos::new(x, y, z), state)
+                    })?;
+                }
                 "break" => {
                     let pos = std::array::from_fn(|i| op["pos"][i].as_i64().unwrap_or(0) as i32);
                     self.harness_owner(|g| g.break_block(pos))?;

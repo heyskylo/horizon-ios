@@ -16,8 +16,9 @@ def main():
     parser.add_argument('--prepare', action='store_true')
     args = parser.parse_args()
     runner = Path(__file__).with_name('test_command_exec_parity.py')
-    for group in ('crafting recipe priority', 'crafting base recipe control'):
-        command = [sys.executable, str(runner), '--only', group]
+    build = runner.resolve().parents[1] / '.local/crafting-priority-parity'
+    for phase, group in [('world', 'crafting recipe priority'), ('base', 'crafting base recipe control')]:
+        command = [sys.executable, str(runner), '--only', group, '--work-dir', str(build / phase)]
         if args.binary:
             command += ['--binary', str(args.binary.resolve())]
         if args.prepare:
