@@ -143,13 +143,13 @@ pub(super) fn set_wanted(m: &mut Mob, speed: f64) {
     m.ai.mov.operation = Operation::MoveTo;
 }
 /// AbstractCubeMob.jumpFromGround (and MagmaCube's size boost).
-pub fn jump(m: &mut Mob) {
+pub fn jump(m: &mut Mob, w: &MobWorld) {
     let boost = if m.species() == Species::MagmaCube {
         m.extra.size as f32 * 0.1
     } else {
         0.0
     };
-    m.velocity.y = f64::from(m.jump_power() + boost);
+    m.velocity.y = f64::from(m.jump_power(w) + boost);
 }
 /// `AbstractCubeMob.tick`'s landing splash: crumbs of goo (or flames) around
 /// the cube's feet, drawn by the side that ticks the mob.

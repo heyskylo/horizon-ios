@@ -84,7 +84,7 @@ impl Launcher {
             .items_end()
             .justify_between()
             .gap(px(20.))
-            .pt(px(40.))
+            .pt(px(40. - crate::glass::CONTENT_INSET))
             .mb(px(28.))
             .child(head.min_w_0())
             .child(tabs);
