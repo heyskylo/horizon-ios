@@ -2402,6 +2402,73 @@ def ravager_noai_counters():
     return ops + setup('/gamerule mob_griefing true', '/forceload remove 0 0 31 31')
 
 
+def nautilus_saved_sitting():
+    """TamableAnimal's ordered Sitting flag survives nautilus NBT edits (#9055).
+
+    Only the saved flag is covered: no sitting AI, pose, riding or reload claim.
+    All measured operations run frozen, with an independent zero-tick witness.
+    """
+    out = []
+
+    def check(command, result=1):
+        out.append(cmd(command, expect_result=result))
+
+    def observe(uid, kind, tag, sitting, owner):
+        check(f'/execute as {uid} if entity @s[type=minecraft:{kind},tag={tag}]')
+        check(f'/data get entity {uid} UUID', 4)
+        check(f'/data get entity {uid} Pos', 3)
+        check(f'/data get entity {uid} Health', 15)
+        check(f'/execute as {uid} if entity @s[nbt={{NoAI:1b,Silent:1b,'
+              'PersistenceRequired:1b,Health:15f,Pos:[10.5d,200d,10.5d]}]')
+        if owner:
+            check(f'/data get entity {uid} Owner', 4)
+        else:
+            check(f'/execute unless data entity {uid} Owner')
+        check(f'/data get entity {uid} Sitting', sitting)
+        check(f'/execute as {uid} if entity @s[nbt={{Sitting:{sitting}b}}]')
+
+    check('/tick freeze')
+    check('/gamerule spawn_mobs', 0)
+    check('/time set midnight', 18000)
+    check('/scoreboard objectives add saved_sit dummy')
+    out += setup('/kill @e[type=!player]', '/forceload add 0 0 15 15')
+    out.append({'op': 'settle'})
+    check('/execute if loaded 0 200 0')
+    check('/fill 0 199 0 15 199 15 stone', 256)
+    out += setup('/execute store result score #before saved_sit run time query gametime')
+    serial = 0
+    for kind in ('nautilus', 'zombie_nautilus'):
+        for owner in (True, False):
+            for sitting in (None, 0, 1):
+                serial += 1
+                uid = f'00000000-0000-0000-0000-00fd{serial:08x}'
+                tag = f'saved_sit_{serial}'
+                saved = (f'{{UUID:[I;0,0,253,{serial}],Tags:["saved_sit","{tag}"],'
+                         'NoAI:1b,Silent:1b,PersistenceRequired:1b,Health:15f')
+                if owner:
+                    saved += ',Owner:[I;1,2,3,4]'
+                if sitting is not None:
+                    saved += f',Sitting:{sitting}b'
+                check(f'/summon minecraft:{kind} 10.5 200 10.5 {saved}}}')
+                observe(uid, kind, tag, sitting or 0, owner)
+                if owner and sitting == 1:
+                    for value in (0, 1):
+                        check(f'/data merge entity {uid} {{Sitting:{value}b}}')
+                        observe(uid, kind, tag, value, True)
+                    check(f'/data remove entity {uid} Owner')
+                    observe(uid, kind, tag, 1, False)
+                out += setup(f'/kill {uid}')
+    out += setup('/execute store result score #after saved_sit run time query gametime')
+    check('/scoreboard players operation #after saved_sit -= #before saved_sit', 0)
+    check('/execute if score #after saved_sit matches 0')
+    out += setup('/tick unfreeze')
+    out.append({'op': 'tick', 'n': 25})
+    out += setup('/kill @e[tag=saved_sit]', '/kill @e[type=item]',
+                 '/fill 0 199 0 15 199 15 air', '/time set 1000',
+                 '/scoreboard objectives remove saved_sit', '/forceload remove 0 0 15 15')
+    return out
+
+
 def groups():
     return [
         ('setup', group_setup()),
@@ -2414,6 +2481,7 @@ def groups():
         ('setblock destroy air', setblock_destroy_air()),
         ('forceload query order', forceload_query_order()),
         ('entities', entities()),
+        ('nautilus saved Sitting', nautilus_saved_sitting()),
         ('ravager NoAI counters', ravager_noai_counters()),
         ('aquatic FromBucket', aquatic_from_bucket()),
         ('villager command names', villager_command_names()),
