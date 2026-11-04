@@ -181,7 +181,7 @@ pub(super) const HEIGHT: f64 = 0.7_f32 as f64;
 /// `MinecartTNT.handleEntityEvent` answers by calling `primeFuse`.
 pub(super) const TNT_PRIME_EVENT: i8 = 70;
 /// AbstractMinecart.getDefaultDisplayOffset, in sixteenths of a block.
-fn default_display_offset(kind: CartKind) -> f64 {
+pub(super) fn default_display_offset(kind: CartKind) -> f64 {
     if kind == CartKind::Hopper { 1.0 } else { 6.0 }
 }
 /// `AbstractMinecart.getDisplayOffset`: the saved `DisplayOffset`, else the default.
