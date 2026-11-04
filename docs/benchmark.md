@@ -1,6 +1,6 @@
 # Benchmark: Horizon vs vanilla 26.3
 
-`tools/perf_bench.py` measures Horizon, the vanilla 26.3 client and vanilla with performance mods on the same machine, the same world and the same camera path, and computes every number with the same code. This page says what it measures, how it keeps the comparison fair, what it can't control, and how to reproduce it. The results are in [Results](#results).
+`tools/perf_bench.py` measures Horizon, the vanilla 26.3 client, and vanilla with performance mods on the same machine, world, and camera path, computing every number with the same code. This page says what it measures, how it keeps the comparison fair, what it can't control, and how to reproduce it. The results are in [Results](#results).
 
 ## What is measured
 

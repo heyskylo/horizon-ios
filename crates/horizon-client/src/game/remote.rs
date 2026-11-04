@@ -135,6 +135,16 @@ pub(super) fn remote_text(tag: &Tag) -> horizon_client::text::Text {
     comp_text(&tag_to_json(tag))
 }
 
+/// `Player.getVoicePitch`: a constant 1.0
+/// (`javap -p -c -constants net.minecraft.world.entity.player.Player`:
+/// `0: fconst_1  1: freturn`), so a player's own hurt and death sounds are
+/// neither raised for a baby nor jittered - `LivingEntity.getVoicePitch`, which
+/// the mobs port, does both. It takes no random, so it draws nothing from the
+/// level random either.
+pub(super) fn player_voice_pitch() -> f32 {
+    1.0
+}
+
 /// The hurt sound of a `ClientboundDamageEventPacket`'s damage type, by its
 /// synchronized registry id: `Player.getHurtSound` picks the type's effects.
 fn hurt_sound_for(
@@ -654,6 +664,8 @@ pub(super) struct Remote {
     death_message: Option<horizon_client::text::Text>,
     /// `LocalPlayer.showDeathScreen`: off with `immediate_respawn`.
     show_death_screen: bool,
+    /// `Player.isReducedDebugInfo`: the server's `reduced_debug_info` rule.
+    pub(super) reduced_debug_info: bool,
     /// `LocalPlayer.doLimitedCrafting`: whether limited crafting is enabled.
     pub(super) do_limited_crafting: bool,
     player_type: Option<Arc<MobType>>,
@@ -757,15 +769,6 @@ impl Game<'_> {
             None => horizon_client::health::hurt_sound("hurt"),
         }
     }
-    /// Offline local profiles never borrow the account that started P1's game.
-    pub(super) fn auth(&self) -> Option<std::sync::Arc<horizon_client::auth::AuthSession>> {
-        if self.options.split_guest {
-            None
-        } else {
-            horizon_client::auth::current()
-        }
-    }
-
     /// Leave the title for a server (ConnectScreen): an empty world fed by the connection.
     pub(super) fn connect_server(&mut self, address: &str, name: &str) -> Result<()> {
         self.connect_server_with_cookies(address, name, None)
@@ -857,7 +860,8 @@ impl Game<'_> {
                 horizon_client::net::shown_address(address),
             );
         }
-        // A signed-in account always plays under its own name.
+        // A signed-in account always plays under its own name; a splitscreen player signs in
+        // with its own account when it picked one.
         let auth = self.auth();
         let name = auth.as_ref().map_or(name, |a| a.name.as_str());
         let user = auth.as_ref().map_or_else(
@@ -1091,6 +1095,7 @@ impl Game<'_> {
             flat: false,
             death_message: None,
             show_death_screen: true,
+            reduced_debug_info: false,
             do_limited_crafting: false,
             player_type,
             synced: vec![None; CREATIVE_SYNCED],
@@ -1684,6 +1689,13 @@ impl Game<'_> {
         )
     }
 
+    /// This player's account: a splitscreen player's own, else the game's (P1's).
+    pub(super) fn auth(&self) -> Option<std::sync::Arc<horizon_client::auth::AuthSession>> {
+        match self.options.split_guest {
+            true => self.split_auth.clone(),
+            false => horizon_client::auth::current(),
+        }
+    }
     /// Connected to a server in online mode (its Login): each player needs its own account.
     pub(super) fn online_server(&self) -> bool {
         self.remote.as_ref().is_some_and(|r| r.online_mode)
@@ -3077,6 +3089,7 @@ impl Game<'_> {
                     r.view_distance = p.chunk_radius;
                     r.simulation_distance = p.simulation_distance;
                     r.show_death_screen = p.show_death_screen;
+                    r.reduced_debug_info = p.reduced_debug_info;
                     r.do_limited_crafting = p.limited_crafting;
                 }
                 self.streaming.radius =
@@ -3916,9 +3929,10 @@ impl Game<'_> {
             // ClientPacketListener.handleDamageEvent: LivingEntity.handleDamageEvent
             // jolts the walk animation and restarts the hurt flash, and the
             // hurt player's own client plays its hurt sound (`Player.getHurtSound`:
-            // the damage type's effects) at `getSoundVolume` with a pitch that
-            // walks 1.0 ± 0.2 on the level random. The server's sound packet
-            // reaches every other player around, never this one (#4149).
+            // the damage type's effects) at `getSoundVolume` and
+            // `Player.getVoicePitch`, which is 1.0 for every player. The
+            // server's sound packet reaches every other player around, never
+            // this one (#4149), and that copy is played at 1.0.
             // This player's own hurt tilt and flash come from the server too
             // (sent to the player itself): its own moves never hurt it.
             C::DamageEvent(p) => {
@@ -3932,9 +3946,7 @@ impl Game<'_> {
                     }
                     if let Some(at) = at {
                         let sound = self.remote_hurt_sound(p.source_type);
-                        let pitch = 1.0
-                            + (self.world.random.next_float() - self.world.random.next_float())
-                                * 0.2;
+                        let pitch = player_voice_pitch();
                         self.audio.play_on(
                             horizon_client::settings::sound_source(sound),
                             sound,
@@ -3968,6 +3980,8 @@ impl Game<'_> {
                 }
                 self.remote_fangs_event(p.id as u32, p.event);
                 self.remote_boat_event(p.id, p.event);
+                // MinecartTNT.handleEntityEvent 70: prime the fuse the window draws.
+                self.remote_tnt_cart_event(p.id, p.event);
                 // Arrow.handleEntityEvent 0: a tipped arrow's burst of particles.
                 if p.event == 0 {
                     self.remote_arrow_puff(p.id as u32);
@@ -3983,9 +3997,19 @@ impl Game<'_> {
                     self.ui.registries.permission = (p.event - 24) as u8;
                     self.remote_world_options_permission(p.event >= 26);
                 }
+                // Player.handleEntityEvent 22 / 23: reduced debug info on / off.
+                if (22..=23).contains(&p.event)
+                    && let Some(r) = self.remote.as_mut().filter(|r| r.entity_id == p.id)
+                {
+                    r.reduced_debug_info = p.event == 22;
+                }
                 // Ravager.handleEntityEvent 69: the roar's puff and push.
                 if p.event == 69 {
                     self.remote_ravager_roar(p.id);
+                }
+                // ClientPacketListener.handleEntityEvent 63: a sniffer's digging sound.
+                if p.event == 63 {
+                    self.start_sniffer_digging_sound(p.id as u32);
                 }
                 // ClientPacketListener.handleEntityEvent 21: a guardian's hum.
                 if p.event == 21 {
@@ -3999,11 +4023,31 @@ impl Game<'_> {
                 if p.event == 45 {
                     self.fox_eat_particles(p.id as u32);
                 }
-                if p.event == 1
-                    && let Some(m) = self.mob_index.get_mut(&mut self.mobs, p.id as u32)
-                    && m.species() == horizon_client::mobs::Species::Rabbit
-                {
-                    horizon_client::mobs::rabbit::hop_event(m);
+                // Rabbit.handleEntityEvent(1): the hop clocks, and
+                // Entity.spawnSprintParticle (one block-dust crumb).
+                if p.event == 1 {
+                    let hop = {
+                        let m = self.mob_index.get_mut(&mut self.mobs, p.id as u32);
+                        if let Some(m) = m
+                            && m.species() == horizon_client::mobs::Species::Rabbit
+                        {
+                            let sample =
+                                (m.position, m.velocity, f64::from(m.width()), m.supporting);
+                            horizon_client::mobs::rabbit::hop_event(m);
+                            Some(sample)
+                        } else {
+                            None
+                        }
+                    };
+                    if let Some((position, movement, width, support)) = hop {
+                        let id = p.id as u32;
+                        self.sprint_particle(position, movement, support, width, |game| {
+                            // this.random: the rabbit's own, x then z.
+                            game.mob_index
+                                .get_mut(&mut game.mobs, id)
+                                .map(|m| (m.random.next_double(), m.random.next_double()))
+                        });
+                    }
                 }
                 if p.event == 19
                     && let Some(m) = self.mob_index.get_mut(&mut self.mobs, p.id as u32)
@@ -4038,8 +4082,7 @@ impl Game<'_> {
                 {
                     let at = [pl.position.x, pl.position.y, pl.position.z];
                     let sound = "minecraft:entity.player.death";
-                    let pitch = 1.0
-                        + (self.world.random.next_float() - self.world.random.next_float()) * 0.2;
+                    let pitch = player_voice_pitch();
                     self.audio.play_on(
                         horizon_client::settings::sound_source(sound),
                         sound,
@@ -5058,15 +5101,13 @@ impl Game<'_> {
         }
     }
     fn poll_own_profile(&mut self) {
+        let auth = self.auth();
         let Some(r) = self.remote.as_mut() else {
             return;
         };
         match &mut r.own_profile {
             OwnProfile::Idle => {
-                let Some(auth) = (!self.options.split_guest)
-                    .then(horizon_client::auth::current)
-                    .flatten()
-                else {
+                let Some(auth) = auth else {
                     r.own_profile = OwnProfile::Done(None);
                     return;
                 };
@@ -5102,7 +5143,7 @@ impl Game<'_> {
         slim: bool,
     ) -> Option<std::sync::Arc<horizon_client::mobs::Part>> {
         use horizon_client::mobs::skin_layers;
-        if !self.settings.three_d_skin_layers {
+        if !self.settings.extras.three_d_skin_layers {
             return None;
         }
         let key = (skin.to_owned(), slim);
@@ -5464,6 +5505,7 @@ impl Game<'_> {
             ticks: 0,
             needs_sync: false,
             stuck: Vec3::ZERO,
+            was_touching_water: false,
         });
     }
     /// `Entity.lerpMotion` (and `recreateFromPacket`'s motion) for the
@@ -6338,9 +6380,21 @@ impl Game<'_> {
                 .collect();
             (fluids, rain, standings, w.thundering)
         };
+        // The window's own player already splashes from its motion tick.
+        let own = self.remote.as_ref().map(|r| r.entity_id);
+        let mut water_fx = Vec::new();
         for ((m, fluids), standing) in self.mobs.iter_mut().zip(fluids).zip(standings) {
             if let Some(fluids) = fluids {
+                let was = m.fluids.in_water;
+                let first = m.first_tick;
                 m.fluids = fluids;
+                // Entity.doWaterSplashEffect on the client copy. Particles
+                // only: ClientLevel draws addParticle, and playSeededSound
+                // drops Entity.playSound (the server broadcasts that).
+                if m.fluids.in_water && !was && !first && Some(m.id as i32) != own {
+                    horizon_client::mobs::living::client_water_splash(m, &mut water_fx);
+                }
+                m.first_tick = false;
             }
             if let Some(name) = standing {
                 m.standing_on = Some(name);
@@ -6452,7 +6506,7 @@ impl Game<'_> {
         let players = &r.level_players;
         let tab_players = &r.tab_players;
         let mut using = Vec::new();
-        let mut mob_fx = Vec::new();
+        let mut mob_fx = water_fx;
         for (m, rain) in self.mobs.iter_mut().zip(rain) {
             let player = players.contains_key(&(m.id as i32));
             if player {
@@ -6737,6 +6791,7 @@ impl Game<'_> {
             self.collision,
             Some(self.border.geometry()),
         );
+        let mut entered = Vec::new();
         for d in self.dropped.iter_mut().filter(|_| running) {
             super::entity::tick_item(
                 d,
@@ -6749,9 +6804,16 @@ impl Game<'_> {
                 // The server decides what an item rests on; this copy only moves between updates.
                 &[],
                 border,
+                &mut |splash| entered.push(splash),
             );
         }
         head_lerps.retain(|_, (_, steps)| *steps > 0);
+        // Entity.doWaterSplashEffect on this window: Level.addParticle draws
+        // the bubbles and splashes. ClientLevel.playSeededSound drops
+        // Entity.playSound, so the sound stays the server's.
+        for splash in entered {
+            self.apply_item_splash(splash);
+        }
         let _ = self.handle_mob_events(mob_fx);
         for (item, ticks, at, eye, pitch, yaw) in using {
             self.remote_player_eating(&item, ticks, at, eye, pitch, yaw);
@@ -8242,6 +8304,9 @@ impl Game<'_> {
             return !self.may_build() || self.pick().is_none();
         }
         if id == "minecraft:glass_bottle" {
+            // A dragon's breath cloud never counts here: its owner is not
+            // synced, so this client's BottleItem.use finds none and PASSes;
+            // the packet still goes and the server fills the bottle.
             return !source(Some(Fluid::Water));
         }
         if super::boats::any_boat_wood(id).is_some() {

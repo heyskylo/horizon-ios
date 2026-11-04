@@ -25,6 +25,7 @@ use horizon_world::block_collision::BlockCollisionRegistry;
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
+    time::Instant,
 };
 
 /// What `sync_data` loaded: whether it was with data packs over the game's
@@ -1686,6 +1687,27 @@ impl Game<'_> {
         }
     }
 
+    /// Update the live view distance used for player chunk tracking.
+    pub(super) fn set_view_distance(&mut self, distance: i32) {
+        if let Some(host) = self.lan.as_mut() {
+            host.hub.set_view_distance(distance);
+        }
+    }
+
+    /// Update the live spawn-protection radius.
+    pub(super) fn set_spawn_protection(&mut self, radius: i32) {
+        if let Some(host) = self.lan.as_mut() {
+            host.hub.spawn_protection = radius;
+        }
+    }
+
+    /// Update the live simulation distance sent to player clients.
+    pub(super) fn set_simulation_distance(&mut self, distance: i32) {
+        if let Some(host) = self.lan.as_mut() {
+            host.hub.set_simulation_distance(distance);
+        }
+    }
+
     /// Update the live movement check's flight policy.
     pub(super) fn set_allow_flight(&mut self, allow: bool) {
         if let Some(host) = self.lan.as_mut() {
@@ -1697,6 +1719,13 @@ impl Game<'_> {
     pub(super) fn set_hide_online_players(&mut self, hide: bool) {
         if let Some(host) = self.lan.as_ref() {
             host.hub.lan.shared.set_hide_online_players(hide);
+        }
+    }
+
+    /// Update whether the server answers connection status requests.
+    pub(super) fn set_status_replies(&mut self, enable: bool) {
+        if let Some(host) = self.lan.as_ref() {
+            host.hub.lan.shared.set_enable_status(enable);
         }
     }
 
@@ -1739,6 +1768,7 @@ impl Game<'_> {
         after: u32,
     ) {
         out.clear();
+        let mut speeds = super::lan_attributes::SpeedByType::default();
         for m in self.mobs.iter().filter(|m| !m.removed && m.id > after) {
             // The lead's holder: the player the mob sees, another mob or a
             // fence knot (game/lan_entities.rs).
@@ -1777,7 +1807,7 @@ impl Game<'_> {
                 && horizon_client::mobs::happy_ghast::on_still_timeout(m);
             mob_freeze_meta(m, &mut e.meta, &mut e.defaults);
             mob_equipment(m, hub, &mut e.equipment);
-            self.mob_attributes(m, &mut e.attributes);
+            self.mob_attributes(m, &mut speeds, &mut e.attributes);
             e.leash = leash;
         }
         for d in self.dropped.iter().filter(|d| d.id > after) {
@@ -1824,7 +1854,16 @@ impl Game<'_> {
         entities: &[EntityState],
         spawn: [f64; 3],
     ) -> Option<LanHost> {
+        // A slow tick's line says which event took it, and whose (`spans::note`): each event's
+        // time is noted when the next one starts (an event's arm may `continue`), the last's
+        // after the loop.
+        let timed = horizon_client::spans::recording_here();
+        let mut previous = None;
         for event in events {
+            if timed {
+                note_event(&host, previous.take());
+                previous = Some((Instant::now(), event_kind(&event)));
+            }
             match event {
                 event @ (HostEvent::Chat { .. } | HostEvent::Warn(_) | HostEvent::Error(_)) => {
                     self.lan_log_event(event);
@@ -2069,6 +2108,7 @@ impl Game<'_> {
                 }
             }
         }
+        note_event(&host, previous);
         Some(host)
     }
 
@@ -2113,20 +2153,24 @@ impl Game<'_> {
             host.hub.mods_loaded = !horizon_client::mod_api::mods().is_empty();
             let pass = self.level_pass;
             let mut events = if pass.first {
-                host.hub.poll(&mut ctx)
+                horizon_client::spans::time("lan_poll", || host.hub.poll(&mut ctx))
             } else {
                 Vec::new()
             };
-            events.extend(host.hub.drain_packets(&mut ctx));
+            events.extend(horizon_client::spans::time("lan_drain", || {
+                host.hub.drain_packets(&mut ctx)
+            }));
             events
         };
-        let Some(back) = self.lan_process_events(host, events, entities.as_slice(), spawn) else {
+        let Some(back) = horizon_client::spans::time("lan_events", || {
+            self.lan_process_events(host, events, entities.as_slice(), spawn)
+        }) else {
             return;
         };
         host = back;
         if !host.quiet.is_empty() {
             self.lan = Some(host);
-            self.run_quiet_commands();
+            horizon_client::spans::time("lan_quiet_commands", || self.run_quiet_commands());
             host = self
                 .lan
                 .take()
@@ -2134,7 +2178,9 @@ impl Game<'_> {
         }
         if !host.hub.native_advancement_grants.is_empty() {
             self.lan = Some(host);
-            self.run_native_advancement_grants();
+            horizon_client::spans::time("lan_advancement_grants", || {
+                self.run_native_advancement_grants()
+            });
             host = self
                 .lan
                 .take()
@@ -2142,7 +2188,7 @@ impl Game<'_> {
         }
         if !host.hub.native_menu_events.is_empty() {
             self.lan = Some(host);
-            self.run_native_menu_events();
+            horizon_client::spans::time("lan_menu_events", || self.run_native_menu_events());
             host = self
                 .lan
                 .take()
@@ -2360,6 +2406,8 @@ impl Game<'_> {
                 }
                 host.hub
                     .set_immediate_respawn(self.ui.rules.bool("immediate_respawn"));
+                host.hub
+                    .set_reduced_debug_info(self.ui.rules.bool("reduced_debug_info"));
                 host.hub
                     .set_limited_crafting(self.ui.rules.bool("limited_crafting"));
                 // A server with several levels runs a pass for each
@@ -2640,6 +2688,10 @@ impl Game<'_> {
     pub(super) fn lan_entity_event(&mut self, id: i32, event: i8, at: [f64; 3]) {
         if self.audio.capture.is_some() {
             self.lan_entity_events.push((id, event, at));
+        }
+        // Event 63: a sniffer's digging sound loop starts (ClientPacketListener.handleEntityEvent 63).
+        if event == 63 && self.options.execution_role.is_client() {
+            self.start_sniffer_digging_sound(id as u32);
         }
         // Event 21: a window that simulates the world itself is its own
         // client, and hears the guardian's hum too.
@@ -3006,6 +3058,48 @@ fn equipment_slot_name(slot: horizon_world::player_inventory::EquipmentSlot) -> 
         EquipmentSlot::Body => "body",
         EquipmentSlot::Saddle => "saddle",
     }
+}
+
+/// What a hub event is, whose connection, and the name of a player who left (no longer in the
+/// hub once it is handled): for a slow tick's notes.
+type EventKind = (&'static str, Option<u32>, Option<String>);
+
+fn event_kind(event: &HostEvent) -> EventKind {
+    match event {
+        HostEvent::Joined(c) => ("join", Some(*c), None),
+        HostEvent::Left(g) => ("leave", None, Some(g.name.clone())),
+        HostEvent::Packet(c, p) => (p.name(), Some(*c), None),
+        HostEvent::MainHandChanged(c, _) => ("main hand", Some(*c), None),
+        HostEvent::LocaleChanged(c, _) => ("locale", Some(*c), None),
+        HostEvent::PlayerLoaded(c) => ("loaded", Some(*c), None),
+        HostEvent::RecipeBookSettings { conn, .. } => ("recipe book", Some(*conn), None),
+        HostEvent::Sneak { conn, .. } => ("sneak", Some(*conn), None),
+        HostEvent::Input { conn, .. } => ("input", Some(*conn), None),
+        HostEvent::Kicked { name, .. } => ("kick", None, Some(name.clone())),
+        HostEvent::Flight { conn, .. } => ("flight", Some(*conn), None),
+        HostEvent::Chat { .. } => ("chat line", None, None),
+        HostEvent::PlayerChat { .. } => ("chat", None, None),
+        HostEvent::ChatFiltered { name, .. } => ("filtered chat", None, Some(name.clone())),
+        HostEvent::Warn(_) => ("warning", None, None),
+        HostEvent::Error(_) => ("error", None, None),
+        HostEvent::Ban { name, .. } => ("ban", None, Some(name.clone())),
+    }
+}
+
+/// Notes how long the event that started at `started` took (`spans::note`).
+fn note_event(host: &LanHost, started: Option<(Instant, EventKind)>) {
+    let Some((started, (kind, conn, name))) = started else {
+        return;
+    };
+    horizon_client::spans::note(started.elapsed().as_secs_f32() * 1000.0, || {
+        let who = name
+            .or_else(|| conn.and_then(|c| host.hub.guest(c)).map(|g| g.name.clone()))
+            .or_else(|| conn.map(|c| format!("connection {c}")));
+        match who {
+            Some(who) => format!("{kind} of {who}"),
+            None => kind.to_owned(),
+        }
+    });
 }
 
 #[cfg(test)]
