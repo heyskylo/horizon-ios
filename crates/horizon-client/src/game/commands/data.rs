@@ -476,6 +476,29 @@ impl Game<'_> {
         true
     }
 
+    /// `ComparatorBlockEntity.saveAdditional`: expose the circuit's live output,
+    /// rather than keeping a second copy in the ordinary block entity map.
+    fn comparator_data(&self, p: [i32; 3]) -> Option<Tag> {
+        if self.data_block_name(p) != "minecraft:comparator" {
+            return None;
+        }
+        let pos = horizon_core::position::BlockPos::new(p[0], p[1], p[2]);
+        let output = self
+            .block_ticks
+            .comparator_outputs
+            .get(&pos)
+            .copied()
+            .unwrap_or(0);
+        Some(Tag::compound([
+            ("id", Tag::String("minecraft:comparator".into())),
+            ("x", Tag::Int(p[0])),
+            ("y", Tag::Int(p[1])),
+            ("z", Tag::Int(p[2])),
+            ("components", empty()),
+            ("OutputSignal", Tag::Int(output)),
+        ]))
+    }
+
     // ---- accessors -----------------------------------------------------
 
     /// The `role`th provider of the command (`entity`, `block` or `storage`).
@@ -509,7 +532,9 @@ impl Game<'_> {
             }
             "block" => {
                 let p = self.block_pos_arg(ctx, &format!("{prefix}Pos"))?;
-                if !self.world.block_entities.contains_key(&(p[0], p[1], p[2])) {
+                if !self.world.block_entities.contains_key(&(p[0], p[1], p[2]))
+                    && self.comparator_data(p).is_none()
+                {
                     return Err(err("commands.data.block.invalid", &[]));
                 }
                 Ok(DataRef::Block(p))
@@ -533,6 +558,9 @@ impl Game<'_> {
                 Ok(tag)
             }
             DataRef::Block(p) => {
+                if let Some(tag) = self.comparator_data(*p) {
+                    return Ok(tag);
+                }
                 let key = (p[0], p[1], p[2]);
                 let name = self.data_block_name(*p);
                 let e = self
@@ -560,6 +588,25 @@ impl Game<'_> {
             DataRef::Entity(t) => self.apply_entity_nbt(*t, tag),
             DataRef::Block(p) => {
                 let key = (p[0], p[1], p[2]);
+                if let Some(mut input) = self.comparator_data(*p) {
+                    // ComparatorBlockEntity.loadAdditional reads getIntOr(0).
+                    // Reuse the existing codec, with the block's own metadata.
+                    if let Some(value) = tag.get("OutputSignal") {
+                        set_key(&mut input, "OutputSignal", value.clone());
+                    } else if let Tag::Compound(map) = &mut input {
+                        map.remove(&"OutputSignal".into());
+                    }
+                    let normalized = horizon_client::block_entity_nbt::canonical(&input)
+                        .ok_or_else(|| err("commands.data.block.invalid", &[]))?;
+                    if let Some(Tag::Int(output)) = normalized.get("OutputSignal") {
+                        self.block_ticks.comparator_outputs.insert(
+                            horizon_core::position::BlockPos::new(p[0], p[1], p[2]),
+                            *output,
+                        );
+                    }
+                    self.mark_block_entity_updated(key);
+                    return Ok(());
+                }
                 if let Some((_, mut new)) = save::decode_block_entity(&tag) {
                     self.take_loot_table(key, &tag, &mut new);
                     self.load_block_name(key, &new, &tag);
