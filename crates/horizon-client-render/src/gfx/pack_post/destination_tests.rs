@@ -199,7 +199,7 @@ impl Fixture {
     }
 
     pub(super) fn build(&self, post: Post) -> PackPost {
-        let post = self.build_with_terrain(post, None);
+        let post = self.try_build(post).expect("the pack runs");
         assert!(
             post.notes.iter().all(|n| n.starts_with("shadow map ")),
             "{:?}",
@@ -208,8 +208,22 @@ impl Fixture {
         post
     }
 
+    /// [`Self::build`] for a pack that may be refused.
+    pub(super) fn try_build(&self, post: Post) -> Result<PackPost, Refused> {
+        self.try_build_with_terrain(post, None)
+    }
+
     /// `build`, with the game's terrain geometry handed to the pack.
     pub(super) fn build_with_terrain(&self, post: Post, terrain: Option<Geometry<'_>>) -> PackPost {
+        self.try_build_with_terrain(post, terrain)
+            .expect("the pack runs")
+    }
+
+    fn try_build_with_terrain(
+        &self,
+        post: Post,
+        terrain: Option<Geometry<'_>>,
+    ) -> Result<PackPost, Refused> {
         let lightmap = self.texture([1, 1], T::Rgba8Unorm);
         PackPost::new(
             &self.device,
@@ -218,11 +232,12 @@ impl Fixture {
             post,
             T::Rgba8Unorm,
             World {
-                material_maps: None,
                 atlas: None,
+                material_maps: None,
                 lightmap,
                 terrain,
                 block_ids: &[],
+                sprite_rects: &[],
                 celestial: None,
                 gui_size: [16, 16],
                 clouds: None,
