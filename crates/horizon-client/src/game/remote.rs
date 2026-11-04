@@ -6781,13 +6781,13 @@ impl Game<'_> {
                 &mut |splash| entered.push(splash),
             );
         }
+        head_lerps.retain(|_, (_, steps)| *steps > 0);
         // Entity.doWaterSplashEffect on this window: Level.addParticle draws
         // the bubbles and splashes. ClientLevel.playSeededSound drops
         // Entity.playSound, so the sound stays the server's.
         for splash in entered {
             self.apply_item_splash(splash);
         }
-        head_lerps.retain(|_, (_, steps)| *steps > 0);
         let _ = self.handle_mob_events(mob_fx);
         for (item, ticks, at, eye, pitch, yaw) in using {
             self.remote_player_eating(&item, ticks, at, eye, pitch, yaw);
