@@ -21,6 +21,48 @@ use horizon_core::{
 };
 use std::{collections::HashMap, path::PathBuf, sync::Arc};
 
+/// Velocity `AbstractMinecart.push` adds: the cart, and a quarter on the stand.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct CartShove {
+    cart_x: f64,
+    cart_z: f64,
+    stand_x: f64,
+    stand_z: f64,
+}
+/// `ArmorStand.pushEntities` for one cart. `None` when the cart is not the
+/// plain rideable kind, the boxes miss, `distanceToSqr` is past 0.2, the
+/// stand is a passenger of the cart, or the horizontal gap is under
+/// `1.0E-4F` (where `AbstractMinecart.push` does nothing).
+fn armor_stand_cart_shove(
+    stand_pos: Vec3,
+    stand_box: Aabb,
+    cart_pos: Vec3,
+    cart_box: Aabb,
+    kind: super::minecarts::CartKind,
+    cart_carries_stand: bool,
+) -> Option<CartShove> {
+    if kind != super::minecarts::CartKind::Rideable
+        || cart_carries_stand
+        || !stand_box.intersects(cart_box)
+    {
+        return None;
+    }
+    let (dx, dy, dz) = (
+        stand_pos.x - cart_pos.x,
+        stand_pos.y - cart_pos.y,
+        stand_pos.z - cart_pos.z,
+    );
+    if dx * dx + dy * dy + dz * dz > 0.2 {
+        return None;
+    }
+    let (xa, za) = super::minecarts::cart_push_from(stand_pos, cart_pos)?;
+    Some(CartShove {
+        cart_x: -xa,
+        cart_z: -za,
+        stand_x: xa / 4.0,
+        stand_z: za / 4.0,
+    })
+}
 /// `EquipmentLayerRenderer.getColorForLayer`: a dyeable layer (one with a
 /// colour when undyed) takes the stack's `minecraft:dyed_color`, else that
 /// colour; any other layer stays white, dyed or not. The result is in the
@@ -879,6 +921,9 @@ impl Game<'_> {
                     true,
                 );
             }
+            // LivingEntity.aiStep calls pushEntities after travel. The stand's
+            // own doPush is empty; only this shove runs.
+            self.push_rideable_minecarts(i);
             let a = &mut self.armor_stands[i];
             if !a.environment_tick(&self.world, self.res.facts(), self.pack.assets.registry) {
                 dead.push(i);
@@ -888,6 +933,50 @@ impl Game<'_> {
             self.break_armor_stand_by_anything(i);
         }
         Ok(())
+    }
+    /// `ArmorStand.pushEntities`: a plain minecart (`RIDABLE_MINECARTS`,
+    /// `AbstractMinecart.isRideable`) whose box meets the stand's is shoved
+    /// when `distanceToSqr` is at most 0.2. `AbstractMinecart.push` of a
+    /// non-cart adds the push to the cart and a quarter of it to the stand
+    /// (`Entity.push(double)` does not consult `isPushable`). A stand with no
+    /// physics (`Marker` or `NoGravity`, `ArmorStand.hasPhysics` / `noPhysics`)
+    /// or one riding that cart does not shove it.
+    fn push_rideable_minecarts(&mut self, i: usize) {
+        let stand = &self.armor_stands[i];
+        if stand.marker || stand.no_gravity {
+            return;
+        }
+        let stand_pos = stand.position;
+        let stand_box = stand.bounds();
+        let vehicle = stand.vehicle;
+        let mut applied = Vec::new();
+        for (j, cart) in self.carts.iter().enumerate() {
+            let Some(shove) = armor_stand_cart_shove(
+                stand_pos,
+                stand_box,
+                cart.position,
+                cart.bounds(),
+                cart.kind,
+                vehicle == Some(cart.id),
+            ) else {
+                continue;
+            };
+            applied.push((j, shove));
+        }
+        let mut stand_x = 0.0;
+        let mut stand_z = 0.0;
+        for (j, shove) in applied {
+            let cart = &mut self.carts[j];
+            cart.velocity.x += shove.cart_x;
+            cart.velocity.z += shove.cart_z;
+            stand_x += shove.stand_x;
+            stand_z += shove.stand_z;
+        }
+        if stand_x != 0.0 || stand_z != 0.0 {
+            let stand = &mut self.armor_stands[i];
+            stand.velocity.x += stand_x;
+            stand.velocity.z += stand_z;
+        }
     }
     /// An armor stand is a `LivingEntity`, so the egg under it
     /// (`getOnPosLegacy`) cracks like under a mob: `TurtleEggBlock.fallOn` one
@@ -1680,6 +1769,86 @@ mod burn_drop_tests {
         let (pos, drops) = broken_armor_stand_equipment(stand);
         assert_eq!(pos, [-1, 5, 0]);
         assert_eq!(drops, vec![kept]);
+    }
+}
+#[cfg(test)]
+mod push_tests {
+    use super::super::minecarts::{CartKind, Minecart};
+    use super::*;
+
+    fn boxes(kind: CartKind, cart_at: Vec3) -> (Aabb, Aabb) {
+        let stand = ArmorStand::new(1, Vec3::ZERO, 0.0);
+        let cart = Minecart::new(2, kind, cart_at);
+        (stand.bounds(), cart.bounds())
+    }
+
+    #[test]
+    fn a_rideable_minecart_inside_the_0_2_gate_is_shoved() {
+        let near = Vec3::new(0.25, 0.0, 0.0);
+        let far = Vec3::new(0.5, 0.0, 0.0);
+        // Written here, not taken from the shove: 0.25² is inside 0.2, 0.5² is not.
+        assert!(0.25 * 0.25 <= 0.2);
+        assert!(0.5 * 0.5 > 0.2);
+        let (stand_box, cart_box) = boxes(CartKind::Rideable, near);
+        let shove = armor_stand_cart_shove(
+            Vec3::ZERO,
+            stand_box,
+            near,
+            cart_box,
+            CartKind::Rideable,
+            false,
+        )
+        .expect("a rideable cart 0.25 away is shoved");
+        // AbstractMinecart.push: gap 0.25, length 0.25, pow capped at 1, then 0.1F * 0.5.
+        // The cart moves east, away from the stand; the stand takes a quarter west.
+        let scale = f64::from(0.1_f32) * 0.5;
+        assert_eq!(shove.cart_x, scale);
+        assert_eq!(shove.cart_z, 0.0);
+        assert_eq!(shove.stand_x, -scale / 4.0);
+        assert_eq!(shove.stand_z, 0.0);
+
+        let (stand_box, cart_box) = boxes(CartKind::Rideable, far);
+        assert!(
+            armor_stand_cart_shove(
+                Vec3::ZERO,
+                stand_box,
+                far,
+                cart_box,
+                CartKind::Rideable,
+                false
+            )
+            .is_none(),
+            "past 0.2 the cart stays"
+        );
+        for kind in [
+            CartKind::Chest,
+            CartKind::Hopper,
+            CartKind::Furnace,
+            CartKind::Tnt,
+            CartKind::CommandBlock,
+            CartKind::Spawner,
+        ] {
+            let (stand_box, cart_box) = boxes(kind, near);
+            assert!(
+                armor_stand_cart_shove(Vec3::ZERO, stand_box, near, cart_box, kind, false)
+                    .is_none(),
+                "{} is not a rideable minecart",
+                kind.id()
+            );
+        }
+        let (stand_box, cart_box) = boxes(CartKind::Rideable, near);
+        assert!(
+            armor_stand_cart_shove(
+                Vec3::ZERO,
+                stand_box,
+                near,
+                cart_box,
+                CartKind::Rideable,
+                true
+            )
+            .is_none(),
+            "a cart does not shove the stand riding it"
+        );
     }
 }
 #[cfg(test)]
