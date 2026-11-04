@@ -93,7 +93,7 @@ impl Game<'_> {
 
     /// `trigger` for a mod's trigger, for the player in place.
     fn trigger_mod_criteria(&mut self, trigger: &str, test: &dyn Fn(&NativeCriterion<'_>) -> bool) {
-        let me = self.player_entity();
+        let me = self.player_entity_for(trigger);
         self.trigger(trigger, |conditions, world| {
             passes(conditions, &me, world, test)
         });
