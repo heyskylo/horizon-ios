@@ -636,7 +636,7 @@ fn build_overlay_uncached(
     }
     // FallbackResourceManager: a file's `.mcmeta` counts only from the pack that
     // supplies the file or one above it; vanilla's own sits below every pack.
-    let hidden: BTreeSet<String> = files
+    let mut hidden: BTreeSet<String> = files
         .iter()
         .filter(|(name, _)| !name.ends_with(".mcmeta"))
         .filter_map(|(name, (owner, _))| {
@@ -647,6 +647,25 @@ fn build_overlay_uncached(
             }
         })
         .collect();
+    // A companion from below the winning colour would describe another surface.
+    // A map-only pack above it is intentional and remains valid.
+    for (name, (owner, _)) in &files {
+        let Some(stem) = name.strip_suffix(".png") else {
+            continue;
+        };
+        if stem.ends_with("_n") || stem.ends_with("_s") {
+            continue;
+        }
+        for suffix in ["_n.png", "_s.png"] {
+            let map = format!("{stem}{suffix}");
+            if files
+                .get(&map)
+                .is_none_or(|(map_owner, _)| map_owner < owner)
+            {
+                hidden.insert(map);
+            }
+        }
+    }
     for name in &hidden {
         files.remove(name);
     }
@@ -1467,6 +1486,61 @@ mod tests {
             Some(Merge::Atlas)
         );
         assert_eq!(merge_kind("assets/minecraft/models/block/stone.json"), None);
+    }
+    #[test]
+    fn companion_maps_follow_the_winning_colour_or_a_higher_map_only_pack() {
+        let root =
+            std::env::temp_dir().join(format!("horizon-material-owner-{}", std::process::id()));
+        let vanilla = root.join("vanilla");
+        let relative = "assets/minecraft/textures/block";
+        fs::create_dir_all(vanilla.join(relative)).unwrap();
+        let names = ["stone.png", "stone_n.png", "stone_s.png"];
+        for name in names {
+            fs::write(vanilla.join(relative).join(name), b"base").unwrap();
+        }
+        for (pack, files) in [
+            ("low", vec!["stone_n.png", "stone_s.png"]),
+            ("colour", vec!["stone.png"]),
+            ("maps", vec!["stone_n.png"]),
+        ] {
+            let dir = root.join("packs").join(pack);
+            fs::create_dir_all(dir.join(relative)).unwrap();
+            fs::write(
+                dir.join("pack.mcmeta"),
+                br#"{"pack":{"description":"fixture","pack_format":97}}"#,
+            )
+            .unwrap();
+            for name in files {
+                fs::write(dir.join(relative).join(name), pack.as_bytes()).unwrap();
+            }
+        }
+        let all = discover(&vanilla, &root.join("packs"));
+        let order = |names: &[&str]| {
+            names
+                .iter()
+                .map(|name| {
+                    all.iter()
+                        .find(|p| p.id == format!("file/{name}"))
+                        .unwrap()
+                        .clone()
+                })
+                .collect::<Vec<_>>()
+        };
+        let out = root.join("out");
+        build_overlay(&vanilla, &order(&["low", "colour"]), &out).unwrap();
+        assert_eq!(
+            fs::read(out.join(relative).join("stone.png")).unwrap(),
+            b"colour"
+        );
+        assert!(!out.join(relative).join("stone_n.png").exists());
+        assert!(!out.join(relative).join("stone_s.png").exists());
+        build_overlay(&vanilla, &order(&["low", "colour", "maps"]), &out).unwrap();
+        assert_eq!(
+            fs::read(out.join(relative).join("stone_n.png")).unwrap(),
+            b"maps"
+        );
+        assert!(!out.join(relative).join("stone_s.png").exists());
+        fs::remove_dir_all(root).unwrap();
     }
     #[test]
     fn overlay_layers_packs_over_vanilla() {

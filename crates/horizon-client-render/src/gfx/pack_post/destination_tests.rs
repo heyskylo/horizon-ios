@@ -208,6 +208,7 @@ impl Fixture {
             T::Rgba8Unorm,
             World {
                 atlas: None,
+                material_maps: None,
                 lightmap,
                 terrain: None,
                 block_ids: &[],

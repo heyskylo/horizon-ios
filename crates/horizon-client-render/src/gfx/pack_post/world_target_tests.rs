@@ -215,6 +215,7 @@ fn pack(
         T::Rgba8Unorm,
         World {
             atlas: None,
+            material_maps: None,
             lightmap: lightmap.clone(),
             terrain: None,
             block_ids: &[],
