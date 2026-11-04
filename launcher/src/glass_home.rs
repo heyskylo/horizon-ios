@@ -70,7 +70,7 @@ impl Launcher {
             .when(wide, |d| d.items_end().justify_between())
             .when(!wide, |d| d.flex_col())
             .gap(px(32.))
-            .pt(px(64.))
+            .pt(px(64. - crate::glass::CONTENT_INSET))
             .child(left)
             .child(self.glass_join_friend(tag, wide, cx))
     }
