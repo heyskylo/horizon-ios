@@ -342,12 +342,57 @@ pub fn elder_server_ai_step(m: &mut Mob, cx: &mut Cx) {
             at: [m.position.x, m.position.y, m.position.z],
         });
     }
-    if m.extra.home.is_none() {
-        m.extra.home = Some([
-            m.position.x.floor() as i32,
-            m.position.y.floor() as i32,
-            m.position.z.floor() as i32,
-        ]);
+    if m.ai.home.is_none() {
+        m.ai.home = Some((
+            [
+                m.position.x.floor() as i32,
+                m.position.y.floor() as i32,
+                m.position.z.floor() as i32,
+            ],
+            16,
+        ));
+    }
+}
+#[cfg(test)]
+mod elder_home_tests {
+    use super::*;
+    use crate::mobs::world::with_test_world;
+    use horizon_core::random::LegacyRandom;
+    use std::sync::Arc;
+
+    /// `ElderGuardian.customServerAiStep`: with no home yet, `setHomeTo(blockPosition(), 16)`,
+    /// the restriction its wandering goals read (`Mob::restricted`); a home it has is kept.
+    #[test]
+    fn an_elder_guardian_homes_where_it_stands() {
+        with_test_world(&[], |w, types| {
+            let kind = Arc::new(types.types["minecraft:elder_guardian"].clone());
+            let mut lr = LegacyRandom::new(0);
+            let mut events = Vec::new();
+            let mut m = Mob::new(1, kind.clone(), Vec3::new(10.7, 64.2, -20.9), 0.0);
+            elder_server_ai_step(
+                &mut m,
+                &mut Cx {
+                    w,
+                    lr: &mut lr,
+                    events: &mut events,
+                },
+            );
+            assert_eq!(m.ai.home, Some(([10, 64, -21], 16)));
+            assert!(!m.restricted(0.0, [20, 64, -21]));
+            assert!(m.restricted(0.0, [27, 64, -21]));
+
+            let mut kept = Mob::new(2, kind, Vec3::new(10.0, 64.0, 20.0), 0.0);
+            kept.ai.home = Some(([100, 50, 100], 24));
+            elder_server_ai_step(
+                &mut kept,
+                &mut Cx {
+                    w,
+                    lr: &mut lr,
+                    events: &mut events,
+                },
+            );
+            assert_eq!(kept.ai.home, Some(([100, 50, 100], 24)));
+        });
     }
 }
 /// Guardian.aiStep's visual attack clock, also used by server clients.
