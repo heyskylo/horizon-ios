@@ -236,9 +236,11 @@ language, at the bottom of the screen (at the top when the field is in the
 lower half, as chat is). D-pad or stick to move, A types, X deletes, Y is a
 space, LT is Shift (twice: caps lock), RB switches to symbols and accents,
 Menu is Enter, B closes it. It opens by itself when the pad opens chat or a
-sign. It types into every field the keyboard reaches: chat (local and
-server), signs, books, the title screens' fields, the options' searches, the
-creative and recipe-book searches, the anvil, the LAN port.
+sign, but not over the chat a sleeper gets (the game opens that one): there
+it waits for A on the chat box. It types into every field the keyboard
+reaches: chat (local and server), signs, books, the title screens' fields,
+the options' searches, the creative and recipe-book searches, the anvil, the
+LAN port.
 
 On a Steam Deck under Steam (`SteamDeck=1`), A asks Steam for its own
 keyboard instead (`steam://open/keyboard`), which types like a real keyboard;
