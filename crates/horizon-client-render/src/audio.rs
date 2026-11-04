@@ -588,7 +588,8 @@ fn mix(mixer: &mut Mixer, data: &mut [f32], channels: usize, rate: u32) {
         };
         let length = |d: [f64; 3]| d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
         // The nearest camera hears it (one camera but in splitscreen).
-        let camera = mixer.cameras
+        let camera = mixer
+            .cameras
             .iter()
             .filter(|camera| c.relative || camera.2 == c.world)
             .min_by(|a, b| length(away(a.0)).total_cmp(&length(away(b.0))))
