@@ -1023,6 +1023,17 @@ def levels():
         cmd('/execute if dimension minecraft:the_nether run say through the portal'),
         cmd('/data get entity @e[tag=remote_cow,limit=1] Pos'),
         cmd('/data get entity @e[tag=remote_cow,distance=..128,limit=1] Pos'),
+        # The unbounded selector reaches the Overworld cow while the player is
+        # in the Nether: /attribute acts on the entity in its own level, as
+        # AttributeCommand does on the entity it was given.
+        cmd('/attribute @e[tag=remote_cow,limit=1] minecraft:max_health get'),
+        cmd('/attribute @e[tag=remote_cow,limit=1] minecraft:follow_range base set 21'),
+        cmd('/attribute @e[tag=remote_cow,limit=1] minecraft:follow_range base get'),
+        cmd('/attribute @e[tag=remote_cow,limit=1] minecraft:follow_range base reset'),
+        cmd('/attribute @e[tag=remote_cow,limit=1] minecraft:scale modifier add harness:xdim 0.5 add_value'),
+        cmd('/attribute @e[tag=remote_cow,limit=1] minecraft:scale get'),
+        cmd('/attribute @e[tag=remote_cow,limit=1] minecraft:scale modifier remove harness:xdim'),
+        cmd('/attribute @e[tag=remote_cow,limit=1] minecraft:scale get'),
         {'op': 'portal'},
         {'op': 'settle'},
         cmd('/execute if dimension minecraft:overworld run say back through the portal'),
@@ -1391,6 +1402,103 @@ def item_nbt_count_bounds():
                 cmd(f'/data get block {chest} Items[0].count'),
             ]
     return ops + setup('/kill @e[tag=h085]', f'/setblock {chest} minecraft:air strict',
+                       '/tick unfreeze')
+
+
+def item_block_containers():
+    at = '12 222 8'
+    chest = '12 222 10'
+    ops = setup('/tick freeze', f'/setblock {chest} minecraft:air strict', f'/setblock {chest} minecraft:chest strict')
+    for block, size in (('minecraft:furnace', 3), ('minecraft:blast_furnace', 3), ('minecraft:smoker', 3),
+                        ('minecraft:brewing_stand', 5), ('minecraft:crafter', 9),
+                        ('minecraft:chiseled_bookshelf', 6), ('minecraft:oak_shelf', 3), ('minecraft:jukebox', 1)):
+        ops += setup(f'/setblock {at} minecraft:air strict', f'/setblock {at} {block} strict')
+        ops += [
+            cmd(f'/item replace block {at} container.0 with minecraft:book 2'),
+            cmd(f'/item replace block {at} container.{size - 1} with minecraft:enchanted_book'),
+            cmd(f'/item replace block {at} container.{size} with minecraft:book'),
+            cmd(f'/execute if items block {at} container.* minecraft:book'),
+            cmd(f'/execute if items block {at} container.* *'),
+            cmd(f'/item modify block {at} container.0 {{type:"minecraft:set_count",count:1}}'),
+            cmd(f'/item replace block {chest} container.0 from block {at} container.0'),
+            cmd(f'/data get block {chest} Items[0]'),
+            cmd(f'/data get block {at} Items'),
+            cmd(f'/item replace block {at} container.0 with minecraft:air'),
+            cmd(f'/execute if items block {at} container.* *'),
+        ]
+    for block in ('minecraft:furnace', 'minecraft:blast_furnace', 'minecraft:smoker'):
+        ops += setup(f'/setblock {at} minecraft:air strict', f'/setblock {at} {block} strict')
+        ops += [
+            cmd(f'/item replace block {at} container.0 with minecraft:iron_ore'),
+            cmd(f'/data get block {at} cooking_total_time'),
+        ]
+        ops += setup(f'/data merge block {at} {{cooking_time_spent:50}}')
+        ops += [
+            cmd(f'/item replace block {at} container.0 with minecraft:iron_ore 3'),
+            cmd(f'/data get block {at} cooking_time_spent'),
+            cmd(f'/item replace block {at} container.1 with minecraft:coal'),
+            cmd(f'/data get block {at} cooking_time_spent'),
+            cmd(f'/item replace block {at} container.0 with minecraft:beef'),
+            cmd(f'/data get block {at} cooking_time_spent'),
+            cmd(f'/data get block {at} cooking_total_time'),
+        ]
+    ops += setup(f'/setblock {at} minecraft:air strict', f'/setblock {at} minecraft:crafter strict',
+                 f'/data merge block {at} {{disabled_slots:[I;0,4]}}')
+    ops += [
+        cmd(f'/item replace block {at} container.0 with minecraft:stone'),
+        cmd(f'/data get block {at} disabled_slots'),
+        cmd(f'/item replace block {at} container.4 with minecraft:air'),
+        cmd(f'/data get block {at} disabled_slots'),
+    ]
+    ops += setup(f'/setblock {at} minecraft:air strict', f'/setblock {at} minecraft:chiseled_bookshelf strict')
+    ops += [
+        cmd(f'/item replace block {at} container.2 with minecraft:stone'),
+        cmd(f'/execute if items block {at} container.* *'),
+        cmd(f'/item replace block {at} container.2 with minecraft:writable_book'),
+        cmd(f'/execute if block {at} minecraft:chiseled_bookshelf[slot_2_occupied=true]'),
+        cmd(f'/data get block {at} last_interacted_slot'),
+        cmd(f'/item replace block {at} container.2 with minecraft:air'),
+        cmd(f'/execute if block {at} minecraft:chiseled_bookshelf[slot_2_occupied=false]'),
+    ]
+    ops += setup(f'/setblock {at} minecraft:air strict', f'/setblock {at} minecraft:jukebox strict')
+    ops += [
+        cmd(f'/item replace block {at} container.0 with minecraft:music_disc_cat'),
+        cmd(f'/execute if block {at} minecraft:jukebox[has_record=true]'),
+        cmd(f'/data get block {at} RecordItem'),
+        cmd(f'/item replace block {at} container.0 with minecraft:stone'),
+        cmd(f'/execute if block {at} minecraft:jukebox[has_record=true]'),
+        cmd(f'/item replace block {at} container.0 with minecraft:air'),
+        cmd(f'/execute if block {at} minecraft:jukebox[has_record=false]'),
+    ]
+    ops += setup(f'/setblock {at} minecraft:air strict', f'/setblock {at} minecraft:furnace strict')
+    ops += [
+        cmd(f'/loot insert {at} loot minecraft:blocks/cobblestone'),
+        cmd(f'/loot insert {at} loot minecraft:blocks/coal_block'),
+        cmd(f'/loot insert {at} loot minecraft:blocks/stone'),
+        cmd(f'/loot insert {at} loot minecraft:blocks/oak_planks'),
+        cmd(f'/data get block {at} Items'),
+        cmd(f'/loot replace block {at} container.2 loot minecraft:blocks/dirt'),
+        cmd(f'/loot replace block {at} container.1 loot minecraft:blocks/dirt'),
+        cmd(f'/loot replace block {at} container.0 loot minecraft:blocks/dirt'),
+        cmd(f'/data get block {at} Items'),
+    ]
+    ops += setup(f'/setblock {at} minecraft:air strict', f'/setblock {at} minecraft:chiseled_bookshelf strict')
+    ops += [
+        cmd(f'/loot insert {at} loot minecraft:blocks/dirt'),
+        cmd(f'/loot replace block {at} container.3 loot minecraft:blocks/dirt'),
+        cmd(f'/execute if items block {at} container.* *'),
+    ]
+    for block in ('minecraft:oak_sign', 'minecraft:lectern', 'minecraft:campfire', 'minecraft:beacon',
+                  'minecraft:stone'):
+        ops += setup(f'/setblock {at} minecraft:air strict', f'/setblock {at} {block} strict')
+        ops += [
+            cmd(f'/loot insert {at} loot minecraft:blocks/dirt'),
+            cmd(f'/item replace block {at} container.0 with minecraft:book'),
+            cmd(f'/item modify block {at} container.0 {{type:"minecraft:set_count",count:1}}'),
+            cmd(f'/item replace block {chest} container.0 from block {at} container.0'),
+            cmd(f'/execute if items block {at} container.* *'),
+        ]
+    return ops + setup(f'/setblock {at} minecraft:air strict', f'/setblock {chest} minecraft:air strict',
                        '/tick unfreeze')
 
 
@@ -4456,6 +4564,67 @@ def mining_efficiency_9021():
 
 
 
+def bell_server_glow():
+    """Actual world ticks: near raiders trigger resonance that reaches farther raiders."""
+    # Centre the harness owner's loading area so settle explicitly awaits entity ticking
+    # in every actor chunk, including the witch at z=48 (outside the old centre).
+    ops = setup('/tp @s 8.5 230 24.5', '/forceload add 0 0 31 63') + [{'op': 'settle'}]
+    ops += [cmd('/execute if loaded 8 200 48', expect_result=1)]
+    ops += setup('/fill 0 199 0 31 199 63 stone',
+                 '/fill 0 200 0 31 205 63 air', '/scoreboard objectives add bell_clock dummy')
+    # Let newly forced chunks acquire entity-ticking readiness before actors exist.
+    ops += [{'op': 'tick', 'n': 20}]
+    for scene in range(3):
+        if scene:
+            ops += setup('/kill @e[tag=h288_bell]') + [{'op': 'tick', 'n': 25}]
+            ops += setup('/setblock 9 200 8 air', '/setblock 8 200 8 air')
+            ops += [{'op': 'tick', 'n': 70}]
+        ops += setup('/setblock 8 200 8 bell[attachment=floor,facing=north]')
+        actors = [('witch', '8.5 200 48.5', 1), ('zombie', '13.5 200 8.5', 2)]
+        if scene != 1:
+            actors.append(('pillager', '18.5 200 8.5', 3))
+        for kind, pos, serial in actors:
+            tag = f'h288_{scene}_{kind}'
+            fields = f'UUID:[I;288,{scene},0,{serial}],Tags:["h288_bell","{tag}"],NoAI:1b,Silent:1b,PersistenceRequired:1b'
+            ops += setup(f'/summon {kind} {pos} {{{fields}}}')
+            guard = f'@e[type={kind},tag={tag},nbt={{UUID:[I;288,{scene},0,{serial}],NoAI:1b,Pos:[{pos.replace(" ", "d,")}d]}}]'
+            ops += [cmd(f'/execute if entity {guard}', expect_result=1),
+                    cmd(f'/data get entity @e[tag={tag},limit=1] Health',
+                        expect_result={'witch': 26, 'zombie': 20, 'pillager': 24}[kind]),
+                    cmd(f'/execute unless data entity @e[tag={tag},limit=1] active_effects[{{id:"minecraft:glowing"}}]', expect_result=1)]
+        ops += [{'op': 'tick', 'n': 2}]
+        ops += setup('/setblock 9 200 8 redstone_block')
+        if scene == 2:
+            # Destroy a resonating bell, tick while absent, then ring its replacement.
+            ops += [{'op': 'tick', 'n': 10}]
+            ops += setup('/setblock 9 200 8 air', '/setblock 8 200 8 air')
+            ops += [{'op': 'tick', 'n': 1}]
+            ops += setup('/setblock 8 200 8 bell[attachment=floor,facing=north]',
+                         '/setblock 9 200 8 redstone_block')
+        ops += [cmd('/execute if block 8 199 8 stone', expect_result=1),
+                cmd('/execute if block 8 200 8 bell[attachment=floor,facing=north,powered=true]', expect_result=1),
+                cmd('/execute if block 9 200 8 redstone_block', expect_result=1)]
+        ops += setup('/execute store result score start bell_clock run time query gametime')
+        elapsed = 0
+        for sample in (41, 43, 44, 45, 46, 47, 48, 49):
+            ops += [{'op': 'tick', 'n': sample - elapsed}]
+            elapsed = sample
+            ops += setup('/execute store result score elapsed bell_clock run time query gametime',
+                         '/scoreboard players operation elapsed bell_clock -= start bell_clock')
+            ops += [cmd('/scoreboard players get elapsed bell_clock', expect_result=sample)]
+            for kind, pos, serial in actors:
+                tag = f'h288_{scene}_{kind}'
+                guard = f'@e[type={kind},tag={tag},nbt={{UUID:[I;288,{scene},0,{serial}],NoAI:1b,Pos:[{pos.replace(" ", "d,")}d]}}]'
+                ops += [cmd(f'/execute if entity {guard}', expect_result=1)]
+                ops += setup(f'/execute store result score health bell_clock run data get entity @e[tag={tag},limit=1] Health 1000')
+                ops += [cmd('/execute if score health bell_clock matches 1..', expect_result=1)]
+                sign = 'if' if scene != 1 and sample >= 45 and kind != 'zombie' else 'unless'
+                ops += [cmd(f'/execute {sign} data entity @e[tag={tag},limit=1] active_effects[{{id:"minecraft:glowing"}}]', expect_result=1)]
+            if scene != 1 and sample == 49:
+                ops += [cmd(f'/data get entity @e[tag=h288_{scene}_witch,limit=1] active_effects[{{id:"minecraft:glowing"}}].duration', expect_result=56)]
+    return ops + setup('/scoreboard objectives remove bell_clock')
+
+
 def groups():
     try:
         from .loaded_cloud_corpus import loaded_clouds
@@ -4463,6 +4632,7 @@ def groups():
         from loaded_cloud_corpus import loaded_clouds
     return [
         ('setup', group_setup()),
+        ('bell server glow', bell_server_glow()),
         ('named weather predicates', named_weather_predicates()),
         ('mining_efficiency_9021', mining_efficiency_9021()),
         ('structured item slots', structured_item_slots()),
@@ -4539,6 +4709,7 @@ def groups():
         ('entity landing sensors', entity_landing_sensors()),
         ('loot set damage', loot_set_damage()),
         ('item NBT count bounds', item_nbt_count_bounds()),
+        ('item block containers', item_block_containers()),
         ('world', world_misc()),
         ('recipe special arguments', recipe_special_arguments()),
         ('progression', progression()),

@@ -26,6 +26,7 @@ mod breaking_fixture;
 mod camera_probe;
 mod cauldron_fixture;
 mod chat_screen_fixture;
+mod chest_load_fixture;
 mod chest_pair_fixture;
 mod cloud_fixture;
 mod command_parse_fixture;
@@ -108,6 +109,7 @@ mod vehicle_container_fixture;
 mod weather_fixture;
 mod world_border_render_fixture;
 mod world_options_fixture;
+mod zombie_cure_sound_probe;
 
 probes! {
     ambient_fixture,
@@ -128,6 +130,7 @@ probes! {
     cauldron_fixture,
     chat_screen_fixture,
     chest_pair_fixture,
+    chest_load_fixture,
     cloud_fixture,
     command_parse_fixture,
     container_screen_probe,
@@ -142,6 +145,7 @@ probes! {
     environment_fixture,
     finalize_spawn_fixture,
     fire_starter_sound_probe,
+    zombie_cure_sound_probe,
     firework_tooltip_fixture,
     first_person_probe,
     frame_limiter_probe,

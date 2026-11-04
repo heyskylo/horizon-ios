@@ -8323,20 +8323,22 @@ mod tests {
                 .unwrap();
             let (ex, ey) = (extra_btn.x + 1.0, extra_btn.y + 1.0);
             use horizon_cosmetics::prefs::Others;
-            assert_eq!(s.extras.cosmetics_others, Others::Shown);
+            // Not chosen, nothing owned: shows Hidden.
+            assert_eq!(s.extras.cosmetics_others, None);
+            assert_eq!(s.extras.effective_others(), Others::Hidden);
 
-            // Forward
+            // Forward (wraps to Shown), now a choice
             ui.click(&mut s, &atlas, ex, ey, size, [854, 480], false, false);
-            assert_eq!(s.extras.cosmetics_others, Others::NameTags);
+            assert_eq!(s.extras.cosmetics_others, Some(Others::Shown));
 
             // Backward with shift
             ui.shift = true;
             ui.click(&mut s, &atlas, ex, ey, size, [854, 480], false, false);
-            assert_eq!(s.extras.cosmetics_others, Others::Shown);
+            assert_eq!(s.extras.cosmetics_others, Some(Others::Hidden));
 
-            // Wrap-around backward with shift
+            // Backward again
             ui.click(&mut s, &atlas, ex, ey, size, [854, 480], false, false);
-            assert_eq!(s.extras.cosmetics_others, Others::Hidden);
+            assert_eq!(s.extras.cosmetics_others, Some(Others::NameTags));
             ui.shift = false;
         }
     }

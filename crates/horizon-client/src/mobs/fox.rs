@@ -366,6 +366,13 @@ fn teleport_randomly(
         if !random_teleport(w, m, Vec3::new(x, y, z)) {
             continue;
         }
+        // `LivingEntity.checkPositionAndTeleport` broadcasts entity event 46
+        // before the teleport sound and the directional trail.
+        events.push(MobEvent::EntityEvent {
+            mob: m.id,
+            event: 46,
+            at: [m.position.x, m.position.y, m.position.z],
+        });
         // `SoundEvents.FOX_TELEPORT`, else the chorus fruit's own; the sound
         // plays at the point reached.
         events.push(MobEvent::Sound(
@@ -1295,6 +1302,12 @@ mod consume_tests {
                         .iter()
                         .any(|e| matches!(e, MobEvent::LevelEvent { id: 2017, .. })),
                     "the portal trail: {events:?}"
+                );
+                assert!(
+                    events
+                        .iter()
+                        .any(|e| matches!(e, MobEvent::EntityEvent { event: 46, .. })),
+                    "entity event 46: {events:?}"
                 );
             },
         );

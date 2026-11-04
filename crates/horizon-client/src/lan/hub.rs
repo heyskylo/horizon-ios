@@ -2269,6 +2269,16 @@ impl Hub {
         }
     }
 
+    /// `ChunkHolder.broadcastChanges` where `ServerChunkCache.tick` runs it,
+    /// before the block events: what changed since the last time (the last
+    /// tick's block events, entities and block entities, this tick's
+    /// scheduled and random ticks), as it is now.
+    pub fn broadcast_changes(&mut self, world: &mut World) {
+        if self.guests.iter().any(|g| self.here(g)) {
+            self.broadcast_light_changes(world);
+            self.broadcast_block_changes(world);
+        }
+    }
     /// `ChunkHolder.broadcastChanges`' light part: the light sections that
     /// changed in a column go to the players for whom it is on the border of
     /// what they track (`ChunkMap.isChunkOnTrackedBorder`); the others light
@@ -2320,6 +2330,20 @@ impl Hub {
             keys
         };
         if !bulk.is_empty() {
+            // The single-player window's far terrain draws a column it isn't sent as the window last saw it: it is
+            // handed the column to summarize again (`handoff::changed`).
+            let unsent = |g: &Guest, key: &(i32, i32)| {
+                self.here(g)
+                    && g.address == super::conn::MEMORY_ADDRESS
+                    && !g.sent_chunks.contains(key)
+            };
+            for key in &bulk {
+                if let Some(chunk) = world.chunks.get(key)
+                    && self.guests.iter().any(|g| unsent(g, key))
+                {
+                    super::handoff::changed(chunk);
+                }
+            }
             let recording = self.recording();
             let columns: Vec<&Chunk> = bulk
                 .iter()

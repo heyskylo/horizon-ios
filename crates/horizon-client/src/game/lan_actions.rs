@@ -2127,10 +2127,13 @@ impl Game<'_> {
                         g.forced_hit = Some(hit);
                         g.guest_use = Some(GuestUse::OnBlock(hand));
                         let swings = g.swings_started;
-                        let consumed = matches!(g.use_item(), Ok(Some(_)));
+                        // InteractionResult.consumesAction: a FAIL (`use_failed`,
+                        // as BlockItem.place's failed placement) does not count,
+                        // even though the click ended on it.
+                        let consumed = matches!(g.use_item(), Ok(Some(_))) && !g.use_failed;
                         // handleUseItemOn: a consuming useItemOn triggers
                         // ANY_BLOCK_USE with the hand's stack as it now is.
-                        if consumed && !g.use_failed {
+                        if consumed {
                             let stack = g
                                 .with_hand(hand, |g| g.held().cloned())
                                 .unwrap_or_else(|| ItemStack::new("minecraft:air", 0));
@@ -2871,19 +2874,12 @@ impl Game<'_> {
         let g = &host.hub.guests[gi];
         let eye = [
             g.position[0],
-            g.position[1] + g.eye_height() - 0.3,
+            g.position[1] + g.eye_height() - f64::from(0.3f32),
             g.position[2],
         ];
-        let (yaw, pitch) = (
-            f64::from(g.yaw).to_radians(),
-            f64::from(g.pitch).to_radians(),
-        );
         for stack in stacks {
-            let v = [
-                -yaw.sin() * pitch.cos() * 0.3,
-                -pitch.sin() * 0.3 + 0.1,
-                yaw.cos() * pitch.cos() * 0.3,
-            ];
+            let r = &mut self.world.random;
+            let v = horizon_client::entities::drop_motion(r, g.yaw, g.pitch, false);
             self.spawn_item(stack, eye, v, 40);
         }
     }
@@ -3895,8 +3891,8 @@ impl Game<'_> {
             .death_reward(self.ui.rules.bool("keep_inventory") || g.game_mode == SPECTATOR);
             let (name, uuid) = (g.name.clone(), g.uuid);
             // ServerPlayer.die: dropAllDeathLoot unless a spectator, from the eyes less 0.3.
-            let drops =
-                (g.game_mode != SPECTATOR).then(|| [at[0], at[1] + g.eye_height() - 0.3, at[2]]);
+            let drops = (g.game_mode != SPECTATOR)
+                .then(|| [at[0], at[1] + g.eye_height() - f64::from(0.3f32), at[2]]);
             let cause = host.play.get_mut(&conn).and_then(|p| p.death_cause.take());
             self.native_player_died(uuid, cause.as_deref());
             // ServerPlayer.die: the neutral mobs near a guest in this level

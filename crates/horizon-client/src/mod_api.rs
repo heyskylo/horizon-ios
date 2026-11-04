@@ -43,6 +43,8 @@ pub use horizon_core::{
 };
 /// The server's play packets `client_packet` hands over, decoded.
 pub use horizon_protocol::packets::play::Clientbound as ClientboundPlayPacket;
+/// The play packets a client sends, as `native_send_packet` takes them.
+pub use horizon_protocol::packets::play::Serverbound as ServerboundPlayPacket;
 pub use horizon_world::consumable::UseAnimation;
 pub use horizon_world::player_inventory::EquipmentSlot;
 pub use horizon_world::{
@@ -132,7 +134,7 @@ pub struct NativeLootDrops<'a> {
     /// the player's id and `minecraft:player`, `player` them, `table` empty,
     /// `origin` where the items leave, `used` false); `drops` empty means
     /// the mod took the whole inventory. Not heard with keepInventory. API
-    /// @API:player_death_drops@.
+    /// 405.
     pub used: bool,
 }
 
@@ -326,7 +328,7 @@ pub struct NativeServerPlayer {
     /// API 398.
     pub entity_id: i32,
     /// The IP address the player connects from (behind a Velocity proxy: the address the proxy forwards);
-    /// empty when not known. API @API:server_player_address@.
+    /// empty when not known. API 407.
     pub address: String,
 }
 

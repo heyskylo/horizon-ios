@@ -1173,7 +1173,7 @@ impl Backdrop {
             h,
             px: m.px,
             glass: filtered(blur, 1.),
-            float: filtered(blur + 24., 0.62),
+            float: filtered(if blur <= 0. { 0. } else { blur + 24. }, 0.62),
         }
     }
 

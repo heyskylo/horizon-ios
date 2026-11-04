@@ -10,8 +10,13 @@ use std::f32::consts::PI;
 /// `Enderman.aiStep`, `Endermite.aiStep` and `Blaze.aiStep` on a client:
 /// two portal particles a tick around endermen and endermites; two large
 /// smoke particles a tick around blazes and, one tick in 24, their burn.
+/// Also `Dolphin.tick`'s trail on a client.
 pub fn client_ai_step(m: &mut Mob, out: &mut Vec<MobEvent>) {
     let species = m.species();
+    if species == Species::Dolphin {
+        dolphin_trail(m, out);
+        return;
+    }
     if !matches!(
         species,
         Species::Enderman | Species::Endermite | Species::Blaze
@@ -53,6 +58,31 @@ pub fn client_ai_step(m: &mut Mob, out: &mut Vec<MobEvent>) {
             ("portal", [x, y, z], velocity)
         };
         out.push(MobEvent::ParticleAt { kind, at, velocity });
+    }
+}
+
+/// `Dolphin.tick` on a client: a dolphin that swims fast in water (squared
+/// speed over 0.03) leaves four dolphin particles a tick behind it, two on
+/// each side, set back along its view by a distance from its own random.
+fn dolphin_trail(m: &mut Mob, out: &mut Vec<MobEvent>) {
+    if m.no_ai || !m.fluids.in_water || m.velocity.length_squared() <= 0.03 {
+        return;
+    }
+    // Entity.getViewVector(0).
+    let view = m.view_vector();
+    let yaw = m.yaw * (PI / 180.0);
+    let (c, s) = (f64::from(yaw.mcos() * 0.3), f64::from(yaw.msin() * 0.3));
+    let back = f64::from(1.2 - m.random.next_float() * 0.7);
+    let p = m.position;
+    let (x, y, z) = (p.x - view[0] * back, p.y - view[1], p.z - view[2] * back);
+    for _ in 0..2 {
+        for (dx, dz) in [(c, s), (-c, -s)] {
+            out.push(MobEvent::ParticleAt {
+                kind: "dolphin",
+                at: [x + dx, y, z + dz],
+                velocity: [0.0; 3],
+            });
+        }
     }
 }
 
@@ -117,5 +147,68 @@ pub fn client_particles(m: &Mob, random: &mut impl RandomSource, out: &mut Vec<M
             }
         }
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::mobs::sensor_scan_tests::kind;
+    use horizon_core::geometry::Vec3;
+
+    fn dolphin() -> Mob {
+        let mut kind = kind();
+        let k = std::sync::Arc::make_mut(&mut kind);
+        k.id = "minecraft:dolphin".into();
+        k.species = Species::Dolphin;
+        let mut m = Mob::new(1, kind, Vec3::new(10.0, 60.0, 20.0), 0.0);
+        m.fluids.in_water = true;
+        m.velocity = Vec3::new(0.0, 0.0, 0.2);
+        m
+    }
+
+    fn trail(m: &mut Mob) -> Vec<[f64; 3]> {
+        let mut out = Vec::new();
+        client_ai_step(m, &mut out);
+        out.into_iter()
+            .map(|e| match e {
+                MobEvent::ParticleAt { kind, at, velocity } => {
+                    assert_eq!((kind, velocity), ("dolphin", [0.0; 3]));
+                    at
+                }
+                _ => panic!("only particles"),
+            })
+            .collect()
+    }
+
+    /// `Dolphin.tick` on a client: facing south (yaw 0, level), a swimming
+    /// dolphin leaves two pairs of particles 0.3 to either side, set back
+    /// 0.5 to 1.2 behind it on the same height.
+    #[test]
+    fn a_swimming_dolphin_leaves_four_trail_particles_behind_it() {
+        let mut m = dolphin();
+        let at = trail(&mut m);
+        assert_eq!(at.len(), 4);
+        let back = 20.0 - at[0][2];
+        assert!((0.5..=1.2).contains(&back), "set back {back}");
+        for (i, p) in at.iter().enumerate() {
+            let side = if i % 2 == 0 { 0.3 } else { -0.3 };
+            assert!((p[0] - (10.0 + side)).abs() < 1e-6, "{p:?}");
+            assert_eq!((p[1], p[2]), (60.0, at[0][2]));
+        }
+    }
+
+    /// No trail out of water, at a squared speed of 0.03 or less, or with NoAI.
+    #[test]
+    fn a_slow_dry_or_no_ai_dolphin_leaves_no_trail() {
+        let mut m = dolphin();
+        m.fluids.in_water = false;
+        assert!(trail(&mut m).is_empty());
+        let mut m = dolphin();
+        m.velocity = Vec3::new(0.0, 0.0, 0.17);
+        assert!(trail(&mut m).is_empty());
+        let mut m = dolphin();
+        m.no_ai = true;
+        assert!(trail(&mut m).is_empty());
     }
 }

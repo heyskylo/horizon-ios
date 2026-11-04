@@ -45,7 +45,7 @@ jobs:
     # Three full preparations (two isolated, one batched) besides the compile.
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.ref }}
           persist-credentials: false
@@ -73,7 +73,7 @@ jobs:
             ! \( -name '*.class' \( -path 'exporters/server/dev/horizonlab/parity/*' -o -path 'exporters/client/dev/horizonlab/parity/*' \) \))
           [ -z "$stray" ] || { echo "::error::not one of our classes: $stray"; exit 1; }
           python3 tools/check_prepare_exporters.py --binary target/release/horizon-prepare
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: original-exporters
           path: exporters/
@@ -128,7 +128,7 @@ jobs:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.ref }}
           persist-credentials: false
@@ -239,14 +239,14 @@ jobs:
           # Published with the release; the publish job checks it again before it publishes anything.
           cp "$home/smoke.json" "$RUNNER_TEMP/smoke-test.json"
       # One smoke-test.json per build, the Apple Silicon one's; the Intel build must pass its own run too.
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: runner.environment == 'self-hosted' && !matrix.target
         with:
           name: smoke-test.json
           path: ${{ runner.temp }}/smoke-test.json
           if-no-files-found: error
           retention-days: 3
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: original-exporters
           path: exporters
@@ -277,7 +277,7 @@ jobs:
             codesign --verify --strict "dist/${{ matrix.dir }}/$binary"
           done
           packaging/macos/notarize.sh "dist/${{ matrix.asset }}"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.asset }}
           path: dist/${{ matrix.asset }}
@@ -299,7 +299,7 @@ jobs:
           rm -f "${{ matrix.server_asset }}"
           tar czf "${{ matrix.server_asset }}" "${{ matrix.server_dir }}"
           ls -l "${{ matrix.server_asset }}"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: matrix.server_asset
         with:
           name: ${{ matrix.server_asset }}
