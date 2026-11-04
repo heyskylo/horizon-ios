@@ -504,6 +504,13 @@ fn mob_meta(
     }
     let e = &m.extra;
     let id = |registry: &str, name: &str| hub.registry_id(registry, &format!("minecraft:{name}"));
+    // Pig.DATA_BOOST_TIME and Strider.DATA_BOOST_TIME (18, the first entry
+    // after AgeableMob's two). The total `boost()` stored in `counter2`.
+    // The default 0 is not registered: vanilla never writes it back, and the
+    // rider's client finishes the timer `onSynced` started.
+    if matches!(kind, "minecraft:pig" | "minecraft:strider") && e.counter2 > 0 {
+        meta.push((18, serializer::INT, Value::Int(e.counter2)));
+    }
     mob_variant_meta(m, hub, meta, defaults);
     match kind {
         "minecraft:guardian" | "minecraft:elder_guardian" => {
