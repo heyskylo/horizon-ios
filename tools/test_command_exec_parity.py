@@ -91,6 +91,9 @@ def main():
     build.mkdir(parents=True, exist_ok=True)
     report_path = build / 'report.json'
     report_path.unlink(missing_ok=True)
+    if args.loaded_fixture:
+        for name in ['client_config.json', 'rust-client-config.json']:
+            (build / name).unlink(missing_ok=True)
     if args.prepare:
         lab.prepare()
     lock, jars, libraries = base.verify_artifacts()
@@ -168,6 +171,14 @@ def main():
             config = json.loads((build / name).read_text())
             if config.get('view_distance') != 2 or config.get('simulation_distance') != 2:
                 sys.exit(f'actual login distance prerequisite failed: {name}: {config}')
+        java = json.loads((build / 'client_config.json').read_text())
+        if java.get('server_view') != 2 or java.get('server_simulation') != 2 or not java.get('client_loaded'):
+            sys.exit(f'Java server/client-loaded prerequisite failed: {java}')
+        for name in ['java.log', 'rust.log']:
+            waits = re.findall(r'harness paced wait: (\d+) ticks, (\d+) ms', (build / name).read_text())
+            if len(waits) != 2 or any(int(n) != ticks or not ticks * 50 <= int(ms) <= upper
+                    for (n, ms), ticks, upper in zip(waits, [40, 120], [4000, 10000])):
+                sys.exit(f'bounded paced-wait prerequisite failed: {name}: {waits}')
         native = json.loads((build / 'rust-client-config.json').read_text())
         if native.get('render_setting') != 2 or native.get('simulation_setting') != 2 or not native.get('joined'):
             sys.exit(f'native settings/join prerequisite failed: {native}')
