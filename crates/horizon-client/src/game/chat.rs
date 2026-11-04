@@ -813,6 +813,40 @@ impl Game<'_> {
     fn leave_bed_button(width: f32, height: f32) -> (i32, i32, i32, i32) {
         (width as i32 / 2 - 100, height as i32 - 40, 200, 20)
     }
+    /// The Leave Bed button's draws. It registers as a button
+    /// (`widgets::record`), so the pad's and the keyboard's focus reach it (the
+    /// pad's starts on it) and `horizon-ctl click-button` finds it.
+    fn leave_bed_draws(
+        m: &Measure,
+        mouse: (i32, i32),
+        width: f32,
+        height: f32,
+    ) -> Vec<horizon_client::screen_draw::Draw> {
+        let (x, y, w, h) = Self::leave_bed_button(width, height);
+        let label = Text::literal(horizon_client::lang::get_or(
+            "multiplayer.stopSleeping",
+            "Leave Bed",
+        ));
+        horizon_client::widgets::record(
+            &label.plain(),
+            [x as f32, y as f32, w as f32, h as f32],
+            true,
+        );
+        let mut button = Vec::new();
+        horizon_client::screen_draw::button(
+            &mut button,
+            m,
+            &label,
+            x,
+            y,
+            w,
+            h,
+            true,
+            horizon_client::screen_draw::inside(mouse, x, y, w, h),
+            horizon_client::hud_overlays::now_ms(),
+        );
+        button
+    }
     /// `Minecraft.computeChatAbilities` from the Chat option.
     pub(super) fn chat_abilities(&self) -> ChatAbilities {
         ChatAbilities::new(ChatVisibility::from_option(self.settings.chat_visibility))
@@ -1289,24 +1323,7 @@ impl Game<'_> {
         horizon_client::screen_draw::paint(batch, &self.gui.atlas, &draws);
         self.ui.chat_screen = Some(screen);
         if in_bed {
-            let (x, y, w, h) = Self::leave_bed_button(batch.width, batch.height);
-            let label = Text::literal(horizon_client::lang::get_or(
-                "multiplayer.stopSleeping",
-                "Leave Bed",
-            ));
-            let mut button = Vec::new();
-            horizon_client::screen_draw::button(
-                &mut button,
-                &m,
-                &label,
-                x,
-                y,
-                w,
-                h,
-                true,
-                horizon_client::screen_draw::inside(mouse, x, y, w, h),
-                horizon_client::hud_overlays::now_ms(),
-            );
+            let button = Self::leave_bed_draws(&m, mouse, batch.width, batch.height);
             horizon_client::screen_draw::paint(batch, &self.gui.atlas, &button);
         }
         // The hovered message part's tooltip (`renderComponentHoverEffect`),
@@ -1904,5 +1921,74 @@ mod tests {
         prefilled.fill_from_exported(&reg);
         assert_eq!(prefilled.summonable, vec!["minecraft:pig".to_string()]);
         assert_eq!(prefilled.entity_types, vec!["minecraft:pig".to_string()]);
+    }
+
+    /// The sleeper's chat: Leave Bed is a button target for the pad and the
+    /// keyboard, right above the chat box, and the D-pad steps between the
+    /// two.
+    #[test]
+    fn leave_bed_is_a_focus_target_above_the_chat_box() {
+        use super::super::key_focus;
+        use horizon_client::{
+            font::Font,
+            gamepad::{Button, focus_step_strict},
+            widgets::Kind,
+        };
+        use std::collections::HashMap;
+        // The missing-glyph metrics measure without game assets.
+        let font = Font::load(
+            Path::new("/nonexistent-horizon-chat-test-resources"),
+            &HashMap::new(),
+            &[],
+            (1, 1),
+            (0, 0),
+            horizon_client::hud::Rect {
+                u0: 0.0,
+                v0: 0.0,
+                u1: 1.0,
+                v1: 1.0,
+                w: 1,
+                h: 1,
+            },
+        );
+        let m = Measure(&font);
+        let registries = Registries::default();
+        let c = Commands {
+            dispatcher: horizon_client::command::vanilla::game_dispatcher(),
+            registries: &registries,
+        };
+        let (width, height) = (427.0, 240.0);
+        let mut screen = ChatScreen::new(
+            &m,
+            &c,
+            "",
+            0,
+            width as i32,
+            height as i32,
+            ChatAbilities::new(ChatVisibility::Full),
+        );
+        screen.draw(&m, (0, 0), 0, 0);
+        Game::leave_bed_draws(&m, (0, 0), width, height);
+        horizon_client::widgets::end_frame(u64::MAX);
+
+        let targets = key_focus::drawn_targets();
+        let (x, y, w, h) = Game::leave_bed_button(width, height);
+        let bed = targets
+            .iter()
+            .copied()
+            .find(|t| t.rect == [x as f32, y as f32, w as f32, h as f32])
+            .expect("Leave Bed is a focus target");
+        assert_eq!(bed.kind, Kind::Button);
+        assert!(key_focus::keyboard_targets(targets.clone(), false).contains(&bed));
+        let field = targets
+            .iter()
+            .copied()
+            .find(|t| t.kind == Kind::Field)
+            .expect("the chat box is a focus target");
+        let rects: Vec<_> = targets.iter().map(|t| t.rect).collect();
+        let step =
+            |from: [f32; 4], button| focus_step_strict(from, button, &rects).map(|i| targets[i]);
+        assert_eq!(step(field.rect, Button::DPadUp), Some(bed));
+        assert_eq!(step(bed.rect, Button::DPadDown), Some(field));
     }
 }
