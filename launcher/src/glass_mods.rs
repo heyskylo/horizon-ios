@@ -284,14 +284,8 @@ impl Launcher {
                 );
             }
             wrap = wrap.child(
-                gpui::deferred(
-                    div()
-                        .absolute()
-                        .top(px(52.))
-                        .right_0()
-                        .child(menu),
-                )
-                .with_priority(1),
+                gpui::deferred(div().absolute().top(px(52.)).right_0().child(menu))
+                    .with_priority(1),
             );
         }
         wrap
